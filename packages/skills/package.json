@@ -1,0 +1,34 @@
+{
+  "name": "@evoclaw/skills",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EvoClaw Skills 能力层 - 技能市场、运行沙箱、执行引擎、SKILL.md解析",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@evoclaw/core": "workspace:*",
+    "@types/uuid": "^10.0.0",
+    "gray-matter": "^4.0.0",
+    "semver": "^7.6.0",
+    "uuid": "^10.0.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/semver": "^7.5.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0"
+  }
+}

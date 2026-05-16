@@ -1,0 +1,12 @@
+export { SecurityGovernor } from "./security-governor";
+export { AuditLogger } from "./audit-logger";
+export { AuditCenter } from "./audit-center";
+export { RateLimiterService } from "./rate-limiter";
+export { AnomalyDetector } from "./anomaly-detector";
+export { RBACManager } from "./rbac-manager";
+export { TenantManager } from "./tenant-manager";
+export { SelfHealingManager } from "./self-healing";
+export type { Role, RBACUser, ApiKeyInfo, Permission, AccessRequest } from "./rbac-manager";
+export type { AuditQuery, AuditStatistics, AuditAlert, AuditRule } from "./audit-center";
+export type { Tenant, TenantConfig, TenantQuota, TenantStats } from "./tenant-manager";
+export type { HealingAction, HealingRule, ServiceHealth, HealingActionType, HealingStrategy } from "./self-healing";

@@ -1,0 +1,33 @@
+{
+  "name": "@evoclaw/evolution",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EvoClaw Evolution 进化层 - 经验学习、需求挖掘、代码生成、性能反馈",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@evoclaw/core": "workspace:*",
+    "@evoclaw/memory": "workspace:*",
+    "@evoclaw/security": "workspace:*",
+    "@evoclaw/skills": "workspace:*",
+    "@types/uuid": "^10.0.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0"
+  }
+}

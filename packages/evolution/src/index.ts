@@ -1,0 +1,15 @@
+export { EvolutionEngine } from "./evolution-engine";
+export { RequirementMiner } from "./requirement-miner";
+export { EvolutionProposer } from "./evolution-proposer";
+export { EvolutionEvaluator } from "./evolution-evaluator";
+export { HotReloadManager } from "./hot-reload-manager";
+export { GeneticEvolutionEngine } from "./genetic-engine";
+export { ExperienceAnalyzer } from "./experience-analyzer";
+export { ReinforcementFeedbackSystem } from "./reinforcement-feedback";
+export { LearningJournal } from "./learning-journal";
+export type { JournalConfig } from "./learning-journal";
+export { ProgressReporter } from "./progress-reporter";
+export type { ProgressPhase } from "./progress-reporter";
+export type { FitnessScore, MutationStrategy } from "./genetic-engine";
+export type { ExperiencePattern, ExperienceAnalysis, ExperienceRecommendation, SimilarityScore, CrossDomainInsight } from "./experience-analyzer";
+export type { RewardSignal, AdaptiveWeights, FeedbackSummary } from "./reinforcement-feedback";

@@ -1,0 +1,30 @@
+{
+  "name": "@evoclaw/security",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EvoClaw 安全审计层 - 权限控制、行为监测、隐私保护、熔断隔离",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@evoclaw/core": "workspace:*",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/uuid": "^10.0.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0"
+  }
+}
