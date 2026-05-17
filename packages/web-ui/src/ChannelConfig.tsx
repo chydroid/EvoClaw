@@ -195,7 +195,7 @@ export default function ChannelConfigPage() {
       const res = await fetch("/api/config/channels");
       if (res.ok) {
         const data = await res.json();
-        if (data.channels) {
+        if (data.channels && Array.isArray(data.channels) && data.channels.length > 0) {
           setChannels(data.channels as ChannelConfig[]);
         }
       }
@@ -570,7 +570,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px", fontWeight: "bold", color: "#ccc", marginBottom: "6px",
   },
   input: {
-    width: "100%", padding: "8px 12px", borderRadius: "6px",
+    width: "400px", padding: "8px 12px", borderRadius: "6px",
     border: "1px solid #3a3a4a", background: "#1a1a2e",
     color: "#e0e0e0", fontSize: "14px", boxSizing: "border-box" as const,
   },

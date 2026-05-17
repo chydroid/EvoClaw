@@ -4,7 +4,7 @@ chcp 65001 > nul
 
 echo.
 echo ====================================
-echo   EcoClaw Server Launcher v0.3.3
+echo   EcoClaw Server Launcher v0.3.4
 echo ====================================
 echo.
 

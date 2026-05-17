@@ -40,7 +40,7 @@ export class AuthProvider {
     }
 
     const cookieToken = this.getCookie(req, "web_ui_token");
-    if (cookieToken && cookieToken === this.webUiToken && req.method === "GET") {
+    if (cookieToken && cookieToken === this.webUiToken) {
       return next();
     }
 

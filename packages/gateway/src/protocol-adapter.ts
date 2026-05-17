@@ -325,7 +325,7 @@ export class ProtocolAdapter {
     });
 
     app.get("/api/config/channels", (_req: Request, res: Response) => {
-      res.json({ channels: [] });
+      res.json({ status: "ok" });
     });
 
     app.put("/api/config/channels", (_req: Request, res: Response) => {

@@ -22,8 +22,8 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     name: "OpenAI",
     apiKey: "",
     baseURL: "https://api.openai.com/v1",
-    models: ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
-    selectedModel: "gpt-4o",
+    models: ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "o3", "o4-mini"],
+    selectedModel: "gpt-4.1",
     enabled: false,
     config: { temperature: 0.7, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
@@ -32,8 +32,8 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     name: "Anthropic",
     apiKey: "",
     baseURL: "https://api.anthropic.com/v1",
-    models: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
-    selectedModel: "claude-3-sonnet",
+    models: ["claude-sonnet-4-6-20250217", "claude-opus-4-7-20260416", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20250301"],
+    selectedModel: "claude-sonnet-4-6-20250217",
     enabled: false,
     config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
@@ -41,9 +41,9 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     id: "deepseek",
     name: "DeepSeek",
     apiKey: "",
-    baseURL: "https://api.deepseek.com/v1",
-    models: ["deepseek-chat", "deepseek-coder"],
-    selectedModel: "deepseek-chat",
+    baseURL: "https://api.deepseek.com",
+    models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+    selectedModel: "deepseek-v4-flash",
     enabled: false,
     config: { temperature: 0.3, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
@@ -52,7 +52,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     name: "Local Model (Ollama/vLLM)",
     apiKey: "",
     baseURL: "http://localhost:11434/v1",
-    models: ["llama3", "mistral", "qwen2", "custom"],
+    models: ["llama3", "mistral", "qwen2.5", "deepseek-r1", "custom"],
     selectedModel: "llama3",
     enabled: false,
     config: { temperature: 0.5, maxTokens: 2048, timeout: 120000, topP: 0.9 },
@@ -167,9 +167,6 @@ export default function LLMConfig() {
     <div style={s.container}>
       <div style={s.header}>
         <h2 style={s.title}>LLM Configuration</h2>
-        <button style={s.saveBtn} onClick={saveConfig} disabled={saving}>
-          {saving ? "Saving..." : "Save All"}
-        </button>
         {statusMsg && (
           <div style={{
             ...s.statusBanner,
@@ -179,6 +176,9 @@ export default function LLMConfig() {
             {statusMsg}
           </div>
         )}
+        <button style={s.saveBtn} onClick={saveConfig} disabled={saving}>
+          {saving ? "Saving..." : "Save All"}
+        </button>
       </div>
 
       <div style={s.body}>
@@ -269,27 +269,18 @@ export default function LLMConfig() {
                     </button>
                   )}
                 </label>
-                <select
-                  style={s.select}
+                <input
+                  style={s.input}
+                  list={`model-list-${activeProvider}`}
                   value={currentProvider.selectedModel}
                   onChange={(e) => updateProvider(activeProvider, { selectedModel: e.target.value })}
-                >
-                  <option value="">Select model...</option>
+                  placeholder="Select or type a model name..."
+                />
+                <datalist id={`model-list-${activeProvider}`}>
                   {currentProvider.models.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                    <option key={m} value={m} />
                   ))}
-                </select>
-                {currentProvider.id === "custom" && currentProvider.selectedModel && (
-                  <div style={s.hint}>Or type a custom model name below:</div>
-                )}
-                {currentProvider.id === "custom" && (
-                  <input
-                    style={s.input}
-                    value={currentProvider.selectedModel}
-                    placeholder="Enter custom model name"
-                    onChange={(e) => updateProvider(activeProvider, { selectedModel: e.target.value })}
-                  />
-                )}
+                </datalist>
               </div>
 
               <div style={s.divider} />
@@ -403,13 +394,13 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: "13px", fontWeight: "bold", color: "#ccc", marginBottom: "6px",
   },
   input: {
-    width: "100%", padding: "8px 12px", borderRadius: "6px",
+    width: "400px", padding: "8px 12px", borderRadius: "6px",
     border: "1px solid #3a3a4a", background: "#1a1a2e",
     color: "#e0e0e0", fontSize: "14px",
     boxSizing: "border-box" as const,
   },
   select: {
-    width: "100%", padding: "8px 12px", borderRadius: "6px",
+    width: "400px", padding: "8px 12px", borderRadius: "6px",
     border: "1px solid #3a3a4a", background: "#1a1a2e",
     color: "#e0e0e0", fontSize: "14px",
   },
