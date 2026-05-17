@@ -134,31 +134,139 @@ export class AgentModelExecutor {
   ): Promise<{ reply: string; tokensUsed: number; duration: number }> {
     const startTime = Date.now();
     const systemPrompt = this.buildSystemPrompt();
-    const skillsAvailable = Array.from(this.registeredTools.values())
-      .map((t) => `- ${t.definition.name}: ${t.definition.description}`)
-      .join("\n");
 
-    const greeting = this.getGreeting();
-    const baseReply = greeting ? greeting + "\n\n" : "";
+    const skillManager = this.registry?.resolveService<{
+      searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
+      listSkills(): unknown[];
+      executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
+    }>("skillManager");
 
-    const reply = [
-      baseReply,
-      `感谢您的消息！`,
-      ``,
-      `当前状态:`,
-      `- 模型: ${this.config.model} (${this.config.provider})`,
-      `- 最大 Token: ${this.config.maxTokens}`,
-      `- 温度: ${this.config.temperature}`,
-      ``,
-      skillsAvailable
-        ? `可用技能:\n${skillsAvailable}\n`
-        : `暂无注册技能，可先配置 LLM 提供商后使用完整功能。`,
-      ``,
-      `系统提示已加载，等待完整 API 客户端集成以连接实际大模型。`,
-    ].join("\n");
+    const installedSkills = skillManager?.listSkills() || [];
+    const msg = message.toLowerCase();
+
+    const reply = await this.generateChatResponse(message, msg, installedSkills, skillManager);
 
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
     return { reply, tokensUsed, duration: Date.now() - startTime };
+  }
+
+  private async generateChatResponse(
+    message: string,
+    msg: string,
+    installedSkills: unknown[],
+    skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>; listSkills(): unknown[]; executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>; } | undefined
+  ): Promise<string> {
+    const skillsList = installedSkills.length > 0
+      ? (installedSkills as Array<{ name: string; description: string }>)
+          .map((s) => `  - ${s.name}: ${s.description || "无描述"}`)
+          .join("\n")
+      : "";
+
+    const lines: string[] = [];
+
+    if (msg.includes("你好") || msg === "hi" || msg === "hello" || msg === "hey") {
+      lines.push(`${this.persona.masterTerm}您好！我是 ${this.persona.name}，${this.persona.title} 🦞`);
+      lines.push("");
+      lines.push(`请问有什么可以帮您的？`);
+      if (skillsList) {
+        lines.push("");
+        lines.push(`我已经安装了以下技能：`);
+        lines.push(skillsList);
+      } else {
+        lines.push("");
+        lines.push(`您可以先安装一些 Skill 来扩展我的能力。`);
+      }
+      lines.push("");
+      lines.push(`当前使用模型: ${this.config.model} (${this.config.provider})`);
+    } else if (msg.includes("你能做什么") || msg.includes("能力") || msg.includes("功能") || msg.includes("what can you do")) {
+      lines.push(`我是 ${this.persona.name}，以下是当前能力：`);
+      lines.push("");
+      lines.push(`🎯 **对话交互** — 自然语言理解和回复`);
+      lines.push(`🛠️ **技能执行** — 运行已安装的 Skill`);
+      lines.push(`📋 **任务编排** — 规划和执行复杂任务流程`);
+      lines.push(`🔍 **搜索技能** — 浏览本地和远程技能市场`);
+      lines.push(`📈 **自我进化** — 学习和优化执行策略`);
+      lines.push(`💬 **多通道** — 支持微信/钉钉/飞书等平台`);
+      if (skillsList) {
+        lines.push("");
+        lines.push(`**已安装技能 (${installedSkills.length} 个):**`);
+        lines.push(skillsList);
+      }
+      lines.push("");
+      lines.push(`当前配置: ${this.config.model}@${this.config.provider}`);
+      lines.push(`您可以通过 LLM 配置页面对接真实大模型 API 来获得更强的智能推理能力。`);
+    } else if (msg.includes("天气") || msg.includes("weather")) {
+      const weatherSkill = skillManager
+        ? (installedSkills as Array<{ id: string; name: string }>).find((s) =>
+            s.name.includes("weather"))
+        : null;
+
+      if (weatherSkill && skillManager) {
+        lines.push(`已匹配天气相关技能！正在使用 "${weatherSkill.name}" 为您处理...`);
+        lines.push("");
+        try {
+          const result = await skillManager.executeSkill(weatherSkill.id, {
+            prompt: message,
+            query: message,
+          });
+          lines.push(`执行结果: ${JSON.stringify(result, null, 2)}`);
+        } catch {
+          lines.push(`技能执行遇到问题，请稍后重试。`);
+        }
+        return lines.join("\n");
+      } else {
+        lines.push(`您提到了天气查询，但目前没有安装天气相关技能。`);
+        lines.push("");
+        lines.push(`您可以通过以下方式安装技能：`);
+        lines.push(`1. 准备一个 .SKILL.md 文件`);
+        lines.push(`2. 使用 CLI: ecoclaw skills install <文件路径>`);
+        lines.push(`3. 或通过 API: POST /api/skills/install`);
+      }
+    } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程")) {
+      lines.push(`好的，我理解您需要编写代码！`);
+      lines.push("");
+      lines.push(`当前我处于**离线/规则模式**，正在使用 ${this.config.model} 模型。`);
+      lines.push(`要获得真正的代码生成能力，您需要：`);
+      lines.push("");
+      lines.push(`1. 在 **LLM 配置页** 配置一个真实的 API（如 OpenAI/DeepSeek/Anthropic）`);
+      lines.push(`2. 填入有效的 API Key`);
+      lines.push(`3. 启用该提供商并保存`);
+      lines.push("");
+      lines.push(`配置完成后，我就能通过 API 调用大模型来为您生成代码了！`);
+      if (skillsList) {
+        lines.push("");
+        lines.push(`已安装技能: ${installedSkills.length} 个`);
+      }
+    } else if (msg.includes("技能") || msg.includes("skill") || msg.includes("安装")) {
+      lines.push(`关于技能管理：`);
+      lines.push("");
+      if (skillsList) {
+        lines.push(`当前已安装 ${installedSkills.length} 个技能：`);
+        lines.push(skillsList);
+      } else {
+        lines.push(`当前没有安装任何技能。`);
+      }
+      lines.push("");
+      lines.push(`技能安装方式：`);
+      lines.push(`- CLI: ecoclaw skills install <路径>  `);
+      lines.push(`- API: POST /api/skills/install {"path":"..."}  `);
+      lines.push(`- 技能市场: ecoclaw skills search <关键词>  `);
+    } else {
+      lines.push(`${this.persona.masterTerm}，收到您的消息："${message}"`);
+      lines.push("");
+      lines.push(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
+      if (skillsList) {
+        lines.push("");
+        lines.push(`已安装技能 (${installedSkills.length} 个):`);
+        lines.push(skillsList);
+        lines.push("");
+        lines.push(`输入 "你能做什么" 了解更多功能。`);
+      } else {
+        lines.push(`暂无技能，建议先安装一些 Skill 或配置真实的 LLM API 来获得完整的 AI 对话能力。`);
+      }
+    }
+
+    return lines.join("\n");
   }
 
   async execute(

@@ -135,6 +135,29 @@ export class SkillManager {
     this.registry.registerSkill(skill);
     this.lifecycle.activate(skill);
 
+    const agentExecutor = this.svcRegistry?.resolveService<{
+      registerTool(name: string, definition: { name: string; description: string; parameters: Record<string, unknown> }, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+    }>("agentModelExecutor");
+
+    if (agentExecutor) {
+      const handler = async (params: Record<string, unknown>) => {
+        return await this.executeSkill(skill.id, params);
+      };
+
+      agentExecutor.registerTool(
+        skill.name,
+        {
+          name: skill.name,
+          description: skill.description || `Execute the ${skill.name} skill`,
+          parameters: {
+            prompt: { type: "string", description: "User prompt for skill execution" },
+            query: { type: "string", description: "Query to pass to the skill" },
+          },
+        },
+        handler
+      );
+    }
+
     await this.eventBus.publish(SystemEvents.SKILL_INSTALLED, skill, "skill-manager");
 
     return skill;

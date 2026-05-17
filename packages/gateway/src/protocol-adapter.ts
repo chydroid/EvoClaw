@@ -231,6 +231,27 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/skills/install", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          installSkill(path: string): Promise<unknown>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillPath = (req.body.path as string) || "";
+        if (!skillPath) {
+          res.status(400).json({ error: "Skill path is required (body.path)" });
+          return;
+        }
+        const installed = await skillManager.installSkill(skillPath);
+        res.json({ success: true, skill: installed });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.post("/api/tasks", async (req: Request, res: Response) => {
       try {
         const taskOrchestrator = this.registry.resolveService<{
