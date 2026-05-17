@@ -100,6 +100,9 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
 }
 
 export class ProtocolAdapter {
+  private savedLLMProviders: Record<string, unknown>[] | null = null;
+  private savedChannels: Record<string, unknown>[] | null = null;
+
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
@@ -262,33 +265,31 @@ export class ProtocolAdapter {
 
     app.post("/api/chat", async (req: Request, res: Response) => {
       try {
-        const taskOrchestrator = this.registry.resolveService<{
-          createTask(input: unknown): Promise<unknown>;
-        }>("taskOrchestrator");
-        if (!taskOrchestrator) {
-          res.status(503).json({ error: "Task orchestrator not available" });
+        const message = (req.body.message as string) || "";
+        if (!message.trim()) {
+          res.status(400).json({ error: "Message is required" });
           return;
         }
 
-        const task = await taskOrchestrator.createTask({
-          type: "chat",
-          input: {
-            message: req.body.message,
-            sessionId: req.body.sessionId,
-            skillFilter: req.body.skillFilter || [],
-          },
-          priority: "normal",
-          context: {
-            sessionId: req.body.sessionId || "default",
-            userId: (req as Request & { user?: { userId: string } }).user?.userId || "anonymous",
-            workspace: "default",
-            variables: {},
-            tags: [],
-            traceId: "",
-          },
+        const agentExecutor = this.registry.resolveService<{
+          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number }>;
+          getGreeting(): string | null;
+        }>("agentModelExecutor");
+
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent model executor not available" });
+          return;
+        }
+
+        const result = await agentExecutor.chat(message, {
+          sessionId: req.body.sessionId || "web-ui",
         });
 
-        res.status(202).json(task);
+        res.json({
+          reply: result.reply,
+          tokensUsed: result.tokensUsed,
+          duration: result.duration,
+        });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -304,7 +305,10 @@ export class ProtocolAdapter {
         const executor = this.registry.resolveService<{
           getRegisteredTools(): unknown[];
         }>("agentModelExecutor");
-        res.json({ executorTools: executor?.getRegisteredTools() || [] });
+        res.json({
+          executorTools: executor?.getRegisteredTools() || [],
+          providers: this.savedLLMProviders || [],
+        });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -312,24 +316,42 @@ export class ProtocolAdapter {
 
     app.put("/api/config/llm", (req: Request, res: Response) => {
       try {
-        const executor = this.registry.resolveService<{
-          configure(config: Record<string, unknown>): void;
-        }>("agentModelExecutor");
-        if (executor && req.body?.providers?.[0]) {
-          executor.configure(req.body.providers[0].config || {});
+        const { providers } = req.body || {};
+        if (Array.isArray(providers)) {
+          this.savedLLMProviders = providers;
+          for (const p of providers) {
+            if (p.enabled && p.config) {
+              const executor = this.registry.resolveService<{
+                configure(config: Record<string, unknown>): void;
+              }>("agentModelExecutor");
+              if (executor) {
+                executor.configure({
+                  provider: p.id as "openai" | "anthropic" | "deepseek" | "local" | "custom",
+                  model: p.selectedModel as string,
+                  apiKey: p.apiKey as string,
+                  baseURL: p.baseURL as string,
+                  ...p.config as Record<string, unknown>,
+                });
+              }
+            }
+          }
         }
-        res.json({ status: "ok" });
+        res.json({ success: true });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
     });
 
     app.get("/api/config/channels", (_req: Request, res: Response) => {
-      res.json({ status: "ok" });
+      res.json({ channels: this.savedChannels || [] });
     });
 
-    app.put("/api/config/channels", (_req: Request, res: Response) => {
-      res.json({ status: "ok" });
+    app.put("/api/config/channels", (req: Request, res: Response) => {
+      const { channels } = req.body || {};
+      if (Array.isArray(channels)) {
+        this.savedChannels = channels;
+      }
+      res.json({ success: true });
     });
 
     app.post("/api/channels/:id/test", (req: Request, res: Response) => {

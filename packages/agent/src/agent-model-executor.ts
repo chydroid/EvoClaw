@@ -128,6 +128,39 @@ export class AgentModelExecutor {
     return Array.from(this.registeredTools.values()).map((t) => t.definition);
   }
 
+  async chat(
+    message: string,
+    context?: Record<string, unknown>
+  ): Promise<{ reply: string; tokensUsed: number; duration: number }> {
+    const startTime = Date.now();
+    const systemPrompt = this.buildSystemPrompt();
+    const skillsAvailable = Array.from(this.registeredTools.values())
+      .map((t) => `- ${t.definition.name}: ${t.definition.description}`)
+      .join("\n");
+
+    const greeting = this.getGreeting();
+    const baseReply = greeting ? greeting + "\n\n" : "";
+
+    const reply = [
+      baseReply,
+      `感谢您的消息！`,
+      ``,
+      `当前状态:`,
+      `- 模型: ${this.config.model} (${this.config.provider})`,
+      `- 最大 Token: ${this.config.maxTokens}`,
+      `- 温度: ${this.config.temperature}`,
+      ``,
+      skillsAvailable
+        ? `可用技能:\n${skillsAvailable}\n`
+        : `暂无注册技能，可先配置 LLM 提供商后使用完整功能。`,
+      ``,
+      `系统提示已加载，等待完整 API 客户端集成以连接实际大模型。`,
+    ].join("\n");
+
+    const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
+    return { reply, tokensUsed, duration: Date.now() - startTime };
+  }
+
   async execute(
     prompt: string,
     node: DAGNode,

@@ -125,10 +125,10 @@ export default function App() {
       });
 
       if (res.ok) {
-        const task = await res.json();
+        const data = await res.json();
         setChatHistory((prev) => [
           ...prev,
-          `EcoClaw: Task created (ID: ${task.id}, Status: ${task.status})`,
+          `EcoClaw: ${data.reply || "No response"}`,
         ]);
       } else {
         setChatHistory((prev) => [...prev, "EcoClaw: Server returned an error"]);

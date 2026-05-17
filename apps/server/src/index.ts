@@ -59,7 +59,7 @@ export class EcoClawServer {
 
   async start(): Promise<void> {
     console.log("============================================");
-    console.log("  EcoClaw v0.3.4 - Self-Evolving Agent OS");
+    console.log("  EcoClaw v0.3.5 - Self-Evolving Agent OS");
     console.log("============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
