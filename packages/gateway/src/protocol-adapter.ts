@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { exec } from "child_process";
+import { spawn } from "child_process";
 import * as path from "path";
 import * as os from "os";
 
@@ -46,10 +46,9 @@ function validateCliCommand(input: string): { valid: boolean; reason?: string } 
 
 function executeCliCommand(command: string): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const childProcess = exec(command, {
-      timeout: CLI_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES,
-      killSignal: "SIGTERM",
+    const args = command.replace(/^ecoclaw\s*/, "").trim().split(/\s+/).filter(Boolean);
+
+    const childProcess = spawn("node", [CLI_SCRIPT_PATH, ...args], {
       windowsHide: true,
       cwd: process.cwd(),
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", CI: "1" },
@@ -60,8 +59,15 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
     let resolved = false;
     let timedOut = false;
 
+    const timeoutId = setTimeout(() => {
+      if (!resolved) {
+        timedOut = true;
+        childProcess.kill("SIGKILL");
+      }
+    }, CLI_TIMEOUT_MS);
+
     childProcess.stdout?.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      stdout += data.toString("utf8");
       if (stdout.length > MAX_OUTPUT_BYTES) {
         stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n... (output truncated)";
         childProcess.kill("SIGTERM");
@@ -69,13 +75,14 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
     });
 
     childProcess.stderr?.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      stderr += data.toString("utf8");
       if (stderr.length > MAX_OUTPUT_BYTES) {
         stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n... (output truncated)";
       }
     });
 
     childProcess.on("close", (code) => {
+      clearTimeout(timeoutId);
       if (!resolved) {
         resolved = true;
         resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: code ?? 1, timedOut });
@@ -83,18 +90,12 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
     });
 
     childProcess.on("error", (err) => {
+      clearTimeout(timeoutId);
       if (!resolved) {
         resolved = true;
         resolve({ stdout: "", stderr: err.message, exitCode: 1, timedOut: false });
       }
     });
-
-    setTimeout(() => {
-      if (!resolved) {
-        timedOut = true;
-        childProcess.kill("SIGKILL");
-      }
-    }, CLI_TIMEOUT_MS);
   });
 }
 
@@ -303,7 +304,7 @@ export class ProtocolAdapter {
         const executor = this.registry.resolveService<{
           getRegisteredTools(): unknown[];
         }>("agentModelExecutor");
-        res.json({ providers: [], executorTools: executor?.getRegisteredTools() || [] });
+        res.json({ executorTools: executor?.getRegisteredTools() || [] });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

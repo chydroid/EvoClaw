@@ -106,7 +106,7 @@ export default function LLMConfig() {
       const res = await fetch("/api/config/llm");
       if (res.ok) {
         const data = await res.json();
-        if (data.providers) {
+        if (data.providers && Array.isArray(data.providers) && data.providers.length > 0) {
           setProviders((data.providers as LLMProvider[]));
         }
       }
