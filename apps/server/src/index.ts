@@ -6,6 +6,8 @@ import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager } from "@evoclaw/infrastructure";
+import * as fs from "fs";
+import * as path from "path";
 
 export class EcoClawServer {
   private registry: ServiceRegistry;
@@ -59,7 +61,7 @@ export class EcoClawServer {
 
   async start(): Promise<void> {
     console.log("============================================");
-    console.log("  EcoClaw v0.3.6 - Self-Evolving Agent OS");
+    console.log("  EcoClaw v0.4.0 - Self-Evolving Agent OS");
     console.log("============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
@@ -74,6 +76,12 @@ export class EcoClawServer {
 
     console.log("[EcoClaw] Skill manager starting...");
     console.log("[EcoClaw] Skill manager ready");
+
+    const skillsDir = path.resolve("skills");
+    if (!fs.existsSync(skillsDir)) {
+      fs.mkdirSync(skillsDir, { recursive: true });
+    }
+    this.skillManager.startAutoScan(skillsDir, 30000);
 
     console.log("[EcoClaw] Evolution engine starting...");
     console.log("[EcoClaw] Evolution engine online");

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import EvolutionDashboard from "./EvolutionDashboard";
 import LLMConfig from "./LLMConfig";
 import ChannelConfigPage from "./ChannelConfig";
+import SkillsConfig from "./SkillsConfig";
 import { CLITerminal } from "./CLITerminal";
 
 interface ServiceInfo {
@@ -565,63 +566,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === "skills" && (
-          <div style={styles.panel}>
-            <div style={styles.skillMarketBanner}>
-              <div style={styles.skillMarketTitle}>🛒 Skill Market</div>
-              <div style={styles.skillMarketLinks}>
-                <a
-                  href="https://clawhub.ai/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={styles.skillMarketLink}
-                  title="ClawHub — Global Skill Registry"
-                >
-                  🌐 clawhub.ai
-                </a>
-                <a
-                  href="https://cn.clawhub-mirror.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ ...styles.skillMarketLink, background: "#1a3a5c" }}
-                  title="ClawHub China Mirror — 国内镜像加速"
-                >
-                  🇨🇳 cn.clawhub-mirror.com
-                </a>
-              </div>
-              <div style={styles.skillMarketHint}>
-                Discover and install skills from the OpenClaw community. Download SKILL.md files and place them in <code>skills/</code> directory.
-              </div>
-            </div>
-            {skills.length === 0 ? (
-              <div style={styles.placeholder}>No skills installed yet — Visit ClawHub to discover skills</div>
-            ) : (
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Version</th>
-                    <th>Status</th>
-                    <th>Success Rate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {skills.map((skill) => (
-                    <tr key={skill.id}>
-                      <td>{skill.name}</td>
-                      <td>{skill.version}</td>
-                      <td>{skill.lifecycle.status}</td>
-                      <td>
-                        {skill.stats.successCount}/
-                        {skill.stats.invocationCount}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+        {activeTab === "skills" && <SkillsConfig />}
 
         {activeTab === "services" && (
           <div style={styles.panel}>

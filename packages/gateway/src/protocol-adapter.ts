@@ -252,6 +252,51 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/skills/refresh", async (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          scanAndInstall(dir: string): Promise<{ installed: unknown[]; skipped: string[] }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.scanAndInstall("skills");
+        res.json({
+          installed: result.installed.length,
+          skipped: result.skipped.length,
+          details: result,
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.put("/api/skills/:id/config", (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getSkill(id: string): Promise<{ id: string; config: Record<string, unknown>; name: string } | undefined>;
+        }>("skillManager");
+        const skillId = req.params.id as string;
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        skillManager.getSkill(skillId).then((skill) => {
+          if (!skill) {
+            res.status(404).json({ error: "Skill not found" });
+            return;
+          }
+          skill.config = { ...skill.config, ...(req.body.config || {}) };
+          res.json({ success: true, skill });
+        }).catch(() => {
+          res.status(500).json({ error: "Failed to update config" });
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.post("/api/tasks", async (req: Request, res: Response) => {
       try {
         const taskOrchestrator = this.registry.resolveService<{

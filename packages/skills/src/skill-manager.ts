@@ -6,6 +6,9 @@ import {
   type SkillExecutionResult,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
+import { execSync } from "child_process";
 import { SKILLmdParser } from "./skill-md-parser";
 import { SkillSandbox } from "./skill-sandbox";
 import { SkillLifecycleManager } from "./skill-lifecycle";
@@ -19,6 +22,8 @@ export class SkillManager {
   private lifecycle: SkillLifecycleManager;
   private registry: SkillRegistry;
   private resolver: SkillResolver;
+  private scanTimer: ReturnType<typeof setInterval> | null = null;
+  private processedItems = new Map<string, number>();
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -278,6 +283,150 @@ export class SkillManager {
 
   addRemoteRegistry(config: RemoteRegistryConfig): void {
     this.registry.addRemoteRegistry(config);
+  }
+
+  startAutoScan(skillsDir: string, intervalMs = 30000): void {
+    if (this.scanTimer) {
+      clearInterval(this.scanTimer);
+    }
+    console.log(`[SkillManager] Auto-scan started on "${skillsDir}" (every ${intervalMs / 1000}s)`);
+
+    const runScan = async () => {
+      try {
+        const result = await this.scanAndInstall(skillsDir);
+        if (result.installed.length > 0 || result.skipped.length > 0) {
+          console.log(
+            `[SkillManager] Scan: ${result.installed.length} installed, ${result.skipped.length} skipped`
+          );
+        }
+      } catch (err) {
+        console.error("[SkillManager] Auto-scan error:", err);
+      }
+    };
+
+    runScan();
+    this.scanTimer = setInterval(runScan, intervalMs);
+  }
+
+  stopAutoScan(): void {
+    if (this.scanTimer) {
+      clearInterval(this.scanTimer);
+      this.scanTimer = null;
+      console.log("[SkillManager] Auto-scan stopped");
+    }
+  }
+
+  async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {
+    const installed: Skill[] = [];
+    const skipped: string[] = [];
+
+    if (!fs.existsSync(skillsDir)) {
+      return { installed, skipped };
+    }
+
+    const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(skillsDir, entry.name);
+
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".zip")) {
+        try {
+          const stat = fs.statSync(fullPath);
+          const prevMtime = this.processedItems.get(fullPath);
+
+          if (prevMtime === stat.mtimeMs) {
+            skipped.push(entry.name);
+            continue;
+          }
+
+          const extractDir = path.join(
+            skillsDir,
+            entry.name.replace(/\.zip$/i, "")
+          );
+
+          if (fs.existsSync(extractDir)) {
+            fs.rmSync(extractDir, { recursive: true, force: true });
+          }
+
+          this.extractZip(fullPath, skillsDir);
+
+          const skill = await this.installFolderSkill(extractDir);
+          if (skill) {
+            this.processedItems.set(fullPath, stat.mtimeMs);
+            installed.push(skill);
+          }
+        } catch (err) {
+          console.error(
+            `[SkillManager] Failed to process ZIP "${entry.name}":`,
+            err
+          );
+        }
+      } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
+        try {
+          const skillMdPath = path.join(fullPath, "SKILL.md");
+          if (!fs.existsSync(skillMdPath)) {
+            continue;
+          }
+
+          const stat = fs.statSync(skillMdPath);
+          const prevMtime = this.processedItems.get(skillMdPath);
+
+          if (prevMtime === stat.mtimeMs) {
+            skipped.push(entry.name);
+            continue;
+          }
+
+          const alreadyInstalled = Array.from(this.skills.values()).some(
+            (s) => s.installPath === skillMdPath && s.lifecycle.status === "active"
+          );
+
+          if (alreadyInstalled) {
+            this.processedItems.set(skillMdPath, stat.mtimeMs);
+            skipped.push(entry.name);
+            continue;
+          }
+
+          const skill = await this.installSkill(skillMdPath);
+          if (skill) {
+            this.processedItems.set(skillMdPath, stat.mtimeMs);
+            installed.push(skill);
+          }
+        } catch (err) {
+          console.error(
+            `[SkillManager] Failed to register folder "${entry.name}":`,
+            err
+          );
+        }
+      }
+    }
+
+    return { installed, skipped };
+  }
+
+  private async installFolderSkill(folderPath: string): Promise<Skill | null> {
+    const skillMdPath = path.join(folderPath, "SKILL.md");
+    if (!fs.existsSync(skillMdPath)) {
+      return null;
+    }
+    return await this.installSkill(skillMdPath);
+  }
+
+  private extractZip(zipPath: string, destDir: string): void {
+    try {
+      if (process.platform === "win32") {
+        execSync(
+          `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`,
+          { stdio: "pipe" }
+        );
+      } else {
+        execSync(
+          `unzip -o "${zipPath}" -d "${destDir}"`,
+          { stdio: "pipe" }
+        );
+      }
+    } catch (err) {
+      throw new Error(`ZIP extraction failed: ${err}`);
+    }
   }
 
   async healthCheck(): Promise<boolean> {
