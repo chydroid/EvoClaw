@@ -1,12 +1,13 @@
 {
   "name": "evoclaw",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "EcoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
     "build": "pnpm -r build",
+    "start": "chcp 65001 > nul && node --env-file=.env apps/server/dist/index.js",
     "dev": "pnpm -r dev",
-    "cli": "node apps/cli/dist/index.js",
+    "cli": "chcp 65001 > nul && node apps/cli/dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "pnpm -r lint",

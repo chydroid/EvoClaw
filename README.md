@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.3.2-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -363,8 +363,17 @@ pnpm build
 ### 5. 启动服务器
 
 ```bash
-node apps/server/dist/index.js
+# 方式一：通过 pnpm script（推荐，自动设置 UTF-8 编码）
+pnpm start
+
+# 方式二：直接运行（Windows 用户需先执行 chcp 65001 避免中文乱码）
+node --env-file=.env apps/server/dist/index.js
+
+# 方式三：Windows 批处理脚本
+start.bat
 ```
+
+> **Windows 用户注意**：如果终端中文显示乱码，是因为 Windows 默认代码页为 GBK (936)，而项目使用 UTF-8 编码。使用 `pnpm start` 或 `start.bat` 会自动设置代码页为 UTF-8 (65001)。
 
 启动成功后将看到:
 
@@ -783,6 +792,9 @@ ecoclaw security audit --fix    # 自动修复安全问题
 ```bash
 # 构建所有包
 pnpm build
+
+# 启动服务器
+pnpm start
 
 # 开发模式 (各包独立构建)
 pnpm dev
