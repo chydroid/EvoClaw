@@ -19,8 +19,8 @@ export interface GatewayConfig {
 }
 
 const DEFAULT_CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173").split(",").map((s) => s.trim());
-const DEFAULT_PORT = parseInt(process.env.EVOCLAW_PORT || "3000", 10);
-const DEFAULT_HOST = process.env.EVOCLAW_HOST || "0.0.0.0";
+const DEFAULT_PORT = parseInt(process.env.ECOCLAW_PORT || "3000", 10);
+const DEFAULT_HOST = process.env.ECOCLAW_HOST || "0.0.0.0";
 
 export class GatewayServer {
   private app: Express;
@@ -70,7 +70,7 @@ export class GatewayServer {
 
     const { port, host } = this.config;
     this.server = this.app.listen(port, host, () => {
-      console.log(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}`);
+      console.log(`[Gateway] EcoClaw Gateway listening on http://${host}:${port}`);
       this.eventBus.publish("system.ready", { port, host }, "gateway").catch((err) => { console.debug("[Gateway] Event publish error:", err); });
     });
   }

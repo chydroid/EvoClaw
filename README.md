@@ -1,6 +1,6 @@
-![EvoClaw Logo](assets/images/android-chrome-512x512.png)
+![EcoClaw Logo](assets/images/android-chrome-512x512.png)
 
-<h1 align="center">EvoClaw</h1>
+<h1 align="center">EcoClaw</h1>
 
 <p align="center">
   <strong>具备增强式自我进化能力的下一代自主智能体操作系统</strong>
@@ -45,15 +45,15 @@
 
 ## 项目简介
 
-**EvoClaw**（进化龙虾）是一个具备增强式自我进化能力的下一代自主智能体系统。它不仅仅是一个 AI Agent 框架，更是一个能够**自我观察、自我诊断、自我优化、自我进化**的完整智能体运行时环境。
+**EcoClaw**（进化龙虾）是一个具备增强式自我进化能力的下一代自主智能体系统。它不仅仅是一个 AI Agent 框架，更是一个能够**自我观察、自我诊断、自我优化、自我进化**的完整智能体运行时环境。
 
-EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一生都在不断蜕皮生长，不会被环境所束缚。EvoClaw 同样具备这种**持续进化**的能力：通过内置的进化引擎，系统能够从任务执行失败、用户反馈、使用模式等多个维度收集经验，并自动生成改进方案，实现智能体的自主迭代升级。
+EcoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一生都在不断蜕皮生长，不会被环境所束缚。EcoClaw 同样具备这种**持续进化**的能力：通过内置的进化引擎，系统能够从任务执行失败、用户反馈、使用模式等多个维度收集经验，并自动生成改进方案，实现智能体的自主迭代升级。
 
 ### 名字由来
 
 > **Evo** = Evolution（进化） + **Claw** = 龙虾之钳
 
-龙虾的钳子既是它捕食的工具，也是它防御的武器。EvoClaw 以此为名，寓意系统既具备强大的**任务执行能力（钳子）**，又拥有持续的**自我进化能力（蜕皮）**。
+龙虾的钳子既是它捕食的工具，也是它防御的武器。EcoClaw 以此为名，寓意系统既具备强大的**任务执行能力（钳子）**，又拥有持续的**自我进化能力（蜕皮）**。
 
 ***
 
@@ -117,7 +117,7 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        EvoClaw Server                        │
+│                        EcoClaw Server                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
 │  │ Gateway │  │   Web UI  │  │    CLI    │  │  IDE Bridge │  │
@@ -177,12 +177,12 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 ## 项目结构
 
 ```
-EvoClaw/
+EcoClaw/
 ├── apps/                          # 应用程序
 │   ├── cli/                       # CLI 命令行工具
 │   │   └── src/index.ts           # 30+ 子命令的完整 CLI 实现
 │   └── server/                    # 主服务器入口
-│       └── src/index.ts           # EvoClawServer 启动与编排
+│       └── src/index.ts           # EcoClawServer 启动与编排
 │
 ├── packages/                      # 核心包 (Monorepo)
 │   ├── core/                      # 核心类型与基础设施
@@ -318,8 +318,8 @@ EvoClaw/
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/chydroid/EvoClaw.git
-cd EvoClaw
+git clone https://github.com/chydroid/EcoClaw.git
+cd EcoClaw
 ```
 
 ### 2. 安装依赖
@@ -338,20 +338,20 @@ cp .env.example .env
 
 ```env
 # 服务器配置
-EVOCLAW_PORT=17788
-EVOCLAW_HOST=0.0.0.0
+ECOCLAW_PORT=17788
+ECOCLAW_HOST=0.0.0.0
 
 # JWT 密钥 (生产环境务必改为至少16位随机字符串!)
 JWT_SECRET=change-me-to-a-random-secret-min-16-chars
 
 # 进化引擎
-EVOCLAW_EVOLUTION_ENABLED=true
+ECOCLAW_EVOLUTION_ENABLED=true
 
 # MCP 协议
-EVOCLAW_MCP_ENABLED=true
+ECOCLAW_MCP_ENABLED=true
 
 # REST API
-EVOCLAW_REST_ENABLED=true
+ECOCLAW_REST_ENABLED=true
 ```
 
 ### 4. 构建项目
@@ -370,27 +370,27 @@ node apps/server/dist/index.js
 
 ```
 ============================================
-  EvoClaw v0.2.0 - Self-Evolving Agent OS
+  EcoClaw v0.2.0 - Self-Evolving Agent OS
 ============================================
 
-[EvoClaw] Starting all services...
-[EvoClaw] Gateway server starting...
-[EvoClaw] Agent pool initialized
-[EvoClaw] Skill manager ready
-[EvoClaw] Evolution engine online
-[EvoClaw] Memory hub active
-[EvoClaw] Security governor engaged
-[EvoClaw] Audit center online
-[EvoClaw] Tenant manager ready
-[EvoClaw] Self-healing monitor starting...
+[EcoClaw] Starting all services...
+[EcoClaw] Gateway server starting...
+[EcoClaw] Agent pool initialized
+[EcoClaw] Skill manager ready
+[EcoClaw] Evolution engine online
+[EcoClaw] Memory hub active
+[EcoClaw] Security governor engaged
+[EcoClaw] Audit center online
+[EcoClaw] Tenant manager ready
+[EcoClaw] Self-healing monitor starting...
 
-[EvoClaw] All systems ready!
+[EcoClaw] All systems ready!
 ============================================
 ```
 
 ### 6. 打开 Web 仪表盘
 
-在浏览器中访问 `http://localhost:17788 `即可进入 EvoClaw Web 管理界面。
+在浏览器中访问 `http://localhost:17788 `即可进入 EcoClaw Web 管理界面。
 
 ### 7. 使用 CLI
 
@@ -408,7 +408,7 @@ ecoclaw health
 
 ## 配置说明
 
-EvoClaw采用**环境变量 + Web UI 双层配置**体系：
+EcoClaw采用**环境变量 + Web UI 双层配置**体系：
 
 | 配置层       | 存储位置      | 管理方式                   | 适用场景                  |
 | --------- | --------- | ---------------------- | --------------------- |
@@ -419,12 +419,12 @@ EvoClaw采用**环境变量 + Web UI 双层配置**体系：
 
 | 变量                          | 默认值       | 说明                  |
 | --------------------------- | --------- | ------------------- |
-| `EVOCLAW_PORT`              | `3000`    | 服务器监听端口             |
-| `EVOCLAW_HOST`              | `0.0.0.0` | 绑定地址                |
+| `ECOCLAW_PORT`              | `3000`    | 服务器监听端口             |
+| `ECOCLAW_HOST`              | `0.0.0.0` | 绑定地址                |
 | `JWT_SECRET`                | -         | JWT 签名密钥 (生产环境必须修改) |
-| `EVOCLAW_EVOLUTION_ENABLED` | `true`    | 是否启用进化引擎            |
-| `EVOCLAW_MCP_ENABLED`       | `true`    | 是否启用 MCP 协议         |
-| `EVOCLAW_REST_ENABLED`      | `true`    | 是否启用 REST API       |
+| `ECOCLAW_EVOLUTION_ENABLED` | `true`    | 是否启用进化引擎            |
+| `ECOCLAW_MCP_ENABLED`       | `true`    | 是否启用 MCP 协议         |
+| `ECOCLAW_REST_ENABLED`      | `true`    | 是否启用 REST API       |
 
 ### LLM 配置
 
@@ -441,7 +441,7 @@ EvoClaw采用**环境变量 + Web UI 双层配置**体系：
 
 ### 命令行界面 (CLI)
 
-EvoClaw 提供了丰富的 CLI 命令，涵盖系统管理的各个方面。
+EcoClaw 提供了丰富的 CLI 命令，涵盖系统管理的各个方面。
 
 #### 安装与入门
 
@@ -552,7 +552,7 @@ Web 仪表盘提供了直观的可视化管理界面，包含以下功能标签:
 
 ### REST API
 
-EvoClaw 通过统一的 RESTful API 暴露所有功能:
+EcoClaw 通过统一的 RESTful API 暴露所有功能:
 
 | 端点                         | 方法   | 说明        |
 | -------------------------- | ---- | --------- |
@@ -573,7 +573,7 @@ EvoClaw 通过统一的 RESTful API 暴露所有功能:
 
 ### 智能体系统 (Agent)
 
-智能体系统是 EvoClaw 的任务执行核心，负责接收、拆解、调度和执行各类任务。
+智能体系统是 EcoClaw 的任务执行核心，负责接收、拆解、调度和执行各类任务。
 
 #### Actor 并发模型
 
@@ -624,7 +624,7 @@ Task: "分析财报并生成报告"
 name: weather-reporter
 version: 1.2.0
 description: Fetch and report weather information
-author: EvoClaw Team
+author: EcoClaw Team
 triggers:
   - type: keyword
     pattern: "weather|temperature|forecast"
@@ -688,7 +688,7 @@ ecoclaw skills list
 
 ### 进化引擎 (Evolution)
 
-进化引擎是 EvoClaw 最核心的差异化能力，实现了 AI 系统的自主进化。
+进化引擎是 EcoClaw 最核心的差异化能力，实现了 AI 系统的自主进化。
 
 #### 进化循环流水线
 
@@ -962,9 +962,9 @@ git push origin feature/my-feature
 ***
 
 <p align="center">
-  <sub>Made with 🦞 by the EvoClaw Team</sub>
+  <sub>Made with 🦞 by the EcoClaw Team</sub>
 </p>
 
 <p align="center">
-  <sub>龙虾蜕壳，终成大器。EvoClaw 永不止步于进化之路。</sub>
+  <sub>龙虾蜕壳，终成大器。EcoClaw 永不止步于进化之路。</sub>
 </p>

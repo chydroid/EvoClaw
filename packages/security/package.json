@@ -2,7 +2,7 @@
   "name": "@evoclaw/security",
   "version": "0.1.0",
   "private": true,
-  "description": "EvoClaw 安全审计层 - 权限控制、行为监测、隐私保护、熔断隔离",
+  "description": "EcoClaw 安全审计层 - 权限控制、行为监测、隐私保护、熔断隔离",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

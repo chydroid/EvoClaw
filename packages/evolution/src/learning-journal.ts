@@ -394,9 +394,9 @@ export class LearningJournal {
 
     const lines: string[] = [];
 
-    lines.push("# 🦞 EvoClaw 学习日志 (Learning Journal)");
+    lines.push("# 🦞 EcoClaw 学习日志 (Learning Journal)");
     lines.push("");
-    lines.push("> 本文件由 EvoClaw 进化引擎自动维护。记录系统从每次交互中学习到的经验教训。");
+    lines.push("> 本文件由 EcoClaw 进化引擎自动维护。记录系统从每次交互中学习到的经验教训。");
     lines.push("> ");
     lines.push("> **最后更新**: " + new Date().toISOString());
     lines.push("> **学习条目**: " + stats.totalEntries + " | **已解决**: " + stats.resolvedEntries + " | **解决率**: " + Math.round(stats.resolutionRate * 100) + "%");

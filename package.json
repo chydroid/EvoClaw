@@ -1,8 +1,8 @@
 {
   "name": "evoclaw",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
+  "description": "EcoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm -r dev",

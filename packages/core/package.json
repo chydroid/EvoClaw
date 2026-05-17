@@ -2,7 +2,7 @@
   "name": "@evoclaw/core",
   "version": "0.1.1",
   "private": true,
-  "description": "EvoClaw 核心领域模型与公共接口定义",
+  "description": "EcoClaw 核心领域模型与公共接口定义",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

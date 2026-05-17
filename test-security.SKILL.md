@@ -2,7 +2,7 @@
 name: test-math-helper
 version: 1.0.0
 description: A simple math utility for testing
-author: EvoClaw Test Team
+author: EcoClaw Test Team
 triggers:
   - type: keyword
     pattern: "calculate|math|compute"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 
 interface LLMProvider {
   id: string;
@@ -74,10 +74,32 @@ export default function LLMConfig() {
   const [activeProvider, setActiveProvider] = useState<string>("openai");
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const dragging = useRef(false);
 
   useEffect(() => {
     loadConfig();
   }, []);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const delta = ev.clientX - startX;
+      const newW = Math.max(180, Math.min(500, startW + delta));
+      setSidebarWidth(newW);
+    };
+    const onMouseUp = () => {
+      dragging.current = false;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [sidebarWidth]);
 
   async function loadConfig() {
     try {
@@ -160,7 +182,7 @@ export default function LLMConfig() {
       </div>
 
       <div style={s.body}>
-        <div style={s.sidebar}>
+        <div style={{ ...s.sidebar, width: sidebarWidth }}>
           {providers.map((p) => (
             <div
               key={p.id}
@@ -182,6 +204,8 @@ export default function LLMConfig() {
             </div>
           ))}
         </div>
+
+        <div style={s.resizeHandle} onMouseDown={onMouseDown} />
 
         <div style={s.content}>
           {currentProvider && (
@@ -349,8 +373,14 @@ const s: Record<string, React.CSSProperties> = {
   },
   body: { display: "flex", flex: 1, overflow: "hidden" },
   sidebar: {
-    width: "200px", borderRight: "1px solid #2a2a3a",
-    overflow: "auto", padding: "8px",
+    width: "260px", borderRight: "1px solid #2a2a3a",
+    overflow: "auto", padding: "8px", flexShrink: 0,
+  },
+  resizeHandle: {
+    width: "4px", cursor: "col-resize", background: "transparent",
+    flexShrink: 0, transition: "background 0.2s",
+    userSelect: "none" as const,
+    borderLeft: "1px solid #2a2a3a",
   },
   sidebarItem: {
     padding: "12px", borderRadius: "8px", cursor: "pointer",

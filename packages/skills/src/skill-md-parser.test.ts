@@ -5,7 +5,7 @@ const sampleSKILLmd = `---
 name: weather-reporter
 version: 1.2.0
 description: Fetch and report weather information
-author: EvoClaw Team
+author: EcoClaw Team
 triggers:
   - type: keyword
     pattern: "weather"
@@ -62,7 +62,7 @@ describe("SKILLmdParser", () => {
     expect(doc.meta.name).toBe("weather-reporter");
     expect(doc.meta.version).toBe("1.2.0");
     expect(doc.meta.description).toBe("Fetch and report weather information");
-    expect(doc.meta.author).toBe("EvoClaw Team");
+    expect(doc.meta.author).toBe("EcoClaw Team");
   });
 
   it("should parse triggers", async () => {

@@ -128,13 +128,13 @@ export default function App() {
         const task = await res.json();
         setChatHistory((prev) => [
           ...prev,
-          `EvoClaw: Task created (ID: ${task.id}, Status: ${task.status})`,
+          `EcoClaw: Task created (ID: ${task.id}, Status: ${task.status})`,
         ]);
       } else {
-        setChatHistory((prev) => [...prev, "EvoClaw: Server returned an error"]);
+        setChatHistory((prev) => [...prev, "EcoClaw: Server returned an error"]);
       }
     } catch {
-      setChatHistory((prev) => [...prev, "EvoClaw: Unable to connect to server"]);
+      setChatHistory((prev) => [...prev, "EcoClaw: Unable to connect to server"]);
     }
 
     setMessage("");
@@ -470,8 +470,8 @@ export default function App() {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.headerLeft}>
-          <img src="/android-chrome-192x192.png" alt="EvoClaw" style={styles.logo} />
-          <h1 style={styles.title}>EvoClaw</h1>
+          <img src="/android-chrome-192x192.png" alt="EcoClaw" style={styles.logo} />
+          <h1 style={styles.title}>EcoClaw</h1>
         </div>
         <div style={statusBadgeStyle(status)}>
           {status === "online" ? "● Online" : status === "connecting" ? "◌ Connecting" : "○ Offline"}
@@ -530,11 +530,11 @@ export default function App() {
               {chatHistory.length === 0 ? (
                 greetingLoaded && greeting ? (
                   <div style={{...styles.botMessage, marginTop: "16px"}}>
-                    <div style={{color: "#a78bfa", fontWeight: "bold", marginBottom: "4px", fontSize: "13px"}}>🦞 EvoClaw小助手</div>
+                    <div style={{color: "#a78bfa", fontWeight: "bold", marginBottom: "4px", fontSize: "13px"}}>🦞 EcoClaw小助手</div>
                     <div>{greeting}</div>
                   </div>
                 ) : (
-                  <div style={styles.placeholder}>Send a message to start chatting with EvoClaw</div>
+                  <div style={styles.placeholder}>Send a message to start chatting with EcoClaw</div>
                 )
               ) : (
                 chatHistory.map((msg, i) => (

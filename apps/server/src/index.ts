@@ -7,7 +7,7 @@ import { MemoryHub } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager } from "@evoclaw/infrastructure";
 
-export class EvoClawServer {
+export class EcoClawServer {
   private registry: ServiceRegistry;
   private eventBus: EventBus;
   private configManager: ConfigManager;
@@ -59,35 +59,35 @@ export class EvoClawServer {
 
   async start(): Promise<void> {
     console.log("============================================");
-    console.log("  EvoClaw v0.2.0 - Self-Evolving Agent OS");
+    console.log("  EcoClaw v0.2.0 - Self-Evolving Agent OS");
     console.log("============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
 
-    console.log("\n[EvoClaw] Starting all services...");
+    console.log("\n[EcoClaw] Starting all services...");
 
-    console.log("[EvoClaw] Gateway server starting...");
+    console.log("[EcoClaw] Gateway server starting...");
     await this.gateway.start();
 
-    console.log("[EvoClaw] Agent pool starting...");
-    console.log("[EvoClaw] Agent pool initialized");
+    console.log("[EcoClaw] Agent pool starting...");
+    console.log("[EcoClaw] Agent pool initialized");
 
-    console.log("[EvoClaw] Skill manager starting...");
-    console.log("[EvoClaw] Skill manager ready");
+    console.log("[EcoClaw] Skill manager starting...");
+    console.log("[EcoClaw] Skill manager ready");
 
-    console.log("[EvoClaw] Evolution engine starting...");
-    console.log("[EvoClaw] Evolution engine online");
+    console.log("[EcoClaw] Evolution engine starting...");
+    console.log("[EcoClaw] Evolution engine online");
 
-    console.log("[EvoClaw] Memory hub starting...");
-    console.log("[EvoClaw] Memory hub active");
+    console.log("[EcoClaw] Memory hub starting...");
+    console.log("[EcoClaw] Memory hub active");
 
-    console.log("[EvoClaw] Security governor engaged");
-    console.log("[EvoClaw] Audit center online");
+    console.log("[EcoClaw] Security governor engaged");
+    console.log("[EcoClaw] Audit center online");
 
-    console.log("[EvoClaw] Tenant manager starting...");
-    console.log("[EvoClaw] Tenant manager ready");
+    console.log("[EcoClaw] Tenant manager starting...");
+    console.log("[EcoClaw] Tenant manager ready");
 
-    console.log("[EvoClaw] Self-healing monitor starting...");
+    console.log("[EcoClaw] Self-healing monitor starting...");
     this.selfHealing.start();
 
     this.tenantManager.createTenant("default", {
@@ -100,8 +100,8 @@ export class EvoClawServer {
       serviceCount: this.registry.getRegisteredServices().length,
     }, "server");
 
-    console.log("\n[EvoClaw] All systems ready!");
-    console.log("[EvoClaw] Registered services:", this.registry.getRegisteredServices().join(", "));
+    console.log("\n[EcoClaw] All systems ready!");
+    console.log("[EcoClaw] Registered services:", this.registry.getRegisteredServices().join(", "));
     console.log("\n============================================\n");
 
     this.eventBus.subscribe("system.shutdown", async () => {
@@ -109,35 +109,35 @@ export class EvoClawServer {
     });
 
     process.on("SIGINT", async () => {
-      console.log("[EvoClaw] Received SIGINT");
+      console.log("[EcoClaw] Received SIGINT");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("SIGTERM", async () => {
-      console.log("[EvoClaw] Received SIGTERM");
+      console.log("[EcoClaw] Received SIGTERM");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("uncaughtException", (err) => {
-      console.error("[EvoClaw] Uncaught exception:", err.message);
+      console.error("[EcoClaw] Uncaught exception:", err.message);
       process.exit(1);
     });
 
     process.on("unhandledRejection", (reason) => {
-      console.error("[EvoClaw] Unhandled rejection:", reason);
+      console.error("[EcoClaw] Unhandled rejection:", reason);
     });
   }
 
   async shutdown(): Promise<void> {
-    console.log("[EvoClaw] Shutting down...");
+    console.log("[EcoClaw] Shutting down...");
     this.selfHealing.stop();
     await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
     await this.processManager.killAll();
     await this.gateway.stop();
     await this.registry.stopAll();
-    console.log("[EvoClaw] Goodbye!");
+    console.log("[EcoClaw] Goodbye!");
   }
 
   getRegistry(): ServiceRegistry {
@@ -150,12 +150,12 @@ export class EvoClawServer {
 }
 
 async function main(): Promise<void> {
-  const server = new EvoClawServer();
+  const server = new EcoClawServer();
   await server.start();
 }
 
 main().catch((err) => {
-  console.error("[EvoClaw] Failed to start:", err);
+  console.error("[EcoClaw] Failed to start:", err);
   process.exit(1);
 });
 

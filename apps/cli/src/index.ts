@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as http from "http";
 
 const VERSION = "0.2.0";
-const DEFAULT_PORT = parseInt(process.env.EVOCLAW_PORT || "3000", 10);
+const DEFAULT_PORT = parseInt(process.env.ECOCLAW_PORT || "3000", 10);
 const DEV_PORT = 19001;
 
 const VALID_LOG_LEVELS = ["silent", "fatal", "error", "warn", "info", "debug", "trace"] as const;
@@ -29,7 +29,7 @@ function c(color: CliColor, text: string): string {
 function brandBanner(): string {
   if (!useColor) {
     const bar = "═".repeat(50);
-    return ["", bar, `  🦞  EvoClaw v${VERSION}`, "  Self-Evolving Agent OS", bar, ""].join("\n");
+    return ["", bar, `  🦞  EcoClaw v${VERSION}`, "  Self-Evolving Agent OS", bar, ""].join("\n");
   }
   const C = "\x1b[36m";
   const B = "\x1b[1m";
@@ -39,7 +39,7 @@ function brandBanner(): string {
   return [
     "",
     bar,
-    `${B}  🦞  EvoClaw ${G}v${VERSION}${R}`,
+    `${B}  🦞  EcoClaw ${G}v${VERSION}${R}`,
     `  Self-Evolving Agent OS`,
     bar,
     "",
@@ -52,7 +52,7 @@ function divider(): string {
 
 function showHelp(): void {
   console.log(brandBanner());
-  console.log(`${c("bold", "ecoclaw")} ${c("gray", `v${VERSION}`)} — EvoClaw CLI
+  console.log(`${c("bold", "ecoclaw")} ${c("gray", `v${VERSION}`)} — EcoClaw CLI
 
 ${c("cyan", "Setup & Onboarding")}
   ecoclaw setup              创建基础配置和工作区
@@ -218,7 +218,7 @@ async function cmdSetup(): Promise<void> {
   const envPath = path.join(process.cwd(), ".env");
   if (!fs.existsSync(envPath)) {
     const secret = require("crypto").randomBytes(32).toString("hex");
-    fs.writeFileSync(envPath, `EVOCLAW_PORT=3000\nJWT_SECRET=${secret}\nEVOCLAW_EVOLUTION_ENABLED=true\n`);
+    fs.writeFileSync(envPath, `ECOCLAW_PORT=3000\nJWT_SECRET=${secret}\nECOCLAW_EVOLUTION_ENABLED=true\n`);
     console.log(c("gray", "   Created .env with random JWT_SECRET"));
   }
   console.log(c("green", "\n📋 Next step: ecoclaw onboard"));
@@ -226,7 +226,7 @@ async function cmdSetup(): Promise<void> {
 
 async function cmdOnboard(): Promise<void> {
   console.log(brandBanner());
-  console.log(`${c("bold", "=== EvoClaw 入门引导 ===\n")}`);
+  console.log(`${c("bold", "=== EcoClaw 入门引导 ===\n")}`);
   console.log(`${c("cyan", "1.")} 启动服务器: ${c("gray", "node apps/server/dist/index.js")}`);
   console.log(`${c("cyan", "2.")} 打开仪表盘: ${c("gray", "ecoclaw dashboard")}`);
   console.log(`${c("cyan", "3.")} 配置 LLM:  打开 Web UI → ${c("gray", "LLM 标签")} → 填入 API Key`);
@@ -244,7 +244,7 @@ async function cmdConfig(sub: string, args: string[], flags: Record<string, stri
       console.log(c("green", `Config file: ${path.join(process.cwd(), ".env")}`));
       return;
     case "schema":
-      console.log(c("green", "✅ Config JSON Schema available in EvoClaw架构设计书.docx"));
+      console.log(c("green", "✅ Config JSON Schema available in EcoClaw架构设计书.docx"));
       console.log(c("gray", "  Use ecoclaw config get <path> to read specific values"));
       return;
     case "validate": {
@@ -291,7 +291,7 @@ async function cmdConfig(sub: string, args: string[], flags: Record<string, stri
         console.log(c("gray", "  Changes are written to .env (non-persisted through CLI). Use Web UI for persistence."));
       } else {
         console.log(c("yellow", "Usage: ecoclaw config set <path> <value>"));
-        console.log(c("gray", "  Example: ecoclaw config set EVOCLAW_PORT 3001"));
+        console.log(c("gray", "  Example: ecoclaw config set ECOCLAW_PORT 3001"));
       }
       return;
     }
@@ -323,7 +323,7 @@ async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void>
   const isNonInteractive = !!flags["non-interactive"];
 
   console.log(brandBanner());
-  console.log(`${c("bold", "=== EvoClaw 系统诊断 ===\n")}`);
+  console.log(`${c("bold", "=== EcoClaw 系统诊断 ===\n")}`);
 
   const checks: Array<{ name: string; ok: boolean; detail: string; fix?: string }> = [];
 
@@ -352,8 +352,8 @@ async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void>
   });
 
   if (isDeep) {
-    const envCount = Object.keys(process.env).filter((k) => k.startsWith("EVOCLAW_")).length;
-    checks.push({ name: "EvoClaw env vars", ok: envCount >= 2, detail: `${envCount} configured` });
+    const envCount = Object.keys(process.env).filter((k) => k.startsWith("ECOCLAW_")).length;
+    checks.push({ name: "EcoClaw env vars", ok: envCount >= 2, detail: `${envCount} configured` });
     const extraGateway = false;
     checks.push({ name: "Extra gateway instances", ok: !extraGateway, detail: extraGateway ? "found duplicate" : "none" });
   }
@@ -380,7 +380,7 @@ async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void>
     }
     if (!dotEnvExists) {
       const secret = require("crypto").randomBytes(32).toString("hex");
-      fs.writeFileSync(path.join(process.cwd(), ".env"), `EVOCLAW_PORT=3000\nJWT_SECRET=${secret}\nEVOCLAW_EVOLUTION_ENABLED=true\n`);
+      fs.writeFileSync(path.join(process.cwd(), ".env"), `ECOCLAW_PORT=3000\nJWT_SECRET=${secret}\nECOCLAW_EVOLUTION_ENABLED=true\n`);
       console.log(`  ${c("green", "✓")} Created .env with random JWT_SECRET`);
     }
     if (!skillsExist) {
@@ -432,7 +432,7 @@ async function cmdHealth(flags: Record<string, string | boolean>): Promise<void>
       console.log(JSON.stringify(d, null, 2));
     } else {
       console.log(brandBanner());
-      console.log(`${c("bold", "=== EvoClaw Health ===\n")}`);
+      console.log(`${c("bold", "=== EcoClaw Health ===\n")}`);
       console.log(`  Status:   ${c("green", String(d.status || "ok"))}`);
       console.log(`  Version:  ${c("gray", String(d.version || VERSION))}`);
       console.log(`  Uptime:   ${c("gray", `${d.uptime || 0}s`)}`);
@@ -456,7 +456,7 @@ async function cmdStatus(flags: Record<string, string | boolean>): Promise<void>
     const isUsage = !!flags.usage;
 
     if (isAll || isDeep) {
-      console.log(`\n${c("bold", "=== EvoClaw Full Diagnosis ===\n")}`);
+      console.log(`\n${c("bold", "=== EcoClaw Full Diagnosis ===\n")}`);
       console.log(`  Server: ${c("green", "running")} on port ${DEFAULT_PORT}`);
     }
 
@@ -470,7 +470,7 @@ async function cmdStatus(flags: Record<string, string | boolean>): Promise<void>
 
     if (!isAll && !isDeep) {
       console.log(brandBanner());
-      console.log(`${c("bold", "=== EvoClaw Status ===\n")}`);
+      console.log(`${c("bold", "=== EcoClaw Status ===\n")}`);
     }
 
     console.log(`  Server: ${c("green", "running")} on port ${DEFAULT_PORT}`);
@@ -1207,7 +1207,7 @@ async function cmdSecrets(sub: string, args: string[], flags: Record<string, str
     case "list":
       console.log(c("gray", "Secrets are managed via .env file and environment variables."));
       const envKeys = Object.keys(process.env).filter((k) =>
-        k.startsWith("EVOCLAW_") || k.includes("SECRET") || k.includes("KEY")
+        k.startsWith("ECOCLAW_") || k.includes("SECRET") || k.includes("KEY")
       );
       for (const k of envKeys) {
         console.log(`  ${k}=${c("gray", "***")}`);
@@ -1350,7 +1350,7 @@ async function cmdUpdate(sub: string, args: string[], flags: Record<string, stri
   }
   if (sub === "wizard") {
     console.log(c("green", "✅ Interactive update wizard started"));
-    console.log(c("gray", "  Follow the prompts to update EvoClaw"));
+    console.log(c("gray", "  Follow the prompts to update EcoClaw"));
     return;
   }
 
@@ -1369,7 +1369,7 @@ async function cmdUpdate(sub: string, args: string[], flags: Record<string, stri
   if (flags.tag) {
     console.log(c("green", `✅ Updated to version ${flags.tag}`));
   } else {
-    console.log(c("green", `✅ EvoClaw v${VERSION} is up to date`));
+    console.log(c("green", `✅ EcoClaw v${VERSION} is up to date`));
   }
 
   if (flags["no-restart"]) {
@@ -1561,10 +1561,10 @@ async function cmdDocs(args: string[]): Promise<void> {
     console.log(`📚 Searching docs for: ${c("bold", query)}`);
     console.log(c("gray", `  Open https://cn.clawhub-mirror.com/docs?q=${encodeURIComponent(query)}`));
   } else {
-    console.log(c("green", "📚 EvoClaw Documentation:"));
+    console.log(c("green", "📚 EcoClaw Documentation:"));
     console.log(c("gray", "  CLI Reference:  ecoclaw --help"));
     console.log(c("gray", "  Deployment:     DEPLOYMENT_GUIDE.md"));
-    console.log(c("gray", "  Architecture:   EvoClaw架构设计书.docx"));
+    console.log(c("gray", "  Architecture:   EcoClaw架构设计书.docx"));
     console.log(c("gray", "  Online Docs:    https://cn.clawhub-mirror.com/docs"));
   }
 }
@@ -1764,7 +1764,7 @@ async function main(): Promise<void> {
   }
 
   if (flags.dev) {
-    process.env.EVOCLAW_DEV = "1";
+    process.env.ECOCLAW_DEV = "1";
     port = DEV_PORT;
     baseDir = path.join(process.cwd(), ".evoclaw-dev");
     if (!fs.existsSync(baseDir)) {
@@ -1775,9 +1775,9 @@ async function main(): Promise<void> {
   if (flags.profile) {
     const profileName = String(flags.profile).replace(/[^a-zA-Z0-9_-]/g, "");
     if (profileName) {
-      process.env.EVOCLAW_PROFILE = profileName;
+      process.env.ECOCLAW_PROFILE = profileName;
       if (!flags.dev) {
-        port = parseInt(process.env.EVOCLAW_PORT || "18789", 10);
+        port = parseInt(process.env.ECOCLAW_PORT || "18789", 10);
       }
       baseDir = path.join(process.cwd(), `.evoclaw-${profileName}`);
       if (!fs.existsSync(baseDir)) {

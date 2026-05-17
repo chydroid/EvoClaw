@@ -7,7 +7,7 @@ describe("KnowledgeGraphStore", () => {
 
     await kg.addNode({ id: "n1", type: "person", properties: { name: "Alice" }, labels: ["user"] });
     await kg.addNode({ id: "n2", type: "person", properties: { name: "Bob" }, labels: ["user"] });
-    await kg.addNode({ id: "n3", type: "project", properties: { name: "EvoClaw" }, labels: ["repo"] });
+    await kg.addNode({ id: "n3", type: "project", properties: { name: "EcoClaw" }, labels: ["repo"] });
 
     const node = await kg.getNode("n1");
     expect(node).toBeDefined();

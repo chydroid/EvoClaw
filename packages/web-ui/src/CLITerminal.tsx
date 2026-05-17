@@ -192,7 +192,7 @@ const OS_HINTS: Record<string, string> = {
 
 export const CLITerminal: React.FC = () => {
   const [entries, setEntries] = useState<CliEntry[]>(() => [
-    { id: 0, type: "info", text: "EvoClaw CLI Terminal v0.2.0" },
+    { id: 0, type: "info", text: "EcoClaw CLI Terminal v0.2.0" },
     { id: 1, type: "info", text: `${OS_HINTS[detectOS()] || ""}` },
     { id: 2, type: "info", text: 'Type "ecoclaw --help" to get started. Up/Down for history, Tab for autocomplete.' },
     { id: 3, type: "info", text: "" },
@@ -583,7 +583,7 @@ export const CLITerminal: React.FC = () => {
 
       <div style={styles.header}>
         <span style={styles.headerTitle}>
-          🦞 EvoClaw CLI Terminal
+          🦞 EcoClaw CLI Terminal
           <span style={{ color: "#8B949E", marginLeft: "8px", fontWeight: 400 }}>
             v0.2.0 — {osPlatform}
           </span>

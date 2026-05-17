@@ -525,7 +525,7 @@ export class ProtocolAdapter {
         }>("agentModelExecutor");
         if (!executor) {
           res.json({
-            greeting: "您好主人！我是 EcoClaw小助手 您的专属EvoClaw智能助理 🦞\n\n很高兴为您服务！有什么需要，随时吩咐我！",
+            greeting: "您好主人！我是 EcoClaw小助手 您的专属EcoClaw智能助理 🦞\n\n很高兴为您服务！有什么需要，随时吩咐我！",
             name: "EcoClaw小助手",
             masterTerm: "主人",
             isFirstSession: true,

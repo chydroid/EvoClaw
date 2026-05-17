@@ -28,7 +28,7 @@ export interface ToolDefinition {
 
 const DEFAULT_PERSONA: PersonaConfig = {
   name: "EcoClaw小助手",
-  title: "您的专属EvoClaw智能助理",
+  title: "您的专属EcoClaw智能助理",
   masterTerm: "主人",
   tone: "warm",
   introduction: "",

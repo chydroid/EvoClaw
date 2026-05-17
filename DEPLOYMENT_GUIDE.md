@@ -1,6 +1,6 @@
-![EvoClaw Logo](assets/images/android-chrome-512x512.png)
+![EcoClaw Logo](assets/images/android-chrome-512x512.png)
 
-# EvoClaw 部署与配置指南
+# EcoClaw 部署与配置指南
 
 ## 目录
 
@@ -97,7 +97,7 @@ sudo nano /etc/systemd/system/evoclaw.service
 
 ```ini
 [Unit]
-Description=EvoClaw - Self-Evolving Agent OS
+Description=EcoClaw - Self-Evolving Agent OS
 After=network.target
 
 [Service]
@@ -108,7 +108,7 @@ ExecStart=/home/evoclaw/.nvm/versions/node/v22.0.0/bin/node apps/server/dist/ind
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
-Environment=EVOCLAW_PORT=17788
+Environment=ECOCLAW_PORT=17788
 
 [Install]
 WantedBy=multi-user.target
@@ -190,7 +190,7 @@ pnpm dev
     <dict>
         <key>NODE_ENV</key>
         <string>production</string>
-        <key>EVOCLAW_PORT</key>
+        <key>ECOCLAW_PORT</key>
         <string>3000</string>
     </dict>
     <key>RunAtLoad</key>
@@ -277,19 +277,19 @@ node apps/server/dist/index.js
 ```powershell
 # 使用 nssm 或 winsw 创建 Windows 服务
 # 方式一：使用 winsw
-# 下载 WinSW-x64.exe 到 EvoClaw 目录下，重命名为 evoclaw-service.exe
+# 下载 WinSW-x64.exe 到 EcoClaw 目录下，重命名为 evoclaw-service.exe
 # 创建 evoclaw-service.xml：
 
 @"
 <service>
-  <id>EvoClaw</id>
-  <name>EvoClaw Server</name>
-  <description>EvoClaw - Self-Evolving Agent OS</description>
+  <id>EcoClaw</id>
+  <name>EcoClaw Server</name>
+  <description>EcoClaw - Self-Evolving Agent OS</description>
   <executable>node</executable>
   <arguments>apps/server/dist/index.js</arguments>
   <workingdirectory>$pwd</workingdirectory>
   <env name="NODE_ENV" value="production"/>
-  <env name="EVOCLAW_PORT" value="3000"/>
+  <env name="ECOCLAW_PORT" value="3000"/>
   <logmode>rotate</logmode>
 </service>
 "@ | Out-File -FilePath evoclaw-service.xml -Encoding UTF8
@@ -307,20 +307,20 @@ node apps/server/dist/index.js
 
 ```ini
 # 服务器配置
-EVOCLAW_PORT=3000
-EVOCLAW_HOST=0.0.0.0
+ECOCLAW_PORT=3000
+ECOCLAW_HOST=0.0.0.0
 
 # JWT 密钥 (生产环境必须修改为至少16位随机字符串！)
 JWT_SECRET=your-production-secret-key-at-least-16-chars
 
 # 进化引擎
-EVOCLAW_EVOLUTION_ENABLED=true
+ECOCLAW_EVOLUTION_ENABLED=true
 
 # MCP 协议
-EVOCLAW_MCP_ENABLED=true
+ECOCLAW_MCP_ENABLED=true
 
 # REST API
-EVOCLAW_REST_ENABLED=true
+ECOCLAW_REST_ENABLED=true
 ```
 
 ***
@@ -413,7 +413,7 @@ ollama list
 > ⚠️ **警告**: 个人微信自动化可能违反微信使用条款，请自行评估风险并承担相应责任。
 
 1. 在左侧选择 **💬 Personal WeChat**
-2. 安装 EvoClaw WeChat Bridge 桥接程序（需要独立设备或模拟器）
+2. 安装 EcoClaw WeChat Bridge 桥接程序（需要独立设备或模拟器）
 3. 运行 Bridge 后扫描二维码登录微信
 4. 在 WebSocket URL 中填入 Bridge 的连接地址（默认 `ws://localhost:8765`）
 5. 保存配置
@@ -431,13 +431,13 @@ ollama list
 
 ### 8.1 什么是 Skill
 
-EvoClaw 完全兼容 **OpenClaw / ClawHub** 生态的 Skill 格式。Skill 是一个以 `SKILL.md` 为核心的技能包，无需编译，解压即用。
+EcoClaw 完全兼容 **OpenClaw / ClawHub** 生态的 Skill 格式。Skill 是一个以 `SKILL.md` 为核心的技能包，无需编译，解压即用。
 
 ### 8.2 从 ClawHub 获取 Skill
 
 **方法一：Web UI 快捷入口**
 
-1. 打开 EvoClaw Web UI → 点击 **Skills** 标签
+1. 打开 EcoClaw Web UI → 点击 **Skills** 标签
 2. 在 **Skill Market** 区域点击链接：
    - 🌐 **[clawhub.ai](https://clawhub.ai/)** — 全球 Skill 注册中心
    - 🇨🇳 **[cn.clawhub-mirror.com](https://cn.clawhub-mirror.com/)** — 国内镜像（更快的访问速度）
@@ -464,7 +464,7 @@ curl -o skills/my-custom-skill/SKILL.md https://clawhub.ai/skills/my-custom-skil
 
 ### 8.3 安装 Skill
 
-EvoClaw 会在启动时自动扫描 `skills/` 目录下的所有 `SKILL.md` 文件并加载。
+EcoClaw 会在启动时自动扫描 `skills/` 目录下的所有 `SKILL.md` 文件并加载。
 
 **目录结构示例：**
 
@@ -504,7 +504,7 @@ triggers:
     description: 匹配 "hello world" 关键词时触发
 requires: []
 config:
-  greeting: "Hello from EvoClaw"
+  greeting: "Hello from EcoClaw"
 metadata:
   openclaw:
     emoji: "🦞"
@@ -532,7 +532,7 @@ async function execute(params) {
 ## Examples
 
 用户: hello world
-EvoClaw: Hello from EvoClaw
+EcoClaw: Hello from EcoClaw
 
 ## Hooks
 
@@ -575,7 +575,7 @@ async function onInstall() {
 
 ### 8.7 故障 Skill 处理
 
-如果 Skill 连续执行失败，EvoClaw 会：
+如果 Skill 连续执行失败，EcoClaw 会：
 
 1. 记录错误日志到控制台
 2. 在 Web UI 标记状态为 `error`
@@ -661,7 +661,7 @@ Test Files  11 passed (11)
 | 问题                         | 解决方案                                              |
 | -------------------------- | ------------------------------------------------- |
 | `pnpm: command not found`  | 重新安装 pnpm: `npm install -g pnpm@10`               |
-| `port 17788 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程               |
+| `port 17788 already in use` | 修改 `.env` 中的 `ECOCLAW_PORT` 或终止占用进程               |
 | 构建失败                       | 清理并重试: `pnpm clean && pnpm install && pnpm build` |
 | Web UI 空白页                 | 确认已运行 `pnpm build`，检查浏览器控制台错误                     |
 | LLM 测试连接失败                 | 检查 API Key 和 Base URL 是否正确，网络是否可达                 |
@@ -737,7 +737,7 @@ Get-Content .\evoclaw-service.out.log -Tail 50 -Wait
 #!/bin/bash
 set -e
 
-echo "=== EvoClaw Quick Setup ==="
+echo "=== EcoClaw Quick Setup ==="
 
 # Check Node.js
 if ! command -v node &> /dev/null; then
@@ -758,9 +758,9 @@ pnpm build
 # Create default .env if missing
 if [ ! -f .env ]; then
     cat > .env << EOF
-EVOCLAW_PORT=17788
+ECOCLAW_PORT=17788
 JWT_SECRET=$(openssl rand -hex 32)
-EVOCLAW_EVOLUTION_ENABLED=true
+ECOCLAW_EVOLUTION_ENABLED=true
 EOF
     echo ".env created with random JWT_SECRET"
 fi
@@ -773,7 +773,7 @@ echo "Web UI: http://localhost:3000"
 ### Windows 一键脚本 (setup.ps1)
 
 ```powershell
-Write-Host "=== EvoClaw Quick Setup ===" -ForegroundColor Cyan
+Write-Host "=== EcoClaw Quick Setup ===" -ForegroundColor Cyan
 
 # Check prerequisites
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -793,9 +793,9 @@ pnpm build
 if (-not (Test-Path .env)) {
     $secret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % {[char]$_})
     @"
-EVOCLAW_PORT=17788
+ECOCLAW_PORT=17788
 JWT_SECRET=$secret
-EVOCLAW_EVOLUTION_ENABLED=true
+ECOCLAW_EVOLUTION_ENABLED=true
 "@ | Out-File -FilePath .env -Encoding UTF8
     Write-Host ".env created with random JWT_SECRET" -ForegroundColor Green
 }
@@ -808,6 +808,6 @@ Write-Host "Web UI: http://localhost:17788" -ForegroundColor Yellow
 ***
 
 > **文档版本**: 1.0\
-> **适用版本**: EvoClaw v0.2.0\
+> **适用版本**: EcoClaw v0.2.0\
 > **最后更新**: 2026-05-15
 

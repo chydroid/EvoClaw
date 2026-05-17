@@ -81,10 +81,10 @@ export class AuthProvider {
       res.status(401).send(`
         <!DOCTYPE html>
         <html>
-        <head><title>EvoClaw - Authentication Required</title></head>
+        <head><title>EcoClaw - Authentication Required</title></head>
         <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px;">
           <h1>🔐 Authentication Required</h1>
-          <p>Please provide a valid token to access the EvoClaw Web UI.</p>
+          <p>Please provide a valid token to access the EcoClaw Web UI.</p>
           <form method="GET" action="/">
             <input type="password" name="token" placeholder="Enter token" style="padding: 10px; font-size: 16px;" />
             <button type="submit" style="padding: 10px 20px; font-size: 16px;">Access</button>
@@ -99,7 +99,7 @@ export class AuthProvider {
       res.status(403).send(`
         <!DOCTYPE html>
         <html>
-        <head><title>EvoClaw - Access Denied</title></head>
+        <head><title>EcoClaw - Access Denied</title></head>
         <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px;">
           <h1>🚫 Access Denied</h1>
           <p>Invalid token. Please try again.</p>

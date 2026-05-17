@@ -35,7 +35,7 @@ describe("ConfigManager", () => {
   });
 
   it("should load from environment variables", () => {
-    process.env.EVOCLAW_PORT = "9999";
+    process.env.ECOCLAW_PORT = "9999";
     process.env.JWT_SECRET = "test-secret-with-minimum-16-chars";
     const cm = new ConfigManager();
     cm.loadFromEnv();
@@ -43,15 +43,15 @@ describe("ConfigManager", () => {
     expect(cm.get("server").port).toBe(9999);
     expect(cm.get("auth").jwtSecret).toBe("test-secret-with-minimum-16-chars");
 
-    delete process.env.EVOCLAW_PORT;
+    delete process.env.ECOCLAW_PORT;
     delete process.env.JWT_SECRET;
   });
 
   it("should respect evolution env toggle", () => {
-    process.env.EVOCLAW_EVOLUTION_ENABLED = "false";
+    process.env.ECOCLAW_EVOLUTION_ENABLED = "false";
     const cm = new ConfigManager();
     cm.loadFromEnv();
     expect(cm.get("evolution").enabled).toBe(false);
-    delete process.env.EVOCLAW_EVOLUTION_ENABLED;
+    delete process.env.ECOCLAW_EVOLUTION_ENABLED;
   });
 });

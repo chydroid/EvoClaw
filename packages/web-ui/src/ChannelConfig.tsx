@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 
 interface ChannelConfig {
   id: string;
@@ -72,7 +72,7 @@ const CHANNEL_TEMPLATES: ChannelTemplate[] = [
     icon: "💬",
     description: "Personal WeChat integration via Bridge",
     setupGuide: [
-      "1. Install the EvoClaw WeChat Bridge on a dedicated device",
+      "1. Install the EcoClaw WeChat Bridge on a dedicated device",
       "2. Scan QR code to login to your WeChat account",
       "3. Configure the bridge WebSocket connection URL",
       "4. Set message handling rules and auto-reply templates",
@@ -93,8 +93,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "",
-    botName: "EvoClaw Bot",
-    welcomeMessage: "Hello! I'm EvoClaw, your AI assistant.",
+    botName: "EcoClaw Bot",
+    welcomeMessage: "Hello! I'm EcoClaw, your AI assistant.",
     allowedUsers: [],
     allowedGroups: [],
     features: {
@@ -117,8 +117,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "",
-    botName: "EvoClaw Bot",
-    welcomeMessage: "Hello! I'm EvoClaw, your AI assistant.",
+    botName: "EcoClaw Bot",
+    welcomeMessage: "Hello! I'm EcoClaw, your AI assistant.",
     allowedUsers: [],
     allowedGroups: [],
     features: {
@@ -141,8 +141,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "ws://localhost:8765",
-    botName: "EvoClaw",
-    welcomeMessage: "Hi, EvoClaw is online!",
+    botName: "EcoClaw",
+    welcomeMessage: "Hi, EcoClaw is online!",
     allowedUsers: [],
     allowedGroups: [],
     features: {
@@ -163,10 +163,32 @@ export default function ChannelConfigPage() {
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const dragging = useRef(false);
 
   useEffect(() => {
     loadConfig();
   }, []);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const delta = ev.clientX - startX;
+      const newW = Math.max(180, Math.min(500, startW + delta));
+      setSidebarWidth(newW);
+    };
+    const onMouseUp = () => {
+      dragging.current = false;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [sidebarWidth]);
 
   async function loadConfig() {
     try {
@@ -286,7 +308,7 @@ export default function ChannelConfigPage() {
       </div>
 
       <div style={styles.body}>
-        <div style={styles.sidebar}>
+        <div style={{ ...styles.sidebar, width: sidebarWidth }}>
           {CHANNEL_TEMPLATES.map((t) => {
             const ch = channels.find((c) => c.id === t.id);
             return (
@@ -312,6 +334,8 @@ export default function ChannelConfigPage() {
             );
           })}
         </div>
+
+        <div style={styles.resizeHandle} onMouseDown={onMouseDown} />
 
         <div style={styles.content}>
           {currentChannel && currentTemplate && (
@@ -508,8 +532,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   body: { display: "flex", flex: 1, overflow: "hidden" },
   sidebar: {
-    width: "220px", borderRight: "1px solid #2a2a3a",
+    width: "280px", borderRight: "1px solid #2a2a3a",
     overflow: "auto", padding: "8px", flexShrink: 0,
+  },
+  resizeHandle: {
+    width: "4px", cursor: "col-resize", background: "transparent",
+    flexShrink: 0, transition: "background 0.2s",
+    userSelect: "none" as const,
+    borderLeft: "1px solid #2a2a3a",
   },
   sidebarItem: {
     padding: "12px", borderRadius: "8px", cursor: "pointer",
