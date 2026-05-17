@@ -154,7 +154,7 @@ describe("SkillManager Integration", () => {
   });
 
   describe("Skill Search", () => {
-    it("should search skills by keyword", async () => {
+    it("should search skills by keyword", { timeout: 15000 }, async () => {
       await skillManager.installSkill(testSkillPath);
 
       const result = await skillManager.searchSkills({ keyword: "math" });

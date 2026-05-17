@@ -1,6 +1,7 @@
 import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
 import http from "http";
+import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
@@ -148,6 +149,15 @@ export class GatewayServer {
       });
     });
 
+    this.app.get("/api/health", (_req: Request, res: Response) => {
+      res.json({
+        status: "ok",
+        version: "0.2.0",
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+      });
+    });
+
     this.app.get("/live", (_req: Request, res: Response) => {
       res.status(200).json({ status: "alive" });
     });
@@ -168,9 +178,21 @@ export class GatewayServer {
       this.protocolAdapter.mountREST(this.app);
     }
 
+    this.setupWebUI();
+
     this.app.use(this.errorHandler.bind(this));
     this.app.use((_req: Request, res: Response) => {
       res.status(404).json({ error: "Not Found" });
+    });
+  }
+
+  private setupWebUI(): void {
+    const webUiPath = path.resolve(__dirname, "..", "..", "..", "packages", "web-ui", "dist");
+
+    this.app.use(this.authProvider.webUiAuthMiddleware.bind(this.authProvider));
+    this.app.use(express.static(webUiPath));
+    this.app.get(/^(?!\/api\/|\/health|\/live|\/ready).*/, (_req: Request, res: Response) => {
+      res.sendFile(path.join(webUiPath, "index.html"));
     });
   }
 

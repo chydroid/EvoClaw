@@ -14,7 +14,7 @@ export class ServiceRegistry implements IPluginRegistry {
     this.serviceInfos.set(name, {
       name,
       version: "0.0.0",
-      status: "uninitialized",
+      status: "running",
       dependencies: [],
     });
 

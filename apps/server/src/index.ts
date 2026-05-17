@@ -39,8 +39,11 @@ export class EvoClawServer {
 
     this.gateway = new GatewayServer(this.registry, this.eventBus);
     this.taskOrchestrator = new TaskOrchestrator(this.registry, this.eventBus);
+    this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
     this.agentPool = new AgentPoolManager(this.registry, this.eventBus);
+    this.registry.registerService("agentPool", this.agentPool);
     this.actorSystem = new ActorSystem();
+    this.registry.registerService("actorSystem", this.actorSystem);
     this.agentModelExecutor = new AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
     this.skillManager = new SkillManager(this.registry, this.eventBus);
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);

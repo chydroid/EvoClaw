@@ -108,7 +108,7 @@ ExecStart=/home/evoclaw/.nvm/versions/node/v22.0.0/bin/node apps/server/dist/ind
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
-Environment=EVOCLAW_PORT=3000
+Environment=EVOCLAW_PORT=17788
 
 [Install]
 WantedBy=multi-user.target
@@ -609,7 +609,7 @@ curl http://localhost:17788/health
 
 ### 9.2 Web UI
 
-打开浏览器访问 `http://localhost:3000`，应能看到：
+打开浏览器访问 `http://localhost:17788`，应能看到：
 
 - **Chat** 标签：对话界面
 - **Skills** 标签：已安装的技能列表
@@ -661,7 +661,7 @@ Test Files  11 passed (11)
 | 问题                         | 解决方案                                              |
 | -------------------------- | ------------------------------------------------- |
 | `pnpm: command not found`  | 重新安装 pnpm: `npm install -g pnpm@10`               |
-| `port 3000 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程               |
+| `port 17788 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程               |
 | 构建失败                       | 清理并重试: `pnpm clean && pnpm install && pnpm build` |
 | Web UI 空白页                 | 确认已运行 `pnpm build`，检查浏览器控制台错误                     |
 | LLM 测试连接失败                 | 检查 API Key 和 Base URL 是否正确，网络是否可达                 |
@@ -802,7 +802,7 @@ EVOCLAW_EVOLUTION_ENABLED=true
 
 Write-Host "=== Setup Complete ===" -ForegroundColor Cyan
 Write-Host "Run: pnpm dev" -ForegroundColor Yellow
-Write-Host "Web UI: http://localhost:3000" -ForegroundColor Yellow
+Write-Host "Web UI: http://localhost:17788" -ForegroundColor Yellow
 ```
 
 ***
