@@ -196,7 +196,17 @@ export default function ChannelConfigPage() {
       if (res.ok) {
         const data = await res.json();
         if (data.channels && Array.isArray(data.channels) && data.channels.length > 0) {
-          setChannels(data.channels as ChannelConfig[]);
+          const validated = (data.channels as any[]).map((ch: any) => {
+            const def = DEFAULT_CHANNEL_CONFIGS.find((d) => d.id === ch.id);
+            return {
+              ...(def || {}),
+              ...ch,
+              features: { ...(def?.features || {}), ...(ch.features || {}) },
+              allowedUsers: Array.isArray(ch.allowedUsers) ? ch.allowedUsers : (def?.allowedUsers || []),
+              allowedGroups: Array.isArray(ch.allowedGroups) ? ch.allowedGroups : (def?.allowedGroups || []),
+            };
+          });
+          setChannels(validated as ChannelConfig[]);
         }
       }
     } catch {
@@ -454,7 +464,7 @@ export default function ChannelConfigPage() {
 
                 <h3 style={styles.sectionTitle}>Features</h3>
                 <div style={styles.featuresGrid}>
-                  {Object.entries(currentChannel.features).map(([key, value]) => (
+                  {Object.entries(currentChannel?.features || {}).map(([key, value]) => (
                     <div key={key} style={styles.featureItem}>
                       <input
                         type="checkbox"
@@ -479,7 +489,7 @@ export default function ChannelConfigPage() {
                     <button style={styles.addBtn} onClick={() => addAllowedUser(activeChannel)}>+ Add</button>
                   </label>
                   <div style={styles.tagList}>
-                    {currentChannel.allowedUsers.length === 0 ? (
+                    {(currentChannel?.allowedUsers?.length ?? 0) === 0 ? (
                       <span style={styles.emptyHint}>No restrictions (all users allowed)</span>
                     ) : (
                       currentChannel.allowedUsers.map((user) => (

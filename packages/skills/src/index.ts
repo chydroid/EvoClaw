@@ -4,6 +4,7 @@ export { SkillSandbox } from "./skill-sandbox";
 export { SkillLifecycleManager } from "./skill-lifecycle";
 export { SkillRegistry } from "./skill-registry";
 export { SkillResolver } from "./skill-resolver";
+export { AutoSkillManager } from "./auto-skill-manager";
 export type { SkillRegistryEntry, RegistrySearchQuery, RegistrySearchResult, RemoteRegistryConfig } from "./skill-registry";
 export type { DependencyCheckResult, DependencyConflict, DependencySuggestion } from "./skill-resolver";
 export type { HealthMonitorConfig, HealthHistory, SkillHealthReport } from "./skill-lifecycle";

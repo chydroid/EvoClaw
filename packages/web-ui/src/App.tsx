@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import EvolutionDashboard from "./EvolutionDashboard";
 import LLMConfig from "./LLMConfig";
 import ChannelConfigPage from "./ChannelConfig";
 import SkillsConfig from "./SkillsConfig";
 import { CLITerminal } from "./CLITerminal";
+import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
 
 interface ServiceInfo {
   name: string;
@@ -61,6 +62,8 @@ export default function App() {
   const [avatars, setAvatars] = useState<AvatarInfo>(DEFAULT_AVATARS);
   const [showAvatarEditor, setShowAvatarEditor] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [currentTheme, setCurrentTheme] = useState<ThemeDefinition>(() => getThemeById(getStoredThemeId()));
+  const [showThemePicker, setShowThemePicker] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -79,6 +82,17 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
+
+  useEffect(() => {
+    applyThemeToDocument(currentTheme);
+  }, [currentTheme]);
+
+  function switchTheme(themeId: string) {
+    const theme = getThemeById(themeId);
+    setCurrentTheme(theme);
+    storeThemeId(themeId);
+    setShowThemePicker(false);
+  }
 
   async function checkAuth() {
     try {
@@ -382,6 +396,43 @@ export default function App() {
           <h1 style={s.title}>EcoClaw</h1>
         </div>
         <div style={s.headerRight}>
+          <div style={s.themePicker}>
+            <button
+              style={s.themeToggleBtn}
+              onClick={() => setShowThemePicker(!showThemePicker)}
+              title="Change theme"
+            >
+              {currentTheme.type === "dark" ? "🌙" : "☀️"} {currentTheme.name}
+            </button>
+            {showThemePicker && (
+              <div style={s.themeDropdown}>
+                {THEMES.map((t) => (
+                  <button
+                    key={t.id}
+                    style={{
+                      ...s.themeOption,
+                      background: currentTheme.id === t.id ? "var(--accent-bg)" : "transparent",
+                      color: currentTheme.id === t.id ? "var(--accent)" : "var(--text-secondary)",
+                      fontWeight: currentTheme.id === t.id ? "bold" : "normal",
+                    }}
+                    onClick={() => switchTheme(t.id)}
+                  >
+                    <span style={s.themeDot}>
+                      <span style={{
+                        display: "inline-block",
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "50%",
+                        background: t.colors.accent,
+                        marginRight: "6px",
+                      }} />
+                    </span>
+                    {t.type === "dark" ? "🌙" : "☀️"} {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div style={statusBadgeStyle(status)}>
             {status === "online" ? "● Online" : status === "connecting" ? "◌ Connecting" : "○ Offline"}
           </div>
@@ -469,13 +520,15 @@ export default function App() {
               ) : (
                 chatHistory.map((msg, i) => (
                   <div key={i} style={msg.role === "user" ? s.msgRowUser : s.msgRowBot}>
-                    <img
-                      src={msg.role === "user" ? avatars.user : avatars.bot}
-                      style={s.msgAvatar}
-                      alt={msg.role}
-                    />
+                    {msg.role === "bot" && (
+                      <img
+                        src={avatars.bot}
+                        style={s.msgAvatar}
+                        alt="bot"
+                      />
+                    )}
                     <div style={{ flex: 1 }}>
-                      <div style={s.msgHeader}>
+                      <div style={{ ...s.msgHeader, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
                         <span style={s.msgName}>
                           {msg.role === "user" ? avatars.userNickname : avatars.botNickname}
                         </span>
@@ -486,6 +539,13 @@ export default function App() {
                         dangerouslySetInnerHTML={{ __html: formatReply(msg.content) }}
                       />
                     </div>
+                    {msg.role === "user" && (
+                      <img
+                        src={avatars.user}
+                        style={s.msgAvatar}
+                        alt="user"
+                      />
+                    )}
                   </div>
                 ))
               )}
@@ -557,61 +617,79 @@ const s: Record<string, React.CSSProperties> = {
   container: {
     display: "flex", flexDirection: "column", height: "100vh",
     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    background: "#0f0f1a", color: "#e0e0e0",
+    background: "var(--bg-primary)", color: "var(--text-primary)",
   },
   loadingScreen: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh" },
   authScreen: { display: "flex", alignItems: "center", justifyContent: "center", flex: 1 },
   authCard: {
-    background: "#1a1a2e", borderRadius: "12px", padding: "32px 40px",
-    border: "1px solid #2a2a3a", textAlign: "center", maxWidth: "380px", width: "100%",
+    background: "var(--bg-card)", borderRadius: "12px", padding: "32px 40px",
+    border: "1px solid var(--border)", textAlign: "center", maxWidth: "380px", width: "100%",
   },
   authInput: {
-    width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1px solid #3a3a4a",
-    background: "#0f0f1a", color: "#e0e0e0", fontSize: "14px", marginBottom: "12px",
+    width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1px solid var(--input-border)",
+    background: "var(--bg-input)", color: "var(--text-primary)", fontSize: "14px", marginBottom: "12px",
     boxSizing: "border-box" as const,
   },
   authBtn: {
     width: "100%", padding: "10px", borderRadius: "8px", border: "none",
-    background: "#7c3aed", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "14px",
+    background: "var(--accent)", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "14px",
   },
   header: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "12px 20px", borderBottom: "1px solid #2a2a3a", background: "#16162a",
+    padding: "12px 20px", borderBottom: "1px solid var(--border)", background: "var(--header-bg)",
   },
   headerLeft: { display: "flex", alignItems: "center", gap: "12px" },
   headerRight: { display: "flex", alignItems: "center", gap: "10px" },
   logo: { width: "32px", height: "32px" },
-  title: { margin: 0, fontSize: "20px", color: "#a78bfa" },
+  title: { margin: 0, fontSize: "20px", color: "var(--accent)" },
+  themePicker: { position: "relative" as const },
+  themeToggleBtn: {
+    padding: "5px 10px", borderRadius: "6px", border: "1px solid var(--border)",
+    background: "var(--bg-card)", color: "var(--text-primary)", cursor: "pointer", fontSize: "12px",
+    whiteSpace: "nowrap" as const,
+  },
+  themeDropdown: {
+    position: "absolute" as const, top: "100%", right: 0, marginTop: "4px",
+    background: "var(--bg-card)", border: "1px solid var(--border)",
+    borderRadius: "8px", padding: "4px", zIndex: 100, minWidth: "170px",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+  },
+  themeOption: {
+    display: "block", width: "100%", padding: "8px 12px", border: "none",
+    borderRadius: "4px", cursor: "pointer", fontSize: "12px", textAlign: "left" as const,
+    background: "transparent", color: "var(--text-secondary)",
+  },
+  themeDot: { display: "inline-flex", alignItems: "center" },
   avatarEditBtn: {
-    padding: "4px 8px", borderRadius: "4px", border: "1px solid #3a3a4a",
-    background: "transparent", color: "#888", cursor: "pointer", fontSize: "14px",
+    padding: "4px 8px", borderRadius: "4px", border: "1px solid var(--border)",
+    background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: "14px",
   },
   avatarEditor: {
-    padding: "12px 20px", background: "#1a1a2e", borderBottom: "1px solid #2a2a3a",
+    padding: "12px 20px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)",
     display: "flex", flexDirection: "column", gap: "8px",
   },
   avatarEditorRow: { display: "flex", alignItems: "center", gap: "10px" },
-  avatarEditorLabel: { fontSize: "12px", color: "#888", minWidth: "80px" },
+  avatarEditorLabel: { fontSize: "12px", color: "var(--text-muted)", minWidth: "80px" },
   avatarPreview: { width: "32px", height: "32px", borderRadius: "50%" },
   avatarChangeBtn: {
-    padding: "4px 10px", borderRadius: "4px", border: "1px solid #7c3aed",
-    background: "transparent", color: "#7c3aed", cursor: "pointer", fontSize: "11px",
+    padding: "4px 10px", borderRadius: "4px", border: "1px solid var(--accent)",
+    background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: "11px",
   },
   nicknameInput: {
-    padding: "4px 8px", borderRadius: "4px", border: "1px solid #3a3a4a",
-    background: "#0f0f1a", color: "#e0e0e0", fontSize: "12px", width: "150px",
+    padding: "4px 8px", borderRadius: "4px", border: "1px solid var(--input-border)",
+    background: "var(--bg-input)", color: "var(--text-primary)", fontSize: "12px", width: "150px",
   },
   tabs: {
     display: "flex", gap: "4px", padding: "8px 20px",
-    borderBottom: "1px solid #2a2a3a", background: "#1a1a2e",
+    borderBottom: "1px solid var(--border)", background: "var(--tab-bg)",
   },
   main: { flex: 1, overflow: "hidden", display: "flex" },
   chatContainer: { display: "flex", flexDirection: "column", flex: 1 },
   chatMessages: { flex: 1, overflow: "auto", padding: "16px 20px" },
   welcomeScreen: { display: "flex", alignItems: "center", justifyContent: "center", height: "100%" },
   welcomeCard: {
-    textAlign: "center", padding: "40px", background: "#1a1a2e",
-    borderRadius: "12px", border: "1px solid #2a2a3a",
+    textAlign: "center", padding: "40px", background: "var(--bg-card)",
+    borderRadius: "12px", border: "1px solid var(--border)",
     display: "flex", flexDirection: "column", alignItems: "center",
   },
   welcomeAvatar: { width: "64px", height: "64px", borderRadius: "50%" },
@@ -619,30 +697,32 @@ const s: Record<string, React.CSSProperties> = {
   msgRowBot: { display: "flex", gap: "10px", marginBottom: "16px" },
   msgAvatar: { width: "36px", height: "36px", borderRadius: "50%", flexShrink: 0, marginTop: "4px" },
   msgHeader: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" },
-  msgName: { fontSize: "12px", fontWeight: "bold", color: "#a78bfa" },
-  msgTime: { fontSize: "11px", color: "#666" },
+  msgName: { fontSize: "12px", fontWeight: "bold", color: "var(--msg-name-color)" },
+  msgTime: { fontSize: "11px", color: "var(--text-muted)" },
   userBubble: {
     padding: "10px 14px", borderRadius: "12px 12px 4px 12px",
-    background: "#1e1e3a", maxWidth: "70%", display: "inline-block",
+    background: "var(--user-bubble-bg)", border: "1px solid var(--user-bubble-border)",
+    maxWidth: "70%", display: "inline-block",
     fontSize: "14px", lineHeight: "1.6", whiteSpace: "pre-wrap", wordBreak: "break-word",
   },
   botBubble: {
     padding: "10px 14px", borderRadius: "12px 12px 12px 4px",
-    background: "#2d1b4e", maxWidth: "85%", display: "inline-block",
+    background: "var(--bot-bubble-bg)", border: "1px solid var(--bot-bubble-border)",
+    maxWidth: "85%", display: "inline-block",
     fontSize: "14px", lineHeight: "1.7", whiteSpace: "pre-wrap", wordBreak: "break-word",
   },
-  chatInput: { display: "flex", flexDirection: "column", gap: "4px", padding: "12px 20px", borderTop: "1px solid #2a2a3a" },
+  chatInput: { display: "flex", flexDirection: "column", gap: "4px", padding: "12px 20px", borderTop: "1px solid var(--border)" },
   inputRow: { display: "flex", gap: "8px" },
   input: {
-    flex: 1, padding: "10px 14px", borderRadius: "8px", border: "1px solid #3a3a4a",
-    background: "#1a1a2e", color: "#e0e0e0", fontSize: "14px", resize: "none",
+    flex: 1, padding: "10px 14px", borderRadius: "8px", border: "1px solid var(--input-border)",
+    background: "var(--bg-input)", color: "var(--text-primary)", fontSize: "14px", resize: "none",
   },
   sendButton: {
     padding: "10px 24px", borderRadius: "8px", border: "none",
-    background: "#7c3aed", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "14px",
+    background: "var(--accent)", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "14px",
   },
-  slashHint: { fontSize: "11px", color: "#666" },
-  placeholder: { padding: "40px", textAlign: "center", color: "#666" },
+  slashHint: { fontSize: "11px", color: "var(--text-muted)" },
+  placeholder: { padding: "40px", textAlign: "center", color: "var(--text-muted)" },
   panel: { flex: 1, padding: "20px", overflow: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
 };
@@ -650,16 +730,17 @@ const s: Record<string, React.CSSProperties> = {
 function statusBadgeStyle(status: string): React.CSSProperties {
   return {
     padding: "4px 12px", borderRadius: "12px", fontSize: "12px",
-    background: status === "online" ? "#064e3b" : status === "connecting" ? "#3b3b0a" : "#4a1515",
-    color: status === "online" ? "#34d399" : status === "connecting" ? "#fbbf24" : "#f87171",
+    background: status === "online" ? "var(--success-bg)" : status === "connecting" ? "var(--warning-bg)" : "var(--error-bg)",
+    color: status === "online" ? "var(--success)" : status === "connecting" ? "var(--warning)" : "var(--error)",
   };
 }
 
 function tabStyle(active: boolean): React.CSSProperties {
+  const accentBg = "var(--accent-bg)";
   return {
     padding: "8px 16px", borderRadius: "6px", border: "none", cursor: "pointer",
-    background: active ? "#7c3aed" : "transparent",
-    color: active ? "#fff" : "#888", fontSize: "14px",
+    background: active ? "var(--accent)" : "transparent",
+    color: active ? "#fff" : "var(--text-muted)", fontSize: "14px",
     fontWeight: active ? "bold" : "normal",
   };
 }

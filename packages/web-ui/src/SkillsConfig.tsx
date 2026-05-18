@@ -65,7 +65,7 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     display: "flex",
     height: "100%",
-    gap: "1px",
+    gap: 0,
     background: "#1e1e2e",
     borderRadius: "8px",
     overflow: "hidden",
@@ -138,12 +138,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   contentPanel: {
     flex: 1,
+    minWidth: 0,
     overflow: "auto",
     padding: "20px 24px",
     background: "#1e1e2e",
   },
   placeholder: {
     flex: 1,
+    minWidth: 0,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",

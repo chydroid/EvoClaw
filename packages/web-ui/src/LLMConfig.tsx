@@ -524,15 +524,15 @@ const s: Record<string, React.CSSProperties> = {
     background: "transparent", border: "1px dashed #7c3aed",
     color: "#7c3aed", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
   },
-  content: { flex: 1, overflow: "auto", padding: "20px" },
-  form: { width: "100%" },
+  content: { flex: 1, minWidth: 0, overflow: "auto", padding: "20px" },
+  form: { width: "100%", minWidth: 0 },
   formGroup: { marginBottom: "18px" },
   label: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
     fontSize: "13px", fontWeight: "bold", color: "#ccc", marginBottom: "6px",
   },
   input: {
-    width: "100%", maxWidth: "600px", padding: "8px 12px", borderRadius: "6px",
+    width: "400px", padding: "8px 12px", borderRadius: "6px",
     border: "1px solid #3a3a4a", background: "#1a1a2e",
     color: "#e0e0e0", fontSize: "14px",
     boxSizing: "border-box" as const,

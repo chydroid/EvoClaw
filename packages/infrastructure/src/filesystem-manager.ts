@@ -1,6 +1,8 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { readFile, writeFile, unlink, access, mkdir, readdir } from "fs/promises";
+import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/promises";
 import { constants } from "fs";
+import * as fsSync from "fs";
+import * as path from "path";
 
 interface FileInfo {
   path: string;
@@ -9,8 +11,17 @@ interface FileInfo {
   createdAt: Date;
 }
 
+interface AuditLogEntry {
+  timestamp: string;
+  operation: "create" | "modify" | "delete" | "read";
+  filePath: string;
+  success: boolean;
+  error?: string;
+}
+
 export class FileSystemManager {
   private basePath = ".";
+  private auditLogPath = "";
 
   constructor(
     private registry: ServiceRegistry,
@@ -21,22 +32,70 @@ export class FileSystemManager {
 
   setBasePath(path: string): void {
     this.basePath = path;
+    this.auditLogPath = `${path}/data/audit`;
   }
 
   async readFile(relativePath: string): Promise<string> {
     const fullPath = this.resolvePath(relativePath);
-    return readFile(fullPath, "utf-8");
+    await this.validatePath(fullPath);
+    const content = await readFile(fullPath, "utf-8");
+    await this.writeAuditLog("read", relativePath, true);
+    return content;
   }
 
   async writeFile(relativePath: string, content: string): Promise<void> {
     const fullPath = this.resolvePath(relativePath);
+    await this.validatePath(fullPath);
+    const existed = fsSync.existsSync(fullPath);
     await this.ensureDir(relativePath);
     await writeFile(fullPath, content, "utf-8");
+    await this.writeAuditLog(existed ? "modify" : "create", relativePath, true);
   }
 
   async deleteFile(relativePath: string): Promise<void> {
     const fullPath = this.resolvePath(relativePath);
-    await unlink(fullPath);
+    await this.validatePath(fullPath);
+
+    try {
+      await access(fullPath, constants.F_OK);
+      await unlink(fullPath);
+      await this.writeAuditLog("delete", relativePath, true);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await this.writeAuditLog("delete", relativePath, false, errorMsg);
+      throw err;
+    }
+  }
+
+  async createFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
+    const fullPath = this.resolvePath(relativePath);
+    await this.validatePath(fullPath);
+
+    if (fsSync.existsSync(fullPath)) {
+      throw new Error(`File already exists: ${relativePath}`);
+    }
+
+    await this.ensureDir(relativePath);
+    await writeFile(fullPath, content, "utf-8");
+    await this.writeAuditLog("create", relativePath, true);
+
+    const fileStat = await stat(fullPath);
+    return { path: relativePath, size: fileStat.size };
+  }
+
+  async modifyFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
+    const fullPath = this.resolvePath(relativePath);
+    await this.validatePath(fullPath);
+
+    if (!fsSync.existsSync(fullPath)) {
+      throw new Error(`File not found: ${relativePath}`);
+    }
+
+    await writeFile(fullPath, content, "utf-8");
+    await this.writeAuditLog("modify", relativePath, true);
+
+    const fileStat = await stat(fullPath);
+    return { path: relativePath, size: fileStat.size };
   }
 
   async exists(relativePath: string): Promise<boolean> {
@@ -49,7 +108,7 @@ export class FileSystemManager {
   }
 
   async ensureDir(relativePath: string): Promise<void> {
-    const parts = relativePath.split("/");
+    const parts = relativePath.replace(/\\/g, "/").split("/");
     const dirs = parts.slice(0, -1).join("/");
 
     if (dirs) {
@@ -61,12 +120,27 @@ export class FileSystemManager {
     const fullPath = this.resolvePath(relativePath);
     const entries = await readdir(fullPath, { withFileTypes: true });
 
-    return entries.map((entry) => ({
-      path: `${relativePath}/${entry.name}`,
-      size: 0,
-      modifiedAt: new Date(),
-      createdAt: new Date(),
-    }));
+    const files: FileInfo[] = [];
+    for (const entry of entries) {
+      const relPath = `${relativePath}/${entry.name}`.replace(/\/+/g, "/");
+      try {
+        const s = await stat(this.resolvePath(relPath));
+        files.push({
+          path: relPath,
+          size: s.size,
+          modifiedAt: s.mtime,
+          createdAt: s.birthtime,
+        });
+      } catch {
+        files.push({
+          path: relPath,
+          size: 0,
+          modifiedAt: new Date(),
+          createdAt: new Date(),
+        });
+      }
+    }
+    return files;
   }
 
   async listAll(
@@ -83,21 +157,119 @@ export class FileSystemManager {
       if (entry.isDirectory()) {
         dirs.push(relPath);
       } else {
-        files.push({
-          path: relPath,
-          size: 0,
-          modifiedAt: new Date(),
-          createdAt: new Date(),
-        });
+        try {
+          const s = await stat(this.resolvePath(relPath));
+          files.push({
+            path: relPath,
+            size: s.size,
+            modifiedAt: s.mtime,
+            createdAt: s.birthtime,
+          });
+        } catch {
+          files.push({
+            path: relPath,
+            size: 0,
+            modifiedAt: new Date(),
+            createdAt: new Date(),
+          });
+        }
       }
     }
 
     return { files, dirs };
   }
 
+  async getAuditLogs(limit = 50): Promise<AuditLogEntry[]> {
+    if (!this.auditLogPath) return [];
+
+    try {
+      if (!fsSync.existsSync(this.auditLogPath)) return [];
+      const entries = await readdir(this.auditLogPath, { withFileTypes: true });
+      const logFiles = entries
+        .filter((e) => e.isFile() && e.name.endsWith(".json"))
+        .sort((a, b) => b.name.localeCompare(a.name));
+
+      const logs: AuditLogEntry[] = [];
+      for (const logFile of logFiles) {
+        if (logs.length >= limit) break;
+        try {
+          const content = fsSync.readFileSync(
+            path.join(this.auditLogPath, logFile.name),
+            "utf-8"
+          );
+          const parsed = JSON.parse(content) as AuditLogEntry[];
+          logs.push(...parsed);
+        } catch {
+          continue;
+        }
+      }
+
+      return logs.slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+
   private resolvePath(relativePath: string): string {
     const normalized = relativePath.replace(/\\/g, "/");
     return `${this.basePath}/${normalized}`.replace(/\/+/g, "/");
+  }
+
+  private async validatePath(fullPath: string): Promise<void> {
+    const normalizedFull = path.resolve(fullPath);
+    const normalizedBase = path.resolve(this.basePath);
+
+    if (!normalizedFull.startsWith(normalizedBase)) {
+      throw new Error(`Access denied: path outside of workspace "${fullPath}"`);
+    }
+
+    const dangerousPatterns = ["/etc/", "/proc/", "/sys/", "C:\\Windows\\", "/dev/"];
+    for (const pattern of dangerousPatterns) {
+      if (normalizedFull.toLowerCase().includes(pattern.toLowerCase())) {
+        throw new Error(`Access denied: restricted path pattern detected`);
+      }
+    }
+  }
+
+  private async writeAuditLog(
+    operation: string,
+    filePath: string,
+    success: boolean,
+    error?: string
+  ): Promise<void> {
+    try {
+      if (!this.auditLogPath) return;
+      if (!fsSync.existsSync(this.auditLogPath)) {
+        fsSync.mkdirSync(this.auditLogPath, { recursive: true });
+      }
+
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const logFile = path.join(this.auditLogPath, `audit-${dateStr}.json`);
+
+      const entry: AuditLogEntry = {
+        timestamp: now.toISOString(),
+        operation: operation as AuditLogEntry["operation"],
+        filePath,
+        success,
+        ...(error ? { error } : {}),
+      };
+
+      let entries: AuditLogEntry[] = [];
+      if (fsSync.existsSync(logFile)) {
+        try {
+          const existing = fsSync.readFileSync(logFile, "utf-8");
+          entries = JSON.parse(existing);
+        } catch {
+          entries = [];
+        }
+      }
+
+      entries.push(entry);
+      fsSync.writeFileSync(logFile, JSON.stringify(entries, null, 2), "utf-8");
+    } catch (err) {
+      console.error(`[FileSystemManager] Audit log write failed:`, err);
+    }
   }
 
   async healthCheck(): Promise<boolean> {

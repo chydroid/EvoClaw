@@ -24,6 +24,7 @@ export class SkillManager {
   private resolver: SkillResolver;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private processedItems = new Map<string, number>();
+  private isScanning = false;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -44,6 +45,13 @@ export class SkillManager {
   }
 
   async installSkill(skillPath: string): Promise<Skill> {
+    const existing = Array.from(this.skills.values()).find(
+      (s) => s.installPath === skillPath
+    );
+    if (existing) {
+      return existing;
+    }
+
     const parsed = await this.parser.parseFromFile(skillPath);
 
     const warnings: string[] = [];
@@ -317,90 +325,99 @@ export class SkillManager {
   }
 
   async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {
-    const installed: Skill[] = [];
-    const skipped: string[] = [];
-
-    if (!fs.existsSync(skillsDir)) {
-      return { installed, skipped };
+    if (this.isScanning) {
+      return { installed: [], skipped: ["Scan already in progress"] };
     }
+    this.isScanning = true;
 
-    const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+    try {
+      const installed: Skill[] = [];
+      const skipped: string[] = [];
 
-    for (const entry of entries) {
-      const fullPath = path.join(skillsDir, entry.name);
+      if (!fs.existsSync(skillsDir)) {
+        return { installed, skipped };
+      }
 
-      if (entry.isFile() && entry.name.toLowerCase().endsWith(".zip")) {
-        try {
-          const stat = fs.statSync(fullPath);
-          const prevMtime = this.processedItems.get(fullPath);
+      const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
 
-          if (prevMtime === stat.mtimeMs) {
-            skipped.push(entry.name);
-            continue;
+      for (const entry of entries) {
+        const fullPath = path.join(skillsDir, entry.name);
+
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(".zip")) {
+          try {
+            const stat = fs.statSync(fullPath);
+            const prevMtime = this.processedItems.get(fullPath);
+
+            if (prevMtime === stat.mtimeMs) {
+              skipped.push(entry.name);
+              continue;
+            }
+
+            const extractDir = path.join(
+              skillsDir,
+              entry.name.replace(/\.zip$/i, "")
+            );
+
+            if (fs.existsSync(extractDir)) {
+              fs.rmSync(extractDir, { recursive: true, force: true });
+            }
+
+            this.extractZip(fullPath, skillsDir);
+
+            const skill = await this.installFolderSkill(extractDir);
+            if (skill) {
+              this.processedItems.set(fullPath, stat.mtimeMs);
+              installed.push(skill);
+            }
+          } catch (err) {
+            console.error(
+              `[SkillManager] Failed to process ZIP "${entry.name}":`,
+              err
+            );
           }
+        } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
+          try {
+            const skillMdPath = path.join(fullPath, "SKILL.md");
+            if (!fs.existsSync(skillMdPath)) {
+              continue;
+            }
 
-          const extractDir = path.join(
-            skillsDir,
-            entry.name.replace(/\.zip$/i, "")
-          );
+            const stat = fs.statSync(skillMdPath);
+            const prevMtime = this.processedItems.get(skillMdPath);
 
-          if (fs.existsSync(extractDir)) {
-            fs.rmSync(extractDir, { recursive: true, force: true });
+            if (prevMtime === stat.mtimeMs) {
+              skipped.push(entry.name);
+              continue;
+            }
+
+            const alreadyInstalled = Array.from(this.skills.values()).some(
+              (s) => s.installPath === skillMdPath && s.lifecycle.status === "active"
+            );
+
+            if (alreadyInstalled) {
+              this.processedItems.set(skillMdPath, stat.mtimeMs);
+              skipped.push(entry.name);
+              continue;
+            }
+
+            const skill = await this.installSkill(skillMdPath);
+            if (skill) {
+              this.processedItems.set(skillMdPath, stat.mtimeMs);
+              installed.push(skill);
+            }
+          } catch (err) {
+            console.error(
+              `[SkillManager] Failed to register folder "${entry.name}":`,
+              err
+            );
           }
-
-          this.extractZip(fullPath, skillsDir);
-
-          const skill = await this.installFolderSkill(extractDir);
-          if (skill) {
-            this.processedItems.set(fullPath, stat.mtimeMs);
-            installed.push(skill);
-          }
-        } catch (err) {
-          console.error(
-            `[SkillManager] Failed to process ZIP "${entry.name}":`,
-            err
-          );
-        }
-      } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
-        try {
-          const skillMdPath = path.join(fullPath, "SKILL.md");
-          if (!fs.existsSync(skillMdPath)) {
-            continue;
-          }
-
-          const stat = fs.statSync(skillMdPath);
-          const prevMtime = this.processedItems.get(skillMdPath);
-
-          if (prevMtime === stat.mtimeMs) {
-            skipped.push(entry.name);
-            continue;
-          }
-
-          const alreadyInstalled = Array.from(this.skills.values()).some(
-            (s) => s.installPath === skillMdPath && s.lifecycle.status === "active"
-          );
-
-          if (alreadyInstalled) {
-            this.processedItems.set(skillMdPath, stat.mtimeMs);
-            skipped.push(entry.name);
-            continue;
-          }
-
-          const skill = await this.installSkill(skillMdPath);
-          if (skill) {
-            this.processedItems.set(skillMdPath, stat.mtimeMs);
-            installed.push(skill);
-          }
-        } catch (err) {
-          console.error(
-            `[SkillManager] Failed to register folder "${entry.name}":`,
-            err
-          );
         }
       }
-    }
 
-    return { installed, skipped };
+      return { installed, skipped };
+    } finally {
+      this.isScanning = false;
+    }
   }
 
   private async installFolderSkill(folderPath: string): Promise<Skill | null> {
