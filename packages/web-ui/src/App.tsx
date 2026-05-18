@@ -282,9 +282,9 @@ export default function App() {
       .replace(/"/g, "&quot;");
   }
 
-  function highlightCode(code: string, lang: string): string {
-    const escaped = htmlEscape(code);
-    if (!lang) return escaped;
+  function highlightCode(escaped: string, lang: string): string {
+    let result = escaped;
+    if (!lang) return result;
 
     const keywords: Record<string, string[]> = {
       javascript: ["const","let","var","function","return","if","else","for","while","class","import","export","from","async","await","try","catch","throw","new","this","typeof","instanceof","null","undefined","true","false"],
@@ -292,8 +292,8 @@ export default function App() {
       python: ["def","return","if","elif","else","for","while","class","import","from","as","try","except","finally","raise","with","yield","lambda","pass","break","continue","and","or","not","in","is","None","True","False","self"],
       bash: ["if","then","else","elif","fi","for","while","do","done","case","esac","function","return","exit","export","local","source","echo","cd","ls","rm","mkdir","cp","mv"],
       json: [],
-      html: [],
-      css: [],
+      html: ["DOCTYPE","html","head","meta","title","style","body","div","span","h1","h2","h3","p","a","button","script","link","script","style","class","id","src","href","charset","content","viewport","width","height","alt","lang","xmlns"],
+      css: ["body","margin","padding","font-family","background","display","justify-content","align-items","height","box-shadow","border-radius","color","font-size","cursor","transition","hover","text-align", "display","flex","flex-direction","justify-content","align-items","max-width","min-width","position","absolute","relative","top","bottom","left","right", "z-index"],
       sql: ["SELECT","FROM","WHERE","INSERT","INTO","VALUES","UPDATE","SET","DELETE","CREATE","TABLE","ALTER","DROP","INDEX","JOIN","LEFT","RIGHT","INNER","ON","AND","OR","NOT","NULL","AS","ORDER","BY","GROUP","HAVING","LIMIT","COUNT","SUM","AVG","MAX","MIN"],
       go: ["func","return","if","else","for","range","var","const","type","struct","interface","map","chan","go","defer","import","package","nil","true","false","break","continue","switch","case","default","select"],
       rust: ["fn","let","mut","const","return","if","else","for","while","loop","match","struct","enum","impl","trait","pub","use","mod","crate","self","super","where","as","in","ref","true","false","Some","None","Ok","Err","async","await","move"],
@@ -302,45 +302,76 @@ export default function App() {
     };
 
     const langLower = lang.toLowerCase();
-    const kw = keywords[langLower];
-    if (!kw) return escaped;
+    const kw = keywords[langLower] || [];
 
-    const kwSet = new Set(kw);
-    let result = escaped;
+    const isHtmlCss = langLower === "html" || langLower === "css" || langLower === "xml" || langLower === "svg";
+    const usesHashComment = langLower === "python" || langLower === "bash" || langLower === "ruby" || langLower === "perl" || langLower === "yaml" || langLower === "toml";
+    const usesDoubleSlash = langLower === "javascript" || langLower === "typescript" || langLower === "cpp" || langLower === "java" || langLower === "go" || langLower === "rust" || langLower === "csharp" || langLower === "swift" || langLower === "kotlin" || langLower === "dart";
 
-    result = result.replace(
-      /(["'`])(?:(?!\1|\\).|\\.)*\1/g,
-      (match) => `<span class="code-string">${match}</span>`
-    );
+    if (!isHtmlCss) {
+      result = result.replace(
+        /(["'`])(?:(?!\1|\\).|\\.)*\1/g,
+        (match) => `<span class="code-string">${match}</span>`
+      );
+    }
 
-    result = result.replace(
-      /\/\/.*$/gm,
-      (match) => `<span class="code-comment">${match}</span>`
-    );
+    if (usesDoubleSlash) {
+      result = result.replace(
+        /\/\/.*$/gm,
+        (match) => `<span class="code-comment">${match}</span>`
+      );
+    }
 
-    result = result.replace(
-      /#.*$/gm,
-      (match) => `<span class="code-comment">${match}</span>`
-    );
+    if (usesHashComment) {
+      result = result.replace(
+        /#.*$/gm,
+        (match) => `<span class="code-comment">${match}</span>`
+      );
+    }
 
-    const keywordPattern = new RegExp(
-      `\\b(${[...kwSet].join("|")})\\b`,
-      "g"
-    );
-    result = result.replace(
-      keywordPattern,
-      (match) => `<span class="code-keyword">${match}</span>`
-    );
+    if (langLower === "css" || langLower === "html" || langLower === "xml" || langLower === "svg") {
+      result = result.replace(
+        /(class|id|style|src|href|alt|type|name|rel|lang|charset|content|viewport|width|height)\s*=/gi,
+        (match) => {
+          const key = match.slice(0, -1).trim();
+          return `<span class="code-keyword">${key}</span>=`;
+        }
+      );
+      result = result.replace(
+        /(&lt;\/?)(\w+)/g,
+        (match, tagStart, tagName) => `${tagStart}<span class="code-keyword">${tagName}</span>`
+      );
+    }
+
+    if (langLower !== "html" && langLower !== "css" && langLower !== "xml" && langLower !== "svg") {
+      const kwSet = new Set(kw);
+      const keywordPattern = new RegExp(
+        `\\b(${[...kwSet].join("|")})\\b`,
+        "g"
+      );
+      result = result.replace(
+        keywordPattern,
+        (match) => `<span class="code-keyword">${match}</span>`
+      );
+    }
 
     result = result.replace(
       /\b(\d+\.?\d*)\b/g,
       (match) => `<span class="code-number">${match}</span>`
     );
 
-    result = result.replace(
-      /`([^`]+)`/g,
-      (match, inner) => `<span class="code-function">${inner}</span>`
-    );
+    if (langLower === "css") {
+      result = result.replace(
+        /([\w-]+)(\s*:\s*)(.+?)(;)/g,
+        (match, prop, colon, value, semi) =>
+          `<span class="code-keyword">${prop}</span>${colon}<span class="code-number">${value}</span>${semi}`
+      );
+      result = result.replace(
+        /(?:\b|^)(\.|#)([\w-]+)/g,
+        (match, prefix, name) =>
+          `${prefix}<span class="code-function">${name}</span>`
+      );
+    }
 
     return result;
   }
@@ -362,7 +393,8 @@ export default function App() {
 
   function formatCodeBlock(codeLines: string[], lang: string): string {
     const codeContent = codeLines.join("\n");
-    const highlighted = lang ? highlightCode(codeContent, lang) : htmlEscape(codeContent);
+    const escaped = htmlEscape(codeContent);
+    const highlighted = lang ? highlightCode(escaped, lang) : escaped;
     const langLabel = lang || "code";
     return [
       `<div class="code-block-wrapper">`,
