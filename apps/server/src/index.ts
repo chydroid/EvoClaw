@@ -17,6 +17,8 @@ import { ScheduleManager } from "@evoclaw/scheduler";
 import type { ScheduledTask } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
+import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
+import type { ClassificationResult, OrchestrationPlan } from "@evoclaw/intelligence";
 import * as fs from "fs";
 
 export class EcoClawServer {
@@ -48,6 +50,8 @@ export class EcoClawServer {
   private emailClient: EmailClient;
   private scheduleManager: ScheduleManager;
   private reportGenerator: ReportGenerator;
+  private taskClassifier: TaskClassifier;
+  private skillOrchestrator: SkillOrchestrator;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -97,6 +101,10 @@ export class EcoClawServer {
       templateDir: path.resolve(__dirname, "..", "..", "..", "packages", "reporting", "src", "templates"),
     });
     this.registry.registerService("reportGenerator", this.reportGenerator);
+    this.taskClassifier = new TaskClassifier(this.registry, this.eventBus);
+    this.registry.registerService("taskClassifier", this.taskClassifier);
+    this.skillOrchestrator = new SkillOrchestrator(this.registry, this.eventBus);
+    this.registry.registerService("skillOrchestrator", this.skillOrchestrator);
   }
 
   async start(): Promise<void> {
@@ -139,6 +147,7 @@ export class EcoClawServer {
     await this.reportGenerator.initialize();
     this.registerSchedulerTools();
     this.registerReportingTools();
+    this.registerIntelligenceTools();
 
     this.scheduleManager.start();
 
@@ -1274,6 +1283,169 @@ export class EcoClawServer {
         } catch (err) {
           return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
+      }
+    );
+  }
+
+  private registerIntelligenceTools(): void {
+    const classifier = this.taskClassifier;
+    const orchestrator = this.skillOrchestrator;
+    const planner = this.taskPlanner;
+
+    this.agentModelExecutor.registerTool(
+      "classify_task",
+      {
+        name: "classify_task",
+        description: "Classify a user task to determine category, complexity, and suggest tools/skills",
+        parameters: {
+          task: { type: "string", description: "The task description to classify" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const task = String(params.task || "");
+        const result = classifier.classify(task);
+        return {
+          success: true,
+          primaryCategory: result.primaryCategory,
+          categories: result.categories,
+          confidence: result.confidence,
+          complexity: result.complexity,
+          suggestedTools: result.suggestedTools,
+          suggestedSkills: result.suggestedSkills,
+          keywords: result.keywords,
+          estimatedSteps: result.estimatedSteps,
+          language: result.language,
+          hasCode: result.hasCode,
+          requiresAuth: result.requiresAuth,
+          entities: result.entities,
+        };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "classification_stats",
+      {
+        name: "classification_stats",
+        description: "Get task classification statistics for a batch of tasks",
+        parameters: {
+          tasks: { type: "string", description: "JSON array of task descriptions" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        let tasks: string[] = [];
+        try {
+          tasks = JSON.parse(String(params.tasks || "[]"));
+        } catch {
+          return { error: "tasks must be a valid JSON array of strings" };
+        }
+
+        const results = tasks.map((t) => classifier.classify(t));
+        const categoryStats: Record<string, number> = {};
+        const complexityStats: Record<string, number> = { simple: 0, medium: 0, complex: 0 };
+
+        for (const r of results) {
+          categoryStats[r.primaryCategory] = (categoryStats[r.primaryCategory] || 0) + 1;
+          complexityStats[r.complexity] = (complexityStats[r.complexity] || 0) + 1;
+        }
+
+        return {
+          success: true,
+          totalTasks: tasks.length,
+          categoryDistribution: categoryStats,
+          complexityDistribution: complexityStats,
+          averageConfidence: results.reduce((sum, r) => sum + r.confidence, 0) / results.length,
+        };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "orchestrate_skills",
+      {
+        name: "orchestrate_skills",
+        description: "Create and execute a skill orchestration plan with multiple skills in pipeline",
+        parameters: {
+          name: { type: "string", description: "Plan name" },
+          description: { type: "string", description: "Plan description" },
+          steps: { type: "string", description: "JSON array of steps: [{name, skillName, dependsOn[], params{}, mergeStrategy}]" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const name = String(params.name || "orchestration");
+        const description = String(params.description || "");
+        let steps: Array<{
+          name: string;
+          skillName: string;
+          dependsOn?: string[];
+          params?: Record<string, unknown>;
+          mergeStrategy?: "replace" | "merge" | "append" | "none";
+        }> = [];
+        try {
+          steps = JSON.parse(String(params.steps || "[]"));
+        } catch {
+          return { error: "steps must be a valid JSON array" };
+        }
+        try {
+          const plan = orchestrator.createPlan({ name, description, steps });
+          const result = await orchestrator.execute(plan.id);
+          return {
+            success: result.success,
+            planId: result.planId,
+            totalDuration: result.totalDuration,
+            resultCount: result.results.length,
+            aggregatedOutput: result.aggregatedOutput,
+            results: result.results.map((r) => ({
+              stepId: r.stepId,
+              skillName: r.skillName,
+              success: r.success,
+              duration: r.duration,
+              error: r.error,
+            })),
+          };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "task_templates",
+      {
+        name: "task_templates",
+        description: "List available project templates for task decomposition",
+        parameters: {},
+      },
+      async () => {
+        const templates = planner.getAvailableTemplates();
+        return { success: true, templates, count: templates.length };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "task_decompose_with_template",
+      {
+        name: "task_decompose_with_template",
+        description: "Decompose a task using a specific project template",
+        parameters: {
+          task: { type: "string", description: "The task description to decompose" },
+          template: { type: "string", description: "Template name: static_website, react_app, api_server, cli_tool, fullstack_app, data_pipeline" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const task = String(params.task || "");
+        const template = String(params.template || "");
+        const plan = planner.decomposeWithTemplate(task, template);
+        return {
+          planId: plan.id,
+          task: plan.task,
+          subtaskCount: plan.subtasks.length,
+          subtasks: plan.subtasks.map((s) => ({
+            id: s.id,
+            description: s.description,
+            tool: s.tool,
+            dependencies: s.dependencies,
+          })),
+          structure: planner.getTemplateStructure(template),
+        };
       }
     );
   }

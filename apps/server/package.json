@@ -23,6 +23,7 @@
     "@evoclaw/skills": "workspace:*",
     "@evoclaw/scheduler": "workspace:*",
     "@evoclaw/reporting": "workspace:*",
+    "@evoclaw/intelligence": "workspace:*",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {

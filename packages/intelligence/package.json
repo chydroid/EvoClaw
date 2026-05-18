@@ -1,0 +1,29 @@
+{
+  "name": "@evoclaw/intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EcoClaw 智能层 - 任务分类/技能编排/项目规划",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@evoclaw/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.6.0"
+  }
+}
