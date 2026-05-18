@@ -562,7 +562,7 @@ const styles: Record<string, React.CSSProperties> = {
   guideTitle: { margin: "0 0 12px 0", fontSize: "15px", color: "#a78bfa" },
   guideSteps: { paddingLeft: "20px", margin: 0 },
   guideStep: { fontSize: "12px", color: "#aaa", lineHeight: 1.8 },
-  form: { maxWidth: "720px" },
+  form: { width: "100%" },
   formRow: { display: "flex", gap: "16px" },
   formGroup: { flex: 1, marginBottom: "16px", minWidth: 0 },
   label: {

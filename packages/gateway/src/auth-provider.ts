@@ -67,7 +67,7 @@ export class AuthProvider {
       return next();
     }
 
-    if (req.path.startsWith("/assets/") || /\.(png|ico|svg|js|css|json|txt|map)$/.test(req.path)) {
+    if (req.path.startsWith("/assets/") || /\.(png|ico|svg|js|css|json|txt|map|woff2?)$/.test(req.path)) {
       return next();
     }
 
@@ -75,46 +75,21 @@ export class AuthProvider {
       return next();
     }
 
-    const token = req.query.token as string || this.getCookie(req, "web_ui_token");
+    const tokenFromUrl = req.query.token as string;
+    const tokenFromCookie = this.getCookie(req, "web_ui_token");
 
-    if (!token) {
-      res.status(401).send(`
-        <!DOCTYPE html>
-        <html>
-        <head><title>EcoClaw - Authentication Required</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px;">
-          <h1>🔐 Authentication Required</h1>
-          <p>Please provide a valid token to access the EcoClaw Web UI.</p>
-          <form method="GET" action="/">
-            <input type="password" name="token" placeholder="Enter token" style="padding: 10px; font-size: 16px;" />
-            <button type="submit" style="padding: 10px 20px; font-size: 16px;">Access</button>
-          </form>
-        </body>
-        </html>
-      `);
-      return;
+    if (tokenFromUrl && tokenFromUrl === this.webUiToken) {
+      res.cookie("web_ui_token", tokenFromUrl, {
+        httpOnly: false,
+        sameSite: "lax",
+        maxAge: 24 * 60 * 60 * 1000,
+      });
     }
 
-    if (token !== this.webUiToken) {
-      res.status(403).send(`
-        <!DOCTYPE html>
-        <html>
-        <head><title>EcoClaw - Access Denied</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px;">
-          <h1>🚫 Access Denied</h1>
-          <p>Invalid token. Please try again.</p>
-          <a href="/">Go back</a>
-        </body>
-        </html>
-      `);
-      return;
+    if (tokenFromUrl && tokenFromUrl !== this.webUiToken) {
+      res.cookie("web_ui_token", "", { maxAge: 0 });
     }
 
-    res.cookie("web_ui_token", token, {
-      httpOnly: false,
-      sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000,
-    });
     next();
   }
 
