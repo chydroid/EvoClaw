@@ -5,11 +5,11 @@ dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig } from "@evoclaw/core";
 import { GatewayServer } from "@evoclaw/gateway";
-import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor } from "@evoclaw/agent";
+import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub } from "@evoclaw/memory";
-import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager } from "@evoclaw/security";
+import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager } from "@evoclaw/infrastructure";
 import * as fs from "fs";
 
@@ -34,6 +34,9 @@ export class EcoClawServer {
   private processManager: ProcessManager;
   private fileSystemManager: FileSystemManager;
   private autoSkillManager: AutoSkillManager;
+  private taskPlanner: TaskPlanner;
+  private permissionManager: PermissionManager;
+  private errorRecoveryManager: ErrorRecoveryManager;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -63,6 +66,9 @@ export class EcoClawServer {
     this.processManager = new ProcessManager(this.registry, this.eventBus);
     this.fileSystemManager = new FileSystemManager(this.registry, this.eventBus);
     this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "skills"));
+    this.taskPlanner = new TaskPlanner(this.registry, this.eventBus);
+    this.permissionManager = new PermissionManager(this.registry, this.eventBus);
+    this.errorRecoveryManager = new ErrorRecoveryManager(this.registry, this.eventBus);
   }
 
   async start(): Promise<void> {
@@ -96,6 +102,8 @@ export class EcoClawServer {
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools();
     this.registerAutoSkillTool();
+    this.registerTaskPlannerTool();
+    this.registerPermissionTools();
 
     console.log("[EcoClaw] File operation tools registered");
     console.log("[EcoClaw] Auto-skill discovery enabled");
@@ -167,6 +175,8 @@ export class EcoClawServer {
 
   private registerFileTools(): void {
     const fsMgr = this.fileSystemManager;
+    const errRecovery = this.errorRecoveryManager;
+    const permMgr = this.permissionManager;
 
     this.agentModelExecutor.registerTool(
       "file_create",
@@ -181,7 +191,14 @@ export class EcoClawServer {
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
         const content = String(params.content || "");
-        return await fsMgr.createFile(filePath, content);
+        const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
+        if (permRequest.status === "denied") {
+          return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${permRequest.id}` };
+        }
+        if (permRequest.status === "pending") {
+          return { success: false, requiresPermission: true, requestId: permRequest.id, description: permRequest.description, target: filePath, error: `Awaiting user approval to create: ${filePath}` };
+        }
+        return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
       }
     );
 
@@ -198,7 +215,14 @@ export class EcoClawServer {
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
         const content = String(params.content || "");
-        return await fsMgr.modifyFile(filePath, content);
+        const permRequest = permMgr.requestPermission("file_modify", filePath, { size: content.length }, "tool");
+        if (permRequest.status === "denied") {
+          return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${permRequest.id}` };
+        }
+        if (permRequest.status === "pending") {
+          return { success: false, requiresPermission: true, requestId: permRequest.id, description: permRequest.description, target: filePath, error: `Awaiting user approval to modify: ${filePath}` };
+        }
+        return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
       }
     );
 
@@ -213,8 +237,17 @@ export class EcoClawServer {
       },
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
-        await fsMgr.deleteFile(filePath);
-        return { success: true, path: filePath };
+        const permRequest = permMgr.requestPermission("file_delete", filePath, {}, "tool");
+        if (permRequest.status === "denied") {
+          return { success: false, error: `Permission denied for file_delete on ${filePath}. Request ID: ${permRequest.id}` };
+        }
+        if (permRequest.status === "pending") {
+          return { success: false, requiresPermission: true, requestId: permRequest.id, description: permRequest.description, target: filePath, error: `Awaiting user approval to delete: ${filePath}` };
+        }
+        return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
+          await fsMgr.deleteFile(filePath);
+          return { success: true, path: filePath };
+        });
       }
     );
 
@@ -229,8 +262,10 @@ export class EcoClawServer {
       },
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
-        const content = await fsMgr.readFile(filePath);
-        return { path: filePath, content };
+        return await errRecovery.executeWithRetry("file_read", filePath, async () => {
+          const content = await fsMgr.readFile(filePath);
+          return { path: filePath, content };
+        });
       }
     );
 
@@ -245,7 +280,7 @@ export class EcoClawServer {
       },
       async (params: Record<string, unknown>) => {
         const dirPath = String(params.path || ".");
-        return await fsMgr.listAll(dirPath);
+        return await errRecovery.executeWithRetry("file_list", dirPath, () => fsMgr.listAll(dirPath));
       }
     );
   }
@@ -288,6 +323,105 @@ export class EcoClawServer {
           relevance: match.relevance,
           reason: match.reason,
         };
+      }
+    );
+  }
+
+  private registerTaskPlannerTool(): void {
+    const planner = this.taskPlanner;
+
+    this.agentModelExecutor.registerTool(
+      "task_decompose",
+      {
+        name: "task_decompose",
+        description: "Decompose a complex task into executable subtasks with dependency ordering",
+        parameters: {
+          task: { type: "string", description: "The task description to decompose" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const task = String(params.task || "");
+        const plan = planner.decompose(task);
+        return {
+          planId: plan.id,
+          task: plan.task,
+          subtaskCount: plan.subtasks.length,
+          subtasks: plan.subtasks.map((s) => ({
+            id: s.id,
+            description: s.description,
+            tool: s.tool,
+            dependencies: s.dependencies,
+            status: s.status,
+          })),
+        };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "task_status",
+      {
+        name: "task_status",
+        description: "Get the status of a task plan",
+        parameters: {
+          planId: { type: "string", description: "The plan ID to check" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const planId = String(params.planId || "");
+        const plan = planner.getPlan(planId);
+        if (!plan) return { error: "Plan not found" };
+        return {
+          planId: plan.id,
+          status: plan.status,
+          progress: plan.progress,
+          subtasks: plan.subtasks.map((s) => ({
+            id: s.id,
+            description: s.description,
+            status: s.status,
+            result: s.result,
+            error: s.error,
+            retryCount: s.retryCount,
+          })),
+        };
+      }
+    );
+  }
+
+  private registerPermissionTools(): void {
+    const permMgr = this.permissionManager;
+
+    this.agentModelExecutor.registerTool(
+      "permission_status",
+      {
+        name: "permission_status",
+        description: "Check the status of pending permission requests",
+        parameters: {},
+      },
+      async () => {
+        const pending = permMgr.getPendingRequests();
+        return {
+          pendingCount: pending.length,
+          requests: pending.map((r) => ({
+            id: r.id,
+            operation: r.operation,
+            target: r.target,
+            description: r.description,
+            status: r.status,
+            requestedAt: r.requestedAt,
+          })),
+        };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "error_stats",
+      {
+        name: "error_stats",
+        description: "Get error statistics and recovery status",
+        parameters: {},
+      },
+      async () => {
+        return this.errorRecoveryManager.getErrorStats();
       }
     );
   }

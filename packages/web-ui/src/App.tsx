@@ -5,6 +5,7 @@ import ChannelConfigPage from "./ChannelConfig";
 import SkillsConfig from "./SkillsConfig";
 import { CLITerminal } from "./CLITerminal";
 import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
+import { htmlEscape, highlightCode } from "./highlight";
 
 interface ServiceInfo {
   name: string;
@@ -155,6 +156,9 @@ export default function App() {
       .code-comment { color: #8b949e; font-style: italic; }
       .code-number { color: #79c0ff; }
       .code-function { color: #d2a8ff; }
+      .code-builtin { color: #ffa657; }
+      .code-type { color: #7ee787; }
+      .code-code { color: #c9d1d9; }
     `;
     document.head.appendChild(style);
   }, []);
@@ -272,108 +276,6 @@ export default function App() {
     saveAvatars(updated);
     setShowAvatarEditor(false);
     setAvatarFile(null);
-  }
-
-  function htmlEscape(text: string): string {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function highlightCode(escaped: string, lang: string): string {
-    let result = escaped;
-    if (!lang) return result;
-
-    const keywords: Record<string, string[]> = {
-      javascript: ["const","let","var","function","return","if","else","for","while","class","import","export","from","async","await","try","catch","throw","new","this","typeof","instanceof","null","undefined","true","false"],
-      typescript: ["const","let","var","function","return","if","else","for","while","class","import","export","from","async","await","try","catch","throw","new","this","typeof","instanceof","null","undefined","true","false","interface","type","enum","implements","extends","readonly","private","public","protected"],
-      python: ["def","return","if","elif","else","for","while","class","import","from","as","try","except","finally","raise","with","yield","lambda","pass","break","continue","and","or","not","in","is","None","True","False","self"],
-      bash: ["if","then","else","elif","fi","for","while","do","done","case","esac","function","return","exit","export","local","source","echo","cd","ls","rm","mkdir","cp","mv"],
-      json: [],
-      html: ["DOCTYPE","html","head","meta","title","style","body","div","span","h1","h2","h3","p","a","button","script","link","script","style","class","id","src","href","charset","content","viewport","width","height","alt","lang","xmlns"],
-      css: ["body","margin","padding","font-family","background","display","justify-content","align-items","height","box-shadow","border-radius","color","font-size","cursor","transition","hover","text-align", "display","flex","flex-direction","justify-content","align-items","max-width","min-width","position","absolute","relative","top","bottom","left","right", "z-index"],
-      sql: ["SELECT","FROM","WHERE","INSERT","INTO","VALUES","UPDATE","SET","DELETE","CREATE","TABLE","ALTER","DROP","INDEX","JOIN","LEFT","RIGHT","INNER","ON","AND","OR","NOT","NULL","AS","ORDER","BY","GROUP","HAVING","LIMIT","COUNT","SUM","AVG","MAX","MIN"],
-      go: ["func","return","if","else","for","range","var","const","type","struct","interface","map","chan","go","defer","import","package","nil","true","false","break","continue","switch","case","default","select"],
-      rust: ["fn","let","mut","const","return","if","else","for","while","loop","match","struct","enum","impl","trait","pub","use","mod","crate","self","super","where","as","in","ref","true","false","Some","None","Ok","Err","async","await","move"],
-      java: ["public","private","protected","class","interface","extends","implements","static","final","void","return","if","else","for","while","do","switch","case","break","continue","new","try","catch","throw","throws","import","package","null","true","false","this","super"],
-      cpp: ["int","float","double","char","bool","void","class","struct","public","private","protected","virtual","override","const","static","return","if","else","for","while","do","switch","case","break","continue","new","delete","try","catch","throw","include","namespace","using","template","typename","nullptr","true","false","this","auto"],
-    };
-
-    const langLower = lang.toLowerCase();
-    const kw = keywords[langLower] || [];
-
-    const isHtmlCss = langLower === "html" || langLower === "css" || langLower === "xml" || langLower === "svg";
-    const usesHashComment = langLower === "python" || langLower === "bash" || langLower === "ruby" || langLower === "perl" || langLower === "yaml" || langLower === "toml";
-    const usesDoubleSlash = langLower === "javascript" || langLower === "typescript" || langLower === "cpp" || langLower === "java" || langLower === "go" || langLower === "rust" || langLower === "csharp" || langLower === "swift" || langLower === "kotlin" || langLower === "dart";
-
-    if (!isHtmlCss) {
-      result = result.replace(
-        /(["'`])(?:(?!\1|\\).|\\.)*\1/g,
-        (match) => `<span class="code-string">${match}</span>`
-      );
-    }
-
-    if (usesDoubleSlash) {
-      result = result.replace(
-        /\/\/.*$/gm,
-        (match) => `<span class="code-comment">${match}</span>`
-      );
-    }
-
-    if (usesHashComment) {
-      result = result.replace(
-        /#.*$/gm,
-        (match) => `<span class="code-comment">${match}</span>`
-      );
-    }
-
-    if (langLower === "css" || langLower === "html" || langLower === "xml" || langLower === "svg") {
-      result = result.replace(
-        /(class|id|style|src|href|alt|type|name|rel|lang|charset|content|viewport|width|height)\s*=/gi,
-        (match) => {
-          const key = match.slice(0, -1).trim();
-          return `<span class="code-keyword">${key}</span>=`;
-        }
-      );
-      result = result.replace(
-        /(&lt;\/?)(\w+)/g,
-        (match, tagStart, tagName) => `${tagStart}<span class="code-keyword">${tagName}</span>`
-      );
-    }
-
-    if (langLower !== "html" && langLower !== "css" && langLower !== "xml" && langLower !== "svg") {
-      const kwSet = new Set(kw);
-      const keywordPattern = new RegExp(
-        `\\b(${[...kwSet].join("|")})\\b`,
-        "g"
-      );
-      result = result.replace(
-        keywordPattern,
-        (match) => `<span class="code-keyword">${match}</span>`
-      );
-    }
-
-    result = result.replace(
-      /\b(\d+\.?\d*)\b/g,
-      (match) => `<span class="code-number">${match}</span>`
-    );
-
-    if (langLower === "css") {
-      result = result.replace(
-        /([\w-]+)(\s*:\s*)(.+?)(;)/g,
-        (match, prop, colon, value, semi) =>
-          `<span class="code-keyword">${prop}</span>${colon}<span class="code-number">${value}</span>${semi}`
-      );
-      result = result.replace(
-        /(?:\b|^)(\.|#)([\w-]+)/g,
-        (match, prefix, name) =>
-          `${prefix}<span class="code-function">${name}</span>`
-      );
-    }
-
-    return result;
   }
 
   function formatTextLines(lines: string[]): string {
@@ -759,7 +661,7 @@ export default function App() {
                         alt="bot"
                       />
                     )}
-                    <div style={{ flex: 1 }}>
+                    <div style={msg.role === "user" ? s.msgContentUser : s.msgContentBot}>
                       <div style={{ ...s.msgHeader, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
                         <span style={s.msgName}>
                           {msg.role === "user" ? avatars.userNickname : avatars.botNickname}
@@ -927,6 +829,8 @@ const s: Record<string, React.CSSProperties> = {
   welcomeAvatar: { width: "64px", height: "64px", borderRadius: "50%" },
   msgRowUser: { display: "flex", gap: "10px", marginBottom: "16px", justifyContent: "flex-end" },
   msgRowBot: { display: "flex", gap: "10px", marginBottom: "16px" },
+  msgContentUser: { flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: 0 },
+  msgContentBot: { flex: 1, minWidth: 0 },
   msgAvatar: { width: "36px", height: "36px", borderRadius: "50%", flexShrink: 0, marginTop: "4px" },
   msgHeader: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" },
   msgName: { fontSize: "12px", fontWeight: "bold", color: "var(--msg-name-color)" },

@@ -4,5 +4,7 @@ export { ActorSystem } from "./actor-system";
 export { DAGExecutor } from "./dag-executor";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
+export { TaskPlanner } from "./task-planner";
 export type { DAGBuilderConfig, BuildContext } from "./dynamic-dag-builder";
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./agent-model-executor";
+export type { SubTask, TaskPlan } from "./task-planner";
