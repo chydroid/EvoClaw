@@ -1,3 +1,8 @@
+import dotenv from "dotenv";
+import * as path from "path";
+
+dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
+
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig } from "@evoclaw/core";
 import { GatewayServer } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor } from "@evoclaw/agent";
@@ -7,7 +12,6 @@ import { MemoryHub } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager } from "@evoclaw/infrastructure";
 import * as fs from "fs";
-import * as path from "path";
 
 export class EcoClawServer {
   private registry: ServiceRegistry;

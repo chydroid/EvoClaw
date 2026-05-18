@@ -19,7 +19,8 @@
     "@evoclaw/infrastructure": "workspace:*",
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/security": "workspace:*",
-    "@evoclaw/skills": "workspace:*"
+    "@evoclaw/skills": "workspace:*",
+    "dotenv": "^16.6.1"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
