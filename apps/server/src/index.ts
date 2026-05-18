@@ -62,7 +62,7 @@ export class EcoClawServer {
     this.messageQueue = new MessageQueue(this.registry, this.eventBus);
     this.processManager = new ProcessManager(this.registry, this.eventBus);
     this.fileSystemManager = new FileSystemManager(this.registry, this.eventBus);
-    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve("skills"));
+    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "skills"));
   }
 
   async start(): Promise<void> {
@@ -86,13 +86,13 @@ export class EcoClawServer {
     console.log("[EcoClaw] Skill manager starting...");
     console.log("[EcoClaw] Skill manager ready");
 
-    const skillsDir = path.resolve("skills");
+    const skillsDir = path.resolve(__dirname, "..", "..", "..", "skills");
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
     this.skillManager.startAutoScan(skillsDir, 30000);
 
-    const fsBase = path.resolve(".");
+    const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools();
     this.registerAutoSkillTool();

@@ -59,6 +59,8 @@ export class AgentModelExecutor {
     definition: ToolDefinition;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
   }>();
+  private conversationHistory = new Map<string, Array<{ role: string; content: string }>>();
+  private maxHistoryLength = 20;
 
   constructor(
     private registry: ServiceRegistry,
@@ -143,6 +145,18 @@ export class AgentModelExecutor {
     this.greeted = false;
   }
 
+  clearChatHistory(sessionId?: string): void {
+    if (sessionId) {
+      this.conversationHistory.delete(sessionId);
+    } else {
+      this.conversationHistory.clear();
+    }
+  }
+
+  getChatHistory(sessionId: string): Array<{ role: string; content: string }> {
+    return this.conversationHistory.get(sessionId) || [];
+  }
+
   getRegisteredTools(): ToolDefinition[] {
     return Array.from(this.registeredTools.values()).map((t) => t.definition);
   }
@@ -153,6 +167,7 @@ export class AgentModelExecutor {
   ): Promise<{ reply: string; tokensUsed: number; duration: number }> {
     const startTime = Date.now();
     const systemPrompt = this.buildSystemPrompt();
+    const sessionId = (context?.sessionId as string) || "default";
 
     const skillManager = this.registry?.resolveService<{
       searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
@@ -165,7 +180,7 @@ export class AgentModelExecutor {
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
     if (enabledProviders.length > 0) {
-      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime);
+      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime, sessionId);
       if (result) return result;
     }
 
@@ -180,7 +195,8 @@ export class AgentModelExecutor {
     systemPrompt: string,
     installedSkills: unknown[],
     providers: ProviderConfig[],
-    startTime: number
+    startTime: number,
+    sessionId: string
   ): Promise<{ reply: string; tokensUsed: number; duration: number } | null> {
     for (const provider of providers) {
       const signals: AbortSignal[] = [];
@@ -202,9 +218,12 @@ export class AgentModelExecutor {
               .join("\n")
           : "";
 
+        const history = this.conversationHistory.get(sessionId) || [];
+
         const messages = [
           { role: "system", content: systemPrompt },
           ...(skillsList ? [{ role: "system" as const, content: `已安装的技能：\n${skillsList}` }] : []),
+          ...history,
           { role: "user", content: message },
         ];
 
@@ -261,6 +280,13 @@ export class AgentModelExecutor {
         if (content && typeof content === "string") {
           const usage = data.usage;
           const tokensUsed = usage?.total_tokens || this.estimateTokenCount(systemPrompt + message + content);
+
+          const newHistory = [...history, { role: "user", content: message }, { role: "assistant", content }];
+          if (newHistory.length > this.maxHistoryLength) {
+            newHistory.splice(0, newHistory.length - this.maxHistoryLength);
+          }
+          this.conversationHistory.set(sessionId, newHistory);
+
           return {
             reply: content,
             tokensUsed,
