@@ -113,8 +113,13 @@ export class AgentModelExecutor {
       `你是 ${this.persona.name}，${this.persona.title}。`,
       `称呼用户为"${this.persona.masterTerm}"。`,
       `口气风格：${this.persona.tone === "warm" ? "温暖亲切" : this.persona.tone === "professional" ? "专业严谨" : this.persona.tone === "casual" ? "轻松随和" : "幽默风趣"}。`,
-      `你的职责是帮助${this.persona.masterTerm}完成各类任务。对于需要实际操作的任务（如创建文件、读写文件、安装技能等），你必须调用对应的工具函数来真正执行，而不是只告诉用户手动步骤。`,
-      `当你需要使用工具时，直接调用 tool_calls。调用工具后，根据工具返回的结果向用户汇报执行情况。`,
+      ``,
+      `【核心规则 - 必须遵守】`,
+      `1. 当用户要求执行操作（如创建文件/文件夹、读写文件、搜索、安装技能等），你**必须调用对应的 function 工具**来真正执行，**严禁仅描述步骤而不调用工具**。`,
+      `2. 如果你只是用文字告诉用户"我会帮你做XX"但没有调用工具，那等于**什么都没做**。必须调用工具。`,
+      `3. 调用工具后，根据工具的实际返回结果报告执行情况。`,
+      `4. 对于纯知识性问题（不涉及实际操作），直接用文字回答。`,
+      ``,
       `回答时用中文，简洁明了，友好亲切。`,
       `如果有不确定的事情，诚实告知而不是编造。`,
     ].join("\n");
@@ -167,10 +172,11 @@ export class AgentModelExecutor {
   async chat(
     message: string,
     context?: Record<string, unknown>
-  ): Promise<{ reply: string; tokensUsed: number; duration: number }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
     const startTime = Date.now();
     const systemPrompt = this.buildSystemPrompt();
     const sessionId = (context?.sessionId as string) || "default";
+    const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
 
     const skillManager = this.registry?.resolveService<{
       searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
@@ -183,14 +189,38 @@ export class AgentModelExecutor {
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
     if (enabledProviders.length > 0) {
-      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime, sessionId);
-      if (result) return result;
+      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
+      if (result) {
+        if (result.toolsExecuted || !this.hasActionIntent(message)) {
+          if (pendingPermissions.length > 0) {
+            return { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
+          }
+          return { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
+        }
+        const msg = message.toLowerCase();
+        const fallbackReply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
+        const combined = result.reply + "\n\n---\n\n" + fallbackReply;
+        return { reply: combined, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
+      }
     }
 
     const msg = message.toLowerCase();
-    const reply = await this.generateChatResponse(message, msg, installedSkills, skillManager);
+    const reply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
-    return { reply, tokensUsed, duration: Date.now() - startTime };
+    return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
+  }
+
+  private hasActionIntent(message: string): boolean {
+    const lower = message.toLowerCase();
+    const actionKeywords = [
+      "创建", "生成", "删除", "修改", "写入", "读取", "列出",
+      "create", "generate", "delete", "modify", "write", "read", "list",
+      "文件夹", "文件", "html", "css", "js", "网页", "代码",
+      "folder", "file", "directory", "mkdir", "touch",
+      "安装", "卸载", "install", "uninstall", "搜索", "search",
+      "在", "到", "放进", "保存", "save",
+    ];
+    return actionKeywords.some((kw) => lower.includes(kw));
   }
 
   private async tryCallLLM(
@@ -199,10 +229,12 @@ export class AgentModelExecutor {
     installedSkills: unknown[],
     providers: ProviderConfig[],
     startTime: number,
-    sessionId: string
-  ): Promise<{ reply: string; tokensUsed: number; duration: number } | null> {
+    sessionId: string,
+    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; toolsExecuted: boolean } | null> {
     const MAX_TOOL_ROUNDS = 10;
     let totalTokensUsed = 0;
+    let anyToolExecuted = false;
 
     for (const provider of providers) {
       try {
@@ -226,12 +258,14 @@ export class AgentModelExecutor {
         messages.push({ role: "user", content: message });
 
         const tools = this.buildOpenAITools();
+        const isAction = this.hasActionIntent(message);
 
         let conversationMessages = [...messages];
         let finalReply = "";
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const result = await this.callLLMOnce(provider, conversationMessages, tools);
+          const tc: "auto" | "required" = (round === 0 && isAction) ? "required" : "auto";
+          const result = await this.callLLMOnce(provider, conversationMessages, tools, tc);
           if (!result) break;
 
           totalTokensUsed += result.tokensUsed;
@@ -260,6 +294,16 @@ export class AgentModelExecutor {
                 const args = JSON.parse(tc.function.arguments || "{}");
                 const result = await toolEntry.handler(args);
                 toolResult = JSON.stringify(result);
+                anyToolExecuted = true;
+                if (result && typeof result === "object" && (result as Record<string, unknown>).requiresPermission) {
+                  const r = result as Record<string, unknown>;
+                  pendingPermissions.push({
+                    id: (r.requestId as string) || (r.id as string) || "",
+                    operation: (r.operation as string) || toolName,
+                    description: (r.description as string) || "需要权限确认",
+                    target: (r.target as string) || tc.function.name,
+                  });
+                }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               } catch (err: unknown) {
                 toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
@@ -297,6 +341,7 @@ export class AgentModelExecutor {
             reply: finalReply,
             tokensUsed: totalTokensUsed,
             duration: Date.now() - startTime,
+            toolsExecuted: anyToolExecuted,
           };
         }
 
@@ -345,7 +390,8 @@ export class AgentModelExecutor {
   private async callLLMOnce(
     provider: ProviderConfig,
     messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
-    tools: Array<{ type: string; function: Record<string, unknown> }>
+    tools: Array<{ type: string; function: Record<string, unknown> }>,
+    toolChoice: "auto" | "required" = "auto"
   ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number } | null> {
     const timeout = provider.timeout || 60000;
     const controller = new AbortController();
@@ -392,7 +438,7 @@ export class AgentModelExecutor {
 
       if (tools.length > 0) {
         body.tools = tools;
-        body.tool_choice = "auto";
+        body.tool_choice = toolChoice;
       }
 
       const response = await fetch(apiURL, {
@@ -454,7 +500,8 @@ export class AgentModelExecutor {
     message: string,
     msg: string,
     installedSkills: unknown[],
-    skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>; listSkills(): unknown[]; executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>; } | undefined
+    skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>; listSkills(): unknown[]; executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>; } | undefined,
+    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>
   ): Promise<string> {
     const skillsList = installedSkills.length > 0
       ? (installedSkills as Array<{ name: string; description: string }>)
@@ -530,72 +577,287 @@ export class AgentModelExecutor {
         lines.push(`当前有 ${this.registeredTools.size} 个可用工具，我正在尝试匹配并执行...`);
         lines.push("");
 
+        let hasDriveLetter = false;
+        let driveRoot = "";
+        const driveMatch = message.match(/([A-Za-z])\s*[盘:]/);
+        if (driveMatch) {
+          hasDriveLetter = true;
+          driveRoot = `${driveMatch[1].toUpperCase()}:/`;
+        }
+
+        const basePath = process.cwd().replace(/\\/g, "/");
+        const targetRoot = driveRoot || `${basePath}/`;
+
+        let folderName = "newweb";
+        const folderMatch = message.match(/(?:创建|新建|生成|建立|写|mkdir?\s+)\s*[一个]*\s*[名为]*\s*["'`]?(\w[\w-]*)["'`]?(?:\s*(?:文件夹|目录|网页|网站|directory|folder|网站|website|webpage))/i);
+        if (folderMatch) {
+          folderName = folderMatch[1];
+        } else {
+          const cnFolderMatch = message.match(/(\w[\w-]*)\s*(?:文件夹|目录)/);
+          if (cnFolderMatch) {
+            folderName = cnFolderMatch[1];
+          }
+        }
+
+        if (hasDriveLetter) {
+          lines.push(`检测到您指定了 ${driveMatch![1].toUpperCase()} 盘，文件将创建在: \`${targetRoot}${folderName}/\``);
+          lines.push("");
+        }
+
         const toolsToTry: Array<{ name: string; args: Record<string, unknown> }> = [];
+        const prefix = `${targetRoot}${folderName}`;
 
         if (msg.includes("文件夹") || msg.includes("directory") || msg.includes("mkdir")) {
           if (this.registeredTools.has("file_create")) {
-            const folderPath = "newweb/.gitkeep";
             toolsToTry.push({
               name: "file_create",
-              args: { path: folderPath, content: "" },
+              args: { path: `${prefix}/.gitkeep`, content: "" },
             });
           }
         }
 
         if (msg.includes("html") || msg.includes("网页")) {
           if (this.registeredTools.has("file_create")) {
-            let htmlPath = "newweb/index.html";
-            let htmlContent = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>My Page</title>\n</head>\n<body>\n  <h1>Hello EcoClaw!</h1>\n</body>\n</html>";
+            const htmlContent = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的网页</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>欢迎来到我的网页</h1>
+    <nav>
+      <a href="#">首页</a>
+      <a href="#">关于</a>
+      <a href="#">联系</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <h2>Hello World!</h2>
+      <p>这是一个由 EcoClaw 自动生成的网页。</p>
+      <button id="greetBtn">点击问好</button>
+      <p id="greeting"></p>
+    </section>
+  </main>
+  <footer>
+    <p>&copy; 2026 My Website. Powered by EcoClaw.</p>
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>`;
             toolsToTry.push({
               name: "file_create",
-              args: { path: htmlPath, content: htmlContent },
+              args: { path: `${prefix}/index.html`, content: htmlContent },
             });
           }
         }
 
         if (msg.includes("css")) {
           if (this.registeredTools.has("file_create")) {
+            const cssContent = `/* style.css */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background: #f5f5f5;
+}
+
+header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+header h1 {
+  margin-bottom: 1rem;
+  font-size: 2rem;
+}
+
+nav {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+nav a {
+  color: rgba(255,255,255,0.85);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+nav a:hover {
+  color: white;
+}
+
+main {
+  max-width: 800px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+
+.hero {
+  background: white;
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+}
+
+.hero h2 {
+  color: #667eea;
+  margin-bottom: 1rem;
+  font-size: 1.8rem;
+}
+
+.hero p {
+  color: #666;
+  margin-bottom: 1.5rem;
+}
+
+button {
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 0.75rem 2rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: #5a6fd6;
+}
+
+#greeting {
+  margin-top: 1rem;
+  font-size: 1.1rem;
+  color: #764ba2;
+  font-weight: 600;
+}
+
+footer {
+  text-align: center;
+  padding: 1.5rem;
+  color: #999;
+  font-size: 0.9rem;
+}`;
             toolsToTry.push({
               name: "file_create",
-              args: {
-                path: "newweb/style.css",
-                content: "body { font-family: sans-serif; margin: 0; padding: 20px; }",
-              },
+              args: { path: `${prefix}/style.css`, content: cssContent },
             });
           }
         }
 
         if (msg.includes("js") || msg.includes("javascript")) {
           if (this.registeredTools.has("file_create")) {
+            const jsContent = `// script.js
+document.addEventListener('DOMContentLoaded', () => {
+  const greetBtn = document.getElementById('greetBtn');
+  const greeting = document.getElementById('greeting');
+
+  const messages = [
+    '你好！很高兴见到你！',
+    '欢迎来到我的网页！',
+    '祝你今天过得愉快！',
+    'Hello from EcoClaw! 🦞',
+    '今天也是个好日子！',
+  ];
+
+  greetBtn.addEventListener('click', () => {
+    const randomMsg = messages[Math.floor(Math.random() * messages.length)];
+    greeting.textContent = randomMsg;
+    greeting.style.animation = 'none';
+    greeting.offsetHeight;
+    greeting.style.animation = 'fadeIn 0.5s ease';
+  });
+});
+
+const style = document.createElement('style');
+style.textContent = \`
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+\`;
+document.head.appendChild(style);
+`;
             toolsToTry.push({
               name: "file_create",
-              args: {
-                path: "newweb/script.js",
-                content: "console.log('Hello from EcoClaw!');",
-              },
+              args: { path: `${prefix}/script.js`, content: jsContent },
             });
           }
         }
 
         if (toolsToTry.length > 0) {
+          let allSuccess = true;
           for (const tt of toolsToTry) {
             try {
               const entry = this.registeredTools.get(tt.name);
               if (entry) {
                 const result = await entry.handler(tt.args);
                 const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-                lines.push(`✅ ${tt.name}(${JSON.stringify(tt.args.path)}) 执行成功:`);
-                lines.push(`\`\`\``);
-                lines.push(resultStr.slice(0, 500));
-                lines.push(`\`\`\``);
+                const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+                const isSuccess = resultObj && resultObj.success !== false;
+                const icon = isSuccess ? "✅" : "❌";
+                if (resultObj && resultObj.requiresPermission) {
+                  pendingPermissions.push({
+                    id: (resultObj.requestId as string) || (resultObj.id as string) || "",
+                    operation: (resultObj.operation as string) || tt.name,
+                    description: (resultObj.description as string) || "需要权限确认",
+                    target: (resultObj.target as string) || (tt.args.path as string) || tt.name,
+                  });
+                  lines.push(`🔐 **权限请求**: ${resultObj.description || "此操作需要您的授权"}`);
+                  lines.push(`   操作: \`${resultObj.operation || tt.name}\`, 目标: \`${resultObj.target || tt.args.path}\``);
+                  lines.push(`   请在下方权限提示条中选择：本次授权 / 加入白名单 / 拒绝`);
+                } else {
+                  lines.push(`${icon} ${tt.name}(${JSON.stringify(tt.args.path)}) ${isSuccess ? "执行成功" : "执行失败"}:`);
+                  lines.push(`\`\`\``);
+                  lines.push(resultStr.slice(0, 500));
+                  lines.push(`\`\`\``);
+                }
                 lines.push("");
+                if (!isSuccess) allSuccess = false;
               }
             } catch (err) {
+              allSuccess = false;
               lines.push(`❌ ${tt.name} 执行失败: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
-          if (toolsToTry.length > 1) {
-            lines.push("所有操作已完成！");
+          if (allSuccess && toolsToTry.length > 1) {
+            let hasAnyPermission = false;
+            for (const tt of toolsToTry) {
+              const pendingForThis = pendingPermissions.length > 0 && pendingPermissions.some((p) => p.target.includes(String(tt.args.path)));
+              if (pendingForThis) { hasAnyPermission = true; break; }
+            }
+            if (hasAnyPermission) {
+              lines.push("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
+            } else {
+              lines.push("所有操作已完成！");
+              if (hasDriveLetter) {
+                lines.push("");
+                lines.push(`文件位置: ${targetRoot}${folderName}/`);
+                lines.push(`在浏览器打开: ${targetRoot}${folderName}/index.html`);
+              }
+            }
+          } else if (!allSuccess) {
+            if (pendingPermissions.length > 0) {
+              lines.push("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
+            } else {
+              lines.push("部分操作未能完成，请检查上述错误信息。");
+            }
           }
           return lines.join("\n");
         }

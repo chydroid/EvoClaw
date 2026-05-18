@@ -14,12 +14,15 @@
   "dependencies": {
     "@evoclaw/agent": "workspace:*",
     "@evoclaw/core": "workspace:*",
+    "@evoclaw/email": "workspace:*",
     "@evoclaw/evolution": "workspace:*",
     "@evoclaw/gateway": "workspace:*",
     "@evoclaw/infrastructure": "workspace:*",
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/security": "workspace:*",
     "@evoclaw/skills": "workspace:*",
+    "@evoclaw/scheduler": "workspace:*",
+    "@evoclaw/reporting": "workspace:*",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {

@@ -6,3 +6,5 @@ export type { LogLevel } from "./logger";
 export { DatabaseManager } from "./database-manager";
 export { BrowserController } from "./browser-controller";
 export type { NavigationResult, BrowserElement, BrowserPage, FormData } from "./browser-controller";
+export { PlaywrightBrowser } from "./playwright-browser";
+export type { PlaywrightTab, ScreenshotOptions, CookieData, LoginResult, FormFillOptions } from "./playwright-browser";

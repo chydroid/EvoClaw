@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 800px; margin: 30px auto; }
+    .header { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; padding: 36px; border-radius: 14px; margin-bottom: 20px; text-align: center; }
+    .header h1 { margin: 0; font-size: 26px; }
+    .header .period { opacity: 0.8; margin-top: 6px; font-size: 14px; }
+    .summary { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
+    .summary h3 { margin: 0 0 10px; color: #667eea; }
+    .metric-row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .metric { flex: 1; min-width: 120px; background: #f8f9fb; border-radius: 8px; padding: 16px; text-align: center; }
+    .metric .value { font-size: 28px; font-weight: 700; }
+    .metric .label { font-size: 12px; color: #888; margin-top: 4px; }
+    .section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
+    .section h2 { margin: 0 0 14px; font-size: 18px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f0f2f5; padding: 10px 14px; text-align: left; font-weight: 600; }
+    td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; }
+    .bar { display: inline-block; height: 8px; border-radius: 4px; min-width: 4px; }
+    .footer { text-align: center; padding: 24px; color: #aaa; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📊 {{title}}</h1>
+      <p class="period">报告周期：{{periodStart}} ~ {{periodEnd}} · 生成时间：{{generatedAt}}</p>
+    </div>
+
+    <div class="summary">
+      <h3>核心指标</h3>
+      <div class="metric-row">
+        {{#each metrics}}
+        <div class="metric">
+          <div class="value" style="color:{{#if (eq trend "up")}}#4CAF50{{else if (eq trend "down")}}#E91E63{{else}}#333{{/if}}">
+            {{value}}{{#if unit}}{{unit}}{{/if}}
+          </div>
+          <div class="label">{{label}}</div>
+          {{#if change}}
+          <div style="font-size:11px;color:{{#if (eq trend "up")}}#4CAF50{{else}}#E91E63{{/if}};">
+            {{#if (eq trend "up")}}↑{{else}}↓{{/if}} {{change}}%
+          </div>
+          {{/if}}
+        </div>
+        {{/each}}
+      </div>
+    </div>
+
+    {{#each sections}}
+    <div class="section">
+      <h2>{{title}}</h2>
+      {{#if tableData}}
+      <table>
+        <thead>
+          <tr>
+            {{#each tableData.headers}}
+            <th>{{this}}</th>
+            {{/each}}
+          </tr>
+        </thead>
+        <tbody>
+          {{#each tableData.rows}}
+          <tr>
+            {{#each this}}
+            <td>{{this}}</td>
+            {{/each}}
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{/if}}
+      {{#if content}}
+      <div style="font-size:14px;line-height:1.7;">{{{content}}}</div>
+      {{/if}}
+    </div>
+    {{/each}}
+
+    <div class="footer">
+      EcoClaw 自动生成 · {{generatedAt}} · 本报告由 AI 自动分析生成
+    </div>
+  </div>
+</body>
+</html>

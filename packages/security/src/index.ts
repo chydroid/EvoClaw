@@ -12,5 +12,5 @@ export type { Role, RBACUser, ApiKeyInfo, Permission, AccessRequest } from "./rb
 export type { AuditQuery, AuditStatistics, AuditAlert, AuditRule } from "./audit-center";
 export type { Tenant, TenantConfig, TenantQuota, TenantStats } from "./tenant-manager";
 export type { HealingAction, HealingRule, ServiceHealth, HealingActionType, HealingStrategy } from "./self-healing";
-export type { PermissionRequest, PermissionRule } from "./permission-manager";
+export type { PermissionRequest, PermissionRule, WhitelistEntry } from "./permission-manager";
 export type { ErrorRecord, RetryConfig, RecoveryAction } from "./error-recovery-manager";

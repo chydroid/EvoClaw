@@ -436,7 +436,7 @@ export class ProtocolAdapter {
         }
 
         const agentExecutor = this.registry.resolveService<{
-          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number }>;
+          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }> }>;
           getGreeting(): string | null;
         }>("agentModelExecutor");
 
@@ -453,6 +453,7 @@ export class ProtocolAdapter {
           reply: result.reply,
           tokensUsed: result.tokensUsed,
           duration: result.duration,
+          permissionRequests: result.permissionRequests || [],
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -716,6 +717,128 @@ export class ProtocolAdapter {
           masterTerm: persona.masterTerm,
           isFirstSession: greeting !== null,
         });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/permission/approve", async (req: Request, res: Response) => {
+      try {
+        const { requestId, whitelist } = req.body || {};
+        if (!requestId) {
+          res.status(400).json({ error: "requestId is required" });
+          return;
+        }
+
+        const permMgr = this.registry.resolveService<{
+          approveRequest(id: string, addToWhitelist?: boolean): { id: string; operation: string; target: string; status: string } | undefined;
+          denyRequest(id: string): { id: string; operation: string; target: string; status: string } | undefined;
+          getPendingRequests(): Array<{ id: string; operation: string; target: string; description: string; status: string }>;
+          addToWhitelist(operation: string, target: string): unknown;
+          removeFromWhitelist(operation: string, target: string): boolean;
+          getWhitelist(): Array<{ operation: string; targetPattern: string; createdAt: Date }>;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.status(503).json({ error: "Permission manager not available" });
+          return;
+        }
+
+        const result = permMgr.approveRequest(String(requestId), whitelist === true);
+        if (!result) {
+          res.status(404).json({ error: "Request not found or already processed" });
+          return;
+        }
+
+        res.json({ success: true, request: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/permission/deny", async (req: Request, res: Response) => {
+      try {
+        const { requestId } = req.body || {};
+        if (!requestId) {
+          res.status(400).json({ error: "requestId is required" });
+          return;
+        }
+
+        const permMgr = this.registry.resolveService<{
+          denyRequest(id: string): { id: string; operation: string; target: string; status: string } | undefined;
+          getPendingRequests(): Array<{ id: string; operation: string; target: string; description: string; status: string }>;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.status(503).json({ error: "Permission manager not available" });
+          return;
+        }
+
+        const result = permMgr.denyRequest(String(requestId));
+        if (!result) {
+          res.status(404).json({ error: "Request not found or already processed" });
+          return;
+        }
+
+        res.json({ success: true, request: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/permission/requests", async (_req: Request, res: Response) => {
+      try {
+        const permMgr = this.registry.resolveService<{
+          getPendingRequests(): Array<{ id: string; operation: string; target: string; description: string; status: string }>;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.json({ requests: [] });
+          return;
+        }
+
+        res.json({ requests: permMgr.getPendingRequests() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/permission/whitelist", async (_req: Request, res: Response) => {
+      try {
+        const permMgr = this.registry.resolveService<{
+          getWhitelist(): Array<{ operation: string; targetPattern: string; createdAt: Date }>;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.json({ whitelist: [] });
+          return;
+        }
+
+        res.json({ whitelist: permMgr.getWhitelist() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.delete("/api/permission/whitelist", async (req: Request, res: Response) => {
+      try {
+        const { operation, target } = req.body || {};
+        if (!operation || !target) {
+          res.status(400).json({ error: "operation and target are required" });
+          return;
+        }
+
+        const permMgr = this.registry.resolveService<{
+          removeFromWhitelist(operation: string, target: string): boolean;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.status(503).json({ error: "Permission manager not available" });
+          return;
+        }
+
+        const removed = permMgr.removeFromWhitelist(String(operation), String(target));
+        res.json({ success: removed });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

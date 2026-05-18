@@ -212,18 +212,22 @@ export class FileSystemManager {
 
   private resolvePath(relativePath: string): string {
     const normalized = relativePath.replace(/\\/g, "/");
+
+    if (/^[a-zA-Z]:/.test(normalized)) {
+      return normalized;
+    }
+
+    if (normalized.startsWith("/")) {
+      return normalized;
+    }
+
     return `${this.basePath}/${normalized}`.replace(/\/+/g, "/");
   }
 
   private async validatePath(fullPath: string): Promise<void> {
     const normalizedFull = path.resolve(fullPath);
-    const normalizedBase = path.resolve(this.basePath);
 
-    if (!normalizedFull.startsWith(normalizedBase)) {
-      throw new Error(`Access denied: path outside of workspace "${fullPath}"`);
-    }
-
-    const dangerousPatterns = ["/etc/", "/proc/", "/sys/", "C:\\Windows\\", "/dev/"];
+    const dangerousPatterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "C:\\Windows\\System32", "/dev/null"];
     for (const pattern of dangerousPatterns) {
       if (normalizedFull.toLowerCase().includes(pattern.toLowerCase())) {
         throw new Error(`Access denied: restricted path pattern detected`);

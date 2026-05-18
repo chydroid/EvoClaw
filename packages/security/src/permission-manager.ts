@@ -20,10 +20,17 @@ export interface PermissionRule {
   description: string;
 }
 
+export interface WhitelistEntry {
+  operation: string;
+  targetPattern: string;
+  createdAt: Date;
+}
+
 export class PermissionManager {
   private requests = new Map<string, PermissionRequest>();
   private rules = new Map<string, PermissionRule>();
   private approvedOperations = new Map<string, Date>();
+  private whitelist: WhitelistEntry[] = [];
 
   constructor(
     private registry: ServiceRegistry,
@@ -37,50 +44,128 @@ export class PermissionManager {
       operation: "file_create",
       autoApprove: false,
       requireExplicitConsent: true,
-      description: "Create a new file at the specified path",
+      description: "创建文件",
     });
 
     this.rules.set("file_modify", {
       operation: "file_modify",
       autoApprove: false,
       requireExplicitConsent: true,
-      description: "Modify an existing file's content",
+      description: "修改文件内容",
     });
 
     this.rules.set("file_delete", {
       operation: "file_delete",
       autoApprove: false,
       requireExplicitConsent: true,
-      description: "Delete a file at the specified path",
+      description: "删除文件",
     });
 
     this.rules.set("file_read", {
       operation: "file_read",
       autoApprove: true,
       requireExplicitConsent: false,
-      description: "Read the contents of a file",
+      description: "读取文件内容",
     });
 
     this.rules.set("file_list", {
       operation: "file_list",
       autoApprove: true,
       requireExplicitConsent: false,
-      description: "List files and directories in a folder",
+      description: "列出文件夹内容",
     });
 
     this.rules.set("skill_find_and_install", {
       operation: "skill_find_and_install",
       autoApprove: false,
       requireExplicitConsent: true,
-      description: "Automatically find and install a suitable skill",
+      description: "自动查找并安装技能",
     });
 
     this.rules.set("skill_search", {
       operation: "skill_search",
       autoApprove: true,
       requireExplicitConsent: false,
-      description: "Search for available skills",
+      description: "搜索可用技能",
     });
+
+    this.rules.set("browser_navigate", {
+      operation: "browser_navigate",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "访问网页URL",
+    });
+
+    this.rules.set("browser_submit_form", {
+      operation: "browser_submit_form",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "提交网页表单",
+    });
+
+    this.rules.set("email_add_account", {
+      operation: "email_add_account",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "添加邮箱账户",
+    });
+
+    this.rules.set("email_send", {
+      operation: "email_send",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "发送邮件",
+    });
+  }
+
+  addToWhitelist(operation: string, target: string): WhitelistEntry {
+    const existing = this.whitelist.find(
+      (e) => e.operation === operation && e.targetPattern === target
+    );
+    if (existing) return existing;
+
+    const entry: WhitelistEntry = {
+      operation,
+      targetPattern: target,
+      createdAt: new Date(),
+    };
+    this.whitelist.push(entry);
+
+    this.eventBus.publish(
+      "permission.whitelist_added",
+      { operation, target },
+      "permission-manager"
+    );
+
+    return entry;
+  }
+
+  removeFromWhitelist(operation: string, target: string): boolean {
+    const idx = this.whitelist.findIndex(
+      (e) => e.operation === operation && e.targetPattern === target
+    );
+    if (idx === -1) return false;
+    this.whitelist.splice(idx, 1);
+    return true;
+  }
+
+  isWhitelisted(operation: string, target: string): boolean {
+    for (const entry of this.whitelist) {
+      if (entry.operation !== operation) continue;
+      if (this.matchTarget(target, entry.targetPattern)) return true;
+    }
+    return false;
+  }
+
+  getWhitelist(): WhitelistEntry[] {
+    return [...this.whitelist];
+  }
+
+  private matchTarget(target: string, pattern: string): boolean {
+    if (pattern.endsWith("*")) {
+      return target.startsWith(pattern.slice(0, -1));
+    }
+    return target === pattern;
   }
 
   requestPermission(
@@ -89,6 +174,40 @@ export class PermissionManager {
     details: Record<string, unknown>,
     requestedBy: string = "system"
   ): PermissionRequest {
+    if (this.isWhitelisted(operation, target)) {
+      const approved: PermissionRequest = {
+        id: uuid().slice(0, 8),
+        operation,
+        description: `白名单授权: ${operation}`,
+        target,
+        details,
+        status: "approved",
+        requestedAt: new Date(),
+        respondedAt: new Date(),
+        requestedBy,
+      };
+      this.requests.set(approved.id, approved);
+      this.approvedOperations.set(operation, new Date());
+      return approved;
+    }
+
+    if (this.isApprovedForOperation(operation, target)) {
+      const approved: PermissionRequest = {
+        id: uuid().slice(0, 8),
+        operation,
+        description: `已批准: ${operation}`,
+        target,
+        details,
+        status: "approved",
+        requestedAt: new Date(),
+        respondedAt: new Date(),
+        requestedBy,
+      };
+      this.requests.set(approved.id, approved);
+      this.approvedOperations.set(operation, new Date());
+      return approved;
+    }
+
     const rule = this.rules.get(operation);
 
     if (rule?.autoApprove) {
@@ -141,7 +260,7 @@ export class PermissionManager {
     const denied: PermissionRequest = {
       id: uuid().slice(0, 8),
       operation,
-      description: "Unknown operation",
+      description: "未知操作类型",
       target,
       details,
       status: "denied",
@@ -154,7 +273,7 @@ export class PermissionManager {
     return denied;
   }
 
-  approveRequest(requestId: string): PermissionRequest | undefined {
+  approveRequest(requestId: string, addToWhitelist: boolean = false): PermissionRequest | undefined {
     const request = this.requests.get(requestId);
     if (!request || request.status !== "pending") return undefined;
 
@@ -162,9 +281,18 @@ export class PermissionManager {
     request.respondedAt = new Date();
     this.approvedOperations.set(request.operation, new Date());
 
+    if (addToWhitelist) {
+      this.addToWhitelist(request.operation, request.target);
+    }
+
     this.eventBus.publish(
       "permission.approved",
-      { requestId, operation: request.operation, target: request.target },
+      {
+        requestId,
+        operation: request.operation,
+        target: request.target,
+        whitelisted: addToWhitelist,
+      },
       "permission-manager"
     );
 
@@ -202,6 +330,7 @@ export class PermissionManager {
   }
 
   isApprovedForOperation(operation: string, target: string): boolean {
+    if (this.isWhitelisted(operation, target)) return true;
     if (this.checkApproval(operation)) return true;
 
     for (const [, req] of this.requests) {

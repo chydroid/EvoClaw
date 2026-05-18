@@ -34,6 +34,14 @@ interface ChatMessage {
   role: "user" | "bot";
   content: string;
   time: string;
+  permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>;
+}
+
+interface PermissionRequestInfo {
+  id: string;
+  operation: string;
+  description: string;
+  target: string;
 }
 
 interface AvatarInfo {
@@ -380,10 +388,11 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         const reply = data.reply || "No response";
+        const perms: PermissionRequestInfo[] = data.permissionRequests || [];
         const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         setChatHistory((prev) => [
           ...prev,
-          { role: "bot", content: reply, time: botNow },
+          { role: "bot", content: reply, time: botNow, permissionRequests: perms.length > 0 ? perms : undefined },
         ]);
       } else {
         setChatHistory((prev) => [...prev, { role: "bot", content: "Server returned an error", time: now }]);
@@ -393,6 +402,57 @@ export default function App() {
     }
 
     setMessage("");
+  }
+
+  async function approvePermission(requestId: string, whitelist: boolean) {
+    try {
+      const res = await fetch("/api/permission/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, whitelist }),
+      });
+      if (res.ok) {
+        setChatHistory((prev) => prev.map((msg) => {
+          if (msg.role !== "bot" || !msg.permissionRequests) return msg;
+          const remaining = msg.permissionRequests.filter((p) => p.id !== requestId);
+          return { ...msg, permissionRequests: remaining.length > 0 ? remaining : undefined };
+        }));
+        const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const label = whitelist ? "已加入白名单，永久授权" : "本次已授权";
+        setChatHistory((prev) => [...prev, {
+          role: "bot",
+          content: `✅ 权限请求已处理：${label}。请重新发送指令继续操作。`,
+          time: now,
+        }]);
+      }
+    } catch {
+      console.warn("Failed to approve permission");
+    }
+  }
+
+  async function denyPermission(requestId: string) {
+    try {
+      const res = await fetch("/api/permission/deny", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId }),
+      });
+      if (res.ok) {
+        setChatHistory((prev) => prev.map((msg) => {
+          if (msg.role !== "bot" || !msg.permissionRequests) return msg;
+          const remaining = msg.permissionRequests.filter((p) => p.id !== requestId);
+          return { ...msg, permissionRequests: remaining.length > 0 ? remaining : undefined };
+        }));
+        const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setChatHistory((prev) => [...prev, {
+          role: "bot",
+          content: "❌ 权限请求已被拒绝。如有需要可重新发送指令。",
+          time: now,
+        }]);
+      }
+    } catch {
+      console.warn("Failed to deny permission");
+    }
   }
 
   async function handleSlashCommand(input: string): Promise<string | null> {
@@ -683,6 +743,44 @@ export default function App() {
                   </div>
                 ))
               )}
+              {(() => {
+                const lastBotMsg = [...chatHistory].reverse().find((m) => m.role === "bot" && m.permissionRequests && m.permissionRequests.length > 0);
+                if (!lastBotMsg || !lastBotMsg.permissionRequests) return null;
+                return (
+                  <div style={s.permissionBar}>
+                    <div style={s.permissionIcon}>🔐</div>
+                    <div style={s.permissionContent}>
+                      <div style={s.permissionTitle}>需要您的授权</div>
+                      {lastBotMsg.permissionRequests.map((pr) => (
+                        <div key={pr.id} style={s.permissionItem}>
+                          <span style={s.permissionOp}>{pr.operation}</span>
+                          <span style={s.permissionDesc}>{pr.description} → <code>{pr.target}</code></span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={s.permissionActions}>
+                      <button
+                        style={s.permissionBtnApprove}
+                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => approvePermission(pr.id, false))}
+                      >
+                        本次授权
+                      </button>
+                      <button
+                        style={s.permissionBtnWhitelist}
+                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => approvePermission(pr.id, true))}
+                      >
+                        加入白名单
+                      </button>
+                      <button
+                        style={s.permissionBtnDeny}
+                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => denyPermission(pr.id))}
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
               <div ref={chatEndRef} />
             </div>
             <div style={s.chatInput}>
@@ -858,6 +956,38 @@ const s: Record<string, React.CSSProperties> = {
     background: "var(--accent)", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "14px",
   },
   slashHint: { fontSize: "11px", color: "var(--text-muted)" },
+  permissionBar: {
+    display: "flex", alignItems: "flex-start", gap: "12px",
+    padding: "14px", marginBottom: "16px",
+    background: "var(--warning-bg)", border: "1px solid var(--warning)",
+    borderRadius: "8px",
+  },
+  permissionIcon: { fontSize: "24px", flexShrink: 0 },
+  permissionContent: { flex: 1 },
+  permissionTitle: { fontWeight: "bold", fontSize: "14px", marginBottom: "6px", color: "var(--warning)" },
+  permissionItem: { display: "flex", gap: "8px", fontSize: "12px", marginBottom: "4px" },
+  permissionOp: {
+    padding: "2px 6px", borderRadius: "4px",
+    background: "var(--accent-bg)", color: "var(--accent)",
+    fontWeight: "bold", fontSize: "11px", textTransform: "uppercase",
+  },
+  permissionDesc: { color: "var(--text-muted)" },
+  permissionActions: { display: "flex", gap: "8px", flexShrink: 0, flexDirection: "column" as const },
+  permissionBtnApprove: {
+    padding: "6px 14px", borderRadius: "6px", border: "none",
+    background: "var(--accent)", color: "#fff", cursor: "pointer",
+    fontSize: "13px", fontWeight: "bold", whiteSpace: "nowrap" as const,
+  },
+  permissionBtnWhitelist: {
+    padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--accent)",
+    background: "transparent", color: "var(--accent)", cursor: "pointer",
+    fontSize: "13px", fontWeight: "bold", whiteSpace: "nowrap" as const,
+  },
+  permissionBtnDeny: {
+    padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--border)",
+    background: "transparent", color: "var(--text-muted)", cursor: "pointer",
+    fontSize: "13px", whiteSpace: "nowrap" as const,
+  },
   placeholder: { padding: "40px", textAlign: "center", color: "var(--text-muted)" },
   panel: { flex: 1, padding: "20px", overflow: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
