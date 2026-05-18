@@ -87,6 +87,78 @@ export default function App() {
     applyThemeToDocument(currentTheme);
   }, [currentTheme]);
 
+  useEffect(() => {
+    const styleId = "ecoclaw-code-styles";
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .code-block-wrapper {
+        margin: 12px 0;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        background: #0d1117;
+        font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+      }
+      .code-block-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 14px;
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+      }
+      .code-lang-label {
+        font-size: 11px;
+        color: #8b949e;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .code-copy-btn {
+        padding: 3px 10px;
+        border-radius: 4px;
+        border: 1px solid #30363d;
+        background: #21262d;
+        color: #c9d1d9;
+        cursor: pointer;
+        font-size: 11px;
+        font-family: inherit;
+        transition: all 0.15s;
+      }
+      .code-copy-btn:hover {
+        background: #30363d;
+        border-color: #8b949e;
+      }
+      .code-block-pre {
+        margin: 0;
+        padding: 14px;
+        overflow-x: auto;
+        background: #0d1117;
+        font-size: 13px;
+        line-height: 1.55;
+        white-space: pre;
+        word-wrap: normal;
+      }
+      .code-block-pre code {
+        font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+        font-size: 13px;
+        background: transparent;
+        padding: 0;
+        border: none;
+        color: #c9d1d9;
+      }
+      .code-keyword { color: #ff7b72; font-weight: 600; }
+      .code-string { color: #a5d6ff; }
+      .code-comment { color: #8b949e; font-style: italic; }
+      .code-number { color: #79c0ff; }
+      .code-function { color: #d2a8ff; }
+    `;
+    document.head.appendChild(style);
+  }, []);
+
   function switchTheme(themeId: string) {
     const theme = getThemeById(themeId);
     setCurrentTheme(theme);
@@ -202,21 +274,149 @@ export default function App() {
     setAvatarFile(null);
   }
 
-  function formatReply(text: string): string {
+  function htmlEscape(text: string): string {
     return text
-      .split("\n")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function highlightCode(code: string, lang: string): string {
+    const escaped = htmlEscape(code);
+    if (!lang) return escaped;
+
+    const keywords: Record<string, string[]> = {
+      javascript: ["const","let","var","function","return","if","else","for","while","class","import","export","from","async","await","try","catch","throw","new","this","typeof","instanceof","null","undefined","true","false"],
+      typescript: ["const","let","var","function","return","if","else","for","while","class","import","export","from","async","await","try","catch","throw","new","this","typeof","instanceof","null","undefined","true","false","interface","type","enum","implements","extends","readonly","private","public","protected"],
+      python: ["def","return","if","elif","else","for","while","class","import","from","as","try","except","finally","raise","with","yield","lambda","pass","break","continue","and","or","not","in","is","None","True","False","self"],
+      bash: ["if","then","else","elif","fi","for","while","do","done","case","esac","function","return","exit","export","local","source","echo","cd","ls","rm","mkdir","cp","mv"],
+      json: [],
+      html: [],
+      css: [],
+      sql: ["SELECT","FROM","WHERE","INSERT","INTO","VALUES","UPDATE","SET","DELETE","CREATE","TABLE","ALTER","DROP","INDEX","JOIN","LEFT","RIGHT","INNER","ON","AND","OR","NOT","NULL","AS","ORDER","BY","GROUP","HAVING","LIMIT","COUNT","SUM","AVG","MAX","MIN"],
+      go: ["func","return","if","else","for","range","var","const","type","struct","interface","map","chan","go","defer","import","package","nil","true","false","break","continue","switch","case","default","select"],
+      rust: ["fn","let","mut","const","return","if","else","for","while","loop","match","struct","enum","impl","trait","pub","use","mod","crate","self","super","where","as","in","ref","true","false","Some","None","Ok","Err","async","await","move"],
+      java: ["public","private","protected","class","interface","extends","implements","static","final","void","return","if","else","for","while","do","switch","case","break","continue","new","try","catch","throw","throws","import","package","null","true","false","this","super"],
+      cpp: ["int","float","double","char","bool","void","class","struct","public","private","protected","virtual","override","const","static","return","if","else","for","while","do","switch","case","break","continue","new","delete","try","catch","throw","include","namespace","using","template","typename","nullptr","true","false","this","auto"],
+    };
+
+    const langLower = lang.toLowerCase();
+    const kw = keywords[langLower];
+    if (!kw) return escaped;
+
+    const kwSet = new Set(kw);
+    let result = escaped;
+
+    result = result.replace(
+      /(["'`])(?:(?!\1|\\).|\\.)*\1/g,
+      (match) => `<span class="code-string">${match}</span>`
+    );
+
+    result = result.replace(
+      /\/\/.*$/gm,
+      (match) => `<span class="code-comment">${match}</span>`
+    );
+
+    result = result.replace(
+      /#.*$/gm,
+      (match) => `<span class="code-comment">${match}</span>`
+    );
+
+    const keywordPattern = new RegExp(
+      `\\b(${[...kwSet].join("|")})\\b`,
+      "g"
+    );
+    result = result.replace(
+      keywordPattern,
+      (match) => `<span class="code-keyword">${match}</span>`
+    );
+
+    result = result.replace(
+      /\b(\d+\.?\d*)\b/g,
+      (match) => `<span class="code-number">${match}</span>`
+    );
+
+    result = result.replace(
+      /`([^`]+)`/g,
+      (match, inner) => `<span class="code-function">${inner}</span>`
+    );
+
+    return result;
+  }
+
+  function formatTextLines(lines: string[]): string {
+    return lines
       .map((line) => {
-        if (line.startsWith("## ")) return `<h3>${line.slice(3)}</h3>`;
-        if (line.startsWith("# ")) return `<h2>${line.slice(2)}</h2>`;
-        if (line.startsWith("- ")) return `<li>${line.slice(2)}</li>`;
-        if (/^\d+\.\s/.test(line)) return `<li>${line.replace(/^\d+\.\s/, "")}</li>`;
-        if (line.startsWith("> ")) return `<blockquote>${line.slice(2)}</blockquote>`;
-        if (line.startsWith("```")) return "";
+        if (line.startsWith("## ")) return `<h3>${htmlEscape(line.slice(3))}</h3>`;
+        if (line.startsWith("# ")) return `<h2>${htmlEscape(line.slice(2))}</h2>`;
+        if (line.startsWith("- ")) return `<li>${htmlEscape(line.slice(2))}</li>`;
+        if (/^\d+\.\s/.test(line)) return `<li>${htmlEscape(line.replace(/^\d+\.\s/, ""))}</li>`;
+        if (line.startsWith("> ")) return `<blockquote>${htmlEscape(line.slice(2))}</blockquote>`;
         if (line.match(/^\*\*.*\*\*$/)) return `<b>${line.slice(2, -2)}</b>`;
         if (line.trim() === "") return "<br/>";
         return line;
       })
       .join("\n");
+  }
+
+  function formatCodeBlock(codeLines: string[], lang: string): string {
+    const codeContent = codeLines.join("\n");
+    const highlighted = lang ? highlightCode(codeContent, lang) : htmlEscape(codeContent);
+    const langLabel = lang || "code";
+    return [
+      `<div class="code-block-wrapper">`,
+      `<div class="code-block-header"><span class="code-lang-label">${htmlEscape(langLabel)}</span><button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.parentElement.parentElement.querySelector('code').textContent);var t=this;t.textContent='Copied!';setTimeout(function(){t.textContent='Copy'},2000)">Copy</button></div>`,
+      `<pre class="code-block-pre"><code class="language-${htmlEscape(langLabel)}">${highlighted}</code></pre>`,
+      `</div>`,
+    ].join("\n");
+  }
+
+  function formatReply(text: string): string {
+    const lines = text.split("\n");
+    const parts: string[] = [];
+    let inCodeBlock = false;
+    let codeLang = "";
+    const codeLines: string[] = [];
+    const textLines: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const codeBlockStart = line.match(/^```(\w*)$/);
+
+      if (codeBlockStart && !inCodeBlock) {
+        if (textLines.length > 0) {
+          parts.push(formatTextLines(textLines));
+          textLines.length = 0;
+        }
+        inCodeBlock = true;
+        codeLang = codeBlockStart[1] || "";
+        continue;
+      }
+
+      if (inCodeBlock) {
+        if (line.trim() === "```") {
+          parts.push(formatCodeBlock(codeLines, codeLang));
+          codeLines.length = 0;
+          inCodeBlock = false;
+          codeLang = "";
+          continue;
+        }
+        codeLines.push(line);
+        continue;
+      }
+
+      textLines.push(line);
+    }
+
+    if (inCodeBlock && codeLines.length > 0) {
+      parts.push(formatCodeBlock(codeLines, codeLang));
+    }
+    if (textLines.length > 0) {
+      parts.push(formatTextLines(textLines));
+    }
+
+    return parts.join("\n");
   }
 
   async function sendMessage() {
