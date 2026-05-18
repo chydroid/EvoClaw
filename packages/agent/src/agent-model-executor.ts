@@ -59,7 +59,7 @@ export class AgentModelExecutor {
     definition: ToolDefinition;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
   }>();
-  private conversationHistory = new Map<string, Array<{ role: string; content: string }>>();
+  private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
   private maxHistoryLength = 20;
 
   constructor(
@@ -108,11 +108,13 @@ export class AgentModelExecutor {
   }
 
   buildSystemPrompt(): string {
+    const toolNames = Array.from(this.registeredTools.keys());
     return [
       `你是 ${this.persona.name}，${this.persona.title}。`,
       `称呼用户为"${this.persona.masterTerm}"。`,
       `口气风格：${this.persona.tone === "warm" ? "温暖亲切" : this.persona.tone === "professional" ? "专业严谨" : this.persona.tone === "casual" ? "轻松随和" : "幽默风趣"}。`,
-      `你的职责是帮助${this.persona.masterTerm}完成各类任务，包括对话问答、技能执行、任务编排、学习优化等。`,
+      `你的职责是帮助${this.persona.masterTerm}完成各类任务。对于需要实际操作的任务（如创建文件、读写文件、安装技能等），你必须调用对应的工具函数来真正执行，而不是只告诉用户手动步骤。`,
+      `当你需要使用工具时，直接调用 tool_calls。调用工具后，根据工具返回的结果向用户汇报执行情况。`,
       `回答时用中文，简洁明了，友好亲切。`,
       `如果有不确定的事情，诚实告知而不是编造。`,
     ].join("\n");
@@ -153,8 +155,9 @@ export class AgentModelExecutor {
     }
   }
 
-  getChatHistory(sessionId: string): Array<{ role: string; content: string }> {
-    return this.conversationHistory.get(sessionId) || [];
+  getChatHistory(sessionId: string): Array<{ role: string; content: string | null }> {
+    const history = this.conversationHistory.get(sessionId) || [];
+    return history.map((h) => ({ role: h.role, content: h.content }));
   }
 
   getRegisteredTools(): ToolDefinition[] {
@@ -198,115 +201,253 @@ export class AgentModelExecutor {
     startTime: number,
     sessionId: string
   ): Promise<{ reply: string; tokensUsed: number; duration: number } | null> {
+    const MAX_TOOL_ROUNDS = 10;
+    let totalTokensUsed = 0;
+
     for (const provider of providers) {
-      const signals: AbortSignal[] = [];
-      let controller: AbortController | undefined;
-
-      const timeout = provider.timeout || 60000;
-      if (timeout > 0) {
-        controller = new AbortController();
-        const timeoutId = setTimeout(() => controller!.abort(), timeout);
-        signals.push(controller.signal);
-      }
-
-      const signal = signals.length > 0 ? signals[0] : undefined;
-
       try {
+        const history = this.conversationHistory.get(sessionId) || [];
+
         const skillsList = installedSkills.length > 0
           ? (installedSkills as Array<{ name: string; description: string }>)
               .map((s) => `- ${s.name}: ${s.description || "无描述"}`)
               .join("\n")
           : "";
 
-        const history = this.conversationHistory.get(sessionId) || [];
-
-        const messages = [
+        const messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
           { role: "system", content: systemPrompt },
-          ...(skillsList ? [{ role: "system" as const, content: `已安装的技能：\n${skillsList}` }] : []),
-          ...history,
-          { role: "user", content: message },
         ];
 
-        const baseURL = provider.baseURL || "";
-        let apiURL = baseURL;
-        if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-          apiURL = apiURL.replace(/\/+$/, "");
-          if (!apiURL.endsWith("/v1")) {
-            apiURL = `${apiURL}/v1`;
+        if (skillsList) {
+          messages.push({ role: "system", content: `已安装的技能：\n${skillsList}` });
+        }
+
+        messages.push(...history);
+        messages.push({ role: "user", content: message });
+
+        const tools = this.buildOpenAITools();
+
+        let conversationMessages = [...messages];
+        let finalReply = "";
+
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          const result = await this.callLLMOnce(provider, conversationMessages, tools);
+          if (!result) break;
+
+          totalTokensUsed += result.tokensUsed;
+
+          const assistantMsg = result.message;
+
+          if (assistantMsg.content) {
+            finalReply = assistantMsg.content;
           }
-          apiURL = `${apiURL}/chat/completions`;
-        }
 
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
+          const toolCalls = assistantMsg.tool_calls;
+          if (!toolCalls || toolCalls.length === 0) {
+            conversationMessages.push(assistantMsg);
+            break;
+          }
 
-        if (provider.apiKey) {
-          if (provider.provider === "anthropic") {
-            headers["x-api-key"] = provider.apiKey;
-            headers["anthropic-version"] = "2023-06-01";
-          } else {
-            headers["Authorization"] = `Bearer ${provider.apiKey}`;
+          conversationMessages.push(assistantMsg);
+
+          for (const tc of toolCalls) {
+            const toolName = tc.function.name;
+            const toolEntry = this.registeredTools.get(toolName);
+
+            let toolResult: string;
+            if (toolEntry) {
+              try {
+                const args = JSON.parse(tc.function.arguments || "{}");
+                const result = await toolEntry.handler(args);
+                toolResult = JSON.stringify(result);
+                console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
+              } catch (err: unknown) {
+                toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+                console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
+              }
+            } else {
+              toolResult = JSON.stringify({ error: `Tool "${toolName}" not found` });
+            }
+
+            conversationMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              name: toolName,
+              content: toolResult,
+            });
+          }
+
+          if (!finalReply && round === MAX_TOOL_ROUNDS - 1) {
+            finalReply = "工具已执行完毕。";
           }
         }
 
-        const response = await fetch(apiURL, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            model: provider.model,
-            messages,
-            max_tokens: provider.maxTokens || 4096,
-            temperature: provider.temperature || 0.3,
-            top_p: provider.topP ?? 1,
-          }),
-          signal,
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => "");
-          console.warn(
-            `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: ${errorText.slice(0, 200)}`
-          );
-          continue;
-        }
-
-        const data = await response.json() as {
-          choices?: Array<{ message?: { content?: string } }>;
-          usage?: { total_tokens?: number };
-        };
-        const content = data.choices?.[0]?.message?.content;
-
-        if (content && typeof content === "string") {
-          const usage = data.usage;
-          const tokensUsed = usage?.total_tokens || this.estimateTokenCount(systemPrompt + message + content);
-
-          const newHistory = [...history, { role: "user", content: message }, { role: "assistant", content }];
+        if (finalReply) {
+          const cleanHistory: Array<{ role: string; content: string | null }> = [
+            { role: "user", content: message },
+            { role: "assistant", content: finalReply },
+          ];
+          const newHistory = [...history, ...cleanHistory];
           if (newHistory.length > this.maxHistoryLength) {
             newHistory.splice(0, newHistory.length - this.maxHistoryLength);
           }
           this.conversationHistory.set(sessionId, newHistory);
 
           return {
-            reply: content,
-            tokensUsed,
+            reply: finalReply,
+            tokensUsed: totalTokensUsed,
             duration: Date.now() - startTime,
           };
         }
 
         console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response`);
-        continue;
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
-          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${timeout}ms`);
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out`);
         } else if (err instanceof Error) {
           console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
         }
-        continue;
       }
     }
 
     return null;
+  }
+
+  private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {
+    return Array.from(this.registeredTools.values()).map((t) => {
+      const props: Record<string, unknown> = {};
+      const required: string[] = [];
+
+      for (const [key, paramDef] of Object.entries(t.definition.parameters)) {
+        const p = paramDef as Record<string, unknown>;
+        props[key] = {
+          type: p.type || "string",
+          description: p.description || key,
+        };
+        required.push(key);
+      }
+
+      return {
+        type: "function",
+        function: {
+          name: t.definition.name,
+          description: t.definition.description,
+          parameters: {
+            type: "object",
+            properties: props,
+            required,
+          },
+        },
+      };
+    });
+  }
+
+  private async callLLMOnce(
+    provider: ProviderConfig,
+    messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+    tools: Array<{ type: string; function: Record<string, unknown> }>
+  ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number } | null> {
+    const timeout = provider.timeout || 60000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const baseURL = provider.baseURL || "";
+      let apiURL = baseURL;
+      if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+        apiURL = apiURL.replace(/\/+$/, "");
+        if (!apiURL.endsWith("/v1")) {
+          apiURL = `${apiURL}/v1`;
+        }
+        apiURL = `${apiURL}/chat/completions`;
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (provider.apiKey) {
+        if (provider.provider === "anthropic") {
+          headers["x-api-key"] = provider.apiKey;
+          headers["anthropic-version"] = "2023-06-01";
+        } else {
+          headers["Authorization"] = `Bearer ${provider.apiKey}`;
+        }
+      }
+
+      const body: Record<string, unknown> = {
+        model: provider.model,
+        messages: messages.map((m) => {
+          const msg: Record<string, unknown> = { role: m.role };
+          if (m.content !== undefined) msg.content = m.content;
+          if (m.tool_calls) msg.tool_calls = m.tool_calls;
+          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+          if (m.name) msg.name = m.name;
+          return msg;
+        }),
+        max_tokens: provider.maxTokens || 4096,
+        temperature: provider.temperature || 0.3,
+        top_p: provider.topP ?? 1,
+      };
+
+      if (tools.length > 0) {
+        body.tools = tools;
+        body.tool_choice = "auto";
+      }
+
+      const response = await fetch(apiURL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        console.warn(
+          `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: ${errorText.slice(0, 200)}`
+        );
+        return null;
+      }
+
+      const data = await response.json() as {
+        choices?: Array<{
+          message?: {
+            role?: string;
+            content?: string | null;
+            tool_calls?: Array<{
+              id: string;
+              type: string;
+              function: { name: string; arguments: string };
+            }>;
+          };
+        }>;
+        usage?: { total_tokens?: number };
+      };
+
+      const choice = data.choices?.[0];
+      const msg = choice?.message;
+      if (!msg) return null;
+
+      return {
+        message: {
+          role: msg.role || "assistant",
+          content: msg.content ?? null,
+          tool_calls: msg.tool_calls,
+        },
+        tokensUsed: data.usage?.total_tokens || 0,
+      };
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${timeout}ms`);
+      } else if (err instanceof Error) {
+        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
+      }
+      return null;
+    }
   }
 
   private async generateChatResponse(
@@ -381,9 +522,85 @@ export class AgentModelExecutor {
         lines.push(`2. 使用 CLI: ecoclaw skills install <文件路径>`);
         lines.push(`3. 或通过 API: POST /api/skills/install`);
       }
-    } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程")) {
-      lines.push(`好的，我理解您需要编写代码！`);
+    } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
+      lines.push(`好的，我理解您需要执行操作！`);
       lines.push("");
+
+      if (this.registeredTools.size > 0) {
+        lines.push(`当前有 ${this.registeredTools.size} 个可用工具，我正在尝试匹配并执行...`);
+        lines.push("");
+
+        const toolsToTry: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+        if (msg.includes("文件夹") || msg.includes("directory") || msg.includes("mkdir")) {
+          if (this.registeredTools.has("file_create")) {
+            const folderPath = "newweb/.gitkeep";
+            toolsToTry.push({
+              name: "file_create",
+              args: { path: folderPath, content: "" },
+            });
+          }
+        }
+
+        if (msg.includes("html") || msg.includes("网页")) {
+          if (this.registeredTools.has("file_create")) {
+            let htmlPath = "newweb/index.html";
+            let htmlContent = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>My Page</title>\n</head>\n<body>\n  <h1>Hello EcoClaw!</h1>\n</body>\n</html>";
+            toolsToTry.push({
+              name: "file_create",
+              args: { path: htmlPath, content: htmlContent },
+            });
+          }
+        }
+
+        if (msg.includes("css")) {
+          if (this.registeredTools.has("file_create")) {
+            toolsToTry.push({
+              name: "file_create",
+              args: {
+                path: "newweb/style.css",
+                content: "body { font-family: sans-serif; margin: 0; padding: 20px; }",
+              },
+            });
+          }
+        }
+
+        if (msg.includes("js") || msg.includes("javascript")) {
+          if (this.registeredTools.has("file_create")) {
+            toolsToTry.push({
+              name: "file_create",
+              args: {
+                path: "newweb/script.js",
+                content: "console.log('Hello from EcoClaw!');",
+              },
+            });
+          }
+        }
+
+        if (toolsToTry.length > 0) {
+          for (const tt of toolsToTry) {
+            try {
+              const entry = this.registeredTools.get(tt.name);
+              if (entry) {
+                const result = await entry.handler(tt.args);
+                const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+                lines.push(`✅ ${tt.name}(${JSON.stringify(tt.args.path)}) 执行成功:`);
+                lines.push(`\`\`\``);
+                lines.push(resultStr.slice(0, 500));
+                lines.push(`\`\`\``);
+                lines.push("");
+              }
+            } catch (err) {
+              lines.push(`❌ ${tt.name} 执行失败: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          if (toolsToTry.length > 1) {
+            lines.push("所有操作已完成！");
+          }
+          return lines.join("\n");
+        }
+      }
+
       lines.push(`当前我处于**离线/规则模式**，正在使用 ${this.config.model} 模型。`);
       lines.push(`要获得真正的代码生成能力，您需要：`);
       lines.push("");

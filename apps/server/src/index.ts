@@ -10,7 +10,7 @@ import { SkillManager, AutoSkillManager } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController } from "@evoclaw/infrastructure";
 import * as fs from "fs";
 
 export class EcoClawServer {
@@ -37,6 +37,7 @@ export class EcoClawServer {
   private taskPlanner: TaskPlanner;
   private permissionManager: PermissionManager;
   private errorRecoveryManager: ErrorRecoveryManager;
+  private browserController: BrowserController;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -69,6 +70,7 @@ export class EcoClawServer {
     this.taskPlanner = new TaskPlanner(this.registry, this.eventBus);
     this.permissionManager = new PermissionManager(this.registry, this.eventBus);
     this.errorRecoveryManager = new ErrorRecoveryManager(this.registry, this.eventBus);
+    this.browserController = new BrowserController(this.registry, this.eventBus);
   }
 
   async start(): Promise<void> {
@@ -104,6 +106,7 @@ export class EcoClawServer {
     this.registerAutoSkillTool();
     this.registerTaskPlannerTool();
     this.registerPermissionTools();
+    this.registerBrowserTools();
 
     console.log("[EcoClaw] File operation tools registered");
     console.log("[EcoClaw] Auto-skill discovery enabled");
@@ -422,6 +425,153 @@ export class EcoClawServer {
       },
       async () => {
         return this.errorRecoveryManager.getErrorStats();
+      }
+    );
+  }
+
+  private registerBrowserTools(): void {
+    const browser = this.browserController;
+
+    this.agentModelExecutor.registerTool(
+      "browser_navigate",
+      {
+        name: "browser_navigate",
+        description: "Navigate to a URL and retrieve page content, links, and forms",
+        parameters: {
+          url: { type: "string", description: "The URL to navigate to" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const url = String(params.url || "");
+        return await browser.navigate(url);
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_get_text",
+      {
+        name: "browser_get_text",
+        description: "Get text content from elements matching a CSS selector on the current page",
+        parameters: {
+          selector: { type: "string", description: "CSS selector (e.g. 'h1', '.class-name', '#id')" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const selector = String(params.selector || "body");
+        if (!browser.getCurrentPage()) {
+          return { error: "No page loaded. Use browser_navigate first." };
+        }
+        const text = await browser.getText(selector);
+        return { selector, text, length: text.length };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_find_elements",
+      {
+        name: "browser_find_elements",
+        description: "Find elements on the current page by CSS selector",
+        parameters: {
+          selector: { type: "string", description: "CSS selector to find elements" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const selector = String(params.selector || "");
+        if (!browser.getCurrentPage()) {
+          return { error: "No page loaded. Use browser_navigate first." };
+        }
+        const elements = await browser.findElements(selector);
+        return { selector, count: elements.length, elements };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_submit_form",
+      {
+        name: "browser_submit_form",
+        description: "Submit a form on the current page with field values",
+        parameters: {
+          action: { type: "string", description: "Form action URL" },
+          method: { type: "string", description: "HTTP method (get or post)" },
+          fields: { type: "string", description: "JSON string of field name-value pairs" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const action = String(params.action || "");
+        const method = String(params.method || "get");
+        let fields: Record<string, string> = {};
+        try {
+          fields = JSON.parse(String(params.fields || "{}"));
+        } catch {
+          return { error: "Invalid fields JSON" };
+        }
+        return await browser.submitForm({ action, method, fields });
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_search",
+      {
+        name: "browser_search",
+        description: "Search the web for a query across multiple search engines",
+        parameters: {
+          query: { type: "string", description: "Search query" },
+          sites: { type: "string", description: "Comma-separated search engines (google,bing,duckduckgo)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const query = String(params.query || "");
+        const sitesStr = String(params.sites || "duckduckgo");
+        const sites = sitesStr.split(",").map((s) => s.trim()).filter(Boolean);
+        return await browser.searchAndScrape(query, sites);
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_fetch_json",
+      {
+        name: "browser_fetch_json",
+        description: "Fetch JSON data from an API endpoint",
+        parameters: {
+          url: { type: "string", description: "The API URL to fetch JSON from" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const url = String(params.url || "");
+        return await browser.fetchJSON(url);
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "browser_tabs",
+      {
+        name: "browser_tabs",
+        description: "Manage browser tabs (list, new, switch, close)",
+        parameters: {
+          action: { type: "string", description: "Action: list, new, switch, or close" },
+          tabId: { type: "string", description: "Tab ID for switch/close actions" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const action = String(params.action || "list");
+        const tabId = String(params.tabId || "");
+
+        if (action === "list") {
+          return { tabs: browser.listTabs(), activeTab: (browser.getCurrentPage()?.url || "") };
+        }
+        if (action === "new") {
+          browser.newTab(tabId || `tab-${Date.now()}`);
+          return { success: true, action: "new", tabId };
+        }
+        if (action === "switch") {
+          const ok = browser.switchTab(tabId);
+          return { success: ok, action: "switch", tabId };
+        }
+        if (action === "close") {
+          const ok = browser.closeTab(tabId);
+          return { success: ok, action: "close", tabId };
+        }
+        return { error: `Unknown action: ${action}` };
       }
     );
   }

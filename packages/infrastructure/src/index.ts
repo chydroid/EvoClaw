@@ -4,3 +4,5 @@ export { FileSystemManager } from "./filesystem-manager";
 export { Logger } from "./logger";
 export type { LogLevel } from "./logger";
 export { DatabaseManager } from "./database-manager";
+export { BrowserController } from "./browser-controller";
+export type { NavigationResult, BrowserElement, BrowserPage, FormData } from "./browser-controller";
