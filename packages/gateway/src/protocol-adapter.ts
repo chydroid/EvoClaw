@@ -3,6 +3,7 @@ import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { spawn } from "child_process";
 import * as path from "path";
 import * as os from "os";
+import * as fs from "fs";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -27,6 +28,10 @@ const FORBIDDEN_PATTERNS = [
 
 const CLI_TIMEOUT_MS = 30000;
 const MAX_OUTPUT_BYTES = 1024 * 512;
+
+const DATA_DIR = path.resolve("data", "config");
+const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
+const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
 
 function validateCliCommand(input: string): { valid: boolean; reason?: string } {
   const trimmed = input.trim();
@@ -107,6 +112,99 @@ export class ProtocolAdapter {
     private registry: ServiceRegistry,
     private eventBus: EventBus
   ) {}
+
+  loadPersistedConfig(): void {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    } catch {}
+
+    try {
+      if (fs.existsSync(LLM_CONFIG_FILE)) {
+        const raw = fs.readFileSync(LLM_CONFIG_FILE, "utf-8");
+        const data = JSON.parse(raw);
+        if (data.providers && Array.isArray(data.providers)) {
+          this.savedLLMProviders = data.providers;
+          this.applyLLMProviders(data.providers);
+          console.log(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk`);
+        }
+      }
+    } catch (err) {
+      console.warn("[ProtocolAdapter] Failed to load LLM config:", err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      if (fs.existsSync(CHANNELS_CONFIG_FILE)) {
+        const raw = fs.readFileSync(CHANNELS_CONFIG_FILE, "utf-8");
+        const data = JSON.parse(raw);
+        if (data.channels && Array.isArray(data.channels)) {
+          this.savedChannels = data.channels;
+          console.log(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
+        }
+      }
+    } catch (err) {
+      console.warn("[ProtocolAdapter] Failed to load channels config:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private persistLLMProviders(providers: Record<string, unknown>[]): void {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2), "utf-8");
+    } catch (err) {
+      console.warn("[ProtocolAdapter] Failed to persist LLM config:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private persistChannels(channels: Record<string, unknown>[]): void {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(CHANNELS_CONFIG_FILE, JSON.stringify({ channels }, null, 2), "utf-8");
+    } catch (err) {
+      console.warn("[ProtocolAdapter] Failed to persist channels config:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private applyLLMProviders(providers: Record<string, unknown>[]): void {
+    const executor = this.registry.resolveService<{
+      configureProviders(providers: Array<{
+        id: string;
+        name: string;
+        enabled: boolean;
+        order: number;
+        provider: string;
+        model: string;
+        apiKey: string;
+        baseURL: string;
+        maxTokens: number;
+        temperature: number;
+        timeout: number;
+        topP?: number;
+      }>): void;
+    }>("agentModelExecutor");
+
+    if (!executor) return;
+
+    const configs = providers
+      .filter((p) => p.enabled)
+      .map((p) => ({
+        id: (p.id as string) || "",
+        name: (p.name as string) || "",
+        enabled: true,
+        order: (p.order as number) ?? 1,
+        provider: (p.id as string) || "custom",
+        model: (p.selectedModel as string) || "",
+        apiKey: (p.apiKey as string) || "",
+        baseURL: (p.baseURL as string) || "",
+        maxTokens: (p.config as Record<string, unknown>)?.maxTokens as number || 4096,
+        temperature: (p.config as Record<string, unknown>)?.temperature as number || 0.3,
+        timeout: (p.config as Record<string, unknown>)?.timeout as number || 60000,
+        topP: (p.config as Record<string, unknown>)?.topP as number ?? 1,
+      }));
+
+    if (configs.length > 0) {
+      executor.configureProviders(configs);
+    }
+  }
 
   private authProvider: {
     generateToken(userId: string, roles?: string[]): string;
@@ -370,6 +468,7 @@ export class ProtocolAdapter {
       try {
         const executor = this.registry.resolveService<{
           getRegisteredTools(): unknown[];
+          getProviders(): { id: string; name: string; enabled: boolean; order: number }[];
         }>("agentModelExecutor");
         res.json({
           executorTools: executor?.getRegisteredTools() || [],
@@ -385,22 +484,9 @@ export class ProtocolAdapter {
         const { providers } = req.body || {};
         if (Array.isArray(providers)) {
           this.savedLLMProviders = providers;
-          for (const p of providers) {
-            if (p.enabled && p.config) {
-              const executor = this.registry.resolveService<{
-                configure(config: Record<string, unknown>): void;
-              }>("agentModelExecutor");
-              if (executor) {
-                executor.configure({
-                  provider: p.id as "openai" | "anthropic" | "deepseek" | "local" | "custom",
-                  model: p.selectedModel as string,
-                  apiKey: p.apiKey as string,
-                  baseURL: p.baseURL as string,
-                  ...p.config as Record<string, unknown>,
-                });
-              }
-            }
-          }
+          this.persistLLMProviders(providers);
+
+          this.applyLLMProviders(providers);
         }
         res.json({ success: true });
       } catch (err) {
@@ -416,6 +502,7 @@ export class ProtocolAdapter {
       const { channels } = req.body || {};
       if (Array.isArray(channels)) {
         this.savedChannels = channels;
+        this.persistChannels(channels);
       }
       res.json({ success: true });
     });

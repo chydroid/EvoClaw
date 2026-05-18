@@ -60,6 +60,10 @@ export class GatewayServer {
     }
   }
 
+  loadPersistedConfig(): void {
+    this.protocolAdapter.loadPersistedConfig();
+  }
+
   async start(): Promise<void> {
     this.setupMiddleware();
     this.setupRoutes();

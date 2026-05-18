@@ -1,13 +1,21 @@
 import { ServiceRegistry, EventBus, type DAGNode, type Skill, type SkillExecutionResult, type PersonaConfig } from "@evoclaw/core";
 
 export interface ModelConfig {
-  provider: "openai" | "anthropic" | "local" | "custom";
+  provider: "openai" | "anthropic" | "deepseek" | "local" | "custom";
   model: string;
   apiKey?: string;
   baseURL?: string;
   maxTokens: number;
   temperature: number;
   timeout: number;
+  topP?: number;
+}
+
+export interface ProviderConfig extends ModelConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  order: number;
 }
 
 export interface AgentExecutionResult {
@@ -44,6 +52,7 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
 
 export class AgentModelExecutor {
   private config: ModelConfig;
+  private providers: ProviderConfig[] = [];
   private persona: PersonaConfig;
   private greeted = false;
   private registeredTools = new Map<string, {
@@ -64,6 +73,16 @@ export class AgentModelExecutor {
 
   configure(config: Partial<ModelConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  configureProviders(providers: ProviderConfig[]): void {
+    this.providers = providers
+      .filter((p) => p.enabled)
+      .sort((a, b) => a.order - b.order);
+  }
+
+  getProviders(): ProviderConfig[] {
+    return [...this.providers];
   }
 
   registerTool(
@@ -89,10 +108,10 @@ export class AgentModelExecutor {
   buildSystemPrompt(): string {
     return [
       `你是 ${this.persona.name}，${this.persona.title}。`,
-      `调用用户为"${this.persona.masterTerm}"。`,
+      `称呼用户为"${this.persona.masterTerm}"。`,
       `口气风格：${this.persona.tone === "warm" ? "温暖亲切" : this.persona.tone === "professional" ? "专业严谨" : this.persona.tone === "casual" ? "轻松随和" : "幽默风趣"}。`,
       `你的职责是帮助${this.persona.masterTerm}完成各类任务，包括对话问答、技能执行、任务编排、学习优化等。`,
-      `回答的时用中文，简洁明了，友好亲切。`,
+      `回答时用中文，简洁明了，友好亲切。`,
       `如果有不确定的事情，诚实告知而不是编造。`,
     ].join("\n");
   }
@@ -142,12 +161,126 @@ export class AgentModelExecutor {
     }>("skillManager");
 
     const installedSkills = skillManager?.listSkills() || [];
+
+    const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
+
+    if (enabledProviders.length > 0) {
+      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime);
+      if (result) return result;
+    }
+
     const msg = message.toLowerCase();
-
     const reply = await this.generateChatResponse(message, msg, installedSkills, skillManager);
-
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
     return { reply, tokensUsed, duration: Date.now() - startTime };
+  }
+
+  private async tryCallLLM(
+    message: string,
+    systemPrompt: string,
+    installedSkills: unknown[],
+    providers: ProviderConfig[],
+    startTime: number
+  ): Promise<{ reply: string; tokensUsed: number; duration: number } | null> {
+    for (const provider of providers) {
+      const signals: AbortSignal[] = [];
+      let controller: AbortController | undefined;
+
+      const timeout = provider.timeout || 60000;
+      if (timeout > 0) {
+        controller = new AbortController();
+        const timeoutId = setTimeout(() => controller!.abort(), timeout);
+        signals.push(controller.signal);
+      }
+
+      const signal = signals.length > 0 ? signals[0] : undefined;
+
+      try {
+        const skillsList = installedSkills.length > 0
+          ? (installedSkills as Array<{ name: string; description: string }>)
+              .map((s) => `- ${s.name}: ${s.description || "无描述"}`)
+              .join("\n")
+          : "";
+
+        const messages = [
+          { role: "system", content: systemPrompt },
+          ...(skillsList ? [{ role: "system" as const, content: `已安装的技能：\n${skillsList}` }] : []),
+          { role: "user", content: message },
+        ];
+
+        const baseURL = provider.baseURL || "";
+        let apiURL = baseURL;
+        if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+          apiURL = apiURL.replace(/\/+$/, "");
+          if (!apiURL.endsWith("/v1")) {
+            apiURL = `${apiURL}/v1`;
+          }
+          apiURL = `${apiURL}/chat/completions`;
+        }
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+
+        if (provider.apiKey) {
+          if (provider.provider === "anthropic") {
+            headers["x-api-key"] = provider.apiKey;
+            headers["anthropic-version"] = "2023-06-01";
+          } else {
+            headers["Authorization"] = `Bearer ${provider.apiKey}`;
+          }
+        }
+
+        const response = await fetch(apiURL, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: provider.model,
+            messages,
+            max_tokens: provider.maxTokens || 4096,
+            temperature: provider.temperature || 0.3,
+            top_p: provider.topP ?? 1,
+          }),
+          signal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => "");
+          console.warn(
+            `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: ${errorText.slice(0, 200)}`
+          );
+          continue;
+        }
+
+        const data = await response.json() as {
+          choices?: Array<{ message?: { content?: string } }>;
+          usage?: { total_tokens?: number };
+        };
+        const content = data.choices?.[0]?.message?.content;
+
+        if (content && typeof content === "string") {
+          const usage = data.usage;
+          const tokensUsed = usage?.total_tokens || this.estimateTokenCount(systemPrompt + message + content);
+          return {
+            reply: content,
+            tokensUsed,
+            duration: Date.now() - startTime,
+          };
+        }
+
+        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response`);
+        continue;
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${timeout}ms`);
+        } else if (err instanceof Error) {
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
+        }
+        continue;
+      }
+    }
+
+    return null;
   }
 
   private async generateChatResponse(
@@ -252,9 +385,16 @@ export class AgentModelExecutor {
       lines.push(`- API: POST /api/skills/install {"path":"..."}  `);
       lines.push(`- 技能市场: ecoclaw skills search <关键词>  `);
     } else {
+      const activeProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
       lines.push(`${this.persona.masterTerm}，收到您的消息："${message}"`);
       lines.push("");
-      lines.push(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
+      if (activeProviders.length > 0) {
+        lines.push(`${this.persona.name} 当前运行在离线模式。`);
+        const provNames = activeProviders.map((p) => `${p.name}(${p.model})`).join(", ");
+        lines.push(`已配置 ${activeProviders.length} 个LLM提供商: ${provNames}，但调用均未成功。`);
+      } else {
+        lines.push(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
+      }
       if (skillsList) {
         lines.push("");
         lines.push(`已安装技能 (${installedSkills.length} 个):`);

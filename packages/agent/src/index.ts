@@ -5,4 +5,4 @@ export { DAGExecutor } from "./dag-executor";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
 export type { DAGBuilderConfig, BuildContext } from "./dynamic-dag-builder";
-export type { ModelConfig, AgentExecutionResult, ToolDefinition } from "./agent-model-executor";
+export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./agent-model-executor";

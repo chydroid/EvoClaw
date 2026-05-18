@@ -8,6 +8,7 @@ interface LLMProvider {
   models: string[];
   selectedModel: string;
   enabled: boolean;
+  order: number;
   config: {
     temperature: number;
     maxTokens: number;
@@ -15,6 +16,8 @@ interface LLMProvider {
     topP: number;
   };
 }
+
+const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "local"]);
 
 const DEFAULT_PROVIDERS: LLMProvider[] = [
   {
@@ -25,6 +28,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "o3", "o4-mini"],
     selectedModel: "gpt-4.1",
     enabled: false,
+    order: 1,
     config: { temperature: 0.7, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
   {
@@ -35,6 +39,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["claude-sonnet-4-6-20250217", "claude-opus-4-7-20260416", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20250301"],
     selectedModel: "claude-sonnet-4-6-20250217",
     enabled: false,
+    order: 2,
     config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
   {
@@ -45,6 +50,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
     selectedModel: "deepseek-v4-flash",
     enabled: false,
+    order: 3,
     config: { temperature: 0.3, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
   {
@@ -55,6 +61,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["llama3", "mistral", "qwen2.5", "deepseek-r1", "custom"],
     selectedModel: "llama3",
     enabled: false,
+    order: 4,
     config: { temperature: 0.5, maxTokens: 2048, timeout: 120000, topP: 0.9 },
   },
   {
@@ -65,9 +72,25 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: [],
     selectedModel: "",
     enabled: false,
+    order: 5,
     config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
   },
 ];
+
+function newCustomProvider(index: number): LLMProvider {
+  const id = `custom-${Date.now()}-${index}`;
+  return {
+    id,
+    name: `Custom LLM #${index}`,
+    apiKey: "",
+    baseURL: "",
+    models: [],
+    selectedModel: "",
+    enabled: false,
+    order: 100 + index,
+    config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
+  };
+}
 
 export default function LLMConfig() {
   const [providers, setProviders] = useState<LLMProvider[]>(DEFAULT_PROVIDERS);
@@ -75,6 +98,7 @@ export default function LLMConfig() {
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
 
   useEffect(() => {
@@ -161,7 +185,45 @@ export default function LLMConfig() {
     }
   }
 
+  function addProvider() {
+    const next = customCount + 1;
+    setCustomCount(next);
+    const newP = newCustomProvider(next);
+    const newOrder = providers.length + 1;
+    newP.order = newOrder;
+    setProviders((prev) => [...prev, newP]);
+    setActiveProvider(newP.id);
+  }
+
+  function deleteProvider(id: string) {
+    if (BUILT_IN_IDS.has(id)) return;
+    setProviders((prev) => {
+      const remaining = prev.filter((p) => p.id !== id);
+      const reordered = remaining.map((p, i) => ({ ...p, order: i + 1 }));
+      return reordered;
+    });
+    setActiveProvider("openai");
+  }
+
+  function moveProvider(id: string, direction: "up" | "down") {
+    setProviders((prev) => {
+      const sorted = [...prev].sort((a, b) => a.order - b.order);
+      const idx = sorted.findIndex((p) => p.id === id);
+      if (idx < 0) return prev;
+      if (direction === "up" && idx === 0) return prev;
+      if (direction === "down" && idx === sorted.length - 1) return prev;
+
+      const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+      const tmp = sorted[idx].order;
+      sorted[idx].order = sorted[swapIdx].order;
+      sorted[swapIdx].order = tmp;
+
+      return [...sorted];
+    });
+  }
+
   const currentProvider = providers.find((p) => p.id === activeProvider);
+  const sortedProviders = [...providers].sort((a, b) => a.order - b.order);
 
   return (
     <div style={s.container}>
@@ -183,7 +245,7 @@ export default function LLMConfig() {
 
       <div style={s.body}>
         <div style={{ ...s.sidebar, width: sidebarWidth }}>
-          {providers.map((p) => (
+          {sortedProviders.map((p) => (
             <div
               key={p.id}
               style={{
@@ -193,16 +255,49 @@ export default function LLMConfig() {
               }}
               onClick={() => setActiveProvider(p.id)}
             >
-              <div style={s.providerName}>
-                <span style={{
-                  ...s.enabledDot,
-                  background: p.enabled ? "#22c55e" : "#555",
-                }} />
-                {p.name}
+              <div style={s.providerRow}>
+                <span style={s.orderBadge}>{p.order}</span>
+                <div style={{ flex: 1 as const }}>
+                  <div style={s.providerName}>
+                    <span style={{
+                      ...s.enabledDot,
+                      background: p.enabled ? "#22c55e" : "#555",
+                    }} />
+                    {p.name}
+                  </div>
+                  <div style={s.modelPreview}>{p.selectedModel || "No model"}</div>
+                </div>
+                {sortedProviders.length > 1 && (
+                  <div style={s.orderBtns} onClick={(e) => e.stopPropagation()}>
+                    <button
+                      style={{ ...s.orderBtn, opacity: sortedProviders[0]?.id === p.id ? 0.3 : 1 }}
+                      disabled={sortedProviders[0]?.id === p.id}
+                      onClick={() => moveProvider(p.id, "up")}
+                      title="Move up (higher priority)"
+                    >▲</button>
+                    <button
+                      style={{ ...s.orderBtn, opacity: sortedProviders[sortedProviders.length - 1]?.id === p.id ? 0.3 : 1 }}
+                      disabled={sortedProviders[sortedProviders.length - 1]?.id === p.id}
+                      onClick={() => moveProvider(p.id, "down")}
+                      title="Move down (lower priority)"
+                    >▼</button>
+                    {!BUILT_IN_IDS.has(p.id) && (
+                      <button
+                        style={s.deleteBtn}
+                        onClick={() => deleteProvider(p.id)}
+                        title="Delete provider"
+                      >✕</button>
+                    )}
+                  </div>
+                )}
               </div>
-              <div style={s.modelPreview}>{p.selectedModel || "No model"}</div>
             </div>
           ))}
+          <div style={s.addBtnWrap}>
+            <button style={s.addProviderBtn} onClick={addProvider}>
+              + Add Provider
+            </button>
+          </div>
         </div>
 
         <div style={s.resizeHandle} onMouseDown={onMouseDown} />
@@ -217,6 +312,17 @@ export default function LLMConfig() {
                   value={currentProvider.name}
                   onChange={(e) => updateProvider(activeProvider, { name: e.target.value })}
                 />
+              </div>
+
+              <div style={s.formGroup}>
+                <label style={s.label}>Priority Order</label>
+                <div style={s.orderDisplay}>
+                  <span style={s.orderNum}>#{currentProvider.order}</span>
+                  <span style={s.orderHint}>
+                    {currentProvider.order === 1 ? "First priority - tried first" :
+                     `Fallback #${currentProvider.order} - tried after ${currentProvider.order - 1} higher priority providers fail`}
+                  </span>
+                </div>
               </div>
 
               <div style={s.formGroup}>
@@ -263,11 +369,9 @@ export default function LLMConfig() {
               <div style={s.formGroup}>
                 <label style={s.label}>
                   Model
-                  {currentProvider.id === "custom" && (
-                    <button style={s.addModelBtn} onClick={() => addCustomModel(activeProvider)}>
-                      + Add
-                    </button>
-                  )}
+                  <button style={s.addModelBtn} onClick={() => addCustomModel(activeProvider)}>
+                    + Add
+                  </button>
                 </label>
                 <input
                   style={s.input}
@@ -366,6 +470,7 @@ const s: Record<string, React.CSSProperties> = {
   sidebar: {
     width: "260px", borderRight: "1px solid #2a2a3a",
     overflow: "auto", padding: "8px", flexShrink: 0,
+    display: "flex", flexDirection: "column",
   },
   resizeHandle: {
     width: "4px", cursor: "col-resize", background: "transparent",
@@ -374,9 +479,19 @@ const s: Record<string, React.CSSProperties> = {
     borderLeft: "1px solid #2a2a3a",
   },
   sidebarItem: {
-    padding: "12px", borderRadius: "8px", cursor: "pointer",
+    padding: "10px 12px", borderRadius: "8px", cursor: "pointer",
     border: "1px solid transparent", marginBottom: "4px",
     transition: "all 0.2s",
+  },
+  providerRow: {
+    display: "flex", alignItems: "center", gap: "8px",
+  },
+  orderBadge: {
+    width: "22px", height: "22px", borderRadius: "50%",
+    background: "#2d1b4e", color: "#a78bfa",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: "10px", fontWeight: "bold", flexShrink: 0,
+    border: "1px solid #7c3aed",
   },
   providerName: {
     fontSize: "14px", fontWeight: "bold", color: "#e0e0e0",
@@ -386,6 +501,29 @@ const s: Record<string, React.CSSProperties> = {
     width: "8px", height: "8px", borderRadius: "50%", display: "inline-block",
   },
   modelPreview: { fontSize: "11px", color: "#888", marginTop: "4px" },
+  orderBtns: {
+    display: "flex", flexDirection: "column", gap: "2px",
+  },
+  orderBtn: {
+    padding: "0px 4px", fontSize: "8px", cursor: "pointer",
+    background: "transparent", border: "1px solid #3a3a4a",
+    borderRadius: "3px", color: "#888", lineHeight: "14px",
+  },
+  deleteBtn: {
+    padding: "0px 4px", fontSize: "8px", cursor: "pointer",
+    background: "transparent", border: "1px solid #5a1a1a",
+    borderRadius: "3px", color: "#f87171", lineHeight: "14px",
+    marginTop: "2px",
+  },
+  addBtnWrap: {
+    marginTop: "auto", paddingTop: "8px",
+    borderTop: "1px solid #2a2a3a",
+  },
+  addProviderBtn: {
+    width: "100%", padding: "8px", borderRadius: "6px",
+    background: "transparent", border: "1px dashed #7c3aed",
+    color: "#7c3aed", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
+  },
   content: { flex: 1, overflow: "auto", padding: "20px" },
   form: { maxWidth: "560px" },
   formGroup: { marginBottom: "18px" },
@@ -399,10 +537,16 @@ const s: Record<string, React.CSSProperties> = {
     color: "#e0e0e0", fontSize: "14px",
     boxSizing: "border-box" as const,
   },
-  select: {
-    width: "400px", padding: "8px 12px", borderRadius: "6px",
-    border: "1px solid #3a3a4a", background: "#1a1a2e",
-    color: "#e0e0e0", fontSize: "14px",
+  orderDisplay: {
+    display: "flex", alignItems: "center", gap: "10px",
+  },
+  orderNum: {
+    fontSize: "20px", fontWeight: "bold", color: "#7c3aed",
+    background: "#2d1b4e", padding: "4px 12px", borderRadius: "6px",
+    border: "1px solid #7c3aed",
+  },
+  orderHint: {
+    fontSize: "12px", color: "#888",
   },
   slider: { width: "100%", accentColor: "#7c3aed" },
   divider: { height: "1px", background: "#2a2a3a", margin: "20px 0" },
@@ -416,7 +560,6 @@ const s: Record<string, React.CSSProperties> = {
     width: "16px", height: "16px", borderRadius: "50%", background: "#fff",
     transition: "margin-left 0.2s",
   },
-  hint: { fontSize: "11px", color: "#666", marginTop: "4px", marginBottom: "6px" },
   addModelBtn: {
     padding: "2px 8px", borderRadius: "4px", border: "1px solid #7c3aed",
     background: "transparent", color: "#7c3aed", cursor: "pointer", fontSize: "11px",

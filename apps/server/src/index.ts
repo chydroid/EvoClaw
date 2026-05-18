@@ -71,6 +71,9 @@ export class EcoClawServer {
     console.log("[EcoClaw] Gateway server starting...");
     await this.gateway.start();
 
+    console.log("[EcoClaw] Loading persisted configuration...");
+    this.gateway.loadPersistedConfig();
+
     console.log("[EcoClaw] Agent pool starting...");
     console.log("[EcoClaw] Agent pool initialized");
 
