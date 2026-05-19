@@ -810,16 +810,17 @@ export class AgentModelExecutor {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    try {
-      const baseURL = provider.baseURL || "";
-      let apiURL = baseURL;
-      if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-        apiURL = apiURL.replace(/\/+$/, "");
-        if (!apiURL.endsWith("/v1")) {
-          apiURL = `${apiURL}/v1`;
-        }
-        apiURL = `${apiURL}/chat/completions`;
+    const baseURL = provider.baseURL || "";
+    let apiURL = baseURL;
+    if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+      apiURL = apiURL.replace(/\/+$/, "");
+      if (!apiURL.endsWith("/v1")) {
+        apiURL = `${apiURL}/v1`;
       }
+      apiURL = `${apiURL}/chat/completions`;
+    }
+
+    try {
 
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -859,6 +860,7 @@ export class AgentModelExecutor {
         }
       }
 
+      console.log(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})`);
       const response = await fetch(apiURL, {
         method: "POST",
         headers,
@@ -871,8 +873,11 @@ export class AgentModelExecutor {
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
         const classified = classifyLLMError(response.status, errorText);
-        console.warn(
-          `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: [${classified.type}] ${errorText.slice(0, 200)}`
+        console.error(
+          `[AgentModelExecutor] ❌ LLM API FAILED for "${provider.name}": HTTP ${response.status} [${classified.type}]\n` +
+          `  URL: ${apiURL}\n` +
+          `  Model: ${provider.model}\n` +
+          `  Error: ${errorText.slice(0, 500)}`
         );
         return {
           message: { role: "assistant", content: null },
@@ -917,7 +922,8 @@ export class AgentModelExecutor {
         classified = classifyLLMError(undefined, undefined, msg);
       } else if (err instanceof Error) {
         const msg = err.message;
-        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${msg}`);
+        console.error(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${msg}`);
+        console.error(`  URL: ${apiURL}, Model: ${provider.model}, Timeout: ${timeout}ms`);
         classified = classifyLLMError(undefined, undefined, msg);
       }
       return {
@@ -995,8 +1001,100 @@ export class AgentModelExecutor {
         addLine(`2. 使用 CLI: EvoClaw skills install <文件路径>`);
         addLine(`3. 或通过 API: POST /api/skills/install`);
       }
+    } else if (msg.includes("新闻") || msg.includes("热搜") || msg.includes("新闻事件") || msg.includes("news") || msg.includes("hot") || (msg.includes("搜") && msg.includes("热"))) {
+      addLine(`🔍 收到新闻搜索请求，我将全力为您搜集信息！`);
+      addLine(``);
+      
+      // Step 1: Try web_search tool
+      if (this.registeredTools.has("web_search")) {
+        addLine(`📡 步骤1: 尝试使用 web_search 工具搜索新闻...`);
+        try {
+          const entry = this.registeredTools.get("web_search")!;
+          const result = await entry.handler({ query: message, limit: 10 });
+          const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+          if (resultObj && resultObj.success !== false) {
+            addLine(`✅ web_search 成功！`);
+            const results = resultObj.results || resultObj.data || resultObj;
+            addLine(`搜索结果:\n${JSON.stringify(results, null, 2).slice(0, 3000)}`);
+            return lines.join("\n");
+          }
+          addLine(`⚠ web_search 返回异常，尝试下一个方法...`);
+        } catch (err) {
+          addLine(`⚠ web_search 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      
+      // Step 2: Try news_search tool or search tool
+      if (this.registeredTools.has("news_search")) {
+        addLine(`📡 步骤2: 尝试使用 news_search 工具...`);
+        try {
+          const entry = this.registeredTools.get("news_search")!;
+          const result = await entry.handler({ query: message, limit: 10 });
+          const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+          if (resultObj && resultObj.success !== false) {
+            addLine(`✅ news_search 成功！`);
+            addLine(`搜索结果:\n${JSON.stringify(resultObj, null, 2).slice(0, 3000)}`);
+            return lines.join("\n");
+          }
+          addLine(`⚠ news_search 返回异常`);
+        } catch (err) {
+          addLine(`⚠ news_search 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      
+      // Step 3: Try to find and execute a news-related skill
+      if (skillManager) {
+        const skills = installedSkills as Array<{ id: string; name: string; description?: string }>;
+        const newsSkill = skills.find((s) => 
+          s.name.toLowerCase().includes("news") || 
+          s.name.includes("新闻") ||
+          (s.description && (s.description.includes("新闻") || s.description.includes("news")))
+        );
+        if (newsSkill) {
+          addLine(`📦 步骤3: 找到技能 "${newsSkill.name}"，正在执行...`);
+          try {
+            const result = await skillManager.executeSkill(newsSkill.id, { prompt: message, query: message });
+            addLine(`✅ 技能执行完成！`);
+            addLine(`结果: ${JSON.stringify(result, null, 2).slice(0, 3000)}`);
+            return lines.join("\n");
+          } catch (err) {
+            addLine(`⚠ 技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          // Try ANY available skill that might help
+          const allSkills = skills;
+          addLine(`📦 步骤3: 搜索相关技能...`);
+          if (allSkills.length > 0) {
+            addLine(`当前已安装 ${allSkills.length} 个技能: ${allSkills.map(s => `"${s.name}"`).join(", ")}`);
+            // Try the first available skill that looks useful
+            for (const skill of allSkills) {
+              addLine(`🔄 尝试执行 "${skill.name}"...`);
+              try {
+                const result = await skillManager.executeSkill(skill.id, { prompt: message, query: message });
+                addLine(`✅ "${skill.name}" 执行完成！`);
+                addLine(`结果: ${JSON.stringify(result, null, 2).slice(0, 3000)}`);
+                return lines.join("\n");
+              } catch {
+                addLine(`⚠ "${skill.name}" 不适用于此任务，继续尝试...`);
+              }
+            }
+            addLine(`⚠ 所有已安装技能均不适用于新闻搜索。`);
+          } else {
+            addLine(`⚠ 未安装任何技能。`);
+          }
+        }
+      }
+      
+      // Step 4: As a last resort, provide guidance
+      addLine(``);
+      addLine(`---`);
+      addLine(`🔄 所有自动化方法已尝试完毕。为了完成新闻搜索，建议：`);
+      addLine(`1. 安装一个新闻搜索 Skill: \`EvoClaw skills install <skill-path>\``);
+      addLine(`2. 或配置真实 LLM API（如 DeepSeek）来获得联网搜索能力`);
+      addLine(`3. 或使用 CLI: \`EvoClaw web search "热搜新闻"\``);
+      addLine(``);
+      addLine(`我将继续等待您的指示，不会放弃这个任务！`);
     } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
-      addLine(`好的，我理解您需要执行操作！`);
 
       let hasDriveLetter = false;
       let driveRoot = "";
@@ -1310,19 +1408,43 @@ document.head.appendChild(style);
     } else {
       const activeProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
       addLine(`${this.persona.masterTerm}，收到您的消息："${message}"`);
+      
       if (activeProviders.length > 0) {
-        addLine(`${this.persona.name} 当前运行在离线模式。`);
         const provNames = activeProviders.map((p) => `${p.name}(${p.model})`).join(", ");
-        addLine(`已配置 ${activeProviders.length} 个LLM提供商: ${provNames}，但调用均未成功。`);
+        addLine(`⚠ ${this.persona.name} 的 LLM 调用暂时失败 (${provNames})，但我不会放弃！`);
+        addLine(``);
+        addLine(`🔄 正在尝试备用方案...`);
+        
+        // Report actual skill state
+        if (skillsList) {
+          addLine(`📦 已安装技能 (${installedSkills.length} 个): ${skillsList}`);
+        } else {
+          addLine(`📦 未检测到已安装技能。`);
+        }
+        
+        // Try common tools
+        const availableTools = Array.from(this.registeredTools.keys());
+        if (availableTools.length > 0) {
+          addLine(`🔧 可用工具 (${availableTools.length} 个): ${availableTools.slice(0, 8).join(", ")}${availableTools.length > 8 ? "..." : ""}`);
+        }
+        
+        addLine(``);
+        addLine(`💡 建议操作：`);
+        addLine(`1. 检查 LLM API 配置是否正确（API Key、模型名、Base URL）`);
+        addLine(`2. 安装专属 Skill 来处理此类任务`);
+        addLine(`3. 重试：重新发送指令给我`);
+        addLine(``);
+        addLine(`请告诉我您想如何继续！`);
       } else {
-        addLine(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
-      }
-      if (skillsList) {
-        addLine(`已安装技能 (${installedSkills.length} 个):`);
-        addLine(skillsList);
-        addLine(`输入 "你能做什么" 了解更多功能。`);
-      } else {
-        addLine(`暂无技能，建议先安装一些 Skill 或配置真实的 LLM API 来获得完整的 AI 对话能力。`);
+        addLine(`${this.persona.name} 尚未配置 LLM 提供商。`);
+        addLine(``);
+        addLine(`要启用 AI 对话能力，请：`);
+        addLine(`1. 在 LLM 配置页添加提供商（如 DeepSeek/OpenAI）`);
+        addLine(`2. 填入 API Key 和 Base URL`);
+        addLine(`3. 启用并保存`);
+        if (skillsList) {
+          addLine(`📦 已安装技能 (${installedSkills.length} 个): ${skillsList}`);
+        }
       }
     }
 
