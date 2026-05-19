@@ -427,6 +427,14 @@ export class AgentModelExecutor {
     return Array.from(this.registeredTools.values()).map((t) => t.definition);
   }
 
+  private static collapseNewlines(text: string): string {
+    return text
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^\n+/, "")
+      .replace(/\n+$/, "")
+      .trim();
+  }
+
   async chat(
     message: string,
     context?: Record<string, unknown>
@@ -438,7 +446,9 @@ export class AgentModelExecutor {
     const tasks = this.parseMultipleTasks(message);
     
     if (tasks.length > 1) {
-      return await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime);
+      const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime);
+      multiResult.reply = AgentModelExecutor.collapseNewlines(multiResult.reply);
+      return multiResult;
     }
 
     const systemPrompt = this.buildSystemPrompt();
@@ -457,19 +467,19 @@ export class AgentModelExecutor {
       if (result) {
         if (result.toolsExecuted || !this.hasActionIntent(message)) {
           if (pendingPermissions.length > 0) {
-            return { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
+            return { reply: AgentModelExecutor.collapseNewlines(result.reply), tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
           }
-          return { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
+          return { reply: AgentModelExecutor.collapseNewlines(result.reply), tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
         }
         const msg = message.toLowerCase();
         const fallbackReply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
-        const combined = result.reply + "\n" + fallbackReply;
+        const combined = AgentModelExecutor.collapseNewlines(result.reply + "\n" + fallbackReply);
         return { reply: combined, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
       }
     }
 
     const msg = message.toLowerCase();
-    const reply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
+    const reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
     return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
   }
@@ -700,6 +710,14 @@ export class AgentModelExecutor {
                 const result = await toolEntry.handler(args);
                 toolResult = JSON.stringify(result);
                 anyToolExecuted = true;
+
+                // Truncate huge tool results to prevent context overflow
+                const isBrowser = toolName.startsWith("browser_");
+                const MAX_RESULT_LEN = isBrowser ? 8000 : 16000;
+                if (toolResult.length > MAX_RESULT_LEN) {
+                  const truncated = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)，请使用 browser_get_text 获取特定内容` });
+                  toolResult = truncated;
+                }
                 if (result && typeof result === "object" && (result as Record<string, unknown>).requiresPermission) {
                   const r = result as Record<string, unknown>;
                   const requestId = (r.requestId as string) || (r.id as string) || "";
