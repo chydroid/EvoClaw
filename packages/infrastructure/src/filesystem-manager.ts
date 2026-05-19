@@ -2,6 +2,7 @@ import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/promises";
 import { constants } from "fs";
 import * as fsSync from "fs";
+import { execSync } from "child_process";
 import * as path from "path";
 
 interface FileInfo {
@@ -48,7 +49,7 @@ export class FileSystemManager {
     await this.validatePath(fullPath);
     const existed = fsSync.existsSync(fullPath);
     await this.ensureDir(relativePath);
-    await writeFile(fullPath, content, "utf-8");
+    await this.writeContent(fullPath, content);
     await this.writeAuditLog(existed ? "modify" : "create", relativePath, true);
   }
 
@@ -76,7 +77,7 @@ export class FileSystemManager {
     }
 
     await this.ensureDir(relativePath);
-    await writeFile(fullPath, content, "utf-8");
+    await this.writeContent(fullPath, content);
     await this.writeAuditLog("create", relativePath, true);
 
     const fileStat = await stat(fullPath);
@@ -91,7 +92,7 @@ export class FileSystemManager {
       throw new Error(`File not found: ${relativePath}`);
     }
 
-    await writeFile(fullPath, content, "utf-8");
+    await this.writeContent(fullPath, content);
     await this.writeAuditLog("modify", relativePath, true);
 
     const fileStat = await stat(fullPath);
@@ -111,8 +112,24 @@ export class FileSystemManager {
     const parts = relativePath.replace(/\\/g, "/").split("/");
     const dirs = parts.slice(0, -1).join("/");
 
-    if (dirs) {
-      await mkdir(this.resolvePath(dirs), { recursive: true });
+    if (!dirs) return;
+
+    const fullDir = this.resolvePath(dirs);
+    try {
+      await mkdir(fullDir, { recursive: true });
+    } catch {
+      if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(fullDir)) {
+        try {
+          execSync(
+            `powershell -Command "New-Item -Path '${fullDir}' -ItemType Directory -Force -ErrorAction Stop"`,
+            { stdio: "pipe", timeout: 15000 }
+          );
+        } catch {
+          throw new Error(`无法创建目录: ${fullDir}。Node.js 和 PowerShell 均失败。`);
+        }
+      } else {
+        throw new Error(`无法创建目录: ${fullDir}`);
+      }
     }
   }
 
@@ -231,6 +248,22 @@ export class FileSystemManager {
     for (const pattern of dangerousPatterns) {
       if (normalizedFull.toLowerCase().includes(pattern.toLowerCase())) {
         throw new Error(`Access denied: restricted path pattern detected`);
+      }
+    }
+  }
+
+  private async writeContent(fullPath: string, content: string): Promise<void> {
+    try {
+      await writeFile(fullPath, content, "utf-8");
+    } catch {
+      if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(fullPath)) {
+        const base64Content = Buffer.from(content, "utf-8").toString("base64");
+        execSync(
+          `powershell -Command "[System.IO.File]::WriteAllBytes('${fullPath}', [System.Convert]::FromBase64String('${base64Content}'))"`,
+          { stdio: "pipe", timeout: 15000 }
+        );
+      } else {
+        throw new Error(`无法写入文件: ${fullPath}`);
       }
     }
   }

@@ -73,6 +73,9 @@ export class AgentModelExecutor {
   private workspacePath: string;
   private bootstrapFiles: Array<{ path: string; content: string }> = [];
   private _cachedSkillNames: Set<string> = new Set();
+  
+  private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string }>();
+  private isProcessingQueue = false;
 
   constructor(
     private registry: ServiceRegistry,
@@ -87,6 +90,16 @@ export class AgentModelExecutor {
     this.compactionTokenThreshold = Math.floor((this.config.maxTokens || 4096) * 0.75);
     this.loadBootstrapFiles();
     registry.registerService("agentModelExecutor", this);
+    this.setupEventListeners();
+  }
+
+  private setupEventListeners(): void {
+    this.eventBus.subscribe(
+      "permission.approved",
+      async (event: { data: { requestId: string; operation: string; target: string } }) => {
+        await this.onPermissionApproved(event.data.requestId);
+      }
+    );
   }
 
   setSessionDataDir(dir: string): void {
@@ -255,6 +268,13 @@ export class AgentModelExecutor {
     console.log(`[AgentModelExecutor] Compacted session "${sessionId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
   }
 
+  private async onPermissionApproved(requestId: string): Promise<void> {
+    const pending = this.pendingOperations.get(requestId);
+    if (!pending) return;
+    this.pendingOperations.delete(requestId);
+    console.log(`[AgentModelExecutor] Permission approved for request "${requestId}". Frontend will auto-resume the task.`);
+  }
+
   configure(config: Partial<ModelConfig>): void {
     this.config = { ...this.config, ...config };
   }
@@ -412,10 +432,16 @@ export class AgentModelExecutor {
     context?: Record<string, unknown>
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
     const startTime = Date.now();
-    const systemPrompt = this.buildSystemPrompt();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
 
+    const tasks = this.parseMultipleTasks(message);
+    
+    if (tasks.length > 1) {
+      return await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime);
+    }
+
+    const systemPrompt = this.buildSystemPrompt();
     const skillManager = this.registry?.resolveService<{
       searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
       listSkills(): unknown[];
@@ -437,7 +463,7 @@ export class AgentModelExecutor {
         }
         const msg = message.toLowerCase();
         const fallbackReply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
-        const combined = result.reply + "\n\n---\n\n" + fallbackReply;
+        const combined = result.reply + "\n" + fallbackReply;
         return { reply: combined, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
       }
     }
@@ -448,15 +474,118 @@ export class AgentModelExecutor {
     return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
   }
 
+  private parseMultipleTasks(message: string): string[] {
+    const separators = [/[。！？]/g, /[.!?]/g];
+    const tasks: string[] = [];
+    
+    let remaining = message.trim();
+    
+    for (const sep of separators) {
+      const parts = remaining.split(sep);
+      if (parts.length > 1) {
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed && trimmed.length > 2) {
+            tasks.push(trimmed);
+          }
+        }
+        return tasks;
+      }
+    }
+    
+    const conjunctionPatterns = [
+      /(同时|并且|然后|接着|还要|另外|也请)/g,
+      /(and|also|then|next)/gi
+    ];
+    
+    for (const pattern of conjunctionPatterns) {
+      if (pattern.test(message)) {
+        const parts = message.split(pattern);
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (trimmed && trimmed.length > 2) {
+            tasks.push(trimmed);
+          }
+        }
+        if (tasks.length > 1) return tasks;
+      }
+    }
+    
+    return [message];
+  }
+
+  private async handleMultipleTasks(
+    tasks: string[],
+    sessionId: string,
+    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
+    startTime: number
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+    const results: string[] = [];
+    let totalTokens = 0;
+
+    results.push(`检测到您有 ${tasks.length} 个任务需要处理，我将依次为您执行：`);
+
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      results.push(`\n--- 任务 ${i + 1}：${task} ---`);
+      
+      const systemPrompt = this.buildSystemPrompt();
+      const skillManager = this.registry?.resolveService<{
+        searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
+        listSkills(): unknown[];
+        executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
+      }>("skillManager");
+      const installedSkills = skillManager?.listSkills() || [];
+      const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
+
+      let taskResult: string = "";
+      let tokensUsed = 0;
+
+      if (enabledProviders.length > 0) {
+        const result = await this.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
+        if (result) {
+          taskResult = result.reply;
+          tokensUsed = result.tokensUsed;
+          if (!result.toolsExecuted && this.hasActionIntent(task)) {
+            const msg = task.toLowerCase();
+            const fallback = await this.generateChatResponse(task, msg, installedSkills, skillManager, pendingPermissions);
+            taskResult = result.reply + "\n\n" + fallback;
+          }
+        }
+      }
+
+      if (!taskResult) {
+        const msg = task.toLowerCase();
+        taskResult = await this.generateChatResponse(task, msg, installedSkills, skillManager, pendingPermissions);
+        tokensUsed = this.estimateTokenCount(systemPrompt + task + taskResult);
+      }
+
+      totalTokens += tokensUsed;
+      results.push(taskResult);
+    }
+
+    results.push(`\n--- 所有任务处理完成 ---`);
+    results.push(`共完成 ${tasks.length} 个任务，耗时 ${Math.floor((Date.now() - startTime) / 1000)} 秒。`);
+
+    return {
+      reply: results.join("\n"),
+      tokensUsed: totalTokens,
+      duration: Date.now() - startTime,
+      permissionRequests: [...pendingPermissions]
+    };
+  }
+
   private hasActionIntent(message: string): boolean {
     const lower = message.toLowerCase();
     const actionKeywords = [
-      "创建", "生成", "删除", "修改", "写入", "读取", "列出",
+      "创建", "生成", "删除", "修改", "写入", "读取", "列出", "查询",
       "create", "generate", "delete", "modify", "write", "read", "list",
       "文件夹", "文件", "html", "css", "js", "网页", "代码",
       "folder", "file", "directory", "mkdir", "touch",
       "安装", "卸载", "install", "uninstall", "搜索", "search",
       "在", "到", "放进", "保存", "save",
+      "搜", "查", "找", "获取", "总结", "分析", "整理",
+      "新闻", "热搜", "天气", "邮件",
     ];
     return actionKeywords.some((kw) => lower.includes(kw));
   }
@@ -573,12 +702,17 @@ export class AgentModelExecutor {
                 anyToolExecuted = true;
                 if (result && typeof result === "object" && (result as Record<string, unknown>).requiresPermission) {
                   const r = result as Record<string, unknown>;
+                  const requestId = (r.requestId as string) || (r.id as string) || "";
                   pendingPermissions.push({
-                    id: (r.requestId as string) || (r.id as string) || "",
+                    id: requestId,
                     operation: (r.operation as string) || toolName,
                     description: (r.description as string) || "需要权限确认",
                     target: (r.target as string) || tc.function.name,
                   });
+                  
+                  if (requestId) {
+                    this.pendingOperations.set(requestId, { sessionId, message, requestId });
+                  }
                 }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               } catch (err: unknown) {
@@ -718,6 +852,11 @@ export class AgentModelExecutor {
       if (tools.length > 0) {
         body.tools = tools;
         body.tool_choice = toolChoice;
+        
+        if (provider.provider === "deepseek" || provider.name.toLowerCase().includes("deepseek")) {
+          // Keep the original tool_choice intent; DeepSeek supports "auto" and "required"
+          body.reasoning_type = "deepseek_reasoning";
+        }
       }
 
       const response = await fetch(apiURL, {
@@ -803,38 +942,34 @@ export class AgentModelExecutor {
       : "";
 
     const lines: string[] = [];
+    const addLine = (text: string) => {
+      if (text.trim()) lines.push(text);
+    };
 
     if (msg.includes("你好") || msg === "hi" || msg === "hello" || msg === "hey") {
-      lines.push(`${this.persona.masterTerm}您好！我是 ${this.persona.name}，${this.persona.title} 🦞`);
-      lines.push("");
-      lines.push(`请问有什么可以帮您的？`);
+      addLine(`${this.persona.masterTerm}您好！我是 ${this.persona.name}，${this.persona.title} 🦞`);
+      addLine(`请问有什么可以帮您的？`);
       if (skillsList) {
-        lines.push("");
-        lines.push(`我已经安装了以下技能：`);
-        lines.push(skillsList);
+        addLine(`我已经安装了以下技能：`);
+        addLine(skillsList);
       } else {
-        lines.push("");
-        lines.push(`您可以先安装一些 Skill 来扩展我的能力。`);
+        addLine(`您可以先安装一些 Skill 来扩展我的能力。`);
       }
-      lines.push("");
-      lines.push(`当前使用模型: ${this.config.model} (${this.config.provider})`);
+      addLine(`当前使用模型: ${this.config.model} (${this.config.provider})`);
     } else if (msg.includes("你能做什么") || msg.includes("能力") || msg.includes("功能") || msg.includes("what can you do")) {
-      lines.push(`我是 ${this.persona.name}，以下是当前能力：`);
-      lines.push("");
-      lines.push(`🎯 **对话交互** — 自然语言理解和回复`);
-      lines.push(`🛠️ **技能执行** — 运行已安装的 Skill`);
-      lines.push(`📋 **任务编排** — 规划和执行复杂任务流程`);
-      lines.push(`🔍 **搜索技能** — 浏览本地和远程技能市场`);
-      lines.push(`📈 **自我进化** — 学习和优化执行策略`);
-      lines.push(`💬 **多通道** — 支持微信/钉钉/飞书等平台`);
+      addLine(`我是 ${this.persona.name}，以下是当前能力：`);
+      addLine(`🎯 **对话交互** — 自然语言理解和回复`);
+      addLine(`🛠️ **技能执行** — 运行已安装的 Skill`);
+      addLine(`📋 **任务编排** — 规划和执行复杂任务流程`);
+      addLine(`🔍 **搜索技能** — 浏览本地和远程技能市场`);
+      addLine(`📈 **自我进化** — 学习和优化执行策略`);
+      addLine(`💬 **多通道** — 支持微信/钉钉/飞书等平台`);
       if (skillsList) {
-        lines.push("");
-        lines.push(`**已安装技能 (${installedSkills.length} 个):**`);
-        lines.push(skillsList);
+        addLine(`**已安装技能 (${installedSkills.length} 个):**`);
+        addLine(skillsList);
       }
-      lines.push("");
-      lines.push(`当前配置: ${this.config.model}@${this.config.provider}`);
-      lines.push(`您可以通过 LLM 配置页面对接真实大模型 API 来获得更强的智能推理能力。`);
+      addLine(`当前配置: ${this.config.model}@${this.config.provider}`);
+      addLine(`您可以通过 LLM 配置页面对接真实大模型 API 来获得更强的智能推理能力。`);
     } else if (msg.includes("天气") || msg.includes("weather")) {
       const weatherSkill = skillManager
         ? (installedSkills as Array<{ id: string; name: string }>).find((s) =>
@@ -842,76 +977,68 @@ export class AgentModelExecutor {
         : null;
 
       if (weatherSkill && skillManager) {
-        lines.push(`已匹配天气相关技能！正在使用 "${weatherSkill.name}" 为您处理...`);
-        lines.push("");
+        addLine(`已匹配天气相关技能！正在使用 "${weatherSkill.name}" 为您处理...`);
         try {
           const result = await skillManager.executeSkill(weatherSkill.id, {
             prompt: message,
             query: message,
           });
-          lines.push(`执行结果: ${JSON.stringify(result, null, 2)}`);
+          addLine(`执行结果: ${JSON.stringify(result, null, 2)}`);
         } catch {
-          lines.push(`技能执行遇到问题，请稍后重试。`);
+          addLine(`技能执行遇到问题，请稍后重试。`);
         }
         return lines.join("\n");
       } else {
-        lines.push(`您提到了天气查询，但目前没有安装天气相关技能。`);
-        lines.push("");
-        lines.push(`您可以通过以下方式安装技能：`);
-        lines.push(`1. 准备一个 .SKILL.md 文件`);
-        lines.push(`2. 使用 CLI: EvoClaw skills install <文件路径>`);
-        lines.push(`3. 或通过 API: POST /api/skills/install`);
+        addLine(`您提到了天气查询，但目前没有安装天气相关技能。`);
+        addLine(`您可以通过以下方式安装技能：`);
+        addLine(`1. 准备一个 .SKILL.md 文件`);
+        addLine(`2. 使用 CLI: EvoClaw skills install <文件路径>`);
+        addLine(`3. 或通过 API: POST /api/skills/install`);
       }
     } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
-      lines.push(`好的，我理解您需要执行操作！`);
-      lines.push("");
+      addLine(`好的，我理解您需要执行操作！`);
 
-      if (this.registeredTools.size > 0) {
-        lines.push(`当前有 ${this.registeredTools.size} 个可用工具，我正在尝试匹配并执行...`);
-        lines.push("");
+      let hasDriveLetter = false;
+      let driveRoot = "";
+      const driveMatch = message.match(/([A-Za-z])\s*[盘:]/);
+      if (driveMatch) {
+        hasDriveLetter = true;
+        driveRoot = `${driveMatch[1].toUpperCase()}:/`;
+      }
 
-        let hasDriveLetter = false;
-        let driveRoot = "";
-        const driveMatch = message.match(/([A-Za-z])\s*[盘:]/);
-        if (driveMatch) {
-          hasDriveLetter = true;
-          driveRoot = `${driveMatch[1].toUpperCase()}:/`;
+      const basePath = process.cwd().replace(/\\/g, "/");
+      const targetRoot = driveRoot || `${basePath}/`;
+
+      let folderName = "newweb";
+      const folderMatch = message.match(/(?:创建|新建|生成|建立|写|mkdir?\s+)\s*[一个]*\s*[名为]*\s*["'`]?(\w[\w-]*)["'`]?(?:\s*(?:文件夹|目录|网页|网站|directory|folder|网站|website|webpage))/i);
+      if (folderMatch) {
+        folderName = folderMatch[1];
+      } else {
+        const cnFolderMatch = message.match(/(\w[\w-]*)\s*(?:文件夹|目录)/);
+        if (cnFolderMatch) {
+          folderName = cnFolderMatch[1];
         }
+      }
 
-        const basePath = process.cwd().replace(/\\/g, "/");
-        const targetRoot = driveRoot || `${basePath}/`;
+      if (hasDriveLetter) {
+        addLine(`检测到您指定了 ${driveMatch![1].toUpperCase()} 盘，文件将创建在: \`${targetRoot}${folderName}/\``);
+      }
 
-        let folderName = "newweb";
-        const folderMatch = message.match(/(?:创建|新建|生成|建立|写|mkdir?\s+)\s*[一个]*\s*[名为]*\s*["'`]?(\w[\w-]*)["'`]?(?:\s*(?:文件夹|目录|网页|网站|directory|folder|网站|website|webpage))/i);
-        if (folderMatch) {
-          folderName = folderMatch[1];
-        } else {
-          const cnFolderMatch = message.match(/(\w[\w-]*)\s*(?:文件夹|目录)/);
-          if (cnFolderMatch) {
-            folderName = cnFolderMatch[1];
-          }
+      const toolsToTry: Array<{ name: string; args: Record<string, unknown> }> = [];
+      const prefix = `${targetRoot}${folderName}`;
+
+      if (msg.includes("文件夹") || msg.includes("directory") || msg.includes("mkdir")) {
+        if (this.registeredTools.has("file_create")) {
+          toolsToTry.push({
+            name: "file_create",
+            args: { path: `${prefix}/.gitkeep`, content: "" },
+          });
         }
+      }
 
-        if (hasDriveLetter) {
-          lines.push(`检测到您指定了 ${driveMatch![1].toUpperCase()} 盘，文件将创建在: \`${targetRoot}${folderName}/\``);
-          lines.push("");
-        }
-
-        const toolsToTry: Array<{ name: string; args: Record<string, unknown> }> = [];
-        const prefix = `${targetRoot}${folderName}`;
-
-        if (msg.includes("文件夹") || msg.includes("directory") || msg.includes("mkdir")) {
-          if (this.registeredTools.has("file_create")) {
-            toolsToTry.push({
-              name: "file_create",
-              args: { path: `${prefix}/.gitkeep`, content: "" },
-            });
-          }
-        }
-
-        if (msg.includes("html") || msg.includes("网页")) {
-          if (this.registeredTools.has("file_create")) {
-            const htmlContent = `<!DOCTYPE html>
+      if (msg.includes("html") || msg.includes("网页")) {
+        if (this.registeredTools.has("file_create")) {
+          const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -942,16 +1069,16 @@ export class AgentModelExecutor {
   <script src="script.js"></script>
 </body>
 </html>`;
-            toolsToTry.push({
-              name: "file_create",
-              args: { path: `${prefix}/index.html`, content: htmlContent },
-            });
-          }
+          toolsToTry.push({
+            name: "file_create",
+            args: { path: `${prefix}/index.html`, content: htmlContent },
+          });
         }
+      }
 
-        if (msg.includes("css")) {
-          if (this.registeredTools.has("file_create")) {
-            const cssContent = `/* style.css */
+      if (msg.includes("css")) {
+        if (this.registeredTools.has("file_create")) {
+          const cssContent = `/* style.css */
 * {
   margin: 0;
   padding: 0;
@@ -1047,16 +1174,16 @@ footer {
   color: #999;
   font-size: 0.9rem;
 }`;
-            toolsToTry.push({
-              name: "file_create",
-              args: { path: `${prefix}/style.css`, content: cssContent },
-            });
-          }
+          toolsToTry.push({
+            name: "file_create",
+            args: { path: `${prefix}/style.css`, content: cssContent },
+          });
         }
+      }
 
-        if (msg.includes("js") || msg.includes("javascript")) {
-          if (this.registeredTools.has("file_create")) {
-            const jsContent = `// script.js
+      if (msg.includes("js") || msg.includes("javascript")) {
+        if (this.registeredTools.has("file_create")) {
+          const jsContent = `// script.js
 document.addEventListener('DOMContentLoaded', () => {
   const greetBtn = document.getElementById('greetBtn');
   const greeting = document.getElementById('greeting');
@@ -1087,120 +1214,115 @@ style.textContent = \`
 \`;
 document.head.appendChild(style);
 `;
-            toolsToTry.push({
-              name: "file_create",
-              args: { path: `${prefix}/script.js`, content: jsContent },
-            });
-          }
-        }
-
-        if (toolsToTry.length > 0) {
-          let allSuccess = true;
-          for (const tt of toolsToTry) {
-            try {
-              const entry = this.registeredTools.get(tt.name);
-              if (entry) {
-                const result = await entry.handler(tt.args);
-                const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-                const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
-                const isSuccess = resultObj && resultObj.success !== false;
-                const icon = isSuccess ? "✅" : "❌";
-                if (resultObj && resultObj.requiresPermission) {
-                  pendingPermissions.push({
-                    id: (resultObj.requestId as string) || (resultObj.id as string) || "",
-                    operation: (resultObj.operation as string) || tt.name,
-                    description: (resultObj.description as string) || "需要权限确认",
-                    target: (resultObj.target as string) || (tt.args.path as string) || tt.name,
-                  });
-                  lines.push(`🔐 **权限请求**: ${resultObj.description || "此操作需要您的授权"}`);
-                  lines.push(`   操作: \`${resultObj.operation || tt.name}\`, 目标: \`${resultObj.target || tt.args.path}\``);
-                  lines.push(`   请在下方权限提示条中选择：本次授权 / 加入白名单 / 拒绝`);
-                } else {
-                  lines.push(`${icon} ${tt.name}(${JSON.stringify(tt.args.path)}) ${isSuccess ? "执行成功" : "执行失败"}:`);
-                  lines.push(`\`\`\``);
-                  lines.push(resultStr.slice(0, 500));
-                  lines.push(`\`\`\``);
-                }
-                lines.push("");
-                if (!isSuccess) allSuccess = false;
-              }
-            } catch (err) {
-              allSuccess = false;
-              lines.push(`❌ ${tt.name} 执行失败: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-          if (allSuccess && toolsToTry.length > 1) {
-            let hasAnyPermission = false;
-            for (const tt of toolsToTry) {
-              const pendingForThis = pendingPermissions.length > 0 && pendingPermissions.some((p) => p.target.includes(String(tt.args.path)));
-              if (pendingForThis) { hasAnyPermission = true; break; }
-            }
-            if (hasAnyPermission) {
-              lines.push("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
-            } else {
-              lines.push("所有操作已完成！");
-              if (hasDriveLetter) {
-                lines.push("");
-                lines.push(`文件位置: ${targetRoot}${folderName}/`);
-                lines.push(`在浏览器打开: ${targetRoot}${folderName}/index.html`);
-              }
-            }
-          } else if (!allSuccess) {
-            if (pendingPermissions.length > 0) {
-              lines.push("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
-            } else {
-              lines.push("部分操作未能完成，请检查上述错误信息。");
-            }
-          }
-          return lines.join("\n");
+          toolsToTry.push({
+            name: "file_create",
+            args: { path: `${prefix}/script.js`, content: jsContent },
+          });
         }
       }
 
-      lines.push(`当前我处于**离线/规则模式**，正在使用 ${this.config.model} 模型。`);
-      lines.push(`要获得真正的代码生成能力，您需要：`);
-      lines.push("");
-      lines.push(`1. 在 **LLM 配置页** 配置一个真实的 API（如 OpenAI/DeepSeek/Anthropic）`);
-      lines.push(`2. 填入有效的 API Key`);
-      lines.push(`3. 启用该提供商并保存`);
-      lines.push("");
-      lines.push(`配置完成后，我就能通过 API 调用大模型来为您生成代码了！`);
+      if (toolsToTry.length > 0) {
+        let allSuccess = true;
+        const actualPaths: string[] = [];
+        for (const tt of toolsToTry) {
+          try {
+            const entry = this.registeredTools.get(tt.name);
+            if (entry) {
+              const result = await entry.handler(tt.args);
+              const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+              const isSuccess = resultObj && resultObj.success !== false;
+              const icon = isSuccess ? "✅" : "❌";
+              if (resultObj && resultObj.requiresPermission) {
+                pendingPermissions.push({
+                  id: (resultObj.requestId as string) || (resultObj.id as string) || "",
+                  operation: (resultObj.operation as string) || tt.name,
+                  description: (resultObj.description as string) || "需要权限确认",
+                  target: (resultObj.target as string) || (tt.args.path as string) || tt.name,
+                });
+                addLine(`🔐 **权限请求**: ${resultObj.description || "此操作需要您的授权"}`);
+                addLine(`   操作: \`${resultObj.operation || tt.name}\`, 目标: \`${resultObj.target || tt.args.path}\``);
+                addLine(`   请在下方权限提示条中选择：本次授权 / 加入白名单 / 拒绝`);
+              } else {
+                const actualPath = (resultObj?.path as string) || (tt.args.path as string);
+                if (isSuccess && actualPath) actualPaths.push(actualPath);
+                addLine(`${icon} \`${tt.name}\` → \`${actualPath}\` ${isSuccess ? "执行成功" : "执行失败"}`);
+                if (resultObj?.warning) {
+                  addLine(`   ⚠ ${resultObj.warning}`);
+                }
+                if (resultObj?.error) {
+                  addLine(`   ${resultObj.error}`);
+                }
+              }
+              if (!isSuccess) allSuccess = false;
+            }
+          } catch (err) {
+            allSuccess = false;
+            addLine(`❌ \`${tt.name}\` 执行失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (allSuccess && toolsToTry.length > 1) {
+          let hasAnyPermission = false;
+          for (const tt of toolsToTry) {
+            const pendingForThis = pendingPermissions.length > 0 && pendingPermissions.some((p) => p.target.includes(String(tt.args.path)));
+            if (pendingForThis) { hasAnyPermission = true; break; }
+          }
+          if (hasAnyPermission) {
+            addLine("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
+          } else {
+            addLine("所有操作已完成！");
+            if (actualPaths.length > 0) {
+              const actualDir = actualPaths[0].replace(/[\\/][^\\/]+$/, "");
+              addLine(`文件位置: ${actualDir}/`);
+              addLine(`在文件浏览器打开: ${actualDir}/`);
+            }
+          }
+        } else if (!allSuccess) {
+          if (pendingPermissions.length > 0) {
+            addLine("以上操作需要您的授权才能执行。请在下方权限提示条中选择操作。");
+          } else {
+            addLine("部分操作未能完成，请检查上述错误信息。");
+          }
+        }
+        return lines.join("\n");
+      }
+
+      addLine(`当前我处于**离线/规则模式**，正在使用 ${this.config.model} 模型。`);
+      addLine(`要获得真正的代码生成能力，您需要：`);
+      addLine(`1. 在 **LLM 配置页** 配置一个真实的 API（如 OpenAI/DeepSeek/Anthropic）`);
+      addLine(`2. 填入有效的 API Key`);
+      addLine(`3. 启用该提供商并保存`);
+      addLine(`配置完成后，我就能通过 API 调用大模型来为您生成代码了！`);
       if (skillsList) {
-        lines.push("");
-        lines.push(`已安装技能: ${installedSkills.length} 个`);
+        addLine(`已安装技能: ${installedSkills.length} 个`);
       }
     } else if (msg.includes("技能") || msg.includes("skill") || msg.includes("安装")) {
-      lines.push(`关于技能管理：`);
-      lines.push("");
+      addLine(`关于技能管理：`);
       if (skillsList) {
-        lines.push(`当前已安装 ${installedSkills.length} 个技能：`);
-        lines.push(skillsList);
+        addLine(`当前已安装 ${installedSkills.length} 个技能：`);
+        addLine(skillsList);
       } else {
-        lines.push(`当前没有安装任何技能。`);
+        addLine(`当前没有安装任何技能。`);
       }
-      lines.push("");
-      lines.push(`技能安装方式：`);
-      lines.push(`- CLI: EvoClaw skills install <路径>  `);
-      lines.push(`- API: POST /api/skills/install {"path":"..."}  `);
-      lines.push(`- 技能市场: EvoClaw skills search <关键词>  `);
+      addLine(`技能安装方式：`);
+      addLine(`- CLI: EvoClaw skills install <路径>`);
+      addLine(`- API: POST /api/skills/install {"path":"..."}`);
+      addLine(`- 技能市场: EvoClaw skills search <关键词>`);
     } else {
       const activeProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
-      lines.push(`${this.persona.masterTerm}，收到您的消息："${message}"`);
-      lines.push("");
+      addLine(`${this.persona.masterTerm}，收到您的消息："${message}"`);
       if (activeProviders.length > 0) {
-        lines.push(`${this.persona.name} 当前运行在离线模式。`);
+        addLine(`${this.persona.name} 当前运行在离线模式。`);
         const provNames = activeProviders.map((p) => `${p.name}(${p.model})`).join(", ");
-        lines.push(`已配置 ${activeProviders.length} 个LLM提供商: ${provNames}，但调用均未成功。`);
+        addLine(`已配置 ${activeProviders.length} 个LLM提供商: ${provNames}，但调用均未成功。`);
       } else {
-        lines.push(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
+        addLine(`${this.persona.name} 当前运行在 ${this.config.provider} 的 ${this.config.model} 模型下。`);
       }
       if (skillsList) {
-        lines.push("");
-        lines.push(`已安装技能 (${installedSkills.length} 个):`);
-        lines.push(skillsList);
-        lines.push("");
-        lines.push(`输入 "你能做什么" 了解更多功能。`);
+        addLine(`已安装技能 (${installedSkills.length} 个):`);
+        addLine(skillsList);
+        addLine(`输入 "你能做什么" 了解更多功能。`);
       } else {
-        lines.push(`暂无技能，建议先安装一些 Skill 或配置真实的 LLM API 来获得完整的 AI 对话能力。`);
+        addLine(`暂无技能，建议先安装一些 Skill 或配置真实的 LLM API 来获得完整的 AI 对话能力。`);
       }
     }
 

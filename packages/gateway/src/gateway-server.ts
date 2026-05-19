@@ -192,9 +192,11 @@ export class GatewayServer {
 
   private setupWebUI(): void {
     const webUiPath = path.resolve(__dirname, "..", "..", "..", "packages", "web-ui", "dist");
+    const userAssetsPath = path.resolve(__dirname, "..", "..", "..", "assets", "images");
 
     this.app.use(this.authProvider.webUiAuthMiddleware.bind(this.authProvider));
     this.app.use(express.static(webUiPath));
+    this.app.use("/assets/images", express.static(userAssetsPath));
     this.app.get(/^(?!\/api\/|\/health|\/live|\/ready).*/, (_req: Request, res: Response) => {
       res.sendFile(path.join(webUiPath, "index.html"));
     });

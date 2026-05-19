@@ -57,8 +57,8 @@ interface AvatarInfo {
 }
 
 const DEFAULT_AVATARS: AvatarInfo = {
-  user: "/assets/images/user.png",
-  bot: "/assets/images/favicon-32x32.png",
+  user: "assets/images/user.png",
+  bot: "assets/images/favicon-32x32.png",
   userNickname: "Me",
   botNickname: "EvoClaw小助手",
 };
@@ -372,17 +372,17 @@ export default function App() {
     return parts.join("\n");
   }
 
-  async function sendMessage() {
-    if (!message.trim() || isTyping) return;
+  async function sendMessage(text?: string) {
+    const msgToSend = (text || message).trim();
+    if (!msgToSend || isTyping) return;
 
-    const trimmed = message.trim();
     const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setChatHistory((prev) => [...prev, { role: "user", content: trimmed, time: now }]);
-    setMessage("");
+    setChatHistory((prev) => [...prev, { role: "user", content: msgToSend, time: now }]);
+    if (!text) setMessage("");
     setIsTyping(true);
 
-    if (trimmed.startsWith("/")) {
-      const slashResult = await handleSlashCommand(trimmed);
+    if (msgToSend.startsWith("/")) {
+      const slashResult = await handleSlashCommand(msgToSend);
       setIsTyping(false);
       if (slashResult !== null) {
         const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -392,11 +392,15 @@ export default function App() {
       setIsTyping(true);
     }
 
+    await callChatAPI(msgToSend);
+  }
+
+  async function callChatAPI(text: string) {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed, sessionId: "web-ui" }),
+        body: JSON.stringify({ message: text, sessionId: "web-ui" }),
       });
 
       const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -436,7 +440,7 @@ export default function App() {
     setIsTyping(false);
   }
 
-  async function approvePermission(requestId: string, whitelist: boolean) {
+  async function approvePermission(requestId: string, whitelist: boolean): Promise<boolean> {
     try {
       const res = await fetch("/api/permission/approve", {
         method: "POST",
@@ -449,16 +453,34 @@ export default function App() {
           const remaining = msg.permissionRequests.filter((p) => p.id !== requestId);
           return { ...msg, permissionRequests: remaining.length > 0 ? remaining : undefined };
         }));
-        const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        const label = whitelist ? "已加入白名单，永久授权" : "本次已授权";
-        setChatHistory((prev) => [...prev, {
-          role: "bot",
-          content: `✅ 权限请求已处理：${label}。请重新发送指令继续操作。`,
-          time: now,
-        }]);
+        return true;
       }
+      return false;
     } catch {
       console.warn("Failed to approve permission");
+      return false;
+    }
+  }
+
+  async function approveAllAndResend(whitelist: boolean) {
+    const lastBot = [...chatHistory].reverse().find((m) => m.role === "bot" && m.permissionRequests && m.permissionRequests.length > 0);
+    const perms = lastBot?.permissionRequests;
+    if (!perms || perms.length === 0) return;
+
+    const results = await Promise.all(perms.map((pr: PermissionRequestInfo) => approvePermission(pr.id, whitelist)));
+    if (results.some(Boolean)) {
+      const label = whitelist ? "已加入白名单，永久授权" : "本次已授权";
+      const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setChatHistory((prev) => [...prev, {
+        role: "system",
+        content: `✅ 权限请求已处理：${label}。正在自动继续执行...`,
+        time: now,
+      }]);
+
+      const lastUserMsg = chatHistory.filter((m) => m.role === "user").pop();
+      if (lastUserMsg) {
+        setTimeout(() => callChatAPI(lastUserMsg.content), 300);
+      }
     }
   }
 
@@ -819,13 +841,13 @@ export default function App() {
                     <div style={s.permissionActions}>
                       <button
                         style={s.permissionBtnApprove}
-                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => approvePermission(pr.id, false))}
+                        onClick={() => approveAllAndResend(false)}
                       >
                         本次授权
                       </button>
                       <button
                         style={s.permissionBtnWhitelist}
-                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => approvePermission(pr.id, true))}
+                        onClick={() => approveAllAndResend(true)}
                       >
                         加入白名单
                       </button>
@@ -872,7 +894,7 @@ export default function App() {
               <div style={s.slashHint}>
                 💡 Type <b>/help</b> for commands · <b>/clear</b> to reset
               </div>
-              <button style={{ ...s.sendButton, opacity: isTyping ? 0.5 : 1 }} onClick={sendMessage} disabled={isTyping}>
+              <button style={{ ...s.sendButton, opacity: isTyping ? 0.5 : 1 }} onClick={() => sendMessage()} disabled={isTyping}>
                 {isTyping ? "Thinking..." : "Send"}
               </button>
             </div>
