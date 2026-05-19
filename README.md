@@ -1,13 +1,13 @@
-![EcoClaw Logo](assets/images/android-chrome-512x512.png)
+![EvoClaw Logo](assets/images/evoclaw-400-100.png)
 
-<h1 align="center">EcoClaw</h1>
+<h1 align="center">EvoClaw</h1>
 
 <p align="center">
   <strong>具备增强式自我进化能力的下一代自主智能体操作系统</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.2-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.4.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -45,15 +45,15 @@
 
 ## 项目简介
 
-**EcoClaw**（进化龙虾）是一个具备增强式自我进化能力的下一代自主智能体系统。它不仅仅是一个 AI Agent 框架，更是一个能够**自我观察、自我诊断、自我优化、自我进化**的完整智能体运行时环境。
+**EvoClaw**（进化龙虾）是一个具备增强式自我进化能力的下一代自主智能体系统。它不仅仅是一个 AI Agent 框架，更是一个能够**自我观察、自我诊断、自我优化、自我进化**的完整智能体运行时环境。
 
-EcoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一生都在不断蜕皮生长，不会被环境所束缚。EcoClaw 同样具备这种**持续进化**的能力：通过内置的进化引擎，系统能够从任务执行失败、用户反馈、使用模式等多个维度收集经验，并自动生成改进方案，实现智能体的自主迭代升级。
+EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一生都在不断蜕皮生长，不会被环境所束缚。EvoClaw 同样具备这种**持续进化**的能力：通过内置的进化引擎，系统能够从任务执行失败、用户反馈、使用模式等多个维度收集经验，并自动生成改进方案，实现智能体的自主迭代升级。
 
 ### 名字由来
 
 > **Evo** = Evolution（进化） + **Claw** = 龙虾之钳
 
-龙虾的钳子既是它捕食的工具，也是它防御的武器。EcoClaw 以此为名，寓意系统既具备强大的**任务执行能力（钳子）**，又拥有持续的**自我进化能力（蜕皮）**。
+龙虾的钳子既是它捕食的工具，也是它防御的武器。EvoClaw 以此为名，寓意系统既具备强大的**任务执行能力（钳子）**，又拥有持续的**自我进化能力（蜕皮）**。
 
 ***
 
@@ -104,12 +104,21 @@ EcoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 - **知识图谱**: 结构化关系网络
 - **向量记忆**: 基于语义相似度的检索
 
-### 🖥️ 多界面交互
+### 🔄 智能 Agent Loop
 
-- **Web 仪表盘**: 功能完善的可视化管理界面
+- **错误分类与恢复**: 自动识别 context_overflow / rate_limit / auth / billing 等 7 种错误类型，触发不同恢复路径
+- **自动 Compaction**: 接近上下文限制时自动压缩对话历史，保留关键摘要
+- **会话持久化**: JSONL 格式的会话记录，支持跨重启恢复
+- **Provider 故障转移**: LLM 提供商出错时自动轮换到下一个配置
+
+### 🖥️ 增强式 Web 控制台
+
+- **系统仪表盘**: 实时 Health / Sessions / Providers / Skills Overview 总览，30s 自动刷新
+- **Bootstrap 编辑器**: 在线编辑 AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md
+- **对话增强**: 打字指示器、Token 消耗统计、错误类型可视化
+- **Web 仪表盘**: 9 个功能标签页的完整可视化管理界面
 - **CLI 命令行**: 涵盖 30+ 子命令的完整终端工具
 - **斜杠命令**: Web Chat 内置的快捷指令系统
-- **IDE 桥接**: 支持 ACP 协议与 VSCode/Cursor 等 IDE 集成
 
 ***
 
@@ -117,7 +126,7 @@ EcoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        EcoClaw Server                        │
+│                        EvoClaw Server                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────┐  ┌──────────┐  ┌───────────┐  ┌────────────┐  │
 │  │ Gateway │  │   Web UI  │  │    CLI    │  │  IDE Bridge │  │
@@ -177,12 +186,12 @@ EcoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 ## 项目结构
 
 ```
-EcoClaw/
+EvoClaw/
 ├── apps/                          # 应用程序
 │   ├── cli/                       # CLI 命令行工具
 │   │   └── src/index.ts           # 30+ 子命令的完整 CLI 实现
 │   └── server/                    # 主服务器入口
-│       └── src/index.ts           # EcoClawServer 启动与编排
+│       └── src/index.ts           # EvoClawServer 启动与编排
 │
 ├── packages/                      # 核心包 (Monorepo)
 │   ├── core/                      # 核心类型与基础设施
@@ -208,7 +217,15 @@ EcoClaw/
 │   │       ├── dag-executor.ts    # DAG 执行器
 │   │       ├── dynamic-dag-builder.ts # 动态 DAG 构建
 │   │       ├── task-orchestrator.ts   # 任务编排器
-│   │       └── agent-model-executor.ts # 模型执行器
+│   │       ├── task-planner.ts        # 任务规划器 (6 种项目模板)
+│   │       ├── agent-model-executor.ts # 模型执行器 (Agent Loop)
+│   │       ├── system-prompt.ts       # 模块化 System Prompt 构建器
+│   │       └── error-classifier.ts    # LLM 错误分类与恢复路径
+│   │
+│   ├── intelligence/              # 智能决策系统
+│   │   └── src/
+│   │       ├── task-classifier.ts     # 10 类意图分类器
+│   │       └── skill-orchestrator.ts  # DAG 多技能编排器
 │   │
 │   ├── evolution/                 # 进化引擎
 │   │   └── src/
@@ -264,14 +281,27 @@ EcoClaw/
 │   │       ├── filesystem-manager.ts # 文件系统管理
 │   │       └── process-manager.ts # 进程管理
 │   │
+├── packages/                      # 智能功能包
+│   ├── email/                     # 邮件服务
+│   │   └── src/email-client.ts    # NodeMailer 邮件客户端
+│   ├── scheduler/                 # 定时调度
+│   │   └── src/schedule-manager.ts # Cron 定时任务管理
+│   └── reporting/                 # 报告生成
+│       └── src/report-generator.ts # HTML 报告生成
+
 │   └── web-ui/                    # Web 仪表盘
 │       └── src/
-│           ├── App.tsx            # 主应用 (Chat/Skills/Services/Evolution)
+│           ├── App.tsx            # 主应用 (9 标签页)
+│           ├── Dashboard.tsx      # 系统仪表盘
+│           ├── BootstrapEditor.tsx # Bootstrap 文件编辑器
 │           ├── main.tsx           # React 入口
 │           ├── CLITerminal.tsx    # 内嵌 CLI 终端
 │           ├── ChannelConfig.tsx  # 频道配置
 │           ├── EvolutionDashboard.tsx # 进化仪表盘
-│           └── LLMConfig.tsx      # LLM 配置界面
+│           ├── LLMConfig.tsx      # LLM 配置界面
+│           ├── SkillsConfig.tsx   # 技能配置界面
+│           ├── theme.ts           # 主题系统 (深色/浅色)
+│           └── highlight.ts       # 代码高亮
 │
 ├── examples/                      # 示例 Skill
 │   └── weather-reporter.SKILL.md  # 天气查询 Skill 示例
@@ -318,8 +348,8 @@ EcoClaw/
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/chydroid/EcoClaw.git
-cd EcoClaw
+git clone https://github.com/chydroid/EvoClaw.git
+cd EvoClaw
 ```
 
 ### 2. 安装依赖
@@ -338,20 +368,20 @@ cp .env.example .env
 
 ```env
 # 服务器配置
-ECOCLAW_PORT=17788
-ECOCLAW_HOST=0.0.0.0
+EvoClaw_PORT=17788
+EvoClaw_HOST=0.0.0.0
 
 # JWT 密钥 (生产环境务必改为至少16位随机字符串!)
 JWT_SECRET=change-me-to-a-random-secret-min-16-chars
 
 # 进化引擎
-ECOCLAW_EVOLUTION_ENABLED=true
+EvoClaw_EVOLUTION_ENABLED=true
 
 # MCP 协议
-ECOCLAW_MCP_ENABLED=true
+EvoClaw_MCP_ENABLED=true
 
 # REST API
-ECOCLAW_REST_ENABLED=true
+EvoClaw_REST_ENABLED=true
 ```
 
 ### 4. 构建项目
@@ -379,27 +409,27 @@ start.bat
 
 ```
 ============================================
-  EcoClaw v0.2.0 - Self-Evolving Agent OS
+  EvoClaw v0.2.0 - Self-Evolving Agent OS
 ============================================
 
-[EcoClaw] Starting all services...
-[EcoClaw] Gateway server starting...
-[EcoClaw] Agent pool initialized
-[EcoClaw] Skill manager ready
-[EcoClaw] Evolution engine online
-[EcoClaw] Memory hub active
-[EcoClaw] Security governor engaged
-[EcoClaw] Audit center online
-[EcoClaw] Tenant manager ready
-[EcoClaw] Self-healing monitor starting...
+[EvoClaw] Starting all services...
+[EvoClaw] Gateway server starting...
+[EvoClaw] Agent pool initialized
+[EvoClaw] Skill manager ready
+[EvoClaw] Evolution engine online
+[EvoClaw] Memory hub active
+[EvoClaw] Security governor engaged
+[EvoClaw] Audit center online
+[EvoClaw] Tenant manager ready
+[EvoClaw] Self-healing monitor starting...
 
-[EcoClaw] All systems ready!
+[EvoClaw] All systems ready!
 ============================================
 ```
 
 ### 6. 打开 Web 仪表盘
 
-在浏览器中访问 `http://localhost:17788 `即可进入 EcoClaw Web 管理界面。
+在浏览器中访问 `http://localhost:17788 `即可进入 EvoClaw Web 管理界面。
 
 ### 7. 使用 CLI
 
@@ -408,32 +438,32 @@ start.bat
 pnpm cli --help
 
 # 方式二：全局安装后直接使用
-ecoclaw --help
-ecoclaw setup
-ecoclaw health
+EvoClaw --help
+EvoClaw setup
+EvoClaw health
 ```
 
 ***
 
 ## 配置说明
 
-EcoClaw采用**环境变量 + Web UI 双层配置**体系：
+EvoClaw采用**环境变量 + Web UI 双层配置**体系：
 
 | 配置层       | 存储位置      | 管理方式                   | 适用场景                  |
 | --------- | --------- | ---------------------- | --------------------- |
-| **环境变量**  | `.env` 文件 | 手动编辑 / `ecoclaw setup` | 服务器端口、密钥、功能开关         |
+| **环境变量**  | `.env` 文件 | 手动编辑 / `EvoClaw setup` | 服务器端口、密钥、功能开关         |
 | **运行时配置** | 服务器内存     | Web UI → LLM 标签        | LLM API Key、模型选择、频道配置 |
 
 ### 关键环境变量
 
 | 变量                          | 默认值       | 说明                  |
 | --------------------------- | --------- | ------------------- |
-| `ECOCLAW_PORT`              | `3000`    | 服务器监听端口             |
-| `ECOCLAW_HOST`              | `0.0.0.0` | 绑定地址                |
+| `EvoClaw_PORT`              | `3000`    | 服务器监听端口             |
+| `EvoClaw_HOST`              | `0.0.0.0` | 绑定地址                |
 | `JWT_SECRET`                | -         | JWT 签名密钥 (生产环境必须修改) |
-| `ECOCLAW_EVOLUTION_ENABLED` | `true`    | 是否启用进化引擎            |
-| `ECOCLAW_MCP_ENABLED`       | `true`    | 是否启用 MCP 协议         |
-| `ECOCLAW_REST_ENABLED`      | `true`    | 是否启用 REST API       |
+| `EvoClaw_EVOLUTION_ENABLED` | `true`    | 是否启用进化引擎            |
+| `EvoClaw_MCP_ENABLED`       | `true`    | 是否启用 MCP 协议         |
+| `EvoClaw_REST_ENABLED`      | `true`    | 是否启用 REST API       |
 
 ### LLM 配置
 
@@ -450,83 +480,83 @@ EcoClaw采用**环境变量 + Web UI 双层配置**体系：
 
 ### 命令行界面 (CLI)
 
-EcoClaw 提供了丰富的 CLI 命令，涵盖系统管理的各个方面。
+EvoClaw 提供了丰富的 CLI 命令，涵盖系统管理的各个方面。
 
 #### 安装与入门
 
 ```bash
-ecoclaw setup              # 创建基础配置和工作区
-ecoclaw onboard            # 完整引导式入门流程
-ecoclaw dashboard          # 打开 Web 仪表盘
-ecoclaw doctor [--fix]     # 系统诊断与自检
+EvoClaw setup              # 创建基础配置和工作区
+EvoClaw onboard            # 完整引导式入门流程
+EvoClaw dashboard          # 打开 Web 仪表盘
+EvoClaw doctor [--fix]     # 系统诊断与自检
 ```
 
 #### 健康与状态
 
 ```bash
-ecoclaw health [--json]    # 健康检查
-ecoclaw status [--all]     # 运行状态
-ecoclaw sessions           # 会话管理
+EvoClaw health [--json]    # 健康检查
+EvoClaw status [--all]     # 运行状态
+EvoClaw sessions           # 会话管理
 ```
 
 #### 智能体与消息
 
 ```bash
-ecoclaw agent -m <msg>     # 运行 Agent
-ecoclaw agents list        # 管理 Agent 列表
-ecoclaw message send       # 发送消息
+EvoClaw agent -m <msg>     # 运行 Agent
+EvoClaw agents list        # 管理 Agent 列表
+EvoClaw message send       # 发送消息
 ```
 
 #### 技能管理
 
 ```bash
-ecoclaw skills search <q>  # 搜索 Skill
-ecoclaw skills install <s> # 安装 Skill
-ecoclaw skills list        # 列出已安装 Skill
-ecoclaw skills update      # 更新 Skill
+EvoClaw skills search <q>  # 搜索 Skill
+EvoClaw skills install <s> # 安装 Skill
+EvoClaw skills list        # 列出已安装 Skill
+EvoClaw skills update      # 更新 Skill
 ```
 
 #### 模型管理
 
 ```bash
-ecoclaw models list        # 列出可用模型
-ecoclaw models set <id>    # 切换默认模型
-ecoclaw models scan        # 扫描可用模型
-ecoclaw models auth        # API Key 认证管理
+EvoClaw models list        # 列出可用模型
+EvoClaw models set <id>    # 切换默认模型
+EvoClaw models scan        # 扫描可用模型
+EvoClaw models auth        # API Key 认证管理
 ```
 
 #### 网关与系统
 
 ```bash
-ecoclaw gateway start      # 启动网关
-ecoclaw gateway status     # 网关状态
-ecoclaw logs [--follow]    # 查看日志
-ecoclaw system events      # 系统事件
+EvoClaw gateway start      # 启动网关
+EvoClaw gateway status     # 网关状态
+EvoClaw logs [--follow]    # 查看日志
+EvoClaw system events      # 系统事件
 ```
 
 #### 频道与安全
 
 ```bash
-ecoclaw channels list      # 频道管理
-ecoclaw security audit     # 安全审计
-ecoclaw secrets list       # 密钥管理
-ecoclaw approvals get      # 执行审批
+EvoClaw channels list      # 频道管理
+EvoClaw security audit     # 安全审计
+EvoClaw secrets list       # 密钥管理
+EvoClaw approvals get      # 执行审批
 ```
 
 #### 定时任务与自动化
 
 ```bash
-ecoclaw cron list          # 定时任务列表
-ecoclaw cron add           # 添加定时任务
-ecoclaw webhooks gmail     # Webhook 管理
+EvoClaw cron list          # 定时任务列表
+EvoClaw cron add           # 添加定时任务
+EvoClaw webhooks gmail     # Webhook 管理
 ```
 
 #### 插件与 MCP
 
 ```bash
-ecoclaw plugins list       # 插件列表
-ecoclaw plugins install    # 安装插件
-ecoclaw mcp list           # MCP 服务器列表
+EvoClaw plugins list       # 插件列表
+EvoClaw plugins install    # 安装插件
+EvoClaw mcp list           # MCP 服务器列表
 ```
 
 ### Web 仪表盘
@@ -535,8 +565,10 @@ Web 仪表盘提供了直观的可视化管理界面，包含以下功能标签:
 
 | 标签            | 功能                                |
 | ------------- | --------------------------------- |
-| **Chat**      | 对话式 AI 交互，支持斜杠命令 (`/help` 查看所有命令) |
+| **Chat**      | 对话式 AI 交互，支持打字指示器、Token 统计、错误类型显示 |
+| **Dashboard** | 系统仪表盘：Health / Sessions / Providers / Skills / Bootstrap |
 | **Skills**    | 已安装技能列表，包含成功率统计与技能市场入口            |
+| **Bootstrap** | 在线编辑 AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md |
 | **Services**  | 所有已注册服务运行状态实时监控                   |
 | **Evolution** | 进化引擎仪表盘，查看进化周期与任务                 |
 | **LLM**       | LLM 模型配置、API Key 管理               |
@@ -561,7 +593,7 @@ Web 仪表盘提供了直观的可视化管理界面，包含以下功能标签:
 
 ### REST API
 
-EcoClaw 通过统一的 RESTful API 暴露所有功能:
+EvoClaw 通过统一的 RESTful API 暴露所有功能:
 
 | 端点                         | 方法   | 说明        |
 | -------------------------- | ---- | --------- |
@@ -582,7 +614,7 @@ EcoClaw 通过统一的 RESTful API 暴露所有功能:
 
 ### 智能体系统 (Agent)
 
-智能体系统是 EcoClaw 的任务执行核心，负责接收、拆解、调度和执行各类任务。
+智能体系统是 EvoClaw 的任务执行核心，负责接收、拆解、调度和执行各类任务。
 
 #### Actor 并发模型
 
@@ -633,7 +665,7 @@ Task: "分析财报并生成报告"
 name: weather-reporter
 version: 1.2.0
 description: Fetch and report weather information
-author: EcoClaw Team
+author: EvoClaw Team
 triggers:
   - type: keyword
     pattern: "weather|temperature|forecast"
@@ -690,14 +722,14 @@ Install → Activate → Execute → Deactivate → Update → Uninstall
 - 🇨🇳 **国内镜像**: [cn.clawhub-mirror.com](https://cn.clawhub-mirror.com)
 
 ```bash
-ecoclaw skills search "weather"
-ecoclaw skills install weather-reporter
-ecoclaw skills list
+EvoClaw skills search "weather"
+EvoClaw skills install weather-reporter
+EvoClaw skills list
 ````
 
 ### 进化引擎 (Evolution)
 
-进化引擎是 EcoClaw 最核心的差异化能力，实现了 AI 系统的自主进化。
+进化引擎是 EvoClaw 最核心的差异化能力，实现了 AI 系统的自主进化。
 
 #### 进化循环流水线
 
@@ -761,9 +793,9 @@ Performance   ──┘              └────┬─────┘
 | **知识图谱** | 图数据库  | 持久化  | 关系遍历     |
 
 ```bash
-ecoclaw memory status        # 记忆状态
-ecoclaw memory search <q>    # 语义搜索
-ecoclaw memory index --force # 重建索引
+EvoClaw memory status        # 记忆状态
+EvoClaw memory search <q>    # 语义搜索
+EvoClaw memory index --force # 重建索引
 ```
 
 ### 安全治理 (Security)
@@ -779,8 +811,8 @@ ecoclaw memory index --force # 重建索引
 | **SelfHealingManager** | 运行时故障自愈   |
 
 ```bash
-ecoclaw security audit --deep   # 深度安全审计
-ecoclaw security audit --fix    # 自动修复安全问题
+EvoClaw security audit --deep   # 深度安全审计
+EvoClaw security audit --fix    # 自动修复安全问题
 ```
 
 ***
@@ -826,15 +858,19 @@ packages:
 | 包名                        | npm 名称                    | 说明        |
 | ------------------------- | ------------------------- | --------- |
 | `packages/core`           | `@evoclaw/core`           | 核心类型与基础设施 |
-| `packages/agent`          | `@evoclaw/agent`          | 智能体引擎     |
+| `packages/agent`          | `@evoclaw/agent`          | 智能体引擎 + System Prompt + 错误分类 |
+| `packages/intelligence`   | `@evoclaw/intelligence`   | 意图分类 + 多技能编排 |
 | `packages/evolution`      | `@evoclaw/evolution`      | 进化引擎      |
 | `packages/memory`         | `@evoclaw/memory`         | 记忆系统      |
 | `packages/skills`         | `@evoclaw/skills`         | 技能系统      |
 | `packages/security`       | `@evoclaw/security`       | 安全治理      |
 | `packages/gateway`        | `@evoclaw/gateway`        | 网关服务      |
 | `packages/infrastructure` | `@evoclaw/infrastructure` | 基础设施      |
-| `packages/web-ui`         | `@evoclaw/web-ui`         | Web 仪表盘   |
-| `apps/cli`                | `@evoclaw/cli`            | CLI 工具    |
+| `packages/email`          | `@evoclaw/email`          | 邮件客户端     |
+| `packages/scheduler`      | `@evoclaw/scheduler`      | 定时调度      |
+| `packages/reporting`      | `@evoclaw/reporting`      | 报告生成      |
+| `packages/web-ui`         | `@evoclaw/web-ui`         | Web 仪表盘    |
+| `apps/cli`                | `@evoclaw/cli`            | CLI 工具     |
 | `apps/server`             | `@evoclaw/server`         | 服务器入口     |
 
 ### 添加新 Skill
@@ -893,6 +929,7 @@ pnpm --filter @evoclaw/evolution test
 - `packages/core/src/event-bus.test.ts`
 - `packages/core/src/service-registry.test.ts`
 - `packages/core/src/config.test.ts`
+- `packages/agent/src/error-classifier.test.ts`
 - `packages/evolution/src/evolution-engine.test.ts`
 - `packages/evolution/src/genetic-engine.test.ts`
 - `packages/memory/src/short-term-memory.test.ts`
@@ -974,9 +1011,9 @@ git push origin feature/my-feature
 ***
 
 <p align="center">
-  <sub>Made with 🦞 by the EcoClaw Team</sub>
+  <sub>Made with 🦞 by the EvoClaw Team</sub>
 </p>
 
 <p align="center">
-  <sub>龙虾蜕壳，终成大器。EcoClaw 永不止步于进化之路。</sub>
+  <sub>龙虾蜕壳，终成大器。EvoClaw 永不止步于进化之路。</sub>
 </p>

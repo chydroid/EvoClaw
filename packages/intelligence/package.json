@@ -2,7 +2,7 @@
   "name": "@evoclaw/intelligence",
   "version": "0.1.0",
   "private": true,
-  "description": "EcoClaw 智能层 - 任务分类/技能编排/项目规划",
+  "description": "EvoClaw 智能层 - 任务分类/技能编排/项目规划",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

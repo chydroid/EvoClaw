@@ -20,7 +20,7 @@ const MAX_HISTORY = 50;
 const HISTORY_KEY = "evoclaw_cli_history";
 
 const COMMAND_COMPLETIONS: Record<string, string[]> = {
-  ecoclaw: [
+  EvoClaw: [
     "setup", "onboard", "configure", "config", "doctor", "dashboard", "completion",
     "health", "status", "sessions",
     "agent", "agents", "message", "acp",
@@ -95,7 +95,7 @@ const GLOBAL_FLAGS = ["--help", "--version", "--json", "--no-color", "--dev", "-
 
 function getCompletions(input: string): string[] {
   const trimmed = input.trim();
-  if (!trimmed || !trimmed.startsWith("ecoclaw")) return [];
+  if (!trimmed || !trimmed.startsWith("EvoClaw")) return [];
 
   const parts = trimmed.split(/\s+/);
   if (parts.length === 0) return [];
@@ -108,7 +108,7 @@ function getCompletions(input: string): string[] {
   }
 
   if (parts.length === 2) {
-    return (COMMAND_COMPLETIONS.ecoclaw || []).filter((c) => c.startsWith(lastPart));
+    return (COMMAND_COMPLETIONS.EvoClaw || []).filter((c) => c.startsWith(lastPart));
   }
 
   if (parts.length === 3 || parts.length >= 3) {
@@ -192,9 +192,9 @@ const OS_HINTS: Record<string, string> = {
 
 export const CLITerminal: React.FC = () => {
   const [entries, setEntries] = useState<CliEntry[]>(() => [
-    { id: 0, type: "info", text: "EcoClaw CLI Terminal v0.3.4" },
+    { id: 0, type: "info", text: "EvoClaw CLI Terminal v0.3.4" },
     { id: 1, type: "info", text: `${OS_HINTS[detectOS()] || ""}` },
-    { id: 2, type: "info", text: 'Type "ecoclaw --help" to get started. Up/Down for history, Tab for autocomplete.' },
+    { id: 2, type: "info", text: 'Type "EvoClaw --help" to get started. Up/Down for history, Tab for autocomplete.' },
     { id: 3, type: "info", text: "" },
   ]);
   const [input, setInput] = useState("");
@@ -239,8 +239,8 @@ export const CLITerminal: React.FC = () => {
   const executeCommand = useCallback(async (cmd: string) => {
     if (!cmd.trim() || running) return;
     const fullCmd = cmd.trim();
-    if (!fullCmd.startsWith("ecoclaw ")) {
-      addEntry({ type: "error", text: `Error: Commands must start with "ecoclaw". Try "ecoclaw --help"` });
+    if (!fullCmd.startsWith("EvoClaw ")) {
+      addEntry({ type: "error", text: `Error: Commands must start with "EvoClaw". Try "EvoClaw --help"` });
       return;
     }
 
@@ -299,7 +299,7 @@ export const CLITerminal: React.FC = () => {
           const parts = input.trim().split(/\s+/);
           parts[parts.length - 1] = completion;
           const prefix = input.trimEnd().split(/\s+/).slice(0, -1).join(" ") + " ";
-          const newInput = parts.length > 1 ? prefix + parts.slice(1).join(" ") : "ecoclaw " + completion;
+          const newInput = parts.length > 1 ? prefix + parts.slice(1).join(" ") : "EvoClaw " + completion;
           setInput(newInput);
           setShowCompletions(null);
         }
@@ -358,7 +358,7 @@ export const CLITerminal: React.FC = () => {
         const parts = input.trim().split(/\s+/);
         parts[parts.length - 1] = completions[0];
         const prefix = input.trimEnd().split(/\s+/).slice(0, -1).join(" ") + " ";
-        const newInput = parts.length > 1 ? prefix + parts.slice(1).join(" ") : "ecoclaw " + completions[0];
+        const newInput = parts.length > 1 ? prefix + parts.slice(1).join(" ") : "EvoClaw " + completions[0];
         setInput(newInput);
         setShowCompletions(null);
       } else {
@@ -368,7 +368,7 @@ export const CLITerminal: React.FC = () => {
           const parts = input.trim().split(/\s+/);
           parts[parts.length - 1] = common;
           const commonPrefix = input.trimEnd().split(/\s+/).slice(0, -1).join(" ") + " ";
-          setInput(commonPrefix + parts.slice(1).join(" ") || "ecoclaw " + common);
+          setInput(commonPrefix + parts.slice(1).join(" ") || "EvoClaw " + common);
         }
         setShowCompletions({ list: completions, selected: 0 });
       }
@@ -412,7 +412,7 @@ export const CLITerminal: React.FC = () => {
   const clearTerminal = () => {
     setEntries([
       { id: entryIdRef.current++, type: "info", text: "Terminal cleared" },
-      { id: entryIdRef.current++, type: "info", text: 'Type "ecoclaw --help" to start' },
+      { id: entryIdRef.current++, type: "info", text: 'Type "EvoClaw --help" to start' },
     ]);
   };
 
@@ -583,7 +583,7 @@ export const CLITerminal: React.FC = () => {
 
       <div style={styles.header}>
         <span style={styles.headerTitle}>
-          🦞 EcoClaw CLI Terminal
+          🦞 EvoClaw CLI Terminal
           <span style={{ color: "#8B949E", marginLeft: "8px", fontWeight: 400 }}>
             v0.3.4 — {osPlatform}
           </span>
@@ -651,7 +651,7 @@ export const CLITerminal: React.FC = () => {
                 e.preventDefault();
                 const parts = input.trim().split(/\s+/);
                 parts[parts.length - 1] = item;
-                setInput(parts.join(" ") || "ecoclaw " + item);
+                setInput(parts.join(" ") || "EvoClaw " + item);
                 setShowCompletions(null);
                 inputRef.current?.focus();
               }}
@@ -691,7 +691,7 @@ export const CLITerminal: React.FC = () => {
       )}
 
       <div style={styles.inputArea}>
-        <span style={styles.prompt}>ecoclaw $</span>
+        <span style={styles.prompt}>EvoClaw $</span>
         <input
           ref={inputRef}
           style={styles.inputField}
@@ -699,7 +699,7 @@ export const CLITerminal: React.FC = () => {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={running ? "Running..." : 'ecoclaw --help'}
+          placeholder={running ? "Running..." : 'EvoClaw --help'}
           disabled={running}
           autoComplete="off"
           spellCheck={false}

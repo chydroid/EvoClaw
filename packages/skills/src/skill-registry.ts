@@ -63,7 +63,7 @@ export class SkillRegistry {
 
   private static readonly CACHE_TTL = 300000;
 
-  readonly name = "EcoClaw Skill Registry";
+  readonly name = "EvoClaw Skill Registry";
 
   constructor(
     private registry: ServiceRegistry,
@@ -323,7 +323,7 @@ export class SkillRegistry {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "EcoClaw/0.1.0",
+      "User-Agent": "EvoClaw/0.1.0",
     };
 
     if (remote.authToken) {

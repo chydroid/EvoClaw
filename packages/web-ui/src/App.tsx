@@ -4,6 +4,8 @@ import LLMConfig from "./LLMConfig";
 import ChannelConfigPage from "./ChannelConfig";
 import SkillsConfig from "./SkillsConfig";
 import { CLITerminal } from "./CLITerminal";
+import Dashboard from "./Dashboard";
+import BootstrapEditor from "./BootstrapEditor";
 import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
 import { htmlEscape, highlightCode } from "./highlight";
 
@@ -31,10 +33,13 @@ interface Skill {
 }
 
 interface ChatMessage {
-  role: "user" | "bot";
+  role: "user" | "bot" | "system";
   content: string;
   time: string;
   permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>;
+  errorType?: string;
+  tokensUsed?: number;
+  duration?: number;
 }
 
 interface PermissionRequestInfo {
@@ -55,11 +60,11 @@ const DEFAULT_AVATARS: AvatarInfo = {
   user: "/assets/images/user.png",
   bot: "/assets/images/favicon-32x32.png",
   userNickname: "Me",
-  botNickname: "EcoClaw小助手",
+  botNickname: "EvoClaw小助手",
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"chat" | "skills" | "services" | "evolution" | "llm" | "channels" | "cli">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "dashboard" | "skills" | "services" | "evolution" | "llm" | "channels" | "cli" | "bootstrap">("chat");
   const [message, setMessage] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -73,6 +78,7 @@ export default function App() {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [currentTheme, setCurrentTheme] = useState<ThemeDefinition>(() => getThemeById(getStoredThemeId()));
   const [showThemePicker, setShowThemePicker] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -97,7 +103,7 @@ export default function App() {
   }, [currentTheme]);
 
   useEffect(() => {
-    const styleId = "ecoclaw-code-styles";
+    const styleId = "EvoClaw-code-styles";
     if (document.getElementById(styleId)) return;
 
     const style = document.createElement("style");
@@ -167,6 +173,11 @@ export default function App() {
       .code-builtin { color: #ffa657; }
       .code-type { color: #7ee787; }
       .code-code { color: #c9d1d9; }
+
+      @keyframes EvoClaw-typing-bounce {
+        0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+        30% { transform: translateY(-6px); opacity: 1; }
+      }
     `;
     document.head.appendChild(style);
   }, []);
@@ -362,20 +373,23 @@ export default function App() {
   }
 
   async function sendMessage() {
-    if (!message.trim()) return;
+    if (!message.trim() || isTyping) return;
 
     const trimmed = message.trim();
     const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatHistory((prev) => [...prev, { role: "user", content: trimmed, time: now }]);
+    setMessage("");
+    setIsTyping(true);
 
     if (trimmed.startsWith("/")) {
       const slashResult = await handleSlashCommand(trimmed);
+      setIsTyping(false);
       if (slashResult !== null) {
         const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         setChatHistory((prev) => [...prev, { role: "bot", content: slashResult, time: botNow }]);
-        setMessage("");
         return;
       }
+      setIsTyping(true);
     }
 
     try {
@@ -385,23 +399,41 @@ export default function App() {
         body: JSON.stringify({ message: trimmed, sessionId: "web-ui" }),
       });
 
+      const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
       if (res.ok) {
         const data = await res.json();
         const reply = data.reply || "No response";
         const perms: PermissionRequestInfo[] = data.permissionRequests || [];
-        const botNow = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         setChatHistory((prev) => [
           ...prev,
-          { role: "bot", content: reply, time: botNow, permissionRequests: perms.length > 0 ? perms : undefined },
+          {
+            role: "bot",
+            content: reply,
+            time: botNow,
+            permissionRequests: perms.length > 0 ? perms : undefined,
+            tokensUsed: data.tokensUsed,
+            duration: data.duration,
+          },
         ]);
       } else {
-        setChatHistory((prev) => [...prev, { role: "bot", content: "Server returned an error", time: now }]);
+        const errText = await res.text().catch(() => "");
+        const errorMsg = errText ? `Server error: ${errText.slice(0, 200)}` : `Server returned status ${res.status}`;
+        setChatHistory((prev) => [
+          ...prev,
+          { role: "system", content: errorMsg, time: botNow, errorType: `HTTP ${res.status}` },
+        ]);
       }
-    } catch {
-      setChatHistory((prev) => [...prev, { role: "bot", content: "Unable to connect to server", time: now }]);
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? `Connection error: ${err.message}` : "Unable to connect to server";
+      const now2 = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setChatHistory((prev) => [
+        ...prev,
+        { role: "system", content: errorMsg, time: now2, errorType: "Network" },
+      ]);
     }
 
-    setMessage("");
+    setIsTyping(false);
   }
 
   async function approvePermission(requestId: string, whitelist: boolean) {
@@ -538,7 +570,7 @@ export default function App() {
     return (
       <div style={s.container}>
         <div style={s.loadingScreen}>
-          <h2 style={{ color: "#a78bfa" }}>EcoClaw</h2>
+          <h2 style={{ color: "#a78bfa" }}>EvoClaw</h2>
           <p style={{ color: "#888" }}>Connecting...</p>
         </div>
       </div>
@@ -550,8 +582,8 @@ export default function App() {
       <div style={s.container}>
         <header style={s.header}>
           <div style={s.headerLeft}>
-            <img src="/android-chrome-192x192.png" alt="EcoClaw" style={s.logo} />
-            <h1 style={s.title}>EcoClaw</h1>
+            <img src="/android-chrome-192x192.png" alt="EvoClaw" style={s.logo} />
+            <h1 style={s.title}>EvoClaw</h1>
           </div>
         </header>
         <div style={s.authScreen}>
@@ -586,8 +618,8 @@ export default function App() {
     <div style={s.container}>
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <img src="/android-chrome-192x192.png" alt="EcoClaw" style={s.logo} />
-          <h1 style={s.title}>EcoClaw</h1>
+          <img src="/android-chrome-192x192.png" alt="EvoClaw" style={s.logo} />
+          <h1 style={s.title}>EvoClaw</h1>
         </div>
         <div style={s.headerRight}>
           <div style={s.themePicker}>
@@ -682,12 +714,14 @@ export default function App() {
       )}
 
       <nav style={s.tabs}>
-        <button style={tabStyle(activeTab === "chat")} onClick={() => setActiveTab("chat")}>Chat</button>
-        <button style={tabStyle(activeTab === "skills")} onClick={() => setActiveTab("skills")}>Skills ({skills.length})</button>
-        <button style={tabStyle(activeTab === "services")} onClick={() => setActiveTab("services")}>Services ({services.length})</button>
-        <button style={tabStyle(activeTab === "evolution")} onClick={() => setActiveTab("evolution")}>Evolution</button>
-        <button style={tabStyle(activeTab === "llm")} onClick={() => setActiveTab("llm")}>LLM</button>
-        <button style={tabStyle(activeTab === "channels")} onClick={() => setActiveTab("channels")}>Channels</button>
+        <button style={tabStyle(activeTab === "chat")} onClick={() => setActiveTab("chat")}>💬 Chat</button>
+        <button style={tabStyle(activeTab === "dashboard")} onClick={() => setActiveTab("dashboard")}>📊 Dashboard</button>
+        <button style={tabStyle(activeTab === "skills")} onClick={() => setActiveTab("skills")}>🧩 Skills ({skills.length})</button>
+        <button style={tabStyle(activeTab === "bootstrap")} onClick={() => setActiveTab("bootstrap")}>📄 Bootstrap</button>
+        <button style={tabStyle(activeTab === "services")} onClick={() => setActiveTab("services")}>⚙️ Services</button>
+        <button style={tabStyle(activeTab === "evolution")} onClick={() => setActiveTab("evolution")}>📈 Evolution</button>
+        <button style={tabStyle(activeTab === "llm")} onClick={() => setActiveTab("llm")}>🧠 LLM</button>
+        <button style={tabStyle(activeTab === "channels")} onClick={() => setActiveTab("channels")}>📡 Channels</button>
         <button style={tabStyle(activeTab === "cli")} onClick={() => setActiveTab("cli")}>🖥 CLI</button>
       </nav>
 
@@ -699,12 +733,12 @@ export default function App() {
                 <div style={s.welcomeScreen}>
                   <div style={s.welcomeCard}>
                     <img src={avatars.bot} style={s.welcomeAvatar} alt="bot" />
-                    <h2 style={{ color: "#a78bfa", marginTop: "12px", marginBottom: "4px" }}>EcoClaw</h2>
+                    <h2 style={{ color: "#a78bfa", marginTop: "12px", marginBottom: "4px" }}>EvoClaw</h2>
                     <p style={{ color: "#888", fontSize: "14px", marginBottom: "16px" }}>
                       Self-Evolving Agent OS
                     </p>
                     <p style={{ color: "#aaa", fontSize: "13px", lineHeight: "1.6", maxWidth: "400px" }}>
-                      Send a message to start chatting. EcoClaw can help with tasks, run skills, and evolve through learning.
+                      Send a message to start chatting. EvoClaw can help with tasks, run skills, and evolve through learning.
                     </p>
                     <p style={{ color: "#666", fontSize: "11px", marginTop: "12px" }}>
                       Type <b>/help</b> for commands
@@ -712,28 +746,51 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                chatHistory.map((msg, i) => (
-                  <div key={i} style={msg.role === "user" ? s.msgRowUser : s.msgRowBot}>
-                    {msg.role === "bot" && (
+                chatHistory.map((msg, i) => {
+                  const isSystemMsg = msg.role === "system";
+                  const isUserMsg = msg.role === "user";
+                  return (
+                  <div key={i} style={isSystemMsg ? s.msgRowSystem : (isUserMsg ? s.msgRowUser : s.msgRowBot)}>
+                    {!isUserMsg && (
                       <img
-                        src={avatars.bot}
-                        style={s.msgAvatar}
-                        alt="bot"
+                        src={isSystemMsg ? "/assets/images/favicon-32x32.png" : avatars.bot}
+                        style={{ ...s.msgAvatar, opacity: isSystemMsg ? 0.6 : 1 }}
+                        alt={isSystemMsg ? "system" : "bot"}
                       />
                     )}
-                    <div style={msg.role === "user" ? s.msgContentUser : s.msgContentBot}>
-                      <div style={{ ...s.msgHeader, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
+                    <div style={isUserMsg ? s.msgContentUser : s.msgContentBot}>
+                      <div style={{ ...s.msgHeader, justifyContent: isUserMsg ? "flex-end" : "flex-start" }}>
                         <span style={s.msgName}>
-                          {msg.role === "user" ? avatars.userNickname : avatars.botNickname}
+                          {isUserMsg ? avatars.userNickname : isSystemMsg ? "System" : avatars.botNickname}
                         </span>
                         <span style={s.msgTime}>{msg.time}</span>
                       </div>
                       <div
-                        style={msg.role === "user" ? s.userBubble : s.botBubble}
-                        dangerouslySetInnerHTML={{ __html: formatReply(msg.content) }}
+                        style={isUserMsg ? s.userBubble : (isSystemMsg ? s.systemBubble : s.botBubble)}
+                        dangerouslySetInnerHTML={{
+                          __html: isSystemMsg ? formatReply(msg.content) : formatReply(msg.content),
+                        }}
                       />
+                      {msg.errorType && (
+                        <div style={{
+                          fontSize: "10px", color: "#ef4444", marginTop: "2px",
+                          padding: "2px 6px", borderRadius: "4px",
+                          background: "#ef444410", display: "inline-block",
+                        }}>
+                          ⚠️ {msg.errorType}
+                        </div>
+                      )}
+                      {(msg.tokensUsed || msg.duration) && (
+                        <div style={{
+                          fontSize: "10px", color: "var(--text-muted)", marginTop: "2px",
+                          display: "flex", gap: "10px",
+                        }}>
+                          {msg.tokensUsed !== undefined && <span>🪙 {msg.tokensUsed} tokens</span>}
+                          {msg.duration !== undefined && <span>⏱ {(msg.duration / 1000).toFixed(1)}s</span>}
+                        </div>
+                      )}
                     </div>
-                    {msg.role === "user" && (
+                    {isUserMsg && (
                       <img
                         src={avatars.user}
                         style={s.msgAvatar}
@@ -741,7 +798,8 @@ export default function App() {
                       />
                     )}
                   </div>
-                ))
+                );
+                })
               )}
               {(() => {
                 const lastBotMsg = [...chatHistory].reverse().find((m) => m.role === "bot" && m.permissionRequests && m.permissionRequests.length > 0);
@@ -781,6 +839,24 @@ export default function App() {
                   </div>
                 );
               })()}
+              {isTyping && (
+                  <div style={s.msgRowBot}>
+                    <img src={avatars.bot} style={s.msgAvatar} alt="bot" />
+                    <div style={s.msgContentBot}>
+                      <div style={s.msgHeader}>
+                        <span style={s.msgName}>{avatars.botNickname}</span>
+                      </div>
+                      <div style={{
+                        ...s.botBubble, padding: "12px 18px",
+                        display: "flex", gap: "4px", alignItems: "center",
+                      }}>
+                        <span style={s.typingDot}></span>
+                        <span style={{ ...s.typingDot, animationDelay: "0.15s" }}></span>
+                        <span style={{ ...s.typingDot, animationDelay: "0.3s" }}></span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               <div ref={chatEndRef} />
             </div>
             <div style={s.chatInput}>
@@ -789,18 +865,25 @@ export default function App() {
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message... (/help for commands)"
+                placeholder={isTyping ? "EvoClaw is thinking..." : "Type a message... (/help for commands)"}
                 rows={2}
+                disabled={isTyping}
               />
               <div style={s.slashHint}>
                 💡 Type <b>/help</b> for commands · <b>/clear</b> to reset
               </div>
-              <button style={s.sendButton} onClick={sendMessage}>Send</button>
+              <button style={{ ...s.sendButton, opacity: isTyping ? 0.5 : 1 }} onClick={sendMessage} disabled={isTyping}>
+                {isTyping ? "Thinking..." : "Send"}
+              </button>
             </div>
           </div>
         )}
 
         {activeTab === "skills" && <SkillsConfig />}
+
+        {activeTab === "dashboard" && <Dashboard />}
+
+        {activeTab === "bootstrap" && <BootstrapEditor />}
 
         {activeTab === "services" && (
           <div style={s.panel}>
@@ -991,6 +1074,18 @@ const s: Record<string, React.CSSProperties> = {
   placeholder: { padding: "40px", textAlign: "center", color: "var(--text-muted)" },
   panel: { flex: 1, padding: "20px", overflow: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
+  msgRowSystem: { display: "flex", gap: "10px", marginBottom: "12px", opacity: 0.85 },
+  systemBubble: {
+    padding: "8px 12px", borderRadius: "8px",
+    background: "var(--warning-bg)", border: "1px solid var(--warning)",
+    maxWidth: "85%", display: "inline-block",
+    fontSize: "12px", lineHeight: "1.5", whiteSpace: "pre-wrap", wordBreak: "break-word",
+  },
+  typingDot: {
+    display: "inline-block", width: "8px", height: "8px", borderRadius: "50%",
+    background: "var(--text-muted)",
+    animation: "EvoClaw-typing-bounce 1.2s infinite ease-in-out",
+  },
 };
 
 function statusBadgeStyle(status: string): React.CSSProperties {

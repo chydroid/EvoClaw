@@ -2,7 +2,7 @@
 name: weather-reporter
 version: 1.2.0
 description: Fetch and report weather information for any location
-author: EcoClaw Team
+author: EvoClaw Team
 triggers:
   - type: keyword
     pattern: "weather|temperature|forecast"

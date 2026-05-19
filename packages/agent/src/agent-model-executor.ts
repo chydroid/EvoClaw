@@ -1,4 +1,8 @@
 import { ServiceRegistry, EventBus, type DAGNode, type Skill, type SkillExecutionResult, type PersonaConfig } from "@evoclaw/core";
+import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
+import { classifyLLMError, estimateMessagesTokens, LLMErrorType, type ClassifiedError } from "./error-classifier";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface ModelConfig {
   provider: "openai" | "anthropic" | "deepseek" | "local" | "custom";
@@ -35,8 +39,8 @@ export interface ToolDefinition {
 }
 
 const DEFAULT_PERSONA: PersonaConfig = {
-  name: "EcoClaw小助手",
-  title: "您的专属EcoClaw智能助理",
+  name: "EvoClaw小助手",
+  title: "您的专属EvoClaw智能助理",
   masterTerm: "主人",
   tone: "warm",
   introduction: "",
@@ -61,6 +65,14 @@ export class AgentModelExecutor {
   }>();
   private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
   private maxHistoryLength = 20;
+  private sessionDataDir: string;
+  private sessionPersistenceEnabled = true;
+  private compactionTokenThreshold: number;
+  private autoCompactionEnabled = true;
+  private runIdCounter = 0;
+  private workspacePath: string;
+  private bootstrapFiles: Array<{ path: string; content: string }> = [];
+  private _cachedSkillNames: Set<string> = new Set();
 
   constructor(
     private registry: ServiceRegistry,
@@ -70,7 +82,177 @@ export class AgentModelExecutor {
   ) {
     this.config = { ...DEFAULT_MODEL_CONFIG, ...config };
     this.persona = { ...DEFAULT_PERSONA, ...persona };
+    this.sessionDataDir = path.resolve(process.cwd(), "data", "sessions");
+    this.workspacePath = path.resolve(process.cwd(), "data", "workspace");
+    this.compactionTokenThreshold = Math.floor((this.config.maxTokens || 4096) * 0.75);
+    this.loadBootstrapFiles();
     registry.registerService("agentModelExecutor", this);
+  }
+
+  setSessionDataDir(dir: string): void {
+    this.sessionDataDir = dir;
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
+
+  setSessionPersistence(enabled: boolean): void {
+    this.sessionPersistenceEnabled = enabled;
+  }
+
+  setAutoCompaction(enabled: boolean): void {
+    this.autoCompactionEnabled = enabled;
+  }
+
+  setCompactionTokenThreshold(tokens: number): void {
+    this.compactionTokenThreshold = tokens;
+  }
+
+  setWorkspacePath(dir: string): void {
+    this.workspacePath = dir;
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    this.loadBootstrapFiles();
+  }
+
+  getWorkspacePath(): string {
+    return this.workspacePath;
+  }
+
+  private loadBootstrapFiles(): void {
+    this.bootstrapFiles = [];
+    const fileNames = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
+    const maxFileChars = 12000;
+    let totalChars = 0;
+    const totalMaxChars = 60000;
+
+    for (const fileName of fileNames) {
+      const filePath = path.join(this.workspacePath, fileName);
+      if (!fs.existsSync(filePath)) continue;
+
+      try {
+        let content = fs.readFileSync(filePath, "utf-8").trim();
+        if (!content) continue;
+
+        if (content.length > maxFileChars) {
+          content = content.slice(0, maxFileChars) + "\n\n[Content truncated...]";
+        }
+
+        if (totalChars + content.length > totalMaxChars) {
+          const remaining = totalMaxChars - totalChars;
+          if (remaining > 100) {
+            content = content.slice(0, remaining) + "\n\n[Content truncated due to total limit...]";
+          } else {
+            break;
+          }
+        }
+
+        totalChars += content.length;
+        this.bootstrapFiles.push({ path: fileName, content });
+        console.log(`[AgentModelExecutor] Loaded bootstrap file: ${fileName} (${content.length} chars)`);
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Failed to read bootstrap file ${fileName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  getBootstrapFiles(): Array<{ path: string; content: string }> {
+    return [...this.bootstrapFiles];
+  }
+
+  private sessionFilePath(sessionId: string): string {
+    if (!fs.existsSync(this.sessionDataDir)) {
+      fs.mkdirSync(this.sessionDataDir, { recursive: true });
+    }
+    return path.join(this.sessionDataDir, `${sessionId}.jsonl`);
+  }
+
+  private persistSessionTurn(sessionId: string, role: string, content: string | null, metadata?: Record<string, unknown>): void {
+    if (!this.sessionPersistenceEnabled) return;
+    try {
+      const filePath = this.sessionFilePath(sessionId);
+      const entry = JSON.stringify({
+        role,
+        content,
+        timestamp: new Date().toISOString(),
+        ...(metadata || {}),
+      });
+      fs.appendFileSync(filePath, entry + "\n", "utf-8");
+    } catch (err) {
+      console.warn(`[AgentModelExecutor] Failed to persist session turn: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private loadSessionHistory(sessionId: string): Array<{ role: string; content: string | null }> {
+    if (!this.sessionPersistenceEnabled) return [];
+    try {
+      const filePath = this.sessionFilePath(sessionId);
+      if (!fs.existsSync(filePath)) return [];
+      const data = fs.readFileSync(filePath, "utf-8");
+      const lines = data.split("\n").filter((l) => l.trim());
+      return lines.map((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return { role: entry.role, content: entry.content };
+        } catch {
+          return null;
+        }
+      }).filter((entry): entry is { role: string; content: string | null } => entry !== null);
+    } catch (err) {
+      console.warn(`[AgentModelExecutor] Failed to load session history: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  private needsCompaction(sessionId: string, systemPrompt: string, maxTokens: number): boolean {
+    if (!this.autoCompactionEnabled) return false;
+    const history = this.conversationHistory.get(sessionId) || [];
+    const systemTokens = estimateMessagesTokens([{ role: "system", content: systemPrompt }]);
+    const historyTokens = estimateMessagesTokens(history.map((h) => ({ role: h.role, content: h.content })));
+    const totalTokens = systemTokens + historyTokens;
+    return totalTokens > this.compactionTokenThreshold;
+  }
+
+  private compactConversationHistory(sessionId: string, keepRecentTurns: number = 4): void {
+    const history = this.conversationHistory.get(sessionId);
+    if (!history || history.length <= keepRecentTurns * 2) return;
+
+    const compactNotice: Array<{ role: string; content: string | null }> = [
+      { role: "system", content: "[Previous conversation has been compacted. Key context is summarized above.]" },
+    ];
+
+    const recentEntries = history.slice(-keepRecentTurns * 2);
+    const olderEntries = history.slice(0, -(keepRecentTurns * 2));
+
+    const userMessages = olderEntries
+      .filter((e) => e.role === "user" && e.content)
+      .map((e) => e.content as string);
+
+    const assistantMessages = olderEntries
+      .filter((e) => e.role === "assistant" && e.content)
+      .map((e) => e.content as string);
+
+    let summary = "";
+    if (userMessages.length > 0 || assistantMessages.length > 0) {
+      summary = `[Compacted ${olderEntries.length} turns. `;
+      if (userMessages.length > 0) {
+        summary += `User discussed: ${userMessages.map((m) => m.slice(0, 80)).join("; ")}. `;
+      }
+      if (assistantMessages.length > 0) {
+        summary += `Assistant covered: ${assistantMessages.map((m) => m.slice(0, 80)).join("; ")}.`;
+      }
+      summary += "]";
+    }
+
+    const compacted: Array<{ role: string; content: string | null }> = [
+      ...compactNotice,
+      { role: "system", content: summary },
+      ...recentEntries,
+    ];
+
+    this.conversationHistory.set(sessionId, compacted);
+    console.log(`[AgentModelExecutor] Compacted session "${sessionId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
   }
 
   configure(config: Partial<ModelConfig>): void {
@@ -107,22 +289,78 @@ export class AgentModelExecutor {
     return { ...this.persona };
   }
 
-  buildSystemPrompt(): string {
+  buildSystemPrompt(promptMode?: PromptMode, context?: { skillsPrompt?: string; workspacePath?: string; bootstrapFiles?: Array<{ path: string; content: string }> }): string {
     const toolNames = Array.from(this.registeredTools.keys());
-    return [
-      `你是 ${this.persona.name}，${this.persona.title}。`,
-      `称呼用户为"${this.persona.masterTerm}"。`,
-      `口气风格：${this.persona.tone === "warm" ? "温暖亲切" : this.persona.tone === "professional" ? "专业严谨" : this.persona.tone === "casual" ? "轻松随和" : "幽默风趣"}。`,
-      ``,
-      `【核心规则 - 必须遵守】`,
-      `1. 当用户要求执行操作（如创建文件/文件夹、读写文件、搜索、安装技能等），你**必须调用对应的 function 工具**来真正执行，**严禁仅描述步骤而不调用工具**。`,
-      `2. 如果你只是用文字告诉用户"我会帮你做XX"但没有调用工具，那等于**什么都没做**。必须调用工具。`,
-      `3. 调用工具后，根据工具的实际返回结果报告执行情况。`,
-      `4. 对于纯知识性问题（不涉及实际操作），直接用文字回答。`,
-      ``,
-      `回答时用中文，简洁明了，友好亲切。`,
-      `如果有不确定的事情，诚实告知而不是编造。`,
-    ].join("\n");
+    const mode = promptMode || "full";
+
+    const skillNames = this.getCachedSkillNames();
+    const skillsPrompt = context?.skillsPrompt ||
+      (this.registeredTools.size > 0
+        ? buildCompactSkillsPrompt(
+            Array.from(this.registeredTools.entries())
+              .filter(([_, t]) => t.definition.description.includes("skill") || skillNames.has(t.definition.name))
+              .map(([name, t]) => ({
+                name,
+                description: t.definition.description,
+                location: `tool://${name}`,
+              }))
+          )
+        : undefined);
+
+    const workspacePath = context?.workspacePath || this.workspacePath;
+    const effectiveBootstrapFiles = context?.bootstrapFiles !== undefined ? context.bootstrapFiles : this.bootstrapFiles;
+
+    return buildAgentSystemPrompt({
+      promptMode: mode,
+      personaName: this.persona.name,
+      personaTitle: this.persona.title,
+      masterTerm: this.persona.masterTerm,
+      personaTone: this.persona.tone,
+      registeredToolNames: toolNames,
+      skillsPrompt,
+      workspacePath,
+      userTimezone: "Asia/Shanghai",
+      timeFormat: "24",
+      hostInfo: {
+        os: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version,
+      },
+      repoRoot: workspacePath,
+      bootstrapFiles: effectiveBootstrapFiles.length > 0 ? effectiveBootstrapFiles : undefined,
+    });
+  }
+
+  private async isSkillTool(name: string): Promise<boolean> {
+    const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ name: string }>> }>("skillManager");
+    if (skillManager) {
+      const skills = await skillManager.listSkills();
+      return Array.isArray(skills) && skills.some((s) => s.name === name);
+    }
+    return false;
+  }
+
+  private getCachedSkillNames(): Set<string> {
+    return this._cachedSkillNames;
+  }
+
+  async buildSkillsPromptForRun(): Promise<string> {
+    const skills: Array<{ name: string; description: string; location: string }> = [];
+    const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ id: string; name: string; description: string; installPath: string }>> }>("skillManager");
+    if (skillManager) {
+      const installed = await skillManager.listSkills();
+      if (Array.isArray(installed)) {
+        this._cachedSkillNames = new Set(installed.map((s) => s.name));
+        for (const s of installed) {
+          skills.push({
+            name: s.name,
+            description: s.description || `Execute ${s.name} skill`,
+            location: s.installPath || `skills/${s.name}/SKILL.md`,
+          });
+        }
+      }
+    }
+    return buildCompactSkillsPrompt(skills);
   }
 
   getGreeting(): string | null {
@@ -233,26 +471,30 @@ export class AgentModelExecutor {
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>
   ): Promise<{ reply: string; tokensUsed: number; duration: number; toolsExecuted: boolean } | null> {
     const MAX_TOOL_ROUNDS = 10;
+    const MAX_CONSECUTIVE_ERRORS = 3;
     let totalTokensUsed = 0;
     let anyToolExecuted = false;
 
+    const skillsPrompt = await this.buildSkillsPromptForRun();
+
     for (const provider of providers) {
+      let consecutiveErrors = 0;
+
       try {
         const history = this.conversationHistory.get(sessionId) || [];
 
-        const skillsList = installedSkills.length > 0
-          ? (installedSkills as Array<{ name: string; description: string }>)
-              .map((s) => `- ${s.name}: ${s.description || "无描述"}`)
-              .join("\n")
-          : "";
+        const fullSystemPrompt = skillsPrompt
+          ? `${systemPrompt}\n\n## Skills\nScan <available_skills>. If one clearly applies, read its SKILL.md at the exact <location> with the read tool, then follow it.\nIf several apply, choose the most specific. If none clearly apply, read none.\nOne skill up front max. Never guess or fabricate skill paths.\nExternal API writes: batch when safe, respect 429/Retry-After.\n${skillsPrompt}`
+          : systemPrompt;
+
+        if (this.needsCompaction(sessionId, fullSystemPrompt, this.config.maxTokens)) {
+          console.log(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"`);
+          this.compactConversationHistory(sessionId);
+        }
 
         const messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: fullSystemPrompt },
         ];
-
-        if (skillsList) {
-          messages.push({ role: "system", content: `已安装的技能：\n${skillsList}` });
-        }
 
         messages.push(...history);
         messages.push({ role: "user", content: message });
@@ -266,8 +508,42 @@ export class AgentModelExecutor {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           const tc: "auto" | "required" = (round === 0 && isAction) ? "required" : "auto";
           const result = await this.callLLMOnce(provider, conversationMessages, tools, tc);
-          if (!result) break;
 
+          if (!result) {
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+            continue;
+          }
+
+          const classified = result.classifiedError;
+          if (classified && classified.type !== LLMErrorType.UNKNOWN) {
+            consecutiveErrors++;
+            console.warn(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}`);
+
+            if (classified.type === LLMErrorType.CONTEXT_OVERFLOW && classified.shouldCompact) {
+              console.log(`[AgentModelExecutor] Compacting due to context overflow...`);
+              this.compactConversationHistory(sessionId);
+              conversationMessages = [
+                { role: "system", content: fullSystemPrompt },
+                ...(this.conversationHistory.get(sessionId) || []),
+                { role: "user", content: message },
+              ];
+            }
+
+            if (classified.type === LLMErrorType.RATE_LIMIT && classified.backoffMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, classified.backoffMs));
+            }
+
+            if (classified.type === LLMErrorType.AUTH || classified.type === LLMErrorType.BILLING) {
+              console.warn(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type}`);
+              break;
+            }
+
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+            continue;
+          }
+
+          consecutiveErrors = 0;
           totalTokensUsed += result.tokensUsed;
 
           const assistantMsg = result.message;
@@ -327,6 +603,9 @@ export class AgentModelExecutor {
         }
 
         if (finalReply) {
+          this.persistSessionTurn(sessionId, "user", message);
+          this.persistSessionTurn(sessionId, "assistant", finalReply, { tokensUsed: totalTokensUsed });
+
           const cleanHistory: Array<{ role: string; content: string | null }> = [
             { role: "user", content: message },
             { role: "assistant", content: finalReply },
@@ -392,7 +671,7 @@ export class AgentModelExecutor {
     messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: Array<{ type: string; function: Record<string, unknown> }>,
     toolChoice: "auto" | "required" = "auto"
-  ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number } | null> {
+  ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number; classifiedError?: ClassifiedError } | null> {
     const timeout = provider.timeout || 60000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -452,10 +731,15 @@ export class AgentModelExecutor {
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
+        const classified = classifyLLMError(response.status, errorText);
         console.warn(
-          `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: ${errorText.slice(0, 200)}`
+          `[AgentModelExecutor] LLM provider "${provider.name}" returned ${response.status}: [${classified.type}] ${errorText.slice(0, 200)}`
         );
-        return null;
+        return {
+          message: { role: "assistant", content: null },
+          tokensUsed: 0,
+          classifiedError: classified,
+        };
       }
 
       const data = await response.json() as {
@@ -487,12 +771,21 @@ export class AgentModelExecutor {
       };
     } catch (err: unknown) {
       clearTimeout(timeoutId);
+      let classified: ClassifiedError | undefined;
       if (err instanceof DOMException && err.name === "AbortError") {
-        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${timeout}ms`);
+        const msg = `LLM provider "${provider.name}" timed out after ${timeout}ms`;
+        console.warn(`[AgentModelExecutor] ${msg}`);
+        classified = classifyLLMError(undefined, undefined, msg);
       } else if (err instanceof Error) {
-        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
+        const msg = err.message;
+        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${msg}`);
+        classified = classifyLLMError(undefined, undefined, msg);
       }
-      return null;
+      return {
+        message: { role: "assistant", content: null },
+        tokensUsed: 0,
+        classifiedError: classified,
+      };
     }
   }
 
@@ -566,7 +859,7 @@ export class AgentModelExecutor {
         lines.push("");
         lines.push(`您可以通过以下方式安装技能：`);
         lines.push(`1. 准备一个 .SKILL.md 文件`);
-        lines.push(`2. 使用 CLI: ecoclaw skills install <文件路径>`);
+        lines.push(`2. 使用 CLI: EvoClaw skills install <文件路径>`);
         lines.push(`3. 或通过 API: POST /api/skills/install`);
       }
     } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
@@ -638,13 +931,13 @@ export class AgentModelExecutor {
   <main>
     <section class="hero">
       <h2>Hello World!</h2>
-      <p>这是一个由 EcoClaw 自动生成的网页。</p>
+      <p>这是一个由 EvoClaw 自动生成的网页。</p>
       <button id="greetBtn">点击问好</button>
       <p id="greeting"></p>
     </section>
   </main>
   <footer>
-    <p>&copy; 2026 My Website. Powered by EcoClaw.</p>
+    <p>&copy; 2026 My Website. Powered by EvoClaw.</p>
   </footer>
   <script src="script.js"></script>
 </body>
@@ -772,7 +1065,7 @@ document.addEventListener('DOMContentLoaded', () => {
     '你好！很高兴见到你！',
     '欢迎来到我的网页！',
     '祝你今天过得愉快！',
-    'Hello from EcoClaw! 🦞',
+    'Hello from EvoClaw! 🦞',
     '今天也是个好日子！',
   ];
 
@@ -886,9 +1179,9 @@ document.head.appendChild(style);
       }
       lines.push("");
       lines.push(`技能安装方式：`);
-      lines.push(`- CLI: ecoclaw skills install <路径>  `);
+      lines.push(`- CLI: EvoClaw skills install <路径>  `);
       lines.push(`- API: POST /api/skills/install {"path":"..."}  `);
-      lines.push(`- 技能市场: ecoclaw skills search <关键词>  `);
+      lines.push(`- 技能市场: EvoClaw skills search <关键词>  `);
     } else {
       const activeProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
       lines.push(`${this.persona.masterTerm}，收到您的消息："${message}"`);

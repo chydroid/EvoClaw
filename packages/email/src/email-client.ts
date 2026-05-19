@@ -83,7 +83,7 @@ const PROVIDER_DEFAULTS: Record<string, { smtpHost: string; smtpPort: number; im
   custom: { smtpHost: "", smtpPort: 587, imapHost: "", imapPort: 993 },
 };
 
-const ENCRYPTION_KEY = Buffer.from(process.env.ECOCLAW_EMAIL_KEY || "evoclaw-email-key-32-bytes-here!", "utf-8").subarray(0, 32);
+const ENCRYPTION_KEY = Buffer.from(process.env.EvoClaw_EMAIL_KEY || "evoclaw-email-key-32-bytes-here!", "utf-8").subarray(0, 32);
 
 export class EmailClient {
   private accounts: Map<string, EmailAccount> = new Map();

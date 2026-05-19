@@ -2,7 +2,7 @@
   "name": "@evoclaw/server",
   "version": "0.1.1",
   "private": true,
-  "description": "EcoClaw 主服务入口 - 组装各层并启动系统",
+  "description": "EvoClaw 主服务入口 - 组装各层并启动系统",
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",

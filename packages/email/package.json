@@ -2,7 +2,7 @@
   "name": "@evoclaw/email",
   "version": "0.1.0",
   "private": true,
-  "description": "EcoClaw Email 邮件模块 - IMAP收信/SMTP发信/邮件分析",
+  "description": "EvoClaw Email 邮件模块 - IMAP收信/SMTP发信/邮件分析",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

@@ -57,7 +57,7 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
   private sseClients: Set<{ write: (data: string) => void; end: () => void }> = new Set();
 
   private serverInfo = {
-    name: "EcoClaw MCP Server",
+    name: "EvoClaw MCP Server",
     version: "0.1.0",
   };
 
@@ -357,7 +357,7 @@ export class MCPStdioTransport extends EventEmitter implements MCPTransportImpl 
   private readHandler: ((data: string) => void) | null = null;
 
   private serverInfo = {
-    name: "EcoClaw MCP Server",
+    name: "EvoClaw MCP Server",
     version: "0.1.0",
   };
 

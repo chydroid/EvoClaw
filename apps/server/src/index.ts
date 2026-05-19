@@ -21,7 +21,7 @@ import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
 import type { ClassificationResult, OrchestrationPlan } from "@evoclaw/intelligence";
 import * as fs from "fs";
 
-export class EcoClawServer {
+export class EvoClawServer {
   private registry: ServiceRegistry;
   private eventBus: EventBus;
   private configManager: ConfigManager;
@@ -109,30 +109,44 @@ export class EcoClawServer {
 
   async start(): Promise<void> {
     console.log("============================================");
-    console.log("  EcoClaw v0.4.0 - Self-Evolving Agent OS");
+    console.log("  EvoClaw v0.4.0 - Self-Evolving Agent OS");
     console.log("============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
 
-    console.log("\n[EcoClaw] Starting all services...");
+    console.log("\n[EvoClaw] Starting all services...");
 
-    console.log("[EcoClaw] Gateway server starting...");
+    console.log("[EvoClaw] Gateway server starting...");
     await this.gateway.start();
 
-    console.log("[EcoClaw] Loading persisted configuration...");
+    console.log("[EvoClaw] Loading persisted configuration...");
     this.gateway.loadPersistedConfig();
 
-    console.log("[EcoClaw] Agent pool starting...");
-    console.log("[EcoClaw] Agent pool initialized");
+    console.log("[EvoClaw] Agent pool starting...");
+    console.log("[EvoClaw] Agent pool initialized");
 
-    console.log("[EcoClaw] Skill manager starting...");
-    console.log("[EcoClaw] Skill manager ready");
+    console.log("[EvoClaw] Skill manager starting...");
+    console.log("[EvoClaw] Skill manager ready");
 
     const skillsDir = path.resolve(__dirname, "..", "..", "..", "skills");
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
     this.skillManager.startAutoScan(skillsDir, 30000);
+
+    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+    if (!fs.existsSync(workspaceDir)) {
+      fs.mkdirSync(workspaceDir, { recursive: true });
+    }
+    const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
+    for (const fileName of bootstrapFiles) {
+      const fpath = path.join(workspaceDir, fileName);
+      if (!fs.existsSync(fpath)) {
+        fs.writeFileSync(fpath, `# ${fileName.replace(".md", "")}\n\nSee ${workspaceDir}/${fileName} for documentation.\n`, "utf-8");
+      }
+    }
+    this.agentModelExecutor.setWorkspacePath(workspaceDir);
+    console.log(`[EvoClaw] Workspace initialized at ${workspaceDir}`);
 
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
@@ -151,19 +165,19 @@ export class EcoClawServer {
 
     this.scheduleManager.start();
 
-    console.log("[EcoClaw] Evolution engine starting...");
-    console.log("[EcoClaw] Evolution engine online");
+    console.log("[EvoClaw] Evolution engine starting...");
+    console.log("[EvoClaw] Evolution engine online");
 
-    console.log("[EcoClaw] Memory hub starting...");
-    console.log("[EcoClaw] Memory hub active");
+    console.log("[EvoClaw] Memory hub starting...");
+    console.log("[EvoClaw] Memory hub active");
 
-    console.log("[EcoClaw] Security governor engaged");
-    console.log("[EcoClaw] Audit center online");
+    console.log("[EvoClaw] Security governor engaged");
+    console.log("[EvoClaw] Audit center online");
 
-    console.log("[EcoClaw] Tenant manager starting...");
-    console.log("[EcoClaw] Tenant manager ready");
+    console.log("[EvoClaw] Tenant manager starting...");
+    console.log("[EvoClaw] Tenant manager ready");
 
-    console.log("[EcoClaw] Self-healing monitor starting...");
+    console.log("[EvoClaw] Self-healing monitor starting...");
     this.selfHealing.start();
 
     this.tenantManager.createTenant("default", {
@@ -176,8 +190,8 @@ export class EcoClawServer {
       serviceCount: this.registry.getRegisteredServices().length,
     }, "server");
 
-    console.log("\n[EcoClaw] All systems ready!");
-    console.log("[EcoClaw] Registered services:", this.registry.getRegisteredServices().join(", "));
+    console.log("\n[EvoClaw] All systems ready!");
+    console.log("[EvoClaw] Registered services:", this.registry.getRegisteredServices().join(", "));
     console.log("\n============================================\n");
 
     this.eventBus.subscribe("system.shutdown", async () => {
@@ -185,36 +199,36 @@ export class EcoClawServer {
     });
 
     process.on("SIGINT", async () => {
-      console.log("[EcoClaw] Received SIGINT");
+      console.log("[EvoClaw] Received SIGINT");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("SIGTERM", async () => {
-      console.log("[EcoClaw] Received SIGTERM");
+      console.log("[EvoClaw] Received SIGTERM");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("uncaughtException", (err) => {
-      console.error("[EcoClaw] Uncaught exception:", err.message);
+      console.error("[EvoClaw] Uncaught exception:", err.message);
       process.exit(1);
     });
 
     process.on("unhandledRejection", (reason) => {
-      console.error("[EcoClaw] Unhandled rejection:", reason);
+      console.error("[EvoClaw] Unhandled rejection:", reason);
     });
   }
 
   async shutdown(): Promise<void> {
-    console.log("[EcoClaw] Shutting down...");
+    console.log("[EvoClaw] Shutting down...");
     this.selfHealing.stop();
     this.scheduleManager.stop();
     await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
     await this.processManager.killAll();
     await this.gateway.stop();
     await this.registry.stopAll();
-    console.log("[EcoClaw] Goodbye!");
+    console.log("[EvoClaw] Goodbye!");
   }
 
   private registerFileTools(): void {
@@ -1460,12 +1474,12 @@ export class EcoClawServer {
 }
 
 async function main(): Promise<void> {
-  const server = new EcoClawServer();
+  const server = new EvoClawServer();
   await server.start();
 }
 
 main().catch((err) => {
-  console.error("[EcoClaw] Failed to start:", err);
+  console.error("[EvoClaw] Failed to start:", err);
   process.exit(1);
 });
 

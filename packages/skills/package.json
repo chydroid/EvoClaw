@@ -2,7 +2,7 @@
   "name": "@evoclaw/skills",
   "version": "0.1.1",
   "private": true,
-  "description": "EcoClaw Skills 能力层 - 技能市场、运行沙箱、执行引擎、SKILL.md解析",
+  "description": "EvoClaw Skills 能力层 - 技能市场、运行沙箱、执行引擎、SKILL.md解析",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

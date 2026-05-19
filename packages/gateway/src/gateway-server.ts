@@ -19,8 +19,8 @@ export interface GatewayConfig {
 }
 
 const DEFAULT_CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173").split(",").map((s) => s.trim());
-const DEFAULT_PORT = parseInt(process.env.ECOCLAW_PORT || "3000", 10);
-const DEFAULT_HOST = process.env.ECOCLAW_HOST || "0.0.0.0";
+const DEFAULT_PORT = parseInt(process.env.EvoClaw_PORT || "3000", 10);
+const DEFAULT_HOST = process.env.EvoClaw_HOST || "0.0.0.0";
 
 export class GatewayServer {
   private app: Express;
@@ -74,7 +74,7 @@ export class GatewayServer {
 
     const { port, host } = this.config;
     this.server = this.app.listen(port, host, () => {
-      console.log(`[Gateway] EcoClaw Gateway listening on http://${host}:${port}`);
+      console.log(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}`);
       this.eventBus.publish("system.ready", { port, host }, "gateway").catch((err) => { console.debug("[Gateway] Event publish error:", err); });
     });
   }
@@ -147,7 +147,7 @@ export class GatewayServer {
     this.app.get("/health", (_req: Request, res: Response) => {
       res.json({
         status: "ok",
-        version: "0.2.0",
+        version: "0.4.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
       });
@@ -156,7 +156,7 @@ export class GatewayServer {
     this.app.get("/api/health", (_req: Request, res: Response) => {
       res.json({
         status: "ok",
-        version: "0.2.0",
+        version: "0.4.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
       });

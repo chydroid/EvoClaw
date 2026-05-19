@@ -2,7 +2,7 @@
   "name": "@evoclaw/agent",
   "version": "0.1.0",
   "private": true,
-  "description": "EcoClaw Agent 调度层 - 任务编排、多代理协同、状态机驱动",
+  "description": "EvoClaw Agent 调度层 - 任务编排、多代理协同、状态机驱动",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

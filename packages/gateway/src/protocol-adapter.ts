@@ -44,14 +44,14 @@ function validateCliCommand(input: string): { valid: boolean; reason?: string } 
     }
   }
 
-  if (!trimmed.startsWith("ecoclaw ")) return { valid: false, reason: 'Commands must start with "ecoclaw" (e.g. ecoclaw --help)' };
+  if (!trimmed.startsWith("EvoClaw ")) return { valid: false, reason: 'Commands must start with "EvoClaw" (e.g. EvoClaw --help)' };
 
   return { valid: true };
 }
 
 function executeCliCommand(command: string): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const args = command.replace(/^ecoclaw\s*/, "").trim().split(/\s+/).filter(Boolean);
+    const args = command.replace(/^EvoClaw\s*/, "").trim().split(/\s+/).filter(Boolean);
 
     const childProcess = spawn("node", [CLI_SCRIPT_PATH, ...args], {
       windowsHide: true,
@@ -702,8 +702,8 @@ export class ProtocolAdapter {
         }>("agentModelExecutor");
         if (!executor) {
           res.json({
-            greeting: "您好主人！我是 EcoClaw小助手 您的专属EcoClaw智能助理 🦞\n\n很高兴为您服务！有什么需要，随时吩咐我！",
-            name: "EcoClaw小助手",
+            greeting: "您好主人！我是 EvoClaw小助手 您的专属EvoClaw智能助理 🦞\n\n很高兴为您服务！有什么需要，随时吩咐我！",
+            name: "EvoClaw小助手",
             masterTerm: "主人",
             isFirstSession: true,
           });

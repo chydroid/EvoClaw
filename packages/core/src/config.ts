@@ -84,11 +84,11 @@ export const defaultConfig: AppConfig = {
     rateLimitMax: 100,
   },
   persona: {
-    name: "EcoClaw小助手",
-    title: "您的专属EcoClaw智能助理",
+    name: "EvoClaw小助手",
+    title: "您的专属EvoClaw智能助理",
     masterTerm: "主人",
     tone: "warm",
-    introduction: `您好主人！我是 EcoClaw小助手，您的专属EcoClaw智能助理 🦞
+    introduction: `您好主人！我是 EvoClaw小助手，您的专属EvoClaw智能助理 🦞
 
 很高兴为您服务！以下是我能帮您做的事情：
 
@@ -187,11 +187,11 @@ export class ConfigManager {
   }
 
   loadFromEnv(): void {
-    const port = parseInt(process.env.ECOCLAW_PORT || "", 10);
+    const port = parseInt(process.env.EvoClaw_PORT || "", 10);
     if (!isNaN(port) && port > 0 && port <= 65535) {
       this.config.server.port = port;
     }
-    const host = process.env.ECOCLAW_HOST;
+    const host = process.env.EvoClaw_HOST;
     if (host && host.length > 0) {
       this.config.server.host = host;
     }
@@ -199,9 +199,9 @@ export class ConfigManager {
     if (jwtSecret && jwtSecret.length >= 16) {
       this.config.auth.jwtSecret = jwtSecret;
     }
-    this.config.evolution.enabled = process.env.ECOCLAW_EVOLUTION_ENABLED !== "false";
-    this.config.gateway.enableMCP = process.env.ECOCLAW_MCP_ENABLED !== "false";
-    this.config.gateway.enableREST = process.env.ECOCLAW_REST_ENABLED !== "false";
+    this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
+    this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";
+    this.config.gateway.enableREST = process.env.EvoClaw_REST_ENABLED !== "false";
   }
 
   private deepMerge(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {

@@ -33,7 +33,7 @@ export interface FormData {
 
 export class BrowserController {
   private cookies: Map<string, string> = new Map();
-  private userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 EcoClaw/1.0";
+  private userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 EvoClaw/1.0";
   private currentPage: NavigationResult | null = null;
   private tabs: Map<string, NavigationResult> = new Map();
   private activeTabId: string = "default";

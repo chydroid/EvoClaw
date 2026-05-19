@@ -177,7 +177,7 @@ export const THEMES: ThemeDefinition[] = [
   { id: "light-clean", name: "Light Clean", type: "light", colors: THEME_LIGHT_CLEAN },
 ];
 
-const THEME_STORAGE_KEY = "ecoclaw-theme";
+const THEME_STORAGE_KEY = "EvoClaw-theme";
 
 export function getStoredThemeId(): string {
   try {

@@ -72,7 +72,7 @@ const CHANNEL_TEMPLATES: ChannelTemplate[] = [
     icon: "💬",
     description: "Personal WeChat integration via Bridge",
     setupGuide: [
-      "1. Install the EcoClaw WeChat Bridge on a dedicated device",
+      "1. Install the EvoClaw WeChat Bridge on a dedicated device",
       "2. Scan QR code to login to your WeChat account",
       "3. Configure the bridge WebSocket connection URL",
       "4. Set message handling rules and auto-reply templates",
@@ -93,8 +93,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "",
-    botName: "EcoClaw Bot",
-    welcomeMessage: "Hello! I'm EcoClaw, your AI assistant.",
+    botName: "EvoClaw Bot",
+    welcomeMessage: "Hello! I'm EvoClaw, your AI assistant.",
     allowedUsers: [],
     allowedGroups: [],
     features: {
@@ -117,8 +117,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "",
-    botName: "EcoClaw Bot",
-    welcomeMessage: "Hello! I'm EcoClaw, your AI assistant.",
+    botName: "EvoClaw Bot",
+    welcomeMessage: "Hello! I'm EvoClaw, your AI assistant.",
     allowedUsers: [],
     allowedGroups: [],
     features: {
@@ -141,8 +141,8 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
     verificationToken: "",
     encryptKey: "",
     webhookUrl: "ws://localhost:8765",
-    botName: "EcoClaw",
-    welcomeMessage: "Hi, EcoClaw is online!",
+    botName: "EvoClaw",
+    welcomeMessage: "Hi, EvoClaw is online!",
     allowedUsers: [],
     allowedGroups: [],
     features: {
