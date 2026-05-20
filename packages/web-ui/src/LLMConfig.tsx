@@ -232,8 +232,8 @@ export default function LLMConfig() {
         {statusMsg && (
           <div style={{
             ...s.statusBanner,
-            background: statusMsg.includes("success") ? "#064e3b" : "#4a1515",
-            color: statusMsg.includes("success") ? "#34d399" : "#f87171",
+            background: statusMsg.includes("success") ? "var(--success-bg)" : "var(--error-bg)",
+            color: statusMsg.includes("success") ? "var(--success)" : "var(--error)",
           }}>
             {statusMsg}
           </div>
@@ -250,8 +250,8 @@ export default function LLMConfig() {
               key={p.id}
               style={{
                 ...s.sidebarItem,
-                background: activeProvider === p.id ? "#2d1b4e" : "transparent",
-                borderColor: activeProvider === p.id ? "#7c3aed" : "transparent",
+                background: activeProvider === p.id ? "var(--accent-bg)" : "transparent",
+                borderColor: activeProvider === p.id ? "var(--accent)" : "transparent",
               }}
               onClick={() => setActiveProvider(p.id)}
             >
@@ -261,7 +261,7 @@ export default function LLMConfig() {
                   <div style={s.providerName}>
                     <span style={{
                       ...s.enabledDot,
-                      background: p.enabled ? "#22c55e" : "#555",
+                      background: p.enabled ? "var(--success)" : "var(--text-muted)",
                     }} />
                     {p.name}
                   </div>
@@ -336,7 +336,7 @@ export default function LLMConfig() {
                   />
                   <span style={{
                     ...s.toggleTrack,
-                    background: currentProvider.enabled ? "#7c3aed" : "#444",
+                    background: currentProvider.enabled ? "var(--accent)" : "#444",
                   }}>
                     <span style={{
                       ...s.toggleThumb,
@@ -456,19 +456,19 @@ const s: Record<string, React.CSSProperties> = {
   container: { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" },
   header: {
     display: "flex", alignItems: "center", gap: "12px",
-    padding: "16px 20px 12px", borderBottom: "1px solid #2a2a3a",
+    padding: "16px 20px 12px", borderBottom: "1px solid var(--border)",
   },
-  title: { margin: 0, fontSize: "18px", color: "#a78bfa", fontWeight: 600, flex: 1 as const },
+  title: { margin: 0, fontSize: "18px", color: "var(--section-title-color)", fontWeight: 600, flex: 1 as const },
   saveBtn: {
     padding: "8px 18px", borderRadius: "8px", border: "none",
-    background: "#7c3aed", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "13px",
+    background: "var(--accent)", color: "#fff", cursor: "pointer", fontWeight: "bold", fontSize: "13px",
   },
   statusBanner: {
     padding: "6px 14px", borderRadius: "6px", fontSize: "12px", fontWeight: 500,
   },
   body: { display: "flex", flex: 1, overflow: "hidden" },
   sidebar: {
-    width: "260px", borderRight: "1px solid #2a2a3a",
+    width: "260px", borderRight: "1px solid var(--border)",
     overflow: "auto", padding: "8px", flexShrink: 0,
     display: "flex", flexDirection: "column",
   },
@@ -476,7 +476,7 @@ const s: Record<string, React.CSSProperties> = {
     width: "4px", cursor: "col-resize", background: "transparent",
     flexShrink: 0, transition: "background 0.2s",
     userSelect: "none" as const,
-    borderLeft: "1px solid #2a2a3a",
+    borderLeft: "1px solid var(--border)",
   },
   sidebarItem: {
     padding: "10px 12px", borderRadius: "8px", cursor: "pointer",
@@ -488,68 +488,68 @@ const s: Record<string, React.CSSProperties> = {
   },
   orderBadge: {
     width: "22px", height: "22px", borderRadius: "50%",
-    background: "#2d1b4e", color: "#a78bfa",
+    background: "var(--accent-bg)", color: "var(--section-title-color)",
     display: "flex", alignItems: "center", justifyContent: "center",
     fontSize: "10px", fontWeight: "bold", flexShrink: 0,
-    border: "1px solid #7c3aed",
+    border: "1px solid var(--accent)",
   },
   providerName: {
-    fontSize: "14px", fontWeight: "bold", color: "#e0e0e0",
+    fontSize: "14px", fontWeight: "bold", color: "var(--text-primary)",
     display: "flex", alignItems: "center", gap: "8px",
   },
   enabledDot: {
     width: "8px", height: "8px", borderRadius: "50%", display: "inline-block",
   },
-  modelPreview: { fontSize: "11px", color: "#888", marginTop: "4px" },
+  modelPreview: { fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px" },
   orderBtns: {
     display: "flex", flexDirection: "column", gap: "2px",
   },
   orderBtn: {
     padding: "0px 4px", fontSize: "8px", cursor: "pointer",
-    background: "transparent", border: "1px solid #3a3a4a",
-    borderRadius: "3px", color: "#888", lineHeight: "14px",
+    background: "transparent", border: "1px solid var(--input-border)",
+    borderRadius: "3px", color: "var(--text-secondary)", lineHeight: "14px",
   },
   deleteBtn: {
     padding: "0px 4px", fontSize: "8px", cursor: "pointer",
     background: "transparent", border: "1px solid #5a1a1a",
-    borderRadius: "3px", color: "#f87171", lineHeight: "14px",
+    borderRadius: "3px", color: "var(--error)", lineHeight: "14px",
     marginTop: "2px",
   },
   addBtnWrap: {
     marginTop: "auto", paddingTop: "8px",
-    borderTop: "1px solid #2a2a3a",
+    borderTop: "1px solid var(--border)",
   },
   addProviderBtn: {
     width: "100%", padding: "8px", borderRadius: "6px",
-    background: "transparent", border: "1px dashed #7c3aed",
-    color: "#7c3aed", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
+    background: "transparent", border: "1px dashed var(--accent)",
+    color: "var(--accent)", cursor: "pointer", fontSize: "13px", fontWeight: "bold",
   },
   content: { flex: 1, minWidth: 0, overflow: "auto", padding: "20px" },
   form: { width: "100%", minWidth: 0 },
   formGroup: { marginBottom: "18px" },
   label: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
-    fontSize: "13px", fontWeight: "bold", color: "#ccc", marginBottom: "6px",
+    fontSize: "13px", fontWeight: "bold", color: "var(--text-primary)", marginBottom: "6px",
   },
   input: {
     width: "400px", padding: "8px 12px", borderRadius: "6px",
-    border: "1px solid #3a3a4a", background: "#1a1a2e",
-    color: "#e0e0e0", fontSize: "14px",
+    border: "1px solid var(--input-border)", background: "var(--bg-sidebar)",
+    color: "var(--text-primary)", fontSize: "14px",
     boxSizing: "border-box" as const,
   },
   orderDisplay: {
     display: "flex", alignItems: "center", gap: "10px",
   },
   orderNum: {
-    fontSize: "20px", fontWeight: "bold", color: "#7c3aed",
-    background: "#2d1b4e", padding: "4px 12px", borderRadius: "6px",
-    border: "1px solid #7c3aed",
+    fontSize: "20px", fontWeight: "bold", color: "var(--accent)",
+    background: "var(--accent-bg)", padding: "4px 12px", borderRadius: "6px",
+    border: "1px solid var(--accent)",
   },
   orderHint: {
-    fontSize: "12px", color: "#888",
+    fontSize: "12px", color: "var(--text-secondary)",
   },
-  slider: { width: "100%", accentColor: "#7c3aed" },
-  divider: { height: "1px", background: "#2a2a3a", margin: "20px 0" },
+  slider: { width: "100%", accentColor: "var(--accent)" },
+  divider: { height: "1px", background: "var(--border)", margin: "20px 0" },
   toggle: { display: "inline-flex", cursor: "pointer" },
   checkbox: { display: "none" },
   toggleTrack: {
@@ -561,7 +561,7 @@ const s: Record<string, React.CSSProperties> = {
     transition: "margin-left 0.2s",
   },
   addModelBtn: {
-    padding: "2px 8px", borderRadius: "4px", border: "1px solid #7c3aed",
-    background: "transparent", color: "#7c3aed", cursor: "pointer", fontSize: "11px",
+    padding: "2px 8px", borderRadius: "4px", border: "1px solid var(--accent)",
+    background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: "11px",
   },
 };

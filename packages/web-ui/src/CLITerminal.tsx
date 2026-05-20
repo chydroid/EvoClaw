@@ -421,8 +421,8 @@ export const CLITerminal: React.FC = () => {
       display: "flex",
       flexDirection: "column",
       height: "100%",
-      backgroundColor: "#0D1117",
-      color: "#E0E0E0",
+      backgroundColor: "var(--bg-primary)",
+      color: "var(--text-primary)",
       fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace",
       fontSize: "13px",
       lineHeight: "1.5",
@@ -432,13 +432,13 @@ export const CLITerminal: React.FC = () => {
       justifyContent: "space-between",
       alignItems: "center",
       padding: "6px 12px",
-      backgroundColor: "#161B22",
-      borderBottom: "1px solid #21262D",
+      backgroundColor: "var(--bg-secondary)",
+      borderBottom: "1px solid var(--border)",
       flexShrink: 0,
     },
     headerTitle: {
       fontWeight: 600,
-      color: "#E0E0E0",
+      color: "var(--text-primary)",
       fontSize: "12px",
     },
     headerActions: {
@@ -448,8 +448,8 @@ export const CLITerminal: React.FC = () => {
     },
     headerBtn: {
       background: "none",
-      border: "1px solid #30363D",
-      color: "#8B949E",
+      border: "1px solid var(--border)",
+      color: "var(--text-secondary)",
       padding: "2px 8px",
       borderRadius: "4px",
       cursor: "pointer",
@@ -460,7 +460,7 @@ export const CLITerminal: React.FC = () => {
       flex: 1,
       overflowY: "auto",
       padding: "8px 12px",
-      backgroundColor: "#0D1117",
+      backgroundColor: "var(--bg-primary)",
     },
     entry: {
       whiteSpace: "pre-wrap",
@@ -468,28 +468,28 @@ export const CLITerminal: React.FC = () => {
       marginBottom: "1px",
     },
     infoEntry: {
-      color: "#8B949E",
+      color: "var(--text-secondary)",
     },
     errorEntry: {
-      color: "#E23D2D",
+      color: "var(--error)",
     },
     inputEntry: {
       color: "#FF7A3D",
     },
     outputEntry: {
-      color: "#E0E0E0",
+      color: "var(--text-primary)",
     },
     inputArea: {
       display: "flex",
       alignItems: "center",
       padding: "6px 12px",
-      backgroundColor: "#161B22",
-      borderTop: "1px solid #21262D",
+      backgroundColor: "var(--bg-secondary)",
+      borderTop: "1px solid var(--border)",
       flexShrink: 0,
       position: "relative" as const,
     },
     prompt: {
-      color: "#2FBF71",
+      color: "var(--success)",
       fontWeight: 600,
       marginRight: "6px",
       whiteSpace: "nowrap" as const,
@@ -500,7 +500,7 @@ export const CLITerminal: React.FC = () => {
       flex: 1,
       background: "transparent",
       border: "none",
-      color: "#E0E0E0",
+      color: "var(--text-primary)",
       fontFamily: "inherit",
       fontSize: "13px",
       outline: "none",
@@ -511,7 +511,7 @@ export const CLITerminal: React.FC = () => {
       width: "8px",
       height: "8px",
       borderRadius: "50%",
-      backgroundColor: "#FFB020",
+      backgroundColor: "var(--warning)",
       marginLeft: "8px",
       animation: "evoclaw-pulse 1s ease-in-out infinite",
     },
@@ -522,8 +522,8 @@ export const CLITerminal: React.FC = () => {
       right: "12px",
       maxHeight: "200px",
       overflowY: "auto",
-      backgroundColor: "#161B22",
-      border: "1px solid #30363D",
+      backgroundColor: "var(--bg-secondary)",
+      border: "1px solid var(--border)",
       borderRadius: "6px 6px 0 0",
       boxShadow: "0 -4px 12px rgba(0,0,0,0.5)",
       zIndex: 100,
@@ -531,12 +531,12 @@ export const CLITerminal: React.FC = () => {
     historyItem: {
       padding: "4px 12px",
       cursor: "pointer",
-      color: "#E0E0E0",
+      color: "var(--text-primary)",
       fontSize: "12px",
-      borderBottom: "1px solid #21262D",
+      borderBottom: "1px solid var(--border)",
     },
     historyItemHover: {
-      backgroundColor: "#1F2937",
+      backgroundColor: "var(--bg-hover)",
     },
     completionsDropdown: {
       position: "absolute" as const,
@@ -545,24 +545,24 @@ export const CLITerminal: React.FC = () => {
       right: "12px",
       maxHeight: "180px",
       overflowY: "auto",
-      backgroundColor: "#161B22",
-      border: "1px solid #30363D",
+      backgroundColor: "var(--bg-secondary)",
+      border: "1px solid var(--border)",
       borderRadius: "6px 6px 0 0",
       boxShadow: "0 -4px 12px rgba(0,0,0,0.5)",
       zIndex: 99,
     },
     completionItem: {
       padding: "2px 12px",
-      color: "#E0E0E0",
+      color: "var(--text-primary)",
       fontSize: "12px",
       cursor: "pointer",
     },
     completionSelected: {
       backgroundColor: "#1F6FEB",
-      color: "#FFFFFF",
+      color: "#fff",
     },
     durationText: {
-      color: "#8B949E",
+      color: "var(--text-secondary)",
       fontSize: "11px",
       marginTop: "2px",
     },
@@ -576,15 +576,15 @@ export const CLITerminal: React.FC = () => {
           50% { opacity: 0.3; }
         }
         .cli-scroll::-webkit-scrollbar { width: 6px; }
-        .cli-scroll::-webkit-scrollbar-track { background: #0D1117; }
-        .cli-scroll::-webkit-scrollbar-thumb { background: #30363D; border-radius: 3px; }
+        .cli-scroll::-webkit-scrollbar-track { background: var(--bg-primary); }
+        .cli-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         .cli-scroll::-webkit-scrollbar-thumb:hover { background: #484F58; }
       `}</style>
 
       <div style={styles.header}>
         <span style={styles.headerTitle}>
           🦞 EvoClaw CLI Terminal
-          <span style={{ color: "#8B949E", marginLeft: "8px", fontWeight: 400 }}>
+          <span style={{ color: "var(--text-secondary)", marginLeft: "8px", fontWeight: 400 }}>
             v0.3.4 — {osPlatform}
           </span>
         </span>
@@ -656,7 +656,7 @@ export const CLITerminal: React.FC = () => {
                 inputRef.current?.focus();
               }}
             >
-              <span style={{ color: "#8B949E", marginRight: "8px" }}>{idx + 1}</span>
+              <span style={{ color: "var(--text-secondary)", marginRight: "8px" }}>{idx + 1}</span>
               {item}
             </div>
           ))}
@@ -665,8 +665,8 @@ export const CLITerminal: React.FC = () => {
 
       {showHistory && historyRef.current.length > 0 && (
         <div ref={historyDropdownRef} style={styles.historyDropdown}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 12px", borderBottom: "1px solid #30363D" }}>
-            <span style={{ color: "#8B949E", fontSize: "11px" }}>Command History</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 12px", borderBottom: "1px solid var(--border)" }}>
+            <span style={{ color: "var(--text-secondary)", fontSize: "11px" }}>Command History</span>
             <button
               onClick={(e) => { e.stopPropagation(); clearHistory(); }}
               style={{ ...styles.headerBtn, fontSize: "10px" }}
@@ -683,7 +683,7 @@ export const CLITerminal: React.FC = () => {
               }}
               onClick={() => selectHistoryItem(idx)}
             >
-              <span style={{ color: "#8B949E", marginRight: "8px", fontSize: "11px" }}>{idx + 1}.</span>
+              <span style={{ color: "var(--text-secondary)", marginRight: "8px", fontSize: "11px" }}>{idx + 1}.</span>
               {cmd}
             </div>
           ))}

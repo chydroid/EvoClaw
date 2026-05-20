@@ -45,8 +45,8 @@ function statusBadgeStyle(status: string): React.CSSProperties {
     fontSize: "10px",
     fontWeight: "bold",
     marginTop: "4px",
-    color: status === "active" ? "#22c55e" : status === "error" ? "#ef4444" : "#f59e0b",
-    background: status === "active" ? "#0a2a1a" : status === "error" ? "#2a0a0a" : "#2a1a0a",
+    color: status === "active" ? "var(--success)" : status === "error" ? "var(--error)" : "var(--warning)",
+    background: status === "active" ? "var(--success-bg)" : status === "error" ? "var(--error-bg)" : "var(--warning-bg)",
   };
 }
 
@@ -56,8 +56,8 @@ function msgBannerStyle(type: "success" | "error"): React.CSSProperties {
     borderRadius: "4px",
     marginBottom: "12px",
     fontSize: "12px",
-    background: type === "success" ? "#0a2a1a" : "#2a0a0a",
-    color: type === "success" ? "#22c55e" : "#ef4444",
+    background: type === "success" ? "var(--success-bg)" : "var(--error-bg)",
+    color: type === "success" ? "var(--success)" : "var(--error)",
   };
 }
 
@@ -66,7 +66,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     height: "100%",
     gap: 0,
-    background: "#1e1e2e",
+    background: "var(--bg-secondary)",
     borderRadius: "8px",
     overflow: "hidden",
   },
@@ -74,8 +74,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: "260px",
     minWidth: "180px",
     maxWidth: "500px",
-    background: "#191929",
-    borderRight: "1px solid #2d2d4a",
+    background: "var(--bg-sidebar)",
+    borderRight: "1px solid var(--border-light)",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
@@ -83,18 +83,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sidebarHeader: {
     padding: "12px 14px",
-    borderBottom: "1px solid #2d2d4a",
+    borderBottom: "1px solid var(--border-light)",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
   },
   sidebarTitle: {
-    color: "#c4b5fd",
+    color: "var(--section-title-color)",
     fontWeight: "bold",
     fontSize: "14px",
   },
   refreshButton: {
-    background: "#7c3aed",
+    background: "var(--accent)",
     color: "#fff",
     border: "none",
     padding: "6px 10px",
@@ -109,19 +109,19 @@ const styles: Record<string, React.CSSProperties> = {
   sidebarItem: {
     padding: "10px 14px",
     cursor: "pointer",
-    borderBottom: "1px solid #25253a",
+    borderBottom: "1px solid var(--bg-hover)",
     transition: "background 0.15s",
   },
   sidebarItemActive: {
     padding: "10px 14px",
     cursor: "pointer",
-    borderBottom: "1px solid #25253a",
-    background: "#2d2d4a",
-    borderLeft: "3px solid #7c3aed",
+    borderBottom: "1px solid var(--bg-hover)",
+    background: "var(--border-light)",
+    borderLeft: "3px solid var(--accent)",
     transition: "background 0.15s",
   },
   skillItemName: {
-    color: "#e0e0f0",
+    color: "var(--text-primary)",
     fontSize: "13px",
     fontWeight: "bold",
     overflow: "hidden",
@@ -129,7 +129,7 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "nowrap",
   },
   skillItemDesc: {
-    color: "#8888aa",
+    color: "var(--text-muted)",
     fontSize: "11px",
     marginTop: "2px",
     overflow: "hidden",
@@ -141,7 +141,7 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     overflow: "auto",
     padding: "20px 24px",
-    background: "#1e1e2e",
+    background: "var(--bg-secondary)",
   },
   placeholder: {
     flex: 1,
@@ -149,38 +149,38 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "#666",
+    color: "var(--text-muted)",
     fontSize: "14px",
-    background: "#1e1e2e",
+    background: "var(--bg-secondary)",
     padding: "20px",
   },
   detailHeader: {
     marginBottom: "16px",
   },
   detailName: {
-    color: "#c4b5fd",
+    color: "var(--section-title-color)",
     fontSize: "20px",
     fontWeight: "bold",
   },
   detailVersion: {
-    color: "#8888aa",
+    color: "var(--text-muted)",
     fontSize: "12px",
     marginLeft: "8px",
   },
   detailDesc: {
-    color: "#a0a0c0",
+    color: "var(--text-secondary)",
     fontSize: "13px",
     marginTop: "6px",
     lineHeight: "1.5",
   },
   sectionTitle: {
-    color: "#c4b5fd",
+    color: "var(--section-title-color)",
     fontSize: "14px",
     fontWeight: "bold",
     marginTop: "20px",
     marginBottom: "8px",
     paddingBottom: "4px",
-    borderBottom: "1px solid #2d2d4a",
+    borderBottom: "1px solid var(--border-light)",
   },
   infoRow: {
     display: "flex",
@@ -188,37 +188,37 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "12px",
   },
   infoLabel: {
-    color: "#8888aa",
+    color: "var(--text-muted)",
     minWidth: "100px",
   },
   infoValue: {
-    color: "#d0d0e0",
+    color: "var(--text-primary)",
     wordBreak: "break-all",
   },
   instructionsBlock: {
-    background: "#191929",
+    background: "var(--bg-sidebar)",
     borderRadius: "6px",
     padding: "12px 16px",
-    color: "#c0c0d0",
+    color: "var(--text-secondary)",
     fontSize: "12px",
     lineHeight: "1.7",
     whiteSpace: "pre-wrap",
     marginTop: "8px",
     maxHeight: "200px",
     overflow: "auto",
-    border: "1px solid #2d2d4a",
+    border: "1px solid var(--border-light)",
   },
   examplesBlock: {
     marginTop: "8px",
   },
   exampleItem: {
-    background: "#191929",
+    background: "var(--bg-sidebar)",
     borderRadius: "6px",
     padding: "10px 14px",
-    color: "#b0b0c0",
+    color: "var(--text-secondary)",
     fontSize: "12px",
     marginBottom: "6px",
-    border: "1px solid #2d2d4a",
+    border: "1px solid var(--border-light)",
     lineHeight: "1.5",
   },
   configForm: {
@@ -231,26 +231,26 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "10px",
   },
   configLabel: {
-    color: "#a0a0c0",
+    color: "var(--text-secondary)",
     fontSize: "12px",
     minWidth: "120px",
   },
   configInput: {
-    background: "#191929",
-    border: "1px solid #3d3d5a",
-    color: "#e0e0f0",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border-light)",
+    color: "var(--text-primary)",
     padding: "6px 10px",
     borderRadius: "4px",
     fontSize: "12px",
     width: "300px",
   },
   configNoConfig: {
-    color: "#666",
+    color: "var(--text-muted)",
     fontSize: "12px",
     fontStyle: "italic",
   },
   saveButton: {
-    background: "#7c3aed",
+    background: "var(--accent)",
     color: "#fff",
     border: "none",
     padding: "8px 16px",
@@ -261,13 +261,13 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: "12px",
   },
   banner: {
-    background: "#202040",
-    border: "1px solid #3d3d5a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border-light)",
     padding: "12px 16px",
     borderRadius: "6px",
     marginBottom: "16px",
     fontSize: "12px",
-    color: "#a0a0c0",
+    color: "var(--text-secondary)",
   },
   dragHandle: {
     position: "absolute",
@@ -280,14 +280,14 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 10,
   },
   bannerTip: {
-    color: "#8888aa",
+    color: "var(--text-muted)",
     fontSize: "11px",
     marginTop: "4px",
   },
   triggerChip: {
     display: "inline-block",
-    background: "#252545",
-    color: "#a0a0d0",
+    background: "var(--bg-hover)",
+    color: "var(--text-secondary)",
     padding: "2px 8px",
     borderRadius: "3px",
     fontSize: "11px",
@@ -368,10 +368,17 @@ export default function SkillsConfig() {
   const handleSaveConfig = useCallback(async () => {
     if (!selectedId) return;
     try {
+      // Filter out internal metadata keys before saving
+      const cleanConfig: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(configValues)) {
+        if (k !== "_requiredBins" && k !== "_primaryEnv" && k !== "_") {
+          cleanConfig[k] = v;
+        }
+      }
       const res = await fetch(`/api/skills/${selectedId}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: configValues }),
+        body: JSON.stringify({ config: cleanConfig }),
       });
       if (res.ok) {
         setMessage({ type: "success", text: "配置已保存" });
@@ -413,7 +420,8 @@ export default function SkillsConfig() {
     (k) => k !== "_requiredBins" && k !== "_primaryEnv" && k !== "_"
   );
   const primaryEnv = skillConfig._primaryEnv as string | undefined;
-  const requiredBins = skillConfig._requiredBins as string[] | undefined;
+  const requiredBinsRaw = skillConfig._requiredBins;
+  const requiredBins: string[] = Array.isArray(requiredBinsRaw) ? requiredBinsRaw as string[] : (typeof requiredBinsRaw === "string" ? [requiredBinsRaw] : []);
   const hasEnvConfig = configKeys.some(k => /^[A-Z_]+$/.test(k) && k !== "_");
 
   return (
@@ -431,7 +439,7 @@ export default function SkillsConfig() {
         </div>
         <div style={styles.sidebarList}>
           {skills.length === 0 ? (
-            <div style={{ padding: "20px 14px", color: "#666", fontSize: "12px" }}>
+            <div style={{ padding: "20px 14px", color: "var(--text-muted)", fontSize: "12px" }}>
               暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。
             </div>
           ) : (
@@ -442,7 +450,7 @@ export default function SkillsConfig() {
                 onClick={() => setSelectedId(skill.id)}
                 onMouseEnter={(e) => {
                   if (selectedId !== skill.id) {
-                    (e.currentTarget as HTMLElement).style.background = "#25253a";
+                    (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
                   }
                 }}
                 onMouseLeave={(e) => {
@@ -498,7 +506,7 @@ export default function SkillsConfig() {
           </div>
 
           <div style={styles.banner}>
-            <div>Skill 文件位置: <code style={{ color: "#c4b5fd" }}>{selectedSkill.installPath}</code></div>
+            <div>Skill 文件位置: <code style={{ color: "var(--section-title-color)" }}>{selectedSkill.installPath}</code></div>
             <div style={styles.bannerTip}>
               ZIP 文件请放入 skills/ 文件夹，系统每 30 秒自动扫描检测
             </div>
@@ -534,7 +542,7 @@ export default function SkillsConfig() {
 
           <div style={styles.sectionTitle}>触发条件</div>
           {selectedSkill.triggers.length === 0 ? (
-            <div style={{ color: "#666", fontSize: "12px" }}>无特定触发条件</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>无特定触发条件</div>
           ) : (
             selectedSkill.triggers.map((t, i) => (
               <div key={i} style={styles.infoRow}>
@@ -551,7 +559,7 @@ export default function SkillsConfig() {
             <span style={styles.infoLabel}>健康检查</span>
             <span style={{
               ...styles.infoValue,
-              color: selectedSkill.lifecycle.healthCheck?.healthy ? "#22c55e" : "#ef4444",
+              color: selectedSkill.lifecycle.healthCheck?.healthy ? "var(--success)" : "var(--error)",
             }}>
               {selectedSkill.lifecycle.healthCheck?.healthy ? "健康" : "异常"}
             </span>
@@ -577,11 +585,11 @@ export default function SkillsConfig() {
 
           {(selectedSkill.lifecycle.healthCheck?.errors?.length ?? 0) > 0 && (
             <>
-              <div style={{ color: "#ef4444", fontSize: "12px", marginTop: "8px", fontWeight: "bold" }}>
-                健康检查错误:
+              <div style={{ color: "var(--error)", fontSize: "12px", marginTop: "8px", fontWeight: "bold" }}>
+                错误详情
               </div>
               {selectedSkill.lifecycle.healthCheck?.errors.map((e, i) => (
-                <div key={i} style={{ color: "#f87171", fontSize: "11px", marginTop: "2px" }}>
+                <div key={i} style={{ color: "var(--error)", fontSize: "11px", marginTop: "2px" }}>
                   {e}
                 </div>
               ))}
@@ -590,7 +598,7 @@ export default function SkillsConfig() {
 
           <div style={styles.sectionTitle}>依赖项</div>
           {selectedSkill.requires.length === 0 ? (
-            <div style={{ color: "#666", fontSize: "12px" }}>无依赖</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>无依赖</div>
           ) : (
             selectedSkill.requires.map((d, i) => (
               <div key={i} style={styles.infoRow}>
@@ -608,7 +616,7 @@ export default function SkillsConfig() {
               {selectedSkill.body.instructions}
             </div>
           ) : (
-            <div style={{ color: "#666", fontSize: "12px", marginTop: "4px" }}>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "4px" }}>
               该技能未提供详细使用说明。
             </div>
           )}
@@ -628,15 +636,15 @@ export default function SkillsConfig() {
             <>
               <div style={styles.sectionTitle}>
                 技能配置
-                {hasEnvConfig && <span style={{ fontSize: "10px", color: "#f59e0b", marginLeft: "8px" }}>需要设置</span>}
+                {hasEnvConfig && <span style={{ fontSize: "10px", color: "var(--warning)", marginLeft: "8px" }}>需要设置</span>}
               </div>
               {primaryEnv && (
-                <div style={{ ...styles.configNoConfig, color: "#f59e0b", marginBottom: "8px", textAlign: "left" }}>
+                <div style={{ ...styles.configNoConfig, color: "var(--warning)", marginBottom: "8px", textAlign: "left" }}>
                   <span style={{ fontWeight: "bold" }}>{primaryEnv}</span> 为必需配置项。请填入你的 API 密钥。
                 </div>
               )}
-              {requiredBins && requiredBins.length > 0 && (
-                <div style={{ ...styles.configNoConfig, color: "#6ee7b7", marginBottom: "8px", textAlign: "left" }}>
+              {requiredBins.length > 0 && (
+                <div style={{ ...styles.configNoConfig, color: "var(--success)", marginBottom: "8px", textAlign: "left" }}>
                   需要系统工具: {requiredBins.join(", ")}
                 </div>
               )}
@@ -645,12 +653,12 @@ export default function SkillsConfig() {
                   <div key={key} style={styles.configRow}>
                     <span style={styles.configLabel}>
                       {key}
-                      {key === primaryEnv ? <span style={{ color: "#f59e0b", marginLeft: "4px" }}>*</span> : null}
+                      {key === primaryEnv ? <span style={{ color: "var(--warning)", marginLeft: "4px" }}>*</span> : null}
                     </span>
                     <input
                       style={{
                         ...styles.configInput,
-                        borderColor: key === primaryEnv && !configValues[key] ? "#f59e0b" : styles.configInput.borderColor,
+                        ...(key === primaryEnv && !configValues[key] ? { borderColor: "var(--warning)" } : {}),
                       }}
                       type={key.toLowerCase().includes("key") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token") ? "password" : "text"}
                       value={configValues[key] || ""}

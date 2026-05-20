@@ -41,7 +41,7 @@ const s = {
   editorDesc: { fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" } as React.CSSProperties,
   textarea: {
     flex: 1, padding: "16px", border: "none",
-    background: "#0d1117", color: "#c9d1d9",
+    background: "var(--bg-primary)", color: "var(--text-primary)",
     fontSize: "13px", fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace",
     lineHeight: "1.6", resize: "none" as const,
     outline: "none", tabSize: 2,
@@ -61,12 +61,12 @@ const s = {
   successBanner: {
     padding: "8px 14px", borderRadius: "6px",
     background: "#22c55e18", border: "1px solid #22c55e40",
-    color: "#22c55e", fontSize: "12px", marginBottom: "8px",
+    color: "var(--success)", fontSize: "12px", marginBottom: "8px",
   } as React.CSSProperties,
   readOnlyBadge: {
     display: "inline-block", padding: "2px 8px", borderRadius: "4px",
     background: "#f59e0b18", border: "1px solid #f59e0b40",
-    color: "#f59e0b", fontSize: "10px", fontWeight: "bold",
+    color: "var(--warning)", fontSize: "10px", fontWeight: "bold",
   } as React.CSSProperties,
 };
 
@@ -208,7 +208,7 @@ export default function BootstrapEditor() {
             <div style={{
               ...s.successBanner,
               ...(saveStatus.startsWith("Error") || saveStatus.startsWith("Save failed")
-                ? { background: "#ef444418", border: "1px solid #ef444440", color: "#ef4444" }
+                ? { background: "#ef444418", border: "1px solid #ef444440", color: "var(--error)" }
                 : {}),
             }}>
               {saveStatus}

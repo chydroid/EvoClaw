@@ -195,25 +195,25 @@ export default function EvolutionDashboard() {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case "completed": return "#22c55e";
-      case "failed": return "#ef4444";
-      case "rejected": return "#f59e0b";
-      case "generating": return "#8b5cf6";
+      case "completed": return "var(--success)";
+      case "failed": return "var(--error)";
+      case "rejected": return "var(--warning)";
+      case "generating": return "var(--accent)";
       case "evaluating": return "#3b82f6";
       case "running": return "#3b82f6";
       case "active": return "#3b82f6";
-      default: return "#6b7280";
+      default: return "var(--text-muted)";
     }
   };
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
-      case "critical": return "#ef4444";
+      case "critical": return "var(--error)";
       case "high": return "#f97316";
-      case "medium": return "#eab308";
-      case "low": return "#22c55e";
+      case "medium": return "var(--warning)";
+      case "low": return "var(--success)";
       case "info": return "#3b82f6";
-      default: return "#6b7280";
+      default: return "var(--text-muted)";
     }
   };
 
@@ -341,7 +341,7 @@ export default function EvolutionDashboard() {
                       <div style={{
                         ...s.bar,
                         width: `${Math.round(fb.successRate * 100)}%`,
-                        background: fb.successRate > 0.8 ? "#22c55e" : fb.successRate > 0.5 ? "#f59e0b" : "#ef4444",
+                        background: fb.successRate > 0.8 ? "var(--success)" : fb.successRate > 0.5 ? "var(--warning)" : "var(--error)",
                       }} />
                     </div>
                     <div style={s.barPercent}>{Math.round(fb.successRate * 100)}%</div>
@@ -419,12 +419,12 @@ export default function EvolutionDashboard() {
                   <td style={s.monoCell}>{fb.cycleId.slice(0, 8)}...</td>
                   <td style={s.monoCell}>{fb.skillId.slice(0, 8)}...</td>
                   <td>
-                    <span style={{ color: fb.successRate > 0.8 ? "#22c55e" : fb.successRate > 0.5 ? "#f59e0b" : "#ef4444" }}>
+                    <span style={{ color: fb.successRate > 0.8 ? "var(--success)" : fb.successRate > 0.5 ? "var(--warning)" : "var(--error)" }}>
                       {Math.round(fb.successRate * 100)}%
                     </span>
                   </td>
                   <td>{Math.round(fb.userAdoptionRate * 100)}%</td>
-                  <td style={{ color: fb.errorRate > 0.3 ? "#ef4444" : "#22c55e" }}>
+                  <td style={{ color: fb.errorRate > 0.3 ? "var(--error)" : "var(--success)" }}>
                     {Math.round(fb.errorRate * 100)}%
                   </td>
                   <td>{fb.tokenConsumption.toLocaleString()}</td>
@@ -450,7 +450,7 @@ export default function EvolutionDashboard() {
               <div style={s.statLabel}>总条目</div>
             </div>
             <div style={s.statCard}>
-              <div style={{ ...s.statValue, color: "#22c55e" }}>{Math.round(ls.resolutionRate * 100)}%</div>
+              <div style={{ ...s.statValue, color: "var(--success)" }}>{Math.round(ls.resolutionRate * 100)}%</div>
               <div style={s.statLabel}>解决率</div>
             </div>
             <div style={s.statCard}>
@@ -458,7 +458,7 @@ export default function EvolutionDashboard() {
               <div style={s.statLabel}>待解决</div>
             </div>
             <div style={s.statCard}>
-              <div style={{ ...s.statValue, color: "#7c3aed" }}>{ls.newThisWeek}</div>
+              <div style={{ ...s.statValue, color: "var(--accent)" }}>{ls.newThisWeek}</div>
               <div style={s.statLabel}>本周新增</div>
             </div>
           </div>
@@ -495,27 +495,27 @@ export default function EvolutionDashboard() {
                 learningEntries.map((entry) => (
                   <tr key={entry.id} style={{ opacity: entry.resolved ? 0.7 : 1 }}>
                     <td>
-                      <span style={{ color: entry.resolved ? "#22c55e" : "#f59e0b", fontSize: "14px" }}>
+                      <span style={{ color: entry.resolved ? "var(--success)" : "var(--warning)", fontSize: "14px" }}>
                         {entry.resolved ? "✅" : "📝"}
                       </span>
                     </td>
                     <td>
-                      <div style={{ fontWeight: 500, color: "#e0e0e0" }}>{entry.title}</div>
-                      {entry.solution && <div style={{ fontSize: "11px", color: "#22c55e", marginTop: "2px" }}>解决: {entry.solution.slice(0, 80)}{entry.solution.length > 80 ? "..." : ""}</div>}
+                      <div style={{ fontWeight: 500, color: "var(--text-primary)" }}>{entry.title}</div>
+                      {entry.solution && <div style={{ fontSize: "11px", color: "var(--success)", marginTop: "2px" }}>解决: {entry.solution.slice(0, 80)}{entry.solution.length > 80 ? "..." : ""}</div>}
                     </td>
                     <td>
                       <span style={{
                         padding: "2px 6px",
                         borderRadius: "4px",
                         fontSize: "11px",
-                        background: "#2a2a3a",
+                        background: "var(--bg-hover)",
                         color: getStatusColor(entry.resolved ? "completed" : "generating"),
                         whiteSpace: "nowrap",
                       }}>
                         {getTriggerLabel(entry.trigger)}
                       </span>
                     </td>
-                    <td style={{ fontSize: "11px", color: "#888" }}>{getCategoryLabel(entry.category)}</td>
+                    <td style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{getCategoryLabel(entry.category)}</td>
                     <td style={s.monoCell}>{entry.source.slice(0, 20)}</td>
                     <td style={s.monoCell}>
                       {new Date(entry.timestamp).toLocaleString("zh-CN", {
@@ -571,9 +571,9 @@ export default function EvolutionDashboard() {
             style={{
               padding: "4px 12px",
               borderRadius: "6px",
-              border: "1px solid #2a2a3a",
-              background: "#1a1a2e",
-              color: "#888",
+              border: "1px solid var(--border)",
+              background: "var(--bg-sidebar)",
+              color: "var(--text-secondary)",
               cursor: "pointer",
               fontSize: "12px",
             }}
@@ -592,7 +592,7 @@ export default function EvolutionDashboard() {
           progressReports.map((report) => (
             <div key={report.id} style={s.progressCard}>
               <div style={s.progressHeader}>
-                <span style={{ color: "#a78bfa", fontWeight: 600, fontSize: "14px" }}>
+                <span style={{ color: "var(--section-title-color)", fontWeight: 600, fontSize: "14px" }}>
                   {report.phase}
                 </span>
                 <span style={{
@@ -607,8 +607,8 @@ export default function EvolutionDashboard() {
               </div>
               <div style={{ margin: "8px 0" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                  <span style={{ fontSize: "13px", color: "#ccc" }}>{report.message}</span>
-                  <span style={{ fontSize: "12px", color: "#a78bfa", fontWeight: "bold" }}>
+                  <span style={{ fontSize: "13px", color: "var(--text-primary)" }}>{report.message}</span>
+                  <span style={{ fontSize: "12px", color: "var(--section-title-color)", fontWeight: "bold" }}>
                     {report.progress}%
                   </span>
                 </div>
@@ -619,11 +619,11 @@ export default function EvolutionDashboard() {
                   }} />
                 </div>
               </div>
-              <div style={{ fontSize: "11px", color: "#666" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                 步骤 {report.step}/{report.totalSteps} · {new Date(report.startedAt).toLocaleTimeString("zh-CN")}
               </div>
               {report.details && (
-                <div style={{ fontSize: "11px", color: "#888", marginTop: "4px", fontStyle: "italic" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
                   {report.details}
                 </div>
               )}
@@ -644,7 +644,7 @@ export default function EvolutionDashboard() {
               <div style={{
                 ...s.patternBadge,
                 background: pattern.count > 0 ? "#7c3aed22" : "#6666",
-                color: pattern.count > 0 ? "#a78bfa" : "#888",
+                color: pattern.count > 0 ? "var(--section-title-color)" : "var(--text-secondary)",
               }}>
                 {pattern.count} 次
               </div>
@@ -655,7 +655,7 @@ export default function EvolutionDashboard() {
                 <div style={{
                   ...s.confidenceBar,
                   width: `${Math.round(pattern.confidence * 100)}%`,
-                  background: pattern.confidence > 0.7 ? "#22c55e" : pattern.confidence > 0.4 ? "#f59e0b" : "#ef4444",
+                  background: pattern.confidence > 0.7 ? "var(--success)" : pattern.confidence > 0.4 ? "var(--warning)" : "var(--error)",
                 }} />
               </div>
             </div>
@@ -680,20 +680,20 @@ const s: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: "16px 20px 12px",
-    borderBottom: "1px solid #2a2a3a",
+    borderBottom: "1px solid var(--border)",
   },
   title: {
     margin: 0,
     fontSize: "18px",
-    color: "#a78bfa",
+    color: "var(--section-title-color)",
     fontWeight: 600,
   },
   errorBanner: {
     marginTop: "8px",
     padding: "8px 12px",
     borderRadius: "6px",
-    background: "#4a1515",
-    color: "#f87171",
+    background: "var(--error-bg)",
+    color: "var(--error)",
     fontSize: "12px",
   },
   summaryRow: {
@@ -705,19 +705,19 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     padding: "12px",
     borderRadius: "10px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
     textAlign: "center",
   },
   summaryValue: {
     fontSize: "24px",
     fontWeight: "bold",
-    color: "#a78bfa",
+    color: "var(--section-title-color)",
     marginBottom: "4px",
   },
   summaryLabel: {
     fontSize: "11px",
-    color: "#888",
+    color: "var(--text-secondary)",
     textTransform: "uppercase" as const,
     letterSpacing: "0.5px",
   },
@@ -725,7 +725,7 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: "4px",
     padding: "0 20px",
-    borderBottom: "1px solid #2a2a3a",
+    borderBottom: "1px solid var(--border)",
     overflowX: "auto" as const,
     flexWrap: "nowrap" as const,
   },
@@ -745,7 +745,7 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     padding: "60px 20px",
-    color: "#666",
+    color: "var(--text-muted)",
     fontSize: "14px",
     textAlign: "center" as const,
   },
@@ -756,25 +756,25 @@ const s: Record<string, React.CSSProperties> = {
   emptyHint: {
     marginTop: "8px",
     fontSize: "12px",
-    color: "#555",
+    color: "var(--text-muted)",
     maxWidth: "400px",
   },
   emptySmall: {
     padding: "20px",
     textAlign: "center" as const,
-    color: "#666",
+    color: "var(--text-muted)",
     fontSize: "13px",
   },
   chartSection: {
     padding: "16px",
     borderRadius: "10px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
   },
   sectionTitle: {
     margin: "0 0 16px 0",
     fontSize: "14px",
-    color: "#a78bfa",
+    color: "var(--section-title-color)",
     fontWeight: 600,
   },
   timeline: {
@@ -805,7 +805,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   timelineSource: {
     fontSize: "13px",
-    color: "#ccc",
+    color: "var(--text-primary)",
     textTransform: "capitalize" as const,
   },
   timelineStatus: {
@@ -815,7 +815,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   timelineMeta: {
     fontSize: "11px",
-    color: "#666",
+    color: "var(--text-muted)",
     marginTop: "2px",
   },
   barChart: {
@@ -831,14 +831,14 @@ const s: Record<string, React.CSSProperties> = {
   barLabel: {
     width: "30px",
     fontSize: "11px",
-    color: "#888",
+    color: "var(--text-secondary)",
     textAlign: "right" as const,
   },
   barTrack: {
     flex: 1,
     height: "12px",
     borderRadius: "6px",
-    background: "#2a2a3a",
+    background: "var(--border)",
     overflow: "hidden",
   },
   bar: {
@@ -849,7 +849,7 @@ const s: Record<string, React.CSSProperties> = {
   barPercent: {
     width: "40px",
     fontSize: "11px",
-    color: "#aaa",
+    color: "var(--text-secondary)",
   },
   tableContainer: {
     overflow: "auto",
@@ -866,7 +866,7 @@ const s: Record<string, React.CSSProperties> = {
   emptyCell: {
     padding: "30px",
     textAlign: "center" as const,
-    color: "#666",
+    color: "var(--text-muted)",
   },
   statusBadge: {
     padding: "2px 8px",
@@ -883,8 +883,8 @@ const s: Record<string, React.CSSProperties> = {
   patternCard: {
     padding: "16px",
     borderRadius: "10px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
   },
   patternHeader: {
     display: "flex",
@@ -895,7 +895,7 @@ const s: Record<string, React.CSSProperties> = {
   patternName: {
     fontSize: "14px",
     fontWeight: "bold",
-    color: "#e0e0e0",
+    color: "var(--text-primary)",
   },
   patternBadge: {
     padding: "2px 8px",
@@ -909,12 +909,12 @@ const s: Record<string, React.CSSProperties> = {
   },
   confidenceLabel: {
     fontSize: "12px",
-    color: "#888",
+    color: "var(--text-secondary)",
   },
   confidenceTrack: {
     height: "6px",
     borderRadius: "3px",
-    background: "#2a2a3a",
+    background: "var(--border)",
     overflow: "hidden",
   },
   confidenceBar: {
@@ -927,7 +927,7 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     height: "100%",
-    color: "#666",
+    color: "var(--text-muted)",
     fontSize: "16px",
   },
   learningContainer: {
@@ -943,19 +943,19 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     padding: "12px",
     borderRadius: "10px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
     textAlign: "center",
   },
   statValue: {
     fontSize: "22px",
     fontWeight: "bold",
-    color: "#a78bfa",
+    color: "var(--section-title-color)",
     marginBottom: "4px",
   },
   statLabel: {
     fontSize: "11px",
-    color: "#888",
+    color: "var(--text-secondary)",
     textTransform: "uppercase" as const,
     letterSpacing: "0.5px",
   },
@@ -967,20 +967,20 @@ const s: Record<string, React.CSSProperties> = {
   learningTag: {
     padding: "4px 10px",
     borderRadius: "12px",
-    background: "#2a2a3a",
+    background: "var(--bg-hover)",
     fontSize: "12px",
-    color: "#a78bfa",
+    color: "var(--section-title-color)",
   },
   tagCount: {
-    color: "#888",
+    color: "var(--text-secondary)",
     fontSize: "10px",
     marginLeft: "4px",
   },
   sessionCard: {
     padding: "12px",
     borderRadius: "8px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
     marginBottom: "8px",
   },
   sessionHeader: {
@@ -991,25 +991,25 @@ const s: Record<string, React.CSSProperties> = {
   },
   sessionTask: {
     fontSize: "13px",
-    color: "#ccc",
+    color: "var(--text-primary)",
     fontWeight: 500,
   },
   sessionSummary: {
     fontSize: "12px",
-    color: "#888",
+    color: "var(--text-secondary)",
     marginTop: "4px",
     whiteSpace: "pre-line" as const,
   },
   sessionMeta: {
     fontSize: "11px",
-    color: "#666",
+    color: "var(--text-muted)",
     marginTop: "8px",
   },
   progressCard: {
     padding: "14px",
     borderRadius: "10px",
-    background: "#1a1a2e",
-    border: "1px solid #2a2a3a",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
     marginBottom: "10px",
   },
   progressHeader: {
@@ -1021,13 +1021,13 @@ const s: Record<string, React.CSSProperties> = {
   progressTrack: {
     height: "8px",
     borderRadius: "4px",
-    background: "#2a2a3a",
+    background: "var(--border)",
     overflow: "hidden",
   },
   progressBar: {
     height: "100%",
     borderRadius: "4px",
-    background: "linear-gradient(90deg, #7c3aed, #a78bfa)",
+    background: "linear-gradient(90deg, var(--accent), var(--section-title-color))",
     transition: "width 0.5s ease",
   },
 };
@@ -1037,11 +1037,11 @@ function subTabStyle(active: boolean): React.CSSProperties {
     padding: "10px 14px",
     border: "none",
     background: "none",
-    color: active ? "#a78bfa" : "#666",
+    color: active ? "var(--section-title-color)" : "var(--text-muted)",
     fontSize: "13px",
     fontWeight: active ? 600 : 400,
     cursor: "pointer",
-    borderBottom: active ? "2px solid #7c3aed" : "2px solid transparent",
+    borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
     transition: "all 0.2s",
     whiteSpace: "nowrap" as const,
   };
