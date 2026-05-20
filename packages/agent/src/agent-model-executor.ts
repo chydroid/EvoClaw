@@ -458,7 +458,7 @@ export class AgentModelExecutor {
       executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
     }>("skillManager");
 
-    const installedSkills = skillManager?.listSkills() || [];
+    const installedSkills = await skillManager?.listSkills() || [];
 
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
@@ -549,7 +549,7 @@ export class AgentModelExecutor {
         listSkills(): unknown[];
         executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
       }>("skillManager");
-      const installedSkills = skillManager?.listSkills() || [];
+      const installedSkills = await skillManager?.listSkills() || [];
       const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
       let taskResult: string = "";
