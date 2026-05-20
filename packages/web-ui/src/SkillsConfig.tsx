@@ -405,9 +405,16 @@ export default function SkillsConfig() {
   }, []);
 
   const selected = skills.find((s) => s.id === selectedId) || null;
-  const configKeys = selectedSkill?.config && typeof selectedSkill.config === "object"
-    ? Object.keys(selectedSkill.config as Record<string, unknown>).filter((k) => k !== "_")
-    : [];
+  // Extract config keys, filtering out internal metadata
+  const skillConfig = selectedSkill?.config && typeof selectedSkill.config === "object"
+    ? selectedSkill.config as Record<string, unknown>
+    : {};
+  const configKeys = Object.keys(skillConfig).filter(
+    (k) => k !== "_requiredBins" && k !== "_primaryEnv" && k !== "_"
+  );
+  const primaryEnv = skillConfig._primaryEnv as string | undefined;
+  const requiredBins = skillConfig._requiredBins as string[] | undefined;
+  const hasEnvConfig = configKeys.some(k => /^[A-Z_]+$/.test(k) && k !== "_");
 
   return (
     <div style={styles.container}>
@@ -619,14 +626,33 @@ export default function SkillsConfig() {
 
           {configKeys.length > 0 && (
             <>
-              <div style={styles.sectionTitle}>技能配置</div>
+              <div style={styles.sectionTitle}>
+                技能配置
+                {hasEnvConfig && <span style={{ fontSize: "10px", color: "#f59e0b", marginLeft: "8px" }}>需要设置</span>}
+              </div>
+              {primaryEnv && (
+                <div style={{ ...styles.configNoConfig, color: "#f59e0b", marginBottom: "8px", textAlign: "left" }}>
+                  <span style={{ fontWeight: "bold" }}>{primaryEnv}</span> 为必需配置项。请填入你的 API 密钥。
+                </div>
+              )}
+              {requiredBins && requiredBins.length > 0 && (
+                <div style={{ ...styles.configNoConfig, color: "#6ee7b7", marginBottom: "8px", textAlign: "left" }}>
+                  需要系统工具: {requiredBins.join(", ")}
+                </div>
+              )}
               <div style={styles.configForm}>
                 {configKeys.map((key) => (
                   <div key={key} style={styles.configRow}>
-                    <span style={styles.configLabel}>{key}</span>
+                    <span style={styles.configLabel}>
+                      {key}
+                      {key === primaryEnv ? <span style={{ color: "#f59e0b", marginLeft: "4px" }}>*</span> : null}
+                    </span>
                     <input
-                      style={styles.configInput}
-                      type="text"
+                      style={{
+                        ...styles.configInput,
+                        borderColor: key === primaryEnv && !configValues[key] ? "#f59e0b" : styles.configInput.borderColor,
+                      }}
+                      type={key.toLowerCase().includes("key") || key.toLowerCase().includes("secret") || key.toLowerCase().includes("token") ? "password" : "text"}
                       value={configValues[key] || ""}
                       onChange={(e) =>
                         setConfigValues((prev) => ({ ...prev, [key]: e.target.value }))
@@ -636,7 +662,7 @@ export default function SkillsConfig() {
                   </div>
                 ))}
                 <button style={styles.saveButton} onClick={handleSaveConfig}>
-                  Save Configuration
+                  {hasEnvConfig ? "保存并激活技能" : "保存配置"}
                 </button>
               </div>
             </>

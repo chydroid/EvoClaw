@@ -134,7 +134,7 @@ export class SkillManager {
       },
       installPath: skillPath,
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
-      config: parsed.meta.config || {},
+      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta),
       requires: parsed.meta.requires || [],
       provides: [],
       triggers,
@@ -454,6 +454,34 @@ export class SkillManager {
     } catch (err) {
       throw new Error(`ZIP extraction failed: ${err}`);
     }
+  }
+
+  /** Merge OpenClaw metadata required env vars into skill config */
+  private buildSkillConfig(
+    baseConfig: Record<string, unknown>,
+    ocMeta: import("@evoclaw/core").OpenClawSkillMeta | null | undefined
+  ): Record<string, unknown> {
+    const config: Record<string, unknown> = { ...baseConfig };
+
+    if (ocMeta?.requires?.env) {
+      for (const envVar of ocMeta.requires.env) {
+        // Use existing env value if set, otherwise empty placeholder
+        if (!(envVar in config)) {
+          config[envVar] = process.env[envVar] || "";
+        }
+      }
+    }
+
+    if (ocMeta?.requires?.bins) {
+      // Store required binaries for display purposes
+      config._requiredBins = ocMeta.requires.bins;
+    }
+
+    if (ocMeta?.primaryEnv) {
+      config._primaryEnv = ocMeta.primaryEnv;
+    }
+
+    return config;
   }
 
   async healthCheck(): Promise<boolean> {
