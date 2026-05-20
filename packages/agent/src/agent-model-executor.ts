@@ -478,7 +478,11 @@ export class AgentModelExecutor {
       }
     }
 
+    // LLM unavailable: try skill-based execution for actionable tasks
     const msg = message.toLowerCase();
+    if (this.hasActionIntent(message)) {
+      console.log(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"`);
+    }
     const reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
     return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
@@ -1103,15 +1107,56 @@ export class AgentModelExecutor {
         }
       }
       
-      // Step 4: As a last resort, provide guidance
+      // Step 4: Auto-create news skill and retry
       addLine(``);
       addLine(`---`);
-      addLine(`🔄 所有自动化方法已尝试完毕。为了完成新闻搜索，建议：`);
-      addLine(`1. 安装一个新闻搜索 Skill: \`EvoClaw skills install <skill-path>\``);
-      addLine(`2. 或配置真实 LLM API（如 DeepSeek）来获得联网搜索能力`);
-      addLine(`3. 或使用 CLI: \`EvoClaw web search "热搜新闻"\``);
+      addLine(`🔄 所有现有方法已尝试完毕。启动自动创建Skill流程...`);
       addLine(``);
-      addLine(`我将继续等待您的指示，不会放弃这个任务！`);
+      
+      if (this.registeredTools.has("skill_create")) {
+        addLine(`🔨 正在自动创建新闻搜索Skill...`);
+        try {
+          const entry = this.registeredTools.get("skill_create")!;
+          const createResult = await entry.handler({
+            name: "news-search",
+            description: "搜索国内外新闻热搜，整理总结后返回",
+            instructions: "1. 使用 web_search 或 browser_search 搜索指定主题的新闻。\n2. 收集国内和国际新闻各5条。\n3. 按热度排序整理成摘要格式返回。\n4. 如一个引擎失败则尝试其他引擎。",
+          });
+          const createObj = typeof createResult === "object" && createResult !== null ? (createResult as Record<string, unknown>) : null;
+          if (createObj?.success) {
+            addLine(`✅ Skill 创建成功: ${createObj.skillName || "news-search"}`);
+            addLine(`🔄 正在用新Skill重新执行任务...`);
+            // Execute the new skill
+            if (this.registeredTools.has("skill_execute") && skillManager) {
+              try {
+                const skillId = String(createObj.skillId || createObj.skillName || "news-search");
+                const execResult = await skillManager.executeSkill(skillId, { prompt: message, query: message });
+                addLine(`✅ Skill执行完成！`);
+                addLine(`结果: ${JSON.stringify(execResult, null, 2).slice(0, 3000)}`);
+                return lines.join("\n");
+              } catch (execErr) {
+                addLine(`⚠ Skill执行失败: ${execErr instanceof Error ? execErr.message : String(execErr)}`);
+              }
+            }
+          } else {
+            addLine(`⚠ Skill自动创建失败: ${createObj?.error || "未知错误"}`);
+          }
+        } catch (err) {
+          addLine(`⚠ Skill创建出错: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      
+      // Step 5: Final fallback - ask user
+      addLine(``);
+      addLine(`---`);
+      addLine(`⚠ 已尝试 ${this.registeredTools.has("web_search") ? "web_search" : "浏览器搜索"} → 技能搜索 → 技能创建，均未能获得完整结果。`);
+      addLine(``);
+      addLine(`📋 建议您：`);
+      addLine(`1. 确认 LLM API 配置正常工作`);
+      addLine(`2. 或直接通过浏览器访问新闻网站获取`);
+      addLine(`3. 我可以继续尝试其他方式，请告诉我您希望我做什么。`);
+      addLine(``);
+      addLine(`我会继续等待指示，任务未完成，绝不放弃！`);
     } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
 
       let hasDriveLetter = false;
@@ -1426,6 +1471,53 @@ document.head.appendChild(style);
     } else {
       const activeProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
       addLine(`${this.persona.masterTerm}，收到您的消息："${message}"`);
+      
+      // Proactive skill search for action-oriented tasks
+      const isAction = this.hasActionIntent(message);
+      if (isAction && this.registeredTools.has("skill_search")) {
+        addLine(`🔍 检测到操作意图，正在搜索匹配的Skill...`);
+        try {
+          const searchTool = this.registeredTools.get("skill_search")!;
+          const searchResult = await searchTool.handler({ task: message });
+          const searchObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
+          if (searchObj?.found) {
+            const skillName = String(searchObj.skillName || "");
+            const skillPath = String(searchObj.skillPath || "");
+            addLine(`✅ 找到匹配Skill: "${skillName}" (路径: ${skillPath})`);
+            addLine(`📦 正在安装...`);
+            
+            if (this.registeredTools.has("skill_install")) {
+              const installTool = this.registeredTools.get("skill_install")!;
+              const installResult = await installTool.handler({ path: skillPath });
+              const installObj = typeof installResult === "object" && installResult !== null ? (installResult as Record<string, unknown>) : null;
+              if (installObj?.success) {
+                addLine(`✅ Skill "${installObj.skillName || skillName}" 安装成功！`);
+                addLine(`🔄 正在执行...`);
+                // Try to execute via skillManager
+                if (skillManager) {
+                  try {
+                    const execResult = await skillManager.executeSkill(String(installObj.skillName || skillName), { prompt: message, query: message });
+                    addLine(`✅ Skill执行完成！`);
+                    addLine(`结果: ${JSON.stringify(execResult, null, 2).slice(0, 3000)}`);
+                    return lines.join("\n");
+                  } catch (execErr) {
+                    addLine(`⚠ Skill执行失败: ${execErr instanceof Error ? execErr.message : String(execErr)}`);
+                  }
+                }
+              } else {
+                addLine(`⚠ 安装失败: ${installObj?.error || "未知错误"}`);
+              }
+            }
+          } else {
+            addLine(`⚠ 未找到匹配的Skill。`);
+            if (this.registeredTools.has("skill_create")) {
+              addLine(`💡 您可以说"创建Skill"让我自动生成一个，或配置LLM API后重试。`);
+            }
+          }
+        } catch (err) {
+          addLine(`⚠ Skill搜索出错: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       
       if (activeProviders.length > 0) {
         const provNames = activeProviders.map((p) => `${p.name}(${p.model})`).join(", ");

@@ -62,13 +62,28 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   );
   sections.push("");
 
-  sections.push("## Execution Bias");
+  sections.push("## Execution Strategy (MANDATORY)");
   sections.push(
-    "Act on actionable requests immediately. Continue until the task is done or blocked. " +
-    "Recover from weak tool results by trying alternatives. " +
-    "Verify mutable state live before finalizing. " +
-    "Do not plan endlessly — execute."
+    "When the user asks you to perform ANY task (search news, browse web, send email, manage files, etc):"
   );
+  sections.push("");
+  sections.push("**STEP 1 — Search for a Skill FIRST**");
+  sections.push("- Call the `skill_search` tool with the task description.");
+  sections.push("- If a matching skill is found: call `skill_install` to install it, then call `skill_execute` to run it.");
+  sections.push("- If NO matching skill exists → proceed to STEP 2.");
+  sections.push("");
+  sections.push("**STEP 2 — Search online / Create the Skill**");
+  sections.push("- For search/web tasks: use the `web_search` tool or browser tools.");
+  sections.push("- Consider calling `skill_create` to auto-generate a new Skill for this task.");
+  sections.push("- If `skill_create` succeeds, install and run the new skill.");
+  sections.push("");
+  sections.push("**STEP 3 — NEVER give up**");
+  sections.push("- If a tool fails: retry once with different parameters.");
+  sections.push("- If still failing: try the NEXT available approach.");
+  sections.push("- If truly stuck: clearly state what failed and ASK the user what to try next.");
+  sections.push("- NEVER silently stop. Always produce a final status message.");
+  sections.push("");
+  sections.push("**Crucial: Do NOT skip STEP 1. 搜索类、上网类任务必须先用 skill_search，而不是直接调 browser 工具！**");
   sections.push("");
 
   if (params.delegationMode === "prefer" && params.hasSessionsSpawn && !isMinimal) {

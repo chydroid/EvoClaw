@@ -361,6 +361,85 @@ export class EvoClawServer {
       }
     );
 
+    // ---- Skill lifecycle tools ----
+
+    this.agentModelExecutor.registerTool(
+      "skill_install",
+      {
+        name: "skill_install",
+        description: "Install a skill from its SKILL.md file path or skills directory. Use after skill_search finds a match.",
+        parameters: {
+          path: { type: "string", description: "Path to the SKILL.md file or skill folder" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const skillPath = String(params.path || "");
+        try {
+          const installed = await this.skillManager.installSkill(skillPath);
+          return { success: true, skillId: installed.id, skillName: installed.name, description: installed.description };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "skill_execute",
+      {
+        name: "skill_execute",
+        description: "Execute an installed skill by name or ID with parameters",
+        parameters: {
+          skill: { type: "string", description: "Skill name or ID to execute" },
+          params: { type: "string", description: "JSON string of parameters to pass to the skill" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const skillName = String(params.skill || "");
+        const execParams = JSON.parse(String(params.params || "{}"));
+        try {
+          const result = await this.skillManager.executeSkill(skillName, execParams);
+          return { success: true, result };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "skill_create",
+      {
+        name: "skill_create",
+        description: "Auto-create a new Skill file when no existing skill matches the task. Generates a SKILL.md and installs it.",
+        parameters: {
+          name: { type: "string", description: "Name for the new skill (e.g. 'news-search')" },
+          description: { type: "string", description: "What this skill does" },
+          instructions: { type: "string", description: "Step-by-step instructions for the skill to execute" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const name = String(params.name || "custom-skill");
+        const desc = String(params.description || "Auto-generated skill");
+        const instructions = String(params.instructions || "Execute the task as described.");
+        try {
+          const fsMgr = this.registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
+          const skillDir = `skills/${name}`;
+          const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: ${desc}\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
+          if (fsMgr) {
+            await fsMgr.createFile(`${skillDir}/SKILL.md`, skillContent);
+          } else {
+            const fsPath = require("path");
+            const skillFullPath = fsPath.resolve(__dirname, "..", "..", "..", skillDir);
+            require("fs").mkdirSync(skillFullPath, { recursive: true });
+            require("fs").writeFileSync(fsPath.join(skillFullPath, "SKILL.md"), skillContent, "utf-8");
+          }
+          const installed = await this.skillManager.installSkill(skillDir);
+          return { success: true, skillId: installed.id, skillName: installed.name, message: `Skill "${name}" has been created, installed, and is ready to use!` };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    );
+
     this.agentModelExecutor.registerTool(
       "skill_search",
       {
