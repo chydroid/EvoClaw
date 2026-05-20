@@ -1,8 +1,85 @@
 import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
+
+const MEMORY_FILE = path.join(process.cwd(), "data", "memory", "long-term.json");
+const SAVE_DEBOUNCE_MS = 2000;
 
 export class LongTermMemoryStore implements LongTermMemory {
   private entries = new Map<string, MemoryEntry>();
+  private saveTimer: NodeJS.Timeout | null = null;
+  private dirty = false;
+
+  constructor() {
+    this.loadFromDisk();
+  }
+
+  /** Load persisted memory from disk */
+  private loadFromDisk(): void {
+    try {
+      if (fs.existsSync(MEMORY_FILE)) {
+        const raw = fs.readFileSync(MEMORY_FILE, "utf-8");
+        const data = JSON.parse(raw);
+        if (Array.isArray(data)) {
+          for (const item of data) {
+            const entry: MemoryEntry = {
+              ...item,
+              createdAt: new Date(item.createdAt),
+              accessedAt: new Date(item.accessedAt),
+            };
+            this.entries.set(entry.id, entry);
+          }
+          console.log(`[LongTermMemory] Loaded ${this.entries.size} entries from disk`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[LongTermMemory] Failed to load from disk: ${err}`);
+    }
+  }
+
+  /** Save to disk with debounce */
+  private scheduleSave(): void {
+    this.dirty = true;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.saveToDisk(), SAVE_DEBOUNCE_MS);
+  }
+
+  private saveToDisk(): void {
+    if (!this.dirty) return;
+    this.dirty = false;
+    try {
+      const dir = path.dirname(MEMORY_FILE);
+      if (!fs.existsSync(dir)) {
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+        } catch {
+          // PowerShell fallback
+          const { execSync } = require("child_process");
+          execSync(`powershell -Command "New-Item -Path '${dir}' -ItemType Directory -Force"`, { stdio: "pipe" });
+        }
+      }
+      const data = Array.from(this.entries.values()).map((e) => ({
+        ...e,
+        createdAt: e.createdAt.toISOString(),
+        accessedAt: e.accessedAt.toISOString(),
+      }));
+      try {
+        fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf-8");
+      } catch {
+        // PowerShell fallback for restricted filesystem
+        const tmp = JSON.stringify(data);
+        const b64 = Buffer.from(tmp, "utf-8").toString("base64");
+        const { execSync } = require("child_process");
+        execSync(
+          `powershell -Command "[IO.File]::WriteAllBytes('${MEMORY_FILE}', [Convert]::FromBase64String('${b64}'))"`,
+          { stdio: "pipe" }
+        );
+      }
+    } catch (err) {
+      console.warn(`[LongTermMemory] Failed to save: ${err}`);
+    }
+  }
 
   async store(entry: MemoryEntry): Promise<MemoryEntry> {
     const fullEntry: MemoryEntry = {
@@ -12,6 +89,7 @@ export class LongTermMemoryStore implements LongTermMemory {
       accessedAt: entry.accessedAt || new Date(),
     };
     this.entries.set(fullEntry.id, fullEntry);
+    this.scheduleSave();
     return fullEntry;
   }
 
@@ -62,6 +140,7 @@ export class LongTermMemoryStore implements LongTermMemory {
     const entry = this.entries.get(id);
     if (entry) {
       entry.accessedAt = new Date();
+      this.scheduleSave();
     }
     return entry || null;
   }
@@ -70,11 +149,13 @@ export class LongTermMemoryStore implements LongTermMemory {
     const entry = this.entries.get(id);
     if (entry) {
       this.entries.set(id, { ...entry, ...updates, accessedAt: new Date() });
+      this.scheduleSave();
     }
   }
 
   async delete(id: string): Promise<void> {
     this.entries.delete(id);
+    this.scheduleSave();
   }
 
   async expire(): Promise<number> {
@@ -86,7 +167,18 @@ export class LongTermMemoryStore implements LongTermMemory {
         expired++;
       }
     }
+    if (expired > 0) this.scheduleSave();
     return expired;
+  }
+
+  /** Get all entries (for backup/export) */
+  async getAll(): Promise<MemoryEntry[]> {
+    return Array.from(this.entries.values());
+  }
+
+  /** Force immediate save */
+  async flush(): Promise<void> {
+    this.saveToDisk();
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

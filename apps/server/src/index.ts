@@ -73,6 +73,7 @@ export class EvoClawServer {
     this.skillManager = new SkillManager(this.registry, this.eventBus);
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
+    this.agentModelExecutor.setMemoryHub(this.memoryHub);
     this.securityGovernor = new SecurityGovernor(this.registry, this.eventBus);
     this.auditCenter = new AuditCenter(this.registry, this.eventBus);
     this.tenantManager = new TenantManager(this.registry, this.eventBus);

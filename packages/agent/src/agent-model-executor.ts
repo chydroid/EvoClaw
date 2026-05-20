@@ -69,6 +69,13 @@ export class AgentModelExecutor {
   private sessionPersistenceEnabled = true;
   private compactionTokenThreshold: number;
   private autoCompactionEnabled = true;
+  private memoryHub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } } | null = null;
+
+  /** Set memory hub for session/memory integration */
+  setMemoryHub(hub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } }): void {
+    this.memoryHub = hub;
+    console.log(`[AgentModelExecutor] Memory hub integrated`);
+  }
   private runIdCounter = 0;
   private workspacePath: string;
   private bootstrapFiles: Array<{ path: string; content: string }> = [];
@@ -266,6 +273,29 @@ export class AgentModelExecutor {
 
     this.conversationHistory.set(sessionId, compacted);
     console.log(`[AgentModelExecutor] Compacted session "${sessionId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
+
+    // Store compacted summary in long-term memory for future reference
+    if (this.memoryHub && summary) {
+      const longTerm = this.memoryHub.getLongTerm();
+      longTerm.store({
+        content: summary,
+        type: "system",
+        metadata: {
+          source: "compaction",
+          sessionId: sessionId,
+          userId: "default",
+          tags: ["conversation", "compacted"],
+          importance: 0.6,
+          associations: [],
+          entities: [],
+        },
+        ttl: 30 * 24 * 3600 * 1000, // 30 days
+        embedding: null,
+        id: "",
+        createdAt: new Date(),
+        accessedAt: new Date(),
+      }).catch((err) => console.warn(`[AgentModelExecutor] Failed to store compaction summary: ${err}`));
+    }
   }
 
   private async onPermissionApproved(requestId: string): Promise<void> {
@@ -451,7 +481,27 @@ export class AgentModelExecutor {
       return multiResult;
     }
 
-    const systemPrompt = this.buildSystemPrompt();
+    // Recall relevant past memories for contextual awareness
+    let memoryContext = "";
+    if (this.memoryHub) {
+      try {
+        const longTerm = this.memoryHub.getLongTerm();
+        const memories = await longTerm.search({
+          query: message,
+          type: "system",
+          limit: 3,
+        });
+        if (memories.length > 0) {
+          memoryContext = "\n[相关历史记忆]\n" + memories.map((m, i) => 
+            `  ${i + 1}. ${m.entry.content.slice(0, 300)}`
+          ).join("\n") + "\n";
+        }
+      } catch (err) {
+        // Silent fallback - memory is optional
+      }
+    }
+
+    const systemPrompt = this.buildSystemPrompt() + memoryContext;
     const skillManager = this.registry?.resolveService<{
       searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
       listSkills(): unknown[];
@@ -485,7 +535,40 @@ export class AgentModelExecutor {
     }
     const reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
+    
+    // Save important interaction to long-term memory
+    this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
+    
     return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
+  }
+
+  /** Asynchronously save an interaction to long-term memory */
+  private rememberInteraction(userMsg: string, agentReply: string, sessionId: string): void {
+    if (!this.memoryHub) return;
+    try {
+      const longTerm = this.memoryHub.getLongTerm();
+      const content = `User: ${userMsg}\nAgent: ${agentReply}`;
+      longTerm.store({
+        content,
+        type: "conversation",
+        metadata: {
+          source: "chat",
+          sessionId,
+          userId: "default",
+          tags: ["chat"],
+          importance: 0.4,
+          associations: [],
+          entities: [],
+        },
+        ttl: 7 * 24 * 3600 * 1000, // 7 days
+        embedding: null,
+        id: "",
+        createdAt: new Date(),
+        accessedAt: new Date(),
+      }).catch((err) => console.warn(`[AgentModelExecutor] Memory save failed: ${err}`));
+    } catch {
+      // Silent fallback
+    }
   }
 
   private parseMultipleTasks(message: string): string[] {
