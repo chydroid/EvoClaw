@@ -869,6 +869,152 @@ export class EvoClawServer {
       }
     );
 
+    // ============ Web Search & Fetch Tools ============
+    // Standalone web tools not requiring browser controller
+
+    this.agentModelExecutor.registerTool(
+      "web_fetch",
+      {
+        name: "web_fetch",
+        description: "Fetch content from a web URL and extract readable text. Use for getting page content, RSS feeds, or API data.",
+        parameters: {
+          url: { type: "string", description: "The URL to fetch content from" },
+          format: { type: "string", description: "Response format: 'text' (plain), 'html' (raw), or 'json' (parsed JSON). Default: 'text'" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const url = String(params.url || "");
+        const format = String(params.format || "text");
+        if (!url || !url.startsWith("http")) {
+          return { error: "Valid HTTP/HTTPS URL is required" };
+        }
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          const response = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
+              "Accept": format === "json" ? "application/json" : "text/html,text/plain,*/*",
+            },
+            signal: controller.signal,
+            redirect: "follow",
+          });
+          clearTimeout(timeout);
+          if (!response.ok) {
+            return { error: `HTTP ${response.status}`, url };
+          }
+
+          if (format === "json") {
+            const data = await response.json();
+            return { url, status: response.status, data };
+          }
+
+          const text = await response.text();
+          if (format === "html") {
+            return { url, status: response.status, html: text.slice(0, 8000), length: text.length };
+          }
+
+          // Extract readable text from HTML
+          const plainText = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&nbsp;/g, " ")
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
+          return {
+            url,
+            title: titleMatch ? titleMatch[1].trim() : url,
+            status: response.status,
+            text: plainText.slice(0, 5000),
+            length: plainText.length,
+          };
+        } catch (err: any) {
+          return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
+        }
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "web_search",
+      {
+        name: "web_search",
+        description: "Search the web using DuckDuckGo (no API key needed). Returns titles, URLs, and snippets.",
+        parameters: {
+          query: { type: "string", description: "Search query string" },
+          limit: { type: "string", description: "Max results (default 10)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const query = String(params.query || "");
+        const limit = parseInt(String(params.limit || "10"), 10) || 10;
+        if (!query) return { error: "Search query is required" };
+
+        try {
+          const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000);
+          const response = await fetch(searchUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
+              "Accept": "text/html",
+            },
+            signal: controller.signal,
+            redirect: "follow",
+          });
+          clearTimeout(timeout);
+
+          if (!response.ok) {
+            return { error: `Search failed: HTTP ${response.status}` };
+          }
+
+          const html = await response.text();
+          // Extract search results from DuckDuckGo HTML
+          const results: Array<{ title: string; url: string; snippet: string }> = [];
+          const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*)<\/a>/gi;
+          let match;
+          while ((match = resultRegex.exec(html)) !== null && results.length < limit) {
+            results.push({
+              title: match[2].trim().replace(/<\/?[^>]+>/g, ""),
+              url: match[1],
+              snippet: match[3].trim().replace(/<\/?[^>]+>/g, ""),
+            });
+          }
+          // Fallback: extract any links
+          if (results.length === 0) {
+            const linkRegex = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+            while ((match = linkRegex.exec(html)) !== null && results.length < limit) {
+              const text = match[2].replace(/<\/?[^>]+>/g, "").trim();
+              if (text.length > 10) {
+                results.push({ title: text.slice(0, 200), url: match[1], snippet: "" });
+              }
+            }
+          }
+          // Last resort: generic link extraction
+          if (results.length === 0) {
+            const genericLinks = html.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([^<]+)<\/a>/gi);
+            if (genericLinks) {
+              for (const link of genericLinks.slice(0, limit)) {
+                const hrefMatch = link.match(/href="(https?:\/\/[^"]+)"/i);
+                const textMatch = link.match(/>([^<]+)</);
+                if (hrefMatch && textMatch && textMatch[1].trim().length > 10) {
+                  results.push({ title: textMatch[1].trim().slice(0, 200), url: hrefMatch[1], snippet: "" });
+                }
+              }
+            }
+          }
+          return { query, source: "DuckDuckGo", count: results.length, results: results.slice(0, limit) };
+        } catch (err: any) {
+          return { error: err.name === "AbortError" ? "Search timed out" : (err.message || String(err)) };
+        }
+      }
+    );
+
     this.agentModelExecutor.registerTool(
       "email_add_account",
       {

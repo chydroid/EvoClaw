@@ -1072,12 +1072,49 @@ export class AgentModelExecutor {
           s.name.includes("新闻") ||
           (s.description && (s.description.includes("新闻") || s.description.includes("news")))
         );
+        const formatSkillResult = (result: any): string => {
+          if (!result.success) {
+            const errors = result.errors || [];
+            return `❌ 执行失败: ${errors.join("; ") || "未知错误"}`;
+          }
+          const output = result.output;
+          if (!output) return `✅ 执行完成，但无返回数据。`;
+          
+          // Extract actual search results
+          let formatted = "";
+          if (output.raw) {
+            // Try to parse as JSON search results
+            try {
+              const parsed = JSON.parse(output.raw);
+              if (Array.isArray(parsed)) {
+                formatted = parsed.slice(0, 15).map((item: any, i: number) => {
+                  const title = item.title || item.name || "";
+                  const url = item.url || item.link || item.site_name || "";
+                  return `  ${i + 1}. **${title}** ${url ? `\n     ${url}` : ""}`;
+                }).join("\n");
+              }
+            } catch {
+              formatted = output.raw.slice(0, 3000);
+            }
+          }
+          if (output.text && !formatted) {
+            formatted = output.text.slice(0, 3000);
+          }
+          if (!formatted) {
+            formatted = JSON.stringify(output).slice(0, 3000);
+          }
+          return formatted;
+        };
+
         if (newsSkill) {
           addLine(`📦 步骤3: 找到技能 "${newsSkill.name}"，正在执行...`);
           try {
             const result = await skillManager.executeSkill(newsSkill.id, { prompt: message, query: message });
             addLine(`✅ 技能执行完成！`);
-            addLine(`结果: ${JSON.stringify(result, null, 2).slice(0, 3000)}`);
+            addLine(``);
+            const display = formatSkillResult(result);
+            addLine(display);
+            addLine(``);
             return lines.join("\n");
           } catch (err) {
             addLine(`⚠ 技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1088,13 +1125,26 @@ export class AgentModelExecutor {
           addLine(`📦 步骤3: 搜索相关技能...`);
           if (allSkills.length > 0) {
             addLine(`当前已安装 ${allSkills.length} 个技能: ${allSkills.map(s => `"${s.name}"`).join(", ")}`);
-            // Try the first available skill that looks useful
-            for (const skill of allSkills) {
+            // Try skills that look relevant first (search/search-related)
+            const searchSkills = allSkills.filter(s => 
+              s.name.toLowerCase().includes("search") || 
+              s.name.toLowerCase().includes("search") || 
+              (s.description && (s.description?.toLowerCase().includes("search") || s.description?.toLowerCase().includes("搜索")))
+            );
+            const trySkills = searchSkills.length > 0 ? searchSkills : allSkills;
+            for (const skill of trySkills) {
               addLine(`🔄 尝试执行 "${skill.name}"...`);
               try {
                 const result = await skillManager.executeSkill(skill.id, { prompt: message, query: message });
+                const display = formatSkillResult(result);
+                if (display.startsWith("✅")) {
+                  addLine(display);
+                  addLine(``);
+                  return lines.join("\n");
+                }
                 addLine(`✅ "${skill.name}" 执行完成！`);
-                addLine(`结果: ${JSON.stringify(result, null, 2).slice(0, 3000)}`);
+                addLine(display);
+                addLine(``);
                 return lines.join("\n");
               } catch {
                 addLine(`⚠ "${skill.name}" 不适用于此任务，继续尝试...`);

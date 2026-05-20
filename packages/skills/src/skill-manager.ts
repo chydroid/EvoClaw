@@ -102,6 +102,16 @@ export class SkillManager {
       .map((t) => t.pattern.replace(/\/|\^|\$/g, ""))
       .slice(0, 10);
 
+    // Determine sandbox policy based on skill requirements
+    const needsNetwork = parsed.meta.requires?.some(r => r.name === "python3" || r.name === "python") ||
+      (parsed.meta.metadata?.openclaw?.requires?.env?.length ?? 0) > 0 ||
+      parsed.meta.description?.toLowerCase().includes("search") ||
+      parsed.meta.description?.toLowerCase().includes("web") ||
+      parsed.meta.description?.toLowerCase().includes("api");
+    const needsSubprocess = parsed.meta.requires?.some(r => r.name === "python3" || r.name === "python" || r.name === "node") ||
+      (parsed.meta.metadata?.openclaw?.requires?.bins?.length ?? 0) > 0;
+    const hasScripts = parsed.scripts && Object.keys(parsed.scripts).length > 0;
+
     const skill: Skill = {
       id: uuid(),
       name: parsed.meta.name,
@@ -114,12 +124,12 @@ export class SkillManager {
       category: "custom",
       entryPoint: skillPath,
       sandboxPolicy: {
-        allowNetwork: false,
+        allowNetwork: needsNetwork || needsSubprocess,
         allowFileSystem: true,
-        allowSubprocess: false,
-        maxExecutionTime: 30000,
-        maxMemoryMB: 128,
-        allowedHosts: [],
+        allowSubprocess: needsSubprocess || hasScripts,
+        maxExecutionTime: 60000,
+        maxMemoryMB: 256,
+        allowedHosts: needsNetwork ? ["*"] : [],
         allowedPaths: [],
       },
       installPath: skillPath,

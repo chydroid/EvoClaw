@@ -158,6 +158,21 @@ export class SKILLmdParser {
         for (const [lang, code] of codeBlocks) {
           (result.scripts as Record<string, string>)[lang || "default"] = code;
         }
+      } else if (key.includes("usage") || key.includes("run") || key.includes("execute")) {
+        // Also extract executable commands from Usage/Run sections
+        result.scripts = result.scripts || {};
+        const codeBlocks = this.extractCodeBlocks(content);
+        for (const [lang, code] of codeBlocks) {
+          const scriptKey = lang || "default";
+          if (!(result.scripts as Record<string, string>)[scriptKey]) {
+            (result.scripts as Record<string, string>)[scriptKey] = code;
+          }
+        }
+        // Also detect inline shell/bash commands in the usage section
+        const shellCommands = this.extractShellCommands(content);
+        if (shellCommands.length > 0 && !(result.scripts as Record<string, string>)["default"]) {
+          (result.scripts as Record<string, string>)["default"] = shellCommands.join("\n");
+        }
       } else if (key.includes("example")) {
         result.examples = result.examples || [];
         (result.examples as string[]).push(content);
@@ -173,6 +188,24 @@ export class SKILLmdParser {
     }
 
     return result;
+  }
+
+  private extractShellCommands(content: string): string[] {
+    const commands: string[] = [];
+    // Match commands like: python3 scripts/search.py '...' or node script.js
+    const cmdRegex = /^[#$]\s*(python3?\s+.+|node\s+.+|bash\s+.+|curl\s+.+)/gm;
+    let m: RegExpExecArray | null;
+    while ((m = cmdRegex.exec(content)) !== null) {
+      commands.push(m[1].trim());
+    }
+    // Also match commands without $ prefix in text
+    if (commands.length === 0) {
+      const plainCmdRegex = /^(python3?\s+.+|python\s+.+\.py\b)/gm;
+      while ((m = plainCmdRegex.exec(content)) !== null) {
+        commands.push(m[1].trim());
+      }
+    }
+    return commands;
   }
 
   private extractCodeBlocks(content: string): [string, string][] {
