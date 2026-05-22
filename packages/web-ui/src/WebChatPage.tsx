@@ -589,7 +589,7 @@ export function WebChatPage() {
       setCurrentProgress((prev) => Math.min(prev + Math.random() * 10 + 3, 85));
       msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1; // Cycle through 2nd to last message
       setLoadingMessageIndex(msgIndex);
-    }, 2000);
+    }, 3000);
 
     try {
       const res = await fetch("/api/chat", {
