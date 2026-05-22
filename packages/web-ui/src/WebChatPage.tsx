@@ -773,14 +773,15 @@ export function WebChatPage() {
           method: "DELETE",
         });
         if (res.ok) {
-          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          // 先计算剩余的会话
+          const remainingSessions = sessions.filter((s) => s.id !== sessionId);
+          setSessions(remainingSessions);
+          
           if (activeSessionId === sessionId) {
-            const remaining = sessions.filter((s) => s.id !== sessionId);
-            if (remaining.length > 0) {
-              setActiveSessionId(remaining[0].id);
+            if (remainingSessions.length > 0) {
+              setActiveSessionId(remainingSessions[0].id);
             } else {
-              setActiveSessionId(null);
-              setMessages([]);
+              // 删除最后一个会话时，直接创建新会话，不要先设为null
               await createBackendSession();
             }
           }
