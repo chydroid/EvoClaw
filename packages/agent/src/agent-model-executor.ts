@@ -937,6 +937,20 @@ export class AgentModelExecutor {
       }
     }
 
+    // ── Skill install detection: handle skill installation requests early ──
+    const skillManager = this.registry?.resolveService<{
+      searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
+      listSkills(): unknown[];
+      executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
+    }>("skillManager");
+    
+    const installKeywords = /(?:安装|下载|添加|配置).*?(?:技能|skill|skills?)/i;
+    const installRequest = /(?:给我|帮我|需要|想要).*?(?:安装|下载|添加|配置).*?(?:技能|skill|skills?)/i;
+    if (installKeywords.test(message) || installRequest.test(message)) {
+      console.log(`[AgentModelExecutor] Skill install request detected: "${message}"`);
+      return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
+    }
+
     // ── Email account detection: detect email credentials in user input ──
     const emailAccountResult = await this.detectAndConfigureEmailAccount(message);
     if (emailAccountResult) {
@@ -978,12 +992,6 @@ export class AgentModelExecutor {
     }
 
     const systemPrompt = this.buildSystemPrompt() + memoryContext;
-    const skillManager = this.registry?.resolveService<{
-      searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
-      listSkills(): unknown[];
-      executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
-    }>("skillManager");
-
     const installedSkills = await skillManager?.listSkills() || [];
 
     // ── Semantic intent detection + real-time search pre-processing ──
@@ -1090,12 +1098,6 @@ export class AgentModelExecutor {
         }
         return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
       }
-    }
-
-    // Check if user wants to install skills
-    const installMatch = message.match(/(?:安装|下载|添加|配置)\s*(?:技能|skill|skills?)[：:\s]*(.+)/i);
-    if (installMatch || message.match(/(?:给我|帮我|需要)\s*(?:安装|下载|添加|配置)\s*(?:一些|常用|热门|排名靠前)?\s*(?:技能|skill|skills?)/i)) {
-      return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
     }
 
     // LLM unavailable: try skill-based execution for actionable tasks
@@ -1284,30 +1286,6 @@ export class AgentModelExecutor {
     sessionId: string
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
     try {
-      // Get default skills list
-      const defaultSkillsPath = path.join(process.cwd(), "data", "workspace", "skills", "default-skills.json");
-      let availableSkills: Array<{ name: string; description: string; path: string; category: string; installCount: number }> = [];
-      
-      try {
-        if (fs.existsSync(defaultSkillsPath)) {
-          const content = fs.readFileSync(defaultSkillsPath, "utf-8");
-          const data = JSON.parse(content);
-          availableSkills = data.skills || [];
-        }
-      } catch {
-        // Fallback to hardcoded list
-        availableSkills = [
-          { name: "weather", description: "查询天气信息", path: "skills/weather", category: "utility", installCount: 15000 },
-          { name: "web-search", description: "网页搜索", path: "skills/web-search", category: "search", installCount: 25000 },
-          { name: "code-runner", description: "运行代码片段", path: "skills/code-runner", category: "development", installCount: 18000 },
-          { name: "translator", description: "翻译文本", path: "skills/translator", category: "utility", installCount: 20000 },
-          { name: "calculator", description: "数学计算", path: "skills/calculator", category: "utility", installCount: 22000 },
-          { name: "file-manager", description: "文件管理", path: "skills/file-manager", category: "system", installCount: 10000 },
-          { name: "reminder", description: "设置提醒", path: "skills/reminder", category: "productivity", installCount: 14000 },
-          { name: "news-search", description: "搜索最新新闻", path: "skills/news-search", category: "search", installCount: 12000 },
-        ];
-      }
-
       // Get currently installed skills
       const installedSkills = await skillManager?.listSkills() || [];
       const installedNames = new Set(
@@ -1316,8 +1294,41 @@ export class AgentModelExecutor {
           .filter(Boolean)
       );
 
+      // Search remote skill registries for popular skills
+      let remoteSkills: Array<{ name: string; description: string; version: string; rating: number; downloads: number; category: string }> = [];
+      
+      try {
+        // Use skill registry to search remote
+        const skillRegistry = this.registry?.resolveService<{
+          searchRemote(query: Record<string, unknown>): Promise<{ entries: Array<{ name: string; description: string; version: string; rating: number; downloads: number; category: string }> }>;
+        }>("skillRegistry");
+        
+        if (skillRegistry) {
+          const result = await skillRegistry.searchRemote({ keyword: "", limit: 20, sortBy: "downloads" });
+          if (result && result.entries) {
+            remoteSkills = result.entries;
+          }
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Remote skill search failed: ${err}`);
+      }
+
+      // Fallback to default skills if remote search failed
+      if (remoteSkills.length === 0) {
+        remoteSkills = [
+          { name: "weather", description: "查询天气信息", version: "1.0.0", rating: 4.5, downloads: 15000, category: "utility" },
+          { name: "web-search", description: "网页搜索", version: "1.0.0", rating: 4.8, downloads: 25000, category: "search" },
+          { name: "code-runner", description: "运行代码片段", version: "1.0.0", rating: 4.3, downloads: 18000, category: "development" },
+          { name: "translator", description: "翻译文本", version: "1.0.0", rating: 4.6, downloads: 20000, category: "utility" },
+          { name: "calculator", description: "数学计算", version: "1.0.0", rating: 4.4, downloads: 22000, category: "utility" },
+          { name: "file-manager", description: "文件管理", version: "1.0.0", rating: 4.1, downloads: 10000, category: "system" },
+          { name: "reminder", description: "设置提醒", version: "1.0.0", rating: 4.2, downloads: 14000, category: "productivity" },
+          { name: "news-search", description: "搜索最新新闻", version: "1.0.0", rating: 4.5, downloads: 12000, category: "search" },
+        ];
+      }
+
       // Filter out already installed skills
-      const notInstalled = availableSkills.filter((s) => !installedNames.has(s.name));
+      const notInstalled = remoteSkills.filter((s) => !installedNames.has(s.name));
 
       if (notInstalled.length === 0) {
         return {
@@ -1330,17 +1341,18 @@ export class AgentModelExecutor {
         };
       }
 
-      // Sort by install count (popularity)
-      notInstalled.sort((a, b) => b.installCount - a.installCount);
+      // Sort by downloads (popularity)
+      notInstalled.sort((a, b) => b.downloads - a.downloads);
 
       // Build response
       let reply = "📦 **技能安装助手**\n\n";
       reply += "以下是推荐安装的常用技能（按使用量排序）：\n\n";
       
       notInstalled.forEach((skill, index) => {
-        const popularity = skill.installCount > 20000 ? "🔥 热门" : skill.installCount > 15000 ? "⭐ 推荐" : "📌 常用";
-        reply += `${index + 1}. **${skill.name}** - ${skill.description}\n`;
-        reply += `   ${popularity} | 安装量: ${skill.installCount.toLocaleString()} | 分类: ${skill.category}\n\n`;
+        const popularity = skill.downloads > 20000 ? "🔥 热门" : skill.downloads > 15000 ? "⭐ 推荐" : "📌 常用";
+        const stars = "★".repeat(Math.floor(skill.rating)) + "☆".repeat(5 - Math.floor(skill.rating));
+        reply += `${index + 1}. **${skill.name}** v${skill.version} - ${skill.description}\n`;
+        reply += `   ${popularity} | ${stars} | 下载量: ${skill.downloads.toLocaleString()} | 分类: ${skill.category}\n\n`;
       });
 
       reply += "---\n\n";
