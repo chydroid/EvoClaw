@@ -475,7 +475,7 @@ export class SessionManager {
     );
   }
 
-  /** Get the first user message preview (first 20 chars by word count) */
+  /** Get the first user message preview (first 23 chars by word count) */
   private getFirstMessagePreview(agentId: string, sessionId: string): string | null {
     const turns = this.loadTranscript(agentId, sessionId);
     if (turns.length === 0) return null;
@@ -503,8 +503,8 @@ export class SessionManager {
     const hasValidChars = /[\u4e00-\u9fa5a-zA-Z]/.test(cleanContent);
     if (!hasValidChars) return null;
 
-    // Calculate preview: 20 words (Chinese = 1 word, English = 2 letters = 1 word)
-    const previewLength = this.calculatePreviewLength(cleanContent, 20);
+    // Calculate preview: 23 words (Chinese = 1 word, English = 2 letters = 1 word)
+    const previewLength = this.calculatePreviewLength(cleanContent, 23);
     const preview = cleanContent.substring(0, previewLength);
     
     return preview.length < cleanContent.length ? preview + "..." : preview;
