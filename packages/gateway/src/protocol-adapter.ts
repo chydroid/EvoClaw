@@ -293,15 +293,34 @@ export class ProtocolAdapter {
       }
     });
 
-    app.get("/api/skills", async (_req: Request, res: Response) => {
+    app.get("/api/skills", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
           listSkills(): Promise<unknown[]>;
+          searchLocalSkills(query: Record<string, unknown>): Promise<unknown>;
+          searchRemoteSkills(query: Record<string, unknown>): Promise<unknown>;
         }>("skillManager");
         if (!skillManager) {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
+        
+        // If keyword parameter is provided, perform search
+        const keyword = req.query.keyword as string;
+        if (keyword) {
+          const query = { keyword, limit: parseInt(req.query.limit as string) || 20 };
+          const localResults = await skillManager.searchLocalSkills(query);
+          const remoteResults = await skillManager.searchRemoteSkills(query);
+          res.json({ 
+            success: true, 
+            keyword,
+            local: localResults,
+            remote: remoteResults
+          });
+          return;
+        }
+        
+        // Otherwise list all installed skills
         const skills = await skillManager.listSkills();
         res.json(skills);
       } catch (err) {

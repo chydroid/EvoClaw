@@ -1092,6 +1092,12 @@ export class AgentModelExecutor {
       }
     }
 
+    // Check if user wants to install skills
+    const installMatch = message.match(/(?:安装|下载|添加|配置)\s*(?:技能|skill|skills?)[：:\s]*(.+)/i);
+    if (installMatch || message.match(/(?:给我|帮我|需要)\s*(?:安装|下载|添加|配置)\s*(?:一些|常用|热门|排名靠前)?\s*(?:技能|skill|skills?)/i)) {
+      return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
+    }
+
     // LLM unavailable: try skill-based execution for actionable tasks
     const msg = message.toLowerCase();
     if (this.hasActionIntent(message)) {
@@ -1269,6 +1275,95 @@ export class AgentModelExecutor {
       duration: Date.now() - startTime,
       permissionRequests: [...pendingPermissions]
     };
+  }
+
+  private async handleSkillInstall(
+    message: string,
+    skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown>; listSkills(): unknown[]; installSkill?(path: string): Promise<unknown> } | undefined,
+    startTime: number,
+    sessionId: string
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+    try {
+      // Get default skills list
+      const defaultSkillsPath = path.join(process.cwd(), "data", "workspace", "skills", "default-skills.json");
+      let availableSkills: Array<{ name: string; description: string; path: string; category: string; installCount: number }> = [];
+      
+      try {
+        if (fs.existsSync(defaultSkillsPath)) {
+          const content = fs.readFileSync(defaultSkillsPath, "utf-8");
+          const data = JSON.parse(content);
+          availableSkills = data.skills || [];
+        }
+      } catch {
+        // Fallback to hardcoded list
+        availableSkills = [
+          { name: "weather", description: "查询天气信息", path: "skills/weather", category: "utility", installCount: 15000 },
+          { name: "web-search", description: "网页搜索", path: "skills/web-search", category: "search", installCount: 25000 },
+          { name: "code-runner", description: "运行代码片段", path: "skills/code-runner", category: "development", installCount: 18000 },
+          { name: "translator", description: "翻译文本", path: "skills/translator", category: "utility", installCount: 20000 },
+          { name: "calculator", description: "数学计算", path: "skills/calculator", category: "utility", installCount: 22000 },
+          { name: "file-manager", description: "文件管理", path: "skills/file-manager", category: "system", installCount: 10000 },
+          { name: "reminder", description: "设置提醒", path: "skills/reminder", category: "productivity", installCount: 14000 },
+          { name: "news-search", description: "搜索最新新闻", path: "skills/news-search", category: "search", installCount: 12000 },
+        ];
+      }
+
+      // Get currently installed skills
+      const installedSkills = await skillManager?.listSkills() || [];
+      const installedNames = new Set(
+        (installedSkills as Array<Record<string, unknown>>)
+          .map((s) => (s.name as string) || "")
+          .filter(Boolean)
+      );
+
+      // Filter out already installed skills
+      const notInstalled = availableSkills.filter((s) => !installedNames.has(s.name));
+
+      if (notInstalled.length === 0) {
+        return {
+          reply: "✅ 所有常用技能已经安装完成了！当前已安装的技能包括：\n\n" + 
+                 Array.from(installedNames).map((name) => `  • ${name}`).join("\n") + 
+                 "\n\n如果您需要特定的技能，请告诉我技能名称。",
+          tokensUsed: 0,
+          duration: Date.now() - startTime,
+          permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+        };
+      }
+
+      // Sort by install count (popularity)
+      notInstalled.sort((a, b) => b.installCount - a.installCount);
+
+      // Build response
+      let reply = "📦 **技能安装助手**\n\n";
+      reply += "以下是推荐安装的常用技能（按使用量排序）：\n\n";
+      
+      notInstalled.forEach((skill, index) => {
+        const popularity = skill.installCount > 20000 ? "🔥 热门" : skill.installCount > 15000 ? "⭐ 推荐" : "📌 常用";
+        reply += `${index + 1}. **${skill.name}** - ${skill.description}\n`;
+        reply += `   ${popularity} | 安装量: ${skill.installCount.toLocaleString()} | 分类: ${skill.category}\n\n`;
+      });
+
+      reply += "---\n\n";
+      reply += "💡 **安装方式**：\n";
+      reply += "请回复技能编号或名称来安装，例如：\n";
+      reply += "• \"安装 1,2,3\" 或 \"安装 weather,translator\"\n";
+      reply += "• \"全部安装\" 安装所有推荐技能\n\n";
+      reply += "已安装技能: " + (installedNames.size > 0 ? Array.from(installedNames).join(", ") : "无") + "\n";
+
+      return {
+        reply,
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+      };
+    } catch (err) {
+      return {
+        reply: `❌ 获取技能列表时出错: ${err}`,
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+      };
+    }
   }
 
   private hasActionIntent(message: string): boolean {
