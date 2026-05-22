@@ -240,7 +240,7 @@ const dotStyle: CSSProperties = {
 };
 
 const loadingMessages = [
-  "正在分析您的需求...",
+  "正在分析你的需求...",
   "正在检索相关信息...",
   "正在处理中，请稍候...",
   "正在生成回复...",
@@ -568,7 +568,7 @@ export function WebChatPage() {
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsStreaming(true);
-    setLoadingMessageIndex(0);
+    setLoadingMessageIndex(0); // First message shows once
     setCurrentProgress(0);
 
     const botMsgId = `bot-${Date.now()}`;
@@ -581,11 +581,15 @@ export function WebChatPage() {
 
     setMessages((prev) => [...prev, botMsg]);
 
-    // Start loading animation loop
-    const loadingInterval = setInterval(() => {
-      setLoadingMessageIndex((prev) => (prev + 1) % loadingMessages.length);
-      setCurrentProgress((prev) => Math.min(prev + Math.random() * 15 + 5, 90));
-    }, 1500);
+    // Start loading animation - first message shows once, then cycle through others
+    let msgIndex = 1; // Start from second message
+    setLoadingMessageIndex(1);
+    
+    const progressInterval = setInterval(() => {
+      setCurrentProgress((prev) => Math.min(prev + Math.random() * 10 + 3, 85));
+      msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1; // Cycle through 2nd to last message
+      setLoadingMessageIndex(msgIndex);
+    }, 2000);
 
     try {
       const res = await fetch("/api/chat", {
@@ -647,7 +651,7 @@ export function WebChatPage() {
         );
       }
     } catch {
-      clearInterval(loadingInterval);
+      clearInterval(progressInterval);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMsgId
@@ -657,7 +661,7 @@ export function WebChatPage() {
       );
     }
 
-    clearInterval(loadingInterval);
+    clearInterval(progressInterval);
     setIsStreaming(false);
     setCurrentProgress(100);
   }, [input, isStreaming, activeSessionId]);
