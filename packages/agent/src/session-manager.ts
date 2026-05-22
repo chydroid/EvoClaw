@@ -475,7 +475,7 @@ export class SessionManager {
     );
   }
 
-  /** Get the first user message preview (first 12 chars) */
+  /** Get the first user message preview (first 20 chars by word count) */
   private getFirstMessagePreview(agentId: string, sessionId: string): string | null {
     const turns = this.loadTranscript(agentId, sessionId);
     if (turns.length === 0) return null;
@@ -496,15 +496,53 @@ export class SessionManager {
     // Skip if content is too long (likely a web scrape)
     if (content.length > 5000) return null;
 
-    // Simple cleanup - just remove extra whitespace
-    const cleanContent = content.replace(/\s+/g, " ").trim();
+    // Remove all whitespace
+    const cleanContent = content.replace(/\s+/g, "");
     
     // Check if content looks valid (at least some Chinese or English characters)
     const hasValidChars = /[\u4e00-\u9fa5a-zA-Z]/.test(cleanContent);
     if (!hasValidChars) return null;
 
-    // Return first 12 characters
-    return cleanContent.length > 12 ? cleanContent.substring(0, 12) + "..." : cleanContent;
+    // Calculate preview: 20 words (Chinese = 1 word, English = 2 letters = 1 word)
+    const previewLength = this.calculatePreviewLength(cleanContent, 20);
+    const preview = cleanContent.substring(0, previewLength);
+    
+    return preview.length < cleanContent.length ? preview + "..." : preview;
+  }
+
+  /** Calculate preview length based on word count rules */
+  private calculatePreviewLength(content: string, targetWordCount: number): number {
+    let wordCount = 0;
+    let charIndex = 0;
+    let englishBuffer = 0;
+    
+    while (charIndex < content.length && wordCount < targetWordCount) {
+      const char = content[charIndex];
+      
+      if (/[\u4e00-\u9fa5]/.test(char)) {
+        // Chinese character = 1 word
+        wordCount++;
+        charIndex++;
+      } else if (/[a-zA-Z]/.test(char)) {
+        // English letter - 2 letters = 1 word
+        englishBuffer++;
+        charIndex++;
+        if (englishBuffer >= 2) {
+          wordCount++;
+          englishBuffer = 0;
+        }
+      } else {
+        // Other characters (numbers, symbols) - count as part of word but not as word boundary
+        charIndex++;
+      }
+    }
+    
+    // If we have remaining English letters, count them as a word
+    if (englishBuffer > 0 && wordCount < targetWordCount) {
+      wordCount++;
+    }
+    
+    return charIndex;
   }
 
   /** List all agent directories */
