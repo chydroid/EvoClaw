@@ -5,6 +5,27 @@ import { simpleParser, type ParsedMail } from "mailparser";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { ImapFlow } from "imapflow";
+
+export interface InboxOptions {
+  accountId: string;
+  folder?: string;
+  limit?: number;
+  unreadOnly?: boolean;
+  since?: Date;
+}
+
+export interface EmailListItem {
+  uid: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: Date;
+  size: number;
+  flags: string[];
+  hasAttachments: boolean;
+  snippet: string;
+}
 
 export interface EmailAccount {
   id: string;
@@ -281,7 +302,7 @@ export class EmailClient {
       id: parsed.messageId || `email-${Date.now()}`,
       from,
       to,
-      subject: parsed.subject || "(No Subject)",
+      subject: parsed.subject || "(无主题)",
       date: parsed.date || new Date(),
       text: parsed.text || "",
       html: parsed.html || null,
@@ -461,5 +482,222 @@ export class EmailClient {
 
   async healthCheck(): Promise<boolean> {
     return true;
+  }
+
+  /**
+   * Connect to email account via IMAP and list emails
+   */
+  async listEmails(options: InboxOptions): Promise<EmailListItem[]> {
+    const account = this.accounts.get(options.accountId);
+    if (!account) throw new Error(`Account not found: ${options.accountId}`);
+    if (!account.imapHost || !account.imapPort) {
+      throw new Error(`IMAP not configured for account ${options.accountId}`);
+    }
+
+    const password = this.decryptPassword(account);
+    const emails: EmailListItem[] = [];
+
+    try {
+      const client = new ImapFlow({
+        host: account.imapHost,
+        port: account.imapPort,
+        secure: account.imapPort === 993,
+        auth: {
+          user: account.email,
+          pass: password,
+        },
+        logger: false,
+      });
+
+      await client.connect();
+      await client.mailboxOpen(options.folder || "INBOX");
+
+      const limit = options.limit || 50;
+      
+      // 使用简单查询方式，从第一封开始获取
+      let fetched = 0;
+      for await (const message of client.fetch('1:*', {
+        envelope: true,
+        flags: true,
+        size: true,
+        uid: true,
+      })) {
+        const envelope = message.envelope;
+        if (!envelope) continue;
+
+        const fromAddr = envelope.from?.[0];
+        const toAddr = envelope.to?.[0];
+        const flags = message.flags;
+        const hasAttachments = flags instanceof Set ? flags.has("\\Attachment") : false;
+        const flagsArray = flags instanceof Set ? Array.from(flags) : [];
+
+        emails.unshift({
+          uid: String(message.uid),
+          subject: envelope.subject || "(无主题)",
+          from: fromAddr ? `${fromAddr.name || ""} <${fromAddr.address}>`.trim() : "",
+          to: toAddr ? `${toAddr.name || ""} <${toAddr.address}>`.trim() : "",
+          date: envelope.date ? new Date(envelope.date) : new Date(),
+          size: message.size || 0,
+          flags: flagsArray,
+          hasAttachments,
+          snippet: "(请查看完整邮件以获取预览)",
+        });
+        
+        fetched++;
+        if (fetched >= limit) break;
+      }
+
+      await client.logout();
+    } catch (err) {
+      console.error(`[EmailClient] Failed to list emails: ${err}`);
+      throw new Error(`无法连接邮箱: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return emails;
+  }
+
+  /**
+   * Fetch full email content by UID
+   */
+  async getEmail(accountId: string, uid: string): Promise<ParsedEmail> {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new Error(`Account not found: ${accountId}`);
+    if (!account.imapHost || !account.imapPort) {
+      throw new Error(`IMAP not configured for account ${accountId}`);
+    }
+
+    const password = this.decryptPassword(account);
+
+    const client = new ImapFlow({
+      host: account.imapHost,
+      port: account.imapPort,
+      secure: account.imapPort === 993,
+      auth: {
+        user: account.email,
+        pass: password,
+      },
+      logger: false,
+    });
+
+    try {
+      await client.connect();
+      await client.mailboxOpen("INBOX");
+
+      const lock = await client.getMailboxLock("INBOX");
+      let rawContent = "";
+
+      try {
+        const msg = await client.fetchOne(uid, { envelope: true, source: true });
+        if (msg && msg.source) {
+          if (Buffer.isBuffer(msg.source)) {
+            rawContent = msg.source.toString("utf-8");
+          } else {
+            rawContent = msg.source as string;
+          }
+        }
+      } finally {
+        lock.release();
+      }
+
+      await client.logout();
+
+      if (!rawContent) {
+        throw new Error("无法获取邮件内容");
+      }
+
+      return this.parseRawEmail(rawContent);
+    } catch (err) {
+      await client.logout().catch(() => {});
+      throw err;
+    }
+  }
+
+  /**
+   * Get inbox summary with statistics
+   */
+  async getInboxSummary(accountId: string): Promise<{
+    total: number;
+    unread: number;
+    recent: EmailListItem[];
+    categories: Record<string, number>;
+  }> {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new Error(`Account not found: ${accountId}`);
+
+    const categories: Record<string, number> = {
+      "工作/商务": 0,
+      "账单/财务": 0,
+      "社交/通知": 0,
+      "营销/推广": 0,
+      "安全/账户": 0,
+      "其他": 0,
+    };
+
+    let total = 0;
+    let unread = 0;
+    let recent: EmailListItem[] = [];
+
+    try {
+      if (account.imapHost && account.imapPort) {
+        const password = this.decryptPassword(account);
+        const client = new ImapFlow({
+          host: account.imapHost,
+          port: account.imapPort,
+          secure: account.imapPort === 993,
+          auth: {
+            user: account.email,
+            pass: password,
+          },
+          logger: false,
+        });
+
+        await client.connect();
+        const mailbox = await client.mailboxOpen("INBOX");
+
+        // Get actual total from mailbox
+        total = mailbox && 'exists' in mailbox ? mailbox.exists : 0;
+
+        await client.logout();
+
+        // Fetch recent emails
+        recent = await this.listEmails({ accountId, limit: 20 });
+
+        // Count unread from flags
+        unread = recent.filter(e => !e.flags.includes("\\Seen")).length;
+      } else {
+        // Fall back if no IMAP configured
+        total = 0;
+        unread = 0;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[EmailClient] Failed to get full inbox summary for ${account.email}: ${errMsg}`);
+      // 出错时尝试获取邮件作为备用方案
+      try {
+        recent = await this.listEmails({ accountId, limit: 20 });
+        total = recent.length;
+        unread = recent.filter(e => !e.flags.includes("\\Seen")).length;
+      } catch (err2) {
+        const err2Msg = err2 instanceof Error ? err2.message : String(err2);
+        console.error(`[EmailClient] Fallback listEmails also failed: ${err2Msg}`);
+        total = 0;
+        unread = 0;
+        recent = [];
+      }
+    }
+
+    // Classify emails
+    for (const email of recent) {
+      const cats = this.classifyEmail(email.subject, email.snippet);
+      for (const cat of cats) {
+        if (categories[cat] !== undefined) {
+          categories[cat]++;
+        } else {
+          categories["其他"]++;
+        }
+      }
+    }
+
+    return { total, unread, recent, categories };
   }
 }

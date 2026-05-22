@@ -3,17 +3,18 @@ import * as path from "path";
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig } from "@evoclaw/core";
-import { GatewayServer } from "@evoclaw/gateway";
-import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner } from "@evoclaw/agent";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints } from "@evoclaw/core";
+import { GatewayServer, ChannelManager, ProtocolHandler } from "@evoclaw/gateway";
+import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, handleChatCommand, dispatchCommand } from "@evoclaw/agent";
+import type { AgentConfig, AgentBinding } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
-import { MemoryHub } from "@evoclaw/memory";
-import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser } from "@evoclaw/infrastructure";
+import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
+import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay } from "@evoclaw/security";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import type { EmailAccount, ParsedEmail } from "@evoclaw/email";
-import { ScheduleManager } from "@evoclaw/scheduler";
+import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
 import type { ScheduledTask } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
@@ -25,6 +26,7 @@ export class EvoClawServer {
   private registry: ServiceRegistry;
   private eventBus: EventBus;
   private configManager: ConfigManager;
+  private logger: Logger;
 
   private gateway: GatewayServer;
   private taskOrchestrator: TaskOrchestrator;
@@ -49,15 +51,186 @@ export class EvoClawServer {
   private playwrightBrowser: PlaywrightBrowser;
   private emailClient: EmailClient;
   private scheduleManager: ScheduleManager;
+  private bootstrapManager: BootstrapManager;
+  private compactionManager: CompactionManager;
+  private lifecycleManager: AgentLifecycleManager;
+  private queueManager: QueueManager;
+  private pluginManager: PluginManager;
+  private sessionManager: SessionManager;
+  private contextEngine: ContextEngine;
+  private channelManager: ChannelManager;
+  private protocolHandler: ProtocolHandler;
   private reportGenerator: ReportGenerator;
   private taskClassifier: TaskClassifier;
   private skillOrchestrator: SkillOrchestrator;
+
+  // ── New modules (OpenClaw parity) ──
+  private agentRouter: AgentRouter;
+  private toolPolicyManager: ToolPolicyManager;
+  private dmPairingManager: DMPairingManager;
+  private semanticMemory: SemanticMemoryStore;
+  private subagentRegistry: SubagentRegistry;
+  private cronScheduler: CronScheduler;
+  private configValidator: ConfigValidator;
+  private configWatcher: ConfigWatcher;
+
+  // ── New P0/P1 modules ──
+  private autoReplyEngine: AutoReplyEngine;
+  private commitmentManager: CommitmentManager;
+  private memoryHost: MemoryHost;
+
+  // ── ACP + Operations modules (Round 4) ──
+  private eventLedger: EventLedger;
+  private permissionRelay: PermissionRelay;
+  private crestodian: Crestodian;
 
   constructor() {
     this.registry = new ServiceRegistry();
     this.eventBus = new EventBus();
     this.configManager = new ConfigManager();
     this.configManager.loadFromEnv();
+
+    // ── Initialize structured logger (OpenClaw parity) ──
+    this.logger = Logger.getInstance({
+      minLevel: (process.env.LOG_LEVEL as any) || "info",
+      prettyPrint: process.env.NODE_ENV !== "production",
+    });
+    this.registry.registerService("logger", this.logger);
+
+    // ── Config validation (OpenClaw parity) ──
+    this.configValidator = new ConfigValidator(CONFIG_SCHEMA);
+    this.registry.registerService("configValidator", this.configValidator);
+
+    this.configWatcher = new ConfigWatcher();
+    this.configWatcher.onChange((filePath) => {
+      this.logger.info("config", `Config file changed: ${filePath}, reloading...`);
+      // Re-load configuration from env (hot-reload support)
+      this.configManager.loadFromEnv();
+    });
+    this.registry.registerService("configWatcher", this.configWatcher);
+
+    // ── Agent Router (OpenClaw parity) ──
+    this.agentRouter = new AgentRouter({
+      defaultAgentId: "default",
+      baseWorkspaceDir: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+      baseSessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+    });
+    // Register the default agent
+    this.agentRouter.registerAgent({
+      id: "default",
+      name: "EvoClaw",
+      persona: this.configManager.get("persona") || {},
+      workspace: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+      sessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+      enabled: true,
+      dmPolicy: "open",
+      sandbox: "off",
+    });
+    this.registry.registerService("agentRouter", this.agentRouter);
+
+    // ── Tool Policy Manager (OpenClaw parity) ──
+    this.toolPolicyManager = new ToolPolicyManager();
+    this.toolPolicyManager.assignPolicy("default", "main-agent-full-access");
+    this.registry.registerService("toolPolicyManager", this.toolPolicyManager);
+
+    // ── DM Pairing Manager (OpenClaw parity) ──
+    this.dmPairingManager = new DMPairingManager(this.eventBus, {
+      pairingStorePath: path.resolve(__dirname, "..", "..", "..", "data", "pairing-store.json"),
+    });
+    this.dmPairingManager.setChannelPolicy({
+      channel: "webchat",
+      policy: (process.env.DM_POLICY as any) || "open",
+    });
+    this.registry.registerService("dmPairingManager", this.dmPairingManager);
+
+    // ── Semantic Memory (OpenClaw parity, TF-IDF based) ──
+    this.semanticMemory = new SemanticMemoryStore({
+      threshold: 0.05,
+      defaultLimit: 10,
+    });
+    this.registry.registerService("semanticMemory", this.semanticMemory);
+
+    // ── Subagent Registry (OpenClaw parity) ──
+    this.subagentRegistry = new SubagentRegistry(this.eventBus, 10);
+    this.registry.registerService("subagentRegistry", this.subagentRegistry);
+
+    // ── Enhanced Cron Scheduler (OpenClaw parity) ──
+    this.cronScheduler = new CronScheduler({ maxConcurrentJobs: 5 });
+    this.cronScheduler.on("job:start", (record) => {
+      this.logger.info("cron", `Job "${record.jobName}" started`, { jobId: record.jobId });
+    });
+    this.cronScheduler.on("job:complete", (record) => {
+      this.logger.info("cron", `Job "${record.jobName}" completed`, { jobId: record.jobId, duration: record.duration });
+    });
+    this.cronScheduler.on("job:error", (record) => {
+      this.logger.error("cron", `Job "${record.jobName}" failed`, record.error);
+    });
+    this.registry.registerService("cronScheduler", this.cronScheduler);
+
+    // ── Auto-Reply Engine (OpenClaw parity) ──
+    this.autoReplyEngine = new AutoReplyEngine(this.eventBus);
+    this.autoReplyEngine.configure({
+      enabled: true,
+      globalCooldownMs: 10_000,
+      rules: [
+        {
+          id: "dm-welcome",
+          label: "DM Welcome",
+          trigger: "dm",
+          template: "你好 {{sender}}！我是 EvoClaw 助手。请问有什么可以帮你的？",
+          priority: 10,
+          cooldownMs: 60_000,
+        },
+      ],
+    });
+    this.registry.registerService("autoReplyEngine", this.autoReplyEngine);
+
+    // ── Commitment Manager (OpenClaw parity) ──
+    this.commitmentManager = new CommitmentManager(this.eventBus, {
+      storePath: path.resolve(__dirname, "..", "..", "..", "data", "commitments.json"),
+    });
+    this.registry.registerService("commitmentManager", this.commitmentManager);
+
+    // ── Memory Host SDK (OpenClaw parity) ──
+    this.memoryHost = new MemoryHost(
+      {
+        maxEntries: 10_000,
+        defaultTtlMs: 86_400_000, // 24 hours
+        storePath: path.resolve(__dirname, "..", "..", "..", "data", "memory-host.json"),
+      },
+      this.eventBus,
+    );
+    this.registry.registerService("memoryHost", this.memoryHost);
+
+    // ── Event Ledger (ACP: event sourcing) ──
+    this.eventLedger = new EventLedger({
+      storeDir: path.resolve(__dirname, "..", "..", "..", "data", "ledger"),
+      maxEntriesPerFile: 10_000,
+      autoFlushMs: 5_000,
+    });
+    this.registry.registerService("eventLedger", this.eventLedger);
+
+    // ── Permission Relay (ACP: centralized permission control) ──
+    this.permissionRelay = new PermissionRelay(
+      {
+        autoApprovePatterns: ["file_read", "file_list", "task_status", "skill_search", "error_stats", "permission_status"],
+        autoDenyPatterns: [],
+        defaultTimeoutMs: 30_000,
+        maxPending: 50,
+      },
+      this.eventBus,
+    );
+    this.registry.registerService("permissionRelay", this.permissionRelay);
+
+    // ── Crestodian (Daemon Operations Manager) ──
+    this.crestodian = new Crestodian(
+      {
+        checkIntervalMs: 60_000,
+        maxOperationHistory: 500,
+      },
+      this.eventBus,
+    );
+    this.registry.registerService("crestodian", this.crestodian);
 
     this.registry.registerService("registry", this.registry);
     this.registry.registerService("eventBus", this.eventBus);
@@ -74,6 +247,49 @@ export class EvoClawServer {
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
     this.agentModelExecutor.setMemoryHub(this.memoryHub);
+    this.bootstrapManager = new BootstrapManager(this.configManager);
+    this.agentModelExecutor.setBootstrapManager(this.bootstrapManager);
+    this.registry.registerService("bootstrapManager", this.bootstrapManager);
+    this.bootstrapManager.initialize().then((ctx) => {
+      this.logger.info("server", `Bootstrap initialized: bootstrapPending=${ctx.bootstrapPending}, missingFiles=${ctx.missingFiles.join(",") || "none"}`);
+    });
+    this.compactionManager = new CompactionManager();
+    this.agentModelExecutor.setCompactionManager(this.compactionManager);
+    this.registry.registerService("compactionManager", this.compactionManager);
+    this.lifecycleManager = new AgentLifecycleManager(this.eventBus);
+    this.agentModelExecutor.setLifecycleManager(this.lifecycleManager);
+    this.registry.registerService("lifecycleManager", this.lifecycleManager);
+    this.queueManager = new QueueManager(this.eventBus);
+    this.agentModelExecutor.setQueueManager(this.queueManager);
+    this.registry.registerService("queueManager", this.queueManager);
+    this.queueManager.loadPersistedQueues();
+    this.pluginManager = new PluginManager(path.resolve(__dirname, "..", "..", "..", "data", "plugins"));
+    this.pluginManager.setEventBus(this.eventBus);
+    this.agentModelExecutor.setPluginManager(this.pluginManager);
+    this.registry.registerService("pluginManager", this.pluginManager);
+    this.sessionManager = new SessionManager({
+      sessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+      writeLockTimeoutMs: 60000,
+      truncateAfterCompaction: true,
+    });
+    this.agentModelExecutor.setSessionManager(this.sessionManager);
+    this.registry.registerService("sessionManager", this.sessionManager);
+    this.contextEngine = new ContextEngine({
+      workspacePath: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+      maxContextTokens: 60000,
+      reserveTokens: 4000,
+    });
+    this.agentModelExecutor.setContextEngine(this.contextEngine);
+    this.registry.registerService("contextEngine", this.contextEngine);
+    this.channelManager = new ChannelManager(this.eventBus);
+    this.agentModelExecutor.setChannelManager(this.channelManager as any);
+    this.registry.registerService("channelManager", this.channelManager);
+    this.protocolHandler = new ProtocolHandler({
+      serverVersion: "0.4.0",
+      autoApproveLoopback: true,
+    });
+    this.protocolHandler.setEventBus(this.eventBus);
+    this.registry.registerService("protocolHandler", this.protocolHandler);
     this.securityGovernor = new SecurityGovernor(this.registry, this.eventBus);
     this.auditCenter = new AuditCenter(this.registry, this.eventBus);
     this.tenantManager = new TenantManager(this.registry, this.eventBus);
@@ -81,7 +297,7 @@ export class EvoClawServer {
     this.messageQueue = new MessageQueue(this.registry, this.eventBus);
     this.processManager = new ProcessManager(this.registry, this.eventBus);
     this.fileSystemManager = new FileSystemManager(this.registry, this.eventBus);
-    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "skills"));
+    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "data", "workspace", "skills"));
     this.taskPlanner = new TaskPlanner(this.registry, this.eventBus);
     this.permissionManager = new PermissionManager(this.registry, this.eventBus);
     this.registry.registerService("permissionManager", this.permissionManager);
@@ -109,36 +325,39 @@ export class EvoClawServer {
   }
 
   async start(): Promise<void> {
-    console.log("============================================");
-    console.log("  EvoClaw v0.4.0 - Self-Evolving Agent OS");
-    console.log("============================================");
+    this.logger.info("server", "============================================");
+    this.logger.info("server", "  EvoClaw v0.4.0 - Self-Evolving Agent OS");
+    this.logger.info("server", "============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
 
-    console.log("\n[EvoClaw] Starting all services...");
+    // ── Compat layer: check for legacy env vars ──
+    printMigrationHints();
 
-    console.log("[EvoClaw] Gateway server starting...");
+    this.logger.info("server", "Starting all services...");
+
+    this.logger.info("server", "Gateway server starting...");
     await this.gateway.start();
 
-    console.log("[EvoClaw] Loading persisted configuration...");
+    this.logger.info("server", "Loading persisted configuration...");
     this.gateway.loadPersistedConfig();
 
-    console.log("[EvoClaw] Agent pool starting...");
-    console.log("[EvoClaw] Agent pool initialized");
+    this.logger.info("server", "Agent pool starting...");
+    this.logger.info("server", "Agent pool initialized");
 
-    console.log("[EvoClaw] Skill manager starting...");
-    console.log("[EvoClaw] Skill manager ready");
-
-    const skillsDir = path.resolve(__dirname, "..", "..", "..", "skills");
-    if (!fs.existsSync(skillsDir)) {
-      fs.mkdirSync(skillsDir, { recursive: true });
-    }
-    this.skillManager.startAutoScan(skillsDir, 30000);
+    this.logger.info("server", "Skill manager starting...");
+    this.logger.info("server", "Skill manager ready");
 
     const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
     if (!fs.existsSync(workspaceDir)) {
       fs.mkdirSync(workspaceDir, { recursive: true });
     }
+    const skillsDir = path.join(workspaceDir, "skills");
+    if (!fs.existsSync(skillsDir)) {
+      fs.mkdirSync(skillsDir, { recursive: true });
+    }
+    this.skillManager.startAutoScan(skillsDir, 30000);
+
     const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
     for (const fileName of bootstrapFiles) {
       const fpath = path.join(workspaceDir, fileName);
@@ -147,13 +366,14 @@ export class EvoClawServer {
       }
     }
     this.agentModelExecutor.setWorkspacePath(workspaceDir);
-    console.log(`[EvoClaw] Workspace initialized at ${workspaceDir}`);
+    this.logger.info("server", `Workspace initialized at ${workspaceDir}`);
 
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools();
     this.registerAutoSkillTool();
     this.registerTaskPlannerTool();
+    this.registerBootstrapTool();
     this.registerPermissionTools();
     this.registerBrowserTools();
 
@@ -166,19 +386,19 @@ export class EvoClawServer {
 
     this.scheduleManager.start();
 
-    console.log("[EvoClaw] Evolution engine starting...");
-    console.log("[EvoClaw] Evolution engine online");
+    this.logger.info("server", "Evolution engine starting...");
+    this.logger.info("server", "Evolution engine online");
 
-    console.log("[EvoClaw] Memory hub starting...");
-    console.log("[EvoClaw] Memory hub active");
+    this.logger.info("server", "Memory hub starting...");
+    this.logger.info("server", "Memory hub active");
 
-    console.log("[EvoClaw] Security governor engaged");
-    console.log("[EvoClaw] Audit center online");
+    this.logger.info("server", "Security governor engaged");
+    this.logger.info("server", "Audit center online");
 
-    console.log("[EvoClaw] Tenant manager starting...");
-    console.log("[EvoClaw] Tenant manager ready");
+    this.logger.info("server", "Tenant manager starting...");
+    this.logger.info("server", "Tenant manager ready");
 
-    console.log("[EvoClaw] Self-healing monitor starting...");
+    this.logger.info("server", "Self-healing monitor starting...");
     this.selfHealing.start();
 
     this.tenantManager.createTenant("default", {
@@ -187,49 +407,50 @@ export class EvoClawServer {
     });
 
     await this.eventBus.publish(SystemEvents.SYSTEM_READY, {
-      version: "0.2.0",
+      version: "0.4.0",
       serviceCount: this.registry.getRegisteredServices().length,
     }, "server");
 
-    console.log("\n[EvoClaw] All systems ready!");
-    console.log("[EvoClaw] Registered services:", this.registry.getRegisteredServices().join(", "));
-    console.log("\n============================================\n");
+    this.logger.info("server", "All systems ready!");
+    this.logger.info("server", `Registered services: ${this.registry.getRegisteredServices().join(", ")}`);
 
     this.eventBus.subscribe("system.shutdown", async () => {
       await this.shutdown();
     });
 
     process.on("SIGINT", async () => {
-      console.log("[EvoClaw] Received SIGINT");
+      this.logger.info("server", "Received SIGINT");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("SIGTERM", async () => {
-      console.log("[EvoClaw] Received SIGTERM");
+      this.logger.info("server", "Received SIGTERM");
       await this.shutdown();
       process.exit(0);
     });
 
     process.on("uncaughtException", (err) => {
-      console.error("[EvoClaw] Uncaught exception:", err.message);
+      this.logger.fatal("server", "Uncaught exception", err);
       process.exit(1);
     });
 
     process.on("unhandledRejection", (reason) => {
-      console.error("[EvoClaw] Unhandled rejection:", reason);
+      this.logger.error("server", "Unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
     });
   }
 
   async shutdown(): Promise<void> {
-    console.log("[EvoClaw] Shutting down...");
+    this.logger.info("server", "Shutting down...");
     this.selfHealing.stop();
     this.scheduleManager.stop();
+    this.configWatcher.stopAll();
+    this.logger.info("server", "Stopping subsystems...");
     await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
     await this.processManager.killAll();
     await this.gateway.stop();
     await this.registry.stopAll();
-    console.log("[EvoClaw] Goodbye!");
+    this.logger.info("server", "Goodbye!");
   }
 
   private registerFileTools(): void {
@@ -521,6 +742,38 @@ export class EvoClawServer {
             retryCount: s.retryCount,
           })),
         };
+      }
+    );
+  }
+
+  private registerBootstrapTool(): void {
+    const bm = this.bootstrapManager;
+    const mh = this.memoryHub;
+    this.agentModelExecutor.registerTool(
+      "complete_bootstrap",
+      {
+        name: "complete_bootstrap",
+        description: "Complete the initial bootstrap ritual. Call after finishing the first-run setup in BOOTSTRAP.md. Deletes BOOTSTRAP.md permanently.",
+        parameters: {
+          summary: { type: "string", description: "Brief summary of what was accomplished" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        if (!bm) return { error: "Bootstrap manager not initialized" };
+        const ctx = bm.getContext();
+        if (!ctx.bootstrapPending) return { completed: false, message: "Bootstrap not pending." };
+        bm.completeBootstrap();
+        const summary = String(params.summary || "Bootstrap completed");
+        if (mh) {
+          try {
+            await mh.getLongTerm().store({
+              content: `Bootstrap: ${summary}`, type: "system",
+              metadata: { source: "bootstrap", sessionId: "bootstrap", userId: "default", tags: ["bootstrap"], importance: 0.9, associations: [], entities: [] },
+              ttl: 365 * 24 * 3600 * 1000, embedding: null, id: "", createdAt: new Date(), accessedAt: new Date(),
+            });
+          } catch { /* silent */ }
+        }
+        return { completed: true, message: "Bootstrap ritual completed. Workspace initialized.", summary };
       }
     );
   }
@@ -915,15 +1168,26 @@ export class EvoClawServer {
             return { url, status: response.status, html: text.slice(0, 8000), length: text.length };
           }
 
-          // Extract readable text from HTML
+          // Extract readable text from HTML with full entity decoding
           const plainText = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
             .replace(/<[^>]+>/g, " ")
-            .replace(/&nbsp;/g, " ")
+            .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+            .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
             .replace(/&amp;/g, "&")
             .replace(/&lt;/g, "<")
             .replace(/&gt;/g, ">")
             .replace(/&quot;/g, '"')
+            .replace(/&ensp;/g, " ")
+            .replace(/&emsp;/g, "  ")
+            .replace(/&nbsp;/g, " ")
+            .replace(/&thinsp;/g, " ")
+            .replace(/&mdash;/g, "—")
+            .replace(/&ndash;/g, "–")
+            .replace(/&lsquo;/g, "'")
+            .replace(/&rsquo;/g, "'")
+            .replace(/&ldquo;/g, '"')
+            .replace(/&rdquo;/g, '"')
             .replace(/\s+/g, " ")
             .trim();
 
@@ -941,11 +1205,79 @@ export class EvoClawServer {
       }
     );
 
+    // ── fetch_node_page: internal tool for news pre-processing (fetches page content) ──
+    this.agentModelExecutor.registerTool(
+      "fetch_node_page",
+      {
+        name: "fetch_node_page",
+        description: "Fetch a web page URL and extract its text content. Used internally for news/article content extraction.",
+        parameters: {
+          url: { type: "string", description: "The URL to fetch content from" },
+          maxLength: { type: "number", description: "Maximum characters to return (default 5000)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const url = String(params.url || "");
+        const maxLength = Number(params.maxLength || 5000);
+        if (!url || !url.startsWith("http")) {
+          return { error: "Valid HTTP/HTTPS URL is required", url };
+        }
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          const response = await fetch(url, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
+              "Accept": "text/html,text/plain,*/*",
+            },
+            signal: controller.signal,
+            redirect: "follow",
+          });
+          clearTimeout(timeout);
+          if (!response.ok) {
+            return { error: `HTTP ${response.status}`, url };
+          }
+          const text = await response.text();
+          // Full entity decode + strip tags
+          const content = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+            .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&ensp;/g, " ")
+            .replace(/&emsp;/g, "  ")
+            .replace(/&nbsp;/g, " ")
+            .replace(/&thinsp;/g, " ")
+            .replace(/&mdash;/g, "—")
+            .replace(/&ndash;/g, "–")
+            .replace(/&lsquo;/g, "'")
+            .replace(/&rsquo;/g, "'")
+            .replace(/&ldquo;/g, '"')
+            .replace(/&rdquo;/g, '"')
+            .replace(/\s+/g, " ")
+            .trim();
+          const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
+          return {
+            url,
+            title: titleMatch ? titleMatch[1].trim().replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"') : url,
+            content: content.slice(0, maxLength),
+            length: content.length,
+          };
+        } catch (err: any) {
+          return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
+        }
+      }
+    );
+
     this.agentModelExecutor.registerTool(
       "web_search",
       {
         name: "web_search",
-        description: "Search the web using DuckDuckGo (no API key needed). Returns titles, URLs, and snippets.",
+        description: "Search the web using DuckDuckGo or Bing (no API key needed). Returns titles, URLs, and snippets.",
         parameters: {
           query: { type: "string", description: "Search query string" },
           limit: { type: "string", description: "Max results (default 10)" },
@@ -956,65 +1288,156 @@ export class EvoClawServer {
         const limit = parseInt(String(params.limit || "10"), 10) || 10;
         if (!query) return { error: "Search query is required" };
 
-        try {
-          const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 10000);
-          const response = await fetch(searchUrl, {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
-              "Accept": "text/html",
-            },
-            signal: controller.signal,
-            redirect: "follow",
-          });
-          clearTimeout(timeout);
+        const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-          if (!response.ok) {
-            return { error: `Search failed: HTTP ${response.status}` };
-          }
-
-          const html = await response.text();
-          // Extract search results from DuckDuckGo HTML
-          const results: Array<{ title: string; url: string; snippet: string }> = [];
-          const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*)<\/a>/gi;
-          let match;
-          while ((match = resultRegex.exec(html)) !== null && results.length < limit) {
-            results.push({
-              title: match[2].trim().replace(/<\/?[^>]+>/g, ""),
-              url: match[1],
-              snippet: match[3].trim().replace(/<\/?[^>]+>/g, ""),
-            });
-          }
-          // Fallback: extract any links
-          if (results.length === 0) {
-            const linkRegex = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-            while ((match = linkRegex.exec(html)) !== null && results.length < limit) {
-              const text = match[2].replace(/<\/?[^>]+>/g, "").trim();
-              if (text.length > 10) {
-                results.push({ title: text.slice(0, 200), url: match[1], snippet: "" });
-              }
-            }
-          }
-          // Last resort: generic link extraction
-          if (results.length === 0) {
-            const genericLinks = html.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([^<]+)<\/a>/gi);
-            if (genericLinks) {
-              for (const link of genericLinks.slice(0, limit)) {
-                const hrefMatch = link.match(/href="(https?:\/\/[^"]+)"/i);
-                const textMatch = link.match(/>([^<]+)</);
-                if (hrefMatch && textMatch && textMatch[1].trim().length > 10) {
-                  results.push({ title: textMatch[1].trim().slice(0, 200), url: hrefMatch[1], snippet: "" });
-                }
-              }
-            }
-          }
-          return { query, source: "DuckDuckGo", count: results.length, results: results.slice(0, limit) };
-        } catch (err: any) {
-          return { error: err.name === "AbortError" ? "Search timed out" : (err.message || String(err)) };
+        // Try Bing first (more reliable in China)
+        const bingResult = await trySearchBing(query, limit, userAgent);
+        if (bingResult.results && bingResult.results.length > 0) {
+          return { query, source: "Bing", count: bingResult.results.length, results: bingResult.results.slice(0, limit) };
         }
+
+        // Fallback to DuckDuckGo Lite
+        const ddgResult = await trySearchDDG(query, limit, userAgent);
+        if (ddgResult.results && ddgResult.results.length > 0) {
+          return { query, source: "DuckDuckGo", count: ddgResult.results.length, results: ddgResult.results.slice(0, limit) };
+        }
+
+        const errorMsg = bingResult.error || ddgResult.error || "All search providers failed";
+        return { error: errorMsg, query, source: "none", results: [] };
       }
     );
+
+    // ── HTML entity decoder ──
+    function decodeHtmlEntities(text: string): string {
+      return text
+        .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+        .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&ensp;/g, " ")
+        .replace(/&emsp;/g, "  ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&thinsp;/g, " ")
+        .replace(/&mdash;/g, "—")
+        .replace(/&ndash;/g, "–")
+        .replace(/&lsquo;/g, "'")
+        .replace(/&rsquo;/g, "'")
+        .replace(/&ldquo;/g, '"')
+        .replace(/&rdquo;/g, '"');
+    }
+
+    // ── Clean snippet/title text ──
+    function cleanText(text: string): string {
+      return decodeHtmlEntities(text.replace(/<\/?[^>]+>/g, "").trim().slice(0, 500));
+    }
+
+    // ── Bing search helper ──
+    async function trySearchBing(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(q)}&count=${limit}`, {
+          headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+          signal: controller.signal,
+          redirect: "follow",
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          return { error: `Bing HTTP ${response.status}` };
+        }
+
+        const html = await response.text();
+        const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+        // Bing search results are in <li class="b_algo"> blocks
+        // Each contains: <h2><a href="URL">Title</a></h2> and <p>snippet</p>
+        const algoRegex = /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
+        let match;
+        while ((match = algoRegex.exec(html)) !== null && results.length < limit) {
+          const block = match[1];
+          const titleMatch = block.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+          const snippetMatch = block.match(/<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/i) 
+            || block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+          if (titleMatch) {
+            results.push({
+              title: cleanText(titleMatch[2]),
+              url: titleMatch[1],
+              snippet: snippetMatch ? cleanText(snippetMatch[1]) : "",
+            });
+          }
+        }
+
+        if (results.length > 0) return { results };
+
+        // Fallback: try <div class="b_caption"> patterns
+        const captionRegex = /<div[^>]*class="[^"]*b_caption[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+        while ((match = captionRegex.exec(html)) !== null && results.length < limit) {
+          const block = match[1];
+          const titleMatch = block.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+          const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+          if (titleMatch) {
+            results.push({
+              title: cleanText(titleMatch[2]),
+              url: titleMatch[1],
+              snippet: snippetMatch ? cleanText(snippetMatch[1]) : "",
+            });
+          }
+        }
+
+        if (results.length > 0) return { results };
+        return { error: "No results found in Bing" };
+      } catch (err: any) {
+        return { error: err.name === "AbortError" ? "Bing search timed out" : `Bing error: ${err.message || String(err)}` };
+      }
+    }
+
+    // ── DuckDuckGo Lite search helper (simpler HTML, more reliable) ──
+    async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        // Use DuckDuckGo Lite for simpler HTML structure
+        const response = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, {
+          headers: { "User-Agent": ua, "Accept": "text/html", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+          signal: controller.signal,
+          redirect: "follow",
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          return { error: `DuckDuckGo HTTP ${response.status}` };
+        }
+
+        const html = await response.text();
+        const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+        // DuckDuckGo Lite results are in <tr class="result-snippet"> blocks
+        // containing <a rel="nofollow" href="URL">Title</a> and <td class="result-snippet">snippet</td>
+        const rowRegex = /<tr[^>]*class="[^"]*result-snippet[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi;
+        let match;
+        while ((match = rowRegex.exec(html)) !== null && results.length < limit) {
+          const row = match[1];
+          const linkMatch = row.match(/<a[^>]*rel="nofollow"[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i)
+            || row.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+          const snippetMatch = row.match(/<td[^>]*class="[^"]*result-snippet[^"]*"[^>]*>([\s\S]*?)<\/td>/i);
+          if (linkMatch && linkMatch[1] && !linkMatch[1].includes("duckduckgo.com")) {
+            results.push({
+              title: cleanText(linkMatch[2]),
+              url: linkMatch[1],
+              snippet: snippetMatch ? cleanText(snippetMatch[1]) : "",
+            });
+          }
+        }
+
+        if (results.length > 0) return { results };
+        return { error: "No results found in DuckDuckGo" };
+      } catch (err: any) {
+        return { error: err.name === "AbortError" ? "DuckDuckGo search timed out" : `DuckDuckGo error: ${err.message || String(err)}` };
+      }
+    }
 
     this.agentModelExecutor.registerTool(
       "email_add_account",
@@ -1161,6 +1584,90 @@ export class EvoClawServer {
       async () => {
         const accounts = this.emailClient.listAccounts();
         return { success: true, accounts };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "email_list_inbox",
+      {
+        name: "email_list_inbox",
+        description: "List emails from inbox with optional filters",
+        parameters: {
+          accountId: { type: "string", description: "Email account ID (use first available if not provided)" },
+          limit: { type: "number", description: "Maximum number of emails to fetch (default: 50)" },
+          unreadOnly: { type: "boolean", description: "Only show unread emails (default: false)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const accountId = String(params.accountId || "");
+        const limit = Number(params.limit || 50);
+        const unreadOnly = Boolean(params.unreadOnly || false);
+
+        const accounts = this.emailClient.listAccounts();
+        if (accounts.length === 0) {
+          return { success: false, error: "No email accounts configured" };
+        }
+
+        // If accountId specified, try that first; otherwise try all accounts until one succeeds
+        const accountIdsToTry = accountId
+          ? [accountId]
+          : accounts.map(a => a.id);
+
+        let lastError = "";
+        for (const targetId of accountIdsToTry) {
+          try {
+            const emails = await this.emailClient.listEmails({
+              accountId: targetId,
+              limit,
+              unreadOnly,
+            });
+            return { success: true, emails, account: accounts.find(a => a.id === targetId) };
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+            console.error(`[Server] email_list_inbox failed for account ${targetId}: ${lastError}`);
+            // Try next account
+          }
+        }
+
+        return { success: false, error: `All accounts failed. Last error: ${lastError}` };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "email_get_inbox_summary",
+      {
+        name: "email_get_inbox_summary",
+        description: "Get inbox summary and statistics",
+        parameters: {
+          accountId: { type: "string", description: "Email account ID (use first available if not provided)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const accountId = String(params.accountId || "");
+
+        const accounts = this.emailClient.listAccounts();
+        if (accounts.length === 0) {
+          return { success: false, error: "No email accounts configured" };
+        }
+
+        // If accountId specified, try that first; otherwise try all accounts until one succeeds
+        const accountIdsToTry = accountId
+          ? [accountId]
+          : accounts.map(a => a.id);
+
+        let lastError = "";
+        for (const targetId of accountIdsToTry) {
+          try {
+            const summary = await this.emailClient.getInboxSummary(targetId);
+            return { success: true, summary, account: accounts.find(a => a.id === targetId) };
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+            console.error(`[Server] email_get_inbox_summary failed for account ${targetId}: ${lastError}`);
+            // Try next account
+          }
+        }
+
+        return { success: false, error: `All accounts failed. Last error: ${lastError}` };
       }
     );
   }
@@ -1705,7 +2212,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[EvoClaw] Failed to start:", err);
+  const logger = Logger.getInstance();
+  logger.fatal("server", "Failed to start", err);
   process.exit(1);
 });
 

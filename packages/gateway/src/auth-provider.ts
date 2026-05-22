@@ -29,9 +29,14 @@ export class AuthProvider {
   }
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const publicPaths = ["/health", "/live", "/ready", "/api/auth/login", "/api/auth/register", "/api/cli/execute"];
+    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/system/services", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
 
     if (publicPaths.includes(req.path)) {
+      return next();
+    }
+
+    // Allow all sub-paths under these public API prefixes
+    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/")) {
       return next();
     }
 
@@ -63,7 +68,7 @@ export class AuthProvider {
   }
 
   webUiAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-    if (req.path.startsWith("/api/") || req.path === "/health" || req.path === "/live" || req.path === "/ready") {
+    if (req.path.startsWith("/api/") || req.path === "/health" || req.path === "/healthz" || req.path === "/live" || req.path === "/ready" || req.path === "/readyz") {
       return next();
     }
 

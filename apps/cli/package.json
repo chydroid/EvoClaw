@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "EvoClaw": "./dist/index.js"
+    "EvoClaw": "./dist/index.js",
+    "evoclaw": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

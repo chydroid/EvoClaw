@@ -144,38 +144,77 @@ export class GatewayServer {
   }
 
   private setupRoutes(): void {
-    this.app.get("/health", (_req: Request, res: Response) => {
-      res.json({
-        status: "ok",
-        version: "0.4.0",
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-      });
-    });
+    // ── Health Probes (K8s-compatible, public, no auth required) ──
 
-    this.app.get("/api/health", (_req: Request, res: Response) => {
-      res.json({
-        status: "ok",
-        version: "0.4.0",
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-      });
+    // Liveness: process is alive (minimal check)
+    this.app.get("/healthz", (_req: Request, res: Response) => {
+      res.status(200).set("Content-Type", "text/plain").send("ok");
     });
 
     this.app.get("/live", (_req: Request, res: Response) => {
-      res.status(200).json({ status: "alive" });
+      res.status(200).json({ status: "alive", uptime: process.uptime() });
+    });
+
+    // Readiness: all critical services are healthy
+    this.app.get("/readyz", (_req: Request, res: Response) => {
+      const serviceInfos = this.registry.getAllServiceInfos?.() || [];
+      const unhealthy = serviceInfos.filter((info: { status: string }) => info.status === "error");
+      if (unhealthy.length > 0) {
+        res.status(503).json({
+          status: "not_ready",
+          unhealthy: unhealthy.map((s: { name: string }) => s.name),
+        });
+      } else {
+        res.status(200).set("Content-Type", "text/plain").send("ready");
+      }
     });
 
     this.app.get("/ready", (_req: Request, res: Response) => {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       const unhealthyServices = serviceInfos.filter(
-        (info) => info.status === "error"
+        (info: { status: string }) => info.status === "error"
       );
       if (unhealthyServices.length > 0) {
-        res.status(503).json({ status: "not ready", unhealthyServices: unhealthyServices.map((s) => s.name) });
+        res.status(503).json({ status: "not ready", unhealthyServices: unhealthyServices.map((s: { name: string }) => s.name) });
       } else {
         res.json({ status: "ready", services: serviceInfos.length });
       }
+    });
+
+    // Detailed health with version + metrics
+    this.app.get("/health", (_req: Request, res: Response) => {
+      const serviceInfos = this.registry.getAllServiceInfos?.() || [];
+      const unhealthy = serviceInfos.filter((info: { status: string }) => info.status === "error");
+      const memUsage = process.memoryUsage();
+      res.json({
+        status: unhealthy.length > 0 ? "degraded" : "ok",
+        version: "0.4.0",
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        node: process.version,
+        platform: process.platform,
+        memory: {
+          rss: Math.round(memUsage.rss / 1024 / 1024) + "MB",
+          heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024) + "MB",
+          heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024) + "MB",
+        },
+        services: {
+          total: serviceInfos.length,
+          healthy: serviceInfos.length - unhealthy.length,
+          unhealthy: unhealthy.map((s: { name: string }) => s.name),
+        },
+      });
+    });
+
+    this.app.get("/api/health", (_req: Request, res: Response) => {
+      const serviceInfos = this.registry.getAllServiceInfos?.() || [];
+      res.json({
+        status: "ok",
+        version: "0.4.0",
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        serviceCount: serviceInfos.length,
+      });
     });
 
     if (this.config.enableREST) {

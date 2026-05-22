@@ -359,7 +359,8 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        const result = await skillManager.scanAndInstall("skills");
+        const skillsDir = path.resolve(process.cwd(), "..", "..", "data", "workspace", "skills");
+        const result = await skillManager.scanAndInstall(skillsDir);
         res.json({
           installed: result.installed.length,
           skipped: result.skipped.length,
@@ -390,6 +391,183 @@ export class ProtocolAdapter {
         }).catch(() => {
           res.status(500).json({ error: "Failed to update config" });
         });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Bootstrap File Routes ============
+    app.get("/api/bootstrap", async (_req: Request, res: Response) => {
+      try {
+        const bm = this.registry.resolveService<{
+          listFiles(): { name: string; description: string; content: string; exists: boolean }[];
+          getContext(): { bootstrapPending: boolean; missingFiles: string[] };
+          getWorkspacePath(): string;
+        }>("bootstrapManager");
+        if (!bm) return res.json({ files: [], pending: false, workspacePath: "" });
+        const files = bm.listFiles();
+        const ctx = bm.getContext();
+        res.json({ files, pending: ctx.bootstrapPending, missingFiles: ctx.missingFiles, workspacePath: bm.getWorkspacePath() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/bootstrap/:filename", (req: Request, res: Response) => {
+      try {
+        const bm = this.registry.resolveService<{
+          readBootstrapFile(filename: string): string | null;
+        }>("bootstrapManager");
+        if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
+        const content = bm.readBootstrapFile(String(req.params.filename));
+        if (content === null) return res.status(404).json({ error: "File not found" });
+        res.json({ filename: req.params.filename, content });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.put("/api/bootstrap/:filename", (req: Request, res: Response) => {
+      try {
+        const bm = this.registry.resolveService<{
+          writeBootstrapFile(filename: string, content: string): void;
+        }>("bootstrapManager");
+        if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
+        const { content } = req.body || {};
+        if (!content) return res.status(400).json({ error: "Content is required" });
+        bm.writeBootstrapFile(String(req.params.filename), content);
+        res.json({ success: true, filename: req.params.filename });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.delete("/api/bootstrap/:filename", (req: Request, res: Response) => {
+      try {
+        const bm = this.registry.resolveService<{
+          deleteBootstrapFile(filename: string): void;
+        }>("bootstrapManager");
+        if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
+        bm.deleteBootstrapFile(String(req.params.filename));
+        res.json({ success: true, filename: req.params.filename });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/bootstrap/complete", (_req: Request, res: Response) => {
+      try {
+        const bm = this.registry.resolveService<{
+          completeBootstrap(): void;
+        }>("bootstrapManager");
+        if (!bm) return res.json({ success: false, message: "Not available" });
+        bm.completeBootstrap();
+        res.json({ success: true, message: "Bootstrap completed" });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Status / Lifecycle Routes ============
+    app.get("/api/status", (_req: Request, res: Response) => {
+      try {
+        const lm = this.registry.resolveService<{
+          getAllStatuses(): Array<{ sessionId: string; state: string; currentAction: string; toolCalls: Array<{ name: string; status: string }>; lastActivity: string; tokensUsed: number; duration: number; runId: number; progress?: { current: number; total: number; label: string } }>;
+          getStatus(sessionId: string): unknown;
+        }>("lifecycleManager");
+        const uptime = process.uptime();
+        const memUsage = process.memoryUsage();
+        res.json({
+          online: true,
+          uptime: Math.floor(uptime),
+          uptimeFormatted: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`,
+          memory: {
+            heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+            heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+            rss: Math.round(memUsage.rss / 1024 / 1024),
+          },
+          platform: process.platform,
+          nodeVersion: process.version,
+          agentStatuses: lm?.getAllStatuses() || [],
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/status/:sessionId", (req: Request, res: Response) => {
+      try {
+        const lm = this.registry.resolveService<{
+          getStatus(sessionId: string): unknown;
+        }>("lifecycleManager");
+        if (!lm) return res.json({ sessionId: req.params.sessionId, state: "unknown" });
+        const status = lm.getStatus(String(req.params.sessionId));
+        if (!status) return res.json({ sessionId: req.params.sessionId, state: "idle" });
+        res.json(status);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Queue Routes ============
+    app.get("/api/queue", (_req: Request, res: Response) => {
+      try {
+        const qm = this.registry.resolveService<{
+          getQueue(sessionId: string): unknown[];
+          getStats(sessionId: string): { total: number; pending: number; processing: number; done: number; failed: number };
+          hasPending(sessionId: string): boolean;
+        }>("queueManager");
+        if (!qm) return res.json({ queues: {}, stats: {} });
+        const sessionId = "web-ui";
+        res.json({
+          queue: qm.getQueue(sessionId),
+          stats: qm.getStats(sessionId),
+          hasPending: qm.hasPending(sessionId),
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/queue/enqueue", (req: Request, res: Response) => {
+      try {
+        const qm = this.registry.resolveService<{
+          enqueue(sessionId: string, message: string, mode: string, context?: Record<string, unknown>, priority?: number): unknown;
+        }>("queueManager");
+        if (!qm) return res.status(503).json({ error: "Queue manager not available" });
+        const { sessionId, message, mode } = req.body || {};
+        if (!message) return res.status(400).json({ error: "Message is required" });
+        const item = qm.enqueue(sessionId || "web-ui", message, mode || "steer");
+        res.json({ success: true, item });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/queue/clear", (req: Request, res: Response) => {
+      try {
+        const qm = this.registry.resolveService<{
+          clearQueue(sessionId: string): void;
+        }>("queueManager");
+        if (!qm) return res.status(503).json({ error: "Queue manager not available" });
+        qm.clearQueue((req.body?.sessionId as string) || "web-ui");
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Compaction Routes ============
+    app.get("/api/compactions/:sessionId", (req: Request, res: Response) => {
+      try {
+        const cm = this.registry.resolveService<{
+          getCompactionChain(sessionId: string): unknown[];
+          loadCompactionChain(sessionId: string): unknown[];
+        }>("compactionManager");
+        if (!cm) return res.json({ compactions: [] });
+        const chain = cm.getCompactionChain(String(req.params.sessionId));
+        res.json({ compactions: chain });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -445,14 +623,16 @@ export class ProtocolAdapter {
           return;
         }
 
+        const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
         const result = await agentExecutor.chat(message, {
-          sessionId: req.body.sessionId || "web-ui",
+          sessionId: resolvedSessionId,
         });
 
         res.json({
           reply: result.reply,
           tokensUsed: result.tokensUsed,
           duration: result.duration,
+          sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
         });
       } catch (err) {
@@ -884,6 +1064,451 @@ export class ProtocolAdapter {
         });
       } catch (err) {
         this.handleError(err, res, "CLI execution failed");
+      }
+    });
+
+    // ─── Plugin API routes ──────────────────────────────────────────────────
+
+    app.get("/api/plugins", (_req: Request, res: Response) => {
+      try {
+        const pluginManager = this.registry.resolveService("pluginManager") as { getPlugins(): Array<{ manifest: { name: string; version: string; description: string }; status: string; error?: string }> } | undefined;
+        res.json({
+          success: true,
+          plugins: pluginManager?.getPlugins() ?? [],
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list plugins");
+      }
+    });
+
+    app.post("/api/plugins/install", async (req: Request, res: Response) => {
+      try {
+        const { name, version, source } = req.body;
+        if (!name) {
+          res.status(400).json({ success: false, error: "Plugin name is required" });
+          return;
+        }
+        // In real implementation, this would trigger the plugin install pipeline
+        res.json({
+          success: true,
+          message: `Plugin "${name}" installation queued`,
+          stage: "pending",
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to install plugin");
+      }
+    });
+
+    app.delete("/api/plugins/:name", async (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const pluginManager = this.registry.resolveService("pluginManager") as { unregisterPlugin(name: string): Promise<void> } | undefined;
+        if (pluginManager) {
+          await pluginManager.unregisterPlugin(name);
+        }
+        res.json({ success: true, message: `Plugin "${name}" removed` });
+      } catch (err) {
+        this.handleError(err, res, "Failed to remove plugin");
+      }
+    });
+
+    app.post("/api/plugins/:name/toggle", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const { status } = req.body;
+        const pluginManager = this.registry.resolveService("pluginManager") as { setPluginStatus(name: string, status: "active" | "disabled"): void } | undefined;
+        if (pluginManager) {
+          pluginManager.setPluginStatus(name, status ?? "active");
+        }
+        res.json({ success: true, name, status });
+      } catch (err) {
+        this.handleError(err, res, "Failed to toggle plugin");
+      }
+    });
+
+    // ─── Session API routes ─────────────────────────────────────────────────
+
+    app.get("/api/sessions", (_req: Request, res: Response) => {
+      try {
+        const sessionManager = this.registry.resolveService("sessionManager") as {
+          listAgents(): string[];
+          listSessions(agentId: string): Array<{ sessionId: string; agentId: string; status: string; turnCount: number; createdAt: string; updatedAt: string }>;
+        } | undefined;
+
+        if (!sessionManager) {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.json({ success: true, sessions: [] });
+          return;
+        }
+
+        const agents = sessionManager.listAgents();
+        const allSessions: unknown[] = [];
+        for (const agentId of agents) {
+          const sessions = sessionManager.listSessions(agentId);
+          for (const s of sessions) {
+            allSessions.push(s);
+          }
+        }
+
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.json({ success: true, sessions: allSessions });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list sessions");
+      }
+    });
+
+    app.get("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
+      try {
+        const agentId = String(req.params.agentId);
+        const sessionId = String(req.params.sessionId);
+        const sessionManager = this.registry.resolveService("sessionManager") as {
+          loadSession(agentId: string, sessionId: string): { session: Record<string, unknown>; turns: Array<Record<string, unknown>>; predecessorId?: string; successorId?: string } | null;
+        } | undefined;
+
+        if (!sessionManager) {
+          res.status(404).json({ success: false, error: "Session manager not available" });
+          return;
+        }
+
+        const result = sessionManager.loadSession(agentId, sessionId);
+        if (!result) {
+          res.status(404).json({ success: false, error: "Session not found" });
+          return;
+        }
+
+        res.json({ success: true, ...result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to load session");
+      }
+    });
+
+    app.post("/api/sessions", (req: Request, res: Response) => {
+      try {
+        const { agentId, sessionId } = req.body;
+        const sessionManager = this.registry.resolveService("sessionManager") as {
+          createSession(agentId: string, options?: { sessionId?: string }): Record<string, unknown>;
+        } | undefined;
+
+        if (!sessionManager) {
+          res.status(500).json({ success: false, error: "Session manager not available" });
+          return;
+        }
+
+        const session = sessionManager.createSession(agentId ?? "default", { sessionId });
+        res.json({ success: true, session });
+      } catch (err) {
+        this.handleError(err, res, "Failed to create session");
+      }
+    });
+
+    app.delete("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
+      try {
+        const agentId = String(req.params.agentId);
+        const sessionId = String(req.params.sessionId);
+        const sessionManager = this.registry.resolveService("sessionManager") as {
+          deleteSession(agentId: string, sessionId: string): boolean;
+        } | undefined;
+
+        if (!sessionManager) {
+          res.status(500).json({ success: false, error: "Session manager not available" });
+          return;
+        }
+
+        const success = sessionManager.deleteSession(agentId, sessionId);
+        if (success) {
+          res.json({ success: true, message: "Session deleted successfully" });
+        } else {
+          res.status(404).json({ success: false, error: "Session not found" });
+        }
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete session");
+      }
+    });
+
+    // ─── Channel API routes ──────────────────────────────────────────────────
+
+    app.get("/api/channels/status", (_req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAllStatuses(): Array<{ type: string; label: string; enabled: boolean; connected: boolean; messageCount: number }>;
+        } | undefined;
+
+        res.json({
+          success: true,
+          channels: channelManager?.getAllStatuses() ?? [],
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get channel status");
+      }
+    });
+
+    app.get("/api/channels/active", (_req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getActiveChannels(): string[];
+        } | undefined;
+
+        res.json({
+          success: true,
+          activeChannels: channelManager?.getActiveChannels() ?? [],
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get active channels");
+      }
+    });
+
+    app.get("/api/channels/approved", (req: Request, res: Response) => {
+      try {
+        const channel = req.query.channel as string;
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getDMPolicy(channel: string): string;
+          isPeerApproved?: (channel: string, peerId: string) => boolean;
+        } | undefined;
+
+        res.json({
+          success: true,
+          channel,
+          dmPolicy: channelManager?.getDMPolicy(channel ?? "webchat"),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get approved peers");
+      }
+    });
+
+    app.post("/api/channels/pairing/approve", (req: Request, res: Response) => {
+      try {
+        const { code } = req.body;
+        const channelManager = this.registry.resolveService("channelManager") as {
+          approvePairing(code: string): boolean;
+        } | undefined;
+
+        const result = channelManager?.approvePairing(code ?? "") ?? false;
+        res.json({ success: result, message: result ? "Pairing approved" : "Invalid pairing code" });
+      } catch (err) {
+        this.handleError(err, res, "Failed to approve pairing");
+      }
+    });
+
+    // ─── WebSocket / Streaming status ────────────────────────────────────────
+
+    app.get("/api/ws/connections", (_req: Request, res: Response) => {
+      try {
+        const protocolHandler = this.registry.resolveService("protocolHandler") as {
+          getConnectionCount(): number;
+          getConnectedClients(): Array<{ id: string; role: string; connectedAt: Date; remoteAddress: string }>;
+        } | undefined;
+
+        res.json({
+          success: true,
+          connectionCount: protocolHandler?.getConnectionCount() ?? 0,
+          clients: protocolHandler?.getConnectedClients() ?? [],
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get WS connections");
+      }
+    });
+
+    // ─── Context Engine ─────────────────────────────────────────────────────
+
+    app.get("/api/context/status", (_req: Request, res: Response) => {
+      try {
+        const contextEngine = this.registry.resolveService("contextEngine") as {
+          getConfig(): Record<string, unknown>;
+        } | undefined;
+
+        res.json({
+          success: true,
+          config: contextEngine?.getConfig() ?? {},
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get context config");
+      }
+    });
+
+    // ─── Event Ledger (ACP event sourcing) ──────────────────────────────────
+
+    app.get("/api/events", (req: Request, res: Response) => {
+      try {
+        const eventLedger = this.registry.resolveService("eventLedger") as {
+          query(query: { sessionId?: string; agentId?: string; type?: string; fromTime?: number; toTime?: number; limit?: number }): Array<Record<string, unknown>>;
+          snapshot(): Record<string, unknown>;
+        } | undefined;
+
+        if (!eventLedger) {
+          res.json({ events: [], total: 0 });
+          return;
+        }
+
+        const query: Record<string, unknown> = {};
+        if (req.query.sessionId) query.sessionId = String(req.query.sessionId);
+        if (req.query.agentId) query.agentId = String(req.query.agentId);
+        if (req.query.type) query.type = String(req.query.type);
+        if (req.query.fromTime) query.fromTime = parseInt(String(req.query.fromTime), 10);
+        if (req.query.toTime) query.toTime = parseInt(String(req.query.toTime), 10);
+        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10);
+
+        const events = eventLedger.query(query as any);
+        res.json({ events, total: events.length });
+      } catch (err) {
+        this.handleError(err, res, "Failed to query events");
+      }
+    });
+
+    app.get("/api/events/snapshot", (_req: Request, res: Response) => {
+      try {
+        const eventLedger = this.registry.resolveService("eventLedger") as {
+          snapshot(): Record<string, unknown>;
+        } | undefined;
+
+        if (!eventLedger) {
+          res.json({ entries: 0, firstSeq: 0, lastSeq: 0 });
+          return;
+        }
+
+        res.json(eventLedger.snapshot());
+      } catch (err) {
+        this.handleError(err, res, "Failed to get event snapshot");
+      }
+    });
+
+    // ─── Permission Relay ──────────────────────────────────────────────────
+
+    app.get("/api/permission-relay/pending", (_req: Request, res: Response) => {
+      try {
+        const permissionRelay = this.registry.resolveService("permissionRelay") as {
+          getPending(): Array<Record<string, unknown>>;
+          getHistory(limit?: number): Array<Record<string, unknown>>;
+        } | undefined;
+
+        if (!permissionRelay) {
+          res.json({ requests: [] });
+          return;
+        }
+
+        res.json({ requests: permissionRelay.getPending() });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get pending permissions");
+      }
+    });
+
+    app.get("/api/permission-relay/history", (req: Request, res: Response) => {
+      try {
+        const permissionRelay = this.registry.resolveService("permissionRelay") as {
+          getHistory(limit?: number): Array<Record<string, unknown>>;
+        } | undefined;
+
+        if (!permissionRelay) {
+          res.json({ history: [] });
+          return;
+        }
+
+        const limit = parseInt(String(req.query.limit || "50"), 10);
+        res.json({ history: permissionRelay.getHistory(limit) });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get permission history");
+      }
+    });
+
+    app.post("/api/permission-relay/:id/approve", (req: Request, res: Response) => {
+      try {
+        const permissionRelay = this.registry.resolveService("permissionRelay") as {
+          approve(id: string, by?: string): Record<string, unknown> | null;
+        } | undefined;
+
+        if (!permissionRelay) {
+          res.status(503).json({ error: "Permission relay not available" });
+          return;
+        }
+
+        const result = permissionRelay.approve(String(req.params.id), "webui");
+        if (!result) {
+          res.status(404).json({ error: "Request not found" });
+          return;
+        }
+        res.json({ success: true, request: result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to approve permission");
+      }
+    });
+
+    app.post("/api/permission-relay/:id/deny", (req: Request, res: Response) => {
+      try {
+        const permissionRelay = this.registry.resolveService("permissionRelay") as {
+          deny(id: string, reason?: string, by?: string): Record<string, unknown> | null;
+        } | undefined;
+
+        if (!permissionRelay) {
+          res.status(503).json({ error: "Permission relay not available" });
+          return;
+        }
+
+        const { reason } = req.body || {};
+        const result = permissionRelay.deny(String(req.params.id), reason || "Denied by user", "webui");
+        if (!result) {
+          res.status(404).json({ error: "Request not found" });
+          return;
+        }
+        res.json({ success: true, request: result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to deny permission");
+      }
+    });
+
+    // ─── Crestodian (Operations Manager) ───────────────────────────────────
+
+    app.get("/api/crestodian/health", (_req: Request, res: Response) => {
+      try {
+        const crestodian = this.registry.resolveService("crestodian") as {
+          getHealth(): Record<string, unknown>;
+          getOverview(): Record<string, unknown>;
+          collectDiagnostics(): Record<string, unknown>;
+          isAlive(): boolean;
+          isReady(): boolean;
+        } | undefined;
+
+        if (!crestodian) {
+          res.json({ status: "unavailable" });
+          return;
+        }
+
+        res.json(crestodian.getHealth());
+      } catch (err) {
+        this.handleError(err, res, "Failed to get health probe");
+      }
+    });
+
+    app.get("/api/crestodian/overview", (_req: Request, res: Response) => {
+      try {
+        const crestodian = this.registry.resolveService("crestodian") as {
+          getOverview(): Record<string, unknown>;
+          renderOverview(): string;
+        } | undefined;
+
+        if (!crestodian) {
+          res.json({ status: "unavailable", services: [] });
+          return;
+        }
+
+        res.json(crestodian.getOverview());
+      } catch (err) {
+        this.handleError(err, res, "Failed to get overview");
+      }
+    });
+
+    app.get("/api/crestodian/diagnostics", (_req: Request, res: Response) => {
+      try {
+        const crestodian = this.registry.resolveService("crestodian") as {
+          collectDiagnostics(): Record<string, unknown>;
+        } | undefined;
+
+        if (!crestodian) {
+          res.json({ status: "unavailable" });
+          return;
+        }
+
+        res.json(crestodian.collectDiagnostics());
+      } catch (err) {
+        this.handleError(err, res, "Failed to collect diagnostics");
       }
     });
   }

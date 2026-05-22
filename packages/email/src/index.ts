@@ -5,4 +5,6 @@ export type {
   EmailSummary,
   ParsedEmail,
   AnalysisResult,
+  InboxOptions,
+  EmailListItem,
 } from "./email-client";

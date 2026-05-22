@@ -325,78 +325,275 @@ async function cmdDoctor(flags: Record<string, string | boolean>): Promise<void>
   console.log(brandBanner());
   console.log(`${c("bold", "=== EvoClaw 系统诊断 ===\n")}`);
 
-  const checks: Array<{ name: string; ok: boolean; detail: string; fix?: string }> = [];
+  const checks: Array<{ name: string; ok: boolean; detail: string; fix?: string; severity?: "warning" | "error" }> = [];
+  const fixesApplied: string[] = [];
 
-  const nodeOk = process.version >= "v20.0.0";
-  checks.push({ name: "Node.js >= 20", ok: nodeOk, detail: nodeOk ? process.version : `${process.version} (needs v20+)` });
-
-  const serverOk = await checkServer();
-  checks.push({ name: "Server running", ok: serverOk, detail: serverOk ? `port ${DEFAULT_PORT}` : "not running" });
-
-  const dotEnvExists = fs.existsSync(path.join(process.cwd(), ".env"));
-  checks.push({ name: ".env config", ok: dotEnvExists, detail: dotEnvExists ? "found" : "missing", fix: "Run EvoClaw setup to create .env" });
-
-  const skillsDir = path.join(process.cwd(), "skills");
-  const skillsExist = fs.existsSync(skillsDir);
-  const skillCount = skillsExist ? fs.readdirSync(skillsDir).filter((f) => {
-    try { return fs.statSync(path.join(skillsDir, f)).isDirectory(); } catch { return false; }
-  }).length : 0;
-  checks.push({ name: "Skills directory", ok: skillsExist && skillCount > 0, detail: `${skillCount} skills found`, fix: "Run EvoClaw skills install <slug> to add skills" });
-
-  const envSecret = process.env.JWT_SECRET;
-  checks.push({
-    name: "JWT_SECRET",
-    ok: !!(envSecret && envSecret.length >= 16),
-    detail: envSecret ? `${envSecret.length} chars` : "not set or too short (<16)",
-    fix: "Run EvoClaw setup to generate JWT_SECRET",
+  console.log(`${c("cyan", "1. 系统环境检查")}`);
+  
+  const nodeVersion = process.version;
+  const nodeMajor = parseInt(nodeVersion.slice(1).split(".")[0], 10);
+  const nodeOk = nodeMajor >= 20;
+  checks.push({ 
+    name: "Node.js 版本", 
+    ok: nodeOk, 
+    detail: nodeOk ? `${nodeVersion} ✓` : `${nodeVersion} (需要 >= v20)`,
+    fix: "升级 Node.js 到 v20+",
+    severity: nodeOk ? undefined : "error"
   });
 
-  if (isDeep) {
-    const envCount = Object.keys(process.env).filter((k) => k.startsWith("EvoClaw_")).length;
-    checks.push({ name: "EvoClaw env vars", ok: envCount >= 2, detail: `${envCount} configured` });
-    const extraGateway = false;
-    checks.push({ name: "Extra gateway instances", ok: !extraGateway, detail: extraGateway ? "found duplicate" : "none" });
+  const osInfo = {
+    platform: process.platform,
+    arch: process.arch,
+    cpus: require("os").cpus().length,
+    memTotal: Math.round(require("os").totalmem() / 1024 / 1024),
+    memFree: Math.round(require("os").freemem() / 1024 / 1024),
+  };
+  checks.push({ name: "操作系统", ok: true, detail: `${osInfo.platform} ${osInfo.arch}, ${osInfo.cpus}核, ${osInfo.memTotal}MB RAM` });
+  
+  const freeMemPct = (osInfo.memFree / osInfo.memTotal * 100).toFixed(1);
+  const memOk = parseFloat(freeMemPct) > 10;
+  checks.push({ 
+    name: "可用内存", 
+    ok: memOk, 
+    detail: `${osInfo.memFree}MB / ${osInfo.memTotal}MB (${freeMemPct}%)`,
+    fix: "释放内存或增加系统内存",
+    severity: memOk ? undefined : "warning"
+  });
+
+  console.log(`\n${c("cyan", "2. 配置文件检查")}`);
+
+  const dotEnvPath = path.join(process.cwd(), ".env");
+  const dotEnvExists = fs.existsSync(dotEnvPath);
+  checks.push({ 
+    name: ".env 配置文件", 
+    ok: dotEnvExists, 
+    detail: dotEnvExists ? "存在" : "缺失",
+    fix: "运行 EvoClaw setup 创建配置",
+    severity: "error"
+  });
+
+  let envContent = "";
+  if (dotEnvExists) {
+    try {
+      envContent = fs.readFileSync(dotEnvPath, "utf-8");
+    } catch {
+      checks.push({ name: ".env 可读", ok: false, detail: "无法读取", fix: "检查文件权限", severity: "error" });
+    }
   }
 
+  if (envContent) {
+    const jwtSecret = process.env.JWT_SECRET;
+    const jwtOk = !!(jwtSecret && jwtSecret.length >= 16);
+    checks.push({ 
+      name: "JWT_SECRET", 
+      ok: jwtOk, 
+      detail: jwtSecret ? `${jwtSecret.length} 字符` : "未设置或过短 (<16)",
+      fix: "运行 EvoClaw setup 生成",
+      severity: "error"
+    });
+
+    const evoPort = process.env.EvoClaw_PORT;
+    const portOk = !!(evoPort && /^\d+$/.test(evoPort) && parseInt(evoPort, 10) > 0 && parseInt(evoPort, 10) < 65536);
+    checks.push({ 
+      name: "EvoClaw_PORT", 
+      ok: portOk, 
+      detail: evoPort ? `${evoPort}` : "未设置或无效",
+      fix: "在 .env 中设置有效的端口号",
+      severity: "warning"
+    });
+
+    const envVars = envContent.split("\n").filter(line => line.trim() && !line.startsWith("#")).length;
+    checks.push({ name: "配置变量数量", ok: envVars >= 2, detail: `${envVars} 个` });
+  }
+
+  console.log(`\n${c("cyan", "3. 工作目录结构")}`);
+
+  const requiredDirs = ["skills", "data", "logs"];
+  for (const dir of requiredDirs) {
+    const dirPath = path.join(process.cwd(), dir);
+    const exists = fs.existsSync(dirPath);
+    checks.push({ 
+      name: `${dir}/ 目录`, 
+      ok: exists, 
+      detail: exists ? "存在" : "缺失",
+      fix: `创建目录: mkdir ${dir}`,
+      severity: exists ? undefined : "warning"
+    });
+  }
+
+  const skillsDir = path.join(process.cwd(), "skills");
+  const skillCount = fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir).filter((f) => {
+    try { return fs.statSync(path.join(skillsDir, f)).isDirectory(); } catch { return false; }
+  }).length : 0;
+  checks.push({ 
+    name: "已安装技能", 
+    ok: skillCount > 0, 
+    detail: `${skillCount} 个`,
+    fix: "运行 EvoClaw skills install <slug> 安装技能"
+  });
+
+  console.log(`\n${c("cyan", "4. 依赖与模块检查")}`);
+
+  const pkgJsonPath = path.join(process.cwd(), "package.json");
+  const pkgJsonExists = fs.existsSync(pkgJsonPath);
+  checks.push({ 
+    name: "package.json", 
+    ok: pkgJsonExists, 
+    detail: pkgJsonExists ? "存在" : "缺失",
+    fix: "初始化项目: npm init",
+    severity: "error"
+  });
+
+  const nodeModulesExists = fs.existsSync(path.join(process.cwd(), "node_modules"));
+  checks.push({ 
+    name: "node_modules", 
+    ok: nodeModulesExists, 
+    detail: nodeModulesExists ? "存在" : "缺失",
+    fix: "安装依赖: pnpm install",
+    severity: "error"
+  });
+
+  if (nodeModulesExists && pkgJsonExists) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      checks.push({ name: "依赖数量", ok: Object.keys(deps).length > 0, detail: `${Object.keys(deps).length} 个依赖` });
+    } catch {
+      checks.push({ name: "依赖解析", ok: false, detail: "package.json 解析失败", severity: "warning" });
+    }
+  }
+
+  console.log(`\n${c("cyan", "5. 服务健康检查")}`);
+
+  const serverOk = await checkServer();
+  checks.push({ 
+    name: "Gateway 服务", 
+    ok: serverOk, 
+    detail: serverOk ? `运行中 (端口 ${DEFAULT_PORT})` : "未运行",
+    fix: "启动服务: node apps/server/dist/index.js",
+    severity: "warning"
+  });
+
+  if (serverOk) {
+    try {
+      const r = await apiRequest("GET", "/health");
+      const d = r.data as Record<string, unknown>;
+      checks.push({ name: "服务版本", ok: true, detail: String(d.version || VERSION) });
+      checks.push({ name: "服务运行时间", ok: true, detail: `${Math.round((d.uptime as number) || 0)}s` });
+      
+      if (isDeep) {
+        const servicesRes = await apiRequest("GET", "/api/system/services");
+        const services = (servicesRes.data as unknown[]) || [];
+        checks.push({ name: "服务数量", ok: services.length > 0, detail: `${services.length} 个服务` });
+      }
+    } catch (err) {
+      checks.push({ 
+        name: "服务状态", 
+        ok: false, 
+        detail: `获取失败: ${err instanceof Error ? err.message : String(err)}`,
+        severity: "warning"
+      });
+    }
+  }
+
+  console.log(`\n${c("cyan", "6. 安全检查")}`);
+
+  if (envContent) {
+    const hasSecret = envContent.includes("SECRET") || envContent.includes("KEY") || envContent.includes("TOKEN");
+    checks.push({ name: "敏感配置", ok: hasSecret, detail: hasSecret ? "已配置" : "未配置", severity: "warning" });
+  }
+
+  const dotEnvStat = dotEnvExists ? fs.statSync(dotEnvPath) : null;
+  if (dotEnvStat && process.platform !== "win32") {
+    const mode = dotEnvStat.mode & 0o777;
+    const isSecure = (mode & 0o077) === 0;
+    checks.push({ 
+      name: ".env 权限", 
+      ok: isSecure, 
+      detail: isSecure ? "安全 (600)" : `不安全 (${mode.toString(8)})`,
+      fix: "设置权限: chmod 600 .env",
+      severity: "warning"
+    });
+  }
+
+  console.log(`\n${c("cyan", "7. 网络连通性")}`);
+
+  if (isDeep && serverOk) {
+    const endpoints = ["/health", "/api/system/services", "/api/chat"];
+    for (const ep of endpoints) {
+      try {
+        const r = await apiRequest("GET", ep);
+        checks.push({ name: `${ep} 端点`, ok: r.status === 200, detail: r.status === 200 ? "可达" : `状态码 ${r.status}` });
+      } catch {
+        checks.push({ name: `${ep} 端点`, ok: false, detail: "不可达", severity: "warning" });
+      }
+    }
+  }
+
+  console.log(`\n${c("bold", "诊断结果汇总")}`);
+  console.log(divider());
+
   for (const check of checks) {
-    const icon = check.ok ? c("green", "✓") : c("red", "✗");
-    console.log(`  ${icon} ${check.name}: ${c("gray", check.detail)}`);
+    const icon = check.ok ? c("green", "✓") : check.severity === "error" ? c("red", "✗") : c("yellow", "⚠");
+    const color = check.severity === "error" ? "red" : check.severity === "warning" ? "yellow" : "gray";
+    console.log(`  ${icon} ${check.name}: ${c(color, check.detail)}`);
     if (!check.ok && check.fix) {
       console.log(`    ${c("yellow", "💡")} ${c("gray", check.fix)}`);
     }
   }
 
-  const allOk = checks.every((c) => c.ok);
+  const errors = checks.filter(c => c.severity === "error" && !c.ok).length;
+  const warnings = checks.filter(c => c.severity === "warning" && !c.ok).length;
+  const allOk = errors === 0;
 
-  console.log(`\n  ${divider()}`);
+  console.log(`\n${divider()}`);
+  console.log(`  错误: ${c("red", String(errors))} | 警告: ${c("yellow", String(warnings))} | 通过: ${c("green", String(checks.filter(c => c.ok).length))}`);
 
-  if (isFix && !allOk) {
+  if (isFix && (errors > 0 || warnings > 0)) {
     if (!isYes && !isNonInteractive) {
-      console.log(`\n${c("yellow", "⚠ Use --yes to apply automatic fixes, or --force to override custom configs")}`);
-    } else if (isForce) {
-      console.log(`\n${c("green", "✅ Applying fixes (--force: overriding custom configs)...")}`);
+      console.log(`\n${c("yellow", "⚠ 使用 --yes 应用自动修复，或 --force 强制覆盖自定义配置")}`);
+      console.log(`  ${c("gray", "EvoClaw doctor --fix --yes")}`);
     } else {
-      console.log(`\n${c("green", "✅ Applying safe fixes...")}`);
+      console.log(`\n${c("green", isForce ? "🔧 应用修复 (--force: 覆盖自定义配置)...\n" : "🔧 应用安全修复...\n")}`);
+
+      if (!dotEnvExists) {
+        const secret = require("crypto").randomBytes(32).toString("hex");
+        fs.writeFileSync(dotEnvPath, `EvoClaw_PORT=${DEFAULT_PORT}\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
+        fixesApplied.push(`创建 .env 配置文件`);
+      }
+
+      for (const dir of requiredDirs) {
+        const dirPath = path.join(process.cwd(), dir);
+        if (!fs.existsSync(dirPath)) {
+          fs.mkdirSync(dirPath, { recursive: true });
+          fixesApplied.push(`创建 ${dir}/ 目录`);
+        }
+      }
+
+      if (!nodeModulesExists && pkgJsonExists) {
+        console.log(c("yellow", "⚠ 依赖安装需要手动执行: pnpm install"));
+      }
+
+      if (fixesApplied.length > 0) {
+        for (const fix of fixesApplied) {
+          console.log(`  ${c("green", "✓")} ${fix}`);
+        }
+        console.log(`\n${c("green", "✅ 修复完成！")}`);
+        console.log(`\n${c("gray", "提示: 重启 Gateway 服务以应用更改")}`);
+      } else {
+        console.log(c("yellow", "⚠ 没有可自动修复的项"));
+      }
     }
-    if (!dotEnvExists) {
-      const secret = require("crypto").randomBytes(32).toString("hex");
-      fs.writeFileSync(path.join(process.cwd(), ".env"), `EvoClaw_PORT=3000\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
-      console.log(`  ${c("green", "✓")} Created .env with random JWT_SECRET`);
-    }
-    if (!skillsExist) {
-      fs.mkdirSync(skillsDir, { recursive: true });
-      console.log(`  ${c("green", "✓")} Created skills/ directory`);
-    }
-    if (flags["generate-gateway-token"]) {
-      const token = require("crypto").randomBytes(24).toString("hex");
-      console.log(`  ${c("green", "✓")} Generated gateway token: ${token}`);
-    }
-    console.log(`\n${c("green", "✅ Fixes applied!")}\n`);
   } else if (allOk) {
-    console.log(`\n${c("green", "✅ All checks passed!")}\n`);
+    console.log(`\n${c("green", "✅ 所有检查通过！系统状态良好。")}`);
+    console.log(`\n${c("gray", "提示: 定期运行 EvoClaw doctor --deep 进行深度诊断")}`);
   } else {
-    console.log(`\n${c("yellow", "⚠ Some checks failed. Use --fix to apply repairs, or fix the issues above.")}\n`);
+    console.log(`\n${c("yellow", "⚠ 部分检查失败")}`);
+    console.log(`  ${c("gray", "使用 EvoClaw doctor --fix --yes 自动修复")}`);
+    console.log(`  ${c("gray", "或根据上述提示手动修复问题")}`);
   }
+
+  console.log();
 }
 
 async function cmdDashboard(): Promise<void> {
@@ -1747,7 +1944,9 @@ async function cmdAcp(flags: Record<string, string | boolean>): Promise<void> {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const { cmd, sub, flags, args } = parseArgs(argv);
+  
+  const { cmd: rawCmd, sub, flags, args } = parseArgs(argv);
+  const cmd = rawCmd.toLowerCase();
 
   if (flags["no-color"] || process.env.NO_COLOR) useColor = false;
 

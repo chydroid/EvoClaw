@@ -10,7 +10,8 @@ export type TaskCategory =
   | "system_operation"
   | "question_answering"
   | "skill_execution"
-  | "report_generation";
+  | "report_generation"
+  | "analysis_report";  // 新增：分析报告类
 
 export type ComplexityLevel = "simple" | "medium" | "complex";
 
@@ -34,6 +35,7 @@ export interface ClassificationResult {
   language: "zh" | "en" | "mixed";
   hasCode: boolean;
   requiresAuth: boolean;
+  intentSimilarity?: Record<string, number>;  // 各意图的相似度
 }
 
 interface CategoryPattern {
@@ -41,7 +43,169 @@ interface CategoryPattern {
   patterns: RegExp[];
   tools: string[];
   skills: string[];
+  examples?: string[];  // 用于向量匹配的示例句子（可选，优先使用 INTENT_VECTORS）
 }
+
+// 意图向量库 - 预定义的意图及其典型表述
+const INTENT_VECTORS: Array<{
+  category: TaskCategory;
+  name: string;
+  examples: string[];
+}> = [
+  {
+    category: "web_search",
+    name: "信息搜索",
+    examples: [
+      "搜索最新的AI发展情况",
+      "帮我查一下国内AI发展情况",
+      "了解一下当前的人工智能发展现状",
+      "帮我搜索最近AI领域的新闻",
+      "查询一下最新的科技动态",
+      "搜索当前国内国际形势分析",
+      "查找AI行业的最新发展",
+      "搜索人工智能发展趋势",
+      "帮我搜集AI发展相关资料",
+      "了解一下AI领域的现状",
+    ],
+  },
+  {
+    category: "analysis_report",
+    name: "分析报告",
+    examples: [
+      "写一份AI发展分析报告",
+      "做一个1000字的分析报告",
+      "生成一份市场分析报告",
+      "帮我写一个详细的情况分析",
+      "做一个全面的分析总结",
+      "生成行业发展报告",
+      "撰写一份分析报告",
+      "做一份详细的情况报告",
+      "帮我整理一份分析材料",
+      "做一个深度的分析总结",
+    ],
+  },
+  {
+    category: "code_generation",
+    name: "代码生成",
+    examples: [
+      "写一个网页代码",
+      "帮我生成一段Python代码",
+      "创建一个React组件",
+      "写一个登录页面",
+      "帮我写个排序算法",
+      "生成一个API接口",
+    ],
+  },
+  {
+    category: "file_operation",
+    name: "文件操作",
+    examples: [
+      "帮我创建一个文件夹",
+      "删除这个文件",
+      "读取上面的内容",
+      "修改这个配置",
+      "列出当前目录文件",
+      "保存到桌面",
+    ],
+  },
+  {
+    category: "question_answering",
+    name: "问答对话",
+    examples: [
+      "你好",
+      "今天天气怎么样",
+      "你是谁",
+      "你能做什么",
+      "介绍一下你自己",
+      "解释一下什么是区块链",
+    ],
+  },
+  {
+    category: "report_generation",
+    name: "报告生成",
+    examples: [
+      "生成一份周报",
+      "帮我写个工作总结",
+      "制作一个月度报告",
+      "生成销售报表",
+      "导出项目进度报告",
+    ],
+  },
+  {
+    category: "browser_automation",
+    name: "浏览器自动化",
+    examples: [
+      "帮我登录这个网站",
+      "自动填写表单",
+      "监控这个页面的价格",
+      "抓取网页数据",
+      "自动点击这个按钮",
+    ],
+  },
+  {
+    category: "email_handling",
+    name: "邮件处理",
+    examples: [
+      "帮我发一封邮件",
+      "查看收件箱",
+      "回复这封邮件",
+      "分析邮件内容",
+      "配置邮件账户",
+      "整理我的邮件",
+      "帮我整理邮件",
+      "整理邮箱中的邮件",
+      "把邮件整理一下",
+      "整理收件箱",
+      "帮我把邮件分类整理",
+      "整理一下邮箱里的邮件",
+      "把未读邮件整理一下",
+      "整理邮件并生成报告",
+      "整理邮件并做个总结",
+      "自动整理邮件",
+      "帮我把邮箱整理好",
+      "邮件太多了帮我整理",
+      "生成邮件报告",
+      "邮件摘要",
+      "整理所有邮件",
+      "批量处理邮件",
+      "清理邮箱",
+      "把垃圾邮件清理一下",
+      "统计一下邮件",
+    ],
+  },
+  {
+    category: "data_analysis",
+    name: "数据分析",
+    examples: [
+      "分析这份数据",
+      "统计一下销售额",
+      "做个可视化图表",
+      "清洗一下这个数据集",
+      "计算增长率",
+    ],
+  },
+  {
+    category: "system_operation",
+    name: "系统操作",
+    examples: [
+      "启动服务",
+      "查看系统状态",
+      "安装这个依赖",
+      "设置定时任务",
+      "备份数据库",
+    ],
+  },
+  {
+    category: "skill_execution",
+    name: "技能执行",
+    examples: [
+      "安装这个技能",
+      "运行我的脚本",
+      "帮我搜索AI技能",
+      "列出已安装技能",
+    ],
+  },
+];
 
 const CATEGORY_PATTERNS: CategoryPattern[] = [
   {
@@ -189,15 +353,223 @@ const COMPLEXITY_INDICATORS = {
 };
 
 export class TaskClassifier {
+  private tfidfCache = new Map<string, Map<string, number>>();
+  private documentFrequency = new Map<string, number>();
+  private isInitialized = false;
+
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
-  ) {}
+  ) {
+    this.initializeTfidf();
+  }
 
+  /**
+   * 初始化 TF-IDF 向量库
+   */
+  private initializeTfidf(): void {
+    if (this.isInitialized) return;
+
+    // 计算每个意图示例的 TF
+    for (const intent of INTENT_VECTORS) {
+      for (const example of intent.examples) {
+        const tf = this.computeTf(example);
+        const docId = `${intent.category}_${example}`;
+        this.tfidfCache.set(docId, tf);
+      }
+    }
+
+    // 计算 IDF (逆文档频率)
+    const allTerms = new Set<string>();
+    for (const [, tf] of this.tfidfCache) {
+      for (const term of tf.keys()) {
+        allTerms.add(term);
+      }
+    }
+
+    const numDocs = INTENT_VECTORS.reduce((sum, i) => sum + i.examples.length, 0);
+    for (const term of allTerms) {
+      let docCount = 0;
+      for (const [, tf] of this.tfidfCache) {
+        if (tf.has(term)) docCount++;
+      }
+      this.documentFrequency.set(term, Math.log(numDocs / (docCount + 1)));
+    }
+
+    this.isInitialized = true;
+    console.log(`[TaskClassifier] TF-IDF 向量库初始化完成: ${INTENT_VECTORS.length} 个意图, ${numDocs} 个示例`);
+  }
+
+  /**
+   * 计算 TF (词频)
+   */
+  private computeTf(text: string): Map<string, number> {
+    const terms = this.tokenize(text);
+    const tf = new Map<string, number>();
+    const total = terms.length || 1;
+
+    for (const term of terms) {
+      tf.set(term, (tf.get(term) || 0) + 1);
+    }
+
+    // 归一化
+    for (const [term, count] of tf) {
+      tf.set(term, count / total);
+    }
+
+    return tf;
+  }
+
+  /**
+   * 分词 (简单的中英文混合分词)
+   */
+  private tokenize(text: string): string[] {
+    // 简单的分词逻辑
+    const terms: string[] = [];
+    
+    // 处理中文 - 简单按标点和空格分割
+    const chineseTerms = text.toLowerCase().split(/[\s,.;:!?()\[\]{}""''<>'~@#$%^&*+=\\/|，。！？、；：（）【】《》""'']+/)
+      .filter(t => t.length >= 2);
+    
+    // 处理英文 - 提取单词
+    const englishWords = text.toLowerCase().match(/[a-z]{2,}/g) || [];
+    
+    // 提取重要概念 (2-3个字的组合)
+    const bigrams: string[] = [];
+    for (const term of chineseTerms) {
+      if (term.length >= 3) {
+        // 提取关键概念
+        const concepts = term.match(/[\u4e00-\u9fff]{2,4}/g);
+        if (concepts) {
+          bigrams.push(...concepts);
+        }
+      }
+    }
+
+    return [...new Set([...chineseTerms, ...englishWords, ...bigrams])];
+  }
+
+  /**
+   * 计算 TF-IDF 向量
+   */
+  private computeTfidf(text: string): Map<string, number> {
+    const tf = this.computeTf(text);
+    const tfidf = new Map<string, number>();
+
+    for (const [term, tfValue] of tf) {
+      const idf = this.documentFrequency.get(term) || Math.log(INTENT_VECTORS.length);
+      tfidf.set(term, tfValue * idf);
+    }
+
+    return tfidf;
+  }
+
+  /**
+   * 计算余弦相似度
+   */
+  private cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
+    if (a.size === 0 || b.size === 0) return 0;
+
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (const [term, valueA] of a) {
+      const valueB = b.get(term) || 0;
+      dotProduct += valueA * valueB;
+      normA += valueA * valueA;
+    }
+
+    for (const valueB of b.values()) {
+      normB += valueB * valueB;
+    }
+
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  /**
+   * 使用 TF-IDF 向量匹配判断用户意图
+   */
+  private matchIntentByVector(task: string): Array<{ category: TaskCategory; similarity: number }> {
+    const taskVector = this.computeTfidf(task);
+    const results: Array<{ category: TaskCategory; similarity: number }> = [];
+
+    // 计算与每个意图类别的相似度
+    const categoryVectors = new Map<TaskCategory, Map<string, number>[]>();
+    for (const intent of INTENT_VECTORS) {
+      categoryVectors.set(intent.category, []);
+    }
+
+    // 计算每个示例的 TF-IDF 向量
+    for (const intent of INTENT_VECTORS) {
+      for (const example of intent.examples) {
+        const exampleVector = this.computeTfidf(example);
+        categoryVectors.get(intent.category)!.push(exampleVector);
+      }
+    }
+
+    // 计算每个类别的平均相似度
+    for (const [category, vectors] of categoryVectors) {
+      let totalSimilarity = 0;
+      for (const vec of vectors) {
+        totalSimilarity += this.cosineSimilarity(taskVector, vec);
+      }
+      const avgSimilarity = vectors.length > 0 ? totalSimilarity / vectors.length : 0;
+      results.push({ category, similarity: avgSimilarity });
+    }
+
+    // 按相似度排序
+    results.sort((a, b) => b.similarity - a.similarity);
+
+    return results;
+  }
+
+  /**
+   * 综合分类：结合向量匹配和正则匹配
+   */
   classify(task: string): ClassificationResult {
-    const categories = this.detectCategories(task);
-    const primaryCategory = categories[0] || "question_answering";
-    const confidence = this.calculateConfidence(task, primaryCategory);
+    // 使用 TF-IDF 向量匹配
+    const vectorMatches = this.matchIntentByVector(task);
+    const vectorPrimary = vectorMatches[0];
+    const intentSimilarity: Record<string, number> = {};
+    for (const m of vectorMatches) {
+      intentSimilarity[m.category] = Math.round(m.similarity * 100) / 100;
+    }
+
+    // 使用正则匹配
+    const regexCategories = this.detectCategories(task);
+    const regexPrimary = regexCategories[0] || "question_answering";
+
+    // 综合判断：优先使用向量匹配（语义更准确）
+    let primaryCategory: TaskCategory;
+    let confidence: number;
+
+    if (vectorPrimary && vectorPrimary.similarity > 0.3) {
+      // 向量匹配置信度高
+      primaryCategory = vectorPrimary.category;
+      confidence = Math.min(vectorPrimary.similarity + 0.2, 1.0);
+    } else if (vectorMatches.length > 0 && vectorPrimary) {
+      // 向量匹配结果作为参考，结合正则匹配
+      const regexIndex = regexCategories.indexOf(vectorPrimary.category);
+      if (regexIndex >= 0) {
+        primaryCategory = vectorPrimary.category;
+        confidence = vectorPrimary.similarity;
+      } else {
+        // 正则匹配的结果与向量匹配不一致，以向量为准（语义理解更准确）
+        primaryCategory = vectorPrimary.category;
+        confidence = vectorPrimary.similarity * 0.8;
+      }
+    } else {
+      // 默认使用正则匹配结果
+      primaryCategory = regexPrimary;
+      confidence = 0.5;
+    }
+
+    // 合并分类结果
+    const allCategories = new Set([primaryCategory, ...regexCategories]);
+    const categories = Array.from(allCategories);
+
     const complexity = this.detectComplexity(task);
     const entities = this.extractEntities(task);
     const keywords = this.extractKeywords(task);
@@ -208,6 +580,7 @@ export class TaskClassifier {
     const hasCode = this.detectHasCode(task);
     const requiresAuth = this.detectRequiresAuth(categories);
 
+    // 发布分类事件
     this.eventBus.publish(
       "intelligence.task_classified",
       {
@@ -217,11 +590,13 @@ export class TaskClassifier {
         confidence,
         estimatedSteps,
         language,
+        intentSimilarity,
+        vectorMatch: vectorPrimary,
       },
       "task-classifier"
     );
 
-    return {
+    const result: ClassificationResult = {
       categories,
       primaryCategory,
       confidence,
@@ -234,7 +609,65 @@ export class TaskClassifier {
       language,
       hasCode,
       requiresAuth,
+      intentSimilarity,
     };
+
+    console.log(`[TaskClassifier] 分类结果: ${primaryCategory} (置信度: ${(confidence * 100).toFixed(0)}%)`);
+    console.log(`[TaskClassifier] 意图相似度:`, intentSimilarity);
+
+    return result;
+  }
+
+  /**
+   * 判断是否需要网络搜索（基于向量匹配）
+   */
+  needsWebSearch(task: string): { needed: boolean; confidence: number; reason: string } {
+    const result = this.classify(task);
+    
+    // 需要排除的意图类别（这些操作不需要网络搜索）
+    const excludedCategories: TaskCategory[] = [
+      "email_handling",  // 邮件操作不需要网络搜索
+      "file_operation",  // 文件操作不需要网络搜索
+      "code_generation", // 代码生成不需要网络搜索
+      "skill_execution",  // 技能执行不需要网络搜索
+      "system_operation", // 系统操作不需要网络搜索
+    ];
+    
+    // 如果主要意图是排除的类别，不触发搜索
+    if (excludedCategories.includes(result.primaryCategory)) {
+      return { 
+        needed: false, 
+        confidence: 0, 
+        reason: `检测到${result.primaryCategory}意图，无需网络搜索` 
+      };
+    }
+    
+    const searchCategories: TaskCategory[] = ["web_search", "analysis_report"];
+    
+    const searchSimilarity = result.intentSimilarity?.["web_search"] || 0;
+    const reportSimilarity = result.intentSimilarity?.["analysis_report"] || 0;
+    const maxSimilarity = Math.max(searchSimilarity, reportSimilarity);
+
+    if (maxSimilarity > 0.35) {
+      // 再次确认不是排除的类别
+      const topCategory = Object.entries(result.intentSimilarity || {})
+        .sort(([, a], [, b]) => (b as number) - (a as number))[0];
+      
+      if (topCategory && excludedCategories.includes(topCategory[0] as TaskCategory)) {
+        return { 
+          needed: false, 
+          confidence: 0, 
+          reason: `检测到${topCategory[0]}意图，无需网络搜索` 
+        };
+      }
+      
+      const reason = maxSimilarity === searchSimilarity 
+        ? "检测到信息搜索意图" 
+        : "检测到分析报告意图";
+      return { needed: true, confidence: maxSimilarity, reason };
+    }
+
+    return { needed: false, confidence: 0, reason: "未检测到需要搜索的意图" };
   }
 
   private detectCategories(task: string): TaskCategory[] {

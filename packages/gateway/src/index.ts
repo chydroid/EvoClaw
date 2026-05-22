@@ -4,3 +4,7 @@ export { ProtocolAdapter } from "./protocol-adapter";
 export { MCPGateway } from "./mcp-gateway";
 export { MCPSSETransport, MCPStdioTransport } from "./mcp-transport";
 export type { MCPTransportImpl } from "./mcp-transport";
+export { ChannelManager } from "./channel-manager";
+export type { ChannelConfig, ChannelType, ChannelMessage, ChannelSendResult, ChannelAdapter, ChannelStatus, DirectMessagePolicy } from "./channel-manager";
+export { ProtocolHandler } from "./ws-protocol";
+export type { ProtocolFrame, ConnectFrame, RequestFrame, ResponseFrame, EventFrame, WSClient, AllowedMethod } from "./ws-protocol";

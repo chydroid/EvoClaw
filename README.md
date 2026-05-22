@@ -1,5 +1,6 @@
-![EvoClaw Logo](assets/images/evoclaw-400-100.png)
-
+<p align="center">
+    <img src="https://github.com/chydroid/EvoClaw/raw/main/assets/images/evoclaw-400-100.png" alt="EvoClaw" width="400">
+</p>
 <h1 align="center">EvoClaw</h1>
 
 <p align="center">

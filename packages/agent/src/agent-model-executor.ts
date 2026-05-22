@@ -70,12 +70,75 @@ export class AgentModelExecutor {
   private compactionTokenThreshold: number;
   private autoCompactionEnabled = true;
   private memoryHub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } } | null = null;
+  private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
+  private compactionManager: import("./compaction-manager").CompactionManager | null = null;
+  private lifecycleManager: import("./agent-lifecycle").AgentLifecycleManager | null = null;
+  private queueManager: import("./queue-manager").QueueManager | null = null;
+  private sessionManager: import("./session-manager").SessionManager | null = null;
+  private contextEngine: import("./context-engine").ContextEngine | null = null;
+  private pluginManager: import("@evoclaw/core").PluginManager | null = null;
+  // ChannelManager integration — avoids cross-package import using any
+  private channelManager: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> } | null = null;
 
   /** Set memory hub for session/memory integration */
   setMemoryHub(hub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } }): void {
     this.memoryHub = hub;
     console.log(`[AgentModelExecutor] Memory hub integrated`);
   }
+
+  /** Set bootstrap manager */
+  setBootstrapManager(bm: import("./bootstrap-manager").BootstrapManager): void {
+    this.bootstrapManager = bm;
+    console.log(`[AgentModelExecutor] Bootstrap manager integrated`);
+  }
+
+  /** Get bootstrap manager for tool registration */
+  getBootstrapManager(): import("./bootstrap-manager").BootstrapManager | null {
+    return this.bootstrapManager;
+  }
+
+  /** Set compaction manager */
+  setCompactionManager(cm: import("./compaction-manager").CompactionManager): void {
+    this.compactionManager = cm;
+    console.log(`[AgentModelExecutor] Compaction manager integrated`);
+  }
+
+  /** Set lifecycle manager */
+  setLifecycleManager(lm: import("./agent-lifecycle").AgentLifecycleManager): void {
+    this.lifecycleManager = lm;
+    console.log(`[AgentModelExecutor] Lifecycle manager integrated`);
+  }
+
+  /** Set queue manager */
+  setQueueManager(qm: import("./queue-manager").QueueManager): void {
+    this.queueManager = qm;
+    console.log(`[AgentModelExecutor] Queue manager integrated`);
+  }
+
+  /** Set session manager */
+  setSessionManager(sm: import("./session-manager").SessionManager): void {
+    this.sessionManager = sm;
+    console.log(`[AgentModelExecutor] Session manager integrated`);
+  }
+
+  /** Set context engine */
+  setContextEngine(ce: import("./context-engine").ContextEngine): void {
+    this.contextEngine = ce;
+    console.log(`[AgentModelExecutor] Context engine integrated`);
+  }
+
+  /** Set plugin manager */
+  setPluginManager(pm: import("@evoclaw/core").PluginManager): void {
+    this.pluginManager = pm;
+    console.log(`[AgentModelExecutor] Plugin manager integrated`);
+  }
+
+  /** Set channel manager */
+  setChannelManager(cm: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> }): void {
+    this.channelManager = cm;
+    console.log(`[AgentModelExecutor] Channel manager integrated`);
+  }
+
   private runIdCounter = 0;
   private workspacePath: string;
   private bootstrapFiles: Array<{ path: string; content: string }> = [];
@@ -238,44 +301,78 @@ export class AgentModelExecutor {
     const history = this.conversationHistory.get(sessionId);
     if (!history || history.length <= keepRecentTurns * 2) return;
 
-    const compactNotice: Array<{ role: string; content: string | null }> = [
-      { role: "system", content: "[Previous conversation has been compacted. Key context is summarized above.]" },
-    ];
-
     const recentEntries = history.slice(-keepRecentTurns * 2);
     const olderEntries = history.slice(0, -(keepRecentTurns * 2));
 
-    const userMessages = olderEntries
-      .filter((e) => e.role === "user" && e.content)
-      .map((e) => e.content as string);
-
-    const assistantMessages = olderEntries
-      .filter((e) => e.role === "assistant" && e.content)
-      .map((e) => e.content as string);
-
+    // Use CompactionManager if available for richer summary with successor transcripts
     let summary = "";
-    if (userMessages.length > 0 || assistantMessages.length > 0) {
-      summary = `[Compacted ${olderEntries.length} turns. `;
-      if (userMessages.length > 0) {
-        summary += `User discussed: ${userMessages.map((m) => m.slice(0, 80)).join("; ")}. `;
+    let successorId = sessionId;
+    if (this.compactionManager) {
+      const compaction = this.compactionManager.buildSummary(
+        sessionId,
+        olderEntries.map((e) => ({ role: e.role, content: e.content })),
+      );
+      summary = this.compactionManager.buildSuccessorPrompt(compaction);
+      successorId = compaction.successorSessionId;
+
+      // Flush to long-term memory
+      if (this.memoryHub) {
+        const memEntry = this.compactionManager.buildMemoryEntry(compaction);
+        const longTerm = this.memoryHub.getLongTerm();
+        longTerm.store({
+          content: memEntry.content,
+          type: memEntry.type,
+          metadata: {
+            source: memEntry.metadata.source,
+            sessionId,
+            userId: "default",
+            tags: memEntry.metadata.tags,
+            importance: memEntry.metadata.importance,
+            associations: [],
+            entities: [],
+          },
+          ttl: 30 * 24 * 3600 * 1000,
+          embedding: null,
+          id: "",
+          createdAt: new Date(),
+          accessedAt: new Date(),
+        }).catch((err) => console.warn(`[AgentModelExecutor] Memory flush failed: ${err}`));
       }
-      if (assistantMessages.length > 0) {
-        summary += `Assistant covered: ${assistantMessages.map((m) => m.slice(0, 80)).join("; ")}.`;
+
+      // Emit lifecycle event
+      if (this.lifecycleManager) {
+        this.lifecycleManager.compacted(sessionId, olderEntries.length, successorId);
       }
-      summary += "]";
+    } else {
+      // Fallback to simple compaction
+      const userMessages = olderEntries
+        .filter((e) => e.role === "user" && e.content)
+        .map((e) => e.content as string);
+      const assistantMessages = olderEntries
+        .filter((e) => e.role === "assistant" && e.content)
+        .map((e) => e.content as string);
+      if (userMessages.length > 0 || assistantMessages.length > 0) {
+        summary = `[Compacted ${olderEntries.length} turns. `;
+        if (userMessages.length > 0) {
+          summary += `User discussed: ${userMessages.map((m) => m.slice(0, 80)).join("; ")}. `;
+        }
+        if (assistantMessages.length > 0) {
+          summary += `Assistant covered: ${assistantMessages.map((m) => m.slice(0, 80)).join("; ")}.`;
+        }
+        summary += "]";
+      }
     }
 
     const compacted: Array<{ role: string; content: string | null }> = [
-      ...compactNotice,
-      { role: "system", content: summary },
+      { role: "system", content: summary || "[Previous conversation has been compacted.]" },
       ...recentEntries,
     ];
 
     this.conversationHistory.set(sessionId, compacted);
-    console.log(`[AgentModelExecutor] Compacted session "${sessionId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
+    console.log(`[AgentModelExecutor] Compacted session "${sessionId}" -> "${successorId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
 
-    // Store compacted summary in long-term memory for future reference
-    if (this.memoryHub && summary) {
+    // Fallback: Store compacted summary in long-term memory (only when CompactionManager not available, as it already handles this)
+    if (!this.compactionManager && this.memoryHub && summary) {
       const longTerm = this.memoryHub.getLongTerm();
       longTerm.store({
         content: summary,
@@ -303,6 +400,318 @@ export class AgentModelExecutor {
     if (!pending) return;
     this.pendingOperations.delete(requestId);
     console.log(`[AgentModelExecutor] Permission approved for request "${requestId}". Frontend will auto-resume the task.`);
+  }
+
+  /**
+   * Detect email credentials in user input and auto-configure email account
+   * Supported patterns:
+   * - "xxx@163.com 密码是：xxxxx"
+   * - "xxx@gmail.com password: xxxxx"
+   * - "邮箱地址: xxx@xxx.com, 密码: xxxxx"
+   * - "邮箱账号xxx@163.com 授权码：xxxxx"
+   */
+  private async detectAndConfigureEmailAccount(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> } | null> {
+    // Don't detect in search results or context messages
+    if (message.includes("[系统") || message.includes("已为你搜索")) {
+      return null;
+    }
+
+    const originalMsg = message;
+    const lowerMsg = message.toLowerCase().trim();
+    
+    // Fix common typos in email domain
+    let fixedMsg = lowerMsg
+      .replace(/@163\.oom\b/gi, "@163.com")
+      .replace(/@qq\.com\.+/gi, "@qq.com")
+      .replace(/@gmail\.com\.+/gi, "@gmail.com")
+      .replace(/\.oom\b/gi, ".com");
+
+    let email: string | null = null;
+    let password: string | null = null;
+    let matched = false;
+
+    // Pattern 1: Chinese format with "邮箱账号" or "邮箱地址"
+    // Example: "邮箱账号chydroid@163.com 授权码：DCq4QHXN46bMPCc9"
+    const accountPrefixPattern = /(?:邮箱账号|邮箱地址|账号)(?:[:：]\s*)?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i;
+    const accountPrefixMatch = originalMsg.match(accountPrefixPattern);
+    
+    // Pattern 2: Direct email with auth code
+    // Example: "chydroid@163.com 授权码：DCq4QHXN46bMPCc9"
+    const authCodePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s*(?:授权码|密码|password)[:：]\s*([a-zA-Z0-9a-zA-Z]{10,})/i;
+    const authCodeMatch = fixedMsg.match(authCodePattern);
+    
+    // Pattern 3: Key-value format
+    // Example: "邮箱: xxx@xxx.com, 授权码: xxxxx"
+    const kvPattern = /(?:邮箱(?:地址)?|email)\s*[:：]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^a-zA-Z0-9]*?(?:授权码|密码|password)\s*[:：]\s*([a-zA-Z0-9a-zA-Z]{6,})/i;
+    const kvMatch = originalMsg.match(kvPattern);
+    
+    // Pattern 4: Simple format "email password"
+    // Example: "test@163.com MyPassword123"
+    const simplePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+([a-zA-Z0-9a-zA-Z!@#$%]{6,32})(?:\s|$)/i;
+    const simpleMatch = fixedMsg.match(simplePattern);
+
+    // Extract email and password
+    if (authCodeMatch) {
+      email = authCodeMatch[1];
+      password = authCodeMatch[2];
+      matched = true;
+    } else if (kvMatch) {
+      email = kvMatch[1];
+      password = kvMatch[2];
+      matched = true;
+    } else if (simpleMatch) {
+      email = simpleMatch[1];
+      password = simpleMatch[2];
+      matched = true;
+    }
+
+    if (!matched || !email || !password) {
+      return null;
+    }
+    
+    // Detect email provider from message
+    const detectProvider = (msg: string): string => {
+      if (msg.includes("163") || /@163\.com$/i.test(msg)) return "163";
+      if (msg.includes("qq") || /@qq\.com$/i.test(msg)) return "qq";
+      if (msg.includes("126") || /@126\.com$/i.test(msg)) return "126";
+      if (msg.includes("gmail") || /@gmail\.com$/i.test(msg)) return "gmail";
+      if (msg.includes("outlook") || /@outlook\.(com|org)$/i.test(msg)) return "outlook";
+      if (msg.includes("189") || /@189\.cn$/i.test(msg)) return "189";
+      if (msg.includes("yahoo") || /@yahoo\.(com|cn)$/i.test(msg)) return "yahoo";
+      return "163"; // Default to 163 for Chinese email
+    };
+    
+    console.log(`[AgentModelExecutor] Detected email account configuration: ${email}, password length: ${password.length}`);
+    
+    const provider = detectProvider(message);
+    const displayName = email.split("@")[0];
+    
+    // Check if email_add_account tool is registered
+    if (!this.registeredTools.has("email_add_account")) {
+      return {
+        reply: `检测到您提供了邮箱账号：${email}\n\n但系统尚未注册邮箱功能。请联系管理员配置邮箱功能。`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+    
+    // Use TaskClassifier to verify this is an email operation
+    const taskClassifier = this.registry?.resolveService<{
+      classify(task: string): { primaryCategory: string; confidence: number };
+    }>("taskClassifier");
+    
+    if (taskClassifier) {
+      try {
+        const result = taskClassifier.classify(message);
+        // If the primary category is not email_handling, we might have false positive
+        // But since we detected email credentials, we should still proceed
+        console.log(`[AgentModelExecutor] Email config intent classification: ${result.primaryCategory} (confidence: ${result.confidence})`);
+      } catch {
+        // Ignore classification errors
+      }
+    }
+    
+    // Try to add the email account
+    try {
+      const emailTool = this.registeredTools.get("email_add_account")!;
+      const result = await emailTool.handler({
+        email,
+        password,
+        provider,
+        displayName,
+      });
+      
+      const resultObj = typeof result === "object" && result !== null ? result as Record<string, unknown> : null;
+      
+      if (resultObj?.success) {
+        return {
+          reply: `✅ 邮箱账号配置成功！\n\n📧 已添加邮箱：${email}\n🏢 邮箱类型：${provider}\n👤 显示名称：${displayName}\n\n现在您可以使用"帮我整理邮件"来整理您的邮箱了！`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      } else if (resultObj?.requiresPermission) {
+        // Permission is needed, return with pending permission request
+        return {
+          reply: `检测到您提供了邮箱账号，正在请求授权添加...\n\n📧 邮箱：${email}\n🏢 类型：${provider}`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [{
+            id: (resultObj.requestId as string) || (resultObj.id as string) || "email-config",
+            operation: "email_add_account",
+            description: `添加邮箱账号: ${email}`,
+            target: email,
+          }],
+        };
+      } else {
+        return {
+          reply: `⚠️ 邮箱账号配置遇到问题：${resultObj?.error || "未知错误"}\n\n请检查邮箱地址和密码是否正确。`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+    } catch (err) {
+      return {
+        reply: `❌ 邮箱账号配置失败：${err instanceof Error ? err.message : String(err)}`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+  }
+
+  /**
+   * Handle email inbox operations: list emails, summarize, analyze
+   * This is called when the task classifier detects email_handling intent
+   */
+  private async handleEmailOperation(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> } | null> {
+    const lowerMsg = message.toLowerCase();
+    
+    // Check if this is an email operation
+    const emailKeywords = [
+      "整理邮件", "整理邮箱", "查看邮件", "读取邮件", "邮件摘要",
+      "统计邮件", "生成邮件报告", "邮件报告", "收件箱", "未读邮件",
+      "批量处理邮件", "清理邮箱", "整理所有邮件"
+    ];
+    
+    const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw));
+    if (!isEmailOp) {
+      return null;
+    }
+
+    // Check if email tools are available
+    if (!this.registeredTools.has("email_list_accounts")) {
+      return {
+        reply: `检测到您想进行邮件操作，但系统尚未配置邮箱功能。\n\n请先提供您的邮箱账号信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    // List accounts first
+    let accountsResult: unknown;
+    try {
+      const accountsTool = this.registeredTools.get("email_list_accounts")!;
+      accountsResult = await accountsTool.handler({});
+    } catch (err) {
+      return {
+        reply: `❌ 获取邮箱账号列表失败：${err instanceof Error ? err.message : String(err)}`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    const accountsData = accountsResult as { success: boolean; accounts?: unknown[] };
+    if (!accountsData?.success || !accountsData.accounts?.length) {
+      return {
+        reply: `📭 您还没有配置任何邮箱账号。\n\n请先提供邮箱信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    // Get inbox summary
+    if (!this.registeredTools.has("email_get_inbox_summary")) {
+      return {
+        reply: `⚠️ 邮箱功能未完整配置，无法读取收件箱。请联系管理员。`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    let summaryResult: unknown;
+    try {
+      const summaryTool = this.registeredTools.get("email_get_inbox_summary")!;
+      summaryResult = await summaryTool.handler({});
+    } catch (err) {
+      return {
+        reply: `❌ 获取收件箱摘要失败：${err instanceof Error ? err.message : String(err)}`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    const summaryData = summaryResult as { success: boolean; summary?: { total: number; unread: number; categories: Record<string, number> }; error?: string };
+    if (!summaryData?.success) {
+      return {
+        reply: `❌ 无法获取邮箱摘要：${summaryData?.error || "未知错误"}\n\n可能是邮箱账号配置有误或网络连接问题。`,
+        tokensUsed: 0,
+        duration: 0,
+        permissionRequests: [],
+      };
+    }
+
+    const { total, unread, categories } = summaryData.summary!;
+
+    // List recent emails
+    let emails: unknown[] = [];
+    if (this.registeredTools.has("email_list_inbox")) {
+      try {
+        const inboxTool = this.registeredTools.get("email_list_inbox")!;
+        const inboxResult = await inboxTool.handler({ limit: 20 });
+        const inboxData = inboxResult as { success: boolean; emails?: unknown[] };
+        if (inboxData?.success && inboxData.emails) {
+          emails = inboxData.emails;
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    // Generate report
+    const now = new Date();
+    const reportTime = now.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    let report = `📬 邮箱整理报告\n`;
+    report += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    report += `📅 生成时间：${reportTime}\n\n`;
+    report += `📊 收件箱概览：\n`;
+    report += `• 总邮件数：${total} 封\n`;
+    report += `• 未读邮件：${unread} 封\n\n`;
+
+    report += `📁 邮件分类统计：\n`;
+    for (const [category, count] of Object.entries(categories)) {
+      if (count > 0) {
+        report += `• ${category}：${count} 封\n`;
+      }
+    }
+
+    if (emails.length > 0) {
+      report += `\n📋 最近邮件：\n`;
+      for (let i = 0; i < Math.min(emails.length, 10); i++) {
+        const email = emails[i] as { subject: string; from: string; date: Date; snippet: string };
+        const date = email.date instanceof Date ? email.date.toLocaleDateString("zh-CN") : new Date(email.date).toLocaleDateString("zh-CN");
+        report += `\n${i + 1}. ${email.subject || "(无主题)"}\n`;
+        report += `   📤 发件人：${email.from || "未知"}\n`;
+        report += `   📅 日期：${date}\n`;
+        if (email.snippet) {
+          report += `   📝 预览：${email.snippet.substring(0, 100)}...\n`;
+        }
+      }
+    }
+
+    report += `\n━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    report += `✅ 邮件整理完成！`;
+
+    return {
+      reply: report,
+      tokensUsed: 0,
+      duration: 0,
+      permissionRequests: [],
+    };
   }
 
   configure(config: Partial<ModelConfig>): void {
@@ -343,6 +752,20 @@ export class AgentModelExecutor {
     const toolNames = Array.from(this.registeredTools.keys());
     const mode = promptMode || "full";
 
+    // Inject bootstrap context (AGENTS.md, SOUL.md, IDENTITY.md, etc.) at the top
+    let bootstrapPrefix = "";
+    if (this.bootstrapManager) {
+      try {
+        const ctx = this.bootstrapManager.getContext();
+        bootstrapPrefix = this.bootstrapManager.buildSystemPromptInjection(ctx);
+        if (bootstrapPrefix.trim()) {
+          bootstrapPrefix += "\n\n---\n\n";
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Failed to load bootstrap context: ${err}`);
+      }
+    }
+
     const skillNames = this.getCachedSkillNames();
     const skillsPrompt = context?.skillsPrompt ||
       (this.registeredTools.size > 0
@@ -360,7 +783,7 @@ export class AgentModelExecutor {
     const workspacePath = context?.workspacePath || this.workspacePath;
     const effectiveBootstrapFiles = context?.bootstrapFiles !== undefined ? context.bootstrapFiles : this.bootstrapFiles;
 
-    return buildAgentSystemPrompt({
+    return bootstrapPrefix + buildAgentSystemPrompt({
       promptMode: mode,
       personaName: this.persona.name,
       personaTitle: this.persona.title,
@@ -472,8 +895,61 @@ export class AgentModelExecutor {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
+    const agentId = (context?.agentId as string) || "default";
+    const channel = (context?.channel as string) || "web-ui";
+    const peerId = (context?.peerId as string) || "user";
 
-    const tasks = this.parseMultipleTasks(message);
+    // ── Plugin hook: before_agent_start ──
+    let effectiveMessage = message;
+    if (this.pluginManager?.hasHooks("before_agent_start")) {
+      const { blocked, blockReason, merged } = await this.pluginManager.runHooksMerged({
+        type: "before_agent_start",
+        context: { sessionId, agentId, channel, peerId },
+        message,
+        attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
+      });
+      if (blocked) {
+        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, duration: 0, permissionRequests: [] };
+      }
+      const mergedBA = merged as Partial<import("@evoclaw/core").BeforeAgentStartResult>;
+      if (mergedBA.syntheticReply) {
+        return { reply: mergedBA.syntheticReply, tokensUsed: 0, duration: Date.now() - startTime, permissionRequests: [] };
+      }
+      if (mergedBA.message) effectiveMessage = mergedBA.message;
+    }
+
+    // ── Session management ──
+    let session = this.sessionManager?.loadSessionMeta(agentId, sessionId) ?? null;
+    if (!session) {
+      session = this.sessionManager?.createSession(agentId, { sessionId }) ?? null;
+      if (session) {
+        this.eventBus.publish("session.created", { agentId, sessionId }, "agent-model-executor");
+      }
+    }
+    // If SessionManager is available, use its transcript for history
+    if (this.sessionManager && sessionId) {
+      const loadedHistory = this.sessionManager.loadTranscript(agentId, sessionId);
+      if (loadedHistory.length > 0) {
+        this.conversationHistory.set(sessionId, loadedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => ({
+          role: t.role,
+          content: t.content,
+        })));
+      }
+    }
+
+    // ── Email account detection: detect email credentials in user input ──
+    const emailAccountResult = await this.detectAndConfigureEmailAccount(message);
+    if (emailAccountResult) {
+      return emailAccountResult;
+    }
+
+    // ── Email inbox operations: handle email list/summarize/analyze requests ──
+    const emailOperationResult = await this.handleEmailOperation(message);
+    if (emailOperationResult) {
+      return emailOperationResult;
+    }
+
+    const tasks = this.parseMultipleTasks(effectiveMessage);
     
     if (tasks.length > 1) {
       const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime);
@@ -510,21 +986,109 @@ export class AgentModelExecutor {
 
     const installedSkills = await skillManager?.listSkills() || [];
 
+    // ── Semantic intent detection + real-time search pre-processing ──
+    let newsContext = "";
+    let searchReason = "";
+    
+    // Try to use TaskClassifier for semantic intent detection
+    const taskClassifier = this.registry?.resolveService<{
+      classify(task: string): { primaryCategory: string; confidence: number; intentSimilarity?: Record<string, number> };
+      needsWebSearch(task: string): { needed: boolean; confidence: number; reason: string };
+    }>("taskClassifier");
+    
+    let shouldSearch = false;
+    
+    if (taskClassifier) {
+      try {
+        const searchCheck = taskClassifier.needsWebSearch(message);
+        shouldSearch = searchCheck.needed && searchCheck.confidence > 0.35;
+        if (shouldSearch) {
+          searchReason = searchCheck.reason;
+          console.log(`[AgentModelExecutor] Semantic intent detection: ${searchCheck.reason} (confidence: ${(searchCheck.confidence * 100).toFixed(0)}%)`);
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] TaskClassifier failed: ${err}`);
+      }
+    }
+    
+    // Fallback to keyword-based detection if TaskClassifier is not available
+    if (!shouldSearch) {
+      const lowerMsg = message.toLowerCase();
+      const isNewsQuery = (lowerMsg.includes("新闻") || lowerMsg.includes("热搜") || lowerMsg.includes("热点") || 
+                          lowerMsg.includes("AI") || lowerMsg.includes("人工智能") || lowerMsg.includes("科技") ||
+                          lowerMsg.includes("分析报告") || lowerMsg.includes("发展情况") || lowerMsg.includes("分析")) &&
+        (lowerMsg.includes("搜索") || lowerMsg.includes("整理") || lowerMsg.includes("找") || lowerMsg.includes("查") ||
+         lowerMsg.includes("分析") || lowerMsg.includes("报告") || lowerMsg.includes("情况") || lowerMsg.includes("做个"));
+      shouldSearch = isNewsQuery;
+      searchReason = "关键词匹配触发";
+    }
+    
+    if (shouldSearch && this.registeredTools.has("web_search")) {
+      try {
+        const searchQuery = message
+          .replace(/^(搜索|帮我搜|帮我搜索|帮我查|查一下|搜一下)[：:\s]*/i, "")
+          .replace(/(并整理后发给我|整理后发给我|整理一下|并整理|并总结|并汇总).*/i, "")
+          .trim();
+        console.log(`[AgentModelExecutor] News query detected, pre-fetching: "${searchQuery}"`);
+        
+        const entry = this.registeredTools.get("web_search")!;
+        const searchResult = await entry.handler({ query: searchQuery, limit: 5 });
+        const resultObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
+        const results = (resultObj?.results as Array<{ title: string; url: string; snippet: string }>) || [];
+
+        if (results.length > 0) {
+          let allNewsContent = `## 搜索关键词: ${searchQuery}\n## 搜索结果:\n\n`;
+          results.forEach((r, i) => {
+            allNewsContent += `### ${i + 1}. ${r.title}\n- URL: ${r.url}\n- 摘要: ${r.snippet}\n\n`;
+          });
+
+          // Fetch top 3 news pages for full content
+          if (this.registeredTools.has("fetch_node_page")) {
+            const fetchTool = this.registeredTools.get("fetch_node_page")!;
+            let fetchedCount = 0;
+            for (const r of results.slice(0, 3)) {
+              try {
+                const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 3000 });
+                const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
+                const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
+                if (content && content.length > 100) {
+                  fetchedCount++;
+                  allNewsContent += `## 新闻正文 ${fetchedCount}: ${r.title}\n${content.slice(0, 3000)}\n\n`;
+                }
+              } catch {
+                // Skip failed page fetches
+              }
+            }
+          }
+          newsContext = allNewsContent;
+          console.log(`[AgentModelExecutor] Pre-fetched news context: ${newsContext.length} chars, ${results.length} results`);
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] News pre-fetch failed: ${err}`);
+      }
+    }
+
+    const newsEnhancedMessage = newsContext
+      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext}`
+      : message;
+
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
     if (enabledProviders.length > 0) {
-      const result = await this.tryCallLLM(message, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
+      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
       if (result) {
-        if (result.toolsExecuted || !this.hasActionIntent(message)) {
-          if (pendingPermissions.length > 0) {
-            return { reply: AgentModelExecutor.collapseNewlines(result.reply), tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
-          }
-          return { reply: AgentModelExecutor.collapseNewlines(result.reply), tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
+        const timestamp = new Date().toLocaleString("zh-CN", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const reply = `📅 ${timestamp}\n\n${AgentModelExecutor.collapseNewlines(result.reply)}`;
+        if (pendingPermissions.length > 0) {
+          return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
         }
-        const msg = message.toLowerCase();
-        const fallbackReply = await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions);
-        const combined = AgentModelExecutor.collapseNewlines(result.reply + "\n" + fallbackReply);
-        return { reply: combined, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
+        return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
       }
     }
 
@@ -533,13 +1097,48 @@ export class AgentModelExecutor {
     if (this.hasActionIntent(message)) {
       console.log(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"`);
     }
-    const reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
+    let reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
+    
+    // Add timestamp prefix to the reply
+    const timestamp = new Date().toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    reply = `📅 ${timestamp}\n\n${reply}`;
     
     // Save important interaction to long-term memory
     this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
     
-    return { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
+    // ── Plugin hook: agent_end ──
+    const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
+    this.runAgentEndHook(sessionId, agentId, channel, finalResult);
+
+    return finalResult;
+  }
+
+  /** Run the agent_end plugin hook asynchronously (fire and forget) */
+  private runAgentEndHook(
+    sessionId: string,
+    agentId: string,
+    channel: string,
+    result: { reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> },
+  ): void {
+    if (!this.pluginManager?.hasHooks("agent_end")) return;
+    this.pluginManager.runHooks({
+      type: "agent_end",
+      context: { sessionId, agentId, channel },
+      messages: [{ role: "assistant", content: result.reply }],
+      metadata: {
+        tokensUsed: result.tokensUsed,
+        duration: result.duration,
+        toolCalls: 0,
+        success: true,
+      },
+    }).catch(err => console.warn(`[AgentModelExecutor] agent_end hook failed: ${err}`));
   }
 
   /** Asynchronously save an interaction to long-term memory */
@@ -710,7 +1309,7 @@ export class AgentModelExecutor {
         const history = this.conversationHistory.get(sessionId) || [];
 
         const fullSystemPrompt = skillsPrompt
-          ? `${systemPrompt}\n\n## Skills\nScan <available_skills>. If one clearly applies, read its SKILL.md at the exact <location> with the read tool, then follow it.\nIf several apply, choose the most specific. If none clearly apply, read none.\nOne skill up front max. Never guess or fabricate skill paths.\nExternal API writes: batch when safe, respect 429/Retry-After.\n${skillsPrompt}`
+          ? `${systemPrompt}\n\n## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), and many more. Use web_search for any real-time or current information needs.\n\n### Skills\nScan the available skills below. If one clearly applies, you may read and use it. If none apply, fall back to using web_search or other tools directly.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
           : systemPrompt;
 
         if (this.needsCompaction(sessionId, fullSystemPrompt, this.config.maxTokens)) {
@@ -732,7 +1331,7 @@ export class AgentModelExecutor {
         let finalReply = "";
 
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const tc: "auto" | "required" = (round === 0 && isAction) ? "required" : "auto";
+          const tc: "auto" | "required" = "auto";
           const result = await this.callLLMOnce(provider, conversationMessages, tools, tc);
 
           if (!result) {
@@ -790,12 +1389,48 @@ export class AgentModelExecutor {
             const toolName = tc.function.name;
             const toolEntry = this.registeredTools.get(toolName);
 
+            // ── Plugin hook: before_tool_call ──
+            let args: Record<string, unknown> = {};
+            try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore parse errors */ }
+            let skipWithResult: unknown = undefined;
+
+            if (this.pluginManager?.hasHooks("before_tool_call")) {
+              const { blocked, cancelled, merged } = await this.pluginManager.runHooksMerged({
+                type: "before_tool_call",
+                context: { sessionId, agentId: "default", channel: "web-ui" },
+                toolName,
+                params: args,
+              });
+              if (cancelled || blocked) {
+                conversationMessages.push({
+                  role: "tool",
+                  tool_call_id: tc.id,
+                  name: toolName,
+                  content: JSON.stringify({ skipped: true, reason: blocked ? "blocked" : "cancelled" }),
+                });
+                continue;
+              }
+              const mergedBTC = merged as Partial<import("@evoclaw/core").BeforeToolCallResult>;
+              if (mergedBTC.params) args = mergedBTC.params as Record<string, unknown>;
+              if (mergedBTC.skipWithResult !== undefined) {
+                skipWithResult = mergedBTC.skipWithResult;
+              }
+            }
+
             let toolResult: string;
+            let toolErrored = false;
+            let toolError: string | undefined;
+            let rawResult: unknown = undefined;
+
             if (toolEntry) {
               try {
-                const args = JSON.parse(tc.function.arguments || "{}");
-                const result = await toolEntry.handler(args);
-                toolResult = JSON.stringify(result);
+                if (skipWithResult !== undefined) {
+                  rawResult = skipWithResult;
+                  toolResult = JSON.stringify(skipWithResult);
+                } else {
+                  rawResult = await toolEntry.handler(args);
+                  toolResult = JSON.stringify(rawResult);
+                }
                 anyToolExecuted = true;
 
                 // Truncate huge tool results to prevent context overflow
@@ -805,8 +1440,8 @@ export class AgentModelExecutor {
                   const truncated = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)，请使用 browser_get_text 获取特定内容` });
                   toolResult = truncated;
                 }
-                if (result && typeof result === "object" && (result as Record<string, unknown>).requiresPermission) {
-                  const r = result as Record<string, unknown>;
+                if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
+                  const r = rawResult as Record<string, unknown>;
                   const requestId = (r.requestId as string) || (r.id as string) || "";
                   pendingPermissions.push({
                     id: requestId,
@@ -822,10 +1457,31 @@ export class AgentModelExecutor {
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               } catch (err: unknown) {
                 toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+                toolErrored = true;
+                toolError = err instanceof Error ? err.message : String(err);
                 console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
               }
             } else {
               toolResult = JSON.stringify({ error: `Tool "${toolName}" not found` });
+              toolErrored = true;
+              toolError = `Tool "${toolName}" not found`;
+            }
+
+            // ── Plugin hook: after_tool_call ──
+            if (this.pluginManager?.hasHooks("after_tool_call")) {
+              const { merged } = await this.pluginManager.runHooksMerged({
+                type: "after_tool_call",
+                context: { sessionId, agentId: "default", channel: "web-ui" },
+                toolName,
+                params: args,
+                result: (() => { try { return JSON.parse(toolResult); } catch { return toolResult; } })(),
+                errored: toolErrored,
+                error: toolError,
+              });
+              const mergedATC = merged as Partial<import("@evoclaw/core").AfterToolCallResult>;
+              if (mergedATC.result !== undefined) {
+                toolResult = typeof mergedATC.result === "string" ? mergedATC.result : JSON.stringify(mergedATC.result);
+              }
             }
 
             conversationMessages.push({
@@ -842,6 +1498,22 @@ export class AgentModelExecutor {
         }
 
         if (finalReply) {
+          // Persist via SessionManager (primary) + legacy fallback
+          if (this.sessionManager) {
+            try {
+              const agentId = "default";
+              this.sessionManager.getOrCreateSession(agentId, sessionId);
+              this.sessionManager.appendTurn(agentId, sessionId, {
+                turnIndex: 0, role: "user", content: message, timestamp: new Date().toISOString(),
+              });
+              this.sessionManager.appendTurn(agentId, sessionId, {
+                turnIndex: 0, role: "assistant", content: finalReply, timestamp: new Date().toISOString(),
+                toolCalls: anyToolExecuted ? [{ id: "tool-call", name: "llm_tools", arguments: {} }] : undefined,
+              });
+            } catch (err) {
+              console.warn(`[AgentModelExecutor] SessionManager persist failed: ${err}`);
+            }
+          }
           this.persistSessionTurn(sessionId, "user", message);
           this.persistSessionTurn(sessionId, "assistant", finalReply, { tokensUsed: totalTokensUsed });
 
@@ -877,7 +1549,17 @@ export class AgentModelExecutor {
   }
 
   private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {
-    return Array.from(this.registeredTools.values()).map((t) => {
+    // Only send essential tools to the LLM — too many tools cause decision paralysis.
+    // These names MUST match actual registered tools.
+    const essentialTools = new Set([
+      "web_search", "web_fetch", "fetch_node_page", "file_read", "file_create",
+      "file_modify", "file_list", "file_delete", "skill_execute", "skill_install",
+      "skill_search", "skill_find_and_install", "skill_list",
+      "email_send", "email_add_account", "browser_navigate", "browser_search",
+    ]);
+    return Array.from(this.registeredTools.values())
+      .filter((t) => essentialTools.has(t.definition.name))
+      .map((t) => {
       const props: Record<string, unknown> = {};
       const required: string[] = [];
 
@@ -887,7 +1569,10 @@ export class AgentModelExecutor {
           type: p.type || "string",
           description: p.description || key,
         };
-        required.push(key);
+        // Only mark parameters without defaults as required
+        if (p.required !== false && p.default === undefined) {
+          required.push(key);
+        }
       }
 
       return {
@@ -1106,190 +1791,6 @@ export class AgentModelExecutor {
         addLine(`2. 使用 CLI: EvoClaw skills install <文件路径>`);
         addLine(`3. 或通过 API: POST /api/skills/install`);
       }
-    } else if (msg.includes("新闻") || msg.includes("热搜") || msg.includes("新闻事件") || msg.includes("news") || msg.includes("hot") || (msg.includes("搜") && msg.includes("热"))) {
-      addLine(`🔍 收到新闻搜索请求，我将全力为您搜集信息！`);
-      addLine(``);
-      
-      // Step 1: Try web_search tool
-      if (this.registeredTools.has("web_search")) {
-        addLine(`📡 步骤1: 尝试使用 web_search 工具搜索新闻...`);
-        try {
-          const entry = this.registeredTools.get("web_search")!;
-          const result = await entry.handler({ query: message, limit: 10 });
-          const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
-          if (resultObj && resultObj.success !== false) {
-            addLine(`✅ web_search 成功！`);
-            const results = resultObj.results || resultObj.data || resultObj;
-            addLine(`搜索结果:\n${JSON.stringify(results, null, 2).slice(0, 3000)}`);
-            return lines.join("\n");
-          }
-          addLine(`⚠ web_search 返回异常，尝试下一个方法...`);
-        } catch (err) {
-          addLine(`⚠ web_search 失败: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      
-      // Step 2: Try news_search tool or search tool
-      if (this.registeredTools.has("news_search")) {
-        addLine(`📡 步骤2: 尝试使用 news_search 工具...`);
-        try {
-          const entry = this.registeredTools.get("news_search")!;
-          const result = await entry.handler({ query: message, limit: 10 });
-          const resultObj = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
-          if (resultObj && resultObj.success !== false) {
-            addLine(`✅ news_search 成功！`);
-            addLine(`搜索结果:\n${JSON.stringify(resultObj, null, 2).slice(0, 3000)}`);
-            return lines.join("\n");
-          }
-          addLine(`⚠ news_search 返回异常`);
-        } catch (err) {
-          addLine(`⚠ news_search 失败: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      
-      // Step 3: Try to find and execute a news-related skill
-      if (skillManager) {
-        const skills = installedSkills as Array<{ id: string; name: string; description?: string }>;
-        const newsSkill = skills.find((s) => 
-          s.name.toLowerCase().includes("news") || 
-          s.name.includes("新闻") ||
-          (s.description && (s.description.includes("新闻") || s.description.includes("news")))
-        );
-        const formatSkillResult = (result: any): string => {
-          if (!result.success) {
-            const errors = result.errors || [];
-            return `❌ 执行失败: ${errors.join("; ") || "未知错误"}`;
-          }
-          const output = result.output;
-          if (!output) return `✅ 执行完成，但无返回数据。`;
-          
-          // Extract actual search results
-          let formatted = "";
-          if (output.raw) {
-            // Try to parse as JSON search results
-            try {
-              const parsed = JSON.parse(output.raw);
-              if (Array.isArray(parsed)) {
-                formatted = parsed.slice(0, 15).map((item: any, i: number) => {
-                  const title = item.title || item.name || "";
-                  const url = item.url || item.link || item.site_name || "";
-                  return `  ${i + 1}. **${title}** ${url ? `\n     ${url}` : ""}`;
-                }).join("\n");
-              }
-            } catch {
-              formatted = output.raw.slice(0, 3000);
-            }
-          }
-          if (output.text && !formatted) {
-            formatted = output.text.slice(0, 3000);
-          }
-          if (!formatted) {
-            formatted = JSON.stringify(output).slice(0, 3000);
-          }
-          return formatted;
-        };
-
-        if (newsSkill) {
-          addLine(`📦 步骤3: 找到技能 "${newsSkill.name}"，正在执行...`);
-          try {
-            const result = await skillManager.executeSkill(newsSkill.id, { prompt: message, query: message });
-            addLine(`✅ 技能执行完成！`);
-            addLine(``);
-            const display = formatSkillResult(result);
-            addLine(display);
-            addLine(``);
-            return lines.join("\n");
-          } catch (err) {
-            addLine(`⚠ 技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else {
-          // Try ANY available skill that might help
-          const allSkills = skills;
-          addLine(`📦 步骤3: 搜索相关技能...`);
-          if (allSkills.length > 0) {
-            addLine(`当前已安装 ${allSkills.length} 个技能: ${allSkills.map(s => `"${s.name}"`).join(", ")}`);
-            // Try skills that look relevant first (search/search-related)
-            const searchSkills = allSkills.filter(s => 
-              s.name.toLowerCase().includes("search") || 
-              s.name.toLowerCase().includes("search") || 
-              (s.description && (s.description?.toLowerCase().includes("search") || s.description?.toLowerCase().includes("搜索")))
-            );
-            const trySkills = searchSkills.length > 0 ? searchSkills : allSkills;
-            for (const skill of trySkills) {
-              addLine(`🔄 尝试执行 "${skill.name}"...`);
-              try {
-                const result = await skillManager.executeSkill(skill.id, { prompt: message, query: message });
-                const display = formatSkillResult(result);
-                if (display.startsWith("✅")) {
-                  addLine(display);
-                  addLine(``);
-                  return lines.join("\n");
-                }
-                addLine(`✅ "${skill.name}" 执行完成！`);
-                addLine(display);
-                addLine(``);
-                return lines.join("\n");
-              } catch {
-                addLine(`⚠ "${skill.name}" 不适用于此任务，继续尝试...`);
-              }
-            }
-            addLine(`⚠ 所有已安装技能均不适用于新闻搜索。`);
-          } else {
-            addLine(`⚠ 未安装任何技能。`);
-          }
-        }
-      }
-      
-      // Step 4: Auto-create news skill and retry
-      addLine(``);
-      addLine(`---`);
-      addLine(`🔄 所有现有方法已尝试完毕。启动自动创建Skill流程...`);
-      addLine(``);
-      
-      if (this.registeredTools.has("skill_create")) {
-        addLine(`🔨 正在自动创建新闻搜索Skill...`);
-        try {
-          const entry = this.registeredTools.get("skill_create")!;
-          const createResult = await entry.handler({
-            name: "news-search",
-            description: "搜索国内外新闻热搜，整理总结后返回",
-            instructions: "1. 使用 web_search 或 browser_search 搜索指定主题的新闻。\n2. 收集国内和国际新闻各5条。\n3. 按热度排序整理成摘要格式返回。\n4. 如一个引擎失败则尝试其他引擎。",
-          });
-          const createObj = typeof createResult === "object" && createResult !== null ? (createResult as Record<string, unknown>) : null;
-          if (createObj?.success) {
-            addLine(`✅ Skill 创建成功: ${createObj.skillName || "news-search"}`);
-            addLine(`🔄 正在用新Skill重新执行任务...`);
-            // Execute the new skill
-            if (this.registeredTools.has("skill_execute") && skillManager) {
-              try {
-                const skillId = String(createObj.skillId || createObj.skillName || "news-search");
-                const execResult = await skillManager.executeSkill(skillId, { prompt: message, query: message });
-                addLine(`✅ Skill执行完成！`);
-                addLine(`结果: ${JSON.stringify(execResult, null, 2).slice(0, 3000)}`);
-                return lines.join("\n");
-              } catch (execErr) {
-                addLine(`⚠ Skill执行失败: ${execErr instanceof Error ? execErr.message : String(execErr)}`);
-              }
-            }
-          } else {
-            addLine(`⚠ Skill自动创建失败: ${createObj?.error || "未知错误"}`);
-          }
-        } catch (err) {
-          addLine(`⚠ Skill创建出错: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      
-      // Step 5: Final fallback - ask user
-      addLine(``);
-      addLine(`---`);
-      addLine(`⚠ 已尝试 ${this.registeredTools.has("web_search") ? "web_search" : "浏览器搜索"} → 技能搜索 → 技能创建，均未能获得完整结果。`);
-      addLine(``);
-      addLine(`📋 建议您：`);
-      addLine(`1. 确认 LLM API 配置正常工作`);
-      addLine(`2. 或直接通过浏览器访问新闻网站获取`);
-      addLine(`3. 我可以继续尝试其他方式，请告诉我您希望我做什么。`);
-      addLine(``);
-      addLine(`我会继续等待指示，任务未完成，绝不放弃！`);
     } else if (msg.includes("网页") || msg.includes("html") || msg.includes("写一个") || msg.includes("代码") || msg.includes("编程") || msg.includes("创建") || msg.includes("文件") || msg.includes("文件夹") || msg.includes("生成")) {
 
       let hasDriveLetter = false;

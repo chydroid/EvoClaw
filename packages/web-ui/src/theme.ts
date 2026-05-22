@@ -1,6 +1,7 @@
 export interface ThemeColors {
   bgPrimary: string;
   bgSecondary: string;
+  bgTertiary: string;
   bgCard: string;
   bgInput: string;
   bgSidebar: string;
@@ -41,6 +42,7 @@ export interface ThemeDefinition {
 export const THEME_DARK_PURPLE: ThemeColors = {
   bgPrimary: "#0f0f1a",
   bgSecondary: "#1a1a2e",
+  bgTertiary: "#21262d",
   bgCard: "#1a1a2e",
   bgInput: "#1a1a2e",
   bgSidebar: "#191929",
@@ -74,6 +76,7 @@ export const THEME_DARK_PURPLE: ThemeColors = {
 export const THEME_DARK_OCEAN: ThemeColors = {
   bgPrimary: "#0a1628",
   bgSecondary: "#112240",
+  bgTertiary: "#1a3350",
   bgCard: "#112240",
   bgInput: "#112240",
   bgSidebar: "#0d1a30",
@@ -107,6 +110,7 @@ export const THEME_DARK_OCEAN: ThemeColors = {
 export const THEME_LIGHT_WARM: ThemeColors = {
   bgPrimary: "#fdf6e3",
   bgSecondary: "#f5ecd7",
+  bgTertiary: "#e8dbb8",
   bgCard: "#faf3e0",
   bgInput: "#faf3e0",
   bgSidebar: "#f0e6cc",
@@ -140,6 +144,7 @@ export const THEME_LIGHT_WARM: ThemeColors = {
 export const THEME_LIGHT_CLEAN: ThemeColors = {
   bgPrimary: "#f8fafc",
   bgSecondary: "#ffffff",
+  bgTertiary: "#e2e8f0",
   bgCard: "#ffffff",
   bgInput: "#f1f5f9",
   bgSidebar: "#f1f5f9",
@@ -204,6 +209,7 @@ export function applyThemeToDocument(theme: ThemeDefinition): void {
   const { colors } = theme;
   root.style.setProperty("--bg-primary", colors.bgPrimary);
   root.style.setProperty("--bg-secondary", colors.bgSecondary);
+  root.style.setProperty("--bg-tertiary", colors.bgTertiary);
   root.style.setProperty("--bg-card", colors.bgCard);
   root.style.setProperty("--bg-input", colors.bgInput);
   root.style.setProperty("--bg-sidebar", colors.bgSidebar);

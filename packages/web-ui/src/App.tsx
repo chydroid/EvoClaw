@@ -1,13 +1,24 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import EvolutionDashboard from "./EvolutionDashboard";
 import LLMConfig from "./LLMConfig";
 import ChannelConfigPage from "./ChannelConfig";
 import SkillsConfig from "./SkillsConfig";
 import { CLITerminal } from "./CLITerminal";
 import Dashboard from "./Dashboard";
-import BootstrapEditor from "./BootstrapEditor";
+import { BootstrapConfig } from "./BootstrapConfig";
+import { StatusPage } from "./StatusPage";
+import { LogsPage } from "./LogsPage";
+import { CronPage } from "./CronPage";
+import { CanvasPage } from "./CanvasPage";
+import { WebChatPage } from "./WebChatPage";
+import { PluginsPage } from "./PluginsPage";
+import { EventsPage } from "./EventsPage";
+import { PermissionsPage } from "./PermissionsPage";
+import { OpsPage } from "./OpsPage";
 import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
 import { htmlEscape, highlightCode } from "./highlight";
+
+type TabId = "chat" | "status" | "dashboard" | "events" | "skills" | "bootstrap" | "canvas" | "monitoring" | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution" | "ops" | "cli";
 
 interface ServiceInfo {
   name: string;
@@ -64,7 +75,7 @@ const DEFAULT_AVATARS: AvatarInfo = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"chat" | "dashboard" | "skills" | "services" | "evolution" | "llm" | "channels" | "cli" | "bootstrap">("chat");
+  const [activeTab, setActiveTab] = useState<TabId>("chat");
   const [message, setMessage] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -473,7 +484,7 @@ export default function App() {
       const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       setChatHistory((prev) => [...prev, {
         role: "system",
-        content: `✅ 权限请求已处理：${label}。正在自动继续执行...`,
+        content: `权限请求已处理：${label}。正在自动继续执行...`,
         time: now,
       }]);
 
@@ -500,7 +511,7 @@ export default function App() {
         const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         setChatHistory((prev) => [...prev, {
           role: "bot",
-          content: "❌ 权限请求已被拒绝。如有需要可重新发送指令。",
+          content: "权限请求已被拒绝。如有需要可重新发送指令。",
           time: now,
         }]);
       }
@@ -517,7 +528,7 @@ export default function App() {
     switch (cmd) {
       case "help":
         return [
-          "**📋 斜杠命令**",
+          "**斜杠命令**",
           "",
           "| 命令 | 说明 |",
           "|---|---|",
@@ -532,49 +543,49 @@ export default function App() {
 
       case "clear":
         setChatHistory([]);
-        return "✅ 会话已清空";
+        return "会话已清空";
 
       case "new":
         setChatHistory([]);
-        return arg ? `✅ 新会话已开始，模型: ${arg}` : "✅ 新会话已开始";
+        return arg ? `新会话已开始，模型: ${arg}` : "新会话已开始";
 
       case "status":
         try {
           const statusRes = await fetch("/api/system/services");
           if (statusRes.ok) {
             const svcs = await statusRes.json() as Array<Record<string, unknown>>;
-            return `📊 系统在线，${svcs.length} 个服务运行中`;
+            return `系统在线，${svcs.length} 个服务运行中`;
           }
         } catch {}
-        return "⚠️ 无法获取系统状态";
+        return "无法获取系统状态";
 
       case "health":
         try {
           const healthRes = await fetch("/api/health");
           if (healthRes.ok) {
             const h = await healthRes.json() as Record<string, unknown>;
-            return `✅ 健康 | v${h.version || "?"} | 运行 ${Math.round((h.uptime as number) || 0)}s`;
+            return `健康 | v${h.version || "?"} | 运行 ${Math.round((h.uptime as number) || 0)}s`;
           }
         } catch {}
-        return "❌ 健康检查失败";
+        return "健康检查失败";
 
       case "whoami":
       case "id":
-        return "🆔 当前会话: web-ui";
+        return "当前会话: web-ui";
 
       case "model":
-        return "📋 模型配置请前往 **LLM** 标签页。支持 OpenAI / Anthropic / DeepSeek / 本地模型";
+        return "模型配置请前往 **LLM** 标签页。支持 OpenAI / Anthropic / DeepSeek / 本地模型";
 
       case "skills":
         try {
           const skillsRes = await fetch("/api/skills");
           if (skillsRes.ok) {
             const sk = await skillsRes.json() as Array<Record<string, unknown>>;
-            if (sk.length === 0) return "📦 暂无已安装的技能";
+            if (sk.length === 0) return "暂无已安装的技能";
             return sk.map((s) => `- ${s.name} v${s.version}`).join("\n");
           }
         } catch {}
-        return "⚠️ 无法获取技能列表";
+        return "无法获取技能列表";
 
       default:
         return null;
@@ -610,7 +621,7 @@ export default function App() {
         </header>
         <div style={s.authScreen}>
           <div style={s.authCard}>
-            <h2 style={{ color: "#a78bfa", marginTop: 0 }}>🔐 Authentication</h2>
+            <h2 style={{ color: "#a78bfa", marginTop: 0 }}>Authentication</h2>
             <p style={{ color: "#888", fontSize: "14px", marginBottom: "16px" }}>
               Enter the Web UI access token to continue
             </p>
@@ -650,7 +661,7 @@ export default function App() {
               onClick={() => setShowThemePicker(!showThemePicker)}
               title="Change theme"
             >
-              {currentTheme.type === "dark" ? "🌙" : "☀️"} {currentTheme.name}
+              {currentTheme.type === "dark" ? "" : ""} {currentTheme.name}
             </button>
             {showThemePicker && (
               <div style={s.themeDropdown}>
@@ -675,17 +686,16 @@ export default function App() {
                         marginRight: "6px",
                       }} />
                     </span>
-                    {t.type === "dark" ? "🌙" : "☀️"} {t.name}
+                    {t.type === "dark" ? "" : ""} {t.name}
                   </button>
                 ))}
               </div>
             )}
           </div>
           <div style={statusBadgeStyle(status)}>
-            {status === "online" ? "● Online" : status === "connecting" ? "◌ Connecting" : "○ Offline"}
+            {status === "online" ? "Online" : status === "connecting" ? "Connecting" : "Offline"}
           </div>
           <button style={s.avatarEditBtn} onClick={() => setShowAvatarEditor(!showAvatarEditor)} title="Edit profile">
-            ⚙
           </button>
         </div>
       </header>
@@ -736,214 +746,40 @@ export default function App() {
       )}
 
       <nav style={s.tabs}>
-        <button style={tabStyle(activeTab === "chat")} onClick={() => setActiveTab("chat")}>💬 Chat</button>
-        <button style={tabStyle(activeTab === "dashboard")} onClick={() => setActiveTab("dashboard")}>📊 Dashboard</button>
-        <button style={tabStyle(activeTab === "skills")} onClick={() => setActiveTab("skills")}>🧩 Skills ({skills.length})</button>
-        <button style={tabStyle(activeTab === "bootstrap")} onClick={() => setActiveTab("bootstrap")}>📄 Bootstrap</button>
-        <button style={tabStyle(activeTab === "services")} onClick={() => setActiveTab("services")}>⚙️ Services</button>
-        <button style={tabStyle(activeTab === "evolution")} onClick={() => setActiveTab("evolution")}>📈 Evolution</button>
-        <button style={tabStyle(activeTab === "llm")} onClick={() => setActiveTab("llm")}>🧠 LLM</button>
-        <button style={tabStyle(activeTab === "channels")} onClick={() => setActiveTab("channels")}>📡 Channels</button>
-        <button style={tabStyle(activeTab === "cli")} onClick={() => setActiveTab("cli")}>🖥 CLI</button>
+        <button style={tabStyle(activeTab === "chat")} onClick={() => setActiveTab("chat")}>Chat</button>
+        <button style={tabStyle(activeTab === "status")} onClick={() => setActiveTab("status")}>Status</button>
+        <button style={tabStyle(activeTab === "dashboard")} onClick={() => setActiveTab("dashboard")}>Dashboard</button>
+        <button style={tabStyle(activeTab === "events")} onClick={() => setActiveTab("events")}>Events</button>
+        <button style={tabStyle(activeTab === "skills")} onClick={() => setActiveTab("skills")}>Skills</button>
+        <button style={tabStyle(activeTab === "bootstrap")} onClick={() => setActiveTab("bootstrap")}>Bootstrap</button>
+        <button style={tabStyle(activeTab === "canvas")} onClick={() => setActiveTab("canvas")}>Canvas</button>
+        <button style={tabStyle(activeTab === "monitoring")} onClick={() => setActiveTab("monitoring")}>Monitoring</button>
+        <button style={tabStyle(activeTab === "plugins")} onClick={() => setActiveTab("plugins")}>Plugins</button>
+        <button style={tabStyle(activeTab === "permissions")} onClick={() => setActiveTab("permissions")}>Permissions</button>
+        <button style={tabStyle(activeTab === "cron")} onClick={() => setActiveTab("cron")}>Cron</button>
+        <button style={tabStyle(activeTab === "llm")} onClick={() => setActiveTab("llm")}>LLM</button>
+        <button style={tabStyle(activeTab === "channels")} onClick={() => setActiveTab("channels")}>Channels</button>
+        <button style={tabStyle(activeTab === "evolution")} onClick={() => setActiveTab("evolution")}>Evolution</button>
+        <button style={tabStyle(activeTab === "ops")} onClick={() => setActiveTab("ops")}>Ops</button>
+        <button style={tabStyle(activeTab === "cli")} onClick={() => setActiveTab("cli")}>CLI</button>
       </nav>
 
       <main style={s.main}>
-        {activeTab === "chat" && (
-          <div style={s.chatContainer}>
-            <div style={s.chatMessages}>
-              {chatHistory.length === 0 ? (
-                <div style={s.welcomeScreen}>
-                  <div style={s.welcomeCard}>
-                    <img src={avatars.bot} style={s.welcomeAvatar} alt="bot" />
-                    <h2 style={{ color: "#a78bfa", marginTop: "12px", marginBottom: "4px" }}>EvoClaw</h2>
-                    <p style={{ color: "#888", fontSize: "14px", marginBottom: "16px" }}>
-                      Self-Evolving Agent OS
-                    </p>
-                    <p style={{ color: "#aaa", fontSize: "13px", lineHeight: "1.6", maxWidth: "400px" }}>
-                      Send a message to start chatting. EvoClaw can help with tasks, run skills, and evolve through learning.
-                    </p>
-                    <p style={{ color: "#666", fontSize: "11px", marginTop: "12px" }}>
-                      Type <b>/help</b> for commands
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                chatHistory.map((msg, i) => {
-                  const isSystemMsg = msg.role === "system";
-                  const isUserMsg = msg.role === "user";
-                  return (
-                  <div key={i} style={isSystemMsg ? s.msgRowSystem : (isUserMsg ? s.msgRowUser : s.msgRowBot)}>
-                    {!isUserMsg && (
-                      <img
-                        src={isSystemMsg ? "/assets/images/favicon-32x32.png" : avatars.bot}
-                        style={{ ...s.msgAvatar, opacity: isSystemMsg ? 0.6 : 1 }}
-                        alt={isSystemMsg ? "system" : "bot"}
-                      />
-                    )}
-                    <div style={isUserMsg ? s.msgContentUser : s.msgContentBot}>
-                      <div style={{ ...s.msgHeader, justifyContent: isUserMsg ? "flex-end" : "flex-start" }}>
-                        <span style={s.msgName}>
-                          {isUserMsg ? avatars.userNickname : isSystemMsg ? "System" : avatars.botNickname}
-                        </span>
-                        <span style={s.msgTime}>{msg.time}</span>
-                      </div>
-                      <div
-                        style={isUserMsg ? s.userBubble : (isSystemMsg ? s.systemBubble : s.botBubble)}
-                        dangerouslySetInnerHTML={{
-                          __html: isSystemMsg ? formatReply(msg.content) : formatReply(msg.content),
-                        }}
-                      />
-                      {msg.errorType && (
-                        <div style={{
-                          fontSize: "10px", color: "#ef4444", marginTop: "2px",
-                          padding: "2px 6px", borderRadius: "4px",
-                          background: "#ef444410", display: "inline-block",
-                        }}>
-                          ⚠️ {msg.errorType}
-                        </div>
-                      )}
-                      {(msg.tokensUsed || msg.duration) && (
-                        <div style={{
-                          fontSize: "10px", color: "var(--text-muted)", marginTop: "2px",
-                          display: "flex", gap: "10px",
-                        }}>
-                          {msg.tokensUsed !== undefined && <span>🪙 {msg.tokensUsed} tokens</span>}
-                          {msg.duration !== undefined && <span>⏱ {(msg.duration / 1000).toFixed(1)}s</span>}
-                        </div>
-                      )}
-                    </div>
-                    {isUserMsg && (
-                      <img
-                        src={avatars.user}
-                        style={s.msgAvatar}
-                        alt="user"
-                      />
-                    )}
-                  </div>
-                );
-                })
-              )}
-              {(() => {
-                const lastBotMsg = [...chatHistory].reverse().find((m) => m.role === "bot" && m.permissionRequests && m.permissionRequests.length > 0);
-                if (!lastBotMsg || !lastBotMsg.permissionRequests) return null;
-                return (
-                  <div style={s.permissionBar}>
-                    <div style={s.permissionIcon}>🔐</div>
-                    <div style={s.permissionContent}>
-                      <div style={s.permissionTitle}>需要您的授权</div>
-                      {lastBotMsg.permissionRequests.map((pr) => (
-                        <div key={pr.id} style={s.permissionItem}>
-                          <span style={s.permissionOp}>{pr.operation}</span>
-                          <span style={s.permissionDesc}>{pr.description} → <code>{pr.target}</code></span>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={s.permissionActions}>
-                      <button
-                        style={s.permissionBtnApprove}
-                        onClick={() => approveAllAndResend(false)}
-                      >
-                        本次授权
-                      </button>
-                      <button
-                        style={s.permissionBtnWhitelist}
-                        onClick={() => approveAllAndResend(true)}
-                      >
-                        加入白名单
-                      </button>
-                      <button
-                        style={s.permissionBtnDeny}
-                        onClick={() => lastBotMsg.permissionRequests!.forEach((pr) => denyPermission(pr.id))}
-                      >
-                        拒绝
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-              {isTyping && (
-                  <div style={s.msgRowBot}>
-                    <img src={avatars.bot} style={s.msgAvatar} alt="bot" />
-                    <div style={s.msgContentBot}>
-                      <div style={s.msgHeader}>
-                        <span style={s.msgName}>{avatars.botNickname}</span>
-                      </div>
-                      <div style={{
-                        ...s.botBubble, padding: "12px 18px",
-                        display: "flex", gap: "4px", alignItems: "center",
-                      }}>
-                        <span style={s.typingDot}></span>
-                        <span style={{ ...s.typingDot, animationDelay: "0.15s" }}></span>
-                        <span style={{ ...s.typingDot, animationDelay: "0.3s" }}></span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              <div ref={chatEndRef} />
-            </div>
-            <div style={s.chatInput}>
-              <textarea
-                style={s.input}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={isTyping ? "EvoClaw is thinking..." : "Type a message... (/help for commands)"}
-                rows={2}
-                disabled={isTyping}
-              />
-              <div style={s.slashHint}>
-                💡 Type <b>/help</b> for commands · <b>/clear</b> to reset
-              </div>
-              <button style={{ ...s.sendButton, opacity: isTyping ? 0.5 : 1 }} onClick={() => sendMessage()} disabled={isTyping}>
-                {isTyping ? "Thinking..." : "Send"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {activeTab === "skills" && <SkillsConfig />}
-
+        {activeTab === "chat" && <WebChatPage />}
+        {activeTab === "status" && <StatusPage />}
         {activeTab === "dashboard" && <Dashboard />}
-
-        {activeTab === "bootstrap" && <BootstrapEditor />}
-
-        {activeTab === "services" && (
-          <div style={s.panel}>
-            {services.length === 0 ? (
-              <div style={s.placeholder}>No services data available</div>
-            ) : (
-              <table style={s.table}>
-                <thead>
-                  <tr>
-                    <th>Service</th>
-                    <th>Version</th>
-                    <th>Status</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {services.map((svc) => (
-                    <tr key={svc.name}>
-                      <td>{svc.name}</td>
-                      <td>{svc.version}</td>
-                      <td style={svc.status === "running" ? { color: "#22c55e" } : {}}>
-                        {svc.status}
-                      </td>
-                      <td>{svc.error || "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
-
-        {activeTab === "evolution" && <EvolutionDashboard />}
-
+        {activeTab === "events" && <EventsPage />}
+        {activeTab === "skills" && <SkillsConfig />}
+        {activeTab === "bootstrap" && <BootstrapConfig />}
+        {activeTab === "canvas" && <CanvasPage />}
+        {activeTab === "monitoring" && <LogsPage />}
+        {activeTab === "plugins" && <PluginsPage />}
+        {activeTab === "permissions" && <PermissionsPage />}
+        {activeTab === "cron" && <CronPage />}
         {activeTab === "llm" && <LLMConfig />}
-
         {activeTab === "channels" && <ChannelConfigPage />}
-
+        {activeTab === "evolution" && <EvolutionDashboard />}
+        {activeTab === "ops" && <OpsPage />}
         {activeTab === "cli" && <CLITerminal />}
       </main>
     </div>
@@ -1017,11 +853,13 @@ const s: Record<string, React.CSSProperties> = {
     background: "var(--bg-input)", color: "var(--text-primary)", fontSize: "12px", width: "150px",
   },
   tabs: {
-    display: "flex", gap: "4px", padding: "8px 20px",
+    display: "flex", gap: "2px", padding: "6px 16px", flexWrap: "wrap" as const,
     borderBottom: "1px solid var(--border)", background: "var(--tab-bg)",
   },
-  main: { flex: 1, overflow: "hidden", display: "flex" },
-  chatContainer: { display: "flex", flexDirection: "column", flex: 1 },
+  main: {
+    flex: 1, minHeight: 0, display: "flex", flexDirection: "column" as const, width: "100%",
+  },
+  chatContainer: { display: "flex", flex: 1, overflow: "hidden" },
   chatMessages: { flex: 1, overflow: "auto", padding: "16px 20px" },
   welcomeScreen: { display: "flex", alignItems: "center", justifyContent: "center", height: "100%" },
   welcomeCard: {
@@ -1094,7 +932,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: "13px", whiteSpace: "nowrap" as const,
   },
   placeholder: { padding: "40px", textAlign: "center", color: "var(--text-muted)" },
-  panel: { flex: 1, padding: "20px", overflow: "auto" },
+  panel: { flex: 1, padding: "20px", overflow: "auto", width: "100%", boxSizing: "border-box" },
   table: { width: "100%", borderCollapse: "collapse" },
   msgRowSystem: { display: "flex", gap: "10px", marginBottom: "12px", opacity: 0.85 },
   systemBubble: {
@@ -1119,11 +957,10 @@ function statusBadgeStyle(status: string): React.CSSProperties {
 }
 
 function tabStyle(active: boolean): React.CSSProperties {
-  const accentBg = "var(--accent-bg)";
   return {
-    padding: "8px 16px", borderRadius: "6px", border: "none", cursor: "pointer",
+    padding: "6px 12px", borderRadius: "6px", border: "none", cursor: "pointer",
     background: active ? "var(--accent)" : "transparent",
-    color: active ? "#fff" : "var(--text-muted)", fontSize: "14px",
+    color: active ? "#fff" : "var(--text-muted)", fontSize: "13px",
     fontWeight: active ? "bold" : "normal",
   };
 }

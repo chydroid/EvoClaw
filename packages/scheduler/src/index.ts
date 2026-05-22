@@ -4,3 +4,11 @@ export type {
   TaskRunResult,
   ScheduleStats,
 } from "./schedule-manager";
+
+export { CronScheduler } from "./cron-scheduler";
+export type {
+  CronJob,
+  CronJobConfig,
+  CronJobStatus,
+  CronExecutionRecord,
+} from "./cron-scheduler";
