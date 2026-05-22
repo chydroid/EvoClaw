@@ -13,6 +13,27 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { htmlEscape } from "./highlight";
 
+// Add CSS animations
+const styleSheet = document.createElement("style");
+styleSheet.textContent = `
+  @keyframes dotPulse {
+    0%, 80%, 100% {
+      transform: scale(0.6);
+      opacity: 0.5;
+    }
+    40% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+`;
+document.head.appendChild(styleSheet);
+
 // Simple markdown-to-HTML renderer
 function renderMessageHtml(text: string): string {
   // Decode HTML entities first (e.g. &ensp; &#0183; &amp;) before htmlEscape re-encodes them
@@ -193,6 +214,38 @@ const thinkingBadgeStyle: CSSProperties = {
   marginBottom: "8px",
   cursor: "pointer",
 };
+
+const loadingIndicatorStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "12px 16px",
+  borderRadius: "18px 18px 18px 4px",
+  background: "var(--bg-tertiary, #21262d)",
+  color: "var(--text-secondary, #8b949e)",
+  fontSize: "14px",
+};
+
+const dotsStyle: CSSProperties = {
+  display: "flex",
+  gap: "3px",
+};
+
+const dotStyle: CSSProperties = {
+  width: "6px",
+  height: "6px",
+  borderRadius: "50%",
+  background: "var(--accent, #58a6ff)",
+  animation: "dotPulse 1.4s infinite ease-in-out",
+};
+
+const loadingMessages = [
+  "正在分析您的需求...",
+  "正在检索相关信息...",
+  "正在处理中，请稍候...",
+  "正在生成回复...",
+  "马上就好，请耐心等待...",
+];
 
 const toolCallStyle: CSSProperties = {
   padding: "8px 12px",
@@ -376,6 +429,8 @@ export function WebChatPage() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
+  const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
+  const [currentProgress, setCurrentProgress] = useState(0);
   
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -513,6 +568,8 @@ export function WebChatPage() {
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsStreaming(true);
+    setLoadingMessageIndex(0);
+    setCurrentProgress(0);
 
     const botMsgId = `bot-${Date.now()}`;
     const botMsg: WebChatMessage = {
@@ -523,6 +580,12 @@ export function WebChatPage() {
     };
 
     setMessages((prev) => [...prev, botMsg]);
+
+    // Start loading animation loop
+    const loadingInterval = setInterval(() => {
+      setLoadingMessageIndex((prev) => (prev + 1) % loadingMessages.length);
+      setCurrentProgress((prev) => Math.min(prev + Math.random() * 15 + 5, 90));
+    }, 1500);
 
     try {
       const res = await fetch("/api/chat", {
@@ -584,6 +647,7 @@ export function WebChatPage() {
         );
       }
     } catch {
+      clearInterval(loadingInterval);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMsgId
@@ -593,7 +657,9 @@ export function WebChatPage() {
       );
     }
 
+    clearInterval(loadingInterval);
     setIsStreaming(false);
+    setCurrentProgress(100);
   }, [input, isStreaming, activeSessionId]);
 
   // ── Permission handling ──
@@ -831,7 +897,39 @@ export function WebChatPage() {
                 {msg.role === "user" ? (
                   <span>{msg.content}</span>
                 ) : (
-                  <div>{renderMessageContent(msg)}{isStreaming && msg.content === "" && <span style={{ animation: "blink 1s infinite" }}>▊</span>}</div>
+                  <div>
+                    {msg.content !== "" ? (
+                      renderMessageContent(msg)
+                    ) : isStreaming ? (
+                      <div style={loadingIndicatorStyle}>
+                        <span>{loadingMessages[loadingMessageIndex]}</span>
+                        <div style={dotsStyle}>
+                          <span style={{ ...dotStyle, animationDelay: "0s" }} />
+                          <span style={{ ...dotStyle, animationDelay: "0.2s" }} />
+                          <span style={{ ...dotStyle, animationDelay: "0.4s" }} />
+                        </div>
+                        {currentProgress > 0 && (
+                          <div style={{ 
+                            width: "60px", 
+                            height: "4px", 
+                            background: "var(--bg-secondary)", 
+                            borderRadius: "2px",
+                            overflow: "hidden"
+                          }}>
+                            <div style={{ 
+                              width: `${currentProgress}%`, 
+                              height: "100%", 
+                              background: "var(--accent)",
+                              borderRadius: "2px",
+                              transition: "width 0.5s ease"
+                            }} />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
                 )}
 
                 {/* Actions */}
