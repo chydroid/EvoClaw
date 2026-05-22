@@ -500,14 +500,15 @@ export class SessionManager {
     const cleanContent = content.replace(/\s+/g, "");
     
     // Check if content looks valid (at least some Chinese or English characters)
-    const hasValidChars = /[\u4e00-\u9fa5a-zA-Z]/.test(cleanContent);
-    if (!hasValidChars) return null;
+    if (!/[\u4e00-\u9fa5a-zA-Z]/.test(cleanContent) || cleanContent.length === 0) {
+      return null;
+    }
 
-    // Calculate preview: 23 words (Chinese = 1 word, English = 2 letters = 1 word)
-    const previewLength = this.calculatePreviewLength(cleanContent, 23);
-    const preview = cleanContent.substring(0, previewLength);
-    
-    return preview.length < cleanContent.length ? preview + "..." : preview;
+    // Simple implementation: return first 23 characters directly
+    if (cleanContent.length <= 23) {
+      return cleanContent;
+    }
+    return cleanContent.substring(0, 23) + "...";
   }
 
   /** Calculate preview length based on word count rules */
