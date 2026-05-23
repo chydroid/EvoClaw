@@ -1203,6 +1203,9 @@ export class AgentModelExecutor {
             };
           } else if (dispatchResult.path === "none") {
             console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
+          } else {
+            // Skill matched but execution failed — fall through to LLM
+            console.log(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM`);
           }
         }
       } catch (err) {

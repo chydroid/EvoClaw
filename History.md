@@ -5,6 +5,35 @@
 
 ---
 
+## v0.4.3 (2026-05-23)
+
+### Evolution/Compactions API 认证白名单修复
+
+- **文件**: `packages/gateway/src/auth-provider.ts`
+- **问题**: `/api/evolution/*` 和 `/api/compactions` 路径不在认证白名单中，前端请求被 401 拦截
+- **修复**: 将 `/api/evolution/` 和 `/api/compactions` 添加到公开 API 前缀白名单
+- **影响**: Evolution Dashboard 和 Canvas 页面现在可以正常获取数据
+
+### SkillDispatcher 搜索技能匹配增强
+
+- **文件**: `packages/skills/src/auto-skill-manager.ts`, `packages/skills/src/skill-dispatcher.ts`
+- **问题**:
+  - 中文搜索意图（"搜索新闻"、"查找资讯"等）无法匹配到 `baidu-search` 技能
+  - SkillDispatcher 回退搜索仅查找 `web-search`，不包含 `baidu-search`
+- **修复**:
+  - `computeKeywordRelevance()` 添加语义关键词映射：搜索意图词（搜索/查找/查询/新闻/search/find 等）自动提升搜索类技能的相关度分数
+  - SkillDispatcher 回退搜索增加 `baidu-search` 匹配
+- **影响**: 中文搜索请求现在能正确匹配到 baidu-search 技能
+
+### SkillDispatcher 执行失败回退 LLM
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`
+- **问题**: 当 SkillDispatcher 匹配到技能但执行失败时（如缺少 API Key），不会回退到 LLM 处理
+- **修复**: 添加 else 分支，当技能匹配但执行失败时打印日志并回退到 LLM 流程
+- **影响**: 搜索类请求即使技能执行失败，也能通过 LLM 的 web_fetch 工具获取结果
+
+---
+
 ## v0.4.2 (2026-05-23)
 
 ### 删除会话确认弹窗定制化

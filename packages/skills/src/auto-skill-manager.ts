@@ -453,6 +453,20 @@ export class AutoSkillManager {
     if (task.includes(lowerDir)) score += 8;
     if (lowerDir.includes(task.replace(/\s+/g, ""))) score += 6;
 
+    // Semantic keyword mapping: search-intent words boost search skills
+    const searchIntentWords = ["搜索", "查找", "查询", "新闻", "资讯", "最新", "search", "find", "lookup", "news", "latest", "查", "搜"];
+    const isSearchSkill = lowerDir.includes("search") || lowerContent.includes("search the web") || lowerContent.includes("搜索引擎") || lowerContent.includes("web search");
+    if (isSearchSkill) {
+      for (const w of taskWords) {
+        if (searchIntentWords.includes(w.toLowerCase())) score += 4;
+      }
+      // Also check full task for search intent
+      const lowerTask = task.toLowerCase();
+      for (const siw of searchIntentWords) {
+        if (lowerTask.includes(siw)) { score += 2; break; }
+      }
+    }
+
     // Word-level matching in content
     for (const word of taskWords) {
       if (lowerContent.includes(word)) score += 2;

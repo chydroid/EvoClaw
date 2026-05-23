@@ -276,7 +276,7 @@ export class SkillDispatcher {
           if (skillManager) {
             const installedSkills = skillManager.listSkills();
             const webSearch = installedSkills.find(
-              s => s.name === "web-search" || s.name === "web_search" || s.name === "webSearch"
+              s => s.name === "web-search" || s.name === "web_search" || s.name === "webSearch" || s.name === "baidu-search"
             );
             
             if (webSearch) {
