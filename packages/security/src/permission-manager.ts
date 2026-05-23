@@ -31,6 +31,33 @@ export class PermissionManager {
   private rules = new Map<string, PermissionRule>();
   private approvedOperations = new Map<string, Date>();
   private whitelist: WhitelistEntry[] = [];
+  private whitelistedDirs: Array<{ dirPath: string; operations: string[] }> = [];
+
+  /**
+   * Add a directory to the auto-approve whitelist.
+   * All file operations (create/modify/delete) within this directory get
+   * automatically approved without prompting the user.
+   * @param dirPath Absolute path to the directory
+   * @param operations File operations to auto-approve, or ["*"] for all
+   */
+  addDirectoryWhitelist(dirPath: string, operations: string[]): void {
+    const normalized = dirPath.replace(/\\/g, "/").replace(/\/$/, "") + "/";
+    this.whitelistedDirs.push({ dirPath: normalized, operations });
+    console.log(`[PermissionManager] Directory whitelisted: ${normalized} → ${operations.join(", ")}`);
+  }
+
+  /**
+   * Check whether a resolved (absolute) path falls within a whitelisted directory
+   * for the given operation.
+   */
+  isPathAutoApproved(resolvedPath: string, operation: string): boolean {
+    const normalized = resolvedPath.replace(/\\/g, "/");
+    for (const entry of this.whitelistedDirs) {
+      if (!entry.operations.includes(operation) && !entry.operations.includes("*")) continue;
+      if (normalized.startsWith(entry.dirPath)) return true;
+    }
+    return false;
+  }
 
   constructor(
     private registry: ServiceRegistry,

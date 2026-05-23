@@ -7,7 +7,7 @@ import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaCon
 import { GatewayServer, ChannelManager, ProtocolHandler } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, handleChatCommand, dispatchCommand } from "@evoclaw/agent";
 import type { AgentConfig, AgentBinding } from "@evoclaw/agent";
-import { SkillManager, AutoSkillManager } from "@evoclaw/skills";
+import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay } from "@evoclaw/security";
@@ -44,6 +44,7 @@ export class EvoClawServer {
   private processManager: ProcessManager;
   private fileSystemManager: FileSystemManager;
   private autoSkillManager: AutoSkillManager;
+  private skillDispatcher: SkillDispatcher;
   private taskPlanner: TaskPlanner;
   private permissionManager: PermissionManager;
   private errorRecoveryManager: ErrorRecoveryManager;
@@ -298,6 +299,8 @@ export class EvoClawServer {
     this.processManager = new ProcessManager(this.registry, this.eventBus);
     this.fileSystemManager = new FileSystemManager(this.registry, this.eventBus);
     this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "data", "workspace", "skills"));
+    this.skillDispatcher = new SkillDispatcher(this.registry, this.eventBus);
+    this.skillDispatcher.initialize();
     this.taskPlanner = new TaskPlanner(this.registry, this.eventBus);
     this.permissionManager = new PermissionManager(this.registry, this.eventBus);
     this.registry.registerService("permissionManager", this.permissionManager);
@@ -368,9 +371,19 @@ export class EvoClawServer {
     this.agentModelExecutor.setWorkspacePath(workspaceDir);
     this.logger.info("server", `Workspace initialized at ${workspaceDir}`);
 
+    // Whitelist workspace and skills directories — file operations within
+    // these paths are auto-approved without user confirmation.
+    this.permissionManager.addDirectoryWhitelist(workspaceDir, ["file_create", "file_modify", "file_delete"]);
+    this.permissionManager.addDirectoryWhitelist(skillsDir, ["file_create", "file_modify", "file_delete"]);
+    // Also whitelist project root — bare filenames (like "notes.txt") resolve here
+    // because FileSystemManager.setBasePath restricts everything to the project root.
+    const projectRoot = path.resolve(__dirname, "..", "..", "..");
+    this.permissionManager.addDirectoryWhitelist(projectRoot, ["file_create", "file_modify", "file_delete"]);
+    this.logger.info("server", `File operations whitelisted for workspace, skills & project root directories`);
+
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
-    this.registerFileTools();
+    this.registerFileTools(fsBase);
     this.registerAutoSkillTool();
     this.registerTaskPlannerTool();
     this.registerBootstrapTool();
@@ -453,7 +466,7 @@ export class EvoClawServer {
     this.logger.info("server", "Goodbye!");
   }
 
-  private registerFileTools(): void {
+  private registerFileTools(fsBase: string): void {
     const fsMgr = this.fileSystemManager;
     const errRecovery = this.errorRecoveryManager;
     const permMgr = this.permissionManager;
@@ -471,6 +484,11 @@ export class EvoClawServer {
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
         const content = String(params.content || "");
+        // Resolve absolute path for directory whitelist check
+        const resolvedPath = path.resolve(fsBase, filePath);
+        if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
+          return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
+        }
         const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
         if (permRequest.status === "denied") {
           return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${permRequest.id}` };
@@ -495,6 +513,10 @@ export class EvoClawServer {
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
         const content = String(params.content || "");
+        const resolvedPath = path.resolve(fsBase, filePath);
+        if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
+          return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
+        }
         const permRequest = permMgr.requestPermission("file_modify", filePath, { size: content.length }, "tool");
         if (permRequest.status === "denied") {
           return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${permRequest.id}` };
@@ -517,6 +539,13 @@ export class EvoClawServer {
       },
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
+        const resolvedPath = path.resolve(fsBase, filePath);
+        if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
+          return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
+            await fsMgr.deleteFile(filePath);
+            return { success: true, path: filePath };
+          });
+        }
         const permRequest = permMgr.requestPermission("file_delete", filePath, {}, "tool");
         if (permRequest.status === "denied") {
           return { success: false, error: `Permission denied for file_delete on ${filePath}. Request ID: ${permRequest.id}` };

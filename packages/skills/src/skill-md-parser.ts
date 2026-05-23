@@ -13,8 +13,15 @@ export class SKILLmdParser {
 
     const openClawMeta = this.parseOpenClawMetadata(data);
 
+    // Extract name: prefer YAML frontmatter name, then first # heading, then default
+    let skillName = data.name as string | undefined;
+    if (!skillName) {
+      const headingMatch = body.match(/^#\s+(.+)$/m);
+      skillName = headingMatch ? headingMatch[1].trim() : "unnamed-skill";
+    }
+
     const meta: SKILLmdMeta = {
-      name: data.name || "unnamed-skill",
+      name: skillName,
       version: data.version || "1.0.0",
       description: data.description || "",
       author: data.author || "unknown",

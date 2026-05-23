@@ -568,17 +568,164 @@ export class AgentModelExecutor {
    */
   private async handleEmailOperation(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> } | null> {
     const lowerMsg = message.toLowerCase();
-    
+
     // Check if this is an email operation
     const emailKeywords = [
       "整理邮件", "整理邮箱", "查看邮件", "读取邮件", "邮件摘要",
       "统计邮件", "生成邮件报告", "邮件报告", "收件箱", "未读邮件",
       "批量处理邮件", "清理邮箱", "整理所有邮件"
     ];
-    
-    const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw));
+
+    const sendEmailKeywords = ["发邮件", "发送邮件", "给", "发信", "写信", "发一封", "发e-mail", "发email"];
+    const isSendEmailOp = sendEmailKeywords.some(kw => lowerMsg.includes(kw)) && /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(message);
+    const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw)) || isSendEmailOp;
+
     if (!isEmailOp) {
       return null;
+    }
+
+    // ── Send email branch ──
+    if (isSendEmailOp) {
+      if (!this.registeredTools.has("email_send")) {
+        return {
+          reply: `检测到您想发送邮件，但系统尚未配置邮箱发送功能。\n\n请先提供您的邮箱账号信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+
+      // Extract recipient email
+      const emailMatch = message.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+      if (!emailMatch) {
+        return {
+          reply: `请提供收件人邮箱地址，例如：\n给 156231056@qq.com 发邮件，内容是我最近很忙`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+      const toEmail = emailMatch[1];
+
+      // Extract subject / body from message
+      // Patterns:
+      // "给 xxx 发邮件，内容是 ..."
+      // "发邮件给 xxx，告诉他 ..."
+      // "给 xxx 发邮件，主题是 ...，内容是 ..."
+      let subject = "";
+      let body = "";
+
+      const contentPatterns = [
+        /(?:内容|正文|body)[:：]\s*(.+)/i,
+        /(?:告诉他|告诉她|说|写|内容)(?:[:：])?\s*(.+)/i,
+        /(?:发邮件|发信|写信).*?(?:[,，])\s*(.+)/i,
+      ];
+
+      for (const pattern of contentPatterns) {
+        const m = message.match(pattern);
+        if (m && m[1]) {
+          body = m[1].trim();
+          break;
+        }
+      }
+
+      // Clean up noise after extraction: strip leading "是", "想" etc.
+      if (body) {
+        body = body.replace(/^(是|想|说)[，,。.]?\s*/i, "").trim();
+      }
+
+      const subjectPatterns = [
+        /(?:主题|标题|subject)[:：]\s*(.+?)(?:[,，]|内容|正文|body)/i,
+        /(?:主题|标题|subject)[:：]\s*(.+)/i,
+      ];
+
+      for (const pattern of subjectPatterns) {
+        const m = message.match(pattern);
+        if (m && m[1]) {
+          subject = m[1].trim();
+          break;
+        }
+      }
+
+      // If no explicit subject, generate one from body
+      if (!subject && body) {
+        subject = body.slice(0, 30) + (body.length > 30 ? "..." : "");
+      }
+
+      // If still no body, use the whole message after the email as body
+      if (!body) {
+        const afterEmail = message.slice(message.indexOf(toEmail) + toEmail.length);
+        body = afterEmail.replace(/^(\s*[,，]\s*|\s*)/, "").replace(/^(发邮件|发信|写信|，|,)/, "").trim();
+      }
+
+      if (!body) {
+        return {
+          reply: `请提供邮件内容，例如：\n给 ${toEmail} 发邮件，内容是我最近很忙，一直在写EvoClaw`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+
+      // Get first available account
+      let accountsResult: unknown;
+      try {
+        const accountsTool = this.registeredTools.get("email_list_accounts")!;
+        accountsResult = await accountsTool.handler({});
+      } catch (err) {
+        return {
+          reply: `❌ 获取邮箱账号失败：${err instanceof Error ? err.message : String(err)}`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+
+      const accountsData = accountsResult as { success: boolean; accounts?: Array<{ id: string; email: string }> };
+      if (!accountsData?.success || !accountsData.accounts?.length) {
+        return {
+          reply: `📭 您还没有配置任何邮箱账号，无法发送邮件。\n\n请先提供邮箱信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
+
+      const accountId = accountsData.accounts[0].id;
+
+      // Call email_send tool
+      try {
+        const sendTool = this.registeredTools.get("email_send")!;
+        const sendResult = await sendTool.handler({
+          accountId,
+          to: toEmail,
+          subject: subject || "无主题",
+          body,
+        });
+        const sendData = sendResult as { success: boolean; messageId?: string; accepted?: string[]; error?: string };
+        if (sendData?.success) {
+          return {
+            reply: `✅ 邮件发送成功！\n\n📧 收件人：${toEmail}\n📌 主题：${subject || "无主题"}\n📝 内容：${body}\n\n邮件已通过 ${accountsData.accounts[0].email} 发送。`,
+            tokensUsed: 0,
+            duration: 0,
+            permissionRequests: [],
+          };
+        } else {
+          return {
+            reply: `❌ 邮件发送失败：${sendData?.error || "未知错误"}\n\n请检查邮箱配置和网络连接。`,
+            tokensUsed: 0,
+            duration: 0,
+            permissionRequests: [],
+          };
+        }
+      } catch (err) {
+        return {
+          reply: `❌ 邮件发送失败：${err instanceof Error ? err.message : String(err)}`,
+          tokensUsed: 0,
+          duration: 0,
+          permissionRequests: [],
+        };
+      }
     }
 
     // Check if email tools are available
@@ -944,9 +1091,14 @@ export class AgentModelExecutor {
       executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
     }>("skillManager");
     
-    const installKeywords = /(?:安装|下载|添加|配置).*?(?:技能|skill|skills?)/i;
+    // installKeywords: detects "安装技能", "下载技能", "安装 weather", etc.
+    const installKeywords = /(?:安装|下载|添加|配置)\s*(?:技能|skill|skills?)/i;
     const installRequest = /(?:给我|帮我|需要|想要).*?(?:安装|下载|添加|配置).*?(?:技能|skill|skills?)/i;
-    if (installKeywords.test(message) || installRequest.test(message)) {
+    // installSpecificSkill: catches "安装 weather", "安装 translator" etc. (verb+alphanumeric-word)
+    const installSpecificSkill = /(?:安装|下载|添加|配置)\s+([a-zA-Z][\w\-]{1,})/i;
+    // batchInstall: catches "全部安装", "批量安装", "一键安装", "安装所有技能" etc.
+    const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
+    if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message)) {
       console.log(`[AgentModelExecutor] Skill install request detected: "${message}"`);
       return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
     }
@@ -961,6 +1113,64 @@ export class AgentModelExecutor {
     const emailOperationResult = await this.handleEmailOperation(message);
     if (emailOperationResult) {
       return emailOperationResult;
+    }
+
+    // ── SkillDispatcher: try to auto-dispatch task via skill matching (before LLM) ──
+    if (this.hasActionIntent(message)) {
+      try {
+        const skillDispatcher = this.registry?.resolveService<{
+          dispatch(ctx: { task: string; sessionId: string; allowAutoInstall?: boolean; fallbackToWebSearch?: boolean }): Promise<{
+            success: boolean;
+            path: string;
+            skillName?: string;
+            output?: unknown;
+            reasoning: string;
+            duration: number;
+            error?: string;
+          }>;
+        }>("skillDispatcher");
+        
+        if (skillDispatcher) {
+          console.log(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"`);
+          const dispatchResult = await skillDispatcher.dispatch({
+            task: message,
+            sessionId,
+            allowAutoInstall: true,
+            fallbackToWebSearch: true,
+          });
+
+          if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output) {
+            console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
+            const outputStr = typeof dispatchResult.output === "string" 
+              ? dispatchResult.output 
+              : JSON.stringify(dispatchResult.output, null, 2);
+            
+            return {
+              reply: `🎯 **技能调度**: \`${dispatchResult.skillName}\`\n\n${outputStr}\n\n---\n<details><summary>📋 调度详情</summary>\n\n${dispatchResult.reasoning}\n</details>`,
+              tokensUsed: 0,
+              duration: Date.now() - startTime,
+              permissionRequests: [],
+            };
+          } else if (dispatchResult.path === "web_search" && dispatchResult.success && dispatchResult.output) {
+            console.log(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
+            const outputStr = typeof dispatchResult.output === "string"
+              ? dispatchResult.output
+              : JSON.stringify(dispatchResult.output, null, 2);
+            
+            return {
+              reply: `🔍 **网页搜索**: \`${dispatchResult.skillName}\`\n\n${outputStr}`,
+              tokensUsed: 0,
+              duration: Date.now() - startTime,
+              permissionRequests: [],
+            };
+          } else if (dispatchResult.path === "none") {
+            console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] SkillDispatcher dispatch failed: ${err}`);
+        // Fall through to LLM
+      }
     }
 
     const tasks = this.parseMultipleTasks(effectiveMessage);
@@ -1179,22 +1389,31 @@ export class AgentModelExecutor {
   }
 
   private parseMultipleTasks(message: string): string[] {
-    const separators = [/[。！？]/g, /[.!?]/g];
+    // Only split on Chinese sentence-ending punctuation. Avoid english '.' as it
+    // appears in filenames (notes.txt), version numbers, URLs, and abbreviations.
+    const separators = [/[。！？]/g];
     const tasks: string[] = [];
+    
+    // Check if a fragment is just a trailing command phrase like "帮我算一下"
+    const isShortFollowup = (s: string): boolean => {
+      return /^(帮我|给我|请帮我|麻烦|请问|你帮我|能帮我).{0,8}$/.test(s.trim());
+    };
     
     let remaining = message.trim();
     
     for (const sep of separators) {
-      const parts = remaining.split(sep);
+      const parts = remaining.split(sep).filter(p => p.trim().length > 2);
       if (parts.length > 1) {
-        for (const part of parts) {
-          const trimmed = part.trim();
-          if (trimmed && trimmed.length > 2) {
-            tasks.push(trimmed);
-          }
-        }
-        return tasks;
+        // Filter out short follow-up phrases that don't constitute real tasks
+        const realTasks = parts.map(p => p.trim()).filter(p => !isShortFollowup(p));
+        return realTasks.length >= 2 ? realTasks : [message];
       }
+    }
+    
+    // Also split on double-newline (explicit paragraph separators)
+    const paragraphs = remaining.split(/\n\s*\n/).filter(p => p.trim().length > 2);
+    if (paragraphs.length > 1) {
+      return paragraphs.map(p => p.trim());
     }
     
     const conjunctionPatterns = [
@@ -1294,88 +1513,344 @@ export class AgentModelExecutor {
           .filter(Boolean)
       );
 
-      // Search remote skill registries for popular skills
-      let remoteSkills: Array<{ name: string; description: string; version: string; rating: number; downloads: number; category: string }> = [];
-      
-      try {
-        // Use skill registry to search remote
-        const skillRegistry = this.registry?.resolveService<{
-          searchRemote(query: Record<string, unknown>): Promise<{ entries: Array<{ name: string; description: string; version: string; rating: number; downloads: number; category: string }> }>;
-        }>("skillRegistry");
-        
-        if (skillRegistry) {
-          const result = await skillRegistry.searchRemote({ keyword: "", limit: 20, sortBy: "downloads" });
-          if (result && result.entries) {
-            remoteSkills = result.entries;
-          }
+      // ── Detect if user wants to install specific skills ──
+      // Match: "安装 weather, translator" or "安装 skill1 skill2"
+      const specificSkillMatch = message.match(/(?:安装|下载|添加)\s*(?:技能)?\s*[:：]?\s*(.+)/i);
+      const selectedSkills = this.extractSkillNames(message, specificSkillMatch);
+
+      // ── Batch install mode ──
+      if (selectedSkills.length > 0) {
+        return await this.handleBatchSkillInstall(selectedSkills, installedNames, startTime);
+      }
+
+      // ── Browse mode: show available skills ──
+      // Use SkillDispatcher for comprehensive skill discovery
+      const skillDispatcher = this.registry?.resolveService<{
+        getSkillSummary(): Promise<{
+          local: Array<{ name: string; description: string; version: string }>;
+          remote: Array<{ name: string; description: string; rating: number; downloads: number }>;
+          installed: Array<{ name: string; id: string }>;
+        }>;
+        searchForTask(task: string, max?: number): Promise<Array<{ skillName: string; description?: string; relevance: number; source: string }>>;
+      }>("skillDispatcher");
+
+      let localSkills: Array<{ name: string; path?: string; description: string; version: string }> = [];
+      let remoteSkills: Array<{ name: string; description: string; rating: number; downloads: number }> = [];
+
+      if (skillDispatcher) {
+        try {
+          const summary = await skillDispatcher.getSkillSummary();
+          const installedFromSummary = new Set(summary.installed.map(s => s.name));
+          // Merge installedNames
+          for (const s of summary.installed) { installedNames.add(s.name); }
+          localSkills = summary.local.filter(s => !installedFromSummary.has(s.name));
+          remoteSkills = summary.remote.filter(s => !installedFromSummary.has(s.name) && !localSkills.some(l => l.name === s.name));
+        } catch (err) {
+          console.warn(`[AgentModelExecutor] SkillDispatcher summary failed: ${err}`);
         }
-      } catch (err) {
-        console.warn(`[AgentModelExecutor] Remote skill search failed: ${err}`);
       }
 
-      // Fallback to default skills if remote search failed
+      // Fallback: use registry directly
       if (remoteSkills.length === 0) {
-        remoteSkills = [
-          { name: "weather", description: "查询天气信息", version: "1.0.0", rating: 4.5, downloads: 15000, category: "utility" },
-          { name: "web-search", description: "网页搜索", version: "1.0.0", rating: 4.8, downloads: 25000, category: "search" },
-          { name: "code-runner", description: "运行代码片段", version: "1.0.0", rating: 4.3, downloads: 18000, category: "development" },
-          { name: "translator", description: "翻译文本", version: "1.0.0", rating: 4.6, downloads: 20000, category: "utility" },
-          { name: "calculator", description: "数学计算", version: "1.0.0", rating: 4.4, downloads: 22000, category: "utility" },
-          { name: "file-manager", description: "文件管理", version: "1.0.0", rating: 4.1, downloads: 10000, category: "system" },
-          { name: "reminder", description: "设置提醒", version: "1.0.0", rating: 4.2, downloads: 14000, category: "productivity" },
-          { name: "news-search", description: "搜索最新新闻", version: "1.0.0", rating: 4.5, downloads: 12000, category: "search" },
-        ];
+        try {
+          const skillRegistry = this.registry?.resolveService<{
+            searchRemote(query: Record<string, unknown>): Promise<{ entries: Array<{ name: string; description: string; version: string; rating: number; downloads: number; category: string }> }>;
+          }>("skillRegistry");
+          
+          if (skillRegistry) {
+            const result = await skillRegistry.searchRemote({ keyword: "", limit: 30, sortBy: "downloads" });
+            if (result?.entries) {
+              remoteSkills = result.entries
+                .filter((s: { name: string }) => !installedNames.has(s.name))
+                .map((s: { name: string; description: string; rating: number; downloads: number }) => ({
+                  name: s.name,
+                  description: s.description,
+                  rating: s.rating,
+                  downloads: s.downloads,
+                }));
+            }
+          }
+        } catch (err) {
+          console.warn(`[AgentModelExecutor] Remote skill search failed: ${err}`);
+        }
       }
 
-      // Filter out already installed skills
-      const notInstalled = remoteSkills.filter((s) => !installedNames.has(s.name));
+      // Fallback: use AutoSkillManager for local discoverable skills
+      if (localSkills.length === 0) {
+        const autoSkillManager = this.registry?.resolveService<{
+          listDiscoverableSkills(): Array<{ name: string; path: string; description: string; version: string }>;
+        }>("autoSkillManager");
+        if (autoSkillManager) {
+          localSkills = autoSkillManager.listDiscoverableSkills()
+            .filter(s => !installedNames.has(s.name));
+        }
+      }
+
+      // Merge remote into unified list (remote not in local)
+      const seenNames = new Set(localSkills.map(s => s.name));
+      const allAvailable = [
+        ...localSkills.map(s => ({ name: s.name, description: s.description, version: s.version, rating: 0, downloads: 0, source: "本地" as const })),
+        ...remoteSkills.filter(s => !seenNames.has(s.name)).map(s => ({ name: s.name, description: s.description, version: "0.1.0", rating: s.rating, downloads: s.downloads, source: "远端" as const })),
+      ];
+
+      // Sort: local first, then by downloads
+      allAvailable.sort((a, b) => {
+        if (a.source !== b.source) return a.source === "本地" ? -1 : 1;
+        return b.downloads - a.downloads;
+      });
+
+      const notInstalled = allAvailable.filter(s => !installedNames.has(s.name));
 
       if (notInstalled.length === 0) {
         return {
-          reply: "✅ 所有常用技能已经安装完成了！当前已安装的技能包括：\n\n" + 
-                 Array.from(installedNames).map((name) => `  • ${name}`).join("\n") + 
-                 "\n\n如果您需要特定的技能，请告诉我技能名称。",
+          reply: "✅ 所有可发现的技能已经安装完成！\n\n当前已安装: " + 
+                 Array.from(installedNames).map(n => `\`${n}\``).join(", ") + 
+                 "\n\n需要特定技能请告诉我名称，或描述任务我会自动匹配合适的技能。",
           tokensUsed: 0,
           duration: Date.now() - startTime,
-          permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+          permissionRequests: [],
         };
       }
 
-      // Sort by downloads (popularity)
-      notInstalled.sort((a, b) => b.downloads - a.downloads);
-
-      // Build response
+      // Build response with rich formatting
       let reply = "📦 **技能安装助手**\n\n";
-      reply += "以下是推荐安装的常用技能（按使用量排序）：\n\n";
-      
-      notInstalled.forEach((skill, index) => {
-        const popularity = skill.downloads > 20000 ? "🔥 热门" : skill.downloads > 15000 ? "⭐ 推荐" : "📌 常用";
-        const stars = "★".repeat(Math.floor(skill.rating)) + "☆".repeat(5 - Math.floor(skill.rating));
-        reply += `${index + 1}. **${skill.name}** v${skill.version} - ${skill.description}\n`;
-        reply += `   ${popularity} | ${stars} | 下载量: ${skill.downloads.toLocaleString()} | 分类: ${skill.category}\n\n`;
-      });
+      reply += `发现 **${notInstalled.length}** 个可安装技能：\n\n`;
 
-      reply += "---\n\n";
-      reply += "💡 **安装方式**：\n";
-      reply += "请回复技能编号或名称来安装，例如：\n";
-      reply += "• \"安装 1,2,3\" 或 \"安装 weather,translator\"\n";
-      reply += "• \"全部安装\" 安装所有推荐技能\n\n";
-      reply += "已安装技能: " + (installedNames.size > 0 ? Array.from(installedNames).join(", ") : "无") + "\n";
+      // Group: local first, then remote
+      const localAvailable = notInstalled.filter(s => s.source === "本地");
+      const remoteAvailable = notInstalled.filter(s => s.source === "远端");
+
+      if (localAvailable.length > 0) {
+        reply += "📁 **本地可用技能**\n";
+        localAvailable.forEach((skill, i) => {
+          reply += `${i + 1}. **\`${skill.name}\`** - ${skill.description || "无描述"}\n`;
+        });
+        reply += "\n";
+      }
+
+      if (remoteAvailable.length > 0) {
+        reply += "🌐 **远端注册表技能**\n";
+        remoteAvailable.forEach((skill, i) => {
+          const stars = "★".repeat(Math.min(5, Math.floor(skill.rating))) + "☆".repeat(Math.max(0, 5 - Math.floor(skill.rating)));
+          const label = skill.downloads > 20000 ? "🔥" : skill.downloads > 10000 ? "⭐" : "📌";
+          reply += `${i + 1}. **\`${skill.name}\`** ${label} ${stars} (${(skill.downloads/1000).toFixed(0)}k) - ${skill.description || "无描述"}\n`;
+        });
+        reply += "\n";
+      }
+
+      reply += "---\n";
+      reply += "💡 **安装方式**:\n";
+      reply += "• 回复技能名安装: `安装 weather`\n";
+      reply += "• 批量安装: `安装 weather, translator, news-search`\n";
+      reply += "• 全部安装: `全部安装` 或 `install all`\n\n";
+      reply += "已安装: " + (installedNames.size > 0 ? Array.from(installedNames).map(n => `\`${n}\``).join(", ") : "无") + "\n";
 
       return {
         reply,
         tokensUsed: 0,
         duration: Date.now() - startTime,
-        permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+        permissionRequests: [],
       };
     } catch (err) {
       return {
-        reply: `❌ 获取技能列表时出错: ${err}`,
+        reply: `❌ 获取技能列表时出错: ${err instanceof Error ? err.message : String(err)}`,
         tokensUsed: 0,
         duration: Date.now() - startTime,
-        permissionRequests: [] as Array<{ id: string; operation: string; description: string; target: string }>,
+        permissionRequests: [],
       };
     }
+  }
+
+  /**
+   * Extract skill names from user message for batch install.
+   */
+  private extractSkillNames(message: string, regexMatch: RegExpMatchArray | null): string[] {
+    const names: string[] = [];
+
+    // "全部安装" or "install all" → return empty (caller handles)
+    if (/全部安装|install\s+all|安装所有/i.test(message)) {
+      return ["__ALL__"];
+    }
+
+    if (regexMatch && regexMatch[1]) {
+      // Strip trailing punctuation and noise
+      let raw = regexMatch[1].trim();
+      // Remove trailing sentence-ending punctuation
+      raw = raw.replace(/[。.!！?？]+$/, "").trim();
+      // Remove trailing ", etc" or similar
+      raw = raw.replace(/[,，]\s*(etc|等等|之类的)\s*$/i, "").trim();
+
+      // Split by Chinese/English commas, Chinese enumeration markers, or whitespace
+      const parts = raw.split(/[,，、，\s]+/).filter(Boolean);
+      for (const part of parts) {
+        const clean = part.trim();
+        if (clean.length < 2) continue;
+        if (/^(技能|skill|一个|几个|这些|那些|这个|哪个|帮我|给我|请|需要)$/i.test(clean)) continue;
+        // Filter out pure Chinese phrases that are unlikely to be skill names
+        // (skill names in this ecosystem use ASCII alphanumeric identifiers)
+        if (/^[\u4e00-\u9fff]{2,}$/.test(clean)) continue;
+        names.push(clean);
+      }
+    }
+
+    // Also try to extract skill names from pattern like "安装 skill1 skill2"
+    const altMatch = message.match(/安装\s+([\w-]+(?:\s+[\w-]+)*)/i);
+    if (altMatch && names.length === 0) {
+      const parts = altMatch[1].split(/\s+/).filter(s => s.length >= 2 && s !== "技能" && s !== "skill");
+      names.push(...parts);
+    }
+
+    return names;
+  }
+
+  /**
+   * Handle batch installation of specific skills.
+   */
+  private async handleBatchSkillInstall(
+    selectedSkills: string[],
+    installedNames: Set<string>,
+    startTime: number
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+    // "全部安装" special case
+    if (selectedSkills.length === 1 && selectedSkills[0] === "__ALL__") {
+      const autoSkillManager = this.registry?.resolveService<{
+        listDiscoverableSkills(): Array<{ name: string }>;
+      }>("autoSkillManager");
+      
+      if (autoSkillManager) {
+        const all = autoSkillManager.listDiscoverableSkills()
+          .map(s => s.name)
+          .filter(n => !installedNames.has(n));
+        selectedSkills = all;
+      } else {
+        // Fallback: try skillManager's list
+        const sm = this.registry?.resolveService<{
+          listSkills(): Array<{ name: string }>;
+        }>("skillManager");
+        if (sm) {
+          selectedSkills = sm.listSkills().map(s => s.name).filter(n => !installedNames.has(n));
+        }
+      }
+
+      if (selectedSkills.length === 0 || selectedSkills[0] === "__ALL__") {
+        return {
+          reply: "❌ 没有找到可安装的技能。请先确保 `skills/` 目录下有 SKILL.md 文件。",
+          tokensUsed: 0,
+          duration: Date.now() - startTime,
+          permissionRequests: [],
+        };
+      }
+    }
+
+    // Filter out already installed
+    const toInstall = selectedSkills.filter(s => !installedNames.has(s));
+
+    if (toInstall.length === 0) {
+      return {
+        reply: "✅ 这些技能都已经安装过了！",
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [],
+      };
+    }
+
+    // Use AutoSkillManager for batch install
+    const autoSkillManager = this.registry?.resolveService<{
+      batchInstall(names: string[], onProgress?: (p: { phase: string; current: number; total: number; skillName: string; status: string; message: string }) => void): Promise<{
+        success: Array<{ skillName: string }>;
+        failed: Array<{ name: string; reason: string }>;
+      }>;
+    }>("autoSkillManager");
+
+    if (autoSkillManager) {
+      const progressLines: string[] = [];
+      const result = await autoSkillManager.batchInstall(toInstall, (progress) => {
+        const icon = progress.status === "installed" ? "✅" : progress.status === "failed" ? "❌" : progress.status === "installing" ? "⏳" : "📌";
+        progressLines.push(`${icon} [${progress.current}/${progress.total}] ${progress.message}`);
+      });
+
+      let reply = `📦 **批量安装结果**\n\n`;
+      
+      if (result.success.length > 0) {
+        reply += `✅ 成功安装 **${result.success.length}** 个技能:\n`;
+        result.success.forEach(s => {
+          reply += `  • \`${s.skillName}\`\n`;
+        });
+      }
+
+      if (result.failed.length > 0) {
+        reply += `\n❌ **${result.failed.length}** 个失败:\n`;
+        result.failed.forEach(f => {
+          reply += `  • \`${f.name}\`: ${f.reason}\n`;
+        });
+      }
+
+      reply += `\n---\n<details><summary>📋 安装进度</summary>\n\n${progressLines.join("\n")}\n</details>`;
+
+      return {
+        reply,
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [],
+      };
+    }
+
+    // Fallback: try installing one by one via skillManager
+    let reply = "📦 **手动安装**\n\n";
+    const sm = this.registry?.resolveService<{
+      installSkill(path: string): Promise<{ name: string }>;
+    }>("skillManager");
+    
+    if (!sm) {
+      return {
+        reply: "❌ 技能管理器未就绪，无法安装。",
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [],
+      };
+    }
+
+    const successList: string[] = [];
+    const failList: Array<{ name: string; reason: string }> = [];
+
+    for (const name of toInstall) {
+      try {
+        // Resolve path from name
+        const autoSm = this.registry?.resolveService<{
+          listDiscoverableSkills(): Array<{ name: string; path: string }>;
+        }>("autoSkillManager");
+        
+        let skillPath: string | null = null;
+        if (autoSm) {
+          const found = autoSm.listDiscoverableSkills().find(s => s.name === name);
+          if (found) skillPath = found.path;
+        }
+        
+        if (!skillPath) {
+          failList.push({ name, reason: "未找到技能文件" });
+          continue;
+        }
+
+        const installed = await sm.installSkill(skillPath);
+        successList.push(installed.name);
+      } catch (err) {
+        failList.push({ name, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (successList.length > 0) {
+      reply += `✅ 成功: ${successList.map(n => `\`${n}\``).join(", ")}\n`;
+    }
+    if (failList.length > 0) {
+      reply += `❌ 失败: ${failList.map(f => `\`${f.name}\` (${f.reason})`).join(", ")}\n`;
+    }
+
+    return {
+      reply,
+      tokensUsed: 0,
+      duration: Date.now() - startTime,
+      permissionRequests: [],
+    };
   }
 
   private hasActionIntent(message: string): boolean {
