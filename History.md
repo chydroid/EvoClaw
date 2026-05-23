@@ -19,6 +19,13 @@
   - 点击遮罩层可关闭弹窗
 - **影响**: 删除会话体验大幅提升，用户可自主选择是否跳过确认
 
+### 安全修复：移除诊断接口中的环境变量泄露
+
+- **文件**: `packages/infrastructure/src/crestodian.ts`
+- **问题**: `collectDiagnostics()` 返回完整 `process.env`，包含 API 密钥等敏感信息
+- **修复**: 移除 `env: process.env` 字段，仅保留 `config.NODE_ENV`
+- **影响**: 防止通过 Ops 诊断接口泄露 API 密钥等敏感信息
+
 ---
 
 ## v0.4.1 (2026-05-23)

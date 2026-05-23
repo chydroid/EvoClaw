@@ -338,7 +338,6 @@ export class Crestodian {
       config: {
         NODE_ENV: process.env.NODE_ENV,
       },
-      env: process.env,
     };
   }
 
