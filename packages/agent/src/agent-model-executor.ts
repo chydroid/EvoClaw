@@ -1,6 +1,7 @@
 import { ServiceRegistry, EventBus, type DAGNode, type Skill, type SkillExecutionResult, type PersonaConfig } from "@evoclaw/core";
 import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
 import { classifyLLMError, estimateMessagesTokens, LLMErrorType, type ClassifiedError } from "./error-classifier";
+import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -146,6 +147,15 @@ export class AgentModelExecutor {
   
   private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string }>();
   private isProcessingQueue = false;
+
+  // Lazily resolve EventLedger to avoid circular dependency (it's registered after this class)
+  private _eventLedger: { append(type: LedgerEventType, data: Record<string, unknown>, opts?: { agentId?: string; sessionId?: string; causedBy?: number; duration?: number }): number; recordToolExecution(toolName: string, params: Record<string, unknown>, result: unknown, duration: number, opts?: { agentId?: string; sessionId?: string }): { callSeq: number; resultSeq: number }; query(q: Record<string, unknown>): LedgerEntry[]; snapshot(): Record<string, unknown> } | null = null;
+  private getEventLedger() {
+    if (!this._eventLedger) {
+      this._eventLedger = this.registry.resolveService("eventLedger") as typeof this._eventLedger;
+    }
+    return this._eventLedger;
+  }
 
   constructor(
     private registry: ServiceRegistry,
@@ -410,7 +420,7 @@ export class AgentModelExecutor {
    * - "邮箱地址: xxx@xxx.com, 密码: xxxxx"
    * - "邮箱账号xxx@163.com 授权码：xxxxx"
    */
-  private async detectAndConfigureEmailAccount(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> } | null> {
+  private async detectAndConfigureEmailAccount(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null> {
     // Don't detect in search results or context messages
     if (message.includes("[系统") || message.includes("已为你搜索")) {
       return null;
@@ -493,6 +503,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
     
@@ -530,6 +541,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       } else if (resultObj?.requiresPermission) {
         // Permission is needed, return with pending permission request
@@ -543,6 +555,7 @@ export class AgentModelExecutor {
             description: `添加邮箱账号: ${email}`,
             target: email,
           }],
+          toolsExecuted: false,
         };
       } else {
         return {
@@ -550,6 +563,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
     } catch (err) {
@@ -558,6 +572,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
   }
@@ -566,7 +581,7 @@ export class AgentModelExecutor {
    * Handle email inbox operations: list emails, summarize, analyze
    * This is called when the task classifier detects email_handling intent
    */
-  private async handleEmailOperation(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> } | null> {
+  private async handleEmailOperation(message: string): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null> {
     const lowerMsg = message.toLowerCase();
 
     // Check if this is an email operation
@@ -592,6 +607,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
 
@@ -603,6 +619,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
       const toEmail = emailMatch[1];
@@ -664,6 +681,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
 
@@ -678,6 +696,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
 
@@ -688,6 +707,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
 
@@ -709,6 +729,7 @@ export class AgentModelExecutor {
             tokensUsed: 0,
             duration: 0,
             permissionRequests: [],
+            toolsExecuted: false,
           };
         } else {
           return {
@@ -716,6 +737,7 @@ export class AgentModelExecutor {
             tokensUsed: 0,
             duration: 0,
             permissionRequests: [],
+            toolsExecuted: false,
           };
         }
       } catch (err) {
@@ -724,6 +746,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
     }
@@ -735,6 +758,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -749,6 +773,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -759,6 +784,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -769,6 +795,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -782,6 +809,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -792,6 +820,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: 0,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -858,6 +887,7 @@ export class AgentModelExecutor {
       tokensUsed: 0,
       duration: 0,
       permissionRequests: [],
+      toolsExecuted: false,
     };
   }
 
@@ -1038,13 +1068,19 @@ export class AgentModelExecutor {
   async chat(
     message: string,
     context?: Record<string, unknown>
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
     const agentId = (context?.agentId as string) || "default";
     const channel = (context?.channel as string) || "web-ui";
     const peerId = (context?.peerId as string) || "user";
+
+    // Record session start in EventLedger
+    const ledger = this.getEventLedger();
+    if (ledger) {
+      ledger.append("session_start", { channel, peerId }, { agentId, sessionId });
+    }
 
     // ── Plugin hook: before_agent_start ──
     let effectiveMessage = message;
@@ -1056,11 +1092,11 @@ export class AgentModelExecutor {
         attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
       });
       if (blocked) {
-        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, duration: 0, permissionRequests: [] };
+        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, duration: 0, permissionRequests: [], toolsExecuted: false };
       }
       const mergedBA = merged as Partial<import("@evoclaw/core").BeforeAgentStartResult>;
       if (mergedBA.syntheticReply) {
-        return { reply: mergedBA.syntheticReply, tokensUsed: 0, duration: Date.now() - startTime, permissionRequests: [] };
+        return { reply: mergedBA.syntheticReply, tokensUsed: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false };
       }
       if (mergedBA.message) effectiveMessage = mergedBA.message;
     }
@@ -1150,6 +1186,7 @@ export class AgentModelExecutor {
               tokensUsed: 0,
               duration: Date.now() - startTime,
               permissionRequests: [],
+              toolsExecuted: true,
             };
           } else if (dispatchResult.path === "web_search" && dispatchResult.success && dispatchResult.output) {
             console.log(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
@@ -1162,6 +1199,7 @@ export class AgentModelExecutor {
               tokensUsed: 0,
               duration: Date.now() - startTime,
               permissionRequests: [],
+              toolsExecuted: true,
             };
           } else if (dispatchResult.path === "none") {
             console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
@@ -1304,9 +1342,9 @@ export class AgentModelExecutor {
         });
         const reply = `📅 ${timestamp}\n\n${AgentModelExecutor.collapseNewlines(result.reply)}`;
         if (pendingPermissions.length > 0) {
-          return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions] };
+          return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted };
         }
-        return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [] };
+        return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted };
       }
     }
 
@@ -1332,7 +1370,7 @@ export class AgentModelExecutor {
     this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
     
     // ── Plugin hook: agent_end ──
-    const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions] };
+    const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions], toolsExecuted: false };
     this.runAgentEndHook(sessionId, agentId, channel, finalResult);
 
     return finalResult;
@@ -1442,7 +1480,7 @@ export class AgentModelExecutor {
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
     startTime: number
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     const results: string[] = [];
     let totalTokens = 0;
 
@@ -1494,7 +1532,8 @@ export class AgentModelExecutor {
       reply: results.join("\n"),
       tokensUsed: totalTokens,
       duration: Date.now() - startTime,
-      permissionRequests: [...pendingPermissions]
+      permissionRequests: [...pendingPermissions],
+      toolsExecuted: true,
     };
   }
 
@@ -1503,7 +1542,7 @@ export class AgentModelExecutor {
     skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown>; listSkills(): unknown[]; installSkill?(path: string): Promise<unknown> } | undefined,
     startTime: number,
     sessionId: string
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     try {
       // Get currently installed skills
       const installedSkills = await skillManager?.listSkills() || [];
@@ -1609,6 +1648,7 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           duration: Date.now() - startTime,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
 
@@ -1650,6 +1690,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: Date.now() - startTime,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     } catch (err) {
       return {
@@ -1657,6 +1698,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: Date.now() - startTime,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
   }
@@ -1710,7 +1752,7 @@ export class AgentModelExecutor {
     selectedSkills: string[],
     installedNames: Set<string>,
     startTime: number
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     // "全部安装" special case
     if (selectedSkills.length === 1 && selectedSkills[0] === "__ALL__") {
       const autoSkillManager = this.registry?.resolveService<{
@@ -1732,12 +1774,13 @@ export class AgentModelExecutor {
         }
       }
 
-      if (selectedSkills.length === 0 || selectedSkills[0] === "__ALL__") {
+      if (selectedSkills.length === 0) {
         return {
           reply: "❌ 没有找到可安装的技能。请先确保 `skills/` 目录下有 SKILL.md 文件。",
           tokensUsed: 0,
           duration: Date.now() - startTime,
           permissionRequests: [],
+          toolsExecuted: false,
         };
       }
     }
@@ -1751,6 +1794,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: Date.now() - startTime,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -1792,6 +1836,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: Date.now() - startTime,
         permissionRequests: [],
+        toolsExecuted: true,
       };
     }
 
@@ -1807,6 +1852,7 @@ export class AgentModelExecutor {
         tokensUsed: 0,
         duration: Date.now() - startTime,
         permissionRequests: [],
+        toolsExecuted: false,
       };
     }
 
@@ -1850,6 +1896,7 @@ export class AgentModelExecutor {
       tokensUsed: 0,
       duration: Date.now() - startTime,
       permissionRequests: [],
+      toolsExecuted: true,
     };
   }
 
@@ -1876,7 +1923,7 @@ export class AgentModelExecutor {
     startTime: number,
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; toolsExecuted: boolean } | null> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null> {
     const MAX_TOOL_ROUNDS = 10;
     const MAX_CONSECUTIVE_ERRORS = 3;
     let totalTokensUsed = 0;
@@ -1968,6 +2015,7 @@ export class AgentModelExecutor {
           conversationMessages.push(assistantMsg);
 
           for (const tc of toolCalls) {
+            const toolStartTime = Date.now();
             const toolName = tc.function.name;
             const toolEntry = this.registeredTools.get(toolName);
 
@@ -2015,6 +2063,12 @@ export class AgentModelExecutor {
                 }
                 anyToolExecuted = true;
 
+                // Record successful tool execution in EventLedger
+                const ledger = this.getEventLedger();
+                if (ledger) {
+                  ledger.recordToolExecution(toolName, args, rawResult, Date.now() - toolStartTime, { agentId: "default", sessionId });
+                }
+
                 // Truncate huge tool results to prevent context overflow
                 const isBrowser = toolName.startsWith("browser_");
                 const MAX_RESULT_LEN = isBrowser ? 8000 : 16000;
@@ -2042,6 +2096,12 @@ export class AgentModelExecutor {
                 toolErrored = true;
                 toolError = err instanceof Error ? err.message : String(err);
                 console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
+
+                // Record failed tool execution in EventLedger
+                const ledger = this.getEventLedger();
+                if (ledger) {
+                  ledger.append("error", { tool: toolName, params: args, error: toolError }, { agentId: "default", sessionId, duration: Date.now() - toolStartTime });
+                }
               }
             } else {
               toolResult = JSON.stringify({ error: `Tool "${toolName}" not found` });
@@ -2109,10 +2169,17 @@ export class AgentModelExecutor {
           }
           this.conversationHistory.set(sessionId, newHistory);
 
+          // Record session end in EventLedger
+          const ledgerEnd = this.getEventLedger();
+          if (ledgerEnd) {
+            ledgerEnd.append("session_end", { toolsExecuted: anyToolExecuted, totalTokens: totalTokensUsed, durationMs: Date.now() - startTime }, { agentId: "default", sessionId });
+          }
+
           return {
             reply: finalReply,
             tokensUsed: totalTokensUsed,
             duration: Date.now() - startTime,
+            permissionRequests: pendingPermissions.length > 0 ? pendingPermissions : [],
             toolsExecuted: anyToolExecuted,
           };
         }

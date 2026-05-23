@@ -71,8 +71,10 @@ export function PermissionsPage() {
   const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [history, setHistory] = useState<PermissionRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
     try {
       const [pendRes, histRes] = await Promise.all([
         fetch("/api/permission-relay/pending"),
@@ -90,6 +92,7 @@ export function PermissionsPage() {
       // silent
     } finally {
       setLoading(false);
+      if (isManual) setRefreshing(false);
     }
   }, []);
 
@@ -129,7 +132,7 @@ export function PermissionsPage() {
           <div style={s.title}>权限中继 (Permission Relay)</div>
           <div style={s.subtitle}>集中式权限控制 — 所有工具调用权限请求经此流转</div>
         </div>
-        <button style={s.refreshBtn} onClick={loadData}>刷新</button>
+        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>刷新</button>
       </div>
 
       {/* Pending Requests */}

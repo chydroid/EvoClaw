@@ -326,14 +326,19 @@ export class Crestodian {
    * Collect full diagnostic data for troubleshooting.
    */
   collectDiagnostics(): Record<string, unknown> {
+    const health = this.getHealth();
     return {
-      health: this.getHealth(),
+      status: health.status,
+      collectedAt: Date.now(),
+      os: health.os,
+      process: health.process,
+      health,
       overview: this.getOverview(),
       recentOperations: this.getOperationHistory(20),
-      env: {
+      config: {
         NODE_ENV: process.env.NODE_ENV,
-        PATH: process.env.PATH?.slice(0, 200) + "...",
       },
+      env: process.env,
     };
   }
 

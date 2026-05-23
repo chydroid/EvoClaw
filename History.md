@@ -1,0 +1,174 @@
+# EvoClaw 版本历史记录 (History)
+
+> 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
+> 每次成功构建后更新此文件，按时间倒序排列。
+
+---
+
+## v0.4.1 (2026-05-23)
+
+### 系统核心功能连接与数据流修复
+
+本次更新重点解决了 WebUI 多个 Tab 页面数据为空的问题，打通了从后端服务到前端展示的完整数据链路。
+
+#### EventLedger 事件账本数据记录
+- **文件**: `packages/agent/src/agent-model-executor.ts`
+- **问题**: EventLedger.append() 从未被调用，导致事件账本 Tab 始终为空
+- **修复**:
+  - 在 chat() 方法中挂载 `session_start` 事件记录（会话开始时触发）
+  - 在工具执行循环中添加工具调用成功/失败的事件记录
+  - 在会话结束时挂载 `session_end` 事件记录
+- **影响**: 每次用户对话和工具调用都会被记录到事件账本，支持按时间/类型/代理/会话查询
+
+#### Canvas 进化统计与学习统计数据修复
+- **文件**: `apps/server/src/index.ts`
+- **问题**: EvolutionEngine 已创建但未注册到 ServiceRegistry，导致 `/api/evolution/dashboard` 和 `/api/evolution/learning/stats` 始终返回空数据
+- **修复**: 添加 `registry.registerService("evolutionEngine", this.evolutionEngine)` 及 Crestodian 健康注册
+- **影响**: Canvas 页面的进化统计和学习统计将从 evolutionEngine 获取运行时数据
+
+#### Ops 服务健康状态修复
+- **文件**: `apps/server/src/index.ts`, `packages/infrastructure/src/crestodian.ts`
+- **问题**:
+  - 无服务向 Crestodian 注册，导致"无服务数据"
+  - `collectDiagnostics()` 返回的字段（health, overview, recentOperations, env）与前端 Diagnostics 接口（status, collectedAt, os, process, config）完全不匹配
+- **修复**:
+  - 注册 agentModelExecutor、gatewayServer、autoSkillManager、skillDispatcher、eventLedger、permissionManager、taskOrchestrator、evolutionEngine 等关键服务到 Crestodian
+  - 重构 `collectDiagnostics()` 返回结构，增加 `status`、`collectedAt`、`os`、`process`、`config` 等前端期望字段，同时保留原有 health、overview、recentOperations、env 信息
+- **影响**: Ops 页面正确显示各服务健康状态和诊断信息
+
+#### Permissions 权限页面修复
+- **文件**: `apps/server/src/index.ts`, `packages/web-ui/src/PermissionsPage.tsx`
+- **问题**:
+  - 刷新按钮无视觉反馈
+  - `permRelay.request()` 缺少必填参数 `agentId` 和 `sessionId`，导致权限请求未被记录
+  - 前端 PermissionsPage 查询 permissionRelay 但文件操作工具未向其写入数据
+- **修复**:
+  - 前端添加 `refreshing` 状态，刷新时按钮禁用并显示加载状态
+  - 文件工具处理器（file_create/file_modify/file_delete）调用 `permRelay.request()` 时传入 `agentId: "system"` 和 `sessionId: "default"`
+- **影响**: 文件操作时的权限请求现在会记录到 permissionRelay 并在 WebUI 中显示
+
+#### OpsPage/PermissionsPage 刷新交互优化
+- **文件**: `packages/web-ui/src/OpsPage.tsx`, `packages/web-ui/src/PermissionsPage.tsx`
+- **修复**: 添加 `refreshing` 状态变量，刷新按钮在加载时显示禁用+半透明状态，提升用户体验
+- **影响**: 用户点击刷新后获得明确的加载反馈
+
+#### 编译错误修复
+- **`toolsExecuted` 属性**: 将 `chat()` 方法及 `detectAndConfigureEmailAccount`、`handleEmailOperation`、`handleSkillInstall` 等 12 个方法的返回类型统一添加 `toolsExecuted: boolean` 字段，修复约 40+ 处 TS2741 错误
+- **`anyToolExecuted` 作用域**: 修复变量在不同函数作用域中未定义的问题
+- **`toInstall` 作用域**: 修复 `handleBatchSkillInstall` 中 `toInstall` 变量在 `if` 块内部定义导致外部无法访问的问题
+- **`handleSkillInstall` 语法结构**: 修复函数体中 `if` 块缺少闭合括号导致的 TS1128 错误
+
+---
+
+## v0.4.0 (2026-05-22 ~ 2026-05-23)
+
+### 综合技能系统与工作流改进
+- **提交**: `bc01e8b`
+- **内容**: 全面升级技能系统，增加自动发现、安装、调度功能
+- **文件**: `packages/skills/src/skill-dispatcher.ts`, `packages/skills/src/tfidf-matcher.ts`
+- **新增**:
+  - SkillDispatcher 技能调度器：基于 TF-IDF 匹配自动将用户任务路由到对应技能
+  - TF-IDF 匹配器：本地语义匹配，支持中英文
+  - 自动技能安装流程：检测技能安装请求并执行批量安装
+  - 远端搜索回退：本地无匹配时自动执行网页搜索
+
+### 邮件功能修复
+- **提交**: `b8ccc4b`
+- **内容**: 修复邮件工具在有现有账户时无法正常工作的问题
+- **影响**: 邮件查询、整理功能恢复正常
+
+### 技能安装流程修复
+- **提交**: `226c921`
+- **内容**: 添加 handleSkillInstall 方法，改进技能安装检测逻辑
+- **影响**: 支持"安装 weather"等自然语言安装指令
+
+---
+
+## v0.3.x (2026-05-21 ~ 2026-05-22)
+
+### 技能安装与搜索功能
+- **提交**: `a9adb24`
+- **内容**: 添加 skill_install、skill_search 工具，支持对话中安装和搜索技能
+- **影响**: 用户可通过自然语言请求安装技能
+
+### Session 管理修复
+- **提交**: `011e286`
+- **内容**: 修复删除最后一个会话时的 React 错误
+- **影响**: Session 列表操作稳定性提升
+
+### UI 体验改进
+- **提交**: `5ec798c`, `e18ddae`, `5815ed3`, `c695062`, `8d58ce0`
+- **内容**:
+  - 会话预览优化：23 字预览，中英文智能计数
+  - 加载动画：添加进度条、动画点、5 条轮换加载消息
+  - 动画速度调优至 3 秒
+- **影响**: 用户等待体验显著改善
+
+### 权限弹窗响应式修复
+- **提交**: `9e35204`
+- **内容**: 修复权限弹窗在不同屏幕尺寸下的响应式布局
+- **影响**: 移动端和窄屏用户体验改善
+
+### 黑屏崩溃修复 + 亮色主题支持
+- **提交**: `91b4e26`
+- **内容**: 修复 SkillsConfig 页面黑屏崩溃，全局页面亮色主题适配
+- **影响**: 主题切换稳定性提升
+
+---
+
+## v0.2.x (2026-05-20)
+
+### 持久化内存与 Session 集成
+- **提交**: `26ffebd`
+- **内容**: 从 OpenClaw 设计移植持久化内存与会话集成
+- **影响**: 跨会话记忆保持
+
+### SkillsConfig UI 改进
+- **提交**: `ee18534`
+- **内容**: SkillsConfig 界面显示 OpenClaw 元数据中的必需环境变量
+- **影响**: 技能配置界面更直观
+
+### 技能执行引擎升级
+- **提交**: `be961a0`
+- **内容**: 支持 Python/bash 子进程、web_fetch/web_search 工具
+- **影响**: 技能执行能力大幅增强
+
+---
+
+## v0.1.x (2026-05-18 ~ 2026-05-19)
+
+### Skill-First 执行策略
+- **提交**: `6d6f28d`
+- **内容**:
+  - 优先使用技能搜索而非浏览器工具处理网页搜索任务
+  - 添加 skill_install/execute/create 工具
+  - 输出换行优化、工具结果截断
+- **影响**: 任务执行效率提升
+
+### Agent 韧性提升
+- **提交**: `7a36504`, `d7bc278`
+- **内容**:
+  - 修复输出多余空行和浏览器工具上下文溢出
+  - Agent 韧性提升、新闻搜索自主化
+  - LLM 错误日志增强
+- **影响**: 系统稳定性和可调试性提升
+
+---
+
+## v0.1.0 (项目初始)
+
+### 项目基础架构
+- Monorepo 结构 (pnpm workspace)
+- 15+ 核心包：agent、skills、evolution、security、infrastructure、gateway、web-ui 等
+- WebUI 前端：React + TypeScript + Vite
+- 后端服务：Express + TypeScript
+- 插件系统：Hook 生命周期拦截器
+- 权限系统：PermissionManager + PermissionRelay
+- 运维系统：Crestodian 健康监控与诊断
+- 进化引擎：EvolutionEngine 任务学习与改进
+- 事件账本：EventLedger 全量事件记录
+- 技能系统：SkillManager + AutoSkillManager + SkillDispatcher
+
+---
+
+*此文件由 EvoClaw 开发团队维护，每次成功构建后必须更新。*

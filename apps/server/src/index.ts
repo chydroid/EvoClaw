@@ -231,6 +231,14 @@ export class EvoClawServer {
       },
       this.eventBus,
     );
+    // Register all key services with Crestodian for Ops tab health monitoring
+    this.crestodian.setServiceHealth("agentModelExecutor", "ok", { version: "1.0" });
+    this.crestodian.setServiceHealth("gatewayServer", "ok", { port: process.env.EvoClaw_PORT || "17788" });
+    this.crestodian.setServiceHealth("autoSkillManager", "ok");
+    this.crestodian.setServiceHealth("skillDispatcher", "ok");
+    this.crestodian.setServiceHealth("eventLedger", "ok");
+    this.crestodian.setServiceHealth("permissionManager", "ok");
+    this.crestodian.setServiceHealth("taskOrchestrator", "ok");
     this.registry.registerService("crestodian", this.crestodian);
 
     this.registry.registerService("registry", this.registry);
@@ -246,6 +254,8 @@ export class EvoClawServer {
     this.agentModelExecutor = new AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
     this.skillManager = new SkillManager(this.registry, this.eventBus);
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);
+    this.registry.registerService("evolutionEngine", this.evolutionEngine);
+    this.crestodian.setServiceHealth("evolutionEngine", "ok");
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
     this.agentModelExecutor.setMemoryHub(this.memoryHub);
     this.bootstrapManager = new BootstrapManager(this.configManager);
@@ -470,6 +480,7 @@ export class EvoClawServer {
     const fsMgr = this.fileSystemManager;
     const errRecovery = this.errorRecoveryManager;
     const permMgr = this.permissionManager;
+    const permRelay = this.permissionRelay;
 
     this.agentModelExecutor.registerTool(
       "file_create",
@@ -487,6 +498,8 @@ export class EvoClawServer {
         // Resolve absolute path for directory whitelist check
         const resolvedPath = path.resolve(fsBase, filePath);
         if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
+          // Also record to permissionRelay for WebUI display
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
           return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
         }
         const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
@@ -494,6 +507,7 @@ export class EvoClawServer {
           return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${permRequest.id}` };
         }
         if (permRequest.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
           return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_create", description: permRequest.description, target: filePath, error: `Awaiting user approval to create: ${filePath}` };
         }
         return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
@@ -515,6 +529,7 @@ export class EvoClawServer {
         const content = String(params.content || "");
         const resolvedPath = path.resolve(fsBase, filePath);
         if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
           return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
         }
         const permRequest = permMgr.requestPermission("file_modify", filePath, { size: content.length }, "tool");
@@ -522,6 +537,7 @@ export class EvoClawServer {
           return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${permRequest.id}` };
         }
         if (permRequest.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
           return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_modify", description: permRequest.description, target: filePath, error: `Awaiting user approval to modify: ${filePath}` };
         }
         return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
@@ -541,6 +557,7 @@ export class EvoClawServer {
         const filePath = String(params.path || "");
         const resolvedPath = path.resolve(fsBase, filePath);
         if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
           return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
             await fsMgr.deleteFile(filePath);
             return { success: true, path: filePath };
@@ -551,6 +568,7 @@ export class EvoClawServer {
           return { success: false, error: `Permission denied for file_delete on ${filePath}. Request ID: ${permRequest.id}` };
         }
         if (permRequest.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
           return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_delete", description: permRequest.description, target: filePath, error: `Awaiting user approval to delete: ${filePath}` };
         }
         return await errRecovery.executeWithRetry("file_delete", filePath, async () => {

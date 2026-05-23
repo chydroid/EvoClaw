@@ -63,8 +63,10 @@ export function OpsPage() {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
     try {
       const [healthRes, diagRes] = await Promise.all([
         fetch("/api/crestodian/health"),
@@ -76,6 +78,7 @@ export function OpsPage() {
       console.error("[OpsPage] Load data failed:", err);
     } finally {
       setLoading(false);
+      if (isManual) setRefreshing(false);
     }
   }, []);
 
@@ -117,7 +120,7 @@ export function OpsPage() {
           <div style={s.title}>运维管理 (Crestodian)</div>
           <div style={s.subtitle}>守护进程运维管理器 — 系统健康、诊断与操作审计</div>
         </div>
-        <button style={s.refreshBtn} onClick={loadData}>刷新</button>
+        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>刷新</button>
       </div>
 
       {/* Health Cards */}
