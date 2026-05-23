@@ -254,7 +254,7 @@ export class EvoClawServer {
     this.agentModelExecutor = new AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
     this.skillManager = new SkillManager(this.registry, this.eventBus);
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);
-    this.registry.registerService("evolutionEngine", this.evolutionEngine);
+    // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
     this.agentModelExecutor.setMemoryHub(this.memoryHub);
