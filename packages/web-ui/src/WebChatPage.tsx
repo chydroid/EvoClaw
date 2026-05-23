@@ -31,6 +31,16 @@ styleSheet.textContent = `
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0; }
   }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes scaleIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
 `;
 document.head.appendChild(styleSheet);
 
@@ -432,6 +442,12 @@ export function WebChatPage() {
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [currentProgress, setCurrentProgress] = useState(0);
   
+  // Delete confirmation modal state
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [skipDeleteConfirm, setSkipDeleteConfirm] = useState(() => {
+    try { return localStorage.getItem("evoclaw_skip_delete_confirm") === "true"; } catch { return false; }
+  });
+  
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
@@ -767,29 +783,50 @@ export function WebChatPage() {
   };
 
   const deleteSession = async (sessionId: string) => {
-    if (confirm("确定要删除这个会话吗？此操作无法撤销。")) {
-      try {
-        const res = await fetch(`/api/sessions/default/${sessionId}`, {
-          method: "DELETE",
-        });
-        if (res.ok) {
-          // 先计算剩余的会话
-          const remainingSessions = sessions.filter((s) => s.id !== sessionId);
-          setSessions(remainingSessions);
-          
-          if (activeSessionId === sessionId) {
-            if (remainingSessions.length > 0) {
-              setActiveSessionId(remainingSessions[0].id);
-            } else {
-              // 删除最后一个会话时，直接创建新会话，不要先设为null
-              await createBackendSession();
-            }
+    // If user chose to skip confirmation, delete directly
+    if (skipDeleteConfirm) {
+      await performDelete(sessionId);
+      return;
+    }
+    // Show custom confirmation modal
+    setDeleteTarget(sessionId);
+  };
+
+  const performDelete = async (sessionId: string) => {
+    try {
+      const res = await fetch(`/api/sessions/default/${sessionId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        const remainingSessions = sessions.filter((s) => s.id !== sessionId);
+        setSessions(remainingSessions);
+        
+        if (activeSessionId === sessionId) {
+          if (remainingSessions.length > 0) {
+            setActiveSessionId(remainingSessions[0].id);
+          } else {
+            await createBackendSession();
           }
         }
-      } catch {
-        alert("删除会话失败");
       }
+    } catch {
+      // silent
     }
+  };
+
+  const confirmDelete = (dontAskAgain: boolean) => {
+    if (dontAskAgain) {
+      setSkipDeleteConfirm(true);
+      try { localStorage.setItem("evoclaw_skip_delete_confirm", "true"); } catch {}
+    }
+    if (deleteTarget) {
+      performDelete(deleteTarget);
+    }
+    setDeleteTarget(null);
+  };
+
+  const cancelDelete = () => {
+    setDeleteTarget(null);
   };
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1015,6 +1052,98 @@ export function WebChatPage() {
                 onClick={() => handlePermissionAction("deny")}
               >
                 拒绝
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center",
+          justifyContent: "center", zIndex: 10000, backdropFilter: "blur(4px)",
+          animation: "fadeIn 0.15s ease-out",
+        }} onClick={cancelDelete}>
+          <div style={{
+            background: "var(--bg-card, #1c2128)", borderRadius: "12px",
+            padding: "0", border: "1px solid var(--border, #30363d)",
+            width: "380px", maxWidth: "90vw", overflow: "hidden",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05)",
+            animation: "scaleIn 0.2s ease-out",
+          }} onClick={(e) => e.stopPropagation()}>
+            {/* Header with icon */}
+            <div style={{
+              padding: "24px 24px 16px", textAlign: "center",
+            }}>
+              <div style={{
+                width: "48px", height: "48px", borderRadius: "50%",
+                background: "rgba(248,81,73,0.12)", display: "flex",
+                alignItems: "center", justifyContent: "center",
+                margin: "0 auto 16px", fontSize: "22px",
+              }}>
+                🗑️
+              </div>
+              <div style={{
+                fontSize: "17px", fontWeight: 600,
+                color: "var(--text-primary, #c9d1d9)", marginBottom: "8px",
+              }}>
+                删除会话
+              </div>
+              <div style={{
+                fontSize: "13px", color: "var(--text-secondary, #8b949e)", lineHeight: "1.5",
+              }}>
+                确定要删除这个会话吗？此操作无法撤销。
+              </div>
+            </div>
+
+            {/* Don't ask again checkbox */}
+            <div style={{
+              padding: "0 24px 16px",
+            }}>
+              <label style={{
+                display: "flex", alignItems: "center", gap: "8px",
+                cursor: "pointer", fontSize: "12px",
+                color: "var(--text-secondary, #8b949e)",
+                padding: "8px 12px", borderRadius: "6px",
+                background: "var(--bg-secondary, #161b22)",
+                border: "1px solid var(--border-light, #21262d)",
+              }}>
+                <input type="checkbox" id="skipConfirmCheck" style={{ accentColor: "var(--accent, #58a6ff)" }} />
+                <span>以后删除不再提示，直接删除</span>
+              </label>
+            </div>
+
+            {/* Action buttons */}
+            <div style={{
+              display: "flex", borderTop: "1px solid var(--border, #30363d)",
+            }}>
+              <button style={{
+                flex: 1, padding: "14px", border: "none",
+                background: "transparent", color: "var(--text-secondary, #8b949e)",
+                cursor: "pointer", fontSize: "14px", fontWeight: 500,
+                transition: "background 0.15s, color 0.15s",
+              }} onClick={cancelDelete}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover, rgba(110,118,129,0.1))"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              >
+                取消
+              </button>
+              <div style={{ width: "1px", background: "var(--border, #30363d)" }} />
+              <button style={{
+                flex: 1, padding: "14px", border: "none",
+                background: "transparent", color: "#f85149",
+                cursor: "pointer", fontSize: "14px", fontWeight: 600,
+                transition: "background 0.15s",
+              }} onClick={() => {
+                const checkbox = document.getElementById("skipConfirmCheck") as HTMLInputElement;
+                confirmDelete(checkbox?.checked ?? false);
+              }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(248,81,73,0.1)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                确认删除
               </button>
             </div>
           </div>
