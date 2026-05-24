@@ -82,6 +82,13 @@ function renderMessageHtml(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
+interface AvatarInfo {
+  user: string;
+  bot: string;
+  userNickname: string;
+  botNickname: string;
+}
+
 interface WebChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
@@ -430,23 +437,14 @@ const permissionBtnStyle = (primary: boolean, destructive?: boolean): CSSPropert
   transition: "all 0.15s",
 });
 
-export function WebChatPage() {
-  const [sessions, setSessions] = useState<WebChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionId?: string | null; avatars?: AvatarInfo }) {
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
-  const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [currentProgress, setCurrentProgress] = useState(0);
-  
-  // Delete confirmation modal state
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [skipDeleteConfirm, setSkipDeleteConfirm] = useState(() => {
-    try { return localStorage.getItem("evoclaw_skip_delete_confirm") === "true"; } catch { return false; }
-  });
   
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -454,58 +452,22 @@ export function WebChatPage() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isComposingRef = useRef(false);
 
-  // ── Load session list from backend on mount ──
+  // ── Load messages when sessionId prop changes ──
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/sessions");
-        if (!res.ok) return;
-        const data = await res.json();
-        const backendSessions: WebChatSession[] = (data.sessions || []).map((s: Record<string, unknown>) => {
-          const sessionId = (s.sessionId as string) || "";
-          const preview = (s.preview as string) || "";
-          const label = preview || `Session ${sessionId.slice(-8) || "..."}`;
-          return {
-            id: sessionId,
-            label,
-            lastActivity: (s.updatedAt as string) || (s.createdAt as string) || new Date().toISOString(),
-            messageCount: (s.turnCount as number) || 0,
-            status: (s.status === "active" ? "active" : "idle") as "active" | "idle",
-          };
-        });
-
-        if (backendSessions.length > 0) {
-          // Sort by lastActivity descending
-          backendSessions.sort((a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime());
-          setSessions(backendSessions);
-          // Auto-load the most recent session
-          const mostRecent = backendSessions[0];
-          setActiveSessionId(mostRecent.id);
-        } else {
-          // No existing sessions — create a fresh one via API
-          await createBackendSession();
-        }
-      } catch {
-        // Silent fallback — proceed with empty state
-      }
-    })();
-  }, []);
-
-  // ── Load messages when switching sessions ──
-  useEffect(() => {
-    if (!activeSessionId) return;
+    if (!initialSessionId) {
+      setMessages([]);
+      return;
+    }
     (async () => {
       setIsLoadingHistory(true);
       try {
-        const res = await fetch(`/api/sessions/default/${activeSessionId}`);
-        if (!res.ok) {
-          setMessages([]);
-          return;
-        }
+        const res = await fetch(`/api/sessions/default/${initialSessionId}`);
+        if (!res.ok) { setMessages([]); return; }
         const data = await res.json();
         const turns: WebChatMessage[] = (data.turns || []).map((t: Record<string, unknown>, i: number) => ({
-          id: `${activeSessionId}-t${i}`,
+          id: `${initialSessionId}-t${i}`,
           role: (t.role as "user" | "assistant" | "system" | "tool") || "assistant",
           content: (t.content as string) || "",
           timestamp: (t.timestamp as string) || new Date().toISOString(),
@@ -533,46 +495,15 @@ export function WebChatPage() {
         setIsLoadingHistory(false);
       }
     })();
-  }, [activeSessionId]);
+  }, [initialSessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ── Create a new session on the backend ──
-  const createBackendSession = async () => {
-    try {
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId: "default" }),
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      const newSess = data.session as Record<string, unknown>;
-      const sessEntry: WebChatSession = {
-        id: (newSess.sessionId as string) || "",
-        label: `Session ${(newSess.sessionId as string)?.slice(-8) || "new"}`,
-        lastActivity: (newSess.createdAt as string) || new Date().toISOString(),
-        messageCount: 0,
-        status: "active",
-      };
-      setSessions((prev) => [sessEntry, ...prev]);
-      setActiveSessionId(sessEntry.id);
-      setMessages([{
-        id: `welcome-${Date.now()}`,
-        role: "assistant",
-        content: "你好！我是 EvoClaw 小助手。有什么我可以帮助你的吗？",
-        timestamp: new Date().toISOString(),
-      }]);
-    } catch {
-      // Fallback
-    }
-  };
-
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || isStreaming || !activeSessionId) return;
+    if (!text || isStreaming || !initialSessionId) return;
 
     const userMsg: WebChatMessage = {
       id: `user-${Date.now()}`,
@@ -584,7 +515,7 @@ export function WebChatPage() {
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsStreaming(true);
-    setLoadingMessageIndex(0); // First message shows once
+    setLoadingMessageIndex(0);
     setCurrentProgress(0);
 
     const botMsgId = `bot-${Date.now()}`;
@@ -597,13 +528,12 @@ export function WebChatPage() {
 
     setMessages((prev) => [...prev, botMsg]);
 
-    // Start loading animation - first message shows once, then cycle through others
-    let msgIndex = 1; // Start from second message
+    let msgIndex = 1;
     setLoadingMessageIndex(1);
     
     const progressInterval = setInterval(() => {
       setCurrentProgress((prev) => Math.min(prev + Math.random() * 10 + 3, 85));
-      msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1; // Cycle through 2nd to last message
+      msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1;
       setLoadingMessageIndex(msgIndex);
     }, 3000);
 
@@ -611,7 +541,7 @@ export function WebChatPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, sessionId: activeSessionId }),
+        body: JSON.stringify({ message: text, sessionId: initialSessionId }),
       });
 
       if (res.ok) {
@@ -648,14 +578,6 @@ export function WebChatPage() {
               : m,
           ),
         );
-        // Update session metadata (turn count, last activity) in sidebar
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeSessionId
-              ? { ...s, messageCount: s.messageCount + 2, lastActivity: new Date().toISOString() }
-              : s,
-          ),
-        );
       } else {
         const errText = await res.text().catch(() => "");
         setMessages((prev) =>
@@ -680,7 +602,7 @@ export function WebChatPage() {
     clearInterval(progressInterval);
     setIsStreaming(false);
     setCurrentProgress(100);
-  }, [input, isStreaming, activeSessionId]);
+  }, [input, isStreaming, initialSessionId]);
 
   // ── Permission handling ──
   const autoApprovePermissions = async (reqs: PermissionRequest[]) => {
@@ -720,12 +642,12 @@ export function WebChatPage() {
         }
         // Retry the original message after approval
         const lastUserMsg = messages.find((m) => m.role === "user");
-        if (lastUserMsg && activeSessionId) {
+        if (lastUserMsg && initialSessionId) {
           setIsStreaming(true);
           const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: lastUserMsg.content, sessionId: activeSessionId }),
+            body: JSON.stringify({ message: lastUserMsg.content, sessionId: initialSessionId }),
           });
           if (res.ok) {
             const data = await res.json();
@@ -764,6 +686,7 @@ export function WebChatPage() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (isComposingRef.current || e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -778,63 +701,25 @@ export function WebChatPage() {
     navigator.clipboard.writeText(text).catch(() => {});
   };
 
-  const newSession = () => {
-    createBackendSession();
-  };
-
-  const deleteSession = async (sessionId: string) => {
-    // If user chose to skip confirmation, delete directly
-    if (skipDeleteConfirm) {
-      await performDelete(sessionId);
-      return;
-    }
-    // Show custom confirmation modal
-    setDeleteTarget(sessionId);
-  };
-
-  const performDelete = async (sessionId: string) => {
-    try {
-      const res = await fetch(`/api/sessions/default/${sessionId}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        const remainingSessions = sessions.filter((s) => s.id !== sessionId);
-        setSessions(remainingSessions);
-        
-        if (activeSessionId === sessionId) {
-          if (remainingSessions.length > 0) {
-            setActiveSessionId(remainingSessions[0].id);
-          } else {
-            await createBackendSession();
-          }
-        }
-      }
-    } catch {
-      // silent
-    }
-  };
-
-  const confirmDelete = (dontAskAgain: boolean) => {
-    if (dontAskAgain) {
-      setSkipDeleteConfirm(true);
-      try { localStorage.setItem("evoclaw_skip_delete_confirm", "true"); } catch {}
-    }
-    if (deleteTarget) {
-      performDelete(deleteTarget);
-    }
-    setDeleteTarget(null);
-  };
-
-  const cancelDelete = () => {
-    setDeleteTarget(null);
-  };
-
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
   }, []);
 
   const formatTime = (ts: string) => {
-    return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    const d = new Date(ts);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hour = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    const sec = String(d.getSeconds()).padStart(2, "0");
+    return `${year}年${month}月${day}日 ${hour}:${min}:${sec}`;
+  };
+
+  const getNickname = (role: string) => {
+    if (role === "user") return avatars?.userNickname || "Me";
+    if (role === "assistant") return avatars?.botNickname || "EvoClaw";
+    return null;
   };
 
   const renderMessageContent = (msg: WebChatMessage) => {
@@ -845,45 +730,6 @@ export function WebChatPage() {
 
   return (
     <div style={chatContainerStyle}>
-      {/* Session Sidebar */}
-      <div style={sessionSidebarStyle}>
-        <button style={newSessionBtnStyle} onClick={newSession}>
-          + New Session
-        </button>
-        <div style={sessionListStyle}>
-          {sessions.map((s) => (
-            <div
-              key={s.id}
-              style={sessionItemStyle(s.id === activeSessionId)}
-              onClick={() => setActiveSessionId(s.id)}
-              onMouseEnter={() => setHoveredSessionId(s.id)}
-              onMouseLeave={() => setHoveredSessionId(null)}
-            >
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: "2px" }}>{s.label}</div>
-                <div style={{ fontSize: "11px", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between" }}>
-                  <span>{s.messageCount} msgs</span>
-                  <span>{new Date(s.lastActivity).toLocaleDateString()}</span>
-                </div>
-              </div>
-              <button
-                style={{
-                  ...deleteBtnStyle,
-                  opacity: hoveredSessionId === s.id ? 1 : 0,
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteSession(s.id);
-                }}
-                title="删除会话"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Chat Area */}
       <div style={chatAreaStyle}>
         <div style={messagesContainerStyle}>
@@ -899,6 +745,58 @@ export function WebChatPage() {
 
           {messages.map((msg) => (
             <div key={msg.id} style={messageRowStyle(msg.role)}>
+              <div>
+                {/* Nickname + timestamp + avatar above bubble */}
+                {(() => {
+                  const nick = getNickname(msg.role);
+                  if (!nick || !msg.timestamp) return null;
+                  const isUser = msg.role === "user";
+                  const avatarSrc = isUser ? avatars?.user : avatars?.bot;
+                  const avatarSize = 28;
+                  return (
+                    <div style={{
+                      fontSize: "12px",
+                      color: "var(--text-muted, #6e7681)",
+                      marginBottom: "4px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      paddingLeft: isUser ? "0" : "4px",
+                      paddingRight: isUser ? "4px" : "0",
+                      justifyContent: isUser ? "flex-end" : "flex-start",
+                    }}>
+                      {isUser ? (
+                        <>
+                          <span style={{ fontSize: "11px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace" }}>
+                            {formatTime(msg.timestamp)}
+                          </span>
+                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick}</span>
+                          {avatarSrc && (
+                            <img
+                              src={avatarSrc}
+                              style={{ width: avatarSize, height: avatarSize, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border, #30363d)" }}
+                              alt={nick}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {avatarSrc && (
+                            <img
+                              src={avatarSrc}
+                              style={{ width: avatarSize, height: avatarSize, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border, #30363d)" }}
+                              alt={nick}
+                            />
+                          )}
+                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick}</span>
+                          <span style={{ fontSize: "11px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace" }}>
+                            {formatTime(msg.timestamp)}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               <div style={messageBubbleStyle(msg.role)}>
                 {/* Thinking badge */}
                 {msg.thinking && (
@@ -975,12 +873,12 @@ export function WebChatPage() {
                 )}
 
                 {/* Actions */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
-                  <span style={{ fontSize: "10px", opacity: 0.6 }}>{formatTime(msg.timestamp)}</span>
+                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "4px" }}>
                   <div style={{ opacity: 0, transition: "opacity 0.2s" }} className="msg-actions">
                     <button style={actionBtnStyle} onClick={() => copyMessage(msg.content)}>Copy</button>
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           ))}
@@ -995,6 +893,8 @@ export function WebChatPage() {
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => { isComposingRef.current = true; }}
+            onCompositionEnd={() => { isComposingRef.current = false; }}
             placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
             rows={1}
             disabled={isStreaming}
@@ -1052,98 +952,6 @@ export function WebChatPage() {
                 onClick={() => handlePermissionAction("deny")}
               >
                 拒绝
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {deleteTarget && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-          background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center",
-          justifyContent: "center", zIndex: 10000, backdropFilter: "blur(4px)",
-          animation: "fadeIn 0.15s ease-out",
-        }} onClick={cancelDelete}>
-          <div style={{
-            background: "var(--bg-card, #1c2128)", borderRadius: "12px",
-            padding: "0", border: "1px solid var(--border, #30363d)",
-            width: "380px", maxWidth: "90vw", overflow: "hidden",
-            boxShadow: "0 20px 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05)",
-            animation: "scaleIn 0.2s ease-out",
-          }} onClick={(e) => e.stopPropagation()}>
-            {/* Header with icon */}
-            <div style={{
-              padding: "24px 24px 16px", textAlign: "center",
-            }}>
-              <div style={{
-                width: "48px", height: "48px", borderRadius: "50%",
-                background: "rgba(248,81,73,0.12)", display: "flex",
-                alignItems: "center", justifyContent: "center",
-                margin: "0 auto 16px", fontSize: "22px",
-              }}>
-                🗑️
-              </div>
-              <div style={{
-                fontSize: "17px", fontWeight: 600,
-                color: "var(--text-primary, #c9d1d9)", marginBottom: "8px",
-              }}>
-                删除会话
-              </div>
-              <div style={{
-                fontSize: "13px", color: "var(--text-secondary, #8b949e)", lineHeight: "1.5",
-              }}>
-                确定要删除这个会话吗？此操作无法撤销。
-              </div>
-            </div>
-
-            {/* Don't ask again checkbox */}
-            <div style={{
-              padding: "0 24px 16px",
-            }}>
-              <label style={{
-                display: "flex", alignItems: "center", gap: "8px",
-                cursor: "pointer", fontSize: "12px",
-                color: "var(--text-secondary, #8b949e)",
-                padding: "8px 12px", borderRadius: "6px",
-                background: "var(--bg-secondary, #161b22)",
-                border: "1px solid var(--border-light, #21262d)",
-              }}>
-                <input type="checkbox" id="skipConfirmCheck" style={{ accentColor: "var(--accent, #58a6ff)" }} />
-                <span>以后删除不再提示，直接删除</span>
-              </label>
-            </div>
-
-            {/* Action buttons */}
-            <div style={{
-              display: "flex", borderTop: "1px solid var(--border, #30363d)",
-            }}>
-              <button style={{
-                flex: 1, padding: "14px", border: "none",
-                background: "transparent", color: "var(--text-secondary, #8b949e)",
-                cursor: "pointer", fontSize: "14px", fontWeight: 500,
-                transition: "background 0.15s, color 0.15s",
-              }} onClick={cancelDelete}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover, rgba(110,118,129,0.1))"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
-              >
-                取消
-              </button>
-              <div style={{ width: "1px", background: "var(--border, #30363d)" }} />
-              <button style={{
-                flex: 1, padding: "14px", border: "none",
-                background: "transparent", color: "#f85149",
-                cursor: "pointer", fontSize: "14px", fontWeight: 600,
-                transition: "background 0.15s",
-              }} onClick={() => {
-                const checkbox = document.getElementById("skipConfirmCheck") as HTMLInputElement;
-                confirmDelete(checkbox?.checked ?? false);
-              }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(248,81,73,0.1)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              >
-                确认删除
               </button>
             </div>
           </div>
