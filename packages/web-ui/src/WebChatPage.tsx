@@ -275,17 +275,62 @@ const toolCallStyle: CSSProperties = {
 };
 
 const inputContainerStyle: CSSProperties = {
-  padding: "12px 16px",
+  padding: "8px 16px",
   borderTop: "1px solid var(--border, #30363d)",
+  background: "var(--bg-secondary, #161b22)",
+};
+
+const contextBarStyle: CSSProperties = {
   display: "flex",
-  gap: "8px",
-  alignItems: "flex-end",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "12px",
+  padding: "6px 0",
+  fontSize: "12px",
+  color: "var(--text-secondary, #8b949e)",
+};
+
+const contextProgressStyle: CSSProperties = {
+  width: "120px",
+  height: "6px",
+  borderRadius: "3px",
+  background: "var(--bg-tertiary, #21262d)",
+  overflow: "hidden",
+};
+
+const contextProgressFillStyle: (percent: number) => CSSProperties = (percent) => ({
+  height: "100%",
+  borderRadius: "3px",
+  background: percent > 80 ? "#f87171" : percent > 60 ? "#fbbf24" : "var(--accent, #58a6ff)",
+  transition: "width 0.3s ease",
+  width: `${Math.min(percent, 100)}%`,
+});
+
+const inputToolbarStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "4px",
+};
+
+const inputBtnStyle: CSSProperties = {
+  width: "32px",
+  height: "32px",
+  borderRadius: "8px",
+  border: "none",
+  background: "transparent",
+  color: "var(--text-secondary, #8b949e)",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: "14px",
+  transition: "all 0.15s",
 };
 
 const textAreaStyle: CSSProperties = {
   flex: 1,
   padding: "10px 14px",
-  borderRadius: "20px",
+  borderRadius: "12px",
   border: "1px solid var(--border, #30363d)",
   background: "var(--bg-tertiary, #21262d)",
   color: "var(--text-primary, #c9d1d9)",
@@ -885,8 +930,46 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Context Usage Bar */}
+        <div style={contextBarStyle}>
+          <div style={contextProgressStyle}>
+            <div style={contextProgressFillStyle(45)} />
+          </div>
+          <span>45% context used</span>
+          <span style={{ color: "var(--text-muted, #6e7681)" }}>89.1k / 200k</span>
+        </div>
+
         {/* Input */}
-        <div style={inputContainerStyle}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
+          {/* Left toolbar */}
+          <div style={inputToolbarStyle}>
+            <button
+              style={inputBtnStyle}
+              title="附加文件"
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+            >
+              📎
+            </button>
+            <button
+              style={inputBtnStyle}
+              title="开始 Talk"
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+            >
+              🎤
+            </button>
+            <button
+              style={inputBtnStyle}
+              title="设置"
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+            >
+              ⚙
+            </button>
+          </div>
+
+          {/* Text input */}
           <textarea
             ref={inputRef}
             style={textAreaStyle}
@@ -895,7 +978,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             onKeyDown={handleKeyDown}
             onCompositionStart={() => { isComposingRef.current = true; }}
             onCompositionEnd={() => { isComposingRef.current = false; }}
-            placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+            placeholder={`给 ${getNickname("assistant")} 发消息 (Enter 发送)`}
             rows={1}
             disabled={isStreaming}
             autoComplete="off"
@@ -903,9 +986,43 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             autoCapitalize="off"
             spellCheck={false}
           />
-          <button style={sendBtnStyle} onClick={handleSend} disabled={isStreaming}>
-            {isStreaming ? "⏳" : "➤"}
-          </button>
+
+          {/* Right toolbar */}
+          <div style={{ ...inputToolbarStyle, gap: "8px" }}>
+            <button
+              style={{ ...inputBtnStyle, width: "auto", padding: "0 12px", fontSize: "12px", fontWeight: 500 }}
+              title="新会话"
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              onClick={() => {
+                setMessages([{
+                  id: `welcome-${Date.now()}`,
+                  role: "assistant",
+                  content: "你好！我是 EvoClaw 小助手。有什么我可以帮助你的吗？",
+                  timestamp: new Date().toISOString(),
+                }]);
+                setInput("");
+              }}
+            >
+              + 新会话
+            </button>
+            <button
+              style={inputBtnStyle}
+              title="导出"
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+            >
+              📥
+            </button>
+            <button
+              style={{ ...sendBtnStyle, width: "40px", height: "40px" }}
+              onClick={handleSend}
+              disabled={isStreaming}
+              title="发送"
+            >
+              {isStreaming ? "⏳" : "➤"}
+            </button>
+          </div>
         </div>
       </div>
 
