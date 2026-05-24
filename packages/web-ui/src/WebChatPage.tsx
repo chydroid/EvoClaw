@@ -580,7 +580,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = useCallback(async () => {
+  const handleSend = async () => {
     const text = input.trim();
     // Allow sending with text, files, or both
     const readyFiles = attachedFiles.filter(f => f.status === "done");
@@ -691,7 +691,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     clearInterval(progressInterval);
     setIsStreaming(false);
     setCurrentProgress(100);
-  }, [input, isStreaming, initialSessionId, attachedFiles]);
+  };
 
   // ── Permission handling ──
   const autoApprovePermissions = async (reqs: PermissionRequest[]) => {
@@ -1332,7 +1332,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               onCompositionEnd={() => { isComposingRef.current = false; }}
               placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
               rows={1}
-              disabled={isStreaming}
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"

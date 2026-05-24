@@ -11,7 +11,8 @@
 
 - **文件**: `packages/web-ui/src/WebChatPage.tsx`
 - **改动**:
-  - `handleSend` 的 `useCallback` 依赖数组添加 `attachedFiles`，修复 stale closure 导致的消息发送失败
+  - `handleSend` 移除 `useCallback` 包裹，改为普通 async 函数，彻底消除 stale closure 问题
+  - 移除 textarea 的 `disabled={isStreaming}` 属性，避免阻塞键盘事件
   - 移除未使用的 `fileSummary` 变量和 `clearReadyFiles` 函数
 
 ---
