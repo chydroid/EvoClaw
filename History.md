@@ -5,6 +5,24 @@
 
 ---
 
+## v0.5.2 (2026-05-24)
+
+### 文件上传端到端打通：API 携带附件数据 + LLM 感知文件
+
+- **文件**: `packages/web-ui/src/WebChatPage.tsx`、`packages/gateway/src/protocol-adapter.ts`、`packages/agent/src/agent-model-executor.ts`
+- **改动**:
+  - `AttachedFileInfo` 新增 `data?: string` 字段，存储 base64 数据（图片）或文本内容
+  - `handleFileAttach` 使用 FileReader 预读文件内容：图片 `readAsDataURL`，文本/JSON `readAsText`
+  - `handleSend` 构建 `attachmentPayload` 并在 API POST body 中携带 `attachments` 数组
+  - `protocol-adapter.ts`：提取 `req.body.attachments` 并传入 `agentModelExecutor.chat` 的 context
+  - `agent-model-executor.ts`：注入附件内容到 `effectiveMessage`：
+    - 图片：元数据（名称/类型/大小）+ 说明当前使用文本模型
+    - 文本文件：内联内容（最多 8000 字符）
+    - 其他二进制文件：仅元数据标注
+    - 纯文件发送（无文字）：显示"用户未附带文字说明"
+
+---
+
 ## v0.5.1 (2026-05-24)
 
 ### Bugfix: 消息发送功能修复

@@ -1101,6 +1101,53 @@ export class AgentModelExecutor {
       if (mergedBA.message) effectiveMessage = mergedBA.message;
     }
 
+    // ── Inject attachment content into the message ──
+    const attachments = context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined;
+    if (attachments && attachments.length > 0) {
+      const parts: string[] = [];
+      parts.push("\n\n---\n📎 **用户上传了以下文件：**\n");
+      for (const att of attachments) {
+        const sizeStr = att.size > 1024 * 1024 
+          ? `${(att.size / (1024 * 1024)).toFixed(1)}MB` 
+          : att.size > 1024 
+            ? `${(att.size / 1024).toFixed(1)}KB` 
+            : `${att.size}B`;
+        parts.push(`\n### 📄 ${att.name} (${sizeStr}, ${att.type})`);
+        
+        if (att.data) {
+          if (att.type.startsWith("image/")) {
+            // Image: include metadata, note that it's available for analysis
+            const dataLen = att.data.length;
+            const isDataUrl = att.data.startsWith("data:");
+            parts.push(`  - 类型: 图片 (${att.type})`);
+            parts.push(`  - 数据大小: ${dataLen} 字符`);
+            parts.push(`  - 格式: ${isDataUrl ? "Data URL (base64)" : "原始数据"}`);
+            parts.push(`  - ⚠ 请告知用户：你收到了图片，但目前使用文本模型只能分析图片的元数据。如需解析图片内容，请用户描述图片或使用多模态模型。`);
+            // Include a small portion of the base64 as existence proof
+            if (isDataUrl && att.data.length > 100) {
+              parts.push(`  - 数据预览: ${att.data.substring(0, 80)}...`);
+            }
+          } else if (att.type.startsWith("text/") || att.type === "application/json") {
+            // Text file: include content inline (truncated to 8000 chars)
+            const maxLen = 8000;
+            const content = att.data.length > maxLen 
+              ? att.data.substring(0, maxLen) + `\n...(共 ${att.data.length} 字符，已截断)` 
+              : att.data;
+            parts.push(`\n\`\`\`\n${content}\n\`\`\``);
+          } else {
+            parts.push(`  - (二进制文件，内容不可直接读取)`);
+          }
+        } else {
+          parts.push(`  - (文件数据不可直接读取)`);
+        }
+      }
+      parts.push("\n---\n");
+      
+      // Prepend attachment context before user message so LLM knows about files
+      const userMsgLine = effectiveMessage.trim() ? `\n\n📝 **用户消息**: ${effectiveMessage}` : "\n\n📝 **用户未附带文字说明**";
+      effectiveMessage = parts.join("\n") + userMsgLine;
+    }
+
     // ── Session management ──
     let session = this.sessionManager?.loadSessionMeta(agentId, sessionId) ?? null;
     if (!session) {

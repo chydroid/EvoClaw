@@ -122,6 +122,7 @@ interface AttachedFileInfo {
   size: number;
   type: string;
   previewUrl?: string;
+  data?: string;  // base64 data URL for images, text content for text files
   status: "pending" | "uploading" | "done" | "error";
   progress: number;
   error?: string;
@@ -627,10 +628,22 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     }, 3000);
 
     try {
+      // Build attachment payload for backend
+      const attachmentPayload = readyFiles.length > 0 ? readyFiles.map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        data: f.data || null,
+      })) : undefined;
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, sessionId: initialSessionId }),
+        body: JSON.stringify({ 
+          message: text, 
+          sessionId: initialSessionId,
+          attachments: attachmentPayload,
+        }),
       });
 
       if (res.ok) {
@@ -1007,7 +1020,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       }
 
       if (errors.length > 0) {
-        // Show errors — create a system message for now
         setMessages(prev => [...prev, {
           id: `file-err-${Date.now()}`,
           role: "system",
@@ -1023,6 +1035,30 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         });
         // Start upload simulation for each new file
         newFiles.forEach(f => simulateUpload(f));
+        // Pre-read file content for sending to backend
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const info = newFiles.find(f => f.name === file.name && f.size === file.size);
+          if (!info || info.cancelToken?.cancelled) continue;
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            setAttachedFiles(prev =>
+              prev.map(f => f.id === info.id ? { ...f, data: result } : f)
+            );
+          };
+          reader.onerror = () => {
+            console.warn(`[FileRead] Failed to read file: ${file.name}`);
+          };
+
+          if (file.type.startsWith("image/")) {
+            reader.readAsDataURL(file);
+          } else if (file.type.startsWith("text/") || file.type === "application/json") {
+            reader.readAsText(file);
+          }
+          // Other binary files (PDF, docx, zip): data not pre-read
+        }
       }
     };
     inputEl.click();

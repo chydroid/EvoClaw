@@ -627,8 +627,9 @@ export class ProtocolAdapter {
     app.post("/api/chat", async (req: Request, res: Response) => {
       try {
         const message = (req.body.message as string) || "";
-        if (!message.trim()) {
-          res.status(400).json({ error: "Message is required" });
+        const attachments = req.body.attachments as Array<{ name: string; type: string; size: number; data: string | null }> | undefined;
+        if (!message.trim() && (!attachments || attachments.length === 0)) {
+          res.status(400).json({ error: "Message or attachment is required" });
           return;
         }
 
@@ -645,6 +646,7 @@ export class ProtocolAdapter {
         const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
         const result = await agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
+          attachments,
         });
 
         res.json({
