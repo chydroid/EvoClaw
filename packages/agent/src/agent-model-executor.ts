@@ -1179,6 +1179,12 @@ export class AgentModelExecutor {
       return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
     }
 
+    // ── System config query: handle "查配置", "check config", "system info" etc. ──
+    const configQueryResult = this.handleSystemConfigQuery(message, skillManager, startTime);
+    if (configQueryResult) {
+      return configQueryResult;
+    }
+
     // ── Email account detection: detect email credentials in user input ──
     const emailAccountResult = await this.detectAndConfigureEmailAccount(message);
     if (emailAccountResult) {
@@ -1578,6 +1584,118 @@ export class AgentModelExecutor {
       duration: Date.now() - startTime,
       permissionRequests: [...pendingPermissions],
       toolsExecuted: true,
+    };
+  }
+
+  // ── System Config Query: direct response without LLM ──
+  private handleSystemConfigQuery(
+    message: string,
+    skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>; listSkills(): unknown[]; executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>; } | undefined,
+    startTime: number,
+  ): { reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null {
+    // Match: "查配置", "系统配置", "当前配置", "check config", "system info", "查看配置", "model info" etc.
+    const configKeywords = [
+      /(?:查|看|查看|显示|展示|告诉我|当前|现在|系统)\s*(?:的\s*)?(?:配置|设置|系统|模型|provider|模型列表|提供商|技能列表)/i,
+      /(?:config|configuration|system\s*info|model\s*info|check\s*config)/i,
+      /(?:什么|哪些)\s*(?:模型|技能|provider|提供商|配置)/i,
+      /(?:how\s*(?:many|to)\s*|what\s*)(?:model|skill|provider|config)/i,
+      /(?:列出|list)\s*(?:模型|技能|配置|系统)/i,
+    ];
+
+    const matches = configKeywords.some(re => re.test(message));
+    if (!matches) return null;
+
+    console.log(`[AgentModelExecutor] System config query detected: "${message}" — responding directly`);
+
+    const enabledProviders = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
+    const totalProviders = this.providers.length;
+    const allSkills = skillManager ? (skillManager.listSkills() as Array<{ name: string; description?: string }>) : [];
+    const toolCount = this.registeredTools.size;
+
+    const lines: string[] = [];
+    const ts = new Date().toLocaleString("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+    const separator = "─".repeat(36);
+
+    lines.push(`📅 ${ts}\n`);
+    lines.push(`## 🦞 EvoClaw 系统配置\n`);
+    lines.push(`### 🤖 推理模型`);
+    if (enabledProviders.length > 0) {
+      for (let i = 0; i < enabledProviders.length; i++) {
+        const p = enabledProviders[i];
+        const tag = i === 0 ? " (主)" : "";
+        lines.push(`  ${i + 1}. **${p.name}**${tag}`);
+        lines.push(`     - 模型: \`${p.model}\``);
+        lines.push(`     - 类型: \`${p.provider}\``);
+        lines.push(`     - 超时: ${p.timeout / 1000}s | 最大 Token: ${p.maxTokens}`);
+        if (p.baseURL) {
+          lines.push(`     - 端点: \`${p.baseURL.replace(/\/+$/, "")}\``);
+        }
+      }
+    } else {
+      lines.push(`  - ⚠ 无已启用模型`);
+    }
+    if (totalProviders > enabledProviders.length) {
+      lines.push(`  - 已禁用: ${totalProviders - enabledProviders.length} 个`);
+    }
+
+    lines.push(`\n### 🛠 可用工具 (${toolCount})`);
+    if (toolCount > 0) {
+      const toolNames = Array.from(this.registeredTools.keys()).slice(0, 12);
+      lines.push(`  ${toolNames.map(t => `\`${t}\``).join(", ")}`);
+      if (toolCount > 12) lines.push(`  ...及其他 ${toolCount - 12} 个工具`);
+    } else {
+      lines.push(`  - 无已注册工具`);
+    }
+
+    lines.push(`\n### 📦 技能 (Skills)`);
+    if (allSkills.length > 0) {
+      const statusMap = new Map<string, "installed" | "available">();
+      for (const s of allSkills) {
+        const name = s.name || (s as Record<string, unknown>).id as string || "unknown";
+        statusMap.set(name, 
+          (s as Record<string, unknown>).installed === false || (s as Record<string, unknown>).installed === "false" 
+            ? "available" : "installed"
+        );
+      }
+      const installed = Array.from(statusMap.entries()).filter(([, v]) => v === "installed");
+      const available = Array.from(statusMap.entries()).filter(([, v]) => v === "available");
+      
+      if (installed.length > 0) {
+        lines.push(`  **已安装** (${installed.length}): ${installed.map(([n]) => `\`${n}\``).join(", ")}`);
+      }
+      if (available.length > 0) {
+        lines.push(`  **可安装** (${available.length}): ${available.map(([n]) => `\`${n}\``).join(", ")}`);
+      }
+    } else {
+      lines.push(`  - 无已扫描技能，可执行"搜索技能"来发现可用技能`);
+    }
+
+    lines.push(`\n### 💾 系统信息`);
+    lines.push(`  - Agent: ${this.persona.name} (${this.persona.title})`);
+    lines.push(`  - 会话历史上限: ${this.maxHistoryLength} 轮`);
+    lines.push(`  - 自动压缩: ${this.autoCompactionEnabled ? "已启用" : "未启用"}`);
+    lines.push(`  - 压缩阈值: ${this.compactionTokenThreshold} tokens`);
+    
+    // Memory stats
+    if (this.memoryHub) {
+      try {
+        const mem = this.memoryHub.getLongTerm();
+        lines.push(`  - 长期记忆: 已集成`);
+      } catch { /* ignore */ }
+    }
+
+    lines.push(`\n${separator}`);
+    lines.push(`> 查询时间: ${ts} | 响应耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+
+    return {
+      reply: lines.join("\n"),
+      tokensUsed: 0,
+      duration: Date.now() - startTime,
+      permissionRequests: [],
+      toolsExecuted: false,
     };
   }
 
