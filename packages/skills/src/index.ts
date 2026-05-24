@@ -13,3 +13,5 @@ export type { HealthMonitorConfig, HealthHistory, SkillHealthReport } from "./sk
 export type { SkillMatch, AutoInstallResult, BatchInstallProgress, ProgressCallback } from "./auto-skill-manager";
 export type { DispatchContext, DispatchResult, DispatchOptions } from "./skill-dispatcher";
 export type { TfidfMatchResult } from "./tfidf-matcher";
+export { SkillMarketplace } from "./marketplace";
+export type { SkillPackage, SkillReview, SearchQuery, SearchResult, InstallResult, MarketplaceConfig } from "./marketplace";

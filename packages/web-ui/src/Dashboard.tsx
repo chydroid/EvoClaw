@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { PageHeader, Card, Badge, StatsGrid, DataTable, Section, Loading, ErrorBanner } from "./shared";
 
 interface SystemHealth {
   status: string;
@@ -165,23 +166,11 @@ export default function Dashboard() {
   }, [fetchData]);
 
   if (loading && !data) {
-    return (
-      <div style={s.container}>
-        <div style={{ textAlign: "center", padding: "60px", color: "var(--text-muted)" }}>
-          Loading dashboard...
-        </div>
-      </div>
-    );
+    return <div style={s.container}><Loading text="Loading dashboard..." /></div>;
   }
 
   if (error && !data) {
-    return (
-      <div style={s.container}>
-        <div style={{ textAlign: "center", padding: "60px", color: "#ef4444" }}>
-          {error}
-        </div>
-      </div>
-    );
+    return <div style={s.container}><ErrorBanner message={error} onRetry={fetchData} /></div>;
   }
 
   if (!data) return null;
@@ -208,105 +197,40 @@ export default function Dashboard() {
 
   return (
     <div style={s.container}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-        <h2 style={{ fontSize: "18px", color: "var(--text-primary)", margin: 0 }}>System Dashboard</h2>
-        <button style={s.refreshBtn} onClick={fetchData}>Refresh</button>
-      </div>
+      <PageHeader title="System Dashboard" />
+
+      <StatsGrid items={[
+        { label: "Sessions", value: data.sessions.length, color: "#a78bfa" },
+        { label: "Tokens", value: totalTokens(data.sessions), color: "#60a5fa" },
+        { label: "Compactions", value: compactCount(data.sessions), color: "#fbbf24" },
+        { label: "Messages", value: data.sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0), color: "#34d399" },
+      ]} />
 
       <div style={s.grid}>
-        {/* System Health Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>
-            <span style={s.badge(healthColor)}></span>
-            System Health
-          </div>
-          <div style={s.row}>
-            <span style={s.label}>Status</span>
-            <span style={s.valueBadge(healthColor)}>{data.health.status.toUpperCase()}</span>
-          </div>
-          <div style={s.row}>
-            <span style={s.label}>Version</span>
-            <span style={s.value}>{data.health.version}</span>
-          </div>
-          <div style={s.row}>
-            <span style={s.label}>Uptime</span>
-            <span style={s.value}>{formatUptime(data.health.uptime)}</span>
-          </div>
-          <div style={s.row}>
-            <span style={s.label}>Platform</span>
-            <span style={s.value}>{data.health.platform}</span>
-          </div>
-          <div style={s.row}>
-            <span style={s.label}>Node.js</span>
-            <span style={s.value}>{data.health.nodeVersion}</span>
-          </div>
-        </div>
+        {/* System Health */}
+        <Card title={<><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: healthColor, marginRight: 8 }} />System Health</>}>
+          <div style={s.row}><span style={s.label}>Status</span><Badge variant={data.health.status === "ok" ? "success" : data.health.status === "degraded" ? "warning" : "error"}>{data.health.status.toUpperCase()}</Badge></div>
+          <div style={s.row}><span style={s.label}>Version</span><span style={s.value}>{data.health.version}</span></div>
+          <div style={s.row}><span style={s.label}>Uptime</span><span style={s.value}>{formatUptime(data.health.uptime)}</span></div>
+          <div style={s.row}><span style={s.label}>Platform</span><span style={s.value}>{data.health.platform}</span></div>
+          <div style={s.row}><span style={s.label}>Node.js</span><span style={s.value}>{data.health.nodeVersion}</span></div>
+        </Card>
 
-        {/* Sessions Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>📋 Sessions</div>
-          <div style={s.statsGrid}>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#a78bfa" }}>{data.sessions.length}</div>
-              <div style={s.statLabel}>Active</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#60a5fa" }}>{totalTokens(data.sessions)}</div>
-              <div style={s.statLabel}>Tokens</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#fbbf24" }}>{compactCount(data.sessions)}</div>
-              <div style={s.statLabel}>Compactions</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#34d399" }}>{data.sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0)}</div>
-              <div style={s.statLabel}>Messages</div>
-            </div>
-          </div>
-          {data.sessions.length > 0 ? (
-            <table style={s.table}>
-              <thead>
-                <tr>
-                  <th style={s.th}>Session</th>
-                  <th style={s.th}>Msgs</th>
-                  <th style={s.th}>Tokens</th>
-                  <th style={s.th}>Compact</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.sessions.slice(0, 4).map((ses) => (
-                  <tr key={ses.id}>
-                    <td style={{ ...s.td, fontSize: "11px", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ses.id}</td>
-                    <td style={s.td}>{ses.messageCount}</td>
-                    <td style={s.td}>{ses.tokensUsed}</td>
-                    <td style={s.td}>{ses.compactionCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>
-              No active sessions
-            </div>
-          )}
-        </div>
-
-        {/* Provider Status Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>🔄 LLM Providers</div>
+        {/* Provider Status */}
+        <Card title="LLM Providers">
           {data.providers.length > 0 ? (
             data.providers.map((p, i) => (
               <div key={i} style={{ marginBottom: "10px" }}>
                 <div style={s.row}>
                   <span style={s.label}>
-                    <span style={s.badge(p.status === "active" ? "#22c55e" : p.status === "error" ? "#ef4444" : "#6b7280")}></span>
+                    <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: p.status === "active" ? "#22c55e" : p.status === "error" ? "#ef4444" : "#6b7280", marginRight: 6 }} />
                     {p.name}
                   </span>
                   <span style={{ ...s.value, fontSize: "11px" }}>{p.provider} / {p.model}</span>
                 </div>
                 <div style={{ display: "flex", gap: "12px", marginTop: "3px", fontSize: "11px" }}>
-                  <span style={{ color: "#22c55e" }}>✓ {p.successCount}</span>
-                  <span style={{ color: p.failureCount > 0 ? "#ef4444" : "var(--text-muted)" }}>✗ {p.failureCount}</span>
+                  <span style={{ color: "#22c55e" }}>OK {p.successCount}</span>
+                  <span style={{ color: p.failureCount > 0 ? "#ef4444" : "var(--text-muted)" }}>Fail {p.failureCount}</span>
                 </div>
                 {p.lastError && (
                   <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "3px", wordBreak: "break-all" }}>
@@ -316,33 +240,20 @@ export default function Dashboard() {
               </div>
             ))
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>No provider data available</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>No provider data</div>
           )}
-        </div>
+        </Card>
 
-        {/* Skills Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>🧩 Skills Overview</div>
-          <div style={s.statsGrid}>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#a78bfa" }}>{data.skills.total}</div>
-              <div style={s.statLabel}>Total</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#22c55e" }}>{data.skills.active}</div>
-              <div style={s.statLabel}>Active</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: "#60a5fa" }}>{data.skills.installed}</div>
-              <div style={s.statLabel}>Installed</div>
-            </div>
-            <div style={s.statBox}>
-              <div style={{ ...s.statNum, color: data.skills.failed > 0 ? "#ef4444" : "var(--text-muted)" }}>{data.skills.failed}</div>
-              <div style={s.statLabel}>Failed</div>
-            </div>
-          </div>
+        {/* Skills Overview */}
+        <Card title="Skills Overview">
+          <StatsGrid items={[
+            { label: "Total", value: data.skills.total, color: "#a78bfa" },
+            { label: "Active", value: data.skills.active, color: "#22c55e" },
+            { label: "Installed", value: data.skills.installed, color: "#60a5fa" },
+            { label: "Failed", value: data.skills.failed, color: data.skills.failed > 0 ? "#ef4444" : "var(--text-muted)" },
+          ]} />
           {Object.keys(data.skills.categories).length > 0 ? (
-            <div>
+            <div style={{ marginTop: 12 }}>
               {Object.entries(data.skills.categories).slice(0, 5).map(([cat, count], i) => {
                 const pct = Math.round((count / data.skills.total) * 100);
                 return (
@@ -352,52 +263,54 @@ export default function Dashboard() {
                       <span style={{ fontSize: "12px", color: "var(--text-primary)" }}>{count} ({pct}%)</span>
                     </div>
                     <div style={s.categoryBar}>
-                      <div style={s.categorySegment(`${pct}%`, CATEGORY_COLORS[i % CATEGORY_COLORS.length])}></div>
-                      <div style={{ flex: 1, height: "6px", borderRadius: "3px", background: "var(--bg-input)" }}></div>
+                      <div style={s.categorySegment(`${pct}%`, CATEGORY_COLORS[i % CATEGORY_COLORS.length])} />
+                      <div style={{ flex: 1, height: "6px", borderRadius: "3px", background: "var(--bg-input)" }} />
                     </div>
                   </div>
                 );
               })}
             </div>
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>
-              No skills installed
-            </div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>No skills installed</div>
           )}
-        </div>
+        </Card>
 
-        {/* Bootstrap Files Card */}
-        <div style={{ ...s.card, ...s.fullWidth }}>
-          <div style={s.cardTitle}>📄 Bootstrap Files</div>
-          {data.bootstrapFiles.length > 0 ? (
-            <table style={{ ...s.table, width: "100%" }}>
-              <thead>
-                <tr>
-                  <th style={s.th}>File</th>
-                  <th style={s.th}>Status</th>
-                  <th style={s.th}>Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.bootstrapFiles.map((f) => (
-                  <tr key={f.path}>
-                    <td style={{ ...s.td, fontFamily: "monospace", fontSize: "12px" }}>{f.path}</td>
-                    <td style={s.td}>
-                      <span style={s.valueBadge(f.exists ? "#22c55e" : "#6b7280")}>
-                        {f.exists ? "Loaded" : "Missing"}
-                      </span>
-                    </td>
-                    <td style={s.td}>{f.exists ? `${(f.size / 1024).toFixed(1)} KB` : "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {/* Sessions */}
+        <Card title={`Sessions (${data.sessions.length})`}>
+          {data.sessions.length > 0 ? (
+            <DataTable
+              columns={[
+                { key: "id", label: "Session", render: (s: SessionInfo) => <span style={{ fontSize: "11px", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{s.id}</span> },
+                { key: "messageCount", label: "Msgs" },
+                { key: "tokensUsed", label: "Tokens" },
+                { key: "compactionCount", label: "Compact" },
+              ]}
+              data={data.sessions.slice(0, 4)}
+              keyFn={(s) => s.id}
+              emptyText="No active sessions"
+            />
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>
-              No bootstrap files detected
-            </div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>No active sessions</div>
           )}
-        </div>
+        </Card>
+
+        {/* Bootstrap Files */}
+        <Card title="Bootstrap Files" style={{ gridColumn: "1 / -1" }}>
+          {data.bootstrapFiles.length > 0 ? (
+            <DataTable
+              columns={[
+                { key: "path", label: "File", render: (f: BootstrapFile) => <span style={{ fontFamily: "monospace", fontSize: "12px" }}>{f.path}</span> },
+                { key: "exists", label: "Status", render: (f: BootstrapFile) => <Badge variant={f.exists ? "success" : "default"}>{f.exists ? "Loaded" : "Missing"}</Badge> },
+                { key: "size", label: "Size", render: (f: BootstrapFile) => f.exists ? `${(f.size / 1024).toFixed(1)} KB` : "-" },
+              ]}
+              data={data.bootstrapFiles}
+              keyFn={(f) => f.path}
+              emptyText="No bootstrap files detected"
+            />
+          ) : (
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>No bootstrap files detected</div>
+          )}
+        </Card>
       </div>
     </div>
   );

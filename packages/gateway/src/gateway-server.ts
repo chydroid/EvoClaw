@@ -107,6 +107,16 @@ export class GatewayServer {
     this.app.use(cors({ origin: this.config.corsOrigins, credentials: true }));
     this.app.use(express.json({ limit: "10mb" }));
     this.app.use(express.urlencoded({ extended: true }));
+
+    // Handle JSON parse errors gracefully
+    this.app.use((err: any, _req: Request, res: Response, next: NextFunction): void => {
+      if (err.type === "entity.parse.failed" || err instanceof SyntaxError) {
+        res.status(400).json({ error: "Invalid JSON in request body" });
+        return;
+      }
+      next(err);
+    });
+
     this.app.use(this.requestLogger.bind(this));
     this.app.use(this.rateLimiter.bind(this));
     this.app.use(this.authProvider.authenticate.bind(this.authProvider));

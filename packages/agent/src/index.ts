@@ -37,3 +37,34 @@ export { queryModels, getModel, getModelsByProvider, findBestModelForContext, fo
 export type { ModelEntry, ModelProvider, ModelCapability, ModelQuery } from "./model-catalog";
 export { EventLedger } from "./event-ledger";
 export type { LedgerEventType, LedgerEntry, LedgerQuery, EventLedgerConfig } from "./event-ledger";
+export { ModelFailoverManager } from "./model-failover";
+export type { FailoverConfig, ProviderHealth, FailoverProvider } from "./model-failover";
+export { DefaultProviderRegistry } from "./provider-registry";
+export type { RegistryEntry, ResolvedProvider, RegistryConfig } from "./provider-registry";
+export { OpenAIProvider, AnthropicProvider, GoogleProvider } from "./providers/index.js";
+export { ProgressDraftsManager } from "./progress-drafts";
+export type { ProgressDraft, ProgressEvent, ProgressDraftsConfig, ProgressListener, DraftStatus } from "./progress-drafts";
+export { FormalVerifier, ATLAS_TACTICS } from "./formal-verification";
+export type { AtlasTacticId, AtlasTechnique, DetectionPattern, ThreatMatch, VerificationResult, RuntimeCheckContext, VerificationConfig } from "./formal-verification";
+export { TUIManager } from "./tui-interface";
+export type { TUIState, TUIMessage, TUIStatus, TUINotification, TUICommand, TUIConfig, TUIPanel } from "./tui-interface";
+export { TaskScheduler } from "./task-scheduler";
+export type { ScheduledTask, ScheduleResult, SchedulerConfig, TaskPriority, TaskCategory } from "./task-scheduler";
+export { SelfHealingEngine } from "./self-healing";
+export type { ResilienceConfig, HealthScore, ErrorPattern, MutationStrategy, AnomalyRecord, RecoveryStrategy } from "./self-healing";
+export { SwarmOrchestrator } from "./swarm-orchestrator";
+export type { SwarmAgent, SwarmConfig, AgentRole, DelegationRequest, DelegationResult, ConsensusProposal, ConsensusVote, ConsensusResult } from "./swarm-orchestrator";
+export { ReplyDeduplicator, areMessagesDuplicate } from "./reply-dedup";
+export type { DedupConfig, DedupEntry, DedupCheckResult } from "./reply-dedup";
+
+export { ThreadBindingsManager } from "./thread-bindings";
+export type { ThreadBinding, ThreadBindingsConfig, BindingEvent } from "./thread-bindings";
+
+export { SessionRetentionManager } from "./session-retention";
+export type { SessionEntry, RetentionPolicy, RetentionConfig, RetentionResult } from "./session-retention";
+
+export { ContextFocusManager } from "./context-focus";
+export type { FocusTarget, FocusContext, ContextFocusConfig } from "./context-focus";
+
+export { ModelSwitcher } from "./model-switcher";
+export type { ModelAlias, ModelPreset, ActiveModel, ModelSwitchEvent, ModelSwitcherConfig } from "./model-switcher";

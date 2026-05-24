@@ -20,3 +20,10 @@ export type { PermissionRequest, PermissionRule, WhitelistEntry } from "./permis
 export type { ErrorRecord, RetryConfig, RecoveryAction } from "./error-recovery-manager";
 export { PermissionRelay } from "./permission-relay";
 export type { PermissionDecision, PermissionRelayConfig } from "./permission-relay";
+export { ContentGuard } from "./content-guard";
+export type { ContentCheckResult, SafetyLevel, PIIMatch, ContentGuardConfig } from "./content-guard";
+export { SSRFProtection, isPrivateIP, isMetadataEndpoint } from "./ssrf-protection";
+export type { SSRFConfig, SSRFCheckResult } from "./ssrf-protection";
+
+export { SecretManager } from "./secret-manager";
+export type { SecretEntry, SecretAccessLog, SecretRotationResult, SecretManagerConfig, SecretQuery, SecretScope, SecretProvider } from "./secret-manager";

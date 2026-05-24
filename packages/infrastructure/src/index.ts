@@ -16,3 +16,16 @@ export { Crestodian } from "./crestodian";
 export type { SystemHealth, CrestodianConfig } from "./crestodian";
 export { detectFromBytes, infoFromFilename, mimeFromExtension, parseDataURI, toDataURI, parseAudioTags, extractText } from "./media-processor";
 export type { MediaType, MediaInfo } from "./media-processor";
+export { DockerSandbox } from "./docker-sandbox";
+export type { SandboxConfig, SandboxResult } from "./docker-sandbox";
+export { DaemonManager } from "./daemon-manager";
+export type { DaemonConfig, DaemonStatus } from "./daemon-manager";
+export { UpdateManager } from "./update-manager";
+export type { UpdateConfig, ReleaseInfo, UpdateCheckResult, UpdateProgress } from "./update-manager";
+export { Observability } from "./observability";
+export type { MetricDef, MetricLabel, MetricValue, MetricType, TraceSpan, HealthReport, ObservabilityConfig } from "./observability";
+export { ApiClient, QueryBuilder, WebhookSender, GraphQLClient, PageScraper } from "./api-toolkit";
+export type { ApiClientConfig, HttpRequestOptions, HttpResponse, PaginationOptions, DbQuery, WebhookPayload, PageMetadata } from "./api-toolkit";
+
+export { ResourcePool } from "./resource-pool";
+export type { PooledResource, ResourcePoolConfig, PoolStats } from "./resource-pool";

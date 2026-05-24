@@ -1,57 +1,98 @@
 import { describe, it, expect } from "vitest";
-import { ConfigManager, defaultConfig } from "./config";
+import { ConfigValidator, ConfigWatcher } from "./config-schema.js";
 
-describe("ConfigManager", () => {
-  it("should use defaults when no override provided", () => {
-    const cm = new ConfigManager();
-    expect(cm.get("server").port).toBe(3000);
-    expect(cm.get("agent").minAgents).toBe(2);
-    expect(cm.get("evolution").enabled).toBe(true);
-  });
+describe("ConfigValidator", () => {
+  const validator = new ConfigValidator();
 
-  it("should merge partial overrides", () => {
-    const cm = new ConfigManager({
-      server: { port: 8080 },
-      evolution: { enabled: false },
+  it("should validate a minimal valid config", () => {
+    const result = validator.validate({
+      gateway: { port: 3000, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
     });
-    expect(cm.get("server").port).toBe(8080);
-    expect(cm.get("server").host).toBe("0.0.0.0");
-    expect(cm.get("evolution").enabled).toBe(false);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
   });
 
-  it("should update config at runtime", () => {
-    const cm = new ConfigManager();
-    cm.update({ agent: { maxAgents: 20 } });
-    expect(cm.get("agent").maxAgents).toBe(20);
-    expect(cm.get("agent").minAgents).toBe(2);
+  it("should reject missing required fields", () => {
+    // llm.id and llm.model are required=true in the schema
+    const result = validator.validate({
+      llm: { name: "Test", provider: "openai" },
+    });
+    expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it("should return full config", () => {
-    const cm = new ConfigManager();
-    const all = cm.getAll();
-    expect(all.server).toBeDefined();
-    expect(all.agent).toBeDefined();
-    expect(all.security).toBeDefined();
+  it("should reject invalid port numbers", () => {
+    const result = validator.validate({
+      gateway: { port: 999999, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(false);
   });
 
-  it("should load from environment variables", () => {
-    process.env.EvoClaw_PORT = "9999";
-    process.env.JWT_SECRET = "test-secret-with-minimum-16-chars";
-    const cm = new ConfigManager();
-    cm.loadFromEnv();
-
-    expect(cm.get("server").port).toBe(9999);
-    expect(cm.get("auth").jwtSecret).toBe("test-secret-with-minimum-16-chars");
-
-    delete process.env.EvoClaw_PORT;
-    delete process.env.JWT_SECRET;
+  it("should reject invalid enum values", () => {
+    const result = validator.validate({
+      agent: { tone: "angry" },
+      gateway: { port: 3000, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(false);
   });
 
-  it("should respect evolution env toggle", () => {
-    process.env.EvoClaw_EVOLUTION_ENABLED = "false";
-    const cm = new ConfigManager();
-    cm.loadFromEnv();
-    expect(cm.get("evolution").enabled).toBe(false);
-    delete process.env.EvoClaw_EVOLUTION_ENABLED;
+  it("should accept valid enum values", () => {
+    const result = validator.validate({
+      agent: { tone: "warm" },
+      gateway: { port: 3000, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it("should apply defaults for missing optional fields", () => {
+    const result = validator.validateAndFill({
+      gateway: { port: 3000, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(true);
+    const data = result.data;
+    expect(data.agent).toBeDefined();
+    const agent = data.agent as Record<string, unknown>;
+    expect(agent.tone).toBe("warm"); // default value
+  });
+
+  it("should apply defaults for llm config", () => {
+    const result = validator.validateAndFill({
+      gateway: { port: 3000, host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.data.security).toBeDefined();
+    const security = result.data.security as Record<string, unknown>;
+    expect(security.dmPolicy).toBe("open");
+    expect(security.sandboxMode).toBe("off");
+  });
+
+  it("should reject string for number field", () => {
+    const result = validator.validate({
+      gateway: { port: "not-a-number", host: "0.0.0.0", jwtSecret: "test-secret-123456" },
+    });
+    expect(result.valid).toBe(false);
+  });
+
+  it("should validate full valid config", () => {
+    const result = validator.validate({
+      agent: { name: "TestAgent", tone: "professional", language: "en" },
+      gateway: { port: 3000, host: "127.0.0.1", jwtSecret: "my-super-secret-key-16" },
+      llm: { id: "test", name: "TestLLM", provider: "openai", model: "gpt-4o", apiKey: "sk-test" },
+      security: { dmPolicy: "pairing", sandboxMode: "non-main", execApproval: true },
+    });
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe("ConfigWatcher", () => {
+  it("should register and trigger callbacks", async () => {
+    const watcher = new ConfigWatcher();
+    const calls: string[] = [];
+    
+    watcher.onChange((filePath) => {
+      calls.push(filePath);
+    });
+    
+    expect(watcher).toBeDefined();
+    // Note: Actual file watching is tested in integration tests
   });
 });

@@ -12,3 +12,6 @@ export type {
   CronJobStatus,
   CronExecutionRecord,
 } from "./cron-scheduler";
+
+export { CronRunLogger } from "./run-log";
+export type { RunLogEntry, RunLogQuery, RunLogConfig, RunLogStats } from "./run-log";

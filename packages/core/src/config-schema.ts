@@ -237,10 +237,17 @@ export class ConfigValidator {
   private applyDefaults(data: Record<string, unknown>, schema: SchemaDefinition): Record<string, unknown> {
     const result: Record<string, unknown> = { ...data };
     for (const [key, field] of Object.entries(schema)) {
-      if (result[key] === undefined && field.default !== undefined) {
-        result[key] = field.default;
-      }
-      if (field.properties && typeof result[key] === "object" && result[key] !== null) {
+      if (result[key] === undefined) {
+        if (field.properties) {
+          // Create nested object and recurse for defaults
+          const nested = this.applyDefaults({}, field.properties);
+          if (Object.keys(nested).length > 0) {
+            result[key] = nested;
+          }
+        } else if (field.default !== undefined) {
+          result[key] = field.default;
+        }
+      } else if (field.properties && typeof result[key] === "object" && result[key] !== null) {
         result[key] = this.applyDefaults(result[key] as Record<string, unknown>, field.properties);
       }
     }

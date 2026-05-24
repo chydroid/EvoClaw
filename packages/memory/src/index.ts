@@ -7,3 +7,5 @@ export { SemanticMemoryStore } from "./semantic-memory";
 export type { SemanticMemoryEntry, SemanticSearchResult, SemanticMemoryConfig } from "./semantic-memory";
 export { MemoryHost } from "./memory-host-sdk";
 export type { MemoryHostEntry, MemoryHostQuery, MemoryHostConfig } from "./memory-host-sdk";
+export { MemoryWeaver } from "./memory-weaver";
+export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";

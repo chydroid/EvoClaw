@@ -46,3 +46,30 @@ export {
   getEnvWithCompat, translateLegacyKey, resolveToolName,
   detectLegacyEnv, printMigrationHints,
 } from "./compat-layer";
+
+export { ConfigDoctor, diagnoseConfig, doctorAndFix } from "./config-doctor";
+export type { Diagnostic, DiagnosticSeverity, DoctorReport, DoctorOptions } from "./config-doctor";
+
+export { LastKnownGoodConfig } from "./config-lkg";
+export type { ConfigSnapshot, LKGConfig, DiffResult } from "./config-lkg";
+
+export { FeatureFlagStore } from "./feature-flags";
+export type { FeatureFlag, FeatureFlagsConfig, FlagEvaluation } from "./feature-flags";
+
+export { GracefulShutdownManager } from "./graceful-shutdown";
+export type { ShutdownPhase, ShutdownTask, GracefulShutdownConfig, ShutdownStatus } from "./graceful-shutdown";
+
+export { LRUCache } from "./lru-cache";
+export type { CacheEntry, LRUCacheConfig, CacheStats } from "./lru-cache";
+
+export { Semaphore, Mutex, ConcurrencyLimiter } from "./concurrency";
+export type { SemaphoreConfig, SemaphoreStats } from "./concurrency";
+
+export { ConfigRPC } from "./config-rpc";
+export type { ConfigValue, ConfigChange, ConfigValidator as ConfigRPCValidator, ConfigSchemaEntry, ConfigRPCConfig } from "./config-rpc";
+
+export { OnboardingWizard } from "./onboarding";
+export type { IdentityConfig, AuthConfig, GatewayConfig, LLMConfig, DataConfig, OnboardingConfig, OnboardingProgress, OnboardingWizardConfig, OnboardingStep, InputHandler, SelectHandler } from "./onboarding";
+
+export { ConfigMigrationManager } from "./config-migration";
+export type { MigrationStep, MigrationResult, ConfigMigrationConfig, SemVer } from "./config-migration";
