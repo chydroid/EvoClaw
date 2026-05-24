@@ -123,6 +123,13 @@ export class GatewayServer {
   }
 
   private rateLimiter(req: Request, res: Response, next: NextFunction): void {
+    // Bypass rate limiting for health checks — they must always respond
+    const healthPaths = ["/healthz", "/live", "/readyz", "/ready", "/health", "/api/health"];
+    if (healthPaths.includes(req.path)) {
+      next();
+      return;
+    }
+
     const key = req.ip || req.socket.remoteAddress || "unknown";
     const now = Date.now();
 

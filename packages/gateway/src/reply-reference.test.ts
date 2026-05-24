@@ -4,12 +4,12 @@ import type { ChannelMessage } from "./channel-manager";
 
 function makeMsg(overrides?: Partial<ChannelMessage>): ChannelMessage {
   return {
-    id: "msg-1",
+    messageId: "msg-1",
     channel: "telegram",
     from: "user-1",
     to: "bot",
-    content: "Hello",
-    timestamp: Date.now(),
+    text: "Hello",
+    timestamp: String(Date.now()),
     ...overrides,
   };
 }
@@ -74,8 +74,8 @@ describe("ReplyReferenceManager", () => {
 
   describe("recordFromMessage", () => {
     it("records reply from two messages", () => {
-      const parent = makeMsg({ id: "p1", channel: "telegram", from: "alice" });
-      const child = makeMsg({ id: "c1", channel: "telegram", from: "bob" });
+      const parent = makeMsg({ messageId: "p1", channel: "telegram", from: "alice" });
+      const child = makeMsg({ messageId: "c1", channel: "telegram", from: "bob" });
 
       const ref = rm.recordFromMessage(parent, child);
       expect(ref).not.toBeNull();
@@ -84,8 +84,8 @@ describe("ReplyReferenceManager", () => {
     });
 
     it("detects cross-channel", () => {
-      const parent = makeMsg({ id: "p1", channel: "telegram" });
-      const child = makeMsg({ id: "c1", channel: "discord" });
+      const parent = makeMsg({ messageId: "p1", channel: "telegram" });
+      const child = makeMsg({ messageId: "c1", channel: "discord" });
 
       const ref = rm.recordFromMessage(parent, child);
       expect(ref!.crossChannel).toBe(true);
@@ -236,7 +236,7 @@ describe("ReplyReferenceManager", () => {
   describe("detectMentionFromMessage", () => {
     it("detects from metadata", () => {
       const msg = makeMsg({
-        content: "hello",
+        text: "hello",
       }) as any;
       msg.metadata = { replyTo: "ref-123" };
 
@@ -247,13 +247,13 @@ describe("ReplyReferenceManager", () => {
     });
 
     it("falls back to text detection", () => {
-      const msg = makeMsg({ content: "> quoted text" });
+      const msg = makeMsg({ text: "> quoted text" });
       const m = rm.detectMentionFromMessage(msg);
       expect(m.type).toBe("quote");
     });
 
     it("returns none for plain message", () => {
-      const msg = makeMsg({ content: "hello" });
+      const msg = makeMsg({ text: "hello" });
       const m = rm.detectMentionFromMessage(msg);
       expect(m.type).toBe("none");
     });
