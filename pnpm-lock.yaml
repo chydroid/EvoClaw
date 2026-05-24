@@ -224,6 +224,9 @@ importers:
 
   packages/gateway:
     dependencies:
+      '@evoclaw/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@evoclaw/core':
         specifier: workspace:*
         version: link:../core

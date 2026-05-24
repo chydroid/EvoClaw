@@ -518,6 +518,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [currentProgress, setCurrentProgress] = useState(0);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [contextUsed, setContextUsed] = useState(0);
@@ -627,6 +628,28 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       setLoadingMessageIndex(msgIndex);
     }, 3000);
 
+    // ── Poll for real task status ──
+    const statusInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/chat/status?sessionId=${initialSessionId}`);
+        if (res.ok) {
+          const status = await res.json();
+          if (status && status.phase && status.phase !== "idle") {
+            const phaseLabels: Record<string, string> = {
+              thinking: "思考中",
+              tool_calling: "执行中",
+              generating: "生成中",
+              done: "已完成",
+              error: "出错",
+            };
+            const label = phaseLabels[status.phase] || status.phase;
+            setStatusMessage(`${label}: ${status.detail}`);
+            setCurrentProgress(Math.max(currentProgress, status.progress || 0));
+          }
+        }
+      } catch { /* ignore polling errors */ }
+    }, 1500);
+
     try {
       // Build attachment payload for backend
       const attachmentPayload = readyFiles.length > 0 ? readyFiles.map(f => ({
@@ -731,6 +754,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       );
     } finally {
       clearInterval(progressInterval);
+      clearInterval(statusInterval);
+      setStatusMessage(null);
       setIsStreaming(false);
       setCurrentProgress(100);
     }
@@ -1338,7 +1363,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       renderMessageContent(msg)
                     ) : isStreaming ? (
                       <div style={loadingIndicatorStyle}>
-                        <span>{loadingMessages[loadingMessageIndex]}</span>
+                        <span>{statusMessage || loadingMessages[loadingMessageIndex]}</span>
                         <div style={dotsStyle}>
                           <span style={{ ...dotStyle, animationDelay: "0s" }} />
                           <span style={{ ...dotStyle, animationDelay: "0.2s" }} />

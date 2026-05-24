@@ -1,5 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { taskStatusTracker } from "@evoclaw/agent";
 import { spawn } from "child_process";
 import * as path from "path";
 import * as os from "os";
@@ -684,6 +685,17 @@ export class ProtocolAdapter {
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
+    });
+
+    // ── Task status polling: real-time progress for long-running chat tasks ──
+    app.get("/api/chat/status", (req: Request, res: Response) => {
+      const sessionId = (req.query.sessionId as string) || "";
+      const status = taskStatusTracker.get(sessionId);
+      if (!status) {
+        res.json({ phase: "idle", detail: "no active task", progress: 0 });
+        return;
+      }
+      res.json(status);
     });
 
     app.get("/api/system/services", (_req: Request, res: Response) => {

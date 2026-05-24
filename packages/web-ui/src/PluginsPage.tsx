@@ -289,6 +289,27 @@ export function PluginsPage() {
     setShowInstall(false);
   };
 
+  const installAvailablePlugin = (id: string) => {
+    const plugin = MOCK_AVAILABLE.find((p) => p.id === id);
+    if (!plugin) return;
+    // Check if already installed
+    const alreadyInstalled = plugins.find((p) => p.id === id);
+    if (alreadyInstalled) return;
+    setPlugins((prev) => [
+      ...prev,
+      {
+        id: plugin.id,
+        name: plugin.name,
+        version: plugin.version,
+        description: plugin.description,
+        status: "active",
+        hookCount: 0,
+        hooks: [],
+        installedAt: new Date().toISOString().split("T")[0],
+      },
+    ]);
+  };
+
   const filteredPlugins = plugins.filter(
     (p) =>
       p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -458,7 +479,9 @@ export function PluginsPage() {
       {/* Available Plugins */}
       {activeTab === "available" && (
         <div style={cardGridStyle}>
-          {filteredAvailable.map((plugin) => (
+          {filteredAvailable.map((plugin) => {
+            const isInstalled = plugins.some((p) => p.id === plugin.id);
+            return (
             <div key={plugin.id} style={pluginCardStyle}>
               <div style={pluginHeaderStyle}>
                 <div>
@@ -478,10 +501,20 @@ export function PluginsPage() {
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
                   {plugin.downloads.toLocaleString()} downloads
                 </span>
-                <button style={actionBtnStyle("primary")}>Install</button>
+                <button
+                  style={{
+                    ...actionBtnStyle("primary"),
+                    ...(isInstalled ? { opacity: 0.5, cursor: "not-allowed" } : {}),
+                  }}
+                  onClick={() => installAvailablePlugin(plugin.id)}
+                  disabled={isInstalled}
+                >
+                  {isInstalled ? "Installed" : "Install"}
+                </button>
               </div>
             </div>
-          ))}
+          );
+          })}
           {filteredAvailable.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)" }}>
               No available plugins found matching "{search}"

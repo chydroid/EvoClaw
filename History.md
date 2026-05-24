@@ -5,6 +5,37 @@
 
 ---
 
+## v0.5.6 (2026-05-25)
+
+### 实时任务状态反馈 + 插件安装修复
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`、`packages/agent/src/index.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/gateway/package.json`、`packages/web-ui/src/WebChatPage.tsx`、`packages/web-ui/src/PluginsPage.tsx`
+- **改动**:
+
+  **TaskStatusTracker — 实时任务进度**
+  - 新增 `TaskStatusTracker` 单例，跟踪 5 种状态：`thinking`, `tool_calling`, `generating`, `done`, `error`
+  - 在 `chat()` 流程全程注入状态更新：分析请求 → 技能调度 → 调用模型 → 执行工具 → 整理回复 → 完成/错误
+  - 工具执行时显示具体工具名："正在执行: web_search..."
+  - 系统配置查询类请求直接标记 "done"，不经过 LLM
+  - 所有 provider 失败时标记 "error" 并切换本地规则响应
+
+  **API 端点**
+  - 新增 `GET /api/chat/status?sessionId=X`（protocol-adapter.ts）
+  - 网关新增 `@evoclaw/agent` workspace 依赖
+  - agent index.ts 导出 `taskStatusTracker` 和 `TaskStatus`
+
+  **前端轮询**
+  - `handleSend` 添加 1.5s 间隔轮询 `/api/chat/status`
+  - `statusMessage` 状态覆盖 loading 文案，显示真实阶段："思考中: 正在调用 model..."、"执行中: web_search..."
+  - finally 块清理 `statusInterval` + `statusMessage`
+
+  **插件安装修复**
+  - `PluginsPage.tsx`：可用插件列表的 "Install" 按钮添加 `onClick` 处理
+  - 新增 `installAvailablePlugin()` 函数
+  - 已安装插件显示 "Installed" + 禁用样式
+
+---
+
 ## v0.5.5 (2026-05-25)
 
 ### 系统配置查询直通：绕过 LLM 秒回

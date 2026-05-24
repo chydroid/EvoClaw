@@ -56,6 +56,51 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
   timeout: 60000,
 };
 
+// ── Task Status Tracker: real-time progress feedback for long-running tasks ──
+export interface TaskStatus {
+  phase: "thinking" | "tool_calling" | "generating" | "done" | "error";
+  detail: string;
+  progress: number; // 0-100
+  updatedAt: number;
+}
+
+class TaskStatusTracker {
+  private statuses = new Map<string, TaskStatus>();
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  set(sessionId: string, phase: TaskStatus["phase"], detail: string, progress: number): void {
+    this.statuses.set(sessionId, { phase, detail, progress, updatedAt: Date.now() });
+    // Auto-cleanup stale entries every 5 minutes
+    if (!this.cleanupTimer) {
+      this.cleanupTimer = setInterval(() => {
+        const now = Date.now();
+        for (const [key, val] of this.statuses) {
+          if (now - val.updatedAt > 300_000) this.statuses.delete(key);
+        }
+        if (this.statuses.size === 0 && this.cleanupTimer) {
+          clearInterval(this.cleanupTimer);
+          this.cleanupTimer = null;
+        }
+      }, 60_000);
+    }
+  }
+
+  get(sessionId: string): TaskStatus | null {
+    return this.statuses.get(sessionId) || null;
+  }
+
+  delete(sessionId: string): void {
+    this.statuses.delete(sessionId);
+  }
+
+  /** Get all active statuses (for monitoring) */
+  getAll(): Array<{ sessionId: string; status: TaskStatus }> {
+    return Array.from(this.statuses.entries()).map(([sessionId, status]) => ({ sessionId, status }));
+  }
+}
+
+export const taskStatusTracker = new TaskStatusTracker();
+
 export class AgentModelExecutor {
   private config: ModelConfig;
   private providers: ProviderConfig[] = [];
@@ -1160,6 +1205,9 @@ export class AgentModelExecutor {
       }
     }
 
+    // ── Task status: initial thinking phase ──
+    taskStatusTracker.set(sessionId, "thinking", "正在分析您的请求...", 10);
+
     // ── Skill install detection: handle skill installation requests early ──
     const skillManager = this.registry?.resolveService<{
       searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
@@ -1180,7 +1228,7 @@ export class AgentModelExecutor {
     }
 
     // ── System config query: handle "查配置", "check config", "system info" etc. ──
-    const configQueryResult = this.handleSystemConfigQuery(message, skillManager, startTime);
+    const configQueryResult = this.handleSystemConfigQuery(message, skillManager, startTime, sessionId);
     if (configQueryResult) {
       return configQueryResult;
     }
@@ -1214,6 +1262,7 @@ export class AgentModelExecutor {
         
         if (skillDispatcher) {
           console.log(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"`);
+          taskStatusTracker.set(sessionId, "thinking", "技能调度中，正在匹配最合适的技能...", 20);
           const dispatchResult = await skillDispatcher.dispatch({
             task: message,
             sessionId,
@@ -1380,8 +1429,11 @@ export class AgentModelExecutor {
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
     if (enabledProviders.length > 0) {
+      const primaryProvider = enabledProviders[0];
+      taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
       const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined);
       if (result) {
+        taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         const timestamp = new Date().toLocaleString("zh-CN", {
           year: "numeric",
           month: "2-digit",
@@ -1398,6 +1450,7 @@ export class AgentModelExecutor {
     }
 
     // LLM unavailable: try skill-based execution for actionable tasks
+    taskStatusTracker.set(sessionId, "error", "模型服务暂不可用，切换到本地规则响应", 60);
     const msg = message.toLowerCase();
     if (this.hasActionIntent(message)) {
       console.log(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"`);
@@ -1592,6 +1645,7 @@ export class AgentModelExecutor {
     message: string,
     skillManager: { searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>; listSkills(): unknown[]; executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>; } | undefined,
     startTime: number,
+    sessionId: string,
   ): { reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null {
     // Match: "查配置", "系统配置", "当前配置", "check config", "system info", "查看配置", "model info" etc.
     const configKeywords = [
@@ -1606,6 +1660,7 @@ export class AgentModelExecutor {
     if (!matches) return null;
 
     console.log(`[AgentModelExecutor] System config query detected: "${message}" — responding directly`);
+    taskStatusTracker.set(sessionId, "done", "配置查询完成", 100);
 
     const enabledProviders = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
     const totalProviders = this.providers.length;
@@ -2208,6 +2263,9 @@ export class AgentModelExecutor {
             const toolStartTime = Date.now();
             const toolName = tc.function.name;
             const toolEntry = this.registeredTools.get(toolName);
+
+            // ── Task status: executing tool ──
+            taskStatusTracker.set(sessionId, "tool_calling", `正在执行: ${toolName}...`, 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20));
 
             // ── Plugin hook: before_tool_call ──
             let args: Record<string, unknown> = {};
