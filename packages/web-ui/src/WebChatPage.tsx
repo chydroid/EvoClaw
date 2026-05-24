@@ -924,22 +924,22 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     : "none",
                   transition: "border 0.15s, box-shadow 0.15s",
                   position: "relative",
+                  ...(msg.role === "assistant" ? { paddingTop: "26px" } : {}),
                 }}
                 onMouseEnter={() => setHoveredMsgId(msg.id)}
                 onMouseLeave={() => setHoveredMsgId(null)}
               >
-                {/* Copy button - shown on hover for assistant messages */}
+                {/* Copy button — shown on hover for assistant messages, uses SVG icon */}
                 {hoveredMsgId === msg.id && msg.role === "assistant" && (
                   <button
                     style={{
                       position: "absolute",
-                      top: "8px",
+                      top: "5px",
                       right: "8px",
                       background: "transparent",
                       border: "none",
                       borderRadius: "4px",
-                      padding: "4px",
-                      fontSize: "14px",
+                      padding: "3px",
                       color: "var(--text-muted, #6e7681)",
                       cursor: "pointer",
                       zIndex: 10,
@@ -949,20 +949,23 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       transition: "all 0.15s",
                     }}
                     onClick={(e) => { e.stopPropagation(); copyAsMarkdown(msg); }}
-                    onMouseEnter={(e) => { 
-                      e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; 
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
                       e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
                       const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
                       if (span) span.style.display = "inline";
                     }}
-                    onMouseLeave={(e) => { 
-                      e.currentTarget.style.background = "transparent"; 
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
                       e.currentTarget.style.color = "var(--text-muted, #6e7681)";
                       const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
                       if (span) span.style.display = "none";
                     }}
                   >
-                    📋
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
                     <span className="copy-text" style={{ fontSize: "11px", display: "none", fontWeight: 500 }}>复制为 Markdown</span>
                   </button>
                 )}
@@ -1046,15 +1049,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Context Usage Bar */}
-        <div style={contextBarStyle}>
-          <div style={contextProgressStyle}>
-            <div style={contextProgressFillStyle(contextPercent)} />
-          </div>
-          <span>{contextPercent}% context used</span>
-          <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay}</span>
-        </div>
-
         {/* Input */}
         <div style={{ padding: "8px 16px", borderTop: "1px solid var(--border, #30363d)", background: "var(--bg-secondary, #161b22)" }}>
           {/* Text input row */}
@@ -1110,10 +1104,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             </div>
           </div>
 
-          {/* Toolbar row below textarea */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "6px" }}>
+          {/* Toolbar row below textarea — left: tools, center: context bar, right: send */}
+          <div style={{ display: "flex", alignItems: "center", marginTop: "6px" }}>
             {/* Left tools */}
-            <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "2px", flexShrink: 0 }}>
               <button
                 style={inputBtnStyle}
                 title="附加文件"
@@ -1140,8 +1134,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               </button>
             </div>
 
+            {/* Centered context usage bar */}
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", fontSize: "12px", color: "var(--text-secondary, #8b949e)" }}>
+              <div style={contextProgressStyle}>
+                <div style={contextProgressFillStyle(contextPercent)} />
+              </div>
+              <span>{contextPercent}%</span>
+              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay}</span>
+            </div>
+
             {/* Right tools */}
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
               <button
                 style={inputBtnStyle}
                 title="导出对话记录"
