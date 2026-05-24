@@ -494,6 +494,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [contextUsed, setContextUsed] = useState(0);
   const [contextLimit] = useState(200000);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [textAreaExpanded, setTextAreaExpanded] = useState(false);
+  const [isTextareaHovered, setIsTextareaHovered] = useState(false);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -1054,77 +1056,110 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         </div>
 
         {/* Input */}
-        <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
-          {/* Left toolbar */}
-          <div style={inputToolbarStyle}>
-            <button
-              style={inputBtnStyle}
-              title="附加文件"
-              onClick={handleFileAttach}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
-            >
-              📎
-            </button>
-            <button
-              style={{ ...inputBtnStyle, opacity: 0.4, cursor: "not-allowed" }}
-              title="语音输入（暂未支持）"
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
-            >
-              🎤
-            </button>
-            <button
-              style={inputBtnStyle}
-              title="打开设置"
-              onClick={() => {
-                // Dispatch custom event to open settings modal
-                window.dispatchEvent(new CustomEvent("evoclaw-open-settings"));
+        <div style={{ padding: "8px 16px", borderTop: "1px solid var(--border, #30363d)", background: "var(--bg-secondary, #161b22)" }}>
+          {/* Text input row */}
+          <div
+            style={{ position: "relative" }}
+            onMouseEnter={() => setIsTextareaHovered(true)}
+            onMouseLeave={() => setIsTextareaHovered(false)}
+          >
+            <textarea
+              ref={inputRef}
+              style={{
+                ...textAreaStyle,
+                width: "100%",
+                minHeight: textAreaExpanded ? "130px" : "60px",
+                maxHeight: textAreaExpanded ? "300px" : "120px",
+                transition: "min-height 0.2s ease",
+                paddingRight: "32px",
               }}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onCompositionStart={() => { isComposingRef.current = true; }}
+              onCompositionEnd={() => { isComposingRef.current = false; }}
+              placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
+              rows={1}
+              disabled={isStreaming}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+            {/* Expand/collapse toggle icon — visible on hover over textarea area */}
+            <div
+              style={{
+                position: "absolute",
+                top: "6px",
+                right: "6px",
+                opacity: isTextareaHovered ? 1 : 0,
+                cursor: "pointer",
+                fontSize: "12px",
+                color: "var(--text-muted, #6e7681)",
+                padding: "2px 4px",
+                borderRadius: "4px",
+                transition: "opacity 0.15s, background 0.15s",
+                zIndex: 5,
+              }}
+              onClick={() => setTextAreaExpanded(v => !v)}
+              title={textAreaExpanded ? "折叠输入框" : "展开为 5 行"}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
             >
-              ⚙
-            </button>
+              {textAreaExpanded ? "⤒" : "⤓"}
+            </div>
           </div>
 
-          {/* Text input */}
-          <textarea
-            ref={inputRef}
-            style={textAreaStyle}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onCompositionStart={() => { isComposingRef.current = true; }}
-            onCompositionEnd={() => { isComposingRef.current = false; }}
-            placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
-            rows={1}
-            disabled={isStreaming}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-          />
+          {/* Toolbar row below textarea */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "6px" }}>
+            {/* Left tools */}
+            <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+              <button
+                style={inputBtnStyle}
+                title="附加文件"
+                onClick={handleFileAttach}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              >
+                📎
+              </button>
+              <button
+                style={{ ...inputBtnStyle, opacity: 0.4, cursor: "not-allowed" }}
+                title="语音输入（暂未支持）"
+              >
+                🎤
+              </button>
+              <button
+                style={inputBtnStyle}
+                title="打开设置"
+                onClick={() => { window.dispatchEvent(new CustomEvent("evoclaw-open-settings")); }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              >
+                ⚙
+              </button>
+            </div>
 
-          {/* Right toolbar */}
-          <div style={{ ...inputToolbarStyle, gap: "8px" }}>
-            <button
-              style={inputBtnStyle}
-              title="导出对话记录"
-              onClick={exportConversation}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
-            >
-              📥
-            </button>
-            <button
-              style={{ ...sendBtnStyle, width: "40px", height: "40px" }}
-              onClick={handleSend}
-              disabled={isStreaming}
-              title="发送消息"
-            >
-              {isStreaming ? "⏳" : "➤"}
-            </button>
+            {/* Right tools */}
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <button
+                style={inputBtnStyle}
+                title="导出对话记录"
+                onClick={exportConversation}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              >
+                📥
+              </button>
+              <button
+                style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px" }}
+                onClick={handleSend}
+                disabled={isStreaming}
+                title="发送消息"
+              >
+                {isStreaming ? "⏳" : "➤"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

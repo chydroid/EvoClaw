@@ -496,8 +496,8 @@ export class SessionManager {
     // Skip if content is too long (likely a web scrape)
     if (content.length > 5000) return null;
 
-    // Remove all whitespace
-    const cleanContent = content.replace(/\s+/g, "");
+    // Normalize whitespace: collapse multiple spaces to one, trim
+    const cleanContent = content.replace(/\s+/g, " ").trim();
     
     // Check if content looks valid (at least some Chinese or English characters)
     if (!/[\u4e00-\u9fa5a-zA-Z]/.test(cleanContent) || cleanContent.length === 0) {

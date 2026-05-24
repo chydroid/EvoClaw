@@ -1,0 +1,513 @@
+{
+  "timestamp": "2026-05-24T02:44:42.009Z",
+  "version": "0.4.0",
+  "summary": {
+    "passed": 47,
+    "authRequired": 11,
+    "failed": 0,
+    "total": 58,
+    "successRate": "100.0%"
+  },
+  "results": [
+    {
+      "category": "health",
+      "name": "healthz",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "health",
+      "name": "live",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "health",
+      "name": "ready",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "health",
+      "name": "readyz",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "health",
+      "name": "detailed",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "health",
+      "name": "api_health",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "webui",
+      "name": "root_html",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "system",
+      "name": "status_overview",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "system",
+      "name": "services_list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "skills",
+      "name": "list_all",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "skills",
+      "name": "get_by_id",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "skills",
+      "name": "refresh",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_AGENTS.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_SOUL.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_TOOLS.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_IDENTITY.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_USER.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "bootstrap",
+      "name": "get_HEARTBEAT.md",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "config",
+      "name": "llm_get",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "config",
+      "name": "channels_get",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "channels",
+      "name": "status",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "channels",
+      "name": "active",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "channels",
+      "name": "approved",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "sessions",
+      "name": "create",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "sessions",
+      "name": "get_created",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "sessions",
+      "name": "list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "queue",
+      "name": "status",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "plugins",
+      "name": "list",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "evolution",
+      "name": "dashboard",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "evolution",
+      "name": "learning_stats",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "evolution",
+      "name": "learning_entries",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "evolution",
+      "name": "learning_sessions",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "evolution",
+      "name": "active_progress",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "permission",
+      "name": "requests",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "permission",
+      "name": "whitelist",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "security",
+      "name": "audit_log",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "perm_relay",
+      "name": "pending",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "perm_relay",
+      "name": "history",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "crestodian",
+      "name": "health",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "crestodian",
+      "name": "overview",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "crestodian",
+      "name": "diagnostics",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "persona",
+      "name": "greeting",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "context",
+      "name": "status",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "ws",
+      "name": "connections",
+      "status": "AUTH",
+      "detail": ""
+    },
+    {
+      "category": "events",
+      "name": "list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "events",
+      "name": "snapshot",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "chat",
+      "name": "send_message",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "cli",
+      "name": "execute_help",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "unknown_route",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "method_not_allowed",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "malformed_json",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "empty_body",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "large_payload",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "edge",
+      "name": "special_chars_url",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "category": "concurrency",
+      "name": "10_parallel_healthz",
+      "status": "PASS",
+      "detail": "11ms"
+    },
+    {
+      "category": "load",
+      "name": "20_health_under_load",
+      "status": "PASS",
+      "detail": "11ms"
+    },
+    {
+      "category": "tools",
+      "name": "chat_with_tools",
+      "status": "PASS",
+      "detail": ""
+    }
+  ],
+  "categories": {
+    "health": {
+      "pass": 6,
+      "auth": 0,
+      "fail": 0,
+      "total": 6
+    },
+    "webui": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    },
+    "system": {
+      "pass": 2,
+      "auth": 0,
+      "fail": 0,
+      "total": 2
+    },
+    "skills": {
+      "pass": 3,
+      "auth": 0,
+      "fail": 0,
+      "total": 3
+    },
+    "bootstrap": {
+      "pass": 7,
+      "auth": 0,
+      "fail": 0,
+      "total": 7
+    },
+    "config": {
+      "pass": 2,
+      "auth": 0,
+      "fail": 0,
+      "total": 2
+    },
+    "channels": {
+      "pass": 0,
+      "auth": 3,
+      "fail": 0,
+      "total": 3
+    },
+    "sessions": {
+      "pass": 3,
+      "auth": 0,
+      "fail": 0,
+      "total": 3
+    },
+    "queue": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "plugins": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "evolution": {
+      "pass": 5,
+      "auth": 0,
+      "fail": 0,
+      "total": 5
+    },
+    "permission": {
+      "pass": 0,
+      "auth": 2,
+      "fail": 0,
+      "total": 2
+    },
+    "security": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "perm_relay": {
+      "pass": 2,
+      "auth": 0,
+      "fail": 0,
+      "total": 2
+    },
+    "crestodian": {
+      "pass": 3,
+      "auth": 0,
+      "fail": 0,
+      "total": 3
+    },
+    "persona": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "context": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "ws": {
+      "pass": 0,
+      "auth": 1,
+      "fail": 0,
+      "total": 1
+    },
+    "events": {
+      "pass": 2,
+      "auth": 0,
+      "fail": 0,
+      "total": 2
+    },
+    "chat": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    },
+    "cli": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    },
+    "edge": {
+      "pass": 6,
+      "auth": 0,
+      "fail": 0,
+      "total": 6
+    },
+    "concurrency": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    },
+    "load": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    },
+    "tools": {
+      "pass": 1,
+      "auth": 0,
+      "fail": 0,
+      "total": 1
+    }
+  }
+}
