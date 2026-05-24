@@ -587,20 +587,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     const hasContent = text.length > 0 || readyFiles.length > 0;
     if (!hasContent || isStreaming || !initialSessionId) return;
 
-    // Build file summary for message content
-    let fileSummary = "";
-    if (readyFiles.length > 0) {
-      fileSummary = readyFiles.map(f => 
-        `📎 ${f.name} (${formatFileSize(f.size)})`
-      ).join("\n");
-    }
+    const attachmentsForMsg = readyFiles.length > 0 ? readyFiles.map(f => ({...f})) : undefined;
 
     const userMsg: WebChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
       content: text || (readyFiles.length > 0 ? `发送了 ${readyFiles.length} 个文件` : ""),
       timestamp: new Date().toISOString(),
-      attachments: readyFiles.length > 0 ? [...readyFiles] : undefined,
+      attachments: attachmentsForMsg,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -697,7 +691,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     clearInterval(progressInterval);
     setIsStreaming(false);
     setCurrentProgress(100);
-  }, [input, isStreaming, initialSessionId]);
+  }, [input, isStreaming, initialSessionId, attachedFiles]);
 
   // ── Permission handling ──
   const autoApprovePermissions = async (reqs: PermissionRequest[]) => {
@@ -1052,23 +1046,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       if (file?.cancelToken) file.cancelToken.cancelled = true;
       return prev.filter((_, i) => i !== index);
     });
-  }, []);
-
-  // Clear done files and return them for message attachment
-  const clearReadyFiles = useCallback((): AttachedFileInfo[] => {
-    const ready: AttachedFileInfo[] = [];
-    setAttachedFiles(prev => {
-      const remaining: AttachedFileInfo[] = [];
-      for (const f of prev) {
-        if (f.status === "done") {
-          ready.push(f);
-        } else {
-          remaining.push(f);
-        }
-      }
-      return remaining;
-    });
-    return ready;
   }, []);
 
   // Context usage percentage

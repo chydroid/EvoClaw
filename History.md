@@ -5,6 +5,17 @@
 
 ---
 
+## v0.5.1 (2026-05-24)
+
+### Bugfix: 消息发送功能修复
+
+- **文件**: `packages/web-ui/src/WebChatPage.tsx`
+- **改动**:
+  - `handleSend` 的 `useCallback` 依赖数组添加 `attachedFiles`，修复 stale closure 导致的消息发送失败
+  - 移除未使用的 `fileSummary` 变量和 `clearReadyFiles` 函数
+
+---
+
 ## v0.5.0 (2026-05-24)
 
 ### 文件上传功能完整实现
