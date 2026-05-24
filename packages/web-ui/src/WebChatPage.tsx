@@ -336,7 +336,7 @@ const textAreaStyle: CSSProperties = {
   color: "var(--text-primary, #c9d1d9)",
   fontSize: "14px",
   resize: "none",
-  minHeight: "40px",
+  minHeight: "60px",
   maxHeight: "120px",
   fontFamily: "inherit",
   outline: "none",
@@ -933,23 +933,35 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       position: "absolute",
                       top: "8px",
                       right: "8px",
-                      background: "var(--bg-tertiary, #21262d)",
-                      border: "1px solid var(--border, #30363d)",
-                      borderRadius: "6px",
-                      padding: "4px 8px",
-                      fontSize: "11px",
-                      color: "var(--text-secondary, #8b949e)",
+                      background: "transparent",
+                      border: "none",
+                      borderRadius: "4px",
+                      padding: "4px",
+                      fontSize: "14px",
+                      color: "var(--text-muted, #6e7681)",
                       cursor: "pointer",
+                      zIndex: 10,
                       display: "flex",
                       alignItems: "center",
                       gap: "4px",
-                      zIndex: 10,
+                      transition: "all 0.15s",
                     }}
                     onClick={(e) => { e.stopPropagation(); copyAsMarkdown(msg); }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--accent, #58a6ff)"; e.currentTarget.style.color = "#fff"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+                    onMouseEnter={(e) => { 
+                      e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; 
+                      e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
+                      const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
+                      if (span) span.style.display = "inline";
+                    }}
+                    onMouseLeave={(e) => { 
+                      e.currentTarget.style.background = "transparent"; 
+                      e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                      const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
+                      if (span) span.style.display = "none";
+                    }}
                   >
-                    📋 复制为 Markdown
+                    📋
+                    <span className="copy-text" style={{ fontSize: "11px", display: "none", fontWeight: 500 }}>复制为 Markdown</span>
                   </button>
                 )}
                 {/* Thinking badge */}
@@ -1096,22 +1108,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
           {/* Right toolbar */}
           <div style={{ ...inputToolbarStyle, gap: "8px" }}>
-            <button
-              style={{ ...inputBtnStyle, width: "auto", padding: "0 12px", fontSize: "12px", fontWeight: 500 }}
-              title="新建会话"
-              onClick={() => {
-                setMessages([{
-                  id: `welcome-${Date.now()}`,
-                  role: "assistant",
-                  content: "你好！我是 EvoClaw 小助手。有什么我可以帮助你的吗？",
-                  timestamp: new Date().toISOString(),
-                }]);
-                setInput("");
-                setAttachedFiles([]);
-              }}
-            >
-              + 新会话
-            </button>
             <button
               style={inputBtnStyle}
               title="导出对话记录"
