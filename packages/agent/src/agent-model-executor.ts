@@ -2,6 +2,7 @@ import { ServiceRegistry, EventBus, type DAGNode, type Skill, type SkillExecutio
 import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
 import { classifyLLMError, estimateMessagesTokens, LLMErrorType, type ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
+import type { ChatContent } from "@evoclaw/plugin-sdk";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -1116,17 +1117,9 @@ export class AgentModelExecutor {
         
         if (att.data) {
           if (att.type.startsWith("image/")) {
-            // Image: include metadata, note that it's available for analysis
-            const dataLen = att.data.length;
-            const isDataUrl = att.data.startsWith("data:");
+            // Image: attached as vision input — model can analyze it directly
             parts.push(`  - 类型: 图片 (${att.type})`);
-            parts.push(`  - 数据大小: ${dataLen} 字符`);
-            parts.push(`  - 格式: ${isDataUrl ? "Data URL (base64)" : "原始数据"}`);
-            parts.push(`  - ⚠ 请告知用户：你收到了图片，但目前使用文本模型只能分析图片的元数据。如需解析图片内容，请用户描述图片或使用多模态模型。`);
-            // Include a small portion of the base64 as existence proof
-            if (isDataUrl && att.data.length > 100) {
-              parts.push(`  - 数据预览: ${att.data.substring(0, 80)}...`);
-            }
+            parts.push(`  - 上传为 vision 输入，请直接分析图片内容`);
           } else if (att.type.startsWith("text/") || att.type === "application/json") {
             // Text file: include content inline (truncated to 8000 chars)
             const maxLen = 8000;
@@ -1264,7 +1257,7 @@ export class AgentModelExecutor {
     const tasks = this.parseMultipleTasks(effectiveMessage);
     
     if (tasks.length > 1) {
-      const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime);
+      const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined);
       multiResult.reply = AgentModelExecutor.collapseNewlines(multiResult.reply);
       return multiResult;
     }
@@ -1381,7 +1374,7 @@ export class AgentModelExecutor {
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 
     if (enabledProviders.length > 0) {
-      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
+      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined);
       if (result) {
         const timestamp = new Date().toLocaleString("zh-CN", {
           year: "numeric",
@@ -1529,7 +1522,8 @@ export class AgentModelExecutor {
     tasks: string[],
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
-    startTime: number
+    startTime: number,
+    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     const results: string[] = [];
     let totalTokens = 0;
@@ -1553,7 +1547,7 @@ export class AgentModelExecutor {
       let tokensUsed = 0;
 
       if (enabledProviders.length > 0) {
-        const result = await this.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions);
+        const result = await this.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, attachments);
         if (result) {
           taskResult = result.reply;
           tokensUsed = result.tokensUsed;
@@ -1972,7 +1966,8 @@ export class AgentModelExecutor {
     providers: ProviderConfig[],
     startTime: number,
     sessionId: string,
-    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>
+    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
+    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null> {
     const MAX_TOOL_ROUNDS = 10;
     const MAX_CONSECUTIVE_ERRORS = 3;
@@ -1996,12 +1991,29 @@ export class AgentModelExecutor {
           this.compactConversationHistory(sessionId);
         }
 
-        const messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
+        const messages: Array<{ role: string; content: string | null | ChatContent[]; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
           { role: "system", content: fullSystemPrompt },
         ];
 
         messages.push(...history);
-        messages.push({ role: "user", content: message });
+
+        // Build user message — use multimodal format when images are attached
+        const imageAtts = attachments?.filter(a => a.type.startsWith("image/") && a.data?.startsWith("data:"));
+        if (imageAtts && imageAtts.length > 0) {
+          const contentParts: ChatContent[] = [];
+          if (message) {
+            contentParts.push({ type: "text", text: message });
+          }
+          for (const img of imageAtts) {
+            contentParts.push({
+              type: "image_url",
+              image_url: { url: img.data!, detail: "auto" },
+            });
+          }
+          messages.push({ role: "user", content: contentParts });
+        } else {
+          messages.push({ role: "user", content: message });
+        }
 
         const tools = this.buildOpenAITools();
         const isAction = this.hasActionIntent(message);
@@ -2030,8 +2042,18 @@ export class AgentModelExecutor {
               conversationMessages = [
                 { role: "system", content: fullSystemPrompt },
                 ...(this.conversationHistory.get(sessionId) || []),
-                { role: "user", content: message },
               ];
+              // Rebuild user message with multimodal support
+              if (imageAtts && imageAtts.length > 0) {
+                const retryParts: ChatContent[] = [];
+                if (message) retryParts.push({ type: "text", text: message });
+                for (const img of imageAtts) {
+                  retryParts.push({ type: "image_url", image_url: { url: img.data!, detail: "auto" } });
+                }
+                conversationMessages.push({ role: "user", content: retryParts });
+              } else {
+                conversationMessages.push({ role: "user", content: message });
+              }
             }
 
             if (classified.type === LLMErrorType.RATE_LIMIT && classified.backoffMs > 0) {
@@ -2291,7 +2313,7 @@ export class AgentModelExecutor {
 
   private async callLLMOnce(
     provider: ProviderConfig,
-    messages: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+    messages: Array<{ role: string; content: string | null | ChatContent[]; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: Array<{ type: string; function: Record<string, unknown> }>,
     toolChoice: "auto" | "required" = "auto"
   ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number; classifiedError?: ClassifiedError } | null> {

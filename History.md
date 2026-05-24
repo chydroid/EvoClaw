@@ -5,6 +5,25 @@
 
 ---
 
+## v0.5.3 (2026-05-25)
+
+### 多模态 Vision 支持：图片识别打通
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`
+- **改动**:
+  - 导入 `ChatContent` 类型，消息类型注释从 `string | null` 扩展为 `string | null | ChatContent[]`
+  - `tryCallLLM` 新增 `attachments` 参数，传递图片数据
+  - 消息构建时检测图片 attachment：自动构建多模态 `ChatContent[]` 格式
+    - 文本部分：`{ type: "text", text: message }`
+    - 图片部分：`{ type: "image_url", image_url: { url: "data:image/...", detail: "auto" } }`
+  - `callLLMOnce` 方法签名同步更新以支持数组 content
+  - `handleMultipleTasks` 同步传递 attachments
+  - 上下文压缩路径的消息重建也支持多模态格式
+  - 图片元数据注入文案更新：从"文本模型无法分析"改为"上传为 vision 输入，请直接分析图片内容"
+  - OpenAI provider（`openai.ts`）原生支持 `convertMessage` 处理 image_url 无需修改
+
+---
+
 ## v0.5.2 (2026-05-24)
 
 ### 文件上传端到端打通：API 携带附件数据 + LLM 感知文件
