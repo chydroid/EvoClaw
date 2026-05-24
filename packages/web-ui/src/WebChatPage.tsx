@@ -490,7 +490,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [currentProgress, setCurrentProgress] = useState(0);
-  
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [contextUsed, setContextUsed] = useState(0);
+  const [contextLimit] = useState(200000);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
@@ -773,6 +777,71 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     return <div dangerouslySetInnerHTML={{ __html: html }} />;
   };
 
+  // Copy message as markdown
+  const copyAsMarkdown = async (msg: WebChatMessage) => {
+    const text = msg.content || "";
+    const nick = getNickname(msg.role);
+    const time = msg.timestamp ? formatTime(msg.timestamp) : "";
+    const md = `**${nick}** (${time})\n\n${text}`;
+    try {
+      await navigator.clipboard.writeText(md);
+    } catch {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = md;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  };
+
+  // Export conversation as markdown
+  const exportConversation = () => {
+    const lines: string[] = [`# 对话导出 - ${new Date().toLocaleString("zh-CN")}\n`];
+    for (const msg of messages) {
+      const nick = getNickname(msg.role);
+      const time = msg.timestamp ? formatTime(msg.timestamp) : "";
+      const content = msg.content || "";
+      lines.push(`**${nick}** (${time})`);
+      lines.push("");
+      lines.push(content);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `evoclaw-chat-${Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Attach file
+  const handleFileAttach = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.onchange = (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (files) {
+        setAttachedFiles(prev => [...prev, ...Array.from(files)]);
+      }
+    };
+    input.click();
+  };
+
+  const removeAttachedFile = (index: number) => {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Context usage percentage
+  const contextPercent = contextLimit > 0 ? Math.round((contextUsed / contextLimit) * 100) : 0;
+  const contextUsedDisplay = contextUsed > 1000 ? `${(contextUsed / 1000).toFixed(1)}k` : contextUsed;
+  const contextLimitDisplay = contextLimit > 1000 ? `${(contextLimit / 1000).toFixed(0)}k` : contextLimit;
+
   return (
     <div style={chatContainerStyle}>
       {/* Chat Area */}
@@ -842,7 +911,47 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     </div>
                   );
                 })()}
-              <div style={messageBubbleStyle(msg.role)}>
+              <div
+                style={{
+                  ...messageBubbleStyle(msg.role),
+                  border: hoveredMsgId === msg.id && msg.role === "assistant"
+                    ? "1px solid var(--accent, #58a6ff)"
+                    : messageBubbleStyle(msg.role).border,
+                  boxShadow: hoveredMsgId === msg.id && msg.role === "assistant"
+                    ? "0 0 12px rgba(88, 166, 255, 0.2)"
+                    : "none",
+                  transition: "border 0.15s, box-shadow 0.15s",
+                  position: "relative",
+                }}
+                onMouseEnter={() => setHoveredMsgId(msg.id)}
+                onMouseLeave={() => setHoveredMsgId(null)}
+              >
+                {/* Copy button - shown on hover for assistant messages */}
+                {hoveredMsgId === msg.id && msg.role === "assistant" && (
+                  <button
+                    style={{
+                      position: "absolute",
+                      top: "8px",
+                      right: "8px",
+                      background: "var(--bg-tertiary, #21262d)",
+                      border: "1px solid var(--border, #30363d)",
+                      borderRadius: "6px",
+                      padding: "4px 8px",
+                      fontSize: "11px",
+                      color: "var(--text-secondary, #8b949e)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      zIndex: 10,
+                    }}
+                    onClick={(e) => { e.stopPropagation(); copyAsMarkdown(msg); }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--accent, #58a6ff)"; e.currentTarget.style.color = "#fff"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+                  >
+                    📋 复制为 Markdown
+                  </button>
+                )}
                 {/* Thinking badge */}
                 {msg.thinking && (
                   <div style={thinkingBadgeStyle} onClick={() => toggleThinking(msg.id)}>
@@ -916,13 +1025,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     )}
                   </div>
                 )}
-
-                {/* Actions */}
-                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: "4px" }}>
-                  <div style={{ opacity: 0, transition: "opacity 0.2s" }} className="msg-actions">
-                    <button style={actionBtnStyle} onClick={() => copyMessage(msg.content)}>Copy</button>
-                  </div>
-                </div>
               </div>
               </div>
             </div>
@@ -933,10 +1035,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         {/* Context Usage Bar */}
         <div style={contextBarStyle}>
           <div style={contextProgressStyle}>
-            <div style={contextProgressFillStyle(45)} />
+            <div style={contextProgressFillStyle(contextPercent)} />
           </div>
-          <span>45% context used</span>
-          <span style={{ color: "var(--text-muted, #6e7681)" }}>89.1k / 200k</span>
+          <span>{contextPercent}% context used</span>
+          <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay}</span>
         </div>
 
         {/* Input */}
@@ -946,14 +1048,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             <button
               style={inputBtnStyle}
               title="附加文件"
+              onClick={handleFileAttach}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
             >
               📎
             </button>
             <button
-              style={inputBtnStyle}
-              title="开始 Talk"
+              style={{ ...inputBtnStyle, opacity: 0.4, cursor: "not-allowed" }}
+              title="语音输入（暂未支持）"
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
             >
@@ -961,7 +1064,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             </button>
             <button
               style={inputBtnStyle}
-              title="设置"
+              title="打开设置"
+              onClick={() => {
+                // Dispatch custom event to open settings modal
+                window.dispatchEvent(new CustomEvent("evoclaw-open-settings"));
+              }}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
             >
@@ -978,7 +1085,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             onKeyDown={handleKeyDown}
             onCompositionStart={() => { isComposingRef.current = true; }}
             onCompositionEnd={() => { isComposingRef.current = false; }}
-            placeholder={`给 ${getNickname("assistant")} 发消息 (Enter 发送)`}
+            placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
             rows={1}
             disabled={isStreaming}
             autoComplete="off"
@@ -991,9 +1098,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           <div style={{ ...inputToolbarStyle, gap: "8px" }}>
             <button
               style={{ ...inputBtnStyle, width: "auto", padding: "0 12px", fontSize: "12px", fontWeight: 500 }}
-              title="新会话"
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
+              title="新建会话"
               onClick={() => {
                 setMessages([{
                   id: `welcome-${Date.now()}`,
@@ -1002,13 +1107,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   timestamp: new Date().toISOString(),
                 }]);
                 setInput("");
+                setAttachedFiles([]);
               }}
             >
               + 新会话
             </button>
             <button
               style={inputBtnStyle}
-              title="导出"
+              title="导出对话记录"
+              onClick={exportConversation}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
             >
@@ -1018,7 +1125,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               style={{ ...sendBtnStyle, width: "40px", height: "40px" }}
               onClick={handleSend}
               disabled={isStreaming}
-              title="发送"
+              title="发送消息"
             >
               {isStreaming ? "⏳" : "➤"}
             </button>
