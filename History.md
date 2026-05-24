@@ -5,6 +5,27 @@
 
 ---
 
+## v0.5.0 (2026-05-24)
+
+### 文件上传功能完整实现
+
+- **文件**: `packages/web-ui/src/WebChatPage.tsx`
+- **改动**:
+  - 新增 `AttachedFileInfo` 接口：id、name、size、type、previewUrl、status、progress、error、cancelToken
+  - `WebChatMessage` 新增 `attachments` 字段，用户消息气泡中显示已上传文件引用
+  - 文件选择对话框，支持多文件、类型过滤（图像/文档/文本/压缩包）
+  - 文件验证：10MB 大小限制、允许类型白名单、重复文件检测
+  - 上传进度模拟（条纹动画进度条 + 网络抖动模拟），支持取消上传
+  - 图片文件生成缩略图 Object URL 预览，非图片文件显示类型 SVG 图标
+  - 文件名超长截断（前 20 字 + ... + 扩展名）
+  - 错误处理：格式不支持、超大文件、重复添加等提示
+  - 上传完成后点击发送自动带入消息，支持纯文件发送（无文本）
+  - 文件预览栏在输入框与工具栏之间（flex wrap 布局）
+  - 取消/移除按钮 hover 变红色，进度条条纹动画
+  - 新增 CSS 动画：uploadProgressStripe、slideDown
+
+---
+
 ## v0.4.10 (2026-05-24)
 
 ### 复制按钮交互优化

@@ -41,6 +41,21 @@ styleSheet.textContent = `
     from { transform: scale(0.9); opacity: 0; }
     to { transform: scale(1); opacity: 1; }
   }
+
+  @keyframes uploadProgressStripe {
+    0% { background-position: 0 0; }
+    100% { background-position: 20px 0; }
+  }
+
+  @keyframes slideDown {
+    from { opacity: 0; max-height: 0; transform: translateY(-8px); }
+    to { opacity: 1; max-height: 120px; transform: translateY(0); }
+  }
+
+  @keyframes slideUp {
+    from { opacity: 1; max-height: 120px; transform: translateY(0); }
+    to { opacity: 0; max-height: 0; transform: translateY(-8px); }
+  }
 `;
 document.head.appendChild(styleSheet);
 
@@ -98,6 +113,19 @@ interface WebChatMessage {
   toolCalls?: Array<{ name: string; args: string; result?: string; status: "running" | "done" | "error" }>;
   actions?: Array<{ label: string; type: string }>;
   permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>;
+  attachments?: AttachedFileInfo[];
+}
+
+interface AttachedFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  previewUrl?: string;
+  status: "pending" | "uploading" | "done" | "error";
+  progress: number;
+  error?: string;
+  cancelToken?: { cancelled: boolean };
 }
 
 interface PermissionRequest {
@@ -493,7 +521,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [contextUsed, setContextUsed] = useState(0);
   const [contextLimit] = useState(200000);
-  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpanded, setTextAreaExpanded] = useState(false);
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
 
@@ -554,17 +582,33 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || isStreaming || !initialSessionId) return;
+    // Allow sending with text, files, or both
+    const readyFiles = attachedFiles.filter(f => f.status === "done");
+    const hasContent = text.length > 0 || readyFiles.length > 0;
+    if (!hasContent || isStreaming || !initialSessionId) return;
+
+    // Build file summary for message content
+    let fileSummary = "";
+    if (readyFiles.length > 0) {
+      fileSummary = readyFiles.map(f => 
+        `📎 ${f.name} (${formatFileSize(f.size)})`
+      ).join("\n");
+    }
 
     const userMsg: WebChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: text,
+      content: text || (readyFiles.length > 0 ? `发送了 ${readyFiles.length} 个文件` : ""),
       timestamp: new Date().toISOString(),
+      attachments: readyFiles.length > 0 ? [...readyFiles] : undefined,
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    // Clear ready files from upload list
+    if (readyFiles.length > 0) {
+      setAttachedFiles(prev => prev.filter(f => f.status !== "done"));
+    }
     setIsStreaming(true);
     setLoadingMessageIndex(0);
     setCurrentProgress(0);
@@ -821,23 +865,211 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     URL.revokeObjectURL(url);
   };
 
-  // Attach file
-  const handleFileAttach = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.onchange = (e) => {
-      const files = (e.target as HTMLInputElement).files;
-      if (files) {
-        setAttachedFiles(prev => [...prev, ...Array.from(files)]);
-      }
-    };
-    input.click();
+  // ─── File upload constants ───
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  const ALLOWED_TYPES: Record<string, string[]> = {
+    "image/": [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"],
+    "text/": [".txt", ".csv", ".log", ".md", ".json", ".xml", ".yaml", ".yml"],
+    "application/pdf": [".pdf"],
+    "application/msword": [".doc"],
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+    "application/zip": [".zip"],
+    "application/x-tar": [".tar"],
+    "application/gzip": [".gz"],
+  };
+  const ALLOWED_EXTENSIONS = Object.values(ALLOWED_TYPES).flat();
+  const UPLOAD_SIM_DURATION_MS = 1500; // simulated upload duration
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const removeAttachedFile = (index: number) => {
-    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  const getFileTypeIcon = (fileName: string, mimeType: string): React.ReactNode => {
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    const iconColor = "var(--text-muted, #6e7681)";
+    // Image preview handled separately via previewUrl
+    if (mimeType.startsWith("image/")) return null;
+    if (ext === "pdf" || mimeType === "application/pdf") {
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+      );
+    }
+    if (["zip", "tar", "gz", "rar", "7z"].includes(ext)) {
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      );
+    }
+    if (["doc", "docx"].includes(ext)) {
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/>
+        </svg>
+      );
+    }
+    // Generic file icon
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+      </svg>
+    );
   };
+
+  // Simulate upload with progress
+  const simulateUpload = (fileInfo: AttachedFileInfo): void => {
+    const token = fileInfo.cancelToken;
+    const startTime = Date.now();
+    
+    const tick = () => {
+      if (token?.cancelled) {
+        setAttachedFiles(prev => prev.map(f => f.id === fileInfo.id ? { ...f, status: "error" as const, error: "已取消" } : f));
+        return;
+      }
+      const elapsed = Date.now() - startTime;
+      const rawProgress = Math.min((elapsed / UPLOAD_SIM_DURATION_MS) * 100, 100);
+      // Simulate occasional network jitter
+      const jittered = rawProgress + (rawProgress < 90 ? Math.sin(elapsed / 200) * 5 : 0);
+      const progress = Math.min(Math.max(jittered, rawProgress * 0.8), 100);
+
+      setAttachedFiles(prev =>
+        prev.map(f => f.id === fileInfo.id ? { ...f, progress: Math.round(progress) } : f)
+      );
+
+      if (progress < 100) {
+        setTimeout(tick, 80 + Math.random() * 60);
+      } else {
+        setAttachedFiles(prev =>
+          prev.map(f =>
+            f.id === fileInfo.id ? { ...f, status: "done" as const, progress: 100 } : f
+          )
+        );
+      }
+    };
+
+    setAttachedFiles(prev =>
+      prev.map(f => f.id === fileInfo.id ? { ...f, status: "uploading" as const, progress: 0 } : f)
+    );
+    setTimeout(tick, 100);
+  };
+
+  // Attach file — validates, generates preview, starts upload
+  const handleFileAttach = useCallback(() => {
+    const inputEl = document.createElement("input");
+    inputEl.type = "file";
+    inputEl.multiple = true;
+    inputEl.accept = ALLOWED_EXTENSIONS.join(",");
+    inputEl.onchange = () => {
+      const files = inputEl.files;
+      if (!files || files.length === 0) return;
+
+      const newFiles: AttachedFileInfo[] = [];
+      const errors: string[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const ext = "." + (file.name.split(".").pop()?.toLowerCase() || "");
+        
+        // Duplicate check
+        const isDuplicate = attachedFiles.some(f => f.name === file.name && f.size === file.size);
+        if (isDuplicate) { errors.push(`"${file.name}" 已添加`); continue; }
+
+        // Size check
+        if (file.size > MAX_FILE_SIZE) {
+          errors.push(`"${file.name}" 超过 10MB 限制`);
+          continue;
+        }
+
+        // Type check
+        const isAllowedType = Object.entries(ALLOWED_TYPES).some(([mimePrefix, exts]) => {
+          if (file.type.startsWith("_")) return file.type === mimePrefix;
+          if (mimePrefix.endsWith("/")) return file.type.startsWith(mimePrefix);
+          return file.type === mimePrefix;
+        });
+        const extAllowed = ALLOWED_EXTENSIONS.includes(ext);
+        if (!isAllowedType && !extAllowed) {
+          errors.push(`"${file.name}" 格式不支持 (${ext})`);
+          continue;
+        }
+
+        const id = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const cancelToken = { cancelled: false };
+
+        const info: AttachedFileInfo = {
+          id, name: file.name, size: file.size, type: file.type,
+          status: "pending", progress: 0, cancelToken,
+        };
+
+        // Generate preview URL for images
+        if (file.type.startsWith("image/")) {
+          info.previewUrl = URL.createObjectURL(file);
+        }
+
+        newFiles.push(info);
+      }
+
+      if (errors.length > 0) {
+        // Show errors — create a system message for now
+        setMessages(prev => [...prev, {
+          id: `file-err-${Date.now()}`,
+          role: "system",
+          content: errors.join("\n"),
+          timestamp: new Date().toISOString(),
+        }]);
+      }
+
+      if (newFiles.length > 0) {
+        setAttachedFiles(prev => {
+          const updated = [...prev, ...newFiles];
+          return updated;
+        });
+        // Start upload simulation for each new file
+        newFiles.forEach(f => simulateUpload(f));
+      }
+    };
+    inputEl.click();
+  }, [attachedFiles]);
+
+  // Cancel upload
+  const cancelUpload = useCallback((fileId: string) => {
+    setAttachedFiles(prev => {
+      const target = prev.find(f => f.id === fileId);
+      if (target?.cancelToken) target.cancelToken.cancelled = true;
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter(f => f.id !== fileId);
+    });
+  }, []);
+
+  // Remove attached file (for done/error files)
+  const removeAttachedFile = useCallback((index: number) => {
+    setAttachedFiles(prev => {
+      const file = prev[index];
+      if (file?.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      if (file?.cancelToken) file.cancelToken.cancelled = true;
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
+
+  // Clear done files and return them for message attachment
+  const clearReadyFiles = useCallback((): AttachedFileInfo[] => {
+    const ready: AttachedFileInfo[] = [];
+    setAttachedFiles(prev => {
+      const remaining: AttachedFileInfo[] = [];
+      for (const f of prev) {
+        if (f.status === "done") {
+          ready.push(f);
+        } else {
+          remaining.push(f);
+        }
+      }
+      return remaining;
+    });
+    return ready;
+  }, []);
 
   // Context usage percentage
   const contextPercent = contextLimit > 0 ? Math.round((contextUsed / contextLimit) * 100) : 0;
@@ -1009,7 +1241,53 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
                 {/* Content */}
                 {msg.role === "user" ? (
-                  <span>{msg.content}</span>
+                  <div>
+                    {/* Attached files display in user message */}
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div style={{
+                        display: "flex", flexWrap: "wrap", gap: "6px",
+                        marginBottom: msg.content ? "8px" : "0",
+                      }}>
+                        {msg.attachments.map((att) => {
+                          const isImage = att.type.startsWith("image/");
+                          const shortName = att.name.length > 28
+                            ? att.name.slice(0, 24) + "..." + att.name.slice(-4)
+                            : att.name;
+
+                          return (
+                            <div key={att.id} style={{
+                              display: "flex", alignItems: "center", gap: "6px",
+                              padding: "3px 8px", borderRadius: "6px",
+                              background: "rgba(255,255,255,0.15)",
+                              fontSize: "11px",
+                              maxWidth: "220px",
+                            }}>
+                              {isImage && att.previewUrl ? (
+                                <img src={att.previewUrl} alt="" style={{
+                                  width: "24px", height: "24px", borderRadius: "3px",
+                                  objectFit: "cover", flexShrink: 0,
+                                }} />
+                              ) : (
+                                <span style={{ flexShrink: 0, opacity: 0.8 }}>
+                                  {getFileTypeIcon(att.name, att.type)}
+                                </span>
+                              )}
+                              <span style={{
+                                whiteSpace: "nowrap", overflow: "hidden",
+                                textOverflow: "ellipsis", opacity: 0.9,
+                              }} title={att.name}>
+                                {shortName}
+                              </span>
+                              <span style={{ opacity: 0.6, flexShrink: 0 }}>
+                                {formatFileSize(att.size)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {msg.content && <span>{msg.content}</span>}
+                  </div>
                 ) : (
                   <div>
                     {msg.content !== "" ? (
@@ -1106,6 +1384,103 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               {textAreaExpanded ? "⤒" : "⤓"}
             </div>
           </div>
+
+          {/* File preview bar — shows attached files with upload progress */}
+          {attachedFiles.length > 0 && (
+            <div style={{
+              display: "flex", flexWrap: "wrap", gap: "8px", padding: "6px 0 0 0",
+              animation: "slideDown 0.25s ease",
+            }}>
+              {attachedFiles.map((file, idx) => {
+                const isImage = file.type.startsWith("image/");
+                const isUploading = file.status === "pending" || file.status === "uploading";
+                const isError = file.status === "error";
+                const displayName = file.name.length > 24 
+                  ? file.name.slice(0, 20) + "..." + file.name.slice(-4) 
+                  : file.name;
+
+                return (
+                  <div key={file.id} style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    padding: "4px 8px", borderRadius: "8px",
+                    background: "var(--bg-tertiary, #21262d)",
+                    border: isError ? "1px solid var(--error, #f87171)" : "1px solid var(--border, #30363d)",
+                    fontSize: "12px", color: "var(--text-primary, #c9d1d9)",
+                    maxWidth: "280px", position: "relative",
+                    transition: "border 0.15s",
+                  }}>
+                    {/* Thumbnail or file type icon */}
+                    <div style={{
+                      width: "32px", height: "32px", borderRadius: "4px",
+                      overflow: "hidden", flexShrink: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      background: "var(--bg-secondary, #161b22)",
+                    }}>
+                      {isImage && file.previewUrl ? (
+                        <img src={file.previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        getFileTypeIcon(file.name, file.type)
+                      )}
+                    </div>
+
+                    {/* File info + progress */}
+                    <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ 
+                          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          fontWeight: 500,
+                        }} title={file.name}>
+                          {displayName}
+                        </span>
+                        {isError && (
+                          <span style={{ fontSize: "10px", color: "var(--error, #f87171)", flexShrink: 0 }}>
+                            {file.error || "错误"}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)" }}>
+                        {formatFileSize(file.size)}
+                      </div>
+                      {isUploading && (
+                        <div style={{
+                          width: "100%", height: "3px", borderRadius: "2px",
+                          background: "var(--bg-secondary, #161b22)",
+                          marginTop: "3px", overflow: "hidden",
+                        }}>
+                          <div style={{
+                            height: "100%", borderRadius: "2px",
+                            width: `${file.progress}%`,
+                            background: `repeating-linear-gradient(90deg, var(--accent, #58a6ff) 0, var(--accent, #58a6ff) 6px, rgba(88,166,255,0.4) 6px, rgba(88,166,255,0.4) 12px)`,
+                            backgroundSize: "12px 100%",
+                            animation: "uploadProgressStripe 0.5s linear infinite",
+                            transition: "width 0.15s ease",
+                          }} />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Cancel / Remove button */}
+                    <button
+                      style={{
+                        width: "18px", height: "18px", borderRadius: "50%",
+                        border: "none", background: "transparent",
+                        color: "var(--text-muted, #6e7681)", cursor: "pointer",
+                        fontSize: "11px", display: "flex", alignItems: "center",
+                        justifyContent: "center", flexShrink: 0,
+                        transition: "color 0.15s",
+                      }}
+                      title={isUploading ? "取消上传" : "移除"}
+                      onClick={() => isUploading ? cancelUpload(file.id) : removeAttachedFile(idx)}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error, #f87171)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Toolbar row below textarea — left: tools, center: context bar, right: send */}
           <div style={{ display: "flex", alignItems: "center", marginTop: "6px" }}>
