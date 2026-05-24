@@ -5,6 +5,32 @@
 
 ---
 
+## v0.5.4 (2026-05-25)
+
+### 核心原则：始终给用户反馈 — 全链路超时与兜底
+
+- **文件**: `packages/web-ui/src/WebChatPage.tsx`、`packages/gateway/src/protocol-adapter.ts`、`packages/agent/src/agent-model-executor.ts`
+- **改动**:
+
+  **前端 — fetch 超时 + cleanup**
+  - `handleSend` 的 `fetch("/api/chat")` 添加 120s AbortController 超时
+  - 超时后显示友好提示："请求超时（超过 2 分钟），服务器可能繁忙..."
+  - `setIsStreaming(false)` 移到 `finally` 块，确保任何退出路径（包括权限弹窗 return）都释放 loading 状态
+  - 移除重复的 cleanup 代码，消除死代码
+
+  **网关 — 全局超时包装**
+  - `/api/chat` 用 `Promise.race` 包装 110s 超时
+  - 超时后返回 JSON {"reply": "处理超时，请稍后重试..."} 而非挂起
+  - 确保 Express res.json() 始终被调用
+
+  **Agent Executor — 兜底消息 + 工具超时**
+  - `tryCallLLM`：所有 provider 均失败后不再返回 null，返回兜底中文提示
+    - "抱歉，所有已启用的模型提供商均未能响应。请检查：API Key / 服务在线 / 网络连接"
+  - 工具执行添加 30s 超时 (`Promise.race`)，防止单一工具挂起整个响应链
+  - 超时工具返回明确错误信息，LLM 可在下一轮继续
+
+---
+
 ## v0.5.3 (2026-05-25)
 
 ### 多模态 Vision 支持：图片识别打通

@@ -2130,7 +2130,13 @@ export class AgentModelExecutor {
                   rawResult = skipWithResult;
                   toolResult = JSON.stringify(skipWithResult);
                 } else {
-                  rawResult = await toolEntry.handler(args);
+                  // ── Tool execution with 30s timeout ──
+                  const TOOL_TIMEOUT = 30000;
+                  const toolPromise = toolEntry.handler(args);
+                  const toolTimeoutPromise = new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT)
+                  );
+                  rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
                   toolResult = JSON.stringify(rawResult);
                 }
                 anyToolExecuted = true;
@@ -2266,7 +2272,16 @@ export class AgentModelExecutor {
       }
     }
 
-    return null;
+    // ── All providers failed, always return a fallback response ──
+    const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n可前往 Ops 页面查看详细诊断信息。";
+    console.warn(`[AgentModelExecutor] All ${providers.length} provider(s) failed. Returning fallback message.`);
+    return {
+      reply: fallbackReply,
+      tokensUsed: 0,
+      duration: Date.now() - startTime,
+      permissionRequests: pendingPermissions,
+      toolsExecuted: false,
+    };
   }
 
   private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {

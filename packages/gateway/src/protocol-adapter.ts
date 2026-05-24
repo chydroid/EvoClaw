@@ -644,10 +644,35 @@ export class ProtocolAdapter {
         }
 
         const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
-        const result = await agentExecutor.chat(message, {
+        
+        // ── Global timeout: always return a response within 110s ──
+        const CHAT_TIMEOUT = 110000;
+        const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
         });
+        
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)
+        );
+        
+        let result;
+        try {
+          result = await Promise.race([chatPromise, timeoutPromise]);
+        } catch (raceErr) {
+          if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
+            console.warn(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
+            res.json({
+              reply: "⏱️ 处理超时，请稍后重试。如问题持续，请检查模型配置或简化提问。",
+              tokensUsed: 0,
+              duration: CHAT_TIMEOUT,
+              sessionId: resolvedSessionId,
+              permissionRequests: [],
+            });
+            return;
+          }
+          throw raceErr;
+        }
 
         res.json({
           reply: result.reply,

@@ -636,15 +636,46 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         data: f.data || null,
       })) : undefined;
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          message: text, 
-          sessionId: initialSessionId,
-          attachments: attachmentPayload,
-        }),
-      });
+      // ── Timeout: always ensure response within 120s ──
+      const FETCH_TIMEOUT = 120000; // 2 minutes
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+      let res: Response;
+      try {
+        res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            message: text, 
+            sessionId: initialSessionId,
+            attachments: attachmentPayload,
+          }),
+          signal: controller.signal,
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === botMsgId
+                ? { ...m, role: "system", content: "⏱️ 请求超时（超过 2 分钟），服务器可能繁忙或模型响应缓慢。请稍后重试或检查模型配置。" }
+                : m,
+            ),
+          );
+        } else {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === botMsgId
+                ? { ...m, role: "system", content: "Network error — cannot reach server" }
+                : m,
+            ),
+          );
+        }
+        return;
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (res.ok) {
         const data = await res.json();
@@ -665,7 +696,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           if (nonWhitelisted.length > 0) {
             setPendingPermissions(nonWhitelisted);
             setShowPermissionModal(true);
-            // Don't set streaming to false yet - waiting for permission
+            // Will re-send with approval; keep streaming true until resolved
             return;
           } else {
             // All permissions are whitelisted - auto-approve
@@ -676,7 +707,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         setMessages((prev) =>
           prev.map((m) =>
             m.id === botMsgId
-              ? { ...m, content: data.reply || "No response" }
+              ? { ...m, content: data.reply || "(empty response from server)" }
               : m,
           ),
         );
@@ -691,19 +722,19 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         );
       }
     } catch {
-      clearInterval(progressInterval);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMsgId
-            ? { ...m, role: "system", content: "Network error — cannot reach server" }
+            ? { ...m, role: "system", content: "Unexpected error — please retry" }
             : m,
         ),
       );
+    } finally {
+      clearInterval(progressInterval);
+      setIsStreaming(false);
+      setCurrentProgress(100);
     }
 
-    clearInterval(progressInterval);
-    setIsStreaming(false);
-    setCurrentProgress(100);
   };
 
   // ── Permission handling ──
