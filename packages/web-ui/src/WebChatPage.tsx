@@ -924,7 +924,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     : "none",
                   transition: "border 0.15s, box-shadow 0.15s",
                   position: "relative",
-                  ...(msg.role === "assistant" ? { paddingTop: "26px" } : {}),
+                  ...(msg.role === "assistant" ? { paddingTop: "32px" } : {}),
                 }}
                 onMouseEnter={() => setHoveredMsgId(msg.id)}
                 onMouseLeave={() => setHoveredMsgId(null)}
@@ -945,28 +945,31 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       zIndex: 10,
                       display: "flex",
                       alignItems: "center",
-                      gap: "4px",
-                      transition: "all 0.15s",
+                      transition: "color 0.15s",
                     }}
-                    onClick={(e) => { e.stopPropagation(); copyAsMarkdown(msg); }}
+                    title="复制为 Markdown"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyAsMarkdown(msg);
+                      // Click feedback: brief accent flash
+                      e.currentTarget.style.color = "var(--accent, #58a6ff)";
+                      setTimeout(() => {
+                        e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                      }, 500);
+                    }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
                       e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
-                      const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
-                      if (span) span.style.display = "inline";
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.background = "transparent";
                       e.currentTarget.style.color = "var(--text-muted, #6e7681)";
-                      const span = e.currentTarget.querySelector('.copy-text') as HTMLElement;
-                      if (span) span.style.display = "none";
                     }}
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                     </svg>
-                    <span className="copy-text" style={{ fontSize: "11px", display: "none", fontWeight: 500 }}>复制为 Markdown</span>
                   </button>
                 )}
                 {/* Thinking badge */}
