@@ -45,14 +45,14 @@ function validateCliCommand(input: string): { valid: boolean; reason?: string } 
     }
   }
 
-  if (!trimmed.startsWith("EvoClaw ")) return { valid: false, reason: 'Commands must start with "EvoClaw" (e.g. EvoClaw --help)' };
+  if (!trimmed.toLowerCase().startsWith("evoclaw ")) return { valid: false, reason: 'Commands must start with "EvoClaw" (e.g. EvoClaw --help)' };
 
   return { valid: true };
 }
 
 function executeCliCommand(command: string): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const args = command.replace(/^EvoClaw\s*/, "").trim().split(/\s+/).filter(Boolean);
+    const args = command.replace(/^[Ee][Vv][Oo][Cc][Ll][Aa][Ww]\s*/, "").trim().split(/\s+/).filter(Boolean);
 
     const childProcess = spawn("node", [CLI_SCRIPT_PATH, ...args], {
       windowsHide: true,
@@ -666,6 +666,7 @@ export class ProtocolAdapter {
             res.json({
               reply: "⏱️ 处理超时，请稍后重试。如问题持续，请检查模型配置或简化提问。",
               tokensUsed: 0,
+              contextLimit: 60000,
               duration: CHAT_TIMEOUT,
               sessionId: resolvedSessionId,
               permissionRequests: [],
@@ -675,9 +676,22 @@ export class ProtocolAdapter {
           throw raceErr;
         }
 
+        // Resolve context limit from ContextEngine config
+        let contextLimit = 60000;
+        try {
+          const contextEngine = this.registry.resolveService("contextEngine") as {
+            getConfig(): Record<string, unknown>;
+          } | undefined;
+          if (contextEngine) {
+            const cfg = contextEngine.getConfig();
+            contextLimit = (cfg.maxContextTokens as number) || 60000;
+          }
+        } catch { /* use default */ }
+
         res.json({
           reply: result.reply,
           tokensUsed: result.tokensUsed,
+          contextLimit,
           duration: result.duration,
           sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
@@ -1146,11 +1160,39 @@ export class ProtocolAdapter {
           res.status(400).json({ success: false, error: "Plugin name is required" });
           return;
         }
-        // In real implementation, this would trigger the plugin install pipeline
+
+        const pluginManager = this.registry.resolveService("pluginManager") as {
+          registerPlugin(plugin: unknown): Promise<void>;
+          getPlugins(): Array<{ manifest: { name: string; version: string; description: string }; status: string; error?: string }>;
+        } | undefined;
+
+        if (!pluginManager) {
+          res.status(503).json({ error: "Plugin manager not available" });
+          return;
+        }
+
+        // Try to dynamically import built-in plugin
+        try {
+          const { BUILTIN_PLUGIN_FACTORIES } = await import("@evoclaw/agent/plugins");
+          const factory = BUILTIN_PLUGIN_FACTORIES.find((f: () => { manifest: { name: string } }) => {
+            try { return f().manifest.name.toLowerCase() === name.toLowerCase(); } catch { return false; }
+          });
+          if (factory) {
+            const plugin = factory();
+            await pluginManager.registerPlugin(plugin);
+            res.json({ success: true, message: `Plugin "${plugin.manifest.name}" installed`, plugin: { name: plugin.manifest.name, version: plugin.manifest.version } });
+            return;
+          }
+        } catch {
+          // Dynamic import may fail if @evoclaw/agent is not built
+        }
+
+        // Fallback: try to install from npm-style packages later
         res.json({
           success: true,
-          message: `Plugin "${name}" installation queued`,
+          message: `Plugin "${name}" queued for installation`,
           stage: "pending",
+          note: "Plugin will be loaded on next restart if available in built-in or community registry",
         });
       } catch (err) {
         this.handleError(err, res, "Failed to install plugin");
@@ -1181,6 +1223,165 @@ export class ProtocolAdapter {
         res.json({ success: true, name, status });
       } catch (err) {
         this.handleError(err, res, "Failed to toggle plugin");
+      }
+    });
+
+    // ─── Scheduler / Cron API routes ────────────────────────────────────────
+
+    app.get("/api/scheduler/tasks", (_req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          listTasks(): Array<Record<string, unknown>>;
+          getStats(): Record<string, unknown>;
+        } | undefined;
+        if (!scheduleManager) {
+          res.json({ tasks: [], stats: { totalTasks: 0, activeTasks: 0, totalRuns: 0, totalErrors: 0 } });
+          return;
+        }
+        const tasks = scheduleManager.listTasks();
+        const stats = scheduleManager.getStats();
+        res.json({ success: true, tasks, stats });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list scheduler tasks");
+      }
+    });
+
+    app.post("/api/scheduler/tasks", (req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          createTask(opts: {
+            name: string;
+            cronExpression: string;
+            description?: string;
+            handlerType: string;
+            handlerConfig?: Record<string, unknown>;
+            enabled?: boolean;
+          }): Record<string, unknown>;
+        } | undefined;
+        if (!scheduleManager) {
+          res.status(503).json({ error: "Scheduler not available" });
+          return;
+        }
+
+        const { name, cronExpression, description, handlerType, enabled } = req.body || {};
+        if (!name || !cronExpression) {
+          res.status(400).json({ error: "name and cronExpression are required" });
+          return;
+        }
+
+        // Map Web UI handler types to ScheduleManager handler types
+        const handlerTypeMap: Record<string, string> = {
+          system: "system_cleanup",
+          skills: "custom",
+          memory: "custom",
+          chat: "custom",
+          email_check: "email_check",
+          report_generate: "report_generate",
+          browser_action: "browser_action",
+          system_cleanup: "system_cleanup",
+          custom: "custom",
+        };
+        const mappedHandlerType = handlerTypeMap[handlerType] || "custom";
+
+        const task = scheduleManager.createTask({
+          name,
+          cronExpression,
+          description: description || "",
+          handlerType: mappedHandlerType as "email_check" | "report_generate" | "browser_action" | "system_cleanup" | "custom",
+          enabled: enabled !== false,
+        });
+
+        res.status(201).json({ success: true, task });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: message });
+      }
+    });
+
+    app.put("/api/scheduler/tasks/:taskId", (req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          updateTask(taskId: string, updates: Record<string, unknown>): Record<string, unknown> | null;
+        } | undefined;
+        if (!scheduleManager) {
+          res.status(503).json({ error: "Scheduler not available" });
+          return;
+        }
+
+        const taskId = String(req.params.taskId);
+        const updates: Record<string, unknown> = {};
+        if (req.body.name !== undefined) updates.name = req.body.name;
+        if (req.body.cronExpression !== undefined) updates.cronExpression = req.body.cronExpression;
+        if (req.body.description !== undefined) updates.description = req.body.description;
+        if (req.body.enabled !== undefined) updates.enabled = req.body.enabled;
+
+        const result = scheduleManager.updateTask(taskId, updates);
+        if (!result) {
+          res.status(404).json({ error: "Task not found" });
+          return;
+        }
+        res.json({ success: true, task: result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: message });
+      }
+    });
+
+    app.delete("/api/scheduler/tasks/:taskId", (req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          deleteTask(taskId: string): boolean;
+        } | undefined;
+        if (!scheduleManager) {
+          res.status(503).json({ error: "Scheduler not available" });
+          return;
+        }
+
+        const taskId = String(req.params.taskId);
+        const removed = scheduleManager.deleteTask(taskId);
+        if (!removed) {
+          res.status(404).json({ error: "Task not found" });
+          return;
+        }
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete task");
+      }
+    });
+
+    app.post("/api/scheduler/tasks/:taskId/run", async (req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          executeTask(taskId: string): Promise<Record<string, unknown>>;
+        } | undefined;
+        if (!scheduleManager) {
+          res.status(503).json({ error: "Scheduler not available" });
+          return;
+        }
+
+        const taskId = String(req.params.taskId);
+        const result = await scheduleManager.executeTask(taskId);
+        res.json({ success: result.success, result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to execute task");
+      }
+    });
+
+    app.get("/api/scheduler/history", (req: Request, res: Response) => {
+      try {
+        const scheduleManager = this.registry.resolveService("scheduleManager") as {
+          getRunHistory(taskId?: string, limit?: number): Array<Record<string, unknown>>;
+        } | undefined;
+        if (!scheduleManager) {
+          res.json({ history: [] });
+          return;
+        }
+        const taskId = req.query.taskId as string | undefined;
+        const limit = parseInt(String(req.query.limit || "20"), 10) || 20;
+        const history = scheduleManager.getRunHistory(taskId, limit);
+        res.json({ success: true, history });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get scheduler history");
       }
     });
 

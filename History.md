@@ -5,6 +5,41 @@
 
 ---
 
+## v0.5.7 (2026-05-26)
+
+### 插件系统清理与增强 + Cron 定时任务修复
+
+- **文件**: `packages/agent/src/plugins/index.ts`、`packages/agent/src/plugins/cost-tracker.plugin.ts`(新增)、`packages/agent/src/plugins/response-validator.plugin.ts`(新增)、`packages/agent/src/plugins/conversation-summarizer.plugin.ts`(新增)、`packages/agent/package.json`、`packages/gateway/src/protocol-adapter.ts`、`apps/cli/src/commands/cron.ts`
+- **改动**:
+
+  **插件系统清理**
+  - 移除 5 个空壳占位插件（`AVAILABLE_PLUGINS`）：discord-connector、slack-connector、voice-synthesis、canvas-renderer、sentiment-analyzer——这些插件仅有 manifest 无任何实际 hook 实现
+  - 保留 4 个完整功能插件：Memory Enhancer、Code Analyzer、Web Browser、System Logger
+  - `agent/package.json` 新增 `./plugins` 子路径导出，支持外部动态导入内置插件
+
+  **新增 3 个实用插件**
+  - `Cost Tracker`: 监听 `agent_end` hook，追踪每次对话的 token 用量并估算成本（支持 13 种主流模型定价表：GPT-4/3.5/4o、Claude 3/3.5、Gemini 1.5、DeepSeek），提供每日/会话级成本统计
+  - `Response Validator`: 监听 `before_agent_reply` 和 `agent_end` hook，检测 AI 回复的质量问题：空回复、未闭合代码块、错误 JSON 泄露、AI 自引用、占位符文本、重复内容、截断
+  - `Conversation Summarizer`: 监听 `agent_end` 和 `before_prompt_build` hook，10+ 轮对话后自动生成摘要（提取主题关键词、关键决策、涉及文件），注入系统提示减少 token 浪费
+
+  **Cron 定时任务系统修复**
+  - `protocol-adapter.ts` 新增 6 个 `/api/scheduler/` 端点：
+    - `GET /api/scheduler/tasks` — 列出所有任务 + 统计
+    - `POST /api/scheduler/tasks` — 创建任务（含 handlerType 映射：system→system_cleanup, skills/memory/chat→custom）
+    - `PUT /api/scheduler/tasks/:taskId` — 更新任务（名称/cron/启用状态）
+    - `DELETE /api/scheduler/tasks/:taskId` — 删除任务
+    - `POST /api/scheduler/tasks/:taskId/run` — 立即执行
+    - `GET /api/scheduler/history` — 执行历史（支持 taskId 过滤）
+  - `apps/cli/src/commands/cron.ts` 全部命令从 stub 重写为真实 API 调用：
+    - `cron status` — 调度器状态概览（通过 `/api/scheduler/tasks`）
+    - `cron list` — 所有任务详细列表
+    - `cron add --name --cron [--desc] [--type] [--no-enable]` — 创建任务（POST API）
+    - `cron edit <id> --name/--cron/--desc/--enable/--disable` — 编辑任务（PUT API）
+    - `cron rm/enable/disable/run/runs <id>` — 全部对接真实 API
+
+  **插件安装 API 增强**
+  - `POST /api/plugins/install` 从占位 stub 升级为：尝试从 `@evoclaw/agent/plugins` 动态导入 `BUILTIN_PLUGIN_FACTORIES` 并注册匹配插件，失败则返回排队提示
+
 ## v0.5.6 (2026-05-25)
 
 ### 实时任务状态反馈 + 插件安装修复
