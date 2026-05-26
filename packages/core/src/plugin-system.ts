@@ -369,6 +369,8 @@ export interface Plugin {
   init?(ctx: PluginContext): Promise<void>;
   /** Called when plugin is unloaded */
   shutdown?(): Promise<void>;
+  /** Perform a health check */
+  healthCheck?(): Promise<{ healthy: boolean; message?: string }>;
 }
 
 export interface PluginContext {
