@@ -5,6 +5,34 @@
 
 ---
 
+## v0.5.8 (2026-05-26)
+
+### 全面功能测试 + WebUI API 端点修复
+
+- **文件**: `packages/gateway/src/protocol-adapter.ts`、`package.json`、`apps/cli/package.json`
+- **改动**:
+
+  **全量功能测试验证**
+  - 启动服务并对 WebUI 全部 7 组菜单（MAIN/SYSTEM/CONFIG/SECURITY/ADMIN/HEALTH/OPS）下 27 个页面进行 API 端点测试
+  - 发现 5 个缺失的后端 API 端点 + 1 个路径错误 + 1 个方法签名不匹配问题
+  - 最终验证：22 个关键 API 端点全部通过（22/22 PASS）
+
+  **新增 5 个系统 API 端点**
+  - `GET /api/system/sessions` — 返回所有会话信息（含 token 用量、压缩次数），对接 SessionManager + LifecycleManager（修正 `listSessions("default")` 必须传入 agentId 的签名不匹配问题）
+  - `GET /api/system/providers` — 返回 LLM 提供商状态列表（名称/provider/model/状态/成功失败计数）
+  - `GET /api/system/bootstrap-files` — 返回 4 个启动文件的存在状态和大小
+  - `GET /api/system/bootstrap-file/:file` — 读取单个启动文件内容（安全校验：仅允许 AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md）
+  - `PUT /api/system/bootstrap-file/:file` — 写入/更新启动文件内容
+
+  **路径修正**
+  - bootstrap 文件路径从 `data/bootstrap/` 修正为 `data/workspace/`（与 AgentModelExecutor.loadBootstrapFiles() 保持一致）
+
+  **安全加固**
+  - bootstrap-file 端点加入文件名白名单校验，防止路径遍历攻击
+  - 所有新端点使用 try/catch 统一错误处理，返回结构化 JSON 错误
+
+---
+
 ## v0.5.7 (2026-05-26)
 
 ### 插件系统清理与增强 + Cron 定时任务修复

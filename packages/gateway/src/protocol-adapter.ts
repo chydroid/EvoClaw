@@ -717,6 +717,125 @@ export class ProtocolAdapter {
       res.json(infos);
     });
 
+    // ─── System info endpoints for Dashboard ────────────────────────────
+
+    app.get("/api/system/sessions", (_req: Request, res: Response) => {
+      try {
+        const sessionMgr = this.registry.resolveService<{
+          listSessions(agentId: string): Array<{ sessionId: string; messageCount?: number; updatedAt?: string; status?: string }>;
+        }>("sessionManager");
+        const lm = this.registry.resolveService<{
+          getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number; compactionCount?: number }>;
+        }>("lifecycleManager");
+
+        const sessions = sessionMgr?.listSessions("default") || [];
+        const statuses = lm?.getAllStatuses() || [];
+
+        const result = sessions.map((s) => {
+          const status = statuses.find((st) => st.sessionId === s.sessionId);
+          return {
+            id: s.sessionId,
+            messageCount: s.messageCount || 0,
+            lastActive: s.updatedAt || new Date().toISOString(),
+            compactionCount: status?.compactionCount || 0,
+            tokensUsed: status?.tokensUsed || 0,
+          };
+        });
+
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/system/providers", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{
+          getProviders(): Array<{ id: string; name: string; provider?: string; model?: string; enabled: boolean; order: number; lastError?: string; lastErrorType?: string; successCount?: number; failureCount?: number }>;
+        }>("agentModelExecutor");
+
+        const providers = executor?.getProviders() || this.savedLLMProviders || [];
+        const result = providers.map((p: any) => ({
+          name: p.name || p.id,
+          provider: p.provider || p.id,
+          model: p.model || "default",
+          status: p.enabled !== false ? "active" as const : "inactive" as const,
+          lastError: p.lastError || undefined,
+          lastErrorType: p.lastErrorType || undefined,
+          successCount: p.successCount || 0,
+          failureCount: p.failureCount || 0,
+        }));
+
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/system/bootstrap-files", (_req: Request, res: Response) => {
+      try {
+        // Bootstrap files are loaded from the workspace directory (same as agent-model-executor)
+        const workspacePath = path.resolve("data", "workspace");
+        const files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
+        const result = files.map((f) => {
+          const filePath = path.join(workspacePath, f);
+          const exists = fs.existsSync(filePath);
+          return {
+            path: f,
+            exists,
+            size: exists ? fs.statSync(filePath).size : 0,
+          };
+        });
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/system/bootstrap-file/:file", (req: Request, res: Response) => {
+      try {
+        const filename = String(req.params.file);
+        if (!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"].includes(filename)) {
+          res.status(404).json({ error: "Unknown bootstrap file" });
+          return;
+        }
+        const workspacePath = path.resolve("data", "workspace");
+        const filePath = path.join(workspacePath, filename);
+        if (!fs.existsSync(filePath)) {
+          res.json({ path: filename, content: "", editable: true, exists: false });
+          return;
+        }
+        const content = fs.readFileSync(filePath, "utf8");
+        res.json({ path: filename, content, editable: true, exists: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.put("/api/system/bootstrap-file/:file", (req: Request, res: Response) => {
+      try {
+        const filename = String(req.params.file);
+        if (!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"].includes(filename)) {
+          res.status(404).json({ error: "Unknown bootstrap file" });
+          return;
+        }
+        const { content } = req.body || {};
+        if (typeof content !== "string") {
+          res.status(400).json({ error: "content field (string) is required" });
+          return;
+        }
+        const workspacePath = path.resolve("data", "workspace");
+        const filePath = path.join(workspacePath, filename);
+        if (!fs.existsSync(path.dirname(filePath))) {
+          fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        }
+        fs.writeFileSync(filePath, content, "utf8");
+        res.json({ success: true, path: filename, bytes: Buffer.byteLength(content, "utf8") });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.get("/api/config/llm", (_req: Request, res: Response) => {
       try {
         const executor = this.registry.resolveService<{
