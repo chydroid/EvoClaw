@@ -489,17 +489,17 @@ export default function App() {
         <div style={modalOverlayStyle} onClick={() => setDeleteTarget(null)}>
           <div style={modalCardStyle} onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10, color: "var(--text-primary)" }}>
-              {lang === "zh" ? "确认删除" : "Confirm Deletion"}
+              {t("app.confirm_delete")}
             </div>
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-              {lang === "zh" ? "确定要删除此会话吗？此操作不可撤销。" : "Are you sure you want to delete this session? This action cannot be undone."}
+              {t("app.confirm_delete_desc")}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button style={modalCancelBtn} onClick={() => setDeleteTarget(null)}>
-                {lang === "zh" ? "取消" : "Cancel"}
+                {t("app.cancel")}
               </button>
               <button style={modalDeleteBtn} onClick={() => deleteSession(deleteTarget)}>
-                {lang === "zh" ? "删除" : "Delete"}
+                {t("app.delete")}
               </button>
             </div>
           </div>

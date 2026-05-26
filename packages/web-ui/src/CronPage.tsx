@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface ScheduledTask {
   id: string;
@@ -87,12 +88,12 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 const CRON_TEMPLATES = [
-  { name: "每30分钟心跳检查", cron: "*/30 * * * *", desc: "定期检查Agent心跳状态", handlerType: "system" },
-  { name: "每日技能刷新", cron: "0 2 * * *", desc: "每天凌晨2点刷新技能列表", handlerType: "skills" },
-  { name: "每小时记忆清理", cron: "0 * * * *", desc: "每小时清理过期记忆条目", handlerType: "memory" },
-  { name: "每6小时用户问候", cron: "0 */6 * * *", desc: "定期向用户发送问候", handlerType: "chat" },
-  { name: "每日日志归档", cron: "0 3 * * *", desc: "每天凌晨3点归档日志", handlerType: "system" },
-  { name: "每15分钟健康检查", cron: "*/15 * * * *", desc: "检查所有服务健康状态", handlerType: "system" },
+  { nameKey: "cron.tpl_heartbeat", descKey: "cron.tpl_heartbeat_desc", cron: "*/30 * * * *", handlerType: "system" },
+  { nameKey: "cron.tpl_skill_refresh", descKey: "cron.tpl_skill_refresh_desc", cron: "0 2 * * *", handlerType: "skills" },
+  { nameKey: "cron.tpl_memory_clean", descKey: "cron.tpl_memory_clean_desc", cron: "0 * * * *", handlerType: "memory" },
+  { nameKey: "cron.tpl_greeting", descKey: "cron.tpl_greeting_desc", cron: "0 */6 * * *", handlerType: "chat" },
+  { nameKey: "cron.tpl_log_archive", descKey: "cron.tpl_log_archive_desc", cron: "0 3 * * *", handlerType: "system" },
+  { nameKey: "cron.tpl_health_check", descKey: "cron.tpl_health_check_desc", cron: "*/15 * * * *", handlerType: "system" },
 ];
 
 interface TaskForm {
@@ -104,6 +105,7 @@ interface TaskForm {
 }
 
 export function CronPage() {
+  const { t, lang } = useTranslation();
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<TaskForm>({
@@ -131,9 +133,9 @@ export function CronPage() {
 
   const applyTemplate = (tpl: typeof CRON_TEMPLATES[0]) => {
     setForm({
-      name: tpl.name,
+      name: t(tpl.nameKey),
       cronExpression: tpl.cron,
-      description: tpl.desc,
+      description: t(tpl.descKey),
       handlerType: tpl.handlerType,
       enabled: true,
     });
@@ -141,7 +143,7 @@ export function CronPage() {
 
   const saveTask = async () => {
     if (!form.name || !form.cronExpression) {
-      setMessage("名称和 Cron 表达式为必填项");
+      setMessage(t("cron.name_cron_required"));
       return;
     }
     try {
@@ -151,15 +153,16 @@ export function CronPage() {
         body: JSON.stringify(form),
       });
       if (res.ok) {
-        setMessage("任务已创建");
+        setMessage(t("cron.created_ok"));
         setShowModal(false);
         setForm({ name: "", cronExpression: "", description: "", handlerType: "system", enabled: true });
         loadTasks();
       } else {
-        setMessage("创建失败");
+        const errorData = await res.json().catch(() => ({ error: "Unknown error" }));
+        setMessage(`${t("cron.create_fail")}: ${errorData.error || res.statusText}`);
       }
     } catch {
-      setMessage("网络错误");
+      setMessage(t("cron.network_error"));
     }
     setTimeout(() => setMessage(""), 3000);
   };
@@ -185,27 +188,31 @@ export function CronPage() {
   const runTask = async (taskId: string) => {
     try {
       await fetch(`/api/scheduler/tasks/${taskId}/run`, { method: "POST" });
-      setMessage("任务已触发执行");
+      setMessage(t("cron.triggered"));
       setTimeout(() => setMessage(""), 3000);
       loadTasks();
     } catch {}
   };
 
+  const isErrorMsg = lang === "zh"
+    ? message.includes("失败") || message.includes("错误")
+    : /fail|error/i.test(message);
+
   return (
     <div style={s.container}>
       <div style={s.header}>
         <div>
-          <div style={s.title}>定时任务 (Cron)</div>
-          <div style={s.subtitle}>管理定期自动执行的任务 · 支持标准 Cron 表达式</div>
+          <div style={s.title}>{t("cron.title")}</div>
+          <div style={s.subtitle}>{t("cron.subtitle")}</div>
         </div>
-        <button style={s.addBtn} onClick={() => setShowModal(true)}>+ 新建任务</button>
+        <button style={s.addBtn} onClick={() => setShowModal(true)}>{t("cron.new_task")}</button>
       </div>
 
       {message && (
         <div style={{
           padding: "8px 14px", borderRadius: "6px", marginBottom: "12px",
-          background: message.includes("失败") || message.includes("错误") ? "var(--error-bg)" : "var(--success-bg)",
-          color: message.includes("失败") || message.includes("错误") ? "var(--error)" : "var(--success)",
+          background: isErrorMsg ? "var(--error-bg)" : "var(--success-bg)",
+          color: isErrorMsg ? "var(--error)" : "var(--success)",
           fontSize: "12px",
         }}>
           {message}
@@ -214,8 +221,8 @@ export function CronPage() {
 
       {tasks.length === 0 ? (
         <div style={s.empty}>
-          暂无定时任务<br />
-          <span style={{ fontSize: "11px" }}>点击"+ 新建任务"创建第一个定时任务，或从模板快速创建</span>
+          {t("cron.empty")}<br />
+          <span style={{ fontSize: "11px" }}>{t("cron.empty_hint")}</span>
         </div>
       ) : (
         tasks.map((task) => (
@@ -223,34 +230,34 @@ export function CronPage() {
             <div style={s.cardHeader}>
               <div>
                 <div style={s.cardTitle}>{task.name}</div>
-                <div style={s.cardDesc}>{task.description || "无描述"}</div>
+                <div style={s.cardDesc}>{task.description || t("cron.no_desc")}</div>
               </div>
-              <span style={cronStatusBadgeStyle(task.enabled)}>{task.enabled ? "启用" : "禁用"}</span>
+              <span style={cronStatusBadgeStyle(task.enabled)}>{task.enabled ? t("cron.enabled") : t("cron.disabled")}</span>
             </div>
             <div style={s.cronBadge}>{task.cronExpression}</div>
             <div style={s.metaRow}>
               <div style={s.metaItem}>
-                类型: <span style={s.metaValue}>{task.handlerType}</span>
+                {t("cron.type")}: <span style={s.metaValue}>{task.handlerType}</span>
               </div>
               <div style={s.metaItem}>
-                执行次数: <span style={s.metaValue}>{task.runCount || 0}</span>
+                {t("cron.run_count")}: <span style={s.metaValue}>{task.runCount || 0}</span>
               </div>
               <div style={s.metaItem}>
-                错误次数: <span style={{ ...s.metaValue, color: task.errorCount > 0 ? "var(--error)" : "var(--text-secondary)" }}>{task.errorCount || 0}</span>
+                {t("cron.error_count")}: <span style={{ ...s.metaValue, color: task.errorCount > 0 ? "var(--error)" : "var(--text-secondary)" }}>{task.errorCount || 0}</span>
               </div>
               <div style={s.metaItem}>
-                上次运行: <span style={s.metaValue}>{task.lastRun ? new Date(task.lastRun).toLocaleString() : "从未"}</span>
+                {t("cron.last_run")}: <span style={s.metaValue}>{task.lastRun ? new Date(task.lastRun).toLocaleString() : t("cron.never")}</span>
               </div>
               <div style={s.metaItem}>
-                下次运行: <span style={s.metaValue}>{task.nextRun ? new Date(task.nextRun).toLocaleString() : "计算中..."}</span>
+                {t("cron.next_run")}: <span style={s.metaValue}>{task.nextRun ? new Date(task.nextRun).toLocaleString() : t("cron.calculating")}</span>
               </div>
             </div>
             <div style={s.actionBtns}>
               <button style={s.actionBtn} onClick={() => toggleTask(task.id, task.enabled)}>
-                {task.enabled ? "禁用" : "启用"}
+                {task.enabled ? t("cron.disable") : t("cron.enable")}
               </button>
-              <button style={s.actionBtn} onClick={() => runTask(task.id)}>立即执行</button>
-              <button style={s.dangerBtn} onClick={() => deleteTask(task.id)}>删除</button>
+              <button style={s.actionBtn} onClick={() => runTask(task.id)}>{t("cron.run_now")}</button>
+              <button style={s.dangerBtn} onClick={() => deleteTask(task.id)}>{t("cron.delete")}</button>
             </div>
           </div>
         ))
@@ -260,18 +267,18 @@ export function CronPage() {
       {showModal && (
         <div style={s.modal} onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}>
           <div style={s.modalCard}>
-            <div style={s.modalTitle}>新建定时任务</div>
+            <div style={s.modalTitle}>{t("cron.modal_title")}</div>
 
             {/* Templates */}
             <div style={s.templateSection}>
               <div style={{ color: "var(--text-muted)", fontSize: "11px", fontWeight: "bold", marginBottom: "8px" }}>
-                快速模板 (点击应用)
+                {t("cron.template_title")}
               </div>
               <div style={s.templateGrid}>
                 {CRON_TEMPLATES.map((tpl, i) => (
                   <div key={i} style={s.templateCard} onClick={() => applyTemplate(tpl)}>
-                    <div style={s.templateName}>{tpl.name}</div>
-                    <div style={s.templateDesc}>{tpl.desc}</div>
+                    <div style={s.templateName}>{t(tpl.nameKey)}</div>
+                    <div style={s.templateDesc}>{t(tpl.descKey)}</div>
                     <div style={s.templateCron}>{tpl.cron}</div>
                   </div>
                 ))}
@@ -279,37 +286,37 @@ export function CronPage() {
             </div>
 
             <div style={s.field}>
-              <label style={s.label}>任务名称 *</label>
-              <input style={s.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例: 每日技能刷新" />
+              <label style={s.label}>{t("cron.task_name_label")}</label>
+              <input style={s.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={t("cron.task_name_placeholder")} />
             </div>
             <div style={s.field}>
-              <label style={s.label}>Cron 表达式 *</label>
-              <input style={s.input} value={form.cronExpression} onChange={(e) => setForm({ ...form, cronExpression: e.target.value })} placeholder="例: 0 2 * * *" />
-              <div style={s.helpText}>格式: 分 时 日 月 周 (例: */30 * * * * = 每30分钟, 0 2 * * * = 每天2:00)</div>
+              <label style={s.label}>{t("cron.cron_label")}</label>
+              <input style={s.input} value={form.cronExpression} onChange={(e) => setForm({ ...form, cronExpression: e.target.value })} placeholder={t("cron.cron_placeholder")} />
+              <div style={s.helpText}>{t("cron.cron_help")}</div>
             </div>
             <div style={s.field}>
-              <label style={s.label}>描述</label>
-              <input style={s.input} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="简要描述此任务" />
+              <label style={s.label}>{t("cron.desc_label")}</label>
+              <input style={s.input} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={t("cron.desc_placeholder")} />
             </div>
             <div style={s.field}>
-              <label style={s.label}>处理器类型</label>
+              <label style={s.label}>{t("cron.handler_label")}</label>
               <select style={s.select} value={form.handlerType} onChange={(e) => setForm({ ...form, handlerType: e.target.value })}>
-                <option value="system">系统任务</option>
-                <option value="skills">技能任务</option>
-                <option value="memory">记忆任务</option>
-                <option value="chat">对话任务</option>
-                <option value="custom">自定义</option>
+                <option value="system">{t("cron.handler_system")}</option>
+                <option value="skills">{t("cron.handler_skills")}</option>
+                <option value="memory">{t("cron.handler_memory")}</option>
+                <option value="chat">{t("cron.handler_chat")}</option>
+                <option value="custom">{t("cron.handler_custom")}</option>
               </select>
             </div>
             <div style={s.field}>
               <div style={s.checkbox}>
                 <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} id="cron-enabled" />
-                <label htmlFor="cron-enabled" style={{ color: "var(--text-secondary)", fontSize: "12px", cursor: "pointer" }}>创建后立即启用</label>
+                <label htmlFor="cron-enabled" style={{ color: "var(--text-secondary)", fontSize: "12px", cursor: "pointer" }}>{t("cron.enable_checkbox")}</label>
               </div>
             </div>
             <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
-              <button style={s.addBtn} onClick={saveTask}>创建任务</button>
-              <button style={s.actionBtn} onClick={() => setShowModal(false)}>取消</button>
+              <button style={s.addBtn} onClick={saveTask}>{t("cron.create_btn")}</button>
+              <button style={s.actionBtn} onClick={() => setShowModal(false)}>{t("cron.cancel")}</button>
             </div>
           </div>
         </div>

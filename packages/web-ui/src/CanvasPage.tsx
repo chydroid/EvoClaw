@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface CompactionSummary {
   id: string;
@@ -66,6 +67,7 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export function CanvasPage() {
+  const { t, lang } = useTranslation();
   const [compactions, setCompactions] = useState<CompactionSummary[]>([]);
   const [evolution, setEvolution] = useState<EvolutionStats | null>(null);
   const [learning, setLearning] = useState<{ totalEntries: number; resolvedEntries: number; unresolvedEntries: number; resolutionRate: number } | null>(null);
@@ -101,37 +103,37 @@ export function CanvasPage() {
     loadData();
   }, [loadData]);
 
-  if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>加载中...</div></div>;
+  if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>{t("canvas.loading")}</div></div>;
 
   return (
     <div style={s.container}>
       <div style={s.header}>
-        <div style={s.title}>全局概览 (Canvas)</div>
-        <div style={s.subtitle}>对话压缩历史 · 进化统计 · 学习进度 · 全局状态一览</div>
+        <div style={s.title}>{t("canvas.global_overview")}</div>
+        <div style={s.subtitle}>{t("canvas.global_desc")}</div>
       </div>
 
       <div style={s.grid}>
         {/* Evolution Stats */}
         <div style={s.card}>
           <div style={s.cardTitle}>
-            <span style={s.cardIcon}>📈</span> 进化统计
+            <span style={s.cardIcon}>📈</span> {t("canvas.evo_stats")}
           </div>
           <div style={s.metricRow}>
-            <span style={s.metricLabel}>进化周期</span>
+            <span style={s.metricLabel}>{t("canvas.evo_cycles")}</span>
             <span>
               <span style={s.metricLarge}>{evolution?.totalCycles || 0}</span>
-              <span style={s.metricUnit}>次</span>
+              <span style={s.metricUnit}>{lang === "zh" ? t("canvas.cycles_unit") : ""}</span>
             </span>
           </div>
           <div style={s.progressBar}>
             <div style={canvasProgressFillStyle((evolution?.successRate || 0) * 100, "var(--success)")} />
           </div>
           <div style={{ ...s.metricRow, marginTop: "8px" }}>
-            <span style={s.metricLabel}>成功率</span>
+            <span style={s.metricLabel}>{t("canvas.success_rate")}</span>
             <span style={s.metricValue}>{evolution ? `${Math.round(evolution.successRate * 100)}%` : "N/A"}</span>
           </div>
           <div style={s.metricRow}>
-            <span style={s.metricLabel}>候选方案总数</span>
+            <span style={s.metricLabel}>{t("canvas.total_candidates")}</span>
             <span style={s.metricValue}>{evolution?.totalCandidates || 0}</span>
           </div>
         </div>
@@ -139,24 +141,24 @@ export function CanvasPage() {
         {/* Learning Stats */}
         <div style={s.card}>
           <div style={s.cardTitle}>
-            <span style={s.cardIcon}>📚</span> 学习统计
+            <span style={s.cardIcon}>📚</span> {t("canvas.learning_stats")}
           </div>
           <div style={s.metricRow}>
-            <span style={s.metricLabel}>学习条目</span>
+            <span style={s.metricLabel}>{t("canvas.learning_entries")}</span>
             <span>
               <span style={s.metricLarge}>{learning?.totalEntries || 0}</span>
-              <span style={s.metricUnit}>条</span>
+              <span style={s.metricUnit}>{lang === "zh" ? t("canvas.entries_unit") : ""}</span>
             </span>
           </div>
           <div style={s.progressBar}>
             <div style={canvasProgressFillStyle((learning?.resolutionRate || 0) * 100, "var(--accent)")} />
           </div>
           <div style={{ ...s.metricRow, marginTop: "8px" }}>
-            <span style={s.metricLabel}>解决率</span>
+            <span style={s.metricLabel}>{t("canvas.resolution_rate")}</span>
             <span style={s.metricValue}>{learning ? `${Math.round(learning.resolutionRate * 100)}%` : "N/A"}</span>
           </div>
           <div style={s.metricRow}>
-            <span style={s.metricLabel}>已解决 / 未解决</span>
+            <span style={s.metricLabel}>{t("canvas.resolved_unresolved")}</span>
             <span style={s.metricValue}>
               <span style={{ color: "var(--success)" }}>{learning?.resolvedEntries || 0}</span>
               {" / "}
@@ -168,21 +170,21 @@ export function CanvasPage() {
         {/* Compaction chain */}
         <div style={{ ...s.card, gridColumn: compactions.length > 0 ? "1 / -1" : undefined }}>
           <div style={s.cardTitle}>
-            <span style={s.cardIcon}>🔄</span> 对话压缩链
+            <span style={s.cardIcon}>🔄</span> {t("canvas.compaction_chain")}
           </div>
           {compactions.length === 0 ? (
-            <div style={s.empty}>暂无压缩记录 — 当对话历史过长时自动触发</div>
+            <div style={s.empty}>{t("canvas.no_compactions")}</div>
           ) : (
             <div style={s.timeline}>
               {compactions.map((comp, i) => (
                 <div key={comp.id} style={s.timelineItem}>
                   <div style={s.timelineDot} />
                   <div style={s.timelineTitle}>
-                    压缩 #{i + 1}: {comp.parentSessionId} → {comp.successorSessionId}
+                    {t("canvas.compression_num")}{i + 1}: {comp.parentSessionId} → {comp.successorSessionId}
                   </div>
                   <div style={s.timelineDesc}>{comp.summary.slice(0, 200)}</div>
                   <div style={s.timelineTime}>
-                    {new Date(comp.timestamp).toLocaleString()} · 压缩了 {comp.compactedTurnCount} 轮对话
+                    {new Date(comp.timestamp).toLocaleString()} · {t("canvas.compressed_turns").replace("{0}", String(comp.compactedTurnCount))}
                   </div>
                   {comp.keyFacts.length > 0 && (
                     <div style={{ marginTop: "6px" }}>
@@ -213,7 +215,7 @@ export function CanvasPage() {
       </div>
 
       <div style={{ color: "var(--text-muted)", fontSize: "10px", textAlign: "center" as const, marginTop: "24px" }}>
-        Canvas 全局视图 · 数据来自各子系统实时查询
+        {t("canvas.footer")}
       </div>
     </div>
   );

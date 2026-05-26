@@ -5,6 +5,39 @@
 
 ---
 
+## v0.5.9 (2026-05-26)
+
+### 定时任务修复 + 全面多语言 i18n + 微信扫码通道建立
+
+- **文件**: `packages/web-ui/src/i18n.ts`、`packages/web-ui/src/CronPage.tsx`、`packages/web-ui/src/ChannelConfig.tsx`、`packages/web-ui/src/App.tsx`、`packages/web-ui/src/BootstrapConfig.tsx`、`packages/web-ui/src/CanvasPage.tsx`、`package.json`
+- **改动**:
+
+  **问题 1 — 定时任务创建功能修复**
+  - 排查定时任务创建流程：API 端点 (`POST /api/scheduler/tasks`) 正常返回 201，根因是前端错误提示不清晰
+  - 修复 `CronPage.tsx` 错误处理逻辑：当 `res.ok === false` 时读取响应体 error 信息，不再显示通用 "创建失败"
+  - 多场景测试通过：创建 heartbeat (每30分钟)、技能刷新、内存清理等任务，全部 CRUD 操作 (创建/列表/启用禁用/手动执行/删除) 验证正常
+  - handlerType 自动映射：前端 "system" → 后端 "system_cleanup"，"skills/memory/chat" → "custom"
+
+  **问题 2 — 全面多语言界面 i18n 修复**
+  - 扩展 `i18n.ts` 字典：新增 200+ 翻译键，覆盖全部 13 个页面类别
+  - 通道配置 (ChannelConfig.tsx)：42 个翻译键，飞书/企业微信/个人微信的 18 条 setup guide 全部双语化
+  - 定时任务 (CronPage.tsx)：40+ 翻译键，6 个模板名称/描述、表单标签、状态提示、错误信息全部双语化
+  - 对话页 (App.tsx)：删除确认弹窗从三元表达式 `lang === "zh" ? ... : ...` 转为标准 `t()` 调用
+  - 引导配置 (BootstrapConfig.tsx)：完整 i18n 集成，标题/提示/按钮/消息全部双语化
+  - 全局画布 (CanvasPage.tsx)：完整 i18n 集成，进化统计/学习统计/压缩链/页脚全部双语化
+  - 插件/仪表盘/状态/事件/技能/权限/LLM配置/进化/日志/运维页面字典全部就绪
+
+  **问题 3 — 个人微信通道二维码建立流程**
+  - 重构 `ChannelConfig.tsx` 个人微信通道：用 SVG 二维码替代纯表单填写
+  - QR 码生成：`generateQRDataUri()` 基于配对码 `evoclaw-pair:wechat:{timestamp}:{token}` 生成 240x240 SVG 二维码
+  - 3 种状态视觉反馈：waiting (旋转加载) / connected (绿色对勾) / expired (红色警告)
+  - 自动过期：5 分钟后 QR 码自动标记为过期
+  - 刷新按钮：允许用户重新生成 QR 码
+  - 表单回退：提供切换开关，支持用户手动填写通道信息
+  - 飞书和企业微信通道保持不变（表单模式）
+
+---
+
 ## v0.5.8 (2026-05-26)
 
 ### 全面功能测试 + WebUI API 端点修复

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface BootstrapFile {
   name: string;
@@ -49,6 +50,7 @@ const fileTabStyle = (active: boolean): React.CSSProperties => ({
 });
 
 export function BootstrapConfig() {
+  const { t, lang } = useTranslation();
   const [data, setData] = useState<BootstrapData | null>(null);
   const [selectedFile, setSelectedFile] = useState("AGENTS.md");
   const [content, setContent] = useState("");
@@ -99,14 +101,14 @@ export function BootstrapConfig() {
       const json = await res.json();
       if (json.success) {
         setOriginalContent(content);
-        setMessage(`已保存 ${selectedFile}`);
+        setMessage(t("bootstrap.saved_ok") + selectedFile);
         setTimeout(() => setMessage(""), 3000);
         loadFiles();
       } else {
-        setMessage("保存失败: " + (json.error || "未知错误"));
+        setMessage(t("bootstrap.save_fail") + (json.error || t("bootstrap.unknown_error")));
       }
     } catch (err) {
-      setMessage("保存失败: " + String(err));
+      setMessage(t("bootstrap.save_fail") + String(err));
     }
   };
 
@@ -117,13 +119,16 @@ export function BootstrapConfig() {
       setMessage(json.message || "Bootstrap ritual completed");
       loadFiles();
     } catch (err) {
-      setMessage("操作失败: " + String(err));
+      setMessage(t("bootstrap.op_fail") + String(err));
     }
   };
 
   const isDirty = content !== originalContent;
+  const isErrorMsg = lang === "zh"
+    ? message.includes("失败") || message.includes("错误")
+    : /fail|error/i.test(message);
 
-  if (loading) return <div style={styles.container}><div style={{ color: "var(--text-muted)" }}>加载中...</div></div>;
+  if (loading) return <div style={styles.container}><div style={{ color: "var(--text-muted)" }}>{t("bootstrap.loading")}</div></div>;
 
   const currentFile = data?.files?.find((f) => f.name === selectedFile);
 
@@ -131,22 +136,22 @@ export function BootstrapConfig() {
     <div style={styles.container}>
       <div style={styles.header}>
         <div>
-          <div style={styles.title}>Bootstrap 引导文件</div>
+          <div style={styles.title}>{t("bootstrap.title")}</div>
           <div style={styles.subtitle}>
-            OpenClaw 风格的工作区引导文件 · 路径: {data?.workspacePath || "data/workspace"}
+            {t("bootstrap.subtitle_prefix")}{data?.workspacePath || "data/workspace"}
           </div>
         </div>
       </div>
 
       {data?.pending && (
         <div style={styles.pendingBanner}>
-          Bootstrap 仪式待完成 — BOOTSTRAP.md 存在。Agent 会在首次运行时处理它，完成后自动删除。
+          {t("bootstrap.pending_banner")}
         </div>
       )}
 
       {data?.missingFiles && data.missingFiles.length > 0 && (
         <div style={{ ...styles.pendingBanner, background: "var(--error-bg)", color: "var(--error)", borderColor: "var(--error)" }}>
-          缺失文件: {data.missingFiles.join(", ")}
+          {t("bootstrap.missing_files")}{data.missingFiles.join(", ")}
         </div>
       )}
 
@@ -158,7 +163,7 @@ export function BootstrapConfig() {
             onClick={() => selectFile(f.name)}
           >
             {f.name}
-            {!f.exists ? " (缺失)" : ""}
+            {!f.exists ? t("bootstrap.missing_suffix") : ""}
           </div>
         ))}
       </div>
@@ -172,7 +177,7 @@ export function BootstrapConfig() {
             </div>
             {data?.pending && currentFile.name === "BOOTSTRAP.md" && (
               <button style={{ background: "var(--warning)", color: "#000", border: "none", padding: "8px 12px", borderRadius: "4px", cursor: "pointer", fontSize: "12px", fontWeight: "bold" }} onClick={completeBootstrap}>
-                完成 Bootstrap 仪式
+                {t("bootstrap.complete_btn")}
               </button>
             )}
           </div>
@@ -184,14 +189,14 @@ export function BootstrapConfig() {
           />
           <div style={styles.buttonRow}>
             <button style={styles.saveBtn} onClick={saveFile} disabled={!isDirty}>
-              {isDirty ? "保存更改" : "已保存"}
+              {isDirty ? t("bootstrap.save_changes") : t("bootstrap.saved")}
             </button>
             <button style={styles.resetBtn} onClick={() => setContent(originalContent)} disabled={!isDirty}>
-              撤销
+              {t("bootstrap.undo")}
             </button>
           </div>
           {message && (
-            <div style={message.includes("失败") ? { ...styles.info, color: "var(--error)" } : styles.success}>
+            <div style={isErrorMsg ? { ...styles.info, color: "var(--error)" } : styles.success}>
               {message}
             </div>
           )}
