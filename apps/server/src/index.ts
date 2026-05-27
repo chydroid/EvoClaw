@@ -4,7 +4,7 @@ import * as path from "path";
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints } from "@evoclaw/core";
-import { GatewayServer, ChannelManager, ProtocolHandler } from "@evoclaw/gateway";
+import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, handleChatCommand, dispatchCommand } from "@evoclaw/agent";
 import type { AgentConfig, AgentBinding } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
@@ -64,6 +64,9 @@ export class EvoClawServer {
   private reportGenerator: ReportGenerator;
   private taskClassifier: TaskClassifier;
   private skillOrchestrator: SkillOrchestrator;
+
+  // Weixin plugin adapter
+  private weixinPluginAdapter: WeixinPluginAdapter;
 
   // ── New modules (OpenClaw parity) ──
   private agentRouter: AgentRouter;
@@ -335,6 +338,9 @@ export class EvoClawServer {
     this.registry.registerService("taskClassifier", this.taskClassifier);
     this.skillOrchestrator = new SkillOrchestrator(this.registry, this.eventBus);
     this.registry.registerService("skillOrchestrator", this.skillOrchestrator);
+
+    // Initialize Weixin plugin adapter
+    this.weixinPluginAdapter = new WeixinPluginAdapter(this.eventBus, this.agentModelExecutor);
   }
 
   async start(): Promise<void> {
@@ -351,6 +357,15 @@ export class EvoClawServer {
 
     this.logger.info("server", "Gateway server starting...");
     await this.gateway.start();
+
+    this.logger.info("server", "Starting Weixin plugin adapter...");
+    this.weixinPluginAdapter.startAllConfiguredMonitors();
+
+    // Listen for Weixin monitor start events
+    this.eventBus.subscribe("weixin:start-monitor", async (_event) => {
+      this.logger.info("server", "Received Weixin monitor start request");
+      this.weixinPluginAdapter.startAllConfiguredMonitors();
+    });
 
     this.logger.info("server", "Loading persisted configuration...");
     this.gateway.loadPersistedConfig();
@@ -408,6 +423,21 @@ export class EvoClawServer {
     this.registerIntelligenceTools();
 
     this.scheduleManager.start();
+
+    // Register all built-in plugins
+    try {
+      const { BUILTIN_PLUGIN_FACTORIES } = await import("@evoclaw/agent/plugins");
+      for (const factory of BUILTIN_PLUGIN_FACTORIES) {
+        try {
+          const plugin = factory();
+          await this.pluginManager.registerPlugin(plugin);
+        } catch (err) {
+          this.logger.error("server", `Failed to register built-in plugin: ${err}`);
+        }
+      }
+    } catch (err) {
+      this.logger.error("server", `Failed to load built-in plugins: ${err}`);
+    }
 
     this.logger.info("server", "Evolution engine starting...");
     this.logger.info("server", "Evolution engine online");
@@ -468,6 +498,8 @@ export class EvoClawServer {
     this.selfHealing.stop();
     this.scheduleManager.stop();
     this.configWatcher.stopAll();
+    // Stop Weixin plugin adapter
+    this.weixinPluginAdapter.stopAllMonitors();
     this.logger.info("server", "Stopping subsystems...");
     await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
     await this.processManager.killAll();

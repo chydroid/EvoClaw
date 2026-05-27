@@ -108,6 +108,9 @@ export interface SKILLmdMeta {
   version: string;
   description: string;
   author: string;
+  category?: SkillCategory;
+  keywords?: string[];
+  license?: string;
   triggers: SkillTrigger[];
   requires: SkillDependency[];
   config: Record<string, unknown>;

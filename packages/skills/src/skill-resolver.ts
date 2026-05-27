@@ -28,6 +28,7 @@ export interface DependencySuggestion {
   availableVersion: string;
   source: "local" | "remote";
   confidence: number;
+  installPath?: string;
 }
 
 export class SkillResolver {
@@ -78,10 +79,19 @@ export class SkillResolver {
         (s) => s.dependency.name === missing.name
       );
 
-      if (suggestion) {
+      if (suggestion && suggestion.installPath) {
         details.push(
           `Installing ${missing.name}@${suggestion.availableVersion} (from ${suggestion.source})`
         );
+        try {
+          const installedSkill = await installFn(suggestion.installPath);
+          installed.push(installedSkill);
+        } catch (err) {
+          failed.push(missing);
+          details.push(
+            `Failed to install "${missing.name}": ${err instanceof Error ? err.message : "unknown error"}`
+          );
+        }
       } else {
         failed.push(missing);
         details.push(
@@ -214,7 +224,10 @@ export class SkillResolver {
       if (wanted === "*" || wanted === "latest") return true;
 
       const clean = semver.valid(actual);
-      if (!clean) return true;
+      if (!clean) {
+        // If actual version is not valid semver, do string comparison as fallback
+        return actual === wanted;
+      }
 
       return semver.satisfies(clean, wanted);
     } catch {
@@ -228,11 +241,14 @@ export class SkillResolver {
     const local = this.skillRegistry.searchLocal({ keyword: dep.name });
 
     if (local.entries.length > 0) {
+      const entry = local.entries[0];
+      const localSkill = this.skillRegistry.getLocalSkill(entry.skillId);
       return {
         dependency: dep,
-        availableVersion: local.entries[0].version,
+        availableVersion: entry.version,
         source: "local",
         confidence: 0.9,
+        installPath: localSkill?.installPath || undefined,
       };
     }
 
@@ -245,6 +261,7 @@ export class SkillResolver {
           availableVersion: remote.entries[0].version,
           source: "remote",
           confidence: 0.7,
+          installPath: `remote:${remote.entries[0].name}`,
         };
       }
     } catch {
@@ -255,8 +272,9 @@ export class SkillResolver {
   }
 
   invalidateCache(skillId: string): void {
+    // Delete entries where the skillId matches exactly at the start followed by @
     for (const [key] of this.resolutionCache) {
-      if (key.startsWith(skillId)) {
+      if (key.startsWith(skillId + "@") || key.startsWith(skillId + ":")) {
         this.resolutionCache.delete(key);
       }
     }

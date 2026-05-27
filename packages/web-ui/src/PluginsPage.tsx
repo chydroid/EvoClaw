@@ -5,8 +5,9 @@
  * install / uninstall / enable / disable operations.
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import type { CSSProperties } from "react";
+import { useTranslation } from "./i18n";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -170,73 +171,7 @@ const statCardStyle: CSSProperties = {
   textAlign: "center",
 };
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_PLUGINS: PluginInfo[] = [
-  {
-    id: "memory-enhancer",
-    name: "Memory Enhancer",
-    version: "1.2.0",
-    description: "Enhanced memory management with semantic search and vector embeddings",
-    author: "evoclaw",
-    status: "active",
-    hookCount: 4,
-    hooks: [
-      { type: "before_prompt_build", priority: "normal" },
-      { type: "after_tool_call", priority: "normal" },
-      { type: "session_start", priority: "first" },
-      { type: "session_end", priority: "last" },
-    ],
-    installedAt: "2026-05-15",
-  },
-  {
-    id: "web-browser",
-    name: "Web Browser",
-    version: "0.9.1",
-    description: "Full web browsing capabilities with Playwright integration",
-    author: "evoclaw",
-    status: "active",
-    hookCount: 3,
-    hooks: [
-      { type: "before_tool_call", priority: "first" },
-      { type: "after_tool_call", priority: "normal" },
-      { type: "tool_result_persist", priority: "normal" },
-    ],
-    installedAt: "2026-05-10",
-  },
-  {
-    id: "telegram-connector",
-    name: "Telegram Connector",
-    version: "0.5.0",
-    description: "Connect EvoClaw to Telegram for multi-channel messaging",
-    author: "community",
-    status: "disabled",
-    hookCount: 5,
-    hooks: [
-      { type: "message_received", priority: "first" },
-      { type: "message_sending", priority: "first" },
-      { type: "message_sent", priority: "normal" },
-      { type: "gateway_start", priority: "first" },
-      { type: "gateway_stop", priority: "last" },
-    ],
-    installedAt: "2026-04-28",
-  },
-  {
-    id: "code-analyzer",
-    name: "Code Analyzer",
-    version: "2.0.0-beta",
-    description: "Static code analysis, linting, and security scanning for development tasks",
-    author: "evoclaw",
-    status: "error",
-    error: "Failed to initialize: Missing dependency 'eslint'",
-    hookCount: 2,
-    hooks: [
-      { type: "before_agent_reply", priority: "normal" },
-      { type: "before_tool_call", priority: "normal" },
-    ],
-    installedAt: "2026-05-18",
-  },
-];
+// ─── Available Plugins (community registry) ─────────────────────────────────
 
 const MOCK_AVAILABLE: AvailablePlugin[] = [
   { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord channel integration with slash commands", author: "community", downloads: 1230, rating: 4.5 },
@@ -250,64 +185,116 @@ const MOCK_AVAILABLE: AvailablePlugin[] = [
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function PluginsPage() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"installed" | "available">("installed");
-  const [plugins, setPlugins] = useState<PluginInfo[]>(MOCK_PLUGINS);
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [search, setSearch] = useState("");
   const [installId, setInstallId] = useState("");
   const [showInstall, setShowInstall] = useState(false);
+  const [message, setMessage] = useState("");
 
-  const togglePlugin = (id: string) => {
-    setPlugins((prev) =>
-      prev.map((p) =>
-        p.id === id
-          ? { ...p, status: p.status === "active" ? ("disabled" as const) : ("active" as const), error: undefined }
-          : p,
-      ),
-    );
+  const loadPlugins = useCallback(async () => {
+    try {
+      const res = await fetch("/api/plugins");
+      if (res.ok) {
+        const data = await res.json();
+        const apiPlugins = (data.plugins || []).map((p: any) => ({
+          id: p.manifest?.name?.toLowerCase().replace(/\s+/g, "-") || "unknown",
+          name: p.manifest?.name || "Unknown",
+          version: p.manifest?.version || "0.0.0",
+          description: p.manifest?.description || "",
+          author: p.manifest?.author,
+          status: p.status || "active",
+          error: p.error,
+          hookCount: 0,
+          hooks: [],
+          installedAt: new Date().toISOString().split("T")[0],
+        }));
+        setPlugins(apiPlugins);
+      }
+    } catch {
+      // API not available
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPlugins();
+    const interval = setInterval(loadPlugins, 15000);
+    return () => clearInterval(interval);
+  }, [loadPlugins]);
+
+  const togglePlugin = async (id: string) => {
+    const plugin = plugins.find((p) => p.id === id);
+    if (!plugin) return;
+    const newStatus = plugin.status === "active" ? "disabled" : "active";
+    try {
+      await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      loadPlugins();
+    } catch {
+      setMessage(t("plugins.toggle_fail"));
+      setTimeout(() => setMessage(""), 3000);
+    }
   };
 
-  const uninstallPlugin = (id: string) => {
-    setPlugins((prev) => prev.filter((p) => p.id !== id));
+  const uninstallPlugin = async (id: string) => {
+    const plugin = plugins.find((p) => p.id === id);
+    if (!plugin) return;
+    try {
+      await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}`, { method: "DELETE" });
+      loadPlugins();
+    } catch {
+      setMessage(t("plugins.remove_fail"));
+      setTimeout(() => setMessage(""), 3000);
+    }
   };
 
-  const handleInstall = () => {
+  const handleInstall = async () => {
     if (!installId.trim()) return;
-    setPlugins((prev) => [
-      ...prev,
-      {
-        id: installId.toLowerCase().replace(/\s+/g, "-"),
-        name: installId,
-        version: "0.1.0",
-        description: "Newly installed plugin",
-        status: "active",
-        hookCount: 0,
-        hooks: [],
-        installedAt: new Date().toISOString().split("T")[0],
-      },
-    ]);
+    try {
+      const res = await fetch("/api/plugins/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: installId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage(data.message || t("plugins.install_ok"));
+      } else {
+        setMessage(data.error || t("plugins.install_fail"));
+      }
+    } catch {
+      setMessage(t("plugins.install_fail"));
+    }
     setInstallId("");
     setShowInstall(false);
+    loadPlugins();
+    setTimeout(() => setMessage(""), 3000);
   };
 
-  const installAvailablePlugin = (id: string) => {
+  const installAvailablePlugin = async (id: string) => {
     const plugin = MOCK_AVAILABLE.find((p) => p.id === id);
     if (!plugin) return;
-    // Check if already installed
-    const alreadyInstalled = plugins.find((p) => p.id === id);
-    if (alreadyInstalled) return;
-    setPlugins((prev) => [
-      ...prev,
-      {
-        id: plugin.id,
-        name: plugin.name,
-        version: plugin.version,
-        description: plugin.description,
-        status: "active",
-        hookCount: 0,
-        hooks: [],
-        installedAt: new Date().toISOString().split("T")[0],
-      },
-    ]);
+    try {
+      const res = await fetch("/api/plugins/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: plugin.name }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage(data.message || t("plugins.install_ok"));
+      } else {
+        setMessage(data.error || t("plugins.install_fail"));
+      }
+    } catch {
+      setMessage(t("plugins.install_fail"));
+    }
+    loadPlugins();
+    setTimeout(() => setMessage(""), 3000);
   };
 
   const filteredPlugins = plugins.filter(
@@ -318,8 +305,9 @@ export function PluginsPage() {
 
   const filteredAvailable = MOCK_AVAILABLE.filter(
     (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.description.toLowerCase().includes(search.toLowerCase()),
+      !plugins.some((inst) => inst.name.toLowerCase() === p.name.toLowerCase() || inst.id === p.id) &&
+      (p.name.toLowerCase().includes(search.toLowerCase()) ||
+      p.description.toLowerCase().includes(search.toLowerCase())),
   );
 
   const activeCount = plugins.filter((p) => p.status === "active").length;
@@ -327,6 +315,16 @@ export function PluginsPage() {
 
   return (
     <div style={containerStyle}>
+      {/* Message banner */}
+      {message && (
+        <div style={{
+          padding: "8px 14px", borderRadius: "6px", marginBottom: "12px",
+          background: "var(--success-bg)", color: "var(--success)", fontSize: "12px",
+        }}>
+          {message}
+        </div>
+      )}
+
       {/* Stats Row */}
       <div style={statsRowStyle}>
         <div style={statCardStyle}>
@@ -343,7 +341,7 @@ export function PluginsPage() {
         </div>
         <div style={statCardStyle}>
           <div style={{ fontSize: "24px", fontWeight: 700, color: "var(--text-secondary)" }}>
-            {MOCK_AVAILABLE.length}
+            {filteredAvailable.length}
           </div>
           <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>可用</div>
         </div>
@@ -388,7 +386,7 @@ export function PluginsPage() {
           Installed ({plugins.length})
         </button>
         <button style={tabStyle(activeTab === "available")} onClick={() => setActiveTab("available")}>
-          Available ({MOCK_AVAILABLE.length})
+          Available ({filteredAvailable.length})
         </button>
       </div>
 

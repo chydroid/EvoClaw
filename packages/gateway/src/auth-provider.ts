@@ -36,7 +36,7 @@ export class AuthProvider {
     }
 
     // Allow all sub-paths under these public API prefixes
-    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/bootstrap/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/") || req.path.startsWith("/api/evolution/") || req.path.startsWith("/api/compactions")) {
+    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/bootstrap/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/") || req.path.startsWith("/api/evolution/") || req.path.startsWith("/api/compactions") || req.path.startsWith("/api/scheduler/") || req.path.startsWith("/api/system/") || req.path.startsWith("/api/channels/") || req.path.startsWith("/api/plugins") || req.path.startsWith("/api/permission/")) {
       return next();
     }
 

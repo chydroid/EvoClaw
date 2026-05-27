@@ -522,7 +522,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [currentProgress, setCurrentProgress] = useState(0);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [contextUsed, setContextUsed] = useState(0);
-  const [contextLimit] = useState(200000);
+  const [contextLimit, setContextLimit] = useState(60000);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpanded, setTextAreaExpanded] = useState(false);
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
@@ -537,6 +537,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   // ── Load messages when sessionId prop changes ──
   useEffect(() => {
+    setContextUsed(0); // Reset context usage on session change
     if (!initialSessionId) {
       setMessages([]);
       return;
@@ -734,6 +735,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               : m,
           ),
         );
+
+        // Update context usage from server response
+        if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
+          setContextUsed((prev) => prev + data.tokensUsed);
+        }
+        if (typeof data.contextLimit === "number" && data.contextLimit > 0) {
+          setContextLimit(data.contextLimit);
+        }
       } else {
         const errText = await res.text().catch(() => "");
         setMessages((prev) =>

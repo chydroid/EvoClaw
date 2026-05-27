@@ -47,3 +47,5 @@ export type { DeadLetter, DLQQuery, DLQStats, DLQConfig } from "./dead-letter-qu
 
 export { ReplyReferenceManager } from "./reply-reference";
 export type { ReplyRef, ReplyChainContext, ReplyNode, ReplyTree, ReplyReferenceConfig, MentionInfo } from "./reply-reference";
+
+export { WeixinPluginAdapter } from "./weixin-plugin-adapter.js";

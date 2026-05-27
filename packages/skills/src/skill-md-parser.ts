@@ -3,6 +3,7 @@ import {
   type SKILLmdMeta,
   type OpenClawMetadata,
   type OpenClawSkillMeta,
+  type SkillCategory,
 } from "@evoclaw/core";
 import matter from "gray-matter";
 import { readFile } from "fs/promises";
@@ -25,6 +26,11 @@ export class SKILLmdParser {
       version: data.version || "1.0.0",
       description: data.description || "",
       author: data.author || "unknown",
+      category: data.category && ["automation", "integration", "analysis", "generation", "utility", "custom"].includes(String(data.category))
+        ? String(data.category) as SkillCategory
+        : undefined,
+      keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : undefined,
+      license: data.license || undefined,
       triggers: this.parseTriggers(data.triggers),
       requires: this.parseDependencies(data.requires),
       config: data.config || {},

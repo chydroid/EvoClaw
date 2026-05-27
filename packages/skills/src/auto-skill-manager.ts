@@ -38,6 +38,7 @@ export class AutoSkillManager {
   private tfidfMatcher: TfidfMatcher;
   private corpusBuilt = false;
   private remoteSkills: SkillMatch[] = [];
+  private fileContentCache = new Map<string, { content: string; mtime: number }>();
 
   constructor(
     private registry: ServiceRegistry,
@@ -115,7 +116,7 @@ export class AutoSkillManager {
 
     // ── 1. TF-IDF semantic matching on local skills ──
     if (this.corpusBuilt && this.tfidfMatcher) {
-      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.03, maxResults);
+      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.1, maxResults);
       for (const r of tfidfResults) {
         const skillMdPath = path.join(this.skillsDir, r.target, "SKILL.md");
         allMatches.push({
@@ -411,6 +412,11 @@ export class AutoSkillManager {
     const matches: SkillMatch[] = [];
     const lowerTask = taskDescription.toLowerCase();
 
+    // Cleanup cache if it grows too large
+    if (this.fileContentCache.size > 200) {
+      this.fileContentCache.clear();
+    }
+
     if (!fs.existsSync(this.skillsDir)) return matches;
 
     const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
@@ -419,22 +425,31 @@ export class AutoSkillManager {
         const skillMdPath = path.join(this.skillsDir, entry.name, "SKILL.md");
         if (!fs.existsSync(skillMdPath)) continue;
 
+        let content: string;
         try {
-          const content = fs.readFileSync(skillMdPath, "utf-8");
-          const relevance = this.computeKeywordRelevance(lowerTask, content, entry.name);
-          if (relevance > 0.05) {
-            const metadata = this.extractMetadata(skillMdPath, content, entry.name);
-            matches.push({
-              skillPath: skillMdPath,
-              skillName: entry.name,
-              relevance,
-              reason: `关键词匹配: ${this.getKeywordMatchReason(lowerTask, content, entry.name)}`,
-              source: "local",
-              description: metadata.description,
-            });
+          const stat = fs.statSync(skillMdPath);
+          const cached = this.fileContentCache.get(skillMdPath);
+          if (cached && cached.mtime === stat.mtimeMs) {
+            content = cached.content;
+          } else {
+            content = fs.readFileSync(skillMdPath, "utf-8");
+            this.fileContentCache.set(skillMdPath, { content, mtime: stat.mtimeMs });
           }
         } catch {
           continue;
+        }
+
+        const relevance = this.computeKeywordRelevance(lowerTask, content, entry.name);
+        if (relevance > 0.05) {
+          const metadata = this.extractMetadata(skillMdPath, content, entry.name);
+          matches.push({
+            skillPath: skillMdPath,
+            skillName: entry.name,
+            relevance,
+            reason: `关键词匹配: ${this.getKeywordMatchReason(lowerTask, content, entry.name)}`,
+            source: "local",
+            description: metadata.description,
+          });
         }
       }
     }
@@ -495,7 +510,10 @@ export class AutoSkillManager {
       }
     }
 
-    return Math.min(score / 25, 1.0);
+    // Normalize: base score of 5 for any match, scale by number of task words
+    const taskWordCount = taskWords.length || 1;
+    const maxPossible = 8 + 6 + (taskWordCount * 5.5) + taskWordCount + 4;
+    return Math.min(score / Math.max(maxPossible * 0.3, 10), 1.0);
   }
 
   private computeRemoteRelevance(lowerTask: string, remote: SkillMatch): number {
@@ -520,7 +538,9 @@ export class AutoSkillManager {
       }
     }
 
-    return Math.min(score / 20, 1.0);
+    const taskWordCount = taskWords.length || 1;
+    const maxPossible = 5 + (taskWordCount * 5) + (remote.keywords?.length || 0) * 2;
+    return Math.min(score / Math.max(maxPossible * 0.3, 8), 1.0);
   }
 
   private getKeywordMatchReason(task: string, content: string, dirName: string): string {
@@ -668,17 +688,28 @@ export class AutoSkillManager {
    */
   private generateSkillMdFromCurated(curated: { name: string; description: string; keywords: string[]; category: string }): string {
     const lines: string[] = [];
-    lines.push(`# ${curated.name}`);
+    lines.push("---");
+    lines.push(`name: ${curated.name}`);
+    lines.push(`version: 0.1.0`);
+    lines.push(`description: ${curated.description}`);
+    lines.push(`author: evoclaw-curated`);
+    lines.push(`license: MIT`);
+    lines.push(`category: ${curated.category}`);
+    if (curated.keywords.length > 0) {
+      lines.push(`keywords:`);
+      for (const kw of curated.keywords) {
+        lines.push(`  - ${kw}`);
+      }
+    }
+    lines.push("---");
     lines.push("");
-    lines.push(`**Category:** ${curated.category}`);
-    lines.push(`**Version:** 0.1.0`);
-    lines.push(`**Author:** evoclaw-curated`);
+    lines.push(`# ${curated.name}`);
     lines.push("");
     lines.push("## Description");
     lines.push("");
     lines.push(curated.description);
     lines.push("");
-    
+
     if (curated.keywords.length > 0) {
       lines.push("## Keywords");
       lines.push("");
@@ -693,7 +724,6 @@ export class AutoSkillManager {
     lines.push("### Example Prompts");
     lines.push("");
     
-    // Generate example prompts based on category and keywords
     const examples = this.generateUsageExamples(curated);
     lines.push(...examples);
     lines.push("");

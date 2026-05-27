@@ -99,12 +99,12 @@ export class SkillDispatcher {
           
           // Check if already installed
           const skillManager = this.registry.resolveService<{
-            listSkills(): Array<{ name: string; id: string }>;
+            listSkills(): Promise<Array<{ name: string; id: string }>>;
             executeSkill(id: string, params: Record<string, unknown>): Promise<SkillExecutionResult>;
           }>("skillManager");
-          
+
           if (skillManager) {
-            const installedSkills = skillManager.listSkills();
+            const installedSkills = await skillManager.listSkills();
             const installed = installedSkills.find(s => s.name === best.skillName);
             
             if (installed) {
@@ -270,11 +270,11 @@ export class SkillDispatcher {
         if (webSearchFn) {
           // Try to find web-search skill
           const skillManager = this.registry.resolveService<{
-            listSkills(): Array<{ name: string; id: string }>;
+            listSkills(): Promise<Array<{ name: string; id: string }>>;
           }>("skillManager");
-          
+
           if (skillManager) {
-            const installedSkills = skillManager.listSkills();
+            const installedSkills = await skillManager.listSkills();
             const webSearch = installedSkills.find(
               s => s.name === "web-search" || s.name === "web_search" || s.name === "webSearch" || s.name === "baidu-search"
             );
@@ -416,12 +416,12 @@ export class SkillDispatcher {
 
     // Find and execute
     const skillManager = this.registry.resolveService<{
-      listSkills(): Array<{ name: string; id: string }>;
+      listSkills(): Promise<Array<{ name: string; id: string }>>;
       executeSkill(id: string, params: Record<string, unknown>): Promise<SkillExecutionResult>;
     }>("skillManager");
 
     if (skillManager) {
-      const skills = skillManager.listSkills();
+      const skills = await skillManager.listSkills();
       const match = skills.find(s => s.name === installed.skillName);
       
       if (match) {
@@ -492,9 +492,9 @@ export class SkillDispatcher {
     }
 
     const skillManager = this.registry.resolveService<{
-      listSkills(): Array<{ name: string; id: string }>;
+      listSkills(): Promise<Array<{ name: string; id: string }>>;
     }>("skillManager");
-    const installed = skillManager?.listSkills() || [];
+    const installed = await skillManager?.listSkills() || [];
 
     return { local, remote, installed };
   }
@@ -528,6 +528,14 @@ export class SkillDispatcher {
       { regex: /rss|订阅/, keyword: "rss" },
       { regex: /markdown|md/, keyword: "markdown" },
       { regex: /http|api|请求|request/, keyword: "http" },
+      { regex: /音乐|歌曲|播放|听歌/, keyword: "music" },
+      { regex: /视频|电影|看片/, keyword: "video" },
+      { regex: /地图|导航|路线|位置/, keyword: "map" },
+      { regex: /购物|买|价格|比价/, keyword: "shopping" },
+      { regex: /日历|日程|安排|计划/, keyword: "calendar" },
+      { regex: /笔记|记录|备忘/, keyword: "notes" },
+      { regex: /聊天|对话|问答/, keyword: "chat" },
+      { regex: /数据|统计|图表|分析/, keyword: "analytics" },
     ];
 
     for (const { regex, keyword } of cnPatterns) {
@@ -538,7 +546,7 @@ export class SkillDispatcher {
     const words = lower
       .replace(/[，。！？、；：（）【】《》""'']/g, " ")
       .split(/[\s,.;:!?()]+/)
-      .filter(w => w.length >= 3 && !["the", "and", "for", "get", "how", "can", "you", "what", "when", "where", "帮我", "一下", "一个", "这个", "那个", "哪个", "怎么", "什么", "为什么"].includes(w));
+      .filter(w => w.length >= 3 && !["the", "and", "for", "get", "how", "can", "you", "what", "when", "where", "pls", "please", "want", "need", "help", "with", "from", "into", "about", "that", "this", "just", "like", "also", "帮我", "一下", "一个", "这个", "那个", "哪个", "怎么", "什么", "为什么"].includes(w));
 
     // Return up to 3 most meaningful words
     if (words.length > 0) {

@@ -8,7 +8,9 @@ interface SkillInfo {
   author: string;
   category: string;
   keywords: string[];
+  license?: string;
   homepage?: string;
+  emoji?: string;
   entryPoint: string;
   installPath: string;
   requires: { name: string; version: string; optional: boolean }[];
@@ -459,11 +461,23 @@ export default function SkillsConfig() {
                   }
                 }}
               >
-                <div style={styles.skillItemName}>{skill.name}</div>
-                <div style={styles.skillItemDesc}>{skill.description.slice(0, 60)}</div>
-                <span style={statusBadgeStyle(skill.lifecycle.status)}>
-                  {skill.lifecycle.status}
-                </span>
+                <div style={styles.skillItemName}>{skill.emoji ? `${skill.emoji} ` : ""}{skill.name}</div>
+                <div style={styles.skillItemDesc}>{skill.description ? skill.description.slice(0, 60) : "无描述"}</div>
+                <div style={{ display: "flex", gap: "4px", alignItems: "center", marginTop: "4px" }}>
+                  <span style={statusBadgeStyle(skill.lifecycle.status)}>
+                    {skill.lifecycle.status}
+                  </span>
+                  <span style={{
+                    display: "inline-block",
+                    padding: "1px 4px",
+                    borderRadius: "2px",
+                    fontSize: "9px",
+                    color: "var(--primary)",
+                    background: "var(--primary-bg, rgba(0,123,255,0.1))",
+                  }}>
+                    {skill.category}
+                  </span>
+                </div>
               </div>
             ))
           )}
@@ -494,14 +508,37 @@ export default function SkillsConfig() {
 
           <div style={styles.detailHeader}>
             <div>
-              <span style={styles.detailName}>{selectedSkill.name}</span>
+              <span style={styles.detailName}>{selectedSkill.emoji ? `${selectedSkill.emoji} ` : ""}{selectedSkill.name}</span>
               <span style={styles.detailVersion}>v{selectedSkill.version}</span>
             </div>
             <div style={styles.detailDesc}>{selectedSkill.description || "无描述"}</div>
-            <div style={{ marginTop: "8px" }}>
+            <div style={{ marginTop: "8px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
               <span style={statusBadgeStyle(selectedSkill.lifecycle.status)}>
                 {selectedSkill.lifecycle.status}
               </span>
+              <span style={{
+                display: "inline-block",
+                padding: "2px 6px",
+                borderRadius: "3px",
+                fontSize: "10px",
+                fontWeight: "bold",
+                color: "var(--primary)",
+                background: "var(--primary-bg, rgba(0,123,255,0.1))",
+              }}>
+                {selectedSkill.category}
+              </span>
+              {selectedSkill.license && (
+                <span style={{
+                  display: "inline-block",
+                  padding: "2px 6px",
+                  borderRadius: "3px",
+                  fontSize: "10px",
+                  color: "var(--text-muted)",
+                  background: "var(--hover-bg)",
+                }}>
+                  {selectedSkill.license}
+                </span>
+              )}
             </div>
           </div>
 
@@ -527,8 +564,16 @@ export default function SkillsConfig() {
           </div>
           <div style={styles.infoRow}>
             <span style={styles.infoLabel}>主页</span>
-            <span style={styles.infoValue}>{selectedSkill.homepage || "-"}</span>
+            <span style={styles.infoValue}>{selectedSkill.homepage ? (
+              <a href={selectedSkill.homepage} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>{selectedSkill.homepage}</a>
+            ) : "-"}</span>
           </div>
+          {selectedSkill.license && (
+            <div style={styles.infoRow}>
+              <span style={styles.infoLabel}>许可证</span>
+              <span style={styles.infoValue}>{selectedSkill.license}</span>
+            </div>
+          )}
           {selectedSkill.keywords.length > 0 && (
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>关键词</span>

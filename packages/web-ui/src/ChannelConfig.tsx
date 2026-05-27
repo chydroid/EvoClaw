@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useTranslation } from "./i18n";
+import QRCode from "qrcode";
 
 interface ChannelConfig {
   id: string;
@@ -112,56 +113,6 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
 
 // ─── QR Helpers ──────────────────────────────────────────────
 
-function simpleHash(str: string, len: number): number[] {
-  const result: number[] = [];
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h) + str.charCodeAt(i);
-    if (result.length < len) result.push(Math.abs(h) % 256);
-  }
-  while (result.length < len) {
-    h = ((h << 5) - h) + result.length;
-    result.push(Math.abs(h) % 256);
-  }
-  return result;
-}
-
-function generateQRDataUri(data: string): string {
-  const size = 240;
-  const moduleCount = 25;
-  const moduleSize = size / moduleCount;
-  const hash = simpleHash(data, moduleCount * moduleCount);
-
-  const isFinder = (r: number, c: number): boolean => {
-    if (r < 7 && c < 7) {
-      return (r === 0 || r === 6 || c === 0 || c === 6) || (r >= 2 && r <= 4 && c >= 2 && c <= 4);
-    }
-    if (r < 7 && c >= moduleCount - 7) {
-      return (r === 0 || r === 6 || c === moduleCount - 7 || c === moduleCount - 1) || (r >= 2 && r <= 4 && c >= moduleCount - 5 && c <= moduleCount - 3);
-    }
-    if (r >= moduleCount - 7 && c < 7) {
-      return (r === moduleCount - 7 || r === moduleCount - 1 || c === 0 || c === 6) || (r >= moduleCount - 5 && r <= moduleCount - 3 && c >= 2 && c <= 4);
-    }
-    return false;
-  };
-
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="white"/>`;
-
-  for (let r = 0; r < moduleCount; r++) {
-    for (let c = 0; c < moduleCount; c++) {
-      const dark = isFinder(r, c) || (hash[r * moduleCount + c] & 0x1) === 1;
-      if (dark) {
-        svg += `<rect x="${(c * moduleSize).toFixed(1)}" y="${(r * moduleSize).toFixed(1)}" width="${moduleSize.toFixed(1)}" height="${moduleSize.toFixed(1)}" fill="black"/>`;
-      }
-    }
-  }
-
-  svg += `</svg>`;
-  const bytes = new TextEncoder().encode(svg);
-  const bin = String.fromCharCode(...bytes);
-  return `data:image/svg+xml;base64,${btoa(bin)}`;
-}
-
 function generateQrToken(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).substring(2, 10);
@@ -231,31 +182,106 @@ export default function ChannelConfigPage() {
   const dragging = useRef(false);
 
   // ─── WeChat QR state ──────────────────────────────────
-  const [qrStatus, setQrStatus] = useState<"waiting" | "connected" | "expired">("waiting");
+  const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "waiting" | "connected" | "expired">("idle");
   const [qrToken, setQrToken] = useState<string>("");
   const [qrDataUri, setQrDataUri] = useState<string>("");
   const [showWechatForm, setShowWechatForm] = useState(false);
   const qrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const qrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qrTokenRef = useRef<string>("");
 
-  const refreshQR = useCallback(() => {
-    const token = generateQrToken();
-    const pairingCode = `evoclaw-pair:wechat:${Date.now()}:${token}`;
-    setQrToken(token);
-    setQrDataUri(generateQRDataUri(pairingCode));
-    setQrStatus("waiting");
-
-    if (qrTimerRef.current) clearTimeout(qrTimerRef.current);
-    qrTimerRef.current = setTimeout(() => {
-      setQrStatus("expired");
-    }, 5 * 60 * 1000); // 5 min expiry
+  const stopQrPolling = useCallback(() => {
+    if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
+    if (qrTimerRef.current) { clearTimeout(qrTimerRef.current); qrTimerRef.current = null; }
   }, []);
 
+  const refreshQR = useCallback(() => {
+    stopQrPolling();
+    setQrStatus("loading");
+    setQrDataUri("");
+    qrTokenRef.current = "";
+
+    fetch("/api/channels/wechat/pair-request", { method: "POST" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.success || !data.pairUrl) {
+          setQrStatus("expired");
+          return;
+        }
+        const key = data.qrcodeKey || "";
+        setQrToken(key);
+        qrTokenRef.current = key; // 保存到 ref，避免闭包问题
+        setQrStatus("waiting");
+
+        // Generate QR from the WeChat iLink URL
+        return QRCode.toDataURL(data.pairUrl, {
+          width: 240, margin: 2,
+          color: { dark: "#000000", light: "#ffffff" },
+          errorCorrectionLevel: "M",
+        });
+      })
+      .then((url: string | undefined) => {
+        if (url) setQrDataUri(url);
+      })
+      .catch(() => {
+        setQrStatus("expired");
+      });
+
+    // Auto-expire after 5 minutes
+    qrTimerRef.current = setTimeout(() => {
+      setQrStatus("expired");
+      stopQrPolling();
+    }, 5 * 60 * 1000);
+
+    // Poll pairing status every 2 seconds — 使用 qrTokenRef 避免 React 闭包陷阱
+    qrPollRef.current = setInterval(() => {
+      const currentToken = qrTokenRef.current;
+      if (!currentToken) return;
+      fetch(`/api/channels/wechat/pair-status?qrcode=${encodeURIComponent(currentToken)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.status === "confirmed") {
+            setQrStatus("connected");
+            stopQrPolling();
+            // 自动启用个人微信通道
+            setChannels((prev) =>
+              prev.map((c) =>
+                c.id === "personal_wechat" ? { ...c, enabled: true } : c
+              )
+            );
+            // 保存启用状态到服务端
+            fetch("/api/config/channels", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                channels: channels.map((c) =>
+                  c.id === "personal_wechat" ? { ...c, enabled: true } : c
+                ),
+              }),
+            }).catch(() => { /* ignore */ });
+          } else if (data.status === "expired") {
+            setQrStatus("expired");
+            stopQrPolling();
+          } else if (data.status === "scaned") {
+            // Scanned but not confirmed yet — keep waiting
+          } else if (data.status === "binded_redirect") {
+            setQrStatus("connected");
+            stopQrPolling();
+            // 自动启用个人微信通道
+            setChannels((prev) =>
+              prev.map((c) =>
+                c.id === "personal_wechat" ? { ...c, enabled: true } : c
+              )
+            );
+          }
+        })
+        .catch(() => { /* ignore poll errors */ });
+    }, 2000);
+  }, [stopQrPolling]);
+
   useEffect(() => {
-    refreshQR();
-    return () => {
-      if (qrTimerRef.current) clearTimeout(qrTimerRef.current);
-    };
-  }, [refreshQR]);
+    return () => { stopQrPolling(); };
+  }, [stopQrPolling]);
 
   useEffect(() => {
     loadConfig();
@@ -287,14 +313,16 @@ export default function ChannelConfigPage() {
       if (res.ok) {
         const data = await res.json();
         if (data.channels && Array.isArray(data.channels) && data.channels.length > 0) {
-          const validated = (data.channels as any[]).map((ch: any) => {
-            const def = DEFAULT_CHANNEL_CONFIGS.find((d) => d.id === ch.id);
+          // Merge server data with defaults — keep all default channels, overlay server values
+          const validated = DEFAULT_CHANNEL_CONFIGS.map((def) => {
+            const ch = (data.channels as any[]).find((c: any) => c.id === def.id);
+            if (!ch) return def;
             return {
-              ...(def || {}),
+              ...def,
               ...ch,
-              features: { ...(def?.features || {}), ...(ch.features || {}) },
-              allowedUsers: Array.isArray(ch.allowedUsers) ? ch.allowedUsers : (def?.allowedUsers || []),
-              allowedGroups: Array.isArray(ch.allowedGroups) ? ch.allowedGroups : (def?.allowedGroups || []),
+              features: { ...def.features, ...(ch.features || {}) },
+              allowedUsers: Array.isArray(ch.allowedUsers) ? ch.allowedUsers : def.allowedUsers,
+              allowedGroups: Array.isArray(ch.allowedGroups) ? ch.allowedGroups : def.allowedGroups,
             };
           });
           setChannels(validated as ChannelConfig[]);
@@ -303,6 +331,21 @@ export default function ChannelConfigPage() {
     } catch {
       console.debug("[ChannelConfig] Server not reachable, using defaults");
     }
+
+    // 检查微信连接状态，如果已连接则自动启用
+    try {
+      const statusRes = await fetch("/api/channels/weixin/status");
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        if (statusData.connected) {
+          setChannels((prev) =>
+            prev.map((c) =>
+              c.id === "personal_wechat" ? { ...c, enabled: true } : c
+            )
+          );
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   async function saveConfig() {
@@ -467,14 +510,25 @@ export default function ChannelConfigPage() {
                   <p style={styles.qrDesc}>{t("channels.qr_desc")}</p>
 
                   <div style={styles.qrCodeBox}>
-                    {qrDataUri ? (
-                      <img
-                        src={qrDataUri}
-                        alt="QR Code"
-                        style={styles.qrImage}
-                      />
-                    ) : (
-                      <div style={styles.qrPlaceholder} />
+                    {qrStatus === "loading" && (
+                      <div style={styles.qrPlaceholder}>
+                        <span style={styles.spinner} />
+                      </div>
+                    )}
+                    {qrStatus === "idle" && (
+                      <div style={styles.qrPlaceholder}>
+                        <button style={styles.qrStartBtn} onClick={refreshQR}>
+                          {t("channels.qr_refresh")}
+                        </button>
+                      </div>
+                    )}
+                    {(qrStatus === "waiting" || qrStatus === "connected" || qrStatus === "expired") && qrDataUri && (
+                      <img src={qrDataUri} alt="QR Code" style={styles.qrImage} />
+                    )}
+                    {(qrStatus === "waiting" || qrStatus === "connected" || qrStatus === "expired") && !qrDataUri && (
+                      <div style={styles.qrPlaceholder}>
+                        <span style={styles.spinner} />
+                      </div>
                     )}
                   </div>
 
@@ -505,19 +559,18 @@ export default function ChannelConfigPage() {
                     )}
                   </div>
 
-                  <button
-                    style={styles.qrRefreshBtn}
-                    onClick={refreshQR}
-                  >
-                    {t("channels.qr_refresh")}
-                  </button>
+                  {(qrStatus !== "idle" && qrStatus !== "loading") && (
+                    <button style={styles.qrRefreshBtn} onClick={refreshQR}>
+                      {t("channels.qr_refresh")}
+                    </button>
+                  )}
 
                   <div style={styles.qrFallbackRow}>
                     <button
                       style={styles.qrFallbackBtn}
                       onClick={() => setShowWechatForm((v) => !v)}
                     >
-                      {t("channels.qr_fallback")}
+                      {showWechatForm ? t("channels.qr_switch_qr") : t("channels.qr_fallback")}
                     </button>
                   </div>
                 </div>
@@ -526,6 +579,12 @@ export default function ChannelConfigPage() {
               {/* ─── Form (hidden for personal_wechat unless toggled) ─── */}
               {(!isWechat || showWechatForm) && (
                 <div style={styles.form}>
+                  {isWechat && (
+                    <div style={styles.fieldHintBox}>
+                      <div style={styles.fieldHintTitle}>{t("channels.wechat_manual_hint_title")}</div>
+                      <div style={styles.fieldHintText}>{t("channels.wechat_manual_hint_desc")}</div>
+                    </div>
+                  )}
                   <div style={styles.formRow}>
                     <div style={styles.formGroup}>
                       <label style={styles.label}>{t("channels.enable_channel")}</label>
@@ -543,12 +602,15 @@ export default function ChannelConfigPage() {
                         value={currentChannel.botName}
                         onChange={(e) => updateChannel(activeChannel, { botName: e.target.value })}
                       />
+                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_botname_hint")}</div>}
                     </div>
                   </div>
 
                   <div style={styles.formRow}>
                     <div style={styles.formGroup}>
-                      <label style={styles.label}>{t("channels.app_id")}</label>
+                      <label style={styles.label}>
+                        {isWechat ? t("channels.wechat_nickname") : t("channels.app_id")}
+                      </label>
                       <input
                         style={styles.input}
                         value={currentChannel.appId}
@@ -556,18 +618,23 @@ export default function ChannelConfigPage() {
                         placeholder={
                           currentChannel.type === "feishu" ? "cli_xxxxxxxxxxxx"
                             : currentChannel.type === "wecom" ? "ww1234567890abcdef"
-                            : t("channels.app_id_placeholder")
+                            : t("channels.wechat_nickname_placeholder")
                         }
                       />
+                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_nickname_hint")}</div>}
                     </div>
                     <div style={styles.formGroup}>
-                      <label style={styles.label}>{t("channels.app_secret")}</label>
+                      <label style={styles.label}>
+                        {isWechat ? t("channels.wechat_token") : t("channels.app_secret")}
+                      </label>
                       <input
                         style={styles.input}
-                        type="password"
+                        type={isWechat ? "text" : "password"}
                         value={currentChannel.appSecret}
                         onChange={(e) => updateChannel(activeChannel, { appSecret: e.target.value })}
+                        placeholder={isWechat ? t("channels.wechat_token_placeholder") : ""}
                       />
+                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_token_hint")}</div>}
                     </div>
                   </div>
 
@@ -582,13 +649,13 @@ export default function ChannelConfigPage() {
                         style={styles.input}
                         value={currentChannel.verificationToken}
                         onChange={(e) => updateChannel(activeChannel, { verificationToken: e.target.value })}
+                        placeholder={isWechat ? t("channels.wechat_verify_hint") : ""}
                       />
+                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_verify_desc")}</div>}
                     </div>
                     <div style={styles.formGroup}>
                       <label style={styles.label}>
-                        {currentChannel.type === "personal_wechat"
-                          ? t("channels.ws_url")
-                          : t("channels.webhook_url")}
+                        {isWechat ? t("channels.ws_url") : t("channels.webhook_url")}
                       </label>
                       <input
                         style={styles.input}
@@ -600,6 +667,7 @@ export default function ChannelConfigPage() {
                             : "ws://localhost:8765"
                         }
                       />
+                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_ws_hint")}</div>}
                     </div>
                   </div>
 
@@ -757,7 +825,11 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
   },
   qrImage: { width: "240px", height: "240px" },
-  qrPlaceholder: { width: "240px", height: "240px", background: "#f0f0f0" },
+  qrPlaceholder: { width: "240px", height: "240px", background: "#f0f0f0", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px" },
+  qrStartBtn: {
+    padding: "10px 24px", borderRadius: "8px", border: "1px solid var(--accent)",
+    background: "var(--accent)", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: "bold",
+  },
   qrStatusRow: {
     display: "flex", alignItems: "center", gap: "8px", marginTop: "12px",
   },
@@ -812,6 +884,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: "11px",
   },
   emptyHint: { fontSize: "12px", color: "var(--text-muted)" },
+  fieldHint: { fontSize: "11px", color: "var(--text-muted)", marginTop: "3px", lineHeight: 1.4 },
+  fieldHintBox: {
+    padding: "12px 16px", borderRadius: "8px", marginBottom: "16px",
+    background: "var(--accent-bg)", border: "1px solid var(--border)",
+  },
+  fieldHintTitle: { fontSize: "13px", fontWeight: "bold", color: "var(--accent)", marginBottom: "4px" },
+  fieldHintText: { fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.6 },
   formActions: { marginTop: "20px", display: "flex", gap: "12px" },
   testBtn: {
     padding: "10px 20px", borderRadius: "8px", border: "1px solid var(--success)",

@@ -265,11 +265,23 @@ export class SkillMarketplace {
     }
 
     try {
-      // Install dependencies first
+      // Install dependencies first (with depth limit to prevent infinite recursion)
       const depResults: InstallResult[] = [];
+      const maxDepth = (version?.startsWith("__depth_") ? parseInt(version.split("_").pop() || "0") : 0);
+
       for (const [depName, depVersion] of Object.entries(pkg.dependencies)) {
         if (!this.installed.has(depName)) {
-          const depResult = await this.install(depName, depVersion);
+          if (maxDepth >= 3) {
+            return {
+              success: false,
+              packageName: name,
+              version: targetVersion,
+              error: `Dependency depth limit exceeded: ${depName}`,
+              dependencies: depResults,
+            };
+          }
+          const depthVersion = `__depth_${maxDepth + 1}`;
+          const depResult = await this.install(depName, depthVersion);
           depResults.push(depResult);
           if (!depResult.success) {
             return {
@@ -289,12 +301,62 @@ export class SkillMarketplace {
         return { success: false, packageName: name, version: targetVersion, error: `Download failed: HTTP ${response.status}` };
       }
 
-      const data = await response.text();
+      const data = await response.arrayBuffer();
 
       // Verify checksum if provided
       if (pkg.checksum) {
-        // In production, verify SHA-256 here
+        const crypto = await import("crypto");
+        const hash = crypto.createHash("sha256").update(Buffer.from(data)).digest("hex");
+        if (hash !== pkg.checksum) {
+          return { success: false, packageName: name, version: targetVersion, error: `Checksum verification failed: expected ${pkg.checksum}, got ${hash}` };
+        }
       }
+
+      // Write to disk
+      const fs = await import("fs");
+      const path = await import("path");
+      const skillDir = path.join(this.config.cacheDir, "skills", name);
+      if (!fs.existsSync(skillDir)) {
+        fs.mkdirSync(skillDir, { recursive: true });
+      }
+
+      const zipPath = path.join(skillDir, `${name}-${targetVersion}.zip`);
+      fs.writeFileSync(zipPath, Buffer.from(data));
+
+      // Extract ZIP
+      const extractDir = path.join(this.config.cacheDir, "installed", name);
+      if (fs.existsSync(extractDir)) {
+        fs.rmSync(extractDir, { recursive: true, force: true });
+      }
+      fs.mkdirSync(extractDir, { recursive: true });
+
+      try {
+        const { execFileSync } = await import("child_process");
+        if (process.platform === "win32") {
+          execFileSync("powershell", ["-Command", "Expand-Archive", "-Path", zipPath, "-DestinationPath", extractDir, "-Force"], { stdio: "pipe" });
+        } else {
+          execFileSync("unzip", ["-o", zipPath, "-d", extractDir], { stdio: "pipe" });
+        }
+      } catch (extractErr) {
+        return { success: false, packageName: name, version: targetVersion, error: `Extraction failed: ${extractErr}` };
+      }
+
+      // Find SKILL.md in extracted directory
+      let skillMdPath: string | null = null;
+      const findSkillMd = (dir: string): string | null => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isFile() && entry.name === "SKILL.md") return fullPath;
+          if (entry.isDirectory()) {
+            const found = findSkillMd(fullPath);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      skillMdPath = findSkillMd(extractDir);
 
       // Store in installed registry
       this.installed.set(name, pkg);
@@ -303,12 +365,14 @@ export class SkillMarketplace {
         package: pkg,
         version: targetVersion,
         dependencies: depResults,
+        installedPath: skillMdPath || extractDir,
       }, "skill-marketplace");
 
       return {
         success: true,
         packageName: name,
         version: targetVersion,
+        installedPath: skillMdPath || extractDir,
         dependencies: depResults.length > 0 ? depResults : undefined,
       };
     } catch (err) {

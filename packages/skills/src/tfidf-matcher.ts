@@ -18,6 +18,23 @@ export class TfidfMatcher {
   private docVectors: Array<{ id: string; vector: Map<string, number>; metadata: Record<string, string> }> = [];
   private initialized = false;
 
+  private static readonly STOP_WORDS = new Set([
+    // Chinese stopwords
+    "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
+    "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
+    "自己", "这", "他", "她", "它", "们", "那", "些", "什么", "怎么", "如何",
+    "可以", "能", "请", "帮", "让", "把", "被", "从", "对", "为", "以", "及",
+    "但", "而", "与", "或", "如果", "因为", "所以", "虽然", "但是",
+    // English stopwords
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+    "her", "was", "one", "our", "out", "has", "have", "from", "this",
+    "that", "with", "will", "been", "they", "their", "which", "would",
+    "there", "could", "other", "into", "more", "some", "than", "its",
+    "over", "such", "after", "just", "also", "about", "want", "need",
+    "help", "please", "like", "does", "make", "when", "what", "how",
+    "where", "who", "why", "your", "them", "then", "only", "very",
+  ]);
+
   /**
    * Initialize the matcher with a corpus of documents
    */
@@ -54,7 +71,7 @@ export class TfidfMatcher {
   /**
    * Find best matching documents for a query
    */
-  search(query: string, minScore = 0.05, maxResults = 10): TfidfMatchResult[] {
+  search(query: string, minScore = 0.1, maxResults = 10): TfidfMatchResult[] {
     if (!this.initialized || this.docVectors.length === 0) return [];
 
     const queryVector = this.computeTfidf(query);
@@ -138,9 +155,13 @@ export class TfidfMatcher {
     const chineseChars = lower.match(/[\u4e00-\u9fff]+/g) || [];
     for (const segment of chineseChars) {
       if (segment.length >= 2) terms.push(segment);
-      // Also add bigrams for partial matching
+      // Bigrams for partial matching
       for (let i = 0; i <= segment.length - 2; i++) {
         terms.push(segment.substring(i, i + 2));
+      }
+      // Trigrams for 3+ character words
+      for (let i = 0; i <= segment.length - 3; i++) {
+        terms.push(segment.substring(i, i + 3));
       }
     }
 
@@ -153,7 +174,8 @@ export class TfidfMatcher {
       .filter(s => s.length >= 2);
     terms.push(...segments);
 
-    return [...new Set(terms)];
+    // Filter stopwords
+    return [...new Set(terms)].filter(t => !TfidfMatcher.STOP_WORDS.has(t) && t.length >= 2);
   }
 
   /**

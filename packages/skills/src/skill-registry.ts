@@ -224,15 +224,20 @@ export class SkillRegistry {
     let allEntries: SkillRegistryEntry[] = [];
     let total = 0;
 
-    for (const remote of this.remoteRegistries.filter((r) => r.enabled)) {
-      try {
-        const result = await this.queryRemoteRegistry(remote, query);
-        allEntries = allEntries.concat(result.entries);
-        total += result.total;
-      } catch (err) {
+    const enabledRemotes = this.remoteRegistries.filter((r) => r.enabled);
+    const remoteResults = await Promise.allSettled(
+      enabledRemotes.map((remote) => this.queryRemoteRegistry(remote, query))
+    );
+
+    for (let i = 0; i < remoteResults.length; i++) {
+      const result = remoteResults[i];
+      if (result.status === "fulfilled") {
+        allEntries = allEntries.concat(result.value.entries);
+        total += result.value.total;
+      } else {
         console.warn(
-          `[SkillRegistry] Failed to query remote registry "${remote.url}":`,
-          err instanceof Error ? err.message : String(err)
+          `[SkillRegistry] Failed to query remote registry "${enabledRemotes[i].url}":`,
+          result.reason instanceof Error ? result.reason.message : String(result.reason)
         );
       }
     }
@@ -495,21 +500,21 @@ export class SkillRegistry {
     keywords: string[];
     category: string;
   }> = [
-    { name: "web-search", description: "Search the web for live information and news", keywords: ["search", "web", "news", "查询", "搜索", "新闻"], category: "search" },
+    { name: "web-search", description: "Search the web for live information and news", keywords: ["search", "web", "news", "查询", "搜索", "新闻"], category: "utility" },
     { name: "weather", description: "Query weather forecasts and conditions", keywords: ["weather", "天气", "forecast", "预报"], category: "utility" },
     { name: "translator", description: "Translate text between languages", keywords: ["translate", "翻译", "language"], category: "utility" },
-    { name: "code-runner", description: "Execute code snippets in various languages", keywords: ["code", "run", "execute", "代码", "运行"], category: "development" },
+    { name: "code-runner", description: "Execute code snippets in various languages", keywords: ["code", "run", "execute", "代码", "运行"], category: "automation" },
     { name: "calculator", description: "Perform mathematical calculations", keywords: ["calc", "math", "计算", "数学"], category: "utility" },
-    { name: "file-manager", description: "Manage files and directories", keywords: ["file", "文件", "directory", "folder"], category: "system" },
-    { name: "reminder", description: "Set reminders and alarms", keywords: ["remind", "alarm", "提醒", "闹钟"], category: "productivity" },
-    { name: "email", description: "Send and manage emails", keywords: ["email", "mail", "邮件", "邮箱"], category: "communication" },
-    { name: "image-generator", description: "Generate images from text descriptions", keywords: ["image", "generate", "图片", "生成"], category: "media" },
-    { name: "pdf-tools", description: "Create, merge, and manipulate PDF files", keywords: ["pdf", "document", "文档"], category: "productivity" },
-    { name: "database-query", description: "Query and manage databases", keywords: ["database", "sql", "数据库", "查询"], category: "development" },
-    { name: "crypto-tracker", description: "Track cryptocurrency prices", keywords: ["crypto", "bitcoin", "btc", "加密", "货币"], category: "finance" },
-    { name: "rss-reader", description: "Read RSS feeds and news", keywords: ["rss", "feed", "订阅", "阅读"], category: "productivity" },
-    { name: "markdown-editor", description: "Edit and preview Markdown documents", keywords: ["markdown", "md", "编辑", "文档"], category: "development" },
-    { name: "http-client", description: "Make HTTP requests and test APIs", keywords: ["http", "api", "rest", "request"], category: "development" },
+    { name: "file-manager", description: "Manage files and directories", keywords: ["file", "文件", "directory", "folder"], category: "automation" },
+    { name: "reminder", description: "Set reminders and alarms", keywords: ["remind", "alarm", "提醒", "闹钟"], category: "utility" },
+    { name: "email", description: "Send and manage emails", keywords: ["email", "mail", "邮件", "邮箱"], category: "integration" },
+    { name: "image-generator", description: "Generate images from text descriptions", keywords: ["image", "generate", "图片", "生成"], category: "generation" },
+    { name: "pdf-tools", description: "Create, merge, and manipulate PDF files", keywords: ["pdf", "document", "文档"], category: "utility" },
+    { name: "database-query", description: "Query and manage databases", keywords: ["database", "sql", "数据库", "查询"], category: "automation" },
+    { name: "crypto-tracker", description: "Track cryptocurrency prices", keywords: ["crypto", "bitcoin", "btc", "加密", "货币"], category: "analysis" },
+    { name: "rss-reader", description: "Read RSS feeds and news", keywords: ["rss", "feed", "订阅", "阅读"], category: "utility" },
+    { name: "markdown-editor", description: "Edit and preview Markdown documents", keywords: ["markdown", "md", "编辑", "文档"], category: "automation" },
+    { name: "http-client", description: "Make HTTP requests and test APIs", keywords: ["http", "api", "rest", "request"], category: "automation" },
   ];
 
   /**
@@ -554,7 +559,7 @@ export class SkillRegistry {
     return scored
       .filter(s => s.score > 0)
       .slice(0, limit)
-      .map((s, i) => ({
+      .map((s) => ({
         skillId: `curated:${s.name}@0.1.0`,
         name: s.name,
         version: "0.1.0",
@@ -566,8 +571,8 @@ export class SkillRegistry {
         triggers: [],
         requires: [],
         provides: [],
-        rating: 4.0 - i * 0.15,
-        downloads: 50000 - i * 3000,
+        rating: 0,
+        downloads: 0,
         installCount: 0,
         publishedAt: new Date(),
         updatedAt: new Date(),
@@ -617,11 +622,15 @@ export class SkillRegistry {
       }
     }
 
+    // Sort merged results by rating
+    merged.sort((a, b) => b.rating - a.rating);
+
+    const pageSize = Math.max(local.pageSize, remote.pageSize);
     return {
-      entries: merged.slice(0, remote.pageSize),
-      total: local.total + remote.total,
+      entries: merged.slice(0, pageSize),
+      total: merged.length,
       page: 1,
-      pageSize: remote.pageSize,
+      pageSize,
     };
   }
 }

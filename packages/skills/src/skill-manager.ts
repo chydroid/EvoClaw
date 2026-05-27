@@ -3,12 +3,13 @@ import {
   EventBus,
   SystemEvents,
   type Skill,
+  type SkillCategory,
   type SkillExecutionResult,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { SKILLmdParser } from "./skill-md-parser";
 import { SkillSandbox } from "./skill-sandbox";
 import { SkillLifecycleManager } from "./skill-lifecycle";
@@ -54,6 +55,51 @@ export class SkillManager {
 
     const parsed = await this.parser.parseFromFile(skillPath);
 
+    // 读取 _meta.json 补充元数据
+    const skillDir = path.dirname(skillPath);
+    const metaJsonPath = path.join(skillDir, "_meta.json");
+    let metaJson: Record<string, unknown> | null = null;
+    try {
+      if (fs.existsSync(metaJsonPath)) {
+        metaJson = JSON.parse(fs.readFileSync(metaJsonPath, "utf-8"));
+      }
+    } catch { /* ignore */ }
+
+    // 用 _meta.json 补充 SKILL.md 中缺失的字段
+    if (metaJson) {
+      if (!parsed.meta.description && metaJson.description) {
+        parsed.meta.description = String(metaJson.description);
+      }
+      if (!parsed.meta.author || parsed.meta.author === "unknown") {
+        parsed.meta.author = String(metaJson.author || metaJson.ownerId || metaJson.owner || "unknown");
+      }
+      if (!parsed.meta.category && metaJson.category) {
+        const cat = String(metaJson.category);
+        if (["automation", "integration", "analysis", "generation", "utility", "custom"].includes(cat)) {
+          parsed.meta.category = cat as SkillCategory;
+        }
+      }
+      if (!parsed.meta.keywords || parsed.meta.keywords.length === 0) {
+        if (Array.isArray(metaJson.keywords)) {
+          parsed.meta.keywords = metaJson.keywords.map(String);
+        }
+      }
+      if (!parsed.meta.license && metaJson.license) {
+        parsed.meta.license = String(metaJson.license);
+      }
+      if (!parsed.meta.homepage && metaJson.homepage) {
+        parsed.meta.homepage = String(metaJson.homepage);
+      }
+      // 远程技能的 displayName 作为 name 备选
+      if (parsed.meta.name === "unnamed-skill" && metaJson.displayName) {
+        parsed.meta.name = String(metaJson.displayName);
+      }
+      // 远程技能的 slug 作为 name 备选
+      if (parsed.meta.name === "unnamed-skill" && metaJson.slug) {
+        parsed.meta.name = String(metaJson.slug);
+      }
+    }
+
     const warnings: string[] = [];
 
     if (parsed.meta.os && parsed.meta.os.length > 0) {
@@ -97,10 +143,13 @@ export class SkillManager {
     }
 
     const triggers = parsed.meta.triggers || [];
-    const keywords = triggers
-      .filter((t) => t.type === "keyword")
-      .map((t) => t.pattern.replace(/\/|\^|\$/g, ""))
-      .slice(0, 10);
+    // 优先使用 SKILL.md frontmatter 中的 keywords，否则从 triggers 提取
+    const keywords = parsed.meta.keywords && parsed.meta.keywords.length > 0
+      ? parsed.meta.keywords
+      : triggers
+          .filter((t) => t.type === "keyword")
+          .map((t) => t.pattern.replace(/\/|\^|\$/g, ""))
+          .slice(0, 10);
 
     // Determine sandbox policy based on skill requirements
     const needsNetwork = parsed.meta.requires?.some(r => r.name === "python3" || r.name === "python") ||
@@ -118,10 +167,10 @@ export class SkillManager {
       version: parsed.meta.version,
       description: parsed.meta.description,
       author: parsed.meta.author,
-      license: "MIT",
+      license: parsed.meta.license || "MIT",
       homepage: parsed.meta.homepage || ocMeta?.homepage,
       keywords,
-      category: "custom",
+      category: parsed.meta.category || "custom",
       entryPoint: skillPath,
       sandboxPolicy: {
         allowNetwork: needsNetwork || needsSubprocess,
@@ -265,8 +314,30 @@ export class SkillManager {
     const skill = this.skills.get(skillId);
     if (skill) {
       this.lifecycle.deactivate(skill);
+
+      // Unregister agent tool
+      const agentExecutor = this.svcRegistry?.resolveService<{
+        unregisterTool(name: string): void;
+      }>("agentModelExecutor");
+
+      if (agentExecutor) {
+        try {
+          agentExecutor.unregisterTool(skill.name);
+        } catch {
+          // Tool may not have been registered or unregister not supported
+        }
+      }
+
       this.registry.unregisterSkill(skillId);
       this.skills.delete(skillId);
+
+      // Clean up processedItems cache
+      for (const [key] of this.processedItems) {
+        if (key.includes(skill.name) || key.includes(skillId)) {
+          this.processedItems.delete(key);
+        }
+      }
+
       await this.eventBus.publish(
         SystemEvents.SKILL_UNINSTALLED,
         skill,
@@ -335,6 +406,11 @@ export class SkillManager {
   }
 
   async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {
+    // Prevent processedItems from growing indefinitely
+    if (this.processedItems.size > 1000) {
+      this.processedItems.clear();
+    }
+
     if (this.isScanning) {
       return { installed: [], skipped: ["Scan already in progress"] };
     }
@@ -441,15 +517,9 @@ export class SkillManager {
   private extractZip(zipPath: string, destDir: string): void {
     try {
       if (process.platform === "win32") {
-        execSync(
-          `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`,
-          { stdio: "pipe" }
-        );
+        execFileSync("powershell", ["-Command", "Expand-Archive", "-Path", zipPath, "-DestinationPath", destDir, "-Force"], { stdio: "pipe" });
       } else {
-        execSync(
-          `unzip -o "${zipPath}" -d "${destDir}"`,
-          { stdio: "pipe" }
-        );
+        execFileSync("unzip", ["-o", zipPath, "-d", destDir], { stdio: "pipe" });
       }
     } catch (err) {
       throw new Error(`ZIP extraction failed: ${err}`);

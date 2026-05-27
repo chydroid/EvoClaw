@@ -239,7 +239,7 @@ export const CLITerminal: React.FC = () => {
   const executeCommand = useCallback(async (cmd: string) => {
     if (!cmd.trim() || running) return;
     const fullCmd = cmd.trim();
-    if (!fullCmd.startsWith("EvoClaw ")) {
+    if (!fullCmd.toLowerCase().startsWith("evoclaw ")) {
       addEntry({ type: "error", text: `Error: Commands must start with "EvoClaw". Try "EvoClaw --help"` });
       return;
     }

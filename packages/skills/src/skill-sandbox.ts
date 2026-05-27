@@ -6,7 +6,7 @@ import {
   type SandboxPolicy,
 } from "@evoclaw/core";
 import { Script, createContext } from "vm";
-import { execSync, spawn, type SpawnOptions } from "child_process";
+import { spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -152,26 +152,22 @@ export class SkillSandbox {
     params: Record<string, unknown>,
     policy: SandboxPolicy
   ): Promise<unknown> {
+    if (!policy.allowSubprocess) {
+      throw new Error(`Skill "${skill.name}" requires subprocess execution but sandbox policy denies it`);
+    }
+
     const skillDir = this.resolveSkillDir(skill);
-    const scriptPath = this.extractScriptPath(code, skillDir, "py");
     const queryParams = typeof params.query === "string" ? params.query : JSON.stringify(params);
+    const jsonArgs = JSON.stringify({ query: queryParams });
 
-    // If code is a shell command like "python3 scripts/search.py '<JSON>'",
-    // extract and execute it directly
-    const commandMatch = code.match(/^(python3?\s+.+)/m);
-    let cmd: string;
+    let scriptFile: string | null = null;
+    let args: string[];
 
-    if (commandMatch) {
-      // Replace the template with actual query
-      cmd = commandMatch[1].replace(/'<JSON>'|"<JSON>"|<JSON>/, `'${JSON.stringify({ query: queryParams })}'`);
-      // Resolve relative paths
-      if (skillDir) {
-        cmd = cmd.replace(/scripts\//g, path.join(skillDir, "scripts") + path.sep);
-        cmd = cmd.replace(/skills\//g, "");
-      }
-    } else if (scriptPath && fs.existsSync(scriptPath)) {
-      // We have the script file content, write it to temp and execute
-      cmd = `python "${scriptPath}" '${JSON.stringify({ query: queryParams })}'`;
+    // If code references an existing script file, use it directly
+    const scriptPath = this.extractScriptPath(code, skillDir, "py");
+    if (scriptPath && fs.existsSync(scriptPath)) {
+      scriptFile = scriptPath;
+      args = [scriptFile, jsonArgs];
     } else {
       // Write code to temp file and execute
       const tmpDir = path.join(process.cwd(), "data", "tmp");
@@ -179,13 +175,63 @@ export class SkillSandbox {
         fs.mkdirSync(tmpDir, { recursive: true });
       }
       const tmpFile = path.join(tmpDir, `skill-${skill.name}-${Date.now()}.py`);
-      fs.writeFileSync(tmpFile, code, "utf-8");
-      cmd = `python "${tmpFile}" '${JSON.stringify({ query: queryParams })}'`;
+      // Strip shell command prefix if present (e.g., "python3 scripts/foo.py")
+      const cleanCode = code.replace(/^python3?\s+\S+\s*/m, "").trim();
+      fs.writeFileSync(tmpFile, cleanCode || code, "utf-8");
+      scriptFile = tmpFile;
+      args = [tmpFile, jsonArgs];
       // Clean up after execution
       setTimeout(() => { try { fs.unlinkSync(tmpFile); } catch {} }, 5000);
     }
 
-    return this.execCommand(cmd, skill, policy);
+    const timeout = policy.maxExecutionTime || 30000;
+    const env = { ...process.env };
+    if (skill.config && typeof skill.config === "object") {
+      for (const [k, v] of Object.entries(skill.config as Record<string, unknown>)) {
+        if (typeof v === "string") env[k] = v;
+      }
+    }
+
+    console.log(`[SkillSandbox] Executing Python: ${scriptFile}`);
+
+    return new Promise((resolve, reject) => {
+      const child = spawn("python", args, {
+        timeout,
+        env,
+        cwd: skillDir || process.cwd(),
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+      const timeoutId = setTimeout(() => {
+        child.kill();
+        reject(new Error(`Python execution timed out after ${timeout}ms`));
+      }, timeout);
+
+      child.on("close", (code) => {
+        clearTimeout(timeoutId);
+        if (code === 0 || stdout) {
+          try {
+            resolve(JSON.parse(stdout));
+          } catch {
+            resolve({ raw: stdout, text: stdout.slice(0, 8000) });
+          }
+        } else {
+          reject(new Error(`Python execution failed (exit ${code}): ${stderr || "no output"}`));
+        }
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timeoutId);
+        reject(new Error(`Python execution error: ${err.message}`));
+      });
+    });
   }
 
   /** Execute a shell script via subprocess */
@@ -252,15 +298,13 @@ export class SkillSandbox {
     policy: SandboxPolicy
   ): Promise<unknown> {
     if (!policy.allowSubprocess) {
-      // Temporarily allow since this is a skill that needs it
-      console.log(`[SkillSandbox] Allowing subprocess for skill "${skill.name}" (policy override)`);
+      throw new Error(`Skill "${skill.name}" requires subprocess execution but sandbox policy denies it`);
     }
 
     const timeout = policy.maxExecutionTime || 30000;
     const env = { ...process.env };
 
-    // Pass query params as environment variables
-    // For baidu-search, inject API keys from skill config or env
+    // Pass skill config as environment variables
     if (skill.config && typeof skill.config === "object") {
       for (const [k, v] of Object.entries(skill.config as Record<string, unknown>)) {
         if (typeof v === "string") {
@@ -272,44 +316,51 @@ export class SkillSandbox {
     console.log(`[SkillSandbox] Executing: ${cmd.slice(0, 200)}`);
 
     return new Promise((resolve, reject) => {
+      const isWindows = process.platform === "win32";
+      const shell = isWindows ? "cmd" : "/bin/sh";
+      const shellArg = isWindows ? "/c" : "-c";
+
+      const child = spawn(shell, [shellArg, cmd], {
+        timeout,
+        env,
+        cwd: process.cwd(),
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout?.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      child.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
       const timeoutId = setTimeout(() => {
+        child.kill();
         reject(new Error(`Skill subprocess timed out after ${timeout}ms`));
       }, timeout);
 
-      try {
-        const result = execSync(cmd, {
-          timeout,
-          env,
-          maxBuffer: 10 * 1024 * 1024, // 10MB
-          cwd: process.cwd(),
-          windowsHide: true,
-          encoding: "utf-8",
-        });
-
+      child.on("close", (code) => {
         clearTimeout(timeoutId);
-        console.log(`[SkillSandbox] Subprocess completed for "${skill.name}"`);
-
-        // Try to parse as JSON, otherwise return as text
-        try {
-          resolve(JSON.parse(result));
-        } catch {
-          resolve({ raw: result, text: result.slice(0, 8000) });
-        }
-      } catch (err: any) {
-        clearTimeout(timeoutId);
-        const stderr = err.stderr || "";
-        const stdout = err.stdout || "";
-        // If we got stdout despite error, still try to use it
-        if (stdout) {
+        if (code === 0 || stdout) {
           try {
             resolve(JSON.parse(stdout));
           } catch {
-            resolve({ raw: stdout, text: stdout.slice(0, 8000), warning: String(err.message) });
+            resolve({ raw: stdout, text: stdout.slice(0, 8000) });
           }
         } else {
-          reject(new Error(`Subprocess failed: ${err.message}${stderr ? "\n" + stderr : ""}`));
+          reject(new Error(`Subprocess failed (exit ${code}): ${stderr || "no output"}`));
         }
-      }
+      });
+
+      child.on("error", (err) => {
+        clearTimeout(timeoutId);
+        reject(new Error(`Subprocess error: ${err.message}`));
+      });
     });
   }
 
@@ -479,11 +530,13 @@ export class SkillSandbox {
 
       try {
         const parsedUrl = new URL(url);
-        const allowed = allowedHosts.some(
-          (host) =>
-            parsedUrl.hostname === host ||
-            parsedUrl.hostname.endsWith("." + host)
-        );
+        // 支持通配符 "*" 允许所有主机
+        const allowed = allowedHosts.includes("*") ||
+          allowedHosts.some(
+            (host) =>
+              parsedUrl.hostname === host ||
+              parsedUrl.hostname.endsWith("." + host)
+          );
 
         if (!allowed) {
           throw new Error(
@@ -502,12 +555,58 @@ export class SkillSandbox {
   }
 
   private createControlledFS(policy: SandboxPolicy): Record<string, unknown> {
-    return {
-      allowedPaths: policy.allowedPaths,
-      readFile: undefined,
-      writeFile: undefined,
-    };
-  }
+  const allowedPaths = policy.allowedPaths || [];
+  const isAllowed = (filePath: string): boolean => {
+    if (allowedPaths.length === 0) return true; // No restrictions if no paths specified
+    const resolved = path.resolve(filePath);
+    return allowedPaths.some(allowed => {
+      const resolvedAllowed = path.resolve(allowed);
+      return resolved === resolvedAllowed || resolved.startsWith(resolvedAllowed + path.sep);
+    });
+  };
+
+  return {
+    allowedPaths,
+    readFile: (filePath: string, encoding?: BufferEncoding): string | null => {
+      if (!isAllowed(filePath)) {
+        throw new Error(`File access denied: "${filePath}" is not in allowed paths`);
+      }
+      try {
+        return fs.readFileSync(filePath, encoding || "utf-8");
+      } catch (err) {
+        throw new Error(`Failed to read file "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    writeFile: (filePath: string, content: string, encoding?: BufferEncoding): void => {
+      if (!isAllowed(filePath)) {
+        throw new Error(`File access denied: "${filePath}" is not in allowed paths`);
+      }
+      try {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, content, encoding || "utf-8");
+      } catch (err) {
+        throw new Error(`Failed to write file "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    listDir: (dirPath: string): string[] | null => {
+      if (!isAllowed(dirPath)) {
+        throw new Error(`Directory access denied: "${dirPath}" is not in allowed paths`);
+      }
+      try {
+        return fs.readdirSync(dirPath);
+      } catch (err) {
+        throw new Error(`Failed to list directory "${dirPath}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    exists: (filePath: string): boolean => {
+      if (!isAllowed(filePath)) return false;
+      return fs.existsSync(filePath);
+    },
+  };
+}
 
   private wrapCode(code: string, policy: SandboxPolicy): string {
     return `

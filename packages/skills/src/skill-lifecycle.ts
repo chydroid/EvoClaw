@@ -242,14 +242,30 @@ export class SkillLifecycleManager {
 
   getAllHealthReports(): SkillHealthReport[] {
     const skillManager = this.registry.resolveService("skillManager") as
-      | { listSkills: () => Promise<Skill[]> }
+      | { listSkills: () => Skill[] }
       | undefined;
 
     if (!skillManager) {
       return [];
     }
 
-    return [];
+    const skills = skillManager.listSkills();
+    return skills.map((skill) => ({
+      skillId: skill.id,
+      skillName: skill.name,
+      currentStatus: skill.lifecycle.status,
+      healthy: skill.lifecycle.healthCheck?.healthy ?? true,
+      totalChecks: skill.stats?.invocationCount ?? 0,
+      successRate: skill.stats?.invocationCount
+        ? skill.stats.successCount / skill.stats.invocationCount
+        : 1,
+      averageResponseTime: skill.stats?.averageDuration ?? 0,
+      lastError: skill.lifecycle.healthCheck?.errors?.[0] ?? null,
+      history: [],
+      recommendation: skill.lifecycle.healthCheck?.healthy
+        ? "Skill is healthy"
+        : skill.lifecycle.healthCheck?.errors?.join("; ") || "Health check failed",
+    }));
   }
 
   private handleUnhealthy(skill: Skill, result: HealthCheckResult): void {

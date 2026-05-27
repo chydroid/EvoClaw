@@ -7,7 +7,8 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "EvoClaw": "./dist/index.js",
-    "evoclaw": "./dist/index.js"
+    "evoclaw": "./dist/index.js",
+    "openclaw": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -23,7 +24,8 @@
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/security": "workspace:*",
     "@evoclaw/skills": "workspace:*",
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
