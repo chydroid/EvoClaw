@@ -48,8 +48,7 @@ COPY start.bat ./
 # Create data directory
 RUN mkdir -p /app/data/workspace /app/data/sessions /app/logs
 
-# Copy pre-built web UI if available (skip if not found)
-COPY packages/web-ui/dist/ /app/packages/web-ui/dist/
+# Note: packages/web-ui/dist/ is already copied from builder stage in line 39
 
 # Environment
 ENV NODE_ENV=production
