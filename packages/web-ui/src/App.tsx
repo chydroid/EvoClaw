@@ -394,7 +394,7 @@ export default function App() {
   if (!authChecked) {
     return (
       <div style={css.loadingScreen}>
-        <div style={{ fontSize: "32px", fontWeight: 700, color: "var(--accent)", marginBottom: "12px" }}>EvoClaw</div>
+        <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "32px", marginBottom: "12px" }} />
         <SpinnerPulse />
       </div>
     );
@@ -404,7 +404,7 @@ export default function App() {
     return (
       <div style={css.authScreen}>
         <div style={css.authCard}>
-          <div style={{ fontSize: "24px", fontWeight: 700, color: "var(--accent)", marginBottom: "8px" }}>EvoClaw</div>
+          <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "24px", marginBottom: "8px" }} />
           <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "20px" }}>
             {t("app.auth.desc")}
           </p>
@@ -520,7 +520,7 @@ export default function App() {
           <button style={css.menuBtn} onClick={() => { if (sidebarCollapsed) setSidebarCollapsed(false); setMobileMenuOpen(!mobileMenuOpen); }} title={t("sidebar.toggle_menu")}>
             <IconMenu size={18} />
           </button>
-          <img src="/android-chrome-192x192.png" alt="EvoClaw" style={css.headerLogo} />
+          <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={css.headerLogo} />
           <span style={css.headerTitle}>EvoClaw</span>
         </div>
         <div style={css.headerRight}>

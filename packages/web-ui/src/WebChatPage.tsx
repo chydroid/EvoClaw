@@ -1161,7 +1161,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         <div style={messagesContainerStyle}>
           {messages.length === 0 && (
             <div style={emptyStateStyle}>
-              <div style={{ fontSize: "48px", marginBottom: "12px" }}>🦞</div>
+              <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "48px", marginBottom: "12px" }} />
               <div style={{ fontSize: "18px", fontWeight: 600, marginBottom: "6px" }}>开始对话</div>
               <div style={{ fontSize: "14px", maxWidth: "400px" }}>
                 EvoClaw WebChat - 在下方输入消息开始与你的 AI 助手对话
