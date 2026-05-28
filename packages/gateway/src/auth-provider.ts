@@ -40,7 +40,7 @@ export class AuthProvider {
       return next();
     }
 
-    if (req.path === "/" || req.path.startsWith("/assets/") || req.path.match(/\.(html|js|css|png|ico|svg|json)$/)) {
+    if (req.path === "/" || req.path.startsWith("/ui") || req.path.startsWith("/assets/") || req.path.match(/\.(html|js|css|png|ico|svg|json)$/)) {
       return next();
     }
 
