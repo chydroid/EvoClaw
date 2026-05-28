@@ -127,7 +127,11 @@ export default function EvolutionDashboard() {
   const [progressReports, setProgressReports] = useState<ProgressReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress">("overview");
+  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress" | "help">("overview");
+  const [triggering, setTriggering] = useState(false);
+  const [triggerDesc, setTriggerDesc] = useState("");
+  const [showTrigger, setShowTrigger] = useState(false);
+  const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   useEffect(() => {
     loadEvolutionData();
@@ -184,6 +188,49 @@ export default function EvolutionDashboard() {
       if (res.ok) setProgressReports(await res.json());
     } catch {
       /* silent */
+    }
+  }
+
+  async function handleTriggerEvolution() {
+    if (!triggerDesc.trim()) return;
+    setTriggering(true);
+    try {
+      const res = await fetch("/api/evolution/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: triggerDesc.trim() }),
+      });
+      if (res.ok) {
+        setFeedbackMsg("✅ 进化周期已触发，正在处理中...");
+        setTriggerDesc("");
+        setShowTrigger(false);
+        loadEvolutionData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setFeedbackMsg(`❌ 触发失败: ${(err as any).error || res.statusText}`);
+      }
+    } catch {
+      setFeedbackMsg("❌ 网络错误，无法触发进化");
+    } finally {
+      setTriggering(false);
+    }
+  }
+
+  async function handleSubmitFeedback(cycleId: string, adopted: boolean, comment?: string) {
+    try {
+      const res = await fetch("/api/evolution/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cycleId, adopted, comment }),
+      });
+      if (res.ok) {
+        setFeedbackMsg(adopted ? "✅ 已采纳该进化建议" : "❌ 已拒绝该进化建议");
+        loadEvolutionData();
+      } else {
+        setFeedbackMsg("❌ 反馈提交失败");
+      }
+    } catch {
+      setFeedbackMsg("❌ 网络错误，无法提交反馈");
     }
   }
 
@@ -254,8 +301,116 @@ export default function EvolutionDashboard() {
     <div style={s.container}>
       <div style={s.header}>
         <h2 style={s.title}>🦞 Evolution Dashboard</h2>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <button
+            onClick={() => setShowTrigger(!showTrigger)}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "6px",
+              border: "1px solid var(--accent)",
+              background: "var(--accent)",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            🧬 触发进化
+          </button>
+          <button
+            onClick={loadEvolutionData}
+            style={{
+              padding: "6px 10px",
+              borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "var(--bg-sidebar)",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "12px",
+            }}
+          >
+            🔄
+          </button>
+        </div>
         {error && <div style={s.errorBanner}>{error}</div>}
       </div>
+
+      {showTrigger && (
+        <div style={{
+          padding: "12px 16px",
+          background: "var(--bg-sidebar)",
+          border: "1px solid var(--border)",
+          borderRadius: "8px",
+          marginBottom: "12px",
+          display: "flex",
+          gap: "8px",
+          alignItems: "center",
+        }}>
+          <input
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "var(--bg-secondary)",
+              color: "var(--text-primary)",
+              fontSize: "13px",
+              outline: "none",
+            }}
+            placeholder="描述进化需求，例如：优化 weather 技能的超时处理..."
+            value={triggerDesc}
+            onChange={(e) => setTriggerDesc(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleTriggerEvolution()}
+          />
+          <button
+            onClick={handleTriggerEvolution}
+            disabled={triggering || !triggerDesc.trim()}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "6px",
+              border: "none",
+              background: triggering ? "var(--text-muted)" : "var(--accent)",
+              color: "#fff",
+              cursor: triggering ? "not-allowed" : "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            {triggering ? "执行中..." : "执行"}
+          </button>
+          <button
+            onClick={() => setShowTrigger(false)}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "6px",
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: "12px",
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
+
+      {feedbackMsg && (
+        <div style={{
+          padding: "8px 14px",
+          borderRadius: "6px",
+          marginBottom: "12px",
+          background: "var(--success-bg)",
+          color: "var(--success)",
+          fontSize: "12px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          {feedbackMsg}
+          <button onClick={() => setFeedbackMsg(null)} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
 
       <div style={s.summaryRow}>
         <div style={s.summaryCard}>
@@ -283,6 +438,7 @@ export default function EvolutionDashboard() {
         <button style={subTabStyle(activeSubTab === "learning")} onClick={() => setActiveSubTab("learning")}>📝 学习</button>
         <button style={subTabStyle(activeSubTab === "progress")} onClick={() => setActiveSubTab("progress")}>📊 进度</button>
         <button style={subTabStyle(activeSubTab === "patterns")} onClick={() => setActiveSubTab("patterns")}>模式</button>
+        <button style={subTabStyle(activeSubTab === "help")} onClick={() => setActiveSubTab("help")}>📖 帮助</button>
       </div>
 
       <div style={s.content}>
@@ -292,6 +448,7 @@ export default function EvolutionDashboard() {
         {activeSubTab === "learning" && renderLearning()}
         {activeSubTab === "progress" && renderProgress()}
         {activeSubTab === "patterns" && renderPatterns()}
+        {activeSubTab === "help" && renderHelp()}
       </div>
     </div>
   );
@@ -368,11 +525,12 @@ export default function EvolutionDashboard() {
               <th>候选方案</th>
               <th>用时</th>
               <th>开始时间</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
             {data.cycles.length === 0 ? (
-              <tr><td colSpan={6} style={s.emptyCell}>暂无进化周期记录</td></tr>
+              <tr><td colSpan={7} style={s.emptyCell}>暂无进化周期记录</td></tr>
             ) : (
               data.cycles.map((cycle) => (
                 <tr key={cycle.id}>
@@ -386,6 +544,51 @@ export default function EvolutionDashboard() {
                   <td>{cycle.candidatesGenerated} / {cycle.candidatesPassed} 通过</td>
                   <td>{formatDuration(cycle.duration)}</td>
                   <td style={s.monoCell}>{new Date(cycle.startedAt).toLocaleString("zh-CN")}</td>
+                  <td>
+                    {cycle.status === "completed" && (
+                      <div style={{ display: "flex", gap: "4px" }}>
+                        <button
+                          onClick={() => handleSubmitFeedback(cycle.id, true)}
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: "4px",
+                            border: "1px solid var(--success)",
+                            background: "transparent",
+                            color: "var(--success)",
+                            cursor: "pointer",
+                            fontSize: "11px",
+                          }}
+                          title="采纳此进化建议"
+                        >
+                          ✅ 采纳
+                        </button>
+                        <button
+                          onClick={() => handleSubmitFeedback(cycle.id, false)}
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: "4px",
+                            border: "1px solid var(--error)",
+                            background: "transparent",
+                            color: "var(--error)",
+                            cursor: "pointer",
+                            fontSize: "11px",
+                          }}
+                          title="拒绝此进化建议"
+                        >
+                          ❌ 拒绝
+                        </button>
+                      </div>
+                    )}
+                    {(cycle.status === "generating" || cycle.status === "evaluating" || cycle.status === "running" || cycle.status === "analyzing") && (
+                      <span style={{ fontSize: "11px", color: "var(--accent)" }}>⏳ 处理中</span>
+                    )}
+                    {cycle.status === "failed" && (
+                      <span style={{ fontSize: "11px", color: "var(--error)" }}>⚠️ 失败</span>
+                    )}
+                    {cycle.status === "rejected" && (
+                      <span style={{ fontSize: "11px", color: "var(--warning)" }}>⊘ 已拒绝</span>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
@@ -665,6 +868,127 @@ export default function EvolutionDashboard() {
           <div style={s.emptyIcon}>📊</div>
           <div>暂无检测到的模式</div>
           <div style={s.emptyHint}>失败模式将在进化周期运行后自动检测</div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderHelp() {
+    return (
+      <div style={s.helpContainer}>
+        <div style={s.helpSection}>
+          <h3 style={s.helpTitle}>🧬 什么是进化功能？</h3>
+          <div style={s.helpText}>
+            进化功能是 EvoClaw 的核心自优化机制。系统能够从任务失败、用户反馈、外部错误和知识改进中自动学习，
+            生成改进方案并评估其有效性，最终将验证通过的改进应用到技能中，实现持续自我进化。
+          </div>
+        </div>
+
+        <div style={s.helpSection}>
+          <h3 style={s.helpTitle}>🎯 核心应用场景</h3>
+          <div style={s.helpGrid}>
+            <div style={s.helpCard}>
+              <div style={s.helpCardIcon}>🔧</div>
+              <div style={s.helpCardTitle}>错误自动修复</div>
+              <div style={s.helpCardDesc}>当技能执行失败时，系统自动分析错误原因，生成修复方案并验证</div>
+            </div>
+            <div style={s.helpCard}>
+              <div style={s.helpCardIcon}>📈</div>
+              <div style={s.helpCardTitle}>性能优化</div>
+              <div style={s.helpCardDesc}>基于使用数据识别性能瓶颈，自动生成优化方案</div>
+            </div>
+            <div style={s.helpCard}>
+              <div style={s.helpCardIcon}>🆕</div>
+              <div style={s.helpCardTitle}>能力扩展</div>
+              <div style={s.helpCardDesc}>检测到能力缺口时，自动生成新技能或扩展现有技能</div>
+            </div>
+            <div style={s.helpCard}>
+              <div style={s.helpCardIcon}>🔄</div>
+              <div style={s.helpCardTitle}>知识更新</div>
+              <div style={s.helpCardDesc}>发现过时知识或更优方法时，自动更新技能内容</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={s.helpSection}>
+          <h3 style={s.helpTitle}>📋 使用指南</h3>
+          <div style={s.helpSteps}>
+            <div style={s.helpStep}>
+              <div style={s.helpStepNum}>1</div>
+              <div style={s.helpStepContent}>
+                <div style={s.helpStepTitle}>自动触发</div>
+                <div style={s.helpStepDesc}>系统在检测到任务失败、用户纠正、能力缺口或外部错误时，自动启动进化周期</div>
+              </div>
+            </div>
+            <div style={s.helpStep}>
+              <div style={s.helpStepNum}>2</div>
+              <div style={s.helpStepContent}>
+                <div style={s.helpStepTitle}>手动触发</div>
+                <div style={s.helpStepDesc}>点击顶部「🧬 触发进化」按钮，输入进化需求描述，手动启动进化周期</div>
+              </div>
+            </div>
+            <div style={s.helpStep}>
+              <div style={s.helpStepNum}>3</div>
+              <div style={s.helpStepContent}>
+                <div style={s.helpStepTitle}>查看进度</div>
+                <div style={s.helpStepDesc}>在「周期」标签页查看进化周期的状态、候选方案和评估结果</div>
+              </div>
+            </div>
+            <div style={s.helpStep}>
+              <div style={s.helpStepNum}>4</div>
+              <div style={s.helpStepContent}>
+                <div style={s.helpStepTitle}>反馈评价</div>
+                <div style={s.helpStepDesc}>对已完成的进化周期，使用「✅ 采纳」或「❌ 拒绝」按钮提供反馈，帮助系统持续改进</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={s.helpSection}>
+          <h3 style={s.helpTitle}>⚙️ 进化流程</h3>
+          <div style={s.helpFlow}>
+            <div style={s.helpFlowNode}>
+              <div style={s.helpFlowLabel}>需求挖掘</div>
+              <div style={s.helpFlowDesc}>分析失败日志、用户反馈和性能数据</div>
+            </div>
+            <div style={s.helpFlowArrow}>→</div>
+            <div style={s.helpFlowNode}>
+              <div style={s.helpFlowLabel}>方案生成</div>
+              <div style={s.helpFlowDesc}>LLM 驱动生成改进代码和测试用例</div>
+            </div>
+            <div style={s.helpFlowArrow}>→</div>
+            <div style={s.helpFlowNode}>
+              <div style={s.helpFlowLabel}>安全评估</div>
+              <div style={s.helpFlowDesc}>安全审计、测试执行、质量评分</div>
+            </div>
+            <div style={s.helpFlowArrow}>→</div>
+            <div style={s.helpFlowNode}>
+              <div style={s.helpFlowLabel}>发布应用</div>
+              <div style={s.helpFlowDesc}>热重载应用改进，记录学习经验</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={s.helpSection}>
+          <h3 style={s.helpTitle}>📊 评估指标</h3>
+          <div style={s.helpMetrics}>
+            <div style={s.helpMetric}>
+              <div style={s.helpMetricValue}>成功率</div>
+              <div style={s.helpMetricDesc}>完成 / 总周期数，衡量进化系统的整体效率</div>
+            </div>
+            <div style={s.helpMetric}>
+              <div style={s.helpMetricValue}>候选方案数</div>
+              <div style={s.helpMetricDesc}>每个周期生成的改进方案数量，反映生成能力</div>
+            </div>
+            <div style={s.helpMetric}>
+              <div style={s.helpMetricValue}>采纳率</div>
+              <div style={s.helpMetricDesc}>用户采纳 / 已反馈数，衡量改进的实用性</div>
+            </div>
+            <div style={s.helpMetric}>
+              <div style={s.helpMetricValue}>解决率</div>
+              <div style={s.helpMetricDesc}>学习条目的解决比例，反映知识积累效果</div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -1029,6 +1353,142 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: "4px",
     background: "linear-gradient(90deg, var(--accent), var(--section-title-color))",
     transition: "width 0.5s ease",
+  },
+  helpContainer: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "24px",
+  },
+  helpSection: {
+    padding: "16px",
+    borderRadius: "10px",
+    background: "var(--bg-sidebar)",
+    border: "1px solid var(--border)",
+  },
+  helpTitle: {
+    margin: "0 0 12px 0",
+    fontSize: "15px",
+    color: "var(--section-title-color)",
+    fontWeight: 600,
+  },
+  helpText: {
+    fontSize: "13px",
+    color: "var(--text-secondary)",
+    lineHeight: 1.7,
+  },
+  helpGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+    gap: "12px",
+  },
+  helpCard: {
+    padding: "14px",
+    borderRadius: "8px",
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--border)",
+    textAlign: "center" as const,
+  },
+  helpCardIcon: {
+    fontSize: "28px",
+    marginBottom: "8px",
+  },
+  helpCardTitle: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    marginBottom: "6px",
+  },
+  helpCardDesc: {
+    fontSize: "12px",
+    color: "var(--text-secondary)",
+    lineHeight: 1.5,
+  },
+  helpSteps: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  helpStep: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "flex-start",
+  },
+  helpStepNum: {
+    width: "28px",
+    height: "28px",
+    borderRadius: "50%",
+    background: "var(--accent)",
+    color: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "13px",
+    fontWeight: "bold",
+    flexShrink: 0,
+  },
+  helpStepContent: {
+    flex: 1,
+  },
+  helpStepTitle: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--text-primary)",
+    marginBottom: "4px",
+  },
+  helpStepDesc: {
+    fontSize: "12px",
+    color: "var(--text-secondary)",
+    lineHeight: 1.5,
+  },
+  helpFlow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap" as const,
+  },
+  helpFlowNode: {
+    padding: "10px 14px",
+    borderRadius: "8px",
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--accent)",
+    textAlign: "center" as const,
+    minWidth: "100px",
+  },
+  helpFlowLabel: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--accent)",
+    marginBottom: "4px",
+  },
+  helpFlowDesc: {
+    fontSize: "11px",
+    color: "var(--text-secondary)",
+  },
+  helpFlowArrow: {
+    fontSize: "18px",
+    color: "var(--text-muted)",
+  },
+  helpMetrics: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+    gap: "12px",
+  },
+  helpMetric: {
+    padding: "12px",
+    borderRadius: "8px",
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--border)",
+  },
+  helpMetricValue: {
+    fontSize: "14px",
+    fontWeight: 600,
+    color: "var(--section-title-color)",
+    marginBottom: "6px",
+  },
+  helpMetricDesc: {
+    fontSize: "12px",
+    color: "var(--text-secondary)",
+    lineHeight: 1.5,
   },
 };
 

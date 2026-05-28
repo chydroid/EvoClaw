@@ -595,7 +595,7 @@ export class TaskDecomposer {
     if (!executor) return null;
 
     try {
-      const providers = executor.getProviders().filter(p => p.enabled);
+      const providers = typeof executor.getProviders === "function" ? executor.getProviders().filter(p => p.enabled) : [];
       if (providers.length === 0) return null;
 
       const provider = providers[0];

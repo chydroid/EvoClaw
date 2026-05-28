@@ -338,7 +338,7 @@ export class SkillMarketplace {
           execFileSync("unzip", ["-o", zipPath, "-d", extractDir], { stdio: "pipe" });
         }
       } catch (extractErr) {
-        return { success: false, packageName: name, version: targetVersion, error: `Extraction failed: ${extractErr}` };
+        console.warn(`[SkillMarketplace] ZIP extraction failed for ${name}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`);
       }
 
       // Find SKILL.md in extracted directory

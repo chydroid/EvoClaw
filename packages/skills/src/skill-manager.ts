@@ -4,6 +4,7 @@ import {
   SystemEvents,
   type Skill,
   type SkillCategory,
+  type SkillI18n,
   type SkillExecutionResult,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
@@ -15,6 +16,7 @@ import { SkillSandbox } from "./skill-sandbox";
 import { SkillLifecycleManager } from "./skill-lifecycle";
 import { SkillRegistry, type RegistrySearchQuery, type RegistrySearchResult, type RemoteRegistryConfig } from "./skill-registry";
 import { SkillResolver } from "./skill-resolver";
+import { LocalizationService } from "./localization-service";
 
 export class SkillManager {
   private skills = new Map<string, Skill>();
@@ -23,6 +25,7 @@ export class SkillManager {
   private lifecycle: SkillLifecycleManager;
   private registry: SkillRegistry;
   private resolver: SkillResolver;
+  private localization: LocalizationService;
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private processedItems = new Map<string, number>();
   private isScanning = false;
@@ -41,6 +44,7 @@ export class SkillManager {
       this.registry,
       (id) => this.skills.get(id)
     );
+    this.localization = new LocalizationService(svcRegistry);
 
     svcRegistry.registerService("skillManager", this);
   }
@@ -206,6 +210,20 @@ export class SkillManager {
     this.skills.set(skill.id, skill);
     this.registry.registerSkill(skill);
     this.lifecycle.activate(skill);
+
+    const existingI18n = this.localization.loadI18nFile(skillDir);
+    if (existingI18n) {
+      skill.i18n = existingI18n as SkillI18n;
+    }
+
+    this.localization.enqueueTranslation(async () => {
+      try {
+        const i18n = await this.localization.checkAndTranslateSkill(skill);
+        if (i18n) {
+          skill.i18n = i18n;
+        }
+      } catch { /* non-critical */ }
+    });
 
     const agentExecutor = this.svcRegistry?.resolveService<{
       registerTool(name: string, definition: { name: string; description: string; parameters: Record<string, unknown> }, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
@@ -578,5 +596,31 @@ export class SkillManager {
 
   async healthCheck(): Promise<boolean> {
     return true;
+  }
+
+  async checkAndTranslateInstalledSkills(): Promise<{ checked: number; translated: number }> {
+    let checked = 0;
+    let translated = 0;
+    const allSkills = Array.from(this.skills.values());
+
+    for (const skill of allSkills) {
+      checked++;
+      try {
+        const i18n = await this.localization.checkAndTranslateSkill(skill);
+        if (i18n && (i18n.description_zh || i18n.instructions_zh)) {
+          skill.i18n = i18n;
+          translated++;
+        }
+      } catch { /* non-critical */ }
+    }
+
+    if (translated > 0) {
+      console.log(`[SkillManager] Localization check: ${checked} skills checked, ${translated} translated`);
+    }
+    return { checked, translated };
+  }
+
+  getLocalizationService(): LocalizationService {
+    return this.localization;
   }
 }

@@ -421,6 +421,107 @@ export class EvolutionEngine {
     }
   }
 
+  async triggerManualEvolution(
+    targetSkill: string | null,
+    description: string,
+    source: "task_failure" | "user_feedback" | "usage_pattern" | "performance_degradation" | "manual" = "manual"
+  ): Promise<EvolutionCycle> {
+    return this.startEvolutionCycle(source, {
+      targetSkill,
+      description,
+      triggerReason: "user_triggered",
+    });
+  }
+
+  async triggerSkillEvolution(skillId: string, skillName: string, errorInfo?: string): Promise<EvolutionCycle> {
+    const input: Record<string, unknown> = {
+      targetSkill: skillId,
+      skillName,
+      description: `针对技能 "${skillName}" 的进化优化`,
+    };
+
+    if (errorInfo) {
+      input.failureLogs = [errorInfo];
+      input.successRate = 0;
+      input.relatedSkills = [skillName];
+    } else {
+      input.successRate = 0.5;
+      input.relatedSkills = [skillName];
+    }
+
+    return this.startEvolutionCycle("usage_pattern", input);
+  }
+
+  async submitUserFeedback(
+    cycleId: string,
+    adopted: boolean,
+    comment?: string
+  ): Promise<void> {
+    const cycle = this.cycles.get(cycleId);
+    if (!cycle) return;
+
+    const feedback: Omit<ReinforcementFeedback, "collectedAt"> = {
+      cycleId,
+      skillId: cycle.targetSkill || "unknown",
+      successRate: adopted ? 1.0 : 0.0,
+      userAdoptionRate: adopted ? 1.0 : 0.0,
+      tokenConsumption: 0,
+      errorRate: adopted ? 0.0 : 1.0,
+    };
+
+    await this.recordFeedback(feedback);
+
+    if (comment) {
+      this.learningJournal.recordLearning({
+        trigger: "user_feedback",
+        category: adopted ? "better_approach" : "correction",
+        title: `用户反馈: 进化周期 ${cycleId.slice(0, 8)}`,
+        context: `用户${adopted ? "采纳" : "拒绝"}了进化建议`,
+        correction: adopted ? undefined : comment,
+        solution: adopted ? comment : undefined,
+        source: "user-feedback",
+        tags: ["evolution-feedback", adopted ? "adopted" : "rejected"],
+        metadata: { cycleId, adopted, comment },
+      });
+    }
+
+    await this.eventBus.publish(
+      "evolution.user_feedback" as any,
+      { cycleId, adopted, comment },
+      "evolution-engine"
+    );
+  }
+
+  getEvolutionStats() {
+    const cycles = Array.from(this.cycles.values());
+    const completed = cycles.filter(c => c.status === "completed");
+    const rejected = cycles.filter(c => c.status === "rejected");
+    const failed = cycles.filter(c => c.status === "failed");
+
+    return {
+      totalCycles: cycles.length,
+      completedCycles: completed.length,
+      rejectedCycles: rejected.length,
+      failedCycles: failed.length,
+      successRate: cycles.length > 0 ? completed.length / cycles.length : 0,
+      totalCandidates: cycles.reduce((sum, c) => sum + c.candidates.length, 0),
+      averageCandidatesPerCycle: cycles.length > 0
+        ? cycles.reduce((sum, c) => sum + c.candidates.length, 0) / cycles.length
+        : 0,
+      recentCycles: cycles.slice(-10).map(c => ({
+        id: c.id,
+        source: c.source,
+        status: c.status,
+        candidatesCount: c.candidates.length,
+        startedAt: c.startedAt,
+        completedAt: c.completedAt,
+        duration: c.completedAt
+          ? c.completedAt.getTime() - c.startedAt.getTime()
+          : null,
+      })),
+    };
+  }
+
   getLearningStats() {
     return this.learningJournal.getStats();
   }

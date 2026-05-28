@@ -416,6 +416,45 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/skills/translate", async (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          checkAndTranslateInstalledSkills(): Promise<{ checked: number; translated: number }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.checkAndTranslateInstalledSkills();
+        res.json({ success: true, ...result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/:id/translate", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getSkill(id: string): Promise<{ id: string; name: string; description: string; installPath: string; body: { instructions: string; examples: string[] }; i18n?: Record<string, unknown> } | undefined>;
+          getLocalizationService(): { checkAndTranslateSkill(skill: { name: string; description: string; installPath: string; body: { instructions: string; examples: string[] }; i18n?: Record<string, unknown> }): Promise<Record<string, unknown> | undefined> };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skill = await skillManager.getSkill(String(req.params.id));
+        if (!skill) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        const localization = skillManager.getLocalizationService();
+        const i18n = await localization.checkAndTranslateSkill(skill);
+        res.json({ success: true, i18n });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     // ============ Bootstrap File Routes ============
     app.get("/api/bootstrap", async (_req: Request, res: Response) => {
       try {
@@ -1045,6 +1084,88 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/evolution/trigger", async (req: Request, res: Response) => {
+      try {
+        const evolutionEngine = this.registry.resolveService<{
+          triggerManualEvolution(targetSkill: string | null, description: string, source?: string): Promise<{ id: string; status: string; source: string; startedAt: Date }>;
+        }>("evolutionEngine");
+        if (!evolutionEngine) {
+          res.status(503).json({ error: "Evolution engine not available" });
+          return;
+        }
+        const { targetSkill, description, source } = req.body || {};
+        if (!description) {
+          res.status(400).json({ error: "Description is required" });
+          return;
+        }
+        const cycle = await evolutionEngine.triggerManualEvolution(
+          targetSkill || null,
+          description,
+          source
+        );
+        res.json({ success: true, cycle: { id: cycle.id, status: cycle.status, source: cycle.source, startedAt: cycle.startedAt } });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/evolution/trigger-skill", async (req: Request, res: Response) => {
+      try {
+        const evolutionEngine = this.registry.resolveService<{
+          triggerSkillEvolution(skillId: string, skillName: string, errorInfo?: string): Promise<{ id: string; status: string; source: string; startedAt: Date }>;
+        }>("evolutionEngine");
+        if (!evolutionEngine) {
+          res.status(503).json({ error: "Evolution engine not available" });
+          return;
+        }
+        const { skillId, skillName, errorInfo } = req.body || {};
+        if (!skillId || !skillName) {
+          res.status(400).json({ error: "skillId and skillName are required" });
+          return;
+        }
+        const cycle = await evolutionEngine.triggerSkillEvolution(skillId, skillName, errorInfo);
+        res.json({ success: true, cycle: { id: cycle.id, status: cycle.status, source: cycle.source, startedAt: cycle.startedAt } });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/evolution/feedback", async (req: Request, res: Response) => {
+      try {
+        const evolutionEngine = this.registry.resolveService<{
+          submitUserFeedback(cycleId: string, adopted: boolean, comment?: string): Promise<void>;
+        }>("evolutionEngine");
+        if (!evolutionEngine) {
+          res.status(503).json({ error: "Evolution engine not available" });
+          return;
+        }
+        const { cycleId, adopted, comment } = req.body || {};
+        if (!cycleId || adopted === undefined) {
+          res.status(400).json({ error: "cycleId and adopted are required" });
+          return;
+        }
+        await evolutionEngine.submitUserFeedback(cycleId, adopted, comment);
+        res.json({ success: true, message: "Feedback recorded" });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/evolution/stats", async (_req: Request, res: Response) => {
+      try {
+        const evolutionEngine = this.registry.resolveService<{
+          getEvolutionStats(): Record<string, unknown>;
+        }>("evolutionEngine");
+        if (!evolutionEngine) {
+          res.status(503).json({ error: "Evolution engine not available" });
+          return;
+        }
+        res.json(evolutionEngine.getEvolutionStats());
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.get("/api/system/audit", async (req: Request, res: Response) => {
       try {
         const auditCenter = this.registry.resolveService<{
@@ -1260,12 +1381,38 @@ export class ProtocolAdapter {
 
     // ─── Plugin API routes ──────────────────────────────────────────────────
 
-    app.get("/api/plugins", (_req: Request, res: Response) => {
+    app.get("/api/plugins", async (_req: Request, res: Response) => {
       try {
-        const pluginManager = this.registry.resolveService("pluginManager") as { getPlugins(): Array<{ manifest: { name: string; version: string; description: string }; status: string; error?: string }> } | undefined;
+        const pluginManager = this.registry.resolveService("pluginManager") as { getPlugins(): Array<{ manifest: { name: string; version: string; description: string; author?: string }; status: string; error?: string }> } | undefined;
+        const localizationService = this.registry.resolveService<{
+          needsChineseTranslation(text: string): boolean;
+          translateToChinese(text: string, context?: string): Promise<string>;
+        }>("localizationService");
+
+        const plugins = pluginManager?.getPlugins() ?? [];
+
+        const enrichedPlugins = await Promise.all(plugins.map(async (p) => {
+          const result: Record<string, unknown> = {
+            manifest: p.manifest,
+            status: p.status,
+            error: p.error,
+          };
+
+          if (localizationService && p.manifest.description && localizationService.needsChineseTranslation(p.manifest.description)) {
+            try {
+              const description_zh = await localizationService.translateToChinese(p.manifest.description, `插件"${p.manifest.name}"的描述`);
+              if (description_zh && description_zh !== p.manifest.description) {
+                result.i18n = { description_zh, translatedAt: new Date().toISOString() };
+              }
+            } catch { /* non-critical */ }
+          }
+
+          return result;
+        }));
+
         res.json({
           success: true,
-          plugins: pluginManager?.getPlugins() ?? [],
+          plugins: enrichedPlugins,
         });
       } catch (err) {
         this.handleError(err, res, "Failed to list plugins");

@@ -28,7 +28,7 @@ function makePackage(overrides: Partial<SkillPackage> = {}): SkillPackage {
     evoclawVersion: ">=0.4.0",
     dependencies: {},
     downloadURL: "https://example.com/test-skill",
-    checksum: "abc123",
+    checksum: "",
     publishedAt: "2024-01-15T00:00:00Z",
     updatedAt: "2024-06-01T00:00:00Z",
     downloads: 1000,
@@ -36,6 +36,16 @@ function makePackage(overrides: Partial<SkillPackage> = {}): SkillPackage {
     reviewCount: 50,
     verified: true,
     ...overrides,
+  };
+}
+
+function mockDownloadResponse(content: string = "package-content") {
+  const encoder = new TextEncoder();
+  const buffer = encoder.encode(content);
+  return {
+    ok: true,
+    text: async () => content,
+    arrayBuffer: async () => buffer.buffer as ArrayBuffer,
   };
 }
 
@@ -196,7 +206,7 @@ describe("SkillMarketplace", () => {
               name: "my-pkg",
               version: "1.2.3",
               downloadURL: "https://example.com/download",
-              checksum: "sha256:abc",
+              checksum: "",
             }),
           ],
           total: 1,
@@ -206,10 +216,7 @@ describe("SkillMarketplace", () => {
     });
 
     it("should install a package successfully", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "package-content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse());
 
       const result = await marketplace.install("my-pkg");
       expect(result.success).toBe(true);
@@ -218,10 +225,7 @@ describe("SkillMarketplace", () => {
     });
 
     it("should publish installed event", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "package-content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse());
 
       await marketplace.install("my-pkg");
       expect(eventBus.publish).toHaveBeenCalledWith(
@@ -273,14 +277,8 @@ describe("SkillMarketplace", () => {
     });
 
     it("should install dependencies before main package", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "dep-content",
-      });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "main-content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse("dep-content"));
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse("main-content"));
 
       const result = await marketplace.install("main-pkg");
       expect(result.success).toBe(true);
@@ -299,10 +297,7 @@ describe("SkillMarketplace", () => {
       });
       await marketplace.refreshCatalog();
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
       await marketplace.install("old-pkg");
 
       // Now put a newer version in the catalog
@@ -326,10 +321,7 @@ describe("SkillMarketplace", () => {
       });
       await marketplace.refreshCatalog();
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
       await marketplace.install("stable-pkg");
 
       // Refresh catalog with same version
@@ -546,10 +538,7 @@ describe("SkillMarketplace", () => {
       });
       await marketplace.refreshCatalog();
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () => "content",
-      });
+      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
       await marketplace.install("pkg");
 
       expect(marketplace.isInstalled("pkg")).toBe(true);

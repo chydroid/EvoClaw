@@ -22,6 +22,10 @@ interface PluginInfo {
   hookCount: number;
   hooks: Array<{ type: string; priority: string }>;
   installedAt: string;
+  i18n?: {
+    description_zh?: string;
+    translatedAt?: string;
+  };
 }
 
 interface AvailablePlugin {
@@ -416,6 +420,11 @@ export function PluginsPage() {
 
               <div style={{ fontSize: "13px", color: "var(--text-secondary, #8b949e)", margin: "10px 0" }}>
                 {plugin.description}
+                {plugin.i18n?.description_zh && plugin.i18n.description_zh !== plugin.description && (
+                  <div style={{ color: "var(--accent, #58a6ff)", marginTop: "4px", fontSize: "12px", borderLeft: "2px solid var(--accent, #58a6ff)", paddingLeft: "6px" }}>
+                    {plugin.i18n.description_zh}
+                  </div>
+                )}
               </div>
 
               {plugin.error && (

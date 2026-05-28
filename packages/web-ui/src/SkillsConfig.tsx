@@ -37,6 +37,12 @@ interface SkillInfo {
     examples: string[];
     hooks: Record<string, string>;
   };
+  i18n?: {
+    description_zh?: string;
+    instructions_zh?: string;
+    examples_zh?: string[];
+    translatedAt?: string;
+  };
 }
 
 function statusBadgeStyle(status: string): React.CSSProperties {
@@ -512,6 +518,11 @@ export default function SkillsConfig() {
               <span style={styles.detailVersion}>v{selectedSkill.version}</span>
             </div>
             <div style={styles.detailDesc}>{selectedSkill.description || "无描述"}</div>
+            {selectedSkill.i18n?.description_zh && selectedSkill.i18n.description_zh !== selectedSkill.description && (
+              <div style={{ ...styles.detailDesc, color: "var(--primary)", marginTop: "4px", borderLeft: "3px solid var(--primary)", paddingLeft: "8px" }}>
+                {selectedSkill.i18n.description_zh}
+              </div>
+            )}
             <div style={{ marginTop: "8px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
               <span style={statusBadgeStyle(selectedSkill.lifecycle.status)}>
                 {selectedSkill.lifecycle.status}
@@ -657,8 +668,16 @@ export default function SkillsConfig() {
 
           <div style={styles.sectionTitle}>使用方法</div>
           {selectedSkill.body.instructions ? (
-            <div style={styles.instructionsBlock}>
-              {selectedSkill.body.instructions}
+            <div>
+              <div style={styles.instructionsBlock}>
+                {selectedSkill.body.instructions}
+              </div>
+              {selectedSkill.i18n?.instructions_zh && selectedSkill.i18n.instructions_zh !== selectedSkill.body.instructions && (
+                <div style={{ ...styles.instructionsBlock, borderLeft: "3px solid var(--primary)", marginTop: "8px" }}>
+                  <div style={{ fontSize: "10px", color: "var(--primary)", marginBottom: "6px", fontWeight: "bold" }}>中文翻译</div>
+                  {selectedSkill.i18n.instructions_zh}
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "4px" }}>
@@ -671,7 +690,14 @@ export default function SkillsConfig() {
               <div style={styles.sectionTitle}>使用示例</div>
               <div style={styles.examplesBlock}>
                 {selectedSkill.body.examples.map((ex, i) => (
-                  <div key={i} style={styles.exampleItem}>{ex}</div>
+                  <div key={i} style={styles.exampleItem}>
+                    <div>{ex}</div>
+                    {selectedSkill.i18n?.examples_zh?.[i] && selectedSkill.i18n.examples_zh[i] !== ex && (
+                      <div style={{ color: "var(--primary)", marginTop: "4px", fontSize: "11px", borderLeft: "2px solid var(--primary)", paddingLeft: "6px" }}>
+                        {selectedSkill.i18n.examples_zh[i]}
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </>

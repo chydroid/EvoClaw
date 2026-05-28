@@ -387,6 +387,12 @@ export class EvoClawServer {
     }
     this.skillManager.startAutoScan(skillsDir, 30000);
 
+    setTimeout(async () => {
+      try {
+        await this.skillManager.checkAndTranslateInstalledSkills();
+      } catch { /* non-critical */ }
+    }, 10000);
+
     const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
     for (const fileName of bootstrapFiles) {
       const fpath = path.join(workspaceDir, fileName);

@@ -90,6 +90,7 @@ const DEFAULT_CONFIG: DLQConfig = {
 
 export class DeadLetterQueue {
   private config: DLQConfig;
+  private seq = 0;
 
   constructor(config?: Partial<DLQConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -102,7 +103,7 @@ export class DeadLetterQueue {
   enqueue(entry: Omit<DeadLetter, "id" | "deadLetteredAt" | "replayed">): DeadLetter {
     const dl: DeadLetter = {
       ...entry,
-      id: `dl_${Date.now()}_${randomUUID().slice(0, 6)}`,
+      id: `dl_${Date.now()}_${(this.seq++).toString(36).padStart(4, "0")}_${randomUUID().slice(0, 6)}`,
       deadLetteredAt: new Date().toISOString(),
       replayed: false,
     };
@@ -133,9 +134,11 @@ export class DeadLetterQueue {
 
     // Sort by dead letter time descending (newest first)
     results.sort(
-      (a, b) =>
-        new Date(b.deadLetteredAt).getTime() -
-        new Date(a.deadLetteredAt).getTime(),
+      (a, b) => {
+        const timeDiff = new Date(b.deadLetteredAt).getTime() - new Date(a.deadLetteredAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return b.id.localeCompare(a.id);
+      },
     );
 
     const limit = q.limit ?? results.length;

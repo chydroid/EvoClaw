@@ -63,6 +63,13 @@ export interface SandboxPolicy {
   allowedPaths: string[];
 }
 
+export interface SkillI18n {
+  description_zh?: string;
+  instructions_zh?: string;
+  examples_zh?: string[];
+  translatedAt?: string;
+}
+
 export interface Skill extends SkillManifest {
   id: string;
   installPath: string;
@@ -70,6 +77,7 @@ export interface Skill extends SkillManifest {
   config: Record<string, unknown>;
   stats: SkillStats;
   body: SkillBody;
+  i18n?: SkillI18n;
 }
 
 export interface SkillBody {

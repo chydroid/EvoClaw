@@ -36,7 +36,7 @@ describe("DeadLetterQueue", () => {
   describe("enqueue", () => {
     it("creates a dead letter with generated id and timestamp", () => {
       const dl = dlq.enqueue(makeEntry());
-      expect(dl.id).toMatch(/^dl_\d+_[a-f0-9]+$/);
+      expect(dl.id).toMatch(/^dl_\d+_[a-z0-9]+_[a-f0-9]+$/);
       expect(dl.deadLetteredAt).toBeTruthy();
       expect(dl.replayed).toBe(false);
     });

@@ -424,7 +424,6 @@ export class LLMDispatcher {
   ): Promise<LLMDispatchResponse> {
     const startTime = Date.now();
 
-    // Try to resolve the agent model executor to get provider configs
     if (this.registry) {
       const executor = this.registry.resolveService<{
         getProviders(): Array<{
@@ -432,20 +431,33 @@ export class LLMDispatcher {
           apiKey?: string; baseURL?: string; enabled: boolean; order: number;
           maxTokens: number; temperature: number; timeout: number;
         }>;
+        execute?(input: string | { systemPrompt: string; prompt: string }, context?: Record<string, unknown>): Promise<{
+          content: string; usage: { promptTokens: number; completionTokens: number };
+          model: string; finishReason: string;
+        }>;
       }>("agentModelExecutor");
 
       if (executor) {
-        const providers = executor.getProviders().filter(p => p.enabled);
+        const providers = typeof executor.getProviders === "function" ? executor.getProviders().filter(p => p.enabled) : [];
         if (providers.length > 0) {
-          // Use the first enabled provider (same priority as main chat)
           const provider = providers[0];
           const result = await this.callLLMDirect(provider, systemPrompt, userPrompt, maxTokens, temperature);
           return result;
         }
+
+        if (typeof executor.execute === "function") {
+          const result = await executor.execute({ systemPrompt, prompt: userPrompt });
+          return {
+            content: result.content,
+            model: result.model || "unknown",
+            tokenUsage: { input: result.usage?.promptTokens ?? 0, output: result.usage?.completionTokens ?? 0 },
+            finishReason: result.finishReason || "stop",
+            durationMs: Date.now() - startTime,
+          };
+        }
       }
     }
 
-    // Fallback: return a placeholder response
     throw new Error("No LLM executor available. Ensure agentModelExecutor is registered in ServiceRegistry.");
   }
 
