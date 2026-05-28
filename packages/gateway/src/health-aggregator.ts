@@ -95,6 +95,7 @@ export class HealthAggregator extends EventEmitter {
   private transitions: HealthTransition[] = [];
   private checkTimer: ReturnType<typeof setInterval> | null = null;
   private checkFns = new Map<string, () => Promise<{ ok: boolean; error?: string; responseTimeMs?: number }>>();
+  private startTime: number = Date.now();
 
   constructor(config?: Partial<HealthAggregatorConfig>) {
     super();
@@ -248,7 +249,7 @@ export class HealthAggregator extends EventEmitter {
       components: components.map((c) => ({ ...c })),
       summary,
       computedAt: Date.now(),
-      uptimeSec: Math.round(process.uptime()),
+      uptimeSec: Math.max(1, Math.round((Date.now() - this.startTime) / 1000)),
       ready,
       alive,
     };
