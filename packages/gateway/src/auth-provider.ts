@@ -85,8 +85,8 @@ export class AuthProvider {
 
     if (tokenFromUrl && tokenFromUrl === this.webUiToken) {
       res.cookie("web_ui_token", tokenFromUrl, {
-        httpOnly: false,
-        sameSite: "lax",
+        httpOnly: true,
+        sameSite: "strict",
         maxAge: 24 * 60 * 60 * 1000,
       });
     }

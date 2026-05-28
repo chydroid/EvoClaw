@@ -175,14 +175,22 @@ export function CronPage() {
         body: JSON.stringify({ enabled: !enabled }),
       });
       loadTasks();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to toggle task:", err);
+      setMessage(t("cron.network_error"));
+      setTimeout(() => setMessage(""), 3000);
+    }
   };
 
   const deleteTask = async (taskId: string) => {
     try {
       await fetch(`/api/scheduler/tasks/${taskId}`, { method: "DELETE" });
       loadTasks();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to delete task:", err);
+      setMessage(t("cron.network_error"));
+      setTimeout(() => setMessage(""), 3000);
+    }
   };
 
   const runTask = async (taskId: string) => {
@@ -191,7 +199,11 @@ export function CronPage() {
       setMessage(t("cron.triggered"));
       setTimeout(() => setMessage(""), 3000);
       loadTasks();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to run task:", err);
+      setMessage(t("cron.network_error"));
+      setTimeout(() => setMessage(""), 3000);
+    }
   };
 
   const isErrorMsg = lang === "zh"

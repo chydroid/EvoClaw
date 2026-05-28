@@ -513,14 +513,19 @@ export class ProtocolAdapter {
 
     app.put("/api/bootstrap/:filename", (req: Request, res: Response) => {
       try {
+        const filename = String(req.params.filename);
+        if (!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"].includes(filename)) {
+          res.status(400).json({ error: "Invalid filename" });
+          return;
+        }
         const bm = this.registry.resolveService<{
           writeBootstrapFile(filename: string, content: string): void;
         }>("bootstrapManager");
         if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
         const { content } = req.body || {};
         if (!content) return res.status(400).json({ error: "Content is required" });
-        bm.writeBootstrapFile(String(req.params.filename), content);
-        res.json({ success: true, filename: req.params.filename });
+        bm.writeBootstrapFile(filename, content);
+        res.json({ success: true, filename });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -528,12 +533,17 @@ export class ProtocolAdapter {
 
     app.delete("/api/bootstrap/:filename", (req: Request, res: Response) => {
       try {
+        const filename = String(req.params.filename);
+        if (!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"].includes(filename)) {
+          res.status(400).json({ error: "Invalid filename" });
+          return;
+        }
         const bm = this.registry.resolveService<{
           deleteBootstrapFile(filename: string): void;
         }>("bootstrapManager");
         if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
-        bm.deleteBootstrapFile(String(req.params.filename));
-        res.json({ success: true, filename: req.params.filename });
+        bm.deleteBootstrapFile(filename);
+        res.json({ success: true, filename });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1535,9 +1545,13 @@ export class ProtocolAdapter {
       try {
         const name = String(req.params.name);
         const { status } = req.body;
+        if (status !== "enabled" && status !== "disabled") {
+          res.status(400).json({ error: "Invalid status, must be 'enabled' or 'disabled'" });
+          return;
+        }
         const pluginManager = this.registry.resolveService("pluginManager") as { setPluginStatus(name: string, status: "active" | "disabled"): void } | undefined;
         if (pluginManager) {
-          pluginManager.setPluginStatus(name, status ?? "active");
+          pluginManager.setPluginStatus(name, status === "enabled" ? "active" : "disabled");
         }
         res.json({ success: true, name, status });
       } catch (err) {
@@ -1585,6 +1599,10 @@ export class ProtocolAdapter {
         const { name, cronExpression, description, handlerType, enabled } = req.body || {};
         if (!name || !cronExpression) {
           res.status(400).json({ error: "name and cronExpression are required" });
+          return;
+        }
+        if (/[;|$`&\n\r]/.test(cronExpression)) {
+          res.status(400).json({ error: "cronExpression contains invalid characters" });
           return;
         }
 
@@ -1940,6 +1958,9 @@ export class ProtocolAdapter {
             const path = await import("path");
             const os = await import("os");
             const normalizedId = data.ilink_bot_id.replace(/@/g, "-");
+            if (normalizedId.includes("..")) {
+              throw new Error("Invalid bot ID: path traversal detected");
+            }
             const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
             const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
             fs.mkdirSync(accountsDir, { recursive: true });

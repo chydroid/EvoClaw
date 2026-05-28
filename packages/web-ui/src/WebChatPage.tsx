@@ -83,7 +83,8 @@ function renderMessageHtml(text: string): string {
   return escaped
     // Code blocks: ```lang\n...\n```
     .replace(/```(\w*)\n?([\s\S]*?)```/g, (_: string, lang: string, code: string) => {
-      return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang-label">${lang || "code"}</span></div><pre class="code-block-pre"><code>${code.trim()}</code></pre></div>`;
+      const safeLang = (lang || "code").replace(/["'<>]/g, "");
+      return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang-label">${safeLang}</span></div><pre class="code-block-pre"><code>${code.trim()}</code></pre></div>`;
     })
     // Inline code: `text`
     .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">$1</code>')

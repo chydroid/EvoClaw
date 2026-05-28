@@ -69,7 +69,7 @@ export interface AppConfig {
 export const defaultConfig: AppConfig = {
   server: {
     port: 3000,
-    host: "0.0.0.0",
+    host: "127.0.0.1",
     corsOrigins: ["http://localhost:5173"],
   },
   auth: {
@@ -198,6 +198,9 @@ export class ConfigManager {
     const jwtSecret = process.env.JWT_SECRET;
     if (jwtSecret && jwtSecret.length >= 16) {
       this.config.auth.jwtSecret = jwtSecret;
+    }
+    if (/dev|secret|change/i.test(this.config.auth.jwtSecret)) {
+      console.warn("[Config] WARNING: JWT secret contains weak keywords (dev/secret/change). Please use a strong random secret in production.");
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
     this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";

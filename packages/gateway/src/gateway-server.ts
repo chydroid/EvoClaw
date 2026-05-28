@@ -40,12 +40,16 @@ export class GatewayServer {
       port: DEFAULT_PORT,
       host: DEFAULT_HOST,
       corsOrigins: DEFAULT_CORS_ORIGINS,
-      jwtSecret: process.env.JWT_SECRET || "evoclaw-dev-secret",
+      jwtSecret: process.env.JWT_SECRET || "",
       enableMCP: true,
       enableREST: true,
       rateLimitWindow: 60000,
       rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || "100", 10),
     };
+
+    if (!this.config.jwtSecret || this.config.jwtSecret.length === 0) {
+      console.warn("[Gateway] WARNING: JWT secret is not set. Authentication will not work properly. Please set JWT_SECRET environment variable.");
+    }
 
     this.authProvider = new AuthProvider(this.config.jwtSecret, registry);
     this.registry.registerService("authProvider", this.authProvider);

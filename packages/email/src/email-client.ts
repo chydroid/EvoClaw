@@ -469,7 +469,9 @@ export class EmailClient {
           });
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("[EmailClient] Failed to load accounts:", err);
+    }
   }
 
   private async saveAccounts(): Promise<void> {
@@ -477,7 +479,9 @@ export class EmailClient {
       const filePath = path.join(this.dataDir, "accounts.json");
       const data = [...this.accounts.values()];
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-    } catch {}
+    } catch (err) {
+      console.error("[EmailClient] Failed to save accounts:", err);
+    }
   }
 
   async healthCheck(): Promise<boolean> {

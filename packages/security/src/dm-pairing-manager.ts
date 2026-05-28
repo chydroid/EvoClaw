@@ -77,6 +77,7 @@ export class DMPairingManager {
   private pendingPairings = new Map<string, PairingRequest>(); // code → request
   private approvedPeers = new Map<string, Set<string>>(); // channel → Set<peerId>
   private pairingStorePath: string;
+  private cleanupTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private eventBus: EventBus,
@@ -95,7 +96,14 @@ export class DMPairingManager {
     }
 
     // Periodic cleanup of expired pairing requests
-    setInterval(() => this.cleanupExpired(), 60_000);
+    this.cleanupTimer = setInterval(() => this.cleanupExpired(), 60_000);
+  }
+
+  stop(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
   }
 
   // ── Configuration ──

@@ -688,6 +688,13 @@ export class LearningJournal {
     }, 1000);
   }
 
+  stop(): void {
+    if (this.persistTimer) {
+      clearInterval(this.persistTimer);
+      this.persistTimer = null;
+    }
+  }
+
   async healthCheck(): Promise<boolean> {
     return true;
   }

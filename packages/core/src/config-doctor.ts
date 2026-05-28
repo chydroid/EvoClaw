@@ -335,7 +335,7 @@ export class ConfigDoctor {
 
     // JWT secret warning
     const jwtSecret = (config as any).auth?.jwtSecret;
-    if (jwtSecret === "your-secret-key" || jwtSecret === "dev-secret" || jwtSecret === "CHANGE_ME") {
+    if (jwtSecret === "your-secret-key" || jwtSecret === "dev-secret" || jwtSecret === "CHANGE_ME" || jwtSecret === "evoclaw-dev-secret" || jwtSecret === "evoclaw-dev-secret-change-in-production") {
       diagnostics.push({
         severity: "error",
         code: "DEFAULT_JWT_SECRET",

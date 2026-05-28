@@ -122,8 +122,9 @@ export function LogsPage() {
       if (res.ok) {
         setQueue(await res.json());
       }
-    } catch {}
-    // Generate realistic logs
+    } catch (err) {
+      console.error("Failed to load queue data:", err);
+    }
     setLogs(generateMockLogs());
   }, []);
 
@@ -145,7 +146,9 @@ export function LogsPage() {
     try {
       await fetch("/api/queue/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "web-ui" }) });
       loadData();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to clear queue:", err);
+    }
   };
 
   return (

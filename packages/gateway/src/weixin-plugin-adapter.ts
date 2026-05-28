@@ -145,6 +145,10 @@ export class WeixinPluginAdapter {
    * 加载微信账户配置
    */
   loadAccount(accountId: string): WeixinAccount | null {
+    if (accountId.includes("..") || accountId.includes("/") || accountId.includes("\\")) {
+      console.error(`[Weixin] Invalid accountId (path traversal detected): ${accountId}`);
+      return null;
+    }
     try {
       const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
       const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");

@@ -381,7 +381,9 @@ export class PlaywrightBrowser {
         }
         fs.writeFileSync(this.cookieFile, JSON.stringify(cookies, null, 2), "utf-8");
       }
-    } catch {}
+    } catch (err) {
+      console.error("[PlaywrightBrowser] Failed to save cookies:", err);
+    }
   }
 
   async newTab(url?: string): Promise<string> {

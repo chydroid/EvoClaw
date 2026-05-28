@@ -106,7 +106,9 @@ export function PermissionsPage() {
     try {
       const res = await fetch(`/api/permission-relay/${id}/approve`, { method: "POST" });
       if (res.ok) await loadData();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to approve permission request:", err);
+    }
   };
 
   const deny = async (id: string) => {
@@ -117,7 +119,9 @@ export function PermissionsPage() {
         body: JSON.stringify({ reason: "Denied from Web UI" }),
       });
       if (res.ok) await loadData();
-    } catch {}
+    } catch (err) {
+      console.error("Failed to deny permission request:", err);
+    }
   };
 
   const formatTime = (ts?: number) => {

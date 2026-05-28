@@ -557,7 +557,7 @@ export class SkillSandbox {
   private createControlledFS(policy: SandboxPolicy): Record<string, unknown> {
   const allowedPaths = policy.allowedPaths || [];
   const isAllowed = (filePath: string): boolean => {
-    if (allowedPaths.length === 0) return true; // No restrictions if no paths specified
+    if (allowedPaths.length === 0) return false;
     const resolved = path.resolve(filePath);
     return allowedPaths.some(allowed => {
       const resolvedAllowed = path.resolve(allowed);

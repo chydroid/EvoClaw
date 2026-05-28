@@ -409,7 +409,9 @@ export class ScheduleManager {
           });
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("[ScheduleManager] Failed to load tasks:", err);
+    }
   }
 
   private async saveTasks(): Promise<void> {
@@ -417,6 +419,8 @@ export class ScheduleManager {
       const filePath = path.join(this.dataDir, "tasks.json");
       const data = [...this.tasks.values()];
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-    } catch {}
+    } catch (err) {
+      console.error("[ScheduleManager] Failed to save tasks:", err);
+    }
   }
 }

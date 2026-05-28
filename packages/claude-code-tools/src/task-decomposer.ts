@@ -805,7 +805,14 @@ ${contextInfo}
     // Trace back from end task
     const path: string[] = [endTask];
     let current = endTask;
+    let iterations = 0;
+    const maxIterations = tasks.length;
     while (true) {
+      iterations++;
+      if (iterations > maxIterations) {
+        throw new Error("Circular dependency detected in task graph");
+      }
+
       const task = taskMap.get(current);
       if (!task || task.dependencies.length === 0) break;
 
