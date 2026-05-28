@@ -585,17 +585,22 @@ export class TaskDecomposer {
     if (!this.registry) return null;
 
     const executor = this.registry.resolveService<{
-      execute(params: Record<string, unknown>): Promise<{ content: string }>;
+      getProviders(): Array<{
+        id: string; name: string; provider: string; model: string;
+        apiKey?: string; baseURL?: string; enabled: boolean; order: number;
+        maxTokens: number; temperature: number; timeout: number;
+      }>;
     }>("agentModelExecutor");
 
     if (!executor) return null;
 
     try {
+      const providers = executor.getProviders().filter(p => p.enabled);
+      if (providers.length === 0) return null;
+
+      const provider = providers[0];
       const prompt = this.buildDecompositionPrompt(desc, ctx);
-      const response = await executor.execute({
-        prompt,
-        task: "task_decomposition",
-      });
+      const response = await this.callLLMDirect(provider, prompt);
 
       if (response?.content) {
         return this.parseLlmDecomposition(response.content, rootId, ctx);
@@ -605,6 +610,69 @@ export class TaskDecomposer {
     }
 
     return null;
+  }
+
+  /**
+   * Direct LLM API call for decomposition — bypasses chat() to avoid nested tool loops.
+   */
+  private async callLLMDirect(
+    provider: {
+      provider: string; model: string; apiKey?: string; baseURL?: string;
+      maxTokens: number; temperature: number; timeout: number;
+    },
+    userPrompt: string,
+  ): Promise<{ content: string }> {
+    let apiURL = provider.baseURL || "";
+    if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+      apiURL = apiURL.replace(/\/+$/, "");
+      if (!apiURL.endsWith("/v1")) {
+        apiURL = `${apiURL}/v1`;
+      }
+      apiURL = `${apiURL}/chat/completions`;
+    }
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (provider.apiKey) {
+      if (provider.provider === "anthropic") {
+        headers["x-api-key"] = provider.apiKey;
+        headers["anthropic-version"] = "2023-06-01";
+      } else {
+        headers["Authorization"] = `Bearer ${provider.apiKey}`;
+      }
+    }
+
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      messages: [
+        { role: "system", content: "你是一个编程任务分解专家。请严格按照用户要求的JSON格式返回结果。" },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: 4096,
+      temperature: 0.3,
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch(apiURL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`LLM API HTTP ${response.status}`);
+      }
+
+      const data = await response.json() as any;
+      return { content: data.choices?.[0]?.message?.content || "" };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private buildDecompositionPrompt(desc: string, ctx?: DecompositionContext): string {

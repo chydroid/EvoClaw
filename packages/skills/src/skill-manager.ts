@@ -465,7 +465,10 @@ export class SkillManager {
           try {
             const skillMdPath = path.join(fullPath, "SKILL.md");
             if (!fs.existsSync(skillMdPath)) {
-              continue;
+              const generated = await this.tryGenerateCuratedSkill(entry.name, fullPath);
+              if (!generated) {
+                continue;
+              }
             }
 
             const stat = fs.statSync(skillMdPath);
@@ -504,6 +507,25 @@ export class SkillManager {
     } finally {
       this.isScanning = false;
     }
+  }
+
+  private async tryGenerateCuratedSkill(dirName: string, dirPath: string): Promise<boolean> {
+    try {
+      const autoSkillManager = this.svcRegistry.resolveService<{
+        generateFromCurated(skillName: string): Promise<string | null>;
+      }>("autoSkillManager");
+
+      if (!autoSkillManager) return false;
+
+      const result = await autoSkillManager.generateFromCurated(dirName);
+      if (result && fs.existsSync(path.join(dirPath, "SKILL.md"))) {
+        console.log(`[SkillManager] Auto-generated SKILL.md for curated skill: ${dirName}`);
+        return true;
+      }
+    } catch {
+      // Not a curated skill or generation failed
+    }
+    return false;
   }
 
   private async installFolderSkill(folderPath: string): Promise<Skill | null> {

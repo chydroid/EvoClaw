@@ -24,6 +24,7 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@evoclaw/claude-code-tools": "workspace:*",
     "@evoclaw/core": "workspace:*",
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/plugin-sdk": "workspace:*",

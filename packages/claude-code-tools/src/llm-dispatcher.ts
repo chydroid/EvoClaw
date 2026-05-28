@@ -424,37 +424,109 @@ export class LLMDispatcher {
   ): Promise<LLMDispatchResponse> {
     const startTime = Date.now();
 
-    // Try to resolve the agent model executor from the service registry
+    // Try to resolve the agent model executor to get provider configs
     if (this.registry) {
       const executor = this.registry.resolveService<{
-        execute(params: Record<string, unknown>): Promise<{ content: string; usage?: { promptTokens: number; completionTokens: number }; model?: string; finishReason?: string }>;
+        getProviders(): Array<{
+          id: string; name: string; provider: string; model: string;
+          apiKey?: string; baseURL?: string; enabled: boolean; order: number;
+          maxTokens: number; temperature: number; timeout: number;
+        }>;
       }>("agentModelExecutor");
 
       if (executor) {
-        const response = await executor.execute({
-          prompt: userPrompt,
-          systemPrompt,
-          maxTokens,
-          temperature,
-          task: "code_task",
-        });
-
-        return {
-          content: response.content,
-          model: response.model || this.config.defaultModel,
-          tokenUsage: {
-            input: response.usage?.promptTokens || 0,
-            output: response.usage?.completionTokens || 0,
-          },
-          durationMs: Date.now() - startTime,
-          finishReason: response.finishReason || "stop",
-        };
+        const providers = executor.getProviders().filter(p => p.enabled);
+        if (providers.length > 0) {
+          // Use the first enabled provider (same priority as main chat)
+          const provider = providers[0];
+          const result = await this.callLLMDirect(provider, systemPrompt, userPrompt, maxTokens, temperature);
+          return result;
+        }
       }
     }
 
     // Fallback: return a placeholder response
-    // In production, this would integrate with a direct LLM API
     throw new Error("No LLM executor available. Ensure agentModelExecutor is registered in ServiceRegistry.");
+  }
+
+  /**
+   * Direct LLM API call — bypasses chat() to avoid nested tool loops.
+   */
+  private async callLLMDirect(
+    provider: {
+      provider: string; model: string; apiKey?: string; baseURL?: string;
+      maxTokens: number; temperature: number; timeout: number;
+    },
+    systemPrompt: string,
+    userPrompt: string,
+    maxTokens: number,
+    temperature: number,
+  ): Promise<LLMDispatchResponse> {
+    const startTime = Date.now();
+
+    let apiURL = provider.baseURL || "";
+    if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+      apiURL = apiURL.replace(/\/+$/, "");
+      if (!apiURL.endsWith("/v1")) {
+        apiURL = `${apiURL}/v1`;
+      }
+      apiURL = `${apiURL}/chat/completions`;
+    }
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (provider.apiKey) {
+      if (provider.provider === "anthropic") {
+        headers["x-api-key"] = provider.apiKey;
+        headers["anthropic-version"] = "2023-06-01";
+      } else {
+        headers["Authorization"] = `Bearer ${provider.apiKey}`;
+      }
+    }
+
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: maxTokens || provider.maxTokens || 4096,
+      temperature: temperature ?? provider.temperature ?? 0.3,
+    };
+
+    const timeout = provider.timeout || 120000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const response = await fetch(apiURL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(`LLM API HTTP ${response.status}: ${errorText.slice(0, 300)}`);
+      }
+
+      const data = await response.json() as any;
+      const content = data.choices?.[0]?.message?.content || "";
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+
+      return {
+        content,
+        model: provider.model,
+        tokenUsage: { input: inputTokens, output: outputTokens },
+        durationMs: Date.now() - startTime,
+        finishReason: data.choices?.[0]?.finish_reason || "stop",
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   private buildTaskPrompt(task: SubTask, additionalContext?: string): string {

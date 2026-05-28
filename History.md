@@ -5,6 +5,87 @@
 
 ---
 
+## v0.7.0 (2026-05-28)
+
+### 全面系统测试 + Claude Code Tools 插件集成 + 技能系统增强
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`、`packages/agent/src/plugins/claude-code.plugin.ts`、`packages/agent/src/plugins/index.ts`、`packages/agent/package.json`、`packages/claude-code-tools/src/llm-dispatcher.ts`、`packages/claude-code-tools/src/task-decomposer.ts`、`packages/claude-code-tools/src/claude-code-plugin.ts`、`packages/core/src/plugin-system.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/skills/src/auto-skill-manager.ts`、`packages/skills/src/skill-manager.ts`、`apps/server/src/index.ts`、`package.json`
+
+- **改动**:
+
+  **Claude Code Tools 插件集成到 WebUI**
+  - 新建 `claude-code.plugin.ts` 适配器，将 `ClaudeCodePlugin` 类包装为 EvoClaw `Plugin` 接口（含 manifest、hooks、init、shutdown、healthCheck）
+  - 将 `createClaudeCodeToolsPlugin` 添加到 `BUILTIN_PLUGIN_FACTORIES`，服务器启动时自动注册
+  - 添加 `@evoclaw/claude-code-tools` 工作区依赖到 `@evoclaw/agent`
+  - 修复 `PluginManager.resolveService()` 空壳问题（之前始终返回 undefined），新增 `setRegistry()` 方法
+  - 服务器启动时调用 `pluginManager.setRegistry(this.registry)` 使插件能访问服务注册表
+
+  **LLM 调用架构重构**
+  - `LLMDispatcher.callLLM` 从 `executor.execute()` 改为直接 HTTP 调用 LLM API，避免嵌套 chat() 工具循环
+  - `TaskDecomposer.tryLlmDecomposition` 同样改为直接 HTTP 调用 LLM API
+  - 新增 `callLLMDirect()` 方法：支持 OpenAI/Anthropic 兼容 API，含超时控制和错误处理
+
+  **execute_programming_task 异步化**
+  - 从同步阻塞改为异步提交模式：立即返回任务 ID，后台执行
+  - 新增 `get_task_result` 工具：支持查询异步任务进度和结果
+  - 新增 `executeTaskInBackground()` 方法：后台执行任务并通过 EventBus 发布进度
+  - 轮询优化：`get_task_result` 在任务运行中时返回等待提示，避免 LLM 频繁轮询
+
+  **SkillDispatcher 智能路由增强**
+  - 技能输出错误检测：当技能返回包含 API_KEY/authentication/forbidden 等错误标记时，自动 fall through 到 LLM
+  - claude-code-tools 工具名绕过：当消息包含 `execute_programming_task` 等工具名时跳过 SkillDispatcher
+
+  **超时限制优化**
+  - 工具执行超时分级：长运行工具（execute_programming_task 等）5分钟，普通工具30秒
+  - Chat API 超时从110秒增加到5分钟
+
+  **parseMultipleTasks 修复**
+  - 移除问号 `？` 作为任务分隔符，避免普通对话被过度拆分
+  - 新增 `isQuestionOnly()` 检测，过滤纯问题片段
+
+  **Curated 技能内容增强**
+  - `generateSkillMdFromCurated` 生成标准 `## Instructions`、`## Examples`、`## Scripts` 节
+  - 新增 `generateInstructions()` 方法：为11种技能生成详细中文指令说明
+  - 新增 `generateScripts()` 方法：为 calculator/http-client 生成脚本示例
+  - `scanAndInstall` 新增 `tryGenerateCuratedSkill()`：当目录缺少 SKILL.md 时自动从 curated 注册表生成
+
+  **essentialTools 扩展**
+  - 将 `execute_programming_task`、`decompose_programming_task`、`assess_coding_capability`、`get_task_result` 加入 LLM 核心工具集
+
+---
+
+## v0.6.0 (2026-05-27)
+
+### Claude Code Tools 编程任务调度插件 + Skill 系统审计修复
+
+- **文件**: `packages/claude-code-tools/src/*`、`packages/skills/src/*`、`packages/core/src/plugin-system.ts`、`pnpm-workspace.yaml`、`package.json`
+
+- **改动**:
+
+  **Claude Code Tools 插件核心模块**
+  - `task-decomposer.ts`：任务分解引擎，支持 Sequential/Parallel/Hybrid 三种策略，10种任务类型，LLM辅助分解
+  - `llm-dispatcher.ts`：统一LLM调用接口，10种中文系统提示模板，指数退避重试，并发调度
+  - `task-orchestrator.ts`：四阶段执行管线（分解→调度→验证→整合），依赖图调度，错误恢复（重试+再分解+死锁检测）
+  - `capability-upgrade.ts`：能力评估与自动升级机制，6种升级策略，能力趋势检测
+  - `claude-code-plugin.ts`：EvoClaw 插件集成层，注册4个服务和4个工具
+  - 107个测试用例全部通过
+
+  **Skill 系统审计修复（22+项）**
+  - `skill-sandbox.ts`：修复 allowSubprocess 绕过、allowedHosts 通配符、execSync→spawn、createControlledFS 实现、Python 命令注入
+  - `skill-resolver.ts`：修复 autoInstall 未调用 installFn、installPath 缺失、versionMatches 严格性、invalidateCache 精度
+  - `skill-lifecycle.ts`：修复 getAllHealthReports 返回空数组
+  - `skill-manager.ts`：修复 extractZip 命令注入、uninstallSkill 工具清理、processedItems 内存泄漏
+  - `marketplace.ts`：修复 install() 未写入磁盘、SHA-256 校验和、递归依赖深度限制
+  - `skill-dispatcher.ts`：修复 listSkills() 4处缺少 await、新增中文关键词模式
+  - `skill-registry.ts`：修复串行→并行远程查询、mergeResults total、curated skills 分类/评分
+  - `auto-skill-manager.ts`：修复评分归一化、文件内容缓存、generateFromCurated YAML frontmatter
+  - `tfidf-matcher.ts`：新增 trigrams、停用词过滤、提升 minScore 至 0.1
+
+  **pnpm-workspace.yaml**
+  - 移除 `- "!packages/claude-code-tools"` 排除行，使包参与工作区构建
+
+---
+
 ## v0.5.9 (2026-05-26)
 
 ### 定时任务修复 + 全面多语言 i18n + 微信扫码通道建立

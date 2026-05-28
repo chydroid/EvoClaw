@@ -38,6 +38,7 @@ export class ClaudeCodePlugin {
   private orchestrator!: TaskOrchestrator;
   private upgrader!: CapabilityUpgrader;
   private initialized = false;
+  private activeTasks = new Map<string, { status: string; result?: ExecutionResult; progress: ProgressEvent[] }>();
 
   constructor(
     private registry: ServiceRegistry,
@@ -148,12 +149,12 @@ export class ClaudeCodePlugin {
 
     if (!agentExecutor) return;
 
-    // Tool: Execute programming task
+    // Tool: Execute programming task (async — returns task ID immediately)
     agentExecutor.registerTool(
       "execute_programming_task",
       {
         name: "execute_programming_task",
-        description: "执行复杂编程任务：自动分解为子任务、调度LLM完成、整合结果。适用于需要多步骤的编程项目任务。",
+        description: "执行复杂编程任务：自动分解为子任务、调度LLM完成、整合结果。适用于需要多步骤的编程项目任务。此工具异步执行，立即返回任务ID，可通过 get_task_result 查询进度和结果。",
         parameters: {
           task_description: {
             type: "string",
@@ -183,12 +184,57 @@ export class ClaudeCodePlugin {
           framework: params.framework as string | undefined,
         };
 
-        const result = await this.executeTask(
-          params.task_description as string,
-          { strategy, context },
-        );
+        const taskId = `cct_${Date.now()}`;
+        this.activeTasks.set(taskId, { status: "running", progress: [] });
 
+        // Execute in background — do NOT await
+        this.executeTaskInBackground(taskId, params.task_description as string, strategy, context);
+
+        // Return immediately with task ID
         return {
+          taskId,
+          status: "running",
+          message: `任务已提交，正在后台执行。使用 get_task_result 工具查询进度和结果，taskId: ${taskId}`,
+        };
+      },
+    );
+
+    // Tool: Get task execution result
+    agentExecutor.registerTool(
+      "get_task_result",
+      {
+        name: "get_task_result",
+        description: "查询编程任务执行结果和进度。配合 execute_programming_task 使用。",
+        parameters: {
+          task_id: {
+            type: "string",
+            description: "execute_programming_task 返回的任务ID",
+          },
+        },
+      },
+      async (params) => {
+        const taskId = params.task_id as string;
+        const task = this.activeTasks.get(taskId);
+        if (!task) {
+          return { error: `任务 ${taskId} 不存在` };
+        }
+        if (task.status === "running") {
+          const latestProgress = task.progress[task.progress.length - 1];
+          return {
+            taskId,
+            status: "running",
+            currentPhase: latestProgress?.phase || "unknown",
+            completedTasks: latestProgress?.completedTasks || 0,
+            totalTasks: latestProgress?.totalTasks || 0,
+            percentComplete: latestProgress?.percentComplete || 0,
+            message: latestProgress?.message || "正在执行中...",
+            instruction: "任务仍在执行中，请等待15秒后再次使用 get_task_result 查询。不要连续查询。",
+          };
+        }
+        const result = task.result!;
+        return {
+          taskId,
+          status: "completed",
           success: result.success,
           summary: result.integratedResult,
           completedTasks: result.completedTasks.length,
@@ -275,5 +321,57 @@ export class ClaudeCodePlugin {
       const result = await this.upgrader.applyAction(actions[0]);
       console.log(`[ClaudeCodePlugin] Upgrade applied: ${result.message}`);
     }
+  }
+
+  /**
+   * Execute a task in the background, updating activeTasks with progress.
+   */
+  private executeTaskInBackground(
+    taskId: string,
+    taskDescription: string,
+    strategy: DecompositionStrategy,
+    context: DecompositionContext,
+  ): void {
+    const taskInfo = this.activeTasks.get(taskId)!;
+
+    this.executeTask(taskDescription, {
+      strategy,
+      context,
+      onProgress: (event: ProgressEvent) => {
+        taskInfo.progress.push(event);
+        this.eventBus.publish("claude-code-tools:task-progress", {
+          taskId,
+          ...event,
+        }, "claude-code-plugin").catch(() => {});
+      },
+    })
+      .then((result) => {
+        taskInfo.status = "completed";
+        taskInfo.result = result;
+        console.log(`[ClaudeCodePlugin] Task ${taskId} completed — success: ${result.success}, duration: ${result.totalDurationMs}ms`);
+      })
+      .catch((err) => {
+        taskInfo.status = "error";
+        taskInfo.result = {
+          planId: "",
+          success: false,
+          rootTaskId: "",
+          completedTasks: [],
+          failedTasks: [],
+          totalDurationMs: 0,
+          totalTokenUsage: { input: 0, output: 0 },
+          integratedResult: `任务执行失败: ${err instanceof Error ? err.message : String(err)}`,
+          capabilityAssessment: {
+            level: 1,
+            strengths: [],
+            weaknesses: ["任务执行失败"],
+            failureRate: 1,
+            averageTaskDurationMs: 0,
+            recommendation: "检查LLM配置和网络连接",
+            needsUpgrade: true,
+          },
+        };
+        console.error(`[ClaudeCodePlugin] Task ${taskId} failed:`, err);
+      });
   }
 }

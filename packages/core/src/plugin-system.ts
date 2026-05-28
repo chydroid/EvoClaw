@@ -6,6 +6,7 @@
  */
 
 import type { EventBus } from "./event-bus";
+import type { ServiceRegistry } from "./service-registry";
 
 // ─── Hook Types ───────────────────────────────────────────────────────────────
 
@@ -401,6 +402,7 @@ export class PluginManager {
   private plugins = new Map<string, LoadedPlugin>();
   private hookRegistry = new Map<PluginHook["type"], Array<{ plugin: string; handler: PluginHookRegistration["handler"]; priority: HookPriority }>>();
   private eventBus: EventBus | null = null;
+  private registry: ServiceRegistry | null = null;
   private pluginDataDir: string;
 
   constructor(dataDir?: string) {
@@ -409,6 +411,10 @@ export class PluginManager {
 
   setEventBus(eb: EventBus): void {
     this.eventBus = eb;
+  }
+
+  setRegistry(registry: ServiceRegistry): void {
+    this.registry = registry;
   }
 
   /** Register a plugin */
@@ -438,7 +444,10 @@ export class PluginManager {
       try {
         const ctx: PluginContext = {
           eventBus: this.eventBus!,
-          resolveService: <T>(name: string) => undefined as T | undefined,
+          resolveService: <T>(name: string) => {
+            if (!this.registry) return undefined as T | undefined;
+            return this.registry.resolveService<T>(name);
+          },
           emitEvent: (type: string, data: unknown) => {
             this.eventBus?.publish(type, data, "plugin");
           },

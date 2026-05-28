@@ -279,6 +279,7 @@ export class EvoClawServer {
     this.queueManager.loadPersistedQueues();
     this.pluginManager = new PluginManager(path.resolve(__dirname, "..", "..", "..", "data", "plugins"));
     this.pluginManager.setEventBus(this.eventBus);
+    this.pluginManager.setRegistry(this.registry);
     this.agentModelExecutor.setPluginManager(this.pluginManager);
     this.registry.registerService("pluginManager", this.pluginManager);
     this.sessionManager = new SessionManager({

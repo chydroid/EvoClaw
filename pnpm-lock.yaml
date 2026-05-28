@@ -116,6 +116,9 @@ importers:
 
   packages/agent:
     dependencies:
+      '@evoclaw/claude-code-tools':
+        specifier: workspace:*
+        version: link:../claude-code-tools
       '@evoclaw/core':
         specifier: workspace:*
         version: link:../core

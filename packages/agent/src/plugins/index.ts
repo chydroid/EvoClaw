@@ -10,6 +10,7 @@ export { createSystemLoggerPlugin } from "./system-logger.plugin";
 export { createCostTrackerPlugin } from "./cost-tracker.plugin";
 export { createResponseValidatorPlugin } from "./response-validator.plugin";
 export { createConversationSummarizerPlugin } from "./conversation-summarizer.plugin";
+export { createClaudeCodeToolsPlugin } from "./claude-code.plugin";
 
 import type { Plugin } from "@evoclaw/core";
 import { createMemoryEnhancerPlugin } from "./memory-enhancer.plugin";
@@ -19,6 +20,7 @@ import { createSystemLoggerPlugin } from "./system-logger.plugin";
 import { createCostTrackerPlugin } from "./cost-tracker.plugin";
 import { createResponseValidatorPlugin } from "./response-validator.plugin";
 import { createConversationSummarizerPlugin } from "./conversation-summarizer.plugin";
+import { createClaudeCodeToolsPlugin } from "./claude-code.plugin";
 
 /** All built-in plugin factories — call these to create plugin instances for registration */
 export const BUILTIN_PLUGIN_FACTORIES: Array<() => Plugin> = [
@@ -29,4 +31,5 @@ export const BUILTIN_PLUGIN_FACTORIES: Array<() => Plugin> = [
   createCostTrackerPlugin,
   createResponseValidatorPlugin,
   createConversationSummarizerPlugin,
+  createClaudeCodeToolsPlugin,
 ];

@@ -646,8 +646,8 @@ export class ProtocolAdapter {
 
         const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
         
-        // ── Global timeout: always return a response within 110s ──
-        const CHAT_TIMEOUT = 110000;
+        // ── Global timeout: always return a response within 5min ──
+        const CHAT_TIMEOUT = 300000;
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,

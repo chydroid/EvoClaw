@@ -710,27 +710,82 @@ export class AutoSkillManager {
     lines.push(curated.description);
     lines.push("");
 
-    if (curated.keywords.length > 0) {
-      lines.push("## Keywords");
+    const instructions = this.generateInstructions(curated);
+    lines.push("## Instructions");
+    lines.push("");
+    lines.push(instructions);
+    lines.push("");
+
+    const examples = this.generateUsageExamples(curated);
+    lines.push("## Examples");
+    lines.push("");
+    lines.push(...examples);
+    lines.push("");
+
+    const scripts = this.generateScripts(curated);
+    if (scripts.length > 0) {
+      lines.push("## Scripts");
       lines.push("");
-      lines.push(curated.keywords.join(", "));
+      lines.push(...scripts);
       lines.push("");
     }
 
-    lines.push("## How to Use");
-    lines.push("");
-    lines.push(`This skill provides **${curated.name}** capabilities for EvoClaw.`);
-    lines.push("");
-    lines.push("### Example Prompts");
-    lines.push("");
-    
-    const examples = this.generateUsageExamples(curated);
-    lines.push(...examples);
-    lines.push("");
     lines.push("---");
     lines.push(`*Auto-generated from curated registry. Install a full version from ClawHub for enhanced features.*`);
 
     return lines.join("\n");
+  }
+
+  private generateInstructions(curated: { name: string; description: string; keywords: string[]; category: string }): string {
+    const name = curated.name;
+    switch (name) {
+      case "translator":
+        return "将用户提供的文本从一种语言翻译成另一种语言。识别源语言和目标语言，保持原文语义和语气。支持中英日韩法德西等主流语言互译。";
+      case "calculator":
+        return "执行数学计算，包括基本运算（加减乘除）、幂运算、开方、三角函数、对数等。解析用户自然语言描述的数学表达式并返回精确结果。";
+      case "file-manager":
+        return "管理文件和目录，包括列出目录内容、创建文件/文件夹、读取文件内容、移动/重命名/删除文件。操作路径需在允许范围内。";
+      case "reminder":
+        return "设置提醒和闹钟。解析用户描述的时间和提醒内容，创建定时提醒任务。支持一次性提醒和重复提醒。";
+      case "code-runner":
+        return "执行代码片段，支持多种编程语言（Python、JavaScript、TypeScript等）。在安全沙箱中运行代码并返回执行结果。";
+      case "web-search":
+        return "搜索互联网获取实时信息。根据用户查询返回相关网页结果、摘要和链接。";
+      case "email":
+        return "发送和查看电子邮件。支持撰写邮件、查看收件箱、搜索邮件等操作。";
+      case "crypto-tracker":
+        return "追踪加密货币价格和市场数据。查询实时价格、涨跌幅、市值等信息。";
+      case "rss-reader":
+        return "订阅和管理RSS源，阅读最新文章。支持添加/删除订阅、获取更新。";
+      case "http-client":
+        return "发起HTTP请求和测试API。支持GET/POST/PUT/DELETE等方法，可设置请求头和请求体。";
+      case "markdown-editor":
+        return "编辑和预览Markdown文档。支持格式化、插入链接/图片/表格等操作。";
+      default:
+        return `${curated.description}。根据用户输入执行相应操作并返回结果。`;
+    }
+  }
+
+  private generateScripts(curated: { name: string }): string[] {
+    const name = curated.name;
+    switch (name) {
+      case "calculator":
+        return [
+          "```bash",
+          "# Evaluate expression",
+          "node -e \"console.log(eval('<EXPRESSION>'))\"",
+          "```",
+        ];
+      case "http-client":
+        return [
+          "```bash",
+          "# HTTP GET request",
+          "curl -s '<URL>'",
+          "```",
+        ];
+      default:
+        return [];
+    }
   }
 
   /**

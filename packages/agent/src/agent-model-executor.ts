@@ -1246,7 +1246,10 @@ export class AgentModelExecutor {
     }
 
     // ── SkillDispatcher: try to auto-dispatch task via skill matching (before LLM) ──
-    if (this.hasActionIntent(message)) {
+    // Skip SkillDispatcher when user explicitly requests a claude-code-tools tool
+    const claudeCodeToolNames = ["execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result"];
+    const isExplicitToolCall = claudeCodeToolNames.some(name => message.includes(name));
+    if (this.hasActionIntent(message) && !isExplicitToolCall) {
       try {
         const skillDispatcher = this.registry?.resolveService<{
           dispatch(ctx: { task: string; sessionId: string; allowAutoInstall?: boolean; fallbackToWebSearch?: boolean }): Promise<{
@@ -1270,11 +1273,15 @@ export class AgentModelExecutor {
             fallbackToWebSearch: true,
           });
 
-          if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output) {
+          const outputStr = typeof dispatchResult.output === "string"
+            ? dispatchResult.output
+            : JSON.stringify(dispatchResult.output, null, 2);
+
+          const errorPatterns = ["must be set in environment", "API_KEY", "api key is required", "authentication failed", "unauthorized", "forbidden", "rate limit exceeded", "quota exceeded"];
+          const outputHasError = errorPatterns.some(p => outputStr.toLowerCase().includes(p.toLowerCase()));
+
+          if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
-            const outputStr = typeof dispatchResult.output === "string" 
-              ? dispatchResult.output 
-              : JSON.stringify(dispatchResult.output, null, 2);
             
             return {
               reply: `🎯 **技能调度**: \`${dispatchResult.skillName}\`\n\n${outputStr}\n\n---\n<details><summary>📋 调度详情</summary>\n\n${dispatchResult.reasoning}\n</details>`,
@@ -1283,11 +1290,8 @@ export class AgentModelExecutor {
               permissionRequests: [],
               toolsExecuted: true,
             };
-          } else if (dispatchResult.path === "web_search" && dispatchResult.success && dispatchResult.output) {
+          } else if (dispatchResult.path === "web_search" && dispatchResult.success && dispatchResult.output && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
-            const outputStr = typeof dispatchResult.output === "string"
-              ? dispatchResult.output
-              : JSON.stringify(dispatchResult.output, null, 2);
             
             return {
               reply: `🔍 **网页搜索**: \`${dispatchResult.skillName}\`\n\n${outputStr}`,
@@ -1296,6 +1300,8 @@ export class AgentModelExecutor {
               permissionRequests: [],
               toolsExecuted: true,
             };
+          } else if (outputHasError) {
+            console.log(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned error output — falling through to LLM`);
           } else if (dispatchResult.path === "none") {
             console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
           } else {
@@ -1529,23 +1535,28 @@ export class AgentModelExecutor {
   }
 
   private parseMultipleTasks(message: string): string[] {
-    // Only split on Chinese sentence-ending punctuation. Avoid english '.' as it
-    // appears in filenames (notes.txt), version numbers, URLs, and abbreviations.
-    const separators = [/[。！？]/g];
     const tasks: string[] = [];
     
-    // Check if a fragment is just a trailing command phrase like "帮我算一下"
     const isShortFollowup = (s: string): boolean => {
       return /^(帮我|给我|请帮我|麻烦|请问|你帮我|能帮我).{0,8}$/.test(s.trim());
+    };
+
+    const isQuestionOnly = (s: string): boolean => {
+      const trimmed = s.trim();
+      return /^(什么|怎么|如何|为什么|哪|几|多少|是不是|能不能|可以|吗|呢|谁|何时|哪里)/.test(trimmed)
+        || /^(what|how|why|when|where|who|which|is|can|do|does|are)/i.test(trimmed);
     };
     
     let remaining = message.trim();
     
+    // Split on Chinese period/exclamation only (NOT question marks — they indicate
+    // conversational questions, not separate tasks)
+    const separators = [/[。！]/g];
+    
     for (const sep of separators) {
       const parts = remaining.split(sep).filter(p => p.trim().length > 2);
       if (parts.length > 1) {
-        // Filter out short follow-up phrases that don't constitute real tasks
-        const realTasks = parts.map(p => p.trim()).filter(p => !isShortFollowup(p));
+        const realTasks = parts.map(p => p.trim()).filter(p => !isShortFollowup(p) && !isQuestionOnly(p));
         return realTasks.length >= 2 ? realTasks : [message];
       }
     }
@@ -2306,8 +2317,14 @@ export class AgentModelExecutor {
                   rawResult = skipWithResult;
                   toolResult = JSON.stringify(skipWithResult);
                 } else {
-                  // ── Tool execution with 30s timeout ──
-                  const TOOL_TIMEOUT = 30000;
+                  // ── Tool execution with timeout ──
+                  // Long-running tools get extended timeout
+                  const LONG_RUNNING_TOOLS = new Set([
+                    "execute_programming_task", "decompose_programming_task",
+                    "browser_launch", "browser_screenshot", "browser_login",
+                    "get_task_result",
+                  ]);
+                  const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
                   const toolPromise = toolEntry.handler(args);
                   const toolTimeoutPromise = new Promise<never>((_, reject) =>
                     setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT)
@@ -2468,6 +2485,7 @@ export class AgentModelExecutor {
       "file_modify", "file_list", "file_delete", "skill_execute", "skill_install",
       "skill_search", "skill_find_and_install", "skill_list",
       "email_send", "email_add_account", "browser_navigate", "browser_search",
+      "execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result",
     ]);
     return Array.from(this.registeredTools.values())
       .filter((t) => essentialTools.has(t.definition.name))
