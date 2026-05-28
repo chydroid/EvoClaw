@@ -313,9 +313,9 @@ export default function App() {
 
   async function checkAuth() {
     try {
-      const res = await fetch("/api/health");
+      const res = await fetch("/api/auth/check");
       if (res.ok) { setStatus("online"); setAuthenticated(true); }
-      else setAuthenticated(false);
+      else { setAuthenticated(false); setStatus("online"); }
     } catch { setStatus("offline"); setAuthenticated(false); }
     setAuthChecked(true);
   }
@@ -323,11 +323,14 @@ export default function App() {
   async function submitToken() {
     if (!tokenInput.trim()) return;
     try {
-      const res = await fetch("/api/health", { headers: { Cookie: `web_ui_token=${tokenInput.trim()}` } });
+      document.cookie = `web_ui_token=${tokenInput.trim()}; path=/; max-age=86400; SameSite=Lax`;
+      const res = await fetch("/api/auth/check");
       if (res.ok) {
-        document.cookie = `web_ui_token=${tokenInput.trim()}; path=/; max-age=86400; SameSite=Lax`;
         setAuthenticated(true); setStatus("online"); setTokenInput("");
-      } else setStatus("offline");
+      } else {
+        document.cookie = "web_ui_token=; path=/; max-age=0";
+        setStatus("online");
+      }
     } catch { setStatus("offline"); }
   }
 

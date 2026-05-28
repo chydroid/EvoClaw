@@ -294,6 +294,31 @@ export class ProtocolAdapter {
       }
     });
 
+    app.get("/api/auth/check", (req: Request, res: Response) => {
+      const auth = this.getAuthProvider();
+      if (!auth) {
+        res.json({ authenticated: true });
+        return;
+      }
+      const webUiToken = process.env.WEB_UI_TOKEN || "";
+      if (!webUiToken) {
+        res.json({ authenticated: true });
+        return;
+      }
+      const cookieHeader = req.headers.cookie || "";
+      const cookies = cookieHeader.split(";").reduce<Record<string, string>>((acc, c) => {
+        const [k, ...v] = c.trim().split("=");
+        if (k) acc[k] = decodeURIComponent(v.join("="));
+        return acc;
+      }, {});
+      const tokenFromCookie = cookies["web_ui_token"];
+      if (tokenFromCookie && tokenFromCookie === webUiToken) {
+        res.json({ authenticated: true });
+      } else {
+        res.status(401).json({ authenticated: false, error: "Invalid or missing token" });
+      }
+    });
+
     app.get("/api/skills", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{

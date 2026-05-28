@@ -1216,13 +1216,12 @@ export class AgentModelExecutor {
     }>("skillManager");
     
     // installKeywords: detects "安装技能", "下载技能", "安装 weather", etc.
-    const installKeywords = /(?:安装|下载|添加|配置)\s*(?:技能|skill|skills?)/i;
-    const installRequest = /(?:给我|帮我|需要|想要).*?(?:安装|下载|添加|配置).*?(?:技能|skill|skills?)/i;
-    // installSpecificSkill: catches "安装 weather", "安装 translator" etc. (verb+alphanumeric-word)
-    const installSpecificSkill = /(?:安装|下载|添加|配置)\s+([a-zA-Z][\w\-]{1,})/i;
-    // batchInstall: catches "全部安装", "批量安装", "一键安装", "安装所有技能" etc.
+    const installKeywords = /(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*(?:技能|skill|skills?)/i;
+    const installRequest = /(?:给我|帮我|需要|想要|如果).*?(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*.*?(?:技能|skill|skills?)/i;
+    const installSpecificSkill = /(?:安装|下载|添加|配置|装)\s+([a-zA-Z][\w\-]{1,})/i;
     const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
-    if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message)) {
+    const findAndInstallSkill = /(?:找|查找|搜索|看看|查一下).*(?:技能|skill).*?(?:安装|下载|添加|装)/i;
+    if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
       console.log(`[AgentModelExecutor] Skill install request detected: "${message}"`);
       return await this.handleSkillInstall(message, skillManager, startTime, sessionId);
     }
@@ -1658,16 +1657,19 @@ export class AgentModelExecutor {
     startTime: number,
     sessionId: string,
   ): { reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null {
-    // Match: "查配置", "系统配置", "当前配置", "check config", "system info", "查看配置", "model info" etc.
+    if (message.length > 30) return null;
+
     const configKeywords = [
-      /(?:查|看|查看|显示|展示|告诉我|当前|现在|系统)\s*(?:的\s*)?(?:配置|设置|系统|模型|provider|模型列表|提供商|技能列表)/i,
-      /(?:config|configuration|system\s*info|model\s*info|check\s*config)/i,
-      /(?:什么|哪些)\s*(?:模型|技能|provider|提供商|配置)/i,
-      /(?:how\s*(?:many|to)\s*|what\s*)(?:model|skill|provider|config)/i,
-      /(?:列出|list)\s*(?:模型|技能|配置|系统)/i,
+      /^(?:查|查看|显示|展示|告诉我)\s*(?:当前\s*)?(?:的\s*)?(?:配置|设置|模型|provider|模型列表|提供商|技能列表)/i,
+      /^(?:当前|现在)\s*(?:的\s*)?(?:配置|设置|模型|provider|提供商)/i,
+      /^系统(?:配置|设置|信息|模型|状态)/i,
+      /^(?:config|configuration|system\s*info|model\s*info|check\s*config)\s*$/i,
+      /^(?:什么|哪些)\s*(?:模型|provider|提供商|配置)\s*[？?]?\s*$/i,
+      /^(?:how\s*(?:many|to)\s*|what\s*)(?:model|skill|provider|config)/i,
+      /^(?:列出|list)\s*(?:模型|技能|配置|系统)/i,
     ];
 
-    const matches = configKeywords.some(re => re.test(message));
+    const matches = configKeywords.some(re => re.test(message.trim()));
     if (!matches) return null;
 
     console.log(`[AgentModelExecutor] System config query detected: "${message}" — responding directly`);
@@ -2131,15 +2133,26 @@ export class AgentModelExecutor {
   private hasActionIntent(message: string): boolean {
     const lower = message.toLowerCase();
     const actionKeywords = [
-      "创建", "生成", "删除", "修改", "写入", "读取", "列出", "查询",
+      "创建", "生成", "删除", "修改", "写入", "读取", "列出",
       "create", "generate", "delete", "modify", "write", "read", "list",
-      "文件夹", "文件", "html", "css", "js", "网页", "代码",
-      "folder", "file", "directory", "mkdir", "touch",
+      "文件夹", "html", "css", "网页", "代码",
+      "folder", "directory", "mkdir",
       "安装", "卸载", "install", "uninstall", "搜索", "search",
-      "在", "到", "放进", "保存", "save",
-      "搜", "查", "找", "获取", "总结", "分析", "整理",
+      "保存", "save",
+      "搜索", "查找", "获取", "总结", "分析", "整理",
       "新闻", "热搜", "天气", "邮件",
     ];
+    const excludePatterns = [
+      /系统\s*中/i,
+      /是否/i,
+      /有没有/i,
+      /是不是/i,
+      /怎么样/i,
+      /什么是/i,
+      /为什么/i,
+      /如何/i,
+    ];
+    if (excludePatterns.some(p => p.test(message))) return false;
     return actionKeywords.some((kw) => lower.includes(kw));
   }
 
