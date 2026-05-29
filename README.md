@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.8.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -89,14 +89,18 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 - **安全审计**: 全链路操作审计和异常检测
 - **自愈系统**: 运行时故障自动检测与恢复
 - **速率限制**: API 级别的流量控制和保护
+- **设备配对认证**: RSA 公钥 + 挑战签名验证的设备认证系统
+- **Webhook 签名验证**: HMAC-SHA256 签名校验，防止伪造请求
 
 ### 🧩 可扩展架构
 
 - **IoC 依赖注入**: 基于服务注册中心的松耦合设计
 - **事件驱动**: 基于 EventBus 的发布-订阅模式
 - **插件系统**: 支持动态加载和卸载功能插件
+- **PluginHost**: 插件生命周期管理（register → activate → deactivate → unregister）+ Hook 事件系统 + ServiceLocator
 - **MCP 协议**: 集成 Model Context Protocol 协议支持
 - **多协议网关**: 统一接入 REST / WebSocket / MCP 多种协议
+- **统一沙箱管理**: SandboxManager 支持 Docker / SSH / Process 三种沙箱后端
 
 ### 💾 多维记忆
 
@@ -111,6 +115,9 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 - **自动 Compaction**: 接近上下文限制时自动压缩对话历史，保留关键摘要
 - **会话持久化**: JSONL 格式的会话记录，支持跨重启恢复
 - **Provider 故障转移**: LLM 提供商出错时自动轮换到下一个配置
+- **Fallback Chain**: 主模型失败时自动切换到备选模型
+- **Auth Rotation**: API Key 轮换机制，避免单一 Key 限流
+- **Health Scoring**: 基于成功率和响应时间的健康评分，智能选择最优 Provider
 
 ### 🖥️ 增强式 Web 控制台
 
@@ -464,6 +471,15 @@ EvoClaw 通过统一的 RESTful API 暴露所有功能:
 | `/api/evolution/dashboard` | GET  | 进化引擎仪表盘数据 |
 | `/api/system/audit`        | GET  | 安全审计日志    |
 | `/api/persona/greeting`    | GET  | 获取个性欢迎语   |
+| `/api/sandbox/backends`    | GET  | 获取可用沙箱后端  |
+| `/api/sandbox/sessions`    | POST | 创建沙箱会话    |
+| `/api/sandbox/sessions`    | GET  | 列出沙箱会话    |
+| `/api/sandbox/sessions/:id/exec` | POST | 在沙箱中执行命令 |
+| `/api/sandbox/sessions/:id` | DELETE | 销毁沙箱会话 |
+| `/api/webhook/incoming`    | POST | 接收 Webhook 回调 |
+| `/api/device/pairing/request` | POST | 请求设备配对 |
+| `/api/device/pairing/verify` | POST | 验证设备配对签名 |
+| `/api/device/paired`       | GET  | 列出已配对设备   |
 
 ***
 
@@ -721,6 +737,7 @@ packages:
 | `packages/memory`         | `@evoclaw/memory`         | 记忆系统      |
 | `packages/skills`         | `@evoclaw/skills`         | 技能系统      |
 | `packages/security`       | `@evoclaw/security`       | 安全治理      |
+| `packages/plugin-sdk`     | `@evoclaw/plugin-sdk`     | 插件开发 SDK  |
 | `packages/gateway`        | `@evoclaw/gateway`        | 网关服务      |
 | `packages/infrastructure` | `@evoclaw/infrastructure` | 基础设施      |
 | `packages/email`          | `@evoclaw/email`          | 邮件客户端     |
@@ -786,6 +803,7 @@ pnpm --filter @evoclaw/evolution test
 - `packages/core/src/event-bus.test.ts`
 - `packages/core/src/service-registry.test.ts`
 - `packages/core/src/config.test.ts`
+- `packages/core/src/config-lkg.test.ts`
 - `packages/agent/src/error-classifier.test.ts`
 - `packages/evolution/src/evolution-engine.test.ts`
 - `packages/evolution/src/genetic-engine.test.ts`
@@ -793,8 +811,14 @@ pnpm --filter @evoclaw/evolution test
 - `packages/memory/src/knowledge-graph.test.ts`
 - `packages/memory/src/vector-memory.test.ts`
 - `packages/security/src/rbac-manager.test.ts`
+- `packages/security/src/device-pairing-manager.test.ts`
 - `packages/skills/src/skill-md-parser.test.ts`
 - `packages/skills/src/integration.test.ts`
+- `packages/gateway/src/ws-server-transport.test.ts`
+- `packages/infrastructure/src/ssh-sandbox.test.ts`
+- `packages/plugin-sdk/src/plugin-host.test.ts`
+
+> 78 个测试文件，1795 个测试用例，全部通过 ✅
 
 ***
 
@@ -816,7 +840,7 @@ pnpm --filter @evoclaw/evolution test
 项目使用 GitHub Actions 进行持续集成，配置文件位于 `.github/workflows/ci.yml`:
 
 - **触发条件**: `main` / `develop` 分支的 push 和 PR
-- **Node 版本**: 20.x, 22.x 矩阵测试
+- **Node 版本**: 20.x, 22.x, 24.x 矩阵测试
 - **步骤**: Install → TypeCheck → Build → Test → Lint
 
 ***

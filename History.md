@@ -5,6 +5,82 @@
 
 ---
 
+## v0.8.0 (2026-05-29)
+
+### 功能审计补齐 + 安全修复 + CI/CD 修复
+
+- **文件**: `packages/core/src/config-lkg.ts`、`packages/infrastructure/src/ssh-sandbox.ts`、`packages/infrastructure/src/sandbox-manager.ts`、`packages/plugin-sdk/src/plugin-host.ts`、`packages/gateway/src/ws-server-transport.ts`、`packages/gateway/src/gateway-server.ts`、`packages/security/src/device-pairing-manager.ts`、`packages/core/src/config-schema.ts`、`packages/skills/src/skill-curator.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/gateway/src/webhook-manager.ts`、`packages/agent/src/model-failover.ts`
+
+- **改动**:
+
+  **Webhook 系统**
+  - 新增 `IncomingWebhookManager`：支持 GitHub/Discord/Slack/Custom 四种 Webhook 来源
+  - 签名验证：HMAC-SHA256 签名校验，防止伪造请求
+  - 事件路由：基于 Webhook 事件类型自动路由到对应处理器
+  - 重试机制：失败自动重试，指数退避，最多 3 次
+
+  **模型故障转移增强**
+  - `ModelFailover` 新增 Fallback Chain：主模型失败时自动切换到备选模型
+  - Auth Rotation：API Key 轮换机制，避免单一 Key 限流
+  - Health Scoring：基于成功率和响应时间的健康评分，智能选择最优 Provider
+
+  **技能策展器 YAML 修复**
+  - `SkillCurator` 生成 YAML frontmatter 时，`name` 和 `description` 值强制双引号包裹
+  - 修复未引用值含冒号导致 YAML 解析失败的问题（如 `从任务解决方案中提取的技能: 版本历史测试`）
+
+  **WebSocket Server Transport**
+  - 新增 `WSServerTransport`：将 `ws` 库 WebSocket 连接桥接到 `ProtocolHandler` 的 `WSClient` 接口
+  - 支持消息收发、心跳 ping/pong、连接关闭处理
+  - 14 个单元测试全部通过
+
+  **Gateway Server WebSocket 集成**
+  - `GatewayServer` 新增 `enableWS` 配置选项
+  - `registerWSMethodHandlers()`：注册 10 个 WebSocket 方法处理器（health、status、channels.list、channels.status、config.get、sessions.list、plugins.list、cron.list、agent、message.send）
+  - 服务器启动时自动附加 WebSocket，停止时分离
+  - 修复 `protocolHandler` 重复服务注册导致的启动致命错误
+
+  **设备配对管理器**
+  - 新增 `DevicePairingManager`：RSA 公钥 + 挑战签名验证的设备认证系统
+  - 配对流程：请求配对 → 生成挑战 → 签名验证 → 颁发设备令牌
+  - 设备信任列表管理、令牌刷新、吊销
+  - 安全事件发布：`security.alert` 事件通知
+  - 18 个单元测试全部通过
+
+  **配置热重载增强**
+  - `ConfigWatcher` 新增变更差异计算：`diffConfigs()` 递归深度对比
+  - 新增 `SchemaConfigChange` / `SchemaConfigChangeHandler` 类型
+  - `onConfigChange()` 注册变更处理器，`removeConfigChangeHandler()` 移除
+  - `getCurrentConfig()`、`getStats()`、`forceReload()` 方法
+  - 重命名为 `SchemaConfigChange` 以避免与 `config-rpc.ts` 中的 `ConfigChange` 冲突
+
+  **SSH Sandbox**
+  - 新增 `SSHSandbox`：SSH 远程命令执行沙箱
+  - 支持公钥认证（临时密钥文件 0600 权限）和密码认证
+  - 超时控制、输出截断（maxOutputBytes）、工作目录、环境变量传递
+  - `runScript()` 支持多行脚本执行
+
+  **SandboxManager 统一沙箱管理**
+  - 新增 `SandboxManager`：统一管理 Docker/SSH/Process 三种沙箱后端
+  - 会话生命周期：`createSession()` → `execute()` / `executeScript()` → `destroySession()`
+  - `listBackends()` 查询可用后端
+  - 5 个 REST API 端点：`GET /api/sandbox/backends`、`POST /api/sandbox/sessions`、`GET /api/sandbox/sessions`、`POST /api/sandbox/sessions/:id/exec`、`DELETE /api/sandbox/sessions/:id`
+
+  **PluginHost 插件宿主**
+  - 新增 `PluginHost`：插件生命周期管理（registerPlugin → activate → deactivate → unregister）
+  - ServiceLocator 模式：`register(name, service)` / `resolve<T>(name)` 服务注册与查找
+  - Hook 事件系统：`emitHook(hookName, data)` 支持超时保护（5s）
+  - `healthCheck()` 健康检查、`getStats()` 统计信息、`shutdown()` 优雅关闭
+  - 21 个单元测试全部通过
+
+  **CI/CD 测试修复**
+  - `LastKnownGoodConfig.pruneSnapshots(0)` 修复：当 `maxAgeDays <= 0` 时直接删除所有快照，而非计算截止时间戳（避免 `Date.now() - 0 = Date.now()` 导致 `>=` 比较失败）
+  - GitHub Actions Node 22/24 矩阵测试全部通过
+
+  **测试统计**
+  - 78 个测试文件，1795 个测试用例全部通过
+
+---
+
 ## v0.7.0 (2026-05-28)
 
 ### 全面系统测试 + Claude Code Tools 插件集成 + 技能系统增强
