@@ -2486,6 +2486,124 @@ export class ProtocolAdapter {
       }
     });
 
+    // ─── Device Pairing API routes ──────────────────────────────────────────
+
+    app.post("/api/pairing/init", (req: Request, res: Response) => {
+      try {
+        const { deviceType, deviceName } = req.body || {};
+        if (!deviceType || !["web", "mobile", "desktop", "cli"].includes(deviceType)) {
+          res.status(400).json({ error: "deviceType must be one of: web, mobile, desktop, cli" });
+          return;
+        }
+
+        const devicePairingManager = this.registry.resolveService<{
+          initiatePairing(deviceType: string, deviceName: string): { pairingCode: string; challenge: string; expiresAt: Date };
+        }>("devicePairingManager");
+
+        if (!devicePairingManager) {
+          res.status(503).json({ error: "Device pairing service not available" });
+          return;
+        }
+
+        const result = devicePairingManager.initiatePairing(deviceType, deviceName || "Unknown");
+        res.json({ success: true, ...result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to initiate pairing");
+      }
+    });
+
+    app.post("/api/pairing/verify", async (req: Request, res: Response) => {
+      try {
+        const { pairingCode, publicKey, signature, deviceName } = req.body || {};
+        if (!pairingCode || !publicKey || !signature) {
+          res.status(400).json({ error: "pairingCode, publicKey, and signature are required" });
+          return;
+        }
+
+        const devicePairingManager = this.registry.resolveService<{
+          completePairing(params: { pairingCode: string; publicKey: string; signature: string; deviceName?: string }): unknown;
+        }>("devicePairingManager");
+
+        if (!devicePairingManager) {
+          res.status(503).json({ error: "Device pairing service not available" });
+          return;
+        }
+
+        const device = await devicePairingManager.completePairing({
+          pairingCode,
+          publicKey,
+          signature,
+          deviceName,
+        });
+
+        if (!device) {
+          res.status(401).json({ error: "Pairing verification failed" });
+          return;
+        }
+
+        res.json({ success: true, device });
+      } catch (err) {
+        this.handleError(err, res, "Failed to verify pairing");
+      }
+    });
+
+    app.get("/api/pairing/devices", (_req: Request, res: Response) => {
+      try {
+        const devicePairingManager = this.registry.resolveService<{
+          listTrustedDevices(): unknown[];
+        }>("devicePairingManager");
+
+        if (!devicePairingManager) {
+          res.json({ devices: [] });
+          return;
+        }
+
+        res.json({ devices: devicePairingManager.listTrustedDevices() });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list devices");
+      }
+    });
+
+    app.delete("/api/pairing/devices/:id", (req: Request, res: Response) => {
+      try {
+        const devicePairingManager = this.registry.resolveService<{
+          removeDevice(deviceId: string): boolean;
+          revokeDevice(deviceId: string): boolean;
+        }>("devicePairingManager");
+
+        if (!devicePairingManager) {
+          res.status(503).json({ error: "Device pairing service not available" });
+          return;
+        }
+
+        const deviceId = String(req.params.id);
+        devicePairingManager.revokeDevice(deviceId);
+        const removed = devicePairingManager.removeDevice(deviceId);
+
+        res.json({ success: removed });
+      } catch (err) {
+        this.handleError(err, res, "Failed to remove device");
+      }
+    });
+
+    app.post("/api/pairing/challenge", (_req: Request, res: Response) => {
+      try {
+        const devicePairingManager = this.registry.resolveService<{
+          generateChallenge(): string;
+        }>("devicePairingManager");
+
+        if (!devicePairingManager) {
+          res.status(503).json({ error: "Device pairing service not available" });
+          return;
+        }
+
+        const challenge = devicePairingManager.generateChallenge();
+        res.json({ challenge });
+      } catch (err) {
+        this.handleError(err, res, "Failed to generate challenge");
+      }
+    });
+
     // ─── Failover API routes ──────────────────────────────────────────────
 
     app.get("/api/system/failover/status", (_req: Request, res: Response) => {

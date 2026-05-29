@@ -12,6 +12,8 @@ export { ToolPolicyManager, DEFAULT_MAIN_POLICY, DEFAULT_SANDBOX_POLICY, DEFAULT
 export type { ToolPolicyRule, ToolPolicyCondition, ToolPolicyConfig, ToolAccessRequest, ToolAccessDecision, AgentToolPolicy } from "./tool-policy-manager";
 export { DMPairingManager } from "./dm-pairing-manager";
 export type { DMPolicy, PairingRequest, DMPolicyConfig, DMCheckResult } from "./dm-pairing-manager";
+export { DevicePairingManager } from "./device-pairing-manager";
+export type { DeviceIdentity, PairingSession, DevicePairingConfig } from "./device-pairing-manager";
 export type { Role, RBACUser, ApiKeyInfo, Permission, AccessRequest } from "./rbac-manager";
 export type { AuditQuery, AuditStatistics, AuditAlert, AuditRule } from "./audit-center";
 export type { Tenant, TenantConfig, TenantQuota, TenantStats } from "./tenant-manager";

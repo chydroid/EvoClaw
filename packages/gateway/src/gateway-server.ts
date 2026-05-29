@@ -6,6 +6,8 @@ import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
+import { ProtocolHandler } from "./ws-protocol";
+import { WSServerTransport } from "./ws-server-transport";
 
 export interface GatewayConfig {
   port: number;
@@ -14,6 +16,7 @@ export interface GatewayConfig {
   jwtSecret: string;
   enableMCP: boolean;
   enableREST: boolean;
+  enableWS: boolean;
   rateLimitWindow: number;
   rateLimitMax: number;
 }
@@ -29,6 +32,8 @@ export class GatewayServer {
   private authProvider: AuthProvider;
   private protocolAdapter: ProtocolAdapter;
   private mcpGateway: MCPGateway;
+  private protocolHandler: ProtocolHandler;
+  private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
 
   constructor(
@@ -43,6 +48,7 @@ export class GatewayServer {
       jwtSecret: process.env.JWT_SECRET || "",
       enableMCP: true,
       enableREST: true,
+      enableWS: true,
       rateLimitWindow: 60000,
       rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || "100", 10),
     };
@@ -55,6 +61,16 @@ export class GatewayServer {
     this.registry.registerService("authProvider", this.authProvider);
     this.protocolAdapter = new ProtocolAdapter(registry, eventBus);
     this.mcpGateway = new MCPGateway(registry, eventBus);
+
+    this.protocolHandler = new ProtocolHandler({
+      serverVersion: "0.4.0",
+      authToken: this.config.jwtSecret,
+      autoApproveLoopback: true,
+    });
+    this.protocolHandler.setEventBus(eventBus);
+    this.registry.registerService("protocolHandler", this.protocolHandler);
+
+    this.registerWSMethodHandlers();
   }
 
   configure(config: Partial<GatewayConfig>): void {
@@ -79,12 +95,25 @@ export class GatewayServer {
     const { port, host } = this.config;
     this.server = this.app.listen(port, host, () => {
       console.log(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}`);
+
+      if (this.config.enableWS && this.server) {
+        this.wsTransport = new WSServerTransport(this.protocolHandler, this.eventBus);
+        this.wsTransport.attach(this.server);
+        console.log(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws`);
+      }
+
       this.eventBus.publish("system.ready", { port, host }, "gateway").catch((err) => { console.debug("[Gateway] Event publish error:", err); });
     });
   }
 
   async stop(): Promise<void> {
     console.log("[Gateway] Shutting down...");
+
+    if (this.wsTransport) {
+      this.wsTransport.detach();
+      this.wsTransport = null;
+    }
+
     if (this.server) {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -162,6 +191,96 @@ export class GatewayServer {
         this.requestCounts.delete(key);
       }
     }
+  }
+
+  private registerWSMethodHandlers(): void {
+    this.protocolHandler.registerMethod("health", async () => {
+      return { status: "ok", timestamp: new Date().toISOString() };
+    });
+
+    this.protocolHandler.registerMethod("status", async () => {
+      return {
+        uptime: process.uptime(),
+        wsConnections: this.wsTransport?.getConnectedCount() ?? 0,
+        protocolConnections: this.protocolHandler.getConnectionCount(),
+        memory: process.memoryUsage(),
+      };
+    });
+
+    this.protocolHandler.registerMethod("channels.list", async () => {
+      const channelManager = this.registry.resolveService<{
+        getChannelStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
+      }>("channelManager");
+      if (!channelManager) return { channels: [] };
+      return { channels: channelManager.getChannelStatuses() };
+    });
+
+    this.protocolHandler.registerMethod("channels.status", async () => {
+      const channelManager = this.registry.resolveService<{
+        getChannelStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
+      }>("channelManager");
+      if (!channelManager) return { channels: [] };
+      return { channels: channelManager.getChannelStatuses() };
+    });
+
+    this.protocolHandler.registerMethod("config.get", async (params) => {
+      const key = params.key as string | undefined;
+      return { key: key ?? "*", value: "config retrieval via WebSocket" };
+    });
+
+    this.protocolHandler.registerMethod("sessions.list", async () => {
+      const sessionManager = this.registry.resolveService<{
+        listSessions(): Array<{ id: string; status: string; createdAt: Date }>;
+      }>("sessionManager");
+      if (!sessionManager) return { sessions: [] };
+      return { sessions: sessionManager.listSessions() };
+    });
+
+    this.protocolHandler.registerMethod("plugins.list", async () => {
+      const pluginSystem = this.registry.resolveService<{
+        listPlugins(): Array<{ id: string; name: string; enabled: boolean }>;
+      }>("pluginSystem");
+      if (!pluginSystem) return { plugins: [] };
+      return { plugins: pluginSystem.listPlugins() };
+    });
+
+    this.protocolHandler.registerMethod("cron.list", async () => {
+      const scheduleManager = this.registry.resolveService<{
+        listTasks(): Array<{ id: string; name: string; enabled: boolean; cronExpression: string }>;
+      }>("scheduleManager");
+      if (!scheduleManager) return { tasks: [] };
+      return { tasks: scheduleManager.listTasks() };
+    });
+
+    this.protocolHandler.registerMethod("agent", async (params, client) => {
+      const agentExecutor = this.registry.resolveService<{
+        execute(message: string, sessionId?: string): Promise<string>;
+      }>("agentModelExecutor");
+      if (!agentExecutor) {
+        throw new Error("Agent executor not available");
+      }
+      const message = params.message as string;
+      if (!message || typeof message !== "string") {
+        throw new Error("message parameter is required");
+      }
+      const result = await agentExecutor.execute(message, params.sessionId as string | undefined);
+      return { response: result };
+    });
+
+    this.protocolHandler.registerMethod("message.send", async (params) => {
+      const channelManager = this.registry.resolveService<{
+        sendMessage(channelType: string, target: string, text: string): Promise<unknown>;
+      }>("channelManager");
+      if (!channelManager) {
+        throw new Error("Channel manager not available");
+      }
+      const { channel, target, text } = params as { channel: string; target: string; text: string };
+      if (!channel || !target || !text) {
+        throw new Error("channel, target, and text are required");
+      }
+      const result = await channelManager.sendMessage(channel, target, text);
+      return { delivered: true, result };
+    });
   }
 
   private setupRoutes(): void {

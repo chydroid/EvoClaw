@@ -286,21 +286,40 @@ export class ConfigValidator {
 
 // ─── Hot-reload watcher ────────────────────────────────────────────────────────
 
+export interface SchemaConfigChange {
+  path: string;
+  oldValue: unknown;
+  newValue: unknown;
+  type: "added" | "modified" | "removed";
+}
+
+export type SchemaConfigChangeHandler = (
+  newConfig: Record<string, unknown>,
+  oldConfig: Record<string, unknown>,
+  changes: SchemaConfigChange[]
+) => Promise<void>;
+
 export class ConfigWatcher {
   private watchers: Map<string, fs.FSWatcher> = new Map();
   private callbacks: Array<(filePath: string) => void> = [];
+  private changeHandlers: SchemaConfigChangeHandler[] = [];
+  private currentConfigs = new Map<string, Record<string, unknown>>();
+  private reloadCount = 0;
+  private lastReloadAt: Date | null = null;
 
   /** Watch a config file for changes */
   watch(filePath: string): void {
     if (this.watchers.has(filePath)) return;
+
+    this.loadAndValidate(filePath);
 
     const dir = path.dirname(filePath);
     const basename = path.basename(filePath);
 
     const watcher = fs.watch(dir, (eventType, filename) => {
       if (filename === basename && eventType === "change") {
-        // Debounce: wait 200ms before notifying
         setTimeout(() => {
+          this.handleFileChange(filePath);
           for (const cb of this.callbacks) {
             try { cb(filePath); } catch { /* swallow */ }
           }
@@ -316,6 +335,35 @@ export class ConfigWatcher {
     this.callbacks.push(callback);
   }
 
+  onConfigChange(handler: SchemaConfigChangeHandler): void {
+    this.changeHandlers.push(handler);
+  }
+
+  removeConfigChangeHandler(handler: SchemaConfigChangeHandler): void {
+    const idx = this.changeHandlers.indexOf(handler);
+    if (idx >= 0) this.changeHandlers.splice(idx, 1);
+  }
+
+  getCurrentConfig(filePath: string): Record<string, unknown> | undefined {
+    return this.currentConfigs.get(filePath);
+  }
+
+  getStats(): {
+    watchedFiles: number;
+    reloadCount: number;
+    lastReloadAt: Date | null;
+  } {
+    return {
+      watchedFiles: this.watchers.size,
+      reloadCount: this.reloadCount,
+      lastReloadAt: this.lastReloadAt,
+    };
+  }
+
+  forceReload(filePath: string): ConfigValidationResult {
+    return this.loadAndValidate(filePath);
+  }
+
   /** Stop watching a specific file */
   unwatch(filePath: string): void {
     const watcher = this.watchers.get(filePath);
@@ -323,6 +371,7 @@ export class ConfigWatcher {
       watcher.close();
       this.watchers.delete(filePath);
     }
+    this.currentConfigs.delete(filePath);
   }
 
   /** Stop all watchers */
@@ -332,6 +381,83 @@ export class ConfigWatcher {
       this.watchers.delete(filePath);
     }
     this.callbacks = [];
+    this.changeHandlers = [];
+    this.currentConfigs.clear();
+  }
+
+  private loadAndValidate(filePath: string): ConfigValidationResult {
+    const result = ConfigValidator.loadFromFile(filePath);
+    if (result.valid) {
+      this.currentConfigs.set(filePath, result.data);
+      this.reloadCount++;
+      this.lastReloadAt = new Date();
+    }
+    return result;
+  }
+
+  private handleFileChange(filePath: string): void {
+    const oldConfig = this.currentConfigs.get(filePath) ?? {};
+    const result = this.loadAndValidate(filePath);
+
+    if (result.valid && this.changeHandlers.length > 0) {
+      const changes = this.diffConfigs(oldConfig, result.data);
+      if (changes.length > 0) {
+        this.notifyHandlers(result.data, oldConfig, changes);
+      }
+    }
+  }
+
+  diffConfigs(
+    oldConfig: Record<string, unknown>,
+    newConfig: Record<string, unknown>,
+    prefix = ""
+  ): SchemaConfigChange[] {
+    const changes: SchemaConfigChange[] = [];
+    const allKeys = new Set([
+      ...Object.keys(oldConfig),
+      ...Object.keys(newConfig),
+    ]);
+
+    for (const key of allKeys) {
+      const fullPath = prefix ? `${prefix}.${key}` : key;
+      const oldVal = oldConfig[key];
+      const newVal = newConfig[key];
+
+      if (oldVal === undefined && newVal !== undefined) {
+        changes.push({ path: fullPath, oldValue: undefined, newValue: newVal, type: "added" });
+      } else if (oldVal !== undefined && newVal === undefined) {
+        changes.push({ path: fullPath, oldValue: oldVal, newValue: undefined, type: "removed" });
+      } else if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        if (
+          typeof oldVal === "object" && oldVal !== null && !Array.isArray(oldVal) &&
+          typeof newVal === "object" && newVal !== null && !Array.isArray(newVal)
+        ) {
+          changes.push(...this.diffConfigs(
+            oldVal as Record<string, unknown>,
+            newVal as Record<string, unknown>,
+            fullPath
+          ));
+        } else {
+          changes.push({ path: fullPath, oldValue: oldVal, newValue: newVal, type: "modified" });
+        }
+      }
+    }
+
+    return changes;
+  }
+
+  private async notifyHandlers(
+    newConfig: Record<string, unknown>,
+    oldConfig: Record<string, unknown>,
+    changes: SchemaConfigChange[]
+  ): Promise<void> {
+    for (const handler of this.changeHandlers) {
+      try {
+        await handler(newConfig, oldConfig, changes);
+      } catch (err) {
+        console.error("[ConfigWatcher] Handler error:", err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 }
 
