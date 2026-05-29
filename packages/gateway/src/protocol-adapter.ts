@@ -2486,6 +2486,116 @@ export class ProtocolAdapter {
       }
     });
 
+    // ─── Sandbox API routes ──────────────────────────────────────────────
+
+    app.get("/api/sandbox/backends", async (_req: Request, res: Response) => {
+      try {
+        const sandboxManager = this.registry.resolveService<{
+          listBackends(): Promise<Array<{ type: string; available: boolean }>>;
+        }>("sandboxManager");
+
+        if (!sandboxManager) {
+          res.json({ backends: [] });
+          return;
+        }
+
+        const backends = await sandboxManager.listBackends();
+        res.json({ backends });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list sandbox backends");
+      }
+    });
+
+    app.post("/api/sandbox/sessions", async (req: Request, res: Response) => {
+      try {
+        const { backend, docker, ssh } = req.body || {};
+        if (!backend || !["docker", "ssh", "process"].includes(backend)) {
+          res.status(400).json({ error: "backend must be one of: docker, ssh, process" });
+          return;
+        }
+
+        const sandboxManager = this.registry.resolveService<{
+          createSession(config: { backend: string; docker?: unknown; ssh?: unknown }): Promise<unknown>;
+        }>("sandboxManager");
+
+        if (!sandboxManager) {
+          res.status(503).json({ error: "Sandbox service not available" });
+          return;
+        }
+
+        const session = await sandboxManager.createSession({ backend, docker, ssh });
+        res.status(201).json({ success: true, session });
+      } catch (err) {
+        this.handleError(err, res, "Failed to create sandbox session");
+      }
+    });
+
+    app.get("/api/sandbox/sessions", (_req: Request, res: Response) => {
+      try {
+        const sandboxManager = this.registry.resolveService<{
+          listSessions(): Array<{ id: string; backend: string; status: string; executeCount: number }>;
+        }>("sandboxManager");
+
+        if (!sandboxManager) {
+          res.json({ sessions: [] });
+          return;
+        }
+
+        res.json({ sessions: sandboxManager.listSessions() });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list sandbox sessions");
+      }
+    });
+
+    app.post("/api/sandbox/sessions/:id/exec", async (req: Request, res: Response) => {
+      try {
+        const { command, interpreter, timeoutMs, env, workdir } = req.body || {};
+        const sessionId = String(req.params.id);
+
+        const sandboxManager = this.registry.resolveService<{
+          execute(sessionId: string, command: string[], options?: unknown): Promise<unknown>;
+          executeScript(sessionId: string, script: string, options?: unknown): Promise<unknown>;
+        }>("sandboxManager");
+
+        if (!sandboxManager) {
+          res.status(503).json({ error: "Sandbox service not available" });
+          return;
+        }
+
+        let result;
+        if (interpreter && typeof command === "string") {
+          result = await sandboxManager.executeScript(sessionId, command, { interpreter, timeoutMs });
+        } else if (Array.isArray(command)) {
+          result = await sandboxManager.execute(sessionId, command, { timeoutMs, env, workdir });
+        } else {
+          res.status(400).json({ error: "command is required (string for script, array for exec)" });
+          return;
+        }
+
+        res.json({ success: true, result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to execute in sandbox");
+      }
+    });
+
+    app.delete("/api/sandbox/sessions/:id", async (req: Request, res: Response) => {
+      try {
+        const sandboxManager = this.registry.resolveService<{
+          destroySession(sessionId: string): Promise<void>;
+        }>("sandboxManager");
+
+        if (!sandboxManager) {
+          res.status(503).json({ error: "Sandbox service not available" });
+          return;
+        }
+
+        await sandboxManager.destroySession(String(req.params.id));
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to destroy sandbox session");
+      }
+    });
+
     // ─── Device Pairing API routes ──────────────────────────────────────────
 
     app.post("/api/pairing/init", (req: Request, res: Response) => {

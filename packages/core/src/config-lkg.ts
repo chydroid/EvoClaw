@@ -261,6 +261,13 @@ export class LastKnownGoodConfig {
    */
   pruneSnapshots(maxAgeDays: number): number {
     const snapshots = this.listSnapshots();
+    if (maxAgeDays <= 0) {
+      let deleted = 0;
+      for (const snapshot of snapshots) {
+        if (this.deleteSnapshot(snapshot.id)) deleted++;
+      }
+      return deleted;
+    }
     const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
     let deleted = 0;
 

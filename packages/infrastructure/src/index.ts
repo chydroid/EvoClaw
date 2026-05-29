@@ -18,6 +18,10 @@ export { detectFromBytes, infoFromFilename, mimeFromExtension, parseDataURI, toD
 export type { MediaType, MediaInfo } from "./media-processor";
 export { DockerSandbox } from "./docker-sandbox";
 export type { SandboxConfig, SandboxResult } from "./docker-sandbox";
+export { SSHSandbox } from "./ssh-sandbox";
+export type { SSHSandboxConfig, SSHSandboxResult } from "./ssh-sandbox";
+export { SandboxManager } from "./sandbox-manager";
+export type { SandboxBackendType, UnifiedSandboxConfig, SandboxSession } from "./sandbox-manager";
 export { DaemonManager } from "./daemon-manager";
 export type { DaemonConfig, DaemonStatus } from "./daemon-manager";
 export { UpdateManager } from "./update-manager";

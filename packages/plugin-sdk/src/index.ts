@@ -15,6 +15,9 @@ export * from "./types.js";
 // ── Plugin Interface ─────────────────────────────────────
 export * from "./plugin.js";
 
+// ── Plugin Host ──────────────────────────────────────────
+export * from "./plugin-host.js";
+
 // ── Channel SDK ──────────────────────────────────────────
 export * from "./channel.js";
 
