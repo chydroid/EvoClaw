@@ -68,7 +68,6 @@ export class GatewayServer {
       autoApproveLoopback: true,
     });
     this.protocolHandler.setEventBus(eventBus);
-    this.registry.registerService("protocolHandler", this.protocolHandler);
 
     this.registerWSMethodHandlers();
   }

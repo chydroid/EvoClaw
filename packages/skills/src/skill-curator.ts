@@ -582,9 +582,9 @@ export class SkillCurator {
   }): string {
     const lines: string[] = [];
     lines.push("---");
-    lines.push(`name: ${params.name}`);
+    lines.push(`name: "${params.name.replace(/"/g, '\\"')}"`);
     lines.push(`version: ${params.version}`);
-    lines.push(`description: ${params.description}`);
+    lines.push(`description: "${params.description.replace(/"/g, '\\"')}"`);
     lines.push(`author: ${params.author}`);
     lines.push(`license: MIT`);
     lines.push(`category: ${params.category}`);
