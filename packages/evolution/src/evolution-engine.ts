@@ -19,6 +19,7 @@ import { ReinforcementFeedbackSystem } from "./reinforcement-feedback";
 import { LearningJournal } from "./learning-journal";
 import { ProgressReporter } from "./progress-reporter";
 import type { ExperienceAnalysis } from "./experience-analyzer";
+import type { SkillExecutionResult } from "@evoclaw/core";
 
 export class EvolutionEngine {
   requirementMiner: RequirementMiner;
@@ -348,6 +349,8 @@ export class EvolutionEngine {
             { cycleId: cycle.id, candidateId: candidate.id },
             "evolution-engine"
           );
+
+          await this.curateFromEvolutionCandidate(candidate, cycle);
         }
         cycle.status = "completed";
       } else {
@@ -471,6 +474,10 @@ export class EvolutionEngine {
 
     await this.recordFeedback(feedback);
 
+    if (!adopted) {
+      await this.curateImproveFromFeedback(cycle, comment);
+    }
+
     if (comment) {
       this.learningJournal.recordLearning({
         trigger: "user_feedback",
@@ -536,6 +543,58 @@ export class EvolutionEngine {
 
   getActiveProgressReports() {
     return this.progressReporter.getActiveReports();
+  }
+
+  private async curateFromEvolutionCandidate(
+    candidate: import("@evoclaw/core").EvolutionCandidate,
+    cycle: EvolutionCycle
+  ): Promise<void> {
+    const skillCurator = this.registry.resolveService<{
+      extractSkillFromSolution(task: string, solution: string, context: Record<string, unknown>): Promise<unknown>;
+    }>("skillCurator");
+
+    if (!skillCurator) return;
+
+    try {
+      const task = cycle.input.triggerEvent || candidate.proposedChanges.description || "evolution-candidate";
+      const solution = candidate.proposedChanges.description || candidate.codeArtifacts.map((a) => a.source).join("\n") || "";
+      const context: Record<string, unknown> = {
+        cycleId: cycle.id,
+        source: cycle.source,
+        candidateType: candidate.type,
+        riskLevel: candidate.risk.level,
+      };
+
+      await skillCurator.extractSkillFromSolution(task, solution, context);
+    } catch (err) {
+      console.warn("[EvolutionEngine] SkillCurator extraction failed:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async curateImproveFromFeedback(
+    cycle: EvolutionCycle,
+    comment: string | undefined
+  ): Promise<void> {
+    const skillCurator = this.registry.resolveService<{
+      improveSkill(skillId: string, executionResult: SkillExecutionResult, userFeedback: string | null): Promise<unknown>;
+    }>("skillCurator");
+
+    if (!skillCurator || !cycle.targetSkill) return;
+
+    try {
+      const executionResult: SkillExecutionResult = {
+        skillId: cycle.targetSkill,
+        success: false,
+        output: null,
+        errors: comment ? [comment] : ["用户拒绝进化建议"],
+        duration: 0,
+        resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
+      };
+
+      await skillCurator.improveSkill(cycle.targetSkill, executionResult, comment || null);
+    } catch (err) {
+      console.warn("[EvolutionEngine] SkillCurator improvement failed:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   async healthCheck(): Promise<boolean> {

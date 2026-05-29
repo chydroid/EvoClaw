@@ -1,13 +1,18 @@
 /**
- * Model Failover Manager — circuit breaker, health checking, and provider
- * prioritization for LLM API calls.
+ * Model Failover Manager — circuit breaker, health checking, provider
+ * prioritization, fallback chains, auth rotation, and health scoring
+ * for LLM API calls.
  *
  * Features:
- *  - Circuit breaker pattern (closed → open → half-open)
+ *  - Circuit breaker pattern (closed → open → half-open) with configurable
+ *    half-open probe allowance
+ *  - Fallback chain: primary + ordered fallback providers
+ *  - Auth rotation: rotate API keys per provider on rate-limit
+ *  - Health scoring: per-provider score based on success rate, latency, error rate
+ *  - Provider priority: dynamic priority adjustment based on health score
  *  - Provider health monitoring with periodic checks
  *  - Automatic failover to next healthy provider
  *  - Retry with exponential backoff + jitter
- *  - Provider priority based on cost, latency, and reliability
  *
  * Integrates with the existing AgentModelExecutor's tryCallLLM loop,
  * adding pre-flight provider filtering and post-call health updates.
@@ -28,6 +33,14 @@ export interface FailoverConfig {
   retryMaxDelayMs?: number;
   /** Jitter factor (0-1, default: 0.3) */
   jitterFactor?: number;
+  /** Number of probe requests allowed through in half-open state (default: 1) */
+  halfOpenProbeLimit?: number;
+  /** Weight for success rate in health score calculation (default: 0.5) */
+  healthScoreSuccessWeight?: number;
+  /** Weight for latency in health score calculation (default: 0.3) */
+  healthScoreLatencyWeight?: number;
+  /** Weight for error rate in health score calculation (default: 0.2) */
+  healthScoreErrorWeight?: number;
 }
 
 export interface ProviderHealth {
@@ -52,6 +65,18 @@ export interface ProviderHealth {
   active: boolean;
   /** Custom weight for priority sorting */
   weight?: number;
+  /** Computed health score (0-100, higher is better) */
+  healthScore: number;
+  /** Number of probe requests currently in flight during half-open */
+  halfOpenProbeCount: number;
+  /** Current API key index for auth rotation */
+  currentKeyIndex: number;
+  /** Fallback chain: ordered list of provider IDs to try on failure */
+  fallbackChain: string[];
+  /** Dynamic priority (lower = higher priority, adjusted by health score) */
+  dynamicPriority: number;
+  /** EMA of success rate for responsive health scoring */
+  successRateEma: number;
 }
 
 export interface FailoverProvider {
@@ -63,6 +88,10 @@ export interface FailoverProvider {
   healthCheck: () => Promise<boolean>;
   /** Optional weight override for priority */
   weight?: number;
+  /** API keys for auth rotation */
+  apiKeys?: string[];
+  /** Ordered fallback provider IDs */
+  fallbacks?: string[];
 }
 
 export class ModelFailoverManager {
@@ -81,6 +110,10 @@ export class ModelFailoverManager {
       retryBaseDelayMs: config.retryBaseDelayMs ?? 1000,
       retryMaxDelayMs: config.retryMaxDelayMs ?? 30000,
       jitterFactor: config.jitterFactor ?? 0.3,
+      halfOpenProbeLimit: config.halfOpenProbeLimit ?? 1,
+      healthScoreSuccessWeight: config.healthScoreSuccessWeight ?? 0.5,
+      healthScoreLatencyWeight: config.healthScoreLatencyWeight ?? 0.3,
+      healthScoreErrorWeight: config.healthScoreErrorWeight ?? 0.2,
     };
   }
 
@@ -97,6 +130,12 @@ export class ModelFailoverManager {
       avgLatencyMs: 0,
       active: provider.enabled,
       weight: provider.weight,
+      healthScore: 100,
+      halfOpenProbeCount: 0,
+      currentKeyIndex: 0,
+      fallbackChain: provider.fallbacks ?? [],
+      dynamicPriority: provider.order,
+      successRateEma: 1.0,
     });
   }
 
@@ -104,6 +143,130 @@ export class ModelFailoverManager {
     this.providers.delete(providerId);
     this.health.delete(providerId);
     this.circuitTimers.delete(providerId);
+  }
+
+  // ── Fallback Chain ──────────────────────────────────────────────────
+
+  /**
+   * Resolve the full fallback chain for a provider.
+   * Returns [primary, ...fallbacks] in order, skipping open-circuit providers.
+   */
+  resolveFallbackChain(providerId: string): string[] {
+    const h = this.health.get(providerId);
+    if (!h) return [providerId];
+
+    const chain: string[] = [];
+    if (this.canUse(providerId)) {
+      chain.push(providerId);
+    }
+
+    for (const fallbackId of h.fallbackChain) {
+      if (this.canUse(fallbackId)) {
+        chain.push(fallbackId);
+      }
+    }
+
+    return chain.length > 0 ? chain : [providerId];
+  }
+
+  /**
+   * Set the fallback chain for a provider.
+   */
+  setFallbackChain(providerId: string, fallbackIds: string[]): void {
+    const h = this.health.get(providerId);
+    if (!h) return;
+    h.fallbackChain = fallbackIds;
+  }
+
+  /**
+   * Execute a function with automatic fallback chain traversal.
+   * Tries each provider in the chain until one succeeds or all fail.
+   */
+  async executeWithFallback<T>(
+    providerId: string,
+    fn: (currentProviderId: string, apiKey?: string) => Promise<T>
+  ): Promise<T> {
+    const chain = this.resolveFallbackChain(providerId);
+
+    let lastError: Error | undefined;
+    for (const currentId of chain) {
+      const startMs = Date.now();
+      try {
+        const apiKey = this.getCurrentApiKey(currentId);
+        const result = await fn(currentId, apiKey);
+        this.recordSuccess(currentId, Date.now() - startMs);
+        return result;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.recordFailure(currentId, errMsg);
+        lastError = err instanceof Error ? err : new Error(errMsg);
+
+        if (this.isRateLimitError(errMsg)) {
+          const rotated = this.rotateApiKey(currentId);
+          if (rotated) {
+            try {
+              const apiKey = this.getCurrentApiKey(currentId);
+              const result = await fn(currentId, apiKey);
+              this.recordSuccess(currentId, Date.now() - startMs);
+              return result;
+            } catch (retryErr) {
+              const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+              this.recordFailure(currentId, retryMsg);
+              lastError = retryErr instanceof Error ? retryErr : new Error(retryMsg);
+            }
+          }
+        }
+      }
+    }
+
+    throw lastError ?? new Error(`All providers in fallback chain failed for "${providerId}"`);
+  }
+
+  // ── Auth Rotation ───────────────────────────────────────────────────
+
+  /**
+   * Get the current API key for a provider.
+   */
+  getCurrentApiKey(providerId: string): string | undefined {
+    const provider = this.providers.get(providerId);
+    const h = this.health.get(providerId);
+    if (!provider?.apiKeys?.length || !h) return undefined;
+    return provider.apiKeys[h.currentKeyIndex];
+  }
+
+  /**
+   * Rotate to the next API key for a provider.
+   * Returns true if rotation was possible, false if only one key or no keys.
+   */
+  rotateApiKey(providerId: string): boolean {
+    const provider = this.providers.get(providerId);
+    const h = this.health.get(providerId);
+    if (!provider?.apiKeys || provider.apiKeys.length <= 1 || !h) return false;
+
+    h.currentKeyIndex = (h.currentKeyIndex + 1) % provider.apiKeys.length;
+    console.log(
+      `[ModelFailover] Rotated API key for "${providerId}" to index ${h.currentKeyIndex}`
+    );
+    return true;
+  }
+
+  /**
+   * Reset the API key index for a provider back to 0.
+   */
+  resetApiKeyIndex(providerId: string): void {
+    const h = this.health.get(providerId);
+    if (h) h.currentKeyIndex = 0;
+  }
+
+  private isRateLimitError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("rate") ||
+      lower.includes("429") ||
+      lower.includes("too many requests") ||
+      lower.includes("quota") ||
+      lower.includes("throttl")
+    );
   }
 
   // ── Health & Circuit Breaker ──────────────────────────────────────────
@@ -116,13 +279,19 @@ export class ModelFailoverManager {
     h.failureCount = 0;
     h.totalRequests++;
     h.lastSuccess = Date.now();
+    h.successRateEma = h.successRateEma * 0.7 + 1.0 * 0.3;
+
+    if (h.circuitState === "half-open") {
+      h.halfOpenProbeCount = 0;
+    }
     h.circuitState = "closed";
 
-    // Exponential moving average for latency
     h.avgLatencyMs =
       h.avgLatencyMs === 0
         ? latencyMs
         : h.avgLatencyMs * 0.7 + latencyMs * 0.3;
+
+    this.recalculateHealthScore(providerId);
   }
 
   /** Record a failed call */
@@ -135,10 +304,16 @@ export class ModelFailoverManager {
     h.totalRequests++;
     h.lastFailure = Date.now();
     h.lastError = error;
+    h.successRateEma = h.successRateEma * 0.7 + 0.0 * 0.3;
 
-    if (h.failureCount >= this.config.failureThreshold) {
+    if (h.circuitState === "half-open") {
+      h.halfOpenProbeCount = 0;
+      this.openCircuit(providerId);
+    } else if (h.failureCount >= this.config.failureThreshold) {
       this.openCircuit(providerId);
     }
+
+    this.recalculateHealthScore(providerId);
   }
 
   /** Check if provider can be used */
@@ -151,7 +326,11 @@ export class ModelFailoverManager {
     }
 
     if (h.circuitState === "half-open") {
-      return true; // Allow trial
+      if (h.halfOpenProbeCount < this.config.halfOpenProbeLimit) {
+        h.halfOpenProbeCount++;
+        return true;
+      }
+      return false;
     }
 
     return true;
@@ -162,17 +341,18 @@ export class ModelFailoverManager {
     if (!h || h.circuitState === "open") return;
 
     h.circuitState = "open";
+    h.halfOpenProbeCount = 0;
     console.warn(
       `[ModelFailover] Circuit OPEN for "${providerId}" after ${h.failureCount} failures`
     );
 
-    // Schedule half-open reset
     this.circuitTimers.set(
       providerId,
       setTimeout(() => {
         const health = this.health.get(providerId);
         if (health?.circuitState === "open") {
           health.circuitState = "half-open";
+          health.halfOpenProbeCount = 0;
           console.log(
             `[ModelFailover] Circuit HALF-OPEN for "${providerId}"`
           );
@@ -181,10 +361,110 @@ export class ModelFailoverManager {
     );
   }
 
-  // ── Priority & Ordering ──────────────────────────────────────────────
+  /** Manually reset a circuit breaker to closed state */
+  resetCircuit(providerId: string): void {
+    const h = this.health.get(providerId);
+    if (!h) return;
+
+    const timer = this.circuitTimers.get(providerId);
+    if (timer) {
+      clearTimeout(timer);
+      this.circuitTimers.delete(providerId);
+    }
+
+    h.circuitState = "closed";
+    h.failureCount = 0;
+    h.halfOpenProbeCount = 0;
+    console.log(
+      `[ModelFailover] Circuit RESET to CLOSED for "${providerId}"`
+    );
+
+    this.recalculateHealthScore(providerId);
+  }
+
+  /** Reset all circuit breakers */
+  resetAllCircuits(): void {
+    for (const providerId of this.health.keys()) {
+      this.resetCircuit(providerId);
+    }
+  }
+
+  // ── Health Scoring ──────────────────────────────────────────────────
 
   /**
-   * Get providers sorted by priority (healthy first, then by order).
+   * Calculate health score for a provider based on:
+   *  - Success rate (weight: healthScoreSuccessWeight)
+   *  - Latency (weight: healthScoreLatencyWeight) — lower is better
+   *  - Error rate (weight: healthScoreErrorWeight) — lower is better
+   *
+   * Score range: 0-100, higher is better.
+   */
+  recalculateHealthScore(providerId: string): void {
+    const h = this.health.get(providerId);
+    if (!h) return;
+
+    if (h.totalRequests === 0) {
+      h.healthScore = 100;
+      this.updateDynamicPriority(providerId);
+      return;
+    }
+
+    const successScore = h.successRateEma * 100;
+    const errorRate = h.totalRequests > 0 ? h.totalFailures / h.totalRequests : 0;
+    const errorScore = (1 - errorRate) * 100;
+
+    const latencyScore = h.avgLatencyMs > 0
+      ? Math.max(0, 100 - (h.avgLatencyMs / 50))
+      : 100;
+
+    const rawScore =
+      successScore * this.config.healthScoreSuccessWeight +
+      latencyScore * this.config.healthScoreLatencyWeight +
+      errorScore * this.config.healthScoreErrorWeight;
+
+    h.healthScore = Math.round(Math.max(0, Math.min(100, rawScore)));
+
+    this.updateDynamicPriority(providerId);
+  }
+
+  /**
+   * Get the health score for a provider.
+   */
+  getHealthScore(providerId: string): number {
+    return this.health.get(providerId)?.healthScore ?? 0;
+  }
+
+  // ── Provider Priority ──────────────────────────────────────────────
+
+  /**
+   * Update the dynamic priority for a provider based on health score.
+   * Lower dynamicPriority = higher actual priority.
+   * Formula: base order * 100 + (100 - healthScore)
+   */
+  private updateDynamicPriority(providerId: string): void {
+    const h = this.health.get(providerId);
+    const p = this.providers.get(providerId);
+    if (!h || !p) return;
+
+    const baseOrder = p.order * 100;
+    const healthPenalty = 100 - h.healthScore;
+    const circuitPenalty = h.circuitState === "open" ? 10000 : h.circuitState === "half-open" ? 5000 : 0;
+
+    h.dynamicPriority = baseOrder + healthPenalty + circuitPenalty;
+  }
+
+  /**
+   * Manually set the priority order for a provider.
+   */
+  setProviderOrder(providerId: string, order: number): void {
+    const p = this.providers.get(providerId);
+    if (!p) return;
+    p.order = order;
+    this.updateDynamicPriority(providerId);
+  }
+
+  /**
+   * Get providers sorted by priority (healthy first, then by dynamic priority).
    * Returns the list the AgentModelExecutor should use for failover.
    */
   getPrioritizedProviders(): FailoverProvider[] {
@@ -192,7 +472,6 @@ export class ModelFailoverManager {
       (p) => p.enabled
     );
 
-    // Sort: healthy first, then by order, then by weight, then by avg latency
     return all.sort((a, b) => {
       const aHealthy = this.canUse(a.id);
       const bHealthy = this.canUse(b.id);
@@ -202,15 +481,14 @@ export class ModelFailoverManager {
       const ha = this.health.get(a.id);
       const hb = this.health.get(b.id);
 
-      // Prefer lower weight (= better)
+      const aP = ha?.dynamicPriority ?? a.order * 100;
+      const bP = hb?.dynamicPriority ?? b.order * 100;
+      if (aP !== bP) return aP - bP;
+
       const aW = ha?.weight ?? a.weight ?? 0;
       const bW = hb?.weight ?? b.weight ?? 0;
       if (aW !== bW) return aW - bW;
 
-      // Prefer lower order number
-      if (a.order !== b.order) return a.order - b.order;
-
-      // Prefer lower latency
       return (ha?.avgLatencyMs ?? 0) - (hb?.avgLatencyMs ?? 0);
     });
   }
@@ -222,25 +500,25 @@ export class ModelFailoverManager {
   filterHealthy<T extends { id: string; enabled: boolean; order: number }>(
     providers: T[]
   ): T[] {
-    // Map to our provider IDs
     const idSet = new Set(
       Array.from(this.providers.values()).map((p) => p.id)
     );
 
     return providers
       .filter((p) => {
-        // If not registered in failover manager, pass through
         if (!idSet.has(p.id) || !this.providers.has(p.id)) return p.enabled;
         return this.canUse(p.id);
       })
       .sort((a, b) => {
-        const aH = this.health.get(a.id);
-        const bH = this.health.get(b.id);
-
-        // Healthy first
         const aOk = this.canUse(a.id);
         const bOk = this.canUse(b.id);
         if (aOk !== bOk) return aOk ? -1 : 1;
+
+        const aH = this.health.get(a.id);
+        const bH = this.health.get(b.id);
+        const aP = aH?.dynamicPriority ?? a.order * 100;
+        const bP = bH?.dynamicPriority ?? b.order * 100;
+        if (aP !== bP) return aP - bP;
 
         return a.order - b.order;
       });
@@ -290,6 +568,7 @@ export class ModelFailoverManager {
           if (h.circuitState === "half-open") {
             h.circuitState = "closed";
             h.failureCount = 0;
+            h.halfOpenProbeCount = 0;
             console.log(
               `[ModelFailover] Provider "${id}" recovered — circuit CLOSED`
             );
@@ -304,9 +583,14 @@ export class ModelFailoverManager {
             }
           }
         }
+
+        this.recalculateHealthScore(id);
       } catch {
         const h = this.health.get(id);
-        if (h) h.active = false;
+        if (h) {
+          h.active = false;
+          this.recalculateHealthScore(id);
+        }
       }
     }
   }
@@ -326,9 +610,19 @@ export class ModelFailoverManager {
     totalProviders: number;
     healthyProviders: number;
     openCircuits: number;
+    halfOpenCircuits: number;
     totalRequests: number;
     totalFailures: number;
     avgOverallLatencyMs: number;
+    avgHealthScore: number;
+    providers: Array<{
+      id: string;
+      circuitState: string;
+      healthScore: number;
+      dynamicPriority: number;
+      currentKeyIndex: number;
+      fallbackChain: string[];
+    }>;
   } {
     const healths = Array.from(this.health.values());
     const active = healths.filter((h) => h.active);
@@ -337,12 +631,25 @@ export class ModelFailoverManager {
       totalProviders: healths.length,
       healthyProviders: active.filter((h) => h.circuitState === "closed").length,
       openCircuits: healths.filter((h) => h.circuitState === "open").length,
+      halfOpenCircuits: healths.filter((h) => h.circuitState === "half-open").length,
       totalRequests: healths.reduce((s, h) => s + h.totalRequests, 0),
       totalFailures: healths.reduce((s, h) => s + h.totalFailures, 0),
       avgOverallLatencyMs:
         active.length > 0
           ? active.reduce((s, h) => s + h.avgLatencyMs, 0) / active.length
           : 0,
+      avgHealthScore:
+        healths.length > 0
+          ? healths.reduce((s, h) => s + h.healthScore, 0) / healths.length
+          : 0,
+      providers: healths.map((h) => ({
+        id: h.providerId,
+        circuitState: h.circuitState,
+        healthScore: h.healthScore,
+        dynamicPriority: h.dynamicPriority,
+        currentKeyIndex: h.currentKeyIndex,
+        fallbackChain: h.fallbackChain,
+      })),
     };
   }
 

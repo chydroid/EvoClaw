@@ -9,7 +9,8 @@ export type { ChannelConfig, ChannelType, ChannelMessage, ChannelSendResult, Cha
 export { ProtocolHandler } from "./ws-protocol";
 export type { ProtocolFrame, ConnectFrame, RequestFrame, ResponseFrame, EventFrame, WSClient, AllowedMethod } from "./ws-protocol";
 export { WebhookManager } from "./webhook-manager";
-export type { WebhookConfig, WebhookDelivery, WebhookEvent } from "./webhook-manager";
+export { IncomingWebhookManager } from "./webhook-manager";
+export type { WebhookConfig, WebhookDelivery, WebhookEvent, WebhookEndpoint, WebhookEventLog, WebhookActionHandler } from "./webhook-manager";
 export { TelegramAdapter, DiscordAdapter, SlackAdapter, WhatsAppAdapter, FeishuAdapter, WeChatAdapter, QQAdapter, MatrixAdapter } from "./channels/index.js";
 export type { TelegramConfig, DiscordConfig, SlackConfig, WhatsAppConfig, FeishuConfig, WeChatConfig, QQConfig, MatrixConfig } from "./channels/index.js";
 export { CanvasManager } from "./canvas-manager";

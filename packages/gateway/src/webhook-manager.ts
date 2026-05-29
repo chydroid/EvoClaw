@@ -54,6 +54,250 @@ export interface WebhookEvent {
   source?: string;
 }
 
+export interface WebhookEndpoint {
+  id: string;
+  path: string;
+  method: "POST" | "GET";
+  authToken?: string;
+  action: string;
+  description?: string;
+  enabled: boolean;
+  createdAt: string;
+  lastTriggeredAt?: string;
+  triggerCount: number;
+}
+
+export interface WebhookEventLog {
+  id: string;
+  endpointId: string;
+  endpointPath: string;
+  action: string;
+  timestamp: string;
+  method: string;
+  headers: Record<string, string>;
+  body: unknown;
+  statusCode: number;
+  error?: string;
+}
+
+export type WebhookActionHandler = (action: string, payload: { headers: Record<string, string>; body: unknown; path: string; endpointId: string }) => Promise<{ statusCode: number; response?: unknown }>;
+
+export class IncomingWebhookManager {
+  private endpoints = new Map<string, WebhookEndpoint>();
+  private eventLogs: WebhookEventLog[] = [];
+  private maxEventLogs = 500;
+  private actionHandler: WebhookActionHandler | null = null;
+
+  setActionHandler(handler: WebhookActionHandler): void {
+    this.actionHandler = handler;
+  }
+
+  register(data: Omit<WebhookEndpoint, "createdAt" | "lastTriggeredAt" | "triggerCount">): WebhookEndpoint {
+    if (this.endpoints.has(data.id)) {
+      throw new Error(`Webhook endpoint "${data.id}" already exists`);
+    }
+
+    const endpoint: WebhookEndpoint = {
+      ...data,
+      createdAt: new Date().toISOString(),
+      triggerCount: 0,
+    };
+
+    this.endpoints.set(data.id, endpoint);
+    console.log(`[IncomingWebhookManager] Registered endpoint "${data.id}" at ${data.path} (${data.method})`);
+    return endpoint;
+  }
+
+  get(id: string): WebhookEndpoint | undefined {
+    return this.endpoints.get(id);
+  }
+
+  list(): WebhookEndpoint[] {
+    return Array.from(this.endpoints.values());
+  }
+
+  update(id: string, updates: Partial<Omit<WebhookEndpoint, "id" | "createdAt">>): WebhookEndpoint | undefined {
+    const endpoint = this.endpoints.get(id);
+    if (!endpoint) return undefined;
+
+    Object.assign(endpoint, updates);
+    this.endpoints.set(id, endpoint);
+    return endpoint;
+  }
+
+  delete(id: string): boolean {
+    return this.endpoints.delete(id);
+  }
+
+  matchEndpoint(requestPath: string, requestMethod: string): WebhookEndpoint | undefined {
+    for (const endpoint of this.endpoints.values()) {
+      if (!endpoint.enabled) continue;
+      if (endpoint.method !== requestMethod) continue;
+      if (this.pathMatches(endpoint.path, requestPath)) {
+        return endpoint;
+      }
+    }
+    return undefined;
+  }
+
+  private pathMatches(pattern: string, requestPath: string): boolean {
+    const patternParts = pattern.split("/");
+    const pathParts = requestPath.split("/");
+
+    if (patternParts.length !== pathParts.length) {
+      if (pattern.endsWith("/*")) {
+        const basePattern = pattern.slice(0, -2);
+        return requestPath.startsWith(basePattern + "/") || requestPath === basePattern;
+      }
+      return false;
+    }
+
+    for (let i = 0; i < patternParts.length; i++) {
+      if (patternParts[i] === "*") continue;
+      if (patternParts[i] !== pathParts[i]) return false;
+    }
+
+    return true;
+  }
+
+  authenticate(endpoint: WebhookEndpoint, headers: Record<string, string>): boolean {
+    if (!endpoint.authToken) return true;
+
+    const authHeader = headers["authorization"] || headers["x-webhook-token"] || "";
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : authHeader;
+
+    return token === endpoint.authToken;
+  }
+
+  async trigger(
+    endpointId: string,
+    requestPath: string,
+    method: string,
+    headers: Record<string, string>,
+    body: unknown
+  ): Promise<{ statusCode: number; response?: unknown; eventLog: WebhookEventLog }> {
+    const endpoint = this.endpoints.get(endpointId);
+    const logId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+
+    const baseLog: WebhookEventLog = {
+      id: logId,
+      endpointId,
+      endpointPath: requestPath,
+      action: endpoint?.action ?? "unknown",
+      timestamp,
+      method,
+      headers: this.sanitizeHeaders(headers),
+      body,
+      statusCode: 500,
+    };
+
+    if (!endpoint) {
+      const log: WebhookEventLog = { ...baseLog, statusCode: 404, error: "Endpoint not found" };
+      this.recordLog(log);
+      return { statusCode: 404, eventLog: log };
+    }
+
+    if (!endpoint.enabled) {
+      const log: WebhookEventLog = { ...baseLog, statusCode: 403, error: "Endpoint is disabled" };
+      this.recordLog(log);
+      return { statusCode: 403, eventLog: log };
+    }
+
+    if (!this.authenticate(endpoint, headers)) {
+      const log: WebhookEventLog = { ...baseLog, statusCode: 401, error: "Authentication failed" };
+      this.recordLog(log);
+      return { statusCode: 401, eventLog: log };
+    }
+
+    endpoint.lastTriggeredAt = timestamp;
+    endpoint.triggerCount++;
+
+    if (!this.actionHandler) {
+      const log: WebhookEventLog = { ...baseLog, statusCode: 200 };
+      this.recordLog(log);
+      return { statusCode: 200, eventLog: log };
+    }
+
+    try {
+      const result = await this.actionHandler(endpoint.action, {
+        headers,
+        body,
+        path: requestPath,
+        endpointId,
+      });
+
+      const log: WebhookEventLog = { ...baseLog, statusCode: result.statusCode };
+      this.recordLog(log);
+      return { statusCode: result.statusCode, response: result.response, eventLog: log };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const log: WebhookEventLog = { ...baseLog, statusCode: 500, error: errorMessage };
+      this.recordLog(log);
+      return { statusCode: 500, eventLog: log };
+    }
+  }
+
+  private sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
+    const sanitized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      const lower = key.toLowerCase();
+      if (lower === "authorization" || lower === "x-webhook-token") {
+        sanitized[key] = "***";
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    return sanitized;
+  }
+
+  private recordLog(log: WebhookEventLog): void {
+    this.eventLogs.push(log);
+    if (this.eventLogs.length > this.maxEventLogs) {
+      this.eventLogs.splice(0, this.eventLogs.length - this.maxEventLogs);
+    }
+  }
+
+  getEventLogs(endpointId?: string, limit?: number): WebhookEventLog[] {
+    let logs = endpointId
+      ? this.eventLogs.filter((l) => l.endpointId === endpointId)
+      : [...this.eventLogs];
+
+    if (limit != null) {
+      logs = logs.slice(-limit);
+    }
+
+    return logs;
+  }
+
+  clearEventLogs(): void {
+    this.eventLogs = [];
+  }
+
+  getStats(): {
+    totalEndpoints: number;
+    activeEndpoints: number;
+    totalTriggers: number;
+    recentLogs: number;
+  } {
+    const endpoints = Array.from(this.endpoints.values());
+    return {
+      totalEndpoints: endpoints.length,
+      activeEndpoints: endpoints.filter((e) => e.enabled).length,
+      totalTriggers: endpoints.reduce((sum, e) => sum + e.triggerCount, 0),
+      recentLogs: this.eventLogs.length,
+    };
+  }
+
+  dispose(): void {
+    this.endpoints.clear();
+    this.eventLogs = [];
+    this.actionHandler = null;
+  }
+}
+
 export class WebhookManager {
   private webhooks = new Map<string, WebhookConfig & { createdAt: number }>();
   private deliveries = new Map<string, WebhookDelivery[]>();
@@ -61,7 +305,6 @@ export class WebhookManager {
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private signingKey: string;
 
-  /** Max delivery history per webhook */
   private maxHistoryPerWebhook = 100;
 
   constructor(signingKey?: string) {

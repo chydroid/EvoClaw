@@ -1,6 +1,8 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { taskStatusTracker } from "@evoclaw/agent";
+import { taskStatusTracker, ModelFailoverManager } from "@evoclaw/agent";
+import { IncomingWebhookManager } from "./webhook-manager";
+import type { WebhookEndpoint } from "./webhook-manager";
 import { spawn } from "child_process";
 import * as path from "path";
 import * as os from "os";
@@ -108,11 +110,29 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
 export class ProtocolAdapter {
   private savedLLMProviders: Record<string, unknown>[] | null = null;
   private savedChannels: Record<string, unknown>[] | null = null;
+  private incomingWebhookManager: IncomingWebhookManager;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
-  ) {}
+  ) {
+    this.incomingWebhookManager = new IncomingWebhookManager();
+    this.incomingWebhookManager.setActionHandler(async (action, payload) => {
+      this.eventBus.publish("webhook.triggered", {
+        action,
+        endpointId: payload.endpointId,
+        path: payload.path,
+        body: payload.body,
+        headers: payload.headers,
+        timestamp: new Date().toISOString(),
+      }, "protocol-adapter");
+      return { statusCode: 200, response: { received: true, action } };
+    });
+  }
+
+  getIncomingWebhookManager(): IncomingWebhookManager {
+    return this.incomingWebhookManager;
+  }
 
   loadPersistedConfig(): void {
     try {
@@ -452,6 +472,54 @@ export class ProtocolAdapter {
         }
         const result = await skillManager.checkAndTranslateInstalledSkills();
         res.json({ success: true, ...result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/skills/:id/evolution", async (req: Request, res: Response) => {
+      try {
+        const skillCurator = this.registry.resolveService<{
+          getSkillEvolution(skillId: string): unknown;
+          getAllEvolutions(): unknown[];
+          getEvolutionStats(): Record<string, unknown>;
+        }>("skillCurator");
+        if (!skillCurator) {
+          res.status(503).json({ error: "Skill curator not available" });
+          return;
+        }
+        const skillId = String(req.params.id);
+        const evolution = skillCurator.getSkillEvolution(skillId);
+        if (!evolution) {
+          res.status(404).json({ error: "Skill evolution not found" });
+          return;
+        }
+        res.json({ success: true, evolution });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/curate", async (req: Request, res: Response) => {
+      try {
+        const skillCurator = this.registry.resolveService<{
+          extractSkillFromSolution(task: string, solution: string, context: Record<string, unknown>): Promise<unknown>;
+        }>("skillCurator");
+        if (!skillCurator) {
+          res.status(503).json({ error: "Skill curator not available" });
+          return;
+        }
+        const { task, solution, context } = req.body || {};
+        if (!task || !solution) {
+          res.status(400).json({ error: "task and solution are required" });
+          return;
+        }
+        const skill = await skillCurator.extractSkillFromSolution(
+          task,
+          solution,
+          context || {}
+        );
+        res.json({ success: true, skill });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -2249,6 +2317,216 @@ export class ProtocolAdapter {
         res.json(crestodian.collectDiagnostics());
       } catch (err) {
         this.handleError(err, res, "Failed to collect diagnostics");
+      }
+    });
+
+    // ─── Incoming Webhook API routes ────────────────────────────────────────
+
+    app.post("/api/webhooks", (req: Request, res: Response) => {
+      try {
+        const { id, path: hookPath, method, authToken, action, description, enabled } = req.body || {};
+        if (!id || !hookPath || !method || !action) {
+          res.status(400).json({ error: "id, path, method, and action are required" });
+          return;
+        }
+        if (method !== "POST" && method !== "GET") {
+          res.status(400).json({ error: "method must be POST or GET" });
+          return;
+        }
+
+        const endpoint = this.incomingWebhookManager.register({
+          id,
+          path: hookPath,
+          method,
+          authToken,
+          action,
+          description,
+          enabled: enabled !== false,
+        });
+
+        res.status(201).json({ success: true, endpoint });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("already exists")) {
+          res.status(409).json({ error: message });
+          return;
+        }
+        this.handleError(err, res, "Failed to create webhook");
+      }
+    });
+
+    app.get("/api/webhooks", (_req: Request, res: Response) => {
+      try {
+        const endpoints = this.incomingWebhookManager.list();
+        res.json({ success: true, endpoints });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list webhooks");
+      }
+    });
+
+    app.get("/api/webhooks/:id", (req: Request, res: Response) => {
+      try {
+        const endpoint = this.incomingWebhookManager.get(String(req.params.id));
+        if (!endpoint) {
+          res.status(404).json({ error: "Webhook not found" });
+          return;
+        }
+        res.json({ success: true, endpoint });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get webhook");
+      }
+    });
+
+    app.delete("/api/webhooks/:id", (req: Request, res: Response) => {
+      try {
+        const removed = this.incomingWebhookManager.delete(String(req.params.id));
+        if (!removed) {
+          res.status(404).json({ error: "Webhook not found" });
+          return;
+        }
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete webhook");
+      }
+    });
+
+    app.put("/api/webhooks/:id", (req: Request, res: Response) => {
+      try {
+        const { path: hookPath, method, authToken, action, description, enabled } = req.body || {};
+        const updates: Partial<Omit<WebhookEndpoint, "id" | "createdAt">> = {};
+        if (hookPath !== undefined) updates.path = hookPath;
+        if (method !== undefined) {
+          if (method !== "POST" && method !== "GET") {
+            res.status(400).json({ error: "method must be POST or GET" });
+            return;
+          }
+          updates.method = method;
+        }
+        if (authToken !== undefined) updates.authToken = authToken;
+        if (action !== undefined) updates.action = action;
+        if (description !== undefined) updates.description = description;
+        if (enabled !== undefined) updates.enabled = enabled;
+
+        const endpoint = this.incomingWebhookManager.update(String(req.params.id), updates);
+        if (!endpoint) {
+          res.status(404).json({ error: "Webhook not found" });
+          return;
+        }
+        res.json({ success: true, endpoint });
+      } catch (err) {
+        this.handleError(err, res, "Failed to update webhook");
+      }
+    });
+
+    app.post("/api/webhooks/:id/test", async (req: Request, res: Response) => {
+      try {
+        const endpoint = this.incomingWebhookManager.get(String(req.params.id));
+        if (!endpoint) {
+          res.status(404).json({ error: "Webhook not found" });
+          return;
+        }
+
+        const testHeaders: Record<string, string> = { "content-type": "application/json" };
+        if (endpoint.authToken) {
+          testHeaders["x-webhook-token"] = endpoint.authToken;
+        }
+
+        const testBody = req.body?.testPayload ?? { test: true, timestamp: new Date().toISOString() };
+        const result = await this.incomingWebhookManager.trigger(
+          endpoint.id,
+          endpoint.path,
+          endpoint.method,
+          testHeaders,
+          testBody
+        );
+
+        res.json({
+          success: result.statusCode >= 200 && result.statusCode < 300,
+          statusCode: result.statusCode,
+          response: result.response,
+          eventLog: result.eventLog,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to test webhook");
+      }
+    });
+
+    app.all("/hooks/*", async (req: Request, res: Response) => {
+      try {
+        const requestPath = "/" + req.params[0];
+        const requestMethod = req.method.toUpperCase();
+
+        const endpoint = this.incomingWebhookManager.matchEndpoint(requestPath, requestMethod);
+        if (!endpoint) {
+          res.status(404).json({ error: "No matching webhook endpoint found" });
+          return;
+        }
+
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") {
+            headers[key] = value;
+          } else if (Array.isArray(value)) {
+            headers[key] = value.join(", ");
+          }
+        }
+
+        const body = req.body ?? {};
+        const result = await this.incomingWebhookManager.trigger(
+          endpoint.id,
+          requestPath,
+          requestMethod,
+          headers,
+          body
+        );
+
+        res.status(result.statusCode).json(result.response ?? { received: true });
+      } catch (err) {
+        this.handleError(err, res, "Webhook processing failed");
+      }
+    });
+
+    // ─── Failover API routes ──────────────────────────────────────────────
+
+    app.get("/api/system/failover/status", (_req: Request, res: Response) => {
+      try {
+        const failoverManager = this.registry.resolveService("failoverManager") as ModelFailoverManager | undefined;
+
+        if (!failoverManager) {
+          res.json({ status: "unavailable", message: "Failover manager not registered" });
+          return;
+        }
+
+        res.json({
+          status: "active",
+          summary: failoverManager.getSummary(),
+          providers: failoverManager.getAllHealth(),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get failover status");
+      }
+    });
+
+    app.post("/api/system/failover/reset", (req: Request, res: Response) => {
+      try {
+        const failoverManager = this.registry.resolveService("failoverManager") as ModelFailoverManager | undefined;
+
+        if (!failoverManager) {
+          res.json({ status: "unavailable", message: "Failover manager not registered" });
+          return;
+        }
+
+        const { providerId } = req.body as { providerId?: string };
+
+        if (providerId) {
+          failoverManager.resetCircuit(providerId);
+          res.json({ status: "ok", message: `Circuit reset for provider "${providerId}"` });
+        } else {
+          failoverManager.resetAllCircuits();
+          res.json({ status: "ok", message: "All circuits reset" });
+        }
+      } catch (err) {
+        this.handleError(err, res, "Failed to reset circuit breaker");
       }
     });
   }
