@@ -1,8 +1,0 @@
-{
-  "description_zh": "A simple math utility for testing",
-  "instructions_zh": "This skill performs basic mathematical calculations.\n\n1. Parse the input to extract numbers and operations\n2. Perform the calculation\n3. Return formatted result",
-  "examples_zh": [
-    "User: \"Calculate 5 + 3\"\nResult: 8"
-  ],
-  "translatedAt": "2026-05-28T14:04:08.892Z"
-}
