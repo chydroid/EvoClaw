@@ -3,6 +3,7 @@ import cors from "cors";
 import http from "http";
 import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import type { Observability } from "@evoclaw/infrastructure";
 import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
@@ -147,6 +148,15 @@ export class GatewayServer {
         return;
       }
       next(err);
+    });
+
+    this.app.get("/metrics", (_req: Request, res: Response) => {
+      const observability = this.registry.resolveService<Observability>("observability");
+      if (!observability) {
+        res.status(503).set("Content-Type", "text/plain").send("observability service unavailable");
+        return;
+      }
+      res.status(200).set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").send(observability.exportPrometheus());
     });
 
     this.app.use(this.requestLogger.bind(this));
@@ -380,7 +390,15 @@ export class GatewayServer {
     });
   }
 
-  private requestLogger(req: Request, _res: Response, next: NextFunction): void {
+  private requestLogger(req: Request, res: Response, next: NextFunction): void {
+    const start = Date.now();
+    res.on("finish", () => {
+      const latencyMs = Date.now() - start;
+      const observability = this.registry.resolveService<Observability>("observability");
+      if (observability) {
+        observability.recordRequestLatency(req.path, req.method, res.statusCode, latencyMs);
+      }
+    });
     console.log(`[Gateway] ${req.method} ${req.path}`);
     next();
   }

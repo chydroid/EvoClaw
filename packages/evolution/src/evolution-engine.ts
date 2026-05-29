@@ -18,6 +18,9 @@ import { ExperienceAnalyzer } from "./experience-analyzer";
 import { ReinforcementFeedbackSystem } from "./reinforcement-feedback";
 import { LearningJournal } from "./learning-journal";
 import { ProgressReporter } from "./progress-reporter";
+import { ConstraintGate } from "./constraint-gate";
+import { ExternalReflector } from "./external-reflector";
+import type { ExecutionTrace } from "./external-reflector";
 import type { ExperienceAnalysis } from "./experience-analyzer";
 import type { SkillExecutionResult } from "@evoclaw/core";
 
@@ -30,6 +33,8 @@ export class EvolutionEngine {
   reinforcement: ReinforcementFeedbackSystem;
   learningJournal: LearningJournal;
   progressReporter: ProgressReporter;
+  private constraintGate: ConstraintGate;
+  private externalReflector: ExternalReflector;
 
   private cycles = new Map<string, EvolutionCycle>();
   private feedbackStore: ReinforcementFeedback[] = [];
@@ -47,6 +52,8 @@ export class EvolutionEngine {
     this.reinforcement = new ReinforcementFeedbackSystem(registry, eventBus);
     this.learningJournal = new LearningJournal(registry, eventBus);
     this.progressReporter = new ProgressReporter(registry, eventBus);
+    this.constraintGate = new ConstraintGate();
+    this.externalReflector = new ExternalReflector(registry, eventBus);
 
     registry.registerService("evolutionEngine", this);
 
@@ -333,6 +340,21 @@ export class EvolutionEngine {
       for (const candidate of candidates) {
         const evaluation = await this.evaluator.evaluate(candidate);
         if (evaluation.passed) {
+          const gateResult = await this.constraintGate.validate(candidate);
+          if (!gateResult.passed) {
+            const failedGates = gateResult.results
+              .filter((r) => !r.passed)
+              .map((r) => `${r.gateName}: ${r.reason}`)
+              .join("; ");
+            console.warn(`[EvolutionEngine] Candidate ${candidate.id} failed constraint gate: ${failedGates}`);
+            await this.eventBus.publish(
+              "evolution.constraint_gate_failed" as any,
+              { cycleId: cycle.id, candidateId: candidate.id, gateResults: gateResult.results },
+              "evolution-engine"
+            );
+            continue;
+          }
+
           cycle.selectedCandidate = candidate.id;
           cycle.evaluation = evaluation;
           break;
@@ -411,6 +433,20 @@ export class EvolutionEngine {
     traceId: string,
     taskData: Record<string, unknown>
   ): Promise<void> {
+    const trace: ExecutionTrace = {
+      taskId: String(taskData.taskId || traceId),
+      skillId: taskData.skillId ? String(taskData.skillId) : undefined,
+      error: taskData.error ? String(taskData.error) : undefined,
+      steps: [],
+      context: taskData,
+    };
+
+    const reflection = await this.externalReflector.reflect(trace);
+
+    if (!reflection.shouldEvolve) {
+      return;
+    }
+
     const recentFailures = this.feedbackStore.filter(
       (f) => f.errorRate > 0.5
     );
@@ -420,8 +456,21 @@ export class EvolutionEngine {
         traceId,
         failedTask: taskData,
         recentFailures,
+        reflection,
       });
     }
+  }
+
+  async analyzeFailureWithReflection(trace: ExecutionTrace): Promise<import("./external-reflector").ReflectionResult> {
+    const reflection = await this.externalReflector.reflect(trace);
+
+    await this.eventBus.publish(
+      "evolution.failure_reflection" as any,
+      { taskId: trace.taskId, reflection },
+      "evolution-engine"
+    );
+
+    return reflection;
   }
 
   async triggerManualEvolution(

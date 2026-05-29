@@ -568,6 +568,43 @@ export class SkillCurator {
       .map(([word]) => word);
   }
 
+  private escapeYamlString(value: string): string {
+    const escaped = value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, "\\n");
+    return `"${escaped}"`;
+  }
+
+  private validateYamlFrontMatter(content: string): boolean {
+    const match = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!match) return false;
+
+    const yaml = match[1];
+    const lines = yaml.split("\n");
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) continue;
+      if (trimmed.startsWith("- ")) continue;
+
+      const colonIdx = trimmed.indexOf(":");
+      if (colonIdx === -1) continue;
+
+      const value = trimmed.slice(colonIdx + 1).trim();
+      if (value === "") continue;
+      if (value === "true" || value === "false") continue;
+      if (/^-?\d+(\.\d+)?$/.test(value)) continue;
+      if (value.startsWith('"') && value.endsWith('"')) continue;
+      if (value.startsWith("'") && value.endsWith("'")) continue;
+      if (value.startsWith("[") || value.startsWith("{")) continue;
+
+      return false;
+    }
+
+    return true;
+  }
+
   private generateSkillMd(params: {
     name: string;
     version: string;
@@ -582,34 +619,34 @@ export class SkillCurator {
   }): string {
     const lines: string[] = [];
     lines.push("---");
-    lines.push(`name: "${params.name.replace(/"/g, '\\"')}"`);
-    lines.push(`version: ${params.version}`);
-    lines.push(`description: "${params.description.replace(/"/g, '\\"')}"`);
-    lines.push(`author: ${params.author}`);
-    lines.push(`license: MIT`);
-    lines.push(`category: ${params.category}`);
+    lines.push(`name: ${this.escapeYamlString(params.name)}`);
+    lines.push(`version: ${this.escapeYamlString(params.version)}`);
+    lines.push(`description: ${this.escapeYamlString(params.description)}`);
+    lines.push(`author: ${this.escapeYamlString(params.author)}`);
+    lines.push(`license: ${this.escapeYamlString("MIT")}`);
+    lines.push(`category: ${this.escapeYamlString(params.category)}`);
 
     if (params.keywords.length > 0) {
       lines.push("keywords:");
       for (const kw of params.keywords) {
-        lines.push(`  - "${kw}"`);
+        lines.push(`  - ${this.escapeYamlString(kw)}`);
       }
     }
 
     if (params.triggers.length > 0) {
       lines.push("triggers:");
       for (const t of params.triggers) {
-        lines.push(`  - type: ${t.type}`);
-        lines.push(`    pattern: "${t.pattern}"`);
-        lines.push(`    description: "${t.description}"`);
+        lines.push(`  - type: ${this.escapeYamlString(t.type)}`);
+        lines.push(`    pattern: ${this.escapeYamlString(t.pattern)}`);
+        lines.push(`    description: ${this.escapeYamlString(t.description)}`);
       }
     }
 
     if (params.requires.length > 0) {
       lines.push("requires:");
       for (const r of params.requires) {
-        lines.push(`  - name: ${r.name}`);
-        lines.push(`    version: "${r.version}"`);
+        lines.push(`  - name: ${this.escapeYamlString(r.name)}`);
+        lines.push(`    version: ${this.escapeYamlString(r.version)}`);
         lines.push(`    optional: ${r.optional}`);
       }
     }
@@ -625,7 +662,23 @@ export class SkillCurator {
     lines.push("---");
     lines.push("*Auto-extracted by EvoClaw SkillCurator*");
 
-    return lines.join("\n");
+    const result = lines.join("\n");
+
+    if (!this.validateYamlFrontMatter(result)) {
+      const forceEscaped = result.replace(
+        /^---\n([\s\S]*?)\n---/,
+        (match) => {
+          return match
+            .replace(/\\n/g, "\\\\n")
+            .replace(/:(?!["\n])/g, (m) => m);
+        }
+      );
+      if (this.validateYamlFrontMatter(forceEscaped)) {
+        return forceEscaped;
+      }
+    }
+
+    return result;
   }
 
   private analyzeFailure(result: SkillExecutionResult): string[] {

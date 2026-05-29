@@ -13,3 +13,7 @@ export type { ProgressPhase } from "./progress-reporter";
 export type { FitnessScore, MutationStrategy } from "./genetic-engine";
 export type { ExperiencePattern, ExperienceAnalysis, ExperienceRecommendation, SimilarityScore, CrossDomainInsight } from "./experience-analyzer";
 export type { RewardSignal, AdaptiveWeights, FeedbackSummary } from "./reinforcement-feedback";
+export { ConstraintGate } from "./constraint-gate";
+export type { ConstraintGateConfig, GateResult } from "./constraint-gate";
+export { ExternalReflector } from "./external-reflector";
+export type { ReflectionResult, ExecutionTrace } from "./external-reflector";

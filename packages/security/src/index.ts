@@ -26,6 +26,8 @@ export { ContentGuard } from "./content-guard";
 export type { ContentCheckResult, SafetyLevel, PIIMatch, ContentGuardConfig } from "./content-guard";
 export { SSRFProtection, isPrivateIP, isMetadataEndpoint } from "./ssrf-protection";
 export type { SSRFConfig, SSRFCheckResult } from "./ssrf-protection";
+export { SecurityMiddleware } from "./security-middleware";
+export type { SecurityMiddlewareConfig, SecurityScanResult } from "./security-middleware";
 
 export { SecretManager } from "./secret-manager";
 export type { SecretEntry, SecretAccessLog, SecretRotationResult, SecretManagerConfig, SecretQuery, SecretScope, SecretProvider } from "./secret-manager";

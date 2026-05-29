@@ -9,3 +9,7 @@ export { MemoryHost } from "./memory-host-sdk";
 export type { MemoryHostEntry, MemoryHostQuery, MemoryHostConfig } from "./memory-host-sdk";
 export { MemoryWeaver } from "./memory-weaver";
 export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";
+export { FTS5SearchEngine } from "./fts5-search";
+export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";
+export { MemoryCurator } from "./memory-curator";
+export type { CurationDecision, MemorySnapshot } from "./memory-curator";

@@ -8,6 +8,8 @@ export { AutoSkillManager } from "./auto-skill-manager";
 export { SkillDispatcher } from "./skill-dispatcher";
 export { TfidfMatcher } from "./tfidf-matcher";
 export { SkillCurator } from "./skill-curator";
+export { SkillIndex } from "./skill-index";
+export type { SkillIndexEntry, SkillSearchResult } from "./skill-index";
 export type { SkillRegistryEntry, RegistrySearchQuery, RegistrySearchResult, RemoteRegistryConfig } from "./skill-registry";
 export type { DependencyCheckResult, DependencyConflict, DependencySuggestion } from "./skill-resolver";
 export type { HealthMonitorConfig, HealthHistory, SkillHealthReport } from "./skill-lifecycle";

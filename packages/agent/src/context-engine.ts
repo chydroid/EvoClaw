@@ -1,49 +1,39 @@
-/**
- * ContextEngine — OpenClaw-style context assembly pipeline.
- *
- * Assembles the full context for every agent turn by combining:
- * - Bootstrap files (AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md)
- * - Skills context (loaded skills prompts)
- * - Memory context (relevant facts from long-term memory)
- * - System prompt
- * - Conversation history
- * - Compaction summaries
- *
- * The engine supports plugin hooks for context injection (prepend/append).
- */
-
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+export type PromptLayer = "frozen" | "ephemeral";
+
+export interface PromptSection {
+  content: string;
+  layer: PromptLayer;
+  name: string;
+  tokenBudget?: number;
+}
+
+export interface FrozenPromptState {
+  content: string;
+  hash: string;
+  sections: string[];
+  builtAt: number;
+}
 
 export interface ContextConfig {
-  /** Workspace directory */
   workspacePath: string;
-  /** Max total context tokens */
   maxContextTokens: number;
-  /** Reserve tokens for model response */
   reserveTokens: number;
-  /** Bootstrap file names to load */
   bootstrapFiles: string[];
-  /** Max chars per bootstrap file */
   maxBootstrapFileChars: number;
-  /** Max total bootstrap chars */
   maxTotalBootstrapChars: number;
-  /** System prompt mode */
   promptMode: "full" | "minimal" | "none";
-  /** User timezone */
   timezone?: string;
-  /** Time format (12 or 24 hour) */
   timeFormat?: "12" | "24";
-  /** Enable heartbeat reminders */
   heartbeatEnabled?: boolean;
-  /** Heartbeat prompt text */
   heartbeatPrompt?: string;
+  platformHint?: string;
 }
 
 export interface ContextAssemblyInput {
-  /** Session conversation history */
   conversationHistory: Array<{
     role: string;
     content: string | null;
@@ -51,35 +41,33 @@ export interface ContextAssemblyInput {
     tool_call_id?: string;
     name?: string;
   }>;
-  /** System prompt builder */
   systemPrompt: string;
-  /** Available skill names/prompts */
   skillsContext?: string;
-  /** Recent memory entries to inject */
   memoryContext?: string;
-  /** Compaction summary (if session was compacted) */
   compactionSummary?: string;
-  /** Plugin-injected extra content */
   pluginAppendContext?: string;
   pluginPrependContext?: string;
-  /** Current task/instruction */
   currentTask?: string;
 }
 
 export interface ContextAssemblyResult {
-  /** Full assembled messages for the LLM */
   messages: Array<{ role: string; content: string | null }>;
-  /** Token estimate for the assembled context */
   tokenEstimate: number;
-  /** Whether any files were truncated */
   truncated: boolean;
-  /** Loaded bootstrap file paths */
   loadedBootstrapFiles: string[];
-  /** Warnings about context size */
   warnings: string[];
 }
 
-// ─── Defaults ─────────────────────────────────────────────────────────────────
+export interface LayeredContextResult extends ContextAssemblyResult {
+  frozenContent: string;
+  ephemeralContent: string;
+  frozenHash: string;
+  cacheControlAnnotations: Array<{
+    role: string;
+    index: number;
+    cache_control: { type: string };
+  }>;
+}
 
 const DEFAULT_CONFIG: ContextConfig = {
   workspacePath: "data/workspace",
@@ -91,18 +79,15 @@ const DEFAULT_CONFIG: ContextConfig = {
   promptMode: "full",
 };
 
-// ─── Context Engine ───────────────────────────────────────────────────────────
-
 export class ContextEngine {
   private config: ContextConfig;
+  private frozenState: FrozenPromptState | null = null;
+  private lastLoadedBootstrapFiles: string[] = [];
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  // ─── Bootstrap File Loading ──────────────────────────────────────────────
-
-  /** Load all bootstrap files from the workspace */
   loadBootstrapFiles(extraFiles?: string[]): Array<{ path: string; content: string }> {
     const files: Array<{ path: string; content: string }> = [];
     const fileNames = extraFiles
@@ -129,7 +114,7 @@ export class ContextEngine {
             content = content.slice(0, remaining) +
               `\n\n[Content truncated due to total bootstrap limit]`;
           } else {
-            break; // Stop loading more files
+            break;
           }
         }
 
@@ -143,7 +128,6 @@ export class ContextEngine {
     return files;
   }
 
-  /** Build the bootstrap context section for injection into system prompt */
   buildBootstrapContext(bootstrapFiles: Array<{ path: string; content: string }>): string {
     if (bootstrapFiles.length === 0) {
       return "[No bootstrap files loaded. Run setup to create initial configuration.]";
@@ -163,72 +147,106 @@ export class ContextEngine {
     return sections.join("\n");
   }
 
-  // ─── Context Assembly ────────────────────────────────────────────────────
+  buildFrozenPrefix(input: ContextAssemblyInput): FrozenPromptState {
+    const sectionNames: string[] = [];
+    let content = input.systemPrompt;
+    sectionNames.push("systemPrompt");
 
-  /** Assemble the full context for an agent turn */
-  assembleContext(input: ContextAssemblyInput): ContextAssemblyResult {
-    const messages: Array<{ role: string; content: string | null }> = [];
-    const warnings: string[] = [];
-    const loadedBootstrapFiles: string[] = [];
-    let truncated = false;
-
-    // 1. Build system message
-    let systemContent = input.systemPrompt;
-
-    // Add bootstrap context
     const bootstrapFiles = this.loadBootstrapFiles();
-    loadedBootstrapFiles.push(...bootstrapFiles.map((f) => f.path));
+    this.lastLoadedBootstrapFiles = bootstrapFiles.map((f) => f.path);
 
     if (bootstrapFiles.length > 0 && this.config.promptMode !== "none") {
       const bootstrapCtx = this.buildBootstrapContext(bootstrapFiles);
-      systemContent += "\n\n" + bootstrapCtx;
+      content += "\n\n" + bootstrapCtx;
+      sectionNames.push("bootstrap");
     }
 
-    // Add compaction summary if available
     if (input.compactionSummary) {
-      systemContent += "\n\n" +
-        "## Previous Conversation Summary (Compacted)\n\n" +
-        input.compactionSummary;
-      truncated = true;
+      content += "\n\n## Previous Conversation Summary (Compacted)\n\n" + input.compactionSummary;
+      sectionNames.push("compaction");
     }
 
-    // Add skills context
     if (input.skillsContext) {
-      systemContent += "\n\n## Available Skills\n\n" + input.skillsContext;
+      content += "\n\n## Available Skills\n\n" + input.skillsContext;
+      sectionNames.push("skills");
     }
 
-    // Add memory context (relevant facts)
     if (input.memoryContext) {
-      systemContent += "\n\n## Relevant Memories\n\n" + input.memoryContext;
+      content += "\n\n## Relevant Memories\n\n" + input.memoryContext;
+      sectionNames.push("memory");
     }
 
-    // Plugin prepend (before system prompt)
     if (input.pluginPrependContext) {
-      systemContent = input.pluginPrependContext + "\n\n" + systemContent;
+      content = input.pluginPrependContext + "\n\n" + content;
+      sectionNames.unshift("pluginPrepend");
     }
 
-    // Plugin append (after system prompt)
     if (input.pluginAppendContext) {
-      systemContent += "\n\n" + input.pluginAppendContext;
+      content += "\n\n" + input.pluginAppendContext;
+      sectionNames.push("pluginAppend");
     }
 
-    // Heartbeat reminder
-    if (this.config.heartbeatEnabled && this.config.heartbeatPrompt) {
-      systemContent += "\n\n" + this.config.heartbeatPrompt;
+    const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+    if (this.frozenState && this.frozenState.hash === hash) {
+      return this.frozenState;
     }
 
-    // Add timezone info
+    const state: FrozenPromptState = {
+      content,
+      hash,
+      sections: sectionNames,
+      builtAt: Date.now(),
+    };
+
+    this.frozenState = state;
+    return state;
+  }
+
+  buildEphemeralSuffix(input: ContextAssemblyInput): string {
+    const parts: string[] = [];
+
     if (this.config.timezone) {
-      systemContent += `\n\nCurrent timezone: ${this.config.timezone} (${this.config.timeFormat ?? "24"}h format)`;
+      parts.push(`Current timezone: ${this.config.timezone} (${this.config.timeFormat ?? "24"}h format)`);
     }
+
+    if (this.config.platformHint) {
+      parts.push(`Platform: ${this.config.platformHint}`);
+    }
+
+    if (this.config.heartbeatEnabled && this.config.heartbeatPrompt) {
+      parts.push(this.config.heartbeatPrompt);
+    }
+
+    if (input.currentTask) {
+      parts.push(`Current task: ${input.currentTask}`);
+    }
+
+    return parts.length > 0 ? "\n\n" + parts.join("\n\n") : "";
+  }
+
+  invalidateFrozen(): void {
+    this.frozenState = null;
+  }
+
+  getFrozenHash(): string | null {
+    return this.frozenState ? this.frozenState.hash : null;
+  }
+
+  assembleContext(input: ContextAssemblyInput): LayeredContextResult {
+    const messages: Array<{ role: string; content: string | null }> = [];
+    const warnings: string[] = [];
+    let truncated = false;
+
+    const frozen = this.buildFrozenPrefix(input);
+    const ephemeralContent = this.buildEphemeralSuffix(input);
+    const systemContent = frozen.content + ephemeralContent;
 
     messages.push({ role: "system", content: systemContent });
 
-    // 2. Add conversation history
     let historyTokens = 0;
     const availableTokens = this.config.maxContextTokens - this.estimateTokens(systemContent) - this.config.reserveTokens;
 
-    // Add messages from newest to oldest (we'll reverse at the end)
     const reversedHistory: typeof input.conversationHistory = [];
 
     for (let i = input.conversationHistory.length - 1; i >= 0; i--) {
@@ -238,7 +256,6 @@ export class ContextEngine {
 
       if (historyTokens + msgTokens > availableTokens) {
         if (reversedHistory.length === 0) {
-          // Always include at least one message to avoid empty context
           reversedHistory.push(msg);
           warnings.push("Context limit reached — some history was truncated");
           truncated = true;
@@ -250,46 +267,50 @@ export class ContextEngine {
       historyTokens += msgTokens;
     }
 
-    // Reverse back to chronological order
     for (let i = reversedHistory.length - 1; i >= 0; i--) {
       messages.push(reversedHistory[i]);
     }
 
-    // 3. Add current task if provided
     if (input.currentTask) {
       messages.push({ role: "user", content: input.currentTask });
     }
 
-    // 4. Estimate total tokens
     const tokenEstimate = this.estimateTokens(
       messages.map((m) => m.content ?? "").join(""),
     );
 
-    // 5. Context size warning
     if (tokenEstimate > this.config.maxContextTokens * 0.8) {
       warnings.push(
         `Context at ${Math.round((tokenEstimate / this.config.maxContextTokens) * 100)}% of limit — consider compacting`,
       );
     }
 
+    const cacheControlAnnotations = [
+      {
+        role: "system",
+        index: 0,
+        cache_control: { type: "ephemeral" },
+      },
+    ];
+
     return {
       messages,
       tokenEstimate,
       truncated,
-      loadedBootstrapFiles,
+      loadedBootstrapFiles: this.lastLoadedBootstrapFiles,
       warnings,
+      frozenContent: frozen.content,
+      ephemeralContent,
+      frozenHash: frozen.hash,
+      cacheControlAnnotations,
     };
   }
 
-  // ─── Context Size Utilities ───────────────────────────────────────────────
-
-  /** Estimate token count for text (simple heuristic: ~4 chars per token) */
   estimateTokens(text: string): number {
     if (!text) return 0;
     return Math.ceil(text.length / 4);
   }
 
-  /** Check if context needs compaction */
   needsCompaction(
     conversationHistory: Array<{ role: string; content: string | null }>,
     systemPrompt: string,
@@ -304,25 +325,20 @@ export class ContextEngine {
     return totalEstimate > this.config.maxContextTokens * 0.75;
   }
 
-  /** Get available tokens for a response */
   getAvailableTokens(currentContext: string): number {
     const used = this.estimateTokens(currentContext);
     return Math.max(0, this.config.maxContextTokens - used - this.config.reserveTokens);
   }
 
-  /** Quick token estimate for a batch of messages */
   estimateMessagesTokens(
     messages: Array<{ role: string; content: string | null }>,
   ): number {
     return messages.reduce((sum, m) => {
       let tokens = this.estimateTokens(m.content ?? "");
-      // Role names add a small overhead
       tokens += 4;
       return sum + tokens;
     }, 0);
   }
-
-  // ─── Configuration ───────────────────────────────────────────────────────
 
   updateConfig(updates: Partial<ContextConfig>): void {
     this.config = { ...this.config, ...updates };

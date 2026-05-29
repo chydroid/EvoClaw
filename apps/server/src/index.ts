@@ -11,7 +11,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import type { EmailAccount, ParsedEmail } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
@@ -87,6 +87,7 @@ export class EvoClawServer {
   private eventLedger: EventLedger;
   private permissionRelay: PermissionRelay;
   private crestodian: Crestodian;
+  private observability: Observability;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -100,6 +101,23 @@ export class EvoClawServer {
       prettyPrint: process.env.NODE_ENV !== "production",
     });
     this.registry.registerService("logger", this.logger);
+
+    this.observability = new Observability({ metricsPrefix: "evoclaw" });
+    this.observability.registerMetric({ name: "evoclaw_llm_calls_total", type: "counter", help: "Total LLM API calls", labels: ["provider", "model", "status"] });
+    this.observability.registerMetric({ name: "evoclaw_llm_latency_ms", type: "histogram", help: "LLM call latency in milliseconds", labels: ["provider", "model", "status"] });
+    this.observability.registerMetric({ name: "evoclaw_tool_calls_total", type: "counter", help: "Total tool invocations", labels: ["tool", "status"] });
+    this.observability.registerMetric({ name: "evoclaw_tool_latency_ms", type: "histogram", help: "Tool invocation latency in milliseconds", labels: ["tool", "status"] });
+    this.observability.registerMetric({ name: "evoclaw_active_sessions", type: "gauge", help: "Currently active sessions" });
+    this.observability.registerMetric({ name: "evoclaw_evolution_cycles_total", type: "counter", help: "Total evolution engine cycles" });
+    this.registry.registerService("observability", this.observability);
+    this.observability.registerHealthComponent("gateway");
+    this.observability.registerHealthComponent("taskOrchestrator");
+    this.observability.registerHealthComponent("agentPool");
+    this.observability.registerHealthComponent("skillManager");
+    this.observability.registerHealthComponent("evolutionEngine");
+    this.observability.registerHealthComponent("memoryHub");
+    this.observability.registerHealthComponent("securityGovernor");
+    this.observability.registerHealthComponent("messageQueue");
 
     // ── Config validation (OpenClaw parity) ──
     this.configValidator = new ConfigValidator(CONFIG_SCHEMA);

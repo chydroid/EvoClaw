@@ -23,7 +23,7 @@ export type { QueueMode, QueueItem, QueueConfig } from "./queue-manager";
 export { SessionManager } from "./session-manager";
 export type { SessionConfig, SessionInfo, SessionTurn, SessionLoadResult, SessionLock } from "./session-manager";
 export { ContextEngine } from "./context-engine";
-export type { ContextConfig, ContextAssemblyInput, ContextAssemblyResult } from "./context-engine";
+export type { ContextConfig, ContextAssemblyInput, ContextAssemblyResult, PromptLayer, PromptSection, FrozenPromptState, LayeredContextResult } from "./context-engine";
 export { AgentRouter } from "./agent-router";
 export type { AgentConfig, AgentBinding, ToolPolicy, RouteRequest, ResolvedRoute, RouterConfig } from "./agent-router";
 export { SubagentRegistry } from "./subagent-registry";
@@ -69,3 +69,9 @@ export type { FocusTarget, FocusContext, ContextFocusConfig } from "./context-fo
 
 export { ModelSwitcher } from "./model-switcher";
 export type { ModelAlias, ModelPreset, ActiveModel, ModelSwitchEvent, ModelSwitcherConfig } from "./model-switcher";
+
+export { CopilotRouter } from "./copilot-router";
+export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision } from "./copilot-router";
+
+export { CredentialPool } from "./credential-pool";
+export type { CredentialEntry, CredentialPoolConfig } from "./credential-pool";
