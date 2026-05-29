@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.9.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -36,6 +36,8 @@
   - [进化引擎 (Evolution)](#进化引擎-evolution)
   - [记忆系统 (Memory)](#记忆系统-memory)
   - [安全治理 (Security)](#安全治理-security)
+  - [可观测性系统 (Observability)](#可观测性系统-observability)
+  - [Copilot 路由 (Copilot Router)](#copilot-路由-copilot-router)
 - [开发指南](#开发指南)
 - [测试](#测试)
 - [部署](#部署)
@@ -128,6 +130,55 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 - **CLI 命令行**: 涵盖 30+ 子命令的完整终端工具
 - **斜杠命令**: Web Chat 内置的快捷指令系统
 
+### 🧭 Copilot 路由器
+
+- **智能任务路由**: 低价值任务自动降级到轻量模型，代码/数学任务保护不降级
+
+### 🔑 凭证池
+
+- **多 API Key 轮换管理**: round-robin / random / least-used 策略
+- **限速冷却与错误禁用**: 自动冷却被限速的 Key，错误累积自动禁用
+
+### 📋 Prompt 缓存分层
+
+- **冻结层 + 临时层分离**: frozen 层稳定缓存，ephemeral 层临时缓存
+- **SHA-256 哈希追踪**: 精确检测缓存失效，避免重复计算
+
+### 🚧 约束门进化
+
+- **5 道约束门验证**: 大小 / 描述 / 语义 / 兼容性 / 瞬态故障检测，确保进化候选质量
+
+### 🔍 外部反思器
+
+- **失败分类**: transient / systematic / environmental 三类失败自动识别
+- **根因推断与改进建议**: 自动分析失败根因并生成改进方案
+
+### 📚 FTS5 全文检索
+
+- **better-sqlite3 FTS5 虚拟表**: 高性能全文检索引擎
+- **BM25 排名**: 基于相关度的结果排序
+- **Map 回退**: FTS5 不可用时自动降级到 Map 检索
+
+### 🧠 记忆策展器
+
+- **自动评估对话持久化价值**: 智能判断哪些对话值得长期保存
+- **注入/敏感信息扫描**: 自动检测并过滤敏感数据
+
+### 🛡️ 安全中间件
+
+- **ContentGuard + SSRFProtection**: 内容安全与 SSRF 防护
+- **Plugin Hook 集成**: 安全检查集成到插件钩子系统
+
+### 📖 技能渐进索引
+
+- **三级渐进加载**: L0(~20t) / L1(~200t) / L2(~1000+t)，按需加载技能描述
+
+### 📊 可观测性
+
+- **Prometheus /metrics 端点**: 标准化指标导出
+- **LLM/工具调用埋点**: 全链路调用追踪
+- **分布式追踪**: 跨服务请求追踪能力
+
 ***
 
 ## 系统架构
@@ -157,9 +208,10 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 │  │  │Pool    │ │ │  │Eval    │ │ │  │Long    │ │             │
 │  │  │DAG Exec│ │ │  │Proposer│ │ │  │Vector  │ │             │
 │  │  │Orch.   │ │ │  │Feedback│ │ │  │KG      │ │             │
-│  │  └────────┘ │ │  └────────┘ │ │  └────────┘ │             │
-│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘             │
-│         │               │               │                    │
+│  │  └────────┘ │ │  └────────┘ │ │  │FTS5    │ │             │
+│  └──────┬──────┘ └──────┬──────┘ │  │Curator │ │             │
+│         │               │        │  └────────┘ │             │
+│         │               │        └──────┬──────┘             │
 │  ┌──────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐             │
 │  │   Skills    │ │  Security   │ │Infrastruct. │             │
 │  │  ┌────────┐ │ │  ┌────────┐ │ │  ┌────────┐ │             │
@@ -167,10 +219,29 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 │  │  │Registry│ │ │  │RBAC    │ │ │  │DB      │ │             │
 │  │  │Sandbox │ │ │  │Audit   │ │ │  │MQ      │ │             │
 │  │  │Parser  │ │ │  │Healing │ │ │  │FS      │ │             │
-│  │  └────────┘ │ │  │Tenant  │ │ │  │Process │ │             │
-│  └─────────────┘ │  └────────┘ │ │  └────────┘ │             │
-│                  └─────────────┘ └─────────────┘             │
-│                                                              │
+│  │  │ProgIdx │ │ │  │Tenant  │ │ │  │Process │ │             │
+│  │  └────────┘ │ │  │Guard   │ │ │  └────────┘ │             │
+│  └─────────────┘ │  └────────┘ │ └─────────────┘             │
+│                  └─────────────┘                              │
+│                                                               │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐   │
+│  │Copilot Router│ │CredentialPool│ │   Observability      │   │
+│  │  ┌────────┐  │ │  ┌────────┐  │ │  ┌────────────────┐  │   │
+│  │  │Task Cls│  │ │  │Key Rot. │  │ │  │Prometheus      │  │   │
+│  │  │Downgr. │  │ │  │CoolDown │  │ │  │Tracing (OTEL)  │  │   │
+│  │  │Protect │  │ │  │Disable  │  │ │  │Metrics         │  │   │
+│  │  └────────┘  │ │  └────────┘  │ │  └────────────────┘  │   │
+│  └──────────────┘ └──────────────┘ └──────────────────────┘   │
+│                                                               │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐   │
+│  │Prompt Cache  │ │  Reflector   │ │  Constraint Gates    │   │
+│  │  ┌────────┐  │ │  ┌────────┐  │ │  ┌────────────────┐  │   │
+│  │  │Frozen  │  │ │  │Classify│  │ │  │Size/Desc/Sem   │  │   │
+│  │  │Ephem.  │  │ │  │RootCause│ │ │  │Compat/Transient│  │   │
+│  │  │SHA-256 │  │ │  │Suggest │  │ │  └────────────────┘  │   │
+│  │  └────────┘  │ │  └────────┘  │ └──────────────────────┘   │
+│  └──────────────┘ └──────────────┘                              │
+│                                                               │
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │                ServiceRegistry (IoC)                 │    │
 │  └──────────────────────────────────────────────────────┘    │
@@ -196,7 +267,7 @@ EvoClaw 的核心设计理念源于龙虾的生物学特性——龙虾终其一
 
 | 依赖             | 最低版本      | 说明                    |
 | -------------- | --------- | --------------------- |
-| **Node.js**    | >= 22.0.0 | JavaScript 运行时        |
+| **Node.js**    | >= 20.0.0 | JavaScript 运行时        |
 | **pnpm**       | >= 9.0.0  | 包管理器 (Monorepo 工作区支持) |
 | **TypeScript** | 5.x       | 类型安全开发语言              |
 
@@ -273,7 +344,7 @@ start.bat
 
 ```
 ============================================
-  EvoClaw v0.2.0 - Self-Evolving Agent OS
+  EvoClaw v0.9.0 - Self-Evolving Agent OS
 ============================================
 
 [EvoClaw] Starting all services...
@@ -328,6 +399,8 @@ EvoClaw采用**环境变量 + Web UI 双层配置**体系：
 | `EvoClaw_EVOLUTION_ENABLED` | `true`    | 是否启用进化引擎            |
 | `EvoClaw_MCP_ENABLED`       | `true`    | 是否启用 MCP 协议         |
 | `EvoClaw_REST_ENABLED`      | `true`    | 是否启用 REST API       |
+| `CORS_ORIGINS`             | -         | CORS 允许的源            |
+| `RATE_LIMIT_MAX`           | -         | 速率限制最大请求数           |
 
 ### LLM 配置
 
@@ -438,6 +511,17 @@ Web 仪表盘提供了直观的可视化管理界面，包含以下功能标签:
 | **LLM**       | LLM 模型配置、API Key 管理               |
 | **Channels**  | 频道配置与连接管理                         |
 | **CLI**       | 内嵌命令行终端                           |
+| **Secrets**   | 密钥与凭证安全管理                         |
+| **DLQ**       | 死信队列监控与重试                         |
+| **Config RPC** | 配置远程过程调用管理                        |
+| **Model Switcher** | 模型快速切换与降级策略配置                 |
+| **Retention** | 数据保留策略与清理                         |
+| **Feature Flags** | 功能开关与灰度发布控制                    |
+| **Config Migration** | 配置迁移与版本管理                     |
+| **Config Doctor** | 配置诊断与自动修复                       |
+| **Health Aggregator** | 聚合健康状态与告警                     |
+| **Message Templates** | 消息模板管理                         |
+| **Reply Refs** | 回复引用与上下文关联                        |
 
 #### 斜杠命令 (在 Chat 中使用)
 
@@ -480,6 +564,9 @@ EvoClaw 通过统一的 RESTful API 暴露所有功能:
 | `/api/device/pairing/request` | POST | 请求设备配对 |
 | `/api/device/pairing/verify` | POST | 验证设备配对签名 |
 | `/api/device/paired`       | GET  | 列出已配对设备   |
+| `/api/config/avatars`     | GET  | 获取头像配置      |
+| `/api/config/avatars`     | PUT  | 更新头像配置      |
+| `/metrics`                | GET  | Prometheus 指标   |
 
 ***
 
@@ -688,6 +775,45 @@ EvoClaw security audit --deep   # 深度安全审计
 EvoClaw security audit --fix    # 自动修复安全问题
 ```
 
+### 可观测性系统 (Observability)
+
+可观测性系统为 EvoClaw 提供全链路监控、指标采集和分布式追踪能力。
+
+#### 指标类型
+
+| 指标类型         | 说明              | 示例                           |
+| ------------ | --------------- | ---------------------------- |
+| **Counter**  | 单调递增计数器         | LLM 调用次数、工具执行次数             |
+| **Gauge**    | 可增减的瞬时值         | 活跃会话数、Agent 池大小             |
+| **Histogram**| 分布统计            | LLM 响应延迟、Token 消耗分布         |
+
+#### 追踪能力
+
+- **OTEL 兼容追踪**: 基于 OpenTelemetry 标准的分布式追踪
+- **LLM 调用埋点**: 每次 LLM 请求/响应自动记录 Span
+- **工具调用埋点**: Skill 执行与工具调用全链路追踪
+- **Prometheus 导出**: `/metrics` 端点提供标准 Prometheus 格式指标
+
+### Copilot 路由 (Copilot Router)
+
+Copilot 路由器根据任务特征智能选择最优模型，实现成本与质量的平衡。
+
+#### 任务分类
+
+| 任务类型     | 降级策略   | 说明                  |
+| -------- | ------ | ------------------- |
+| **代码生成** | 不降级    | 代码任务始终使用高级模型保证质量     |
+| **数学推理** | 不降级    | 数学任务需要高精度推理能力        |
+| **简单问答** | 可降级    | 低价值任务自动降级到轻量模型       |
+| **闲聊**   | 可降级    | 日常对话使用轻量模型即可满足       |
+| **摘要生成** | 可降级    | 文本摘要任务可使用中等模型        |
+
+#### 降级策略
+
+- **自动降级**: 低价值任务自动路由到轻量模型，降低 API 成本
+- **保护机制**: 代码/数学等高价值任务始终使用高级模型，确保输出质量
+- **动态调整**: 根据模型可用性和负载动态调整路由策略
+
 ***
 
 ## 开发指南
@@ -743,6 +869,7 @@ packages:
 | `packages/email`          | `@evoclaw/email`          | 邮件客户端     |
 | `packages/scheduler`      | `@evoclaw/scheduler`      | 定时调度      |
 | `packages/reporting`      | `@evoclaw/reporting`      | 报告生成      |
+| `packages/claude-code-tools` | `@evoclaw/claude-code-tools` | Claude Code 编程工具 |
 | `packages/web-ui`         | `@evoclaw/web-ui`         | Web 仪表盘    |
 | `apps/cli`                | `@evoclaw/cli`            | CLI 工具     |
 | `apps/server`             | `@evoclaw/server`         | 服务器入口     |

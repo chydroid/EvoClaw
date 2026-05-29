@@ -394,7 +394,7 @@ export default function App() {
   if (!authChecked) {
     return (
       <div style={css.loadingScreen}>
-        <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "32px", marginBottom: "12px" }} />
+        <img src="/assets/images/favicon-48x48.png" alt="EvoClaw" style={{ height: "36px", marginBottom: "12px" }} />
         <SpinnerPulse />
       </div>
     );
@@ -404,7 +404,7 @@ export default function App() {
     return (
       <div style={css.authScreen}>
         <div style={css.authCard}>
-          <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "24px", marginBottom: "8px" }} />
+          <img src="/assets/images/favicon-48x48.png" alt="EvoClaw" style={{ height: "32px", marginBottom: "8px" }} />
           <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "20px" }}>
             {t("app.auth.desc")}
           </p>
@@ -517,11 +517,11 @@ export default function App() {
       {/* Header */}
       <header style={css.header}>
         <div style={css.headerLeft}>
-          <button style={css.menuBtn} onClick={() => { if (sidebarCollapsed) setSidebarCollapsed(false); setMobileMenuOpen(!mobileMenuOpen); }} title={t("sidebar.toggle_menu")}>
+          <button className="EvoClaw-menu-btn" style={css.menuBtn} onClick={() => { if (sidebarCollapsed) setSidebarCollapsed(false); setMobileMenuOpen(!mobileMenuOpen); }} title={t("sidebar.toggle_menu")}>
             <IconMenu size={18} />
           </button>
-          <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={css.headerLogo} />
-          <span style={css.headerTitle}>EvoClaw</span>
+          <img src="/assets/images/favicon-48x48.png" alt="EvoClaw" style={css.headerLogo} />
+          <span className="EvoClaw-header-title" style={css.headerTitle}>EvoClaw</span>
         </div>
         <div style={css.headerRight}>
           {/* Language switcher */}
@@ -810,7 +810,7 @@ const css: Record<string, CSSProperties> = {
   headerRight: { display: "flex", alignItems: "center", gap: 6 },
   headerLogo: { width: 26, height: 26 },
   headerTitle: { fontSize: 18, fontWeight: 700, color: "var(--accent)", letterSpacing: "-0.3px" },
-  menuBtn: { width: 32, height: 32, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-hover)", color: "var(--text-secondary)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  menuBtn: { width: 32, height: 32, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-hover)", color: "var(--text-secondary)", cursor: "pointer", display: "none", alignItems: "center", justifyContent: "center", padding: 0 },
   headerBtn: { padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap", display: "flex", alignItems: "center" },
   themeDropdown: { position: "absolute", top: "100%", right: 0, marginTop: 4, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 4, zIndex: 100, minWidth: 140, boxShadow: "0 8px 24px rgba(0,0,0,0.3)" },
   themeOption: { display: "block", width: "100%", padding: "6px 10px", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12, textAlign: "left", background: "transparent" },
@@ -1032,6 +1032,9 @@ const GLOBAL_CSS = `
 
   /* Mobile (< 768px) */
   @media (max-width: 768px) {
+    .EvoClaw-menu-btn {
+      display: flex !important;
+    }
     .EvoClaw-sidebar {
       position: fixed !important;
       left: 0; top: 50px; bottom: 0;
@@ -1049,11 +1052,19 @@ const GLOBAL_CSS = `
       display: block !important;
     }
     .nav-label-text { display: inline; }
+    /* Compact header on mobile */
+    .EvoClaw-header-title { font-size: 15px !important; }
   }
 
   /* Small mobile (< 480px) */
   @media (max-width: 480px) {
     .EvoClaw-sidebar { width: 100% !important; min-width: 100% !important; }
     .nav-label-text { display: inline; }
+  }
+
+  /* Textarea focus ring */
+  .EvoClaw-chat-textarea:focus {
+    border-color: var(--accent, #58a6ff) !important;
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2) !important;
   }
 `;

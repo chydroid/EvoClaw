@@ -36,6 +36,12 @@ export class GatewayServer {
   private protocolHandler: ProtocolHandler;
   private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
+  private avatarConfig: { user: string; bot: string; userNickname: string; botNickname: string } = {
+    user: "assets/images/user.png",
+    bot: "assets/images/favicon-32x32.png",
+    userNickname: "Me",
+    botNickname: "EvoClaw",
+  };
 
   constructor(
     private registry: ServiceRegistry,
@@ -364,6 +370,18 @@ export class GatewayServer {
         timestamp: new Date().toISOString(),
         serviceCount: serviceInfos.length,
       });
+    });
+
+    this.app.get("/api/config/avatars", (_req: Request, res: Response) => {
+      res.json({ avatars: this.avatarConfig });
+    });
+
+    this.app.put("/api/config/avatars", (req: Request, res: Response) => {
+      const { avatars } = req.body as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
+      if (avatars) {
+        this.avatarConfig = { ...this.avatarConfig, ...avatars };
+      }
+      res.json({ avatars: this.avatarConfig });
     });
 
     if (this.config.enableREST) {

@@ -240,13 +240,15 @@ const messageBubbleStyle = (role: string): CSSProperties => ({
   padding: "10px 16px",
   borderRadius: role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
   background: role === "user"
-    ? "var(--accent, #58a6ff)"
-    : "var(--bg-tertiary, #21262d)",
+    ? "var(--userBubbleBg, var(--accent, #58a6ff))"
+    : "var(--botBubbleBg, var(--bg-tertiary, #21262d))",
   color: role === "user" ? "#fff" : "var(--text-primary, #c9d1d9)",
+  border: role === "user" ? "none" : "1px solid var(--botBubbleBorder, var(--border, #30363d))",
   fontSize: "14px",
-  lineHeight: "1.5",
+  lineHeight: "1.6",
   wordBreak: "break-word",
   position: "relative",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
 });
 
 const thinkingBadgeStyle: CSSProperties = {
@@ -367,10 +369,11 @@ const textAreaStyle: CSSProperties = {
   color: "var(--text-primary, #c9d1d9)",
   fontSize: "14px",
   resize: "none",
-  minHeight: "60px",
+  minHeight: "48px",
   maxHeight: "120px",
   fontFamily: "inherit",
   outline: "none",
+  transition: "border-color 0.2s, box-shadow 0.2s",
 };
 
 const sendBtnStyle: CSSProperties = {
@@ -396,6 +399,8 @@ const emptyStateStyle: CSSProperties = {
   height: "100%",
   color: "var(--text-secondary, #8b949e)",
   textAlign: "center",
+  padding: "40px 20px",
+  gap: "16px",
 };
 
 const actionBtnStyle: CSSProperties = {
@@ -1454,6 +1459,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           >
             <textarea
               ref={inputRef}
+              className="EvoClaw-chat-textarea"
               style={{
                 ...textAreaStyle,
                 width: "100%",
@@ -1609,13 +1615,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 📎
               </button>
               <button
-                style={{ ...inputBtnStyle, opacity: 0.4, cursor: "not-allowed" }}
+                style={{ ...inputBtnStyle, display: "none" }}
                 title="语音输入（暂未支持）"
               >
                 🎤
               </button>
               <button
-                style={inputBtnStyle}
+                style={{ ...inputBtnStyle, display: "none" }}
                 title="打开设置"
                 onClick={() => { window.dispatchEvent(new CustomEvent("evoclaw-open-settings")); }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}

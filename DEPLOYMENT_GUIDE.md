@@ -14,6 +14,8 @@
 8. [Skill 安装与管理](#8-skill-安装与管理)
 9. [验证部署](#9-验证部署)
 10. [故障排除](#10-故障排除)
+11. [安全建议](#11-安全建议)
+12. [可观测性配置](#12-可观测性配置)
 
 ***
 
@@ -191,7 +193,7 @@ pnpm dev
         <key>NODE_ENV</key>
         <string>production</string>
         <key>EvoClaw_PORT</key>
-        <string>3000</string>
+        <string>17788</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -289,7 +291,7 @@ node apps/server/dist/index.js
   <arguments>apps/server/dist/index.js</arguments>
   <workingdirectory>$pwd</workingdirectory>
   <env name="NODE_ENV" value="production"/>
-  <env name="EvoClaw_PORT" value="3000"/>
+  <env name="EvoClaw_PORT" value="17788"/>
   <logmode>rotate</logmode>
 </service>
 "@ | Out-File -FilePath evoclaw-service.xml -Encoding UTF8
@@ -307,7 +309,7 @@ node apps/server/dist/index.js
 
 ```ini
 # 服务器配置
-EvoClaw_PORT=3000
+EvoClaw_PORT=17788
 EvoClaw_HOST=0.0.0.0
 
 # JWT 密钥 (生产环境必须修改为至少16位随机字符串！)
@@ -321,6 +323,15 @@ EvoClaw_MCP_ENABLED=true
 
 # REST API
 EvoClaw_REST_ENABLED=true
+
+# CORS 配置
+CORS_ORIGINS=http://localhost:5173,http://localhost:17788
+
+# 速率限制
+RATE_LIMIT_MAX=100
+
+# 可观测性
+EvoClaw_OBSERVABILITY_ENABLED=true
 ```
 
 ***
@@ -329,7 +340,7 @@ EvoClaw_REST_ENABLED=true
 
 ### 6.1 打开 Web 控制台
 
-启动服务后，在浏览器中访问 `http://localhost:3000`（或服务器 IP:3000）。
+启动服务后，在浏览器中访问 `http://localhost:17788`（或服务器 IP:17788）。
 
 ### 6.2 进入 LLM 配置页面
 
@@ -339,10 +350,10 @@ EvoClaw_REST_ENABLED=true
 
 | 提供商                | 说明                            | 获取 API Key                                                  |
 | ------------------ | ----------------------------- | ----------------------------------------------------------- |
-| **OpenAI**         | GPT-4o, GPT-4 Turbo, GPT-3.5  | [platform.openai.com](https://platform.openai.com/api-keys) |
-| **Anthropic**      | Claude 3 Opus/Sonnet/Haiku    | [console.anthropic.com](https://console.anthropic.com/)     |
-| **DeepSeek**       | DeepSeek Chat, DeepSeek Coder | [platform.deepseek.com](https://platform.deepseek.com/)     |
-| **Local (Ollama)** | Llama3, Mistral, Qwen2 等      | 本地安装 [ollama.com](https://ollama.com)                       |
+| **OpenAI**         | GPT-4o, GPT-4o-mini, GPT5.5    | [platform.openai.com](https://platform.openai.com/api-keys) |
+| **Anthropic**      | Claude 4 Opus 等                | [console.anthropic.com](https://console.anthropic.com/)     |
+| **DeepSeek**       | DeepSeek-V4-Flash, DeepSeek-V4-Pro | [platform.deepseek.com](https://platform.deepseek.com/)     |
+| **Local (Ollama)** | Llama3, Mistral, Qwen3, Gramma 等 | 本地安装 [ollama.com](https://ollama.com)                       |
 | **Custom**         | 任何兼容 OpenAI API 的服务           | -                                                           |
 
 ### 6.4 配置步骤
@@ -368,7 +379,8 @@ curl -fsSL https://ollama.com/install.sh | sh
 # 拉取模型
 ollama pull llama3
 ollama pull mistral
-ollama pull qwen2
+ollama pull qwen3
+ollama pull gramma
 
 # 验证
 ollama list
@@ -483,7 +495,7 @@ evoclaw/
 
 ```bash
 # 通过 API 查看已安装的 Skill
-curl http://localhost:3000/api/skills
+curl http://localhost:17788/api/skills
 
 # 或打开 Web UI → Skills 标签查看
 ```
@@ -637,6 +649,12 @@ curl http://localhost:17788/api/evolution/dashboard
 
 # 查看审计数据
 curl http://localhost:17788/api/system/audit
+
+# 查看头像配置
+curl http://localhost:17788/api/config/avatars
+
+# Prometheus 指标
+curl http://localhost:17788/metrics
 ```
 
 ### 9.4 运行测试套件
@@ -680,7 +698,7 @@ kill -9 <PID>
 **Windows**:
 
 ```powershell
-netstat -ano | findstr :3000
+netstat -ano | findstr :17788
 taskkill /PID <PID> /F
 ```
 
@@ -720,12 +738,15 @@ Get-Content .\evoclaw-service.out.log -Tail 50 -Wait
 ## 11. 安全建议
 
 1. **生产环境务必修改 JWT\_SECRET** 为至少 32 位随机字符串
-2. 配置防火墙只开放必要端口（3000）
+2. 配置防火墙只开放必要端口（17788）
 3. 使用 HTTPS 反向代理（Nginx/Caddy）
 4. 定期更新 Node.js 和依赖：`pnpm update`
 5. 配置 audit center 告警规则
 6. 为每个租户设置合理的配额限制
 7. 启用 self-healing 自动修复机制
+8. 配置 CORS_ORIGINS 限制允许的源
+9. 启用可观测性监控，设置告警规则
+10. 使用 CredentialPool 管理 API Key 轮换
 
 ***
 
@@ -767,7 +788,7 @@ fi
 
 echo "=== Setup Complete ==="
 echo "Run: pnpm dev"
-echo "Web UI: http://localhost:3000"
+echo "Web UI: http://localhost:17788"
 ```
 
 ### Windows 一键脚本 (setup.ps1)
@@ -807,7 +828,56 @@ Write-Host "Web UI: http://localhost:17788" -ForegroundColor Yellow
 
 ***
 
-> **文档版本**: 1.0\
-> **适用版本**: EvoClaw v0.2.0\
-> **最后更新**: 2026-05-15
+## 12. 可观测性配置
+
+EvoClaw 内置可观测性支持，通过 `EvoClaw_OBSERVABILITY_ENABLED=true` 启用后，可暴露 Prometheus 兼容的指标端点和分布式追踪能力。
+
+### 12.1 Prometheus /metrics 端点
+
+启用可观测性后，EvoClaw 会在 `http://localhost:17788/metrics` 暴露 Prometheus 格式的指标数据。
+
+```bash
+curl http://localhost:17788/metrics
+```
+
+### 12.2 指标类型
+
+| 指标类型       | 说明                              | 示例                              |
+| ---------- | ------------------------------- | ------------------------------- |
+| **Counter** | 单调递增计数器，用于请求总数、错误总数等           | `evoclaw_http_requests_total`    |
+| **Gauge**   | 可增可减的仪表盘，用于当前连接数、队列深度等         | `evoclaw_active_sessions`        |
+| **Histogram** | 直方图，用于请求延迟分布、响应大小分布等          | `evocaw_request_duration_seconds` |
+
+### 12.3 追踪配置
+
+EvoClaw 支持分布式追踪，可在 `.env` 中配置：
+
+```ini
+EvoClaw_OBSERVABILITY_ENABLED=true
+EvoClaw_TRACING_ENDPOINT=http://localhost:4318/v1/traces
+EvoClaw_TRACING_SAMPLE_RATE=0.1
+```
+
+| 参数                            | 说明                    | 默认值                          |
+| ----------------------------- | --------------------- | ---------------------------- |
+| `EvoClaw_TRACING_ENDPOINT`    | OTLP 兼容的追踪接收端点        | `http://localhost:4318/v1/traces` |
+| `EvoClaw_TRACING_SAMPLE_RATE` | 采样率 (0.0 - 1.0)      | `0.1`                        |
+
+### 12.4 健康报告
+
+可观测性模块会定期生成健康报告，包含：
+
+- 各子系统状态（LLM、Channel、Skill、Evolution）
+- 资源使用情况（内存、CPU、连接池）
+- 错误率与延迟统计
+
+```bash
+curl http://localhost:17788/health/report
+```
+
+***
+
+> **文档版本**: 1.1\
+> **适用版本**: EvoClaw v0.9.0\
+> **最后更新**: 2026-05-30
 

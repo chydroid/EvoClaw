@@ -5,6 +5,84 @@
 
 ---
 
+## v0.9.0 (2026-05-30)
+
+### Hermes 对标优化 + WebUI 改进 + 文档更新
+
+- **文件**: `packages/agent/src/context-engine.ts`、`packages/agent/src/copilot-router.ts`、`packages/agent/src/credential-pool.ts`、`packages/agent/src/agent-model-executor.ts`、`packages/evolution/src/constraint-gate.ts`、`packages/evolution/src/external-reflector.ts`、`packages/evolution/src/evolution-engine.ts`、`packages/memory/src/fts5-search.ts`、`packages/memory/src/memory-curator.ts`、`packages/memory/src/memory-hub.ts`、`packages/security/src/security-middleware.ts`、`packages/skills/src/skill-index.ts`、`packages/infrastructure/src/observability.ts`、`packages/gateway/src/gateway-server.ts`、`packages/web-ui/src/App.tsx`、`packages/web-ui/src/WebChatPage.tsx`、`apps/server/src/index.ts`、`README.md`、`DEPLOYMENT_GUIDE.md`
+
+- **改动**:
+
+  **Prompt 缓存分层 (ContextEngine)**
+  - 新增 `buildFrozenPrefix()` / `buildEphemeralSuffix()` 方法，将提示词分为冻结层(frozen)和临时层(ephemeral)
+  - 新增 `invalidateFrozen()` / `getFrozenHash()` 方法，使用 SHA-256 哈希追踪缓存失效
+  - 冻结层包含系统提示+引导文件+技能+记忆+插件，临时层包含时区/平台/心跳/当前任务
+
+  **Copilot 路由器 (CopilotRouter)**
+  - 智能任务路由：识别代码/数学任务保护不降级，闲聊/格式化/翻译等低价值任务降级到轻量模型
+  - 支持动态增删路由规则，通过 Plugin Hook 系统集成到 `before_model_resolve`
+
+  **凭证池 (CredentialPool)**
+  - 多 API Key 轮换管理，支持 round-robin/random/least-used 三种策略
+  - 自动处理限速冷却与错误禁用，提供统计信息
+
+  **约束门进化 (ConstraintGate)**
+  - 5 道约束门验证进化候选：大小门/描述门/语义门/兼容性门/瞬态故障门
+  - 瞬态故障门检测代码中是否将超时/限速/网络错误硬编码为永久行为
+
+  **外部反思器 (ExternalReflector)**
+  - 失败分类为 transient/systematic/environmental/unknown 四类
+  - 推断根因，生成改进建议（重试逻辑/熔断器/输入校验等）
+  - 通过 `crossValidate` 与内部评分交叉验证
+
+  **FTS5 全文检索 (FTS5SearchEngine)**
+  - 基于 SQLite FTS5 虚拟表实现全文检索，支持 BM25 排名
+  - 按会话/类型/时间范围过滤，摘要生成
+  - better-sqlite3 不可用时自动降级为内存 Map 关键词匹配
+
+  **记忆策展器 (MemoryCurator)**
+  - 自动评估对话轮次是否值得持久化为记忆
+  - 模式识别：用户偏好/环境事实/经验教训/任务模式
+  - 注入攻击和敏感信息扫描（API Key/密码/Token），拒绝存储
+
+  **安全中间件 (SecurityMiddleware)**
+  - ContentGuard + SSRFProtection 集成到 Plugin Hook 系统
+  - 拦截消息接收（注入检测+净化）、消息发送（系统提示泄露+PII过滤）、工具调用前（URL校验）
+  - JWT 密钥强度验证
+
+  **技能渐进索引 (SkillIndex)**
+  - 三级渐进加载：L0(~20t) 名称+摘要 / L1(~200t) 描述+指令前500字 / L2(1000+t) 完整指令
+  - 关键词搜索按名称/关键词/描述/指令加权评分，叠加使用频率和成功率
+
+  **可观测性 (Observability)**
+  - Counter/Gauge/Histogram 三类指标，支持标签化作用域
+  - OTEL 兼容分布式追踪（span 创建/事件/属性/结束）
+  - Prometheus 文本格式导出，`/metrics` 端点公开访问
+  - LLM 调用/工具执行延迟埋点
+
+  **Gateway 改进**
+  - 新增 `/api/config/avatars` GET/PUT 路由，修复前端 404 错误
+  - `/metrics` 端点移到认证中间件之前，支持公开访问
+  - 请求延迟追踪集成
+
+  **WebUI 优化**
+  - 汉堡菜单按钮仅在窄屏（<768px）时显示，桌面端默认隐藏
+  - Header LOGO 统一使用 `favicon-48x48.png`
+  - 认证页面和加载页面 LOGO 统一更新
+  - 对话输入框下方语音输入(🎤)和设置(⚙)按钮隐藏，待后续开发
+  - 消息气泡样式优化：使用主题变量、添加边框和阴影、行高调整
+  - 输入框焦点样式：添加 accent 色边框和发光效果
+  - 空状态页面增加 padding 和 gap
+  - 移动端 header 标题字号自适应缩小
+
+  **文档更新**
+  - README.md 全面修订：版本号 0.9.0、新增 10 个模块描述、架构图更新、API 端点更新、Web 仪表盘标签页补全
+  - DEPLOYMENT_GUIDE.md 更新：版本号 v0.9.0、新增环境变量、LLM 模型列表更新、可观测性配置章节、端口统一为 17788
+
+- **测试**: 87 个测试文件，1973 个测试用例，全部通过 ✅
+
+---
+
 ## v0.8.0 (2026-05-29)
 
 ### 功能审计补齐 + 安全修复 + CI/CD 修复
