@@ -1114,7 +1114,7 @@ export class AgentModelExecutor {
   async chat(
     message: string,
     context?: Record<string, unknown>
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
@@ -1138,11 +1138,11 @@ export class AgentModelExecutor {
         attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
       });
       if (blocked) {
-        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, duration: 0, permissionRequests: [], toolsExecuted: false };
+        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
       }
       const mergedBA = merged as Partial<import("@evoclaw/core").BeforeAgentStartResult>;
       if (mergedBA.syntheticReply) {
-        return { reply: mergedBA.syntheticReply, tokensUsed: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false };
+        return { reply: mergedBA.syntheticReply, tokensUsed: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
       }
       if (mergedBA.message) effectiveMessage = mergedBA.message;
     }
@@ -1448,9 +1448,9 @@ export class AgentModelExecutor {
         });
         const reply = `📅 ${timestamp}\n\n${AgentModelExecutor.collapseNewlines(result.reply)}`;
         if (pendingPermissions.length > 0) {
-          return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted };
+          return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted, files: result.files };
         }
-        return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted };
+        return { reply, tokensUsed: result.tokensUsed, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted, files: result.files };
       }
     }
 
@@ -2165,11 +2165,12 @@ export class AgentModelExecutor {
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
     attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean } | null> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     const MAX_TOOL_ROUNDS = 10;
     const MAX_CONSECUTIVE_ERRORS = 3;
     let totalTokensUsed = 0;
     let anyToolExecuted = false;
+    const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
 
     const skillsPrompt = await this.buildSkillsPromptForRun();
 
@@ -2347,6 +2348,17 @@ export class AgentModelExecutor {
                 }
                 anyToolExecuted = true;
 
+                if ((toolName === "file_create" || toolName === "file_modify") && rawResult && typeof rawResult === "object") {
+                  const r = rawResult as Record<string, unknown>;
+                  if (r.path && typeof r.path === "string") {
+                    createdFiles.push({
+                      path: r.path as string,
+                      size: (r.size as number) || 0,
+                      downloadUrl: `/api/files/download/${(r.path as string).replace(/\\/g, "/")}`,
+                    });
+                  }
+                }
+
                 // Record successful tool execution in EventLedger
                 const ledger = this.getEventLedger();
                 if (ledger) {
@@ -2465,6 +2477,7 @@ export class AgentModelExecutor {
             duration: Date.now() - startTime,
             permissionRequests: pendingPermissions.length > 0 ? pendingPermissions : [],
             toolsExecuted: anyToolExecuted,
+            files: createdFiles,
           };
         }
 
@@ -2487,6 +2500,7 @@ export class AgentModelExecutor {
       duration: Date.now() - startTime,
       permissionRequests: pendingPermissions,
       toolsExecuted: false,
+      files: [],
     };
   }
 

@@ -777,7 +777,7 @@ export class ProtocolAdapter {
         }
 
         const agentExecutor = this.registry.resolveService<{
-          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }> }>;
+          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
           getGreeting(): string | null;
         }>("agentModelExecutor");
 
@@ -837,6 +837,7 @@ export class ProtocolAdapter {
           duration: result.duration,
           sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
+          files: result.files || [],
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -2755,6 +2756,99 @@ export class ProtocolAdapter {
         }
       } catch (err) {
         this.handleError(err, res, "Failed to reset circuit breaker");
+      }
+    });
+
+    app.get("/api/files/download/*", (req: Request, res: Response) => {
+      try {
+        const filePath = req.params[0] as string;
+        if (!filePath || filePath.includes("..")) {
+          res.status(400).json({ error: "Invalid file path" });
+          return;
+        }
+
+        const workspacePath = process.env.EvoClaw_WORKSPACE || path.resolve(process.cwd(), "data", "workspace");
+        const fullPath = path.resolve(workspacePath, filePath);
+
+        if (!fullPath.startsWith(path.resolve(workspacePath))) {
+          res.status(403).json({ error: "Access denied: path traversal detected" });
+          return;
+        }
+
+        if (!fs.existsSync(fullPath)) {
+          const altBase = process.cwd();
+          const altPath = path.resolve(altBase, filePath);
+          if (altPath.startsWith(altBase) && fs.existsSync(altPath)) {
+            const stat = fs.statSync(altPath);
+            if (stat.isDirectory()) {
+              res.status(400).json({ error: "Path is a directory, not a file" });
+              return;
+            }
+            const filename = path.basename(altPath);
+            res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+            res.setHeader("Content-Type", "application/octet-stream");
+            res.setHeader("Content-Length", stat.size);
+            fs.createReadStream(altPath).pipe(res);
+            return;
+          }
+          res.status(404).json({ error: "File not found" });
+          return;
+        }
+
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          res.status(400).json({ error: "Path is a directory, not a file" });
+          return;
+        }
+
+        const filename = path.basename(fullPath);
+        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Content-Length", stat.size);
+        fs.createReadStream(fullPath).pipe(res);
+      } catch (err) {
+        this.handleError(err, res, "Failed to download file");
+      }
+    });
+
+    app.get("/api/files/list", (req: Request, res: Response) => {
+      try {
+        const dirPath = (req.query.path as string) || ".";
+        if (dirPath.includes("..")) {
+          res.status(400).json({ error: "Invalid path" });
+          return;
+        }
+
+        const workspacePath = process.env.EvoClaw_WORKSPACE || path.resolve(process.cwd(), "data", "workspace");
+        const fullPath = path.resolve(workspacePath, dirPath);
+
+        if (!fullPath.startsWith(path.resolve(workspacePath))) {
+          res.status(403).json({ error: "Access denied" });
+          return;
+        }
+
+        if (!fs.existsSync(fullPath)) {
+          res.status(404).json({ error: "Directory not found" });
+          return;
+        }
+
+        const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+        const files = entries.map((entry) => {
+          const entryPath = path.join(fullPath, entry.name);
+          let size = 0;
+          try { size = fs.statSync(entryPath).size; } catch {}
+          return {
+            name: entry.name,
+            path: path.relative(workspacePath, entryPath).replace(/\\/g, "/"),
+            isDirectory: entry.isDirectory(),
+            size,
+            downloadUrl: entry.isFile() ? `/api/files/download/${path.relative(workspacePath, entryPath).replace(/\\/g, "/")}` : undefined,
+          };
+        });
+
+        res.json({ path: dirPath, files });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list files");
       }
     });
   }

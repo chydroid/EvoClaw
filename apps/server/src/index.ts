@@ -525,21 +525,21 @@ export class EvoClawServer {
       "file_create",
       {
         name: "file_create",
-        description: "Create a new file at the specified path with the given content",
+        description: "Create a new file at the specified path with the given content. If the file already exists and overwrite is true, the file will be replaced. After creating a file, always inform the user of the file path and that they can download it via /api/files/download/{path}.",
         parameters: {
           path: { type: "string", description: "Relative file path to create" },
           content: { type: "string", description: "Content to write to the file" },
+          overwrite: { type: "boolean", description: "Whether to overwrite if file already exists (default: false)" },
         },
       },
       async (params: Record<string, unknown>) => {
         const filePath = String(params.path || "");
         const content = String(params.content || "");
-        // Resolve absolute path for directory whitelist check
+        const overwrite = params.overwrite === true;
         const resolvedPath = path.resolve(fsBase, filePath);
         if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
-          // Also record to permissionRelay for WebUI display
           permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
-          return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
+          return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content, overwrite));
         }
         const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
         if (permRequest.status === "denied") {
@@ -549,7 +549,7 @@ export class EvoClawServer {
           permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
           return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_create", description: permRequest.description, target: filePath, error: `Awaiting user approval to create: ${filePath}` };
         }
-        return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content));
+        return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content, overwrite));
       }
     );
 

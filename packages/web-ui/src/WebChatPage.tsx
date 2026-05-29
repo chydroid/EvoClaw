@@ -115,6 +115,7 @@ interface WebChatMessage {
   actions?: Array<{ label: string; type: string }>;
   permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>;
   attachments?: AttachedFileInfo[];
+  files?: Array<{ path: string; size: number; downloadUrl: string }>;
 }
 
 interface AttachedFileInfo {
@@ -732,7 +733,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         setMessages((prev) =>
           prev.map((m) =>
             m.id === botMsgId
-              ? { ...m, content: data.reply || "(empty response from server)" }
+              ? {
+                  ...m,
+                  content: data.reply || "(empty response from server)",
+                  files: (data.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
+                }
               : m,
           ),
         );
@@ -1302,6 +1307,36 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   <div style={{ ...thinkingBadgeStyle, background: "rgba(248,113,113,0.15)", borderColor: "var(--error, #f87171)", marginBottom: "8px" }}>
                     <span>🔐</span>
                     <span>{msg.permissionRequests.length} 项权限请求</span>
+                  </div>
+                )}
+
+                {/* File download links */}
+                {msg.files && msg.files.length > 0 && (
+                  <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {msg.files.map((f, i) => (
+                      <a
+                        key={i}
+                        href={f.downloadUrl}
+                        download
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "6px",
+                          padding: "6px 12px", borderRadius: "8px",
+                          background: "var(--bg-card, rgba(124,58,237,0.1))",
+                          border: "1px solid var(--border, rgba(124,58,237,0.3))",
+                          color: "var(--accent, #7c3aed)", textDecoration: "none",
+                          fontSize: "13px", fontWeight: 500,
+                          transition: "background 0.2s, transform 0.1s",
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-hover, rgba(124,58,237,0.2))"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-card, rgba(124,58,237,0.1))"; }}
+                      >
+                        <span>📄</span>
+                        <span>{f.path.split("/").pop() || f.path}</span>
+                        <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                          ({f.size > 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${f.size}B`})
+                        </span>
+                      </a>
+                    ))}
                   </div>
                 )}
 

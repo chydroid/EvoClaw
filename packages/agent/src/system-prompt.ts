@@ -61,6 +61,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "After a tool call, report the result based on the actual tool output."
   );
   sections.push("");
+  sections.push("## File Operations");
+  sections.push(
+    "When creating files for the user (documents, tutorials, reports, etc.):"
+  );
+  sections.push("1. Use `file_create` with the file path and content. Set `overwrite: true` if updating an existing file.");
+  sections.push("2. Always save files to the `data/workspace/` directory (e.g., `data/workspace/macOS-tutorial.md`).");
+  sections.push("3. After creating a file, tell the user: the file path, and that they can download it via the download link.");
+  sections.push("4. Format: 📄 文件已保存: `{path}` | [点击下载](/api/files/download/{path})");
+  sections.push("5. For large content, create the file directly — do NOT output the full content in your reply text. Just summarize what was created and provide the download link.");
+  sections.push("");
 
   sections.push("## Execution Strategy (MANDATORY)");
   sections.push(

@@ -68,20 +68,21 @@ export class FileSystemManager {
     }
   }
 
-  async createFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
+  async createFile(relativePath: string, content: string, overwrite = false): Promise<{ path: string; size: number; created: boolean }> {
     const fullPath = this.resolvePath(relativePath);
     await this.validatePath(fullPath);
 
-    if (fsSync.existsSync(fullPath)) {
+    const existed = fsSync.existsSync(fullPath);
+    if (existed && !overwrite) {
       throw new Error(`File already exists: ${relativePath}`);
     }
 
     await this.ensureDir(relativePath);
     await this.writeContent(fullPath, content);
-    await this.writeAuditLog("create", relativePath, true);
+    await this.writeAuditLog(existed ? "modify" : "create", relativePath, true);
 
     const fileStat = await stat(fullPath);
-    return { path: relativePath, size: fileStat.size };
+    return { path: relativePath, size: fileStat.size, created: !existed };
   }
 
   async modifyFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
