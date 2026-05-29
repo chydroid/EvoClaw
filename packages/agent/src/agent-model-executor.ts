@@ -2387,11 +2387,24 @@ export class AgentModelExecutor {
                   }
                 }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
+                const toolObs = this.registry?.resolveService<any>("observability");
+                if (toolObs) {
+                  const latency = Date.now() - toolStartTime;
+                  toolObs.increment("evoclaw_tool_calls_total", 1, { tool: toolName || "unknown", status: "success" });
+                  toolObs.observe("evoclaw_tool_latency_ms", latency, { tool: toolName || "unknown", status: "success" });
+                }
               } catch (err: unknown) {
                 toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
                 toolErrored = true;
                 toolError = err instanceof Error ? err.message : String(err);
                 console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
+
+                const toolErrObs = this.registry?.resolveService<any>("observability");
+                if (toolErrObs) {
+                  const latency = Date.now() - toolStartTime;
+                  toolErrObs.increment("evoclaw_tool_calls_total", 1, { tool: toolName || "unknown", status: "error" });
+                  toolErrObs.observe("evoclaw_tool_latency_ms", latency, { tool: toolName || "unknown", status: "error" });
+                }
 
                 // Record failed tool execution in EventLedger
                 const ledger = this.getEventLedger();
@@ -2567,8 +2580,9 @@ export class AgentModelExecutor {
       apiURL = `${apiURL}/chat/completions`;
     }
 
-    try {
+    const startTime = Date.now();
 
+    try {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
@@ -2652,6 +2666,13 @@ export class AgentModelExecutor {
       const msg = choice?.message;
       if (!msg) return null;
 
+      const obs = this.registry?.resolveService<any>("observability");
+      if (obs) {
+        const latency = Date.now() - startTime;
+        obs.increment("evoclaw_llm_calls_total", 1, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "success" });
+        obs.observe("evoclaw_llm_latency_ms", latency, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "success" });
+      }
+
       return {
         message: {
           role: msg.role || "assistant",
@@ -2662,6 +2683,12 @@ export class AgentModelExecutor {
       };
     } catch (err: unknown) {
       clearTimeout(timeoutId);
+      const obs = this.registry?.resolveService<any>("observability");
+      if (obs) {
+        const latency = Date.now() - startTime;
+        obs.increment("evoclaw_llm_calls_total", 1, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "error" });
+        obs.observe("evoclaw_llm_latency_ms", latency, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "error" });
+      }
       let classified: ClassifiedError | undefined;
       if (err instanceof DOMException && err.name === "AbortError") {
         const msg = `LLM provider "${provider.name}" timed out after ${timeout}ms`;

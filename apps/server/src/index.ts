@@ -21,6 +21,9 @@ import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
 import type { ClassificationResult, OrchestrationPlan } from "@evoclaw/intelligence";
 import * as fs from "fs";
+import { SecurityMiddleware } from "@evoclaw/security";
+import { CopilotRouter, CredentialPool } from "@evoclaw/agent";
+import { SkillIndex } from "@evoclaw/skills";
 
 export class EvoClawServer {
   private registry: ServiceRegistry;
@@ -88,6 +91,10 @@ export class EvoClawServer {
   private permissionRelay: PermissionRelay;
   private crestodian: Crestodian;
   private observability: Observability;
+  private securityMiddleware: SecurityMiddleware;
+  private copilotRouter: CopilotRouter;
+  private credentialPool: CredentialPool;
+  private skillIndex: SkillIndex;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -118,6 +125,17 @@ export class EvoClawServer {
     this.observability.registerHealthComponent("memoryHub");
     this.observability.registerHealthComponent("securityGovernor");
     this.observability.registerHealthComponent("messageQueue");
+
+    this.securityMiddleware = new SecurityMiddleware(this.registry, this.eventBus);
+
+    this.copilotRouter = new CopilotRouter();
+    this.registry.registerService("copilotRouter", this.copilotRouter);
+
+    this.credentialPool = new CredentialPool();
+    this.registry.registerService("credentialPool", this.credentialPool);
+
+    this.skillIndex = new SkillIndex();
+    this.registry.registerService("skillIndex", this.skillIndex);
 
     // ── Config validation (OpenClaw parity) ──
     this.configValidator = new ConfigValidator(CONFIG_SCHEMA);
@@ -372,6 +390,16 @@ export class EvoClawServer {
     // ── Compat layer: check for legacy env vars ──
     printMigrationHints();
 
+    const jwtSecret = process.env.JWT_SECRET || "";
+    const jwtValidation = this.securityMiddleware.validateJWTSecret(jwtSecret);
+    if (!jwtValidation.valid) {
+      this.logger.warn("security", `JWT secret validation failed: ${jwtValidation.reason}. Please set a strong JWT_SECRET environment variable.`);
+      if (process.env.NODE_ENV === "production") {
+        this.logger.fatal("security", "Refusing to start in production with weak JWT secret");
+        process.exit(1);
+      }
+    }
+
     this.logger.info("server", "Starting all services...");
 
     this.logger.info("server", "Gateway server starting...");
@@ -405,6 +433,34 @@ export class EvoClawServer {
     }
     this.skillManager.startAutoScan(skillsDir, 30000);
 
+    this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {
+      try {
+        const skill = event?.data;
+        if (skill) this.skillIndex.indexSkill(skill);
+      } catch { /* non-critical */ }
+    });
+
+    this.eventBus.subscribe(SystemEvents.SKILL_UNINSTALLED, async (event: any) => {
+      try {
+        const skill = event?.data;
+        if (skill?.id) this.skillIndex.removeSkill(skill.id);
+      } catch { /* non-critical */ }
+    });
+
+    this.eventBus.subscribe(SystemEvents.SKILL_EXECUTED, async (event: any) => {
+      try {
+        const data = event?.data;
+        if (data?.skillId) this.skillIndex.updateStats(data.skillId, true);
+      } catch { /* non-critical */ }
+    });
+
+    this.eventBus.subscribe(SystemEvents.SKILL_FAILED, async (event: any) => {
+      try {
+        const data = event?.data;
+        if (data?.skillId) this.skillIndex.updateStats(data.skillId, false);
+      } catch { /* non-critical */ }
+    });
+
     setTimeout(async () => {
       try {
         await this.skillManager.checkAndTranslateInstalledSkills();
@@ -435,6 +491,7 @@ export class EvoClawServer {
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools(fsBase);
     this.registerAutoSkillTool();
+    this.registerSkillIndexTools();
     this.registerTaskPlannerTool();
     this.registerBootstrapTool();
     this.registerPermissionTools();
@@ -463,6 +520,53 @@ export class EvoClawServer {
     } catch (err) {
       this.logger.error("server", `Failed to load built-in plugins: ${err}`);
     }
+
+    this.securityMiddleware.registerHooks(this.pluginManager);
+
+    await this.pluginManager.registerPlugin({
+      manifest: { name: "copilot-router", version: "1.0.0", description: "Routes low-value tasks to cheaper models" },
+      hooks: [
+        {
+          hookType: "before_model_resolve",
+          priority: "normal" as const,
+          handler: async (hook: any) => {
+            const taskDesc = hook?.context?.text || hook?.context?.message || "";
+            if (!taskDesc || !this.copilotRouter) return;
+            const currentModel = hook?.model || "unknown";
+            const currentProvider = hook?.provider || "unknown";
+            const decision = this.copilotRouter.route(taskDesc, currentModel, currentProvider);
+            if (decision.shouldDowngrade) {
+              hook.model = decision.routedModel;
+              hook.provider = decision.routedProvider;
+              this.logger.info("copilot", `Routed to ${decision.routedModel} (${decision.routedProvider}): ${decision.reason}`);
+              return { model: decision.routedModel, provider: decision.routedProvider };
+            }
+            return;
+          },
+        },
+      ],
+    });
+
+    this.eventBus.subscribe("agent_end", async (event: any) => {
+      try {
+        const data = event?.data;
+        if (!data?.userMessage || !data?.agentResponse) return;
+        await this.memoryHub.curateFromTurn(
+          data.userMessage,
+          data.agentResponse,
+          data.context || {},
+        );
+      } catch { /* non-critical */ }
+    });
+
+    this.eventBus.subscribe("memory_stored", async () => {
+      try {
+        this.memoryHub.freezeMemorySnapshot();
+        if (this.contextEngine) {
+          this.contextEngine.invalidateFrozen();
+        }
+      } catch { /* non-critical */ }
+    });
 
     this.logger.info("server", "Evolution engine starting...");
     this.logger.info("server", "Evolution engine online");
@@ -2297,6 +2401,46 @@ export class EvoClawServer {
           })),
           structure: planner.getTemplateStructure(template),
         };
+      }
+    );
+  }
+
+  private registerSkillIndexTools(): void {
+    const index = this.skillIndex;
+
+    this.agentModelExecutor.registerTool(
+      "skill_view",
+      {
+        name: "skill_view",
+        description: "View a skill at a specific detail level. Level 0 = brief (~20 tokens), Level 1 = detailed (~200 tokens), Level 2 = full instructions (~1000+ tokens). Default: Level 1.",
+        parameters: {
+          skill: { type: "string", description: "Skill name or ID to view" },
+          level: { type: "number", description: "Detail level: 0 (brief), 1 (detailed), 2 (full). Default: 1" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const skillName = String(params.skill || "");
+        const level = Number(params.level ?? 1) as 0 | 1 | 2;
+        const allEntries = index.getAll();
+        const entry = allEntries.find(e => e.name === skillName || e.id === skillName);
+        if (!entry) return { error: `Skill "${skillName}" not found in index` };
+        const content = index.getSkillLevel(entry.id, level);
+        if (!content) return { error: `Skill "${skillName}" level ${level} not available` };
+        return { skillName: entry.name, level, content, successRate: entry.successRate, useCount: entry.useCount };
+      }
+    );
+
+    this.agentModelExecutor.registerTool(
+      "skill_index_list",
+      {
+        name: "skill_index_list",
+        description: "List all skills in the compact Level 0 index (minimal token usage)",
+        parameters: {},
+      },
+      async () => {
+        const level0 = index.getLevel0Index();
+        const count = index.getSize();
+        return { count, index: level0 };
       }
     );
   }
