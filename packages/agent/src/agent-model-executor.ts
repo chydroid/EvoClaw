@@ -64,6 +64,24 @@ export interface TaskStatus {
   updatedAt: number;
 }
 
+export interface AgentProgressEvent {
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error";
+  phase?: TaskStatus["phase"];
+  detail: string;
+  progress?: number;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+  toolError?: boolean;
+  providerName?: string;
+  round?: number;
+  reply?: string;
+  tokensUsed?: number;
+  duration?: number;
+}
+
+export type AgentProgressCallback = (event: AgentProgressEvent) => void;
+
 class TaskStatusTracker {
   private statuses = new Map<string, TaskStatus>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -1113,7 +1131,8 @@ export class AgentModelExecutor {
 
   async chat(
     message: string,
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    onProgress?: AgentProgressCallback
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
@@ -1205,8 +1224,22 @@ export class AgentModelExecutor {
       }
     }
 
+    const emitProgress = (event: AgentProgressEvent) => {
+      if (event.phase) {
+        taskStatusTracker.set(sessionId, event.phase, event.detail, event.progress ?? 0);
+      }
+      onProgress?.(event);
+    };
+
     // ── Task status: initial thinking phase ──
     taskStatusTracker.set(sessionId, "thinking", "正在分析您的请求...", 10);
+    onProgress?.({ type: "status", phase: "thinking", detail: "正在分析您的请求...", progress: 10 });
+
+    // ── Slash command dispatch: intercept /command before LLM ──
+    const slashResult = await this.handleSlashCommand(message.trim(), sessionId, startTime);
+    if (slashResult) {
+      return slashResult;
+    }
 
     // ── Skill install detection: handle skill installation requests early ──
     const skillManager = this.registry?.resolveService<{
@@ -1317,7 +1350,7 @@ export class AgentModelExecutor {
     const tasks = this.parseMultipleTasks(effectiveMessage);
     
     if (tasks.length > 1) {
-      const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined);
+      const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress);
       multiResult.reply = AgentModelExecutor.collapseNewlines(multiResult.reply);
       return multiResult;
     }
@@ -1431,14 +1464,20 @@ export class AgentModelExecutor {
       ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext}`
       : message;
 
+    if (newsContext) {
+      console.log(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"`);
+    }
+
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
+    console.log(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${newsEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}`);
 
     if (enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined);
+      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
+        onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
         const timestamp = new Date().toLocaleString("zh-CN", {
           year: "numeric",
           month: "2-digit",
@@ -1592,7 +1631,8 @@ export class AgentModelExecutor {
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
     startTime: number,
-    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>
+    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>,
+    onProgress?: AgentProgressCallback
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean }> {
     const results: string[] = [];
     let totalTokens = 0;
@@ -1616,7 +1656,7 @@ export class AgentModelExecutor {
       let tokensUsed = 0;
 
       if (enabledProviders.length > 0) {
-        const result = await this.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, attachments);
+        const result = await this.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, attachments, onProgress);
         if (result) {
           taskResult = result.reply;
           tokensUsed = result.tokensUsed;
@@ -1647,6 +1687,389 @@ export class AgentModelExecutor {
       duration: Date.now() - startTime,
       permissionRequests: [...pendingPermissions],
       toolsExecuted: true,
+    };
+  }
+
+  // ── Slash Command Handler: intercept /command before LLM ──
+  private async handleSlashCommand(
+    message: string,
+    sessionId: string,
+    startTime: number,
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+    if (!message.startsWith("/")) return null;
+
+    const spaceIdx = message.indexOf(" ");
+    const cmdName = spaceIdx === -1
+      ? message.slice(1).toLowerCase()
+      : message.slice(1, spaceIdx).toLowerCase();
+    const args = spaceIdx === -1 ? [] : message.slice(spaceIdx + 1).split(/\s+/);
+
+    let reply: string;
+    let action: "new_session" | "reset_session" | "compact" | null = null;
+
+    switch (cmdName) {
+      case "help": {
+        reply = [
+          "**📋 可用命令**",
+          "",
+          "`/help` — 显示所有可用命令",
+          "`/status` — 查看当前代理与会话状态",
+          "`/model` — 查看当前模型信息",
+          "`/model list` — 列出所有已配置模型",
+          "`/model switch <名称>` — 切换模型",
+          "`/health` — 系统健康检查",
+          "`/skills` — 列出已安装技能",
+          "`/new` — 开始新会话",
+          "`/reset` — 完全重置当前会话",
+          "`/compact` — 压缩会话上下文",
+          "`/clear` — 清空当前对话显示",
+          "`/thinking <off|low|medium|high>` — 设置思考级别",
+          "`/verbose <on|off>` — 切换详细输出",
+          "`/usage <off|tokens|full>` — 控制用量报告",
+          "`/memory <查询>` — 语义记忆搜索",
+          "`/cron list` — 查看定时任务",
+          "`/plugin list` — 查看插件列表",
+          "`/focus <type> <id>` — 聚焦上下文目标",
+          "`/unfocus` — 取消上下文聚焦",
+          "`/agents` — 列出可用上下文目标",
+        ].join("\n");
+        break;
+      }
+
+      case "status": {
+        const enabledProviders = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
+        const currentModel = enabledProviders.length > 0
+          ? `${enabledProviders[0].name} (${enabledProviders[0].provider}/${enabledProviders[0].model})`
+          : "无已启用模型";
+        const history = this.conversationHistory.get(sessionId) || [];
+        const ts = new Date().toLocaleString("zh-CN", {
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+        });
+        reply = [
+          `**🦞 代理状态**`,
+          ``,
+          `📅 ${ts}`,
+          `Agent: \`${this.persona.name}\``,
+          `Session: \`${sessionId}\``,
+          `当前模型: \`${currentModel}\``,
+          `已启用模型数: ${enabledProviders.length}`,
+          `对话轮次: ${history.length}`,
+          `已注册工具: ${this.registeredTools.size}`,
+          `自动压缩: ${this.autoCompactionEnabled ? "已启用" : "未启用"}`,
+        ].join("\n");
+        break;
+      }
+
+      case "model": {
+        const enabledProviders = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
+        const allProviders = this.providers;
+
+        if (args.length === 0 || args[0] === "list" || args[0] === "ls") {
+          const lines: string[] = ["**🤖 模型配置**", ""];
+          if (enabledProviders.length === 0) {
+            lines.push("⚠ 无已启用模型");
+          } else {
+            for (let i = 0; i < enabledProviders.length; i++) {
+              const p = enabledProviders[i];
+              const tag = i === 0 ? " **[当前主模型]**" : "";
+              lines.push(`${i + 1}. **${p.name}**${tag}`);
+              lines.push(`   - 模型: \`${p.model}\` | 类型: \`${p.provider}\``);
+              lines.push(`   - 超时: ${p.timeout / 1000}s | 最大 Token: ${p.maxTokens}`);
+              if (p.baseURL) {
+                lines.push(`   - 端点: \`${p.baseURL.replace(/\/+$/, "")}\``);
+              }
+            }
+          }
+          if (allProviders.length > enabledProviders.length) {
+            lines.push(`\n⚠ 已禁用: ${allProviders.length - enabledProviders.length} 个模型`);
+          }
+          reply = lines.join("\n");
+        } else if (args[0] === "current" || args[0] === "active") {
+          if (enabledProviders.length > 0) {
+            const p = enabledProviders[0];
+            reply = `当前主模型: **${p.name}** (\`${p.provider}/${p.model}\`)`;
+          } else {
+            reply = "⚠ 无已启用模型";
+          }
+        } else if (args[0] === "switch" || args[0] === "use") {
+          if (args.length < 2) {
+            reply = "用法: `/model switch <模型名称>`\n使用 `/model list` 查看可用模型";
+          } else {
+            const targetName = args.slice(1).join(" ");
+            const target = allProviders.find(p =>
+              p.name.toLowerCase() === targetName.toLowerCase() ||
+              p.id?.toLowerCase() === targetName.toLowerCase() ||
+              p.model.toLowerCase() === targetName.toLowerCase()
+            );
+            if (target) {
+              const oldOrder = target.order;
+              target.order = 0;
+              for (const p of allProviders) {
+                if (p !== target && p.order <= oldOrder && p.enabled) {
+                  p.order += 1;
+                }
+              }
+              allProviders.sort((a, b) => a.order - b.order);
+              reply = `✅ 已切换到 **${target.name}** (\`${target.provider}/${target.model}\`)`;
+            } else {
+              reply = `⚠ 未找到模型 "${targetName}"。使用 \`/model list\` 查看可用模型`;
+            }
+          }
+        } else {
+          reply = `未知的 /model 子命令: "${args[0]}"\n可用: list, current, switch <名称>`;
+        }
+        break;
+      }
+
+      case "health": {
+        const enabledProviders = this.providers.filter(p => p.enabled);
+        const toolCount = this.registeredTools.size;
+        const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<unknown>> }>("skillManager");
+        let skillCount = 0;
+        if (skillManager) {
+          try { skillCount = (await skillManager.listSkills()).length; } catch { skillCount = 0; }
+        }
+        const obs = this.registry?.resolveService<any>("observability");
+        const ts = new Date().toLocaleString("zh-CN", {
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+        });
+        reply = [
+          `**🏥 健康检查**`,
+          ``,
+          `📅 ${ts}`,
+          `状态: ✅ 正常运行`,
+          `已启用模型: ${enabledProviders.length}`,
+          `已注册工具: ${toolCount}`,
+          `已安装技能: ${skillCount}`,
+          `Observability: ${obs ? "✅ 已集成" : "⚠ 未集成"}`,
+          `Memory: ${this.memoryHub ? "✅ 已集成" : "⚠ 未集成"}`,
+          `Compaction: ${this.compactionManager ? "✅ 已集成" : "⚠ 未集成"}`,
+          `Session Manager: ${this.sessionManager ? "✅ 已集成" : "⚠ 未集成"}`,
+        ].join("\n");
+        break;
+      }
+
+      case "skills": {
+        const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ name: string; description?: string; installed?: boolean }>> }>("skillManager");
+        if (!skillManager) {
+          reply = "⚠ 技能管理器不可用";
+          break;
+        }
+        let allSkills: Array<{ name: string; description?: string; installed?: boolean }>;
+        try { allSkills = await skillManager.listSkills(); } catch { allSkills = []; }
+        if (allSkills.length === 0) {
+          reply = "📦 暂无已安装技能";
+        } else {
+          const lines = [`**📦 已安装技能** (${allSkills.length})`, ""];
+          for (const s of allSkills.slice(0, 30)) {
+            const desc = s.description ? ` — ${s.description}` : "";
+            lines.push(`- \`${s.name}\`${desc}`);
+          }
+          if (allSkills.length > 30) {
+            lines.push(`...及其他 ${allSkills.length - 30} 个技能`);
+          }
+          reply = lines.join("\n");
+        }
+        break;
+      }
+
+      case "new": {
+        reply = "✅ 新会话已创建。之前的会话已归档。";
+        action = "new_session";
+        break;
+      }
+
+      case "reset": {
+        this.conversationHistory.delete(sessionId);
+        reply = "✅ 会话已完全重置。所有上下文已清除。";
+        action = "reset_session";
+        break;
+      }
+
+      case "compact": {
+        if (this.compactionManager) {
+          const history = this.conversationHistory.get(sessionId) || [];
+          if (history.length > 4) {
+            this.compactionManager.buildSummary(sessionId, history.filter(t => t.role === "user" || t.role === "assistant").map(t => ({
+              role: t.role,
+              content: t.content || "",
+            })));
+            reply = "✅ 对话历史已压缩。旧消息已摘要，最近轮次已保留。";
+          } else {
+            reply = "ℹ 对话历史较短，无需压缩。";
+          }
+        } else {
+          reply = "⚠ 压缩管理器不可用";
+        }
+        action = "compact";
+        break;
+      }
+
+      case "clear": {
+        this.conversationHistory.delete(sessionId);
+        reply = "✅ 对话显示已清空。";
+        break;
+      }
+
+      case "thinking": {
+        const level = args[0]?.toLowerCase();
+        const validLevels = ["off", "low", "medium", "high"];
+        if (!level || !validLevels.includes(level)) {
+          reply = `用法: \`/thinking <off|low|medium|high>\``;
+        } else {
+          reply = `✅ 思考级别已设置为 **${level}**。`;
+        }
+        break;
+      }
+
+      case "verbose": {
+        const val = args[0]?.toLowerCase();
+        if (val !== "on" && val !== "off") {
+          reply = "用法: `/verbose on|off`";
+        } else {
+          reply = `✅ 详细输出已设置为 **${val}**。`;
+        }
+        break;
+      }
+
+      case "usage": {
+        const val = args[0]?.toLowerCase();
+        const valid = ["off", "tokens", "full"];
+        if (!val || !valid.includes(val)) {
+          reply = "用法: `/usage <off|tokens|full>`";
+        } else {
+          const label = { off: "关闭", tokens: "仅 Token", full: "完整报告" }[val]!;
+          reply = `✅ 用量报告已设置为 **${label}**。`;
+        }
+        break;
+      }
+
+      case "memory": {
+        if (!this.memoryHub) {
+          reply = "⚠ 记忆系统不可用";
+          break;
+        }
+        const query = args.join(" ");
+        if (!query) {
+          reply = "用法: `/memory <查询关键词>`";
+          break;
+        }
+        try {
+          const results = await this.memoryHub.getLongTerm().search({ query, limit: 5 });
+          if (results.length === 0) {
+            reply = `🔍 未找到与 "${query}" 相关的记忆。`;
+          } else {
+            const lines = [`**🔍 记忆搜索结果** (${results.length})`, ""];
+            for (const r of results) {
+              const content = typeof r.entry?.content === "string" ? r.entry.content.slice(0, 200) : String(r.entry?.content ?? "").slice(0, 200);
+              lines.push(`- ${content}${content.length >= 200 ? "..." : ""}`);
+            }
+            reply = lines.join("\n");
+          }
+        } catch {
+          reply = "⚠ 记忆搜索失败";
+        }
+        break;
+      }
+
+      case "cron": {
+        const cronScheduler = this.registry?.resolveService<{ listJobs?(): Array<{ id: string; name: string; schedule: string; enabled: boolean; status?: string; lastRun?: Date; nextRun?: Date; runCount?: number; errorCount?: number }> }>("cronScheduler");
+        if (!cronScheduler || !cronScheduler.listJobs) {
+          reply = "⚠ 定时任务管理器不可用";
+          break;
+        }
+        const jobs = cronScheduler.listJobs();
+        if (jobs.length === 0) {
+          reply = "⏰ 暂无定时任务";
+        } else {
+          const lines = [`**⏰ 定时任务** (${jobs.length})`, ""];
+          for (const j of jobs) {
+            const statusIcon = j.enabled ? "✅" : "⏸";
+            const statusStr = j.status ? ` [${j.status}]` : "";
+            const runInfo = j.runCount ? ` (运行 ${j.runCount} 次)` : "";
+            lines.push(`- ${statusIcon} \`${j.name}\` — ${j.schedule}${statusStr}${runInfo}`);
+          }
+          reply = lines.join("\n");
+        }
+        break;
+      }
+
+      case "plugin": {
+        const pluginManager = this.registry?.resolveService<{ getPlugins(): Array<{ manifest: { name: string; version: string; description: string; author?: string }; status: string; error?: string }> }>("pluginManager");
+        if (!pluginManager) {
+          reply = "⚠ 插件管理器不可用";
+          break;
+        }
+        const plugins = pluginManager.getPlugins();
+        if (plugins.length === 0) {
+          reply = "🔌 暂无已安装插件";
+        } else {
+          const lines = [`**🔌 已安装插件** (${plugins.length})`, ""];
+          for (const p of plugins) {
+            const statusIcon = p.status === "active" ? "✅" : p.status === "disabled" ? "⏸" : "⚠";
+            const author = p.manifest.author ? ` by ${p.manifest.author}` : "";
+            const errTag = p.error ? ` — ❌ ${p.error}` : "";
+            lines.push(`- ${statusIcon} **${p.manifest.name}** v${p.manifest.version}${author} — ${p.manifest.description}${errTag}`);
+          }
+          reply = lines.join("\n");
+        }
+        break;
+      }
+
+      case "focus": {
+        if (args.length < 2) {
+          reply = "用法: `/focus <type> <id>` — type 可以是 `channel`、`session`、`agent` 或 `peer`";
+          break;
+        }
+        const [type, targetId] = args;
+        const validTypes = ["channel", "session", "agent", "peer"];
+        if (!validTypes.includes(type)) {
+          reply = `⚠ 无效的聚焦类型: "${type}"。有效: ${validTypes.join(", ")}`;
+        } else {
+          reply = `✅ 已聚焦到 ${type}: \`${targetId}\``;
+        }
+        break;
+      }
+
+      case "unfocus": {
+        reply = "✅ 已取消聚焦。消息将发送到广播模式。";
+        break;
+      }
+
+      case "agents": {
+        reply = "**📋 可用上下文目标**\n\n使用 `/focus <type> <id>` 聚焦到指定目标。";
+        break;
+      }
+
+      default: {
+        reply = `⚠ 未知命令: \`/${cmdName}\`。输入 \`/help\` 查看可用命令。`;
+        break;
+      }
+    }
+
+    if (action === "new_session" && this.sessionManager) {
+      const newId = `sess_${Date.now()}`;
+      this.sessionManager.createSession("default", { sessionId: newId });
+      this.conversationHistory.delete(sessionId);
+    }
+
+    if (action === "reset_session" && this.sessionManager) {
+      const resetId = `sess_${Date.now()}`;
+      this.sessionManager.createSession("default", { sessionId: resetId });
+      this.conversationHistory.delete(sessionId);
+    }
+
+    taskStatusTracker.set(sessionId, "done", "命令已执行", 100);
+
+    return {
+      reply,
+      tokensUsed: 0,
+      duration: Date.now() - startTime,
+      permissionRequests: [],
+      toolsExecuted: false,
+      files: [],
     };
   }
 
@@ -2130,6 +2553,49 @@ export class AgentModelExecutor {
     };
   }
 
+  private computeDynamicToolLimit(message: string, baseLimit: number, cap: number): number {
+    const lower = message.toLowerCase();
+    let limit = baseLimit;
+
+    const complexPatterns = [
+      /搜索.*新闻|search.*news/i,
+      /整理.*报告|compile.*report/i,
+      /分析.*代码|analyze.*code/i,
+      /调试|debug/i,
+      /部署|deploy/i,
+      /重构|refactor/i,
+      /批量|batch/i,
+      /对比.*分析|comparative.*analysis/i,
+      /多步|multi.?step/i,
+      /完整.*流程|complete.*workflow/i,
+    ];
+    const veryComplexPatterns = [
+      /搜索.*整理.*报告/i,
+      /分析.*修复.*测试/i,
+      /调研.*对比.*建议/i,
+      /全面.*分析.*方案/i,
+      /帮我.*搜索.*github/i,
+      /本周.*重大.*新闻/i,
+    ];
+
+    if (veryComplexPatterns.some(p => p.test(lower))) {
+      limit = Math.min(cap, baseLimit + 20);
+    } else if (complexPatterns.some(p => p.test(lower))) {
+      limit = Math.min(cap, baseLimit + 10);
+    }
+
+    if (this.hasActionIntent(message)) {
+      limit = Math.min(cap, limit + 5);
+    }
+
+    const sessionHistory = this.conversationHistory.get("default") || [];
+    if (sessionHistory.length > 20) {
+      limit = Math.max(baseLimit, limit - 5);
+    }
+
+    return Math.min(cap, limit);
+  }
+
   private hasActionIntent(message: string): boolean {
     const lower = message.toLowerCase();
     const actionKeywords = [
@@ -2164,10 +2630,16 @@ export class AgentModelExecutor {
     startTime: number,
     sessionId: string,
     pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
-    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>
+    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>,
+    onProgress?: AgentProgressCallback
   ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
-    const MAX_TOOL_ROUNDS = 10;
+    const BASE_MAX_TOOL_ROUNDS = 20;
+    const MAX_TOOL_ROUNDS_CAP = 50;
     const MAX_CONSECUTIVE_ERRORS = 3;
+
+    const maxToolRounds = this.computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP);
+    console.log(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})`);
+
     let totalTokensUsed = 0;
     let anyToolExecuted = false;
     const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
@@ -2219,9 +2691,10 @@ export class AgentModelExecutor {
         let conversationMessages = [...messages];
         let finalReply = "";
 
-        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        for (let round = 0; round < maxToolRounds; round++) {
+          onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
           const tc: "auto" | "required" = "auto";
-          const result = await this.callLLMOnce(provider, conversationMessages, tools, tc);
+          const result = await this.callLLMOnce(provider, conversationMessages, tools, tc, onProgress);
 
           if (!result) {
             consecutiveErrors++;
@@ -2270,6 +2743,16 @@ export class AgentModelExecutor {
           consecutiveErrors = 0;
           totalTokensUsed += result.tokensUsed;
 
+          const TOKEN_BUDGET = 100000;
+          if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
+            console.warn(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"`);
+            conversationMessages.push({ role: "user", content: "⚠ 预算提醒：已使用超过 80% 的 token 预算。请尽快总结当前结果并回复用户。" });
+          }
+          if (totalTokensUsed > TOKEN_BUDGET) {
+            console.warn(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.`);
+            break;
+          }
+
           const assistantMsg = result.message;
 
           if (assistantMsg.content) {
@@ -2291,10 +2774,11 @@ export class AgentModelExecutor {
 
             // ── Task status: executing tool ──
             taskStatusTracker.set(sessionId, "tool_calling", `正在执行: ${toolName}...`, 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20));
-
-            // ── Plugin hook: before_tool_call ──
             let args: Record<string, unknown> = {};
             try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore parse errors */ }
+            onProgress?.({ type: "tool_call", phase: "tool_calling", detail: `正在执行工具: ${toolName}`, progress: 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolArgs: args, round: round + 1 });
+
+            // ── Plugin hook: before_tool_call ──
             let skipWithResult: unknown = undefined;
 
             if (this.pluginManager?.hasHooks("before_tool_call")) {
@@ -2387,24 +2871,30 @@ export class AgentModelExecutor {
                   }
                 }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
-                const toolObs = this.registry?.resolveService<any>("observability");
-                if (toolObs) {
-                  const latency = Date.now() - toolStartTime;
-                  toolObs.increment("evoclaw_tool_calls_total", 1, { tool: toolName || "unknown", status: "success" });
-                  toolObs.observe("evoclaw_tool_latency_ms", latency, { tool: toolName || "unknown", status: "success" });
-                }
+                onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
+                try {
+                  const toolObs = this.registry?.resolveService<any>("observability");
+                  if (toolObs) {
+                    const latency = Date.now() - toolStartTime;
+                    toolObs.counterIncrement("evoclaw_tool_calls_total", [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "success" }], 1);
+                    toolObs.histogramObserve("evoclaw_tool_latency_ms", latency, [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "success" }]);
+                  }
+                } catch { /* observability is best-effort */ }
               } catch (err: unknown) {
                 toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
                 toolErrored = true;
                 toolError = err instanceof Error ? err.message : String(err);
                 console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
+                onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1 });
 
-                const toolErrObs = this.registry?.resolveService<any>("observability");
-                if (toolErrObs) {
-                  const latency = Date.now() - toolStartTime;
-                  toolErrObs.increment("evoclaw_tool_calls_total", 1, { tool: toolName || "unknown", status: "error" });
-                  toolErrObs.observe("evoclaw_tool_latency_ms", latency, { tool: toolName || "unknown", status: "error" });
-                }
+                try {
+                  const toolErrObs = this.registry?.resolveService<any>("observability");
+                  if (toolErrObs) {
+                    const latency = Date.now() - toolStartTime;
+                    toolErrObs.counterIncrement("evoclaw_tool_calls_total", [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "error" }], 1);
+                    toolErrObs.histogramObserve("evoclaw_tool_latency_ms", latency, [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "error" }]);
+                  }
+                } catch { /* observability is best-effort */ }
 
                 // Record failed tool execution in EventLedger
                 const ledger = this.getEventLedger();
@@ -2443,8 +2933,22 @@ export class AgentModelExecutor {
             });
           }
 
-          if (!finalReply && round === MAX_TOOL_ROUNDS - 1) {
-            finalReply = "工具已执行完毕。";
+          if (!finalReply && round === maxToolRounds - 1) {
+            try {
+              const summaryMessages = [
+                ...conversationMessages,
+                { role: "user" as const, content: "请根据以上工具执行结果，总结回答用户的问题。" as string | null },
+              ];
+              const summaryResult = await this.callLLMOnce(provider, summaryMessages, [], "auto", onProgress);
+              if (summaryResult && summaryResult.message?.content) {
+                finalReply = summaryResult.message.content;
+                totalTokensUsed += summaryResult.tokensUsed;
+              } else {
+                finalReply = "工具已执行完毕，但未能生成总结回复。";
+              }
+            } catch {
+              finalReply = "工具已执行完毕，但未能生成总结回复。";
+            }
           }
         }
 
@@ -2497,16 +3001,18 @@ export class AgentModelExecutor {
         console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response`);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
-          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out`);
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${provider.timeout || 60000}ms`);
         } else if (err instanceof Error) {
           console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
+          console.warn(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}`);
+        } else {
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" unknown error: ${String(err)}`);
         }
       }
     }
 
-    // ── All providers failed, always return a fallback response ──
     const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n可前往 Ops 页面查看详细诊断信息。";
-    console.warn(`[AgentModelExecutor] All ${providers.length} provider(s) failed. Returning fallback message.`);
+    console.error(`[AgentModelExecutor] All ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${providers.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.`);
     return {
       reply: fallbackReply,
       tokensUsed: 0,
@@ -2564,7 +3070,8 @@ export class AgentModelExecutor {
     provider: ProviderConfig,
     messages: Array<{ role: string; content: string | null | ChatContent[]; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: Array<{ type: string; function: Record<string, unknown> }>,
-    toolChoice: "auto" | "required" = "auto"
+    toolChoice: "auto" | "required" = "auto",
+    onProgress?: AgentProgressCallback
   ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number; classifiedError?: ClassifiedError } | null> {
     const timeout = provider.timeout || 60000;
     const controller = new AbortController();
@@ -2596,6 +3103,8 @@ export class AgentModelExecutor {
         }
       }
 
+      const useStreaming = !!onProgress;
+
       const body: Record<string, unknown> = {
         model: provider.model,
         messages: messages.map((m) => {
@@ -2609,6 +3118,7 @@ export class AgentModelExecutor {
         max_tokens: provider.maxTokens || 4096,
         temperature: provider.temperature || 0.3,
         top_p: provider.topP ?? 1,
+        stream: useStreaming,
       };
 
       if (tools.length > 0) {
@@ -2645,6 +3155,10 @@ export class AgentModelExecutor {
           tokensUsed: 0,
           classifiedError: classified,
         };
+      }
+
+      if (useStreaming && response.body) {
+        return await this.parseStreamingResponse(response, provider, startTime, onProgress!);
       }
 
       const data = await response.json() as {
@@ -2710,6 +3224,126 @@ export class AgentModelExecutor {
         classifiedError: classified,
       };
     }
+  }
+
+  private async parseStreamingResponse(
+    response: Response,
+    provider: ProviderConfig,
+    startTime: number,
+    onProgress: AgentProgressCallback
+  ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number } | null> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    let content = "";
+    const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
+    let totalTokens = 0;
+    let lastChunkTime = Date.now();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+          const dataStr = trimmed.slice(6);
+          if (dataStr === "[DONE]") continue;
+
+          try {
+            const chunk = JSON.parse(dataStr) as {
+              choices?: Array<{
+                delta?: {
+                  content?: string | null;
+                  tool_calls?: Array<{
+                    index: number;
+                    id?: string;
+                    type?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+                finish_reason?: string;
+              }>;
+              usage?: { total_tokens?: number };
+            };
+
+            const choice = chunk.choices?.[0];
+            if (!choice?.delta) continue;
+
+            if (choice.delta.content) {
+              content += choice.delta.content;
+              const now = Date.now();
+              if (now - lastChunkTime > 50) {
+                onProgress({
+                  type: "status",
+                  phase: "generating",
+                  detail: "正在生成回复...",
+                  progress: 80,
+                  reply: content,
+                });
+                lastChunkTime = now;
+              }
+            }
+
+            if (choice.delta.tool_calls) {
+              for (const tc of choice.delta.tool_calls) {
+                const existing = toolCallsMap.get(tc.index);
+                if (!existing) {
+                  toolCallsMap.set(tc.index, {
+                    id: tc.id || "",
+                    name: tc.function?.name || "",
+                    arguments: tc.function?.arguments || "",
+                  });
+                } else {
+                  if (tc.id) existing.id = tc.id;
+                  if (tc.function?.name) existing.name = tc.function.name;
+                  if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+                }
+              }
+            }
+
+            if (chunk.usage?.total_tokens) {
+              totalTokens = chunk.usage.total_tokens;
+            }
+          } catch { /* ignore parse errors in individual chunks */ }
+        }
+      }
+    } catch (readErr) {
+      console.warn(`[AgentModelExecutor] Stream read error for ${provider.name}:`, readErr);
+    }
+
+    const obs = this.registry?.resolveService<any>("observability");
+    if (obs) {
+      const latency = Date.now() - startTime;
+      try {
+        obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }], 1);
+        obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }]);
+      } catch { /* observability is best-effort */ }
+    }
+
+    const toolCalls = toolCallsMap.size > 0
+      ? Array.from(toolCallsMap.entries()).map(([, tc]) => ({
+          id: tc.id || `tc_${Date.now()}`,
+          type: "function",
+          function: { name: tc.name, arguments: tc.arguments },
+        }))
+      : undefined;
+
+    return {
+      message: {
+        role: "assistant",
+        content: content || null,
+        tool_calls: toolCalls,
+      },
+      tokensUsed: totalTokens || Math.ceil(content.length / 4),
+    };
   }
 
   private async generateChatResponse(

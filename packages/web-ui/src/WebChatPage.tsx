@@ -410,6 +410,17 @@ interface SlashCommand {
   category: string;
 }
 
+interface ProgressStep {
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error";
+  detail: string;
+  progress?: number;
+  toolName?: string;
+  toolResult?: string;
+  toolError?: boolean;
+  round?: number;
+  timestamp: number;
+}
+
 const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/help", description: "显示所有可用命令", category: "通用" },
   { name: "/new", description: "开始新会话", usage: "/new [模型]", category: "会话" },
@@ -555,6 +566,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [currentProgress, setCurrentProgress] = useState(0);
+  const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [contextUsed, setContextUsed] = useState(0);
   const [contextLimit, setContextLimit] = useState(60000);
@@ -566,8 +578,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [showCommandPanel, setShowCommandPanel] = useState(false);
   const [commandFilter, setCommandFilter] = useState("");
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [inputHistoryEnabled, setInputHistoryEnabled] = useState(true);
+  const [inputHistoryMax, setInputHistoryMax] = useState(256);
+  const [historyPositionHint, setHistoryPositionHint] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const userAbortedRef = useRef(false);
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
+  const savedInputRef = useRef("");
+  const lastArrowKeyTimeRef = useRef(0);
+  const effectiveSessionIdRef = useRef<string | null>(null);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -578,12 +599,30 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const isComposingRef = useRef(false);
 
   const handleStop = useCallback(() => {
+    userAbortedRef.current = true;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     setIsStreaming(false);
     setStatusMessage(null);
+  }, []);
+
+  const pushInputHistory = useCallback((text: string) => {
+    if (!inputHistoryEnabled || !text.trim()) return;
+    const hist = inputHistoryRef.current;
+    const idx = hist.indexOf(text);
+    if (idx !== -1) hist.splice(idx, 1);
+    hist.unshift(text);
+    if (hist.length > inputHistoryMax) hist.length = inputHistoryMax;
+  }, [inputHistoryEnabled, inputHistoryMax]);
+
+  const showHistoryHint = useCallback((index: number) => {
+    const hist = inputHistoryRef.current;
+    if (hist.length === 0) return;
+    const pos = index === -1 ? hist.length + 1 : index + 1;
+    setHistoryPositionHint(`${pos}/${hist.length}`);
+    setTimeout(() => setHistoryPositionHint(null), 1500);
   }, []);
 
   const handleEnqueue = useCallback(() => {
@@ -599,6 +638,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   // ── Load messages when sessionId prop changes ──
   useEffect(() => {
+    effectiveSessionIdRef.current = initialSessionId || null;
     setContextUsed(0);
     setMessageQueue([]);
     setShowQueuePanel(false);
@@ -624,21 +664,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           const allText = turns.map(t => t.content || "").join("");
           setContextUsed(Math.ceil(allText.length / 4));
         } else {
-          // Empty session — show welcome
-          setMessages([{
-            id: `welcome-${Date.now()}`,
-            role: "assistant",
-            content: "你好！我是 EvoClaw 小助手。有什么我可以帮助你的吗？",
-            timestamp: new Date().toISOString(),
-          }]);
+          setMessages([]);
         }
       } catch {
-        setMessages([{
-          id: `welcome-${Date.now()}`,
-          role: "assistant",
-          content: "你好！我是 EvoClaw 小助手。有什么我可以帮助你的吗？",
-          timestamp: new Date().toISOString(),
-        }]);
+        setMessages([]);
       } finally {
         setIsLoadingHistory(false);
       }
@@ -650,10 +679,30 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   }, [messages]);
 
   const handleSend = async (queuedText?: string) => {
+    userAbortedRef.current = false;
     const text = (queuedText || input).trim();
     const readyFiles = queuedText ? [] : attachedFiles.filter(f => f.status === "done");
     const hasContent = text.length > 0 || readyFiles.length > 0;
-    if (!hasContent || isStreaming || !initialSessionId) return;
+    if (!hasContent || isStreaming) return;
+
+    let sessionId = effectiveSessionIdRef.current;
+    if (!sessionId) {
+      try {
+        const res = await fetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId: "default" }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          sessionId = data.session?.sessionId || data.sessionId;
+          if (sessionId) {
+            effectiveSessionIdRef.current = sessionId;
+          }
+        }
+      } catch { /* ignore */ }
+      if (!sessionId) return;
+    }
 
     const attachmentsForMsg = readyFiles.length > 0 ? readyFiles.map(f => ({...f})) : undefined;
 
@@ -666,6 +715,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     };
 
     setMessages((prev) => [...prev, userMsg]);
+    pushInputHistory(text);
     if (!queuedText) {
       setInput("");
       if (readyFiles.length > 0) {
@@ -697,7 +747,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
     const statusInterval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/chat/status?sessionId=${initialSessionId}`);
+        const res = await fetch(`/api/chat/status?sessionId=${sessionId}`);
         if (res.ok) {
           const status = await res.json();
           if (status && status.phase && status.phase !== "idle") {
@@ -717,7 +767,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     }, 1500);
 
     try {
-      // Build attachment payload for backend
       const attachmentPayload = readyFiles.length > 0 ? readyFiles.map(f => ({
         name: f.name,
         type: f.type,
@@ -725,10 +774,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         data: f.data || null,
       })) : undefined;
 
-      const FETCH_TIMEOUT = 120000;
+      const FETCH_TIMEOUT = 300000;
       const controller = new AbortController();
       abortControllerRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+      setProgressSteps([]);
 
       let res: Response;
       try {
@@ -737,8 +788,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 
             message: text, 
-            sessionId: initialSessionId,
+            sessionId: sessionId,
             attachments: attachmentPayload,
+            stream: true,
           }),
           signal: controller.signal,
         });
@@ -746,10 +798,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         clearTimeout(timeoutId);
         abortControllerRef.current = null;
         if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
+          const wasUserAbort = userAbortedRef.current;
+          userAbortedRef.current = false;
+          const abortMsg = wasUserAbort
+            ? "🛑 已停止生成。"
+            : "⏱️ 请求超时，服务器可能繁忙或模型响应缓慢。请稍后重试或检查模型配置。";
           setMessages((prev) =>
             prev.map((m) =>
               m.id === botMsgId
-                ? { ...m, role: "system", content: "⏱️ 请求超时（超过 2 分钟），服务器可能繁忙或模型响应缓慢。请稍后重试或检查模型配置。" }
+                ? { ...m, role: "system", content: abortMsg }
                 : m,
             ),
           );
@@ -767,10 +824,145 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         clearTimeout(timeoutId);
       }
 
-      if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+
+      if (contentType.includes("text/event-stream") && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let finalData: Record<string, unknown> | null = null;
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            let currentEvent = "";
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                currentEvent = line.slice(7).trim();
+              } else if (line.startsWith("data: ") && currentEvent) {
+                try {
+                  const eventData = JSON.parse(line.slice(6));
+
+                  if (currentEvent === "done") {
+                    finalData = eventData;
+                  } else if (currentEvent === "error") {
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === botMsgId
+                          ? { ...m, role: "system", content: eventData.message || "处理出错" }
+                          : m,
+                      ),
+                    );
+                  } else {
+                    const step: ProgressStep = {
+                      type: eventData.type || currentEvent,
+                      detail: eventData.detail || "",
+                      progress: eventData.progress,
+                      toolName: eventData.toolName,
+                      toolResult: eventData.toolResult,
+                      toolError: eventData.toolError,
+                      round: eventData.round,
+                      timestamp: Date.now(),
+                    };
+                    setProgressSteps((prev) => [...prev, step]);
+
+                    if (eventData.phase === "generating" && eventData.reply) {
+                      setMessages((prev) =>
+                        prev.map((m) =>
+                          m.id === botMsgId
+                            ? { ...m, content: eventData.reply }
+                            : m,
+                        ),
+                      );
+                    }
+
+                    if (eventData.phase) {
+                      const phaseLabels: Record<string, string> = {
+                        thinking: "🧠 思考中",
+                        tool_calling: "🔧 执行工具",
+                        generating: "✍️ 生成回复",
+                        done: "✅ 完成",
+                        error: "❌ 出错",
+                      };
+                      const label = phaseLabels[eventData.phase] || eventData.phase;
+                      setStatusMessage(`${label}: ${eventData.detail}`);
+                    }
+                    if (typeof eventData.progress === "number") {
+                      setCurrentProgress(eventData.progress);
+                    }
+                  }
+                } catch { /* ignore parse errors */ }
+                currentEvent = "";
+              } else if (line.trim() === "") {
+                currentEvent = "";
+              }
+            }
+          }
+        } catch (readErr) {
+          if (readErr instanceof DOMException && readErr.name === "AbortError") {
+            const wasUserAbort = userAbortedRef.current;
+            userAbortedRef.current = false;
+            const abortMsg = wasUserAbort ? "🛑 已停止生成。" : "⏱️ 请求超时。";
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === botMsgId ? { ...m, role: "system", content: abortMsg } : m,
+              ),
+            );
+            return;
+          }
+        }
+
+        if (finalData) {
+          if (finalData.permissionRequests && (finalData.permissionRequests as Array<unknown>).length > 0) {
+            const reqs: PermissionRequest[] = (finalData.permissionRequests as Array<Record<string, unknown>>).map((p) => ({
+              id: (p.id as string) || "",
+              operation: (p.operation as string) || "",
+              description: (p.description as string) || "",
+              target: (p.target as string) || "",
+              messageId: botMsgId,
+            }));
+            const nonWhitelisted = reqs.filter((r) => !isWhitelisted(r.operation));
+            if (nonWhitelisted.length > 0) {
+              setPendingPermissions(nonWhitelisted);
+              setShowPermissionModal(true);
+              return;
+            } else {
+              await autoApprovePermissions(reqs);
+            }
+          }
+
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === botMsgId
+                ? {
+                    ...m,
+                    content: (finalData!.reply as string) || "(empty response from server)",
+                    files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
+                  }
+                : m,
+            ),
+          );
+
+          if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
+            setContextUsed(finalData.tokensUsed as number);
+          } else {
+            const allText = messages.map(m => m.content).join("") + text + ((finalData.reply as string) || "");
+            const estimated = Math.ceil(allText.length / 4);
+            setContextUsed(estimated);
+          }
+          if (typeof finalData.contextLimit === "number") {
+            setContextLimit(finalData.contextLimit as number);
+          }
+        }
+      } else if (res.ok) {
         const data = await res.json();
         
-        // Check for permission requests
         if (data.permissionRequests && data.permissionRequests.length > 0) {
           const reqs: PermissionRequest[] = data.permissionRequests.map((p: Record<string, unknown>) => ({
             id: (p.id as string) || "",
@@ -779,17 +971,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             target: (p.target as string) || "",
             messageId: botMsgId,
           }));
-          
-          // Filter out whitelisted operations
           const nonWhitelisted = reqs.filter((r) => !isWhitelisted(r.operation));
-          
           if (nonWhitelisted.length > 0) {
             setPendingPermissions(nonWhitelisted);
             setShowPermissionModal(true);
-            // Will re-send with approval; keep streaming true until resolved
             return;
           } else {
-            // All permissions are whitelisted - auto-approve
             await autoApprovePermissions(reqs);
           }
         }
@@ -806,7 +993,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           ),
         );
 
-        // Update context usage from server response
         if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
           setContextUsed(data.tokensUsed);
         } else {
@@ -841,11 +1027,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       setStatusMessage(null);
       setIsStreaming(false);
       setCurrentProgress(100);
+      setProgressSteps([]);
       abortControllerRef.current = null;
 
       // Auto-dequeue next message if queue has items
       setMessageQueue(prev => {
-        if (prev.length > 0 && initialSessionId) {
+        if (prev.length > 0 && sessionId) {
           const nextMsg = prev[0];
           const remaining = prev.slice(1);
           setTimeout(() => handleSend(nextMsg), 300);
@@ -895,12 +1082,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         }
         // Retry the original message after approval
         const lastUserMsg = messages.find((m) => m.role === "user");
-        if (lastUserMsg && initialSessionId) {
+        if (lastUserMsg && effectiveSessionIdRef.current) {
           setIsStreaming(true);
           const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: lastUserMsg.content, sessionId: initialSessionId }),
+            body: JSON.stringify({ message: lastUserMsg.content, sessionId: effectiveSessionIdRef.current }),
           });
           if (res.ok) {
             const data = await res.json();
@@ -983,6 +1170,62 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         }
         return;
       }
+    }
+
+    // ── Input history navigation with Up/Down arrows ──
+    if (inputHistoryEnabled && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const textarea = inputRef.current;
+      const hist = inputHistoryRef.current;
+
+      if (textarea && hist.length > 0 && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const now = Date.now();
+        if (now - lastArrowKeyTimeRef.current < 60) {
+          e.preventDefault();
+          return;
+        }
+        lastArrowKeyTimeRef.current = now;
+
+        if (e.key === "ArrowUp") {
+          const cursorAtStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+          if (cursorAtStart || historyIndexRef.current >= 0) {
+            e.preventDefault();
+            if (historyIndexRef.current === -1) {
+              savedInputRef.current = input;
+              historyIndexRef.current = 0;
+            } else {
+              historyIndexRef.current = (historyIndexRef.current + 1) % hist.length;
+            }
+            setInput(hist[historyIndexRef.current]);
+            showHistoryHint(historyIndexRef.current);
+            return;
+          }
+        }
+
+        if (e.key === "ArrowDown") {
+          if (historyIndexRef.current >= 0) {
+            e.preventDefault();
+            const cursorAtEnd = textarea.selectionStart === input.length && textarea.selectionEnd === input.length;
+            if (cursorAtEnd || historyIndexRef.current >= 0) {
+              if (historyIndexRef.current === 0) {
+                setInput(savedInputRef.current);
+                historyIndexRef.current = -1;
+                showHistoryHint(-1);
+              } else {
+                historyIndexRef.current = (historyIndexRef.current - 1 + hist.length) % hist.length;
+                setInput(hist[historyIndexRef.current]);
+                showHistoryHint(historyIndexRef.current);
+              }
+            }
+            return;
+          }
+        }
+      }
+    }
+
+    // Reset history navigation on any other key
+    if (historyIndexRef.current !== -1 && e.key !== "ArrowUp" && e.key !== "ArrowDown") {
+      historyIndexRef.current = -1;
+      savedInputRef.current = "";
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1543,6 +1786,27 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     ) : isStreaming ? (
                       <div style={loadingIndicatorStyle}>
                         <span>{statusMessage || loadingMessages[loadingMessageIndex]}</span>
+                        {progressSteps.length > 0 && (
+                          <div style={{ marginTop: "8px", width: "100%", maxHeight: "200px", overflowY: "auto" }}>
+                            {progressSteps.slice(-8).map((step, i) => (
+                              <div key={i} style={{
+                                fontSize: "12px",
+                                color: step.toolError ? "var(--text-secondary)" : "var(--text-secondary)",
+                                padding: "2px 0",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                opacity: 0.5 + (i / Math.min(progressSteps.length, 8)) * 0.5,
+                              }}>
+                                {step.type === "tool_call" && "🔧"}
+                                {step.type === "tool_result" && (step.toolError ? "❌" : "✅")}
+                                {step.type === "llm_call" && "🧠"}
+                                {step.type === "status" && "📡"}
+                                <span>{step.detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div style={dotsStyle}>
                           <span style={{ ...dotStyle, animationDelay: "0s" }} />
                           <span style={{ ...dotStyle, animationDelay: "0.2s" }} />
@@ -1708,6 +1972,27 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             >
               {textAreaExpanded ? "⤒" : "⤓"}
             </div>
+            {/* History position hint */}
+            {historyPositionHint && (
+              <div style={{
+                position: "absolute",
+                top: "6px",
+                right: "28px",
+                fontSize: "10px",
+                color: "var(--accent, #58a6ff)",
+                background: "var(--bg-primary, #0d1117)",
+                border: "1px solid var(--border, #30363d)",
+                borderRadius: "4px",
+                padding: "1px 6px",
+                opacity: 0.9,
+                zIndex: 5,
+                pointerEvents: "none",
+                fontFamily: "monospace",
+                animation: "fadeIn 0.15s ease-out",
+              }}>
+                {historyPositionHint}
+              </div>
+            )}
           </div>
 
           {/* File preview bar — shows attached files with upload progress */}
@@ -1847,6 +2132,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               {messageQueue.length > 0 && (
                 <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>队列: {messageQueue.length}</span>
               )}
+              <button
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: "11px", color: inputHistoryEnabled ? "var(--accent, #58a6ff)" : "var(--text-muted, #6e7681)", padding: "0 4px", transition: "color 0.15s" }}
+                title={inputHistoryEnabled ? `历史输入已启用 (↑↓浏览, 最多${inputHistoryMax}条)` : "历史输入已禁用"}
+                onClick={() => setInputHistoryEnabled(v => !v)}
+              >
+                {inputHistoryEnabled ? "⏎" : "⏎̶"}
+              </button>
             </div>
 
             {/* Right tools */}

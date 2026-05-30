@@ -4,7 +4,7 @@ export { ActorSystem } from "./actor-system";
 export { DAGExecutor } from "./dag-executor";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor, taskStatusTracker } from "./agent-model-executor";
-export type { TaskStatus } from "./agent-model-executor";
+export type { TaskStatus, AgentProgressEvent, AgentProgressCallback } from "./agent-model-executor";
 export { TaskPlanner } from "./task-planner";
 export { BootstrapManager } from "./bootstrap-manager";
 export { CompactionManager } from "./compaction-manager";

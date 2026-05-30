@@ -771,13 +771,14 @@ export class ProtocolAdapter {
       try {
         const message = (req.body.message as string) || "";
         const attachments = req.body.attachments as Array<{ name: string; type: string; size: number; data: string | null }> | undefined;
+        const useStream = (req.body.stream as boolean) || (req.query.stream === "true");
         if (!message.trim() && (!attachments || attachments.length === 0)) {
           res.status(400).json({ error: "Message or attachment is required" });
           return;
         }
 
         const agentExecutor = this.registry.resolveService<{
-          chat(prompt: string, context?: Record<string, unknown>): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+          chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
           getGreeting(): string | null;
         }>("agentModelExecutor");
 
@@ -787,8 +788,66 @@ export class ProtocolAdapter {
         }
 
         const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
-        
-        // ── Global timeout: always return a response within 5min ──
+
+        // ── SSE Streaming Mode ──
+        if (useStream) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          res.setHeader("X-Accel-Buffering", "no");
+          res.flushHeaders();
+
+          const sendSSE = (event: string, data: unknown) => {
+            try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
+          };
+
+          const onProgress = (event: import("@evoclaw/agent").AgentProgressEvent) => {
+            sendSSE(event.type, event);
+          };
+
+          const CHAT_TIMEOUT = 300000;
+          try {
+            const result = await Promise.race([
+              agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments }, onProgress),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
+            ]);
+
+            let contextLimit = 60000;
+            let sessionTokensUsed = 0;
+            try {
+              const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
+              if (contextEngine) contextLimit = (contextEngine.getConfig().maxContextTokens as number) || 60000;
+            } catch { /* use default */ }
+            try {
+              const lifecycleMgr = this.registry.resolveService<{ getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number }> }>("lifecycleManager");
+              if (lifecycleMgr) {
+                const s = lifecycleMgr.getAllStatuses().find(s => s.sessionId === resolvedSessionId);
+                if (s?.tokensUsed) sessionTokensUsed = s.tokensUsed;
+              }
+            } catch { /* ignore */ }
+
+            sendSSE("done", {
+              reply: result.reply,
+              tokensUsed: result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed,
+              contextLimit,
+              duration: result.duration,
+              sessionId: resolvedSessionId,
+              permissionRequests: result.permissionRequests || [],
+              files: result.files || [],
+            });
+          } catch (chatErr) {
+            if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
+              sendSSE("error", { message: "⏱️ 处理超时，请稍后重试。" });
+            } else {
+              sendSSE("error", { message: String(chatErr) });
+            }
+          } finally {
+            try { res.end(); } catch { /* ignore */ }
+          }
+          return;
+        }
+
+        // ── Non-streaming Mode (original behavior) ──
         const CHAT_TIMEOUT = 300000;
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,

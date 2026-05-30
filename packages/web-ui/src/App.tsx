@@ -236,6 +236,9 @@ export default function App() {
         }));
         list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
         setSessions(list);
+        if (!activeSessionId && list.length > 0) {
+          setActiveSessionId(list[0].sessionId);
+        }
       }
     } catch { /* ignore */ }
     setSessionsLoaded(true);

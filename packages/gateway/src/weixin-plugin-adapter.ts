@@ -423,7 +423,6 @@ export class WeixinPluginAdapter {
     }, 5000);
 
     try {
-      // 使用 EvoClaw 的 agent 处理消息
       const chatContext: Record<string, unknown> = {
         sessionId: `weixin-${fromUserId}`,
         channel: "weixin",
@@ -432,17 +431,41 @@ export class WeixinPluginAdapter {
       if (imageAttachment) {
         chatContext.attachments = [imageAttachment];
       }
+      console.log(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
       const result = await this.agentExecutor.chat(text, chatContext);
 
-      // 停止"正在输入"保活
       clearInterval(typingKeepalive);
-      // 发送"停止输入"
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
 
       if (result.reply) {
         const replyText = typeof result.reply === "string" ? result.reply : String(result.reply);
-        console.log(`[Weixin] Sending reply to ${fromUserId}: ${replyText.substring(0, 80)}...`);
-        await this.sendMessage(account, fromUserId, replyText, message.context_token);
+        const isFallback = replyText.includes("所有已启用的模型提供商均未能响应");
+        if (isFallback) {
+          console.error(`[Weixin] LLM fallback response for ${fromUserId}. tokensUsed=${result.tokensUsed}, duration=${result.duration}ms. Retrying with fresh session...`);
+          const retrySessionId = `weixin-${fromUserId}-retry-${Date.now()}`;
+          const retryContext: Record<string, unknown> = {
+            sessionId: retrySessionId,
+            channel: "weixin",
+            peerId: fromUserId,
+          };
+          try {
+            const retryResult = await this.agentExecutor.chat(text, retryContext);
+            const retryReply = typeof retryResult.reply === "string" ? retryResult.reply : String(retryResult.reply);
+            const retryIsFallback = retryReply.includes("所有已启用的模型提供商均未能响应");
+            if (!retryIsFallback) {
+              console.log(`[Weixin] Retry succeeded for ${fromUserId} with fresh session`);
+              await this.sendMessage(account, fromUserId, retryReply, message.context_token);
+              return;
+            }
+            console.error(`[Weixin] Retry also failed for ${fromUserId}. LLM providers may be down.`);
+          } catch (retryErr) {
+            console.error(`[Weixin] Retry error for ${fromUserId}:`, retryErr);
+          }
+          await this.sendMessage(account, fromUserId, replyText, message.context_token);
+        } else {
+          console.log(`[Weixin] Sending reply to ${fromUserId}: ${replyText.substring(0, 80)}...`);
+          await this.sendMessage(account, fromUserId, replyText, message.context_token);
+        }
       }
     } catch (err) {
       clearInterval(typingKeepalive);

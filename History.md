@@ -5,6 +5,78 @@
 
 ---
 
+## v0.9.4 (2026-05-30)
+
+### 动态工具调用次数调整 + LLM Token 级流式输出 + Token 预算追踪
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/web-ui/src/WebChatPage.tsx`
+
+- **改动**:
+
+  **动态工具调用次数调整机制**（参考 OpenClaw/Hermes 框架）
+  - 新增 `computeDynamicToolLimit()` 方法，基于任务复杂度模式匹配动态计算 `maxToolRounds`
+  - 基础限制 `BASE_MAX_TOOL_ROUNDS = 20`，上限 `MAX_TOOL_ROUNDS_CAP = 50`
+  - 复杂任务模式（搜索新闻、整理报告、分析代码、调试、部署、重构、批量操作等）自动提升 10 轮
+  - 非常复杂任务模式（搜索+整理+报告、分析+修复+测试、调研+对比+建议等）自动提升 20 轮
+  - 包含行动意图（创建、生成、删除、搜索等）的任务额外提升 5 轮
+  - 长对话历史（>20 轮）自动减少 5 轮以节省资源
+  - 新增 `hasActionIntent()` 辅助方法，检测消息中的行动意图关键词
+
+  **Token 预算追踪机制**（参考 Hermes iteration_budget）
+  - 新增 `TOKEN_BUDGET = 100000` 全局 token 预算限制
+  - 80% 预算使用时自动注入警告 prompt，提醒 LLM 尽快总结
+  - 100% 预算使用时强制终止工具循环，避免无限消耗
+
+  **LLM Token 级流式输出**（参考 OpenClaw 流式输出机制）
+  - `callLLMOnce()` 方法新增 `stream: true` 模式，当 `onProgress` 回调存在时自动启用
+  - 新增 `parseStreamingResponse()` 方法，解析 LLM SSE 流式响应
+  - 每 50ms 推送一次增量内容到前端，实现逐字生成效果
+  - 支持流式工具调用解析（tool_calls 增量拼接）
+  - 前端收到 `phase: "generating"` 且有 `reply` 时实时更新消息内容
+  - 后端 SSE 端点完整转发所有 `AgentProgressEvent` 类型事件
+
+  **测试验证**
+  - ✅ SSE 流式输出：`Content-Type: text/event-stream` 正确，6 种事件类型全部正常
+  - ✅ Token 级流式渲染：`generating` 事件中 `reply` 字段逐步增长，实现逐字生成
+  - ✅ 动态工具限制：简单问题获得 base=20，复杂任务（"搜索+整理+报告"）获得 40
+  - ✅ Token 预算追踪：80% 警告注入和 100% 强制终止逻辑已就绪
+
+---
+
+## v0.9.3 (2026-05-30)
+
+### SSE 流式进度反馈 + 工具轮次扩展 + 斜线命令修复
+
+- **文件**: `packages/agent/src/agent-model-executor.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/web-ui/src/WebChatPage.tsx`、`packages/agent/src/index.ts`
+
+- **改动**:
+
+  **SSE 流式进度反馈机制**
+  - 新增 `AgentProgressEvent` 接口和 `AgentProgressCallback` 类型，定义 6 种事件类型：`status`、`tool_call`、`tool_result`、`llm_call`、`final`、`error`
+  - `chat()` 和 `tryCallLLM()` 方法新增 `onProgress` 回调参数，在关键执行节点发出进度事件
+  - `/api/chat` 端点新增 SSE 流式模式（`stream: true`），实时推送中间步骤到前端
+  - 非流式模式完全向后兼容，不影响微信等现有渠道
+  - 前端 WebChatPage 使用 `ReadableStream` 解析 SSE 事件，实时显示中间步骤
+  - 加载动画区域新增进度步骤面板，显示最近 8 条中间步骤（🧠 思考、🔧 执行工具、✅ 工具完成、❌ 工具失败）
+  - 步骤透明度渐变，最新步骤最亮
+
+  **工具轮次扩展**
+  - `MAX_TOOL_ROUNDS` 从 10 提升到 20，支持更复杂的多步骤任务
+  - 工具轮次耗尽时，新增 LLM 总结调用，根据已有工具结果生成最终回复（替代硬编码的"工具已执行完毕。"）
+
+  **斜线命令修复**
+  - `/plugin list` 命令修复：从硬编码通用消息改为调用 `pluginManager.getPlugins()` 返回实际插件列表
+  - `/cron list` 命令修复：服务名从 `"scheduler"` 改为 `"cronScheduler"`，方法名从 `listTasks()` 改为 `listJobs()`
+
+  **停止按钮修复**
+  - 新增 `userAbortedRef` 标志位，区分用户主动停止和超时中止
+  - 用户点击停止按钮显示"🛑 已停止生成。"，超时显示"⏱️ 请求超时..."
+
+  **前端超时调整**
+  - `FETCH_TIMEOUT` 从 120 秒提升到 300 秒（5 分钟），与后端超时一致
+
+---
+
 ## v0.9.2 (2026-05-30)
 
 ### 命令提示系统 + 仓库安全清理
