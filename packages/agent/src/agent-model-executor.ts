@@ -1310,7 +1310,7 @@ export class AgentModelExecutor {
             : JSON.stringify(dispatchResult.output, null, 2);
 
           const skillErrorCategories = {
-            auth: ["must be set in environment", "API_KEY", "api key is required", "authentication failed", "unauthorized"],
+            auth: ["must be set in environment", "api key is required", "authentication failed", "unauthorized", "invalid api key", "api_key is not set", "missing api key"],
             rateLimit: ["rate limit exceeded", "quota exceeded", "too many requests"],
             network: ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "network error", "connection refused"],
             config: ["missing required", "config not found", "not configured"],
@@ -1324,6 +1324,7 @@ export class AgentModelExecutor {
           };
 
           const classifiedError = (() => {
+            if (dispatchResult.success) return null;
             const lower = outputStr.toLowerCase();
             for (const [category, patterns] of Object.entries(skillErrorCategories)) {
               if (patterns.some(p => lower.includes(p.toLowerCase()))) {
@@ -1333,7 +1334,7 @@ export class AgentModelExecutor {
             return null;
           })();
 
-          const outputHasError = classifiedError !== null;
+          const outputHasError = !dispatchResult.success && classifiedError !== null;
 
           if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
