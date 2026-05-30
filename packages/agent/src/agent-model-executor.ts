@@ -2669,8 +2669,10 @@ export class AgentModelExecutor {
       const obs = this.registry?.resolveService<any>("observability");
       if (obs) {
         const latency = Date.now() - startTime;
-        obs.increment("evoclaw_llm_calls_total", 1, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "success" });
-        obs.observe("evoclaw_llm_latency_ms", latency, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "success" });
+        try {
+          obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }], 1);
+          obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }]);
+        } catch { /* observability is best-effort */ }
       }
 
       return {
@@ -2686,8 +2688,10 @@ export class AgentModelExecutor {
       const obs = this.registry?.resolveService<any>("observability");
       if (obs) {
         const latency = Date.now() - startTime;
-        obs.increment("evoclaw_llm_calls_total", 1, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "error" });
-        obs.observe("evoclaw_llm_latency_ms", latency, { provider: provider.provider || "unknown", model: provider.model || "unknown", status: "error" });
+        try {
+          obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "error" }], 1);
+          obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "error" }]);
+        } catch { /* observability is best-effort */ }
       }
       let classified: ClassifiedError | undefined;
       if (err instanceof DOMException && err.name === "AbortError") {
