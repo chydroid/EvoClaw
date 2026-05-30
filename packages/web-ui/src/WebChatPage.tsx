@@ -403,6 +403,34 @@ const emptyStateStyle: CSSProperties = {
   gap: "16px",
 };
 
+interface SlashCommand {
+  name: string;
+  description: string;
+  usage?: string;
+  category: string;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "/help", description: "显示所有可用命令", category: "通用" },
+  { name: "/new", description: "开始新会话", usage: "/new [模型]", category: "会话" },
+  { name: "/reset", description: "完全重置当前会话", category: "会话" },
+  { name: "/clear", description: "清空当前对话显示", category: "会话" },
+  { name: "/compact", description: "压缩会话上下文", category: "会话" },
+  { name: "/status", description: "查看系统状态", category: "系统" },
+  { name: "/health", description: "健康检查", category: "系统" },
+  { name: "/model", description: "查看或切换模型", usage: "/model [名称]", category: "模型" },
+  { name: "/skills", description: "列出已安装技能", category: "技能" },
+  { name: "/memory", description: "语义记忆搜索", usage: "/memory <查询>", category: "记忆" },
+  { name: "/thinking", description: "设置思考级别", usage: "/thinking off|low|medium|high", category: "设置" },
+  { name: "/verbose", description: "切换详细输出", usage: "/verbose on|off", category: "设置" },
+  { name: "/usage", description: "控制用量报告", usage: "/usage off|tokens|full", category: "设置" },
+  { name: "/cron", description: "查看定时任务", usage: "/cron list", category: "任务" },
+  { name: "/plugin", description: "查看插件列表", usage: "/plugin list", category: "插件" },
+  { name: "/focus", description: "聚焦上下文目标", usage: "/focus <type> <id>", category: "高级" },
+  { name: "/unfocus", description: "取消上下文聚焦", category: "高级" },
+  { name: "/agents", description: "列出可用上下文目标", category: "高级" },
+];
+
 const actionBtnStyle: CSSProperties = {
   padding: "2px 8px",
   borderRadius: "4px",
@@ -535,6 +563,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [showQueuePanel, setShowQueuePanel] = useState(false);
+  const [showCommandPanel, setShowCommandPanel] = useState(false);
+  const [commandFilter, setCommandFilter] = useState("");
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -909,6 +940,51 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isComposingRef.current || e.nativeEvent.isComposing) return;
+
+    if (showCommandPanel) {
+      const filtered = SLASH_COMMANDS.filter(cmd =>
+        cmd.name.toLowerCase().includes("/" + commandFilter) ||
+        cmd.description.toLowerCase().includes(commandFilter)
+      );
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedCommandIndex(prev => Math.min(prev + 1, filtered.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedCommandIndex(prev => Math.max(prev - 1, 0));
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (filtered.length > 0) {
+          const cmd = filtered[selectedCommandIndex];
+          setInput(cmd.name + " ");
+          setShowCommandPanel(false);
+          setCommandFilter("");
+          inputRef.current?.focus();
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowCommandPanel(false);
+        setCommandFilter("");
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (filtered.length > 0) {
+          const cmd = filtered[selectedCommandIndex];
+          setInput(cmd.name + " ");
+          setShowCommandPanel(false);
+          setCommandFilter("");
+        }
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -924,7 +1000,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   };
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
+    const val = e.target.value;
+    setInput(val);
+    if (val.startsWith("/")) {
+      setCommandFilter(val.slice(1).toLowerCase());
+      setShowCommandPanel(true);
+      setSelectedCommandIndex(0);
+    } else {
+      setShowCommandPanel(false);
+      setCommandFilter("");
+    }
   }, []);
 
   const formatTime = (ts: string) => {
@@ -1217,9 +1302,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           {messages.length === 0 && (
             <div style={emptyStateStyle}>
               <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "48px", marginBottom: "12px" }} />
-              <div style={{ fontSize: "18px", fontWeight: 600, marginBottom: "6px" }}>开始对话</div>
+              <div style={{ fontSize: "18px", fontWeight: 600, marginBottom: "6px" }}>已准备好对话</div>
               <div style={{ fontSize: "14px", maxWidth: "400px" }}>
-                EvoClaw WebChat - 在下方输入消息开始与你的 AI 助手对话
+                在下方输入消息与你的 AI 助手对话，或输入／查看命令。
               </div>
             </div>
           )}
@@ -1495,6 +1580,80 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
         {/* Input */}
         <div style={{ padding: "8px 16px", borderTop: "1px solid var(--border, #30363d)", background: "var(--bg-secondary, #161b22)" }}>
+          {/* Command panel */}
+          {showCommandPanel && (() => {
+            const filtered = SLASH_COMMANDS.filter(cmd =>
+              cmd.name.toLowerCase().includes("/" + commandFilter) ||
+              cmd.description.toLowerCase().includes(commandFilter)
+            );
+            if (filtered.length === 0) return null;
+            const categories = [...new Set(filtered.map(c => c.category))];
+            return (
+              <div style={{
+                marginBottom: "8px",
+                borderRadius: "10px",
+                border: "1px solid var(--border, #30363d)",
+                background: "var(--bg-primary, #0d1117)",
+                maxHeight: "280px",
+                overflowY: "auto",
+                animation: "slideDown 0.15s ease-out",
+              }}>
+                <div style={{ padding: "8px 12px 4px", fontSize: "11px", fontWeight: 600, color: "var(--text-muted, #6e7681)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  命令提示
+                </div>
+                {categories.map(cat => (
+                  <div key={cat}>
+                    <div style={{ padding: "4px 12px", fontSize: "10px", fontWeight: 600, color: "var(--text-muted, #6e7681)", textTransform: "uppercase", letterSpacing: "0.3px", borderTop: cat === categories[0] ? "none" : "1px solid var(--border, #30363d)" }}>
+                      {cat}
+                    </div>
+                    {filtered.filter(c => c.category === cat).map((cmd) => {
+                      const globalIdx = filtered.indexOf(cmd);
+                      const isSelected = globalIdx === selectedCommandIndex;
+                      return (
+                        <div
+                          key={cmd.name}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            background: isSelected ? "var(--accent-bg, rgba(88,166,255,0.12))" : "transparent",
+                            borderLeft: isSelected ? "2px solid var(--accent, #58a6ff)" : "2px solid transparent",
+                            transition: "background 0.1s, border-color 0.1s",
+                          }}
+                          onClick={() => {
+                            setInput(cmd.name + " ");
+                            setShowCommandPanel(false);
+                            setCommandFilter("");
+                            inputRef.current?.focus();
+                          }}
+                          onMouseEnter={() => setSelectedCommandIndex(globalIdx)}
+                        >
+                          <span style={{ fontFamily: "monospace", fontSize: "13px", fontWeight: 600, color: isSelected ? "var(--accent, #58a6ff)" : "var(--text-primary, #c9d1d9)", minWidth: "90px", flexShrink: 0 }}>
+                            {cmd.name}
+                          </span>
+                          <span style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", flex: 1 }}>
+                            {cmd.description}
+                          </span>
+                          {cmd.usage && (
+                            <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace", marginLeft: "8px", flexShrink: 0 }}>
+                              {cmd.usage}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div style={{ padding: "4px 12px 6px", fontSize: "10px", color: "var(--text-muted, #6e7681)", borderTop: "1px solid var(--border, #30363d)", display: "flex", gap: "12px" }}>
+                  <span>↑↓ 导航</span>
+                  <span>↵ 选择</span>
+                  <span>Tab 补全</span>
+                  <span>Esc 关闭</span>
+                </div>
+              </div>
+            );
+          })()}
           {/* Text input row */}
           <div
             style={{ position: "relative" }}
@@ -1519,6 +1678,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               onKeyDown={handleKeyDown}
               onCompositionStart={() => { isComposingRef.current = true; }}
               onCompositionEnd={() => { isComposingRef.current = false; }}
+              onBlur={() => { setTimeout(() => { setShowCommandPanel(false); }, 200); }}
               placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
               rows={1}
               autoComplete="off"
