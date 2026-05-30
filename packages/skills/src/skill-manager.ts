@@ -6,6 +6,8 @@ import {
   type SkillCategory,
   type SkillI18n,
   type SkillExecutionResult,
+  type OpenClawSkillMeta,
+  type SkillConfigStatus,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
 import * as fs from "fs";
@@ -140,6 +142,8 @@ export class SkillManager {
       );
     }
 
+    const savedConfig = this.loadSkillConfig(skillDir);
+
     if (warnings.length > 0) {
       for (const w of warnings) {
         console.warn(`[SkillManager] ⚠ ${w}`);
@@ -187,7 +191,8 @@ export class SkillManager {
       },
       installPath: skillPath,
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
-      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta),
+      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig),
+      openclawMeta: ocMeta,
       requires: parsed.meta.requires || [],
       provides: [],
       triggers,
@@ -321,7 +326,33 @@ export class SkillManager {
   }
 
   async listSkills(): Promise<Skill[]> {
-    return Array.from(this.skills.values());
+    const skills = Array.from(this.skills.values());
+    for (const skill of skills) {
+      if (!skill.openclawMeta) {
+        const parsed = await this.parser.parseFromFile(skill.entryPoint).catch(() => null);
+        skill.openclawMeta = parsed?.meta?.metadata?.openclaw || undefined;
+      }
+      skill.configStatus = this.computeConfigStatus(skill);
+    }
+    return skills;
+  }
+
+  private computeConfigStatus(skill: Skill): SkillConfigStatus {
+    const ocMeta = skill.openclawMeta;
+    if (!ocMeta?.requires?.env || ocMeta.requires.env.length === 0) {
+      return "configured";
+    }
+    const envVars = ocMeta.requires.env;
+    let configured = 0;
+    for (const envVar of envVars) {
+      const value = skill.config[envVar];
+      if (value && String(value).trim() !== "") {
+        configured++;
+      }
+    }
+    if (configured === envVars.length) return "configured";
+    if (configured > 0) return "partial";
+    return "unconfigured";
   }
 
   async getSkill(id: string): Promise<Skill | undefined> {
@@ -569,21 +600,48 @@ export class SkillManager {
   /** Merge OpenClaw metadata required env vars into skill config */
   private buildSkillConfig(
     baseConfig: Record<string, unknown>,
-    ocMeta: import("@evoclaw/core").OpenClawSkillMeta | null | undefined
+    ocMeta: OpenClawSkillMeta | null | undefined,
+    savedConfig: Record<string, unknown> | null = null
   ): Record<string, unknown> {
     const config: Record<string, unknown> = { ...baseConfig };
 
+    const envMeta: Record<string, { required: boolean; description: string; currentSource: "env" | "config" | "none" }> = {};
+    const envSource: Record<string, "env" | "config" | "none"> = {};
+
     if (ocMeta?.requires?.env) {
       for (const envVar of ocMeta.requires.env) {
-        // Use existing env value if set, otherwise empty placeholder
-        if (!(envVar in config)) {
-          config[envVar] = process.env[envVar] || "";
+        const savedValue = savedConfig?.[envVar] as string | undefined;
+        const envValue = process.env[envVar];
+
+        if (savedValue !== undefined && savedValue !== "") {
+          config[envVar] = savedValue;
+          envMeta[envVar] = {
+            required: true,
+            description: `${envVar} configuration`,
+            currentSource: "config",
+          };
+          envSource[envVar] = "config";
+        } else if (envValue) {
+          config[envVar] = envValue;
+          envMeta[envVar] = {
+            required: true,
+            description: `${envVar} configuration`,
+            currentSource: "env",
+          };
+          envSource[envVar] = "env";
+        } else {
+          config[envVar] = "";
+          envMeta[envVar] = {
+            required: true,
+            description: `${envVar} configuration`,
+            currentSource: "none",
+          };
+          envSource[envVar] = "none";
         }
       }
     }
 
     if (ocMeta?.requires?.bins) {
-      // Store required binaries for display purposes
       config._requiredBins = ocMeta.requires.bins;
     }
 
@@ -591,7 +649,222 @@ export class SkillManager {
       config._primaryEnv = ocMeta.primaryEnv;
     }
 
+    if (Object.keys(envMeta).length > 0) {
+      config._envMeta = envMeta;
+    }
+
+    if (Object.keys(envSource).length > 0) {
+      config._envSource = envSource;
+    }
+
     return config;
+  }
+
+  saveSkillConfig(skillId: string, config: Record<string, unknown>): boolean {
+    const skill = this.skills.get(skillId);
+    if (!skill) return false;
+
+    const skillDir = path.dirname(skill.installPath);
+    const configPath = path.join(skillDir, "_config.json");
+
+    const ocMeta = skill.openclawMeta;
+    const envMeta = (skill.config._envMeta || {}) as Record<string, { required: boolean; description: string; currentSource: string }>;
+    const envSource = (skill.config._envSource || {}) as Record<string, string>;
+
+    for (const [key, value] of Object.entries(config)) {
+      if (key.startsWith("_")) continue;
+      skill.config[key] = value;
+      if (ocMeta?.requires?.env?.includes(key)) {
+        envMeta[key] = {
+          required: true,
+          description: `${key} configuration`,
+          currentSource: value && String(value).trim() !== "" ? "config" : "none",
+        };
+        envSource[key] = value && String(value).trim() !== "" ? "config" : "none";
+      }
+    }
+
+    if (Object.keys(envMeta).length > 0) {
+      skill.config._envMeta = envMeta;
+    }
+    if (Object.keys(envSource).length > 0) {
+      skill.config._envSource = envSource;
+    }
+
+    skill.configStatus = this.computeConfigStatus(skill);
+
+    try {
+      const persistable: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(skill.config)) {
+        if (!key.startsWith("_")) {
+          persistable[key] = value;
+        }
+      }
+      fs.writeFileSync(configPath, JSON.stringify(persistable, null, 2), "utf-8");
+      return true;
+    } catch (err) {
+      console.error(`[SkillManager] Failed to save config for ${skillId}:`, err);
+      return false;
+    }
+  }
+
+  loadSkillConfig(skillDir: string): Record<string, unknown> | null {
+    const configPath = path.join(skillDir, "_config.json");
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, "utf-8");
+        return JSON.parse(raw);
+      }
+    } catch (err) {
+      console.warn(`[SkillManager] Failed to load _config.json from ${skillDir}:`, err);
+    }
+    return null;
+  }
+
+  async validateSkillConfig(skillId: string): Promise<{ valid: boolean; errors: string[]; warnings: string[] }> {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return { valid: false, errors: ["Skill not found"], warnings: [] };
+    }
+
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const ocMeta = skill.openclawMeta;
+
+    if (ocMeta?.requires?.env) {
+      for (const envVar of ocMeta.requires.env) {
+        const value = skill.config[envVar];
+        if (!value || String(value).trim() === "") {
+          errors.push(`Required environment variable "${envVar}" is not configured`);
+        }
+      }
+    }
+
+    if (ocMeta?.requires?.bins) {
+      for (const bin of ocMeta.requires.bins) {
+        try {
+          const which = process.platform === "win32" ? "where" : "which";
+          execFileSync(which, [bin], { stdio: "pipe", timeout: 5000 });
+        } catch {
+          warnings.push(`Required binary "${bin}" is not found in PATH`);
+        }
+      }
+    }
+
+    if (ocMeta?.primaryEnv) {
+      const value = skill.config[ocMeta.primaryEnv];
+      if (!value || String(value).trim() === "") {
+        errors.push(`Primary environment variable "${ocMeta.primaryEnv}" is not configured`);
+      }
+    }
+
+    for (const dep of skill.requires || []) {
+      if (!dep.optional) {
+        let found = false;
+        const results = this.registry.searchLocal({ keyword: dep.name });
+        found = results.entries.some((e: { name: string }) => e.name === dep.name);
+        if (!found) {
+          warnings.push(`Required dependency "${dep.name}" is not installed`);
+        }
+      }
+    }
+
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
+  async checkUpdates(): Promise<Array<{ skillId: string; skillName: string; currentVersion: string; latestVersion: string }>> {
+    const updates: Array<{ skillId: string; skillName: string; currentVersion: string; latestVersion: string }> = [];
+    const skills = Array.from(this.skills.values());
+
+    for (const skill of skills) {
+      try {
+        const remoteResult = await this.registry.searchRemote({ keyword: skill.name, limit: 1 });
+        const remoteEntry = remoteResult.entries.find(e => e.name === skill.name);
+        if (remoteEntry && remoteEntry.version !== skill.version) {
+          const comparison = this.compareVersions(remoteEntry.version, skill.version);
+          if (comparison > 0) {
+            updates.push({
+              skillId: skill.id,
+              skillName: skill.name,
+              currentVersion: skill.version,
+              latestVersion: remoteEntry.version,
+            });
+            skill.latestVersion = remoteEntry.version;
+            skill.updateAvailable = true;
+          }
+        }
+      } catch {
+        // Remote registry unavailable for this skill
+      }
+    }
+
+    return updates;
+  }
+
+  async upgradeSkill(skillId: string): Promise<{ success: boolean; message: string; newVersion?: string }> {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return { success: false, message: "Skill not found" };
+    }
+
+    try {
+      const remoteResult = await this.registry.searchRemote({ keyword: skill.name, limit: 1 });
+      const remoteEntry = remoteResult.entries.find(e => e.name === skill.name);
+
+      if (!remoteEntry) {
+        return { success: false, message: `No remote entry found for skill "${skill.name}"` };
+      }
+
+      if (this.compareVersions(remoteEntry.version, skill.version) <= 0) {
+        return { success: false, message: `Skill "${skill.name}" is already up to date (v${skill.version})` };
+      }
+
+      const skillDir = path.dirname(skill.installPath);
+      const savedConfig = this.loadSkillConfig(skillDir);
+
+      this.lifecycle.update(skill, remoteEntry.version);
+
+      skill.version = remoteEntry.version;
+      skill.lifecycle.lastUpdated = new Date();
+      skill.lifecycle.status = "active";
+      skill.latestVersion = undefined;
+      skill.updateAvailable = false;
+
+      if (savedConfig) {
+        const ocMeta = skill.openclawMeta;
+        const mergedConfig = this.buildSkillConfig(skill.config, ocMeta, savedConfig);
+        skill.config = mergedConfig;
+      }
+
+      await this.eventBus.publish(SystemEvents.SKILL_UPDATED, skill, "skill-manager");
+
+      return {
+        success: true,
+        message: `Skill "${skill.name}" upgraded from v${skill.version} to v${remoteEntry.version}`,
+        newVersion: remoteEntry.version,
+      };
+    } catch (err) {
+      const skill2 = this.skills.get(skillId);
+      if (skill2) {
+        skill2.lifecycle.status = "active";
+      }
+      return {
+        success: false,
+        message: `Upgrade failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  private compareVersions(a: string, b: string): number {
+    const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
+    const partsA = parse(a);
+    const partsB = parse(b);
+    for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+      const pa = partsA[i] || 0;
+      const pb = partsB[i] || 0;
+      if (pa !== pb) return pa - pb;
+    }
+    return 0;
   }
 
   async healthCheck(): Promise<boolean> {

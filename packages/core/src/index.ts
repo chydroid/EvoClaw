@@ -4,6 +4,7 @@ export type {
   SKILLmdMeta,
   OpenClawMetadata,
   OpenClawSkillMeta,
+  SkillConfigStatus,
 } from "./types/skill";
 export * from "./types/task";
 export * from "./types/agent";

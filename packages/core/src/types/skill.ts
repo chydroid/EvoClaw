@@ -70,6 +70,8 @@ export interface SkillI18n {
   translatedAt?: string;
 }
 
+export type SkillConfigStatus = "configured" | "partial" | "unconfigured";
+
 export interface Skill extends SkillManifest {
   id: string;
   installPath: string;
@@ -78,6 +80,10 @@ export interface Skill extends SkillManifest {
   stats: SkillStats;
   body: SkillBody;
   i18n?: SkillI18n;
+  openclawMeta?: OpenClawSkillMeta;
+  configStatus?: SkillConfigStatus;
+  latestVersion?: string;
+  updateAvailable?: boolean;
 }
 
 export interface SkillBody {

@@ -1309,8 +1309,31 @@ export class AgentModelExecutor {
             ? dispatchResult.output
             : JSON.stringify(dispatchResult.output, null, 2);
 
-          const errorPatterns = ["must be set in environment", "API_KEY", "api key is required", "authentication failed", "unauthorized", "forbidden", "rate limit exceeded", "quota exceeded"];
-          const outputHasError = errorPatterns.some(p => outputStr.toLowerCase().includes(p.toLowerCase()));
+          const skillErrorCategories = {
+            auth: ["must be set in environment", "API_KEY", "api key is required", "authentication failed", "unauthorized"],
+            rateLimit: ["rate limit exceeded", "quota exceeded", "too many requests"],
+            network: ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "network error", "connection refused"],
+            config: ["missing required", "config not found", "not configured"],
+          };
+
+          const skillErrorMessages: Record<string, string> = {
+            auth: "技能执行失败：API 密钥未配置或无效。请在技能管理页面配置相应的 API Key。",
+            rateLimit: "技能执行失败：API 调用频率超限。请稍后重试。",
+            network: "技能执行失败：网络连接错误。请检查网络设置。",
+            config: "技能执行失败：配置缺失。请在技能管理页面完善配置。",
+          };
+
+          const classifiedError = (() => {
+            const lower = outputStr.toLowerCase();
+            for (const [category, patterns] of Object.entries(skillErrorCategories)) {
+              if (patterns.some(p => lower.includes(p.toLowerCase()))) {
+                return { category, userMessage: skillErrorMessages[category] };
+              }
+            }
+            return null;
+          })();
+
+          const outputHasError = classifiedError !== null;
 
           if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
@@ -1333,7 +1356,14 @@ export class AgentModelExecutor {
               toolsExecuted: true,
             };
           } else if (outputHasError) {
-            console.log(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned error output — falling through to LLM`);
+            console.log(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM`);
+            return {
+              reply: `⚠️ ${classifiedError!.userMessage}`,
+              tokensUsed: 0,
+              duration: Date.now() - startTime,
+              permissionRequests: [],
+              toolsExecuted: true,
+            };
           } else if (dispatchResult.path === "none") {
             console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
           } else {

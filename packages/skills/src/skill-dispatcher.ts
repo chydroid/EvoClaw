@@ -84,83 +84,106 @@ export class SkillDispatcher {
 
     reasoning.push(`任务分析: "${context.task.slice(0, 100)}"`);
 
-    // ── Step 1: Search local skills with TF-IDF ──
+    // ── Step 1: Search local skills with TF-IDF (multi-candidate) ──
     if (!this.autoSkillManager) {
       reasoning.push("AutoSkillManager 未初始化，跳过本地搜索");
     } else {
       const localMatches = await this.autoSkillManager.findAllMatches(context.task, opts.maxCandidates!);
-      
+
       if (localMatches.length > 0) {
         reasoning.push(`本地匹配 ${localMatches.length} 个技能`);
-        const best = localMatches[0];
-        
-        if (best.relevance >= opts.autoInstallThreshold!) {
-          reasoning.push(`最佳匹配: ${best.skillName} (相关度 ${(best.relevance * 100).toFixed(0)}%)`);
-          
-          // Check if already installed
-          const skillManager = this.registry.resolveService<{
-            listSkills(): Promise<Array<{ name: string; id: string }>>;
-            executeSkill(id: string, params: Record<string, unknown>): Promise<SkillExecutionResult>;
-          }>("skillManager");
 
-          if (skillManager) {
-            const installedSkills = await skillManager.listSkills();
-            const installed = installedSkills.find(s => s.name === best.skillName);
-            
-            if (installed) {
-              reasoning.push(`技能 "${best.skillName}" 已安装，直接执行`);
-              try {
-                const result = await skillManager.executeSkill(installed.id, {
-                  prompt: context.task,
-                  query: context.task,
-                });
+        const skillManager = this.registry.resolveService<{
+          listSkills(): Promise<Array<{ name: string; id: string; config?: Record<string, unknown> }>>;
+          executeSkill(id: string, params: Record<string, unknown>): Promise<SkillExecutionResult>;
+        }>("skillManager");
+
+        if (skillManager) {
+          const installedSkills = await skillManager.listSkills();
+          let autoInstallAttempted = false;
+
+          for (const match of localMatches) {
+            if (match.relevance < opts.autoInstallThreshold!) {
+              reasoning.push(`候选 "${match.skillName}" 相关度过低 (${(match.relevance * 100).toFixed(0)}%)，停止本地尝试`);
+              break;
+            }
+
+            reasoning.push(`尝试候选: ${match.skillName} (相关度 ${(match.relevance * 100).toFixed(0)}%)`);
+
+            const installed = installedSkills.find(s => s.name === match.skillName);
+
+            if (!installed) {
+              if (opts.autoInstall && !autoInstallAttempted) {
+                autoInstallAttempted = true;
+                reasoning.push(`技能 "${match.skillName}" 未安装，自动安装中...`);
+                const installResult = await this.autoSkillManager.autoInstallForTask(context.task);
+
+                if (installResult.installed && installResult.skillId) {
+                  reasoning.push(`安装成功，检查配置...`);
+                  const refreshedSkills = await skillManager.listSkills();
+                  const refreshedSkill = refreshedSkills.find(s => s.id === installResult.skillId);
+
+                  if (refreshedSkill && !this.isSkillConfigured(refreshedSkill)) {
+                    reasoning.push(`技能 "${match.skillName}" 配置不完整，跳过`);
+                    continue;
+                  }
+
+                  reasoning.push(`配置完整，执行中...`);
+                  try {
+                    const params = this.extractSkillParams(context.task, match.skillName);
+                    const result = await skillManager.executeSkill(installResult.skillId, params);
+                    if (result.success) {
+                      return {
+                        success: true,
+                        path: "skill",
+                        skillName: installResult.skillName,
+                        skillId: installResult.skillId,
+                        output: result.output,
+                        reasoning: reasoning.join("\n"),
+                        duration: Date.now() - startTime,
+                        matchedSkills: localMatches,
+                        autoInstallResult: installResult,
+                      };
+                    }
+                    reasoning.push(`技能 "${match.skillName}" 执行未成功，尝试下一个候选`);
+                  } catch (err) {
+                    reasoning.push(`技能 "${match.skillName}" 执行异常: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                } else {
+                  reasoning.push(`自动安装失败: ${installResult.reason}`);
+                }
+              } else {
+                reasoning.push(`技能 "${match.skillName}" 未安装${autoInstallAttempted ? "（已尝试过自动安装）" : "（自动安装未启用）"}，跳过`);
+              }
+              continue;
+            }
+
+            if (!this.isSkillConfigured(installed)) {
+              reasoning.push(`技能 "${match.skillName}" 配置不完整，跳过`);
+              continue;
+            }
+
+            reasoning.push(`技能 "${match.skillName}" 已安装且配置完整，执行中...`);
+            try {
+              const params = this.extractSkillParams(context.task, match.skillName);
+              const result = await skillManager.executeSkill(installed.id, params);
+              if (result.success) {
                 return {
-                  success: result.success,
+                  success: true,
                   path: "skill",
-                  skillName: best.skillName,
+                  skillName: match.skillName,
                   skillId: installed.id,
                   output: result.output,
                   reasoning: reasoning.join("\n"),
                   duration: Date.now() - startTime,
                   matchedSkills: localMatches,
                 };
-              } catch (err) {
-                reasoning.push(`执行失败: ${err instanceof Error ? err.message : String(err)}`);
-                // Fall through to try other skills or fallback
               }
-            } else if (opts.autoInstall) {
-              // Auto-install
-              reasoning.push(`技能 "${best.skillName}" 未安装，自动安装中...`);
-              const installResult = await this.autoSkillManager.autoInstallForTask(context.task);
-              
-              if (installResult.installed && installResult.skillId) {
-                reasoning.push(`安装成功，执行中...`);
-                try {
-                  const result = await skillManager.executeSkill(installResult.skillId, {
-                    prompt: context.task,
-                    query: context.task,
-                  });
-                  return {
-                    success: result.success,
-                    path: "skill",
-                    skillName: installResult.skillName,
-                    skillId: installResult.skillId,
-                    output: result.output,
-                    reasoning: reasoning.join("\n"),
-                    duration: Date.now() - startTime,
-                    matchedSkills: localMatches,
-                    autoInstallResult: installResult,
-                  };
-                } catch (err) {
-                  reasoning.push(`执行失败: ${err instanceof Error ? err.message : String(err)}`);
-                }
-              } else {
-                reasoning.push(`自动安装失败: ${installResult.reason}`);
-              }
+              reasoning.push(`技能 "${match.skillName}" 执行未成功，尝试下一个候选`);
+            } catch (err) {
+              reasoning.push(`技能 "${match.skillName}" 执行异常: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
-        } else {
-          reasoning.push(`最佳匹配 "${best.skillName}" 相关度过低 (${(best.relevance * 100).toFixed(0)}%)`);
         }
       } else {
         reasoning.push("本地未找到匹配技能");
@@ -206,27 +229,33 @@ export class SkillDispatcher {
                 const installResult = await this.autoSkillManager.autoInstallForTask(context.task);
                 if (installResult.installed && installResult.skillId) {
                   const skillManager = this.registry.resolveService<{
+                    listSkills(): Promise<Array<{ name: string; id: string; config?: Record<string, unknown> }>>;
                     executeSkill(id: string, params: Record<string, unknown>): Promise<SkillExecutionResult>;
                   }>("skillManager");
 
                   if (skillManager) {
-                    try {
-                      const result = await skillManager.executeSkill(installResult.skillId, {
-                        prompt: context.task,
-                        query: context.task,
-                      });
-                      return {
-                        success: result.success,
-                        path: "skill",
-                        skillName: installResult.skillName,
-                        skillId: installResult.skillId,
-                        output: result.output,
-                        reasoning: reasoning.join("\n"),
-                        duration: Date.now() - startTime,
-                        autoInstallResult: installResult,
-                      };
-                    } catch (err) {
-                      reasoning.push(`远端技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
+                    const refreshedSkills = await skillManager.listSkills();
+                    const refreshedSkill = refreshedSkills.find(s => s.id === installResult.skillId);
+
+                    if (refreshedSkill && !this.isSkillConfigured(refreshedSkill)) {
+                      reasoning.push(`远端技能 "${skillName}" 配置不完整，跳过`);
+                    } else {
+                      try {
+                        const params = this.extractSkillParams(context.task, skillName);
+                        const result = await skillManager.executeSkill(installResult.skillId, params);
+                        return {
+                          success: result.success,
+                          path: "skill",
+                          skillName: installResult.skillName,
+                          skillId: installResult.skillId,
+                          output: result.output,
+                          reasoning: reasoning.join("\n"),
+                          duration: Date.now() - startTime,
+                          autoInstallResult: installResult,
+                        };
+                      } catch (err) {
+                        reasoning.push(`远端技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
+                      }
                     }
                   }
                 }
@@ -427,10 +456,8 @@ export class SkillDispatcher {
       if (match) {
         reasoning.push("执行中...");
         try {
-          const result = await skillManager.executeSkill(match.id, {
-            prompt: task,
-            query: task,
-          });
+          const params = this.extractSkillParams(task, installed.skillName);
+          const result = await skillManager.executeSkill(match.id, params);
           
           return {
             success: result.success,
@@ -554,6 +581,70 @@ export class SkillDispatcher {
     }
 
     return "";
+  }
+
+  private isSkillConfigured(skill: { config?: Record<string, unknown> }): boolean {
+    if (!skill.config) return true;
+    const configObj = skill.config;
+    const primaryEnv = configObj._primaryEnv as string | undefined;
+    const envMeta = configObj._envMeta as Record<string, { required: boolean; currentSource: string }> | undefined;
+
+    if (!primaryEnv || !envMeta) return true;
+
+    const meta = envMeta[primaryEnv];
+    if (!meta || !meta.required) return true;
+
+    const hasValue = !!configObj[primaryEnv] && String(configObj[primaryEnv]).trim() !== "";
+    return hasValue || meta.currentSource === "env";
+  }
+
+  private extractSkillParams(task: string, skillName: string): Record<string, unknown> {
+    const params: Record<string, unknown> = { prompt: task, query: task };
+
+    const lower = task.toLowerCase();
+
+    if (skillName.includes("search") || skillName.includes("搜索")) {
+      const searchPatterns = [
+        /搜索\s*[""「]?([^""」]+)[""」]?/i,
+        /查找\s*[""「]?([^""」]+)[""」]?/i,
+        /search\s+(?:for\s+)?["']?([^"']+)["']?/i,
+        /find\s+(?:me\s+)?["']?([^"']+)["']?/i,
+        /搜一下\s*[""「]?([^""」]+)[""」]?/i,
+      ];
+      for (const p of searchPatterns) {
+        const m = task.match(p);
+        if (m) {
+          params.query = m[1].trim();
+          break;
+        }
+      }
+
+      if (/今天|今日|today/i.test(lower)) params.freshness = "pd";
+      else if (/本周|这周|this week/i.test(lower)) params.freshness = "pw";
+      else if (/本月|这个月|this month/i.test(lower)) params.freshness = "pm";
+      else if (/今年|今年内|this year/i.test(lower)) params.freshness = "py";
+
+      const countMatch = task.match(/(\d+)\s*(条|个|项|results?)/i);
+      if (countMatch) params.count = parseInt(countMatch[1]);
+    }
+
+    if (skillName.includes("weather") || skillName.includes("天气")) {
+      const cityPatterns = [
+        /(\S+市|\S+区)\s*天气/i,
+        /weather\s+(?:in\s+)?(\S+)/i,
+        /(\S+)\s*的?天气/i,
+      ];
+      for (const p of cityPatterns) {
+        const m = task.match(p);
+        if (m) {
+          params.city = m[1].trim();
+          params.query = m[1].trim();
+          break;
+        }
+      }
+    }
+
+    return params;
   }
 
   private async fetchRemoteSkills(): Promise<void> {

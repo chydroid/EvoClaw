@@ -374,6 +374,24 @@ export class ProtocolAdapter {
       }
     });
 
+    app.get("/api/skills/check-updates", async (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          checkUpdates(): Promise<Array<{ skillId: string; skillName: string; currentVersion: string; latestVersion: string }>>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const updatesAvailable = await skillManager.checkUpdates();
+        res.json({ updatesAvailable });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+
+
     app.get("/api/skills/:id", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
@@ -436,26 +454,29 @@ export class ProtocolAdapter {
       }
     });
 
-    app.put("/api/skills/:id/config", (req: Request, res: Response) => {
+    app.put("/api/skills/:id/config", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
           getSkill(id: string): Promise<{ id: string; config: Record<string, unknown>; name: string } | undefined>;
+          saveSkillConfig(id: string, config: Record<string, unknown>): boolean;
         }>("skillManager");
         const skillId = req.params.id as string;
         if (!skillManager) {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        skillManager.getSkill(skillId).then((skill) => {
-          if (!skill) {
-            res.status(404).json({ error: "Skill not found" });
-            return;
-          }
-          skill.config = { ...skill.config, ...(req.body.config || {}) };
-          res.json({ success: true, skill });
-        }).catch(() => {
-          res.status(500).json({ error: "Failed to update config" });
-        });
+        const skill = await skillManager.getSkill(skillId);
+        if (!skill) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        const incomingConfig = req.body.config || {};
+        const saved = skillManager.saveSkillConfig(skillId, incomingConfig as Record<string, unknown>);
+        if (!saved) {
+          res.status(500).json({ error: "Failed to persist skill config" });
+          return;
+        }
+        res.json({ success: true, skill });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -543,6 +564,91 @@ export class ProtocolAdapter {
         const localization = skillManager.getLocalizationService();
         const i18n = await localization.checkAndTranslateSkill(skill);
         res.json({ success: true, i18n });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/:id/validate-config", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          validateSkillConfig(id: string): Promise<{ valid: boolean; errors: string[]; warnings: string[] }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.validateSkillConfig(String(req.params.id));
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/:id/health-check", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          checkSkillHealth(id: string): Promise<unknown>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.checkSkillHealth(String(req.params.id));
+        if (!result) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        res.json({ success: true, health: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/:id/upgrade", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          upgradeSkill(id: string): Promise<{ success: boolean; message: string; newVersion?: string }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.upgradeSkill(String(req.params.id));
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/batch-upgrade", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          upgradeSkill(id: string): Promise<{ success: boolean; message: string; newVersion?: string }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const { skillIds } = req.body || {};
+        if (!Array.isArray(skillIds) || skillIds.length === 0) {
+          res.status(400).json({ error: "skillIds array is required" });
+          return;
+        }
+        const results: Array<{ skillId: string; success: boolean; message: string; newVersion?: string }> = [];
+        for (const skillId of skillIds) {
+          try {
+            const result = await skillManager.upgradeSkill(String(skillId));
+            results.push({ skillId: String(skillId), ...result });
+          } catch (err) {
+            results.push({
+              skillId: String(skillId),
+              success: false,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        res.json({ success: true, results });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

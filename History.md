@@ -5,6 +5,64 @@
 
 ---
 
+## v0.9.5 (2026-05-30)
+
+### WebUI 技能管理系统全面优化 + 技能调用机制改进
+
+- **文件**: `packages/core/src/types/skill.ts`、`packages/skills/src/skill-manager.ts`、`packages/skills/src/skill-dispatcher.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/web-ui/src/SkillsConfig.tsx`、`packages/agent/src/agent-model-executor.ts`、`data/workspace/skills/openclaw-tavily-search/SKILL.md`
+
+- **改动**:
+
+  **技能配置准确性修复**
+  - 修复 Tavily 搜索技能 SKILL.md 缺少 `metadata.openclaw` 字段导致前端显示"该技能无需额外配置"的问题
+  - 新增 `emoji`、`requires`（bins/env）、`primaryEnv`、`homepage` 等完整元数据
+  - 百度搜索和 Tavily 搜索技能现在正确显示 API Key 配置要求
+
+  **API Key 双重配置方式**
+  - 每个环境变量配置项支持"直接输入"和"环境变量"两种配置方式
+  - 直接输入：密码输入框，直接输入 API Key 值
+  - 环境变量：显示系统环境变量状态，提供 `.env` 文件配置提示
+  - 自动检测配置来源（`currentSource`: "env"|"config"|"none"）
+
+  **技能配置验证机制**
+  - 新增 `POST /api/skills/:id/validate-config` 端点，验证技能配置完整性
+  - 检查所有必需环境变量是否已配置，返回 `{ valid, errors, warnings }`
+  - 前端保存配置后自动验证，显示验证结果
+
+  **配置持久化**
+  - 新增 `saveSkillConfig()` 方法，将配置保存到技能目录的 `_config.json`
+  - 新增 `loadSkillConfig()` 方法，安装技能时自动加载已保存配置
+  - 配置状态追踪：`_envMeta` 记录每个环境变量的 `required`、`description`、`currentSource`
+
+  **技能信息展示增强**
+  - 配置状态可视化：🟢已配置 / 🟡部分配置 / 🔴未配置 / ⚪无需配置
+  - 健康检查颜色编码：🟢正常 / 🟡警告 / 🔴错误
+  - 新增技术详情区域：依赖项安装状态、沙箱策略、脚本类型
+  - 新增运行状态区域：平均响应时间、配置状态、执行健康检查按钮
+
+  **技能版本管理**
+  - 新增 `GET /api/skills/check-updates` 端点，检查所有技能更新
+  - 新增 `POST /api/skills/:id/upgrade` 端点，升级单个技能
+  - 新增 `POST /api/skills/batch-upgrade` 端点，批量升级多个技能
+  - 前端支持一键升级和批量升级，有更新的技能显示 🆕 标记
+
+  **技能健康检查**
+  - 新增 `POST /api/skills/:id/health-check` 端点
+  - 错误详情中添加修复建议按钮
+  - 定期健康检查机制
+
+  **技能调用机制优化（参考 OpenClaw）**
+  - 执行前配置检查：未配置 API Key 的技能自动跳过，避免无意义执行失败
+  - 多候选技能尝试：遍历所有本地匹配结果，依次尝试直到成功
+  - 参数智能提取：搜索类技能提取精确查询词、时间范围、结果数量；天气类技能提取城市
+  - 错误分类后处理：将技能执行错误分为 auth/rateLimit/network/config 四类，返回用户友好提示
+
+  **API 路由修复**
+  - 修复 `check-updates` 和 `batch-upgrade` 路由被 `:id` 参数路由优先匹配的问题
+  - 将固定路径路由移到参数路由之前
+
+---
+
 ## v0.9.4 (2026-05-30)
 
 ### 动态工具调用次数调整 + LLM Token 级流式输出 + Token 预算追踪
