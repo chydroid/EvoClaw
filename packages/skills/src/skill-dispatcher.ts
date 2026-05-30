@@ -305,7 +305,7 @@ export class SkillDispatcher {
           if (skillManager) {
             const installedSkills = await skillManager.listSkills();
             const webSearch = installedSkills.find(
-              s => s.name === "web-search" || s.name === "web_search" || s.name === "webSearch" || s.name === "baidu-search"
+              s => s.name === "tavily-search" || s.name === "baidu-search" || s.name === "web-search" || s.name === "web_search" || s.name === "webSearch"
             );
             
             if (webSearch) {
@@ -610,12 +610,32 @@ export class SkillDispatcher {
         /search\s+(?:for\s+)?["']?([^"']+)["']?/i,
         /find\s+(?:me\s+)?["']?([^"']+)["']?/i,
         /搜一下\s*[""「]?([^""」]+)[""」]?/i,
+        /查一下\s*[""「]?([^""」]+)[""」]?/i,
+        /帮我搜\s*[""「]?([^""」]+)[""」]?/i,
+        /帮我查\s*[""「]?([^""」]+)[""」]?/i,
+        /有没有.*?([\u4e00-\u9fa5a-zA-Z0-9\s]{2,30})的?(?:开源|项目|软件|工具)/i,
+        /最近.*?(?:火|热门|上升|流行).*?([\u4e00-\u9fa5a-zA-Z0-9\s]{2,30})/i,
+        /本周.*?(?:重大|热门|重要).*?([\u4e00-\u9fa5a-zA-Z0-9\s]{2,30})/i,
+        /最新.*?([\u4e00-\u9fa5a-zA-Z0-9\s]{2,30})/i,
       ];
+      let extracted = false;
       for (const p of searchPatterns) {
         const m = task.match(p);
         if (m) {
           params.query = m[1].trim();
+          extracted = true;
           break;
+        }
+      }
+
+      if (!extracted) {
+        const cleaned = task
+          .replace(/^(请问|请问一下|麻烦|帮忙|帮我|能不能|可以|请|我想|我想要|我想看|我想了解|我想知道)\s*/g, "")
+          .replace(/^(搜索|查找|搜一下|查一下|搜搜|查查)\s*/g, "")
+          .replace(/(并整理后发给我|整理后发给我|整理一下|并整理|并总结|并汇总|是什么|怎么样|有哪些|有没有).*/g, "")
+          .trim();
+        if (cleaned.length > 2 && cleaned.length < 200) {
+          params.query = cleaned;
         }
       }
 

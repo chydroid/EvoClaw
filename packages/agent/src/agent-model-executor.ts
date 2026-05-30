@@ -1442,15 +1442,18 @@ export class AgentModelExecutor {
                           lowerMsg.includes("分析报告") || lowerMsg.includes("发展情况") || lowerMsg.includes("分析")) &&
         (lowerMsg.includes("搜索") || lowerMsg.includes("整理") || lowerMsg.includes("找") || lowerMsg.includes("查") ||
          lowerMsg.includes("分析") || lowerMsg.includes("报告") || lowerMsg.includes("情况") || lowerMsg.includes("做个"));
-      shouldSearch = isNewsQuery;
-      searchReason = "关键词匹配触发";
+      const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快)/i.test(message);
+      shouldSearch = isNewsQuery || isSearchIntent;
+      searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : "关键词匹配触发") : "";
     }
     
     if (shouldSearch && this.registeredTools.has("web_search")) {
       try {
         const searchQuery = message
-          .replace(/^(搜索|帮我搜|帮我搜索|帮我查|查一下|搜一下)[：:\s]*/i, "")
-          .replace(/(并整理后发给我|整理后发给我|整理一下|并整理|并总结|并汇总).*/i, "")
+          .replace(/^(请问|请问一下|麻烦|帮忙|帮我|能不能|可以|请|我想|我想要|我想看|我想了解|我想知道)\s*/g, "")
+          .replace(/^(搜索|帮我搜|帮我搜索|帮我查|查一下|搜一下|搜搜|查查)[：:\s]*/i, "")
+          .replace(/(并整理后发给我|整理后发给我|整理一下|并整理|并总结|并汇总|是什么|怎么样|有哪些|有没有|的?情况|的?信息).*/i, "")
+          .replace(/[？?！!。.，,]+$/g, "")
           .trim();
         console.log(`[AgentModelExecutor] News query detected, pre-fetching: "${searchQuery}"`);
         
@@ -1492,7 +1495,7 @@ export class AgentModelExecutor {
     }
 
     const newsEnhancedMessage = newsContext
-      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext}`
+      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext.slice(0, 12000)}`
       : message;
 
     if (newsContext) {
@@ -2683,8 +2686,29 @@ export class AgentModelExecutor {
       try {
         const history = this.conversationHistory.get(sessionId) || [];
 
+        const webToolStrategy = `### Web Tool Decision Strategy (ReAct)
+Follow this decision tree when handling web-related tasks:
+
+\`\`\`
+Have a specific URL?
+├─ YES → Is it static content (article/doc/API/RSS)?
+│        ├─ YES → web_fetch
+│        │        Failed (blank/403/CAPTCHA)? → Try skill_execute with search skills → browser
+│        └─ NO (needs JS/login/interaction/screenshot) → browser_navigate
+└─ NO  → web_search (or skill_execute with tavily-search/baidu-search)
+         ├─ Success → For result URLs, apply the URL logic above
+         ├─ Failed → Try skill_execute with tavily-search or baidu-search
+         └─ No results → browser_search
+\`\`\`
+
+**Key rules:**
+1. For search tasks, prefer skill_execute with **tavily-search** (highest quality) or **baidu-search** over web_search
+2. When web_search returns no results, try tavily-search or baidu-search via skill_execute before giving up
+3. Always inform the user when switching tools — never silently downgrade
+4. For Chinese content, baidu-search often works better; for English/global content, tavily-search is preferred`;
+
         const fullSystemPrompt = skillsPrompt
-          ? `${systemPrompt}\n\n## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), and many more. Use web_search for any real-time or current information needs.\n\n### Skills\nScan the available skills below. If one clearly applies, you may read and use it. If none apply, fall back to using web_search or other tools directly.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
+          ? `${systemPrompt}\n\n## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
           : systemPrompt;
 
         if (this.needsCompaction(sessionId, fullSystemPrompt, this.config.maxTokens)) {
@@ -2774,7 +2798,7 @@ export class AgentModelExecutor {
           consecutiveErrors = 0;
           totalTokensUsed += result.tokensUsed;
 
-          const TOKEN_BUDGET = 100000;
+          const TOKEN_BUDGET = 200000;
           if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
             console.warn(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"`);
             conversationMessages.push({ role: "user", content: "⚠ 预算提醒：已使用超过 80% 的 token 预算。请尽快总结当前结果并回复用户。" });

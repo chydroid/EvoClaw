@@ -853,7 +853,7 @@ export class EvoClawServer {
         try {
           const fsMgr = this.registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
           const skillDir = `skills/${name}`;
-          const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: ${desc}\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
+          const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/"/g, '\\"')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
           if (fsMgr) {
             await fsMgr.createFile(`${skillDir}/SKILL.md`, skillContent);
           } else {
@@ -1485,7 +1485,7 @@ export class EvoClawServer {
       "web_search",
       {
         name: "web_search",
-        description: "Search the web using DuckDuckGo or Bing (no API key needed). Returns titles, URLs, and snippets.",
+        description: "Search the web. Tries Tavily/Baidu skills first (higher quality), then falls back to Bing/DuckDuckGo. Returns titles, URLs, and snippets.",
         parameters: {
           query: { type: "string", description: "Search query string" },
           limit: { type: "string", description: "Max results (default 10)" },
@@ -1496,15 +1496,32 @@ export class EvoClawServer {
         const limit = parseInt(String(params.limit || "10"), 10) || 10;
         if (!query) return { error: "Search query is required" };
 
+        const searchSkills = ["tavily-search", "baidu-search"];
+        for (const skillName of searchSkills) {
+          try {
+            const skills = await this.skillManager.listSkills();
+            const skill = skills.find((s: { name: string }) => s.name === skillName);
+            if (!skill) continue;
+            const result = await this.skillManager.executeSkill(skill.id || skillName, { query, prompt: query, limit });
+            if (result && result.success && result.output) {
+              const outputStr = typeof result.output === "string" ? result.output : JSON.stringify(result.output);
+              if (outputStr.length > 50) {
+                console.log(`[web_search] Used ${skillName} skill successfully`);
+                return { query, source: skillName, count: 1, results: [{ title: `${skillName} result`, url: "", snippet: outputStr.slice(0, 8000) }], rawOutput: result.output };
+              }
+            }
+          } catch (err) {
+            console.debug(`[web_search] ${skillName} skill failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
         const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-        // Try Bing first (more reliable in China)
         const bingResult = await trySearchBing(query, limit, userAgent);
         if (bingResult.results && bingResult.results.length > 0) {
           return { query, source: "Bing", count: bingResult.results.length, results: bingResult.results.slice(0, limit) };
         }
 
-        // Fallback to DuckDuckGo Lite
         const ddgResult = await trySearchDDG(query, limit, userAgent);
         if (ddgResult.results && ddgResult.results.length > 0) {
           return { query, source: "DuckDuckGo", count: ddgResult.results.length, results: ddgResult.results.slice(0, limit) };
