@@ -148,6 +148,12 @@ export class SKILLmdParser {
     hooks?: Record<string, string>;
   } {
     const result: Record<string, unknown> = {};
+    const instructionParts: string[] = [];
+
+    const preamble = this.extractPreamble(body);
+    if (preamble.trim()) {
+      instructionParts.push(preamble.trim());
+    }
 
     const sectionRegex = /^##\s+(.+)$/gm;
     const sections: { title: string; startIndex: number }[] = [];
@@ -162,6 +168,7 @@ export class SKILLmdParser {
       const startPos = body.indexOf("\n", section.startIndex) + 1;
       const endPos = i + 1 < sections.length ? sections[i + 1].startIndex : body.length;
       const content = body.slice(startPos, endPos).trim();
+      const fullSection = `## ${section.title}\n\n${content}`;
 
       const key = section.title.toLowerCase();
 
@@ -171,8 +178,8 @@ export class SKILLmdParser {
         for (const [lang, code] of codeBlocks) {
           (result.scripts as Record<string, string>)[lang || "default"] = code;
         }
-      } else if (key.includes("usage") || key.includes("run") || key.includes("execute")) {
-        // Also extract executable commands from Usage/Run sections
+        instructionParts.push(fullSection);
+      } else if (key.includes("usage") || key.includes("run") || key.includes("execute") || key.includes("command")) {
         result.scripts = result.scripts || {};
         const codeBlocks = this.extractCodeBlocks(content);
         for (const [lang, code] of codeBlocks) {
@@ -181,26 +188,39 @@ export class SKILLmdParser {
             (result.scripts as Record<string, string>)[scriptKey] = code;
           }
         }
-        // Also detect inline shell/bash commands in the usage section
         const shellCommands = this.extractShellCommands(content);
         if (shellCommands.length > 0 && !(result.scripts as Record<string, string>)["default"]) {
           (result.scripts as Record<string, string>)["default"] = shellCommands.join("\n");
         }
+        instructionParts.push(fullSection);
       } else if (key.includes("example")) {
         result.examples = result.examples || [];
         (result.examples as string[]).push(content);
+        instructionParts.push(fullSection);
       } else if (key.includes("hook")) {
         result.hooks = result.hooks || {};
         const hookBlocks = this.extractCodeBlocks(content);
         for (const [_lang, hookCode] of hookBlocks) {
           (result.hooks as Record<string, string>)["section_" + key] = hookCode;
         }
+        instructionParts.push(fullSection);
       } else {
         result[key] = content;
+        instructionParts.push(fullSection);
       }
     }
 
+    if (instructionParts.length > 0) {
+      result.instructions = instructionParts.join("\n\n");
+    }
+
     return result;
+  }
+
+  private extractPreamble(body: string): string {
+    const firstSection = body.search(/^##\s+/m);
+    if (firstSection === -1) return body;
+    return body.slice(0, firstSection).trim();
   }
 
   private extractShellCommands(content: string): string[] {
