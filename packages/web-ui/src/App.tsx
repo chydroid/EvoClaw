@@ -614,6 +614,8 @@ export default function App() {
               <div style={css.sidebarSearchWrap}>
                 <IconSearch size={14} style={{ position: "absolute", left: 20, top: 16, color: "var(--text-muted)", pointerEvents: "none" as const }} />
                 <input
+                  id="evoclaw-sidebar-search"
+                  name="sidebar_search"
                   style={css.sidebarSearch}
                   value={sidebarSearch}
                   onChange={e => setSidebarSearch(e.target.value)}

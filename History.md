@@ -5,6 +5,40 @@
 
 ---
 
+## v0.9.1 (2026-05-30)
+
+### WebUI 交互增强 + 上下文使用量修复
+
+- **文件**: `packages/web-ui/src/WebChatPage.tsx`、`packages/web-ui/src/App.tsx`、`packages/gateway/src/protocol-adapter.ts`
+
+- **改动**:
+
+  **消息队列系统**
+  - 新增队列按钮（⏎+），允许用户在当前命令执行期间提前发送下一步消息
+  - 消息自动排队等待，上一命令执行完毕后自动发送队列中的下一条
+  - 队列面板显示所有排队消息，支持单条移除
+  - 队列计数徽章显示在工具栏，上下文栏同步显示队列数量
+
+  **停止按钮**
+  - 发送消息后，发送按钮变为红色停止按钮（■），可强制中断当前命令执行
+  - 使用 AbortController 实现请求中断，中断后立即停止流式传输
+  - 停止按钮悬停时颜色加深，提供视觉反馈
+
+  **上下文使用量修复**
+  - 修复 `tokensUsed` 累加错误：从 `setContextUsed(prev => prev + data.tokensUsed)` 改为 `setContextUsed(data.tokensUsed)`，避免重复计算
+  - 后端 `protocol-adapter.ts` 新增 session 级别 token 累计查询（通过 lifecycleManager），当单次返回 0 时回退到会话累计值
+  - 前端新增回退估算：当服务器返回 `tokensUsed: 0` 时，基于消息文本长度估算 token 数（字符数/4）
+  - 加载历史会话时自动估算上下文使用量
+  - 显示单位添加 "tokens" 标识，支持 M 级别显示
+
+  **表单字段修复**
+  - 侧边栏搜索输入框添加 `id` 和 `name` 属性
+  - 聊天输入框添加 `id` 和 `name` 属性
+
+- **测试**: 87 个测试文件，1973 个测试用例，全部通过 ✅
+
+---
+
 ## v0.9.0 (2026-05-30)
 
 ### Hermes 对标优化 + WebUI 改进 + 文档更新

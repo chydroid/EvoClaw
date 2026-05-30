@@ -820,6 +820,7 @@ export class ProtocolAdapter {
 
         // Resolve context limit from ContextEngine config
         let contextLimit = 60000;
+        let sessionTokensUsed = 0;
         try {
           const contextEngine = this.registry.resolveService("contextEngine") as {
             getConfig(): Record<string, unknown>;
@@ -829,10 +830,24 @@ export class ProtocolAdapter {
             contextLimit = (cfg.maxContextTokens as number) || 60000;
           }
         } catch { /* use default */ }
+        try {
+          const lifecycleMgr = this.registry.resolveService<{
+            getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number; compactionCount?: number }>;
+          }>("lifecycleManager");
+          if (lifecycleMgr) {
+            const statuses = lifecycleMgr.getAllStatuses();
+            const sessionStatus = statuses.find(s => s.sessionId === resolvedSessionId);
+            if (sessionStatus && sessionStatus.tokensUsed) {
+              sessionTokensUsed = sessionStatus.tokensUsed;
+            }
+          }
+        } catch { /* ignore */ }
+
+        const totalTokensUsed = result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed;
 
         res.json({
           reply: result.reply,
-          tokensUsed: result.tokensUsed,
+          tokensUsed: totalTokensUsed,
           contextLimit,
           duration: result.duration,
           sessionId: resolvedSessionId,

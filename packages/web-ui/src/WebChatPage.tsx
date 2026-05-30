@@ -533,6 +533,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpanded, setTextAreaExpanded] = useState(false);
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const [showQueuePanel, setShowQueuePanel] = useState(false);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -542,9 +546,31 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isComposingRef = useRef(false);
 
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsStreaming(false);
+    setStatusMessage(null);
+  }, []);
+
+  const handleEnqueue = useCallback(() => {
+    const text = input.trim();
+    if (!text) return;
+    setMessageQueue(prev => [...prev, text]);
+    setInput("");
+  }, [input]);
+
+  const handleDequeue = useCallback((index: number) => {
+    setMessageQueue(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
   // ── Load messages when sessionId prop changes ──
   useEffect(() => {
-    setContextUsed(0); // Reset context usage on session change
+    setContextUsed(0);
+    setMessageQueue([]);
+    setShowQueuePanel(false);
     if (!initialSessionId) {
       setMessages([]);
       return;
@@ -564,6 +590,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
         if (turns.length > 0) {
           setMessages(turns);
+          const allText = turns.map(t => t.content || "").join("");
+          setContextUsed(Math.ceil(allText.length / 4));
         } else {
           // Empty session — show welcome
           setMessages([{
@@ -590,10 +618,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async () => {
-    const text = input.trim();
-    // Allow sending with text, files, or both
-    const readyFiles = attachedFiles.filter(f => f.status === "done");
+  const handleSend = async (queuedText?: string) => {
+    const text = (queuedText || input).trim();
+    const readyFiles = queuedText ? [] : attachedFiles.filter(f => f.status === "done");
     const hasContent = text.length > 0 || readyFiles.length > 0;
     if (!hasContent || isStreaming || !initialSessionId) return;
 
@@ -608,10 +635,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     };
 
     setMessages((prev) => [...prev, userMsg]);
-    setInput("");
-    // Clear ready files from upload list
-    if (readyFiles.length > 0) {
-      setAttachedFiles(prev => prev.filter(f => f.status !== "done"));
+    if (!queuedText) {
+      setInput("");
+      if (readyFiles.length > 0) {
+        setAttachedFiles(prev => prev.filter(f => f.status !== "done"));
+      }
     }
     setIsStreaming(true);
     setLoadingMessageIndex(0);
@@ -636,7 +664,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       setLoadingMessageIndex(msgIndex);
     }, 3000);
 
-    // ── Poll for real task status ──
     const statusInterval = setInterval(async () => {
       try {
         const res = await fetch(`/api/chat/status?sessionId=${initialSessionId}`);
@@ -667,9 +694,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         data: f.data || null,
       })) : undefined;
 
-      // ── Timeout: always ensure response within 120s ──
-      const FETCH_TIMEOUT = 120000; // 2 minutes
+      const FETCH_TIMEOUT = 120000;
       const controller = new AbortController();
+      abortControllerRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
       let res: Response;
@@ -686,6 +713,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         });
       } catch (fetchErr) {
         clearTimeout(timeoutId);
+        abortControllerRef.current = null;
         if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
           setMessages((prev) =>
             prev.map((m) =>
@@ -749,7 +777,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
         // Update context usage from server response
         if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
-          setContextUsed((prev) => prev + data.tokensUsed);
+          setContextUsed(data.tokensUsed);
+        } else {
+          const allText = messages.map(m => m.content).join("") + text + (data.reply || "");
+          const estimated = Math.ceil(allText.length / 4);
+          setContextUsed(estimated);
         }
         if (typeof data.contextLimit === "number" && data.contextLimit > 0) {
           setContextLimit(data.contextLimit);
@@ -778,6 +810,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       setStatusMessage(null);
       setIsStreaming(false);
       setCurrentProgress(100);
+      abortControllerRef.current = null;
+
+      // Auto-dequeue next message if queue has items
+      setMessageQueue(prev => {
+        if (prev.length > 0 && initialSessionId) {
+          const nextMsg = prev[0];
+          const remaining = prev.slice(1);
+          setTimeout(() => handleSend(nextMsg), 300);
+          return remaining;
+        }
+        return prev;
+      });
     }
 
   };
@@ -1162,8 +1206,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   // Context usage percentage
   const contextPercent = contextLimit > 0 ? Math.round((contextUsed / contextLimit) * 100) : 0;
-  const contextUsedDisplay = contextUsed > 1000 ? `${(contextUsed / 1000).toFixed(1)}k` : contextUsed;
-  const contextLimitDisplay = contextLimit > 1000 ? `${(contextLimit / 1000).toFixed(0)}k` : contextLimit;
+  const contextUsedDisplay = contextUsed >= 1000000 ? `${(contextUsed / 1000000).toFixed(1)}M` : contextUsed > 1000 ? `${(contextUsed / 1000).toFixed(1)}k` : contextUsed;
+  const contextLimitDisplay = contextLimit >= 1000000 ? `${(contextLimit / 1000000).toFixed(1)}M` : contextLimit > 1000 ? `${(contextLimit / 1000).toFixed(0)}k` : contextLimit;
 
   return (
     <div style={chatContainerStyle}>
@@ -1459,6 +1503,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           >
             <textarea
               ref={inputRef}
+              id="evoclaw-chat-input"
+              name="chat_message"
               className="EvoClaw-chat-textarea"
               style={{
                 ...textAreaStyle,
@@ -1637,7 +1683,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 <div style={contextProgressFillStyle(contextPercent)} />
               </div>
               <span>{contextPercent}%</span>
-              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay}</span>
+              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay} tokens</span>
+              {messageQueue.length > 0 && (
+                <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>队列: {messageQueue.length}</span>
+              )}
             </div>
 
             {/* Right tools */}
@@ -1651,16 +1700,72 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               >
                 📥
               </button>
-              <button
-                style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px" }}
-                onClick={handleSend}
-                disabled={isStreaming}
-                title="发送消息"
-              >
-                {isStreaming ? "⏳" : "➤"}
-              </button>
+              {messageQueue.length > 0 && (
+                <button
+                  style={{ ...inputBtnStyle, position: "relative", color: "var(--accent, #58a6ff)" }}
+                  title={`消息队列 (${messageQueue.length})`}
+                  onClick={() => setShowQueuePanel(!showQueuePanel)}
+                >
+                  📋
+                  <span style={{ position: "absolute", top: -4, right: -4, background: "var(--accent, #58a6ff)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{messageQueue.length}</span>
+                </button>
+              )}
+              {isStreaming ? (
+                <button
+                  style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px", background: "#ef4444" }}
+                  onClick={handleStop}
+                  title="停止执行"
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#dc2626"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#ef4444"; }}
+                >
+                  ■
+                </button>
+              ) : (
+                <>
+                  <button
+                    style={{ ...inputBtnStyle, width: "36px", height: "36px", fontSize: "16px", color: "var(--accent, #58a6ff)" }}
+                    title="加入队列"
+                    onClick={handleEnqueue}
+                    disabled={!input.trim()}
+                    onMouseEnter={(e) => { if (input.trim()) { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; } }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = input.trim() ? "var(--accent, #58a6ff)" : "var(--text-secondary, #8b949e)"; }}
+                  >
+                    ⏎+
+                  </button>
+                  <button
+                    style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px" }}
+                    onClick={() => handleSend()}
+                    disabled={!input.trim() && attachedFiles.filter(f => f.status === "done").length === 0}
+                    title="发送消息"
+                  >
+                    ➤
+                  </button>
+                </>
+              )}
             </div>
           </div>
+
+          {/* Queue panel */}
+          {showQueuePanel && messageQueue.length > 0 && (
+            <div style={{ marginTop: "6px", padding: "8px 10px", borderRadius: "8px", background: "var(--bg-tertiary, #21262d)", border: "1px solid var(--border, #30363d)", maxHeight: "120px", overflowY: "auto" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)", marginBottom: "6px", fontWeight: 600 }}>消息队列 ({messageQueue.length})</div>
+              {messageQueue.map((msg, idx) => (
+                <div key={idx} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 0", borderBottom: idx < messageQueue.length - 1 ? "1px solid var(--border, #30363d)" : "none" }}>
+                  <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", flexShrink: 0 }}>#{idx + 1}</span>
+                  <span style={{ fontSize: "12px", color: "var(--text-primary, #c9d1d9)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{msg}</span>
+                  <button
+                    style={{ width: 18, height: 18, borderRadius: 3, border: "none", background: "transparent", color: "var(--text-muted, #6e7681)", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                    title="移除"
+                    onClick={() => handleDequeue(idx)}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error, #f87171)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
