@@ -1129,6 +1129,65 @@ export class AgentModelExecutor {
       .trim();
   }
 
+  static stripWebNoise(input: string): string {
+    if (!input || input.length < 20) return input;
+
+    let text = input;
+
+    text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+    text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+    text = text.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, "");
+    text = text.replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, "");
+    text = text.replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, "");
+
+    text = text.replace(/\bclass\s*=\s*["'][^"']*["']/gi, "");
+    text = text.replace(/\bid\s*=\s*["'][^"']*["']/gi, "");
+    text = text.replace(/\bstyle\s*=\s*["'][^"']*["']/gi, "");
+    text = text.replace(/\bon\w+\s*=\s*["'][^"']*["']/gi, "");
+    text = text.replace(/\bdata-\w+\s*=\s*["'][^"']*["']/gi, "");
+    text = text.replace(/\bhref\s*=\s*["']javascript:[^"']*["']/gi, "");
+
+    text = text.replace(/<\/?(?:div|span|section|article|main|header|footer|nav|aside|figure|figcaption|details|summary|time|mark|small|strong|em|b|i|u|sub|sup|abbr|cite|dfn|kbd|samp|var|address|blockquote|pre|code|dl|dt|dd|ol|ul|li|table|thead|tbody|tfoot|tr|th|td|caption|colgroup|col|h[1-6]|p|br|hr|a|img|form|input|button|select|option|textarea|label|fieldset|legend)\b[^>]*>/gi, (match) => {
+      if (/^<br\b/i.test(match) || /^<hr\b/i.test(match)) return "\n";
+      if (/^<\/?(?:p|h[1-6]|div|li|tr|blockquote|pre)\b/i.test(match)) return "\n";
+      return "";
+    });
+
+    text = text.replace(/<[^>]+>/g, "");
+
+    text = text.replace(/&amp;/g, "&");
+    text = text.replace(/&lt;/g, "<");
+    text = text.replace(/&gt;/g, ">");
+    text = text.replace(/&quot;/g, '"');
+    text = text.replace(/&#39;/g, "'");
+    text = text.replace(/&nbsp;/g, " ");
+    text = text.replace(/&#\d+;/g, "");
+    text = text.replace(/&\w+;/g, "");
+
+    text = text.replace(/\{[\s\S]*?(?:color|background|font|margin|padding|border|display|position|width|height|overflow|flex|grid|align|justify|gap|opacity|z-index|transition|animation|transform|box-shadow|text-shadow|cursor|outline|visibility|float|clear|content|list-style|white-space|word-break|line-height|letter-spacing|vertical-align)[\s\S]*?\}/gi, "");
+
+    text = text.replace(/\/\/[^\n]*$/gm, "");
+    text = text.replace(/\/\*[\s\S]*?\*\//g, "");
+    text = text.replace(/\b(function|var|let|const|return|if|else|for|while|switch|case|break|continue|try|catch|finally|throw|new|this|class|extends|import|export|default|from|async|await|yield|typeof|instanceof|void|delete|in|of)\b[^;{}]*[;{}]/g, "");
+
+    text = text.replace(/\b(window|document|console|navigator|localStorage|sessionStorage|fetch|XMLHttpRequest|addEventListener|querySelector|getElementById|createElement|appendChild|removeChild|setAttribute|getAttribute|classList|innerHTML|textContent|innerText|style|dataset)\b\.?\w*\s*[\(\[=;{]/g, "");
+
+    text = text.replace(/https?:\/\/\S+/gm, (url) => {
+      if (url.endsWith(".") || url.endsWith(",") || url.endsWith(")") || url.endsWith("]")) {
+        return url.slice(0, -1);
+      }
+      return url;
+    });
+
+    text = text.replace(/[ \t]+/g, " ");
+    text = text.replace(/\n[ \t]+/g, "\n");
+    text = text.replace(/\n{3,}/g, "\n\n");
+    text = text.replace(/^\s+/, "");
+    text = text.replace(/\s+$/, "");
+
+    return text.trim();
+  }
+
   async chat(
     message: string,
     context?: Record<string, unknown>,
@@ -1306,8 +1365,28 @@ export class AgentModelExecutor {
           });
 
           const outputStr = typeof dispatchResult.output === "string"
-            ? dispatchResult.output
-            : JSON.stringify(dispatchResult.output, null, 2);
+            ? AgentModelExecutor.stripWebNoise(dispatchResult.output)
+            : (() => {
+                const obj = dispatchResult.output as Record<string, unknown>;
+                if (obj && typeof obj === "object") {
+                  for (const key of ["content", "text", "body", "snippet", "output"]) {
+                    if (typeof obj[key] === "string" && (obj[key] as string).length > 100) {
+                      obj[key] = AgentModelExecutor.stripWebNoise(obj[key] as string);
+                    }
+                  }
+                  if (Array.isArray(obj.results)) {
+                    for (const item of obj.results as Array<Record<string, unknown>>) {
+                      if (typeof item.snippet === "string" && (item.snippet as string).length > 100) {
+                        item.snippet = AgentModelExecutor.stripWebNoise(item.snippet as string);
+                      }
+                      if (typeof item.content === "string" && (item.content as string).length > 100) {
+                        item.content = AgentModelExecutor.stripWebNoise(item.content as string);
+                      }
+                    }
+                  }
+                }
+                return JSON.stringify(dispatchResult.output, null, 2);
+              })();
 
           const skillErrorCategories = {
             auth: ["must be set in environment", "api key is required", "authentication failed", "unauthorized", "invalid api key", "api_key is not set", "missing api key"],
@@ -1477,9 +1556,10 @@ export class AgentModelExecutor {
                 const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 3000 });
                 const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
                 const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
-                if (content && content.length > 100) {
+                const cleanedContent = AgentModelExecutor.stripWebNoise(content);
+                if (cleanedContent && cleanedContent.length > 50) {
                   fetchedCount++;
-                  allNewsContent += `## 新闻正文 ${fetchedCount}: ${r.title}\n${content.slice(0, 3000)}\n\n`;
+                  allNewsContent += `## 新闻正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 3000)}\n\n`;
                 }
               } catch {
                 // Skip failed page fetches
@@ -2906,6 +2986,36 @@ Have a specific URL?
 
                 // Truncate huge tool results to prevent context overflow
                 const isBrowser = toolName.startsWith("browser_");
+                const isWebTool = toolName === "web_search" || toolName === "web_fetch" || toolName === "fetch_node_page" || toolName === "skill_execute" || toolName === "browser_search" || toolName === "browser_navigate";
+                if (isWebTool && rawResult && typeof rawResult === "object") {
+                  const r = rawResult as Record<string, unknown>;
+                  if (typeof r.content === "string" && r.content.length > 100) {
+                    r.content = AgentModelExecutor.stripWebNoise(r.content);
+                  }
+                  if (typeof r.text === "string" && r.text.length > 100) {
+                    r.text = AgentModelExecutor.stripWebNoise(r.text);
+                  }
+                  if (typeof r.body === "string" && r.body.length > 100) {
+                    r.body = AgentModelExecutor.stripWebNoise(r.body);
+                  }
+                  if (typeof r.snippet === "string" && r.snippet.length > 100) {
+                    r.snippet = AgentModelExecutor.stripWebNoise(r.snippet);
+                  }
+                  if (Array.isArray(r.results)) {
+                    for (const item of r.results as Array<Record<string, unknown>>) {
+                      if (typeof item.snippet === "string" && item.snippet.length > 100) {
+                        item.snippet = AgentModelExecutor.stripWebNoise(item.snippet as string);
+                      }
+                      if (typeof item.content === "string" && item.content.length > 100) {
+                        item.content = AgentModelExecutor.stripWebNoise(item.content as string);
+                      }
+                    }
+                  }
+                  if (typeof r.output === "string" && r.output.length > 200) {
+                    r.output = AgentModelExecutor.stripWebNoise(r.output);
+                  }
+                  toolResult = JSON.stringify(r);
+                }
                 const MAX_RESULT_LEN = isBrowser ? 8000 : 16000;
                 if (toolResult.length > MAX_RESULT_LEN) {
                   const truncated = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)，请使用 browser_get_text 获取特定内容` });
