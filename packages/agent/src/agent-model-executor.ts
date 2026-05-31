@@ -1575,7 +1575,7 @@ export class AgentModelExecutor {
     }
 
     const newsEnhancedMessage = newsContext
-      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext.slice(0, 12000)}`
+      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext.slice(0, 30000)}`
       : message;
 
     if (newsContext) {
