@@ -2218,7 +2218,6 @@ export class AgentModelExecutor {
           .replace(/(并整理后发给我|整理后发给我|整理一下|并整理|并总结|并汇总|是什么|怎么样|有哪些|有没有|的?情况|的?信息).*/i, "")
           .replace(/[？?！!。.，,]+$/g, "")
           .trim();
-        console.log(`[AgentModelExecutor] News query detected, pre-fetching: "${searchQuery}"`);
 
         const lowerQuery = searchQuery.toLowerCase();
         let freshness: string | undefined;
@@ -2227,30 +2226,138 @@ export class AgentModelExecutor {
         else if (/(本月|这个月|this month)/i.test(lowerQuery)) freshness = "pm";
         else if (/\d{4}年/.test(searchQuery) || /最新|current|latest|recent/i.test(lowerQuery)) freshness = "py";
 
-        const entry = this.registeredTools.get("web_search")!;
-        const searchParams: Record<string, unknown> = { query: searchQuery, limit: 10 };
-        if (freshness) searchParams.freshness = freshness;
-        const searchResult = await entry.handler(searchParams);
-        const resultObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
-        const results = (resultObj?.results as Array<{ title: string; url: string; snippet: string }>) || [];
+        const generateSubQueries = (query: string): string[] => {
+          const subQueries: string[] = [query];
+          const isChinese = /[\u4e00-\u9fff]/.test(query);
 
-        if (results.length > 0) {
-          let allNewsContent = `## 搜索关键词: ${searchQuery}\n## 搜索结果:\n\n`;
-          results.forEach((r, i) => {
+          if (isChinese) {
+            const aspectPatterns: Array<{ pattern: RegExp; queries: string[] }> = [
+              {
+                pattern: /横评|对比|比较|评测|测评|性价比/i,
+                queries: [
+                  query + " 价格 定价 API",
+                  query + " 性能 评测 排名",
+                  query + " 最新 2026",
+                ],
+              },
+              {
+                pattern: /大模型|LLM|AI模型/i,
+                queries: [
+                  query.replace(/横评|对比|比较|评测|测评|性价比/g, "") + " 价格表 API定价",
+                  query.replace(/横评|对比|比较|评测|测评|性价比/g, "") + " benchmark 性能排名",
+                ],
+              },
+              {
+                pattern: /报告|分析|调研/i,
+                queries: [
+                  query + " 数据 统计",
+                  query + " 行业趋势 最新",
+                ],
+              },
+            ];
+
+            for (const { pattern, queries } of aspectPatterns) {
+              if (pattern.test(query)) {
+                subQueries.push(...queries);
+              }
+            }
+
+            const modelNames = query.match(/(?:DeepSeek|Qwen|GLM|MiMo|Mimo|Kimi|MiniMax|Seed|混元|Hunyuan|通义|文心|豆包|ChatGLM|Yi|Baichuan)[\s\-]?[Vv]?[\d.]*(?:\s*(?:Pro|Max|Flash|Lite|Plus|Turbo))?/gi);
+            if (modelNames && modelNames.length > 0) {
+              for (const model of [...new Set(modelNames)]) {
+                subQueries.push(`${model} 价格 性能 2026`);
+                subQueries.push(`${model} API 定价 benchmark`);
+              }
+            }
+          } else {
+            if (/compar|review|benchmark|versus/i.test(query)) {
+              subQueries.push(query + " pricing cost API");
+              subQueries.push(query + " performance benchmark 2026");
+            }
+          }
+
+          return [...new Set(subQueries)].slice(0, 6);
+        };
+
+        const subQueries = generateSubQueries(searchQuery);
+        console.log(`[AgentModelExecutor] Multi-round search: ${subQueries.length} sub-queries for "${searchQuery}"`);
+
+        const entry = this.registeredTools.get("web_search")!;
+        let allSearchResults: Array<{ title: string; url: string; snippet: string }> = [];
+        let allFetchedContent: Array<{ title: string; url: string; content: string }> = [];
+        let searchRound = 0;
+
+        for (const subQ of subQueries) {
+          searchRound++;
+          onProgress?.({
+            type: "tool_call",
+            phase: "tool_calling",
+            detail: `正在搜索 (第${searchRound}/${subQueries.length}轮): ${subQ}`,
+            progress: 20 + searchRound * 5,
+            toolName: "web_search",
+            toolArgs: { query: subQ, freshness },
+          });
+
+          const searchParams: Record<string, unknown> = { query: subQ, limit: 8 };
+          if (freshness) searchParams.freshness = freshness;
+
+          try {
+            const searchResult = await entry.handler(searchParams);
+            const resultObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
+            const results = (resultObj?.results as Array<{ title: string; url: string; snippet: string }>) || [];
+
+            const seenUrls = new Set(allSearchResults.map(r => r.url));
+            for (const r of results) {
+              if (!seenUrls.has(r.url)) {
+                allSearchResults.push(r);
+                seenUrls.add(r.url);
+              }
+            }
+
+            onProgress?.({
+              type: "tool_result",
+              phase: "tool_calling",
+              detail: `搜索完成 (第${searchRound}轮): 找到 ${results.length} 条结果`,
+              progress: 25 + searchRound * 5,
+              toolName: "web_search",
+              toolResult: `Found ${results.length} results for "${subQ}"`,
+            });
+          } catch (err) {
+            console.warn(`[AgentModelExecutor] Sub-query "${subQ}" failed: ${err}`);
+          }
+        }
+
+        if (allSearchResults.length > 0) {
+          let allNewsContent = `## 搜索关键词: ${subQueries.join(" | ")}\n## 共 ${allSearchResults.length} 条搜索结果:\n\n`;
+          allSearchResults.forEach((r, i) => {
             allNewsContent += `### ${i + 1}. ${r.title}\n- URL: ${r.url}\n- 摘要: ${r.snippet}\n\n`;
           });
 
           if (this.registeredTools.has("fetch_node_page")) {
             const fetchTool = this.registeredTools.get("fetch_node_page")!;
+            const urlsToFetch = allSearchResults
+              .filter(r => r.url && r.url.startsWith("http") && !r.url.includes("baidu.com/link"))
+              .slice(0, 8);
             let fetchedCount = 0;
-            for (const r of results.slice(0, 5)) {
+
+            for (const r of urlsToFetch) {
               try {
+                onProgress?.({
+                  type: "tool_call",
+                  phase: "tool_calling",
+                  detail: `正在抓取网页内容: ${r.title.slice(0, 40)}`,
+                  progress: 50 + fetchedCount * 3,
+                  toolName: "fetch_node_page",
+                  toolArgs: { url: r.url },
+                });
+
                 const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 5000 });
                 const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
                 const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
                 const cleanedContent = AgentModelExecutor.stripWebNoise(content);
                 if (cleanedContent && cleanedContent.length > 50) {
                   fetchedCount++;
+                  allFetchedContent.push({ title: r.title, url: r.url, content: cleanedContent.slice(0, 5000) });
                   allNewsContent += `## 网页正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 5000)}\n\n`;
                 }
               } catch {
@@ -2258,15 +2365,24 @@ export class AgentModelExecutor {
             }
           }
           newsContext = allNewsContent;
-          console.log(`[AgentModelExecutor] Pre-fetched news context: ${newsContext.length} chars, ${results.length} results`);
+          console.log(`[AgentModelExecutor] Multi-round search complete: ${subQueries.length} queries, ${allSearchResults.length} results, ${allFetchedContent.length} pages fetched, ${newsContext.length} chars`);
         }
       } catch (err) {
-        console.warn(`[AgentModelExecutor] News pre-fetch failed: ${err}`);
+        console.warn(`[AgentModelExecutor] Multi-round search failed: ${err}`);
       }
     }
 
     const newsEnhancedMessage = newsContext
-      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，基于搜索结果中的真实数据来${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}。注意：搜索结果中的数据来自实时网络，请优先使用这些数据，不要声称无法获取实时信息。]\n\n${newsContext.slice(0, 50000)}`
+      ? `${message}\n\n[系统已通过${searchReason}完成多轮搜索，共获取了相关资料。请基于以下搜索结果中的真实数据来${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}。
+
+要求：
+1. 优先使用搜索结果中的具体数据（价格、评分、排名等），不要使用模糊描述
+2. 如有表格数据，请用Markdown表格呈现，包含具体数值
+3. 不要声称无法获取实时信息——搜索结果就是实时数据
+4. 如果搜索结果中缺少某些信息，请如实说明"在当前搜索结果中未找到"，不要编造数据
+5. 报告类任务请包含：核心摘要、详细对比表格、场景化建议、数据来源说明]
+
+\n\n${newsContext.slice(0, 60000)}`
       : message;
 
     if (newsContext) {

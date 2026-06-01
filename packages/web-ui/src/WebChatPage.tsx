@@ -2019,8 +2019,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                                 gap: "6px",
                                 opacity: 0.5 + (i / Math.min(progressSteps.length, 8)) * 0.5,
                               }}>
-                                {step.type === "tool_call" && "🔧"}
-                                {step.type === "tool_result" && (step.toolError ? "❌" : "✅")}
+                                {step.type === "tool_call" && (step.toolName === "web_search" ? "🔍" : step.toolName === "fetch_node_page" ? "📄" : "🔧")}
+                                {step.type === "tool_result" && (step.toolError ? "❌" : step.toolName === "web_search" ? "🔎" : "✅")}
                                 {step.type === "llm_call" && "🧠"}
                                 {step.type === "status" && "📡"}
                                 <span>{step.detail}</span>
