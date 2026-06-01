@@ -2228,7 +2228,7 @@ export class AgentModelExecutor {
         else if (/\d{4}年/.test(searchQuery) || /最新|current|latest|recent/i.test(lowerQuery)) freshness = "py";
 
         const entry = this.registeredTools.get("web_search")!;
-        const searchParams: Record<string, unknown> = { query: searchQuery, limit: 5 };
+        const searchParams: Record<string, unknown> = { query: searchQuery, limit: 10 };
         if (freshness) searchParams.freshness = freshness;
         const searchResult = await entry.handler(searchParams);
         const resultObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
@@ -2240,22 +2240,20 @@ export class AgentModelExecutor {
             allNewsContent += `### ${i + 1}. ${r.title}\n- URL: ${r.url}\n- 摘要: ${r.snippet}\n\n`;
           });
 
-          // Fetch top 3 news pages for full content
           if (this.registeredTools.has("fetch_node_page")) {
             const fetchTool = this.registeredTools.get("fetch_node_page")!;
             let fetchedCount = 0;
-            for (const r of results.slice(0, 3)) {
+            for (const r of results.slice(0, 5)) {
               try {
-                const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 3000 });
+                const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 5000 });
                 const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
                 const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
                 const cleanedContent = AgentModelExecutor.stripWebNoise(content);
                 if (cleanedContent && cleanedContent.length > 50) {
                   fetchedCount++;
-                  allNewsContent += `## 新闻正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 3000)}\n\n`;
+                  allNewsContent += `## 网页正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 5000)}\n\n`;
                 }
               } catch {
-                // Skip failed page fetches
               }
             }
           }
@@ -2268,7 +2266,7 @@ export class AgentModelExecutor {
     }
 
     const newsEnhancedMessage = newsContext
-      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}]\n\n${newsContext.slice(0, 30000)}`
+      ? `${message}\n\n[系统检测到"${searchReason}"，已为你搜索并抓取了相关资料。请仔细阅读以下内容，基于搜索结果中的真实数据来${message.includes("报告") ? "撰写一份结构清晰的分析报告" : "整理并分析后回复用户"}。注意：搜索结果中的数据来自实时网络，请优先使用这些数据，不要声称无法获取实时信息。]\n\n${newsContext.slice(0, 50000)}`
       : message;
 
     if (newsContext) {

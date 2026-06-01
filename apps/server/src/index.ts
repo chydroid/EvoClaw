@@ -1512,7 +1512,10 @@ export class EvoClawServer {
           return [...new Set(queries)];
         };
 
-        const searchSkills = ["tavily-search", "baidu-search"];
+        const isChineseQuery = /[\u4e00-\u9fff]/.test(query);
+        const searchSkills = isChineseQuery
+          ? ["baidu-search", "tavily-search"]
+          : ["tavily-search", "baidu-search"];
         for (const skillName of searchSkills) {
           try {
             const skills = await this.skillManager.listSkills();
@@ -1534,7 +1537,6 @@ export class EvoClawServer {
         }
 
         const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        const isChineseQuery = /[\u4e00-\u9fff]/.test(query);
 
         const allQueries = isChineseQuery ? optimizeChineseQuery(query) : [query];
         let allResults: Array<{ title: string; url: string; snippet: string }> = [];
@@ -1543,57 +1545,48 @@ export class EvoClawServer {
         for (const q of allQueries) {
           if (allResults.length >= limit) break;
 
-          const bingResult = await trySearchBing(q, limit, userAgent, isChineseQuery, freshness);
-          if (bingResult.results && bingResult.results.length > 0) {
+          const addResults = (newResults: Array<{ title: string; url: string; snippet: string }>, source: string) => {
             const seen = new Set(allResults.map(r => r.url));
-            for (const r of bingResult.results) {
+            for (const r of newResults) {
               if (!seen.has(r.url) && allResults.length < limit) {
                 allResults.push(r);
                 seen.add(r.url);
               }
             }
-            usedSource = bingResult.source || "Bing";
+            if (!usedSource) usedSource = source;
+          };
+
+          if (isChineseQuery) {
+            const baiduResult = await trySearchBaiduHTML(q, limit, userAgent, freshness);
+            if (baiduResult.results && baiduResult.results.length > 0) {
+              addResults(baiduResult.results, "Baidu");
+              continue;
+            }
+          }
+
+          const bingResult = await trySearchBing(q, limit, userAgent, isChineseQuery, freshness);
+          if (bingResult.results && bingResult.results.length > 0) {
+            addResults(bingResult.results, bingResult.source || "Bing");
             continue;
           }
 
-          if (isChineseQuery) {
-            const baiduResult = await trySearchBaiduHTML(q, limit, userAgent);
+          if (!isChineseQuery) {
+            const baiduResult = await trySearchBaiduHTML(q, limit, userAgent, freshness);
             if (baiduResult.results && baiduResult.results.length > 0) {
-              const seen = new Set(allResults.map(r => r.url));
-              for (const r of baiduResult.results) {
-                if (!seen.has(r.url) && allResults.length < limit) {
-                  allResults.push(r);
-                  seen.add(r.url);
-                }
-              }
-              if (!usedSource) usedSource = "Baidu";
+              addResults(baiduResult.results, "Baidu");
               continue;
             }
           }
 
           const googleResult = await trySearchGoogle(q, limit, userAgent, freshness);
           if (googleResult.results && googleResult.results.length > 0) {
-            const seen = new Set(allResults.map(r => r.url));
-            for (const r of googleResult.results) {
-              if (!seen.has(r.url) && allResults.length < limit) {
-                allResults.push(r);
-                seen.add(r.url);
-              }
-            }
-            if (!usedSource) usedSource = "Google";
+            addResults(googleResult.results, "Google");
             continue;
           }
 
           const ddgResult = await trySearchDDG(q, limit, userAgent);
           if (ddgResult.results && ddgResult.results.length > 0) {
-            const seen = new Set(allResults.map(r => r.url));
-            for (const r of ddgResult.results) {
-              if (!seen.has(r.url) && allResults.length < limit) {
-                allResults.push(r);
-                seen.add(r.url);
-              }
-            }
-            if (!usedSource) usedSource = "DuckDuckGo";
+            addResults(ddgResult.results, "DuckDuckGo");
             continue;
           }
         }
@@ -1747,11 +1740,17 @@ export class EvoClawServer {
       }
     }
 
-    async function trySearchBaiduHTML(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+    async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
-        const response = await fetch(`https://www.baidu.com/s?wd=${encodeURIComponent(q)}&rn=${limit}`, {
+        let baiduUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(q)}&rn=${limit}`;
+        if (freshness) {
+          const baiduFreshness: Record<string, string> = { pd: "1", pw: "2", pm: "3", py: "4" };
+          const gpc = baiduFreshness[freshness];
+          if (gpc) baiduUrl += `&gpc=stf=${gpc}`;
+        }
+        const response = await fetch(baiduUrl, {
           headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "zh-CN,zh;q=0.9", "Accept-Encoding": "gzip, deflate" },
           signal: controller.signal,
           redirect: "follow",
