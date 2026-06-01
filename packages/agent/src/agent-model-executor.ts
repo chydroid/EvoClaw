@@ -2206,8 +2206,10 @@ export class AgentModelExecutor {
          lowerMsg.includes("横评") || lowerMsg.includes("评测") || lowerMsg.includes("对比") || lowerMsg.includes("性价比") ||
          lowerMsg.includes("排名") || lowerMsg.includes("推荐") || lowerMsg.includes("测评") || lowerMsg.includes("比较"));
       const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快|横评|评测|性价比|排名|对比|测评)/i.test(message);
-      shouldSearch = isNewsQuery || isSearchIntent;
-      searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : "关键词匹配触发") : "";
+      const isEvaluationQuery = /(?:看看|怎么样|如何|好不好|好用吗|值得|评价|评估|介绍|了解|说说|聊聊|讲讲|分析下|看下|了解下|介绍下)/i.test(message);
+      const isModelOrProductQuery = /(?:模型|大模型|LLM|GPT|Claude|Gemini|Qwen|DeepSeek|Llama|Mistral|MiMo|GLM|文心|通义|千问|豆包|Kimi|MiniMax|百川|Yi|零一|商汤|讯飞|智谱|小米|华为|百度|阿里|腾讯|字节|OpenAI|Anthropic|Google|Meta|Microsoft|NVIDIA)/i.test(message);
+      shouldSearch = isNewsQuery || isSearchIntent || (isEvaluationQuery && isModelOrProductQuery);
+      searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : isEvaluationQuery && isModelOrProductQuery ? "实体评价查询触发" : "关键词匹配触发") : "";
     }
     
     if (shouldSearch && this.registeredTools.has("web_search")) {
@@ -2252,6 +2254,13 @@ export class AgentModelExecutor {
                 queries: [
                   query + " 数据 统计",
                   query + " 行业趋势 最新",
+                ],
+              },
+              {
+                pattern: /看看|怎么样|如何|好不好|好用吗|值得|评价|评估|介绍|了解|说说|聊聊|讲讲/i,
+                queries: [
+                  query.replace(/你看看|看看如何|怎么样|好不好|好用吗|值得吗|评价|评估/g, "") + " 评测 体验",
+                  query.replace(/你看看|看看如何|怎么样|好不好|好用吗|值得吗|评价|评估/g, "") + " 最新消息 2026",
                 ],
               },
             ];

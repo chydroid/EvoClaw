@@ -432,7 +432,63 @@ export class WeixinPluginAdapter {
         chatContext.attachments = [imageAttachment];
       }
       console.log(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
-      const result = await this.agentExecutor.chat(text, chatContext);
+
+      await this.sendMessage(account, fromUserId, "📨 收到，正在处理...", message.context_token);
+
+      let lastProgressSent = Date.now();
+      let lastProgressDetail = "";
+      let progressMsgCount = 0;
+      const MAX_PROGRESS_MSGS = 10;
+      const PROGRESS_SEND_INTERVAL = 10000;
+
+      const onProgress = (event: { type: string; phase?: string; detail?: string; progress?: number; toolName?: string; reply?: string }) => {
+        if (progressMsgCount >= MAX_PROGRESS_MSGS) return;
+        const now = Date.now();
+        let msg = "";
+
+        if (event.type === "tool_call" && event.detail) {
+          const detail = event.detail.slice(0, 60);
+          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL || detail !== lastProgressDetail) {
+            lastProgressSent = now;
+            lastProgressDetail = detail;
+            msg = `🔍 ${detail}`;
+          }
+        } else if (event.type === "tool_result" && event.detail) {
+          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL * 2) {
+            lastProgressSent = now;
+            msg = `✅ ${event.detail.slice(0, 60)}`;
+          }
+        } else if (event.type === "status" && event.phase === "thinking" && event.detail) {
+          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL) {
+            lastProgressSent = now;
+            msg = `🤔 ${event.detail.slice(0, 60)}`;
+          }
+        } else if (event.type === "status" && event.phase === "generating" && event.reply) {
+          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL * 2) {
+            lastProgressSent = now;
+            const preview = event.reply.slice(0, 80).replace(/\n/g, " ");
+            msg = `✍️ 正在生成: ${preview}...`;
+          }
+        } else if (event.type === "llm_call" && event.detail) {
+          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL) {
+            lastProgressSent = now;
+            msg = `🤖 ${event.detail.slice(0, 60)}`;
+          }
+        }
+
+        if (msg) {
+          progressMsgCount++;
+          this.sendMessage(account, fromUserId, msg, message.context_token).catch(() => {});
+        }
+      };
+
+      const WEIXIN_CHAT_TIMEOUT = 300_000;
+      const result = await Promise.race([
+        this.agentExecutor.chat(text, chatContext, onProgress),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT)
+        ),
+      ]);
 
       clearInterval(typingKeepalive);
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
@@ -470,13 +526,24 @@ export class WeixinPluginAdapter {
     } catch (err) {
       clearInterval(typingKeepalive);
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
-      console.error("[Weixin] Failed to process message:", err);
-      await this.sendMessage(
-        account,
-        fromUserId,
-        "抱歉，处理您的消息时出现了错误。",
-        message.context_token
-      );
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg === "WEIXIN_CHAT_TIMEOUT") {
+        console.error(`[Weixin] Chat timeout for ${fromUserId} after 300s`);
+        await this.sendMessage(
+          account,
+          fromUserId,
+          "⏰ 处理超时，任务可能过于复杂。请尝试简化问题或稍后再试。",
+          message.context_token
+        );
+      } else {
+        console.error("[Weixin] Failed to process message:", err);
+        await this.sendMessage(
+          account,
+          fromUserId,
+          "抱歉，处理您的消息时出现了错误。",
+          message.context_token
+        );
+      }
     }
   }
 
