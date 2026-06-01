@@ -1542,6 +1542,38 @@ export class EvoClawServer {
         let allResults: Array<{ title: string; url: string; snippet: string }> = [];
         let usedSource = "";
 
+        const trySearchTavilyAPI = async (searchQuery: string, maxResults: number): Promise<{ results: Array<{ title: string; url: string; snippet: string }> }> => {
+          const tavilyKey = process.env.TAVILY_API_KEY;
+          if (!tavilyKey || tavilyKey === "your_api_key") return { results: [] };
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 12000);
+            const resp = await fetch("https://api.tavily.com/search", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                api_key: tavilyKey,
+                query: searchQuery,
+                max_results: maxResults,
+                include_answer: false,
+                search_depth: "basic",
+              }),
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            if (!resp.ok) return { results: [] };
+            const data = await resp.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
+            if (!data.results || !Array.isArray(data.results)) return { results: [] };
+            return {
+              results: data.results
+                .filter((r) => r.url)
+                .map((r) => ({ title: r.title || "", url: r.url!, snippet: (r.content || "").slice(0, 300) })),
+            };
+          } catch {
+            return { results: [] };
+          }
+        };
+
         for (const q of allQueries) {
           if (allResults.length >= limit) break;
 
@@ -1562,6 +1594,12 @@ export class EvoClawServer {
               addResults(baiduResult.results, "Baidu");
               continue;
             }
+          }
+
+          const tavilyResult = await trySearchTavilyAPI(q, limit);
+          if (tavilyResult.results && tavilyResult.results.length > 0) {
+            addResults(tavilyResult.results, "Tavily");
+            continue;
           }
 
           const bingResult = await trySearchBing(q, limit, userAgent, isChineseQuery, freshness);
@@ -1592,9 +1630,11 @@ export class EvoClawServer {
         }
 
         if (allResults.length > 0) {
+          console.log(`[WebSearch] Success: ${allResults.length} results from ${usedSource} for query variants: ${allQueries.join(", ")}`);
           return { query, source: usedSource, count: allResults.length, results: allResults.slice(0, limit) };
         }
 
+        console.warn(`[WebSearch] All search providers failed for query variants: ${allQueries.join(", ")}`);
         const errorMsg = "All search providers failed for all query variants";
         return { error: errorMsg, query, source: "none", results: [] };
       }

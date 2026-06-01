@@ -65,7 +65,10 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "You CAN access the internet in real-time. " +
     "NEVER claim you cannot access the internet, have network restrictions, or lack real-time data. " +
     "When asked about current events, latest information, or recent data, ALWAYS use web_search first. " +
-    "If search results are insufficient, try different query terms or use web_fetch to read specific pages."
+    "If search results are insufficient, try different query terms or use web_fetch to read specific pages. " +
+    "If web_search returns no results, you MUST try browser_launch + browser_navigate to perform a real browser search. " +
+    "NEVER give up and reply with outdated training data — always exhaust all available tools first. " +
+    "When the user asks about a specific entity (company, product, person), you MUST search for the latest information, not rely on your training data."
   );
   sections.push("");
   sections.push("## File Operations");

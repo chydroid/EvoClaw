@@ -2283,9 +2283,10 @@ export class AgentModelExecutor {
          lowerMsg.includes("排名") || lowerMsg.includes("推荐") || lowerMsg.includes("测评") || lowerMsg.includes("比较"));
       const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快|横评|评测|性价比|排名|对比|测评)/i.test(message);
       const isEvaluationQuery = /(?:看看|怎么样|如何|好不好|好用吗|值得|评价|评估|介绍|了解|说说|聊聊|讲讲|分析下|看下|了解下|介绍下)/i.test(message);
-      const isModelOrProductQuery = /(?:模型|大模型|LLM|GPT|Claude|Gemini|Qwen|DeepSeek|Llama|Mistral|MiMo|GLM|文心|通义|千问|豆包|Kimi|MiniMax|百川|Yi|零一|商汤|讯飞|智谱|小米|华为|百度|阿里|腾讯|字节|OpenAI|Anthropic|Google|Meta|Microsoft|NVIDIA)/i.test(message);
-      shouldSearch = isNewsQuery || isSearchIntent || (isEvaluationQuery && isModelOrProductQuery);
-      searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : isEvaluationQuery && isModelOrProductQuery ? "实体评价查询触发" : "关键词匹配触发") : "";
+      const isEntityInfoQuery = /(?:情况|信息|动态|新闻|进展|发布|新品|产品|公告|财报|动向|近况|现状|趋势|发展)/i.test(message);
+      const isModelOrProductQuery = /(?:模型|大模型|LLM|GPT|Claude|Gemini|Qwen|DeepSeek|Llama|Mistral|MiMo|GLM|文心|通义|千问|豆包|Kimi|MiniMax|百川|Yi|零一|商汤|讯飞|智谱|小米|华为|百度|阿里|腾讯|字节|OpenAI|Anthropic|Google|Meta|Microsoft|NVIDIA|苹果|三星|比亚迪|蔚来|理想|小鹏|大疆|OPPO|vivo|荣耀|中兴)/i.test(message);
+      shouldSearch = isNewsQuery || isSearchIntent || (isEvaluationQuery && isModelOrProductQuery) || (isEntityInfoQuery && isModelOrProductQuery);
+      searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : isEvaluationQuery && isModelOrProductQuery ? "实体评价查询触发" : isEntityInfoQuery && isModelOrProductQuery ? "实体信息查询触发" : "关键词匹配触发") : "";
     }
     
     if (shouldSearch && this.registeredTools.has("web_search")) {
@@ -2469,7 +2470,9 @@ export class AgentModelExecutor {
 6. 下载链接格式：请使用标准Markdown链接格式 [点击下载](链接)，例如 [点击下载](/api/files/download/文件名)，确保链接正确包裹在方括号和圆括号中]
 
 \n\n${newsContext.slice(0, 60000)}`
-      : message;
+      : shouldSearch
+        ? `${message}\n\n[系统提示：自动搜索预处理未能获取到有效结果。你必须使用 web_search 工具进行搜索以获取最新实时信息，绝对不能仅凭训练数据回答。如果 web_search 失败，请尝试 browser_launch + browser_navigate 使用真实浏览器搜索。禁止声称"无法获取实时信息"或"网络访问受限"——你有多种搜索工具可用，必须至少尝试一种。]`
+        : message;
 
     if (newsContext) {
       console.log(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"`);
@@ -4263,8 +4266,10 @@ Have a specific URL?
     const essentialTools = new Set([
       "web_search", "web_fetch", "fetch_node_page", "file_read", "file_create",
       "file_modify", "file_list", "file_delete", "skill_execute", "skill_install",
-      "skill_search", "skill_find_and_install", "skill_list",
-      "email_send", "email_add_account", "browser_navigate", "browser_search",
+      "skill_search", "skill_find_and_install", "skill_list", "skill_view", "skill_index_list",
+      "email_send", "email_add_account",
+      "browser_navigate", "browser_search", "browser_launch", "browser_screenshot",
+      "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",
       "execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result",
       "markitdown_convert",
     ]);
