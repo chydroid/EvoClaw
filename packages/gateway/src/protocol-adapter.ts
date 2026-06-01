@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { taskStatusTracker, ModelFailoverManager } from "@evoclaw/agent";
+import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager } from "@evoclaw/agent";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
 import { spawn } from "child_process";
@@ -35,6 +35,96 @@ const MAX_OUTPUT_BYTES = 1024 * 512;
 const DATA_DIR = path.resolve("data", "config");
 const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
+
+type TaskComplexity = "simple" | "medium" | "complex" | "very_complex";
+
+interface ComplexityEstimate {
+  level: TaskComplexity;
+  timeoutMs: number;
+  shouldAutoSplit: boolean;
+  maxSubtasks: number;
+}
+
+const COMPLEXITY_TIMEOUT_MAP: Record<TaskComplexity, number> = {
+  simple: 300_000,
+  medium: 600_000,
+  complex: 1_200_000,
+  very_complex: 1_800_000,
+};
+
+const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexity }> = [
+  {
+    patterns: [
+      /实现.*完整.*系统/i, /implement.*complete.*system/i,
+      /全栈.*应用/i, /full.?stack.*app/i,
+      /设计.*架构.*实现/i, /design.*architecture.*implement/i,
+      /从零.*构建/i, /build.*from.*scratch/i,
+      /多模块.*项目/i, /multi.?module.*project/i,
+      /端到端.*测试/i, /end.?to.?end.*test/i,
+      /复杂.*编码.*任务/i, /complex.*coding.*task/i,
+      /重构.*整个/i, /refactor.*entire/i,
+    ],
+    complexity: "very_complex",
+  },
+  {
+    patterns: [
+      /创建.*项目/i, /create.*project/i,
+      /编写.*类.*方法/i, /write.*class.*method/i,
+      /实现.*算法/i, /implement.*algorithm/i,
+      /开发.*功能/i, /develop.*feature/i,
+      /编写.*测试/i, /write.*test/i,
+      /代码.*审查/i, /code.*review/i,
+      /调试.*修复/i, /debug.*fix/i,
+      /数据.*处理.*管道/i, /data.*pipeline/i,
+      /API.*服务/i, /api.*server/i,
+      /React.*组件/i, /react.*component/i,
+    ],
+    complexity: "complex",
+  },
+  {
+    patterns: [
+      /修改.*文件/i, /modify.*file/i,
+      /添加.*功能/i, /add.*feature/i,
+      /更新.*配置/i, /update.*config/i,
+      /搜索.*信息/i, /search.*info/i,
+      /分析.*代码/i, /analyze.*code/i,
+      /生成.*报告/i, /generate.*report/i,
+    ],
+    complexity: "medium",
+  },
+];
+
+function estimateTaskComplexity(message: string): ComplexityEstimate {
+  const lower = message.toLowerCase();
+  let maxComplexity: TaskComplexity = "simple";
+
+  for (const { patterns, complexity } of COMPLEXITY_PATTERNS) {
+    if (patterns.some(p => p.test(lower) || p.test(message))) {
+      const order: TaskComplexity[] = ["simple", "medium", "complex", "very_complex"];
+      if (order.indexOf(complexity) > order.indexOf(maxComplexity)) {
+        maxComplexity = complexity;
+      }
+    }
+  }
+
+  const codeBlockCount = (lower.match(/```/g) || []).length / 2;
+  const lineCount = message.split("\n").length;
+  const wordCount = message.split(/\s+/).filter(Boolean).length;
+
+  if (codeBlockCount >= 3 || lineCount > 30 || wordCount > 200) {
+    const order: TaskComplexity[] = ["simple", "medium", "complex", "very_complex"];
+    const boosted: TaskComplexity = wordCount > 400 ? "very_complex" : wordCount > 200 ? "complex" : "medium";
+    if (order.indexOf(boosted) > order.indexOf(maxComplexity)) {
+      maxComplexity = boosted;
+    }
+  }
+
+  const timeoutMs = COMPLEXITY_TIMEOUT_MAP[maxComplexity];
+  const shouldAutoSplit = maxComplexity === "complex" || maxComplexity === "very_complex";
+  const maxSubtasks = maxComplexity === "very_complex" ? 8 : maxComplexity === "complex" ? 5 : 3;
+
+  return { level: maxComplexity, timeoutMs, shouldAutoSplit, maxSubtasks };
+}
 
 function validateCliCommand(input: string): { valid: boolean; reason?: string } {
   const trimmed = input.trim();
@@ -911,10 +1001,12 @@ export class ProtocolAdapter {
             sendSSE(event.type, event);
           };
 
-          const CHAT_TIMEOUT = 300000;
+          const complexity = estimateTaskComplexity(message);
+          const CHAT_TIMEOUT = complexity.timeoutMs;
+          console.log(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
           try {
             const result = await Promise.race([
-              agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments }, onProgress),
+              agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
               new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
             ]);
 
@@ -954,10 +1046,15 @@ export class ProtocolAdapter {
         }
 
         // ── Non-streaming Mode (original behavior) ──
-        const CHAT_TIMEOUT = 300000;
+        const complexity = estimateTaskComplexity(message);
+        const CHAT_TIMEOUT = complexity.timeoutMs;
+        console.log(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s`);
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
+          complexity: complexity.level,
+          shouldAutoSplit: complexity.shouldAutoSplit,
+          maxSubtasks: complexity.maxSubtasks,
         });
         
         const timeoutPromise = new Promise<never>((_, reject) =>
@@ -1033,6 +1130,68 @@ export class ProtocolAdapter {
         return;
       }
       res.json(status);
+    });
+
+    app.get("/api/chat/checkpoint", (req: Request, res: Response) => {
+      const sessionId = (req.query.sessionId as string) || "";
+      if (!taskCheckpointManager.has(sessionId)) {
+        res.json({ hasCheckpoint: false });
+        return;
+      }
+      const checkpoint = taskCheckpointManager.get(sessionId);
+      res.json({ hasCheckpoint: true, checkpoint });
+    });
+
+    app.post("/api/chat/resume", async (req: Request, res: Response) => {
+      const sessionId = (req.body.sessionId as string) || "";
+      const message = (req.body.message as string) || "";
+      const useStream = (req.body.stream as boolean) || (req.query.stream === "true");
+
+      const agentExecutor = this.registry.resolveService<{
+        chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent model executor not available" });
+        return;
+      }
+
+      const complexity = estimateTaskComplexity(message);
+
+      if (useStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.flushHeaders();
+
+        const sendSSE = (event: string, data: unknown) => {
+          try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
+        };
+        const onProgress = (event: import("@evoclaw/agent").AgentProgressEvent) => {
+          sendSSE(event.type, event);
+        };
+
+        const CHAT_TIMEOUT = complexity.timeoutMs;
+        try {
+          const result = await Promise.race([
+            agentExecutor.chat(message, { sessionId, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
+          ]);
+          sendSSE("done", { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, sessionId, resumed: true });
+        } catch (chatErr) {
+          if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
+            sendSSE("error", { message: "⏱️ 恢复任务超时，但进度已保存，可再次恢复。" });
+          } else {
+            sendSSE("error", { message: String(chatErr) });
+          }
+        } finally {
+          try { res.end(); } catch { /* ignore */ }
+        }
+        return;
+      }
+
+      res.json({ reply: "恢复任务请使用流式模式 (stream: true)", resumed: false });
     });
 
     app.get("/api/system/services", (_req: Request, res: Response) => {

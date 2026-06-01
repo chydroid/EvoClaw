@@ -757,9 +757,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               generating: "生成中",
               done: "已完成",
               error: "出错",
+              splitting: "任务拆分中",
+              subtask_executing: "子任务执行中",
+              resuming: "从检查点恢复",
             };
             const label = phaseLabels[status.phase] || status.phase;
-            setStatusMessage(`${label}: ${status.detail}`);
+            const subtaskInfo = status.subtaskIndex !== undefined && status.subtaskTotal !== undefined
+              ? ` (${status.subtaskIndex + 1}/${status.subtaskTotal})`
+              : "";
+            setStatusMessage(`${label}${subtaskInfo}: ${status.detail}`);
             setCurrentProgress(Math.max(currentProgress, status.progress || 0));
           }
         }
@@ -774,7 +780,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         data: f.data || null,
       })) : undefined;
 
-      const FETCH_TIMEOUT = 300000;
+      const FETCH_TIMEOUT = 1_200_000;
       const controller = new AbortController();
       abortControllerRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
@@ -889,9 +895,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                         generating: "✍️ 生成回复",
                         done: "✅ 完成",
                         error: "❌ 出错",
+                        splitting: "📋 任务拆分中",
+                        subtask_executing: "⚙️ 子任务执行中",
+                        resuming: "🔄 从检查点恢复",
                       };
                       const label = phaseLabels[eventData.phase] || eventData.phase;
-                      setStatusMessage(`${label}: ${eventData.detail}`);
+                      const subtaskInfo = eventData.subtaskIndex !== undefined && eventData.subtaskTotal !== undefined
+                        ? ` (${eventData.subtaskIndex + 1}/${eventData.subtaskTotal})`
+                        : "";
+                      setStatusMessage(`${label}${subtaskInfo}: ${eventData.detail}`);
                     }
                     if (typeof eventData.progress === "number") {
                       setCurrentProgress(eventData.progress);

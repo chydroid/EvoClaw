@@ -58,14 +58,17 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
 
 // ── Task Status Tracker: real-time progress feedback for long-running tasks ──
 export interface TaskStatus {
-  phase: "thinking" | "tool_calling" | "generating" | "done" | "error";
+  phase: "thinking" | "tool_calling" | "generating" | "done" | "error" | "splitting" | "subtask_executing" | "resuming";
   detail: string;
   progress: number; // 0-100
   updatedAt: number;
+  subtaskIndex?: number;
+  subtaskTotal?: number;
+  subtaskLabel?: string;
 }
 
 export interface AgentProgressEvent {
-  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error";
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed";
   phase?: TaskStatus["phase"];
   detail: string;
   progress?: number;
@@ -78,6 +81,8 @@ export interface AgentProgressEvent {
   reply?: string;
   tokensUsed?: number;
   duration?: number;
+  subtaskIndex?: number;
+  subtaskTotal?: number;
 }
 
 export type AgentProgressCallback = (event: AgentProgressEvent) => void;
@@ -86,8 +91,8 @@ class TaskStatusTracker {
   private statuses = new Map<string, TaskStatus>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-  set(sessionId: string, phase: TaskStatus["phase"], detail: string, progress: number): void {
-    this.statuses.set(sessionId, { phase, detail, progress, updatedAt: Date.now() });
+  set(sessionId: string, phase: TaskStatus["phase"], detail: string, progress: number, subtaskIndex?: number, subtaskTotal?: number, subtaskLabel?: string): void {
+    this.statuses.set(sessionId, { phase, detail, progress, updatedAt: Date.now(), subtaskIndex, subtaskTotal, subtaskLabel });
     // Auto-cleanup stale entries every 5 minutes
     if (!this.cleanupTimer) {
       this.cleanupTimer = setInterval(() => {
@@ -118,6 +123,115 @@ class TaskStatusTracker {
 }
 
 export const taskStatusTracker = new TaskStatusTracker();
+
+export interface TaskCheckpoint {
+  sessionId: string;
+  originalMessage: string;
+  subtasks: Array<{
+    id: string;
+    description: string;
+    status: "pending" | "completed" | "failed";
+    result?: string;
+    error?: string;
+  }>;
+  completedCount: number;
+  totalSubtasks: number;
+  createdAt: number;
+  updatedAt: number;
+  overallResult?: string;
+}
+
+class TaskCheckpointManager {
+  private checkpoints = new Map<string, TaskCheckpoint>();
+  private checkpointDir: string;
+
+  constructor(baseDir?: string) {
+    this.checkpointDir = baseDir || path.resolve(process.cwd(), "data", "checkpoints");
+    if (!fs.existsSync(this.checkpointDir)) {
+      fs.mkdirSync(this.checkpointDir, { recursive: true });
+    }
+    this.loadFromDisk();
+  }
+
+  save(sessionId: string, checkpoint: TaskCheckpoint): void {
+    checkpoint.updatedAt = Date.now();
+    this.checkpoints.set(sessionId, checkpoint);
+    this.persistToDisk(sessionId, checkpoint);
+  }
+
+  get(sessionId: string): TaskCheckpoint | undefined {
+    return this.checkpoints.get(sessionId);
+  }
+
+  has(sessionId: string): boolean {
+    return this.checkpoints.has(sessionId);
+  }
+
+  delete(sessionId: string): void {
+    this.checkpoints.delete(sessionId);
+    try {
+      const filePath = path.join(this.checkpointDir, `${sessionId}.json`);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch { /* ignore */ }
+  }
+
+  updateSubtask(sessionId: string, subtaskId: string, status: "completed" | "failed", result?: string, error?: string): void {
+    const cp = this.checkpoints.get(sessionId);
+    if (!cp) return;
+    const st = cp.subtasks.find(s => s.id === subtaskId);
+    if (!st) return;
+    st.status = status;
+    if (result !== undefined) st.result = result;
+    if (error !== undefined) st.error = error;
+    cp.completedCount = cp.subtasks.filter(s => s.status === "completed").length;
+    cp.updatedAt = Date.now();
+    this.persistToDisk(sessionId, cp);
+  }
+
+  getNextPendingSubtask(sessionId: string): TaskCheckpoint["subtasks"][number] | undefined {
+    const cp = this.checkpoints.get(sessionId);
+    if (!cp) return undefined;
+    return cp.subtasks.find(s => s.status === "pending");
+  }
+
+  private persistToDisk(sessionId: string, checkpoint: TaskCheckpoint): void {
+    try {
+      const filePath = path.join(this.checkpointDir, `${sessionId}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(checkpoint, null, 2), "utf-8");
+    } catch (err) {
+      console.warn(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:`, err);
+    }
+  }
+
+  private loadFromDisk(): void {
+    try {
+      if (!fs.existsSync(this.checkpointDir)) return;
+      const files = fs.readdirSync(this.checkpointDir).filter(f => f.endsWith(".json"));
+      const now = Date.now();
+      const MAX_AGE = 24 * 60 * 60 * 1000;
+      for (const file of files) {
+        try {
+          const data = fs.readFileSync(path.join(this.checkpointDir, file), "utf-8");
+          const cp = JSON.parse(data) as TaskCheckpoint;
+          if (now - cp.updatedAt < MAX_AGE) {
+            this.checkpoints.set(cp.sessionId, cp);
+          } else {
+            fs.unlinkSync(path.join(this.checkpointDir, file));
+          }
+        } catch { /* skip corrupt files */ }
+      }
+    } catch { /* ignore */ }
+    console.log(`[TaskCheckpointManager] Loaded ${this.checkpoints.size} checkpoints from disk`);
+  }
+}
+
+export const taskCheckpointManager = new TaskCheckpointManager();
+
+export interface AutoSplitConfig {
+  complexity: "simple" | "medium" | "complex" | "very_complex";
+  shouldAutoSplit: boolean;
+  maxSubtasks: number;
+}
 
 export class AgentModelExecutor {
   private config: ModelConfig;
@@ -1975,6 +2089,61 @@ export class AgentModelExecutor {
       return multiResult;
     }
 
+    // ── Auto-split mechanism for complex tasks ──
+    const autoSplitConfig: AutoSplitConfig = {
+      complexity: (context?.complexity as AutoSplitConfig["complexity"]) || "simple",
+      shouldAutoSplit: (context?.shouldAutoSplit as boolean) || false,
+      maxSubtasks: (context?.maxSubtasks as number) || 3,
+    };
+
+    if (autoSplitConfig.shouldAutoSplit && autoSplitConfig.complexity !== "simple") {
+      console.log(`[AgentModelExecutor] Auto-split enabled for complexity "${autoSplitConfig.complexity}", maxSubtasks: ${autoSplitConfig.maxSubtasks}`);
+
+      const existingCheckpoint = taskCheckpointManager.get(sessionId);
+      if (existingCheckpoint && existingCheckpoint.completedCount < existingCheckpoint.totalSubtasks) {
+        console.log(`[AgentModelExecutor] Resuming task from checkpoint: ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} completed`);
+        taskStatusTracker.set(sessionId, "resuming", `从检查点恢复任务 (${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks})`, 50);
+        onProgress?.({ type: "task_resumed", phase: "resuming", detail: `从检查点恢复任务，已完成 ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} 个子任务`, progress: 50 });
+
+        const resumeResult = await this.executeSubtasksFromCheckpoint(existingCheckpoint, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress);
+        if (resumeResult) {
+          taskCheckpointManager.delete(sessionId);
+          return resumeResult;
+        }
+      }
+
+      const subtaskDescriptions = this.decomposeTaskForAutoSplit(effectiveMessage, autoSplitConfig.maxSubtasks);
+      if (subtaskDescriptions.length > 1) {
+        console.log(`[AgentModelExecutor] Task decomposed into ${subtaskDescriptions.length} subtasks:`, subtaskDescriptions.map(s => s.description.slice(0, 40)));
+
+        taskStatusTracker.set(sessionId, "splitting", `任务已拆分为 ${subtaskDescriptions.length} 个子任务`, 15);
+        onProgress?.({ type: "status", phase: "splitting", detail: `任务已拆分为 ${subtaskDescriptions.length} 个子任务，开始逐个执行...`, progress: 15 });
+
+        const checkpoint: TaskCheckpoint = {
+          sessionId,
+          originalMessage: effectiveMessage,
+          subtasks: subtaskDescriptions.map((st, i) => ({
+            id: `sub-${i + 1}`,
+            description: st.description,
+            status: "pending" as const,
+          })),
+          completedCount: 0,
+          totalSubtasks: subtaskDescriptions.length,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        taskCheckpointManager.save(sessionId, checkpoint);
+
+        onProgress?.({ type: "checkpoint_saved", phase: "splitting", detail: `检查点已保存，共 ${subtaskDescriptions.length} 个子任务`, progress: 20 });
+
+        const splitResult = await this.executeSubtasksFromCheckpoint(checkpoint, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress);
+        if (splitResult) {
+          taskCheckpointManager.delete(sessionId);
+          return splitResult;
+        }
+      }
+    }
+
     // Recall relevant past memories for contextual awareness
     let memoryContext = "";
     if (this.memoryHub) {
@@ -2311,6 +2480,182 @@ export class AgentModelExecutor {
       duration: Date.now() - startTime,
       permissionRequests: [...pendingPermissions],
       toolsExecuted: true,
+    };
+  }
+
+  private decomposeTaskForAutoSplit(message: string, maxSubtasks: number): Array<{ id: string; description: string }> {
+    const subtasks: Array<{ id: string; description: string }> = [];
+    const lower = message.toLowerCase();
+
+    const codingPatterns: Array<{ test: RegExp; phases: string[] }> = [
+      {
+        test: /实现|implement|编写|write|开发|develop|创建.*类|create.*class/i,
+        phases: ["设计数据结构和接口定义", "实现核心逻辑和算法", "编写错误处理和边界检查", "添加单元测试"],
+      },
+      {
+        test: /算法|algorithm|排序|sort|搜索|search|图|graph/i,
+        phases: ["分析算法需求和时间复杂度要求", "实现核心算法逻辑", "处理边界情况和异常", "编写测试用例验证正确性"],
+      },
+      {
+        test: /API|接口|服务|server|路由|route/i,
+        phases: ["定义API接口和数据模型", "实现核心路由和业务逻辑", "添加中间件和错误处理", "编写API测试"],
+      },
+      {
+        test: /重构|refactor|优化|optimize|改进|improve/i,
+        phases: ["分析现有代码识别问题", "制定重构方案", "逐步实施重构", "验证重构后功能正确性"],
+      },
+      {
+        test: /调试|debug|修复|fix|排错|troubleshoot/i,
+        phases: ["复现问题并收集错误信息", "定位问题根因", "实施修复方案", "验证修复效果并添加回归测试"],
+      },
+    ];
+
+    let matchedPhases: string[] | null = null;
+    for (const pattern of codingPatterns) {
+      if (pattern.test.test(lower)) {
+        matchedPhases = pattern.phases;
+        break;
+      }
+    }
+
+    if (!matchedPhases) {
+      if (lower.includes("测试") || lower.includes("test")) {
+        matchedPhases = ["分析测试需求和覆盖范围", "编写核心测试用例", "添加边界和异常测试", "运行测试并验证结果"];
+      } else if (lower.length > 200 || lower.split("\n").length > 10) {
+        matchedPhases = ["分析需求并设计方案", "实现第一部分功能", "实现第二部分功能", "整合测试和验证"];
+      } else {
+        matchedPhases = ["分析需求并设计方案", "实现核心功能", "测试验证和完善"];
+      }
+    }
+
+    const selectedPhases = matchedPhases.slice(0, maxSubtasks);
+    for (let i = 0; i < selectedPhases.length; i++) {
+      subtasks.push({
+        id: `sub-${i + 1}`,
+        description: selectedPhases[i],
+      });
+    }
+
+    return subtasks;
+  }
+
+  private async executeSubtasksFromCheckpoint(
+    checkpoint: TaskCheckpoint,
+    sessionId: string,
+    pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }>,
+    startTime: number,
+    attachments: Array<{ name: string; type: string; size: number; data?: string | null }> | undefined,
+    onProgress?: AgentProgressCallback
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+    const subtaskResults: string[] = [];
+    let totalTokensUsed = 0;
+    const allFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
+    let failedCount = 0;
+
+    const systemPrompt = this.buildSystemPrompt();
+    const skillManager = this.registry?.resolveService<{
+      searchLocalSkills(query: Record<string, unknown>): Promise<unknown[]>;
+      listSkills(): unknown[];
+      executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
+    }>("skillManager");
+    const installedSkills = await skillManager?.listSkills() || [];
+    const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
+
+    if (enabledProviders.length === 0) {
+      return null;
+    }
+
+    const completedContext = checkpoint.subtasks
+      .filter(s => s.status === "completed" && s.result)
+      .map(s => `### ${s.description}\n${s.result}`)
+      .join("\n\n");
+
+    for (let i = 0; i < checkpoint.subtasks.length; i++) {
+      const subtask = checkpoint.subtasks[i];
+      if (subtask.status === "completed") {
+        subtaskResults.push(`✅ **${subtask.description}**: 已完成`);
+        continue;
+      }
+
+      const baseProgress = 20 + Math.floor((i / checkpoint.totalSubtasks) * 70);
+      taskStatusTracker.set(sessionId, "subtask_executing", `执行子任务 ${i + 1}/${checkpoint.totalSubtasks}: ${subtask.description}`, baseProgress, i, checkpoint.totalSubtasks, subtask.description);
+      onProgress?.({ type: "subtask_start", phase: "subtask_executing", detail: `开始子任务 ${i + 1}/${checkpoint.totalSubtasks}: ${subtask.description}`, progress: baseProgress, subtaskIndex: i, subtaskTotal: checkpoint.totalSubtasks });
+
+      const subtaskPrompt = completedContext
+        ? `${checkpoint.originalMessage}\n\n## 已完成的子任务结果\n\n${completedContext}\n\n## 当前子任务\n请完成以下子任务: ${subtask.description}\n\n注意：这是拆分后的子任务之一，请专注于完成当前子任务，不要重复已完成的工作。`
+        : `${checkpoint.originalMessage}\n\n请完成以下子任务: ${subtask.description}\n\n注意：这是拆分后的子任务之一，请专注于完成当前子任务。`;
+
+      const SUBTASK_TIMEOUT = 300_000;
+      let subtaskResult: string | null = null;
+      let subtaskTokens = 0;
+
+      try {
+        const resultPromise = this.tryCallLLM(
+          subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
+          startTime, sessionId, pendingPermissions, attachments, onProgress
+        );
+        const timeoutPromise = new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), SUBTASK_TIMEOUT)
+        );
+        const result = await Promise.race([resultPromise, timeoutPromise]);
+
+        if (result) {
+          subtaskResult = result.reply;
+          subtaskTokens = result.tokensUsed;
+          if (result.files) allFiles.push(...result.files);
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Subtask "${subtask.description}" failed:`, err);
+      }
+
+      if (subtaskResult) {
+        taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", subtaskResult.slice(0, 2000));
+        subtaskResults.push(`✅ **${subtask.description}**:\n${subtaskResult}`);
+        totalTokensUsed += subtaskTokens;
+        onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 完成: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
+      } else {
+        const retryCount = 1;
+        if (retryCount <= 2) {
+          console.log(`[AgentModelExecutor] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
+          try {
+            const retryResult = await this.tryCallLLM(
+              subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
+              startTime, sessionId, pendingPermissions, attachments, onProgress
+            );
+            if (retryResult) {
+              taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", retryResult.reply.slice(0, 2000));
+              subtaskResults.push(`✅ **${subtask.description}** (重试成功):\n${retryResult.reply}`);
+              totalTokensUsed += retryResult.tokensUsed;
+              if (retryResult.files) allFiles.push(...retryResult.files);
+              onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
+              continue;
+            }
+          } catch { /* retry failed */ }
+        }
+
+        taskCheckpointManager.updateSubtask(sessionId, subtask.id, "failed", undefined, "Subtask execution failed after retry");
+        subtaskResults.push(`❌ **${subtask.description}**: 执行失败（已重试）`);
+        failedCount++;
+        onProgress?.({ type: "subtask_error", phase: "subtask_executing", detail: `子任务 ${i + 1} 失败: ${subtask.description}`, progress: baseProgress });
+      }
+    }
+
+    const finalProgress = failedCount === 0 ? 100 : Math.floor((checkpoint.totalSubtasks - failedCount) / checkpoint.totalSubtasks * 100);
+    taskStatusTracker.set(sessionId, "done", `所有子任务执行完成 (${checkpoint.totalSubtasks - failedCount}/${checkpoint.totalSubtasks} 成功)`, finalProgress);
+
+    const summaryHeader = failedCount === 0
+      ? `🎉 所有 ${checkpoint.totalSubtasks} 个子任务已成功完成！`
+      : `⚠️ ${checkpoint.totalSubtasks - failedCount}/${checkpoint.totalSubtasks} 个子任务完成，${failedCount} 个失败。`;
+
+    const reply = `${summaryHeader}\n\n${subtaskResults.join("\n\n")}\n\n---\n📊 总耗时: ${Math.floor((Date.now() - startTime) / 1000)}秒 | Token使用: ${totalTokensUsed}`;
+
+    return {
+      reply: AgentModelExecutor.collapseNewlines(reply),
+      tokensUsed: totalTokensUsed,
+      duration: Date.now() - startTime,
+      permissionRequests: [...pendingPermissions],
+      toolsExecuted: true,
+      files: allFiles,
     };
   }
 

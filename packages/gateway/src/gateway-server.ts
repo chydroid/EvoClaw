@@ -102,6 +102,13 @@ export class GatewayServer {
     this.server = this.app.listen(port, host, () => {
       console.log(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}`);
 
+      if (this.server) {
+        this.server.requestTimeout = 1_800_000;
+        this.server.headersTimeout = 120_000;
+        this.server.keepAliveTimeout = 30_000;
+        console.log(`[Gateway] Server timeouts: request=${this.server.requestTimeout}ms, headers=${this.server.headersTimeout}ms`);
+      }
+
       if (this.config.enableWS && this.server) {
         this.wsTransport = new WSServerTransport(this.protocolHandler, this.eventBus);
         this.wsTransport.attach(this.server);
