@@ -1486,16 +1486,31 @@ export class EvoClawServer {
       "web_search",
       {
         name: "web_search",
-        description: "Search the web. Tries Tavily/Baidu skills first (higher quality), then falls back to Bing/DuckDuckGo. Returns titles, URLs, and snippets.",
+        description: "Search the web. Tries Tavily/Baidu skills first (higher quality), then falls back to Bing (cn.bing.com for Chinese queries), Google, DuckDuckGo. Returns titles, URLs, and snippets. Supports freshness parameter for time-filtered results.",
         parameters: {
           query: { type: "string", description: "Search query string" },
           limit: { type: "string", description: "Max results (default 10)" },
+          freshness: { type: "string", description: "Time filter: pd (24h), pw (7d), pm (31d), py (365d), or YYYY-MM-DDtoYYYY-MM-DD" },
         },
       },
       async (params: Record<string, unknown>) => {
         const query = String(params.query || "");
         const limit = parseInt(String(params.limit || "10"), 10) || 10;
+        const freshness = String(params.freshness || "");
         if (!query) return { error: "Search query is required" };
+
+        const optimizeChineseQuery = (q: string): string[] => {
+          const queries = [q];
+          const techTerms = ["大模型", "LLM", "AI", "人工智能", "深度学习", "机器学习", "神经网络", "GPT", "Claude", "Gemini", "开源模型"];
+          const hasTechTerm = techTerms.some(t => q.includes(t));
+          if (hasTechTerm) {
+            const cleaned = q.replace(/国产/g, "").replace(/中国/g, "").replace(/国内/g, "").trim();
+            if (cleaned.length > 2) queries.push(cleaned);
+            const withEnglish = q.replace(/大模型/g, "LLM大模型").replace(/性价比/g, "价格 性能 对比").replace(/横评/g, "对比 评测").replace(/评测/g, "评测 对比");
+            queries.push(withEnglish);
+          }
+          return [...new Set(queries)];
+        };
 
         const searchSkills = ["tavily-search", "baidu-search"];
         for (const skillName of searchSkills) {
@@ -1503,7 +1518,9 @@ export class EvoClawServer {
             const skills = await this.skillManager.listSkills();
             const skill = skills.find((s: { name: string }) => s.name === skillName);
             if (!skill) continue;
-            const result = await this.skillManager.executeSkill(skill.id || skillName, { query, prompt: query, limit });
+            const skillParams: Record<string, unknown> = { query, prompt: query, limit };
+            if (freshness) skillParams.freshness = freshness;
+            const result = await this.skillManager.executeSkill(skill.id || skillName, skillParams);
             if (result && result.success && result.output) {
               const outputStr = typeof result.output === "string" ? result.output : JSON.stringify(result.output);
               if (outputStr.length > 50) {
@@ -1517,18 +1534,75 @@ export class EvoClawServer {
         }
 
         const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+        const isChineseQuery = /[\u4e00-\u9fff]/.test(query);
 
-        const bingResult = await trySearchBing(query, limit, userAgent);
-        if (bingResult.results && bingResult.results.length > 0) {
-          return { query, source: "Bing", count: bingResult.results.length, results: bingResult.results.slice(0, limit) };
+        const allQueries = isChineseQuery ? optimizeChineseQuery(query) : [query];
+        let allResults: Array<{ title: string; url: string; snippet: string }> = [];
+        let usedSource = "";
+
+        for (const q of allQueries) {
+          if (allResults.length >= limit) break;
+
+          const bingResult = await trySearchBing(q, limit, userAgent, isChineseQuery, freshness);
+          if (bingResult.results && bingResult.results.length > 0) {
+            const seen = new Set(allResults.map(r => r.url));
+            for (const r of bingResult.results) {
+              if (!seen.has(r.url) && allResults.length < limit) {
+                allResults.push(r);
+                seen.add(r.url);
+              }
+            }
+            usedSource = bingResult.source || "Bing";
+            continue;
+          }
+
+          if (isChineseQuery) {
+            const baiduResult = await trySearchBaiduHTML(q, limit, userAgent);
+            if (baiduResult.results && baiduResult.results.length > 0) {
+              const seen = new Set(allResults.map(r => r.url));
+              for (const r of baiduResult.results) {
+                if (!seen.has(r.url) && allResults.length < limit) {
+                  allResults.push(r);
+                  seen.add(r.url);
+                }
+              }
+              if (!usedSource) usedSource = "Baidu";
+              continue;
+            }
+          }
+
+          const googleResult = await trySearchGoogle(q, limit, userAgent, freshness);
+          if (googleResult.results && googleResult.results.length > 0) {
+            const seen = new Set(allResults.map(r => r.url));
+            for (const r of googleResult.results) {
+              if (!seen.has(r.url) && allResults.length < limit) {
+                allResults.push(r);
+                seen.add(r.url);
+              }
+            }
+            if (!usedSource) usedSource = "Google";
+            continue;
+          }
+
+          const ddgResult = await trySearchDDG(q, limit, userAgent);
+          if (ddgResult.results && ddgResult.results.length > 0) {
+            const seen = new Set(allResults.map(r => r.url));
+            for (const r of ddgResult.results) {
+              if (!seen.has(r.url) && allResults.length < limit) {
+                allResults.push(r);
+                seen.add(r.url);
+              }
+            }
+            if (!usedSource) usedSource = "DuckDuckGo";
+            continue;
+          }
         }
 
-        const ddgResult = await trySearchDDG(query, limit, userAgent);
-        if (ddgResult.results && ddgResult.results.length > 0) {
-          return { query, source: "DuckDuckGo", count: ddgResult.results.length, results: ddgResult.results.slice(0, limit) };
+        if (allResults.length > 0) {
+          return { query, source: usedSource, count: allResults.length, results: allResults.slice(0, limit) };
         }
 
-        const errorMsg = bingResult.error || ddgResult.error || "All search providers failed";
+        const errorMsg = "All search providers failed for all query variants";
         return { error: errorMsg, query, source: "none", results: [] };
       }
     );
@@ -1559,13 +1633,21 @@ export class EvoClawServer {
       return decodeHtmlEntities(text.replace(/<\/?[^>]+>/g, "").trim().slice(0, 500));
     }
 
-    // ── Bing search helper ──
-    async function trySearchBing(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+    async function trySearchBing(q: string, limit: number, ua: string, isChinese: boolean = false, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string; source?: string }> {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
-        const response = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(q)}&count=${limit}`, {
-          headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+        const bingHost = isChinese ? "https://cn.bing.com" : "https://www.bing.com";
+        let url = `${bingHost}/search?q=${encodeURIComponent(q)}&count=${limit}`;
+        if (isChinese) {
+          url += "&setlang=zh-CN&cc=cn&qs=n&form=QBRE";
+        }
+        if (freshness) {
+          const bingFreshness = freshness === "pd" ? "day" : freshness === "pw" ? "week" : freshness === "pm" ? "month" : "";
+          if (bingFreshness) url += `&filters=ex1:"ez${bingFreshness}"`;
+        }
+        const response = await fetch(url, {
+          headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": isChinese ? "zh-CN,zh;q=0.9,en;q=0.8" : "en-US,en;q=0.9" },
           signal: controller.signal,
           redirect: "follow",
         });
@@ -1578,8 +1660,6 @@ export class EvoClawServer {
         const html = await response.text();
         const results: Array<{ title: string; url: string; snippet: string }> = [];
 
-        // Bing search results are in <li class="b_algo"> blocks
-        // Each contains: <h2><a href="URL">Title</a></h2> and <p>snippet</p>
         const algoRegex = /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
         let match;
         while ((match = algoRegex.exec(html)) !== null && results.length < limit) {
@@ -1596,9 +1676,8 @@ export class EvoClawServer {
           }
         }
 
-        if (results.length > 0) return { results };
+        if (results.length > 0) return { results, source: isChinese ? "Bing CN" : "Bing" };
 
-        // Fallback: try <div class="b_caption"> patterns
         const captionRegex = /<div[^>]*class="[^"]*b_caption[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
         while ((match = captionRegex.exec(html)) !== null && results.length < limit) {
           const block = match[1];
@@ -1613,14 +1692,123 @@ export class EvoClawServer {
           }
         }
 
-        if (results.length > 0) return { results };
+        if (results.length > 0) return { results, source: isChinese ? "Bing CN" : "Bing" };
         return { error: "No results found in Bing" };
       } catch (err: any) {
         return { error: err.name === "AbortError" ? "Bing search timed out" : `Bing error: ${err.message || String(err)}` };
       }
     }
 
-    // ── DuckDuckGo Lite search helper (simpler HTML, more reliable) ──
+    async function trySearchGoogle(q: string, limit: number, ua: string, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        let url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${limit}&hl=zh-CN`;
+        if (freshness) {
+          const tbs = freshness === "pd" ? "qdr:d" : freshness === "pw" ? "qdr:w" : freshness === "pm" ? "qdr:m" : freshness === "py" ? "qdr:y" : "";
+          if (tbs) url += `&tbs=${tbs}`;
+        }
+        const response = await fetch(url, {
+          headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+          signal: controller.signal,
+          redirect: "follow",
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          return { error: `Google HTTP ${response.status}` };
+        }
+
+        const html = await response.text();
+        const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+        const resultRegex = /<div[^>]*class="[^"]*g[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
+        let match;
+        while ((match = resultRegex.exec(html)) !== null && results.length < limit) {
+          const block = match[1];
+          const titleMatch = block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+          const linkMatch = block.match(/<a[^>]*href="\/url\?q=(https?:\/\/[^&"]+)[^"]*"[^>]*>/i) 
+            || block.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>/i);
+          const snippetMatch = block.match(/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+            || block.match(/<span[^>]*class="[^"]*aCOpRe[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
+          if (titleMatch && linkMatch && linkMatch[1] && !linkMatch[1].includes("google.com")) {
+            results.push({
+              title: cleanText(titleMatch[1]),
+              url: linkMatch[1],
+              snippet: snippetMatch ? cleanText(snippetMatch[1]) : "",
+            });
+          }
+        }
+
+        if (results.length > 0) return { results };
+        return { error: "No results found in Google" };
+      } catch (err: any) {
+        return { error: err.name === "AbortError" ? "Google search timed out" : `Google error: ${err.message || String(err)}` };
+      }
+    }
+
+    async function trySearchBaiduHTML(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(`https://www.baidu.com/s?wd=${encodeURIComponent(q)}&rn=${limit}`, {
+          headers: { "User-Agent": ua, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "zh-CN,zh;q=0.9", "Accept-Encoding": "gzip, deflate" },
+          signal: controller.signal,
+          redirect: "follow",
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          return { error: `Baidu HTML HTTP ${response.status}` };
+        }
+
+        const html = await response.text();
+        if (html.length < 5000) {
+          return { error: "Baidu returned minimal content (possible anti-bot block)" };
+        }
+
+        const results: Array<{ title: string; url: string; snippet: string }> = [];
+        const seenUrls = new Set<string>();
+
+        const titleRegex = /<h3[^>]*class="[^"]*(?:t|c-title)[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match;
+        while ((match = titleRegex.exec(html)) !== null && results.length < limit) {
+          const url = match[1];
+          const title = cleanText(match[2]);
+          if (title && url && !url.includes("baidu.com/baidu.php") && !seenUrls.has(url)) {
+            seenUrls.add(url);
+            results.push({ title, url, snippet: "" });
+          }
+        }
+
+        if (results.length === 0) {
+          const altTitleRegex = /<h3[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+          while ((match = altTitleRegex.exec(html)) !== null && results.length < limit) {
+            const url = match[1];
+            const title = cleanText(match[2]);
+            if (title && url && !url.includes("baidu.com/baidu.php") && !seenUrls.has(url)) {
+              seenUrls.add(url);
+              results.push({ title, url, snippet: "" });
+            }
+          }
+        }
+
+        const snippetRegex = /<div[^>]*class="[^"]*(?:c-abstract|content-right_[^"]*|c-span-last)[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+        let snippetIdx = 0;
+        while ((match = snippetRegex.exec(html)) !== null && snippetIdx < results.length) {
+          if (results[snippetIdx].snippet === "") {
+            results[snippetIdx].snippet = cleanText(match[1]);
+          }
+          snippetIdx++;
+        }
+
+        if (results.length > 0) return { results };
+        return { error: "No results found in Baidu HTML" };
+      } catch (err: any) {
+        return { error: err.name === "AbortError" ? "Baidu HTML search timed out" : `Baidu HTML error: ${err.message || String(err)}` };
+      }
+    }
+
     async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
       try {
         const controller = new AbortController();

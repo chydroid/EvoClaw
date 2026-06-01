@@ -483,6 +483,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "canvas.gaps": "差距",
     "canvas.failures": "失败",
     "canvas.compaction_chain": "对话压缩链",
+
+    "chat.show_raw": "以MarkDown原文件显示",
+    "chat.show_preview": "以MarkDown预览形式显示",
   },
 
   en: {
@@ -945,6 +948,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     "canvas.gaps": "Gaps",
     "canvas.failures": "Failures",
     "canvas.compaction_chain": "Compaction Chain",
+
+    "chat.show_raw": "Show as Markdown Raw File",
+    "chat.show_preview": "Show as Markdown Preview",
   },
 };
 

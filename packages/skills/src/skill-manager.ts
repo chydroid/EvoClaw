@@ -28,7 +28,6 @@ export class SkillManager {
   private registry: SkillRegistry;
   private resolver: SkillResolver;
   private localization: LocalizationService;
-  private scanTimer: ReturnType<typeof setInterval> | null = null;
   private processedItems = new Map<string, number>();
   private isScanning = false;
 
@@ -423,35 +422,38 @@ export class SkillManager {
     this.registry.addRemoteRegistry(config);
   }
 
+  private scanDirs: Array<{ dir: string; intervalMs: number }> = [];
+  private scanTimers: ReturnType<typeof setInterval>[] = [];
+
   startAutoScan(skillsDir: string, intervalMs = 30000): void {
-    if (this.scanTimer) {
-      clearInterval(this.scanTimer);
-    }
+    this.scanDirs.push({ dir: skillsDir, intervalMs });
     console.log(`[SkillManager] Auto-scan started on "${skillsDir}" (every ${intervalMs / 1000}s)`);
 
-    const runScan = async () => {
+    const runScan = async (dir: string) => {
       try {
-        const result = await this.scanAndInstall(skillsDir);
+        const result = await this.scanAndInstall(dir);
         if (result.installed.length > 0 || result.skipped.length > 0) {
           console.log(
-            `[SkillManager] Scan: ${result.installed.length} installed, ${result.skipped.length} skipped`
+            `[SkillManager] Scan "${dir}": ${result.installed.length} installed, ${result.skipped.length} skipped`
           );
         }
       } catch (err) {
-        console.error("[SkillManager] Auto-scan error:", err);
+        console.error(`[SkillManager] Auto-scan error for "${dir}":`, err);
       }
     };
 
-    runScan();
-    this.scanTimer = setInterval(runScan, intervalMs);
+    runScan(skillsDir);
+    const timer = setInterval(() => runScan(skillsDir), intervalMs);
+    this.scanTimers.push(timer);
   }
 
   stopAutoScan(): void {
-    if (this.scanTimer) {
-      clearInterval(this.scanTimer);
-      this.scanTimer = null;
-      console.log("[SkillManager] Auto-scan stopped");
+    for (const timer of this.scanTimers) {
+      clearInterval(timer);
     }
+    this.scanTimers = [];
+    this.scanDirs = [];
+    console.log("[SkillManager] Auto-scan stopped");
   }
 
   async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {
@@ -613,15 +615,7 @@ export class SkillManager {
         const savedValue = savedConfig?.[envVar] as string | undefined;
         const envValue = process.env[envVar];
 
-        if (savedValue !== undefined && savedValue !== "") {
-          config[envVar] = savedValue;
-          envMeta[envVar] = {
-            required: true,
-            description: `${envVar} configuration`,
-            currentSource: "config",
-          };
-          envSource[envVar] = "config";
-        } else if (envValue) {
+        if (envValue) {
           config[envVar] = envValue;
           envMeta[envVar] = {
             required: true,
@@ -629,6 +623,14 @@ export class SkillManager {
             currentSource: "env",
           };
           envSource[envVar] = "env";
+        } else if (savedValue !== undefined && savedValue !== "") {
+          config[envVar] = savedValue;
+          envMeta[envVar] = {
+            required: true,
+            description: `${envVar} configuration`,
+            currentSource: "config",
+          };
+          envSource[envVar] = "config";
         } else {
           config[envVar] = "";
           envMeta[envVar] = {

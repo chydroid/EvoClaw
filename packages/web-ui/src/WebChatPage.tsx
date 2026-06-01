@@ -12,6 +12,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { htmlEscape } from "./highlight";
+import { useTranslation } from "./i18n";
 
 // Add CSS animations
 const styleSheet = document.createElement("style");
@@ -59,9 +60,7 @@ styleSheet.textContent = `
 `;
 document.head.appendChild(styleSheet);
 
-// Simple markdown-to-HTML renderer
 function renderMessageHtml(text: string): string {
-  // Decode HTML entities first (e.g. &ensp; &#0183; &amp;) before htmlEscape re-encodes them
   const decoded = text
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
@@ -79,23 +78,188 @@ function renderMessageHtml(text: string): string {
     .replace(/&rsquo;/g, "'")
     .replace(/&ldquo;/g, '"')
     .replace(/&rdquo;/g, '"');
-  const escaped = htmlEscape(decoded);
-  return escaped
-    // Code blocks: ```lang\n...\n```
-    .replace(/```(\w*)\n?([\s\S]*?)```/g, (_: string, lang: string, code: string) => {
-      const safeLang = (lang || "code").replace(/["'<>]/g, "");
-      return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang-label">${safeLang}</span></div><pre class="code-block-pre"><code>${code.trim()}</code></pre></div>`;
-    })
-    // Inline code: `text`
-    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">$1</code>')
-    // Bold: **text**
-    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text-primary);">$1</strong>')
-    // Links: [text](url) — must come after code to avoid matching inside code blocks
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>')
-    // Plain URLs that aren't already in links
-    .replace(/(?<!href=")(https?:\/\/[^\s<>\[\]()]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>')
-    // Line breaks
-    .replace(/\n/g, '<br/>');
+
+  const lines = decoded.split("\n");
+  const result: string[] = [];
+  let inCodeBlock = false;
+  let codeBlockLang = "";
+  let codeBlockLines: string[] = [];
+  let inTable = false;
+  let tableRows: string[][] = [];
+  let tableAlign: string[] = [];
+  let inList = false;
+  let listType: "ul" | "ol" = "ul";
+  let listItems: string[] = [];
+
+  const closeList = () => {
+    if (inList) {
+      const tag = listType;
+      result.push(
+        `<${tag} style="margin:4px 0;padding-left:20px;">${listItems.map((li) => `<li style="margin:2px 0;">${li}</li>`).join("")}</${tag}>`
+      );
+      inList = false;
+      listItems = [];
+    }
+  };
+
+  const closeTable = () => {
+    if (inTable && tableRows.length > 0) {
+      const headerRow = tableRows[0];
+      const bodyRows = tableRows.slice(1);
+      result.push('<table style="border-collapse:collapse;margin:8px 0;width:100%;font-size:13px;">');
+      result.push("<thead><tr>");
+      headerRow.forEach((cell, i) => {
+        const align = tableAlign[i] || "left";
+        result.push(
+          `<th style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 10px;text-align:${align};background:var(--bg-tertiary,#21262d);font-weight:600;">${cell}</th>`
+        );
+      });
+      result.push("</tr></thead>");
+      if (bodyRows.length > 0) {
+        result.push("<tbody>");
+        bodyRows.forEach((row) => {
+          result.push("<tr>");
+          row.forEach((cell, i) => {
+            const align = tableAlign[i] || "left";
+            result.push(
+              `<td style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 10px;text-align:${align};">${cell}</td>`
+            );
+          });
+          result.push("</tr>");
+        });
+        result.push("</tbody>");
+      }
+      result.push("</table>");
+      inTable = false;
+      tableRows = [];
+      tableAlign = [];
+    }
+  };
+
+  const inlineFormat = (s: string): string => {
+    const escaped = htmlEscape(s);
+    return escaped
+      .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">$1</code>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text-primary);">$1</strong>')
+      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>')
+      .replace(/(?<!href=")(https?:\/\/[^\s<>\[\]()]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>');
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (line.startsWith("```")) {
+      if (inCodeBlock) {
+        const safeLang = (codeBlockLang || "code").replace(/["'<>]/g, "");
+        result.push(
+          `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang-label">${safeLang}</span></div><pre class="code-block-pre"><code>${codeBlockLines.map((l) => htmlEscape(l)).join("\n")}</code></pre></div>`
+        );
+        inCodeBlock = false;
+        codeBlockLines = [];
+        codeBlockLang = "";
+      } else {
+        closeList();
+        closeTable();
+        inCodeBlock = true;
+        codeBlockLang = line.slice(3).trim();
+        codeBlockLines = [];
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlockLines.push(line);
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      const cells = trimmed.split("|").slice(1, -1).map((c) => c.trim());
+      if (cells.every((c) => /^[-:]+$/.test(c))) {
+        tableAlign = cells.map((c) => {
+          if (c.startsWith(":") && c.endsWith(":")) return "center";
+          if (c.endsWith(":")) return "right";
+          return "left";
+        });
+        continue;
+      }
+      inTable = true;
+      closeList();
+      tableRows.push(cells.map((c) => inlineFormat(c)));
+      continue;
+    } else if (inTable) {
+      closeTable();
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
+      closeList();
+      result.push('<hr style="border:none;border-top:1px solid var(--border,rgba(255,255,255,0.1));margin:12px 0;"/>');
+      continue;
+    }
+
+    const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headerMatch) {
+      closeList();
+      const level = headerMatch[1].length;
+      const sizes: Record<number, string> = { 1: "20px", 2: "18px", 3: "16px", 4: "15px", 5: "14px", 6: "13px" };
+      result.push(
+        `<h${level} style="font-size:${sizes[level]};font-weight:600;margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border,rgba(255,255,255,0.08));color:var(--text-primary);">${inlineFormat(headerMatch[2])}</h${level}>`
+      );
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      closeList();
+      const quoteContent = trimmed.slice(1).trim();
+      result.push(
+        `<blockquote style="border-left:3px solid var(--accent,#58a6ff);padding:4px 12px;margin:6px 0;background:var(--bg-tertiary,rgba(255,255,255,0.04));color:var(--text-secondary);">${inlineFormat(quoteContent)}</blockquote>`
+      );
+      continue;
+    }
+
+    const ulMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (ulMatch) {
+      closeTable();
+      if (!inList || listType !== "ul") {
+        closeList();
+        inList = true;
+        listType = "ul";
+      }
+      listItems.push(inlineFormat(ulMatch[1]));
+      continue;
+    }
+
+    const olMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+    if (olMatch) {
+      closeTable();
+      if (!inList || listType !== "ol") {
+        closeList();
+        inList = true;
+        listType = "ol";
+      }
+      listItems.push(inlineFormat(olMatch[2]));
+      continue;
+    }
+
+    closeList();
+    if (trimmed === "") {
+      result.push('<div style="height:8px;"></div>');
+    } else {
+      result.push(`<p style="margin:4px 0;line-height:1.6;">${inlineFormat(trimmed)}</p>`);
+    }
+  }
+
+  if (inCodeBlock) {
+    const safeLang = (codeBlockLang || "code").replace(/["'<>]/g, "");
+    result.push(
+      `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang-label">${safeLang}</span></div><pre class="code-block-pre"><code>${codeBlockLines.map((l) => htmlEscape(l)).join("\n")}</code></pre></div>`
+    );
+  }
+  closeList();
+  closeTable();
+
+  return result.join("");
 }
 
 interface AvatarInfo {
@@ -558,6 +722,7 @@ const permissionBtnStyle = (primary: boolean, destructive?: boolean): CSSPropert
 });
 
 export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionId?: string | null; avatars?: AvatarInfo }) {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -568,6 +733,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [currentProgress, setCurrentProgress] = useState(0);
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [msgViewModes, setMsgViewModes] = useState<Record<string, "preview" | "raw">>({});
   const [contextUsed, setContextUsed] = useState(0);
   const [contextLimit, setContextLimit] = useState(60000);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
@@ -1286,6 +1452,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   const renderMessageContent = (msg: WebChatMessage) => {
     if (!msg.content) return null;
+    const viewMode = msgViewModes[msg.id] || "preview";
+    if (viewMode === "raw") {
+      return <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontFamily: "monospace", fontSize: "13px", lineHeight: "1.6" }}>{msg.content}</pre>;
+    }
     const html = renderMessageHtml(msg.content);
     return <div dangerouslySetInnerHTML={{ __html: html }} />;
   };
@@ -1634,48 +1804,87 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 onMouseEnter={() => setHoveredMsgId(msg.id)}
                 onMouseLeave={() => setHoveredMsgId(null)}
               >
-                {/* Copy button — shown on hover for assistant messages, uses SVG icon */}
                 {hoveredMsgId === msg.id && msg.role === "assistant" && (
-                  <button
-                    style={{
-                      position: "absolute",
-                      top: "5px",
-                      right: "8px",
-                      background: "transparent",
-                      border: "none",
-                      borderRadius: "4px",
-                      padding: "3px",
-                      color: "var(--text-muted, #6e7681)",
-                      cursor: "pointer",
-                      zIndex: 10,
-                      display: "flex",
-                      alignItems: "center",
-                      transition: "color 0.15s",
-                    }}
-                    title="复制为 Markdown"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      copyAsMarkdown(msg);
-                      // Click feedback: brief accent flash
-                      e.currentTarget.style.color = "var(--accent, #58a6ff)";
-                      setTimeout(() => {
+                  <>
+                    <button
+                      style={{
+                        position: "absolute",
+                        top: "3px",
+                        right: "32px",
+                        background: "transparent",
+                        border: "1px solid var(--border, rgba(255,255,255,0.1))",
+                        borderRadius: "4px",
+                        padding: "2px 6px",
+                        color: "var(--text-muted, #6e7681)",
+                        cursor: "pointer",
+                        zIndex: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        fontSize: "10px",
+                        whiteSpace: "nowrap",
+                        transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                      }}
+                      title={msgViewModes[msg.id] === "raw" ? t("chat.show_preview") : t("chat.show_raw")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMsgViewModes((prev) => ({
+                          ...prev,
+                          [msg.id]: prev[msg.id] === "raw" ? "preview" : "raw",
+                        }));
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
+                        e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
+                        e.currentTarget.style.borderColor = "var(--accent, #58a6ff)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted, #6e7681)";
-                      }, 500);
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
-                      e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      e.currentTarget.style.color = "var(--text-muted, #6e7681)";
-                    }}
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                  </button>
+                        e.currentTarget.style.borderColor = "var(--border, rgba(255,255,255,0.1))";
+                      }}
+                    >
+                      {msgViewModes[msg.id] === "raw" ? t("chat.show_preview") : t("chat.show_raw")}
+                    </button>
+                    <button
+                      style={{
+                        position: "absolute",
+                        top: "5px",
+                        right: "8px",
+                        background: "transparent",
+                        border: "none",
+                        borderRadius: "4px",
+                        padding: "3px",
+                        color: "var(--text-muted, #6e7681)",
+                        cursor: "pointer",
+                        zIndex: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        transition: "color 0.15s",
+                      }}
+                      title="复制为 Markdown"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyAsMarkdown(msg);
+                        e.currentTarget.style.color = "var(--accent, #58a6ff)";
+                        setTimeout(() => {
+                          e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                        }, 500);
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
+                        e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    </button>
+                  </>
                 )}
                 {/* Thinking badge */}
                 {msg.thinking && (

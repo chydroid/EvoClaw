@@ -2197,10 +2197,15 @@ export class AgentModelExecutor {
       const lowerMsg = message.toLowerCase();
       const isNewsQuery = (lowerMsg.includes("新闻") || lowerMsg.includes("热搜") || lowerMsg.includes("热点") || 
                           lowerMsg.includes("AI") || lowerMsg.includes("人工智能") || lowerMsg.includes("科技") ||
-                          lowerMsg.includes("分析报告") || lowerMsg.includes("发展情况") || lowerMsg.includes("分析")) &&
+                          lowerMsg.includes("分析报告") || lowerMsg.includes("发展情况") || lowerMsg.includes("分析") ||
+                          lowerMsg.includes("横评") || lowerMsg.includes("评测") || lowerMsg.includes("对比") ||
+                          lowerMsg.includes("性价比") || lowerMsg.includes("排名") || lowerMsg.includes("推荐") ||
+                          lowerMsg.includes("测评") || lowerMsg.includes("比较")) &&
         (lowerMsg.includes("搜索") || lowerMsg.includes("整理") || lowerMsg.includes("找") || lowerMsg.includes("查") ||
-         lowerMsg.includes("分析") || lowerMsg.includes("报告") || lowerMsg.includes("情况") || lowerMsg.includes("做个"));
-      const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快)/i.test(message);
+         lowerMsg.includes("分析") || lowerMsg.includes("报告") || lowerMsg.includes("情况") || lowerMsg.includes("做个") ||
+         lowerMsg.includes("横评") || lowerMsg.includes("评测") || lowerMsg.includes("对比") || lowerMsg.includes("性价比") ||
+         lowerMsg.includes("排名") || lowerMsg.includes("推荐") || lowerMsg.includes("测评") || lowerMsg.includes("比较"));
+      const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快|横评|评测|性价比|排名|对比|测评)/i.test(message);
       shouldSearch = isNewsQuery || isSearchIntent;
       searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : "关键词匹配触发") : "";
     }
@@ -2214,9 +2219,18 @@ export class AgentModelExecutor {
           .replace(/[？?！!。.，,]+$/g, "")
           .trim();
         console.log(`[AgentModelExecutor] News query detected, pre-fetching: "${searchQuery}"`);
-        
+
+        const lowerQuery = searchQuery.toLowerCase();
+        let freshness: string | undefined;
+        if (/(今天|今日|today)/i.test(lowerQuery)) freshness = "pd";
+        else if (/(本周|这周|最近|this week)/i.test(lowerQuery)) freshness = "pw";
+        else if (/(本月|这个月|this month)/i.test(lowerQuery)) freshness = "pm";
+        else if (/\d{4}年/.test(searchQuery) || /最新|current|latest|recent/i.test(lowerQuery)) freshness = "py";
+
         const entry = this.registeredTools.get("web_search")!;
-        const searchResult = await entry.handler({ query: searchQuery, limit: 5 });
+        const searchParams: Record<string, unknown> = { query: searchQuery, limit: 5 };
+        if (freshness) searchParams.freshness = freshness;
+        const searchResult = await entry.handler(searchParams);
         const resultObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
         const results = (resultObj?.results as Array<{ title: string; url: string; snippet: string }>) || [];
 

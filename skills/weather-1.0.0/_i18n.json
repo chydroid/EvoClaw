@@ -1,5 +1,0 @@
-{
-  "description_zh": "获取当前天气和天气预报（无需API密钥）。",
-  "instructions_zh": "# 天气查询\n\n免费服务，无需API密钥。\n\n## wttr.in（主要服务）\n\n快速单行命令：\n```bash\ncurl -s \"wttr.in/London?format=3\"\n# 输出示例：London: ⛅️ +8°C\n```\n\n紧凑格式：\n```bash\ncurl -s \"wttr.in/London?format=%l:+%c+%t+%h+%w\"\n# 输出示例：London: ⛅️ +8°C 71% ↙5km/h\n```\n\n完整天气预报：\n```bash\ncurl -s \"wttr.in/London?T\"\n```\n\n格式代码：`%c` 天气状况 · `%t` 温度 · `%h` 湿度 · `%w` 风速 · `%l` 地点 · `%m` 月相\n\n使用技巧：\n- URL中空格需编码：`wttr.in/New+York`\n- 支持机场代码：`wttr.in/JFK`\n- 计量单位：`?m`（公制）`?u`（美制）\n- 仅显示今日：`?1` · 仅显示当前：`?0`\n- 导出PNG图片：`curl -s \"wttr.in/Berlin.png\" -o /tmp/weather.png`\n\n## Open-Meteo（备用服务，JSON格式）\n\n免费无需密钥，适合程序化调用：\n```bash\ncurl -s \"https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true\"\n```\n\n先查询城市坐标，再获取天气数据。返回包含温度、风速、天气代码的JSON数据。\n\n文档地址：https://open-meteo.com/en/docs",
-  "translatedAt": "2026-05-31T13:33:38.882Z"
-}

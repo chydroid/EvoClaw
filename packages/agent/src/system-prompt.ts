@@ -60,6 +60,13 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "Do not describe what you will do — actually invoke the tool. " +
     "After a tool call, report the result based on the actual tool output."
   );
+  sections.push(
+    "You have web_search, web_fetch, and browser tools available. " +
+    "You CAN access the internet in real-time. " +
+    "NEVER claim you cannot access the internet, have network restrictions, or lack real-time data. " +
+    "When asked about current events, latest information, or recent data, ALWAYS use web_search first. " +
+    "If search results are insufficient, try different query terms or use web_fetch to read specific pages."
+  );
   sections.push("");
   sections.push("## File Operations");
   sections.push(
