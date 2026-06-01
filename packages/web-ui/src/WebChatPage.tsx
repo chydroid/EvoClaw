@@ -138,16 +138,23 @@ function renderMessageHtml(text: string): string {
 
   const inlineFormat = (s: string): string => {
     let result = s;
+    const linkPlaceholders: string[] = [];
     
     result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {
       const escapedText = htmlEscape(text);
       const escapedLink = htmlEscape(link);
-      return `<a href="${escapedLink}" target="_blank" rel="noopener" style="color:var(--accent);">${escapedText}</a>`;
+      const html = `<a href="${escapedLink}" target="_blank" rel="noopener" style="color:var(--accent);">${escapedText}</a>`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
     });
     result = result.replace(/\[([^\]]+)\]\((\/[^\s)]+)\)/g, (match, text, link) => {
       const escapedText = htmlEscape(text);
       const escapedLink = htmlEscape(link);
-      return `<a href="${escapedLink}" style="color:var(--accent);">${escapedText}</a>`;
+      const html = `<a href="${escapedLink}" style="color:var(--accent);">${escapedText}</a>`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
     });
     
     const parts = result.split(/((?<!href=")(?:https?:\/\/[^\s<>\[\]()]+|\/api\/[^\s<>\[\]()]+))/g);
@@ -170,6 +177,10 @@ function renderMessageHtml(text: string): string {
         return text;
       }
     }).join("");
+
+    for (let i = linkPlaceholders.length - 1; i >= 0; i--) {
+      result = result.replace(`\x00LINK${i}\x00`, linkPlaceholders[i]);
+    }
     
     return result;
   };
