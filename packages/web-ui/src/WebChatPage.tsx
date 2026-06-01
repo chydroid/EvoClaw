@@ -137,10 +137,8 @@ function renderMessageHtml(text: string): string {
   };
 
   const inlineFormat = (s: string): string => {
-    // First handle links specially: extract them, escape text and href separately
     let result = s;
     
-    // Replace Markdown links first: [text](link)
     result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {
       const escapedText = htmlEscape(text);
       const escapedLink = htmlEscape(link);
@@ -152,33 +150,23 @@ function renderMessageHtml(text: string): string {
       return `<a href="${escapedLink}" style="color:var(--accent);">${escapedText}</a>`;
     });
     
-    // Then replace standalone URLs (that aren't already inside href)
-    // We'll do this by splitting into parts and escaping non-link parts
-    // This pattern matches:
-    //   - Either https?://... OR /api/...
-    //   - AND not preceded by href="
     const parts = result.split(/((?<!href=")(?:https?:\/\/[^\s<>\[\]()]+|\/api\/[^\s<>\[\]()]+))/g);
     result = parts.map((part, index) => {
       if (index % 2 === 1) {
-        // It's a link!
         const isExternal = part.startsWith("http://") || part.startsWith("https://");
         const extraAttrs = isExternal ? ' target="_blank" rel="noopener"' : "";
         return `<a href="${htmlEscape(part)}" style="color:var(--accent);"${extraAttrs}>${htmlEscape(part)}</a>`;
       } else {
-        // It's text, apply inline formatting and escape
-        let text = part;
-        // Apply other inline markdown
+        let text = htmlEscape(part);
         text = text.replace(/`([^`]+)`/g, (_, code) => {
-          return `<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">${htmlEscape(code)}</code>`;
+          return `<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">${code}</code>`;
         });
         text = text.replace(/\*\*(.+?)\*\*/g, (_, bold) => {
-          return `<strong style="color:var(--text-primary);">${htmlEscape(bold)}</strong>`;
+          return `<strong style="color:var(--text-primary);">${bold}</strong>`;
         });
         text = text.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, (_, italic) => {
-          return `<em>${htmlEscape(italic)}</em>`;
+          return `<em>${italic}</em>`;
         });
-        // Finally, escape any remaining HTML in the text (that wasn't already handled in links or code)
-        text = htmlEscape(text);
         return text;
       }
     }).join("");
