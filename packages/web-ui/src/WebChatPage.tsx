@@ -143,7 +143,9 @@ function renderMessageHtml(text: string): string {
       .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text-primary);">$1</strong>')
       .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>")
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>')
-      .replace(/(?<!href=")(https?:\/\/[^\s<>\[\]()]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>');
+      .replace(/\[([^\]]+)\]\((\/[^\s)]+)\)/g, '<a href="$2" style="color:var(--accent);">$1</a>')
+      .replace(/(?<!href=")(https?:\/\/[^\s<>\[\]()]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);">$1</a>')
+      .replace(/(?<!href=")(\/api\/[^\s<>\[\]()]+)/g, '<a href="$1" style="color:var(--accent);">$1</a>');
   };
 
   for (let i = 0; i < lines.length; i++) {
