@@ -466,31 +466,39 @@ export class WeixinPluginAdapter {
 
       let searchCount = 0;
       let fetchCount = 0;
+      let lastSearchReportRound = 0;
+      let lastFetchReportCount = 0;
 
       const onProgress = (event: { type: string; phase?: string; detail?: string; progress?: number; toolName?: string; reply?: string }) => {
         const now = Date.now();
         let msg = "";
 
         if (event.type === "tool_result" && event.toolName) {
-          const toolLabel = formatToolName(event.toolName);
           if (event.toolName === "web_search") {
             searchCount++;
-            msg = `✅ 已完成${toolLabel}（第${searchCount}轮）`;
+            const shouldReport = searchCount % 5 === 0 || searchCount === lastSearchReportRound + 1 && now - lastProgressSent >= PROGRESS_SEND_INTERVAL;
+            if (shouldReport || searchCount <= 1) {
+              msg = `✅ 已完成${searchCount}轮网络搜索`;
+              lastSearchReportRound = searchCount;
+            }
           } else if (event.toolName === "fetch_node_page") {
             fetchCount++;
-            msg = `✅ 已抓取第${fetchCount}个网页内容`;
-          } else if (event.toolName === "skill_execute") {
-            msg = `✅ 已完成${toolLabel}`;
+            const shouldReport = fetchCount % 5 === 0;
+            if (shouldReport) {
+              msg = `✅ 已抓取${fetchCount}个网页内容`;
+              lastFetchReportCount = fetchCount;
+            }
           } else {
+            const toolLabel = formatToolName(event.toolName);
             msg = `✅ 已完成${toolLabel}`;
           }
         } else if (event.type === "tool_call" && event.toolName) {
           if (now - lastProgressSent >= PROGRESS_SEND_INTERVAL) {
             const toolLabel = formatToolName(event.toolName);
-            if (event.toolName === "web_search") {
-              msg = `🔍 正在${toolLabel}（第${searchCount + 1}轮）...`;
-            } else if (event.toolName === "fetch_node_page") {
-              msg = `🔍 正在抓取第${fetchCount + 1}个网页...`;
+            if (event.toolName === "web_search" && searchCount > 0) {
+              msg = `🔍 继续网络搜索（已${searchCount}轮）...`;
+            } else if (event.toolName === "fetch_node_page" && fetchCount > 0) {
+              msg = `🔍 继续抓取网页（已${fetchCount}个）...`;
             } else {
               msg = `🔍 正在${toolLabel}...`;
             }
@@ -519,6 +527,13 @@ export class WeixinPluginAdapter {
 
       clearInterval(typingKeepalive);
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
+
+      if (searchCount > lastSearchReportRound) {
+        await this.sendMessage(account, fromUserId, `✅ 网络搜索全部完成，共${searchCount}轮`, message.context_token).catch(() => {});
+      }
+      if (fetchCount > lastFetchReportCount) {
+        await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, message.context_token).catch(() => {});
+      }
 
       if (result.reply) {
         const replyText = typeof result.reply === "string" ? result.reply : String(result.reply);
