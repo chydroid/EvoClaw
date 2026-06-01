@@ -175,11 +175,46 @@ export const THEME_LIGHT_CLEAN: ThemeColors = {
   toggleTrackBg: "#cbd5e1",
 };
 
+export const THEME_CRIMSON_DARK: ThemeColors = {
+  bgPrimary: "#0d0d0d",
+  bgSecondary: "#1a1a1a",
+  bgTertiary: "#2a2a2a",
+  bgCard: "#1a1a1a",
+  bgInput: "#1a1a1a",
+  bgSidebar: "#111111",
+  bgHover: "#2a2a2a",
+  textPrimary: "#e8e8e8",
+  textSecondary: "#b0b0b0",
+  textMuted: "#6e6e6e",
+  border: "#2a2a2a",
+  borderLight: "#3d3d3d",
+  accent: "#c41e3a",
+  accentHover: "#a01830",
+  accentBg: "#2a0f15",
+  success: "#22c55e",
+  successBg: "#0a2a1a",
+  error: "#ef4444",
+  errorBg: "#2a0a0a",
+  warning: "#f59e0b",
+  warningBg: "#2a1a0a",
+  headerBg: "#111111",
+  tabBg: "#1a1a1a",
+  userBubbleBg: "rgba(26, 26, 26, 0.7)",
+  botBubbleBg: "rgba(42, 15, 21, 0.7)",
+  userBubbleBorder: "rgba(196, 30, 58, 0.3)",
+  botBubbleBorder: "rgba(196, 30, 58, 0.3)",
+  msgNameColor: "#e05a72",
+  sectionTitleColor: "#c41e3a",
+  inputBorder: "#3d3d3d",
+  toggleTrackBg: "#3d3d3d",
+};
+
 export const THEMES: ThemeDefinition[] = [
   { id: "dark-purple", name: "Dark Purple", type: "dark", colors: THEME_DARK_PURPLE },
   { id: "dark-ocean", name: "Dark Ocean", type: "dark", colors: THEME_DARK_OCEAN },
   { id: "light-warm", name: "Light Warm", type: "light", colors: THEME_LIGHT_WARM },
   { id: "light-clean", name: "Light Clean", type: "light", colors: THEME_LIGHT_CLEAN },
+  { id: "crimson-dark", name: "Crimson Dark", type: "dark", colors: THEME_CRIMSON_DARK },
 ];
 
 const THEME_STORAGE_KEY = "EvoClaw-theme";

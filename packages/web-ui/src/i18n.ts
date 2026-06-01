@@ -91,6 +91,19 @@ const DICT: Record<Lang, Record<string, string>> = {
     "sessions.load_more": "加载更多 (+10)",
     "sessions.empty": "暂无会话",
     "sessions.loading": "加载中...",
+    "sessions.search": "搜索会话...",
+    "sessions.messages": "条消息",
+    "sessions.tokens": "tokens",
+    "sessions.rename_placeholder": "输入新名称...",
+    "sessions.clear_all": "清空全部",
+    "sessions.confirm_clear": "确认清空所有会话？",
+    "sessions.confirm_delete_inline": "删除此会话？",
+    "sessions.yes": "是",
+    "sessions.no": "否",
+    "sessions.just_now": "刚刚",
+    "sessions.minutes_ago": "{0}分钟前",
+    "sessions.hours_ago": "{0}小时前",
+    "sessions.days_ago": "{0}天前",
 
     // Theme
     "theme.change": "切换主题",
@@ -100,6 +113,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "theme.forest": "森林",
     "theme.ocean": "海洋",
     "theme.sunset": "日落",
+    "theme.crimson-dark": "深红暗夜",
 
     // Profile
     "profile.edit": "编辑个人资料",
@@ -556,6 +570,19 @@ const DICT: Record<Lang, Record<string, string>> = {
     "sessions.load_more": "Load More (+10)",
     "sessions.empty": "No sessions yet",
     "sessions.loading": "Loading...",
+    "sessions.search": "Search sessions...",
+    "sessions.messages": "messages",
+    "sessions.tokens": "tokens",
+    "sessions.rename_placeholder": "Enter new name...",
+    "sessions.clear_all": "Clear All",
+    "sessions.confirm_clear": "Clear all sessions?",
+    "sessions.confirm_delete_inline": "Delete this session?",
+    "sessions.yes": "Yes",
+    "sessions.no": "No",
+    "sessions.just_now": "just now",
+    "sessions.minutes_ago": "{0}m ago",
+    "sessions.hours_ago": "{0}h ago",
+    "sessions.days_ago": "{0}d ago",
 
     // Theme
     "theme.change": "Change theme",
@@ -565,6 +592,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "theme.forest": "Forest",
     "theme.ocean": "Ocean",
     "theme.sunset": "Sunset",
+    "theme.crimson-dark": "Crimson Dark",
 
     // Profile
     "profile.edit": "Edit profile",

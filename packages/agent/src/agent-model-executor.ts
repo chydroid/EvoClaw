@@ -4266,7 +4266,7 @@ Have a specific URL?
     const essentialTools = new Set([
       "web_search", "web_fetch", "fetch_node_page", "file_read", "file_create",
       "file_modify", "file_list", "file_delete", "skill_execute", "skill_install",
-      "skill_search", "skill_find_and_install", "skill_list", "skill_view", "skill_index_list",
+      "skill_search", "skill_find_and_install", "skill_view", "skill_index_list",
       "email_send", "email_add_account",
       "browser_navigate", "browser_search", "browser_launch", "browser_screenshot",
       "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",

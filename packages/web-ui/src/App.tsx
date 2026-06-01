@@ -145,6 +145,8 @@ interface SessionSummary {
   messageCount?: number;
   status?: string;
   preview?: string;
+  customName?: string;
+  tokenEstimate?: number;
 }
 
 const SESSIONS_PAGE_SIZE = 10;
@@ -152,6 +154,33 @@ const SESSIONS_DEFAULT_SHOW = 3;
 
 function normalizeSpaces(s: string): string {
   return s.replace(/\s+/g, " ").trim();
+}
+
+function relativeTime(timestamp: number | undefined, lang: Lang): string {
+  if (!timestamp) return "";
+  const now = Date.now();
+  const diff = now - new Date(timestamp).getTime();
+  if (diff < 0) return "";
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return lang === "zh" ? "刚刚" : "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return lang === "zh" ? `${minutes}分钟前` : `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return lang === "zh" ? `${hours}小时前` : `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return lang === "zh" ? `${days}天前` : `${days}d ago`;
+}
+
+function estimateTokens(text: string | undefined, messageCount: number | undefined): number {
+  const charCount = (text || "").length;
+  const msgCount = messageCount || 0;
+  return Math.round((charCount / 4 + msgCount * 30) * 1.1);
+}
+
+function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1000000) return (n / 1000).toFixed(1) + "k";
+  return (n / 1000000).toFixed(1) + "M";
 }
 
 // ─── Avatar types ─────────────────────────────────────────────
@@ -195,8 +224,13 @@ export default function App() {
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [sessionsVisible, setSessionsVisible] = useState(SESSIONS_DEFAULT_SHOW);
   const [hoveredSessionId, setHoveredSessionId] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [clearAllConfirm, setClearAllConfirm] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const renameInputRef = React.useRef<HTMLInputElement>(null);
 
   const { lang, setLang, t } = useTranslation();
 
@@ -233,6 +267,8 @@ export default function App() {
           messageCount: s.turnCount || s.messageCount || 0,
           status: s.status,
           preview: s.preview || "",
+          customName: s.customName || "",
+          tokenEstimate: estimateTokens(s.preview || "", s.turnCount || s.messageCount || 0),
         }));
         list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
         setSessions(list);
@@ -286,7 +322,47 @@ export default function App() {
         }
       }
     } catch { /* ignore */ }
-    setDeleteTarget(null);
+    setDeleteConfirmId(null);
+  }
+
+  async function clearAllSessions() {
+    const ids = sessions.map(s => s.sessionId);
+    try {
+      await Promise.all(ids.map(id => fetch(`/api/sessions/default/${id}`, { method: "DELETE" })));
+    } catch { /* ignore */ }
+    setSessions([]);
+    setActiveSessionId(null);
+    setNewChatCounter(prev => prev + 1);
+    setClearAllConfirm(false);
+  }
+
+  function startRename(sessionId: string, currentName: string) {
+    setRenamingSessionId(sessionId);
+    setRenameValue(currentName);
+    setTimeout(() => renameInputRef.current?.focus(), 0);
+  }
+
+  function commitRename() {
+    if (!renamingSessionId || !renameValue.trim()) {
+      setRenamingSessionId(null);
+      return;
+    }
+    setSessions(prev => prev.map(s =>
+      s.sessionId === renamingSessionId ? { ...s, customName: renameValue.trim() } : s
+    ));
+    try {
+      fetch(`/api/sessions/default/${renamingSessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customName: renameValue.trim() }),
+      });
+    } catch { /* ignore */ }
+    setRenamingSessionId(null);
+  }
+
+  function cancelRename() {
+    setRenamingSessionId(null);
+    setRenameValue("");
   }
 
   function handleLoadMoreSessions() {
@@ -490,27 +566,7 @@ export default function App() {
     <div style={css.layoutContainer}>
       <ToastContainer />
 
-      {/* Delete session confirmation modal */}
-      {deleteTarget && (
-        <div style={modalOverlayStyle} onClick={() => setDeleteTarget(null)}>
-          <div style={modalCardStyle} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10, color: "var(--text-primary)" }}>
-              {t("app.confirm_delete")}
-            </div>
-            <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
-              {t("app.confirm_delete_desc")}
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button style={modalCancelBtn} onClick={() => setDeleteTarget(null)}>
-                {t("app.cancel")}
-              </button>
-              <button style={modalDeleteBtn} onClick={() => deleteSession(deleteTarget)}>
-                {t("app.delete")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Delete session inline confirmation is handled within session list */}
 
       {/* Mobile overlay */}
       {showMobileSidebar && (
@@ -638,44 +694,127 @@ export default function App() {
 
                     {!collapsedGroups.has("sessions") && (
                       <>
-                        {/* New Chat button inside sessions */}
-                        <button
-                          style={{ ...navItemStyle(false), color: "var(--accent)", fontWeight: 600 }}
-                          onClick={createSession}
-                        >
-                          <IconNewChat size={15} />
-                          {t("nav.new_chat")}
-                        </button>
+                        {/* Session search box */}
+                        <div style={css.sessionSearchWrap}>
+                          <IconSearch size={12} style={{ position: "absolute", left: 8, top: 9, color: "var(--text-muted)", pointerEvents: "none" as const }} />
+                          <input
+                            style={css.sessionSearchInput}
+                            value={sessionSearch}
+                            onChange={e => setSessionSearch(e.target.value)}
+                            placeholder={t("sessions.search")}
+                          />
+                        </div>
 
-                        {sessions.slice(0, sessionsVisible).map(sess => (
-                          <div
-                            key={sess.sessionId}
-                            style={sessionItemContainerStyle(activeSessionId === sess.sessionId && activeTab === "chat")}
-                            onMouseEnter={() => setHoveredSessionId(sess.sessionId)}
-                            onMouseLeave={() => setHoveredSessionId(null)}
+                        {/* New Chat + Clear All buttons */}
+                        <div style={css.sessionActionsRow}>
+                          <button
+                            style={{ ...css.sessionActionBtn, color: "var(--accent)" }}
+                            onClick={createSession}
                           >
-                            <span
-                              style={sessionItemClickStyle}
-                              onClick={() => handleSessionClick(sess.sessionId)}
-                              title={sess.preview || sess.sessionId}
+                            <IconNewChat size={14} />
+                            {t("nav.new_chat")}
+                          </button>
+                          {sessions.length > 1 && (
+                            clearAllConfirm ? (
+                              <div style={css.clearAllConfirmRow}>
+                                <span style={{ fontSize: 10, color: "var(--error, #da3633)" }}>{t("sessions.confirm_clear")}</span>
+                                <button style={css.clearAllYesBtn} onClick={clearAllSessions}>{t("sessions.yes")}</button>
+                                <button style={css.clearAllNoBtn} onClick={() => setClearAllConfirm(false)}>{t("sessions.no")}</button>
+                              </div>
+                            ) : (
+                              <button
+                                style={{ ...css.sessionActionBtn, color: "var(--text-muted)" }}
+                                onClick={() => setClearAllConfirm(true)}
+                              >
+                                {t("sessions.clear_all")}
+                              </button>
+                            )
+                          )}
+                        </div>
+
+                        {sessions
+                          .filter(sess => {
+                            if (!sessionSearch.trim()) return true;
+                            const q = sessionSearch.toLowerCase();
+                            const name = (sess.customName || sess.preview || sess.sessionId).toLowerCase();
+                            return name.includes(q);
+                          })
+                          .slice(0, sessionsVisible)
+                          .map(sess => {
+                          const isActive = activeSessionId === sess.sessionId && activeTab === "chat";
+                          const isRenaming = renamingSessionId === sess.sessionId;
+                          const isConfirmingDelete = deleteConfirmId === sess.sessionId;
+                          const displayName = sess.customName
+                            || (sess.preview ? (() => {
+                              const cleaned = normalizeSpaces(sess.preview);
+                              return cleaned.length > 23 ? cleaned.slice(0, 23) + "..." : cleaned;
+                            })() : `Session ${sess.sessionId.slice(-8)}`);
+                          const timeStr = relativeTime(sess.updatedAt, lang);
+                          const tokenStr = formatTokenCount(sess.tokenEstimate || estimateTokens(sess.preview, sess.messageCount));
+
+                          return (
+                            <div
+                              key={sess.sessionId}
+                              style={sessionItemContainerStyle(isActive)}
+                              onMouseEnter={() => setHoveredSessionId(sess.sessionId)}
+                              onMouseLeave={() => { setHoveredSessionId(null); if (deleteConfirmId === sess.sessionId) setDeleteConfirmId(null); }}
                             >
-                              {(() => { const ChatIcon = ICON_MAP["chat"]; return ChatIcon ? <ChatIcon size={13} style={{ opacity: activeSessionId === sess.sessionId && activeTab === "chat" ? 1 : 0.5, flexShrink: 0 }} /> : null; })()}
-                              <span style={sessionLabelStyle}>
-                                {sess.preview ? (() => {
-                                  const cleaned = normalizeSpaces(sess.preview);
-                                  return cleaned.length > 23 ? cleaned.slice(0, 23) + "..." : cleaned;
-                                })() : `Session ${sess.sessionId.slice(-8)}`}
-                              </span>
-                            </span>
-                            <button
-                              style={sessionDeleteBtnStyle(hoveredSessionId === sess.sessionId)}
-                              onClick={(e) => { e.stopPropagation(); setDeleteTarget(sess.sessionId); }}
-                              title={lang === "zh" ? "删除会话" : "Delete session"}
-                            >
-                              &#10005;
-                            </button>
-                          </div>
-                        ))}
+                              {isConfirmingDelete ? (
+                                <div style={css.inlineDeleteConfirm}>
+                                  <span style={{ fontSize: 10, color: "var(--error, #da3633)", flex: 1 }}>{t("sessions.confirm_delete_inline")}</span>
+                                  <button style={css.inlineYesBtn} onClick={() => deleteSession(sess.sessionId)}>{t("sessions.yes")}</button>
+                                  <button style={css.inlineNoBtn} onClick={() => setDeleteConfirmId(null)}>{t("sessions.no")}</button>
+                                </div>
+                              ) : (
+                                <>
+                                  <span
+                                    style={sessionItemClickStyle}
+                                    onClick={() => handleSessionClick(sess.sessionId)}
+                                    onDoubleClick={() => startRename(sess.sessionId, sess.customName || displayName)}
+                                    title={sess.customName || sess.preview || sess.sessionId}
+                                  >
+                                    {(() => { const ChatIcon = ICON_MAP["chat"]; return ChatIcon ? <ChatIcon size={13} style={{ opacity: isActive ? 1 : 0.5, flexShrink: 0 }} /> : null; })()}
+                                    <div style={css.sessionInfoWrap}>
+                                      {isRenaming ? (
+                                        <input
+                                          ref={renameInputRef}
+                                          style={css.renameInput}
+                                          value={renameValue}
+                                          onChange={e => setRenameValue(e.target.value)}
+                                          onKeyDown={e => {
+                                            if (e.key === "Enter") commitRename();
+                                            if (e.key === "Escape") cancelRename();
+                                          }}
+                                          onBlur={commitRename}
+                                          placeholder={t("sessions.rename_placeholder")}
+                                          onClick={e => e.stopPropagation()}
+                                        />
+                                      ) : (
+                                        <span style={sessionLabelStyle}>{displayName}</span>
+                                      )}
+                                      <div style={css.sessionMetaRow}>
+                                        {sess.messageCount != null && sess.messageCount > 0 && (
+                                          <span style={css.sessionMetaTag}>{sess.messageCount} {t("sessions.messages")}</span>
+                                        )}
+                                        {timeStr && (
+                                          <span style={css.sessionMetaTag}>{timeStr}</span>
+                                        )}
+                                        <span style={css.sessionMetaTag}>~{tokenStr} {t("sessions.tokens")}</span>
+                                      </div>
+                                    </div>
+                                  </span>
+                                  <button
+                                    style={sessionDeleteBtnStyle(hoveredSessionId === sess.sessionId)}
+                                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(sess.sessionId); }}
+                                    title={lang === "zh" ? "删除会话" : "Delete session"}
+                                  >
+                                    &#10005;
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
                         {sessionsVisible < sessions.length ? (
                           <button style={css.loadMoreBtn} onClick={handleLoadMoreSessions}>
                             <IconPlus size={12} />
@@ -852,6 +991,20 @@ const css: Record<string, CSSProperties> = {
   sessionSectionHeader: { display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", cursor: "pointer", fontSize: 14, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.8px", color: "var(--text-primary)" },
   sessionListHeader: { fontSize: 10, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.5px", color: "var(--text-muted)", padding: "6px 30px 4px" },
   sessionEmpty: { fontSize: 11, color: "var(--text-muted)", padding: "4px 30px 8px", fontStyle: "italic" },
+  sessionSearchWrap: { position: "relative" as const, padding: "2px 8px 4px" },
+  sessionSearchInput: { width: "100%", padding: "4px 8px 4px 24px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", boxSizing: "border-box" },
+  sessionActionsRow: { display: "flex", alignItems: "center", gap: 4, padding: "2px 8px 4px" },
+  sessionActionBtn: { display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" as const },
+  sessionInfoWrap: { display: "flex", flexDirection: "column" as const, minWidth: 0, flex: 1 },
+  sessionMetaRow: { display: "flex", gap: 6, marginTop: 1, flexWrap: "wrap" as const },
+  sessionMetaTag: { fontSize: 9, color: "var(--text-muted)", background: "var(--bg-hover)", padding: "0 4px", borderRadius: 3, whiteSpace: "nowrap" as const, lineHeight: "14px" },
+  renameInput: { width: "100%", padding: "1px 4px", borderRadius: 3, border: "1px solid var(--accent)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" },
+  inlineDeleteConfirm: { display: "flex", alignItems: "center", gap: 4, padding: "2px 4px", width: "100%" },
+  inlineYesBtn: { padding: "1px 6px", borderRadius: 3, border: "none", background: "var(--error, #da3633)", color: "#fff", cursor: "pointer", fontSize: 10, fontWeight: 600 },
+  inlineNoBtn: { padding: "1px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 10 },
+  clearAllConfirmRow: { display: "flex", alignItems: "center", gap: 4, flex: 1 },
+  clearAllYesBtn: { padding: "1px 6px", borderRadius: 3, border: "none", background: "var(--error, #da3633)", color: "#fff", cursor: "pointer", fontSize: 10, fontWeight: 600 },
+  clearAllNoBtn: { padding: "1px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 10 },
   loadMoreBtn: {
     display: "flex", alignItems: "center", gap: 4,
     width: "100%", padding: "5px 30px",
@@ -894,7 +1047,7 @@ function navDotStyle(active: boolean): CSSProperties {
 function sessionItemContainerStyle(active: boolean): CSSProperties {
   return {
     display: "flex", alignItems: "center",
-    padding: "4px 10px 4px 30px",
+    padding: "4px 8px 4px 28px",
     borderRadius: 6,
     marginBottom: 1,
     background: active ? "var(--accent-bg)" : "transparent",
@@ -939,38 +1092,6 @@ function statusBadge(status: string): CSSProperties {
     background: bg, color: fg,
   };
 }
-
-// Modal styles
-const modalOverlayStyle: CSSProperties = {
-  position: "fixed", inset: 0,
-  background: "rgba(0,0,0,0.5)",
-  display: "flex", alignItems: "center", justifyContent: "center",
-  zIndex: 9999,
-  animation: "EvoClaw-fade-in 0.15s ease",
-};
-
-const modalCardStyle: CSSProperties = {
-  background: "var(--bg-card)",
-  borderRadius: 12,
-  padding: "24px",
-  border: "1px solid var(--border)",
-  maxWidth: 400,
-  width: "90%",
-  boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
-  animation: "EvoClaw-scale-in 0.15s ease",
-};
-
-const modalCancelBtn: CSSProperties = {
-  padding: "8px 16px", borderRadius: 6,
-  border: "1px solid var(--border)", background: "transparent",
-  color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-};
-
-const modalDeleteBtn: CSSProperties = {
-  padding: "8px 16px", borderRadius: 6,
-  border: "none", background: "var(--error, #da3633)",
-  color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600,
-};
 
 // ─── Global CSS (injected once) ────────────────────────────
 

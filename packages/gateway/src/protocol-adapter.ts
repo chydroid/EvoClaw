@@ -1045,11 +1045,38 @@ export class ProtocolAdapter {
               new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
             ]);
 
-            let contextLimit = 60000;
+            let contextLimit = 128000;
             let sessionTokensUsed = 0;
             try {
+              const providers = (agentExecutor as Record<string, unknown>).getProviders as (() => Array<{ enabled: boolean; model: string }>) | undefined;
+              if (providers) {
+                const activeProvider = providers().find((p) => p.enabled);
+                if (activeProvider?.model) {
+                  const MODEL_CONTEXT: Record<string, number> = {
+                    "gpt-4o": 128000, "gpt-4o-mini": 128000, "gpt-4-turbo": 128000, "gpt-4": 8192, "gpt-3.5-turbo": 16385,
+                    "claude-3-5-sonnet": 200000, "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
+                    "claude-sonnet-4-20250514": 200000, "deepseek-chat": 128000, "deepseek-reasoner": 128000,
+                    "qwen-max": 32768, "qwen-plus": 131072, "qwen-turbo": 131072,
+                    "glm-4": 128000, "glm-4-flash": 128000,
+                  };
+                  for (const [pattern, limit] of Object.entries(MODEL_CONTEXT)) {
+                    if (activeProvider.model.includes(pattern.replace("-4-turbo", "").replace("-4o", ""))) {
+                      contextLimit = limit;
+                      break;
+                    }
+                  }
+                  if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
+                  if (activeProvider.model.includes("claude")) contextLimit = 200000;
+                  if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
+                }
+              }
+            } catch { /* use default */ }
+            try {
               const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
-              if (contextEngine) contextLimit = (contextEngine.getConfig().maxContextTokens as number) || 60000;
+              if (contextEngine) {
+                const cfgMax = contextEngine.getConfig().maxContextTokens as number;
+                if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
+              }
             } catch { /* use default */ }
             try {
               const lifecycleMgr = this.registry.resolveService<{ getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number }> }>("lifecycleManager");
@@ -1105,7 +1132,7 @@ export class ProtocolAdapter {
             res.json({
               reply: "⏱️ 处理超时，请稍后重试。如问题持续，请检查模型配置或简化提问。",
               tokensUsed: 0,
-              contextLimit: 60000,
+              contextLimit: 128000,
               duration: CHAT_TIMEOUT,
               sessionId: resolvedSessionId,
               permissionRequests: [],
@@ -1116,15 +1143,27 @@ export class ProtocolAdapter {
         }
 
         // Resolve context limit from ContextEngine config
-        let contextLimit = 60000;
+        let contextLimit = 128000;
         let sessionTokensUsed = 0;
+        try {
+          const providers = (agentExecutor as Record<string, unknown>).getProviders as (() => Array<{ enabled: boolean; model: string }>) | undefined;
+          if (providers) {
+            const activeProvider = providers().find((p) => p.enabled);
+            if (activeProvider?.model) {
+              if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
+              else if (activeProvider.model.includes("claude")) contextLimit = 200000;
+              else if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
+              else if (activeProvider.model.includes("qwen")) contextLimit = 131072;
+            }
+          }
+        } catch { /* use default */ }
         try {
           const contextEngine = this.registry.resolveService("contextEngine") as {
             getConfig(): Record<string, unknown>;
           } | undefined;
           if (contextEngine) {
-            const cfg = contextEngine.getConfig();
-            contextLimit = (cfg.maxContextTokens as number) || 60000;
+            const cfgMax = contextEngine.getConfig().maxContextTokens as number;
+            if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
           }
         } catch { /* use default */ }
         try {

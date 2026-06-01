@@ -14,6 +14,12 @@ import type { CSSProperties } from "react";
 import { htmlEscape } from "./highlight";
 import { useTranslation } from "./i18n";
 
+const estimateTokens = (text: string): number => {
+  const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
+  const otherChars = text.length - cjkChars;
+  return Math.ceil(cjkChars * 1.5 + otherChars / 4);
+};
+
 // Add CSS animations
 const styleSheet = document.createElement("style");
 styleSheet.textContent = `
@@ -776,7 +782,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [msgViewModes, setMsgViewModes] = useState<Record<string, "preview" | "raw">>({});
   const [contextUsed, setContextUsed] = useState(0);
-  const [contextLimit, setContextLimit] = useState(60000);
+  const [contextLimit, setContextLimit] = useState(128000);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpanded, setTextAreaExpanded] = useState(false);
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
@@ -869,7 +875,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         if (turns.length > 0) {
           setMessages(turns);
           const allText = turns.map(t => t.content || "").join("");
-          setContextUsed(Math.ceil(allText.length / 4));
+          setContextUsed(estimateTokens(allText));
         } else {
           setMessages([]);
         }
@@ -1217,8 +1223,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             setContextUsed(finalData.tokensUsed as number);
           } else {
             const allText = messages.map(m => m.content).join("") + text + ((finalData.reply as string) || "");
-            const estimated = Math.ceil(allText.length / 4);
-            setContextUsed(estimated);
+            setContextUsed(estimateTokens(allText));
           }
           if (typeof finalData.contextLimit === "number") {
             setContextLimit(finalData.contextLimit as number);
@@ -1261,8 +1266,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           setContextUsed(data.tokensUsed);
         } else {
           const allText = messages.map(m => m.content).join("") + text + (data.reply || "");
-          const estimated = Math.ceil(allText.length / 4);
-          setContextUsed(estimated);
+          setContextUsed(estimateTokens(allText));
         }
         if (typeof data.contextLimit === "number" && data.contextLimit > 0) {
           setContextLimit(data.contextLimit);
