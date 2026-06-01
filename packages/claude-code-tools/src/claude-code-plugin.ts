@@ -19,7 +19,7 @@ import type { CapabilityAssessment } from "./task-orchestrator";
 
 export const CLAUDE_CODE_PLUGIN_INFO = {
   name: "Claude Code Tools",
-  version: "1.0.0",
+  version: "2.0.0",
   description: "编程任务调度插件 — 复杂编程项目任务的分解、LLM调度与结果整合",
   author: "EvoClaw",
   capabilities: [

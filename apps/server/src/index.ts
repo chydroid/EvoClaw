@@ -503,6 +503,7 @@ export class EvoClawServer {
     this.registerSchedulerTools();
     this.registerReportingTools();
     this.registerIntelligenceTools();
+    this.registerMarkItDownTools();
 
     this.scheduleManager.start();
 
@@ -2255,6 +2256,130 @@ export class EvoClawServer {
         } catch (err) {
           return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
+      }
+    );
+  }
+
+  private registerMarkItDownTools(): void {
+    const { execFile } = require("child_process");
+    const { promisify } = require("util");
+    const fs = require("fs");
+    const path = require("path");
+    const os = require("os");
+    const execFileAsync = promisify(execFile);
+
+    let mdAvailable: string | null = null;
+
+    const checkAvailable = async (): Promise<boolean> => {
+      if (mdAvailable !== null) return mdAvailable !== "";
+      try {
+        await execFileAsync("markitdown", ["--version"], { timeout: 5000 });
+        mdAvailable = "markitdown";
+      } catch {
+        try {
+          await execFileAsync("python", ["-m", "markitdown", "--version"], { timeout: 5000 });
+          mdAvailable = "python -m markitdown";
+        } catch {
+          try {
+            await execFileAsync("python3", ["-m", "markitdown", "--version"], { timeout: 5000 });
+            mdAvailable = "python3 -m markitdown";
+          } catch {
+            mdAvailable = "";
+            console.log("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'");
+          }
+        }
+      }
+      return mdAvailable !== "";
+    };
+
+    const doConvert = async (inputPath: string): Promise<string | null> => {
+      const available = await checkAvailable();
+      if (!available || !mdAvailable) return null;
+      try {
+        const parts = mdAvailable.split(" ");
+        const cmd = parts[0];
+        const baseArgs = parts.slice(1);
+        const args = [...baseArgs, inputPath];
+        const { stdout } = await execFileAsync(cmd, args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: "utf-8", env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } });
+        return stdout || null;
+      } catch (err: any) {
+        return null;
+      }
+    };
+
+    this.agentModelExecutor.registerTool(
+      "markitdown_convert",
+      {
+        name: "markitdown_convert",
+        description: "Convert documents (PDF, Word, Excel, PowerPoint, HTML, etc.) or web pages to Markdown format for better readability. Uses microsoft/markitdown. Supports: .pdf .docx .pptx .xlsx .html .csv .json .xml .epub and more. Does NOT support images or videos.",
+        parameters: {
+          source: { type: "string", description: "File path or URL to convert. Can be a local file path or an HTTP/HTTPS URL." },
+          output_format: { type: "string", description: "Output format: 'markdown' (default) or 'text' (plain text without markdown formatting)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const source = String(params.source || "");
+        const outputFormat = String(params.output_format || "markdown");
+        if (!source) return { error: "Source file path or URL is required" };
+
+        const skipExts = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp", ".ico",
+          ".mp4", ".avi", ".mkv", ".mov", ".mp3", ".wav", ".ogg", ".flac",
+          ".zip", ".tar", ".gz", ".7z", ".rar", ".exe", ".dll"];
+        const ext = path.extname(source.split("?")[0]).toLowerCase();
+        if (skipExts.includes(ext)) {
+          return { error: `File type '${ext}' is not supported. MarkItDown converts documents (PDF, Word, Excel, PPT, HTML, etc.), not images/videos/archives.` };
+        }
+
+        const isUrl = source.startsWith("http://") || source.startsWith("https://");
+
+        if (isUrl) {
+          const tmpDir = os.tmpdir();
+          const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}${ext || ".html"}`);
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            const response = await fetch(source, {
+              headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
+              signal: controller.signal,
+              redirect: "follow",
+            });
+            clearTimeout(timeout);
+            if (!response.ok) {
+              return { error: `HTTP ${response.status} fetching URL`, source };
+            }
+            const buffer = await response.arrayBuffer();
+            fs.writeFileSync(tmpFile, Buffer.from(buffer));
+            const markdown = await doConvert(tmpFile);
+            if (!markdown) {
+              return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
+            }
+            const result = outputFormat === "text"
+              ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
+              : markdown;
+            return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
+          } catch (err: any) {
+            return { error: err.message || String(err), source };
+          } finally {
+            try { fs.unlinkSync(tmpFile); } catch {}
+          }
+        }
+
+        if (!fs.existsSync(source)) {
+          return { error: `File not found: ${source}` };
+        }
+        const stat = fs.statSync(source);
+        if (stat.size > 50 * 1024 * 1024) {
+          return { error: `File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB. Maximum: 50MB.` };
+        }
+
+        const markdown = await doConvert(source);
+        if (!markdown) {
+          return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
+        }
+        const result = outputFormat === "text"
+          ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
+          : markdown;
+        return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
       }
     );
   }

@@ -27,3 +27,12 @@ IMPROVEMENT_PLAN.md
 *.tmp
 
 Thumbs.db
+
+coding-tasks/
+test-webui-simulation.js
+test-e2e-coding-tasks.js
+webui-test-report.json
+webui-test-report.txt
+webui-test-report-final.txt
+e2e-test-report.json
+coding-task-report.txt

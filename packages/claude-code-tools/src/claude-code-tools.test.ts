@@ -1221,7 +1221,7 @@ describe("ClaudeCodePlugin", () => {
   describe("plugin info", () => {
     it("should have correct plugin metadata", () => {
       expect(CLAUDE_CODE_PLUGIN_INFO.name).toBe("Claude Code Tools");
-      expect(CLAUDE_CODE_PLUGIN_INFO.version).toBe("1.0.0");
+      expect(CLAUDE_CODE_PLUGIN_INFO.version).toBe("2.0.0");
       expect(CLAUDE_CODE_PLUGIN_INFO.capabilities).toContain("task_decomposition");
       expect(CLAUDE_CODE_PLUGIN_INFO.capabilities).toContain("llm_dispatch");
       expect(CLAUDE_CODE_PLUGIN_INFO.capabilities).toContain("auto_upgrade");
