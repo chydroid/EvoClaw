@@ -443,11 +443,9 @@ export class WeixinPluginAdapter {
       }
       await this.sendMessage(account, fromUserId, firstFeedback, message.context_token);
 
-      let lastProgressSent = Date.now();
-      let lastProgressDetail = "";
-      let progressMsgCount = 0;
-      const MAX_PROGRESS_MSGS = 10;
-      const PROGRESS_SEND_INTERVAL = 10000;
+      let lastProgressSent = 0;
+      let lastSentMsg = "";
+      const PROGRESS_SEND_INTERVAL = 15000;
 
       const formatToolName = (name: string): string => {
         const nameMap: Record<string, string> = {
@@ -466,45 +464,47 @@ export class WeixinPluginAdapter {
         return nameMap[name] || name;
       };
 
+      let searchCount = 0;
+      let fetchCount = 0;
+
       const onProgress = (event: { type: string; phase?: string; detail?: string; progress?: number; toolName?: string; reply?: string }) => {
-        if (progressMsgCount >= MAX_PROGRESS_MSGS) return;
         const now = Date.now();
         let msg = "";
 
-        if (event.type === "tool_call" && event.detail) {
-          const detail = event.detail.slice(0, 60);
-          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL || detail !== lastProgressDetail) {
-            lastProgressSent = now;
-            lastProgressDetail = detail;
-            const toolLabel = event.toolName ? formatToolName(event.toolName) : "";
-            msg = toolLabel ? `🔍 正在${toolLabel}...` : `🔍 ${detail}`;
+        if (event.type === "tool_result" && event.toolName) {
+          const toolLabel = formatToolName(event.toolName);
+          if (event.toolName === "web_search") {
+            searchCount++;
+            msg = `✅ 已完成${toolLabel}（第${searchCount}轮）`;
+          } else if (event.toolName === "fetch_node_page") {
+            fetchCount++;
+            msg = `✅ 已抓取第${fetchCount}个网页内容`;
+          } else if (event.toolName === "skill_execute") {
+            msg = `✅ 已完成${toolLabel}`;
+          } else {
+            msg = `✅ 已完成${toolLabel}`;
           }
-        } else if (event.type === "tool_result" && event.detail) {
-          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL * 2) {
-            lastProgressSent = now;
-            const toolLabel = event.toolName ? formatToolName(event.toolName) : "";
-            msg = toolLabel ? `✅ ${toolLabel}完成` : `✅ ${event.detail.slice(0, 60)}`;
-          }
-        } else if (event.type === "status" && event.phase === "thinking" && event.detail) {
-          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL) {
-            lastProgressSent = now;
-            msg = `🤔 ${event.detail.slice(0, 60)}`;
+        } else if (event.type === "tool_call" && event.toolName) {
+          if (now - lastProgressSent >= PROGRESS_SEND_INTERVAL) {
+            const toolLabel = formatToolName(event.toolName);
+            if (event.toolName === "web_search") {
+              msg = `🔍 正在${toolLabel}（第${searchCount + 1}轮）...`;
+            } else if (event.toolName === "fetch_node_page") {
+              msg = `🔍 正在抓取第${fetchCount + 1}个网页...`;
+            } else {
+              msg = `🔍 正在${toolLabel}...`;
+            }
           }
         } else if (event.type === "status" && event.phase === "generating" && event.reply) {
-          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL * 2) {
-            lastProgressSent = now;
-            const preview = event.reply.slice(0, 80).replace(/\n/g, " ");
+          if (now - lastProgressSent >= PROGRESS_SEND_INTERVAL * 2) {
+            const preview = event.reply.slice(0, 60).replace(/\n/g, " ");
             msg = `✍️ 正在撰写回复: ${preview}...`;
-          }
-        } else if (event.type === "llm_call" && event.detail) {
-          if (now - lastProgressSent > PROGRESS_SEND_INTERVAL) {
-            lastProgressSent = now;
-            msg = `🧠 AI模型处理中...`;
           }
         }
 
-        if (msg) {
-          progressMsgCount++;
+        if (msg && msg !== lastSentMsg) {
+          lastProgressSent = now;
+          lastSentMsg = msg;
           this.sendMessage(account, fromUserId, msg, message.context_token).catch(() => {});
         }
       };
