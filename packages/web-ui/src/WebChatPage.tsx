@@ -615,7 +615,7 @@ interface SlashCommand {
 }
 
 interface ProgressStep {
-  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error";
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "understanding" | "progress_summary";
   detail: string;
   progress?: number;
   toolName?: string;
@@ -623,6 +623,8 @@ interface ProgressStep {
   toolError?: boolean;
   round?: number;
   timestamp: number;
+  summaryType?: string;
+  summaryCount?: number;
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -1071,6 +1073,42 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                           : m,
                       ),
                     );
+                  } else if (currentEvent === "understanding") {
+                    const step: ProgressStep = {
+                      type: "understanding",
+                      detail: eventData.text || "",
+                      timestamp: Date.now(),
+                    };
+                    setProgressSteps((prev) => [...prev, step]);
+                    setStatusMessage(`📋 ${eventData.text || "正在处理"}`);
+                  } else if (currentEvent === "progress_summary") {
+                    const summaryType = eventData.type as string;
+                    const summaryCount = eventData.count as number;
+                    const detail = eventData.detail as string || "";
+                    let label = "";
+                    if (summaryType === "search_progress") {
+                      label = `✅ 已完成${summaryCount}轮网络搜索`;
+                    } else if (summaryType === "fetch_progress") {
+                      label = `✅ 已抓取${summaryCount}个网页内容`;
+                    } else if (summaryType === "search_done") {
+                      label = `✅ 网络搜索全部完成，共${summaryCount}轮`;
+                    } else if (summaryType === "fetch_done") {
+                      label = `✅ 网页抓取全部完成，共${summaryCount}个`;
+                    }
+                    const step: ProgressStep = {
+                      type: "progress_summary",
+                      detail: label,
+                      timestamp: Date.now(),
+                      summaryType,
+                      summaryCount,
+                    };
+                    setProgressSteps((prev) => {
+                      const filtered = prev.filter(s =>
+                        !(s.type === "progress_summary" && s.summaryType === summaryType && s.summaryCount === summaryCount)
+                      );
+                      return [...filtered, step];
+                    });
+                    if (label) setStatusMessage(label);
                   } else {
                     const step: ProgressStep = {
                       type: eventData.type || currentEvent,
@@ -1082,7 +1120,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       round: eventData.round,
                       timestamp: Date.now(),
                     };
-                    setProgressSteps((prev) => [...prev, step]);
+                    const isSearchOrFetchResult = step.type === "tool_result" && (step.toolName === "web_search" || step.toolName === "fetch_node_page");
+                    if (!isSearchOrFetchResult) {
+                      setProgressSteps((prev) => {
+                        const lastStep = prev[prev.length - 1];
+                        if (lastStep && lastStep.type === step.type && lastStep.toolName === step.toolName && lastStep.detail === step.detail) {
+                          return prev;
+                        }
+                        return [...prev, step];
+                      });
+                    }
 
                     if (eventData.phase === "generating" && eventData.reply) {
                       setMessages((prev) =>
@@ -2048,24 +2095,52 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       <div style={loadingIndicatorStyle}>
                         <span>{statusMessage || loadingMessages[loadingMessageIndex]}</span>
                         {progressSteps.length > 0 && (
-                          <div style={{ marginTop: "8px", width: "100%", maxHeight: "200px", overflowY: "auto" }}>
-                            {progressSteps.slice(-8).map((step, i) => (
-                              <div key={i} style={{
-                                fontSize: "12px",
-                                color: step.toolError ? "var(--text-secondary)" : "var(--text-secondary)",
-                                padding: "2px 0",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "6px",
-                                opacity: 0.5 + (i / Math.min(progressSteps.length, 8)) * 0.5,
-                              }}>
-                                {step.type === "tool_call" && (step.toolName === "web_search" ? "🔍" : step.toolName === "fetch_node_page" ? "📄" : "🔧")}
-                                {step.type === "tool_result" && (step.toolError ? "❌" : step.toolName === "web_search" ? "🔎" : "✅")}
-                                {step.type === "llm_call" && "🧠"}
-                                {step.type === "status" && "📡"}
-                                <span>{step.detail}</span>
-                              </div>
-                            ))}
+                          <div style={{ marginTop: "8px", width: "100%", maxHeight: "240px", overflowY: "auto" }}>
+                            {progressSteps.slice(-12).map((step, i) => {
+                              const totalSteps = Math.min(progressSteps.length, 12);
+                              const baseOpacity = 0.4 + (i / totalSteps) * 0.6;
+                              if (step.type === "understanding") {
+                                return (
+                                  <div key={i} style={{
+                                    fontSize: "12px", padding: "4px 0",
+                                    color: "var(--accent)", opacity: baseOpacity,
+                                    borderBottom: "1px solid var(--border, #30363d)",
+                                    marginBottom: "4px",
+                                  }}>
+                                    📋 {step.detail}
+                                  </div>
+                                );
+                              }
+                              if (step.type === "progress_summary") {
+                                return (
+                                  <div key={i} style={{
+                                    fontSize: "12px", padding: "3px 0",
+                                    color: "var(--text-primary)", opacity: baseOpacity,
+                                    fontWeight: 500,
+                                  }}>
+                                    {step.detail}
+                                  </div>
+                                );
+                              }
+                              let icon = "📡";
+                              if (step.type === "tool_call") icon = step.toolName === "web_search" ? "🔍" : step.toolName === "fetch_node_page" ? "📄" : "🔧";
+                              else if (step.type === "tool_result") icon = step.toolError ? "❌" : "✅";
+                              else if (step.type === "llm_call") icon = "🧠";
+                              return (
+                                <div key={i} style={{
+                                  fontSize: "12px",
+                                  color: "var(--text-secondary)",
+                                  padding: "2px 0",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "6px",
+                                  opacity: baseOpacity,
+                                }}>
+                                  {icon}
+                                  <span>{step.detail}</span>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                         <div style={dotsStyle}>

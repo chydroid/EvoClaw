@@ -976,6 +976,7 @@ export class ProtocolAdapter {
         const agentExecutor = this.registry.resolveService<{
           chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
           getGreeting(): string | null;
+          generateBriefUnderstanding(userMessage: string): Promise<string>;
         }>("agentModelExecutor");
 
         if (!agentExecutor) {
@@ -997,8 +998,42 @@ export class ProtocolAdapter {
             try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* closed */ }
           };
 
+          try {
+            const understanding = await agentExecutor.generateBriefUnderstanding(message);
+            if (understanding) {
+              sendSSE("understanding", { text: understanding });
+            }
+          } catch { /* non-critical */ }
+
+          let webSearchCount = 0;
+          let webFetchCount = 0;
+          let lastSearchReportRound = 0;
+          let lastFetchReportCount = 0;
+
           const onProgress = (event: import("@evoclaw/agent").AgentProgressEvent) => {
-            sendSSE(event.type, event);
+            if (event.type === "tool_result" && event.toolName === "web_search") {
+              webSearchCount++;
+              if (webSearchCount % 3 === 0 || webSearchCount === 1) {
+                sendSSE("progress_summary", { type: "search_progress", count: webSearchCount, detail: event.detail });
+                lastSearchReportRound = webSearchCount;
+              }
+            } else if (event.type === "tool_result" && event.toolName === "fetch_node_page") {
+              webFetchCount++;
+              if (webFetchCount % 3 === 0 || webFetchCount === 1) {
+                sendSSE("progress_summary", { type: "fetch_progress", count: webFetchCount, detail: event.detail?.slice(0, 200) });
+                lastFetchReportCount = webFetchCount;
+              }
+            } else if (event.type === "final") {
+              if (webSearchCount > lastSearchReportRound) {
+                sendSSE("progress_summary", { type: "search_done", count: webSearchCount });
+              }
+              if (webFetchCount > lastFetchReportCount) {
+                sendSSE("progress_summary", { type: "fetch_done", count: webFetchCount });
+              }
+              sendSSE(event.type, event);
+            } else {
+              sendSSE(event.type, event);
+            }
           };
 
           const complexity = estimateTaskComplexity(message);
