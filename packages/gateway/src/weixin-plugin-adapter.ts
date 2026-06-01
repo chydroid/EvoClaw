@@ -110,90 +110,6 @@ function buildHeaders(token?: string): Record<string, string> {
 }
 
 export class WeixinPluginAdapter {
-
-  /**
-   * 关键词映射表：关键词 -> { 理解模板, 计划模板 }
-   */
-  private static readonly KEYWORD_PLAN_MAP: Record<string, { understanding: string; plan: string }> = {
-    "搜索": { understanding: "您想要搜索信息", plan: "我将使用搜索工具查找相关内容，然后为您整理结果" },
-    "查询": { understanding: "您想要查询某些数据", plan: "我将检索相关数据源并返回查询结果" },
-    "分析": { understanding: "您希望对某事物进行深入分析", plan: "我将收集相关信息，进行多角度分析，并给出详细结论" },
-    "总结": { understanding: "您需要一份内容摘要", plan: "我将阅读完整内容，提取关键要点，生成精炼的总结" },
-    "翻译": { understanding: "您需要翻译服务", plan: "我将识别源语言，进行准确翻译，并确保语义通顺" },
-    "写": { understanding: "您希望我帮您撰写内容", plan: "我将根据您的要求构思框架，逐步撰写并优化内容" },
-    "生成": { understanding: "您希望自动生成某些内容", plan: "我将根据您的需求，利用合适的模板或方法生成目标内容" },
-    "修复": { understanding: "您遇到了问题需要修复", plan: "我将定位问题原因，提出修复方案并执行" },
-    "调试": { understanding: "您需要调试某个问题", plan: "我将逐步排查问题，分析日志和状态，找出根因" },
-    "解释": { understanding: "您希望我解释某个概念或代码", plan: "我将用通俗易懂的方式详细说明其原理和细节" },
-    "优化": { understanding: "您希望改进现有方案的性能或质量", plan: "我将评估当前状况，识别瓶颈，提出并实施优化方案" },
-    "对比": { understanding: "您希望比较不同选项", plan: "我将从多个维度进行对比分析，帮您做出决策" },
-    "推荐": { understanding: "您需要推荐建议", plan: "我将根据您的需求筛选候选方案，给出最佳推荐" },
-    "创建": { understanding: "您希望创建新的内容或资源", plan: "我将按照规范创建所需资源，并确认创建成功" },
-    "删除": { understanding: "您希望移除某些内容", plan: "我将确认删除目标，执行删除操作并验证结果" },
-    "修改": { understanding: "您希望更改现有内容", plan: "我将定位待修改部分，应用您的变更要求并验证" },
-    "部署": { understanding: "您需要进行部署操作", plan: "我将准备部署环境，执行部署流程并确认服务正常" },
-    "测试": { understanding: "您需要进行测试", plan: "我将设计测试用例，执行测试并报告结果" },
-  };
-
-  /**
-   * 基于用户消息的关键词分析，生成自然语言的理解和计划描述
-   * @param userMessage 用户发送的原始消息文本
-   * @returns 包含理解确认和执行计划的对象，如果没有匹配的关键词则返回 null
-   */
-  generateUnderstandingAndPlan(userMessage: string): { understanding: string; plan: string } | null {
-    if (!userMessage || typeof userMessage !== "string") {
-      return null;
-    }
-
-    const trimmedMessage = userMessage.trim();
-    if (trimmedMessage.length === 0) {
-      return null;
-    }
-
-    // 遍历关键词映射表，查找匹配的关键词
-    const matchedKeywords: Array<{ keyword: string; understanding: string; plan: string; position: number }> = [];
-
-    for (const [keyword, templates] of Object.entries(WeixinPluginAdapter.KEYWORD_PLAN_MAP)) {
-      const position = trimmedMessage.indexOf(keyword);
-      if (position !== -1) {
-        matchedKeywords.push({
-          keyword,
-          understanding: templates.understanding,
-          plan: templates.plan,
-          position,
-        });
-      }
-    }
-
-    // 没有匹配的关键词
-    if (matchedKeywords.length === 0) {
-      return null;
-    }
-
-    // 按出现位置排序，优先使用最早出现的关键词
-    matchedKeywords.sort((a, b) => a.position - b.position);
-
-    // 如果匹配到多个关键词，组合理解和计划
-    if (matchedKeywords.length === 1) {
-      const match = matchedKeywords[0];
-      return {
-        understanding: `${match.understanding}。`,
-        plan: match.plan,
-      };
-    }
-
-    // 多关键词匹配：合并理解和计划
-    const uniqueUnderstandings = [...new Set(matchedKeywords.map(m => m.understanding))];
-    const uniquePlans = [...new Set(matchedKeywords.map(m => m.plan))];
-
-    const combinedUnderstanding = uniqueUnderstandings.join("，同时") + "。";
-    const combinedPlan = uniquePlans.join("；然后，");
-
-    return {
-      understanding: combinedUnderstanding,
-      plan: combinedPlan,
-    };
-  }
   private eventBus: EventBus;
   private agentExecutor: AgentModelExecutor;
   private runningMonitors: Map<string, { controller: AbortController }> = new Map();
@@ -517,20 +433,13 @@ export class WeixinPluginAdapter {
       }
       console.log(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
 
-      const understandingPlan = this.generateUnderstandingAndPlan(text);
-      let firstFeedback: string;
-      if (understandingPlan) {
-        firstFeedback = `📋 ${understandingPlan.understanding}\n\n📌 ${understandingPlan.plan}`;
-      } else {
-        const isQuestion = /[？?]/.test(text) || /^(什么|怎么|为什么|如何|哪|几|多少|是不是|能不能|可以)/.test(text);
-        const isShortCmd = text.length <= 10 && !isQuestion;
-        if (isQuestion) {
-          firstFeedback = "📋 收到您的问题，我来查找相关信息并为您解答。";
-        } else if (isShortCmd) {
-          firstFeedback = "📋 收到，马上为您处理。";
-        } else {
-          firstFeedback = "📋 收到您的消息，我来分析并处理您的请求。";
+      let firstFeedback = "📋 收到，正在处理...";
+      try {
+        const llmUnderstanding = await this.agentExecutor.generateBriefUnderstanding(text);
+        if (llmUnderstanding) {
+          firstFeedback = `📋 ${llmUnderstanding}`;
         }
+      } catch {
       }
       await this.sendMessage(account, fromUserId, firstFeedback, message.context_token);
 
