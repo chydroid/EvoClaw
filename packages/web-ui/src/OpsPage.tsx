@@ -107,11 +107,13 @@ export function OpsPage() {
     return `${((total / 10000) / (health?.uptimeMs || 1)).toFixed(1)}%`;
   };
 
-  const servicesArray = health?.services ? Object.keys(health.services).map((name) => ({
-    name,
-    status: "ok" as const,
-    latencyMs: 0,
-  })) : [];
+  const servicesArray = health?.services
+    ? Object.entries(health.services).map(([name, info]: [string, any]) => ({
+        name,
+        status: info?.status === "running" ? "ok" as const : "error" as const,
+        latencyMs: info?.latencyMs || 0,
+      }))
+    : [];
 
   return (
     <div style={s.container}>
@@ -180,7 +182,7 @@ export function OpsPage() {
                   <td style={s.td}>{svc.name}</td>
                   <td style={s.td}>
                     <span style={statusDotStyle(svc.status)} />
-                    {svc.status === "ok" ? "正常" : svc.status === "degraded" ? "降级" : "异常"}
+                    {svc.status === "ok" ? "正常" : svc.status === "error" ? "异常" : "未知"}
                   </td>
                   <td style={s.td}>{svc.latencyMs}ms</td>
                   <td style={s.td}>-</td>

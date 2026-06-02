@@ -140,6 +140,7 @@ export class EvoClawServer {
     // ── Config validation (OpenClaw parity) ──
     this.configValidator = new ConfigValidator(CONFIG_SCHEMA);
     this.registry.registerService("configValidator", this.configValidator);
+    this.registry.registerService("config", this.configManager);
 
     this.configWatcher = new ConfigWatcher();
     this.configWatcher.onChange((filePath) => {

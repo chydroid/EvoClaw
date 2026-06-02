@@ -87,6 +87,18 @@ interface LearningSession {
   summary: string | null;
 }
 
+interface CompactionSummary {
+  id: string;
+  parentSessionId: string;
+  successorSessionId: string;
+  summary: string;
+  keyFacts: string[];
+  decisions: string[];
+  pendingItems: string[];
+  compactedTurnCount: number;
+  timestamp: string;
+}
+
 interface ProgressReport {
   id: string;
   sessionId: string;
@@ -125,6 +137,7 @@ export default function EvolutionDashboard() {
   const [learningEntries, setLearningEntries] = useState<LearningEntry[]>([]);
   const [learningSessions, setLearningSessions] = useState<LearningSession[]>([]);
   const [progressReports, setProgressReports] = useState<ProgressReport[]>([]);
+  const [compactions, setCompactions] = useState<CompactionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress" | "help">("overview");
@@ -141,13 +154,20 @@ export default function EvolutionDashboard() {
 
   async function loadEvolutionData() {
     try {
-      const res = await fetch("/api/evolution/dashboard");
+      const [res, compactionsRes] = await Promise.all([
+        fetch("/api/evolution/dashboard"),
+        fetch("/api/compactions/web-ui").catch(() => null),
+      ]);
       if (res.ok) {
         const json = await res.json();
         setData(json);
         setError(null);
       } else {
         setData(DEFAULT_DATA);
+      }
+      if (compactionsRes && compactionsRes.ok) {
+        const c = await compactionsRes.json();
+        setCompactions(c.compactions || []);
       }
     } catch {
       setData(DEFAULT_DATA);
@@ -456,7 +476,7 @@ export default function EvolutionDashboard() {
   function renderOverview() {
     return (
       <div style={s.overview}>
-        {data.cycles.length === 0 && (!learning || learning.totalEntries === 0) ? (
+        {data.cycles.length === 0 && (!learning || learning.totalEntries === 0) && compactions.length === 0 ? (
           <div style={s.emptyState}>
             <div style={s.emptyIcon}>🧬</div>
             <div>暂无进化数据</div>
@@ -466,6 +486,95 @@ export default function EvolutionDashboard() {
           </div>
         ) : (
           <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
+              <div style={s.chartSection}>
+                <h3 style={s.sectionTitle}>📈 进化统计</h3>
+                <div style={s.overviewMetricRow}>
+                  <span style={s.overviewMetricLabel}>进化周期</span>
+                  <span style={s.overviewMetricLarge}>{data.summary.totalCycles}</span>
+                </div>
+                <div style={s.progressBarTrack}>
+                  <div style={{ ...s.progressBarFill, width: `${Math.round(data.summary.successRate * 100)}%`, background: "var(--success)" }} />
+                </div>
+                <div style={{ ...s.overviewMetricRow, marginTop: "8px" }}>
+                  <span style={s.overviewMetricLabel}>成功率</span>
+                  <span style={s.overviewMetricValue}>{Math.round(data.summary.successRate * 100)}%</span>
+                </div>
+                <div style={s.overviewMetricRow}>
+                  <span style={s.overviewMetricLabel}>候选方案</span>
+                  <span style={s.overviewMetricValue}>{data.summary.totalCandidates}</span>
+                </div>
+              </div>
+
+              <div style={s.chartSection}>
+                <h3 style={s.sectionTitle}>📚 学习统计</h3>
+                <div style={s.overviewMetricRow}>
+                  <span style={s.overviewMetricLabel}>学习条目</span>
+                  <span style={s.overviewMetricLarge}>{learning?.totalEntries ?? 0}</span>
+                </div>
+                <div style={s.progressBarTrack}>
+                  <div style={{ ...s.progressBarFill, width: `${Math.round((learning?.resolutionRate ?? 0) * 100)}%`, background: "var(--accent)" }} />
+                </div>
+                <div style={{ ...s.overviewMetricRow, marginTop: "8px" }}>
+                  <span style={s.overviewMetricLabel}>解决率</span>
+                  <span style={s.overviewMetricValue}>{learning ? `${Math.round(learning.resolutionRate * 100)}%` : "N/A"}</span>
+                </div>
+                <div style={s.overviewMetricRow}>
+                  <span style={s.overviewMetricLabel}>已解决 / 待解决</span>
+                  <span style={s.overviewMetricValue}>
+                    <span style={{ color: "var(--success)" }}>{learning?.resolvedEntries ?? 0}</span>
+                    {" / "}
+                    <span style={{ color: "var(--warning)" }}>{learning?.unresolvedEntries ?? 0}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div style={s.chartSection}>
+              <h3 style={s.sectionTitle}>🔄 压缩链</h3>
+              {compactions.length === 0 ? (
+                <div style={s.emptySmall}>暂无压缩记录</div>
+              ) : (
+                <div style={s.compactionTimeline}>
+                  {compactions.map((comp, i) => (
+                    <div key={comp.id} style={s.compactionTimelineItem}>
+                      <div style={s.compactionTimelineDot} />
+                      <div>
+                        <div style={s.compactionTimelineTitle}>
+                          压缩 #{i + 1}: {comp.parentSessionId} → {comp.successorSessionId}
+                        </div>
+                        <div style={s.compactionTimelineDesc}>{comp.summary.slice(0, 200)}</div>
+                        <div style={s.compactionTimelineTime}>
+                          {new Date(comp.timestamp).toLocaleString("zh-CN")} · {comp.compactedTurnCount} 轮压缩
+                        </div>
+                        {comp.keyFacts.length > 0 && (
+                          <div style={{ marginTop: "6px" }}>
+                            {comp.keyFacts.slice(0, 5).map((fact, fi) => (
+                              <span key={fi} style={s.factTag}>{fact.slice(0, 40)}</span>
+                            ))}
+                          </div>
+                        )}
+                        {comp.decisions.length > 0 && (
+                          <div style={{ marginTop: "4px" }}>
+                            {comp.decisions.slice(0, 3).map((d, di) => (
+                              <span key={di} style={s.decisionTag}>{d.slice(0, 40)}</span>
+                            ))}
+                          </div>
+                        )}
+                        {comp.pendingItems.length > 0 && (
+                          <div style={{ marginTop: "4px" }}>
+                            {comp.pendingItems.slice(0, 3).map((p, pi) => (
+                              <span key={pi} style={s.pendingTag}>{p.slice(0, 40)}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div style={s.chartSection}>
               <h3 style={s.sectionTitle}>近期进化周期</h3>
               <div style={s.timeline}>
@@ -1088,6 +1197,101 @@ const s: Record<string, React.CSSProperties> = {
     textAlign: "center" as const,
     color: "var(--text-muted)",
     fontSize: "13px",
+  },
+  overviewMetricRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "8px",
+  },
+  overviewMetricLabel: {
+    color: "var(--text-muted)",
+    fontSize: "12px",
+  },
+  overviewMetricValue: {
+    color: "var(--text-primary)",
+    fontSize: "14px",
+    fontWeight: "bold" as const,
+  },
+  overviewMetricLarge: {
+    color: "var(--accent)",
+    fontSize: "32px",
+    fontWeight: "bold" as const,
+  },
+  progressBarTrack: {
+    height: "6px",
+    borderRadius: "3px",
+    background: "var(--bg-hover)",
+    marginTop: "8px",
+    overflow: "hidden",
+  },
+  progressBarFill: {
+    height: "100%",
+    borderRadius: "3px",
+    transition: "width 0.5s",
+  },
+  compactionTimeline: {
+    position: "relative" as const,
+    paddingLeft: "24px",
+    marginTop: "8px",
+  },
+  compactionTimelineItem: {
+    position: "relative" as const,
+    paddingBottom: "16px",
+    borderLeft: "2px solid var(--border)",
+    paddingLeft: "16px",
+  },
+  compactionTimelineDot: {
+    position: "absolute" as const,
+    left: "-7px",
+    top: "2px",
+    width: "12px",
+    height: "12px",
+    borderRadius: "50%",
+    background: "var(--accent)",
+    border: "2px solid var(--bg-sidebar)",
+  },
+  compactionTimelineTitle: {
+    color: "var(--text-primary)",
+    fontSize: "13px",
+    fontWeight: "bold" as const,
+  },
+  compactionTimelineDesc: {
+    color: "var(--text-secondary)",
+    fontSize: "11px",
+    marginTop: "2px",
+  },
+  compactionTimelineTime: {
+    color: "var(--text-muted)",
+    fontSize: "10px",
+    marginTop: "2px",
+  },
+  factTag: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: "4px",
+    fontSize: "11px",
+    background: "var(--accent-bg)",
+    color: "var(--accent)",
+    margin: "2px 4px 2px 0",
+  },
+  decisionTag: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: "4px",
+    fontSize: "11px",
+    background: "var(--success-bg)",
+    color: "var(--success)",
+    margin: "2px 4px 2px 0",
+  },
+  pendingTag: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: "4px",
+    fontSize: "11px",
+    background: "var(--warning-bg)",
+    color: "var(--warning)",
+    margin: "2px 4px 2px 0",
   },
   chartSection: {
     padding: "16px",

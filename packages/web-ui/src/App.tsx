@@ -25,7 +25,6 @@ import { useTranslation, type Lang } from "./i18n";
 import SecretsManagerPage from "./SecretsManagerPage";
 import DeadLetterQueuePage from "./DeadLetterQueuePage";
 import ConfigRPCPage from "./ConfigRPCPage";
-import ModelSwitcherPage from "./ModelSwitcherPage";
 import SessionRetentionPage from "./SessionRetentionPage";
 import FeatureFlagsPage from "./FeatureFlagsPage";
 import ConfigMigrationPage from "./ConfigMigrationPage";
@@ -39,7 +38,7 @@ type TabId =
   | "events" | "skills" | "bootstrap" | "canvas" | "monitoring"
   | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
   | "ops" | "cli"
-  | "secrets" | "dlq" | "config-rpc" | "model-switcher" | "retention"
+  | "secrets" | "dlq" | "config-rpc" | "retention"
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs";
 
@@ -108,7 +107,6 @@ const NAV_GROUPS: NavGroup[] = [
     iconId: "admin",
     items: [
       { id: "config-rpc", i18nKey: "nav.config_rpc", iconId: "config-rpc" },
-      { id: "model-switcher", i18nKey: "nav.model_switcher", iconId: "model-switcher" },
       { id: "retention", i18nKey: "nav.retention", iconId: "retention" },
       { id: "config-migration", i18nKey: "nav.config_migration", iconId: "config-migration" },
       { id: "config-doctor", i18nKey: "nav.config_doctor", iconId: "config-doctor" },
@@ -537,7 +535,6 @@ export default function App() {
       case "secrets": return <SecretsManagerPage />;
       case "dlq": return <DeadLetterQueuePage />;
       case "config-rpc": return <ConfigRPCPage />;
-      case "model-switcher": return <ModelSwitcherPage />;
       case "retention": return <SessionRetentionPage />;
       case "feature-flags": return <FeatureFlagsPage />;
       case "config-migration": return <ConfigMigrationPage />;

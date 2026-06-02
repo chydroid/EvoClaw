@@ -342,6 +342,7 @@ export class ProtocolAdapter {
   private secretsStore: Map<string, any> = new Map();
   private secretsAuditLog: Array<any> = [];
   private configRpcStore: Map<string, any> = new Map();
+  private configRpcInitialized = false;
   private configRpcWatchers: Map<string, Array<{ subscriptionId: string }>> = new Map();
   private modelsStore: Map<string, any> = new Map();
   private currentModelId: string = "";
@@ -356,6 +357,8 @@ export class ProtocolAdapter {
   };
   private featureFlagsStore: Map<string, any> = new Map();
   private migrationsStore: Map<string, any> = new Map();
+  private configSnapshots: Map<string, { config: any; timestamp: string }> = new Map();
+  private migrationVersion: number = 0;
   private doctorIssues: Array<any> = [];
 
   private getDeadLetterQueue(): DeadLetterQueue {
@@ -396,7 +399,99 @@ export class ProtocolAdapter {
     });
   }
 
+  private runConfigDiagnostics(): Array<{ path: string; severity: string; message: string; suggestion?: any; currentValue?: any }> {
+    const issues: Array<{ path: string; severity: string; message: string; suggestion?: any; currentValue?: any }> = [];
+    const config = this.registry.resolveService<any>("config");
+    const authConfig = config?.get?.("auth") || config?.auth;
+    if (authConfig) {
+      if (!authConfig.jwtSecret || /change|dev|secret/i.test(authConfig.jwtSecret)) {
+        issues.push({ path: "auth.jwtSecret", severity: "error", message: "JWT 密钥使用默认值或弱密码，存在安全风险", suggestion: "设置强随机密钥（至少16位）", currentValue: "******" });
+      }
+    }
+    const gatewayConfig = config?.get?.("gateway") || config?.gateway;
+    if (gatewayConfig) {
+      if (gatewayConfig.enableMCP === false && gatewayConfig.enableREST === false) {
+        issues.push({ path: "gateway.enableMCP", severity: "warning", message: "MCP 和 REST API 均已禁用，外部无法访问", suggestion: "至少启用一种通信协议" });
+      }
+    }
+    const llmProviders = this.savedLLMProviders || [];
+    if (llmProviders.length === 0) {
+      issues.push({ path: "llm.providers", severity: "error", message: "未配置任何 LLM 提供商，Agent 无法工作", suggestion: "至少配置一个 LLM 提供商" });
+    } else {
+      for (const p of llmProviders) {
+        if (!p.apiKey || p.apiKey === "" || p.apiKey === "sk-xxx") {
+          issues.push({ path: `llm.providers.${p.id || p.name}.apiKey`, severity: "error", message: `LLM 提供商 "${p.name || p.id}" 未配置 API Key`, suggestion: "设置有效的 API Key" });
+        }
+      }
+    }
+    const channels = this.savedChannels || [];
+    if (channels.length === 0) {
+      issues.push({ path: "channels", severity: "warning", message: "未配置任何消息通道", suggestion: "配置至少一个消息通道（如微信、Telegram）" });
+    }
+    return issues;
+  }
+
+  private ensureConfigRpcInitialized(): void {
+    if (this.configRpcInitialized) return;
+    this.configRpcInitialized = true;
+    const config = this.registry.resolveService<any>("config");
+    if (config?.get) {
+      try {
+        const allConfig = config.getAll?.() || {};
+        for (const key of Object.keys(allConfig)) {
+          this.configRpcStore.set(key, allConfig[key]);
+        }
+      } catch {
+        try {
+          const sections = ["server", "auth", "gateway", "persona", "agent", "sandbox", "memory", "security", "evolution"];
+          for (const section of sections) {
+            const val = config.get(section);
+            if (val) this.configRpcStore.set(section, val);
+          }
+        } catch {}
+      }
+    }
+    if (this.savedLLMProviders && this.savedLLMProviders.length > 0) {
+      this.configRpcStore.set("llm.providers", this.savedLLMProviders);
+    }
+    if (this.savedChannels && this.savedChannels.length > 0) {
+      this.configRpcStore.set("channels.list", this.savedChannels);
+    }
+  }
+
   mountREST(app: Express): void {
+    const ha = this.getHealthAggregator();
+    const services = [
+      { name: "eventBus", type: "service" as const },
+      { name: "sessionManager", type: "service" as const },
+      { name: "pluginManager", type: "service" as const },
+      { name: "skillManager", type: "service" as const },
+      { name: "permissionManager", type: "service" as const },
+      { name: "memoryHub", type: "service" as const },
+      { name: "evolutionEngine", type: "service" as const },
+    ];
+    for (const svc of services) {
+      const instance = this.registry.resolveService<any>(svc.name);
+      if (instance && !ha.getComponent(svc.name)) {
+        ha.registerComponent(
+          svc.name,
+          svc.type,
+          async () => {
+            try {
+              if (instance.healthCheck) {
+                const result = await instance.healthCheck();
+                return { ok: !!result, responseTimeMs: 0 };
+              }
+              return { ok: true, responseTimeMs: 0 };
+            } catch {
+              return { ok: false, error: "Health check failed", responseTimeMs: 0 };
+            }
+          },
+        );
+      }
+    }
+    ha.startPolling();
+
     app.post("/api/auth/login", (req: Request, res: Response) => {
       try {
         const { username, password } = req.body || {};
@@ -1027,6 +1122,15 @@ export class ProtocolAdapter {
         if (!message.trim() && (!attachments || attachments.length === 0)) {
           res.status(400).json({ error: "Message or attachment is required" });
           return;
+        }
+
+        const rm = this.getReplyReferenceManager();
+        if (rm && (req.body.replyTo || req.body.parentId || req.body.inReplyTo)) {
+          try {
+            rm.record(req.body.replyTo || req.body.parentId || req.body.inReplyTo, req.body.id || req.body.sessionId || "web-ui", {
+              channel: req.body.channel || "webchat",
+            });
+          } catch {}
         }
 
         const agentExecutor = this.registry.resolveService<{
@@ -2736,22 +2840,28 @@ export class ProtocolAdapter {
 
     app.get("/api/crestodian/health", (_req: Request, res: Response) => {
       try {
-        const crestodian = this.registry.resolveService("crestodian") as {
-          getHealth(): Record<string, unknown>;
-          getOverview(): Record<string, unknown>;
-          collectDiagnostics(): Record<string, unknown>;
-          isAlive(): boolean;
-          isReady(): boolean;
-        } | undefined;
-
-        if (!crestodian) {
-          res.json({ status: "unavailable" });
-          return;
+        const serviceNames = [
+          "eventBus", "sessionManager", "pluginManager", "skillManager",
+          "permissionManager", "memoryHub", "evolutionEngine", "agentModelExecutor",
+          "channelManager", "securityGovernor", "auditCenter",
+        ];
+        const services: Record<string, { status: string; uptime?: number }> = {};
+        for (const name of serviceNames) {
+          const svc = this.registry.resolveService(name);
+          services[name] = { status: svc ? "running" : "stopped" };
         }
-
-        res.json(crestodian.getHealth());
+        const observability = this.registry.resolveService<any>("observability");
+        const uptime = observability ? Math.floor(process.uptime()) : Math.floor(process.uptime());
+        res.json({
+          status: "ok",
+          services,
+          uptime,
+          version: process.env.npm_package_version || "0.4.0",
+          nodeVersion: process.version,
+          platform: process.platform,
+        });
       } catch (err) {
-        this.handleError(err, res, "Failed to get health probe");
+        this.handleError(err, res, "Failed to get health");
       }
     });
 
@@ -2775,18 +2885,20 @@ export class ProtocolAdapter {
 
     app.get("/api/crestodian/diagnostics", (_req: Request, res: Response) => {
       try {
-        const crestodian = this.registry.resolveService("crestodian") as {
-          collectDiagnostics(): Record<string, unknown>;
-        } | undefined;
-
-        if (!crestodian) {
-          res.json({ status: "unavailable" });
-          return;
-        }
-
-        res.json(crestodian.collectDiagnostics());
+        const memUsage = process.memoryUsage();
+        res.json({
+          status: "ok",
+          memory: {
+            rss: Math.round(memUsage.rss / 1024 / 1024),
+            heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+            heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+            external: Math.round(memUsage.external / 1024 / 1024),
+          },
+          uptime: Math.floor(process.uptime()),
+          pid: process.pid,
+        });
       } catch (err) {
-        this.handleError(err, res, "Failed to collect diagnostics");
+        this.handleError(err, res, "Failed to get diagnostics");
       }
     });
 
@@ -3513,6 +3625,21 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/reply-refs", (req: Request, res: Response) => {
+      try {
+        const rm = this.getReplyReferenceManager();
+        const { parentId, childId, channel } = req.body || {};
+        if (!parentId || !childId) {
+          res.status(400).json({ error: "parentId and childId are required" });
+          return;
+        }
+        rm.record(parentId, childId, { channel: channel || "unknown" });
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to record reply reference");
+      }
+    });
+
     // ─── Message Template API routes ───────────────────────────────────────
 
     app.get("/api/message-templates", (_req: Request, res: Response) => {
@@ -3806,6 +3933,7 @@ export class ProtocolAdapter {
 
     app.get("/api/config-rpc", (req: Request, res: Response) => {
       try {
+        this.ensureConfigRpcInitialized();
         const prefix = req.query.prefix as string | undefined;
         const configManager = this.registry.resolveService<{
           list(prefix?: string): Array<{ path: string; value: unknown; source: string }>;
@@ -3856,6 +3984,7 @@ export class ProtocolAdapter {
 
     app.get("/api/config-rpc/:path", (req: Request, res: Response) => {
       try {
+        this.ensureConfigRpcInitialized();
         const dotPath = String(req.params.path);
         const configManager = this.registry.resolveService<{
           get(path: string): { path: string; value: unknown } | null;
@@ -4039,19 +4168,70 @@ export class ProtocolAdapter {
       }
     });
 
-    app.get("/api/retention/stats", (_req: Request, res: Response) => {
+    app.get("/api/retention/stats", async (_req: Request, res: Response) => {
       try {
-        res.json(this.retentionStats);
+        const sessionManager = this.registry.resolveService<any>("sessionManager");
+        let allSessions: any[] = [];
+        if (sessionManager) {
+          const agents: string[] = sessionManager.listAgents?.() || [];
+          for (const agentId of agents) {
+            const agentSessions = sessionManager.listSessions?.(agentId) || [];
+            if (Array.isArray(agentSessions)) {
+              allSessions = allSessions.concat(agentSessions);
+            }
+          }
+        }
+        const totalSessions = allSessions.length;
+        const now = Date.now();
+        const maxAgeMs = (this.retentionPolicy.maxAgeDays || 30) * 86400000;
+        const maxInactiveMs = (this.retentionPolicy.maxInactiveDays || 7) * 86400000;
+        let expiredSessions = 0;
+        for (const s of allSessions) {
+          const lastActive = s.lastActivityAt || s.updatedAt || s.createdAt || 0;
+          const created = s.createdAt || 0;
+          if ((now - lastActive > maxInactiveMs) || (now - created > maxAgeMs)) {
+            expiredSessions++;
+          }
+        }
+        res.json({
+          totalSessions,
+          expiredSessions,
+          cleanedUp: this.retentionStats.cleanedUp || 0,
+          lastRun: this.retentionStats.lastRun || "",
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to get retention stats");
       }
     });
 
-    app.post("/api/retention/run", (_req: Request, res: Response) => {
+    app.post("/api/retention/run", async (_req: Request, res: Response) => {
       try {
-        const cleaned = this.retentionStats.expiredSessions;
-        this.retentionStats.cleanedUp += cleaned;
-        this.retentionStats.expiredSessions = 0;
+        const sessionManager = this.registry.resolveService<any>("sessionManager");
+        let cleaned = 0;
+        if (sessionManager) {
+          const agents: string[] = sessionManager.listAgents?.() || [];
+          let allSessions: any[] = [];
+          for (const agentId of agents) {
+            const agentSessions = sessionManager.listSessions?.(agentId) || [];
+            if (Array.isArray(agentSessions)) {
+              allSessions = allSessions.concat(agentSessions);
+            }
+          }
+          const now = Date.now();
+          const maxAgeMs = (this.retentionPolicy.maxAgeDays || 30) * 86400000;
+          const maxInactiveMs = (this.retentionPolicy.maxInactiveDays || 7) * 86400000;
+          for (const s of allSessions) {
+            const lastActive = s.lastActivityAt || s.updatedAt || s.createdAt || 0;
+            const created = s.createdAt || 0;
+            if ((now - lastActive > maxInactiveMs) || (now - created > maxAgeMs)) {
+              const sid = s.id || s.sessionId;
+              if (sid && sessionManager.deleteSession?.(sid)) { cleaned++; }
+              else if (sid && sessionManager.removeSession?.(sid)) { cleaned++; }
+              else if (sid && sessionManager.destroySession?.(sid)) { cleaned++; }
+            }
+          }
+        }
+        this.retentionStats.cleanedUp = (this.retentionStats.cleanedUp || 0) + cleaned;
         this.retentionStats.lastRun = new Date().toISOString();
         res.json({ cleaned });
       } catch (err) {
@@ -4129,42 +4309,37 @@ export class ProtocolAdapter {
     // ─── Config Migration API routes ────────────────────────────────────
 
     app.get("/api/config/migrations", (_req: Request, res: Response) => {
-      try {
-        const migrations = Array.from(this.migrationsStore.values());
-        res.json({ migrations });
-      } catch (err) {
-        this.handleError(err, res, "Failed to list migrations");
-      }
+      const migrations = Array.from(this.migrationsStore.values());
+      res.json({ migrations });
     });
 
-    app.post("/api/config/migrations/:id/run", (req: Request, res: Response) => {
+    app.post("/api/config/migrations/:id/run", async (req: Request, res: Response) => {
       try {
         const id = String(req.params.id);
         const now = new Date().toISOString();
-        let migration = this.migrationsStore.get(id);
-        if (!migration) {
-          migration = {
-            id,
-            fromVersion: "0",
-            toVersion: "1",
-            status: "running",
-            startedAt: now,
-            changes: [],
-          };
-          this.migrationsStore.set(id, migration);
-        } else {
-          migration.status = "running";
-          migration.startedAt = now;
-        }
-        migration.status = "completed";
-        migration.completedAt = now;
+        const config = this.registry.resolveService<any>("config");
+        const currentConfig = config?.get ? config.get("") : {};
+        const snapshotId = `pre-migration-${id}`;
+        this.configSnapshots.set(snapshotId, { config: JSON.parse(JSON.stringify(currentConfig)), timestamp: now });
+        const migration = {
+          id,
+          fromVersion: String(this.migrationVersion),
+          toVersion: String(this.migrationVersion + 1),
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+          changes: [{ action: "snapshot", path: "*", description: "配置快照已保存" }],
+          snapshotId,
+        };
+        this.migrationVersion++;
+        this.migrationsStore.set(id, migration);
         res.json(migration);
       } catch (err) {
         this.handleError(err, res, "Failed to run migration");
       }
     });
 
-    app.post("/api/config/migrations/:id/rollback", (req: Request, res: Response) => {
+    app.post("/api/config/migrations/:id/rollback", async (req: Request, res: Response) => {
       try {
         const id = String(req.params.id);
         const migration = this.migrationsStore.get(id);
@@ -4172,10 +4347,18 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Migration not found" });
           return;
         }
-        const now = new Date().toISOString();
-        migration.status = "failed";
-        migration.completedAt = now;
-        migration.error = "Rolled back";
+        const snapshot = this.configSnapshots.get(migration.snapshotId);
+        if (snapshot) {
+          const config = this.registry.resolveService<any>("config");
+          if (config?.set) {
+            for (const [key, value] of Object.entries(snapshot.config)) {
+              try { config.set(key, value); } catch {}
+            }
+          }
+        }
+        migration.status = "rolled_back";
+        migration.completedAt = new Date().toISOString();
+        this.migrationVersion = Math.max(0, this.migrationVersion - 1);
         res.json(migration);
       } catch (err) {
         this.handleError(err, res, "Failed to rollback migration");
@@ -4183,32 +4366,23 @@ export class ProtocolAdapter {
     });
 
     app.get("/api/config/migration-status", (_req: Request, res: Response) => {
-      try {
-        const migrations = Array.from(this.migrationsStore.values());
-        const completed = migrations.filter((m: any) => m.status === "completed");
-        const pending = migrations.filter((m: any) => m.status === "pending");
-        const currentVersion = completed.length > 0
-          ? String(completed.length)
-          : "0";
-        const lastMigration = completed.length > 0
-          ? completed[completed.length - 1]
-          : undefined;
-        res.json({
-          currentVersion,
-          pendingCount: pending.length,
-          lastMigration,
-        });
-      } catch (err) {
-        this.handleError(err, res, "Failed to get migration status");
-      }
+      const migrations = Array.from(this.migrationsStore.values());
+      const lastMigration = migrations[migrations.length - 1];
+      const pendingCount = migrations.filter((m: any) => m.status === "pending").length;
+      res.json({
+        currentVersion: String(this.migrationVersion),
+        pendingCount,
+        lastMigration: lastMigration?.completedAt || null,
+      });
     });
 
     // ─── Config Doctor API routes ───────────────────────────────────────
 
     app.get("/api/config/doctor", (_req: Request, res: Response) => {
       try {
-        const healthy = this.doctorIssues.length === 0;
-        res.json({ issues: this.doctorIssues, healthy });
+        const issues = this.runConfigDiagnostics();
+        const healthy = issues.filter((i: any) => i.severity === "error").length === 0;
+        res.json({ issues, healthy });
       } catch (err) {
         this.handleError(err, res, "Failed to run diagnostics");
       }
@@ -4217,13 +4391,11 @@ export class ProtocolAdapter {
     app.post("/api/config/doctor/fix", (req: Request, res: Response) => {
       try {
         const { path, value } = req.body || {};
-        if (!path) {
-          res.status(400).json({ error: "path is required" });
-          return;
-        }
-        const idx = this.doctorIssues.findIndex((i: any) => i.path === path);
-        if (idx !== -1) {
-          this.doctorIssues.splice(idx, 1);
+        const config = this.registry.resolveService<any>("config");
+        if (config?.set) {
+          config.set(path, value);
+          res.json({ fixed: true });
+        } else if (this.configRpcStore) {
           this.configRpcStore.set(path, value);
           res.json({ fixed: true });
         } else {
@@ -4236,14 +4408,16 @@ export class ProtocolAdapter {
 
     app.post("/api/config/doctor/fix-all", (_req: Request, res: Response) => {
       try {
-        const fixed = this.doctorIssues.length;
-        for (const issue of this.doctorIssues) {
-          if (issue.suggestion !== undefined) {
-            this.configRpcStore.set(issue.path, issue.suggestion);
+        const issues = this.runConfigDiagnostics();
+        let fixed = 0;
+        for (const issue of issues) {
+          if (issue.suggestion !== undefined && issue.severity !== "error") {
+            const config = this.registry.resolveService<any>("config");
+            if (config?.set) { config.set(issue.path, issue.suggestion); fixed++; }
+            else if (this.configRpcStore) { this.configRpcStore.set(issue.path, issue.suggestion); fixed++; }
           }
         }
-        this.doctorIssues = [];
-        res.json({ fixed, remaining: 0 });
+        res.json({ fixed, remaining: issues.length - fixed });
       } catch (err) {
         this.handleError(err, res, "Failed to fix all issues");
       }

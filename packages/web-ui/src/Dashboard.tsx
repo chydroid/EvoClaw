@@ -154,7 +154,7 @@ export default function Dashboard() {
         bootstrapFiles: bootstrapFiles || [],
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load dashboard data");
+      setError(err instanceof Error ? err.message : "加载仪表盘数据失败");
     }
     setLoading(false);
   }, []);
@@ -166,7 +166,7 @@ export default function Dashboard() {
   }, [fetchData]);
 
   if (loading && !data) {
-    return <div style={s.container}><Loading text="Loading dashboard..." /></div>;
+    return <div style={s.container}><Loading text="加载仪表盘..." /></div>;
   }
 
   if (error && !data) {
@@ -197,27 +197,33 @@ export default function Dashboard() {
 
   return (
     <div style={s.container}>
-      <PageHeader title="System Dashboard" />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <PageHeader title="系统仪表盘" />
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>每 15 秒自动刷新</span>
+          <button style={s.refreshBtn} onClick={fetchData}>刷新</button>
+        </div>
+      </div>
 
       <StatsGrid items={[
-        { label: "Sessions", value: data.sessions.length, color: "#a78bfa" },
-        { label: "Tokens", value: totalTokens(data.sessions), color: "#60a5fa" },
-        { label: "Compactions", value: compactCount(data.sessions), color: "#fbbf24" },
-        { label: "Messages", value: data.sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0), color: "#34d399" },
+        { label: "会话数", value: data.sessions.length, color: "#a78bfa" },
+        { label: "Token 总量", value: totalTokens(data.sessions), color: "#60a5fa" },
+        { label: "压缩次数", value: compactCount(data.sessions), color: "#fbbf24" },
+        { label: "消息总数", value: data.sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0), color: "#34d399" },
       ]} />
 
       <div style={s.grid}>
         {/* System Health */}
-        <Card title={<><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: healthColor, marginRight: 8 }} />System Health</>}>
-          <div style={s.row}><span style={s.label}>Status</span><Badge variant={data.health.status === "ok" ? "success" : data.health.status === "degraded" ? "warning" : "error"}>{data.health.status.toUpperCase()}</Badge></div>
-          <div style={s.row}><span style={s.label}>Version</span><span style={s.value}>{data.health.version}</span></div>
-          <div style={s.row}><span style={s.label}>Uptime</span><span style={s.value}>{formatUptime(data.health.uptime)}</span></div>
-          <div style={s.row}><span style={s.label}>Platform</span><span style={s.value}>{data.health.platform}</span></div>
+        <Card title={<><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: healthColor, marginRight: 8 }} />系统健康</>}>
+          <div style={s.row}><span style={s.label}>状态</span><Badge variant={data.health.status === "ok" ? "success" : data.health.status === "degraded" ? "warning" : "error"}>{data.health.status === "ok" ? "健康" : data.health.status === "degraded" ? "降级" : data.health.status === "unhealthy" ? "异常" : "未知"}</Badge></div>
+          <div style={s.row}><span style={s.label}>版本</span><span style={s.value}>{data.health.version}</span></div>
+          <div style={s.row}><span style={s.label}>运行时间</span><span style={s.value}>{formatUptime(data.health.uptime)}</span></div>
+          <div style={s.row}><span style={s.label}>平台</span><span style={s.value}>{data.health.platform}</span></div>
           <div style={s.row}><span style={s.label}>Node.js</span><span style={s.value}>{data.health.nodeVersion}</span></div>
         </Card>
 
         {/* Provider Status */}
-        <Card title="LLM Providers">
+        <Card title="LLM 提供商">
           {data.providers.length > 0 ? (
             data.providers.map((p, i) => (
               <div key={i} style={{ marginBottom: "10px" }}>
@@ -229,8 +235,8 @@ export default function Dashboard() {
                   <span style={{ ...s.value, fontSize: "11px" }}>{p.provider} / {p.model}</span>
                 </div>
                 <div style={{ display: "flex", gap: "12px", marginTop: "3px", fontSize: "11px" }}>
-                  <span style={{ color: "#22c55e" }}>OK {p.successCount}</span>
-                  <span style={{ color: p.failureCount > 0 ? "#ef4444" : "var(--text-muted)" }}>Fail {p.failureCount}</span>
+                  <span style={{ color: "#22c55e" }}>成功 {p.successCount}</span>
+                  <span style={{ color: p.failureCount > 0 ? "#ef4444" : "var(--text-muted)" }}>失败 {p.failureCount}</span>
                 </div>
                 {p.lastError && (
                   <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "3px", wordBreak: "break-all" }}>
@@ -240,17 +246,17 @@ export default function Dashboard() {
               </div>
             ))
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>No provider data</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>暂无提供商数据</div>
           )}
         </Card>
 
         {/* Skills Overview */}
-        <Card title="Skills Overview">
+        <Card title="技能概览">
           <StatsGrid items={[
-            { label: "Total", value: data.skills.total, color: "#a78bfa" },
-            { label: "Active", value: data.skills.active, color: "#22c55e" },
-            { label: "Installed", value: data.skills.installed, color: "#60a5fa" },
-            { label: "Failed", value: data.skills.failed, color: data.skills.failed > 0 ? "#ef4444" : "var(--text-muted)" },
+            { label: "总计", value: data.skills.total, color: "#a78bfa" },
+            { label: "活跃", value: data.skills.active, color: "#22c55e" },
+            { label: "已安装", value: data.skills.installed, color: "#60a5fa" },
+            { label: "失败", value: data.skills.failed, color: data.skills.failed > 0 ? "#ef4444" : "var(--text-muted)" },
           ]} />
           {Object.keys(data.skills.categories).length > 0 ? (
             <div style={{ marginTop: 12 }}>
@@ -271,44 +277,44 @@ export default function Dashboard() {
               })}
             </div>
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>No skills installed</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>暂无已安装技能</div>
           )}
         </Card>
 
         {/* Sessions */}
-        <Card title={`Sessions (${data.sessions.length})`}>
+        <Card title={`会话 (${data.sessions.length})`}>
           {data.sessions.length > 0 ? (
             <DataTable
               columns={[
-                { key: "id", label: "Session", render: (s: SessionInfo) => <span style={{ fontSize: "11px", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{s.id}</span> },
-                { key: "messageCount", label: "Msgs" },
-                { key: "tokensUsed", label: "Tokens" },
-                { key: "compactionCount", label: "Compact" },
+                { key: "id", label: "会话 ID", render: (s: SessionInfo) => <span style={{ fontSize: "11px", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{s.id}</span> },
+                { key: "messageCount", label: "消息" },
+                { key: "tokensUsed", label: "Token" },
+                { key: "compactionCount", label: "压缩" },
               ]}
               data={data.sessions.slice(0, 4)}
               keyFn={(s) => s.id}
-              emptyText="No active sessions"
+              emptyText="暂无活跃会话"
             />
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>No active sessions</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "10px 0" }}>暂无活跃会话</div>
           )}
         </Card>
 
         {/* Bootstrap Files */}
-        <Card title="Bootstrap Files" style={{ gridColumn: "1 / -1" }}>
+        <Card title="引导文件" style={{ gridColumn: "1 / -1" }}>
           {data.bootstrapFiles.length > 0 ? (
             <DataTable
               columns={[
-                { key: "path", label: "File", render: (f: BootstrapFile) => <span style={{ fontFamily: "monospace", fontSize: "12px" }}>{f.path}</span> },
-                { key: "exists", label: "Status", render: (f: BootstrapFile) => <Badge variant={f.exists ? "success" : "default"}>{f.exists ? "Loaded" : "Missing"}</Badge> },
-                { key: "size", label: "Size", render: (f: BootstrapFile) => f.exists ? `${(f.size / 1024).toFixed(1)} KB` : "-" },
+                { key: "path", label: "文件", render: (f: BootstrapFile) => <span style={{ fontFamily: "monospace", fontSize: "12px" }}>{f.path}</span> },
+                { key: "exists", label: "状态", render: (f: BootstrapFile) => <Badge variant={f.exists ? "success" : "default"}>{f.exists ? "是" : "否"}</Badge> },
+                { key: "size", label: "大小", render: (f: BootstrapFile) => f.exists ? `${(f.size / 1024).toFixed(1)} KB` : "-" },
               ]}
               data={data.bootstrapFiles}
               keyFn={(f) => f.path}
-              emptyText="No bootstrap files detected"
+              emptyText="未检测到引导文件"
             />
           ) : (
-            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>No bootstrap files detected</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>未检测到引导文件</div>
           )}
         </Card>
       </div>
