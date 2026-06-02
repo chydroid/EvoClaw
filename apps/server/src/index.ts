@@ -16,7 +16,7 @@ function getServerVersion(): string {
 }
 const SERVER_VERSION = getServerVersion();
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, handleChatCommand, dispatchCommand } from "@evoclaw/agent";
 import type { AgentConfig, AgentBinding } from "@evoclaw/agent";
@@ -107,6 +107,7 @@ export class EvoClawServer {
   private copilotRouter: CopilotRouter;
   private credentialPool: CredentialPool;
   private skillIndex: SkillIndex;
+  private featureFlagStore: FeatureFlagStore;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -148,6 +149,32 @@ export class EvoClawServer {
 
     this.skillIndex = new SkillIndex();
     this.registry.registerService("skillIndex", this.skillIndex);
+
+    // ── Feature Flag Store (runtime feature toggles) ──
+    this.featureFlagStore = new FeatureFlagStore({
+      environment: process.env.NODE_ENV || "development",
+      auditEvaluations: true,
+      defaultEnabled: false,
+    });
+    this.featureFlagStore.registerAll([
+      { key: "evolution", description: "自进化引擎 — 自动优化Agent行为和配置", enabled: true, owner: "core", updatedAt: Date.now() },
+      { key: "compaction", description: "上下文压缩 — 长对话自动摘要以节省Token", enabled: true, owner: "core", updatedAt: Date.now() },
+      { key: "sandbox", description: "技能沙箱 — 在隔离环境中执行用户自定义技能", enabled: true, owner: "security", updatedAt: Date.now() },
+      { key: "mcp", description: "MCP协议支持 — Model Context Protocol工具集成", enabled: true, owner: "integration", updatedAt: Date.now() },
+      { key: "a2ui", description: "A2UI协议 — Agent驱动的Canvas可视化界面", enabled: true, owner: "canvas", updatedAt: Date.now() },
+      { key: "autoSkill", description: "自动技能发现与安装 — 根据任务自动匹配技能", enabled: true, owner: "skills", updatedAt: Date.now() },
+      { key: "permissionFastTrack", description: "权限快速通道 — 白名单目录操作自动审批", enabled: true, owner: "security", updatedAt: Date.now() },
+      { key: "copilotRouter", description: "Copilot路由 — 低价值任务自动降级到廉价模型", enabled: true, owner: "optimization", updatedAt: Date.now() },
+      { key: "hotReload", description: "热重载 — 配置文件变更自动生效无需重启", enabled: true, owner: "devops", updatedAt: Date.now() },
+      { key: "semanticMemory", description: "语义记忆 — 基于TF-IDF的语义搜索记忆存储", enabled: true, owner: "memory", updatedAt: Date.now() },
+      { key: "selfHealing", description: "自愈管理 — 自动检测和恢复服务异常", enabled: true, owner: "devops", updatedAt: Date.now() },
+      { key: "weixinIntegration", description: "微信集成 — 微信公众号/企业微信消息通道", enabled: false, owner: "integration", updatedAt: Date.now() },
+      { key: "playwrightBrowser", description: "Playwright浏览器 — 高级网页自动化操作", enabled: true, owner: "browser", updatedAt: Date.now() },
+      { key: "emailIntegration", description: "邮件集成 — 邮件收发与分析功能", enabled: false, owner: "integration", updatedAt: Date.now() },
+      { key: "scheduledTasks", description: "定时任务 — Cron定时执行预设操作", enabled: true, owner: "scheduler", updatedAt: Date.now() },
+      { key: "rolloutCanary", description: "金丝雀发布 — 百分比灰度发布新功能（仅对10%请求启用）", enabled: false, rolloutPercent: 10, owner: "devops", updatedAt: Date.now() },
+    ]);
+    this.registry.registerService("featureFlagStore", this.featureFlagStore);
 
     // ── Config validation (OpenClaw parity) ──
     this.configValidator = new ConfigValidator(CONFIG_SCHEMA);
@@ -291,6 +318,7 @@ export class EvoClawServer {
     this.crestodian.setServiceHealth("eventLedger", "ok");
     this.crestodian.setServiceHealth("permissionManager", "ok");
     this.crestodian.setServiceHealth("taskOrchestrator", "ok");
+    this.crestodian.setServiceHealth("featureFlagStore", "ok");
     this.registry.registerService("crestodian", this.crestodian);
 
     this.registry.registerService("registry", this.registry);

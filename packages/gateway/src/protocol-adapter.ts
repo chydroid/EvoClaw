@@ -1,5 +1,5 @@
 import { Express, Request, Response } from "express";
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, FeatureFlagStore } from "@evoclaw/core";
 import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager } from "@evoclaw/agent";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
@@ -358,7 +358,6 @@ export class ProtocolAdapter {
     totalSessions: 0, expiredSessions: 0,
     cleanedUp: 0, lastRun: "",
   };
-  private featureFlagsStore: Map<string, any> = new Map();
   private migrationsStore: Map<string, any> = new Map();
   private configSnapshots: Map<string, { config: any; timestamp: string }> = new Map();
   private migrationVersion: number = 0;
@@ -4255,9 +4254,26 @@ export class ProtocolAdapter {
 
     // ─── Feature Flags API routes ───────────────────────────────────────
 
+    const getFlagStore = (): FeatureFlagStore | null => {
+      try {
+        return this.registry.resolveService<FeatureFlagStore>("featureFlagStore") ?? null;
+      } catch { return null; }
+    };
+
     app.get("/api/feature-flags", (_req: Request, res: Response) => {
       try {
-        const flags = Array.from(this.featureFlagsStore.values());
+        const store = getFlagStore();
+        const flags = store ? store.listFlags().map(f => ({
+          key: f.key,
+          name: f.key,
+          description: f.description,
+          enabled: f.enabled,
+          defaultValue: f.enabled,
+          rolloutPercent: f.rolloutPercent,
+          environments: f.environments,
+          owner: f.owner,
+          updatedAt: new Date(f.updatedAt).toISOString(),
+        })) : [];
         res.json({ flags });
       } catch (err) {
         this.handleError(err, res, "Failed to list feature flags");
@@ -4267,12 +4283,27 @@ export class ProtocolAdapter {
     app.get("/api/feature-flags/:key", (req: Request, res: Response) => {
       try {
         const key = String(req.params.key);
-        const flag = this.featureFlagsStore.get(key);
+        const store = getFlagStore();
+        if (!store) {
+          res.status(404).json({ error: "Feature flag store not available" });
+          return;
+        }
+        const flag = store.getFlag(key);
         if (!flag) {
           res.status(404).json({ error: "Feature flag not found" });
           return;
         }
-        res.json(flag);
+        res.json({
+          key: flag.key,
+          name: flag.key,
+          description: flag.description,
+          enabled: flag.enabled,
+          defaultValue: flag.enabled,
+          rolloutPercent: flag.rolloutPercent,
+          environments: flag.environments,
+          owner: flag.owner,
+          updatedAt: new Date(flag.updatedAt).toISOString(),
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to get feature flag");
       }
@@ -4286,18 +4317,38 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "enabled must be a boolean" });
           return;
         }
-        const now = new Date().toISOString();
-        const existing = this.featureFlagsStore.get(key);
-        const flag = {
-          key,
-          name: existing?.name || key,
-          description: existing?.description || "",
-          enabled,
-          defaultValue: existing?.defaultValue ?? enabled,
-          updatedAt: now,
-        };
-        this.featureFlagsStore.set(key, flag);
-        res.json(flag);
+        const store = getFlagStore();
+        if (!store) {
+          res.status(503).json({ error: "Feature flag store not available" });
+          return;
+        }
+        const existing = store.getFlag(key);
+        if (existing) {
+          if (enabled) {
+            store.enable(key);
+          } else {
+            store.disable(key);
+          }
+        } else {
+          // Register a new flag on-the-fly
+          store.register({
+            key,
+            description: "",
+            enabled,
+            updatedAt: Date.now(),
+          });
+        }
+        const updated = store.getFlag(key)!;
+        res.json({
+          key: updated.key,
+          name: updated.key,
+          description: updated.description,
+          enabled: updated.enabled,
+          defaultValue: updated.enabled,
+          rolloutPercent: updated.rolloutPercent,
+          owner: updated.owner,
+          updatedAt: new Date(updated.updatedAt).toISOString(),
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to set feature flag");
       }
@@ -4307,14 +4358,21 @@ export class ProtocolAdapter {
       try {
         const key = String(req.params.key);
         const { context } = req.body || {};
-        const flag = this.featureFlagsStore.get(key);
+        const store = getFlagStore();
+        if (!store) {
+          res.status(503).json({ error: "Feature flag store not available" });
+          return;
+        }
+        const flag = store.getFlag(key);
         if (!flag) {
           res.status(404).json({ error: "Feature flag not found" });
           return;
         }
-        const enabled = flag.enabled;
-        const reason = enabled ? "flag_enabled" : "flag_disabled";
-        res.json({ enabled, reason });
+        const userId = context?.userId as string | undefined;
+        const channel = context?.channel as string | undefined;
+        const result = store.evaluate(key, { userId, channel, context });
+        const reason = result ? "flag_enabled" : "flag_disabled";
+        res.json({ enabled: result, reason });
       } catch (err) {
         this.handleError(err, res, "Failed to evaluate feature flag");
       }

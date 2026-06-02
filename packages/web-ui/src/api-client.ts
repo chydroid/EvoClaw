@@ -312,6 +312,9 @@ export const retentionApi = {
 export interface FeatureFlag {
   key: string; name: string; description: string;
   enabled: boolean; defaultValue: boolean; value?: boolean;
+  rolloutPercent?: number;
+  environments?: string[];
+  owner?: string;
   conditions?: Array<{ type: string; config: unknown }>;
   updatedAt: string;
 }
