@@ -1130,7 +1130,7 @@ export class ProtocolAdapter {
             rm.record(req.body.replyTo || req.body.parentId || req.body.inReplyTo, req.body.id || req.body.sessionId || "web-ui", {
               channel: req.body.channel || "webchat",
             });
-          } catch {}
+          } catch (err) { console.warn("[ProtocolAdapter] Failed to record reply reference:", err); }
         }
 
         const agentExecutor = this.registry.resolveService<{
@@ -3383,21 +3383,6 @@ export class ProtocolAdapter {
         }
 
         if (!fs.existsSync(fullPath)) {
-          const altBase = process.cwd();
-          const altPath = path.resolve(altBase, filePath);
-          if (altPath.startsWith(altBase) && fs.existsSync(altPath)) {
-            const stat = fs.statSync(altPath);
-            if (stat.isDirectory()) {
-              res.status(400).json({ error: "Path is a directory, not a file" });
-              return;
-            }
-            const filename = path.basename(altPath);
-            res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
-            res.setHeader("Content-Type", "application/octet-stream");
-            res.setHeader("Content-Length", stat.size);
-            fs.createReadStream(altPath).pipe(res);
-            return;
-          }
           res.status(404).json({ error: "File not found" });
           return;
         }
@@ -4374,18 +4359,19 @@ export class ProtocolAdapter {
           return;
         }
         const snapshot = this.configSnapshots.get(migration.snapshotId);
+        const failedKeys: string[] = [];
         if (snapshot) {
           const config = this.registry.resolveService<any>("config");
           if (config?.set) {
             for (const [key, value] of Object.entries(snapshot.config)) {
-              try { config.set(key, value); } catch {}
+              try { config.set(key, value); } catch (err) { console.warn(`[ProtocolAdapter] Config rollback failed for key "${key}":`, err); failedKeys.push(key); }
             }
           }
         }
         migration.status = "rolled_back";
         migration.completedAt = new Date().toISOString();
         this.migrationVersion = Math.max(0, this.migrationVersion - 1);
-        res.json(migration);
+        res.json({ ...migration, rollbackFailures: failedKeys.length > 0 ? failedKeys : undefined });
       } catch (err) {
         this.handleError(err, res, "Failed to rollback migration");
       }

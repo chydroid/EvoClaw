@@ -371,7 +371,7 @@ export class CompactionManager {
       if (fs.existsSync(filePath)) {
         try {
           existing = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        } catch {}
+        } catch (err) { console.warn(`[CompactionManager] Failed to parse existing compaction file "${filePath}":`, err); }
       }
 
       existing.push(compaction);

@@ -2941,8 +2941,9 @@ export class AgentModelExecutor {
         totalTokensUsed += subtaskTokens;
         onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 完成: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
       } else {
-        const retryCount = 1;
-        if (retryCount <= 2) {
+        let retryCount = 0;
+        while (retryCount < 2) {
+          retryCount++;
           console.log(`[AgentModelExecutor] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
           try {
             const retryResult = await this.tryCallLLM(
@@ -2955,15 +2956,17 @@ export class AgentModelExecutor {
               totalTokensUsed += retryResult.tokensUsed;
               if (retryResult.files) allFiles.push(...retryResult.files);
               onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
-              continue;
+              break;
             }
-          } catch { /* retry failed */ }
+          } catch { }
         }
 
-        taskCheckpointManager.updateSubtask(sessionId, subtask.id, "failed", undefined, "Subtask execution failed after retry");
-        subtaskResults.push(`❌ **${subtask.description}**: 执行失败（已重试）`);
-        failedCount++;
-        onProgress?.({ type: "subtask_error", phase: "subtask_executing", detail: `子任务 ${i + 1} 失败: ${subtask.description}`, progress: baseProgress });
+        if (retryCount >= 2) {
+          taskCheckpointManager.updateSubtask(sessionId, subtask.id, "failed", undefined, "Subtask execution failed after retry");
+          subtaskResults.push(`❌ **${subtask.description}**: 执行失败（已重试）`);
+          failedCount++;
+          onProgress?.({ type: "subtask_error", phase: "subtask_executing", detail: `子任务 ${i + 1} 失败: ${subtask.description}`, progress: baseProgress });
+        }
       }
     }
 

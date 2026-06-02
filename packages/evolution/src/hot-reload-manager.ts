@@ -8,6 +8,7 @@ import {
 export class HotReloadManager {
   private reloadQueue: HotReloadEvent[] = [];
   private isReloading = false;
+  private scheduledTimeout: NodeJS.Timeout | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -40,7 +41,10 @@ export class HotReloadManager {
     if (strategy === "immediate") {
       await this.processQueue();
     } else {
-      setTimeout(() => this.processQueue(), 5000);
+      if (this.scheduledTimeout) {
+        clearTimeout(this.scheduledTimeout);
+      }
+      this.scheduledTimeout = setTimeout(() => { this.scheduledTimeout = null; this.processQueue(); }, 5000);
     }
   }
 

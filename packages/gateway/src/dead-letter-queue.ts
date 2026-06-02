@@ -318,7 +318,8 @@ export class DeadLetterQueue {
           .split("\n")
           .filter((line) => line.trim())
           .map((line) => JSON.parse(line) as DeadLetter);
-      } catch {
+      } catch (err) {
+        console.warn(`[DeadLetterQueue] Failed to read channel file for "${channel}":`, err);
         return [];
       }
     }

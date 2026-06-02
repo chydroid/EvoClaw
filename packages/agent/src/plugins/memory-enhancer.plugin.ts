@@ -121,7 +121,7 @@ function loadRecentSessions(count: number): Array<{ sessionId: string; insights:
         decisions: data.decisions || [],
         errors: data.errors || [],
       });
-    } catch {}
+    } catch (err) { console.warn(`[Memory Enhancer] Failed to load session file "${file}":`, err); }
   }
   return sessions;
 }

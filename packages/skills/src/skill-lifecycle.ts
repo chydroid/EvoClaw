@@ -189,7 +189,7 @@ export class SkillLifecycleManager {
     this.stopHealthMonitoring(skill.id);
 
     const intervalId = setInterval(async () => {
-      await this.performHealthCheck(skill);
+      await this.performHealthCheck(skill).catch((err) => { console.warn(`[SkillLifecycle] Health check failed for "${skill.id}":`, err); });
     }, this.config.checkInterval);
 
     this.healthMonitors.set(skill.id, intervalId);

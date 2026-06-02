@@ -162,26 +162,22 @@ export class SkillSandbox {
 
     let scriptFile: string | null = null;
     let args: string[];
+    let tmpFile: string | null = null;
 
-    // If code references an existing script file, use it directly
     const scriptPath = this.extractScriptPath(code, skillDir, "py");
     if (scriptPath && fs.existsSync(scriptPath)) {
       scriptFile = scriptPath;
       args = [scriptFile, jsonArgs];
     } else {
-      // Write code to temp file and execute
       const tmpDir = path.join(process.cwd(), "data", "tmp");
       if (!fs.existsSync(tmpDir)) {
         fs.mkdirSync(tmpDir, { recursive: true });
       }
-      const tmpFile = path.join(tmpDir, `skill-${skill.name}-${Date.now()}.py`);
-      // Strip shell command prefix if present (e.g., "python3 scripts/foo.py")
+      tmpFile = path.join(tmpDir, `skill-${skill.name}-${Date.now()}.py`);
       const cleanCode = code.replace(/^python3?\s+\S+\s*/m, "").trim();
       fs.writeFileSync(tmpFile, cleanCode || code, "utf-8");
       scriptFile = tmpFile;
       args = [tmpFile, jsonArgs];
-      // Clean up after execution
-      setTimeout(() => { try { fs.unlinkSync(tmpFile); } catch {} }, 5000);
     }
 
     const timeout = policy.maxExecutionTime || 30000;
@@ -194,44 +190,50 @@ export class SkillSandbox {
 
     console.log(`[SkillSandbox] Executing Python: ${scriptFile}`);
 
-    return new Promise((resolve, reject) => {
-      const child = spawn("python", args, {
-        timeout,
-        env,
-        cwd: skillDir || process.cwd(),
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+    try {
+      return await new Promise((resolve, reject) => {
+        const child = spawn("python", args, {
+          timeout,
+          env,
+          cwd: skillDir || process.cwd(),
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
 
-      let stdout = "";
-      let stderr = "";
+        let stdout = "";
+        let stderr = "";
 
-      child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
-      child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+        child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+        child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
 
-      const timeoutId = setTimeout(() => {
-        child.kill();
-        reject(new Error(`Python execution timed out after ${timeout}ms`));
-      }, timeout);
+        const timeoutId = setTimeout(() => {
+          child.kill();
+          reject(new Error(`Python execution timed out after ${timeout}ms`));
+        }, timeout);
 
-      child.on("close", (code) => {
-        clearTimeout(timeoutId);
-        if (code === 0 || stdout) {
-          try {
-            resolve(JSON.parse(stdout));
-          } catch {
-            resolve({ raw: stdout, text: stdout.slice(0, 8000) });
+        child.on("close", (code) => {
+          clearTimeout(timeoutId);
+          if (code === 0 || stdout) {
+            try {
+              resolve(JSON.parse(stdout));
+            } catch {
+              resolve({ raw: stdout, text: stdout.slice(0, 8000) });
+            }
+          } else {
+            reject(new Error(`Python execution failed (exit ${code}): ${stderr || "no output"}`));
           }
-        } else {
-          reject(new Error(`Python execution failed (exit ${code}): ${stderr || "no output"}`));
-        }
-      });
+        });
 
-      child.on("error", (err) => {
-        clearTimeout(timeoutId);
-        reject(new Error(`Python execution error: ${err.message}`));
+        child.on("error", (err) => {
+          clearTimeout(timeoutId);
+          reject(new Error(`Python execution error: ${err.message}`));
+        });
       });
-    });
+    } finally {
+      if (tmpFile) {
+        try { fs.unlinkSync(tmpFile); } catch { }
+      }
+    }
   }
 
   /** Execute a shell script via subprocess */
@@ -247,6 +249,13 @@ export class SkillSandbox {
     let cmd = code
       .replace(/'<JSON>'|"<JSON>"/g, `'${JSON.stringify({ query: queryParams })}'`)
       .replace(/<QUERY>/g, queryParams);
+
+    const dangerousPatterns = [/\$\(/, /`/, /&&/, /\|\|/, /;(?!\s*$)/, /\b(rm|del|format|shutdown|reboot)\b\s+/i];
+    for (const pat of dangerousPatterns) {
+      if (pat.test(cmd)) {
+        throw new Error(`[SkillSandbox] Command blocked by security policy: contains potentially dangerous pattern`);
+      }
+    }
 
     return this.execCommand(cmd, skill, policy);
   }

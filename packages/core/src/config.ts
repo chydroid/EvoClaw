@@ -200,7 +200,10 @@ export class ConfigManager {
       this.config.auth.jwtSecret = jwtSecret;
     }
     if (/dev|secret|change/i.test(this.config.auth.jwtSecret)) {
-      console.warn("[Config] WARNING: JWT secret contains weak keywords (dev/secret/change). Please use a strong random secret in production.");
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("[Config] FATAL: JWT secret uses default/weak value. Set JWT_SECRET env var with a strong random secret (>= 16 chars) before running in production.");
+      }
+      console.warn("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.");
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
     this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";

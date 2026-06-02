@@ -67,7 +67,7 @@ export class QueueManager {
   private ensureDataDir(): void {
     try {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
-    } catch {}
+    } catch (err) { console.warn(`[QueueManager] Failed to create data directory "${this.config.dataDir}":`, err); }
   }
 
   // ====== Enqueue ======
