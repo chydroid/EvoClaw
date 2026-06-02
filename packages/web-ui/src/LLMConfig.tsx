@@ -94,7 +94,7 @@ function newCustomProvider(index: number): LLMProvider {
 
 export default function LLMConfig() {
   const [providers, setProviders] = useState<LLMProvider[]>(DEFAULT_PROVIDERS);
-  const [activeProvider, setActiveProvider] = useState<string>("openai");
+  const [activeProvider, setActiveProvider] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(260);
@@ -131,11 +131,18 @@ export default function LLMConfig() {
       if (res.ok) {
         const data = await res.json();
         if (data.providers && Array.isArray(data.providers) && data.providers.length > 0) {
-          setProviders((data.providers as LLMProvider[]));
+          const loaded = data.providers as LLMProvider[];
+          setProviders(loaded);
+          // Highlight the first (highest priority) provider from server data
+          const sorted = [...loaded].sort((a, b) => a.order - b.order);
+          setActiveProvider(sorted[0].id);
         }
       }
     } catch {
       console.debug("[LLMConfig] Server not reachable, using defaults");
+      // Fallback: highlight first default provider
+      const sorted = [...DEFAULT_PROVIDERS].sort((a, b) => a.order - b.order);
+      setActiveProvider(sorted[0].id);
     }
   }
 
@@ -202,7 +209,8 @@ export default function LLMConfig() {
       const reordered = remaining.map((p, i) => ({ ...p, order: i + 1 }));
       return reordered;
     });
-    setActiveProvider("openai");
+    // Switch to the first provider after deletion
+    setActiveProvider("");
   }
 
   function moveProvider(id: string, direction: "up" | "down") {

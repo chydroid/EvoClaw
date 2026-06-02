@@ -5,6 +5,43 @@
 
 ---
 
+## v0.9.6 (2026-06-02)
+
+### 功能开关页面完善 — FeatureFlagStore 服务集成与前端增强
+
+- **文件**: `apps/server/src/index.ts`、`packages/gateway/src/protocol-adapter.ts`、`packages/gateway/src/auth-provider.ts`、`packages/web-ui/src/FeatureFlagsPage.tsx`、`packages/web-ui/src/api-client.ts`
+
+- **改动**:
+
+  **根因修复：FeatureFlagStore 服务注册与初始化**
+  - 在 `EvoClawServer` 构造函数中创建 `FeatureFlagStore` 实例，配置环境感知和审计日志
+  - 注册16个默认功能开关，覆盖系统全部核心模块：
+    - 已启用(13个)：evolution(自进化引擎)、compaction(上下文压缩)、sandbox(技能沙箱)、mcp(MCP协议)、a2ui(A2UI协议)、autoSkill(自动技能)、permissionFastTrack(权限快速通道)、copilotRouter(Copilot路由)、hotReload(热重载)、semanticMemory(语义记忆)、selfHealing(自愈管理)、playwrightBrowser(Playwright浏览器)、scheduledTasks(定时任务)
+    - 已禁用(3个)：weixinIntegration(微信集成)、emailIntegration(邮件集成)、rolloutCanary(金丝雀发布，10%灰度)
+  - 将 `FeatureFlagStore` 注册为服务 (`featureFlagStore`)，纳入 Crestodian 健康监控
+
+  **API端点重构：从空Map到FeatureFlagStore服务**
+  - `GET /api/feature-flags` — 从 `FeatureFlagStore.listFlags()` 读取，返回完整开关数据（含owner/rolloutPercent/environments）
+  - `GET /api/feature-flags/:key` — 从 `FeatureFlagStore.getFlag()` 读取
+  - `POST /api/feature-flags/:key` — 使用 `FeatureFlagStore.enable()/disable()/register()` 操作，支持动态注册新开关
+  - `POST /api/feature-flags/:key/evaluate` — 使用 `FeatureFlagStore.evaluate()` 完整评估（依赖检查/过期/环境/灰度/白名单）
+  - 删除旧的空 `featureFlagsStore: Map<string, any>` 字段
+
+  **认证白名单更新**
+  - 将 `/api/feature-flags` 路径前缀添加到 `auth-provider.ts` 公共路径列表
+
+  **前端增强**
+  - 新增统计面板：显示总开关数、已启用数、已禁用数
+  - 新增按owner分类筛选按钮（core/security/integration/canvas/skills/optimization/devops/memory/browser/scheduler）
+  - 卡片显示owner彩色标签、灰度百分比标签、环境信息
+  - 前端 `FeatureFlag` 接口新增 `rolloutPercent`、`environments`、`owner` 字段
+
+- **影响范围**: 功能开关管理页面（WebUI）、FeatureFlagStore服务、API认证
+
+- **解决问题**: 功能开关页面显示"暂无功能开关"的空数据问题
+
+---
+
 ## v0.9.5 (2026-05-30)
 
 ### WebUI 技能管理系统全面优化 + 技能调用机制改进

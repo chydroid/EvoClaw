@@ -110,7 +110,7 @@ ExecStart=/home/evoclaw/.nvm/versions/node/v22.0.0/bin/node apps/server/dist/ind
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
-Environment=EvoClaw_PORT=17788
+Environment=EvoClaw_PORT=27788
 
 [Install]
 WantedBy=multi-user.target
@@ -193,7 +193,7 @@ pnpm dev
         <key>NODE_ENV</key>
         <string>production</string>
         <key>EvoClaw_PORT</key>
-        <string>17788</string>
+        <string>27788</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -291,7 +291,7 @@ node apps/server/dist/index.js
   <arguments>apps/server/dist/index.js</arguments>
   <workingdirectory>$pwd</workingdirectory>
   <env name="NODE_ENV" value="production"/>
-  <env name="EvoClaw_PORT" value="17788"/>
+  <env name="EvoClaw_PORT" value="27788"/>
   <logmode>rotate</logmode>
 </service>
 "@ | Out-File -FilePath evoclaw-service.xml -Encoding UTF8
@@ -309,7 +309,7 @@ node apps/server/dist/index.js
 
 ```ini
 # 服务器配置
-EvoClaw_PORT=17788
+EvoClaw_PORT=27788
 EvoClaw_HOST=0.0.0.0
 
 # JWT 密钥 (生产环境必须修改为至少16位随机字符串！)
@@ -325,7 +325,7 @@ EvoClaw_MCP_ENABLED=true
 EvoClaw_REST_ENABLED=true
 
 # CORS 配置
-CORS_ORIGINS=http://localhost:5173,http://localhost:17788
+CORS_ORIGINS=http://localhost:5173,http://localhost:27788
 
 # 速率限制
 RATE_LIMIT_MAX=100
@@ -340,7 +340,7 @@ EvoClaw_OBSERVABILITY_ENABLED=true
 
 ### 6.1 打开 Web 控制台
 
-启动服务后，在浏览器中访问 `http://localhost:17788`（或服务器 IP:17788）。
+启动服务后，在浏览器中访问 `http://localhost:27788`（或服务器 IP:27788）。
 
 ### 6.2 进入 LLM 配置页面
 
@@ -495,7 +495,7 @@ evoclaw/
 
 ```bash
 # 通过 API 查看已安装的 Skill
-curl http://localhost:17788/api/skills
+curl http://localhost:27788/api/skills
 
 # 或打开 Web UI → Skills 标签查看
 ```
@@ -598,7 +598,7 @@ async function onInstall() {
 
 ```bash
 # 通过 API 触发健康检查
-curl -X POST http://localhost:17788/api/skills/{skillId}/health-check
+curl -X POST http://localhost:27788/api/skills/{skillId}/health-check
 
 # 或在 Web UI Skills 标签中查看并重新安装
 ```
@@ -610,7 +610,7 @@ curl -X POST http://localhost:17788/api/skills/{skillId}/health-check
 ### 9.1 健康检查
 
 ```bash
-curl http://localhost:17788/health
+curl http://localhost:27788/health
 ```
 
 应返回：
@@ -621,7 +621,7 @@ curl http://localhost:17788/health
 
 ### 9.2 Web UI
 
-打开浏览器访问 `http://localhost:17788`，应能看到：
+打开浏览器访问 `http://localhost:27788`，应能看到：
 
 - **Chat** 标签：对话界面
 - **Skills** 标签：已安装的技能列表
@@ -634,27 +634,27 @@ curl http://localhost:17788/health
 
 ```bash
 # 发送消息
-curl -X POST http://localhost:17788/api/chat \
+curl -X POST http://localhost:27788/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello", "sessionId": "test"}'
 
 # 查看技能列表
-curl http://localhost:17788/api/skills
+curl http://localhost:27788/api/skills
 
 # 查看系统服务
-curl http://localhost:17788/api/system/services
+curl http://localhost:27788/api/system/services
 
 # 查看进化数据
-curl http://localhost:17788/api/evolution/dashboard
+curl http://localhost:27788/api/evolution/dashboard
 
 # 查看审计数据
-curl http://localhost:17788/api/system/audit
+curl http://localhost:27788/api/system/audit
 
 # 查看头像配置
-curl http://localhost:17788/api/config/avatars
+curl http://localhost:27788/api/config/avatars
 
 # Prometheus 指标
-curl http://localhost:17788/metrics
+curl http://localhost:27788/metrics
 ```
 
 ### 9.4 运行测试套件
@@ -679,7 +679,7 @@ Test Files  11 passed (11)
 | 问题                         | 解决方案                                              |
 | -------------------------- | ------------------------------------------------- |
 | `pnpm: command not found`  | 重新安装 pnpm: `npm install -g pnpm@10`               |
-| `port 17788 already in use` | 修改 `.env` 中的 `EvoClaw_PORT` 或终止占用进程               |
+| `port 27788 already in use` | 修改 `.env` 中的 `EvoClaw_PORT` 或终止占用进程               |
 | 构建失败                       | 清理并重试: `pnpm clean && pnpm install && pnpm build` |
 | Web UI 空白页                 | 确认已运行 `pnpm build`，检查浏览器控制台错误                     |
 | LLM 测试连接失败                 | 检查 API Key 和 Base URL 是否正确，网络是否可达                 |
@@ -691,14 +691,14 @@ Test Files  11 passed (11)
 **Ubuntu/macOS**:
 
 ```bash
-lsof -i :17788
+lsof -i :27788
 kill -9 <PID>
 ```
 
 **Windows**:
 
 ```powershell
-netstat -ano | findstr :17788
+netstat -ano | findstr :27788
 taskkill /PID <PID> /F
 ```
 
@@ -738,7 +738,7 @@ Get-Content .\evoclaw-service.out.log -Tail 50 -Wait
 ## 11. 安全建议
 
 1. **生产环境务必修改 JWT\_SECRET** 为至少 32 位随机字符串
-2. 配置防火墙只开放必要端口（17788）
+2. 配置防火墙只开放必要端口（27788）
 3. 使用 HTTPS 反向代理（Nginx/Caddy）
 4. 定期更新 Node.js 和依赖：`pnpm update`
 5. 配置 audit center 告警规则
@@ -779,7 +779,7 @@ pnpm build
 # Create default .env if missing
 if [ ! -f .env ]; then
     cat > .env << EOF
-EvoClaw_PORT=17788
+EvoClaw_PORT=27788
 JWT_SECRET=$(openssl rand -hex 32)
 EvoClaw_EVOLUTION_ENABLED=true
 EOF
@@ -788,7 +788,7 @@ fi
 
 echo "=== Setup Complete ==="
 echo "Run: pnpm dev"
-echo "Web UI: http://localhost:17788"
+echo "Web UI: http://localhost:27788"
 ```
 
 ### Windows 一键脚本 (setup.ps1)
@@ -814,7 +814,7 @@ pnpm build
 if (-not (Test-Path .env)) {
     $secret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % {[char]$_})
     @"
-EvoClaw_PORT=17788
+EvoClaw_PORT=27788
 JWT_SECRET=$secret
 EvoClaw_EVOLUTION_ENABLED=true
 "@ | Out-File -FilePath .env -Encoding UTF8
@@ -823,7 +823,7 @@ EvoClaw_EVOLUTION_ENABLED=true
 
 Write-Host "=== Setup Complete ===" -ForegroundColor Cyan
 Write-Host "Run: pnpm dev" -ForegroundColor Yellow
-Write-Host "Web UI: http://localhost:17788" -ForegroundColor Yellow
+Write-Host "Web UI: http://localhost:27788" -ForegroundColor Yellow
 ```
 
 ***
@@ -834,10 +834,10 @@ EvoClaw 内置可观测性支持，通过 `EvoClaw_OBSERVABILITY_ENABLED=true` �
 
 ### 12.1 Prometheus /metrics 端点
 
-启用可观测性后，EvoClaw 会在 `http://localhost:17788/metrics` 暴露 Prometheus 格式的指标数据。
+启用可观测性后，EvoClaw 会在 `http://localhost:27788/metrics` 暴露 Prometheus 格式的指标数据。
 
 ```bash
-curl http://localhost:17788/metrics
+curl http://localhost:27788/metrics
 ```
 
 ### 12.2 指标类型
@@ -872,12 +872,12 @@ EvoClaw_TRACING_SAMPLE_RATE=0.1
 - 错误率与延迟统计
 
 ```bash
-curl http://localhost:17788/health/report
+curl http://localhost:27788/health/report
 ```
 
 ***
 
-> **文档版本**: 1.1\
-> **适用版本**: EvoClaw v0.9.0\
-> **最后更新**: 2026-05-30
+> **文档版本**: 1.2\
+> **适用版本**: EvoClaw v0.9.6\
+> **最后更新**: 2026-06-02
 
