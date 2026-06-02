@@ -2842,20 +2842,34 @@ export class ProtocolAdapter {
           "permissionManager", "memoryHub", "evolutionEngine", "agentModelExecutor",
           "channelManager", "securityGovernor", "auditCenter",
         ];
-        const services: Record<string, { status: string; uptime?: number }> = {};
+        const services: Record<string, { status: string }> = {};
         for (const name of serviceNames) {
           const svc = this.registry.resolveService(name);
           services[name] = { status: svc ? "running" : "stopped" };
         }
-        const observability = this.registry.resolveService<any>("observability");
-        const uptime = observability ? Math.floor(process.uptime()) : Math.floor(process.uptime());
+        const os = require("os");
+        const cpuUsage = process.cpuUsage();
+        const memUsage = process.memoryUsage();
         res.json({
           status: "ok",
           services,
-          uptime,
-          version: process.env.npm_package_version || "0.4.0",
-          nodeVersion: process.version,
-          platform: process.platform,
+          uptimeMs: Math.floor(process.uptime() * 1000),
+          os: {
+            hostname: os.hostname(),
+            platform: os.platform(),
+            arch: os.arch(),
+            cpus: os.cpus().length,
+            totalMem: os.totalmem(),
+            freeMem: os.freemem(),
+            loadAvg: os.loadavg ? os.loadavg() : [],
+          },
+          process: {
+            pid: process.pid,
+            memoryRss: memUsage.rss,
+            memoryHeapUsed: memUsage.heapUsed,
+            cpuUser: cpuUsage.user,
+            cpuSystem: cpuUsage.system,
+          },
         });
       } catch (err) {
         this.handleError(err, res, "Failed to get health");
@@ -2882,17 +2896,32 @@ export class ProtocolAdapter {
 
     app.get("/api/crestodian/diagnostics", (_req: Request, res: Response) => {
       try {
+        const os = require("os");
         const memUsage = process.memoryUsage();
+        const cpuUsage = process.cpuUsage();
         res.json({
           status: "ok",
-          memory: {
+          collectedAt: Date.now(),
+          os: {
+            hostname: os.hostname(),
+            platform: os.platform(),
+            arch: os.arch(),
+            cpus: os.cpus().length,
+            totalMem: Math.round(os.totalmem() / 1024 / 1024),
+            freeMem: Math.round(os.freemem() / 1024 / 1024),
+            loadAvg: os.loadavg ? os.loadavg() : [],
+            uptime: Math.floor(os.uptime()),
+          },
+          process: {
+            pid: process.pid,
             rss: Math.round(memUsage.rss / 1024 / 1024),
             heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
             heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
-            external: Math.round(memUsage.external / 1024 / 1024),
+            cpuUser: cpuUsage.user,
+            cpuSystem: cpuUsage.system,
+            uptime: Math.floor(process.uptime()),
+            nodeVersion: process.version,
           },
-          uptime: Math.floor(process.uptime()),
-          pid: process.pid,
         });
       } catch (err) {
         this.handleError(err, res, "Failed to get diagnostics");
