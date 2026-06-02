@@ -1,3 +1,7 @@
+[English](README.md) | [中文](README.zh-CN.md)
+
+***
+
 <p align="center">
   <img src="https://github.com/chydroid/EvoClaw/raw/main/assets/images/evoclaw-400-100.png" alt="EvoClaw" width="420">
 </p>
@@ -22,7 +26,7 @@
   <a href="#quick-start">Quick Start</a> · <a href="#documentation">Documentation</a> · <a href="#architecture">Architecture</a> · <a href="#contributing">Contributing</a>
 </p>
 
----
+***
 
 ## What is EvoClaw?
 
@@ -32,29 +36,29 @@ Inspired by the biological principle of molting (lobsters shed their shells to g
 
 ### Why EvoClaw?
 
-| | Traditional Agent Frameworks | EvoClaw |
-|---|---|---|
-| **Evolution** | Manual updates only | Self-observing, self-diagnosing, self-optimizing |
-| **Architecture** | Single agent or static pipeline | Actor Model + DAG orchestration + dynamic scaling |
-| **Skills** | Hardcoded capabilities | SKILL.md standard + ClawHub marketplace + auto-discovery |
-| **Security** | Basic auth | RBAC + multi-tenant isolation + self-healing + audit |
-| **Memory** | Session-only | Multi-layer: short-term / long-term / vector / knowledge graph |
-| **Observability** | Logs only | Prometheus metrics + distributed tracing + health aggregation |
+| <br />            | Traditional Agent Frameworks    | EvoClaw                                                        |
+| ----------------- | ------------------------------- | -------------------------------------------------------------- |
+| **Evolution**     | Manual updates only             | Self-observing, self-diagnosing, self-optimizing               |
+| **Architecture**  | Single agent or static pipeline | Actor Model + DAG orchestration + dynamic scaling              |
+| **Skills**        | Hardcoded capabilities          | SKILL.md standard + ClawHub marketplace + auto-discovery       |
+| **Security**      | Basic auth                      | RBAC + multi-tenant isolation + self-healing + audit           |
+| **Memory**        | Session-only                    | Multi-layer: short-term / long-term / vector / knowledge graph |
+| **Observability** | Logs only                       | Prometheus metrics + distributed tracing + health aggregation  |
 
 ### By the Numbers
 
-| | |
-|---|---|
-| **17** | Monorepo packages (core, agent, evolution, memory, skills, security, gateway, ...) |
-| **16** | Built-in feature flags with runtime toggle |
-| **30+** | CLI sub-commands |
-| **20+** | Web UI management pages |
-| **50+** | REST API endpoints |
-| **1795** | Test cases passing |
-| **4** | LLM provider types (OpenAI / Anthropic / DeepSeek / Local) |
-| **5** | Constraint gates for evolution quality assurance |
+| <br />   | <br />                                                                             |
+| -------- | ---------------------------------------------------------------------------------- |
+| **17**   | Monorepo packages (core, agent, evolution, memory, skills, security, gateway, ...) |
+| **16**   | Built-in feature flags with runtime toggle                                         |
+| **30+**  | CLI sub-commands                                                                   |
+| **20+**  | Web UI management pages                                                            |
+| **50+**  | REST API endpoints                                                                 |
+| **1795** | Test cases passing                                                                 |
+| **4**    | LLM provider types (OpenAI / Anthropic / DeepSeek / Local)                         |
+| **5**    | Constraint gates for evolution quality assurance                                   |
 
----
+***
 
 ## Core Features
 
@@ -81,7 +85,7 @@ The crown jewel of EvoClaw. The Evolution Engine closes the loop from failure �
 - **ClawHub Marketplace** — Global skill registry at [clawhub.ai](https://clawhub.ai) / [cn.clawhub-mirror.com](https://cn.clawhub-mirror.com)
 - **Sandboxed Execution** — Isolated skill runtime (Docker / SSH / Process backends)
 - **Multi-mode Triggers** — Keyword / intent / schedule / event / webhook
-- **Progressive Index** — Three-tier loading: L0(~20t) / L1(~200t) / L2(~1000+t)
+- **Progressive Index** — Three-tier loading: L0(\~20t) / L1(\~200t) / L2(\~1000+t)
 
 ### 🔐 Enterprise Security
 
@@ -96,53 +100,53 @@ The crown jewel of EvoClaw. The Evolution Engine closes the loop from failure �
 
 ### 💾 Multi-Dimensional Memory
 
-| Layer | Storage | Lifecycle | Retrieval |
-|---|---|---|---|
-| **Short-term** | Session context | Single session | Chronological |
-| **Long-term** | Persistent store | Cross-session | Keyword / semantic |
-| **Vector** | Vector database | Persistent | Semantic similarity (TF-IDF) |
-| **Knowledge Graph** | Graph database | Persistent | Relationship traversal |
-| **FTS5 Full-text** | SQLite FTS5 | Persistent | BM25 ranking |
+| Layer               | Storage          | Lifecycle      | Retrieval                    |
+| ------------------- | ---------------- | -------------- | ---------------------------- |
+| **Short-term**      | Session context  | Single session | Chronological                |
+| **Long-term**       | Persistent store | Cross-session  | Keyword / semantic           |
+| **Vector**          | Vector database  | Persistent     | Semantic similarity (TF-IDF) |
+| **Knowledge Graph** | Graph database   | Persistent     | Relationship traversal       |
+| **FTS5 Full-text**  | SQLite FTS5      | Persistent     | BM25 ranking                 |
 
 ### 🖥️ Web Console
 
 A comprehensive management dashboard with 20+ pages:
 
-| Page | Function |
-|---|---|
-| **Chat** | Conversational AI with typing indicator, token stats, error visualization |
-| **Dashboard** | System overview: health / sessions / providers / skills / bootstrap |
-| **Canvas** | Agent-driven visual workspace with A2UI protocol |
-| **Skills** | Installed skills with success rate stats + market entry |
-| **Evolution** | Evolution engine dashboard: cycles, candidates, constraints |
-| **LLM** | Multi-provider model config with priority ordering |
-| **Channels** | Feishu / WeCom / WeChat channel management |
-| **Feature Flags** | 16 runtime toggles with owner tags, rollout %, evaluation |
-| **Services** | Real-time service health monitoring |
-| **Ops** | System status: uptime, CPU, memory, processes |
-| **Health Aggregator** | Aggregated health status and alerts |
-| **CLI Terminal** | Embedded command-line terminal |
+| Page                  | Function                                                                  |
+| --------------------- | ------------------------------------------------------------------------- |
+| **Chat**              | Conversational AI with typing indicator, token stats, error visualization |
+| **Dashboard**         | System overview: health / sessions / providers / skills / bootstrap       |
+| **Canvas**            | Agent-driven visual workspace with A2UI protocol                          |
+| **Skills**            | Installed skills with success rate stats + market entry                   |
+| **Evolution**         | Evolution engine dashboard: cycles, candidates, constraints               |
+| **LLM**               | Multi-provider model config with priority ordering                        |
+| **Channels**          | Feishu / WeCom / WeChat channel management                                |
+| **Feature Flags**     | 16 runtime toggles with owner tags, rollout %, evaluation                 |
+| **Services**          | Real-time service health monitoring                                       |
+| **Ops**               | System status: uptime, CPU, memory, processes                             |
+| **Health Aggregator** | Aggregated health status and alerts                                       |
+| **CLI Terminal**      | Embedded command-line terminal                                            |
 
 ### 🧭 Copilot Router
 
 Intelligent task routing that balances cost and quality:
 
-- **Auto-downgrade** — Low-value tasks (chitchat, simple Q&A) → lightweight models
+- **Auto-downgrade** — Low-value tasks (chitchat, simple Q\&A) → lightweight models
 - **Protection** — High-value tasks (code, math) always use premium models
 - **Dynamic adjustment** — Route based on model availability and load
 
----
+***
 
 ## Quick Start
 
 ### Prerequisites
 
-| Dependency | Version | Notes |
-|---|---|---|
-| **Node.js** | >= 20.0.0 | 22.x LTS recommended |
-| **pnpm** | >= 9.0.0 | Monorepo workspace manager |
-| **Git** | any | Version control & skill repo cloning |
-| **LLM API Key** | — | OpenAI / Anthropic / DeepSeek / Ollama |
+| Dependency      | Version   | Notes                                  |
+| --------------- | --------- | -------------------------------------- |
+| **Node.js**     | >= 20.0.0 | 22.x LTS recommended                   |
+| **pnpm**        | >= 9.0.0  | Monorepo workspace manager             |
+| **Git**         | any       | Version control & skill repo cloning   |
+| **LLM API Key** | —         | OpenAI / Anthropic / DeepSeek / Ollama |
 
 ### Install in 60 Seconds
 
@@ -165,7 +169,7 @@ pnpm -r build
 pnpm start
 ```
 
-Open **http://localhost:27788** in your browser — you're ready to go.
+Open **<http://localhost:27788>** in your browser — you're ready to go.
 
 ### Configure Your First LLM
 
@@ -178,7 +182,7 @@ Open **http://localhost:27788** in your browser — you're ready to go.
 
 > **Local models?** Install [Ollama](https://ollama.com), run `ollama pull llama3`, then set Base URL to `http://localhost:11434/v1`.
 
----
+***
 
 ## Architecture
 
@@ -234,17 +238,17 @@ Open **http://localhost:27788** in your browser — you're ready to go.
 
 ### Design Patterns
 
-| Pattern | Implementation | Purpose |
-|---|---|---|
-| **IoC / DI** | ServiceRegistry | Loose coupling via dependency injection |
-| **Event-Driven** | EventBus | Async pub-sub inter-service communication |
-| **Actor Model** | ActorSystem | Concurrent agent collaboration via message passing |
-| **DAG Orchestration** | DAGExecutor | Automatic task decomposition and parallel scheduling |
-| **Observer** | EvolutionEngine | Behavior-triggered improvement cycle |
-| **Strategy** | Gateway | Multi-protocol strategy switching |
-| **Pool** | AgentPoolManager | Dynamic agent instance pool with scaling |
+| Pattern               | Implementation   | Purpose                                              |
+| --------------------- | ---------------- | ---------------------------------------------------- |
+| **IoC / DI**          | ServiceRegistry  | Loose coupling via dependency injection              |
+| **Event-Driven**      | EventBus         | Async pub-sub inter-service communication            |
+| **Actor Model**       | ActorSystem      | Concurrent agent collaboration via message passing   |
+| **DAG Orchestration** | DAGExecutor      | Automatic task decomposition and parallel scheduling |
+| **Observer**          | EvolutionEngine  | Behavior-triggered improvement cycle                 |
+| **Strategy**          | Gateway          | Multi-protocol strategy switching                    |
+| **Pool**              | AgentPoolManager | Dynamic agent instance pool with scaling             |
 
----
+***
 
 ## Project Structure
 
@@ -273,7 +277,7 @@ EvoClaw/
 └── pnpm-workspace.yaml    # Monorepo workspace config
 ```
 
----
+***
 
 ## CLI Reference
 
@@ -333,80 +337,80 @@ evoclaw channels list            # Channel management
 /memory <query> Semantic memory search
 ```
 
----
+***
 
 ## REST API
 
 Key endpoints (50+ total):
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/health` | GET | Health check |
-| `/api/chat` | POST | Send chat message |
-| `/api/skills` | GET | List installed skills |
-| `/api/system/services` | GET | Service runtime status |
-| `/api/config/llm` | GET/PUT | LLM configuration |
-| `/api/config/channels` | GET/PUT | Channel configuration |
-| `/api/feature-flags` | GET | List feature flags |
-| `/api/feature-flags/:key` | GET/POST | Get/set feature flag |
-| `/api/feature-flags/:key/evaluate` | POST | Evaluate feature flag |
-| `/api/evolution/dashboard` | GET | Evolution engine data |
-| `/api/canvas/projects` | GET/POST | Canvas project management |
-| `/api/memory/search?q=` | GET | Semantic memory search |
-| `/api/sandbox/backends` | GET | Available sandbox backends |
-| `/metrics` | GET | Prometheus metrics |
+| Endpoint                           | Method   | Description                |
+| ---------------------------------- | -------- | -------------------------- |
+| `/api/health`                      | GET      | Health check               |
+| `/api/chat`                        | POST     | Send chat message          |
+| `/api/skills`                      | GET      | List installed skills      |
+| `/api/system/services`             | GET      | Service runtime status     |
+| `/api/config/llm`                  | GET/PUT  | LLM configuration          |
+| `/api/config/channels`             | GET/PUT  | Channel configuration      |
+| `/api/feature-flags`               | GET      | List feature flags         |
+| `/api/feature-flags/:key`          | GET/POST | Get/set feature flag       |
+| `/api/feature-flags/:key/evaluate` | POST     | Evaluate feature flag      |
+| `/api/evolution/dashboard`         | GET      | Evolution engine data      |
+| `/api/canvas/projects`             | GET/POST | Canvas project management  |
+| `/api/memory/search?q=`            | GET      | Semantic memory search     |
+| `/api/sandbox/backends`            | GET      | Available sandbox backends |
+| `/metrics`                         | GET      | Prometheus metrics         |
 
 Full API documentation is available in the Web UI.
 
----
+***
 
 ## Configuration
 
 EvoClaw uses a **dual-layer configuration** system:
 
-| Layer | Storage | Management | Use Case |
-|---|---|---|---|
-| **Environment Variables** | `.env` file | Manual / `evoclaw setup` | Server port, secrets, feature flags |
-| **Runtime Config** | Server memory | Web UI → LLM / Channels tabs | API keys, model selection, channel config |
+| Layer                     | Storage       | Management                   | Use Case                                  |
+| ------------------------- | ------------- | ---------------------------- | ----------------------------------------- |
+| **Environment Variables** | `.env` file   | Manual / `evoclaw setup`     | Server port, secrets, feature flags       |
+| **Runtime Config**        | Server memory | Web UI → LLM / Channels tabs | API keys, model selection, channel config |
 
 ### Key Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `EVOCLAW_PORT` | `27788` | Server listen port |
-| `EVOCLAW_HOST` | `0.0.0.0` | Bind address |
-| `JWT_SECRET` | — | JWT signing key (**must change for production**) |
-| `EVOCLAW_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
-| `EVOCLAW_MCP_ENABLED` | `true` | Enable MCP protocol |
-| `CORS_ORIGINS` | — | Allowed CORS origins |
-| `RATE_LIMIT_MAX` | — | Rate limit max requests |
+| Variable                    | Default   | Description                                      |
+| --------------------------- | --------- | ------------------------------------------------ |
+| `EVOCLAW_PORT`              | `27788`   | Server listen port                               |
+| `EVOCLAW_HOST`              | `0.0.0.0` | Bind address                                     |
+| `JWT_SECRET`                | —         | JWT signing key (**must change for production**) |
+| `EVOCLAW_EVOLUTION_ENABLED` | `true`    | Enable evolution engine                          |
+| `EVOCLAW_MCP_ENABLED`       | `true`    | Enable MCP protocol                              |
+| `CORS_ORIGINS`              | —         | Allowed CORS origins                             |
+| `RATE_LIMIT_MAX`            | —         | Rate limit max requests                          |
 
----
+***
 
 ## Feature Flags
 
 EvoClaw ships with 16 built-in feature flags, manageable from the Web UI:
 
-| Flag | Default | Owner | Description |
-|---|---|---|---|
-| `evolution` | ✅ | core | Self-evolution engine |
-| `compaction` | ✅ | core | Context compression for long conversations |
-| `sandbox` | ✅ | security | Sandboxed skill execution |
-| `mcp` | ✅ | integration | Model Context Protocol support |
-| `a2ui` | ✅ | canvas | Agent-to-UI protocol for Canvas |
-| `autoSkill` | ✅ | skills | Auto skill discovery & installation |
-| `permissionFastTrack` | ✅ | security | Auto-approve whitelisted directory ops |
-| `copilotRouter` | ✅ | optimization | Task-aware model routing |
-| `hotReload` | ✅ | devops | Hot config reload without restart |
-| `semanticMemory` | ✅ | memory | TF-IDF semantic search memory |
-| `selfHealing` | ✅ | devops | Auto fault detection & recovery |
-| `playwrightBrowser` | ✅ | browser | Playwright browser automation |
-| `scheduledTasks` | ✅ | scheduler | Cron scheduled task execution |
-| `weixinIntegration` | ❌ | integration | WeChat integration |
-| `emailIntegration` | ❌ | integration | Email integration |
-| `rolloutCanary` | ❌ | devops | Canary release (10% rollout) |
+| Flag                  | Default | Owner        | Description                                |
+| --------------------- | ------- | ------------ | ------------------------------------------ |
+| `evolution`           | ✅       | core         | Self-evolution engine                      |
+| `compaction`          | ✅       | core         | Context compression for long conversations |
+| `sandbox`             | ✅       | security     | Sandboxed skill execution                  |
+| `mcp`                 | ✅       | integration  | Model Context Protocol support             |
+| `a2ui`                | ✅       | canvas       | Agent-to-UI protocol for Canvas            |
+| `autoSkill`           | ✅       | skills       | Auto skill discovery & installation        |
+| `permissionFastTrack` | ✅       | security     | Auto-approve whitelisted directory ops     |
+| `copilotRouter`       | ✅       | optimization | Task-aware model routing                   |
+| `hotReload`           | ✅       | devops       | Hot config reload without restart          |
+| `semanticMemory`      | ✅       | memory       | TF-IDF semantic search memory              |
+| `selfHealing`         | ✅       | devops       | Auto fault detection & recovery            |
+| `playwrightBrowser`   | ✅       | browser      | Playwright browser automation              |
+| `scheduledTasks`      | ✅       | scheduler    | Cron scheduled task execution              |
+| `weixinIntegration`   | ❌       | integration  | WeChat integration                         |
+| `emailIntegration`    | ❌       | integration  | Email integration                          |
+| `rolloutCanary`       | ❌       | devops       | Canary release (10% rollout)               |
 
----
+***
 
 ## Development
 
@@ -452,7 +456,7 @@ cd packages/web-ui
 pnpm dev        # Start Vite dev server with HMR
 ```
 
----
+***
 
 ## Testing
 
@@ -463,29 +467,29 @@ pnpm --filter @evoclaw/core test    # Run specific package tests
 
 Framework: **Vitest** | Convention: `*.test.ts` | Coverage: **78 test files, 1795 test cases**
 
----
+***
 
 ## Documentation
 
-| Document | Description |
-|---|---|
-| [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | Full deployment guide (Ubuntu / macOS / Windows) |
-| [History.md](History.md) | Version history and changelog |
-| [deploy-checklist.md](deploy-checklist.md) | Multi-cluster deployment checklist |
+| Document                                    | Description                                      |
+| ------------------------------------------- | ------------------------------------------------ |
+| [DEPLOYMENT\_GUIDE.md](DEPLOYMENT_GUIDE.md) | Full deployment guide (Ubuntu / macOS / Windows) |
+| [History.md](History.md)                    | Version history and changelog                    |
+| [deploy-checklist.md](deploy-checklist.md)  | Multi-cluster deployment checklist               |
 
----
+***
 
 ## Supported Platforms
 
-| Platform | Status |
-|---|---|
+| Platform             | Status         |
+| -------------------- | -------------- |
 | Ubuntu Server 22.04+ | ✅ Full support |
-| Debian 12+ | ✅ Full support |
-| macOS 13+ | ✅ Full support |
-| Windows 10+ | ✅ Supported |
-| Docker | ✅ Supported |
+| Debian 12+           | ✅ Full support |
+| macOS 13+            | ✅ Full support |
+| Windows 10+          | ✅ Supported    |
+| Docker               | ✅ Supported    |
 
----
+***
 
 ## Contributing
 
@@ -515,13 +519,13 @@ git push origin feature/my-feature
 - Write tests for new features
 - Ensure `pnpm typecheck` and `pnpm test` pass
 
----
+***
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
 
----
+***
 
 <p align="center">
   <sub>Made with 🧬 by the EvoClaw Team</sub>
