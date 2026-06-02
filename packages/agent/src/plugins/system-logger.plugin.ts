@@ -14,6 +14,7 @@ const MANIFEST = {
   name: "System Logger",
   version: "1.0.0",
   description: "Comprehensive activity logging for audit, debugging, and analytics",
+  description_zh: "系统日志：全面的操作活动记录，支持审计、调试和分析",
   author: "evoclaw",
 };
 

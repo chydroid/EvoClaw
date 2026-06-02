@@ -11,6 +11,7 @@ const MANIFEST = {
   name: "MarkItDown",
   version: "1.0.0",
   description: "Convert documents and web pages to Markdown using microsoft/markitdown. Supports PDF, Word, Excel, PowerPoint, HTML, and more.",
+  description_zh: "文档转换：使用 microsoft/markitdown 将文档和网页转为 Markdown，支持 PDF、Word、Excel、PPT、HTML 等格式",
   author: "evoclaw",
 };
 

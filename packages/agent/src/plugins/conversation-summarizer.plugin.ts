@@ -15,6 +15,7 @@ const MANIFEST = {
   name: "Conversation Summarizer",
   version: "1.0.0",
   description: "Auto-summarizes long conversations to maintain context efficiency and reduce token waste",
+  description_zh: "对话摘要：自动总结长对话，保持上下文效率并减少 Token 浪费",
   author: "evoclaw",
 };
 

@@ -3400,7 +3400,16 @@ export class ProtocolAdapter {
       try {
         const ha = this.getHealthAggregator();
         const report = await ha.checkAll();
-        res.json({ success: true, report });
+        const statusMap: Record<string, string> = { ok: "healthy", down: "unhealthy", degraded: "degraded", unknown: "unknown" };
+        const components = report.components.map((c: any) => ({
+          name: c.name,
+          status: statusMap[c.status] || c.status,
+          latencyMs: c.responseTimeMs ?? -1,
+          lastCheck: c.lastCheckedAt ? new Date(c.lastCheckedAt).toISOString() : "",
+          message: c.error || undefined,
+          details: c.metadata || undefined,
+        }));
+        res.json({ overall: statusMap[report.overall] || report.overall, components, timestamp: new Date(report.computedAt).toISOString() });
       } catch (err) {
         this.handleError(err, res, "Failed to get full health report");
       }
@@ -3415,7 +3424,15 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Component not found" });
           return;
         }
-        res.json({ success: true, component });
+        const statusMap: Record<string, string> = { ok: "healthy", down: "unhealthy", degraded: "degraded", unknown: "unknown" };
+        res.json({
+          name: component.name,
+          status: statusMap[component.status] || component.status,
+          latencyMs: component.responseTimeMs ?? -1,
+          lastCheck: component.lastCheckedAt ? new Date(component.lastCheckedAt).toISOString() : "",
+          message: component.error || undefined,
+          details: component.metadata || undefined,
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to get component health");
       }
@@ -3430,7 +3447,15 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Component not found" });
           return;
         }
-        res.json({ success: true, component: result });
+        const statusMap: Record<string, string> = { ok: "healthy", down: "unhealthy", degraded: "degraded", unknown: "unknown" };
+        res.json({
+          name: result.name,
+          status: statusMap[result.status] || result.status,
+          latencyMs: result.responseTimeMs ?? -1,
+          lastCheck: result.lastCheckedAt ? new Date(result.lastCheckedAt).toISOString() : "",
+          message: result.error || undefined,
+          details: result.metadata || undefined,
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to check component health");
       }

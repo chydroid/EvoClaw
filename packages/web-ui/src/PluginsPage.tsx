@@ -178,18 +178,18 @@ const statCardStyle: CSSProperties = {
 // ─── Available Plugins (community registry) ─────────────────────────────────
 
 const MOCK_AVAILABLE: AvailablePlugin[] = [
-  { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord channel integration with slash commands", author: "community", downloads: 1230, rating: 4.5 },
-  { id: "slack-connector", name: "Slack Connector", version: "0.7.0", description: "Slack workspace integration with threaded replies", author: "community", downloads: 980, rating: 4.2 },
-  { id: "voice-synthesis", name: "Voice Synthesis", version: "1.0.0", description: "Text-to-speech with ElevenLabs and system TTS fallback", author: "evoclaw", downloads: 2500, rating: 4.8 },
-  { id: "canvas-renderer", name: "Canvas Renderer", version: "0.6.0", description: "Live canvas with A2UI support for visual output", author: "evoclaw", downloads: 870, rating: 4.0 },
-  { id: "cron-enhancer", name: "Cron Enhancer", version: "0.5.0", description: "Enhanced cron scheduling with natural language time expressions", author: "community", downloads: 540, rating: 4.3 },
-  { id: "sentiment-analyzer", name: "Sentiment Analyzer", version: "0.3.0", description: "Analyze user sentiment and adjust tone accordingly", author: "community", downloads: 320, rating: 3.8 },
+  { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord 频道集成，支持斜杠命令", author: "community", downloads: 1230, rating: 4.5 },
+  { id: "slack-connector", name: "Slack Connector", version: "0.7.0", description: "Slack 工作区集成，支持线程回复", author: "community", downloads: 980, rating: 4.2 },
+  { id: "voice-synthesis", name: "Voice Synthesis", version: "1.0.0", description: "文本转语音，支持 ElevenLabs 和系统 TTS 回退", author: "evoclaw", downloads: 2500, rating: 4.8 },
+  { id: "canvas-renderer", name: "Canvas Renderer", version: "0.6.0", description: "实时画布，支持 A2UI 可视化输出", author: "evoclaw", downloads: 870, rating: 4.0 },
+  { id: "cron-enhancer", name: "Cron Enhancer", version: "0.5.0", description: "增强型 Cron 调度，支持自然语言时间表达式", author: "community", downloads: 540, rating: 4.3 },
+  { id: "sentiment-analyzer", name: "Sentiment Analyzer", version: "0.3.0", description: "分析用户情绪并自动调整回复语气", author: "community", downloads: 320, rating: 3.8 },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function PluginsPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [activeTab, setActiveTab] = useState<"installed" | "available">("installed");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [search, setSearch] = useState("");
@@ -213,6 +213,9 @@ export function PluginsPage() {
           hookCount: 0,
           hooks: [],
           installedAt: new Date().toISOString().split("T")[0],
+          i18n: {
+            description_zh: p.manifest?.description_zh || undefined,
+          },
         }));
         setPlugins(apiPlugins);
       }
@@ -353,7 +356,7 @@ export function PluginsPage() {
 
       {/* Header */}
       <div style={headerStyle}>
-        <div style={titleStyle}>Plugin Manager</div>
+        <div style={titleStyle}>插件管理</div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <input
             style={searchInputStyle}
@@ -363,7 +366,7 @@ export function PluginsPage() {
           />
           {activeTab === "installed" && (
             <button style={actionBtnStyle("primary")} onClick={() => setShowInstall(!showInstall)}>
-              + Install
+              + 安装
             </button>
           )}
         </div>
@@ -379,18 +382,18 @@ export function PluginsPage() {
             onChange={(e) => setInstallId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleInstall()}
           />
-          <button style={actionBtnStyle("primary")} onClick={handleInstall}>Install</button>
-          <button style={actionBtnStyle("default")} onClick={() => setShowInstall(false)}>Cancel</button>
+          <button style={actionBtnStyle("primary")} onClick={handleInstall}>安装</button>
+          <button style={actionBtnStyle("default")} onClick={() => setShowInstall(false)}>取消</button>
         </div>
       )}
 
       {/* Tabs */}
       <div style={tabBarStyle}>
         <button style={tabStyle(activeTab === "installed")} onClick={() => setActiveTab("installed")}>
-          Installed ({plugins.length})
+          已安装 ({plugins.length})
         </button>
         <button style={tabStyle(activeTab === "available")} onClick={() => setActiveTab("available")}>
-          Available ({filteredAvailable.length})
+          可用 ({filteredAvailable.length})
         </button>
       </div>
 
@@ -419,8 +422,8 @@ export function PluginsPage() {
               </div>
 
               <div style={{ fontSize: "13px", color: "var(--text-secondary, #8b949e)", margin: "10px 0" }}>
-                {plugin.description}
-                {plugin.i18n?.description_zh && plugin.i18n.description_zh !== plugin.description && (
+                {lang === "zh" && plugin.i18n?.description_zh ? plugin.i18n.description_zh : plugin.description}
+                {lang !== "zh" && plugin.i18n?.description_zh && plugin.i18n.description_zh !== plugin.description && (
                   <div style={{ color: "var(--accent, #58a6ff)", marginTop: "4px", fontSize: "12px", borderLeft: "2px solid var(--accent, #58a6ff)", paddingLeft: "6px" }}>
                     {plugin.i18n.description_zh}
                   </div>
@@ -456,20 +459,20 @@ export function PluginsPage() {
 
               <div style={{ display: "flex", gap: "8px", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  Installed: {plugin.installedAt}
+                  安装于: {plugin.installedAt}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button
                     style={actionBtnStyle(plugin.status === "active" ? "default" : "primary")}
                     onClick={() => togglePlugin(plugin.id)}
                   >
-                    {plugin.status === "active" ? "Disable" : "Enable"}
+                    {plugin.status === "active" ? "停用" : "启用"}
                   </button>
                   <button
                     style={actionBtnStyle("danger")}
                     onClick={() => uninstallPlugin(plugin.id)}
                   >
-                    Remove
+                    移除
                   </button>
                 </div>
               </div>
@@ -477,7 +480,7 @@ export function PluginsPage() {
           ))}
           {filteredPlugins.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)" }}>
-              No plugins found matching "{search}"
+              未找到匹配 "{search}" 的插件
             </div>
           )}
         </div>
@@ -506,7 +509,7 @@ export function PluginsPage() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  {plugin.downloads.toLocaleString()} downloads
+                  {plugin.downloads.toLocaleString()} 次下载
                 </span>
                 <button
                   style={{
@@ -516,7 +519,7 @@ export function PluginsPage() {
                   onClick={() => installAvailablePlugin(plugin.id)}
                   disabled={isInstalled}
                 >
-                  {isInstalled ? "Installed" : "Install"}
+                  {isInstalled ? "已安装" : "安装"}
                 </button>
               </div>
             </div>
@@ -524,7 +527,7 @@ export function PluginsPage() {
           })}
           {filteredAvailable.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)" }}>
-              No available plugins found matching "{search}"
+              未找到匹配 "{search}" 的可用插件
             </div>
           )}
         </div>

@@ -351,9 +351,9 @@ export interface PluginManifest {
   name: string;
   version: string;
   description: string;
+  description_zh?: string;
   author?: string;
   homepage?: string;
-  /** Minimum EvoClaw version required */
   minVersion?: string;
 }
 

@@ -4,6 +4,7 @@ const MANIFEST = {
   name: "Response Validator",
   version: "2.0.0",
   description: "Validates AI response quality — catches and auto-fixes broken replies before delivery",
+  description_zh: "响应验证：验证 AI 回复质量，在输出前捕获并自动修复异常回复",
   author: "evoclaw",
 };
 

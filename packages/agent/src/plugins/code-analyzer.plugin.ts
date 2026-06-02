@@ -4,6 +4,7 @@ const MANIFEST = {
   name: "Code Analyzer",
   version: "3.0.0",
   description: "Static code analysis with security, quality, type safety, performance, and architecture scanning",
+  description_zh: "静态代码分析：安全性、代码质量、类型安全、性能和架构扫描",
   author: "evoclaw",
 };
 

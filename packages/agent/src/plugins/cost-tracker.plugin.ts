@@ -15,6 +15,7 @@ const MANIFEST = {
   name: "Cost Tracker",
   version: "1.0.0",
   description: "Tracks token usage and estimates costs across model providers",
+  description_zh: "成本追踪：跟踪 Token 使用量并估算各模型提供商的费用",
   author: "evoclaw",
 };
 

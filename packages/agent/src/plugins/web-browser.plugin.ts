@@ -13,6 +13,7 @@ const MANIFEST = {
   name: "Web Browser",
   version: "1.0.0",
   description: "Full web browsing capabilities with Playwright integration and URL safety",
+  description_zh: "网页浏览：集成 Playwright 浏览器自动化与 URL 安全检测",
   author: "evoclaw",
 };
 

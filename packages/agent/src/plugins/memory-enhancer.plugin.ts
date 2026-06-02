@@ -6,6 +6,7 @@ const MANIFEST = {
   name: "Memory Enhancer",
   version: "2.0.0",
   description: "ECC-inspired memory persistence: auto-save insights on session end, restore context on session start, preserve state across compactions, and extract reusable patterns from tool results.",
+  description_zh: "ECC记忆增强：会话结束时自动保存洞察，启动时恢复上下文，压缩时保留状态，并从工具结果中提取可复用模式",
   author: "evoclaw",
 };
 
