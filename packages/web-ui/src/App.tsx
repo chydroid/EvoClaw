@@ -577,7 +577,7 @@ export default function App() {
             <IconMenu size={18} />
           </button>
           <img src="/assets/images/favicon-48x48.png" alt="EvoClaw" style={css.headerLogo} />
-          <span className="EvoClaw-header-title" style={css.headerTitle}>EvoClaw</span>
+          <span className="EvoClaw-header-title" style={css.headerTitle}><span style={{ color: "#f0f0f0" }}>Evo</span>Claw</span>
         </div>
         <div style={css.headerRight}>
           {/* Language switcher */}
