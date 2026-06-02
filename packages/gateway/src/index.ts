@@ -17,6 +17,9 @@ export type { TelegramConfig, DiscordConfig, SlackConfig, WhatsAppConfig, Feishu
 export { CanvasManager } from "./canvas-manager";
 export type { CanvasConfig, CanvasFile, CanvasListResult } from "./canvas-manager";
 
+export { CanvasHost } from "./canvas-host";
+export type { CanvasFile as CanvasHostFile, CanvasProject } from "./canvas-host";
+
 export { createInboundEnvelope, filterEnvelope, serializeEnvelope, deserializeEnvelope, bumpRetry, withRoutingHint, withAgentBinding, tagEnvelope } from "./inbound-envelope";
 export type { InboundEnvelope, MessageIntent, EnvelopePriority, DeliveryContext, RoutingHint, EnvelopeMetadata, EnvelopeOptions, EnvelopeFilter } from "./inbound-envelope";
 

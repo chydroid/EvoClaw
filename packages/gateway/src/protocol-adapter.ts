@@ -11,6 +11,7 @@ import { DeadLetterQueue } from "./dead-letter-queue";
 import { HealthAggregator } from "./health-aggregator";
 import { ReplyReferenceManager } from "./reply-reference";
 import { MessageTemplateEngine } from "./message-templates";
+import { CanvasHost } from "./canvas-host";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -205,6 +206,7 @@ export class ProtocolAdapter {
   private savedLLMProviders: Record<string, unknown>[] | null = null;
   private savedChannels: Record<string, unknown>[] | null = null;
   private incomingWebhookManager: IncomingWebhookManager;
+  private canvasHost: CanvasHost;
 
   constructor(
     private registry: ServiceRegistry,
@@ -222,6 +224,7 @@ export class ProtocolAdapter {
       }, "protocol-adapter");
       return { statusCode: 200, response: { received: true, action } };
     });
+    this.canvasHost = new CanvasHost();
   }
 
   getIncomingWebhookManager(): IncomingWebhookManager {
@@ -4433,6 +4436,177 @@ export class ProtocolAdapter {
       } catch (err) {
         this.handleError(err, res, "Failed to fix all issues");
       }
+    });
+
+    // ─── Canvas API routes ────────────────────────────────────────────
+
+    // List all canvas projects
+    app.get("/api/canvas/projects", (_req: Request, res: Response) => {
+      try {
+        const projects = this.canvasHost.listProjects();
+        res.json({ projects, total: projects.length });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list canvas projects");
+      }
+    });
+
+    // Create a new canvas project
+    app.post("/api/canvas/projects", (req: Request, res: Response) => {
+      try {
+        const { name, html } = req.body || {};
+        if (!name || typeof name !== "string") {
+          res.status(400).json({ error: "Project name is required" });
+          return;
+        }
+        const project = this.canvasHost.createProject(name, html);
+        res.status(201).json(project);
+      } catch (err) {
+        this.handleError(err, res, "Failed to create canvas project");
+      }
+    });
+
+    // Get a canvas project
+    app.get("/api/canvas/projects/:id", (req: Request, res: Response) => {
+      try {
+        const project = this.canvasHost.getProject(String(req.params.id));
+        if (!project) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
+        res.json(project);
+      } catch (err) {
+        this.handleError(err, res, "Failed to get canvas project");
+      }
+    });
+
+    // Delete a canvas project
+    app.delete("/api/canvas/projects/:id", (req: Request, res: Response) => {
+      try {
+        const ok = this.canvasHost.deleteProject(String(req.params.id));
+        if (!ok) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
+        res.json({ deleted: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete canvas project");
+      }
+    });
+
+    // Read a file from a canvas project
+    app.get("/api/canvas/projects/:id/files/:filename", (req: Request, res: Response) => {
+      try {
+        const content = this.canvasHost.readFile(String(req.params.id), String(req.params.filename));
+        if (content === null) {
+          res.status(404).json({ error: "File not found" });
+          return;
+        }
+        res.type("text/plain").send(content);
+      } catch (err) {
+        this.handleError(err, res, "Failed to read canvas file");
+      }
+    });
+
+    // Write a file to a canvas project
+    app.put("/api/canvas/projects/:id/files/:filename", (req: Request, res: Response) => {
+      try {
+        const { content } = req.body || {};
+        if (typeof content !== "string") {
+          res.status(400).json({ error: "File content is required" });
+          return;
+        }
+        const ok = this.canvasHost.writeFile(String(req.params.id), String(req.params.filename), content);
+        if (!ok) {
+          res.status(404).json({ error: "Project not found or invalid filename" });
+          return;
+        }
+        res.json({ written: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to write canvas file");
+      }
+    });
+
+    // Eval script in canvas context
+    app.post("/api/canvas/projects/:id/eval", (req: Request, res: Response) => {
+      try {
+        const { script } = req.body || {};
+        if (!script || typeof script !== "string") {
+          res.status(400).json({ error: "Script is required" });
+          return;
+        }
+        const result = this.canvasHost.evalScript(String(req.params.id), script);
+        res.json(result);
+      } catch (err) {
+        this.handleError(err, res, "Failed to eval canvas script");
+      }
+    });
+
+    // Get project snapshot
+    app.get("/api/canvas/projects/:id/snapshot", (req: Request, res: Response) => {
+      try {
+        const snapshot = this.canvasHost.snapshot(String(req.params.id));
+        if (!snapshot) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
+        res.json(snapshot);
+      } catch (err) {
+        this.handleError(err, res, "Failed to get canvas snapshot");
+      }
+    });
+
+    // A2UI push — receive JSONL data and broadcast to frontend
+    app.post("/api/canvas/a2ui-push", (req: Request, res: Response) => {
+      try {
+        const { projectId, data } = req.body || {};
+        if (!projectId || typeof projectId !== "string") {
+          res.status(400).json({ error: "projectId is required" });
+          return;
+        }
+        if (!data) {
+          res.status(400).json({ error: "data is required" });
+          return;
+        }
+        this.canvasHost.emit("a2ui-push", { projectId, data, timestamp: Date.now() });
+        res.json({ received: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to process A2UI push");
+      }
+    });
+
+    // SSE event stream for real-time canvas updates
+    app.get("/api/canvas/events", (req: Request, res: Response) => {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write("data: {\"type\":\"connected\"}\n\n");
+
+      const onFileChanged = (evt: { projectId: string; filename: string }) => {
+        res.write(`data: ${JSON.stringify({ type: "file-changed", ...evt })}\n\n`);
+      };
+      const onProjectCreated = (project: any) => {
+        res.write(`data: ${JSON.stringify({ type: "project-created", projectId: project.id })}\n\n`);
+      };
+      const onProjectDeleted = (id: string) => {
+        res.write(`data: ${JSON.stringify({ type: "project-deleted", projectId: id })}\n\n`);
+      };
+      const onA2uiPush = (evt: { projectId: string; data: any; timestamp: number }) => {
+        res.write(`data: ${JSON.stringify({ type: "a2ui-push", ...evt })}\n\n`);
+      };
+
+      this.canvasHost.on("file-changed", onFileChanged);
+      this.canvasHost.on("project-created", onProjectCreated);
+      this.canvasHost.on("project-deleted", onProjectDeleted);
+      this.canvasHost.on("a2ui-push", onA2uiPush);
+
+      req.on("close", () => {
+        this.canvasHost.off("file-changed", onFileChanged);
+        this.canvasHost.off("project-created", onProjectCreated);
+        this.canvasHost.off("project-deleted", onProjectDeleted);
+        this.canvasHost.off("a2ui-push", onA2uiPush);
+      });
     });
   }
 }
