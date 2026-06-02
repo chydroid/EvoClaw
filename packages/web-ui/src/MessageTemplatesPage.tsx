@@ -12,6 +12,7 @@ import {
 } from "./shared";
 import { templatesApi } from "./api-client";
 import type { MessageTemplate } from "./api-client";
+import { useTranslation } from "./i18n";
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -97,11 +98,11 @@ function formatDate(ts: string): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MessageTemplatesPage() {
+  const { t } = useTranslation();
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
 
-  // Create / Edit modal
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
@@ -111,10 +112,8 @@ export default function MessageTemplatesPage() {
   const [formVariables, setFormVariables] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
-  // Expand
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // Test render
   const [testTemplateId, setTestTemplateId] = useState<string | null>(null);
   const [testVars, setTestVars] = useState<Record<string, string>>({});
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -127,7 +126,7 @@ export default function MessageTemplatesPage() {
       setTemplates(data.templates || []);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load templates");
+      setError(err instanceof Error ? err.message : "加载模板失败");
     } finally {
       setLoading(false);
     }
@@ -174,7 +173,7 @@ export default function MessageTemplatesPage() {
 
   const handleSave = useCallback(async () => {
     if (!formName.trim() || !formContent.trim()) {
-      showToast("Name and template content are required", "error");
+      showToast("名称和模板内容为必填项", "error");
       return;
     }
     setSaving(true);
@@ -187,7 +186,7 @@ export default function MessageTemplatesPage() {
           template: formContent,
           variables: formVariables,
         });
-        showToast("Template updated", "success");
+        showToast("模板已更新", "success");
       } else {
         await templatesApi.create({
           name: formName.trim(),
@@ -196,28 +195,28 @@ export default function MessageTemplatesPage() {
           template: formContent,
           variables: formVariables,
         });
-        showToast("Template created", "success");
+        showToast("模板已创建", "success");
       }
       setShowModal(false);
       resetForm();
       await loadTemplates();
     } catch {
-      showToast("Failed to save template", "error");
+      showToast("保存模板失败", "error");
     } finally {
       setSaving(false);
     }
   }, [formName, formDesc, formCategory, formContent, formVariables, editingId, resetForm, loadTemplates]);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this template?")) return;
+    if (!window.confirm("确认删除此模板？")) return;
     try {
       await templatesApi.delete(id);
-      showToast("Template deleted", "success");
+      showToast("模板已删除", "success");
       setExpandedId(null);
       setTestTemplateId(null);
       await loadTemplates();
     } catch {
-      showToast("Failed to delete template", "error");
+      showToast("删除模板失败", "error");
     }
   }, [loadTemplates]);
 
@@ -238,7 +237,7 @@ export default function MessageTemplatesPage() {
       const data = await templatesApi.render(id, testVars);
       setTestResult(data.rendered);
     } catch {
-      showToast("Render failed", "error");
+      showToast("渲染失败", "error");
     }
   }, [testVars]);
 
@@ -252,22 +251,22 @@ export default function MessageTemplatesPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  if (loading) return <div style={s.container}><Loading text="Loading templates..." /></div>;
+  if (loading) return <div style={s.container}><Loading text={t("app.loading")} /></div>;
   if (error && templates.length === 0) return <div style={s.container}><ErrorBanner message={error} onRetry={loadTemplates} /></div>;
 
   return (
     <div style={s.container}>
       <PageHeader
-        title="Message Templates"
-        subtitle="Create and manage reusable message templates"
+        title={t("message_templates.title")}
+        subtitle={t("message_templates.subtitle")}
         actions={
-          <PrimaryButton onClick={openCreate}>+ Create Template</PrimaryButton>
+          <PrimaryButton onClick={openCreate}>{"+ " + t("message_templates.create")}</PrimaryButton>
         }
       />
 
       {templates.length === 0 ? (
         <Card>
-          <EmptyState title="No templates" description="Create your first message template to get started." />
+          <EmptyState title={t("message_templates.no_templates")} description="创建第一个消息模板以开始使用" />
         </Card>
       ) : (
         templates.map((tpl) => {
@@ -280,28 +279,27 @@ export default function MessageTemplatesPage() {
               <div style={s.templateHeader}>
                 <div>
                   <div style={s.templateName}>{tpl.name}</div>
-                  <div style={s.templateDesc}>{tpl.description || "No description"}</div>
+                  <div style={s.templateDesc}>{tpl.description || "无描述"}</div>
                 </div>
-                <Badge variant="info">{tpl.category || "Uncategorized"}</Badge>
+                <Badge variant="info">{tpl.category || "未分类"}</Badge>
               </div>
               <div style={s.templateMeta}>
                 <span style={s.metaValue}>
-                  <span style={s.metaLabel}>Variables: </span>{varCount}
+                  <span style={s.metaLabel}>{t("message_templates.variables") + ": "}</span>{varCount}
                 </span>
                 <span style={s.metaValue}>
-                  <span style={s.metaLabel}>Created: </span>{formatDate(tpl.createdAt)}
+                  <span style={s.metaLabel}>{t("message_templates.created_at") + ": "}</span>{formatDate(tpl.createdAt)}
                 </span>
               </div>
 
-              {/* Expanded view */}
               {isExpanded && (
                 <div style={s.expandedSection} onClick={(e) => e.stopPropagation()}>
-                  <Section title="Template Content">
+                  <Section title={t("message_templates.template")}>
                     <div style={s.contentPreview}>{tpl.template}</div>
                   </Section>
 
                   {varCount > 0 && (
-                    <Section title="Variables">
+                    <Section title={t("message_templates.variables")}>
                       <div style={s.variablesList}>
                         {(tpl.variables || []).map((v) => (
                           <span key={v} style={s.variableChip}>{`{{${v}}}`}</span>
@@ -311,15 +309,14 @@ export default function MessageTemplatesPage() {
                   )}
 
                   <div style={s.actions}>
-                    <SecondaryButton small onClick={() => openEdit(tpl)}>Edit</SecondaryButton>
-                    <SecondaryButton small onClick={() => startTest(tpl)}>Test Render</SecondaryButton>
-                    <GhostButton small onClick={() => handleDelete(tpl.id)} style={{ color: "var(--error)" }}>Delete</GhostButton>
+                    <SecondaryButton small onClick={() => openEdit(tpl)}>{t("message_templates.edit")}</SecondaryButton>
+                    <SecondaryButton small onClick={() => startTest(tpl)}>{t("message_templates.render")}</SecondaryButton>
+                    <GhostButton small onClick={() => handleDelete(tpl.id)} style={{ color: "var(--error)" }}>{t("message_templates.delete")}</GhostButton>
                   </div>
 
-                  {/* Test Render Section */}
                   {isTesting && (
                     <div style={s.testSection}>
-                      <div style={s.testTitle}>Test Render</div>
+                      <div style={s.testTitle}>渲染测试</div>
                       {(tpl.variables || []).map((v) => (
                         <div key={v} style={s.testVarRow}>
                           <span style={s.testVarLabel}>{`{{${v}}}`}</span>
@@ -327,16 +324,16 @@ export default function MessageTemplatesPage() {
                             <TextInput
                               value={testVars[v] || ""}
                               onChange={(val) => setTestVars((prev) => ({ ...prev, [v]: val }))}
-                              placeholder={`Value for ${v}...`}
+                              placeholder={`${v} 的值...`}
                             />
                           </div>
                         </div>
                       ))}
                       <div style={{ marginTop: "10px" }}>
-                        <PrimaryButton small onClick={() => handleRender(tpl.id)}>Render</PrimaryButton>
+                        <PrimaryButton small onClick={() => handleRender(tpl.id)}>{t("message_templates.render")}</PrimaryButton>
                       </div>
                       {testResult !== null && (
-                        <div style={s.testResult}>{testResult || "(empty result)"}</div>
+                        <div style={s.testResult}>{testResult || "(空结果)"}</div>
                       )}
                     </div>
                   )}
@@ -347,43 +344,42 @@ export default function MessageTemplatesPage() {
         })
       )}
 
-      {/* Create / Edit Modal */}
       {showModal && (
         <Modal
-          title={editingId ? "Edit Template" : "Create Template"}
+          title={editingId ? t("message_templates.edit") : t("message_templates.create")}
           onClose={() => setShowModal(false)}
           footer={
             <>
-              <SecondaryButton onClick={() => setShowModal(false)}>Cancel</SecondaryButton>
+              <SecondaryButton onClick={() => setShowModal(false)}>{t("message_templates.cancel")}</SecondaryButton>
               <PrimaryButton onClick={handleSave} disabled={saving}>
-                {saving ? "Saving..." : editingId ? "Update" : "Create"}
+                {saving ? "保存中..." : editingId ? "更新" : "创建"}
               </PrimaryButton>
             </>
           }
         >
           <div style={s.formGroup}>
-            <label style={s.formLabel}>Name</label>
-            <TextInput value={formName} onChange={setFormName} placeholder="Template name..." />
+            <label style={s.formLabel}>{t("message_templates.name")}</label>
+            <TextInput value={formName} onChange={setFormName} placeholder="模板名称..." />
           </div>
           <div style={s.formGroup}>
-            <label style={s.formLabel}>Description</label>
-            <TextInput value={formDesc} onChange={setFormDesc} placeholder="Brief description..." />
+            <label style={s.formLabel}>{t("message_templates.description")}</label>
+            <TextInput value={formDesc} onChange={setFormDesc} placeholder="简要描述..." />
           </div>
           <div style={s.formGroup}>
-            <label style={s.formLabel}>Category</label>
-            <TextInput value={formCategory} onChange={setFormCategory} placeholder="e.g. greeting, notification..." />
+            <label style={s.formLabel}>{t("message_templates.category")}</label>
+            <TextInput value={formCategory} onChange={setFormCategory} placeholder="如 greeting, notification..." />
           </div>
           <div style={s.formGroup}>
-            <label style={s.formLabel}>Template Content</label>
+            <label style={s.formLabel}>{t("message_templates.template")}</label>
             <textarea
               style={s.formTextarea}
               value={formContent}
               onChange={(e) => handleContentChange(e.target.value)}
-              placeholder="Enter template with {{variables}}..."
+              placeholder="输入模板内容，使用 {{变量名}}..."
             />
           </div>
           <div style={s.formGroup}>
-            <label style={s.formLabel}>Detected Variables</label>
+            <label style={s.formLabel}>检测到的变量</label>
             {formVariables.length > 0 ? (
               <div style={s.variablesList}>
                 {formVariables.map((v) => (
@@ -391,14 +387,14 @@ export default function MessageTemplatesPage() {
                 ))}
               </div>
             ) : (
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>No variables detected. Use {"{{variableName}}"} in your template.</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{"未检测到变量。在模板中使用 {{变量名}}。"}</div>
             )}
           </div>
         </Modal>
       )}
 
       <div style={s.footer}>
-        Auto-refreshing every 15 seconds &middot; {templates.length} templates
+        每 15 秒自动刷新 &middot; {templates.length} 个模板
       </div>
     </div>
   );

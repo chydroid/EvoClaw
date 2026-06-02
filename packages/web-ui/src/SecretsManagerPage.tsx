@@ -13,24 +13,23 @@ import {
 } from "./shared";
 import { secretsApi } from "./api-client";
 import type { SecretEntry, SecretAuditLog } from "./api-client";
+import { useTranslation } from "./i18n";
 
 export default function SecretsManagerPage() {
+  const { t } = useTranslation();
   const [secrets, setSecrets] = useState<SecretEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Modals
   const [showRegister, setShowRegister] = useState(false);
   const [showGenerateKey, setShowGenerateKey] = useState(false);
   const [showReveal, setShowReveal] = useState<string | null>(null);
 
-  // Forms
   const [regName, setRegName] = useState("");
   const [regValue, setRegValue] = useState("");
   const [regTtl, setRegTtl] = useState("");
   const [genPrefix, setGenPrefix] = useState("");
 
-  // Audit
   const [auditLogs, setAuditLogs] = useState<SecretAuditLog[]>([]);
   const [auditExpanded, setAuditExpanded] = useState(false);
 
@@ -40,7 +39,7 @@ export default function SecretsManagerPage() {
       setSecrets(res.secrets);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load secrets");
+      setError(err instanceof Error ? err.message : "加载密钥失败");
     } finally {
       setLoading(false);
     }
@@ -56,57 +55,57 @@ export default function SecretsManagerPage() {
   useEffect(() => { load(); }, [load]);
 
   const handleRegister = async () => {
-    if (!regName || !regValue) return showToast("Name and value are required", "error");
+    if (!regName || !regValue) return showToast("名称和值为必填项", "error");
     try {
       await secretsApi.register(regName, regValue, regTtl ? Number(regTtl) : undefined);
-      showToast(`Secret "${regName}" registered`, "success");
+      showToast(`密钥 "${regName}" 已注册`, "success");
       setShowRegister(false);
       setRegName(""); setRegValue(""); setRegTtl("");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Registration failed", "error");
+      showToast(err instanceof Error ? err.message : "注册失败", "error");
     }
   };
 
   const handleGenerateKey = async () => {
     try {
       const res = await secretsApi.generateApiKey(genPrefix || undefined);
-      showToast(`API Key generated: ${res.name}`, "success");
+      showToast(`API Key 已生成: ${res.name}`, "success");
       setShowGenerateKey(false);
       setGenPrefix("");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Generation failed", "error");
+      showToast(err instanceof Error ? err.message : "生成失败", "error");
     }
   };
 
   const handleRotate = async (name: string) => {
     try {
       await secretsApi.rotate(name);
-      showToast(`Secret "${name}" rotated`, "success");
+      showToast(`密钥 "${name}" 已轮换`, "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Rotation failed", "error");
+      showToast(err instanceof Error ? err.message : "轮换失败", "error");
     }
   };
 
   const handleRevoke = async (name: string) => {
     try {
       await secretsApi.revoke(name);
-      showToast(`Secret "${name}" revoked`, "success");
+      showToast(`密钥 "${name}" 已撤销`, "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Revoke failed", "error");
+      showToast(err instanceof Error ? err.message : "撤销失败", "error");
     }
   };
 
   const handleDelete = async (name: string) => {
     try {
       await secretsApi.delete(name);
-      showToast(`Secret "${name}" deleted`, "success");
+      showToast(`密钥 "${name}" 已删除`, "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Delete failed", "error");
+      showToast(err instanceof Error ? err.message : "删除失败", "error");
     }
   };
 
@@ -115,7 +114,7 @@ export default function SecretsManagerPage() {
       const res = await secretsApi.get(name);
       setShowReveal(res.value);
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Failed to get secret", "error");
+      showToast(err instanceof Error ? err.message : "获取密钥失败", "error");
     }
   };
 
@@ -126,12 +125,12 @@ export default function SecretsManagerPage() {
   return (
     <div style={{ padding: "20px", height: "100%", overflow: "auto", background: "var(--bg-primary)", boxSizing: "border-box" }}>
       <PageHeader
-        title="Secrets Manager"
-        subtitle="Manage sensitive credentials and API keys"
+        title={t("secrets.title")}
+        subtitle={t("secrets.subtitle")}
         actions={
           <>
-            <PrimaryButton onClick={() => setShowRegister(true)}>Register Secret</PrimaryButton>
-            <SecondaryButton onClick={() => setShowGenerateKey(true)}>Generate API Key</SecondaryButton>
+            <PrimaryButton onClick={() => setShowRegister(true)}>{t("secrets.register")}</PrimaryButton>
+            <SecondaryButton onClick={() => setShowGenerateKey(true)}>{t("secrets.generate_apikey")}</SecondaryButton>
           </>
         }
       />
@@ -139,36 +138,36 @@ export default function SecretsManagerPage() {
       {error && <ErrorBanner message={error} onRetry={load} />}
 
       <StatsGrid items={[
-        { label: "Total Secrets", value: secrets.length },
-        { label: "Active", value: activeCount, color: "var(--success)" },
-        { label: "Revoked", value: revokedCount, color: "var(--error)" },
-        { label: "Recent Rotations", value: rotatedCount, color: "var(--accent)" },
+        { label: "密钥总数", value: secrets.length },
+        { label: t("secrets.active"), value: activeCount, color: "var(--success)" },
+        { label: t("secrets.revoked"), value: revokedCount, color: "var(--error)" },
+        { label: "最近轮换", value: rotatedCount, color: "var(--accent)" },
       ]} />
 
       <div style={{ marginTop: "20px" }} />
 
       {loading ? (
-        <Loading text="Loading secrets..." />
+        <Loading text={t("app.loading")} />
       ) : secrets.length === 0 ? (
-        <EmptyState title="No secrets found" description="Register your first secret or generate an API key to get started." />
+        <EmptyState title={t("secrets.no_secrets")} description="注册第一个密钥或生成 API Key 以开始使用" />
       ) : (
-        <Section title="Secrets">
+        <Section title="密钥列表">
           <Card>
             <DataTable
               columns={[
-                { key: "name", label: "Name", render: (s: SecretEntry) => <code style={{ fontSize: "12px", color: "var(--accent)" }}>{s.name}</code> },
-                { key: "source", label: "Source", render: (s: SecretEntry) => <Badge variant="info">{s.source}</Badge> },
+                { key: "name", label: t("secrets.name"), render: (s: SecretEntry) => <code style={{ fontSize: "12px", color: "var(--accent)" }}>{s.name}</code> },
+                { key: "source", label: t("secrets.source"), render: (s: SecretEntry) => <Badge variant="info">{s.source}</Badge> },
                 {
-                  key: "status", label: "Status",
+                  key: "status", label: t("secrets.status"),
                   render: (s: SecretEntry) => (
                     s.revoked
-                      ? <Badge variant="error">revoked</Badge>
-                      : <Badge variant="success">active</Badge>
+                      ? <Badge variant="error">{t("secrets.revoked")}</Badge>
+                      : <Badge variant="success">{t("secrets.active")}</Badge>
                   ),
                 },
-                { key: "rotationVersion", label: "Rotations", render: (s: SecretEntry) => <span style={{ fontSize: "13px" }}>{s.rotationVersion}</span> },
+                { key: "rotationVersion", label: "轮换次数", render: (s: SecretEntry) => <span style={{ fontSize: "13px" }}>{s.rotationVersion}</span> },
                 {
-                  key: "createdAt", label: "Created",
+                  key: "createdAt", label: t("secrets.created"),
                   render: (s: SecretEntry) => (
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                       {new Date(s.createdAt).toLocaleDateString()}
@@ -176,47 +175,46 @@ export default function SecretsManagerPage() {
                   ),
                 },
                 {
-                  key: "actions", label: "Actions",
+                  key: "actions", label: "操作",
                   render: (s: SecretEntry) => (
                     <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-                      <GhostButton small onClick={() => handleReveal(s.name)}>Reveal</GhostButton>
-                      <GhostButton small onClick={() => handleRotate(s.name)}>Rotate</GhostButton>
+                      <GhostButton small onClick={() => handleReveal(s.name)}>查看</GhostButton>
+                      <GhostButton small onClick={() => handleRotate(s.name)}>{t("secrets.rotate")}</GhostButton>
                       {!s.revoked && (
-                        <GhostButton small onClick={() => handleRevoke(s.name)} style={{ color: "var(--warning)" }}>Revoke</GhostButton>
+                        <GhostButton small onClick={() => handleRevoke(s.name)} style={{ color: "var(--warning)" }}>{t("secrets.revoke")}</GhostButton>
                       )}
-                      <GhostButton small onClick={() => handleDelete(s.name)} style={{ color: "var(--error)" }}>Delete</GhostButton>
+                      <GhostButton small onClick={() => handleDelete(s.name)} style={{ color: "var(--error)" }}>{t("secrets.delete")}</GhostButton>
                     </div>
                   ),
                 },
               ]}
               data={secrets}
               keyFn={(s) => s.name}
-              emptyText="No secrets registered"
+              emptyText={t("secrets.no_secrets")}
             />
           </Card>
         </Section>
       )}
 
-      {/* Audit Log Section */}
       <div style={{ marginTop: "24px" }}>
-        <Section title="Audit Log">
+        <Section title={t("secrets.audit_log")}>
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
             <GhostButton small onClick={() => { loadAudit(); setAuditExpanded(!auditExpanded); }}>
-              {auditExpanded ? "Collapse" : "Load Audit Logs"}
+              {auditExpanded ? "收起" : "加载审计日志"}
             </GhostButton>
           </div>
           {auditExpanded && (
             <Card>
               {auditLogs.length === 0 ? (
-                <EmptyState title="No audit logs" description="Audit logs will appear here when secrets are accessed." />
+                <EmptyState title={t("secrets.no_audit")} description="密钥被访问时审计日志将在此显示" />
               ) : (
                 <DataTable
                   columns={[
-                    { key: "secretName", label: "Secret" },
-                    { key: "operation", label: "Operation" },
-                    { key: "accessedBy", label: "Accessed By" },
+                    { key: "secretName", label: "密钥" },
+                    { key: "operation", label: t("secrets.operation") },
+                    { key: "accessedBy", label: t("secrets.accessed_by") },
                     {
-                      key: "timestamp", label: "Timestamp",
+                      key: "timestamp", label: t("secrets.timestamp"),
                       render: (l: SecretAuditLog) => (
                         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                           {new Date(l.timestamp).toLocaleString()}
@@ -224,17 +222,17 @@ export default function SecretsManagerPage() {
                       ),
                     },
                     {
-                      key: "success", label: "Result",
+                      key: "success", label: "结果",
                       render: (l: SecretAuditLog) => (
                         l.success
-                          ? <Badge variant="success">success</Badge>
-                          : <Badge variant="error">failed</Badge>
+                          ? <Badge variant="success">{t("secrets.success")}</Badge>
+                          : <Badge variant="error">{t("secrets.failed")}</Badge>
                       ),
                     },
                   ]}
                   data={auditLogs}
                   keyFn={(l, i) => `${l.secretName}-${i}`}
-                  emptyText="No audit logs"
+                  emptyText={t("secrets.no_audit")}
                 />
               )}
             </Card>
@@ -242,62 +240,59 @@ export default function SecretsManagerPage() {
         </Section>
       </div>
 
-      {/* Register Modal */}
       {showRegister && (
         <Modal
-          title="Register Secret"
+          title={t("secrets.register_new")}
           onClose={() => setShowRegister(false)}
           footer={
             <>
-              <SecondaryButton onClick={() => setShowRegister(false)}>Cancel</SecondaryButton>
-              <PrimaryButton onClick={handleRegister}>Register</PrimaryButton>
+              <SecondaryButton onClick={() => setShowRegister(false)}>{t("app.cancel")}</SecondaryButton>
+              <PrimaryButton onClick={handleRegister}>{t("secrets.register")}</PrimaryButton>
             </>
           }
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>Name *</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("secrets.secret_name")} *</label>
               <TextInput value={regName} onChange={setRegName} placeholder="e.g. DB_PASSWORD" />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>Value *</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("secrets.secret_value")} *</label>
               <TextInput value={regValue} onChange={setRegValue} placeholder="Secret value" type="password" />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>TTL (ms, optional)</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("secrets.ttl")}</label>
               <TextInput value={regTtl} onChange={setRegTtl} placeholder="e.g. 3600000" />
             </div>
           </div>
         </Modal>
       )}
 
-      {/* Generate API Key Modal */}
       {showGenerateKey && (
         <Modal
-          title="Generate API Key"
+          title={t("secrets.generate_apikey")}
           onClose={() => setShowGenerateKey(false)}
           footer={
             <>
-              <SecondaryButton onClick={() => setShowGenerateKey(false)}>Cancel</SecondaryButton>
-              <PrimaryButton onClick={handleGenerateKey}>Generate</PrimaryButton>
+              <SecondaryButton onClick={() => setShowGenerateKey(false)}>{t("app.cancel")}</SecondaryButton>
+              <PrimaryButton onClick={handleGenerateKey}>生成</PrimaryButton>
             </>
           }
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>Key Prefix (optional)</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>密钥前缀（可选）</label>
               <TextInput value={genPrefix} onChange={setGenPrefix} placeholder="e.g. sk-" />
             </div>
           </div>
         </Modal>
       )}
 
-      {/* Reveal Modal */}
       {showReveal !== null && (
         <Modal
-          title="Secret Value"
+          title="密钥值"
           onClose={() => setShowReveal(null)}
-          footer={<SecondaryButton onClick={() => setShowReveal(null)}>Close</SecondaryButton>}
+          footer={<SecondaryButton onClick={() => setShowReveal(null)}>关闭</SecondaryButton>}
         >
           <pre style={{
             margin: 0, padding: "12px", borderRadius: "8px",

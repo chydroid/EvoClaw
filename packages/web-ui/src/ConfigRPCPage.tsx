@@ -11,6 +11,7 @@ import {
   TextInput, showToast,
 } from "./shared";
 import { configRpcApi } from "./api-client";
+import { useTranslation } from "./i18n";
 
 interface ConfigEntry {
   path: string;
@@ -19,6 +20,7 @@ interface ConfigEntry {
 }
 
 export default function ConfigRPCPage() {
+  const { t } = useTranslation();
   const [dotPath, setDotPath] = useState("");
   const [currentValue, setCurrentValue] = useState<unknown>(undefined);
   const [valueLoading, setValueLoading] = useState(false);
@@ -41,7 +43,7 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.get(path);
       setCurrentValue(res.value);
     } catch (err: unknown) {
-      setValueError(err instanceof Error ? err.message : "Failed to get value");
+      setValueError(err instanceof Error ? err.message : "读取值失败");
     } finally {
       setValueLoading(false);
     }
@@ -59,9 +61,9 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.set(dotPath, parsed);
       setCurrentValue(res.value);
       setSetMode(false);
-      showToast(`"${dotPath}" updated`, "success");
+      showToast(`"${dotPath}" 已更新`, "success");
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Failed to set value", "error");
+      showToast(err instanceof Error ? err.message : "写入值失败", "error");
     }
   };
 
@@ -71,7 +73,7 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.list(browsePrefix || undefined);
       setEntries(res.entries);
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Failed to browse config", "error");
+      showToast(err instanceof Error ? err.message : "浏览配置失败", "error");
     } finally {
       setBrowseLoading(false);
     }
@@ -91,29 +93,28 @@ export default function ConfigRPCPage() {
   return (
     <div style={{ padding: "20px", height: "100%", overflow: "auto", background: "var(--bg-primary)", boxSizing: "border-box" }}>
       <PageHeader
-        title="Config RPC"
-        subtitle="Read and write configuration values via dot-path notation"
+        title={t("config_rpc.title")}
+        subtitle={t("config_rpc.subtitle")}
       />
 
-      {/* Get / Set Section */}
-      <Section title="Read / Write">
+      <Section title="读取 / 写入">
         <Card>
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "16px" }}>
             <div style={{ flex: 1, minWidth: "240px" }}>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>Dot Path</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("config_rpc.path")}</label>
               <TextInput
                 value={dotPath}
                 onChange={setDotPath}
-                placeholder='e.g. "agent.default.model"'
+                placeholder={t("config_rpc.path_placeholder")}
               />
             </div>
-            <PrimaryButton onClick={() => handleGet(dotPath)} disabled={!dotPath.trim()}>Get</PrimaryButton>
+            <PrimaryButton onClick={() => handleGet(dotPath)} disabled={!dotPath.trim()}>{t("config_rpc.get")}</PrimaryButton>
             {currentValue !== undefined && (
-              <SecondaryButton onClick={() => { setSetMode(true); setSetValue(formatValue(currentValue)); }}>Set</SecondaryButton>
+              <SecondaryButton onClick={() => { setSetMode(true); setSetValue(formatValue(currentValue)); }}>{t("config_rpc.set")}</SecondaryButton>
             )}
           </div>
 
-          {valueLoading && <Loading text="Fetching value..." />}
+          {valueLoading && <Loading text={t("app.loading")} />}
           {valueError && <ErrorBanner message={valueError} />}
 
           {currentValue !== undefined && !valueLoading && !setMode && (
@@ -122,7 +123,7 @@ export default function ConfigRPCPage() {
               background: "var(--bg-hover)", border: "1px solid var(--border)",
             }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "8px" }}>
-                Current Value
+                {t("config_rpc.value")}
               </div>
               {isObject ? (
                 <pre style={{
@@ -150,7 +151,7 @@ export default function ConfigRPCPage() {
               marginTop: "8px",
             }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--accent)", textTransform: "uppercase", marginBottom: "8px" }}>
-                New Value (JSON or plain text)
+                新值 (JSON 或纯文本)
               </div>
               <textarea
                 value={setValue}
@@ -164,38 +165,37 @@ export default function ConfigRPCPage() {
                 }}
               />
               <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-                <PrimaryButton onClick={handleSet}>Save</PrimaryButton>
-                <SecondaryButton onClick={() => setSetMode(false)}>Cancel</SecondaryButton>
+                <PrimaryButton onClick={handleSet}>{t("config_rpc.set")}</PrimaryButton>
+                <SecondaryButton onClick={() => setSetMode(false)}>{t("app.cancel")}</SecondaryButton>
               </div>
             </div>
           )}
         </Card>
       </Section>
 
-      {/* Browse Section */}
       <div style={{ marginTop: "24px" }} />
-      <Section title="Browse">
+      <Section title="浏览">
         <Card>
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", marginBottom: "16px" }}>
             <div style={{ flex: 1, maxWidth: "400px" }}>
               <TextInput
                 value={browsePrefix}
                 onChange={setBrowsePrefix}
-                placeholder='Filter by prefix, e.g. "agent."'
+                placeholder={"按前缀筛选，如 \"agent.\""}
               />
             </div>
-            <SecondaryButton small onClick={loadBrowse}>Refresh</SecondaryButton>
+            <SecondaryButton small onClick={loadBrowse}>刷新</SecondaryButton>
           </div>
 
           {browseLoading ? (
-            <Loading text="Loading entries..." />
+            <Loading text={t("app.loading")} />
           ) : entries.length === 0 ? (
-            <EmptyState title="No config entries" description="No configuration entries found." />
+            <EmptyState title={t("config_rpc.no_entries")} description="未找到配置项" />
           ) : (
             <DataTable
               columns={[
                 {
-                  key: "path", label: "Path",
+                  key: "path", label: t("config_rpc.path"),
                   render: (e: ConfigEntry) => (
                     <code style={{ fontSize: "12px", color: "var(--accent)", fontFamily: "Consolas, Monaco, monospace" }}>
                       {e.path}
@@ -203,7 +203,7 @@ export default function ConfigRPCPage() {
                   ),
                 },
                 {
-                  key: "value", label: "Value",
+                  key: "value", label: t("config_rpc.value"),
                   render: (e: ConfigEntry) => {
                     const s = typeof e.value === "object" ? JSON.stringify(e.value) : String(e.value ?? "—");
                     return (
@@ -214,13 +214,13 @@ export default function ConfigRPCPage() {
                   },
                 },
                 {
-                  key: "source", label: "Source",
+                  key: "source", label: t("config_rpc.source"),
                   render: (e: ConfigEntry) => <Badge variant="info">{e.source}</Badge>,
                 },
               ]}
               data={entries}
               keyFn={(e) => e.path}
-              emptyText="No entries"
+              emptyText={t("config_rpc.no_entries")}
             />
           )}
         </Card>

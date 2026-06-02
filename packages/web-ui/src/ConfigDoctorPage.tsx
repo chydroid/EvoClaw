@@ -8,6 +8,7 @@ import {
   Section, PrimaryButton, SecondaryButton, StatusDot, showToast,
 } from "./shared";
 import { configDoctorApi, type ConfigIssue } from "./api-client";
+import { useTranslation } from "./i18n";
 
 const s = {
   container: { padding: "20px", overflow: "auto", height: "100%" } as React.CSSProperties,
@@ -160,7 +161,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
 
   if (healthy && issues.length === 0) {
     return {
-      label: "Healthy",
+      label: "健康",
       bg: "var(--success-bg)",
       border: "var(--success)",
       iconBg: "var(--success)",
@@ -170,7 +171,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
   }
   if (hasErrors) {
     return {
-      label: "Unhealthy",
+      label: "异常",
       bg: "var(--error-bg)",
       border: "var(--error)",
       iconBg: "var(--error)",
@@ -180,7 +181,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
   }
   if (hasWarnings) {
     return {
-      label: "Degraded",
+      label: "降级",
       bg: "var(--warning-bg)",
       border: "var(--warning)",
       iconBg: "var(--warning)",
@@ -189,7 +190,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
     };
   }
   return {
-    label: "Healthy",
+    label: "健康",
     bg: "var(--success-bg)",
     border: "var(--success)",
     iconBg: "var(--success)",
@@ -199,6 +200,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
 }
 
 export default function ConfigDoctorPage() {
+  const { t } = useTranslation();
   const [issues, setIssues] = useState<ConfigIssue[]>([]);
   const [healthy, setHealthy] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -216,7 +218,7 @@ export default function ConfigDoctorPage() {
       setIssues(result.issues);
       setHealthy(result.healthy);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Diagnosis failed");
+      setError(err instanceof Error ? err.message : "诊断失败");
     } finally {
       setDiagnosing(false);
       setLoading(false);
@@ -234,13 +236,13 @@ export default function ConfigDoctorPage() {
     try {
       const result = await configDoctorApi.fix(issue.path, value);
       if (result.fixed) {
-        showToast(`Fixed: ${issue.path}`, "success");
+        showToast(`已修复: ${issue.path}`, "success");
         await runDiagnosis();
       } else {
-        showToast(`Could not fix: ${issue.path}`, "error");
+        showToast(`无法修复: ${issue.path}`, "error");
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Fix failed", "error");
+      showToast(err instanceof Error ? err.message : "修复失败", "error");
     } finally {
       setFixingId(null);
     }
@@ -252,16 +254,16 @@ export default function ConfigDoctorPage() {
     try {
       const result = await configDoctorApi.fixAll();
       setFixResult(result);
-      showToast(`Fixed ${result.fixed} issue(s), ${result.remaining} remaining`, result.remaining === 0 ? "success" : "info");
+      showToast(`已修复 ${result.fixed} 个问题, ${result.remaining} 个待处理`, result.remaining === 0 ? "success" : "info");
       await runDiagnosis();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Fix all failed", "error");
+      showToast(err instanceof Error ? err.message : "全部修复失败", "error");
     } finally {
       setFixingAll(false);
     }
   }, [runDiagnosis]);
 
-  if (loading) return <Loading text="Running diagnosis..." />;
+  if (loading) return <Loading text={t("config_doctor.running")} />;
 
   const hc = healthConfig(healthy, issues);
   const severityOrder: ConfigIssue["severity"][] = ["error", "warning", "info"];
@@ -271,15 +273,19 @@ export default function ConfigDoctorPage() {
     return acc;
   }, [] as Array<{ severity: ConfigIssue["severity"]; items: ConfigIssue[] }>);
 
+  const errorCount = issues.filter((i) => i.severity === "error").length;
+  const warnCount = issues.filter((i) => i.severity === "warning").length;
+  const infoCount = issues.filter((i) => i.severity === "info").length;
+
   return (
     <div style={s.container}>
       <PageHeader
-        title="Config Doctor"
-        subtitle="Diagnose and fix configuration issues"
+        title={t("config_doctor.title")}
+        subtitle={t("config_doctor.subtitle")}
         actions={
           <div style={{ display: "flex", gap: "8px" }}>
             <SecondaryButton onClick={runDiagnosis} small disabled={diagnosing}>
-              {diagnosing ? "Diagnosing..." : "Run Diagnosis"}
+              {diagnosing ? t("config_doctor.running") : t("config_doctor.run_diagnosis")}
             </SecondaryButton>
           </div>
         }
@@ -287,41 +293,39 @@ export default function ConfigDoctorPage() {
 
       {error && <ErrorBanner message={error} onRetry={runDiagnosis} />}
 
-      {/* Health Banner */}
       <div style={{ ...s.healthBanner, background: hc.bg, border: `1px solid ${hc.border}` }}>
         <div style={{ ...s.healthIcon, background: hc.iconBg, color: hc.iconColor }}>
           {hc.icon}
         </div>
         <div style={s.healthText}>
           <div style={{ ...s.healthTitle, color: hc.border }}>
-            System Status: {hc.label}
+            系统状态: {hc.label}
           </div>
           <div style={s.healthSub}>
-            {issues.length} issue{issues.length !== 1 ? "s" : ""} found
+            发现 {issues.length} 个问题
             {" "}&bull;{" "}
-            {issues.filter((i) => i.severity === "error").length} error(s),
-            {" "}{issues.filter((i) => i.severity === "warning").length} warning(s),
-            {" "}{issues.filter((i) => i.severity === "info").length} info(s)
+            {errorCount} 个错误,
+            {" "}{warnCount} 个警告,
+            {" "}{infoCount} 个提示
           </div>
           {issues.length > 0 && (
             <div style={s.actions}>
               <PrimaryButton onClick={handleFixAll} disabled={fixingAll || fixingId !== null}>
-                {fixingAll ? "Fixing All..." : "Fix All"}
+                {fixingAll ? "修复全部中..." : t("config_doctor.fix_all")}
               </PrimaryButton>
             </div>
           )}
           {fixResult && (
             <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--success)", fontWeight: 600 }}>
-              Fixed {fixResult.fixed} issue(s), {fixResult.remaining} remaining
+              已修复 {fixResult.fixed} 个问题, {fixResult.remaining} 个待处理
             </div>
           )}
         </div>
       </div>
 
-      {/* Issues */}
       {issues.length === 0 ? (
         <Card>
-          <EmptyState icon="" title="No issues found" description="All configuration checks passed successfully" />
+          <EmptyState icon="" title={t("config_doctor.no_issues")} description="所有配置检查均已通过" />
         </Card>
       ) : (
         grouped.map((group) => {
@@ -337,7 +341,7 @@ export default function ConfigDoctorPage() {
                 >
                   {group.severity.toUpperCase()}
                 </Badge>
-                <span style={{ color: "var(--text-muted)" }}>{group.items.length} issue{group.items.length !== 1 ? "s" : ""}</span>
+                <span style={{ color: "var(--text-muted)" }}>{group.items.length} 个问题</span>
               </div>
               {group.items.map((issue) => (
                 <div key={issue.path} style={s.issueCard}>
@@ -349,12 +353,12 @@ export default function ConfigDoctorPage() {
                     <div style={s.issueMessage}>{issue.message}</div>
                     {issue.suggestion && (
                       <div style={s.issueMeta}>
-                        Suggestion: {issue.suggestion}
+                        {t("config_doctor.suggestion")}: {issue.suggestion}
                       </div>
                     )}
                     {issue.currentValue !== undefined && (
                       <div style={s.issueMeta}>
-                        Current value: <span style={s.issueValue}>{JSON.stringify(issue.currentValue)}</span>
+                        {t("config_doctor.current_value")}: <span style={s.issueValue}>{JSON.stringify(issue.currentValue)}</span>
                       </div>
                     )}
                   </div>
@@ -363,7 +367,7 @@ export default function ConfigDoctorPage() {
                     onClick={() => handleFix(issue, issue.currentValue)}
                     disabled={fixingId === issue.path || fixingAll}
                   >
-                    {fixingId === issue.path ? "Fixing..." : "Fix"}
+                    {fixingId === issue.path ? "修复中..." : t("config_doctor.fix")}
                   </button>
                 </div>
               ))}

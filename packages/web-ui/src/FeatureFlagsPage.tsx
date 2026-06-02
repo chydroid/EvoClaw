@@ -11,14 +11,15 @@ import {
 } from "./shared";
 import { featureFlagsApi } from "./api-client";
 import type { FeatureFlag } from "./api-client";
+import { useTranslation } from "./i18n";
 
 export default function FeatureFlagsPage() {
+  const { t } = useTranslation();
   const [flags, setFlags] = useState<FeatureFlag[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
 
-  // Evaluation popover
   const [evalFlag, setEvalFlag] = useState<FeatureFlag | null>(null);
   const [evalResult, setEvalResult] = useState<{ enabled: boolean; reason: string } | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
@@ -29,7 +30,7 @@ export default function FeatureFlagsPage() {
       setFlags(res.flags);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load feature flags");
+      setError(err instanceof Error ? err.message : "加载功能开关失败");
     } finally {
       setLoading(false);
     }
@@ -43,9 +44,9 @@ export default function FeatureFlagsPage() {
       setFlags((prev) =>
         prev.map((f) => (f.key === key ? { ...f, enabled } : f)),
       );
-      showToast(`Flag "${key}" ${enabled ? "enabled" : "disabled"}`, "success");
+      showToast(`开关 "${key}" ${enabled ? "已启用" : "已禁用"}`, "success");
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Toggle failed", "error");
+      showToast(err instanceof Error ? err.message : "切换失败", "error");
       load();
     }
   };
@@ -58,7 +59,7 @@ export default function FeatureFlagsPage() {
       const res = await featureFlagsApi.evaluate(flag.key);
       setEvalResult(res);
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Evaluation failed", "error");
+      showToast(err instanceof Error ? err.message : "评估失败", "error");
     } finally {
       setEvalLoading(false);
     }
@@ -74,8 +75,8 @@ export default function FeatureFlagsPage() {
   return (
     <div style={{ padding: "20px", height: "100%", overflow: "auto", background: "var(--bg-primary)", boxSizing: "border-box" }}>
       <PageHeader
-        title="Feature Flags"
-        subtitle="Toggle and manage application features"
+        title={t("feature_flags.title")}
+        subtitle={t("feature_flags.subtitle")}
       />
 
       {error && <ErrorBanner message={error} onRetry={load} />}
@@ -84,19 +85,19 @@ export default function FeatureFlagsPage() {
         <TextInput
           value={search}
           onChange={setSearch}
-          placeholder="Search feature flags..."
+          placeholder="搜索功能开关..."
         />
       </div>
 
       {loading ? (
-        <Loading text="Loading feature flags..." />
+        <Loading text={t("app.loading")} />
       ) : filteredFlags.length === 0 ? (
         <EmptyState
-          title={search ? "No matching flags" : "No feature flags found"}
-          description={search ? "Try a different search term." : "Feature flags will appear here when configured."}
+          title={search ? "无匹配的开关" : t("feature_flags.no_flags")}
+          description={search ? "尝试不同的搜索词" : "配置功能开关后将在此显示"}
         />
       ) : (
-        <Section title={`Flags (${filteredFlags.length})`}>
+        <Section title={`功能开关 (${filteredFlags.length})`}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "12px" }}>
             {filteredFlags.map((flag) => (
               <Card key={flag.key}>
@@ -121,9 +122,9 @@ export default function FeatureFlagsPage() {
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    Updated: {new Date(flag.updatedAt).toLocaleDateString()}
+                    更新: {new Date(flag.updatedAt).toLocaleDateString()}
                   </span>
-                  <GhostButton small onClick={() => handleEvaluate(flag)}>Evaluate</GhostButton>
+                  <GhostButton small onClick={() => handleEvaluate(flag)}>{t("feature_flags.evaluate")}</GhostButton>
                 </div>
               </Card>
             ))}
@@ -131,22 +132,21 @@ export default function FeatureFlagsPage() {
         </Section>
       )}
 
-      {/* Evaluation Modal */}
       {evalFlag && (
         <Modal
-          title={`Evaluate: ${evalFlag.key}`}
+          title={`评估: ${evalFlag.key}`}
           onClose={() => { setEvalFlag(null); setEvalResult(null); }}
-          footer={<GhostButton onClick={() => { setEvalFlag(null); setEvalResult(null); }}>Close</GhostButton>}
+          footer={<GhostButton onClick={() => { setEvalFlag(null); setEvalResult(null); }}>关闭</GhostButton>}
           width={440}
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
-              <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>Flag</div>
+              <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>开关</div>
               <div style={{ fontSize: "14px", color: "var(--text-primary)", fontWeight: 600 }}>{evalFlag.name}</div>
               <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>{evalFlag.description}</div>
             </div>
             {evalLoading ? (
-              <Loading text="Evaluating..." />
+              <Loading text="评估中..." />
             ) : evalResult ? (
               <div style={{
                 padding: "14px", borderRadius: "8px",
@@ -154,7 +154,7 @@ export default function FeatureFlagsPage() {
                 border: `1px solid ${evalResult.enabled ? "var(--success)" : "var(--error)"}40`,
               }}>
                 <div style={{ fontSize: "16px", fontWeight: 700, color: evalResult.enabled ? "var(--success)" : "var(--error)", marginBottom: "6px" }}>
-                  {evalResult.enabled ? "✓ Enabled" : "✗ Disabled"}
+                  {evalResult.enabled ? "✓ 已启用" : "✗ 已禁用"}
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                   {evalResult.reason}

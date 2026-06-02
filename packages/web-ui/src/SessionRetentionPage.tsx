@@ -1,13 +1,10 @@
-/**
- * SessionRetentionPage — Session retention policy management.
- */
-
 import React, { useState, useEffect, useCallback } from "react";
 import {
   Card, PageHeader, Loading, ErrorBanner, Section,
   PrimaryButton, SecondaryButton, Toggle, StatsGrid, showToast,
 } from "./shared";
 import { retentionApi, type RetentionPolicy, type RetentionStats } from "./api-client";
+import { useTranslation } from "./i18n";
 
 const s = {
   container: { padding: "20px", overflow: "auto", height: "100%" } as React.CSSProperties,
@@ -63,20 +60,19 @@ const s = {
 };
 
 export default function SessionRetentionPage() {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleanResult, setCleanResult] = useState<number | null>(null);
 
-  // Policy state
   const [maxAgeDays, setMaxAgeDays] = useState(30);
   const [maxInactiveDays, setMaxInactiveDays] = useState(7);
   const [maxSessions, setMaxSessions] = useState(100);
   const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(1000);
   const [enabled, setEnabled] = useState(true);
 
-  // Stats state
   const [stats, setStats] = useState<RetentionStats>({
     totalSessions: 0,
     expiredSessions: 0,
@@ -100,7 +96,7 @@ export default function SessionRetentionPage() {
       setStats(statsRes);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load retention data");
+      setError(err instanceof Error ? err.message : "加载保留策略数据失败");
     } finally {
       setLoading(false);
     }
@@ -122,13 +118,13 @@ export default function SessionRetentionPage() {
         maxMessagesPerSession,
         enabled,
       });
-      showToast("Retention policy saved", "success");
+      showToast(t("retention.saved_ok"), "success");
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to save policy", "error");
+      showToast(err instanceof Error ? err.message : t("retention.save_fail"), "error");
     } finally {
       setSaving(false);
     }
-  }, [maxAgeDays, maxInactiveDays, maxSessions, maxMessagesPerSession, enabled]);
+  }, [maxAgeDays, maxInactiveDays, maxSessions, maxMessagesPerSession, enabled, t]);
 
   const handleRunCleanup = useCallback(async () => {
     setCleaning(true);
@@ -136,51 +132,49 @@ export default function SessionRetentionPage() {
     try {
       const result = await retentionApi.runNow();
       setCleanResult(result.cleaned);
-      showToast(`Cleaned up ${result.cleaned} sessions`, "success");
+      showToast(t("retention.cleaned_count", String(result.cleaned)), "success");
       await fetchData();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Cleanup failed", "error");
+      showToast(err instanceof Error ? err.message : "清理失败", "error");
     } finally {
       setCleaning(false);
     }
-  }, [fetchData]);
+  }, [fetchData, t]);
 
   const formatDate = (dateStr: string) => {
-    if (!dateStr) return "Never";
+    if (!dateStr) return t("retention.never");
     return new Date(dateStr).toLocaleString("zh-CN");
   };
 
-  if (loading) return <Loading text="Loading retention policy..." />;
+  if (loading) return <Loading text={t("app.loading")} />;
 
   return (
     <div style={s.container}>
       <PageHeader
-        title="Session Retention"
-        subtitle="Manage session lifecycle and cleanup policies"
-        actions={<SecondaryButton onClick={fetchData} small>Refresh</SecondaryButton>}
+        title={t("retention.title")}
+        subtitle={t("retention.subtitle")}
+        actions={<SecondaryButton onClick={fetchData} small>刷新</SecondaryButton>}
       />
 
       {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
-      {/* Stats */}
       <StatsGrid
         items={[
-          { label: "Total Sessions", value: stats.totalSessions, color: "var(--accent)" },
-          { label: "Expired", value: stats.expiredSessions, color: "var(--warning)" },
-          { label: "Cleaned Up", value: stats.cleanedUp, color: "var(--success)" },
-          { label: "Last Run", value: stats.lastRun ? new Date(stats.lastRun).toLocaleDateString("zh-CN") : "Never", sub: stats.lastRun ? new Date(stats.lastRun).toLocaleTimeString("zh-CN") : undefined },
+          { label: t("retention.total_sessions"), value: stats.totalSessions, color: "var(--accent)" },
+          { label: t("retention.expired"), value: stats.expiredSessions, color: "var(--warning)" },
+          { label: t("retention.cleaned"), value: stats.cleanedUp, color: "var(--success)" },
+          { label: t("retention.last_run"), value: stats.lastRun ? new Date(stats.lastRun).toLocaleDateString("zh-CN") : t("retention.never"), sub: stats.lastRun ? new Date(stats.lastRun).toLocaleTimeString("zh-CN") : undefined },
         ]}
       />
 
-      {/* Policy Configuration */}
-      <Section title="Policy Configuration" style={{ marginTop: "20px" }}>
+      <Section title="策略配置" style={{ marginTop: "20px" }}>
         <Card>
           <div style={s.toggleRow}>
-            <Toggle checked={enabled} onChange={setEnabled} label={enabled ? "Enabled" : "Disabled"} />
+            <Toggle checked={enabled} onChange={setEnabled} label={enabled ? t("retention.enabled") : t("feature_flags.disabled")} />
           </div>
           <div style={s.policyGrid}>
             <div style={s.inputGroup}>
-              <span style={s.label}>Max Age (Days)</span>
+              <span style={s.label}>{t("retention.max_age")}</span>
               <input
                 type="number"
                 style={s.input}
@@ -190,7 +184,7 @@ export default function SessionRetentionPage() {
               />
             </div>
             <div style={s.inputGroup}>
-              <span style={s.label}>Max Inactive (Days)</span>
+              <span style={s.label}>{t("retention.max_inactive")}</span>
               <input
                 type="number"
                 style={s.input}
@@ -200,7 +194,7 @@ export default function SessionRetentionPage() {
               />
             </div>
             <div style={s.inputGroup}>
-              <span style={s.label}>Max Sessions</span>
+              <span style={s.label}>{t("retention.max_sessions")}</span>
               <input
                 type="number"
                 style={s.input}
@@ -210,7 +204,7 @@ export default function SessionRetentionPage() {
               />
             </div>
             <div style={s.inputGroup}>
-              <span style={s.label}>Max Messages / Session</span>
+              <span style={s.label}>{t("retention.max_messages")}</span>
               <input
                 type="number"
                 style={s.input}
@@ -222,24 +216,23 @@ export default function SessionRetentionPage() {
           </div>
           <div style={s.actions}>
             <PrimaryButton onClick={handleSave} disabled={saving}>
-              {saving ? "Saving..." : "Save Policy"}
+              {saving ? "保存中..." : t("retention.save")}
             </PrimaryButton>
           </div>
         </Card>
       </Section>
 
-      {/* Cleanup */}
-      <Section title="Manual Cleanup" style={{ marginTop: "24px" }}>
+      <Section title="手动清理" style={{ marginTop: "24px" }}>
         <Card>
           <div style={{ marginBottom: "12px", fontSize: "13px", color: "var(--text-secondary)" }}>
-            Sessions that exceed retention thresholds will be removed. Last run: {formatDate(stats.lastRun)}
+            超过保留阈值的会话将被删除。上次执行: {formatDate(stats.lastRun)}
           </div>
           <PrimaryButton onClick={handleRunCleanup} disabled={cleaning} danger>
-            {cleaning ? "Cleaning..." : "Run Cleanup Now"}
+            {cleaning ? "清理中..." : t("retention.run_now")}
           </PrimaryButton>
           {cleanResult !== null && (
             <div style={s.cleanupResult}>
-              Cleaned up {cleanResult} session{cleanResult !== 1 ? "s" : ""}
+              已清理 {cleanResult} 个会话
             </div>
           )}
         </Card>

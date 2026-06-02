@@ -12,10 +12,19 @@ import {
 } from "./shared";
 import { dlqApi } from "./api-client";
 import type { DeadLetter } from "./api-client";
+import { useTranslation } from "./i18n";
 
 const STATUS_FILTERS = ["All", "Pending", "Dead", "Retrying"] as const;
 
+const STATUS_LABELS: Record<string, string> = {
+  All: "全部",
+  Pending: "dlq.pending",
+  Dead: "dlq.dead",
+  Retrying: "dlq.retrying",
+};
+
 export default function DeadLetterQueuePage() {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState<DeadLetter[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -37,7 +46,7 @@ export default function DeadLetterQueuePage() {
       setTotal(res.total);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load dead letter queue");
+      setError(err instanceof Error ? err.message : "加载死信队列失败");
     } finally {
       setLoading(false);
     }
@@ -48,42 +57,42 @@ export default function DeadLetterQueuePage() {
   const handleRetry = async (id: string) => {
     try {
       await dlqApi.retry(id);
-      showToast("Message retry scheduled", "success");
+      showToast("消息已加入重试队列", "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Retry failed", "error");
+      showToast(err instanceof Error ? err.message : "重试失败", "error");
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await dlqApi.delete(id);
-      showToast("Message deleted", "success");
+      showToast("消息已删除", "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Delete failed", "error");
+      showToast(err instanceof Error ? err.message : "删除失败", "error");
     }
   };
 
   const handleRetryAll = async () => {
     try {
       const res = await dlqApi.retryAll();
-      showToast(`${res.retried} messages queued for retry`, "success");
+      showToast(`${res.retried} 条消息已加入重试队列`, "success");
       setConfirmAction(null);
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Retry all failed", "error");
+      showToast(err instanceof Error ? err.message : "全部重试失败", "error");
     }
   };
 
   const handlePurge = async () => {
     try {
       const res = await dlqApi.purge();
-      showToast(`${res.deleted} messages purged`, "success");
+      showToast(`${res.deleted} 条消息已清除`, "success");
       setConfirmAction(null);
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "Purge failed", "error");
+      showToast(err instanceof Error ? err.message : "清空失败", "error");
     }
   };
 
@@ -96,12 +105,12 @@ export default function DeadLetterQueuePage() {
   return (
     <div style={{ padding: "20px", height: "100%", overflow: "auto", background: "var(--bg-primary)", boxSizing: "border-box" }}>
       <PageHeader
-        title="Dead Letter Queue"
-        subtitle="Monitor and manage failed message deliveries"
+        title={t("dlq.title")}
+        subtitle={t("dlq.subtitle")}
         actions={
           <>
-            <SecondaryButton onClick={() => setConfirmAction({ type: "retryAll" })}>Retry All</SecondaryButton>
-            <PrimaryButton danger onClick={() => setConfirmAction({ type: "purgeAll" })}>Purge All</PrimaryButton>
+            <SecondaryButton onClick={() => setConfirmAction({ type: "retryAll" })}>{t("dlq.retry_all")}</SecondaryButton>
+            <PrimaryButton danger onClick={() => setConfirmAction({ type: "purgeAll" })}>{t("dlq.purge")}</PrimaryButton>
           </>
         }
       />
@@ -109,15 +118,14 @@ export default function DeadLetterQueuePage() {
       {error && <ErrorBanner message={error} onRetry={load} />}
 
       <StatsGrid items={[
-        { label: "Total", value: total },
-        { label: "Pending", value: pendingCount, color: "var(--warning)" },
-        { label: "Dead", value: deadCount, color: "var(--error)" },
-        { label: "Retried", value: retryingCount, color: "var(--accent)" },
+        { label: "总计", value: total },
+        { label: t("dlq.pending"), value: pendingCount, color: "var(--warning)" },
+        { label: t("dlq.dead"), value: deadCount, color: "var(--error)" },
+        { label: t("dlq.retrying"), value: retryingCount, color: "var(--accent)" },
       ]} />
 
       <div style={{ marginTop: "20px" }} />
 
-      {/* Filters */}
       <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: "4px" }}>
           {STATUS_FILTERS.map((f) => (
@@ -131,7 +139,7 @@ export default function DeadLetterQueuePage() {
                 cursor: "pointer", fontSize: "12px", fontWeight: 500,
               }}
             >
-              {f}
+              {STATUS_LABELS[f].includes(".") ? t(STATUS_LABELS[f]) : STATUS_LABELS[f]}
             </button>
           ))}
         </div>
@@ -144,19 +152,19 @@ export default function DeadLetterQueuePage() {
             cursor: "pointer",
           }}
         >
-          <option value="">All Types</option>
-          {uniqueTypes.map((t) => (
-            <option key={t} value={t}>{t}</option>
+          <option value="">全部类型</option>
+          {uniqueTypes.map((ut) => (
+            <option key={ut} value={ut}>{ut}</option>
           ))}
         </select>
       </div>
 
       {loading ? (
-        <Loading text="Loading dead letter queue..." />
+        <Loading text={t("app.loading")} />
       ) : messages.length === 0 ? (
-        <EmptyState title="No dead letters" description="The dead letter queue is empty." />
+        <EmptyState title={t("dlq.no_messages")} description="死信队列为空" />
       ) : (
-        <Section title="Messages">
+        <Section title="消息列表">
           <Card>
             <DataTable
               columns={[
@@ -171,9 +179,9 @@ export default function DeadLetterQueuePage() {
                     </code>
                   ),
                 },
-                { key: "type", label: "Type" },
+                { key: "type", label: t("dlq.type") },
                 {
-                  key: "reason", label: "Reason",
+                  key: "reason", label: t("dlq.reason"),
                   render: (m: DeadLetter) => (
                     <span style={{ fontSize: "12px", color: "var(--text-muted)", maxWidth: "200px", display: "inline-block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {m.reason}
@@ -181,20 +189,20 @@ export default function DeadLetterQueuePage() {
                   ),
                 },
                 {
-                  key: "attempts", label: "Attempts",
+                  key: "attempts", label: t("dlq.attempts"),
                   render: (m: DeadLetter) => (
                     <span style={{ fontSize: "13px" }}>{m.attempts} / {m.maxAttempts}</span>
                   ),
                 },
                 {
-                  key: "status", label: "Status",
+                  key: "status", label: t("dlq.status"),
                   render: (m: DeadLetter) => {
                     const v = m.status === "dead" ? "error" : m.status === "retrying" ? "warning" : m.status === "pending" ? "info" : "default";
                     return <Badge variant={v}>{m.status}</Badge>;
                   },
                 },
                 {
-                  key: "enqueuedAt", label: "Enqueued",
+                  key: "enqueuedAt", label: t("dlq.enqueued_at"),
                   render: (m: DeadLetter) => (
                     <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                       {new Date(m.enqueuedAt).toLocaleString()}
@@ -202,21 +210,20 @@ export default function DeadLetterQueuePage() {
                   ),
                 },
                 {
-                  key: "actions", label: "Actions",
+                  key: "actions", label: "操作",
                   render: (m: DeadLetter) => (
                     <div style={{ display: "flex", gap: "4px" }}>
-                      <GhostButton small onClick={() => handleRetry(m.id)}>Retry</GhostButton>
-                      <GhostButton small onClick={() => handleDelete(m.id)} style={{ color: "var(--error)" }}>Delete</GhostButton>
+                      <GhostButton small onClick={() => handleRetry(m.id)}>{t("dlq.retry")}</GhostButton>
+                      <GhostButton small onClick={() => handleDelete(m.id)} style={{ color: "var(--error)" }}>{t("dlq.delete")}</GhostButton>
                     </div>
                   ),
                 },
               ]}
               data={messages}
               keyFn={(m) => m.id}
-              emptyText="No messages in queue"
+              emptyText={t("dlq.no_messages")}
             />
 
-            {/* Expanded row */}
             {expandedId && (() => {
               const msg = messages.find((m) => m.id === expandedId);
               if (!msg) return null;
@@ -226,7 +233,7 @@ export default function DeadLetterQueuePage() {
                   background: "var(--bg-hover)", border: "1px solid var(--border)",
                 }}>
                   <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "8px" }}>
-                    Payload for {msg.id}
+                    消息内容 {msg.id}
                   </div>
                   <pre style={{
                     margin: 0, fontSize: "12px", color: "var(--text-primary)",
@@ -242,27 +249,26 @@ export default function DeadLetterQueuePage() {
         </Section>
       )}
 
-      {/* Confirm Modal */}
       {confirmAction && (
         <Modal
-          title={confirmAction.type === "retryAll" ? "Retry All Messages" : "Purge All Messages"}
+          title={confirmAction.type === "retryAll" ? "全部重试" : "清空队列"}
           onClose={() => setConfirmAction(null)}
           footer={
             <>
-              <SecondaryButton onClick={() => setConfirmAction(null)}>Cancel</SecondaryButton>
+              <SecondaryButton onClick={() => setConfirmAction(null)}>{t("app.cancel")}</SecondaryButton>
               <PrimaryButton
                 danger={confirmAction.type === "purgeAll"}
                 onClick={confirmAction.type === "retryAll" ? handleRetryAll : handlePurge}
               >
-                {confirmAction.type === "retryAll" ? "Retry All" : "Purge All"}
+                {confirmAction.type === "retryAll" ? t("dlq.retry_all") : t("dlq.purge")}
               </PrimaryButton>
             </>
           }
         >
           <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "14px", lineHeight: "1.6" }}>
             {confirmAction.type === "retryAll"
-              ? `Are you sure you want to retry all ${total} messages in the queue?`
-              : `Are you sure you want to permanently delete all ${total} messages? This action cannot be undone.`}
+              ? `确认重试队列中的 ${total} 条消息？`
+              : `确认永久删除 ${total} 条消息？此操作不可撤销。`}
           </p>
         </Modal>
       )}

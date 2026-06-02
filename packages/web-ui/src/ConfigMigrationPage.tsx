@@ -9,6 +9,7 @@ import {
   StatsGrid, showToast,
 } from "./shared";
 import { migrationApi, type MigrationRecord } from "./api-client";
+import { useTranslation } from "./i18n";
 
 const s = {
   container: { padding: "20px", overflow: "auto", height: "100%" } as React.CSSProperties,
@@ -66,6 +67,7 @@ function formatDate(dateStr?: string): string {
 }
 
 export default function ConfigMigrationPage() {
+  const { t } = useTranslation();
   const [migrations, setMigrations] = useState<MigrationRecord[]>([]);
   const [currentVersion, setCurrentVersion] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
@@ -87,7 +89,7 @@ export default function ConfigMigrationPage() {
       setLastMigration(statusRes.lastMigration);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load migrations");
+      setError(err instanceof Error ? err.message : "加载迁移记录失败");
     } finally {
       setLoading(false);
     }
@@ -112,10 +114,10 @@ export default function ConfigMigrationPage() {
     setActionIds((prev) => new Set(prev).add(migrationId));
     try {
       await migrationApi.run(migrationId);
-      showToast("Migration started", "success");
+      showToast("迁移已开始", "success");
       await fetchData();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to run migration", "error");
+      showToast(err instanceof Error ? err.message : "执行迁移失败", "error");
     } finally {
       setActionIds((prev) => {
         const next = new Set(prev);
@@ -129,10 +131,10 @@ export default function ConfigMigrationPage() {
     setActionIds((prev) => new Set(prev).add(migrationId));
     try {
       await migrationApi.rollback(migrationId);
-      showToast("Rollback initiated", "success");
+      showToast("回滚已启动", "success");
       await fetchData();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to rollback migration", "error");
+      showToast(err instanceof Error ? err.message : "回滚迁移失败", "error");
     } finally {
       setActionIds((prev) => {
         const next = new Set(prev);
@@ -142,31 +144,31 @@ export default function ConfigMigrationPage() {
     }
   }, [fetchData]);
 
-  if (loading) return <Loading text="Loading migrations..." />;
+  if (loading) return <Loading text={t("app.loading")} />;
 
   return (
     <div style={s.container}>
       <PageHeader
-        title="Config Migration"
-        subtitle="Track and execute configuration migrations"
-        actions={<SecondaryButton onClick={fetchData} small>Refresh</SecondaryButton>}
+        title={t("config_migration.title")}
+        subtitle={t("config_migration.subtitle")}
+        actions={<SecondaryButton onClick={fetchData} small>刷新</SecondaryButton>}
       />
 
       {error && <ErrorBanner message={error} onRetry={fetchData} />}
 
       <StatsGrid
         items={[
-          { label: "Current Version", value: currentVersion || "Unknown", color: "var(--accent)" },
-          { label: "Pending", value: pendingCount, color: pendingCount > 0 ? "var(--warning)" : "var(--text-muted)" },
-          { label: "Last Migration", value: lastMigration?.id?.slice(0, 12) ?? "None", sub: lastMigration ? formatDate(lastMigration.completedAt) : undefined },
-          { label: "Total Migrations", value: migrations.length },
+          { label: t("config_migration.current_version"), value: currentVersion || "未知", color: "var(--accent)" },
+          { label: t("config_migration.pending"), value: pendingCount, color: pendingCount > 0 ? "var(--warning)" : "var(--text-muted)" },
+          { label: "上次迁移", value: lastMigration?.id?.slice(0, 12) ?? "无", sub: lastMigration ? formatDate(lastMigration.completedAt) : undefined },
+          { label: "迁移总数", value: migrations.length },
         ]}
       />
 
-      <Section title="Migrations" style={{ marginTop: "20px" }}>
+      <Section title="迁移列表" style={{ marginTop: "20px" }}>
         <Card>
           {migrations.length === 0 ? (
-            <EmptyState icon="" title="No migrations found" description="No configuration migrations have been recorded yet" />
+            <EmptyState icon="" title={t("config_migration.no_migrations")} description="尚未记录任何配置迁移" />
           ) : (
             <DataTable
               columns={[
@@ -180,7 +182,7 @@ export default function ConfigMigrationPage() {
                 },
                 {
                   key: "fromVersion",
-                  label: "From Version",
+                  label: t("config_migration.from_version"),
                   width: "12%",
                   render: (item) => (
                     <span style={s.monoText}>{item.fromVersion}</span>
@@ -188,7 +190,7 @@ export default function ConfigMigrationPage() {
                 },
                 {
                   key: "toVersion",
-                  label: "To Version",
+                  label: t("config_migration.to_version"),
                   width: "12%",
                   render: (item) => (
                     <span style={s.monoText}>{item.toVersion}</span>
@@ -196,7 +198,7 @@ export default function ConfigMigrationPage() {
                 },
                 {
                   key: "status",
-                  label: "Status",
+                  label: t("config_migration.status"),
                   width: "12%",
                   render: (item) => (
                     <Badge variant={statusVariant(item.status)}>{item.status}</Badge>
@@ -204,19 +206,19 @@ export default function ConfigMigrationPage() {
                 },
                 {
                   key: "startedAt",
-                  label: "Started",
+                  label: t("config_migration.started_at"),
                   width: "15%",
                   render: (item) => formatDate(item.startedAt),
                 },
                 {
                   key: "completedAt",
-                  label: "Completed",
+                  label: t("config_migration.completed_at"),
                   width: "15%",
                   render: (item) => formatDate(item.completedAt),
                 },
                 {
                   key: "actions",
-                  label: "Actions",
+                  label: "操作",
                   width: "19%",
                   render: (item) => (
                     <div style={s.actions}>
@@ -226,7 +228,7 @@ export default function ConfigMigrationPage() {
                           onClick={() => handleRun(item.id)}
                           disabled={actionIds.has(item.id)}
                         >
-                          {actionIds.has(item.id) ? "..." : "Run"}
+                          {actionIds.has(item.id) ? "..." : t("config_migration.run")}
                         </PrimaryButton>
                       )}
                       {item.status === "completed" && (
@@ -235,11 +237,11 @@ export default function ConfigMigrationPage() {
                           onClick={() => handleRollback(item.id)}
                           disabled={actionIds.has(item.id)}
                         >
-                          {actionIds.has(item.id) ? "..." : "Rollback"}
+                          {actionIds.has(item.id) ? "..." : t("config_migration.rollback")}
                         </SecondaryButton>
                       )}
                       <GhostButton small onClick={() => toggleExpand(item.id)}>
-                        {expandedIds.has(item.id) ? "Hide" : "Details"}
+                        {expandedIds.has(item.id) ? "收起" : "详情"}
                       </GhostButton>
                     </div>
                   ),
@@ -247,26 +249,25 @@ export default function ConfigMigrationPage() {
               ]}
               data={migrations}
               keyFn={(item) => item.id}
-              emptyText="No migrations"
+              emptyText={t("config_migration.no_migrations")}
             />
           )}
-          {/* Expanded change details rendered below the table */}
           {migrations.map((m) =>
             expandedIds.has(m.id) ? (
               <div key={`exp-${m.id}`} style={s.expandedRow}>
                 <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.3px", marginBottom: "8px" }}>
-                  Changes for {m.id.slice(0, 12)}...
+                  {m.id.slice(0, 12)}... 的变更
                 </div>
                 {m.changes.length === 0 ? (
-                  <div style={s.emptyExpanded}>No changes recorded</div>
+                  <div style={s.emptyExpanded}>无变更记录</div>
                 ) : (
                   m.changes.map((change, ci) => (
                     <div key={ci} style={s.changeItem}>
                       <div style={s.changePath}>{change.path}</div>
                       <div style={s.changeValue}>
-                        From: <code style={{ fontSize: "11px", color: "var(--error)" }}>{JSON.stringify(change.from)}</code>
+                        从: <code style={{ fontSize: "11px", color: "var(--error)" }}>{JSON.stringify(change.from)}</code>
                         {" "}&rarr;{" "}
-                        To: <code style={{ fontSize: "11px", color: "var(--success)" }}>{JSON.stringify(change.to)}</code>
+                        到: <code style={{ fontSize: "11px", color: "var(--success)" }}>{JSON.stringify(change.to)}</code>
                       </div>
                     </div>
                   ))

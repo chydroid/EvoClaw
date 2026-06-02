@@ -7,6 +7,10 @@ import { spawn } from "child_process";
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
+import { DeadLetterQueue } from "./dead-letter-queue";
+import { HealthAggregator } from "./health-aggregator";
+import { ReplyReferenceManager } from "./reply-reference";
+import { MessageTemplateEngine } from "./message-templates";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -328,6 +332,58 @@ export class ProtocolAdapter {
       this.authProvider = this.registry.resolveService("authProvider") || null;
     }
     return this.authProvider;
+  }
+
+  private deadLetterQueue: DeadLetterQueue | null = null;
+  private healthAggregator: HealthAggregator | null = null;
+  private replyReferenceManager: ReplyReferenceManager | null = null;
+  private messageTemplateEngine: MessageTemplateEngine | null = null;
+
+  private secretsStore: Map<string, any> = new Map();
+  private secretsAuditLog: Array<any> = [];
+  private configRpcStore: Map<string, any> = new Map();
+  private configRpcWatchers: Map<string, Array<{ subscriptionId: string }>> = new Map();
+  private modelsStore: Map<string, any> = new Map();
+  private currentModelId: string = "";
+  private retentionPolicy: any = {
+    maxAgeDays: 30, maxInactiveDays: 7,
+    maxSessions: 1000, maxMessagesPerSession: 500,
+    enabled: true,
+  };
+  private retentionStats: any = {
+    totalSessions: 0, expiredSessions: 0,
+    cleanedUp: 0, lastRun: "",
+  };
+  private featureFlagsStore: Map<string, any> = new Map();
+  private migrationsStore: Map<string, any> = new Map();
+  private doctorIssues: Array<any> = [];
+
+  private getDeadLetterQueue(): DeadLetterQueue {
+    if (!this.deadLetterQueue) {
+      this.deadLetterQueue = this.registry.resolveService("deadLetterQueue") || new DeadLetterQueue();
+    }
+    return this.deadLetterQueue;
+  }
+
+  private getHealthAggregator(): HealthAggregator {
+    if (!this.healthAggregator) {
+      this.healthAggregator = this.registry.resolveService("healthAggregator") || new HealthAggregator();
+    }
+    return this.healthAggregator;
+  }
+
+  private getReplyReferenceManager(): ReplyReferenceManager {
+    if (!this.replyReferenceManager) {
+      this.replyReferenceManager = this.registry.resolveService("replyReferenceManager") || new ReplyReferenceManager();
+    }
+    return this.replyReferenceManager;
+  }
+
+  private getMessageTemplateEngine(): MessageTemplateEngine {
+    if (!this.messageTemplateEngine) {
+      this.messageTemplateEngine = this.registry.resolveService("messageTemplateEngine") || new MessageTemplateEngine();
+    }
+    return this.messageTemplateEngine;
   }
 
   private handleError(err: unknown, res: Response, defaultMsg: string): void {
@@ -3262,6 +3318,909 @@ export class ProtocolAdapter {
         res.json({ path: dirPath, files });
       } catch (err) {
         this.handleError(err, res, "Failed to list files");
+      }
+    });
+
+    // ─── Dead Letter Queue API routes ──────────────────────────────────────
+
+    app.get("/api/dlq", (req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        const query: Record<string, unknown> = {};
+        if (req.query.channel) query.channel = String(req.query.channel);
+        if (req.query.type) query.failureType = String(req.query.type);
+        if (req.query.status === "unreplayed") query.unreplayed = true;
+        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10);
+        const messages = dlq.query(query as any);
+        const stats = dlq.getStats();
+        res.json({ success: true, messages, stats });
+      } catch (err) {
+        this.handleError(err, res, "Failed to query dead letter queue");
+      }
+    });
+
+    app.post("/api/dlq/:id/retry", (req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        const id = String(req.params.id);
+        const entry = dlq.get(id);
+        if (!entry) {
+          res.status(404).json({ error: "Dead letter not found" });
+          return;
+        }
+        const ok = dlq.markReplayed(id, true);
+        res.json({ success: ok, id });
+      } catch (err) {
+        this.handleError(err, res, "Failed to retry dead letter");
+      }
+    });
+
+    app.post("/api/dlq/retry-all", (req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        const unreplayed = dlq.getUnreplayed();
+        let retried = 0;
+        for (const entry of unreplayed) {
+          if (dlq.markReplayed(entry.id, true)) retried++;
+        }
+        res.json({ success: true, retried, total: unreplayed.length });
+      } catch (err) {
+        this.handleError(err, res, "Failed to retry all dead letters");
+      }
+    });
+
+    app.delete("/api/dlq/:id", (req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        const id = String(req.params.id);
+        const ok = dlq.delete(id);
+        if (!ok) {
+          res.status(404).json({ error: "Dead letter not found" });
+          return;
+        }
+        res.json({ success: true, id });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete dead letter");
+      }
+    });
+
+    app.delete("/api/dlq/purge", (_req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        const purged = dlq.purge();
+        res.json({ success: true, purged });
+      } catch (err) {
+        this.handleError(err, res, "Failed to purge dead letter queue");
+      }
+    });
+
+    // ─── Health Aggregator API routes ──────────────────────────────────────
+
+    app.get("/api/health/full", async (_req: Request, res: Response) => {
+      try {
+        const ha = this.getHealthAggregator();
+        const report = await ha.checkAll();
+        res.json({ success: true, report });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get full health report");
+      }
+    });
+
+    app.get("/api/health/component/:name", (req: Request, res: Response) => {
+      try {
+        const ha = this.getHealthAggregator();
+        const name = String(req.params.name);
+        const component = ha.getComponent(name);
+        if (!component) {
+          res.status(404).json({ error: "Component not found" });
+          return;
+        }
+        res.json({ success: true, component });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get component health");
+      }
+    });
+
+    app.post("/api/health/component/:name/check", async (req: Request, res: Response) => {
+      try {
+        const ha = this.getHealthAggregator();
+        const name = String(req.params.name);
+        const result = await ha.checkComponent(name);
+        if (!result) {
+          res.status(404).json({ error: "Component not found" });
+          return;
+        }
+        res.json({ success: true, component: result });
+      } catch (err) {
+        this.handleError(err, res, "Failed to check component health");
+      }
+    });
+
+    // ─── Reply Reference API routes ────────────────────────────────────────
+
+    app.get("/api/reply-refs", (req: Request, res: Response) => {
+      try {
+        const rm = this.getReplyReferenceManager();
+        const channelId = req.query.channelId as string | undefined;
+        const rootId = req.query.rootId as string | undefined;
+        const stats = {
+          totalRefs: rm.countRefs(),
+          totalChains: rm.countChains(),
+        };
+        if (rootId) {
+          const tree = rm.getReplyTree(rootId);
+          const nodesObj: Record<string, unknown> = {};
+          for (const [key, value] of tree.nodes) {
+            nodesObj[key] = value;
+          }
+          res.json({ success: true, stats, tree: { ...tree, nodes: nodesObj } });
+          return;
+        }
+        res.json({ success: true, stats, channelId: channelId || null });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list reply references");
+      }
+    });
+
+    app.get("/api/reply-refs/:rootId/tree", (req: Request, res: Response) => {
+      try {
+        const rm = this.getReplyReferenceManager();
+        const rootId = String(req.params.rootId);
+        const tree = rm.getReplyTree(rootId);
+        const nodesObj: Record<string, unknown> = {};
+        for (const [key, value] of tree.nodes) {
+          nodesObj[key] = value;
+        }
+        res.json({ success: true, tree: { ...tree, nodes: nodesObj } });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get reply tree");
+      }
+    });
+
+    app.get("/api/reply-refs/:rootId/chain", (req: Request, res: Response) => {
+      try {
+        const rm = this.getReplyReferenceManager();
+        const rootId = String(req.params.rootId);
+        const chain = rm.getChainContext(rootId);
+        res.json({ success: true, chain });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get reply chain");
+      }
+    });
+
+    // ─── Message Template API routes ───────────────────────────────────────
+
+    app.get("/api/message-templates", (_req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const names = engine.listTemplates();
+        const templates = names.map((name) => ({
+          id: name,
+          content: engine.getTemplate(name),
+        }));
+        res.json({ success: true, templates });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list message templates");
+      }
+    });
+
+    app.get("/api/message-templates/:id", (req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const id = String(req.params.id);
+        const content = engine.getTemplate(id);
+        if (content === null) {
+          res.status(404).json({ error: "Template not found" });
+          return;
+        }
+        res.json({ success: true, id, content });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get message template");
+      }
+    });
+
+    app.post("/api/message-templates", (req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const { id, content } = req.body || {};
+        if (!id || !content) {
+          res.status(400).json({ error: "id and content are required" });
+          return;
+        }
+        engine.register(String(id), String(content));
+        res.status(201).json({ success: true, id });
+      } catch (err) {
+        this.handleError(err, res, "Failed to create message template");
+      }
+    });
+
+    app.put("/api/message-templates/:id", (req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const id = String(req.params.id);
+        const { content } = req.body || {};
+        if (!content) {
+          res.status(400).json({ error: "content is required" });
+          return;
+        }
+        engine.register(id, String(content));
+        res.json({ success: true, id });
+      } catch (err) {
+        this.handleError(err, res, "Failed to update message template");
+      }
+    });
+
+    app.delete("/api/message-templates/:id", (req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const id = String(req.params.id);
+        const removed = engine.unregister(id);
+        if (!removed) {
+          res.status(404).json({ error: "Template not found" });
+          return;
+        }
+        res.json({ success: true, id });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete message template");
+      }
+    });
+
+    app.post("/api/message-templates/:id/render", (req: Request, res: Response) => {
+      try {
+        const engine = this.getMessageTemplateEngine();
+        const id = String(req.params.id);
+        const { variables, format } = req.body || {};
+        const rendered = engine.renderNamed(id, variables || {}, format);
+        res.json({ success: true, id, rendered });
+      } catch (err) {
+        this.handleError(err, res, "Failed to render message template");
+      }
+    });
+
+    // ─── Secrets Manager API routes ──────────────────────────────────────
+
+    app.get("/api/secrets", (_req: Request, res: Response) => {
+      try {
+        const secrets = Array.from(this.secretsStore.values()).map((s: any) => ({
+          name: s.name,
+          source: s.source,
+          createdAt: s.createdAt,
+          expiresAt: s.expiresAt,
+          revoked: s.revoked,
+          rotationVersion: s.rotationVersion,
+          lastRotatedAt: s.lastRotatedAt,
+        }));
+        res.json({ secrets });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list secrets");
+      }
+    });
+
+    app.post("/api/secrets", (req: Request, res: Response) => {
+      try {
+        const { name, value, ttlMs } = req.body || {};
+        if (!name || !value) {
+          res.status(400).json({ error: "name and value are required" });
+          return;
+        }
+        const now = new Date().toISOString();
+        const entry: any = {
+          name,
+          value,
+          source: "registered",
+          createdAt: now,
+          expiresAt: ttlMs ? new Date(Date.now() + ttlMs).toISOString() : undefined,
+          revoked: false,
+          rotationVersion: 0,
+          lastRotatedAt: undefined,
+        };
+        this.secretsStore.set(name, entry);
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "register",
+          accessedBy: "api",
+          timestamp: now,
+          success: true,
+        });
+        res.status(201).json({
+          name: entry.name,
+          source: entry.source,
+          createdAt: entry.createdAt,
+          expiresAt: entry.expiresAt,
+          revoked: entry.revoked,
+          rotationVersion: entry.rotationVersion,
+          lastRotatedAt: entry.lastRotatedAt,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to register secret");
+      }
+    });
+
+    app.get("/api/secrets/audit", (req: Request, res: Response) => {
+      try {
+        const name = req.query.name as string | undefined;
+        const logs = name
+          ? this.secretsAuditLog.filter((l: any) => l.secretName === name)
+          : this.secretsAuditLog;
+        res.json({ logs });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get audit logs");
+      }
+    });
+
+    app.post("/api/secrets/generate-apikey", (req: Request, res: Response) => {
+      try {
+        const { prefix } = req.body || {};
+        const key = `${prefix || "evc"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const name = `apikey_${prefix || "default"}_${Date.now()}`;
+        const now = new Date().toISOString();
+        this.secretsStore.set(name, {
+          name,
+          value: key,
+          source: "registered",
+          createdAt: now,
+          revoked: false,
+          rotationVersion: 0,
+        });
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "generate-apikey",
+          accessedBy: "api",
+          timestamp: now,
+          success: true,
+        });
+        res.json({ apiKey: key, name });
+      } catch (err) {
+        this.handleError(err, res, "Failed to generate API key");
+      }
+    });
+
+    app.post("/api/secrets/:name/get", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const { requester } = req.body || {};
+        const entry = this.secretsStore.get(name);
+        if (!entry) {
+          res.status(404).json({ error: "Secret not found" });
+          return;
+        }
+        if (entry.revoked) {
+          res.status(403).json({ error: "Secret has been revoked" });
+          return;
+        }
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "get",
+          accessedBy: requester || "api",
+          timestamp: new Date().toISOString(),
+          success: true,
+        });
+        res.json({ value: entry.value });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get secret");
+      }
+    });
+
+    app.post("/api/secrets/:name/rotate", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const entry = this.secretsStore.get(name);
+        if (!entry) {
+          res.status(404).json({ error: "Secret not found" });
+          return;
+        }
+        const now = new Date().toISOString();
+        entry.rotationVersion += 1;
+        entry.lastRotatedAt = now;
+        entry.value = `${entry.value}_v${entry.rotationVersion}`;
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "rotate",
+          accessedBy: "api",
+          timestamp: now,
+          success: true,
+        });
+        res.json({
+          name: entry.name,
+          source: entry.source,
+          createdAt: entry.createdAt,
+          expiresAt: entry.expiresAt,
+          revoked: entry.revoked,
+          rotationVersion: entry.rotationVersion,
+          lastRotatedAt: entry.lastRotatedAt,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to rotate secret");
+      }
+    });
+
+    app.post("/api/secrets/:name/revoke", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const entry = this.secretsStore.get(name);
+        if (!entry) {
+          res.status(404).json({ error: "Secret not found" });
+          return;
+        }
+        entry.revoked = true;
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "revoke",
+          accessedBy: "api",
+          timestamp: new Date().toISOString(),
+          success: true,
+        });
+        res.status(204).end();
+      } catch (err) {
+        this.handleError(err, res, "Failed to revoke secret");
+      }
+    });
+
+    app.delete("/api/secrets/:name", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        const deleted = this.secretsStore.delete(name);
+        if (!deleted) {
+          res.status(404).json({ error: "Secret not found" });
+          return;
+        }
+        this.secretsAuditLog.push({
+          secretName: name,
+          operation: "delete",
+          accessedBy: "api",
+          timestamp: new Date().toISOString(),
+          success: true,
+        });
+        res.status(204).end();
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete secret");
+      }
+    });
+
+    // ─── Config RPC API routes ──────────────────────────────────────────
+
+    app.get("/api/config-rpc", (req: Request, res: Response) => {
+      try {
+        const prefix = req.query.prefix as string | undefined;
+        const configManager = this.registry.resolveService<{
+          list(prefix?: string): Array<{ path: string; value: unknown; source: string }>;
+        }>("configManager");
+        if (configManager) {
+          const entries = configManager.list(prefix);
+          res.json({ entries });
+          return;
+        }
+        let entries = Array.from(this.configRpcStore.entries()).map(([p, v]) => ({
+          path: p,
+          value: v,
+          source: "memory",
+        }));
+        if (prefix) {
+          entries = entries.filter((e) => e.path.startsWith(prefix));
+        }
+        res.json({ entries });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list config entries");
+      }
+    });
+
+    app.post("/api/config-rpc/batch", (req: Request, res: Response) => {
+      try {
+        const { paths } = req.body || {};
+        if (!Array.isArray(paths)) {
+          res.status(400).json({ error: "paths must be an array" });
+          return;
+        }
+        const configManager = this.registry.resolveService<{
+          batchGet(paths: string[]): Array<{ path: string; value: unknown }>;
+        }>("configManager");
+        if (configManager) {
+          const results = configManager.batchGet(paths);
+          res.json({ results });
+          return;
+        }
+        const results = paths.map((p: string) => ({
+          path: p,
+          value: this.configRpcStore.has(p) ? this.configRpcStore.get(p) : null,
+        }));
+        res.json({ results });
+      } catch (err) {
+        this.handleError(err, res, "Failed to batch read config");
+      }
+    });
+
+    app.get("/api/config-rpc/:path", (req: Request, res: Response) => {
+      try {
+        const dotPath = String(req.params.path);
+        const configManager = this.registry.resolveService<{
+          get(path: string): { path: string; value: unknown } | null;
+        }>("configManager");
+        if (configManager) {
+          const result = configManager.get(dotPath);
+          if (!result) {
+            res.status(404).json({ error: "Config path not found" });
+            return;
+          }
+          res.json(result);
+          return;
+        }
+        if (!this.configRpcStore.has(dotPath)) {
+          res.status(404).json({ error: "Config path not found" });
+          return;
+        }
+        res.json({ path: dotPath, value: this.configRpcStore.get(dotPath) });
+      } catch (err) {
+        this.handleError(err, res, "Failed to read config");
+      }
+    });
+
+    app.post("/api/config-rpc/:path", (req: Request, res: Response) => {
+      try {
+        const dotPath = String(req.params.path);
+        const { value } = req.body || {};
+        const configManager = this.registry.resolveService<{
+          set(path: string, value: unknown): { path: string; value: unknown };
+        }>("configManager");
+        if (configManager) {
+          const result = configManager.set(dotPath, value);
+          res.json(result);
+          return;
+        }
+        this.configRpcStore.set(dotPath, value);
+        res.json({ path: dotPath, value });
+      } catch (err) {
+        this.handleError(err, res, "Failed to write config");
+      }
+    });
+
+    app.post("/api/config-rpc/:path/watch", (req: Request, res: Response) => {
+      try {
+        const dotPath = String(req.params.path);
+        const subscriptionId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        if (!this.configRpcWatchers.has(dotPath)) {
+          this.configRpcWatchers.set(dotPath, []);
+        }
+        this.configRpcWatchers.get(dotPath)!.push({ subscriptionId });
+        res.json({ subscriptionId });
+      } catch (err) {
+        this.handleError(err, res, "Failed to watch config path");
+      }
+    });
+
+    // ─── Model Switcher API routes ──────────────────────────────────────
+
+    app.get("/api/models", (_req: Request, res: Response) => {
+      try {
+        const modelSwitcher = this.registry.resolveService<{
+          listModels(): Array<{
+            id: string; name: string; provider: string;
+            model: string; capabilities: string[];
+            maxTokens: number; costPer1k: { input: number; output: number };
+            status: string;
+          }>;
+        }>("modelSwitcher");
+        if (modelSwitcher) {
+          const models = modelSwitcher.listModels();
+          res.json({ models });
+          return;
+        }
+        const models = Array.from(this.modelsStore.values());
+        res.json({ models });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list models");
+      }
+    });
+
+    app.get("/api/models/current", (_req: Request, res: Response) => {
+      try {
+        const modelSwitcher = this.registry.resolveService<{
+          getCurrentModel(): {
+            id: string; name: string; provider: string;
+            model: string; capabilities: string[];
+            maxTokens: number; costPer1k: { input: number; output: number };
+            status: string;
+          };
+        }>("modelSwitcher");
+        if (modelSwitcher) {
+          const model = modelSwitcher.getCurrentModel();
+          res.json({ model });
+          return;
+        }
+        const model = this.currentModelId
+          ? this.modelsStore.get(this.currentModelId)
+          : null;
+        if (!model) {
+          res.status(404).json({ error: "No current model configured" });
+          return;
+        }
+        res.json({ model });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get current model");
+      }
+    });
+
+    app.post("/api/models/switch", (req: Request, res: Response) => {
+      try {
+        const { modelId } = req.body || {};
+        if (!modelId) {
+          res.status(400).json({ error: "modelId is required" });
+          return;
+        }
+        const modelSwitcher = this.registry.resolveService<{
+          switchModel(modelId: string): { previous: string; current: string };
+        }>("modelSwitcher");
+        if (modelSwitcher) {
+          const result = modelSwitcher.switchModel(modelId);
+          res.json(result);
+          return;
+        }
+        const previous = this.currentModelId;
+        if (!this.modelsStore.has(modelId)) {
+          res.status(404).json({ error: "Model not found" });
+          return;
+        }
+        this.currentModelId = modelId;
+        res.json({ previous, current: modelId });
+      } catch (err) {
+        this.handleError(err, res, "Failed to switch model");
+      }
+    });
+
+    app.post("/api/models/test", (req: Request, res: Response) => {
+      try {
+        const { modelId } = req.body || {};
+        if (!modelId) {
+          res.status(400).json({ error: "modelId is required" });
+          return;
+        }
+        const modelSwitcher = this.registry.resolveService<{
+          testModel(modelId: string): { success: boolean; latencyMs: number };
+        }>("modelSwitcher");
+        if (modelSwitcher) {
+          const result = modelSwitcher.testModel(modelId);
+          res.json(result);
+          return;
+        }
+        const start = Date.now();
+        const exists = this.modelsStore.has(modelId);
+        const latencyMs = Date.now() - start;
+        res.json({ success: exists, latencyMs });
+      } catch (err) {
+        this.handleError(err, res, "Failed to test model");
+      }
+    });
+
+    // ─── Retention API routes ───────────────────────────────────────────
+
+    app.get("/api/retention/policy", (_req: Request, res: Response) => {
+      try {
+        res.json({ policy: this.retentionPolicy });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get retention policy");
+      }
+    });
+
+    app.put("/api/retention/policy", (req: Request, res: Response) => {
+      try {
+        const { policy } = req.body || {};
+        if (!policy) {
+          res.status(400).json({ error: "policy is required" });
+          return;
+        }
+        Object.assign(this.retentionPolicy, policy);
+        res.json({ policy: this.retentionPolicy });
+      } catch (err) {
+        this.handleError(err, res, "Failed to update retention policy");
+      }
+    });
+
+    app.get("/api/retention/stats", (_req: Request, res: Response) => {
+      try {
+        res.json(this.retentionStats);
+      } catch (err) {
+        this.handleError(err, res, "Failed to get retention stats");
+      }
+    });
+
+    app.post("/api/retention/run", (_req: Request, res: Response) => {
+      try {
+        const cleaned = this.retentionStats.expiredSessions;
+        this.retentionStats.cleanedUp += cleaned;
+        this.retentionStats.expiredSessions = 0;
+        this.retentionStats.lastRun = new Date().toISOString();
+        res.json({ cleaned });
+      } catch (err) {
+        this.handleError(err, res, "Failed to run retention cleanup");
+      }
+    });
+
+    // ─── Feature Flags API routes ───────────────────────────────────────
+
+    app.get("/api/feature-flags", (_req: Request, res: Response) => {
+      try {
+        const flags = Array.from(this.featureFlagsStore.values());
+        res.json({ flags });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list feature flags");
+      }
+    });
+
+    app.get("/api/feature-flags/:key", (req: Request, res: Response) => {
+      try {
+        const key = String(req.params.key);
+        const flag = this.featureFlagsStore.get(key);
+        if (!flag) {
+          res.status(404).json({ error: "Feature flag not found" });
+          return;
+        }
+        res.json(flag);
+      } catch (err) {
+        this.handleError(err, res, "Failed to get feature flag");
+      }
+    });
+
+    app.post("/api/feature-flags/:key", (req: Request, res: Response) => {
+      try {
+        const key = String(req.params.key);
+        const { enabled } = req.body || {};
+        if (typeof enabled !== "boolean") {
+          res.status(400).json({ error: "enabled must be a boolean" });
+          return;
+        }
+        const now = new Date().toISOString();
+        const existing = this.featureFlagsStore.get(key);
+        const flag = {
+          key,
+          name: existing?.name || key,
+          description: existing?.description || "",
+          enabled,
+          defaultValue: existing?.defaultValue ?? enabled,
+          updatedAt: now,
+        };
+        this.featureFlagsStore.set(key, flag);
+        res.json(flag);
+      } catch (err) {
+        this.handleError(err, res, "Failed to set feature flag");
+      }
+    });
+
+    app.post("/api/feature-flags/:key/evaluate", (req: Request, res: Response) => {
+      try {
+        const key = String(req.params.key);
+        const { context } = req.body || {};
+        const flag = this.featureFlagsStore.get(key);
+        if (!flag) {
+          res.status(404).json({ error: "Feature flag not found" });
+          return;
+        }
+        const enabled = flag.enabled;
+        const reason = enabled ? "flag_enabled" : "flag_disabled";
+        res.json({ enabled, reason });
+      } catch (err) {
+        this.handleError(err, res, "Failed to evaluate feature flag");
+      }
+    });
+
+    // ─── Config Migration API routes ────────────────────────────────────
+
+    app.get("/api/config/migrations", (_req: Request, res: Response) => {
+      try {
+        const migrations = Array.from(this.migrationsStore.values());
+        res.json({ migrations });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list migrations");
+      }
+    });
+
+    app.post("/api/config/migrations/:id/run", (req: Request, res: Response) => {
+      try {
+        const id = String(req.params.id);
+        const now = new Date().toISOString();
+        let migration = this.migrationsStore.get(id);
+        if (!migration) {
+          migration = {
+            id,
+            fromVersion: "0",
+            toVersion: "1",
+            status: "running",
+            startedAt: now,
+            changes: [],
+          };
+          this.migrationsStore.set(id, migration);
+        } else {
+          migration.status = "running";
+          migration.startedAt = now;
+        }
+        migration.status = "completed";
+        migration.completedAt = now;
+        res.json(migration);
+      } catch (err) {
+        this.handleError(err, res, "Failed to run migration");
+      }
+    });
+
+    app.post("/api/config/migrations/:id/rollback", (req: Request, res: Response) => {
+      try {
+        const id = String(req.params.id);
+        const migration = this.migrationsStore.get(id);
+        if (!migration) {
+          res.status(404).json({ error: "Migration not found" });
+          return;
+        }
+        const now = new Date().toISOString();
+        migration.status = "failed";
+        migration.completedAt = now;
+        migration.error = "Rolled back";
+        res.json(migration);
+      } catch (err) {
+        this.handleError(err, res, "Failed to rollback migration");
+      }
+    });
+
+    app.get("/api/config/migration-status", (_req: Request, res: Response) => {
+      try {
+        const migrations = Array.from(this.migrationsStore.values());
+        const completed = migrations.filter((m: any) => m.status === "completed");
+        const pending = migrations.filter((m: any) => m.status === "pending");
+        const currentVersion = completed.length > 0
+          ? String(completed.length)
+          : "0";
+        const lastMigration = completed.length > 0
+          ? completed[completed.length - 1]
+          : undefined;
+        res.json({
+          currentVersion,
+          pendingCount: pending.length,
+          lastMigration,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get migration status");
+      }
+    });
+
+    // ─── Config Doctor API routes ───────────────────────────────────────
+
+    app.get("/api/config/doctor", (_req: Request, res: Response) => {
+      try {
+        const healthy = this.doctorIssues.length === 0;
+        res.json({ issues: this.doctorIssues, healthy });
+      } catch (err) {
+        this.handleError(err, res, "Failed to run diagnostics");
+      }
+    });
+
+    app.post("/api/config/doctor/fix", (req: Request, res: Response) => {
+      try {
+        const { path, value } = req.body || {};
+        if (!path) {
+          res.status(400).json({ error: "path is required" });
+          return;
+        }
+        const idx = this.doctorIssues.findIndex((i: any) => i.path === path);
+        if (idx !== -1) {
+          this.doctorIssues.splice(idx, 1);
+          this.configRpcStore.set(path, value);
+          res.json({ fixed: true });
+        } else {
+          res.json({ fixed: false });
+        }
+      } catch (err) {
+        this.handleError(err, res, "Failed to fix issue");
+      }
+    });
+
+    app.post("/api/config/doctor/fix-all", (_req: Request, res: Response) => {
+      try {
+        const fixed = this.doctorIssues.length;
+        for (const issue of this.doctorIssues) {
+          if (issue.suggestion !== undefined) {
+            this.configRpcStore.set(issue.path, issue.suggestion);
+          }
+        }
+        this.doctorIssues = [];
+        res.json({ fixed, remaining: 0 });
+      } catch (err) {
+        this.handleError(err, res, "Failed to fix all issues");
       }
     });
   }

@@ -8,6 +8,7 @@ import {
   Section, PrimaryButton, SecondaryButton, StatusDot, StatsGrid, showToast,
 } from "./shared";
 import { modelApi, type ModelInfo } from "./api-client";
+import { useTranslation } from "./i18n";
 
 const s = {
   container: { padding: "20px", overflow: "auto", height: "100%" } as React.CSSProperties,
@@ -98,6 +99,7 @@ const s = {
 };
 
 export default function ModelSwitcherPage() {
+  const { t } = useTranslation();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [currentModelId, setCurrentModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,7 +118,7 @@ export default function ModelSwitcherPage() {
       setCurrentModelId(currentRes?.model?.id ?? null);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load models");
+      setError(err instanceof Error ? err.message : "加载模型失败");
     } finally {
       setLoading(false);
     }
@@ -149,15 +151,15 @@ export default function ModelSwitcherPage() {
     try {
       await modelApi.switch(modelId);
       setCurrentModelId(modelId);
-      showToast("Model switched successfully", "success");
+      showToast(t("model_switcher.switched"), "success");
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to switch model", "error");
+      showToast(err instanceof Error ? err.message : t("model_switcher.switch_fail"), "error");
     } finally {
       setSwitchingId(null);
     }
-  }, []);
+  }, [t]);
 
-  if (loading) return <Loading text="Loading models..." />;
+  if (loading) return <Loading text={t("app.loading")} />;
   if (error) return <div style={s.container}><ErrorBanner message={error} onRetry={fetchData} /></div>;
 
   const currentModel = models.find((m) => m.id === currentModelId);
@@ -167,30 +169,29 @@ export default function ModelSwitcherPage() {
   return (
     <div style={s.container}>
       <PageHeader
-        title="Model Switcher"
-        subtitle="Switch between LLM models and test connectivity"
-        actions={<SecondaryButton onClick={fetchData} small>Refresh</SecondaryButton>}
+        title={t("model_switcher.title")}
+        subtitle={t("model_switcher.subtitle")}
+        actions={<SecondaryButton onClick={fetchData} small>刷新</SecondaryButton>}
       />
 
       <StatsGrid
         items={[
-          { label: "Active Model", value: currentModel?.name ?? "None", color: "var(--accent)" },
-          { label: "Available Models", value: availableCount },
-          { label: "Active Models", value: activeCount, color: "var(--success)" },
-          { label: "Inactive", value: availableCount - activeCount, color: "var(--text-muted)" },
+          { label: t("model_switcher.current"), value: currentModel?.name ?? "无", color: "var(--accent)" },
+          { label: t("model_switcher.available"), value: availableCount },
+          { label: "活跃模型", value: activeCount, color: "var(--success)" },
+          { label: "未激活", value: availableCount - activeCount, color: "var(--text-muted)" },
         ]}
       />
 
-      {/* Current Active Model */}
       {currentModel && (
-        <Section title="Current Active Model" style={{ marginTop: "20px" }}>
+        <Section title={t("model_switcher.current")} style={{ marginTop: "20px" }}>
           <div style={s.modelCardActive}>
             <div style={s.modelHeader}>
               <div>
                 <div style={s.modelName}>
                   <StatusDot status="active" size={10} />
                   {currentModel.name}
-                  <span style={s.activeLabel}>Active</span>
+                  <span style={s.activeLabel}>活跃</span>
                 </div>
                 <div style={s.modelMeta}>
                   {currentModel.provider} / {currentModel.model}
@@ -203,37 +204,36 @@ export default function ModelSwitcherPage() {
               ))}
             </div>
             <div style={s.detailRow}>
-              <span style={s.detailLabel}>Max Tokens</span>
+              <span style={s.detailLabel}>{t("model_switcher.max_tokens")}</span>
               <span style={s.detailValue}>{currentModel.maxTokens.toLocaleString()}</span>
             </div>
             <div style={s.detailRow}>
-              <span style={s.detailLabel}>Cost (Input)</span>
+              <span style={s.detailLabel}>费用 (输入)</span>
               <span style={s.detailValue}>${currentModel.costPer1k.input}/1k tokens</span>
             </div>
             <div style={s.detailRow}>
-              <span style={s.detailLabel}>Cost (Output)</span>
+              <span style={s.detailLabel}>费用 (输出)</span>
               <span style={s.detailValue}>${currentModel.costPer1k.output}/1k tokens</span>
             </div>
             {testResults[currentModel.id] && (
               <div style={testResults[currentModel.id].success ? s.latencyResult : s.latencyError}>
                 {testResults[currentModel.id].success
-                  ? `Latency: ${testResults[currentModel.id].latencyMs}ms`
-                  : "Test failed"}
+                  ? `延迟: ${testResults[currentModel.id].latencyMs}ms`
+                  : t("model_switcher.test_fail")}
               </div>
             )}
             <div style={s.actions}>
               <PrimaryButton onClick={() => handleTest(currentModel.id)} disabled={testingIds.has(currentModel.id)} small>
-                {testingIds.has(currentModel.id) ? "Testing..." : "Test"}
+                {testingIds.has(currentModel.id) ? t("model_switcher.testing") : t("model_switcher.test")}
               </PrimaryButton>
             </div>
           </div>
         </Section>
       )}
 
-      {/* All Models */}
-      <Section title="Available Models" style={{ marginTop: "24px" }}>
+      <Section title={t("model_switcher.available")} style={{ marginTop: "24px" }}>
         {models.length === 0 ? (
-          <EmptyState icon="" title="No models available" description="Add models to get started" />
+          <EmptyState icon="" title={t("model_switcher.no_models")} description="添加模型以开始使用" />
         ) : (
           <div style={s.grid}>
             {models.map((model) => {
@@ -246,7 +246,7 @@ export default function ModelSwitcherPage() {
                       <div style={s.modelName}>
                         <StatusDot status={model.status} size={8} />
                         {model.name}
-                        {isActive && <span style={s.activeLabel}>Active</span>}
+                        {isActive && <span style={s.activeLabel}>活跃</span>}
                       </div>
                       <div style={s.modelMeta}>
                         {model.provider} / {model.model}
@@ -259,23 +259,23 @@ export default function ModelSwitcherPage() {
                     ))}
                   </div>
                   <div style={s.detailRow}>
-                    <span style={s.detailLabel}>Max Tokens</span>
+                    <span style={s.detailLabel}>{t("model_switcher.max_tokens")}</span>
                     <span style={s.detailValue}>{model.maxTokens.toLocaleString()}</span>
                   </div>
                   <div style={s.detailRow}>
-                    <span style={s.detailLabel}>Cost (In/Out)</span>
+                    <span style={s.detailLabel}>费用 (输入/输出)</span>
                     <span style={s.detailValue}>${model.costPer1k.input}/${model.costPer1k.output}</span>
                   </div>
                   {testResults[model.id] && (
                     <div style={testResults[model.id].success ? s.latencyResult : s.latencyError}>
                       {testResults[model.id].success
-                        ? `Latency: ${testResults[model.id].latencyMs}ms`
-                        : "Test failed"}
+                        ? `延迟: ${testResults[model.id].latencyMs}ms`
+                        : t("model_switcher.test_fail")}
                     </div>
                   )}
                   <div style={s.actions}>
                     <PrimaryButton onClick={() => handleTest(model.id)} disabled={testingIds.has(model.id)} small>
-                      {testingIds.has(model.id) ? "Testing..." : "Test"}
+                      {testingIds.has(model.id) ? t("model_switcher.testing") : t("model_switcher.test")}
                     </PrimaryButton>
                     {!isActive && (
                       <SecondaryButton
@@ -283,7 +283,7 @@ export default function ModelSwitcherPage() {
                         disabled={switchingId === model.id}
                         small
                       >
-                        {switchingId === model.id ? "Switching..." : "Switch Model"}
+                        {switchingId === model.id ? "切换中..." : t("model_switcher.switch_to")}
                       </SecondaryButton>
                     )}
                   </div>
