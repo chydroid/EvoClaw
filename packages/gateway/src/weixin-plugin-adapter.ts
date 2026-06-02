@@ -441,7 +441,7 @@ export class WeixinPluginAdapter {
         }
       } catch {
       }
-      await this.sendMessage(account, fromUserId, firstFeedback, message.context_token);
+      await this.sendMessage(account, fromUserId, firstFeedback, undefined);
 
       let lastProgressSent = 0;
       let lastSentMsg = "";
@@ -513,7 +513,7 @@ export class WeixinPluginAdapter {
         if (msg && msg !== lastSentMsg) {
           lastProgressSent = now;
           lastSentMsg = msg;
-          this.sendMessage(account, fromUserId, msg, message.context_token).catch(() => {});
+          this.sendMessage(account, fromUserId, msg, undefined).catch(() => {});
         }
       };
 
@@ -529,10 +529,10 @@ export class WeixinPluginAdapter {
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
 
       if (searchCount > lastSearchReportRound) {
-        await this.sendMessage(account, fromUserId, `✅ 网络搜索全部完成，共${searchCount}轮`, message.context_token).catch(() => {});
+        await this.sendMessage(account, fromUserId, `✅ 网络搜索全部完成，共${searchCount}轮`, undefined).catch(() => {});
       }
       if (fetchCount > lastFetchReportCount) {
-        await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, message.context_token).catch(() => {});
+        await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, undefined).catch(() => {});
       }
 
       if (result.reply) {

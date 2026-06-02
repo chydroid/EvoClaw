@@ -1025,15 +1025,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           setMessages((prev) =>
             prev.map((m) =>
               m.id === botMsgId
-                ? { ...m, role: "system", content: abortMsg }
+                ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + abortMsg : "⚠️ " + abortMsg }
                 : m,
             ),
           );
         } else {
+          const netErrMsg = "Network error — cannot reach server";
           setMessages((prev) =>
             prev.map((m) =>
               m.id === botMsgId
-                ? { ...m, role: "system", content: "Network error — cannot reach server" }
+                ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + netErrMsg : "⚠️ " + netErrMsg }
                 : m,
             ),
           );
@@ -1071,10 +1072,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   if (currentEvent === "done") {
                     finalData = eventData;
                   } else if (currentEvent === "error") {
+                    const errMsg = eventData.message || "处理出错";
                     setMessages((prev) =>
                       prev.map((m) =>
                         m.id === botMsgId
-                          ? { ...m, role: "system", content: eventData.message || "处理出错" }
+                          ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + errMsg : "⚠️ " + errMsg }
                           : m,
                       ),
                     );
@@ -1181,7 +1183,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             const abortMsg = wasUserAbort ? "🛑 已停止生成。" : "⏱️ 请求超时。";
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === botMsgId ? { ...m, role: "system", content: abortMsg } : m,
+                m.id === botMsgId
+                  ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + abortMsg : "⚠️ " + abortMsg }
+                  : m,
               ),
             );
             return;
@@ -1208,15 +1212,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           }
 
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === botMsgId
-                ? {
-                    ...m,
-                    content: (finalData!.reply as string) || "(empty response from server)",
-                    files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
-                  }
-                : m,
-            ),
+            prev.map((m) => {
+              if (m.id !== botMsgId) return m;
+              const finalReply = (finalData!.reply as string) || "";
+              const finalContent = finalReply || m.content || "(empty response from server)";
+              return {
+                ...m,
+                content: finalContent,
+                files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
+              };
+            }),
           );
 
           if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
@@ -1251,15 +1256,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         }
         
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === botMsgId
-              ? {
-                  ...m,
-                  content: data.reply || "(empty response from server)",
-                  files: (data.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
-                }
-              : m,
-          ),
+          prev.map((m) => {
+            if (m.id !== botMsgId) return m;
+            const nonStreamReply = data.reply || "";
+            const nonStreamContent = nonStreamReply || m.content || "(empty response from server)";
+            return {
+              ...m,
+              content: nonStreamContent,
+              files: (data.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
+            };
+          }),
         );
 
         if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
@@ -1273,19 +1279,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         }
       } else {
         const errText = await res.text().catch(() => "");
+        const srvErrMsg = `Server error: ${errText.slice(0, 200)}`;
         setMessages((prev) =>
           prev.map((m) =>
             m.id === botMsgId
-              ? { ...m, role: "system", content: `Server error: ${errText.slice(0, 200)}` }
+              ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + srvErrMsg : "⚠️ " + srvErrMsg }
               : m,
           ),
         );
       }
     } catch {
+      const unexpErrMsg = "Unexpected error — please retry";
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMsgId
-            ? { ...m, role: "system", content: "Unexpected error — please retry" }
+            ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + unexpErrMsg : "⚠️ " + unexpErrMsg }
             : m,
         ),
       );
@@ -1381,7 +1389,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         setMessages((prev) =>
           prev.map((m) =>
             m.id === pendingPermissions[0]?.messageId
-              ? { ...m, role: "system", content: "权限请求已被拒绝" }
+              ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ 权限请求已被拒绝" : "⚠️ 权限请求已被拒绝" }
               : m,
           ),
         );
