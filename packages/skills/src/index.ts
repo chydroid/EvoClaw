@@ -1,4 +1,6 @@
 export { SkillManager } from "./skill-manager";
+export { SkillValidator } from "./skill-validator";
+export { SkillHookEngine } from "./skill-hook-engine";
 export { SKILLmdParser } from "./skill-md-parser";
 export { SkillSandbox } from "./skill-sandbox";
 export { SkillLifecycleManager } from "./skill-lifecycle";
@@ -7,6 +9,10 @@ export { SkillResolver } from "./skill-resolver";
 export { AutoSkillManager } from "./auto-skill-manager";
 export { SkillDispatcher } from "./skill-dispatcher";
 export { TfidfMatcher } from "./tfidf-matcher";
+export { SkillCircuitBreaker } from "./skill-circuit-breaker";
+export type { CircuitState, CircuitStats, CircuitBreakerConfig } from "./skill-circuit-breaker";
+export { SkillCapabilityEvaluator } from "./skill-capability-evaluator";
+export type { CapabilityScore } from "./skill-capability-evaluator";
 export { SkillCurator } from "./skill-curator";
 export { SkillIndex } from "./skill-index";
 export type { SkillIndexEntry, SkillSearchResult } from "./skill-index";

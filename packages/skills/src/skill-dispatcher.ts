@@ -1,6 +1,8 @@
-import { ServiceRegistry, EventBus, type SkillExecutionResult } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, type SkillExecutionResult, type Skill } from "@evoclaw/core";
 import type { AutoSkillManager, SkillMatch, AutoInstallResult, ProgressCallback } from "./auto-skill-manager";
 import type { SkillRegistry, RegistrySearchResult } from "./skill-registry";
+import type { SkillCircuitBreaker } from "./skill-circuit-breaker";
+import type { SkillCapabilityEvaluator } from "./skill-capability-evaluator";
 
 export interface DispatchContext {
   task: string;
@@ -45,6 +47,8 @@ const DEFAULT_OPTIONS: DispatchOptions = {
 export class SkillDispatcher {
   private autoSkillManager: AutoSkillManager | null = null;
   private skillRegistry: SkillRegistry | null = null;
+  private circuitBreaker: SkillCircuitBreaker | null = null;
+  private capabilityEvaluator: SkillCapabilityEvaluator | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -53,12 +57,11 @@ export class SkillDispatcher {
     registry.registerService("skillDispatcher", this);
   }
 
-  /**
-   * Initialize: resolve dependent services.
-   */
   initialize(): void {
     this.autoSkillManager = this.registry.resolveService<AutoSkillManager>("autoSkillManager") ?? null;
     this.skillRegistry = this.registry.resolveService<SkillRegistry>("skillRegistry") ?? null;
+    this.circuitBreaker = this.registry.resolveService<SkillCircuitBreaker>("skillCircuitBreaker") ?? null;
+    this.capabilityEvaluator = this.registry.resolveService<SkillCapabilityEvaluator>("skillCapabilityEvaluator") ?? null;
     
     // Build TF-IDF corpus from existing skills
     this.autoSkillManager?.buildCorpus();
@@ -90,8 +93,10 @@ export class SkillDispatcher {
     } else {
       const localMatches = await this.autoSkillManager.findAllMatches(context.task, opts.maxCandidates!);
 
-      if (localMatches.length > 0) {
-        reasoning.push(`本地匹配 ${localMatches.length} 个技能`);
+      const rankedMatches = await this.rerankWithEvaluator(localMatches, context.task);
+
+      if (rankedMatches.length > 0) {
+        reasoning.push(`本地匹配 ${rankedMatches.length} 个技能`);
 
         const skillManager = this.registry.resolveService<{
           listSkills(): Promise<Array<{ name: string; id: string; config?: Record<string, unknown> }>>;
@@ -102,10 +107,15 @@ export class SkillDispatcher {
           const installedSkills = await skillManager.listSkills();
           let autoInstallAttempted = false;
 
-          for (const match of localMatches) {
+          for (const match of rankedMatches) {
             if (match.relevance < opts.autoInstallThreshold!) {
               reasoning.push(`候选 "${match.skillName}" 相关度过低 (${(match.relevance * 100).toFixed(0)}%)，停止本地尝试`);
               break;
+            }
+
+            if (match.skillId && this.circuitBreaker && !this.circuitBreaker.isAvailable(match.skillId)) {
+              reasoning.push(`候选 "${match.skillName}" 已被熔断，跳过`);
+              continue;
             }
 
             reasoning.push(`尝试候选: ${match.skillName} (相关度 ${(match.relevance * 100).toFixed(0)}%)`);
@@ -133,6 +143,7 @@ export class SkillDispatcher {
                     const params = this.extractSkillParams(context.task, match.skillName);
                     const result = await skillManager.executeSkill(installResult.skillId, params);
                     if (result.success) {
+                      this.circuitBreaker?.recordSuccess(installResult.skillId);
                       return {
                         success: true,
                         path: "skill",
@@ -141,13 +152,16 @@ export class SkillDispatcher {
                         output: result.output,
                         reasoning: reasoning.join("\n"),
                         duration: Date.now() - startTime,
-                        matchedSkills: localMatches,
+                        matchedSkills: rankedMatches,
                         autoInstallResult: installResult,
                       };
                     }
+                    this.circuitBreaker?.recordFailure(installResult.skillId, "执行未成功");
                     reasoning.push(`技能 "${match.skillName}" 执行未成功，尝试下一个候选`);
                   } catch (err) {
-                    reasoning.push(`技能 "${match.skillName}" 执行异常: ${err instanceof Error ? err.message : String(err)}`);
+                    const errMsg = err instanceof Error ? err.message : String(err);
+                    this.circuitBreaker?.recordFailure(installResult.skillId, errMsg);
+                    reasoning.push(`技能 "${match.skillName}" 执行异常: ${errMsg}`);
                   }
                 } else {
                   reasoning.push(`自动安装失败: ${installResult.reason}`);
@@ -168,6 +182,7 @@ export class SkillDispatcher {
               const params = this.extractSkillParams(context.task, match.skillName);
               const result = await skillManager.executeSkill(installed.id, params);
               if (result.success) {
+                this.circuitBreaker?.recordSuccess(installed.id);
                 return {
                   success: true,
                   path: "skill",
@@ -176,12 +191,15 @@ export class SkillDispatcher {
                   output: result.output,
                   reasoning: reasoning.join("\n"),
                   duration: Date.now() - startTime,
-                  matchedSkills: localMatches,
+                  matchedSkills: rankedMatches,
                 };
               }
+              this.circuitBreaker?.recordFailure(installed.id, "执行未成功");
               reasoning.push(`技能 "${match.skillName}" 执行未成功，尝试下一个候选`);
             } catch (err) {
-              reasoning.push(`技能 "${match.skillName}" 执行异常: ${err instanceof Error ? err.message : String(err)}`);
+              const errMsg = err instanceof Error ? err.message : String(err);
+              this.circuitBreaker?.recordFailure(installed.id, errMsg);
+              reasoning.push(`技能 "${match.skillName}" 执行异常: ${errMsg}`);
             }
           }
         }
@@ -243,6 +261,11 @@ export class SkillDispatcher {
                       try {
                         const params = this.extractSkillParams(context.task, skillName);
                         const result = await skillManager.executeSkill(installResult.skillId, params);
+                        if (result.success) {
+                          this.circuitBreaker?.recordSuccess(installResult.skillId);
+                        } else {
+                          this.circuitBreaker?.recordFailure(installResult.skillId, "执行未成功");
+                        }
                         return {
                           success: result.success,
                           path: "skill",
@@ -254,7 +277,9 @@ export class SkillDispatcher {
                           autoInstallResult: installResult,
                         };
                       } catch (err) {
-                        reasoning.push(`远端技能执行失败: ${err instanceof Error ? err.message : String(err)}`);
+                        const errMsg = err instanceof Error ? err.message : String(err);
+                        this.circuitBreaker?.recordFailure(installResult.skillId, errMsg);
+                        reasoning.push(`远端技能执行失败: ${errMsg}`);
                       }
                     }
                   }
@@ -458,7 +483,13 @@ export class SkillDispatcher {
         try {
           const params = this.extractSkillParams(task, installed.skillName);
           const result = await skillManager.executeSkill(match.id, params);
-          
+
+          if (result.success) {
+            this.circuitBreaker?.recordSuccess(match.id);
+          } else {
+            this.circuitBreaker?.recordFailure(match.id, "执行未成功");
+          }
+
           return {
             success: result.success,
             path: "skill",
@@ -469,6 +500,8 @@ export class SkillDispatcher {
             duration: Date.now() - startTime,
           };
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.circuitBreaker?.recordFailure(match.id, errMsg);
           return {
             success: false,
             path: "skill",
@@ -476,7 +509,7 @@ export class SkillDispatcher {
             skillId: match.id,
             reasoning: reasoning.join("\n"),
             duration: Date.now() - startTime,
-            error: `执行失败: ${err instanceof Error ? err.message : String(err)}`,
+            error: `执行失败: ${errMsg}`,
           };
         }
       }
@@ -527,6 +560,55 @@ export class SkillDispatcher {
   }
 
   // ── Private ──
+
+  private async rerankWithEvaluator(matches: SkillMatch[], taskDescription: string): Promise<SkillMatch[]> {
+    if (!this.capabilityEvaluator || matches.length === 0) return matches;
+
+    try {
+      const skillManager = this.registry.resolveService<{
+        listSkills(): Promise<Skill[]>;
+      }>("skillManager");
+
+      if (!skillManager) return matches;
+
+      const allSkills = await skillManager.listSkills();
+      const matchSkillIds = new Set(matches.map(m => m.skillId).filter(Boolean));
+      const relevantSkills = allSkills.filter(s => matchSkillIds.has(s.id));
+
+      if (relevantSkills.length === 0) return matches;
+
+      this.capabilityEvaluator.buildCorpus(relevantSkills);
+
+      const ranked = this.capabilityEvaluator.rankSkills(relevantSkills, taskDescription);
+
+      const skillById = new Map(relevantSkills.map(s => [s.id, s]));
+      const rankedMatches: SkillMatch[] = [];
+      const seen = new Set<string>();
+
+      for (const { skill, score } of ranked) {
+        const originalMatch = matches.find(m => m.skillId === skill.id);
+        if (originalMatch && !seen.has(originalMatch.skillName)) {
+          seen.add(originalMatch.skillName);
+          rankedMatches.push({
+            ...originalMatch,
+            relevance: score.overall,
+            reason: `${originalMatch.reason} [评估: ${(score.overall * 100).toFixed(0)}%]`,
+          });
+        }
+      }
+
+      for (const m of matches) {
+        if (!seen.has(m.skillName)) {
+          seen.add(m.skillName);
+          rankedMatches.push(m);
+        }
+      }
+
+      return rankedMatches;
+    } catch {
+      return matches;
+    }
+  }
 
   /**
    * Extract concise keywords from natural-language task description

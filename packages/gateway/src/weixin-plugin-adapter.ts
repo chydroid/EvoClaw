@@ -113,6 +113,8 @@ export class WeixinPluginAdapter {
   private eventBus: EventBus;
   private agentExecutor: AgentModelExecutor;
   private runningMonitors: Map<string, { controller: AbortController }> = new Map();
+  // 跟踪每个用户的 pending permission requests
+  private userPendingPermissions: Map<string, Array<{ requestId: string; timestamp: number }>> = new Map();
 
   constructor(eventBus: EventBus, agentExecutor: AgentModelExecutor) {
     this.eventBus = eventBus;
@@ -331,6 +333,38 @@ export class WeixinPluginAdapter {
       }
     }
 
+    // ── 权限快速通道：如果用户有 pending 权限请求，检测批准/拒绝关键词 ──
+    const userPending = this.userPendingPermissions.get(fromUserId);
+    if (userPending && userPending.length > 0 && text) {
+      const trimmed = text.trim();
+      const isApproval = /^[好是对批准同意可以行]+$/.test(trimmed) ||
+                        /^(批准|同意|可以|好的|是的|对|行|没问题|OK|ok|Yes|yes)$/.test(trimmed);
+      const isRejection = /^(拒绝|不要|不行|不可以|不批准|不同意|no|stop|取消)$/.test(trimmed) && !isApproval;
+
+      if (isApproval || isRejection) {
+        const pending = userPending.pop()!;
+        if (userPending.length === 0) {
+          this.userPendingPermissions.delete(fromUserId);
+        }
+
+        if (isApproval) {
+          console.log(`[Weixin] Permission approved by user ${fromUserId}: "${trimmed}" → fast-track executing tool`);
+          try {
+            const result = await this.agentExecutor.approveAndExecute(pending.requestId);
+            await this.sendMessage(account, fromUserId, result.reply, message.context_token);
+          } catch (err) {
+            console.error("[Weixin] approveAndExecute failed:", err);
+            await this.sendMessage(account, fromUserId, "⚠️ 执行已批准的操作时出错，请重试。", message.context_token);
+          }
+        } else {
+          console.log(`[Weixin] Permission rejected by user ${fromUserId}: "${trimmed}"`);
+          const result = this.agentExecutor.rejectPermission(pending.requestId);
+          await this.sendMessage(account, fromUserId, result.reply, message.context_token);
+        }
+        return;
+      }
+    }
+
     // 下载图片并转为 base64 data URI（用于 Vision）
     let imageAttachment: { name: string; type: string; size: number; data: string } | undefined;
     if (hasImage) {
@@ -533,6 +567,32 @@ export class WeixinPluginAdapter {
       }
       if (fetchCount > lastFetchReportCount) {
         await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, undefined).catch(() => {});
+      }
+
+      // 检查是否有权限请求
+      if (result.permissionRequests && result.permissionRequests.length > 0) {
+        console.log(`[Weixin] Received ${result.permissionRequests.length} permission requests for user ${fromUserId}`);
+        const userPending = [];
+        for (const req of result.permissionRequests) {
+          userPending.push({
+            requestId: req.id,
+            timestamp: Date.now(),
+          });
+        }
+        this.userPendingPermissions.set(fromUserId, userPending);
+        
+        // 构建权限请求消息
+        let permissionMsg = "⚠️ 需要您的授权才能继续：\n";
+        for (let i = 0; i < result.permissionRequests.length; i++) {
+          const req = result.permissionRequests[i];
+          permissionMsg += `\n${i + 1}. **${req.operation}**\n`;
+          permissionMsg += `   ${req.description}\n`;
+          permissionMsg += `   目标: ${req.target}\n`;
+        }
+        permissionMsg += "\n请回复\"批准\"或\"同意\"继续，回复\"拒绝\"或\"取消\"放弃。";
+        
+        await this.sendMessage(account, fromUserId, permissionMsg, undefined);
+        return;
       }
 
       if (result.reply) {

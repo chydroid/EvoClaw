@@ -323,7 +323,7 @@ export class AgentModelExecutor {
   private bootstrapFiles: Array<{ path: string; content: string }> = [];
   private _cachedSkillNames: Set<string> = new Set();
   
-  private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string }>();
+  private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string; toolName: string; toolArgs: Record<string, unknown> }>();
   private isProcessingQueue = false;
 
   // Lazily resolve EventLedger to avoid circular dependency (it's registered after this class)
@@ -587,7 +587,117 @@ export class AgentModelExecutor {
     const pending = this.pendingOperations.get(requestId);
     if (!pending) return;
     this.pendingOperations.delete(requestId);
-    console.log(`[AgentModelExecutor] Permission approved for request "${requestId}". Frontend will auto-resume the task.`);
+    console.log(`[AgentModelExecutor] Permission approved for request "${requestId}". Notifying via event...`);
+    this.eventBus.publish("permission.approved_fast", {
+      requestId,
+      sessionId: pending.sessionId,
+      toolName: pending.toolName,
+    }, "agent-model-executor");
+  }
+
+  /**
+   * 权限批准快速通道：直接重新执行被阻塞的工具，不经过 LLM
+   * 返回工具执行结果，由调用方直接反馈给用户
+   */
+  async approveAndExecute(requestId: string, addToWhitelist: boolean = true): Promise<{ success: boolean; reply: string; toolName?: string }> {
+    const pending = this.pendingOperations.get(requestId);
+    if (!pending) {
+      return { success: false, reply: "⚠️ 未找到对应的权限请求，可能已过期或已处理。" };
+    }
+    this.pendingOperations.delete(requestId);
+
+    console.log(`[AgentModelExecutor] approveAndExecute: re-executing tool "${pending.toolName}" for request "${requestId}"`);
+
+    // 1. 先在 PermissionManager 中批准该操作（加入白名单，5分钟内同类操作自动通过）
+    const permManager = this.registry?.resolveService<any>("permissionManager");
+    if (permManager) {
+      try {
+        permManager.approveRequest(requestId, addToWhitelist);
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] approveAndExecute: failed to approve in PermissionManager:`, err);
+      }
+    }
+
+    // 2. 直接重新执行被阻塞的工具
+    const toolEntry = this.registeredTools.get(pending.toolName);
+    if (!toolEntry) {
+      return { success: false, reply: `⚠️ 工具 "${pending.toolName}" 未找到，无法执行。`, toolName: pending.toolName };
+    }
+
+    try {
+      const toolStartTime = Date.now();
+      const rawResult = await toolEntry.handler(pending.toolArgs);
+      const duration = Date.now() - toolStartTime;
+
+      // 记录到 EventLedger
+      const ledger = this.getEventLedger();
+      if (ledger) {
+        ledger.recordToolExecution(pending.toolName, pending.toolArgs, rawResult, duration, { agentId: "default", sessionId: pending.sessionId });
+      }
+
+      // 构建用户友好的反馈
+      let resultText = "";
+      if (rawResult && typeof rawResult === "object") {
+        const r = rawResult as Record<string, unknown>;
+        if (typeof r.content === "string") resultText = r.content;
+        else if (typeof r.text === "string") resultText = r.text;
+        else if (typeof r.message === "string") resultText = r.message;
+        else resultText = JSON.stringify(rawResult);
+      } else if (typeof rawResult === "string") {
+        resultText = rawResult;
+      } else {
+        resultText = JSON.stringify(rawResult);
+      }
+
+      // 根据工具类型生成简洁的确认消息
+      const toolLabelMap: Record<string, string> = {
+        "file_create": "创建文件",
+        "file_modify": "修改文件",
+        "file_delete": "删除文件",
+        "browser_navigate": "浏览器访问",
+        "browser_submit_form": "提交表单",
+        "skill_find_and_install": "安装技能",
+        "email_add_account": "添加邮箱",
+        "email_send": "发送邮件",
+      };
+      const toolLabel = toolLabelMap[pending.toolName] || pending.toolName;
+
+      // 提取目标文件路径（如果有）
+      const targetPath = (pending.toolArgs?.path as string) || (pending.toolArgs?.filePath as string) || (pending.toolArgs?.target as string) || "";
+      const targetInfo = targetPath ? `: ${targetPath.split("/").pop() || targetPath.split("\\").pop() || targetPath}` : "";
+
+      const reply = `✅ ${toolLabel}${targetInfo} 已完成\n\n${resultText.length > 2000 ? resultText.slice(0, 2000) + "\n...(结果已截断)" : resultText}`;
+
+      console.log(`[AgentModelExecutor] approveAndExecute: tool "${pending.toolName}" executed successfully in ${duration}ms`);
+      return { success: true, reply, toolName: pending.toolName };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[AgentModelExecutor] approveAndExecute: tool "${pending.toolName}" failed:`, errMsg);
+      return { success: false, reply: `❌ 工具执行失败: ${errMsg}`, toolName: pending.toolName };
+    }
+  }
+
+  /**
+   * 权限拒绝快速通道：清理 pending 状态，返回拒绝确认
+   */
+  rejectPermission(requestId: string): { success: boolean; reply: string } {
+    const pending = this.pendingOperations.get(requestId);
+    if (!pending) {
+      return { success: false, reply: "⚠️ 未找到对应的权限请求。" };
+    }
+    this.pendingOperations.delete(requestId);
+
+    const permManager = this.registry?.resolveService<any>("permissionManager");
+    if (permManager) {
+      try {
+        permManager.denyRequest(requestId);
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] rejectPermission: failed to deny in PermissionManager:`, err);
+      }
+    }
+
+    console.log(`[AgentModelExecutor] rejectPermission: request "${requestId}" rejected`);
+    return { success: true, reply: "❌ 操作已取消。" };
   }
 
   /**
@@ -4104,7 +4214,7 @@ Have a specific URL?
                   });
                   
                   if (requestId) {
-                    this.pendingOperations.set(requestId, { sessionId, message, requestId });
+                    this.pendingOperations.set(requestId, { sessionId: sessionId, message: message, requestId: requestId, toolName: toolName, toolArgs: args });
                   }
                 }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);

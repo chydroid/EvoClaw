@@ -16,6 +16,8 @@ import { execFileSync } from "child_process";
 import { SKILLmdParser } from "./skill-md-parser";
 import { SkillSandbox } from "./skill-sandbox";
 import { SkillLifecycleManager } from "./skill-lifecycle";
+import { SkillValidator } from "./skill-validator";
+import { SkillHookEngine } from "./skill-hook-engine";
 import { SkillRegistry, type RegistrySearchQuery, type RegistrySearchResult, type RemoteRegistryConfig } from "./skill-registry";
 import { SkillResolver } from "./skill-resolver";
 import { LocalizationService } from "./localization-service";
@@ -28,6 +30,8 @@ export class SkillManager {
   private registry: SkillRegistry;
   private resolver: SkillResolver;
   private localization: LocalizationService;
+  private validator: SkillValidator;
+  private hookEngine: SkillHookEngine;
   private processedItems = new Map<string, number>();
   private isScanning = false;
 
@@ -46,6 +50,8 @@ export class SkillManager {
       (id) => this.skills.get(id)
     );
     this.localization = new LocalizationService(svcRegistry);
+    this.validator = new SkillValidator();
+    this.hookEngine = new SkillHookEngine(svcRegistry, eventBus);
 
     svcRegistry.registerService("skillManager", this);
   }
@@ -102,6 +108,16 @@ export class SkillManager {
       // 远程技能的 slug 作为 name 备选
       if (parsed.meta.name === "unnamed-skill" && metaJson.slug) {
         parsed.meta.name = String(metaJson.slug);
+      }
+    }
+
+    const validation = this.validator.validate(parsed);
+    if (!validation.valid) {
+      throw new Error(`Skill validation failed: ${validation.errors.join("; ")}`);
+    }
+    if (validation.warnings.length > 0) {
+      for (const w of validation.warnings) {
+        console.warn(`[SkillManager] ⚠ ${w}`);
       }
     }
 
@@ -215,6 +231,8 @@ export class SkillManager {
     this.registry.registerSkill(skill);
     this.lifecycle.activate(skill);
 
+    await this.hookEngine.executeHook(skill, "onInstall");
+
     const existingI18n = this.localization.loadI18nFile(skillDir);
     if (existingI18n) {
       skill.i18n = existingI18n as SkillI18n;
@@ -277,6 +295,8 @@ export class SkillManager {
     skill.stats.invocationCount++;
 
     try {
+      await this.hookEngine.executeHook(skill, "onBeforeExecute", { params });
+
       const result = await this.sandbox.execute(skill, params);
 
       const duration = Date.now() - startTime;
@@ -288,8 +308,12 @@ export class SkillManager {
 
       await this.eventBus.publish(SystemEvents.SKILL_EXECUTED, { skillId, params, result }, "skill-manager");
 
+      await this.hookEngine.executeHook(skill, "onAfterExecute", { params, result });
+
       return result;
     } catch (err) {
+      await this.hookEngine.executeHook(skill, "onError", { params, error: err });
+
       const duration = Date.now() - startTime;
       skill.stats.failureCount++;
 
@@ -361,6 +385,8 @@ export class SkillManager {
   async uninstallSkill(skillId: string): Promise<void> {
     const skill = this.skills.get(skillId);
     if (skill) {
+      await this.hookEngine.executeHook(skill, "onUninstall");
+
       this.lifecycle.deactivate(skill);
 
       // Unregister agent tool

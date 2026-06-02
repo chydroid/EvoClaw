@@ -258,6 +258,10 @@ name: security-check
 version: 1.0.0
 description: Security validation test
 author: Test
+triggers:
+  - type: keyword
+    pattern: "security-check"
+    description: Test trigger
 ---
 
 ## Scripts
