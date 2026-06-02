@@ -86,6 +86,7 @@ const commandModules = [
   "sandbox", "tasks", "hooks",
   "cron", "webhooks", "plugins", "mcp",
   "directory", "docs",
+  "configure", "infer", "tui", "transcripts", "dns", "qr",
   "update", "backup", "uninstall", "reset",
 ];
 
