@@ -1437,27 +1437,24 @@ export class ProtocolAdapter {
 
     app.get("/api/system/sessions", (_req: Request, res: Response) => {
       try {
-        const sessionMgr = this.registry.resolveService<{
-          listSessions(agentId: string): Array<{ sessionId: string; messageCount?: number; updatedAt?: string; status?: string }>;
-        }>("sessionManager");
-        const lm = this.registry.resolveService<{
-          getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number; compactionCount?: number }>;
-        }>("lifecycleManager");
-
-        const sessions = sessionMgr?.listSessions("default") || [];
-        const statuses = lm?.getAllStatuses() || [];
-
-        const result = sessions.map((s) => {
-          const status = statuses.find((st) => st.sessionId === s.sessionId);
-          return {
-            id: s.sessionId,
-            messageCount: s.messageCount || 0,
-            lastActive: s.updatedAt || new Date().toISOString(),
-            compactionCount: status?.compactionCount || 0,
-            tokensUsed: status?.tokensUsed || 0,
-          };
-        });
-
+        const sessionMgr = this.registry.resolveService<any>("sessionManager");
+        let allSessions: any[] = [];
+        if (sessionMgr) {
+          const agents: string[] = sessionMgr.listAgents?.() || [];
+          for (const agentId of agents) {
+            const agentSessions = sessionMgr.listSessions?.(agentId) || [];
+            if (Array.isArray(agentSessions)) {
+              allSessions = allSessions.concat(agentSessions);
+            }
+          }
+        }
+        const result = allSessions.map((s: any) => ({
+          id: s.sessionId || s.id,
+          messageCount: s.turnCount || s.messageCount || 0,
+          lastActive: s.updatedAt || s.lastActivityAt || new Date().toISOString(),
+          compactionCount: s.compactionCount || 0,
+          tokensUsed: s.tokenEstimate || s.tokensUsed || 0,
+        }));
         res.json(result);
       } catch (err) {
         res.status(500).json({ error: String(err) });
