@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
-import { Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState, Section, StatusDot, StatsGrid, PrimaryButton, showToast } from "./shared";
+import { Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState, Section, StatusDot, PrimaryButton, showToast } from "./shared";
 import { healthApi } from "./api-client";
 import type { ComponentHealth } from "./api-client";
 import { useTranslation } from "./i18n";
@@ -139,12 +139,22 @@ export default function HealthAggregatorPage() {
             {healthyCount} 健康 / {degradedCount} 降级 / {unhealthyCount} 异常 &mdash; 共 {components.length} 个组件
           </div>
         </div>
-        <StatsGrid items={[
-          { label: t("health_aggregator.healthy"), value: healthyCount, color: "var(--success)" },
-          { label: t("health_aggregator.degraded"), value: degradedCount, color: "var(--warning)" },
-          { label: t("health_aggregator.unhealthy"), value: unhealthyCount, color: "var(--error)" },
-          { label: "总计", value: components.length },
-        ]} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", minWidth: "200px" }}>
+          {[
+            { label: t("health_aggregator.healthy"), value: healthyCount, color: "var(--success)" },
+            { label: t("health_aggregator.degraded"), value: degradedCount, color: "var(--warning)" },
+            { label: t("health_aggregator.unhealthy"), value: unhealthyCount, color: "var(--error)" },
+            { label: "总计", value: components.length },
+          ].map((item, i) => (
+            <div key={i} style={{
+              background: "var(--bg-input)", border: "1px solid var(--border-light)",
+              borderRadius: "8px", padding: "10px 14px", textAlign: "center",
+            }}>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 600, marginBottom: "2px" }}>{item.label}</div>
+              <div style={{ fontSize: "22px", fontWeight: 700, color: item.color || "var(--text-primary)" }}>{item.value}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <Section title={`组件 (${components.length})`}>
