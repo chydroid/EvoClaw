@@ -1899,20 +1899,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     <button
                       style={{
                         position: "absolute",
-                        top: "3px",
+                        top: "5px",
                         right: "32px",
                         background: "transparent",
-                        border: "1px solid var(--border, rgba(255,255,255,0.1))",
+                        border: "none",
                         borderRadius: "4px",
-                        padding: "2px 6px",
+                        padding: "3px",
                         color: "var(--text-muted, #6e7681)",
                         cursor: "pointer",
                         zIndex: 10,
                         display: "flex",
                         alignItems: "center",
-                        fontSize: "10px",
-                        whiteSpace: "nowrap",
-                        transition: "color 0.15s, background 0.15s, border-color 0.15s",
+                        transition: "color 0.15s, background 0.15s",
                       }}
                       title={msgViewModes[msg.id] === "raw" ? t("chat.show_preview") : t("chat.show_raw")}
                       onClick={(e) => {
@@ -1925,15 +1923,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       onMouseEnter={(e) => {
                         e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
                         e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
-                        e.currentTarget.style.borderColor = "var(--accent, #58a6ff)";
                       }}
                       onMouseLeave={(e) => {
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted, #6e7681)";
-                        e.currentTarget.style.borderColor = "var(--border, rgba(255,255,255,0.1))";
                       }}
                     >
-                      {msgViewModes[msg.id] === "raw" ? t("chat.show_preview") : t("chat.show_raw")}
+                      {msgViewModes[msg.id] === "raw" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/><line x1="14" y1="4" x2="10" y2="20"/></svg>
+                      )}
                     </button>
                     <button
                       style={{
@@ -2442,7 +2442,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
               >
-                📎
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
               </button>
               <button
                 style={{ ...inputBtnStyle, display: "none" }}
