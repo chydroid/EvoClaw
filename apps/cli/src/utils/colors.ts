@@ -27,7 +27,7 @@ export const ICONS = {
   tip: () => c("yellow", "💡"),
   star: () => c("yellow", "★"),
   dash: () => c("gray", "—"),
-  rock: "🦞",
+  rock: "🧬",
 };
 
 export function divider(): string {

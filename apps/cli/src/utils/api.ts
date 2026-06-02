@@ -3,7 +3,17 @@ import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
 
-export const VERSION = "0.5.9";
+function loadVersion(): string {
+  try {
+    const pkgPath = path.resolve(__dirname, "../../../../package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      if (pkg.version) return pkg.version;
+    }
+  } catch {}
+  return "0.9.5";
+}
+export const VERSION = loadVersion();
 /** OpenClaw-compatible version for WeChat plugin compatibility */
 export const OPENCLAW_COMPAT_VERSION = "2026.3.22";
 

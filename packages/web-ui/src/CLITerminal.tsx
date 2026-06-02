@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
+declare const __APP_VERSION__: string;
+
 interface CliEntry {
   id: number;
   type: "input" | "output" | "error" | "info";
@@ -192,7 +194,7 @@ const OS_HINTS: Record<string, string> = {
 
 export const CLITerminal: React.FC = () => {
   const [entries, setEntries] = useState<CliEntry[]>(() => [
-    { id: 0, type: "info", text: "EvoClaw CLI Terminal v0.3.4" },
+    { id: 0, type: "info", text: `EvoClaw CLI Terminal v${__APP_VERSION__}` },
     { id: 1, type: "info", text: `${OS_HINTS[detectOS()] || ""}` },
     { id: 2, type: "info", text: 'Type "EvoClaw --help" to get started. Up/Down for history, Tab for autocomplete.' },
     { id: 3, type: "info", text: "" },
@@ -583,9 +585,9 @@ export const CLITerminal: React.FC = () => {
 
       <div style={styles.header}>
         <span style={styles.headerTitle}>
-          🦞 EvoClaw CLI Terminal
+          🧬 EvoClaw CLI Terminal
           <span style={{ color: "var(--text-secondary)", marginLeft: "8px", fontWeight: 400 }}>
-            v0.3.4 — {osPlatform}
+            v{__APP_VERSION__} — {osPlatform}
           </span>
         </span>
         <div style={styles.headerActions}>

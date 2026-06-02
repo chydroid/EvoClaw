@@ -320,7 +320,7 @@ export default function EvolutionDashboard() {
   return (
     <div style={s.container}>
       <div style={s.header}>
-        <h2 style={s.title}>🦞 Evolution Dashboard</h2>
+        <h2 style={s.title}>🧬 进化仪表盘</h2>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <button
             onClick={() => setShowTrigger(!showTrigger)}
@@ -801,7 +801,7 @@ export default function EvolutionDashboard() {
             <tbody>
               {learningEntries.length === 0 ? (
                 <tr><td colSpan={6} style={s.emptyCell}>
-                  {ls && ls.totalEntries > 0 ? "加载中..." : "🦞 暂无学习记录。当系统遇到错误、用户纠正或发现改进机会时，会自动记录。"}
+                  {ls && ls.totalEntries > 0 ? "加载中..." : "🧬 暂无学习记录。当系统遇到错误、用户纠正或发现改进机会时，会自动记录。"}
                 </td></tr>
               ) : (
                 learningEntries.map((entry) => (

@@ -1,7 +1,20 @@
 import dotenv from "dotenv";
 import * as path from "path";
+import * as fs from "fs";
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
+
+function getServerVersion(): string {
+  try {
+    const pkgPath = path.resolve(__dirname, "../../../../package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      if (pkg.version) return pkg.version;
+    }
+  } catch {}
+  return "0.9.5";
+}
+const SERVER_VERSION = getServerVersion();
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, type PersonaConfig, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter } from "@evoclaw/gateway";
@@ -20,7 +33,6 @@ import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
 import type { ClassificationResult, OrchestrationPlan } from "@evoclaw/intelligence";
-import * as fs from "fs";
 import { SecurityMiddleware } from "@evoclaw/security";
 import { CopilotRouter, CredentialPool } from "@evoclaw/agent";
 import { SkillIndex } from "@evoclaw/skills";
@@ -337,7 +349,7 @@ export class EvoClawServer {
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
     this.registry.registerService("channelManager", this.channelManager);
     this.protocolHandler = new ProtocolHandler({
-      serverVersion: "0.4.0",
+      serverVersion: SERVER_VERSION,
       autoApproveLoopback: true,
     });
     this.protocolHandler.setEventBus(this.eventBus);
@@ -383,7 +395,7 @@ export class EvoClawServer {
 
   async start(): Promise<void> {
     this.logger.info("server", "============================================");
-    this.logger.info("server", "  EvoClaw v0.4.0 - Self-Evolving Agent OS");
+    this.logger.info("server", `  EvoClaw v${SERVER_VERSION} - Self-Evolving Agent OS`);
     this.logger.info("server", "============================================");
 
     await this.eventBus.publish(SystemEvents.SYSTEM_STARTING, null, "server");
@@ -591,7 +603,7 @@ export class EvoClawServer {
     });
 
     await this.eventBus.publish(SystemEvents.SYSTEM_READY, {
-      version: "0.4.0",
+      version: SERVER_VERSION,
       serviceCount: this.registry.getRegisteredServices().length,
     }, "server");
 
