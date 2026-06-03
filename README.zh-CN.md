@@ -186,55 +186,17 @@ pnpm start
 
 ## 架构
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         EvoClaw 服务器                            │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │  网关    │  │  Web UI  │  │   CLI    │  │   IDE 桥接      │ │
-│  │REST/WS/  │  │ (React)  │  │(Node.js) │  │    (ACP)         │ │
-│  │  MCP     │  │          │  │          │  │                  │ │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────────┬─────────┘ │
-│       └──────────────┴─────────────┴─────────────────┘           │
-│                            │                                     │
-│                    ┌───────▼───────┐                              │
-│                    │   事件总线    │  EventBus                     │
-│                    └───────┬───────┘                              │
-│                            │                                     │
-│       ┌────────────────────┼────────────────────┐                │
-│       │                    │                    │                │
-│  ┌────▼─────┐  ┌──────────▼───┐  ┌────────────▼───┐            │
-│  │  Agent   │  │   进化引擎   │  │     记忆       │            │
-│  │ ┌──────┐ │  │ ┌──────────┐ │  │ ┌────────────┐ │            │
-│  │ │Actor │ │  │ │ 遗传引擎 │ │  │ │   短期     │ │            │
-│  │ │ 池   │ │  │ │  评估器  │ │  │ │   长期     │ │            │
-│  │ │DAG   │ │  │ │  提案器  │ │  │ │   向量     │ │            │
-│  │ │编排  │ │  │ │ 反思器   │ │  │ │ KG + FTS5  │ │            │
-│  │ └──────┘ │  │ └──────────┘ │  │ │  策展器    │ │            │
-│  └────┬─────┘  └──────┬───────┘  │ └────────────┘ │            │
-│       │               │          └───────┬────────┘            │
-│  ┌────▼─────┐  ┌──────▼───────┐  ┌───────▼────────┐            │
-│  │   技能   │  │    安全      │  │   基础设施     │            │
-│  │ ┌──────┐ │  │ ┌──────────┐ │  │ ┌────────────┐ │            │
-│  │ │注册  │ │  │ │  RBAC    │ │  │ │ 日志/数据库│ │            │
-│  │ │沙箱  │ │  │ │  审计    │ │  │ │ 消息队列/  │ │            │
-│  │ │解析  │ │  │ │  自愈    │ │  │ │ 文件系统   │ │            │
-│  │ │索引  │ │  │ │  租户    │ │  │ │  进程      │ │            │
-│  │ └──────┘ │  │ │  守卫    │ │  │ └────────────┘ │            │
-│  └──────────┘  │ └──────────┘ │  └────────────────┘            │
-│                └──────────────┘                                 │
-│                                                                  │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐  │
-│  │  Copilot   │ │  凭据池    │ │  提示词    │ │   约束门     │  │
-│  │   路由器   │ │ Credential │ │   缓存     │ │   Constraint │  │
-│  └────────────┘ └────────────┘ └────────────┘ └──────────────┘  │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │              服务注册表 (IoC 容器)                          │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
+EvoClaw 采用模块化、事件驱动的架构，以 IoC（控制反转）容器为核心：
+
+- **入口层** — 网关（REST/WS/MCP）、Web UI（React）、CLI（Node.js）和 IDE 桥接（ACP）作为外部接口。所有请求通过网关流入内部 EventBus。
+- **EventBus** — 集中式发布-订阅事件总线，解耦所有内部服务。每个组件通过类型化事件进行异步通信。
+- **核心服务** — 三大主要领域位于 EventBus 之上：
+  - **Agent** — 基于 Actor 的并发模型，包含动态 Agent 池、DAG 编排用于并行任务分解，以及降级链。
+  - **Evolution** — 遗传引擎、评估器、提案器和反思器构成自我进化流水线。
+  - **Memory** — 多层记忆，包括短期、长期、向量（TF-IDF）、知识图谱、FTS5 全文搜索和记忆策展器。
+- **支撑服务** — Skills（注册中心、沙箱、解析器、渐进索引）、Security（RBAC、审计、自愈、租户隔离、内容守卫）和 Infrastructure（日志、数据库、消息队列、文件系统、进程管理）。
+- **横切模块** — Copilot Router（智能模型路由）、Credential Pool（API 密钥管理）、Prompt Cache 和 Constraint Gates（5 门进化质量保障）。
+- **ServiceRegistry** — 底层的 IoC 容器通过依赖注入将所有服务连接在一起，实现松耦合和运行时服务替换。
 
 ### 设计模式
 
@@ -473,9 +435,97 @@ pnpm --filter @evoclaw/core test    # 运行指定包测试
 
 | 文档 | 说明 |
 |---|---|
-| [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | 完整部署指南（Ubuntu / macOS / Windows） |
 | [History.md](History.md) | 版本历史和变更日志 |
 | [deploy-checklist.md](deploy-checklist.md) | 多集群部署检查清单 |
+
+---
+
+## 故障排除
+
+| 问题 | 解决方案 |
+|---|---|
+| `pnpm: command not found` | 重新安装 pnpm: `npm install -g pnpm@10` |
+| `port 27788 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程 |
+| 构建失败 | 清理并重试: `pnpm clean && pnpm install && pnpm build` |
+| Web UI 空白页 | 确认已运行 `pnpm build`，检查浏览器控制台错误 |
+| LLM 测试连接失败 | 检查 API Key 和 Base URL 是否正确，网络是否可达 |
+| 渠道连接失败 | 检查回调 URL 是否可从公网访问，Token 是否匹配 |
+| `JWT_SECRET` 警告 | 设置至少 16 位的 JWT 密钥 |
+
+### 端口占用处理
+
+**Ubuntu/macOS**:
+```bash
+lsof -i :27788
+kill -9 <PID>
+```
+
+**Windows**:
+```powershell
+netstat -ano | findstr :27788
+taskkill /PID <PID> /F
+```
+
+### 完全重置
+
+```bash
+pnpm clean
+rm -rf node_modules pnpm-lock.yaml
+pnpm install
+pnpm build
+pnpm test
+```
+
+### 查看日志
+
+**systemd (Ubuntu)**: `sudo journalctl -u evoclaw -f`
+
+**launchd (macOS)**: `tail -f ~/Library/Logs/evoclaw.log`
+
+**Windows (winsw)**: `Get-Content .\evoclaw-service.out.log -Tail 50 -Wait`
+
+---
+
+## 安全最佳实践
+
+1. **生产环境务必修改 `JWT_SECRET`** 为至少 32 位随机字符串
+2. 配置防火墙只开放必要端口（27788）
+3. 使用 HTTPS 反向代理（Nginx/Caddy）
+4. 保持依赖更新：`pnpm update`
+5. 配置审计中心告警规则
+6. 为每个租户设置合理的配额限制
+7. 启用自愈机制自动修复故障
+8. 限制 `CORS_ORIGINS` 为可信域名
+9. 启用可观测性监控并设置告警规则
+10. 使用 CredentialPool 管理 API Key 轮换
+
+---
+
+## 可观测性
+
+在 `.env` 中设置 `EVOCLAW_OBSERVABILITY_ENABLED=true` 启用。EvoClaw 在 `/metrics` 端点暴露 Prometheus 兼容指标，并支持通过 OTLP 进行分布式追踪。
+
+### 指标类型
+
+| 类型 | 说明 | 示例 |
+|---|---|---|
+| **Counter** | 单调递增计数器，用于请求/错误总数 | `evoclaw_http_requests_total` |
+| **Gauge** | 当前值，用于活跃连接数、队列深度 | `evoclaw_active_sessions` |
+| **Histogram** | 分布直方图，用于请求延迟、响应大小 | `evoclaw_request_duration_seconds` |
+
+### 追踪配置
+
+```ini
+EVOCLAW_OBSERVABILITY_ENABLED=true
+EVOCLAW_TRACING_ENDPOINT=http://localhost:4318/v1/traces
+EVOCLAW_TRACING_SAMPLE_RATE=0.1
+```
+
+### 健康报告
+
+```bash
+curl http://localhost:27788/health/report
+```
 
 ---
 

@@ -6,6 +6,7 @@ import {
   type MemoryEntry,
   type MemorySearchQuery,
 } from "@evoclaw/core";
+import { SemanticEmbedder } from "./semantic-embedder";
 
 export interface ExperiencePattern {
   id: string;
@@ -60,16 +61,17 @@ export interface CrossDomainInsight {
   precedents: string[];
 }
 
-const DEFAULT_EMBEDDING_DIMENSION = 384;
-
 export class ExperienceAnalyzer {
   private patterns = new Map<string, ExperiencePattern>();
   private patternEmbeddings = new Map<string, number[]>();
+  private embedder: SemanticEmbedder;
 
   constructor(
     private registry: ServiceRegistry,
-    private eventBus: EventBus
+    private eventBus: EventBus,
+    embedder?: SemanticEmbedder,
   ) {
+    this.embedder = embedder || new SemanticEmbedder(registry);
     registry.registerService("experienceAnalyzer", this);
   }
 
@@ -518,36 +520,27 @@ export class ExperienceAnalyzer {
   private generatePatternEmbedding(
     pattern: ExperiencePattern
   ): number[] {
-    return this.generateTextEmbedding(
+    return this.embedder.hashEmbedding(
       `${pattern.sourceSkill} ${pattern.category} ${pattern.description}`
     );
   }
 
   private generateTextEmbedding(text: string): number[] {
-    const hash = this.simpleHash(text);
-    const embedding = new Array(DEFAULT_EMBEDDING_DIMENSION);
-
-    for (let i = 0; i < DEFAULT_EMBEDDING_DIMENSION; i++) {
-      embedding[i] = Math.sin((hash + i) * 0.0174533) * 0.5 + 0.5;
-    }
-
-    const norm = Math.sqrt(embedding.reduce((sum, v) => sum + v * v, 0));
-    if (norm > 0) {
-      for (let i = 0; i < embedding.length; i++) {
-        embedding[i] /= norm;
-      }
-    }
-
-    return embedding;
+    return this.embedder.hashEmbedding(text);
   }
 
-  private simpleHash(str: string): number {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash + char) | 0;
-    }
-    return Math.abs(hash);
+  /**
+   * 异步生成语义嵌入向量（用于外部调用）
+   */
+  async generateSemanticEmbedding(text: string): Promise<number[]> {
+    return this.embedder.embed(text);
+  }
+
+  /**
+   * 获取嵌入器统计信息
+   */
+  getEmbedderStats(): ReturnType<SemanticEmbedder["getStats"]> {
+    return this.embedder.getStats();
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

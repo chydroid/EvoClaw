@@ -1,6 +1,5 @@
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
 
 const BOOTSTRAP_FILES = [
   { name: "AGENTS.md", description: "Operating instructions + memory", required: true },
@@ -229,13 +228,8 @@ export class BootstrapManager {
     if (fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);
-      } catch {
-        try {
-          const { execFileSync } = require("child_process");
-          execFileSync("powershell", ["-Command", "Remove-Item", "-Path", filePath, "-Force"], { stdio: "pipe" });
-        } catch (e2) {
-          console.warn(`[BootstrapManager] Failed to delete ${filePath}: ${e2}`);
-        }
+      } catch (e) {
+        console.warn(`[BootstrapManager] Failed to delete ${filePath}: ${e}`);
       }
     }
   }
@@ -307,13 +301,8 @@ export class BootstrapManager {
     if (!fs.existsSync(dir)) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-      } catch {
-        try {
-          const { execFileSync } = require("child_process");
-          execFileSync("powershell", ["-Command", "New-Item", "-Path", dir, "-ItemType", "Directory", "-Force"], { stdio: "pipe" });
-        } catch (e2) {
-          console.warn(`[BootstrapManager] Failed to create dir ${dir}: ${e2}`);
-        }
+      } catch (e) {
+        console.warn(`[BootstrapManager] Failed to create dir ${dir}: ${e}`);
       }
     }
   }
@@ -330,15 +319,8 @@ export class BootstrapManager {
   private writeFile(filePath: string, content: string): void {
     try {
       fs.writeFileSync(filePath, content, "utf-8");
-    } catch {
-      try {
-        const { execFileSync } = require("child_process");
-        const b64 = Buffer.from(content, "utf-8").toString("base64");
-        const psScript = `[IO.File]::WriteAllBytes('${filePath.replace(/'/g, "''")}', [Convert]::FromBase64String('${b64}'))`;
-        execFileSync("powershell", ["-Command", psScript], { stdio: "pipe" });
-      } catch (e2) {
-        console.warn(`[BootstrapManager] Failed to write ${filePath}: ${e2}`);
-      }
+    } catch (e) {
+      console.warn(`[BootstrapManager] Failed to write ${filePath}: ${e}`);
     }
   }
 }

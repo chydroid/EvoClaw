@@ -226,26 +226,55 @@ export class EvolutionProposer {
           id: string; name: string; provider: string; model: string;
           apiKey?: string; baseURL?: string; enabled: boolean;
         }>;
+        execute?(input: { systemPrompt: string; prompt: string }, context?: Record<string, unknown>): Promise<{
+          content: string; usage?: { promptTokens: number; completionTokens: number };
+          model?: string; finishReason?: string;
+        }>;
       }>("agentModelExecutor");
 
       if (!executor) return null;
 
-      const providers = executor.getProviders().filter(p => p.enabled);
-      if (providers.length === 0) return null;
+      // 优先使用 execute 方法（统一接口）
+      let content = "";
+      if (typeof executor.execute === "function") {
+        try {
+          const result = await executor.execute(
+            { systemPrompt: this.llmSystemPrompt, prompt: this.buildLLMPrompt(req) },
+          );
+          content = result.content;
+        } catch {
+          // execute 失败，降级到直接 API 调用
+        }
+      }
 
-      const provider = providers[0];
-      const baseURL = provider.baseURL || "https://api.openai.com/v1";
-      const apiUrl = `${baseURL}/chat/completions`;
+      // 如果 execute 不可用或失败，使用直接 API 调用
+      if (!content) {
+        const providers = executor.getProviders().filter(p => p.enabled);
+        if (providers.length === 0) return null;
 
-      const systemPrompt = `你是 EvoClaw 系统的进化引擎代码生成器。根据错误模式和需求描述，生成高质量的 TypeScript 改进代码。
+        content = await this.callLLMDirectly(providers[0], this.llmSystemPrompt, this.buildLLMPrompt(req));
+      }
+
+      if (!content) return null;
+      return this.parseLLMResponse(content, req);
+    } catch (err) {
+      console.warn(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  private get llmSystemPrompt(): string {
+    return `你是 EvoClaw 系统的进化引擎代码生成器。根据错误模式和需求描述，生成高质量的 TypeScript 改进代码。
 要求：
 1. 代码必须包含完整的类型定义
 2. 必须包含错误处理和边界情况处理
 3. 代码必须可独立运行，不依赖未定义的外部变量
 4. 使用 async/await 模式
 5. 返回格式：第一部分是改进代码（用 \`\`\`typescript 包裹），第二部分是测试代码（用 \`\`\`typescript 包裹），用 --- 分隔`;
+  }
 
-      const userPrompt = `请为以下需求生成改进代码：
+  private buildLLMPrompt(req: AnalyzedRequirement): string {
+    return `请为以下需求生成改进代码：
 
 需求类型: ${req.type}
 需求描述: ${req.description}
@@ -257,49 +286,49 @@ export class EvolutionProposer {
 请生成：
 1. 改进后的 TypeScript 代码
 2. 对应的 vitest 测试代码`;
+  }
 
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (provider.provider === "anthropic" || provider.model?.includes("claude")) {
-        headers["x-api-key"] = provider.apiKey || "";
-        headers["anthropic-version"] = "2023-06-01";
-      } else {
-        headers["Authorization"] = `Bearer ${provider.apiKey || ""}`;
+  private async callLLMDirectly(
+    provider: { id: string; name: string; provider: string; model: string; apiKey?: string; baseURL?: string },
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<string> {
+    const baseURL = provider.baseURL || "https://api.openai.com/v1";
+    const apiUrl = `${baseURL.replace(/\/+$/, "")}/chat/completions`;
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (provider.provider === "anthropic" || provider.model?.includes("claude")) {
+      headers["x-api-key"] = provider.apiKey || "";
+      headers["anthropic-version"] = "2023-06-01";
+    } else {
+      headers["Authorization"] = `Bearer ${provider.apiKey || ""}`;
+    }
+
+    const body = provider.provider === "anthropic" || provider.model?.includes("claude")
+      ? { model: provider.model, max_tokens: 4096, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }
+      : { model: provider.model, max_tokens: 4096, temperature: 0.4, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }] };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: "POST", headers, body: JSON.stringify(body), signal: controller.signal,
+      });
+
+      if (!response.ok) return "";
+
+      const data = await response.json() as Record<string, unknown>;
+      const choices = data.choices as Array<{ message: { content: string } }> | undefined;
+      if (choices && choices.length > 0 && choices[0].message?.content) {
+        return choices[0].message.content;
       }
+      const c = data.content as Array<{ type: string; text: string }> | undefined;
+      if (c && c.length > 0 && c[0].text) return c[0].text;
 
-      const body = provider.provider === "anthropic" || provider.model?.includes("claude")
-        ? { model: provider.model, max_tokens: 4096, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }
-        : { model: provider.model, max_tokens: 4096, temperature: 0.4, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }] };
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
-
-      try {
-        const response = await fetch(apiUrl, {
-          method: "POST", headers, body: JSON.stringify(body), signal: controller.signal,
-        });
-
-        if (!response.ok) return null;
-
-        const data = await response.json() as Record<string, unknown>;
-        let content = "";
-
-        const choices = data.choices as Array<{ message: { content: string } }> | undefined;
-        if (choices && choices.length > 0 && choices[0].message?.content) {
-          content = choices[0].message.content;
-        } else {
-          const c = data.content as Array<{ type: string; text: string }> | undefined;
-          if (c && c.length > 0 && c[0].text) content = c[0].text;
-        }
-
-        if (!content) return null;
-
-        return this.parseLLMResponse(content, req);
-      } finally {
-        clearTimeout(timeout);
-      }
-    } catch (err) {
-      console.warn(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+      return "";
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

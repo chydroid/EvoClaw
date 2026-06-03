@@ -22,6 +22,10 @@ export interface ProviderConfig extends ModelConfig {
   name: string;
   enabled: boolean;
   order: number;
+  successCount?: number;
+  failureCount?: number;
+  lastError?: string;
+  lastErrorType?: string;
 }
 
 export interface AgentExecutionResult {
@@ -236,6 +240,12 @@ export interface AutoSplitConfig {
 export class AgentModelExecutor {
   private config: ModelConfig;
   private providers: ProviderConfig[] = [];
+  private providerStats = new Map<string, {
+    successCount: number;
+    failureCount: number;
+    lastError?: string;
+    lastErrorType?: string;
+  }>();
   private persona: PersonaConfig;
   private greeted = false;
   private registeredTools = new Map<string, {
@@ -1187,10 +1197,29 @@ export class AgentModelExecutor {
     this.providers = providers
       .filter((p) => p.enabled)
       .sort((a, b) => a.order - b.order);
+    
+    // 初始化或保留统计数据
+    for (const provider of this.providers) {
+      if (!this.providerStats.has(provider.id)) {
+        this.providerStats.set(provider.id, {
+          successCount: 0,
+          failureCount: 0,
+        });
+      }
+    }
   }
 
   getProviders(): ProviderConfig[] {
-    return [...this.providers];
+    return this.providers.map(provider => {
+      const stats = this.providerStats.get(provider.id) || { successCount: 0, failureCount: 0 };
+      return {
+        ...provider,
+        successCount: stats.successCount,
+        failureCount: stats.failureCount,
+        lastError: stats.lastError,
+        lastErrorType: stats.lastErrorType,
+      };
+    });
   }
 
   registerTool(
@@ -1211,6 +1240,26 @@ export class AgentModelExecutor {
 
   getPersona(): PersonaConfig {
     return { ...this.persona };
+  }
+
+  /**
+   * 记录 Provider 成功调用
+   */
+  private recordProviderSuccess(providerId: string): void {
+    const stats = this.providerStats.get(providerId) || { successCount: 0, failureCount: 0 };
+    stats.successCount += 1;
+    this.providerStats.set(providerId, stats);
+  }
+
+  /**
+   * 记录 Provider 失败调用
+   */
+  private recordProviderFailure(providerId: string, errorMessage: string, errorType: string): void {
+    const stats = this.providerStats.get(providerId) || { successCount: 0, failureCount: 0 };
+    stats.failureCount += 1;
+    stats.lastError = errorMessage;
+    stats.lastErrorType = errorType;
+    this.providerStats.set(providerId, stats);
   }
 
   buildSystemPrompt(promptMode?: PromptMode, context?: { skillsPrompt?: string; workspacePath?: string; bootstrapFiles?: Array<{ path: string; content: string }> }): string {
@@ -4503,6 +4552,10 @@ Have a specific URL?
           `  Model: ${provider.model}\n` +
           `  Error: ${errorText.slice(0, 500)}`
         );
+
+        // 记录失败统计
+        this.recordProviderFailure(provider.id, `HTTP ${response.status}: ${errorText}`, classified.type);
+
         return {
           message: { role: "assistant", content: null },
           tokensUsed: 0,
@@ -4542,6 +4595,9 @@ Have a specific URL?
         } catch { /* observability is best-effort */ }
       }
 
+      // 记录成功统计
+      this.recordProviderSuccess(provider.id);
+
       return {
         message: {
           role: msg.role || "assistant",
@@ -4561,16 +4617,25 @@ Have a specific URL?
         } catch { /* observability is best-effort */ }
       }
       let classified: ClassifiedError | undefined;
+      let errorMessage = "Unknown error";
+      let errorType = "UNKNOWN";
       if (err instanceof DOMException && err.name === "AbortError") {
         const msg = `LLM provider "${provider.name}" timed out after ${timeout}ms`;
         console.warn(`[AgentModelExecutor] ${msg}`);
         classified = classifyLLMError(undefined, undefined, msg);
+        errorMessage = msg;
+        errorType = "TIMEOUT";
       } else if (err instanceof Error) {
-        const msg = err.message;
-        console.error(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${msg}`);
+        errorMessage = err.message;
+        console.error(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${errorMessage}`);
         console.error(`  URL: ${apiURL}, Model: ${provider.model}, Timeout: ${timeout}ms`);
-        classified = classifyLLMError(undefined, undefined, msg);
+        classified = classifyLLMError(undefined, undefined, errorMessage);
+        errorType = classified?.type || "UNKNOWN";
       }
+
+      // 记录失败统计
+      this.recordProviderFailure(provider.id, errorMessage, errorType);
+
       return {
         message: { role: "assistant", content: null },
         tokensUsed: 0,
@@ -4680,6 +4745,9 @@ Have a specific URL?
         obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }]);
       } catch { /* observability is best-effort */ }
     }
+
+    // 记录成功统计
+    this.recordProviderSuccess(provider.id);
 
     const toolCalls = toolCallsMap.size > 0
       ? Array.from(toolCallsMap.entries()).map(([, tc]) => ({

@@ -2,7 +2,6 @@ import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/promises";
 import { constants } from "fs";
 import * as fsSync from "fs";
-import { execSync } from "child_process";
 import * as path from "path";
 
 interface FileInfo {
@@ -116,21 +115,17 @@ export class FileSystemManager {
     if (!dirs) return;
 
     const fullDir = this.resolvePath(dirs);
+    // Verify the resolved path is still within basePath to prevent traversal
+    const resolved = path.resolve(fullDir);
+    const baseResolved = path.resolve(this.basePath);
+    if (!resolved.startsWith(baseResolved) && resolved !== baseResolved) {
+      throw new Error(`Directory outside base path: ${fullDir}`);
+    }
+
     try {
-      await mkdir(fullDir, { recursive: true });
+      await mkdir(resolved, { recursive: true });
     } catch {
-      if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(fullDir)) {
-        try {
-          execSync(
-            `powershell -Command "New-Item -Path '${fullDir}' -ItemType Directory -Force -ErrorAction Stop"`,
-            { stdio: "pipe", timeout: 15000 }
-          );
-        } catch {
-          throw new Error(`无法创建目录: ${fullDir}。Node.js 和 PowerShell 均失败。`);
-        }
-      } else {
-        throw new Error(`无法创建目录: ${fullDir}`);
-      }
+      throw new Error(`Unable to create directory: ${resolved}`);
     }
   }
 
@@ -257,15 +252,7 @@ export class FileSystemManager {
     try {
       await writeFile(fullPath, content, "utf-8");
     } catch {
-      if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(fullPath)) {
-        const base64Content = Buffer.from(content, "utf-8").toString("base64");
-        execSync(
-          `powershell -Command "[System.IO.File]::WriteAllBytes('${fullPath}', [System.Convert]::FromBase64String('${base64Content}'))"`,
-          { stdio: "pipe", timeout: 15000 }
-        );
-      } else {
-        throw new Error(`无法写入文件: ${fullPath}`);
-      }
+      throw new Error(`Unable to write file: ${fullPath}`);
     }
   }
 

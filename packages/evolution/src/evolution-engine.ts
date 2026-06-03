@@ -21,6 +21,11 @@ import { ProgressReporter } from "./progress-reporter";
 import { ConstraintGate } from "./constraint-gate";
 import { ExternalReflector } from "./external-reflector";
 import type { ExecutionTrace } from "./external-reflector";
+import { LLMReflector } from "./llm-reflector";
+import { EvolutionThreshold, type EvolutionThresholdConfig } from "./evolution-threshold";
+import { SandboxExecutor } from "./sandbox-executor";
+import { GeneticEvolutionEngine, type FitnessScore } from "./genetic-engine";
+import { ExperienceDistiller } from "./experience-distiller";
 import type { ExperienceAnalysis } from "./experience-analyzer";
 import type { SkillExecutionResult } from "@evoclaw/core";
 
@@ -35,6 +40,11 @@ export class EvolutionEngine {
   progressReporter: ProgressReporter;
   private constraintGate: ConstraintGate;
   private externalReflector: ExternalReflector;
+  private llmReflector: LLMReflector;
+  private evolutionThreshold: EvolutionThreshold;
+  private sandboxExecutor: SandboxExecutor;
+  private geneticEngine: GeneticEvolutionEngine;
+  private experienceDistiller: ExperienceDistiller;
 
   private cycles = new Map<string, EvolutionCycle>();
   private feedbackStore: ReinforcementFeedback[] = [];
@@ -54,6 +64,11 @@ export class EvolutionEngine {
     this.progressReporter = new ProgressReporter(registry, eventBus);
     this.constraintGate = new ConstraintGate();
     this.externalReflector = new ExternalReflector(registry, eventBus);
+    this.llmReflector = new LLMReflector(registry, eventBus);
+    this.evolutionThreshold = new EvolutionThreshold();
+    this.sandboxExecutor = new SandboxExecutor(registry, eventBus);
+    this.geneticEngine = new GeneticEvolutionEngine(registry, eventBus);
+    this.experienceDistiller = new ExperienceDistiller(registry, eventBus);
 
     registry.registerService("evolutionEngine", this);
 
@@ -64,6 +79,12 @@ export class EvolutionEngine {
     this.eventBus.subscribe(SystemEvents.TASK_FAILED, async (event) => {
       const taskData = event.data as Record<string, unknown>;
       if (taskData?.error) {
+        const skillId = taskData.skillId ? String(taskData.skillId) : null;
+        const source = String(taskData.source || "task-executor");
+
+        // 记录失败到进化门槛
+        this.evolutionThreshold.recordFailure(skillId, source);
+
         const session = this.learningJournal.startSession(
           String(taskData.taskId || uuid()),
           String(taskData.description || "任务执行失败")
@@ -101,7 +122,41 @@ export class EvolutionEngine {
 
         this.learningJournal.completeSession(session.id, false);
 
-        await this.onTaskFailure(event.id, taskData);
+        // 使用 LLM 驱动的反思分析
+        const trace: ExecutionTrace = {
+          taskId: String(taskData.taskId || event.id),
+          skillId: taskData.skillId ? String(taskData.skillId) : undefined,
+          error: taskData.error ? String(taskData.error) : undefined,
+          steps: [],
+          context: taskData,
+        };
+        const reflection = await this.llmReflector.reflect(trace);
+
+        if (!reflection.shouldEvolve) {
+          return;
+        }
+
+        // 进化门槛检查
+        const currentSuccessRate = taskData.successRate !== undefined
+          ? Number(taskData.successRate)
+          : undefined;
+        const thresholdCheck = this.evolutionThreshold.check(
+          "task_failure",
+          skillId,
+          currentSuccessRate
+        );
+
+        if (!thresholdCheck.allowed) {
+          console.log(`[EvolutionEngine] Evolution threshold blocked: ${thresholdCheck.reason}`);
+          return;
+        }
+
+        this.evolutionThreshold.recordEvolution();
+        await this.startEvolutionCycle("task_failure", {
+          taskData,
+          reflection,
+          thresholdCheck,
+        });
       }
     });
 
@@ -130,6 +185,8 @@ export class EvolutionEngine {
       this.learningJournal.completeSession(session.id, true);
 
       if (data.triggerEvolution !== false) {
+        // 用户反馈直接允许进化（用户主动触发）
+        this.evolutionThreshold.recordEvolution();
         await this.startEvolutionCycle("user_feedback", {
           correctionEvent: data,
           description: data.description || data.context,
@@ -170,6 +227,12 @@ export class EvolutionEngine {
         this.learningJournal.completeSession(session.id, true);
 
         if (data.triggerEvolution !== false) {
+          const thresholdCheck = this.evolutionThreshold.check("usage_pattern", null);
+          if (!thresholdCheck.allowed) {
+            console.log(`[EvolutionEngine] Evolution threshold blocked (capability gap): ${thresholdCheck.reason}`);
+            return;
+          }
+          this.evolutionThreshold.recordEvolution();
           await this.startEvolutionCycle("usage_pattern", {
             capabilityGap: data,
             gapDescription: data.description || data.context,
@@ -214,6 +277,12 @@ export class EvolutionEngine {
       this.learningJournal.completeSession(session.id, !!data.solution);
 
       if (data.triggerEvolution !== false) {
+        const thresholdCheck = this.evolutionThreshold.check("performance_degradation", null);
+        if (!thresholdCheck.allowed) {
+          console.log(`[EvolutionEngine] Evolution threshold blocked (external failure): ${thresholdCheck.reason}`);
+          return;
+        }
+        this.evolutionThreshold.recordEvolution();
         await this.startEvolutionCycle("performance_degradation", {
           externalFailure: data,
           errorInfo: data.error,
@@ -255,6 +324,12 @@ export class EvolutionEngine {
       this.learningJournal.completeSession(session.id, true);
 
       if (data.triggerEvolution !== false) {
+        const thresholdCheck = this.evolutionThreshold.check("manual", null);
+        if (!thresholdCheck.allowed) {
+          console.log(`[EvolutionEngine] Evolution threshold blocked (knowledge improvement): ${thresholdCheck.reason}`);
+          return;
+        }
+        this.evolutionThreshold.recordEvolution();
         await this.startEvolutionCycle("manual", {
           improvement: data,
           description: data.description || data.context,
@@ -365,6 +440,49 @@ export class EvolutionEngine {
         cycle.status = "publishing";
         const candidate = cycle.candidates.find((c) => c.id === cycle.selectedCandidate);
         if (candidate) {
+          // 沙箱执行验证：在实际环境中运行候选代码
+          const sandboxResult = await this.sandboxExecutor.execute(candidate);
+          if (!sandboxResult.success) {
+            // 沙箱执行失败，通过反思系统分析
+            const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
+            console.warn(
+              `[EvolutionEngine] Sandbox execution failed for candidate ${candidate.id}: ${sandboxResult.error}`,
+              `\nReflection: ${sandboxReflection.rootCause}`
+            );
+            // 将沙箱失败记录为反馈，不阻断发布但记录问题
+            await this.recordFeedback({
+              cycleId: cycle.id,
+              skillId: "unknown",
+              successRate: sandboxResult.testResults.length > 0
+                ? sandboxResult.testResults.filter((t) => t.passed).length / sandboxResult.testResults.length
+                : 0,
+              userAdoptionRate: 0,
+              tokenConsumption: 0,
+              errorRate: sandboxResult.testResults.length > 0
+                ? sandboxResult.testResults.filter((t) => !t.passed).length / sandboxResult.testResults.length
+                : 1,
+            });
+
+            // 将沙箱失败轨迹加入经验蒸馏器
+            this.experienceDistiller.addTrajectory(
+              sandboxResult.executionTrace,
+              sandboxReflection
+            ).catch(() => {});
+          } else {
+            // 成功执行也记录轨迹，供经验蒸馏
+            const successTrace = sandboxResult.executionTrace;
+            this.experienceDistiller.addTrajectory(
+              successTrace,
+              {
+                rootCause: "Sandbox execution successful",
+                failureCategory: "unknown",
+                suggestedImprovements: [],
+                confidenceScore: 1.0,
+                shouldEvolve: false,
+              }
+            ).catch(() => {});
+          }
+
           await this.hotReload.publish(candidate);
           await this.eventBus.publish(
             SystemEvents.EVOLUTION_PUBLISHED,
@@ -376,7 +494,60 @@ export class EvolutionEngine {
         }
         cycle.status = "completed";
       } else {
-        cycle.status = "rejected";
+        // 无候选方案通过评估，尝试遗传算法优化
+        if (cycle.candidates.length > 0) {
+          console.log(`[EvolutionEngine] No candidates passed evaluation, attempting genetic optimization...`);
+          const geneticResult = await this.geneticEngine.tryGeneticOptimization(cycle.candidates);
+          if (geneticResult && geneticResult.bestCandidate) {
+            cycle.candidates.push(geneticResult.bestCandidate);
+            const evalResult = await this.evaluator.evaluate(geneticResult.bestCandidate);
+            if (evalResult.passed) {
+              const gateResult = await this.constraintGate.validate(geneticResult.bestCandidate);
+              if (gateResult.passed) {
+                cycle.selectedCandidate = geneticResult.bestCandidate.id;
+                cycle.evaluation = evalResult;
+                cycle.status = "publishing";
+
+                const sandboxResult = await this.sandboxExecutor.execute(geneticResult.bestCandidate);
+                if (!sandboxResult.success) {
+                  console.warn(
+                    `[EvolutionEngine] Genetic candidate sandbox failed: ${sandboxResult.error}`
+                  );
+                  // 将遗传优化的沙箱失败轨迹加入经验蒸馏器
+                  const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
+                  this.experienceDistiller.addTrajectory(
+                    sandboxResult.executionTrace,
+                    sandboxReflection
+                  ).catch(() => {});
+                } else {
+                  this.experienceDistiller.addTrajectory(
+                    sandboxResult.executionTrace,
+                    {
+                      rootCause: "Genetic optimization sandbox successful",
+                      failureCategory: "unknown",
+                      suggestedImprovements: [],
+                      confidenceScore: 1.0,
+                      shouldEvolve: false,
+                    }
+                  ).catch(() => {});
+                }
+
+                await this.hotReload.publish(geneticResult.bestCandidate);
+                await this.eventBus.publish(
+                  SystemEvents.EVOLUTION_PUBLISHED,
+                  { cycleId: cycle.id, candidateId: geneticResult.bestCandidate.id, source: "genetic" },
+                  "evolution-engine"
+                );
+                await this.curateFromEvolutionCandidate(geneticResult.bestCandidate, cycle);
+                cycle.status = "completed";
+              }
+            }
+          }
+        }
+
+        if (cycle.status !== "completed") {
+          cycle.status = "rejected";
+        }
       }
     } catch (err) {
       cycle.status = "failed";
@@ -462,7 +633,7 @@ export class EvolutionEngine {
   }
 
   async analyzeFailureWithReflection(trace: ExecutionTrace): Promise<import("./external-reflector").ReflectionResult> {
-    const reflection = await this.externalReflector.reflect(trace);
+    const reflection = await this.llmReflector.reflect(trace);
 
     await this.eventBus.publish(
       "evolution.failure_reflection" as any,
@@ -471,6 +642,26 @@ export class EvolutionEngine {
     );
 
     return reflection;
+  }
+
+  /** 获取进化门槛状态 */
+  getEvolutionThreshold(): EvolutionThreshold {
+    return this.evolutionThreshold;
+  }
+
+  /** 配置进化门槛 */
+  configureEvolutionThreshold(config: Partial<EvolutionThresholdConfig>): void {
+    this.evolutionThreshold.configure(config);
+  }
+
+  /** 获取 LLM 反思器 */
+  getLLMReflector(): LLMReflector {
+    return this.llmReflector;
+  }
+
+  /** 获取经验蒸馏器 */
+  getExperienceDistiller(): ExperienceDistiller {
+    return this.experienceDistiller;
   }
 
   async triggerManualEvolution(

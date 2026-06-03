@@ -51,31 +51,14 @@ export class LongTermMemoryStore implements LongTermMemory {
     try {
       const dir = path.dirname(MEMORY_FILE);
       if (!fs.existsSync(dir)) {
-        try {
-          fs.mkdirSync(dir, { recursive: true });
-        } catch {
-          // PowerShell fallback
-          const { execSync } = require("child_process");
-          execSync(`powershell -Command "New-Item -Path '${dir}' -ItemType Directory -Force"`, { stdio: "pipe" });
-        }
+        fs.mkdirSync(dir, { recursive: true });
       }
       const data = Array.from(this.entries.values()).map((e) => ({
         ...e,
         createdAt: e.createdAt.toISOString(),
         accessedAt: e.accessedAt.toISOString(),
       }));
-      try {
-        fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf-8");
-      } catch {
-        // PowerShell fallback for restricted filesystem
-        const tmp = JSON.stringify(data);
-        const b64 = Buffer.from(tmp, "utf-8").toString("base64");
-        const { execSync } = require("child_process");
-        execSync(
-          `powershell -Command "[IO.File]::WriteAllBytes('${MEMORY_FILE}', [Convert]::FromBase64String('${b64}'))"`,
-          { stdio: "pipe" }
-        );
-      }
+      fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
       console.warn(`[LongTermMemory] Failed to save: ${err}`);
     }

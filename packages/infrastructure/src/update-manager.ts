@@ -537,17 +537,10 @@ export class UpdateManager {
       fs.mkdirSync(extractDir, { recursive: true });
 
       if (assetName.endsWith(".zip")) {
-        // Use unzip for zip files
-        if (process.platform === "win32") {
-          execSync(
-            `powershell -Command "Expand-Archive -Path '${downloadPath}' -DestinationPath '${extractDir}' -Force"`,
-            { stdio: "inherit" }
-          );
-        } else {
-          execSync(`unzip -o "${downloadPath}" -d "${extractDir}"`, {
-            stdio: "inherit",
-          });
-        }
+        // Use adm-zip for cross-platform ZIP extraction
+        const AdmZip = require("adm-zip");
+        const zip = new AdmZip(downloadPath);
+        zip.extractAllTo(extractDir, true);
       } else {
         execSync(`tar -xzf "${downloadPath}" -C "${extractDir}"`, {
           stdio: "inherit",

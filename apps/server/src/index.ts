@@ -881,17 +881,120 @@ export class EvoClawServer {
       "skill_create",
       {
         name: "skill_create",
-        description: "Auto-create a new Skill file when no existing skill matches the task. Generates a SKILL.md and installs it.",
+        description: "Create a new reusable Skill when no existing skill matches the task. Only use for genuinely reusable workflows that solve a generalizable problem. Skills must have a meaningful lowercase-hyphenated name (e.g. 'news-search', 'csv-to-json'), a substantive description of what problem it solves and when to use it, and detailed step-by-step instructions with actual tools/APIs/code. DO NOT create skills for one-off tasks, placeholder content, or tasks solvable by a single existing tool.",
         parameters: {
-          name: { type: "string", description: "Name for the new skill (e.g. 'news-search')" },
-          description: { type: "string", description: "What this skill does" },
-          instructions: { type: "string", description: "Step-by-step instructions for the skill to execute" },
+          name: { type: "string", description: "Skill name in lowercase-hyphenated format (e.g. 'news-search'). Must be meaningful and reusable." },
+          description: { type: "string", description: "What problem this skill solves and when to use it. Be specific about the use case." },
+          instructions: { type: "string", description: "Detailed step-by-step instructions with concrete tools, APIs, and code to execute. Must be specific and actionable." },
         },
       },
       async (params: Record<string, unknown>) => {
-        const name = String(params.name || "custom-skill");
-        const desc = String(params.description || "Auto-generated skill");
-        const instructions = String(params.instructions || "Execute the task as described.");
+        const name = String(params.name || "").trim();
+        const desc = String(params.description || "").trim();
+        const instructions = String(params.instructions || "").trim();
+
+        // --- Quality Gates ---
+
+        const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
+        const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-skill", "temp-"];
+        const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
+
+        const PLACEHOLDER_DESC_PATTERNS: RegExp[] = [
+          /^执行操作(?:。)?$/,
+          /^方案\d*$/,
+          /^解决[方方]案[ABCDEFG]?(?:方案)?$/,
+          /^任务[ABCDEFG]?(?:描述)?$/,
+          /^auto-generated/i,
+          /^placeholder/i,
+          /^te?mp$/i,
+        ];
+        const PLACEHOLDER_INSTR_PATTERNS: RegExp[] = [
+          /^执行操作(?:。)?$/,
+          /^execut(?:e|ing)\s+(?:the\s+)?task/i,
+          /^方案\d*$/,
+          /^follow\s+the\s+steps$/i,
+        ];
+
+        const errors: string[] = [];
+
+        // 1. Name validation
+        if (!name) {
+          errors.push("Skill name is required");
+        } else if (!NAME_REGEX.test(name)) {
+          errors.push(`Skill name "${name}" must be lowercase, start with a letter, and contain only letters, numbers, and hyphens (e.g. 'news-search')`);
+        } else if (name.length < 3) {
+          errors.push("Skill name must be at least 3 characters");
+        } else if (name.length > 64) {
+          errors.push("Skill name must not exceed 64 characters");
+        } else {
+          for (const prefix of RESERVED_PREFIXES) {
+            if (name.startsWith(prefix)) {
+              errors.push(`Skill name cannot start with "${prefix}"`);
+              break;
+            }
+          }
+          if (GENERIC_NAMES.includes(name)) {
+            errors.push(`"${name}" is too generic as a skill name. Use a more specific name describing the actual workflow.`);
+          }
+        }
+
+        // 2. Description quality
+        const isPlaceholder = (text: string, patterns: RegExp[]): boolean => {
+          for (const p of patterns) {
+            if (p.test(text)) return true;
+          }
+          return false;
+        };
+
+        if (!desc) {
+          errors.push("Skill description is required");
+        } else if (desc.length < 20) {
+          errors.push(`Skill description is too short (${desc.length} chars). Provide a meaningful description of what problem this solves and when to use it.`);
+        } else if (isPlaceholder(desc, PLACEHOLDER_DESC_PATTERNS)) {
+          errors.push(`Skill description "${desc}" appears to be a placeholder. Please provide a meaningful description.`);
+        } else if (desc === name || desc.replace(/[-_\s]/g, "") === name.replace(/[-_\s]/g, "")) {
+          errors.push("Skill description should not be identical to the skill name. Describe what the skill does.");
+        }
+
+        // 3. Instructions quality
+        if (!instructions) {
+          errors.push("Skill instructions are required");
+        } else if (instructions.length < 50) {
+          errors.push(`Skill instructions are too short (${instructions.length} chars). Provide detailed step-by-step instructions.`);
+        } else if (isPlaceholder(instructions, PLACEHOLDER_INSTR_PATTERNS)) {
+          errors.push("Skill instructions appear to be a placeholder. Provide concrete, actionable steps.");
+        }
+
+        // 4. Check for duplicate skills
+        if (errors.length === 0) {
+          try {
+            const existing = await this.skillManager.listSkills();
+            const similar = existing.filter((s: { name: string }) =>
+              s.name.toLowerCase() === name.toLowerCase() ||
+              s.name.toLowerCase().replace(/[-_\s]/g, "") === name.toLowerCase().replace(/[-_\s]/g, "")
+            );
+            if (similar.length > 0) {
+              errors.push(`A skill with a similar name "${similar[0].name}" already exists. Use skill_improve to update it instead.`);
+            }
+          } catch {
+            // listSkills may fail — non-fatal
+          }
+        }
+
+        if (errors.length > 0) {
+          return {
+            success: false,
+            error: `Skill creation rejected. ${errors.join("; ")}`,
+            details: {
+              rejected: true,
+              reason: "quality_gate",
+              errors,
+              hint: "Skills should represent reusable, generalizable workflows with concrete instructions. Do not create skills for one-off tasks or with placeholder content.",
+            },
+          };
+        }
+
+        // --- Create the skill ---
         try {
           const fsMgr = this.registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
           const skillDir = `skills/${name}`;

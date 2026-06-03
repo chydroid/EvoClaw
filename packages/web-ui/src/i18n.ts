@@ -114,6 +114,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "theme.ocean": "海洋",
     "theme.sunset": "日落",
     "theme.crimson-dark": "深红暗夜",
+    "theme.cyan-dark": "青蓝暗夜",
 
     // Profile
     "profile.edit": "编辑个人资料",
@@ -805,6 +806,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "theme.ocean": "Ocean",
     "theme.sunset": "Sunset",
     "theme.crimson-dark": "Crimson Dark",
+    "theme.cyan-dark": "Cyan Dark",
 
     // Profile
     "profile.edit": "Edit profile",

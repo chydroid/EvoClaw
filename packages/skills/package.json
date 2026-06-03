@@ -21,12 +21,14 @@
   "dependencies": {
     "@evoclaw/core": "workspace:*",
     "@types/uuid": "^10.0.0",
+    "adm-zip": "^0.5.17",
     "gray-matter": "^4.0.0",
     "semver": "^7.6.0",
     "uuid": "^10.0.0",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.19.19",
     "@types/semver": "^7.5.0",
     "rimraf": "^6.0.0",

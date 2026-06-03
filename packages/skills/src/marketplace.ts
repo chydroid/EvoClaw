@@ -331,12 +331,9 @@ export class SkillMarketplace {
       fs.mkdirSync(extractDir, { recursive: true });
 
       try {
-        const { execFileSync } = await import("child_process");
-        if (process.platform === "win32") {
-          execFileSync("powershell", ["-Command", "Expand-Archive", "-Path", zipPath, "-DestinationPath", extractDir, "-Force"], { stdio: "pipe" });
-        } else {
-          execFileSync("unzip", ["-o", zipPath, "-d", extractDir], { stdio: "pipe" });
-        }
+        const AdmZip = await import("adm-zip");
+        const zip = new AdmZip.default(zipPath);
+        zip.extractAllTo(extractDir, true);
       } catch (extractErr) {
         console.warn(`[SkillMarketplace] ZIP extraction failed for ${name}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`);
       }
