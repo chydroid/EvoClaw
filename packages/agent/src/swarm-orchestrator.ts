@@ -125,6 +125,7 @@ export class SwarmOrchestrator {
   private activeDelegations = new Map<string, DelegationRequest>();
   private delegationResults = new Map<string, DelegationResult>();
   private delegationStartTimes = new Map<string, number>();
+  private delegationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private proposals = new Map<string, ConsensusProposal>();
   private votes = new Map<string, ConsensusVote[]>();
   private config: Required<SwarmConfig>;
@@ -252,6 +253,13 @@ export class SwarmOrchestrator {
     this.activeDelegations.set(delegation.id, delegation);
     this.delegationStartTimes.set(delegation.id, startTime);
 
+    // Set timeout for delegation
+    const timeoutMs = request.timeoutMs || 120000; // default 2 minutes
+    const timeoutTimer = setTimeout(() => {
+      this.failDelegation(delegation.id, new Error(`Delegation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    this.delegationTimers.set(delegation.id, timeoutTimer);
+
     this.eventBus.publish("swarm:delegation-started", { delegation }, "swarm-orchestrator");
 
     // In production, the agent would execute asynchronously;
@@ -269,6 +277,10 @@ export class SwarmOrchestrator {
   completeDelegation(requestId: string, result: string, error?: string): DelegationResult | null {
     const delegation = this.activeDelegations.get(requestId);
     if (!delegation) return null;
+
+    // Clear timeout timer
+    const timer = this.delegationTimers.get(requestId);
+    if (timer) { clearTimeout(timer); this.delegationTimers.delete(requestId); }
 
     const agent = this.agents.get(delegation.toAgentId!);
     const endTime = Date.now();
@@ -319,6 +331,30 @@ export class SwarmOrchestrator {
     return delResult;
   }
 
+  /** Handle a delegation failure or timeout */
+  private failDelegation(delegationId: string, error: Error): void {
+    const delegation = this.activeDelegations.get(delegationId);
+    if (!delegation) return;
+
+    // Clear timeout timer
+    const timer = this.delegationTimers.get(delegationId);
+    if (timer) { clearTimeout(timer); this.delegationTimers.delete(delegationId); }
+
+    // Mark agent as idle again
+    const agent = this.agents.get(delegation.toAgentId!);
+    if (agent) agent.status = "idle";
+
+    // Remove from active delegations
+    this.activeDelegations.delete(delegationId);
+    this.delegationStartTimes.delete(delegationId);
+
+    // Emit failure event
+    this.eventBus.publish("swarm:delegation_failed", { delegationId, error: error.message }, "swarm-orchestrator");
+
+    // Process pending delegations
+    this.processPending(agent?.id);
+  }
+
   // ── Consensus ───────────────────────────────────────────
 
   /** Propose a decision to the swarm for consensus */
@@ -351,8 +387,13 @@ export class SwarmOrchestrator {
 
     // Check if consensus is reached
     const onlineAgents = this.getActiveAgents().length;
-    const votesReceived = filtered.length;
-    const agreementRatio = votesReceived / Math.max(onlineAgents, 1);
+    // Count votes per option to find the most popular
+    const optionCounts = new Map<string, number>();
+    for (const v of filtered) {
+      optionCounts.set(v.choice, (optionCounts.get(v.choice) || 0) + 1);
+    }
+    const maxCount = filtered.length > 0 ? Math.max(...optionCounts.values()) : 0;
+    const agreementRatio = maxCount / Math.max(onlineAgents, 1);
 
     if (agreementRatio >= proposal.requiredRatio) {
       return true;
@@ -368,7 +409,6 @@ export class SwarmOrchestrator {
 
     const allVotes = this.votes.get(proposalId) ?? [];
     const onlineAgents = this.getActiveAgents().length;
-    const agreementRatio = allVotes.length / Math.max(onlineAgents, 1);
 
     // Count votes per option
     const counts = new Map<string, { votes: number; totalConfidence: number }>();
@@ -382,6 +422,10 @@ export class SwarmOrchestrator {
         c.totalConfidence += vote.confidence;
       }
     }
+
+    // agreementRatio = most popular option votes / total online agents
+    const maxVoteCount = allVotes.length > 0 ? Math.max(...Array.from(counts.values()).map((c) => c.votes)) : 0;
+    const agreementRatio = maxVoteCount / Math.max(onlineAgents, 1);
 
     // Find winner
     let winner: string | undefined;
@@ -545,6 +589,11 @@ export class SwarmOrchestrator {
 
   shutdown(): void {
     this.stop();
+    // Clear all delegation timers
+    for (const [, timer] of this.delegationTimers) {
+      clearTimeout(timer);
+    }
+    this.delegationTimers.clear();
     this.agents.clear();
     this.pendingDelegations.clear();
     this.activeDelegations.clear();
@@ -641,6 +690,17 @@ export class SwarmOrchestrator {
         }
 
         this.eventBus.publish("swarm:agent-offline", { agentId: agent.id }, "swarm-orchestrator");
+      }
+    }
+
+    // Check for timed-out delegations
+    for (const [delegationId, delegation] of this.activeDelegations) {
+      const startTime = this.delegationStartTimes.get(delegationId);
+      if (startTime) {
+        const timeoutMs = delegation.timeoutMs || this.config.defaultTimeoutMs;
+        if (now - startTime > timeoutMs) {
+          this.failDelegation(delegationId, new Error(`Delegation timed out after ${timeoutMs}ms`));
+        }
       }
     }
   }

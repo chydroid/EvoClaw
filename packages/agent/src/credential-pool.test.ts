@@ -242,4 +242,60 @@ describe("CredentialPool", () => {
 
     expect(after).toBeGreaterThanOrEqual(before ?? 0);
   });
+
+  // ── getNextKey convenience method ──────────────────────
+
+  it("getNextKey returns the key string from the pool", () => {
+    pool.addCredential("openai", "sk-key-aaa");
+    pool.addCredential("openai", "sk-key-bbb");
+
+    const key = pool.getNextKey("openai");
+    expect(key).toBe("sk-key-aaa");
+  });
+
+  it("getNextKey returns empty string for unknown provider", () => {
+    expect(pool.getNextKey("unknown")).toBe("");
+  });
+
+  it("getNextKey rotates through keys with round-robin", () => {
+    pool.addCredential("openai", "key-a");
+    pool.addCredential("openai", "key-b");
+    pool.addCredential("openai", "key-c");
+
+    expect(pool.getNextKey("openai")).toBe("key-a");
+    expect(pool.getNextKey("openai")).toBe("key-b");
+    expect(pool.getNextKey("openai")).toBe("key-c");
+    expect(pool.getNextKey("openai")).toBe("key-a");
+  });
+
+  // ── reportRateLimit convenience method ─────────────────
+
+  it("reportRateLimit marks a key as rate-limited by provider+key", () => {
+    pool.addCredential("openai", "key-1");
+    pool.addCredential("openai", "key-2");
+
+    pool.reportRateLimit("openai", "key-1");
+
+    // key-1 should be rate-limited, so getNextKey should return key-2
+    const key = pool.getNextKey("openai");
+    expect(key).toBe("key-2");
+  });
+
+  it("reportRateLimit is a no-op for unknown provider", () => {
+    expect(() => pool.reportRateLimit("unknown", "some-key")).not.toThrow();
+  });
+
+  it("reportRateLimit is a no-op for unknown key", () => {
+    pool.addCredential("openai", "key-1");
+    expect(() => pool.reportRateLimit("openai", "nonexistent-key")).not.toThrow();
+  });
+
+  it("reportRateLimit sets rateLimitedUntil in the future", () => {
+    pool.addCredential("openai", "key-1");
+    pool.reportRateLimit("openai", "key-1");
+
+    const entry = pool.getCredentials("openai")[0];
+    expect(entry.rateLimitedUntil).not.toBeNull();
+    expect(entry.rateLimitedUntil!).toBeGreaterThan(Date.now());
+  });
 });

@@ -1,7 +1,19 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { SkillCurator } from "../src/skill-curator";
-import type { SkillEvolutionEntry } from "../src/skill-curator";
+
+// Minimum solution length to pass the 300-char instruction quality gate.
+// The derived instructions include a heading and task prefix (~50 chars), so the
+// solution itself needs to provide the remaining ~250 chars.
+const LONG_SOLUTION = [
+  "Step 1: Initialize the environment and load all necessary dependencies and configurations.",
+  "Step 2: Parse the input parameters and validate them against the expected schema.",
+  "Step 3: Execute the core logic by calling the appropriate processing pipeline.",
+  "Step 4: Handle edge cases and errors gracefully with proper fallback mechanisms.",
+  "Step 5: Format the output results according to the specified output schema.",
+  "Step 6: Log the execution details and return the final result to the caller.",
+  "Step 7: Clean up any temporary resources and close open connections.",
+].join("\n");
 
 describe("SkillCurator", () => {
   function createCurator() {
@@ -9,6 +21,8 @@ describe("SkillCurator", () => {
     const eventBus = new EventBus();
     registry.registerService("eventBus", eventBus);
     const curator = new SkillCurator(registry, eventBus);
+    // Auto-extraction is OFF by default — tests must explicitly enable it.
+    curator.enableAutoExtraction();
     return { curator, registry, eventBus };
   }
 
@@ -17,15 +31,15 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "搜索最新的科技新闻",
-        "1. 调用搜索API获取关键词结果\n2. 过滤和排序结果\n3. 返回格式化的新闻列表",
+        "search latest technology news with web api integration",
+        LONG_SOLUTION,
         { source: "task-completion", taskId: "test-1" }
       );
 
       expect(skill).toBeDefined();
       expect(skill!.name).toBeDefined();
       expect(skill!.version).toBe("1.0.0");
-      expect(skill!.description).toContain("搜索");
+      expect(skill!.description).toContain("search");
       expect(skill!.lifecycle.status).toBe("active");
     });
 
@@ -33,8 +47,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "计算数学表达式",
-        "解析表达式并返回计算结果",
+        "evaluate math expressions from user input queries",
+        LONG_SOLUTION,
         { source: "test" }
       );
 
@@ -45,29 +59,29 @@ describe("SkillCurator", () => {
       expect(evolution!.versions[0].trigger).toBe("extraction");
       expect(evolution!.versions[0].previousVersion).toBeNull();
       expect(evolution!.extractionSource).not.toBeNull();
-      expect(evolution!.extractionSource!.task).toBe("计算数学表达式");
+      expect(evolution!.extractionSource!.task).toBe("evaluate math expressions from user input queries");
     });
 
     it("should derive appropriate category from task description", async () => {
       const { curator } = createCurator();
 
       const integrationSkill = await curator.extractSkillFromSolution(
-        "调用外部API获取数据",
-        "使用fetch调用REST API",
+        "fetch data from external api endpoint integration",
+        LONG_SOLUTION,
         {}
       );
       expect(integrationSkill!.category).toBe("integration");
 
       const analysisSkill = await curator.extractSkillFromSolution(
-        "分析销售数据并生成统计报告",
-        "聚合数据并计算统计指标",
+        "analyze sales data and generate statistical reports",
+        LONG_SOLUTION,
         {}
       );
       expect(analysisSkill!.category).toBe("analysis");
 
       const generationSkill = await curator.extractSkillFromSolution(
-        "生成项目文档",
-        "根据代码结构自动生成文档",
+        "generate project documentation from code structure",
+        LONG_SOLUTION,
         {}
       );
       expect(generationSkill!.category).toBe("generation");
@@ -77,8 +91,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "搜索新闻并返回结果",
-        "执行搜索查询",
+        "search news and return structured results",
+        LONG_SOLUTION,
         {}
       );
 
@@ -86,7 +100,7 @@ describe("SkillCurator", () => {
       expect(skill!.triggers[0].type).toBe("keyword");
     });
 
-    it("should handle empty or minimal task/solution gracefully", async () => {
+    it("should return null for insufficient task/solution (quality gate)", async () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
@@ -95,8 +109,23 @@ describe("SkillCurator", () => {
         {}
       );
 
-      expect(skill).toBeDefined();
-      expect(skill!.name).toBeDefined();
+      expect(skill).toBeNull();
+    });
+
+    it("should return null when auto-extraction is disabled", async () => {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      registry.registerService("eventBus", eventBus);
+      const curator = new SkillCurator(registry, eventBus);
+      // DO NOT enable auto-extraction — verify it returns null by default
+
+      const skill = await curator.extractSkillFromSolution(
+        "search latest technology news with web api integration",
+        LONG_SOLUTION,
+        {}
+      );
+
+      expect(skill).toBeNull();
     });
   });
 
@@ -105,8 +134,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "文件处理工具",
-        "读取文件内容并处理",
+        "file processing utility for reading content",
+        LONG_SOLUTION,
         {}
       );
 
@@ -139,8 +168,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "数据转换工具",
-        "将CSV转换为JSON格式",
+        "data conversion tool for csv to json format",
+        LONG_SOLUTION,
         {}
       );
 
@@ -170,8 +199,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "代码格式化工具",
-        "格式化TypeScript代码",
+        "code formatting tool for typescript source",
+        LONG_SOLUTION,
         {}
       );
 
@@ -217,8 +246,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "待弃用技能",
-        "执行某些操作",
+        "deprecated skill test for cleanup verification",
+        LONG_SOLUTION,
         {}
       );
 
@@ -244,8 +273,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "批量数据处理",
-        "处理大量数据记录",
+        "batch data processing for large records",
+        LONG_SOLUTION,
         {}
       );
 
@@ -277,8 +306,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "旧版工具",
-        "执行旧版操作",
+        "legacy tool handler for migration support",
+        LONG_SOLUTION,
         {}
       );
 
@@ -305,8 +334,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "重复弃用测试",
-        "执行操作",
+        "duplicate deprecation test case verification",
+        LONG_SOLUTION,
         {}
       );
 
@@ -328,8 +357,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "版本历史测试",
-        "执行操作",
+        "version history test for tracking changes",
+        LONG_SOLUTION,
         {}
       );
 
@@ -365,8 +394,8 @@ describe("SkillCurator", () => {
     it("should return all tracked evolutions", async () => {
       const { curator } = createCurator();
 
-      await curator.extractSkillFromSolution("任务A", "解决方案A", {});
-      await curator.extractSkillFromSolution("任务B", "解决方案B", {});
+      await curator.extractSkillFromSolution("task alpha processing pipeline for data analysis", LONG_SOLUTION, {});
+      await curator.extractSkillFromSolution("task beta processing pipeline for data analysis", LONG_SOLUTION, {});
 
       const evolutions = curator.getAllEvolutions();
       expect(evolutions.length).toBeGreaterThanOrEqual(2);
@@ -377,8 +406,8 @@ describe("SkillCurator", () => {
     it("should return accurate statistics", async () => {
       const { curator } = createCurator();
 
-      const skill1 = await curator.extractSkillFromSolution("统计任务1", "方案1", {});
-      const skill2 = await curator.extractSkillFromSolution("统计任务2", "方案2", {});
+      const skill1 = await curator.extractSkillFromSolution("stats task one processing pipeline for data analysis", LONG_SOLUTION, {});
+      const skill2 = await curator.extractSkillFromSolution("stats task two processing pipeline for data analysis", LONG_SOLUTION, {});
 
       await curator.improveSkill(skill1!.id, {
         skillId: skill1!.id,
@@ -405,8 +434,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "版本管理测试",
-        "执行操作",
+        "version management test case for tracking",
+        LONG_SOLUTION,
         {}
       );
 
@@ -439,8 +468,8 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
-        "版本追踪测试",
-        "执行操作",
+        "version tracking test case for history",
+        LONG_SOLUTION,
         {}
       );
 
@@ -456,6 +485,26 @@ describe("SkillCurator", () => {
       const evolution = curator.getSkillEvolution(skill!.id);
       expect(evolution!.versions[1].previousVersion).toBe("1.0.0");
       expect(evolution!.versions[1].version).toBe("1.0.1");
+    });
+  });
+
+  describe("autoExtractionToggle", () => {
+    it("should default to disabled", () => {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      const curator = new SkillCurator(registry, eventBus);
+      expect(curator.isAutoExtractionEnabled()).toBe(false);
+    });
+
+    it("should enable and disable auto-extraction", () => {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      const curator = new SkillCurator(registry, eventBus);
+      expect(curator.isAutoExtractionEnabled()).toBe(false);
+      curator.enableAutoExtraction();
+      expect(curator.isAutoExtractionEnabled()).toBe(true);
+      curator.disableAutoExtraction();
+      expect(curator.isAutoExtractionEnabled()).toBe(false);
     });
   });
 

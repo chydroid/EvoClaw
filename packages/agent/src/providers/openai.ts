@@ -25,6 +25,7 @@ import type {
   ChatContent,
   ToolCall,
 } from "@evoclaw/plugin-sdk";
+import type { CredentialPool } from "../credential-pool.js";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -134,6 +135,7 @@ export class OpenAIProvider implements ProviderPlugin {
 
   private config: ProviderConfig = {};
   private logger: PluginLogger = console as unknown as PluginLogger;
+  private credentialPool: CredentialPool | undefined;
   private baseURL = "https://api.openai.com";
   private totalTokens = 0;
   private totalCost = 0;
@@ -142,22 +144,25 @@ export class OpenAIProvider implements ProviderPlugin {
   async init(
     config: ProviderConfig,
     logger: PluginLogger,
-    _services: ServiceLocator
+    services: ServiceLocator
   ): Promise<void> {
     this.config = config;
     this.logger = logger;
     this.baseURL = config.baseURL || "https://api.openai.com";
     // Strip trailing slashes
     this.baseURL = this.baseURL.replace(/\/+$/, "");
+    // Acquire CredentialPool from service locator if available
+    this.credentialPool = services.get<CredentialPool>("credentialPool");
   }
 
   async listModels(): Promise<ModelInfo[]> {
     // Try to fetch from API if key is available
-    if (this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (apiKey) {
       try {
         const res = await fetch(`${this.baseURL}/v1/models`, {
           headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
             ...(this.config.headers ?? {}),
           },
         });
@@ -199,11 +204,12 @@ export class OpenAIProvider implements ProviderPlugin {
     if (builtIn) return true;
 
     // Check remote if available
-    if (this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (apiKey) {
       try {
         const res = await fetch(`${this.baseURL}/v1/models/${modelId}`, {
           headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
             ...(this.config.headers ?? {}),
           },
         });
@@ -225,16 +231,33 @@ export class OpenAIProvider implements ProviderPlugin {
     const msgCount = request.messages.length;
     this.logger.info(`[OpenAI] → ${request.model} (${msgCount} msgs)`);
 
-    const response = await this.fetchWithRetry(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    const data = await response.json() as OpenAIChatResponse;
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const response = await this.fetchWithRetry(url, {
+        method: "POST",
+        headers: this.buildHeaders(lastKey),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
+      });
 
-    return this.parseResponse(data, request.model, startTime);
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[OpenAI] 429 rate limit on key, rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      const data = await response.json() as OpenAIChatResponse;
+      return this.parseResponse(data, request.model, startTime);
+    }
+
+    // Should not reach here, but fallback
+    throw new Error("All key rotation attempts exhausted");
   }
 
   async streamComplete(
@@ -249,18 +272,45 @@ export class OpenAIProvider implements ProviderPlugin {
     const msgCountS = request.messages.length;
     this.logger.info(`[OpenAI] → ${request.model} (stream, ${msgCountS} msgs)`);
 
-    const response = await this.fetchWithRetry(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    if (!response.ok || !response.body) {
-      throw new Error(`OpenAI stream failed: HTTP ${response.status}`);
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const response = await this.fetchWithRetry(url, {
+        method: "POST",
+        headers: this.buildHeaders(lastKey),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
+      });
+
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[OpenAI] 429 rate limit on key (stream), rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      if (!response.ok || !response.body) {
+        throw new Error(`OpenAI stream failed: HTTP ${response.status}`);
+      }
+
+      return this.processStreamResponse(response, request.model, startTime, onChunk);
     }
 
-    const reader = response.body.getReader();
+    throw new Error("All key rotation attempts exhausted (stream)");
+  }
+
+  private async processStreamResponse(
+    response: Response,
+    model: string,
+    startTime: number,
+    onChunk: (chunk: StreamChunk) => void
+  ): Promise<ModelResponse> {
+
+    const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let finalContent = "";
@@ -341,11 +391,11 @@ export class OpenAIProvider implements ProviderPlugin {
         },
       }));
 
-    this.recordUsage(usage.totalTokens, request.model);
+    this.recordUsage(usage.totalTokens, model);
 
     return {
       id: `chatcmpl_${Date.now()}`,
-      model: request.model,
+      model,
       content: finalContent,
       toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
       usage,
@@ -354,12 +404,13 @@ export class OpenAIProvider implements ProviderPlugin {
   }
 
   async healthCheck(): Promise<{ healthy: boolean; message?: string }> {
-    if (!this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (!apiKey) {
       return { healthy: false, message: "No API key configured" };
     }
     try {
       const res = await fetch(`${this.baseURL}/v1/models`, {
-        headers: { Authorization: `Bearer ${this.config.apiKey}` },
+        headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(5000),
       });
       return { healthy: res.ok, message: res.ok ? undefined : `HTTP ${res.status}` };
@@ -378,12 +429,22 @@ export class OpenAIProvider implements ProviderPlugin {
 
   // ── Internal ────────────────────────────────────────────
 
-  private buildHeaders(): Record<string, string> {
+  private buildHeaders(key?: string): Record<string, string> {
+    const apiKey = key ?? this.resolveApiKey();
     return {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${this.config.apiKey ?? ""}`,
+      Authorization: `Bearer ${apiKey}`,
       ...(this.config.headers ?? {}),
     };
+  }
+
+  /** Resolve the API key: try credential pool first, fall back to config */
+  private resolveApiKey(): string {
+    if (this.credentialPool) {
+      const key = this.credentialPool.getNextKey(this.provider);
+      if (key) return key;
+    }
+    return this.config.apiKey ?? "";
   }
 
   private buildRequestBody(

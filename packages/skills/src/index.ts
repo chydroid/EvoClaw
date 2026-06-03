@@ -18,7 +18,7 @@ export { SkillIndex } from "./skill-index";
 export type { SkillIndexEntry, SkillSearchResult } from "./skill-index";
 export type { SkillRegistryEntry, RegistrySearchQuery, RegistrySearchResult, RemoteRegistryConfig } from "./skill-registry";
 export type { DependencyCheckResult, DependencyConflict, DependencySuggestion } from "./skill-resolver";
-export type { HealthMonitorConfig, HealthHistory, SkillHealthReport } from "./skill-lifecycle";
+export type { HealthMonitorConfig, HealthHistory, SkillHealthReport, SkillUsageRecord } from "./skill-lifecycle";
 export type { SkillMatch, AutoInstallResult, BatchInstallProgress, ProgressCallback } from "./auto-skill-manager";
 export type { DispatchContext, DispatchResult, DispatchOptions } from "./skill-dispatcher";
 export type { TfidfMatchResult } from "./tfidf-matcher";

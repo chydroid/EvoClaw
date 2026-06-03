@@ -21,6 +21,7 @@ import type {
   StreamChunk,
   ChatMessage,
 } from "@evoclaw/plugin-sdk";
+import type { CredentialPool } from "../credential-pool.js";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -82,6 +83,7 @@ export class AnthropicProvider implements ProviderPlugin {
 
   private config: ProviderConfig = {};
   private logger: PluginLogger = console as unknown as PluginLogger;
+  private credentialPool: CredentialPool | undefined;
   private baseURL = "https://api.anthropic.com";
   private totalTokens = 0;
   private totalCost = 0;
@@ -90,12 +92,13 @@ export class AnthropicProvider implements ProviderPlugin {
   async init(
     config: ProviderConfig,
     logger: PluginLogger,
-    _services: ServiceLocator
+    services: ServiceLocator
   ): Promise<void> {
     this.config = config;
     this.logger = logger;
     this.baseURL = config.baseURL || "https://api.anthropic.com";
     this.baseURL = this.baseURL.replace(/\/+$/, "");
+    this.credentialPool = services.get<CredentialPool>("credentialPool");
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -112,16 +115,32 @@ export class AnthropicProvider implements ProviderPlugin {
 
     this.logger.info(`[Anthropic] → ${request.model} (${request.messages.length} msgs)`);
 
-    const response = await this.fetchWithRetry(`${this.baseURL}/v1/messages`, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    const data = await response.json() as AnthropicResponse;
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const response = await this.fetchWithRetry(`${this.baseURL}/v1/messages`, {
+        method: "POST",
+        headers: this.buildHeaders(lastKey),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
+      });
 
-    return this.parseResponse(data, request.model, startTime);
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[Anthropic] 429 rate limit on key, rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      const data = await response.json() as AnthropicResponse;
+      return this.parseResponse(data, request.model, startTime);
+    }
+
+    throw new Error("All key rotation attempts exhausted");
   }
 
   async streamComplete(
@@ -135,18 +154,45 @@ export class AnthropicProvider implements ProviderPlugin {
 
     this.logger.info(`[Anthropic] → ${request.model} (stream, ${request.messages.length} msgs)`);
 
-    const response = await this.fetchWithRetry(url, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    if (!response.ok || !response.body) {
-      throw new Error(`Anthropic stream failed: HTTP ${response.status}`);
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const response = await this.fetchWithRetry(url, {
+        method: "POST",
+        headers: this.buildHeaders(lastKey),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
+      });
+
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[Anthropic] 429 rate limit on key (stream), rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Anthropic stream failed: HTTP ${response.status}`);
+      }
+
+      return this.processStreamResponse(response, request.model, startTime, onChunk);
     }
 
-    const reader = response.body.getReader();
+    throw new Error("All key rotation attempts exhausted (stream)");
+  }
+
+  private async processStreamResponse(
+    response: Response,
+    model: string,
+    startTime: number,
+    onChunk: (chunk: StreamChunk) => void
+  ): Promise<ModelResponse> {
+
+    const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let finalContent = "";
@@ -205,11 +251,11 @@ export class AnthropicProvider implements ProviderPlugin {
     }
 
     const totalTokens = inputTokens + outputTokens;
-    this.recordUsage(totalTokens, request.model);
+    this.recordUsage(totalTokens, model);
 
     return {
       id: `msg_${Date.now()}`,
-      model: request.model,
+      model,
       content: finalContent,
       usage: {
         promptTokens: inputTokens,
@@ -221,13 +267,14 @@ export class AnthropicProvider implements ProviderPlugin {
   }
 
   async healthCheck(): Promise<{ healthy: boolean; message?: string }> {
-    if (!this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (!apiKey) {
       return { healthy: false, message: "No API key configured" };
     }
     try {
       const res = await fetch(`${this.baseURL}/v1/messages`, {
         method: "POST",
-        headers: this.buildHeaders(),
+        headers: this.buildHeaders(apiKey),
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1,
@@ -252,13 +299,23 @@ export class AnthropicProvider implements ProviderPlugin {
 
   // ── Internal ────────────────────────────────────────────
 
-  private buildHeaders(): Record<string, string> {
+  private buildHeaders(key?: string): Record<string, string> {
+    const apiKey = key ?? this.resolveApiKey();
     return {
       "Content-Type": "application/json",
-      "x-api-key": this.config.apiKey ?? "",
+      "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
       ...(this.config.headers ?? {}),
     };
+  }
+
+  /** Resolve the API key: try credential pool first, fall back to config */
+  private resolveApiKey(): string {
+    if (this.credentialPool) {
+      const key = this.credentialPool.getNextKey(this.provider);
+      if (key) return key;
+    }
+    return this.config.apiKey ?? "";
   }
 
   private buildRequestBody(

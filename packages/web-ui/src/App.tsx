@@ -32,6 +32,7 @@ import ConfigDoctorPage from "./ConfigDoctorPage";
 import HealthAggregatorPage from "./HealthAggregatorPage";
 import MessageTemplatesPage from "./MessageTemplatesPage";
 import ReplyReferencePage from "./ReplyReferencePage";
+import QueueManagerPage from "./QueueManagerPage";
 
 type TabId =
   | "chat" | "status" | "dashboard"
@@ -40,7 +41,7 @@ type TabId =
   | "ops" | "cli"
   | "secrets" | "dlq" | "config-rpc" | "retention"
   | "feature-flags" | "config-migration" | "config-doctor"
-  | "health-aggregator" | "message-templates" | "reply-refs";
+  | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue";
 
 interface NavGroup {
   id: string;
@@ -120,6 +121,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "health-aggregator", i18nKey: "nav.health_aggregator", iconId: "health-aggregator" },
       { id: "reply-refs", i18nKey: "nav.reply_refs", iconId: "reply-refs" },
       { id: "message-templates", i18nKey: "nav.templates", iconId: "message-templates" },
+      { id: "message-queue", i18nKey: "nav.message_queue", iconId: "message-queue" },
     ],
   },
   {
@@ -542,6 +544,7 @@ export default function App() {
       case "health-aggregator": return <HealthAggregatorPage />;
       case "message-templates": return <MessageTemplatesPage />;
       case "reply-refs": return <ReplyReferencePage />;
+      case "message-queue": return <QueueManagerPage />;
       default: return <WebChatPage />;
     }
   }

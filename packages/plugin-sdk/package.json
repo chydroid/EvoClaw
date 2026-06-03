@@ -40,7 +40,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rimraf dist"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@evoclaw/core": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.8.0",
     "@types/node": "^22.19.19",

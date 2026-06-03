@@ -357,6 +357,7 @@ export class EvolutionEngine {
       candidates: [],
       selectedCandidate: null,
       evaluation: null,
+      feedback: null,
       startedAt: new Date(),
       completedAt: null,
     };
@@ -443,13 +444,14 @@ export class EvolutionEngine {
           // 沙箱执行验证：在实际环境中运行候选代码
           const sandboxResult = await this.sandboxExecutor.execute(candidate);
           if (!sandboxResult.success) {
-            // 沙箱执行失败，通过反思系统分析
-            const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
+            // 沙箱执行失败，拒绝候选并阻断发布
+            cycle.status = "rejected";
+            cycle.feedback = { ...cycle.feedback, rejectionReason: `Sandbox validation failed: ${sandboxResult.error}` };
             console.warn(
-              `[EvolutionEngine] Sandbox execution failed for candidate ${candidate.id}: ${sandboxResult.error}`,
-              `\nReflection: ${sandboxReflection.rootCause}`
+              `[EvolutionEngine] Evolution candidate rejected: sandbox validation failed for candidate ${candidate.id} - ${sandboxResult.error}`
             );
-            // 将沙箱失败记录为反馈，不阻断发布但记录问题
+
+            // 将沙箱失败记录为反馈
             await this.recordFeedback({
               cycleId: cycle.id,
               skillId: "unknown",
@@ -464,25 +466,29 @@ export class EvolutionEngine {
             });
 
             // 将沙箱失败轨迹加入经验蒸馏器
+            const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
             this.experienceDistiller.addTrajectory(
               sandboxResult.executionTrace,
               sandboxReflection
             ).catch(() => {});
-          } else {
-            // 成功执行也记录轨迹，供经验蒸馏
-            const successTrace = sandboxResult.executionTrace;
-            this.experienceDistiller.addTrajectory(
-              successTrace,
-              {
-                rootCause: "Sandbox execution successful",
-                failureCategory: "unknown",
-                suggestedImprovements: [],
-                confidenceScore: 1.0,
-                shouldEvolve: false,
-              }
-            ).catch(() => {});
+
+            return;
           }
 
+          // 沙箱执行成功，记录轨迹供经验蒸馏
+          const successTrace = sandboxResult.executionTrace;
+          this.experienceDistiller.addTrajectory(
+            successTrace,
+            {
+              rootCause: "Sandbox execution successful",
+              failureCategory: "unknown",
+              suggestedImprovements: [],
+              confidenceScore: 1.0,
+              shouldEvolve: false,
+            }
+          ).catch(() => {});
+
+          // 仅当沙箱验证通过时才发布
           await this.hotReload.publish(candidate);
           await this.eventBus.publish(
             SystemEvents.EVOLUTION_PUBLISHED,
@@ -513,25 +519,35 @@ export class EvolutionEngine {
                   console.warn(
                     `[EvolutionEngine] Genetic candidate sandbox failed: ${sandboxResult.error}`
                   );
+                  // 沙箱执行失败，拒绝候选并阻断发布
+                  cycle.status = "rejected";
+                  cycle.feedback = { ...cycle.feedback, rejectionReason: `Sandbox validation failed (genetic): ${sandboxResult.error}` };
+                  console.warn(
+                    `[EvolutionEngine] Evolution candidate rejected: sandbox validation failed for genetic candidate - ${sandboxResult.error}`
+                  );
+
                   // 将遗传优化的沙箱失败轨迹加入经验蒸馏器
                   const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
                   this.experienceDistiller.addTrajectory(
                     sandboxResult.executionTrace,
                     sandboxReflection
                   ).catch(() => {});
-                } else {
-                  this.experienceDistiller.addTrajectory(
-                    sandboxResult.executionTrace,
-                    {
-                      rootCause: "Genetic optimization sandbox successful",
-                      failureCategory: "unknown",
-                      suggestedImprovements: [],
-                      confidenceScore: 1.0,
-                      shouldEvolve: false,
-                    }
-                  ).catch(() => {});
+
+                  return;
                 }
 
+                this.experienceDistiller.addTrajectory(
+                  sandboxResult.executionTrace,
+                  {
+                    rootCause: "Genetic optimization sandbox successful",
+                    failureCategory: "unknown",
+                    suggestedImprovements: [],
+                    confidenceScore: 1.0,
+                    shouldEvolve: false,
+                  }
+                ).catch(() => {});
+
+                // 仅当沙箱验证通过时才发布
                 await this.hotReload.publish(geneticResult.bestCandidate);
                 await this.eventBus.publish(
                   SystemEvents.EVOLUTION_PUBLISHED,

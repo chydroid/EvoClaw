@@ -6,13 +6,23 @@ export interface SkillLifecycle {
   healthCheck: HealthCheckResult | null;
 }
 
-export type SkillStatus = "installed" | "active" | "error" | "updating" | "uninstalling" | "disabled";
+export type SkillStatus = "draft" | "active" | "stale" | "archived" | "error" | "updating" | "uninstalling" | "disabled";
 
 export interface HealthCheckResult {
   healthy: boolean;
   lastCheck: Date;
   errors: string[];
   missingDependencies: string[];
+}
+
+export interface SkillUsageRecord {
+  skillId: string;
+  lastUsedAt: Date;
+  useCount: number;
+  successCount: number;
+  failureCount: number;
+  lastFailureAt: Date | null;
+  lastFailureReason: string | null;
 }
 
 export interface SkillManifest {
@@ -171,4 +181,28 @@ export interface SkillHooks {
   onBeforeExecute?: string;
   onAfterExecute?: string;
   onError?: string;
+}
+
+/** Skill loading priority (higher number = higher priority, matching OpenClaw's 6-level system) */
+export interface SkillLoadConfig {
+  /** Skill directories in priority order (highest first) */
+  searchPaths: string[];
+  /** Per-agent skill allowlist. Empty array = no skills. Undefined = all skills allowed */
+  agentAllowlists?: Record<string, string[]>;
+  /** Default allowlist for agents not in agentAllowlists */
+  defaultAllowlist?: string[];
+}
+
+export interface SecurityScanResult {
+  safe: boolean;
+  riskLevel: "low" | "medium" | "high" | "critical";
+  findings: SecurityFinding[];
+}
+
+export interface SecurityFinding {
+  type: "injection" | "exfiltration" | "privilege_escalation" | "supply_chain" | "suspicious_pattern";
+  severity: "low" | "medium" | "high" | "critical";
+  description: string;
+  location: string;
+  recommendation: string;
 }

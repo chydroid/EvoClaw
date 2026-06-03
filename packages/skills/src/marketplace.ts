@@ -128,8 +128,9 @@ export class SkillMarketplace {
   private catalogTimestamp = 0;
   private installed = new Map<string, SkillPackage>();
   private eventBus: EventBus;
+  private skillManager: { installSkill(skillPath: string): Promise<unknown> } | null;
 
-  constructor(eventBus: EventBus, config: MarketplaceConfig = {}) {
+  constructor(eventBus: EventBus, config: MarketplaceConfig = {}, skillManager?: { installSkill(skillPath: string): Promise<unknown> } | null) {
     this.config = {
       registryURL: config.registryURL ?? "https://clawhub.ai/api/v1",
       cacheDir: config.cacheDir ?? "data/marketplace",
@@ -137,6 +138,7 @@ export class SkillMarketplace {
       maxConcurrentDownloads: config.maxConcurrentDownloads ?? 3,
     };
     this.eventBus = eventBus;
+    this.skillManager = skillManager ?? null;
   }
 
   // ── Catalog Operations ──────────────────────────────────
@@ -242,9 +244,33 @@ export class SkillMarketplace {
     };
   }
 
-  /** Get a single package by name */
+  /** Get a single package by name from local catalog */
   getPackage(name: string): SkillPackage | undefined {
     return this.catalog.find((p) => p.name === name);
+  }
+
+  /** Fetch a single package's details from the ClawHub registry API */
+  async fetchPackageDetails(name: string): Promise<SkillPackage | null> {
+    try {
+      const res = await fetch(`${this.config.registryURL}/packages/${encodeURIComponent(name)}`);
+      if (!res.ok) {
+        if (res.status === 404) return null;
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json() as SkillPackage;
+      // Update local catalog entry if present
+      const idx = this.catalog.findIndex((p) => p.name === name);
+      if (idx >= 0) {
+        this.catalog[idx] = data;
+      } else {
+        this.catalog.push(data);
+      }
+      return data;
+    } catch (err) {
+      console.warn(`[Marketplace] Failed to fetch package details for "${name}": ${err}`);
+      // Fall back to local catalog
+      return this.getPackage(name) ?? null;
+    }
   }
 
   // ── Install / Update ────────────────────────────────────
@@ -354,6 +380,15 @@ export class SkillMarketplace {
       };
 
       skillMdPath = findSkillMd(extractDir);
+
+      // Register with SkillManager if available
+      if (this.skillManager && skillMdPath) {
+        try {
+          await this.skillManager.installSkill(skillMdPath);
+        } catch (regErr) {
+          console.warn(`[SkillMarketplace] SkillManager registration failed for ${name}: ${regErr instanceof Error ? regErr.message : String(regErr)}`);
+        }
+      }
 
       // Store in installed registry
       this.installed.set(name, pkg);
@@ -493,6 +528,19 @@ export class SkillMarketplace {
     return [...this.catalog]
       .sort((a, b) => b.downloads - a.downloads)
       .slice(0, limit);
+  }
+
+  /** Get available categories from the catalog */
+  getCategories(): Array<{ name: string; count: number }> {
+    const counts = new Map<string, number>();
+    for (const pkg of this.catalog) {
+      for (const tag of pkg.tags) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
   }
 
   /** Get newly added packages */

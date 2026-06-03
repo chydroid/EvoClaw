@@ -152,6 +152,32 @@ export class CredentialPool {
     }
   }
 
+  /**
+   * Convenience method: get the next API key string for a provider.
+   * Uses the configured rotation strategy and skips rate-limited keys.
+   * Falls back to the single apiKey from config if no pool keys are available.
+   */
+  getNextKey(provider: string): string {
+    const entry = this.getCredential(provider);
+    return entry?.key ?? "";
+  }
+
+  /**
+   * Convenience method: report a 429 rate-limit event for a specific key.
+   * Records the event and temporarily removes the key from rotation
+   * for the configured cooldown period (default 60 seconds).
+   */
+  reportRateLimit(provider: string, key: string): void {
+    const entries = this.credentials.get(provider);
+    if (!entries) return;
+    const entry = entries.find((e) => e.key === key);
+    if (!entry) return;
+    const now = Date.now();
+    entry.errorCount++;
+    entry.lastErrorAt = now;
+    entry.rateLimitedUntil = now + this.config.rateLimitCooldownMs;
+  }
+
   getCredentials(provider: string): CredentialEntry[] {
     return [...(this.credentials.get(provider) ?? [])];
   }

@@ -3,20 +3,82 @@ import { v4 as uuid } from "uuid";
 import * as fs from "fs";
 import * as path from "path";
 
-const MEMORY_FILE = path.join(process.cwd(), "data", "memory", "long-term.json");
+interface SqliteStatement {
+  run(...params: unknown[]): void;
+  get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
+}
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const DATA_DIR = process.env.EVOCLAW_DATA_DIR || path.join(process.cwd(), "data");
+const MEMORY_FILE = path.join(DATA_DIR, "memory", "long-term.json");
+const SQLITE_FILE = path.join(DATA_DIR, "memory", "long-term.db");
 const SAVE_DEBOUNCE_MS = 2000;
 
 export class LongTermMemoryStore implements LongTermMemory {
   private entries = new Map<string, MemoryEntry>();
   private saveTimer: NodeJS.Timeout | null = null;
   private dirty = false;
+  private sqliteDb: SqliteDatabase | null = null;
 
   constructor() {
+    this.initSqlite();
     this.loadFromDisk();
+  }
+
+  private initSqlite(): void {
+    try {
+      const BetterSqlite3 = require("better-sqlite3");
+      const dir = path.dirname(SQLITE_FILE);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      this.sqliteDb = new BetterSqlite3(SQLITE_FILE) as SqliteDatabase;
+      this.sqliteDb.exec(
+        "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, type TEXT, content TEXT, importance REAL, tags TEXT, createdAt TEXT, updatedAt TEXT, ttl INTEGER, data TEXT)"
+      );
+      console.log(`[LongTermMemory] SQLite backend opened at ${SQLITE_FILE}`);
+    } catch {
+      this.sqliteDb = null;
+      console.warn(`[LongTermMemory] better-sqlite3 not available, SQLite backend disabled`);
+    }
   }
 
   /** Load persisted memory from disk */
   private loadFromDisk(): void {
+    // Try SQLite first
+    if (this.sqliteDb) {
+      try {
+        const stmt = this.sqliteDb.prepare("SELECT data FROM memories");
+        const rows = stmt.all() as Array<{ data: string }>;
+        if (rows.length > 0 && this.entries.size === 0) {
+          for (const row of rows) {
+            try {
+              const item = JSON.parse(row.data);
+              const entry: MemoryEntry = {
+                ...item,
+                createdAt: new Date(item.createdAt),
+                accessedAt: new Date(item.accessedAt),
+              };
+              this.entries.set(entry.id, entry);
+            } catch {
+              // skip malformed rows
+            }
+          }
+          console.log(`[LongTermMemory] Loaded ${this.entries.size} entries from SQLite`);
+          return;
+        }
+      } catch (err) {
+        console.warn(`[LongTermMemory] Failed to load from SQLite: ${err}`);
+      }
+    }
+
+    // Fallback to JSON file
     try {
       if (fs.existsSync(MEMORY_FILE)) {
         const raw = fs.readFileSync(MEMORY_FILE, "utf-8");
@@ -64,6 +126,33 @@ export class LongTermMemoryStore implements LongTermMemory {
     }
   }
 
+  private saveToSqlite(entry: MemoryEntry): void {
+    if (!this.sqliteDb) return;
+    try {
+      const stmt = this.sqliteDb.prepare(
+        "INSERT OR REPLACE INTO memories (id, type, content, importance, tags, createdAt, updatedAt, ttl, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      );
+      const data = JSON.stringify({
+        ...entry,
+        createdAt: entry.createdAt.toISOString(),
+        accessedAt: entry.accessedAt.toISOString(),
+      });
+      stmt.run(
+        entry.id,
+        entry.type,
+        entry.content,
+        entry.metadata.importance,
+        JSON.stringify(entry.metadata.tags),
+        entry.createdAt.toISOString(),
+        entry.accessedAt.toISOString(),
+        entry.ttl,
+        data
+      );
+    } catch (err) {
+      console.warn(`[LongTermMemory] Failed to save to SQLite: ${err}`);
+    }
+  }
+
   async store(entry: MemoryEntry): Promise<MemoryEntry> {
     const fullEntry: MemoryEntry = {
       ...entry,
@@ -72,6 +161,7 @@ export class LongTermMemoryStore implements LongTermMemory {
       accessedAt: entry.accessedAt || new Date(),
     };
     this.entries.set(fullEntry.id, fullEntry);
+    this.saveToSqlite(fullEntry);
     this.scheduleSave();
     return fullEntry;
   }
@@ -79,6 +169,58 @@ export class LongTermMemoryStore implements LongTermMemory {
   async search(query: MemorySearchQuery): Promise<MemorySearchResult[]> {
     const results: MemorySearchResult[] = [];
 
+    // Use SQLite for content matching when available
+    if (this.sqliteDb && query.query) {
+      try {
+        const stmt = this.sqliteDb.prepare(
+          "SELECT id FROM memories WHERE content LIKE ?"
+        );
+        const rows = stmt.all(`%${query.query}%`) as Array<{ id: string }>;
+        const sqliteMatchIds = new Set(rows.map((r) => r.id));
+
+        for (const entry of this.entries.values()) {
+          let score = 0;
+          const matchedFields: string[] = [];
+
+          if (query.type && entry.type !== query.type) continue;
+
+          if (query.tags?.length) {
+            const tagMatch = query.tags.some((t) => entry.metadata.tags.includes(t));
+            if (!tagMatch) continue;
+            matchedFields.push("tags");
+            score += 0.3;
+          }
+
+          if (query.minImportance && entry.metadata.importance < query.minImportance) continue;
+
+          if (sqliteMatchIds.has(entry.id)) {
+            score += 0.5;
+            matchedFields.push("content");
+          }
+
+          if (query.embedding && entry.embedding) {
+            const similarity = this.cosineSimilarity(query.embedding, entry.embedding);
+            if (similarity >= (query.threshold || COSINE_SIMILARITY_THRESHOLD)) {
+              score += similarity * 0.5;
+              matchedFields.push("embedding");
+            } else if (!matchedFields.length) {
+              continue;
+            }
+          }
+
+          if (score > 0) {
+            results.push({ entry, score, matchedFields });
+          }
+        }
+
+        results.sort((a, b) => b.score - a.score);
+        return query.limit ? results.slice(0, query.limit) : results;
+      } catch (err) {
+        console.warn(`[LongTermMemory] SQLite search failed, falling back to in-memory: ${err}`);
+      }
+    }
+
+    // In-memory fallback
     for (const entry of this.entries.values()) {
       let score = 0;
       const matchedFields: string[] = [];
@@ -120,24 +262,53 @@ export class LongTermMemoryStore implements LongTermMemory {
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
-    const entry = this.entries.get(id);
+    let entry = this.entries.get(id) ?? null;
+    if (!entry && this.sqliteDb) {
+      // Check SQLite if not found in memory Map
+      try {
+        const stmt = this.sqliteDb.prepare("SELECT data FROM memories WHERE id = ?");
+        const row = stmt.get(id) as { data: string } | undefined;
+        if (row) {
+          const item = JSON.parse(row.data);
+          const sqliteEntry: MemoryEntry = {
+            ...item,
+            createdAt: new Date(item.createdAt),
+            accessedAt: new Date(item.accessedAt),
+          };
+          this.entries.set(sqliteEntry.id, sqliteEntry);
+          entry = sqliteEntry;
+        }
+      } catch (err) {
+        console.warn(`[LongTermMemory] Failed to retrieve from SQLite: ${err}`);
+      }
+    }
     if (entry) {
       entry.accessedAt = new Date();
       this.scheduleSave();
     }
-    return entry || null;
+    return entry;
   }
 
   async update(id: string, updates: Partial<MemoryEntry>): Promise<void> {
     const entry = this.entries.get(id);
     if (entry) {
-      this.entries.set(id, { ...entry, ...updates, accessedAt: new Date() });
+      const updated = { ...entry, ...updates, accessedAt: new Date() };
+      this.entries.set(id, updated);
+      this.saveToSqlite(updated);
       this.scheduleSave();
     }
   }
 
   async delete(id: string): Promise<void> {
     this.entries.delete(id);
+    if (this.sqliteDb) {
+      try {
+        const stmt = this.sqliteDb.prepare("DELETE FROM memories WHERE id = ?");
+        stmt.run(id);
+      } catch (err) {
+        console.warn(`[LongTermMemory] Failed to delete from SQLite: ${err}`);
+      }
+    }
     this.scheduleSave();
   }
 
@@ -147,6 +318,14 @@ export class LongTermMemoryStore implements LongTermMemory {
     for (const [id, entry] of this.entries) {
       if (entry.createdAt.getTime() + entry.ttl < now) {
         this.entries.delete(id);
+        if (this.sqliteDb) {
+          try {
+            const stmt = this.sqliteDb.prepare("DELETE FROM memories WHERE id = ?");
+            stmt.run(id);
+          } catch {
+            // best effort
+          }
+        }
         expired++;
       }
     }

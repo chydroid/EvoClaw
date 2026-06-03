@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { ServiceRegistry } from "@evoclaw/core";
@@ -14,7 +15,20 @@ export class AuthProvider {
     private jwtSecret: string,
     private registry: ServiceRegistry
   ) {
+    if (!jwtSecret || jwtSecret.length === 0) {
+      throw new Error("JWT secret must be a non-empty string. Set JWT_SECRET environment variable or pass it in config.");
+    }
+    if (jwtSecret.length < 16) {
+      console.warn("[AuthProvider] WARNING: JWT secret is shorter than 16 characters. This is insecure for production use.");
+    }
     this.webUiToken = process.env.WEB_UI_TOKEN || "";
+  }
+
+  private safeEqual(a: string, b: string): boolean {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 
   private getCookie(req: Request, name: string): string | undefined {
@@ -29,14 +43,14 @@ export class AuthProvider {
   }
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/system/services", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
+    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
 
     if (publicPaths.includes(req.path)) {
       return next();
     }
 
     // Allow all sub-paths under these public API prefixes
-    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/config-rpc") || req.path.startsWith("/api/bootstrap/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/") || req.path.startsWith("/api/evolution/") || req.path.startsWith("/api/compactions") || req.path.startsWith("/api/scheduler/") || req.path.startsWith("/api/system/") || req.path.startsWith("/api/channels/") || req.path.startsWith("/api/plugins") || req.path.startsWith("/api/permission/") || req.path.startsWith("/api/retention/") || req.path.startsWith("/api/health/") || req.path.startsWith("/api/secrets/") || req.path.startsWith("/api/models/") || req.path.startsWith("/api/dead-letter-queue/") || req.path.startsWith("/api/message-templates") || req.path.startsWith("/api/reply-refs") || req.path.startsWith("/api/canvas/") || req.path.startsWith("/api/feature-flags")) {
+    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/config-rpc") || req.path.startsWith("/api/bootstrap/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/") || req.path.startsWith("/api/evolution/") || req.path.startsWith("/api/compactions") || req.path.startsWith("/api/scheduler/") || req.path.startsWith("/api/channels/") || req.path.startsWith("/api/plugins") || req.path.startsWith("/api/permission/") || req.path.startsWith("/api/retention/") || req.path.startsWith("/api/health/") || req.path.startsWith("/api/models/") || req.path.startsWith("/api/dead-letter-queue/") || req.path.startsWith("/api/message-templates") || req.path.startsWith("/api/reply-refs") || req.path.startsWith("/api/canvas/") || req.path.startsWith("/api/feature-flags")) {
       return next();
     }
 
@@ -45,7 +59,7 @@ export class AuthProvider {
     }
 
     const cookieToken = this.getCookie(req, "web_ui_token");
-    if (cookieToken && cookieToken === this.webUiToken) {
+    if (cookieToken && this.safeEqual(cookieToken, this.webUiToken)) {
       return next();
     }
 
@@ -83,7 +97,7 @@ export class AuthProvider {
     const tokenFromUrl = req.query.token as string;
     const tokenFromCookie = this.getCookie(req, "web_ui_token");
 
-    if (tokenFromUrl && tokenFromUrl === this.webUiToken) {
+    if (tokenFromUrl && this.safeEqual(tokenFromUrl, this.webUiToken)) {
       res.cookie("web_ui_token", tokenFromUrl, {
         httpOnly: true,
         sameSite: "strict",
@@ -91,8 +105,10 @@ export class AuthProvider {
       });
     }
 
-    if (tokenFromUrl && tokenFromUrl !== this.webUiToken) {
+    if (tokenFromUrl && !this.safeEqual(tokenFromUrl, this.webUiToken)) {
       res.cookie("web_ui_token", "", { maxAge: 0 });
+      res.status(401).send("Unauthorized: invalid token");
+      return;
     }
 
     next();

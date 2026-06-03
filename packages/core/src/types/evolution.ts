@@ -7,6 +7,7 @@ export interface EvolutionCycle {
   candidates: EvolutionCandidate[];
   selectedCandidate: string | null;
   evaluation: EvolutionEvaluation | null;
+  feedback: Record<string, unknown> | null;
   startedAt: Date;
   completedAt: Date | null;
 }

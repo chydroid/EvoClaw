@@ -157,6 +157,8 @@ export interface ProviderConfig {
   headers?: Record<string, string>;
   /** Provider-specific config */
   extra?: Record<string, unknown>;
+  /** Key rotation strategy when multiple API keys are available */
+  rotationStrategy?: "round-robin" | "random" | "least-used";
 }
 
 // ── Provider Registry ────────────────────────────────────

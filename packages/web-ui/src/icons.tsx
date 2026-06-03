@@ -290,6 +290,15 @@ export const IconReply = Icon(
   </>
 );
 
+export const IconMessageQueue = Icon(
+  <>
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <line x1="9" y1="10" x2="15" y2="10" />
+    <line x1="12" y1="10" x2="12" y2="16" />
+    <line x1="9" y1="13" x2="15" y2="13" />
+  </>
+);
+
 export const IconOps = Icon(
   <>
     <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
@@ -354,6 +363,7 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   "health-aggregator": IconHealthCheck,
   "message-templates": IconTemplates,
   "reply-refs": IconReply,
+  "message-queue": IconMessageQueue,
   ops: IconOps,
   cli: IconTerminal,
 };

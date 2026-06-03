@@ -897,6 +897,109 @@ export class ProtocolAdapter {
       }
     });
 
+    // ============ ClawHub Marketplace Routes ============
+
+    app.get("/api/marketplace/search", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          searchMarketplace(query: string, category?: string): unknown;
+          getMarketplace(): { refreshCatalog(): Promise<number>; search(query: Record<string, unknown>): unknown };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const q = (req.query.q as string) || "";
+        const category = req.query.category as string | undefined;
+        if (!q) {
+          res.status(400).json({ error: "Query parameter 'q' is required" });
+          return;
+        }
+        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        const results = skillManager.searchMarketplace(q, category);
+        res.json({ success: true, results });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/marketplace/install", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          installFromMarketplace(skillName: string): Promise<unknown>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const name = req.body.name as string;
+        if (!name) {
+          res.status(400).json({ error: "Skill name is required (body.name)" });
+          return;
+        }
+        const skill = await skillManager.installFromMarketplace(name);
+        res.json({ success: true, skill });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/marketplace/trending", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getMarketplace(): { refreshCatalog(): Promise<number>; getTrending(limit?: number): unknown };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        const limit = parseInt(req.query.limit as string) || 10;
+        const trending = skillManager.getMarketplace().getTrending(limit);
+        res.json({ success: true, trending });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/marketplace/categories", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getMarketplace(): { refreshCatalog(): Promise<number>; getCategories(): Array<{ name: string; count: number }> };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        const categories = skillManager.getMarketplace().getCategories();
+        res.json({ success: true, categories });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/skills/:id/upgrade-from-marketplace", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          upgradeFromMarketplace(skillId: string): Promise<unknown>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillId = String(req.params.id);
+        const result = await skillManager.upgradeFromMarketplace(skillId);
+        if (!result) {
+          res.json({ success: true, message: "Skill is already up to date or not found on marketplace" });
+          return;
+        }
+        res.json({ success: true, skill: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     // ============ Bootstrap File Routes ============
     app.get("/api/bootstrap", async (_req: Request, res: Response) => {
       try {
@@ -1021,53 +1124,8 @@ export class ProtocolAdapter {
       }
     });
 
-    // ============ Queue Routes ============
-    app.get("/api/queue", (_req: Request, res: Response) => {
-      try {
-        const qm = this.registry.resolveService<{
-          getQueue(sessionId: string): unknown[];
-          getStats(sessionId: string): { total: number; pending: number; processing: number; done: number; failed: number };
-          hasPending(sessionId: string): boolean;
-        }>("queueManager");
-        if (!qm) return res.json({ queues: {}, stats: {} });
-        const sessionId = "web-ui";
-        res.json({
-          queue: qm.getQueue(sessionId),
-          stats: qm.getStats(sessionId),
-          hasPending: qm.hasPending(sessionId),
-        });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
-      }
-    });
-
-    app.post("/api/queue/enqueue", (req: Request, res: Response) => {
-      try {
-        const qm = this.registry.resolveService<{
-          enqueue(sessionId: string, message: string, mode: string, context?: Record<string, unknown>, priority?: number): unknown;
-        }>("queueManager");
-        if (!qm) return res.status(503).json({ error: "Queue manager not available" });
-        const { sessionId, message, mode } = req.body || {};
-        if (!message) return res.status(400).json({ error: "Message is required" });
-        const item = qm.enqueue(sessionId || "web-ui", message, mode || "steer");
-        res.json({ success: true, item });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
-      }
-    });
-
-    app.post("/api/queue/clear", (req: Request, res: Response) => {
-      try {
-        const qm = this.registry.resolveService<{
-          clearQueue(sessionId: string): void;
-        }>("queueManager");
-        if (!qm) return res.status(503).json({ error: "Queue manager not available" });
-        qm.clearQueue((req.body?.sessionId as string) || "web-ui");
-        res.json({ success: true });
-      } catch (err) {
-        res.status(500).json({ error: String(err) });
-      }
-    });
+    // Queue routes are defined below in the main routing section.
+    // See the "Queue API routes" section for full endpoints.
 
     // ============ Compaction Routes ============
     app.get("/api/compactions/:sessionId", (req: Request, res: Response) => {
@@ -2459,6 +2517,251 @@ export class ProtocolAdapter {
         }
       } catch (err) {
         this.handleError(err, res, "Failed to delete session");
+      }
+    });
+
+    // ─── Queue API routes ──────────────────────────────────────────────────
+
+    app.get("/api/queue/:sessionId", (req: Request, res: Response) => {
+      try {
+        const sessionId = String(req.params.sessionId);
+        const queueManager = this.registry.resolveService("queueManager") as {
+          getQueue(sessionId: string): Array<Record<string, unknown>>;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        const queue = queueManager.getQueue(sessionId);
+        res.json({ success: true, queue });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get queue");
+      }
+    });
+
+    app.get("/api/queue", (_req: Request, res: Response) => {
+      try {
+        const queueManager = this.registry.resolveService("queueManager") as {
+          getQueue(sessionId: string): Array<Record<string, unknown>>;
+          getAllSessions(): string[];
+        } | undefined;
+
+        if (!queueManager) {
+          res.json({ success: true, sessions: [] });
+          return;
+        }
+
+        const sessionIds = queueManager.getAllSessions();
+        const allQueues: Record<string, Array<Record<string, unknown>>> = {};
+        for (const sid of sessionIds) {
+          allQueues[sid] = queueManager.getQueue(sid);
+        }
+        res.json({ success: true, sessions: allQueues });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get all queues");
+      }
+    });
+
+    app.post("/api/queue/enqueue", (req: Request, res: Response) => {
+      try {
+        const { sessionId, message, mode } = req.body || {};
+        if (!sessionId || !message) {
+          res.status(400).json({ success: false, error: "sessionId and message are required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          enqueue(sessionId: string, message: string, mode?: string): Record<string, unknown>;
+          getQueue(sessionId: string): Array<Record<string, unknown>>;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        // Check queue size limit (10 max)
+        const queue = queueManager.getQueue(sessionId);
+        if (queue.length >= 10) {
+          res.status(429).json({ success: false, error: "Queue is full (max 10 messages)" });
+          return;
+        }
+
+        const item = queueManager.enqueue(sessionId, String(message), mode || "followup");
+        res.json({ success: true, item });
+      } catch (err) {
+        this.handleError(err, res, "Failed to enqueue message");
+      }
+    });
+
+    app.post("/api/queue/dequeue", (req: Request, res: Response) => {
+      try {
+        const { sessionId } = req.body || {};
+        if (!sessionId) {
+          res.status(400).json({ success: false, error: "sessionId is required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          dequeue(sessionId: string): Record<string, unknown> | undefined;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        const item = queueManager.dequeue(sessionId);
+        if (!item) {
+          res.json({ success: true, item: null });
+          return;
+        }
+        res.json({ success: true, item });
+      } catch (err) {
+        this.handleError(err, res, "Failed to dequeue message");
+      }
+    });
+
+    app.post("/api/queue/mark-done", (req: Request, res: Response) => {
+      try {
+        const { itemId, result } = req.body || {};
+        if (!itemId) {
+          res.status(400).json({ success: false, error: "itemId is required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          markDone(itemId: string, result?: string): void;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        queueManager.markDone(itemId, result);
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to mark item as done");
+      }
+    });
+
+    app.delete("/api/queue/:itemId", (req: Request, res: Response) => {
+      try {
+        const itemId = String(req.params.itemId);
+        const queueManager = this.registry.resolveService("queueManager") as {
+          clearQueue(sessionId: string): void;
+          getQueue(sessionId: string): Array<Record<string, unknown>>;
+          getAllSessions(): string[];
+          reorderItems(sessionId: string, ids: string[]): boolean;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        // Find and remove item from its session queue
+        const allSessions = (queueManager as { getAllSessions(): string[] }).getAllSessions?.() ?? [];
+        let found = false;
+        for (const sid of allSessions) {
+          const queue = queueManager.getQueue(sid);
+          const idx = queue.findIndex((q: Record<string, unknown>) => q.id === itemId);
+          if (idx !== -1) {
+            queue.splice(idx, 1);
+            const reorderMgr = queueManager as { reorderItems(sessionId: string, ids: string[]): boolean };
+            reorderMgr.reorderItems(sid, queue.map((q: Record<string, unknown>) => q.id as string));
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          res.status(404).json({ success: false, error: "Queue item not found" });
+          return;
+        }
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to delete queue item");
+      }
+    });
+
+    app.put("/api/queue/reorder", (req: Request, res: Response) => {
+      try {
+        const { sessionId, orderedIds } = req.body || {};
+        if (!sessionId || !Array.isArray(orderedIds)) {
+          res.status(400).json({ success: false, error: "sessionId and orderedIds (array) are required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          reorderItems(sessionId: string, orderedIds: string[]): boolean;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        const ok = queueManager.reorderItems(sessionId, orderedIds);
+        res.json({ success: ok });
+      } catch (err) {
+        this.handleError(err, res, "Failed to reorder queue");
+      }
+    });
+
+    app.put("/api/queue/move", (req: Request, res: Response) => {
+      try {
+        const { sessionId, itemId, direction } = req.body || {};
+        if (!sessionId || !itemId || !direction) {
+          res.status(400).json({ success: false, error: "sessionId, itemId, and direction are required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          moveItem(sessionId: string, itemId: string, direction: "up" | "down"): boolean;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        const ok = queueManager.moveItem(sessionId, itemId, direction);
+        res.json({ success: ok });
+      } catch (err) {
+        this.handleError(err, res, "Failed to move queue item");
+      }
+    });
+
+    app.put("/api/queue/:itemId", (req: Request, res: Response) => {
+      try {
+        const itemId = String(req.params.itemId);
+        const { message } = req.body || {};
+        if (!message) {
+          res.status(400).json({ success: false, error: "message is required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          updateItem(itemId: string, message: string): Record<string, unknown> | undefined;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        const updated = queueManager.updateItem(itemId, String(message));
+        if (!updated) {
+          res.status(404).json({ success: false, error: "Queue item not found or not editable" });
+          return;
+        }
+        res.json({ success: true, item: updated });
+      } catch (err) {
+        this.handleError(err, res, "Failed to update queue item");
       }
     });
 
@@ -4665,6 +4968,96 @@ export class ProtocolAdapter {
         this.canvasHost.off("project-deleted", onProjectDeleted);
         this.canvasHost.off("a2ui-push", onA2uiPush);
       });
+    });
+
+    // ── Heartbeat API ──
+
+    // GET /api/agent/heartbeat-status — Returns current heartbeat state
+    app.get("/api/agent/heartbeat-status", (_req: Request, res: Response) => {
+      try {
+        const agentExecutor = this.registry.resolveService<{
+          getHeartbeatStatus(): {
+            enabled: boolean;
+            active: boolean;
+            intervalMs: number;
+            lastFireTime: Date | null;
+            nextFireTime: Date | null;
+            isIdle: boolean;
+            activeConversations: number;
+          };
+        }>("agentModelExecutor");
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent executor not available" });
+          return;
+        }
+        const status = agentExecutor.getHeartbeatStatus();
+        res.json({
+          enabled: status.enabled,
+          active: status.active,
+          state: status.isIdle ? "idle" : "busy",
+          intervalMs: status.intervalMs,
+          lastFireTime: status.lastFireTime?.toISOString() ?? null,
+          nextFireTime: status.nextFireTime?.toISOString() ?? null,
+          activeConversations: status.activeConversations,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get heartbeat status");
+      }
+    });
+
+    // POST /api/agent/heartbeat/config — Update heartbeat config
+    app.post("/api/agent/heartbeat/config", (req: Request, res: Response) => {
+      try {
+        const agentExecutor = this.registry.resolveService<{
+          configureHeartbeat(config: { intervalMs?: number; enabled?: boolean }): void;
+          startHeartbeat(): void;
+          stopHeartbeat(): void;
+          getHeartbeatStatus(): {
+            enabled: boolean;
+            active: boolean;
+            intervalMs: number;
+            lastFireTime: Date | null;
+            nextFireTime: Date | null;
+            isIdle: boolean;
+            activeConversations: number;
+          };
+        }>("agentModelExecutor");
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent executor not available" });
+          return;
+        }
+
+        const { intervalMs, enabled } = req.body as { intervalMs?: number; enabled?: boolean };
+
+        if (intervalMs !== undefined && (typeof intervalMs !== "number" || intervalMs < 60000)) {
+          res.status(400).json({ error: "intervalMs must be a number >= 60000 (1 minute)" });
+          return;
+        }
+        if (enabled !== undefined && typeof enabled !== "boolean") {
+          res.status(400).json({ error: "enabled must be a boolean" });
+          return;
+        }
+
+        agentExecutor.configureHeartbeat({ intervalMs, enabled });
+
+        // Auto-start heartbeat if enabled and not already running
+        if (enabled === true) {
+          agentExecutor.startHeartbeat();
+        } else if (enabled === false) {
+          agentExecutor.stopHeartbeat();
+        }
+
+        const status = agentExecutor.getHeartbeatStatus();
+        res.json({
+          success: true,
+          enabled: status.enabled,
+          active: status.active,
+          intervalMs: status.intervalMs,
+          nextFireTime: status.nextFireTime?.toISOString() ?? null,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to configure heartbeat");
+      }
     });
   }
 }

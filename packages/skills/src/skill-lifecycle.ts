@@ -5,7 +5,10 @@ import {
   type HealthCheckResult,
   type Skill,
   type SkillStatus,
+  type SkillUsageRecord,
 } from "@evoclaw/core";
+
+export type { SkillUsageRecord };
 
 export interface HealthMonitorConfig {
   checkInterval: number;
@@ -41,6 +44,16 @@ export class SkillLifecycleManager {
   private retryCounts = new Map<string, number>();
   private config: HealthMonitorConfig;
 
+  // Lifecycle state machine
+  private usageRecords: Map<string, SkillUsageRecord> = new Map();
+  private staleSince: Map<string, Date> = new Map();
+
+  // Thresholds (configurable)
+  private staleAfterDays: number = 30;     // No usage for 30 days → stale
+  private archiveAfterDays: number = 90;   // Stale for 90 days → archived
+  private lowSuccessRate: number = 0.2;    // Success rate < 20% → stale
+  private minUsesForRateCheck: number = 5; // Minimum uses before checking success rate
+
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
@@ -58,9 +71,191 @@ export class SkillLifecycleManager {
     this.config = { ...this.config, ...config };
   }
 
+  /** Configure lifecycle thresholds */
+  configureLifecycleThresholds(opts: {
+    staleAfterDays?: number;
+    archiveAfterDays?: number;
+    lowSuccessRate?: number;
+    minUsesForRateCheck?: number;
+  }): void {
+    if (opts.staleAfterDays !== undefined) this.staleAfterDays = opts.staleAfterDays;
+    if (opts.archiveAfterDays !== undefined) this.archiveAfterDays = opts.archiveAfterDays;
+    if (opts.lowSuccessRate !== undefined) this.lowSuccessRate = opts.lowSuccessRate;
+    if (opts.minUsesForRateCheck !== undefined) this.minUsesForRateCheck = opts.minUsesForRateCheck;
+  }
+
+  /** Record a skill usage */
+  recordUsage(skillId: string, success: boolean, error?: string): void {
+    const existing = this.usageRecords.get(skillId);
+    const now = new Date();
+
+    if (existing) {
+      existing.lastUsedAt = now;
+      existing.useCount += 1;
+      if (success) {
+        existing.successCount += 1;
+      } else {
+        existing.failureCount += 1;
+        existing.lastFailureAt = now;
+        existing.lastFailureReason = error ?? null;
+      }
+    } else {
+      this.usageRecords.set(skillId, {
+        skillId,
+        lastUsedAt: now,
+        useCount: 1,
+        successCount: success ? 1 : 0,
+        failureCount: success ? 0 : 1,
+        lastFailureAt: success ? null : now,
+        lastFailureReason: success ? null : (error ?? null),
+      });
+    }
+  }
+
+  /** Check and transition skill lifecycle states */
+  checkTransitions(): Array<{ skillId: string; from: SkillStatus; to: SkillStatus; reason: string }> {
+    const transitions: Array<{ skillId: string; from: SkillStatus; to: SkillStatus; reason: string }> = [];
+    const now = new Date();
+
+    const skillManager = this.registry.resolveService<{
+      getSkill(id: string): Skill | undefined;
+      listSkills(): Skill[];
+    }>("skillManager");
+
+    if (!skillManager) return transitions;
+
+    for (const [skillId, record] of this.usageRecords) {
+      const skill = skillManager.getSkill(skillId);
+      if (!skill) continue;
+
+      const currentStatus = skill.lifecycle.status;
+
+      // active → stale: no usage for staleAfterDays
+      if (currentStatus === "active") {
+        const daysSinceLastUse = (now.getTime() - record.lastUsedAt.getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSinceLastUse >= this.staleAfterDays) {
+          transitions.push({
+            skillId,
+            from: currentStatus,
+            to: "stale",
+            reason: `No usage for ${Math.round(daysSinceLastUse)} days (threshold: ${this.staleAfterDays} days)`,
+          });
+          continue;
+        }
+
+        // active → stale: low success rate (min 5 uses)
+        if (record.useCount >= this.minUsesForRateCheck) {
+          const successRate = record.successCount / record.useCount;
+          if (successRate < this.lowSuccessRate) {
+            transitions.push({
+              skillId,
+              from: currentStatus,
+              to: "stale",
+              reason: `Low success rate ${(successRate * 100).toFixed(1)}% (${record.successCount}/${record.useCount}, threshold: ${this.lowSuccessRate * 100}%)`,
+            });
+            continue;
+          }
+        }
+      }
+
+      // stale → archived: no usage for archiveAfterDays since becoming stale
+      if (currentStatus === "stale") {
+        const staleDate = this.staleSince.get(skillId);
+        if (staleDate) {
+          const daysStale = (now.getTime() - staleDate.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysStale >= this.archiveAfterDays) {
+            transitions.push({
+              skillId,
+              from: currentStatus,
+              to: "archived",
+              reason: `Stale for ${Math.round(daysStale)} days (threshold: ${this.archiveAfterDays} days)`,
+            });
+            continue;
+          }
+        }
+      }
+
+      // stale → active: used successfully
+      if (currentStatus === "stale") {
+        const lastRecordedUse = record.lastUsedAt;
+        const staleDate = this.staleSince.get(skillId);
+        // If the skill was used after it became stale, and the last use was successful
+        if (staleDate && lastRecordedUse > staleDate) {
+          const lastUseSuccess = record.successCount > 0 &&
+            (record.lastFailureAt === null || record.lastUsedAt > record.lastFailureAt);
+          if (lastUseSuccess) {
+            transitions.push({
+              skillId,
+              from: currentStatus,
+              to: "active",
+              reason: "Successfully used after becoming stale",
+            });
+            continue;
+          }
+        }
+      }
+    }
+
+    return transitions;
+  }
+
+  /** Get usage stats for a skill */
+  getUsageStats(skillId: string): SkillUsageRecord | undefined {
+    return this.usageRecords.get(skillId);
+  }
+
+  /** Run periodic lifecycle check (called by scheduler) */
+  async runPeriodicCheck(): Promise<void> {
+    const transitions = this.checkTransitions();
+
+    const skillManager = this.registry.resolveService<{
+      getSkill(id: string): Skill | undefined;
+    }>("skillManager");
+
+    for (const transition of transitions) {
+      if (!skillManager) continue;
+
+      const skill = skillManager.getSkill(transition.skillId);
+      if (!skill) continue;
+
+      // Update skill status
+      skill.lifecycle.status = transition.to;
+      skill.lifecycle.lastUpdated = new Date();
+
+      // Track stale timestamp
+      if (transition.to === "stale") {
+        this.staleSince.set(transition.skillId, new Date());
+      } else if (transition.to === "active") {
+        this.staleSince.delete(transition.skillId);
+      } else if (transition.to === "archived") {
+        this.staleSince.delete(transition.skillId);
+      }
+
+      // Log the transition
+      console.log(
+        `[SkillLifecycle] Transition: ${transition.skillId} ${transition.from} → ${transition.to} (${transition.reason})`
+      );
+
+      // Publish event via EventBus
+      await this.eventBus.publish(
+        "skill.lifecycle.transition",
+        {
+          skillId: transition.skillId,
+          from: transition.from,
+          to: transition.to,
+          reason: transition.reason,
+          timestamp: new Date(),
+        },
+        "skill-lifecycle"
+      ).catch((err) => {
+        console.warn(`[SkillLifecycle] Failed to publish transition event for ${transition.skillId}:`, err);
+      });
+    }
+  }
+
   createLifecycle(version: string): SkillLifecycle {
     return {
-      status: "installed",
+      status: "draft",
       version,
       installDate: new Date(),
       lastUpdated: new Date(),

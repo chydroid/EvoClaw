@@ -841,12 +841,35 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const handleEnqueue = useCallback(() => {
     const text = input.trim();
     if (!text) return;
+    if (messageQueue.length >= 10) {
+      setStatusMessage("消息队列已满（最多10条）");
+      setTimeout(() => setStatusMessage(null), 2000);
+      return;
+    }
     setMessageQueue(prev => [...prev, text]);
     setInput("");
-  }, [input]);
+    // Also sync to backend QueueManager
+    const sid = effectiveSessionIdRef.current;
+    if (sid) {
+      fetch("/api/queue/enqueue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sid, message: text, mode: "followup" }),
+      }).catch(() => {});
+    }
+  }, [input, messageQueue.length]);
 
   const handleDequeue = useCallback((index: number) => {
-    setMessageQueue(prev => prev.filter((_, i) => i !== index));
+    setMessageQueue(prev => {
+      const item = prev[index];
+      const newQueue = prev.filter((_, i) => i !== index);
+      // Also sync to backend
+      const sid = effectiveSessionIdRef.current;
+      if (sid && item) {
+        fetch(`/api/queue/${encodeURIComponent(item)}`, { method: "DELETE" }).catch(() => {});
+      }
+      return newQueue;
+    });
   }, []);
 
   // ── Load messages when sessionId prop changes ──
@@ -2499,14 +2522,20 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               >
                 📥
               </button>
-              {messageQueue.length > 0 && (
+              {/* Queue button: visible when streaming (send→stop), add to queue */}
+              {isStreaming && (
                 <button
                   style={{ ...inputBtnStyle, position: "relative", color: "var(--accent, #58a6ff)" }}
-                  title={`消息队列 (${messageQueue.length})`}
-                  onClick={() => setShowQueuePanel(!showQueuePanel)}
+                  title={messageQueue.length >= 10 ? "队列已满（最多10条）" : `添加到消息队列${messageQueue.length > 0 ? ` (${messageQueue.length})` : ""}`}
+                  onClick={handleEnqueue}
+                  disabled={!input.trim() || messageQueue.length >= 10}
+                  onMouseEnter={(e) => { if (input.trim()) { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; } }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = input.trim() && messageQueue.length < 10 ? "var(--accent, #58a6ff)" : "var(--text-secondary, #8b949e)"; }}
                 >
                   📋
-                  <span style={{ position: "absolute", top: -4, right: -4, background: "var(--accent, #58a6ff)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{messageQueue.length}</span>
+                  {messageQueue.length > 0 && (
+                    <span style={{ position: "absolute", top: -4, right: -4, background: "var(--accent, #58a6ff)", color: "#fff", borderRadius: "50%", width: 14, height: 14, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{messageQueue.length}</span>
+                  )}
                 </button>
               )}
               {isStreaming ? (
@@ -2521,16 +2550,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 </button>
               ) : (
                 <>
-                  <button
-                    style={{ ...inputBtnStyle, width: "36px", height: "36px", fontSize: "16px", color: "var(--accent, #58a6ff)" }}
-                    title="加入队列"
-                    onClick={handleEnqueue}
-                    disabled={!input.trim()}
-                    onMouseEnter={(e) => { if (input.trim()) { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; } }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = input.trim() ? "var(--accent, #58a6ff)" : "var(--text-secondary, #8b949e)"; }}
-                  >
-                    ⏎+
-                  </button>
                   <button
                     style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px" }}
                     onClick={() => handleSend()}

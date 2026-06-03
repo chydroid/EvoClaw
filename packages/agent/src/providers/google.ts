@@ -22,6 +22,7 @@ import type {
   StreamChunk,
   ChatMessage,
 } from "@evoclaw/plugin-sdk";
+import type { CredentialPool } from "../credential-pool.js";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -83,6 +84,7 @@ export class GoogleProvider implements ProviderPlugin {
 
   private config: ProviderConfig = {};
   private logger: PluginLogger = console as unknown as PluginLogger;
+  private credentialPool: CredentialPool | undefined;
   private baseURL = "https://generativelanguage.googleapis.com";
   private totalTokens = 0;
   private totalCost = 0;
@@ -91,19 +93,21 @@ export class GoogleProvider implements ProviderPlugin {
   async init(
     config: ProviderConfig,
     logger: PluginLogger,
-    _services: ServiceLocator
+    services: ServiceLocator
   ): Promise<void> {
     this.config = config;
     this.logger = logger;
     this.baseURL = config.baseURL || "https://generativelanguage.googleapis.com";
     this.baseURL = this.baseURL.replace(/\/+$/, "");
+    this.credentialPool = services.get<CredentialPool>("credentialPool");
   }
 
   async listModels(): Promise<ModelInfo[]> {
     // If API key is available, try to fetch the live model list
-    if (this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (apiKey) {
       try {
-        const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(this.config.apiKey)}`;
+        const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(apiKey)}`;
         const res = await fetch(url, {
           headers: this.config.headers ?? {},
           signal: AbortSignal.timeout(10000),
@@ -142,9 +146,10 @@ export class GoogleProvider implements ProviderPlugin {
     const builtIn = GEMINI_MODELS.some((m) => m.id === modelId);
     if (builtIn) return true;
 
-    if (this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (apiKey) {
       try {
-        const url = `${this.baseURL}/v1beta/models/${modelId}?key=${encodeURIComponent(this.config.apiKey)}`;
+        const url = `${this.baseURL}/v1beta/models/${modelId}?key=${encodeURIComponent(apiKey)}`;
         const res = await fetch(url, {
           headers: this.config.headers ?? {},
           signal: AbortSignal.timeout(5000),
@@ -160,25 +165,41 @@ export class GoogleProvider implements ProviderPlugin {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const startTime = Date.now();
-    const url = this.buildURL(request.model, false);
 
     const body = this.buildRequestBody(request);
 
     this.logger.info(`[Google] → ${request.model} (${request.messages.length} msgs)`);
 
-    const response = await this.fetchWithRetry(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.config.headers ?? {}),
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    const data = await response.json() as GeminiResponse;
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const url = this.buildURL(request.model, false, lastKey);
+      const response = await this.fetchWithRetry(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.config.headers ?? {}),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
+      });
 
-    return this.parseResponse(data, request.model, startTime);
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[Google] 429 rate limit on key, rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      const data = await response.json() as GeminiResponse;
+      return this.parseResponse(data, request.model, startTime);
+    }
+
+    throw new Error("All key rotation attempts exhausted");
   }
 
   async streamComplete(
@@ -186,27 +207,54 @@ export class GoogleProvider implements ProviderPlugin {
     onChunk: (chunk: StreamChunk) => void
   ): Promise<ModelResponse> {
     const startTime = Date.now();
-    const url = this.buildURL(request.model, true);
 
     const body = this.buildRequestBody(request);
 
     this.logger.info(`[Google] → ${request.model} (stream, ${request.messages.length} msgs)`);
 
-    const response = await this.fetchWithRetry(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.config.headers ?? {}),
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
-    });
+    const maxKeyRetries = this.credentialPool ? 3 : 0;
+    let lastKey = this.resolveApiKey();
 
-    if (!response.ok || !response.body) {
-      throw new Error(`Gemini stream failed: HTTP ${response.status}`);
+    for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
+      const url = this.buildURL(request.model, true, lastKey);
+      const response = await this.fetchWithRetry(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.config.headers ?? {}),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.timeout ?? 120_000),
+      });
+
+      if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
+        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        this.logger.warn(`[Google] 429 rate limit on key (stream), rotating (attempt ${keyAttempt + 1})`);
+        const nextKey = this.credentialPool.getNextKey(this.provider);
+        if (nextKey && nextKey !== lastKey) {
+          lastKey = nextKey;
+          continue;
+        }
+      }
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Gemini stream failed: HTTP ${response.status}`);
+      }
+
+      return this.processStreamResponse(response, request.model, startTime, onChunk);
     }
 
-    const reader = response.body.getReader();
+    throw new Error("All key rotation attempts exhausted (stream)");
+  }
+
+  private async processStreamResponse(
+    response: Response,
+    model: string,
+    startTime: number,
+    onChunk: (chunk: StreamChunk) => void
+  ): Promise<ModelResponse> {
+
+    const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let finalContent = "";
@@ -266,11 +314,11 @@ export class GoogleProvider implements ProviderPlugin {
     }
 
     const totalTokens = promptTokens + completionTokens;
-    this.recordUsage(totalTokens, request.model);
+    this.recordUsage(totalTokens, model);
 
     return {
       id: `gemini_${Date.now()}`,
-      model: request.model,
+      model,
       content: finalContent,
       usage: {
         promptTokens,
@@ -282,11 +330,12 @@ export class GoogleProvider implements ProviderPlugin {
   }
 
   async healthCheck(): Promise<{ healthy: boolean; message?: string }> {
-    if (!this.config.apiKey) {
+    const apiKey = this.resolveApiKey();
+    if (!apiKey) {
       return { healthy: false, message: "No API key configured" };
     }
     try {
-      const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(this.config.apiKey)}`;
+      const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       return { healthy: res.ok, message: res.ok ? undefined : `HTTP ${res.status}` };
     } catch (err) {
@@ -304,10 +353,20 @@ export class GoogleProvider implements ProviderPlugin {
 
   // ── Internal ────────────────────────────────────────────
 
-  private buildURL(model: string, stream: boolean): string {
+  /** Resolve the API key: try credential pool first, fall back to config */
+  private resolveApiKey(): string {
+    if (this.credentialPool) {
+      const key = this.credentialPool.getNextKey(this.provider);
+      if (key) return key;
+    }
+    return this.config.apiKey ?? "";
+  }
+
+  private buildURL(model: string, stream: boolean, key?: string): string {
+    const apiKey = key ?? this.resolveApiKey();
     const params = new URLSearchParams();
-    if (this.config.apiKey) {
-      params.set("key", this.config.apiKey);
+    if (apiKey) {
+      params.set("key", apiKey);
     }
     if (stream) {
       params.set("alt", "sse");

@@ -8,6 +8,103 @@ import type {
 import { PluginStatus } from "./types.js";
 import type { Plugin } from "./plugin.js";
 import { validateManifest } from "./plugin.js";
+import type {
+  Plugin as CorePlugin,
+  PluginManifest as CorePluginManifest,
+  PluginHookRegistration,
+  PluginHook,
+  PluginHookResult,
+  HookPriority,
+} from "@evoclaw/core";
+
+// ─── SDK → Core Hook Mapping ─────────────────────────────────────────────────
+
+const SDK_TO_CORE_HOOK_MAP: Partial<Record<PluginHookName, PluginHook["type"]>> = {
+  onMessageReceived: "message_received",
+  onMessageSent: "message_sent",
+  onModelCalled: "before_agent_reply",
+  onToolExecuted: "after_tool_call",
+  onChannelConnected: "gateway_start",
+  onChannelDisconnected: "gateway_stop",
+  onSkillInstalled: "before_install",
+};
+
+// ─── Conversion Helper ────────────────────────────────────────────────────────
+
+/**
+ * Convert an SDK Plugin to a core Plugin format.
+ * Maps SDK hook names to core hook types and adapts the interface.
+ */
+export function convertToCorePlugin(sdkPlugin: Plugin): CorePlugin {
+  const manifest = sdkPlugin.manifest;
+
+  const coreManifest: CorePluginManifest = {
+    name: manifest.id,
+    version: manifest.version,
+    description: manifest.description,
+    author: manifest.author,
+    homepage: manifest.homepage,
+    minVersion: manifest.evoclawVersion,
+  };
+
+  const hooks: PluginHookRegistration[] = [];
+
+  if (sdkPlugin.getHooks && sdkPlugin.onHook) {
+    const sdkHooks = sdkPlugin.getHooks();
+    for (const hookName of sdkHooks) {
+      const coreHookType = SDK_TO_CORE_HOOK_MAP[hookName];
+      if (coreHookType) {
+        const onHook = sdkPlugin.onHook.bind(sdkPlugin);
+        hooks.push({
+          hookType: coreHookType,
+          priority: "normal" as HookPriority,
+          handler: async (hook: PluginHook): Promise<PluginHookResult | void> => {
+            const context: PluginHookContext = {
+              pluginId: manifest.id,
+              hookName,
+              timestamp: new Date(),
+              data: hook,
+            };
+            await onHook(context);
+          },
+        });
+      }
+    }
+  }
+
+  const corePlugin: CorePlugin = {
+    manifest: coreManifest,
+    hooks,
+    async init(ctx): Promise<void> {
+      const serviceLocator = {
+        get: ctx.resolveService,
+        register: () => {},
+        has: () => false,
+        list: () => [],
+      };
+      const logger: PluginLogger = {
+        fatal(msg: string, ...args: unknown[]) { console.error(`[Plugin:${manifest.id}]`, msg, ...args); },
+        error(msg: string, ...args: unknown[]) { console.error(`[Plugin:${manifest.id}]`, msg, ...args); },
+        warn(msg: string, ...args: unknown[]) { console.warn(`[Plugin:${manifest.id}]`, msg, ...args); },
+        info(msg: string, ...args: unknown[]) { console.log(`[Plugin:${manifest.id}]`, msg, ...args); },
+        debug(msg: string, ...args: unknown[]) { console.debug(`[Plugin:${manifest.id}]`, msg, ...args); },
+        trace() {},
+      };
+      await sdkPlugin.init(serviceLocator, logger);
+    },
+    async shutdown(): Promise<void> {
+      await sdkPlugin.shutdown();
+    },
+    async healthCheck(): Promise<{ healthy: boolean; message?: string }> {
+      if (sdkPlugin.healthCheck) {
+        return sdkPlugin.healthCheck();
+      }
+      return { healthy: true };
+    },
+  };
+
+  return corePlugin;
+}
 
 export interface PluginHostConfig {
   maxPlugins?: number;
@@ -32,9 +129,11 @@ export class PluginHost {
   private services = new Map<string, unknown>();
   private config: Required<PluginHostConfig>;
   private hookHandlers = new Map<PluginHookName, Set<string>>();
+  private pluginManager: import("@evoclaw/core").PluginManager | null;
 
-  constructor(config?: PluginHostConfig) {
+  constructor(config?: PluginHostConfig, pluginManager?: import("@evoclaw/core").PluginManager) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.pluginManager = pluginManager ?? null;
   }
 
   registerPlugin(plugin: Plugin): void {
@@ -50,6 +149,28 @@ export class PluginHost {
 
     if (this.plugins.size >= this.config.maxPlugins) {
       throw new Error(`Maximum number of plugins (${this.config.maxPlugins}) reached`);
+    }
+
+    // Delegate to PluginManager when available
+    if (this.pluginManager) {
+      const corePlugin = convertToCorePlugin(plugin);
+      this.pluginManager.registerPlugin(corePlugin).catch((err) => {
+        console.error(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}":`, err);
+      });
+
+      // Still track locally for state queries
+      const state: PluginState = {
+        manifest,
+        status: PluginStatus.Active,
+      };
+      const hooks = new Set<PluginHookName>();
+      if (plugin.getHooks) {
+        for (const hook of plugin.getHooks()) {
+          hooks.add(hook);
+        }
+      }
+      this.plugins.set(manifest.id, { plugin, state, hooks });
+      return;
     }
 
     const state: PluginState = {
@@ -86,6 +207,13 @@ export class PluginHost {
 
     if (entry.state.status === PluginStatus.Active) return;
 
+    // When delegating, activation is handled by PluginManager during registerPlugin
+    if (this.pluginManager) {
+      entry.state.status = PluginStatus.Active;
+      entry.state.loadedAt = new Date();
+      return;
+    }
+
     if (entry.state.status === PluginStatus.Loading) {
       throw new Error(`Plugin "${pluginId}" is already loading`);
     }
@@ -114,6 +242,18 @@ export class PluginHost {
 
     if (entry.state.status !== PluginStatus.Active) return;
 
+    // Delegate to PluginManager
+    if (this.pluginManager) {
+      try {
+        await this.pluginManager.unregisterPlugin(pluginId);
+        entry.state.status = PluginStatus.Disabled;
+      } catch (err) {
+        entry.state.status = PluginStatus.Error;
+        entry.state.error = err instanceof Error ? err.message : String(err);
+      }
+      return;
+    }
+
     try {
       await entry.plugin.shutdown();
       entry.state.status = PluginStatus.Disabled;
@@ -139,6 +279,20 @@ export class PluginHost {
   }
 
   async emitHook(hookName: PluginHookName, data?: unknown): Promise<void> {
+    // Delegate to PluginManager when available
+    if (this.pluginManager) {
+      const coreHookType = SDK_TO_CORE_HOOK_MAP[hookName];
+      if (coreHookType) {
+        const hook: PluginHook = {
+          type: coreHookType,
+          context: {},
+          ...(data instanceof Object ? data : {}),
+        } as PluginHook;
+        await this.pluginManager.runHooks(hook);
+      }
+      return;
+    }
+
     const handlerIds = this.hookHandlers.get(hookName);
     if (!handlerIds) return;
 
@@ -199,6 +353,22 @@ export class PluginHost {
   }
 
   async healthCheck(): Promise<Array<{ pluginId: string; healthy: boolean; message?: string }>> {
+    // Delegate to PluginManager when available
+    if (this.pluginManager) {
+      const pluginInfos = this.pluginManager.getPlugins();
+      const results: Array<{ pluginId: string; healthy: boolean; message?: string }> = [];
+      for (const info of pluginInfos) {
+        if (info.status === "error") {
+          results.push({ pluginId: info.manifest.name, healthy: false, message: info.error });
+        } else if (info.status === "active") {
+          results.push({ pluginId: info.manifest.name, healthy: true });
+        } else {
+          results.push({ pluginId: info.manifest.name, healthy: false, message: `Plugin is ${info.status}` });
+        }
+      }
+      return results;
+    }
+
     const results: Array<{ pluginId: string; healthy: boolean; message?: string }> = [];
 
     for (const [id, entry] of this.plugins) {

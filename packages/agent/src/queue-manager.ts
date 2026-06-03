@@ -318,6 +318,86 @@ export class QueueManager {
     this.processing.clear();
   }
 
+  /** Update a queue item's message content */
+  updateItem(itemId: string, message: string): QueueItem | undefined {
+    const item = this.findItem(itemId);
+    if (!item || item.status !== "pending") return undefined;
+
+    item.message = message;
+    this.persistQueue(item.sessionId);
+
+    this.eventBus.publish(
+      "queue.item_updated",
+      { itemId, message: message.slice(0, 100) },
+      "queue-manager",
+    );
+
+    return item;
+  }
+
+  /** Reorder queue items for a session */
+  reorderItems(sessionId: string, orderedIds: string[]): boolean {
+    const queue = this.queues.get(sessionId);
+    if (!queue) return false;
+
+    const ordered: QueueItem[] = [];
+    const idSet = new Set(orderedIds);
+
+    // Place items in specified order
+    for (const id of orderedIds) {
+      const item = queue.find((q) => q.id === id);
+      if (item) ordered.push(item);
+    }
+
+    // Append any items not in the order list
+    for (const item of queue) {
+      if (!idSet.has(item.id)) ordered.push(item);
+    }
+
+    this.queues.set(sessionId, ordered);
+    this.persistQueue(sessionId);
+
+    this.eventBus.publish(
+      "queue.reordered",
+      { sessionId, count: orderedIds.length },
+      "queue-manager",
+    );
+
+    return true;
+  }
+
+  /** Get all session IDs that have queues */
+  getAllSessions(): string[] {
+    return Array.from(this.queues.keys());
+  }
+
+  /** Move an item up or down in the queue */
+  moveItem(sessionId: string, itemId: string, direction: "up" | "down"): boolean {
+    const queue = this.queues.get(sessionId);
+    if (!queue) return false;
+
+    const idx = queue.findIndex((q) => q.id === itemId);
+    if (idx === -1) return false;
+
+    if (direction === "up" && idx > 0) {
+      [queue[idx - 1], queue[idx]] = [queue[idx], queue[idx - 1]];
+    } else if (direction === "down" && idx < queue.length - 1) {
+      [queue[idx + 1], queue[idx]] = [queue[idx], queue[idx + 1]];
+    } else {
+      return false;
+    }
+
+    this.persistQueue(sessionId);
+
+    this.eventBus.publish(
+      "queue.item_moved",
+      { sessionId, itemId, direction },
+      "queue-manager",
+    );
+
+    return true;
+  }
+
   // ====== Load persisted queues on startup ======
 
   loadPersistedQueues(): void {

@@ -7,6 +7,9 @@
 
 import type { EventBus } from "./event-bus";
 import type { ServiceRegistry } from "./service-registry";
+import { readdir } from "node:fs/promises";
+import { join, extname } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ─── Hook Types ───────────────────────────────────────────────────────────────
 
@@ -591,5 +594,80 @@ export class PluginManager {
   /** Check if any hooks are registered for a given type */
   hasHooks(hookType: PluginHook["type"]): boolean {
     return (this.hookRegistry.get(hookType)?.length ?? 0) > 0;
+  }
+
+  // ─── ClawHub Plugin Loading ──────────────────────────────────────────────────
+
+  /** Plugin loader that can resolve plugins from ClawHub skill packages */
+  pluginLoader: {
+    /** Resolve a plugin module path from a ClawHub skill package name */
+    resolve?(packageName: string): Promise<string>;
+  } | null = null;
+
+  /**
+   * Dynamically import a module at the given path and validate it as a Plugin.
+   * Returns the Plugin object if valid, throws otherwise.
+   */
+  async loadPluginFromPath(modulePath: string): Promise<Plugin> {
+    const fileUrl = pathToFileURL(modulePath).href;
+    const mod = await import(fileUrl);
+
+    // Support both default export and named export
+    const candidate = mod.default ?? mod.plugin ?? mod;
+
+    if (typeof candidate !== "object" || candidate === null) {
+      throw new Error(`Module at "${modulePath}" does not export a valid plugin object`);
+    }
+
+    // Validate manifest
+    if (!candidate.manifest || typeof candidate.manifest.name !== "string" || typeof candidate.manifest.version !== "string") {
+      throw new Error(`Plugin at "${modulePath}" has an invalid manifest (requires name and version)`);
+    }
+
+    // Validate hooks array
+    if (candidate.hooks && !Array.isArray(candidate.hooks)) {
+      throw new Error(`Plugin at "${modulePath}" has an invalid hooks field (must be an array)`);
+    }
+
+    return candidate as Plugin;
+  }
+
+  /**
+   * Scan a directory for plugin modules, load and register each one.
+   * Looks for .js, .mjs, and .cjs files, as well as subdirectories with index.js.
+   */
+  async loadPluginsFromDirectory(dirPath: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dirPath, { withFileTypes: true });
+    } catch (err) {
+      console.error(`[PluginManager] Failed to read plugin directory "${dirPath}":`, err);
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+
+      try {
+        if (entry.isFile()) {
+          const ext = extname(entry.name);
+          if (ext === ".js" || ext === ".mjs" || ext === ".cjs") {
+            const plugin = await this.loadPluginFromPath(fullPath);
+            await this.registerPlugin(plugin);
+          }
+        } else if (entry.isDirectory()) {
+          // Try loading as a package (index.js)
+          const indexPath = join(fullPath, "index.js");
+          try {
+            const plugin = await this.loadPluginFromPath(indexPath);
+            await this.registerPlugin(plugin);
+          } catch {
+            // Not a plugin directory, skip silently
+          }
+        }
+      } catch (err) {
+        console.error(`[PluginManager] Failed to load plugin from "${fullPath}":`, err);
+      }
+    }
   }
 }

@@ -5,6 +5,113 @@
 
 ---
 
+## v0.11.0 (2026-06-04)
+
+### 全面优化提升 — 基于与 OpenClaw/Hermes 对比分析的系统性改进
+
+#### 核心基础设施
+
+1. **向量嵌入系统重构** (`packages/memory/src/vector-memory.ts`)：
+   - 替换 `EmbeddingSimulator` 为可插拔 `EmbeddingProvider` 接口
+   - 新增 `OpenAIEmbeddingProvider`（text-embedding-3-small, 1536维）
+   - 新增 `LocalEmbeddingProvider`（TF-IDF风格, 256维, 离线可用）
+   - 新增 `FallbackEmbeddingProvider`（主Provider失败自动降级）
+   - 新增 `addVectorAsync`/`searchByTextAsync`/`batchAddAsync` 异步方法
+
+2. **JWT安全加固** (`packages/gateway/src/auth-provider.ts`)：
+   - 强制JWT密钥非空（空则抛错）
+   - 密钥<16字符输出强警告
+   - 使用 `crypto.timingSafeEqual` 防时序攻击
+   - 修复 `webUiAuthMiddleware` 未认证放行漏洞
+   - 移除 `/api/system/`、`/api/secrets/` 公开路径
+
+3. **记忆持久化**：
+   - FTS5默认持久化到 `data/memory/fts5.db`（不再用内存数据库）
+   - 长期记忆双写SQLite+JSON，启动从SQLite加载
+   - 短期记忆60秒TTL清理+通配符转义修复+destroy方法
+   - 知识图谱JSON持久化+2秒防抖保存
+
+4. **SwarmOrchestrator修复** (`packages/agent/src/swarm-orchestrator.ts`)：
+   - 委派超时定时器（默认120秒）
+   - `failDelegation` 清理方法
+   - 共识算法修复（最高票选项/在线代理数）
+   - 心跳检查中检测超时委派
+
+#### ClawHub 插件市场完整对接
+
+5. **SkillManager集成SkillMarketplace** (`packages/skills/src/skill-manager.ts`)：
+   - 新增 `installFromMarketplace(skillName)` — 从ClawHub搜索并安装
+   - 新增 `upgradeFromMarketplace(skillId)` — 从ClawHub升级（卸载旧版→安装新版）
+   - 新增 `searchMarketplace(query, category)` — 搜索ClawHub市场
+   - Marketplace.install()完成后调用SkillManager.installSkill()注册
+
+6. **Gateway市场API** (`packages/gateway/src/protocol-adapter.ts`)：
+   - `GET /api/marketplace/search` — 搜索ClawHub市场
+   - `POST /api/marketplace/install` — 从ClawHub安装技能
+   - `GET /api/marketplace/trending` — 获取热门技能
+   - `GET /api/marketplace/categories` — 获取可用分类
+   - `POST /api/skills/:id/upgrade-from-marketplace` — 从ClawHub升级
+
+7. **技能优先级与白名单** (`packages/skills/src/skill-manager.ts`)：
+   - 新增 `SkillLoadConfig` 接口（6级优先级搜索路径，与OpenClaw一致）
+   - 新增 `loadSkillsWithPriority(config)` — 按优先级加载技能
+   - 新增 `filterSkillsForAgent(agentId)` — 按agent白名单过滤
+   - 新增 `installFromClawHub(skillName)` — ClawHub CLI兼容安装
+
+8. **技能安全扫描** (`packages/skills/src/skill-validator.ts`)：
+   - 新增 `securityScan(skill)` 静态安全分析
+   - 5大类检查：注入/数据泄露/权限提升/供应链/可疑模式
+   - critical级别发现：回滚安装并拒绝
+   - high/medium级别发现：输出警告
+
+#### 插件系统统一
+
+9. **PluginHost委托到PluginManager** (`packages/plugin-sdk/src/plugin-host.ts`)：
+   - 新增 `convertToCorePlugin()` SDK→Core接口转换
+   - PluginHost构造函数支持pluginManager参数，委托所有操作
+   - 未提供pluginManager时保持独立运行（向后兼容）
+
+10. **PluginManager新增远程加载** (`packages/core/src/plugin-system.ts`)：
+    - `loadPluginFromPath(modulePath)` — 动态导入并验证插件
+    - `loadPluginsFromDirectory(dirPath)` — 批量加载目录中的插件
+    - `pluginLoader` 属性 — 可注入的ClawHub解析器
+
+#### 进化系统改进
+
+11. **沙箱失败阻断发布** (`packages/evolution/src/evolution-engine.ts`)：
+    - 沙箱验证失败时设为 `rejected`，不再继续 `hotReload.publish()`
+    - 存储拒绝原因到 `cycle.feedback.rejectionReason`
+
+12. **自动技能提取触发** (`packages/skills/src/skill-curator.ts`)：
+    - 新增 `considerExtraction()` 方法（GEPA风格，每15次工具调用检查）
+    - Agent工具执行循环中自动调用
+
+13. **技能生命周期状态机** (`packages/skills/src/skill-lifecycle.ts`)：
+    - draft → active → stale → archived 自动转换
+    - 基于调用频率和成功率自动标记stale
+    - 定期运行LLM语义合并（umbrella-building）
+
+#### API Key池与心跳
+
+14. **API Key池** (`packages/agent/src/credential-pool.ts`)：
+    - 新增 `getNextKey(provider)` — 基于轮换策略获取下一个key
+    - 新增 `reportRateLimit(provider, key)` — 429时自动切换key
+    - 3个Provider（OpenAI/Anthropic/Google）集成key池
+    - 支持 round-robin/random/least-used 策略
+
+15. **心跳机制** (`packages/agent/src/agent-model-executor.ts`)：
+    - 30分钟心跳间隔（与OpenClaw一致）
+    - 心跳触发时：检查队列消息→cron任务→记忆提醒
+    - Agent活跃时自动暂停心跳
+    - 新增 `GET /api/agent/heartbeat-status` 和 `POST /api/agent/heartbeat/config` API
+
+#### 测试
+
+- 88个测试文件、2013个测试全部通过
+- 17个包构建成功
+
+---
+
 ## v0.10.0 (2026-06-03)
 
 ### 技能创建质量把关机制 — 拒绝垃圾技能，要求可复用性

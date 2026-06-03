@@ -146,7 +146,7 @@ export default function Dashboard() {
         providers: providers || [],
         skills: {
           total: (skills || []).length,
-          installed: (skills || []).filter((s: any) => s.lifecycle?.status === "installed").length,
+          installed: (skills || []).filter((s: any) => s.lifecycle?.status === "draft" || s.lifecycle?.status === "active").length,
           active: (skills || []).filter((s: any) => s.lifecycle?.status === "active").length,
           failed: (skills || []).filter((s: any) => s.lifecycle?.status === "failed").length,
           categories,

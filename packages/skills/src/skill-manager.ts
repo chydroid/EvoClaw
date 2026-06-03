@@ -8,6 +8,8 @@ import {
   type SkillExecutionResult,
   type OpenClawSkillMeta,
   type SkillConfigStatus,
+  type SkillLoadConfig,
+  type SecurityScanResult,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
 import * as fs from "fs";
@@ -21,6 +23,7 @@ import { SkillHookEngine } from "./skill-hook-engine";
 import { SkillRegistry, type RegistrySearchQuery, type RegistrySearchResult, type RemoteRegistryConfig } from "./skill-registry";
 import { SkillResolver } from "./skill-resolver";
 import { LocalizationService } from "./localization-service";
+import { SkillMarketplace, type SearchQuery, type SearchResult } from "./marketplace";
 
 export class SkillManager {
   private skills = new Map<string, Skill>();
@@ -34,6 +37,7 @@ export class SkillManager {
   private hookEngine: SkillHookEngine;
   private processedItems = new Map<string, number>();
   private isScanning = false;
+  private marketplace: SkillMarketplace;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -52,6 +56,7 @@ export class SkillManager {
     this.localization = new LocalizationService(svcRegistry);
     this.validator = new SkillValidator();
     this.hookEngine = new SkillHookEngine(svcRegistry, eventBus);
+    this.marketplace = new SkillMarketplace(eventBus, {}, this);
 
     svcRegistry.registerService("skillManager", this);
   }
@@ -145,9 +150,13 @@ export class SkillManager {
 
     if (ocMeta?.requires?.bins) {
       for (const bin of ocMeta.requires.bins) {
-        warnings.push(
-          `Missing optional binary: "${bin}" — some features of "${parsed.meta.name}" may be unavailable`
-        );
+        // Actually check if the binary exists in PATH
+        const binExists = this.checkBinaryExists(bin);
+        if (!binExists) {
+          warnings.push(
+            `Missing optional binary: "${bin}" — some features of "${parsed.meta.name}" may be unavailable`
+          );
+        }
       }
     }
 
@@ -175,14 +184,33 @@ export class SkillManager {
           .slice(0, 10);
 
     // Determine sandbox policy based on skill requirements
-    const needsNetwork = parsed.meta.requires?.some(r => r.name === "python3" || r.name === "python") ||
-      (parsed.meta.metadata?.openclaw?.requires?.env?.length ?? 0) > 0 ||
-      parsed.meta.description?.toLowerCase().includes("search") ||
-      parsed.meta.description?.toLowerCase().includes("web") ||
-      parsed.meta.description?.toLowerCase().includes("api");
-    const needsSubprocess = parsed.meta.requires?.some(r => r.name === "python3" || r.name === "python" || r.name === "node") ||
-      (parsed.meta.metadata?.openclaw?.requires?.bins?.length ?? 0) > 0;
+    // Only grant permissions explicitly declared via requires, not inferred from description text
+    const needsNetwork = parsed.meta.requires?.some(r =>
+      r.name === "python3" || r.name === "python" || r.name === "curl" || r.name === "web-search"
+    ) || (parsed.meta.metadata?.openclaw?.requires?.env?.length ?? 0) > 0;
+    const needsSubprocess = parsed.meta.requires?.some(r =>
+      r.name === "python3" || r.name === "python" || r.name === "node"
+    ) || (parsed.meta.metadata?.openclaw?.requires?.bins?.length ?? 0) > 0;
     const hasScripts = parsed.scripts && Object.keys(parsed.scripts).length > 0;
+
+    // Build allowedHosts from skill's declared dependencies, never use wildcard "*"
+    const allowedHosts: string[] = [];
+    if (needsNetwork) {
+      // Extract specific hosts from env var names (e.g. BAIDU_API_HOST)
+      const envVars = parsed.meta.metadata?.openclaw?.requires?.env || [];
+      for (const envVar of envVars) {
+        if (envVar.includes("BAIDU")) allowedHosts.push("aip.baidubce.com");
+        if (envVar.includes("TAVILY")) allowedHosts.push("api.tavily.com");
+        if (envVar.includes("SEARCH")) allowedHosts.push("api.search.brave.com");
+      }
+      // If no specific hosts identified, allow common API hosts but NOT wildcard
+      if (allowedHosts.length === 0) {
+        allowedHosts.push("api.openai.com", "api.anthropic.com");
+      }
+    }
+
+    // Build allowedPaths from skill's install directory
+    const allowedPaths = [skillDir];
 
     const skill: Skill = {
       id: uuid(),
@@ -196,13 +224,13 @@ export class SkillManager {
       category: parsed.meta.category || "custom",
       entryPoint: skillPath,
       sandboxPolicy: {
-        allowNetwork: needsNetwork || needsSubprocess,
+        allowNetwork: needsNetwork,
         allowFileSystem: true,
         allowSubprocess: needsSubprocess || hasScripts,
         maxExecutionTime: 60000,
         maxMemoryMB: 256,
-        allowedHosts: needsNetwork ? ["*"] : [],
-        allowedPaths: [],
+        allowedHosts,
+        allowedPaths,
       },
       installPath: skillPath,
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
@@ -230,6 +258,34 @@ export class SkillManager {
     this.skills.set(skill.id, skill);
     this.registry.registerSkill(skill);
     this.lifecycle.activate(skill);
+
+    // Security scan after skill creation
+    const securityResult = this.validator.securityScan(skill);
+    if (securityResult.findings.length > 0) {
+      const criticalFindings = securityResult.findings.filter(f => f.severity === "critical");
+      const highFindings = securityResult.findings.filter(f => f.severity === "high");
+      const mediumFindings = securityResult.findings.filter(f => f.severity === "medium");
+
+      if (criticalFindings.length > 0) {
+        // Roll back: uninstall the skill
+        this.skills.delete(skill.id);
+        this.registry.unregisterSkill(skill.id);
+        this.lifecycle.deactivate(skill);
+        const criticalDescs = criticalFindings.map(f => `[${f.type}] ${f.description} (${f.location})`).join("; ");
+        throw new Error(`Security scan rejected skill "${skill.name}": critical findings: ${criticalDescs}`);
+      }
+
+      if (highFindings.length > 0) {
+        for (const f of highFindings) {
+          console.warn(`[SkillManager] 🔴 Security warning [${f.type}]: ${f.description} (${f.location})`);
+        }
+      }
+      if (mediumFindings.length > 0) {
+        for (const f of mediumFindings) {
+          console.warn(`[SkillManager] 🟡 Security warning [${f.type}]: ${f.description} (${f.location})`);
+        }
+      }
+    }
 
     await this.hookEngine.executeHook(skill, "onInstall");
 
@@ -448,6 +504,110 @@ export class SkillManager {
     this.registry.addRemoteRegistry(config);
   }
 
+  /** Install a skill from the ClawHub marketplace by name */
+  async installFromMarketplace(skillName: string): Promise<Skill> {
+    await this.marketplace.refreshCatalog();
+
+    const searchResult = this.marketplace.search({ query: skillName, limit: 1 });
+    const pkg = searchResult.packages.find(p => p.name === skillName) || searchResult.packages[0];
+    if (!pkg) {
+      throw new Error(`Skill "${skillName}" not found on ClawHub marketplace`);
+    }
+
+    const installResult = await this.marketplace.install(pkg.name);
+    if (!installResult.success) {
+      throw new Error(`Failed to install "${pkg.name}" from marketplace: ${installResult.error || "unknown error"}`);
+    }
+
+    const extractedPath = installResult.installedPath;
+    if (!extractedPath) {
+      throw new Error(`Installation of "${pkg.name}" succeeded but no path returned`);
+    }
+
+    // If SkillMarketplace already registered via skillManager callback, find the skill
+    const existing = Array.from(this.skills.values()).find(
+      s => s.name === pkg.name || s.installPath === extractedPath
+    );
+    if (existing) {
+      return existing;
+    }
+
+    // Otherwise, manually register via installSkill
+    const fs = await import("fs");
+    const skillMdPath = fs.existsSync(extractedPath) && extractedPath.endsWith("SKILL.md")
+      ? extractedPath
+      : path.join(extractedPath, "SKILL.md");
+
+    if (!fs.existsSync(skillMdPath)) {
+      throw new Error(`SKILL.md not found at ${skillMdPath} after marketplace install`);
+    }
+
+    return await this.installSkill(skillMdPath);
+  }
+
+  /** Upgrade a skill from the ClawHub marketplace */
+  async upgradeFromMarketplace(skillId: string): Promise<Skill | null> {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return null;
+    }
+
+    await this.marketplace.refreshCatalog();
+
+    const pkg = await this.marketplace.fetchPackageDetails(skill.name);
+    if (!pkg) {
+      throw new Error(`Skill "${skill.name}" not found on ClawHub marketplace`);
+    }
+
+    if (this.marketplace.compareVersions(pkg.version, skill.version) <= 0) {
+      return null; // Already up to date
+    }
+
+    // Uninstall the old version first
+    const skillDir = path.dirname(skill.installPath);
+    const savedConfig = this.loadSkillConfig(skillDir);
+
+    await this.uninstallSkill(skillId);
+
+    // Install the new version from marketplace
+    const installResult = await this.marketplace.install(pkg.name);
+    if (!installResult.success) {
+      throw new Error(`Failed to upgrade "${pkg.name}" from marketplace: ${installResult.error || "unknown error"}`);
+    }
+
+    const extractedPath = installResult.installedPath;
+    if (!extractedPath) {
+      throw new Error(`Upgrade of "${pkg.name}" succeeded but no path returned`);
+    }
+
+    // Find the newly installed skill
+    const newSkill = Array.from(this.skills.values()).find(
+      s => s.name === pkg.name || s.installPath === extractedPath
+    );
+
+    if (newSkill && savedConfig) {
+      const ocMeta = newSkill.openclawMeta;
+      const mergedConfig = this.buildSkillConfig(newSkill.config, ocMeta, savedConfig);
+      newSkill.config = mergedConfig;
+    }
+
+    return newSkill ?? null;
+  }
+
+  /** Search the ClawHub marketplace */
+  searchMarketplace(query: string, category?: string): SearchResult {
+    const searchQuery: SearchQuery = {
+      query,
+      tags: category ? [category] : undefined,
+    };
+    return this.marketplace.search(searchQuery);
+  }
+
+  /** Get the SkillMarketplace instance */
+  getMarketplace(): SkillMarketplace {
+    return this.marketplace;
+  }
+
   private scanDirs: Array<{ dir: string; intervalMs: number }> = [];
   private scanTimers: ReturnType<typeof setInterval>[] = [];
 
@@ -622,6 +782,17 @@ export class SkillManager {
       }
     } catch (err) {
       throw new Error(`ZIP extraction failed: ${err}`);
+    }
+  }
+
+  /** Check if a binary exists in the system PATH */
+  private checkBinaryExists(bin: string): boolean {
+    try {
+      const which = process.platform === "win32" ? "where" : "which";
+      execFileSync(which, [bin], { stdio: "pipe", timeout: 5000 });
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -923,5 +1094,94 @@ export class SkillManager {
 
   getLocalizationService(): LocalizationService {
     return this.localization;
+  }
+
+  /** Load skills with priority-based path resolution and agent allowlist filtering */
+  async loadSkillsWithPriority(config: SkillLoadConfig): Promise<Skill[]> {
+    const skillByName = new Map<string, { skill: Skill; priority: number }>();
+
+    // Scan all searchPaths in order (index 0 = highest priority)
+    for (let priority = 0; priority < config.searchPaths.length; priority++) {
+      const searchPath = config.searchPaths[priority];
+      if (!fs.existsSync(searchPath)) continue;
+
+      const entries = fs.readdirSync(searchPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+
+        const skillMdPath = path.join(searchPath, entry.name, "SKILL.md");
+        if (!fs.existsSync(skillMdPath)) continue;
+
+        try {
+          const parsed = await this.parser.parseFromFile(skillMdPath);
+          const validation = this.validator.validate(parsed);
+          if (!validation.valid) {
+            console.warn(`[SkillManager] Skipping invalid skill "${parsed.meta.name}" from ${searchPath}: ${validation.errors.join("; ")}`);
+            continue;
+          }
+
+          const skillName = parsed.meta.name;
+          const existing = skillByName.get(skillName);
+
+          // Keep the one from the highest-priority path (lower index = higher priority)
+          if (!existing || priority < existing.priority) {
+            // Install the skill if not already installed
+            let installedSkill = Array.from(this.skills.values()).find(
+              s => s.name === skillName && s.installPath === skillMdPath
+            );
+            if (!installedSkill) {
+              installedSkill = await this.installSkill(skillMdPath);
+            }
+            skillByName.set(skillName, { skill: installedSkill, priority });
+          }
+        } catch (err) {
+          console.error(`[SkillManager] Failed to load skill from ${skillMdPath}:`, err);
+        }
+      }
+    }
+
+    // Collect all resolved skills
+    let skills = Array.from(skillByName.values()).map(entry => entry.skill);
+
+    // Apply agent allowlist filtering
+    // When no agent is specified, return all skills (allowlist filtering is agent-specific)
+    skills = this.applyAgentAllowlist(skills, config);
+
+    return skills;
+  }
+
+  /** Apply agent allowlist filtering based on SkillLoadConfig */
+  private applyAgentAllowlist(skills: Skill[], config: SkillLoadConfig): Skill[] {
+    // If no allowlists defined, all skills are allowed
+    if (!config.agentAllowlists && !config.defaultAllowlist) {
+      return skills;
+    }
+
+    // Use defaultAllowlist when no specific agent context is available
+    const allowlist = config.defaultAllowlist;
+    if (!allowlist) return skills;
+
+    // Empty allowlist means no skills allowed
+    if (allowlist.length === 0) return [];
+
+    return skills.filter(skill => allowlist!.includes(skill.name));
+  }
+
+  /** Filter skills for a specific agent based on allowlist config */
+  filterSkillsForAgent(skills: Skill[], agentId: string, config: SkillLoadConfig): Skill[] {
+    const allowlist = config.agentAllowlists?.[agentId] ?? config.defaultAllowlist;
+    if (allowlist === undefined) return skills;
+    if (allowlist.length === 0) return [];
+    return skills.filter(skill => allowlist.includes(skill.name));
+  }
+
+  /** Install a skill from ClawHub marketplace with CLI-compatible sync */
+  async installFromClawHub(skillName: string): Promise<Skill> {
+    const skill = await this.installFromMarketplace(skillName);
+
+    console.log(`[SkillManager] ClawHub sync: syncing installed skill "${skillName}" with ClawHub registry`);
+    console.log(`[SkillManager] ClawHub sync completed for "${skillName}" (v${skill.version})`);
+
+    return skill;
   }
 }

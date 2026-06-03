@@ -136,13 +136,32 @@ export class SkillSandbox {
     if (/^(bash|sh|curl|wget)\s/.test(code.trim())) return "bash";
 
     // If skill requires python3 binary, prefer Python execution
-    const ocMeta = skill.body?.instructions ? null : null;
     if (skill.requires?.some(r => r.name === "python3" || r.name === "python")) {
       return "python";
     }
 
     // Default: JavaScript
     return "javascript";
+  }
+
+  /** Resolve the Python binary name, preferring python3 over python */
+  private resolvePythonBin(): string {
+    // Check python3 first (common on Linux/macOS)
+    try {
+      const { execSync } = require("child_process");
+      execSync("python3 --version", { stdio: "pipe", timeout: 3000 });
+      return "python3";
+    } catch {
+      // Fall back to python
+      try {
+        const { execSync } = require("child_process");
+        execSync("python --version", { stdio: "pipe", timeout: 3000 });
+        return "python";
+      } catch {
+        console.warn("[SkillSandbox] Neither python3 nor python found in PATH");
+        return "python3"; // Default to python3, will fail with clear error
+      }
+    }
   }
 
   /** Execute a Python script via subprocess */
@@ -188,11 +207,14 @@ export class SkillSandbox {
       }
     }
 
+    // Prefer python3, fall back to python
+    const pythonBin = this.resolvePythonBin();
+
     console.log(`[SkillSandbox] Executing Python: ${scriptFile}`);
 
     try {
       return await new Promise((resolve, reject) => {
-        const child = spawn("python", args, {
+        const child = spawn(pythonBin, args, {
           timeout,
           env,
           cwd: skillDir || process.cwd(),
@@ -213,7 +235,7 @@ export class SkillSandbox {
 
         child.on("close", (code) => {
           clearTimeout(timeoutId);
-          if (code === 0 || stdout) {
+          if (code === 0) {
             try {
               resolve(JSON.parse(stdout));
             } catch {
@@ -250,7 +272,18 @@ export class SkillSandbox {
       .replace(/'<JSON>'|"<JSON>"/g, `'${JSON.stringify({ query: queryParams })}'`)
       .replace(/<QUERY>/g, queryParams);
 
-    const dangerousPatterns = [/\$\(/, /`/, /&&/, /\|\|/, /;(?!\s*$)/, /\b(rm|del|format|shutdown|reboot)\b\s+/i];
+    const dangerousPatterns = [
+      /\$\(/,           // Command substitution $()
+      /`/,              // Backtick command substitution
+      /&&/,             // Command chaining AND
+      /\|\|/,           // Command chaining OR
+      /\|(?!\|)/,       // Pipe (single |, not ||)
+      /;(?!\s*$)/,      // Semicolon command separator
+      />(?!\>)/,        // Output redirection >
+      />>/,             // Append redirection >>
+      /</,              // Input redirection <
+      /\b(rm|del|format|shutdown|reboot|wget|curl)\b\s+/i,  // Dangerous commands
+    ];
     for (const pat of dangerousPatterns) {
       if (pat.test(cmd)) {
         throw new Error(`[SkillSandbox] Command blocked by security policy: contains potentially dangerous pattern`);
@@ -500,7 +533,8 @@ export class SkillSandbox {
     }
 
     if (policy.allowFileSystem) {
-      sandbox._fs = this.createControlledFS(policy);
+      const skillDir = this.resolveSkillDir(skill) || undefined;
+      sandbox._fs = this.createControlledFS(policy, skillDir);
     }
 
     return sandbox;
@@ -563,11 +597,15 @@ export class SkillSandbox {
     };
   }
 
-  private createControlledFS(policy: SandboxPolicy): Record<string, unknown> {
+  private createControlledFS(policy: SandboxPolicy, skillDir?: string): Record<string, unknown> {
   const allowedPaths = policy.allowedPaths || [];
   const isAllowed = (filePath: string): boolean => {
-    if (allowedPaths.length === 0) return false;
+    if (allowedPaths.length === 0 && !skillDir) return false;
     const resolved = path.resolve(filePath);
+    // Always allow access to the skill's own install directory
+    if (skillDir && resolved.startsWith(path.resolve(skillDir) + path.sep)) return true;
+    if (skillDir && resolved === path.resolve(skillDir)) return true;
+    if (allowedPaths.length === 0) return false;
     return allowedPaths.some(allowed => {
       const resolvedAllowed = path.resolve(allowed);
       return resolved === resolvedAllowed || resolved.startsWith(resolvedAllowed + path.sep);

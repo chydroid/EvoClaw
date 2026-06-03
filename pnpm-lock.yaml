@@ -397,6 +397,10 @@ importers:
         version: 5.9.3
 
   packages/plugin-sdk:
+    dependencies:
+      '@evoclaw/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.19.19

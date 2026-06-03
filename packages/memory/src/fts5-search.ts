@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as path from "path";
+
 interface SqliteStatement {
   run(...params: unknown[]): void;
   get(...params: unknown[]): unknown;
@@ -42,14 +45,25 @@ export class FTS5SearchEngine {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath ?? ":memory:";
+    if (dbPath === undefined) {
+      const dataDir = process.env.EVOCLAW_DATA_DIR || path.join(process.cwd(), "data");
+      this.dbPath = path.join(dataDir, "memory", "fts5.db");
+      const dir = path.dirname(this.dbPath);
+      fs.mkdirSync(dir, { recursive: true });
+    } else {
+      this.dbPath = dbPath;
+    }
     try {
       const BetterSqlite3 = require("better-sqlite3");
       this.db = new BetterSqlite3(this.dbPath) as SqliteDatabase;
       this.useFallback = false;
+      if (this.dbPath !== ":memory:") {
+        console.log(`[FTS5Search] Using persistent database at ${this.dbPath}`);
+      }
     } catch {
       this.db = null;
       this.useFallback = true;
+      console.warn(`[FTS5Search] better-sqlite3 not available, falling back to in-memory mode`);
     }
   }
 

@@ -8,6 +8,7 @@ import {
   type SkillDependency,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import { SkillValidator } from "./skill-validator";
 
 export interface SkillVersion {
   version: string;
@@ -57,12 +58,76 @@ export interface ImprovementInput {
 export class SkillCurator {
   private evolutions = new Map<string, SkillEvolutionEntry>();
   private maxEvolutionEntries = 1000;
+  private validator: SkillValidator;
+  /** Auto-extraction is OFF by default — must be explicitly enabled via API or config. */
+  private autoExtractionEnabled = false;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
   ) {
     registry.registerService("skillCurator", this);
+    this.validator = new SkillValidator();
+  }
+
+  /** Enable automatic skill extraction from task solutions. Use with caution. */
+  enableAutoExtraction(): void {
+    this.autoExtractionEnabled = true;
+    console.log("[SkillCurator] Auto-extraction ENABLED — skills may be created from task solutions.");
+  }
+
+  /** Disable automatic skill extraction. This is the default. */
+  disableAutoExtraction(): void {
+    this.autoExtractionEnabled = false;
+    console.log("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.");
+  }
+
+  isAutoExtractionEnabled(): boolean {
+    return this.autoExtractionEnabled;
+  }
+
+  /**
+   * Consider extracting a skill from the current task solution.
+   * Triggered periodically (every 15 tool calls) when auto-extraction is enabled,
+   * inspired by Hermes's GEPA algorithm.
+   */
+  considerExtraction(
+    sessionId: string,
+    toolCallCount: number,
+    lastToolResult: unknown,
+    taskDescription: string
+  ): void {
+    if (!this.autoExtractionEnabled) {
+      console.log(
+        `[SkillCurator] Extraction considered but skipped: auto-extraction disabled (session=${sessionId}, toolCallCount=${toolCallCount})`
+      );
+      return;
+    }
+
+    if (toolCallCount % 15 !== 0) {
+      console.log(
+        `[SkillCurator] Extraction considered but not triggered: toolCallCount=${toolCallCount} is not a multiple of 15 (session=${sessionId})`
+      );
+      return;
+    }
+
+    console.log(
+      `[SkillCurator] Auto-extraction triggered at toolCallCount=${toolCallCount} for session=${sessionId}`
+    );
+
+    const solution = typeof lastToolResult === "string"
+      ? lastToolResult
+      : JSON.stringify(lastToolResult);
+
+    this.extractSkillFromSolution(taskDescription, solution, {
+      sessionId,
+      toolCallCount,
+      trigger: "gepa_periodic",
+    }).catch((err) => {
+      console.warn(
+        `[SkillCurator] Periodic auto-extraction failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
   }
 
   async extractSkillFromSolution(
@@ -70,9 +135,29 @@ export class SkillCurator {
     solution: string,
     context: Record<string, unknown>
   ): Promise<Skill | null> {
+    // ── Gate 0: auto-extraction must be explicitly enabled ──
+    if (!this.autoExtractionEnabled) {
+      return null;
+    }
+
     const skillName = this.deriveSkillName(task);
     const skillDescription = this.deriveDescription(task, solution);
     const instructions = this.deriveInstructions(task, solution);
+
+    // ── Quality gate: reject garbage/placeholder skills ──
+    if (!this.isValidSkillName(skillName)) {
+      console.warn(`[SkillCurator] Rejected auto-extracted skill: invalid name "${skillName}"`);
+      return null;
+    }
+    if (!this.isValidDescription(skillDescription)) {
+      console.warn(`[SkillCurator] Rejected auto-extracted skill: placeholder description for "${skillName}"`);
+      return null;
+    }
+    if (!this.isValidInstructions(instructions)) {
+      console.warn(`[SkillCurator] Rejected auto-extracted skill: insufficient instructions for "${skillName}"`);
+      return null;
+    }
+
     const triggers = this.deriveTriggers(task, solution);
     const keywords = this.deriveKeywords(task, solution);
     const category = this.deriveCategory(task, context);
@@ -409,15 +494,17 @@ export class SkillCurator {
   private deriveSkillName(task: string): string {
     const cleaned = task
       .toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, "")
+      .replace(/[^a-z0-9\s-]/g, "")  // Strip non-ASCII (Chinese, etc.) — skill names must be ASCII
       .trim()
       .split(/\s+/)
+      .filter(w => w.length > 1)
       .slice(0, 4)
       .join("-")
       .slice(0, 60);
 
-    if (!cleaned || cleaned.length < 2) {
-      return `curated-skill-${Date.now()}`;
+    if (!cleaned || cleaned.length < 3) {
+      // Use a timestamp-based fallback that will pass validation
+      return `extracted-skill-${Date.now()}`;
     }
 
     return cleaned;
@@ -856,6 +943,89 @@ export class SkillCurator {
     for (const [key] of toRemove) {
       this.evolutions.delete(key);
     }
+  }
+
+  /**
+   * Quality gate: reject skill names that are generic, auto-generated, or non-English.
+   * Must be a meaningful multi-word name (at least 5 chars, containing a hyphen).
+   */
+  private isValidSkillName(name: string): boolean {
+    // Must match the required naming convention: lowercase, starts with letter, alphanumeric + hyphens
+    const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
+    if (!NAME_REGEX.test(name)) return false;
+
+    // Reject reserved prefixes
+    const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-skill", "temp-", "extracted-skill"];
+    for (const prefix of RESERVED_PREFIXES) {
+      if (name.startsWith(prefix)) return false;
+    }
+
+    // Reject generic single-word names
+    const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
+    if (GENERIC_NAMES.includes(name)) return false;
+
+    // Reject names that are too short or lack a hyphen (must be multi-word)
+    if (name.length < 5) return false;
+    if (!name.includes("-")) return false;
+
+    return true;
+  }
+
+  /**
+   * Quality gate: reject descriptions that are placeholders or too short.
+   * Must be a meaningful sentence of at least 50 characters.
+   */
+  private isValidDescription(desc: string): boolean {
+    if (!desc || desc.trim().length < 50) return false;
+
+    const PLACEHOLDER_PATTERNS = [
+      /^执行操作(?:。)?$/,
+      /^execut(?:e|ing)\s+(?:the\s+)?task/i,
+      /^方案\d*$/,
+      /^解决[方方]案[ABCDEFG]?(?:方案)?$/,
+      /^任务[ABCDEFG]?(?:描述)?$/,
+      /^auto-generated/i,
+      /^placeholder/i,
+      /^te?mp$/i,
+      /^follow\s+the\s+steps$/i,
+      /^do\s+the\s+thing$/i,
+      /^extract(?:ed|ing)?\s+from\s+/i,
+      /^derived\s+from\s+/i,
+      /^generated\s+from\s+/i,
+      /^a\s+skill\s+(?:to|for|that)/i,
+      /^this\s+skill\s+/i,
+    ];
+    for (const pattern of PLACEHOLDER_PATTERNS) {
+      if (pattern.test(desc.trim())) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Quality gate: reject instructions that are too short or pure placeholders.
+   * Must be at least 300 characters of meaningful content.
+   */
+  private isValidInstructions(instructions: string): boolean {
+    if (!instructions || instructions.trim().length < 300) return false;
+
+    const PLACEHOLDER_PATTERNS = [
+      /^执行操作(?:。)?$/,
+      /^execut(?:e|ing)\s+(?:the\s+)?task/i,
+      /^方案\d*$/,
+      /^解决[方方]案[ABCDEFG]?(?:方案)?$/,
+      /^任务[ABCDEFG]?(?:描述)?$/,
+      /^auto-generated/i,
+      /^placeholder/i,
+      /^extract(?:ed|ing)?\s+from\s+/i,
+      /^derived\s+from\s+/i,
+      /^generated\s+from\s+/i,
+      /^this\s+skill\s+/i,
+      /^a\s+skill\s+(?:to|for|that)/i,
+    ];
+    for (const pattern of PLACEHOLDER_PATTERNS) {
+      if (pattern.test(instructions.trim())) return false;
+    }
+    return true;
   }
 
   private reconstructSkillFromEntry(entry: SkillEvolutionEntry): Skill {

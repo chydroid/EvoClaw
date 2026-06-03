@@ -336,6 +336,14 @@ export class AgentModelExecutor {
   private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string; toolName: string; toolArgs: Record<string, unknown> }>();
   private isProcessingQueue = false;
 
+  // ── Heartbeat mechanism ──
+  private heartbeatIntervalMs: number = 1_800_000; // 30 minutes default
+  private heartbeatEnabled: boolean = true;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatLastFireTime: Date | null = null;
+  private heartbeatNextFireTime: Date | null = null;
+  private heartbeatActiveConversations = new Set<string>(); // sessions currently being processed
+
   // Lazily resolve EventLedger to avoid circular dependency (it's registered after this class)
   private _eventLedger: { append(type: LedgerEventType, data: Record<string, unknown>, opts?: { agentId?: string; sessionId?: string; causedBy?: number; duration?: number }): number; recordToolExecution(toolName: string, params: Record<string, unknown>, result: unknown, duration: number, opts?: { agentId?: string; sessionId?: string }): { callSeq: number; resultSeq: number }; query(q: Record<string, unknown>): LedgerEntry[]; snapshot(): Record<string, unknown> } | null = null;
   private getEventLedger() {
@@ -2059,6 +2067,10 @@ export class AgentModelExecutor {
     const channel = (context?.channel as string) || "web-ui";
     const peerId = (context?.peerId as string) || "user";
 
+    // Mark session as active for heartbeat pausing
+    this.markSessionActive(sessionId);
+
+    try {
     // Record session start in EventLedger
     const ledger = this.getEventLedger();
     if (ledger) {
@@ -2689,6 +2701,10 @@ export class AgentModelExecutor {
     this.runAgentEndHook(sessionId, agentId, channel, finalResult);
 
     return finalResult;
+    } finally {
+      // Mark session as idle so heartbeat can resume
+      this.markSessionIdle(sessionId);
+    }
   }
 
   /** Run the agent_end plugin hook asynchronously (fire and forget) */
@@ -3990,6 +4006,7 @@ export class AgentModelExecutor {
 
     let totalTokensUsed = 0;
     let anyToolExecuted = false;
+    let toolCallCount = 0;
     const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
 
     const skillsPrompt = await this.buildSkillsPromptForRun();
@@ -4330,6 +4347,17 @@ Have a specific URL?
               name: toolName,
               content: toolResult,
             });
+
+            // ── Auto skill extraction consideration (GEPA-inspired) ──
+            toolCallCount++;
+            try {
+              const skillCurator = this.registry?.resolveService<{
+                considerExtraction(sessionId: string, toolCallCount: number, lastToolResult: unknown, taskDescription: string): void;
+              }>("skillCurator");
+              if (skillCurator) {
+                skillCurator.considerExtraction(sessionId, toolCallCount, rawResult, message);
+              }
+            } catch { /* skill extraction is best-effort */ }
           }
 
           if (!finalReply && round === maxToolRounds - 1) {
@@ -5498,5 +5526,192 @@ document.head.appendChild(style);
 
   async healthCheck(): Promise<boolean> {
     return true;
+  }
+
+  // ====== Heartbeat Mechanism ======
+
+  /** Configure heartbeat settings */
+  configureHeartbeat(config: { intervalMs?: number; enabled?: boolean }): void {
+    if (config.intervalMs !== undefined) {
+      this.heartbeatIntervalMs = Math.max(60_000, config.intervalMs); // minimum 1 minute
+    }
+    if (config.enabled !== undefined) {
+      this.heartbeatEnabled = config.enabled;
+    }
+    // Restart timer if already running
+    if (this.heartbeatTimer) {
+      this.stopHeartbeat();
+      if (this.heartbeatEnabled) {
+        this.startHeartbeat();
+      }
+    }
+    console.log(`[AgentModelExecutor] Heartbeat configured: enabled=${this.heartbeatEnabled}, interval=${this.heartbeatIntervalMs}ms`);
+  }
+
+  /** Start the heartbeat timer */
+  startHeartbeat(): void {
+    if (this.heartbeatTimer) return; // already running
+    if (!this.heartbeatEnabled) {
+      console.log("[AgentModelExecutor] Heartbeat is disabled, not starting timer");
+      return;
+    }
+
+    this.heartbeatNextFireTime = new Date(Date.now() + this.heartbeatIntervalMs);
+    this.heartbeatTimer = setInterval(() => this.onHeartbeat(), this.heartbeatIntervalMs);
+    console.log(`[AgentModelExecutor] Heartbeat started (interval: ${this.heartbeatIntervalMs}ms, next fire: ${this.heartbeatNextFireTime.toISOString()})`);
+  }
+
+  /** Stop the heartbeat timer */
+  stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+      this.heartbeatNextFireTime = null;
+      console.log("[AgentModelExecutor] Heartbeat stopped");
+    }
+  }
+
+  /** Mark a session as actively processing (pauses heartbeat for that session) */
+  markSessionActive(sessionId: string): void {
+    this.heartbeatActiveConversations.add(sessionId);
+  }
+
+  /** Mark a session as idle (resumes heartbeat eligibility) */
+  markSessionIdle(sessionId: string): void {
+    this.heartbeatActiveConversations.delete(sessionId);
+  }
+
+  /** Check if the agent is currently idle (no active conversations) */
+  isAgentIdle(): boolean {
+    return this.heartbeatActiveConversations.size === 0;
+  }
+
+  /** Get current heartbeat status */
+  getHeartbeatStatus(): {
+    enabled: boolean;
+    active: boolean;
+    intervalMs: number;
+    lastFireTime: Date | null;
+    nextFireTime: Date | null;
+    isIdle: boolean;
+    activeConversations: number;
+  } {
+    return {
+      enabled: this.heartbeatEnabled,
+      active: this.heartbeatTimer !== null,
+      intervalMs: this.heartbeatIntervalMs,
+      lastFireTime: this.heartbeatLastFireTime,
+      nextFireTime: this.heartbeatNextFireTime,
+      isIdle: this.isAgentIdle(),
+      activeConversations: this.heartbeatActiveConversations.size,
+    };
+  }
+
+  /** Internal heartbeat handler — fires periodically when agent is idle */
+  private async onHeartbeat(): Promise<void> {
+    // Skip if agent is actively processing conversations
+    if (!this.isAgentIdle()) {
+      console.log("[AgentModelExecutor] Heartbeat skipped — agent is busy");
+      this.heartbeatNextFireTime = new Date(Date.now() + this.heartbeatIntervalMs);
+      return;
+    }
+
+    this.heartbeatLastFireTime = new Date();
+    this.heartbeatNextFireTime = new Date(Date.now() + this.heartbeatIntervalMs);
+
+    console.log(`[AgentModelExecutor] Heartbeat fired at ${this.heartbeatLastFireTime.toISOString()}`);
+
+    const heartbeatResults: {
+      queueItemsProcessed: number;
+      cronTasksDue: number;
+      memoryReminders: number;
+    } = {
+      queueItemsProcessed: 0,
+      cronTasksDue: 0,
+      memoryReminders: 0,
+    };
+
+    try {
+      // 1. Check for pending queue messages and process the next one
+      if (this.queueManager) {
+        const sessions = this.queueManager.getAllSessions();
+        for (const sessionId of sessions) {
+          if (this.queueManager.hasPending(sessionId)) {
+            const item = this.queueManager.dequeue(sessionId);
+            if (item) {
+              heartbeatResults.queueItemsProcessed++;
+              console.log(`[AgentModelExecutor] Heartbeat processing queued item [${item.mode}] for session "${sessionId}": "${item.message.slice(0, 80)}"`);
+              try {
+                const result = await this.chat(item.message, {
+                  sessionId,
+                  channel: "heartbeat",
+                  peerId: "system",
+                });
+                this.queueManager.markDone(item.id, result.reply);
+              } catch (err) {
+                const errorMsg = err instanceof Error ? err.message : String(err);
+                this.queueManager.markFailed(item.id, errorMsg);
+                console.warn(`[AgentModelExecutor] Heartbeat queue item failed: ${errorMsg}`);
+              }
+              // Only process one item per heartbeat to avoid overload
+              break;
+            }
+          }
+        }
+      }
+
+      // 2. Check for scheduled cron tasks that are due
+      const scheduleManager = this.registry.resolveService<{
+        listTasks(): Array<{ id: string; name: string; enabled: boolean; nextRun?: Date; cronExpression: string }>;
+        executeTask(taskId: string): Promise<{ success: boolean; error?: string }>;
+      }>("scheduleManager");
+      if (scheduleManager) {
+        const now = new Date();
+        const tasks = scheduleManager.listTasks();
+        for (const task of tasks) {
+          if (task.enabled && task.nextRun && new Date(task.nextRun) <= now) {
+            heartbeatResults.cronTasksDue++;
+            console.log(`[AgentModelExecutor] Heartbeat found due cron task: "${task.name}" (${task.id})`);
+            try {
+              await scheduleManager.executeTask(task.id);
+            } catch (err) {
+              console.warn(`[AgentModelExecutor] Heartbeat cron task execution failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      }
+
+      // 3. Check memory for follow-up reminders
+      if (this.memoryHub) {
+        try {
+          const results = await this.memoryHub.getLongTerm().search({
+            query: "follow-up reminder todo 待办 提醒",
+            tags: ["reminder", "follow-up", "todo"],
+            limit: 5,
+          });
+          heartbeatResults.memoryReminders = results.length;
+          if (results.length > 0) {
+            console.log(`[AgentModelExecutor] Heartbeat found ${results.length} memory reminders`);
+          }
+        } catch {
+          // Memory search is best-effort
+        }
+      }
+
+      // 4. Emit agent.heartbeat event via EventBus
+      await this.eventBus.publish("agent.heartbeat", {
+        timestamp: this.heartbeatLastFireTime.toISOString(),
+        isIdle: true,
+        results: heartbeatResults,
+      }, "agent-model-executor");
+
+      // Also notify the lifecycle manager
+      if (this.lifecycleManager) {
+        this.lifecycleManager.heartbeat("system");
+      }
+
+    } catch (err) {
+      console.error(`[AgentModelExecutor] Heartbeat error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
