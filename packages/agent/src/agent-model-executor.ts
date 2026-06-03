@@ -26,6 +26,8 @@ export interface ProviderConfig extends ModelConfig {
   failureCount?: number;
   lastError?: string;
   lastErrorType?: string;
+  /** Ordered list of model names (first = highest priority, used as fallback cascade) */
+  models?: string[];
 }
 
 export interface AgentExecutionResult {
@@ -4009,9 +4011,24 @@ export class AgentModelExecutor {
     let toolCallCount = 0;
     const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
 
+    // Expand providers with multiple models: each model becomes a separate entry
+    // so the failover loop can try models in priority order within each provider.
+    const expandedProviders: ProviderConfig[] = [];
+    for (const p of providers) {
+      const models = p.models && p.models.length > 0 ? p.models : (p.model ? [p.model] : []);
+      if (models.length === 0) {
+        expandedProviders.push(p);
+      } else {
+        for (const m of models) {
+          expandedProviders.push({ ...p, model: m });
+        }
+      }
+    }
+    console.log(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"`);
+
     const skillsPrompt = await this.buildSkillsPromptForRun();
 
-    for (const provider of providers) {
+    for (const provider of expandedProviders) {
       let consecutiveErrors = 0;
 
       try {
@@ -4425,21 +4442,21 @@ Have a specific URL?
           };
         }
 
-        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response`);
+        console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response (model: ${provider.model})`);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
-          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" timed out after ${provider.timeout || 60000}ms`);
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) timed out after ${provider.timeout || 60000}ms`);
         } else if (err instanceof Error) {
-          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" error: ${err.message}`);
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) error: ${err.message}`);
           console.warn(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}`);
         } else {
-          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" unknown error: ${String(err)}`);
+          console.warn(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) unknown error: ${String(err)}`);
         }
       }
     }
 
     const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n可前往 Ops 页面查看详细诊断信息。";
-    console.error(`[AgentModelExecutor] All ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${providers.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.`);
+    console.error(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.`);
     return {
       reply: fallbackReply,
       tokensUsed: 0,

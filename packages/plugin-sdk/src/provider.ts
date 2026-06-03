@@ -159,6 +159,8 @@ export interface ProviderConfig {
   extra?: Record<string, unknown>;
   /** Key rotation strategy when multiple API keys are available */
   rotationStrategy?: "round-robin" | "random" | "least-used";
+  /** Ordered list of model names (first = highest priority, used as fallback cascade) */
+  models?: string[];
 }
 
 // ── Provider Registry ────────────────────────────────────

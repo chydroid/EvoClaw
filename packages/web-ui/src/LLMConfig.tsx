@@ -186,10 +186,55 @@ export default function LLMConfig() {
     if (modelName) {
       setProviders((prev) =>
         prev.map((p) =>
-          p.id === providerId ? { ...p, models: [...p.models, modelName] } : p
+          p.id === providerId ? { ...p, models: [...p.models, modelName], selectedModel: p.selectedModel || modelName } : p
         )
       );
     }
+  }
+
+  function removeModel(providerId: string, modelName: string) {
+    setProviders((prev) =>
+      prev.map((p) => {
+        if (p.id !== providerId) return p;
+        const newModels = p.models.filter((m) => m !== modelName);
+        return {
+          ...p,
+          models: newModels,
+          selectedModel: p.selectedModel === modelName ? (newModels[0] || "") : p.selectedModel,
+        };
+      })
+    );
+  }
+
+  function moveModel(providerId: string, modelName: string, direction: "up" | "down") {
+    setProviders((prev) =>
+      prev.map((p) => {
+        if (p.id !== providerId) return p;
+        const idx = p.models.indexOf(modelName);
+        if (idx < 0) return p;
+        if (direction === "up" && idx === 0) return p;
+        if (direction === "down" && idx === p.models.length - 1) return p;
+        const newModels = [...p.models];
+        const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+        [newModels[idx], newModels[swapIdx]] = [newModels[swapIdx], newModels[idx]];
+        // Keep the first model as selectedModel
+        return { ...p, models: newModels, selectedModel: newModels[0] };
+      })
+    );
+  }
+
+  function setModelPriority(providerId: string, modelName: string, newIndex: number) {
+    setProviders((prev) =>
+      prev.map((p) => {
+        if (p.id !== providerId) return p;
+        const models = [...p.models];
+        const oldIdx = models.indexOf(modelName);
+        if (oldIdx < 0) return p;
+        models.splice(oldIdx, 1);
+        models.splice(newIndex, 0, modelName);
+        return { ...p, models, selectedModel: models[0] };
+      })
+    );
   }
 
   function addProvider() {
@@ -376,23 +421,58 @@ export default function LLMConfig() {
 
               <div style={s.formGroup}>
                 <label style={s.label}>
-                  Model
+                  Models (Priority Order)
                   <button style={s.addModelBtn} onClick={() => addCustomModel(activeProvider)}>
-                    + Add
+                    + Add Model
                   </button>
                 </label>
-                <input
-                  style={s.input}
-                  list={`model-list-${activeProvider}`}
-                  value={currentProvider.selectedModel}
-                  onChange={(e) => updateProvider(activeProvider, { selectedModel: e.target.value })}
-                  placeholder="Select or type a model name..."
-                />
-                <datalist id={`model-list-${activeProvider}`}>
-                  {currentProvider.models.map((m) => (
-                    <option key={m} value={m} />
+                <div style={s.modelListContainer}>
+                  {currentProvider.models.length === 0 && (
+                    <div style={s.modelEmptyHint}>No models added. Click "+ Add Model" to add one.</div>
+                  )}
+                  {currentProvider.models.map((model, idx) => (
+                    <div key={model} style={s.modelRow}>
+                      <span style={s.modelPriorityBadge}>#{idx + 1}</span>
+                      <input
+                        style={{ ...s.input, flex: 1 as const, width: "auto" }}
+                        value={model}
+                        onChange={(e) => {
+                          const newModels = [...currentProvider.models];
+                          newModels[idx] = e.target.value;
+                          updateProvider(activeProvider, {
+                            models: newModels,
+                            selectedModel: idx === 0 ? e.target.value : currentProvider.selectedModel,
+                          });
+                        }}
+                      />
+                      <div style={s.modelActionBtns}>
+                        <button
+                          style={{ ...s.modelActionBtn, opacity: idx === 0 ? 0.3 : 1 }}
+                          disabled={idx === 0}
+                          onClick={() => moveModel(activeProvider, model, "up")}
+                          title="Move up (higher priority)"
+                        >▲</button>
+                        <button
+                          style={{ ...s.modelActionBtn, opacity: idx === currentProvider.models.length - 1 ? 0.3 : 1 }}
+                          disabled={idx === currentProvider.models.length - 1}
+                          onClick={() => moveModel(activeProvider, model, "down")}
+                          title="Move down (lower priority)"
+                        >▼</button>
+                        <button
+                          style={s.modelDeleteBtn}
+                          onClick={() => removeModel(activeProvider, model)}
+                          title="Remove model"
+                        >✕</button>
+                      </div>
+                    </div>
                   ))}
-                </datalist>
+                </div>
+                {currentProvider.models.length > 1 && (
+                  <div style={s.modelPriorityHint}>
+                    Models are tried in priority order. Highest priority (#1) is used first.
+                    If it fails, the system falls back to the next model.
+                  </div>
+                )}
               </div>
 
               <div style={s.divider} />
@@ -571,5 +651,44 @@ const s: Record<string, React.CSSProperties> = {
   addModelBtn: {
     padding: "2px 8px", borderRadius: "4px", border: "1px solid var(--accent)",
     background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: "11px",
+  },
+  modelListContainer: {
+    display: "flex", flexDirection: "column", gap: "6px",
+    marginTop: "4px",
+  },
+  modelRow: {
+    display: "flex", alignItems: "center", gap: "6px",
+  },
+  modelPriorityBadge: {
+    width: "28px", height: "28px", borderRadius: "6px",
+    background: "var(--accent-bg)", color: "var(--accent)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: "11px", fontWeight: "bold", flexShrink: 0,
+    border: "1px solid var(--accent)",
+  },
+  modelActionBtns: {
+    display: "flex", flexDirection: "column", gap: "2px",
+  },
+  modelActionBtn: {
+    padding: "0px 6px", fontSize: "10px", cursor: "pointer",
+    background: "transparent", border: "1px solid var(--input-border)",
+    borderRadius: "3px", color: "var(--text-secondary)", lineHeight: "16px",
+  },
+  modelDeleteBtn: {
+    padding: "0px 6px", fontSize: "10px", cursor: "pointer",
+    background: "transparent", border: "1px solid #5a1a1a",
+    borderRadius: "3px", color: "var(--error)", lineHeight: "16px",
+  },
+  modelEmptyHint: {
+    padding: "10px 12px", color: "var(--text-muted)", fontSize: "12px",
+    fontStyle: "italic", textAlign: "center" as const,
+    border: "1px dashed var(--border)", borderRadius: "6px",
+  },
+  modelPriorityHint: {
+    marginTop: "8px", padding: "8px 12px",
+    background: "var(--accent-bg)", borderRadius: "6px",
+    fontSize: "11px", color: "var(--text-secondary)",
+    border: "1px solid var(--accent)",
+    lineHeight: "1.5",
   },
 };

@@ -335,6 +335,29 @@ export class QueueManager {
     return item;
   }
 
+  /** Remove a queue item by ID */
+  removeItem(itemId: string): boolean {
+    const item = this.findItem(itemId);
+    if (!item) return false;
+
+    const queue = this.queues.get(item.sessionId);
+    if (!queue) return false;
+
+    const idx = queue.findIndex((q) => q.id === itemId);
+    if (idx === -1) return false;
+
+    queue.splice(idx, 1);
+    this.persistQueue(item.sessionId);
+
+    this.eventBus.publish(
+      "queue.item_removed",
+      { itemId },
+      "queue-manager",
+    );
+
+    return true;
+  }
+
   /** Reorder queue items for a session */
   reorderItems(sessionId: string, orderedIds: string[]): boolean {
     const queue = this.queues.get(sessionId);

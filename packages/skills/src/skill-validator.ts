@@ -98,7 +98,7 @@ export class SkillValidator {
       !Array.isArray(meta.triggers) ||
       meta.triggers.length === 0
     ) {
-      errors.push("Skill triggers must be a non-empty array");
+      warnings.push("Skill has no triggers defined — it will only be invocable by the LLM based on its description. Consider adding keyword/intent triggers for better discoverability.");
     }
 
     if (!meta.author || meta.author.trim() === "") {

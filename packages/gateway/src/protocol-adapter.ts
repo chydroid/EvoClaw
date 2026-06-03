@@ -310,13 +310,14 @@ export class ProtocolAdapter {
         enabled: true,
         order: (p.order as number) ?? 1,
         provider: (p.id as string) || "custom",
-        model: (p.selectedModel as string) || "",
+        model: (p.selectedModel as string) || (Array.isArray(p.models) ? (p.models as string[])[0] : "") || "",
         apiKey: (p.apiKey as string) || "",
         baseURL: (p.baseURL as string) || "",
         maxTokens: (p.config as Record<string, unknown>)?.maxTokens as number || 4096,
         temperature: (p.config as Record<string, unknown>)?.temperature as number || 0.3,
         timeout: (p.config as Record<string, unknown>)?.timeout as number || 60000,
         topP: (p.config as Record<string, unknown>)?.topP as number ?? 1,
+        models: (p.models as string[]) || [],
       }));
 
     if (configs.length > 0) {
@@ -2652,10 +2653,7 @@ export class ProtocolAdapter {
       try {
         const itemId = String(req.params.itemId);
         const queueManager = this.registry.resolveService("queueManager") as {
-          clearQueue(sessionId: string): void;
-          getQueue(sessionId: string): Array<Record<string, unknown>>;
-          getAllSessions(): string[];
-          reorderItems(sessionId: string, ids: string[]): boolean;
+          removeItem(itemId: string): boolean;
         } | undefined;
 
         if (!queueManager) {
@@ -2663,22 +2661,8 @@ export class ProtocolAdapter {
           return;
         }
 
-        // Find and remove item from its session queue
-        const allSessions = (queueManager as { getAllSessions(): string[] }).getAllSessions?.() ?? [];
-        let found = false;
-        for (const sid of allSessions) {
-          const queue = queueManager.getQueue(sid);
-          const idx = queue.findIndex((q: Record<string, unknown>) => q.id === itemId);
-          if (idx !== -1) {
-            queue.splice(idx, 1);
-            const reorderMgr = queueManager as { reorderItems(sessionId: string, ids: string[]): boolean };
-            reorderMgr.reorderItems(sid, queue.map((q: Record<string, unknown>) => q.id as string));
-            found = true;
-            break;
-          }
-        }
-
-        if (!found) {
+        const removed = queueManager.removeItem(itemId);
+        if (!removed) {
           res.status(404).json({ success: false, error: "Queue item not found" });
           return;
         }
