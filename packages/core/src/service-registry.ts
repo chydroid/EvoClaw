@@ -23,6 +23,21 @@ export class ServiceRegistry implements IPluginRegistry {
     }
   }
 
+  /** Replace an already-registered service, or register if not present */
+  replaceService<T>(name: string, service: T): void {
+    this.services.set(name, service);
+    this.serviceInfos.set(name, {
+      name,
+      version: "0.0.0",
+      status: "running",
+      dependencies: [],
+    });
+
+    if (this.isIService(service)) {
+      this.lifecycles.set(name, service);
+    }
+  }
+
   resolveService<T>(name: string): T | undefined {
     return this.services.get(name) as T | undefined;
   }

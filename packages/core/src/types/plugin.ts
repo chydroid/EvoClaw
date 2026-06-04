@@ -8,6 +8,7 @@ export interface Plugin {
 
 export interface IPluginRegistry {
   registerService<T>(name: string, service: T): void;
+  replaceService<T>(name: string, service: T): void;
   resolveService<T>(name: string): T | undefined;
   hasService(name: string): boolean;
   getRegisteredServices(): string[];

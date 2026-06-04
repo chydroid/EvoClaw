@@ -5,7 +5,16 @@
 
 ---
 
-## v0.12.1 (2026-06-04)
+## v0.12.2 (2026-06-04)
+
+### 信息流程测试修复
+
+通过模拟"下载小说"需求测试完整信息流程，发现并修复以下问题：
+
+- **browser_search 中文搜索词被误拦截**：`extractUrl()` 函数将 `query` 参数当作 URL 提取，导致中文搜索词被 URL 安全校验拦截。修复：`query` 参数不再作为 URL 提取（web-browser.plugin.ts + enhanced-browser.plugin.ts）
+- **skill_execute JSON 解析错误**：当 LLM 传入对象而非 JSON 字符串时，`JSON.parse(String(params))` 报错。修复：先检查类型，对象直接使用，字符串才解析
+- **browser_launch 重复注册报错**：Playwright 浏览器重新启动时 `registerService` 抛出 "already registered" 异常。修复：新增 `ServiceRegistry.replaceService()` 方法，允许替换已注册的服务
+- **IPluginRegistry 接口更新**：新增 `replaceService` 方法签名
 
 ### Agent 执行策略优化
 

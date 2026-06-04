@@ -867,7 +867,17 @@ export class EvoClawServer {
       },
       async (params: Record<string, unknown>) => {
         const skillName = String(params.skill || "");
-        const execParams = JSON.parse(String(params.params || "{}"));
+        let execParams: Record<string, unknown> = {};
+        try {
+          const rawParams = params.params;
+          if (rawParams && typeof rawParams === "object") {
+            execParams = rawParams as Record<string, unknown>;
+          } else if (rawParams && typeof rawParams === "string") {
+            execParams = JSON.parse(rawParams);
+          }
+        } catch {
+          execParams = {};
+        }
         try {
           const result = await this.skillManager.executeSkill(skillName, execParams);
           return { success: true, result };
@@ -1383,7 +1393,7 @@ export class EvoClawServer {
         });
         await newBrowser.launch();
         this.playwrightBrowser = newBrowser;
-        this.registry.registerService("playwrightBrowser", this.playwrightBrowser);
+        this.registry.replaceService("playwrightBrowser", this.playwrightBrowser);
         return { success: true, headless, message: "Playwright browser launched" };
       }
     );

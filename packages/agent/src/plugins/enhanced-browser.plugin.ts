@@ -133,7 +133,7 @@ interface ExtractionResult {
 // ── Helper Functions ──────────────────────────────────
 
 function extractUrl(params: Record<string, unknown>): string | null {
-  return (params.url as string) || (params.search_url as string) || (params.query as string) || null;
+  return (params.url as string) || (params.search_url as string) || null;
 }
 
 function formatWebResult(toolName: string, result: unknown): string | null {
