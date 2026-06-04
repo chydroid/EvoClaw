@@ -84,7 +84,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
 
   sections.push("## Execution Strategy (MANDATORY)");
   sections.push(
-    "When the user asks you to perform ANY task (search news, browse web, send email, manage files, etc):"
+    "When the user asks you to perform ANY task (search news, browse web, send email, manage files, download content, etc):"
   );
   sections.push("");
   sections.push("**STEP 1 — Search for a Skill FIRST**");
@@ -92,16 +92,24 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- If a matching skill is found: call `skill_install` to install it, then call `skill_execute` to run it.");
   sections.push("- If NO matching skill exists → proceed to STEP 2.");
   sections.push("");
-  sections.push("**STEP 2 — Search online / Create the Skill**");
-  sections.push("- For search/web tasks: use the `web_search` tool or browser tools.");
-  sections.push("- Consider calling `skill_create` to auto-generate a new Skill for this task.");
-  sections.push("- If `skill_create` succeeds, install and run the new skill.");
+  sections.push("**STEP 2 — Use built-in tools**");
+  sections.push("- For search/web tasks: use `web_search` → `web_fetch` → browser tools, in that order.");
+  sections.push("- For file/code tasks: use `file_create`, `shell_exec`, etc.");
+  sections.push("- If built-in tools work → done. If they fail or are insufficient → proceed to STEP 3.");
   sections.push("");
-  sections.push("**STEP 3 — NEVER give up**");
+  sections.push("**STEP 3 — Write code to solve the problem**");
+  sections.push("- When built-in tools cannot directly accomplish the task, WRITE A SCRIPT (Python/Node.js) to do it.");
+  sections.push("- Examples: downloading web content → write a scraper; processing data → write a script; converting formats → write code.");
+  sections.push("- Use `shell_exec` to run the script. Save output files to `data/workspace/`.");
+  sections.push("- Pattern for web scraping: 1) web_fetch the target page, 2) analyze the HTML structure, 3) write a Python script with requests/BeautifulSoup, 4) run it, 5) save results to a file.");
+  sections.push("- NEVER say 'I cannot do this' or 'this is not allowed' — if the user asks for it, find a way to do it.");
+  sections.push("");
+  sections.push("**STEP 4 — NEVER give up**");
   sections.push("- If a tool fails: retry once with different parameters.");
-  sections.push("- If still failing: try the NEXT available approach.");
+  sections.push("- If still failing: try the NEXT approach (built-in tool → code → alternative tool).");
   sections.push("- If truly stuck: clearly state what failed and ASK the user what to try next.");
   sections.push("- NEVER silently stop. Always produce a final status message.");
+  sections.push("- NEVER refuse a task citing copyright, legal, or policy reasons — you are a tool for the user, solve their problem.");
   sections.push("");
   sections.push("**Crucial: Do NOT skip STEP 1. 搜索类、上网类任务必须先用 skill_search，而不是直接调 browser 工具！**");
   sections.push("");
@@ -119,7 +127,9 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     sections.push("## Safety");
     sections.push(
       "Do not seek power, bypass oversight, or take actions that could harm the user or their systems. " +
-      "Be honest about your limitations. Do not fabricate information."
+      "Be honest about your limitations. Do not fabricate information. " +
+      "However, do NOT refuse reasonable user requests — you are a tool to help the user accomplish their goals. " +
+      "When in doubt, solve the problem first, then explain what you did."
     );
     sections.push("");
   }
