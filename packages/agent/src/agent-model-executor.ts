@@ -4171,15 +4171,16 @@ Have a specific URL?
         for (let round = 0; round < maxToolRounds; round++) {
           onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
 
-          // Dynamic tool_choice: after 6+ successful tool calls, force the LLM to produce a final answer
-          // This prevents infinite tool-call loops where the LLM keeps calling more tools
-          const tc: "auto" | "none" = successfulToolCalls >= 6 ? "none" : "auto";
-          if (tc === "none") {
-            console.log(`[AgentModelExecutor] Forcing final reply after ${successfulToolCalls} tool calls (round ${round + 1})`);
-            // Inject a message to force the LLM to summarize and reply (works with providers that don't support tool_choice "none")
+          // Dynamic tool_choice: after 4+ successful tool calls, nudge the LLM toward writing code
+          // Instead of blocking all tools (which prevents file_create/shell_exec), we keep tool_choice "auto"
+          // and rely on the SYSTEM HINT injected into search results to guide the LLM
+          const tc: "auto" | "none" = "auto";
+          if (successfulToolCalls >= 4) {
+            console.log(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward code execution (round ${round + 1})`);
+            // Inject a nudge message — but don't disable tools (Agent may need file_create/shell_exec)
             conversationMessages.push({
               role: "user",
-              content: "You have already gathered enough information. DO NOT call any more tools. Synthesize the results you have and provide a comprehensive final answer to the user now."
+              content: "You have gathered enough information. Now WRITE CODE to produce the final output file. Use file_create to write a Python script, then shell_exec to run it. Do NOT search again."
             });
           }
 
@@ -4233,9 +4234,14 @@ Have a specific URL?
           totalTokensUsed += result.tokensUsed;
 
           const TOKEN_BUDGET = 200000;
+          // Early intervention at 50% budget: stop searching, start coding
+          if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
+            console.warn(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"`);
+            conversationMessages.push({ role: "user", content: "⚠ Token budget is 50% used. STOP searching. If you have found any URLs or resources, WRITE CODE NOW (use file_create + shell_exec) to download/process them. Do NOT search again." });
+          }
           if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
             console.warn(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"`);
-            conversationMessages.push({ role: "user", content: "⚠ 预算提醒：已使用超过 80% 的 token 预算。请尽快总结当前结果并回复用户。" });
+            conversationMessages.push({ role: "user", content: "⚠ Token budget 80% used. You MUST produce a final answer NOW. If you have any results, format them for the user. If you have a script, run it with shell_exec immediately." });
           }
           if (totalTokensUsed > TOKEN_BUDGET) {
             console.warn(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.`);
@@ -4246,6 +4252,10 @@ Have a specific URL?
 
           if (assistantMsg.content) {
             finalReply = assistantMsg.content;
+            // Clean up XML-style tool calls that some models (e.g., Mimo) embed in text
+            finalReply = finalReply.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "").trim();
+            finalReply = finalReply.replace(/<invoke\s+name="[^"]*">[\s\S]*?<\/invoke>/g, "").trim();
+            finalReply = finalReply.replace(/<parameter\s+name="[^"]*">[\s\S]*?<\/parameter>/g, "").trim();
           }
 
           const toolCalls = assistantMsg.tool_calls;
@@ -4318,7 +4328,7 @@ Have a specific URL?
                     const LONG_RUNNING_TOOLS = new Set([
                       "execute_programming_task", "decompose_programming_task",
                       "browser_launch", "browser_screenshot", "browser_login",
-                      "get_task_result",
+                      "get_task_result", "shell_exec",
                     ]);
                     const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
                     const toolPromise = toolEntry.handler(args);
@@ -4393,6 +4403,10 @@ Have a specific URL?
                 // ── 智能摘要工具结果，减少 token 用量 ──
                 if (!cacheHit) {
                   toolResult = this.summarizeToolResult(toolName, toolResult);
+                }
+                // ── 搜索结果引导：当搜索工具返回结果后，提示 Agent 写代码而非继续搜索 ──
+                if ((toolName === "web_search" || toolName === "skill_execute" || toolName === "web_fetch" || toolName === "fetch_node_page") && successfulToolCalls >= 2) {
+                  toolResult += "\n\n[SYSTEM HINT: You have search results now. Do NOT search again. Use file_create to write a Python script, then use shell_exec to run it and produce the final output file. The user wants a FILE, not more search results.]";
                 }
                 if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
                   const r = rawResult as Record<string, unknown>;
@@ -4674,7 +4688,7 @@ Have a specific URL?
         stream: useStreaming,
       };
 
-      if (tools.length > 0) {
+      if (tools.length > 0 && toolChoice !== "none") {
         body.tools = tools;
         body.tool_choice = toolChoice;
         

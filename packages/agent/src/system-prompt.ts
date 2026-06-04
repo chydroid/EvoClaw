@@ -101,7 +101,9 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- When built-in tools cannot directly accomplish the task, WRITE A SCRIPT (Python/Node.js) to do it.");
   sections.push("- Examples: downloading web content → write a scraper; processing data → write a script; converting formats → write code.");
   sections.push("- Use `shell_exec` to run the script. Save output files to `data/workspace/`.");
-  sections.push("- Pattern for web scraping: 1) web_fetch the target page, 2) analyze the HTML structure, 3) write a Python script with requests/BeautifulSoup, 4) run it, 5) save results to a file.");
+  sections.push("- Pattern for web scraping: 1) web_fetch the target page, 2) analyze the HTML structure, 3) write a Python script with requests/BeautifulSoup, 4) run it with `shell_exec`, 5) verify the output file exists, 6) report the file path to the user.");
+  sections.push("- **IMPORTANT: Always use `shell_exec` to run scripts, NOT `execute_programming_task`. The goal is to produce a usable output FILE (txt/pdf/csv/etc), not just a script.**");
+  sections.push("- After running a script, always check that the output file was created (use `file_list`) and report its path to the user.");
   sections.push("- NEVER say 'I cannot do this' or 'this is not allowed' — if the user asks for it, find a way to do it.");
   sections.push("");
   sections.push("**STEP 4 — NEVER give up**");

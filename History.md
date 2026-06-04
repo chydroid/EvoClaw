@@ -5,6 +5,47 @@
 
 ---
 
+## v0.12.4 (2026-06-05)
+
+### Agent 执行流程深度优化
+
+通过多轮端到端测试（"下载小说"场景），持续优化 Agent 的工具调用效率和问题解决能力：
+
+#### 搜索结果引导提示
+
+- 在搜索工具（web_search/skill_execute/web_fetch/fetch_node_page）返回结果后，自动附加 `[SYSTEM HINT]` 提示，引导 Agent 转向写代码而非继续搜索
+- 当成功工具调用 ≥ 2 次时触发，避免 Agent 陷入无限搜索循环
+
+#### 动态工具调用引导（替代 tool_choice: "none"）
+
+- 4 次成功工具调用后注入引导消息："WRITE CODE to produce the final output file"
+- 不再使用 `tool_choice: "none"` 阻止所有工具调用（这会同时阻止 `file_create` 和 `shell_exec`）
+- 保持 `tool_choice: "auto"` 让 Agent 能在引导下自然转向代码工具
+
+#### Token 预算分级干预
+
+- **50% 预算**：注入"STOP searching, WRITE CODE NOW"提示
+- **80% 预算**：注入"produce final answer NOW"提示
+- **100% 预算**：强制中断循环
+
+#### shell_exec 超时扩展
+
+- `shell_exec` 加入 `LONG_RUNNING_TOOLS` 列表，超时从 30 秒扩展到 300 秒
+- 支持长时间运行的下载/处理脚本
+
+#### Mimo 模型兼容性
+
+- `tool_choice: "none"` 时不传 `tools` 参数（而非传 `tool_choice: "none"`），避免 Mimo 模型在回复中嵌入 XML 格式的工具调用
+- 添加回复后处理：清理 `<minimax:tool_call>` 等 XML 标签
+
+#### 系统提示词优化
+
+- STEP 3 增加"用 `shell_exec` 运行脚本，NOT `execute_programming_task`"的明确指导
+- 增加"验证输出文件存在并报告路径"的要求
+- Safety 段落进一步强化"NEVER refuse"规则
+
+---
+
 ## v0.12.3 (2026-06-05)
 
 ### LLM 调用优化与 Agent 行为改进
