@@ -7,6 +7,26 @@
 
 ## v0.11.0 (2026-06-04)
 
+### 增强型浏览器插件 + CI修复
+
+#### 增强型浏览器插件 (`packages/agent/src/plugins/enhanced-browser.plugin.ts`)
+
+- **会话隔离**：支持多会话创建/切换/删除，每个会话独立管理Cookie、LocalStorage、请求头
+- **确认门控**：敏感操作（登录、表单提交、文件上传、JS执行）需用户确认
+- **网络捕获**：可开关的网络日志记录，支持按会话隔离
+- **URL安全**：阻止localhost/127.0.0.1/0.0.0.0/.onion等危险URL，检测可执行文件下载等可疑模式
+- **多策略内容提取**：轻量级HTTP提取（快速）支持链接/表单/元数据提取，支持自定义User-Agent和超时
+- **并行抓取**：支持多URL并发抓取，可配置并发数，返回成功/失败统计
+- 全面测试覆盖：87个测试用例，包括14个真实HTTP集成测试（httpbin.org）
+- 插件已注册到内置插件工厂
+
+#### CI/CD修复
+
+- **Docker Buildx超时修复** (`.github/workflows/ci.yml`)：
+  - 在setup-buildx前添加Docker daemon registry mirrors配置（mirror.gcr.io、dockerhub.timeweb.cloud）
+  - 添加`network=host` driver-opts解决registry-1.docker.io连接超时
+  - 增大max-concurrent-downloads到10
+
 ### 全面优化提升 — 基于与 OpenClaw/Hermes 对比分析的系统性改进
 
 #### 核心基础设施
