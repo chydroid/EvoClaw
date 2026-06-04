@@ -2813,6 +2813,33 @@ export class ProtocolAdapter {
       }
     });
 
+    // ─── Feishu Webhook ──────────────────────────────────────────────────
+
+    app.post("/api/channels/feishu/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>): Promise<{ challenge?: string }> } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("feishu");
+        if (!adapter) {
+          res.status(404).json({ error: "Feishu adapter not found" });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        const result = await adapter.handleWebhookEvent(req.body as Record<string, unknown>, headers);
+        res.json(result.challenge ? { challenge: result.challenge } : {});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     // ─── WeChat iLink API Proxy ──────────────────────────────────────────
 
     const WEIXIN_API_BASE = "https://ilinkai.weixin.qq.com";

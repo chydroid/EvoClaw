@@ -965,6 +965,53 @@ export class EvoClawServer {
           errors.push("Skill instructions appear to be a placeholder. Provide concrete, actionable steps.");
         }
 
+        // 3.1 指令长度门控：instructions 必须 >= 200 字符
+        if (instructions && instructions.length < 200) {
+          errors.push(`Skill instructions are too short (${instructions.length} chars, minimum 200). Instructions must contain substantive content, not just a template shell.`);
+        }
+
+        // 3.2 指令步骤验证：必须包含至少 2 个具体步骤或操作
+        if (instructions) {
+          const numberedSteps = instructions.match(/\b\d+\.\s/g) || [];
+          const listItems = instructions.match(/^[\s]*[-*]\s/gm) || [];
+          const totalSteps = numberedSteps.length + listItems.length;
+          if (totalSteps < 2) {
+            errors.push(`Skill instructions must include at least 2 concrete steps or actions (found ${totalSteps}). Use numbered steps (e.g. "1.") or list items (e.g. "- ").`);
+          }
+        }
+
+        // 3.3 禁止模板步骤检测：拒绝完全相同的7步模板
+        if (instructions) {
+          const TEMPLATE_STEPS = ["Initialize", "Parse", "Execute", "Handle edge cases", "Format", "Log", "Cleanup"];
+          const allTemplateStepsPresent = TEMPLATE_STEPS.every(step => instructions.includes(step));
+          if (allTemplateStepsPresent) {
+            errors.push("Skill instructions appear to follow a generic 7-step template (Initialize → Parse → Execute → Handle edge cases → Format → Log → Cleanup). Provide domain-specific steps instead.");
+          }
+        }
+
+        // 3.4 功能性验证：instructions 必须提及至少一个具体的工具、API、脚本或命令
+        if (instructions) {
+          const FUNCTIONAL_KEYWORDS = /\b(API|script|fetch|curl|python|node|http|endpoint|command|npm|pip|docker|git|ssh|sql|redis|mongo|postgres|axios|request|shell|bash|powershell|cli|sdk|library|module|import|require|exec|spawn|run)\b/i;
+          if (!FUNCTIONAL_KEYWORDS.test(instructions)) {
+            errors.push("Skill instructions must reference at least one concrete tool, API, script, or command (e.g. API, fetch, curl, python, node, http, endpoint, command). Purely abstract instructions are not allowed.");
+          }
+        }
+
+        // 3.5 描述长度门控：description 必须 >= 30 字符
+        if (desc && desc.length < 30) {
+          errors.push(`Skill description is too short (${desc.length} chars, minimum 30). Provide a more detailed description of what problem this skill solves.`);
+        }
+
+        // 3.6 名称与描述相关性：name 中的关键词必须出现在 description 中
+        if (name && desc) {
+          const nameWords = name.split(/[-_]/).filter(w => w.length > 2);
+          const descLower = desc.toLowerCase();
+          const matchedWords = nameWords.filter(w => descLower.includes(w));
+          if (nameWords.length > 0 && matchedWords.length === 0) {
+            errors.push(`Skill name keywords (${nameWords.join(", ")}) do not appear in the description. The description should relate to the skill name.`);
+          }
+        }
+
         // 4. Check for duplicate skills
         if (errors.length === 0) {
           try {

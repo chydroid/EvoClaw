@@ -12,8 +12,8 @@ export { WSServerTransport } from "./ws-server-transport";
 export { WebhookManager } from "./webhook-manager";
 export { IncomingWebhookManager } from "./webhook-manager";
 export type { WebhookConfig, WebhookDelivery, WebhookEvent, WebhookEndpoint, WebhookEventLog, WebhookActionHandler } from "./webhook-manager";
-export { TelegramAdapter, DiscordAdapter, SlackAdapter, WhatsAppAdapter, FeishuAdapter, WeChatAdapter, QQAdapter, MatrixAdapter } from "./channels/index.js";
-export type { TelegramConfig, DiscordConfig, SlackConfig, WhatsAppConfig, FeishuConfig, WeChatConfig, QQConfig, MatrixConfig } from "./channels/index.js";
+export { TelegramAdapter, DiscordAdapter, SlackAdapter, WhatsAppAdapter, FeishuAdapter, WeChatAdapter, QQAdapter, MatrixAdapter, DingtalkAdapter } from "./channels/index.js";
+export type { TelegramConfig, DiscordConfig, SlackConfig, WhatsAppConfig, FeishuConfig, WeChatConfig, QQConfig, MatrixConfig, DingtalkConfig } from "./channels/index.js";
 export { CanvasManager } from "./canvas-manager";
 export type { CanvasConfig, CanvasFile, CanvasListResult } from "./canvas-manager";
 

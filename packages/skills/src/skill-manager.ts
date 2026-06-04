@@ -138,8 +138,17 @@ export class SkillManager {
     }
 
     const ocMeta = parsed.meta.metadata?.openclaw;
-    if (ocMeta?.requires?.env) {
-      for (const envVar of ocMeta.requires.env) {
+
+    // Auto-detect env vars from SKILL.md body when metadata.openclaw is missing or incomplete
+    const detectedEnvVars = this.detectEnvVarsFromContent(parsed.instructions);
+    const declaredEnv = ocMeta?.requires?.env || [];
+    const allEnvVars = [...new Set([...declaredEnv, ...detectedEnvVars])];
+    if (detectedEnvVars.length > 0) {
+      console.log(`[SkillManager] Auto-detected env vars from SKILL.md body: ${detectedEnvVars.join(", ")}`);
+    }
+
+    if (allEnvVars.length > 0) {
+      for (const envVar of allEnvVars) {
         if (!process.env[envVar]) {
           warnings.push(
             `Missing required environment variable: ${envVar} — skill "${parsed.meta.name}" may not function correctly`
@@ -160,9 +169,12 @@ export class SkillManager {
       }
     }
 
-    if (ocMeta?.primaryEnv && !process.env[ocMeta.primaryEnv]) {
+    const primaryEnv = ocMeta?.primaryEnv || detectedEnvVars.find(v =>
+      /KEY|SECRET|TOKEN|API/i.test(v)
+    );
+    if (primaryEnv && !process.env[primaryEnv]) {
       warnings.push(
-        `Primary environment variable "${ocMeta.primaryEnv}" is not set — skill "${parsed.meta.name}" requires configuration`
+        `Primary environment variable "${primaryEnv}" is not set — skill "${parsed.meta.name}" requires configuration`
       );
     }
 
@@ -187,7 +199,7 @@ export class SkillManager {
     // Only grant permissions explicitly declared via requires, not inferred from description text
     const needsNetwork = parsed.meta.requires?.some(r =>
       r.name === "python3" || r.name === "python" || r.name === "curl" || r.name === "web-search"
-    ) || (parsed.meta.metadata?.openclaw?.requires?.env?.length ?? 0) > 0;
+    ) || allEnvVars.length > 0;
     const needsSubprocess = parsed.meta.requires?.some(r =>
       r.name === "python3" || r.name === "python" || r.name === "node"
     ) || (parsed.meta.metadata?.openclaw?.requires?.bins?.length ?? 0) > 0;
@@ -197,8 +209,7 @@ export class SkillManager {
     const allowedHosts: string[] = [];
     if (needsNetwork) {
       // Extract specific hosts from env var names (e.g. BAIDU_API_HOST)
-      const envVars = parsed.meta.metadata?.openclaw?.requires?.env || [];
-      for (const envVar of envVars) {
+      for (const envVar of allEnvVars) {
         if (envVar.includes("BAIDU")) allowedHosts.push("aip.baidubce.com");
         if (envVar.includes("TAVILY")) allowedHosts.push("api.tavily.com");
         if (envVar.includes("SEARCH")) allowedHosts.push("api.search.brave.com");
@@ -234,7 +245,7 @@ export class SkillManager {
       },
       installPath: skillPath,
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
-      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig),
+      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig, detectedEnvVars),
       openclawMeta: ocMeta,
       requires: parsed.meta.requires || [],
       provides: [],
@@ -418,18 +429,24 @@ export class SkillManager {
 
   private computeConfigStatus(skill: Skill): SkillConfigStatus {
     const ocMeta = skill.openclawMeta;
-    if (!ocMeta?.requires?.env || ocMeta.requires.env.length === 0) {
+    // Collect env vars from both declared metadata and auto-detected config keys
+    const declaredEnv = ocMeta?.requires?.env || [];
+    const configKeys = Object.keys(skill.config).filter(
+      k => !k.startsWith("_") && /^[A-Z][A-Z0-9_]{2,}$/.test(k)
+    );
+    const allEnvVars = [...new Set([...declaredEnv, ...configKeys])];
+
+    if (allEnvVars.length === 0) {
       return "configured";
     }
-    const envVars = ocMeta.requires.env;
     let configured = 0;
-    for (const envVar of envVars) {
+    for (const envVar of allEnvVars) {
       const value = skill.config[envVar];
       if (value && String(value).trim() !== "") {
         configured++;
       }
     }
-    if (configured === envVars.length) return "configured";
+    if (configured === allEnvVars.length) return "configured";
     if (configured > 0) return "partial";
     return "unconfigured";
   }
@@ -796,47 +813,115 @@ export class SkillManager {
     }
   }
 
-  /** Merge OpenClaw metadata required env vars into skill config */
+  /** Detect environment variable requirements from SKILL.md body content.
+   *  Scans sections like "Requirements", "Prerequisites", "Configuration" etc.
+   *  for patterns like `SOME_API_KEY`, "environment variable: `VAR_NAME`", or `VAR_NAME=...`
+   */
+  private detectEnvVarsFromContent(instructions: string): string[] {
+    const envVars: string[] = [];
+    const seen = new Set<string>();
+
+    // Extract relevant sections (Requirements, Prerequisites, Configuration, Setup, etc.)
+    const sectionRegex = /^##\s+(.+)$/gm;
+    const sections: { title: string; start: number }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = sectionRegex.exec(instructions)) !== null) {
+      sections.push({ title: m[1].trim().toLowerCase(), start: m.index });
+    }
+
+    // Collect content from config-related sections
+    const relevantSections: string[] = [];
+    const configKeywords = ["requirement", "prerequisite", "configuration", "config", "setup", "environment", "env", "credential", "api key", "准备", "配置", "环境变量"];
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i];
+      const isRelevant = configKeywords.some(kw => section.title.includes(kw));
+      if (isRelevant) {
+        const start = instructions.indexOf("\n", section.start) + 1;
+        const end = i + 1 < sections.length ? sections[i + 1].start : instructions.length;
+        relevantSections.push(instructions.slice(start, end));
+      }
+    }
+
+    // Also scan the full instructions for env var patterns (catches preamble mentions)
+    const scanText = relevantSections.length > 0 ? relevantSections.join("\n") : instructions;
+
+    // Pattern 1: environment variable: `VAR_NAME` or environment variable `VAR_NAME`
+    const envLabelRegex = /environment\s+variable[:\s]+`?([A-Z][A-Z0-9_]{2,})`?/gi;
+    while ((m = envLabelRegex.exec(scanText)) !== null) {
+      if (!seen.has(m[1])) { seen.add(m[1]); envVars.push(m[1]); }
+    }
+
+    // Pattern 2: `VAR_NAME=...` (assignment in backticks)
+    const assignRegex = /`([A-Z][A-Z0-9_]{2,})\s*=/g;
+    while ((m = assignRegex.exec(scanText)) !== null) {
+      if (!seen.has(m[1])) { seen.add(m[1]); envVars.push(m[1]); }
+    }
+
+    // Pattern 3: `VAR_NAME` in backticks that looks like an API key / config var
+    // Only match if the surrounding context mentions key/secret/token/config/env/api
+    const backtickVarRegex = /`([A-Z][A-Z0-9_]{2,})`/g;
+    const contextKeywords = ["key", "secret", "token", "config", "env", "api", "credential", "variable", "密钥", "凭证"];
+    while ((m = backtickVarRegex.exec(scanText)) !== null) {
+      const varName = m[1];
+      if (seen.has(varName)) continue;
+      // Check surrounding context (100 chars before and after)
+      const ctxStart = Math.max(0, m.index - 100);
+      const ctxEnd = Math.min(scanText.length, m.index + m[0].length + 100);
+      const context = scanText.slice(ctxStart, ctxEnd).toLowerCase();
+      if (contextKeywords.some(kw => context.includes(kw))) {
+        seen.add(varName);
+        envVars.push(varName);
+      }
+    }
+
+    return envVars;
+  }
+
+  /** Merge OpenClaw metadata required env vars and auto-detected env vars into skill config */
   private buildSkillConfig(
     baseConfig: Record<string, unknown>,
     ocMeta: OpenClawSkillMeta | null | undefined,
-    savedConfig: Record<string, unknown> | null = null
+    savedConfig: Record<string, unknown> | null = null,
+    detectedEnvVars: string[] = []
   ): Record<string, unknown> {
     const config: Record<string, unknown> = { ...baseConfig };
 
     const envMeta: Record<string, { required: boolean; description: string; currentSource: "env" | "config" | "none" }> = {};
     const envSource: Record<string, "env" | "config" | "none"> = {};
 
-    if (ocMeta?.requires?.env) {
-      for (const envVar of ocMeta.requires.env) {
-        const savedValue = savedConfig?.[envVar] as string | undefined;
-        const envValue = process.env[envVar];
+    // Merge declared env vars (from metadata.openclaw) and auto-detected env vars
+    const declaredEnv = ocMeta?.requires?.env || [];
+    const allEnvVars = [...new Set([...declaredEnv, ...detectedEnvVars])];
 
-        if (envValue) {
-          config[envVar] = envValue;
-          envMeta[envVar] = {
-            required: true,
-            description: `${envVar} configuration`,
-            currentSource: "env",
-          };
-          envSource[envVar] = "env";
-        } else if (savedValue !== undefined && savedValue !== "") {
-          config[envVar] = savedValue;
-          envMeta[envVar] = {
-            required: true,
-            description: `${envVar} configuration`,
-            currentSource: "config",
-          };
-          envSource[envVar] = "config";
-        } else {
-          config[envVar] = "";
-          envMeta[envVar] = {
-            required: true,
-            description: `${envVar} configuration`,
-            currentSource: "none",
-          };
-          envSource[envVar] = "none";
-        }
+    for (const envVar of allEnvVars) {
+      const savedValue = savedConfig?.[envVar] as string | undefined;
+      const envValue = process.env[envVar];
+      const isDeclared = declaredEnv.includes(envVar);
+
+      if (envValue) {
+        config[envVar] = envValue;
+        envMeta[envVar] = {
+          required: isDeclared,
+          description: `${envVar} configuration`,
+          currentSource: "env",
+        };
+        envSource[envVar] = "env";
+      } else if (savedValue !== undefined && savedValue !== "") {
+        config[envVar] = savedValue;
+        envMeta[envVar] = {
+          required: isDeclared,
+          description: `${envVar} configuration`,
+          currentSource: "config",
+        };
+        envSource[envVar] = "config";
+      } else {
+        config[envVar] = "";
+        envMeta[envVar] = {
+          required: isDeclared,
+          description: `${envVar} configuration`,
+          currentSource: "none",
+        };
+        envSource[envVar] = "none";
       }
     }
 
@@ -844,8 +929,12 @@ export class SkillManager {
       config._requiredBins = ocMeta.requires.bins;
     }
 
-    if (ocMeta?.primaryEnv) {
-      config._primaryEnv = ocMeta.primaryEnv;
+    // Determine primaryEnv: prefer declared, then first detected env var containing KEY/SECRET/TOKEN
+    const primaryEnv = ocMeta?.primaryEnv || detectedEnvVars.find(v =>
+      /KEY|SECRET|TOKEN|API/i.test(v)
+    );
+    if (primaryEnv) {
+      config._primaryEnv = primaryEnv;
     }
 
     if (Object.keys(envMeta).length > 0) {

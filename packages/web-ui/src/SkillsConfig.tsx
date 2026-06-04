@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { renderMarkdown } from "./markdown-renderer";
 
 interface EnvMeta {
   required?: boolean;
@@ -1335,13 +1336,11 @@ export default function SkillsConfig() {
           <div style={styles.sectionTitle}>使用方法</div>
           {selectedSkill.body.instructions ? (
             <div>
-              <div style={styles.instructionsBlock}>
-                {selectedSkill.body.instructions}
-              </div>
+              <div style={styles.instructionsBlock} dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.body.instructions) }} />
               {selectedSkill.i18n?.instructions_zh && selectedSkill.i18n.instructions_zh !== selectedSkill.body.instructions && (
                 <div style={{ ...styles.instructionsBlock, borderLeft: "3px solid var(--primary)", marginTop: "8px" }}>
                   <div style={{ fontSize: "10px", color: "var(--primary)", marginBottom: "6px", fontWeight: "bold" }}>中文翻译</div>
-                  {selectedSkill.i18n.instructions_zh}
+                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.i18n.instructions_zh) }} />
                 </div>
               )}
             </div>
@@ -1357,10 +1356,10 @@ export default function SkillsConfig() {
               <div style={styles.examplesBlock}>
                 {selectedSkill.body.examples.map((ex, i) => (
                   <div key={i} style={styles.exampleItem}>
-                    <div>{ex}</div>
+                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(ex) }} />
                     {selectedSkill.i18n?.examples_zh?.[i] && selectedSkill.i18n.examples_zh[i] !== ex && (
                       <div style={{ color: "var(--primary)", marginTop: "4px", fontSize: "11px", borderLeft: "2px solid var(--primary)", paddingLeft: "6px" }}>
-                        {selectedSkill.i18n.examples_zh[i]}
+                        <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.i18n.examples_zh[i]) }} />
                       </div>
                     )}
                   </div>

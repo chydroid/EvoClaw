@@ -5,6 +5,58 @@
 
 ---
 
+## v0.12.0 (2026-06-04)
+
+### 技能系统审计与加固
+
+#### 技能审计与清理
+
+- **移除 20 个无用技能**：审计 `data/workspace/skills/` 下全部 25 个技能，识别并删除 20 个由 evoclaw-curator 自动生成的模板空壳技能（无脚本支撑、无实际功能、功能重复或废弃测试用例）
+- **保留 5 个有效技能**：baidu-web-search、tavily-search、humanizer、ontology、self-improving-agent
+
+#### skill_create 质量门控收紧
+
+- **指令长度门控**：instructions 必须 ≥ 200 字符，防止模板空壳
+- **指令步骤验证**：instructions 必须包含至少 2 个编号步骤或列表项
+- **模板步骤检测**：拒绝包含完整 7 步通用模板 (Initialize → Parse → Execute → Handle edge cases → Format → Log → Cleanup) 的指令
+- **功能性验证**：instructions 必须提及至少一个具体工具/API/命令关键词
+- **描述长度门控**：description 必须 ≥ 30 字符
+- **名称与描述相关性**：name 中的关键词必须出现在 description 中
+
+#### 技能配置自动检测
+
+- **SKILL.md 正文环境变量自动检测**：当 `metadata.openclaw` 缺失时，`SkillManager` 自动从 SKILL.md 正文中检测环境变量需求（如 `environment variable: \`TAVILY_API_KEY\``），生成 `_envMeta` 和配置输入框
+- **检测模式**：支持 3 种检测模式（environment variable 标签、赋值表达式、上下文关键词匹配）
+- **tavily-search SKILL.md 修复**：补充 `metadata.openclaw` 字段声明 `TAVILY_API_KEY` 环境变量需求
+
+### 渠道系统增强
+
+#### 钉钉 (DingTalk) 渠道适配器（新增）
+
+- **完整适配器实现** (`packages/gateway/src/channels/dingtalk.ts`)：
+  - 认证：通过 appKey + appSecret 获取 access_token，自动刷新（有效期 7200 秒）
+  - 消息接收：事件订阅 webhook 回调，支持 URL 验证（challenge 响应）和 AES-256-CBC 加解密
+  - 消息发送：机器人消息（群聊/单聊）和工作通知消息，支持文本和 Markdown 格式
+  - 群聊/私聊区分、健康检查、错误处理
+- **渠道注册**：在 ChannelType 中添加 "dingtalk"，更新 channels/index.ts 和 gateway/src/index.ts 导出
+
+#### 飞书 (Feishu) 渠道修复
+
+- **事件签名验证**：添加 X-Lark-Signature HMAC-SHA256 验证，防止伪造事件
+- **事件去重**：添加 processedEvents Set（最多 1000 条），防止重复处理
+- **Token 刷新重试**：ensureToken 最多重试 3 次，间隔递增
+- **长轮询错误日志**：修复静默吞掉错误的问题
+- **富文本消息支持**：添加 post 格式消息类型检测
+- **Webhook 路由注册**：在 protocol-adapter.ts 中添加 `POST /api/channels/feishu/webhook` 路由
+- **ChannelManager.getAdapter()**：新增方法获取指定渠道的适配器实例
+
+### 前端改进
+
+- **LLM 配置页面**：模型名为空时默认显示一个输入框（带 placeholder），而非提示文字
+- **技能使用方法页面**：Markdown 预览模式（之前显示原始 Markdown 文本）
+
+---
+
 ## v0.11.0 (2026-06-04)
 
 ### 增强型浏览器插件 + CI修复

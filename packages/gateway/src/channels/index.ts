@@ -25,3 +25,6 @@ export type { QQConfig } from "./qq.js";
 
 export { MatrixAdapter } from "./matrix.js";
 export type { MatrixConfig } from "./matrix.js";
+
+export { DingtalkAdapter } from "./dingtalk.js";
+export type { DingtalkConfig } from "./dingtalk.js";

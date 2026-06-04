@@ -428,10 +428,25 @@ export default function LLMConfig() {
                 </label>
                 <div style={s.modelListContainer}>
                   {currentProvider.models.length === 0 && (
-                    <div style={s.modelEmptyHint}>No models added. Click "+ Add Model" to add one.</div>
+                    <div style={s.modelRow}>
+                      <span style={s.modelPriorityBadge}>#1</span>
+                      <input
+                        style={{ ...s.input, flex: 1 as const, width: "auto" }}
+                        value=""
+                        placeholder="Enter model name (e.g. gpt-4.1, claude-sonnet-4-6-20250217)"
+                        onChange={(e) => {
+                          if (e.target.value.trim()) {
+                            updateProvider(activeProvider, {
+                              models: [e.target.value],
+                              selectedModel: e.target.value,
+                            });
+                          }
+                        }}
+                      />
+                    </div>
                   )}
                   {currentProvider.models.map((model, idx) => (
-                    <div key={model} style={s.modelRow}>
+                    <div key={`${model}-${idx}`} style={s.modelRow}>
                       <span style={s.modelPriorityBadge}>#{idx + 1}</span>
                       <input
                         style={{ ...s.input, flex: 1 as const, width: "auto" }}

@@ -26,6 +26,7 @@ export type ChannelType =
   | "webchat"
   | "cli"
   | "api"
+  | "dingtalk"
   | "custom";
 
 export type DirectMessagePolicy = "open" | "pairing" | "closed";
@@ -195,6 +196,11 @@ export class ChannelManager {
       await adapter.stop();
       this.adapters.delete(type);
     }
+  }
+
+  /** Get adapter by channel type */
+  getAdapter(type: ChannelType): ChannelAdapter | undefined {
+    return this.adapters.get(type);
   }
 
   // ─── Message Handling ─────────────────────────────────────────────────────

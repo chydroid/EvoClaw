@@ -14,6 +14,7 @@
  *  - Group chat support
  */
 
+import crypto from "crypto";
 import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
@@ -47,6 +48,8 @@ export class FeishuAdapter implements ChannelAdapter {
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
   private polling = false;
   private pollAbort = new AbortController();
+  private processedEvents = new Set<string>();
+  private static MAX_PROCESSED_EVENTS = 1000;
 
   constructor(channelConfig: ChannelConfig) {
     this.channelConfig = channelConfig;
@@ -104,6 +107,19 @@ export class FeishuAdapter implements ChannelAdapter {
           }
         } catch {
           // Not a card, use text
+        }
+      }
+
+      // Handle post (rich text) messages
+      if (body.msg_type === "text") {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.zh_cn || parsed.en_us || parsed.ja_jp) {
+            body.msg_type = "post";
+            body.content = text;
+          }
+        } catch {
+          // Not a post
         }
       }
 
@@ -169,7 +185,13 @@ export class FeishuAdapter implements ChannelAdapter {
    * Handle incoming webhook event from Feishu Event Subscription.
    * Call this from your HTTP server's webhook route.
    */
-  async handleWebhookEvent(body: Record<string, unknown>): Promise<{ challenge?: string }> {
+  async handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>): Promise<{ challenge?: string }> {
+    // Verify event signature
+    const rawBody = JSON.stringify(body);
+    if (!this.verifySignature(rawBody, headers?.["x-lark-signature"])) {
+      return {};
+    }
+
     // URL verification challenge
     if (body.type === "url_verification" && body.challenge) {
       return { challenge: body.challenge as string };
@@ -185,6 +207,14 @@ export class FeishuAdapter implements ChannelAdapter {
   }
 
   // ── Internal ────────────────────────────────────────────
+
+  private verifySignature(body: string, signature: string | undefined): boolean {
+    if (!this.config.verificationToken || !signature) {
+      return true; // Skip if not configured
+    }
+    const expected = crypto.createHmac("sha256", this.config.verificationToken).update(body).digest("base64");
+    return expected === signature;
+  }
 
   private async refreshToken(): Promise<void> {
     const res = await fetch(`${this.baseURL}/open-apis/auth/v3/tenant_access_token/internal`, {
@@ -213,7 +243,19 @@ export class FeishuAdapter implements ChannelAdapter {
 
   private async ensureToken(): Promise<void> {
     if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-      await this.refreshToken();
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.refreshToken();
+          return;
+        } catch (err) {
+          lastError = err as Error;
+          if (attempt < 2) {
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          }
+        }
+      }
+      throw lastError;
     }
   }
 
@@ -225,8 +267,8 @@ export class FeishuAdapter implements ChannelAdapter {
       while (this.polling && !this.pollAbort.signal.aborted) {
         try {
           await this.pollMessages();
-        } catch {
-          // Silent error on poll
+        } catch (err) {
+          console.error("[Feishu] Polling error:", err);
         }
         await new Promise((r) => setTimeout(r, 3000));
       }
@@ -291,6 +333,16 @@ export class FeishuAdapter implements ChannelAdapter {
 
     const msgBody = event.message;
     if (!msgBody) return;
+
+    // Event deduplication
+    const eventId = msgBody.message_id;
+    if (eventId) {
+      if (this.processedEvents.has(eventId)) return;
+      this.processedEvents.add(eventId);
+      if (this.processedEvents.size > FeishuAdapter.MAX_PROCESSED_EVENTS) {
+        this.processedEvents.clear();
+      }
+    }
 
     const content = this.parseContent(msgBody.content);
 
