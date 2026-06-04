@@ -70,7 +70,7 @@ Skill management tools: search, install, execute skills. Skills are reusable tas
   "IDENTITY.md": `# Agent Identity
 
 - Name: EvoClaw
-- Emoji: 🦞
+- Emoji: 🧬
 - Style: Modern, friendly AI assistant
 - Language: Match user's language (default: Chinese)
 `,

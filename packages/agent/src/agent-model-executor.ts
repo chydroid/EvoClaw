@@ -271,6 +271,35 @@ export class AgentModelExecutor {
   // ChannelManager integration — avoids cross-package import using any
   private channelManager: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> } | null = null;
 
+  /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
+  private toolResultCache = new Map<string, { result: string; timestamp: number }>();
+  private static TOOL_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+  private static TOOL_CACHE_MAX = 100;
+
+  /** 生成工具缓存 key，包含工具名和排序后的参数 */
+  private getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
+    const sortedParams = Object.keys(params).sort().map(k => `${k}=${JSON.stringify(params[k])}`).join("&");
+    return `${toolName}:${sortedParams}`;
+  }
+
+  /** 清理过期和超量的工具缓存 */
+  private cleanToolCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.toolResultCache) {
+      if (now - entry.timestamp > AgentModelExecutor.TOOL_CACHE_TTL) {
+        this.toolResultCache.delete(key);
+      }
+    }
+    if (this.toolResultCache.size > AgentModelExecutor.TOOL_CACHE_MAX) {
+      const entries = Array.from(this.toolResultCache.entries())
+        .sort((a, b) => b[1].timestamp - a[1].timestamp);
+      this.toolResultCache.clear();
+      for (let i = 0; i < AgentModelExecutor.TOOL_CACHE_MAX && i < entries.length; i++) {
+        this.toolResultCache.set(entries[i][0], entries[i][1]);
+      }
+    }
+  }
+
   /** Set memory hub for session/memory integration */
   setMemoryHub(hub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } }): void {
     this.memoryHub = hub;
@@ -1365,7 +1394,7 @@ export class AgentModelExecutor {
     this.greeted = true;
 
     return this.persona.introduction || [
-      `您好${this.persona.masterTerm}！我是 ${this.persona.name}，${this.persona.title} 🦞`,
+      `您好${this.persona.masterTerm}！我是 ${this.persona.name}，${this.persona.title} 🧬`,
       ``,
       `很高兴为您服务！我可以帮您：`,
       ``,
@@ -1447,6 +1476,50 @@ export class AgentModelExecutor {
     }
 
     return text;
+  }
+
+  /**
+   * 智能摘要工具结果，减少 token 用量。
+   * web_search: 仅保留标题+摘要+URL
+   * web_fetch: 保留前3段+最后1段
+   * 其他工具: 智能截断并保留首尾重叠
+   */
+  private summarizeToolResult(toolName: string, result: string): string {
+    if (!result || result.length < 2000) return result;
+
+    // web_search 结果：提取结构化数据
+    if (toolName === "web_search") {
+      const lines = result.split("\n");
+      const summaryLines: string[] = [];
+      for (const line of lines) {
+        // 保留标题行（通常以数字+点开头或包含 URL）
+        if (/^\d+\.\s/.test(line) || line.includes("http") || line.startsWith("[") || line.startsWith("*")) {
+          summaryLines.push(line);
+        }
+      }
+      if (summaryLines.length > 0 && summaryLines.length < lines.length) {
+        return summaryLines.join("\n");
+      }
+    }
+
+    // web_fetch / browser 结果：保留首尾部分
+    if (toolName === "web_fetch" || toolName === "fetch_node_page" || toolName.startsWith("browser_")) {
+      const maxLen = 4000;
+      if (result.length > maxLen * 2) {
+        const firstPart = result.substring(0, maxLen);
+        const lastPart = result.substring(result.length - maxLen);
+        return firstPart + "\n\n... [content truncated, showing start and end] ...\n\n" + lastPart;
+      }
+    }
+
+    // 默认：智能截断并保留首尾重叠
+    const maxLen = 8000;
+    if (result.length > maxLen) {
+      const halfLen = Math.floor(maxLen / 2);
+      return result.substring(0, halfLen) + "\n\n... [truncated] ...\n\n" + result.substring(result.length - halfLen);
+    }
+
+    return result;
   }
 
   private static _stripHtml(input: string): string {
@@ -3113,7 +3186,7 @@ export class AgentModelExecutor {
           hour: "2-digit", minute: "2-digit", second: "2-digit",
         });
         reply = [
-          `**🦞 代理状态**`,
+          `**🧬 代理状态**`,
           ``,
           `📅 ${ts}`,
           `Agent: \`${this.persona.name}\``,
@@ -3477,7 +3550,7 @@ export class AgentModelExecutor {
     const separator = "─".repeat(36);
 
     lines.push(`📅 ${ts}\n`);
-    lines.push(`## 🦞 EvoClaw 系统配置\n`);
+    lines.push(`## 🧬 EvoClaw 系统配置\n`);
     lines.push(`### 🤖 推理模型`);
     if (enabledProviders.length > 0) {
       for (let i = 0; i < enabledProviders.length; i++) {
@@ -4093,10 +4166,23 @@ Have a specific URL?
 
         let conversationMessages = [...messages];
         let finalReply = "";
+        let successfulToolCalls = 0; // Track successful tool calls for efficiency control
 
         for (let round = 0; round < maxToolRounds; round++) {
           onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
-          const tc: "auto" | "required" = "auto";
+
+          // Dynamic tool_choice: after 6+ successful tool calls, force the LLM to produce a final answer
+          // This prevents infinite tool-call loops where the LLM keeps calling more tools
+          const tc: "auto" | "none" = successfulToolCalls >= 6 ? "none" : "auto";
+          if (tc === "none") {
+            console.log(`[AgentModelExecutor] Forcing final reply after ${successfulToolCalls} tool calls (round ${round + 1})`);
+            // Inject a message to force the LLM to summarize and reply (works with providers that don't support tool_choice "none")
+            conversationMessages.push({
+              role: "user",
+              content: "You have already gathered enough information. DO NOT call any more tools. Synthesize the results you have and provide a comprehensive final answer to the user now."
+            });
+          }
+
           const result = await this.callLLMOnce(provider, conversationMessages, tools, tc, onProgress);
 
           if (!result) {
@@ -4211,6 +4297,7 @@ Have a specific URL?
             let toolErrored = false;
             let toolError: string | undefined;
             let rawResult: unknown = undefined;
+            let cacheHit = false;
 
             if (toolEntry) {
               try {
@@ -4218,20 +4305,34 @@ Have a specific URL?
                   rawResult = skipWithResult;
                   toolResult = JSON.stringify(skipWithResult);
                 } else {
-                  // ── Tool execution with timeout ──
-                  // Long-running tools get extended timeout
-                  const LONG_RUNNING_TOOLS = new Set([
-                    "execute_programming_task", "decompose_programming_task",
-                    "browser_launch", "browser_screenshot", "browser_login",
-                    "get_task_result",
-                  ]);
-                  const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
-                  const toolPromise = toolEntry.handler(args);
-                  const toolTimeoutPromise = new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT)
-                  );
-                  rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
-                  toolResult = JSON.stringify(rawResult);
+                  // ── 工具结果缓存检查 ──
+                  const cacheKey = this.getToolCacheKey(toolName, args);
+                  const cached = this.toolResultCache.get(cacheKey);
+                  if (cached && Date.now() - cached.timestamp < AgentModelExecutor.TOOL_CACHE_TTL) {
+                    console.log(`[AgentModelExecutor] Tool cache hit: ${toolName}`);
+                    toolResult = cached.result;
+                    cacheHit = true;
+                  } else {
+                    // ── Tool execution with timeout ──
+                    // Long-running tools get extended timeout
+                    const LONG_RUNNING_TOOLS = new Set([
+                      "execute_programming_task", "decompose_programming_task",
+                      "browser_launch", "browser_screenshot", "browser_login",
+                      "get_task_result",
+                    ]);
+                    const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
+                    const toolPromise = toolEntry.handler(args);
+                    const toolTimeoutPromise = new Promise<never>((_, reject) =>
+                      setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT)
+                    );
+                    rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
+                    toolResult = JSON.stringify(rawResult);
+                    // ── 缓存成功的工具结果 ──
+                    if (toolResult && typeof toolResult === "string" && toolResult.length > 0) {
+                      this.toolResultCache.set(cacheKey, { result: toolResult, timestamp: Date.now() });
+                      this.cleanToolCache();
+                    }
+                  }
                 }
                 anyToolExecuted = true;
 
@@ -4289,6 +4390,10 @@ Have a specific URL?
                   const truncated = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)，请使用 browser_get_text 获取特定内容` });
                   toolResult = truncated;
                 }
+                // ── 智能摘要工具结果，减少 token 用量 ──
+                if (!cacheHit) {
+                  toolResult = this.summarizeToolResult(toolName, toolResult);
+                }
                 if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
                   const r = rawResult as Record<string, unknown>;
                   const requestId = (r.requestId as string) || (r.id as string) || "";
@@ -4304,6 +4409,7 @@ Have a specific URL?
                   }
                 }
                 console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
+                successfulToolCalls++;
                 onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
                 try {
                   const toolObs = this.registry?.resolveService<any>("observability");
@@ -4517,7 +4623,7 @@ Have a specific URL?
     provider: ProviderConfig,
     messages: Array<{ role: string; content: string | null | ChatContent[]; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: Array<{ type: string; function: Record<string, unknown> }>,
-    toolChoice: "auto" | "required" = "auto",
+    toolChoice: "auto" | "required" | "none" = "auto",
     onProgress?: AgentProgressCallback
   ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number; classifiedError?: ClassifiedError } | null> {
     const timeout = provider.timeout || 60000;
@@ -4573,7 +4679,10 @@ Have a specific URL?
         body.tool_choice = toolChoice;
         
         if (provider.provider === "deepseek" || provider.name.toLowerCase().includes("deepseek")) {
-          // Keep the original tool_choice intent; DeepSeek supports "auto" and "required"
+          // DeepSeek doesn't support tool_choice "none" — fall back to "auto"
+          if (body.tool_choice === "none") {
+            body.tool_choice = "auto";
+          }
           body.reasoning_type = "deepseek_reasoning";
         }
       }
@@ -4831,7 +4940,7 @@ Have a specific URL?
     };
 
     if (msg.includes("你好") || msg === "hi" || msg === "hello" || msg === "hey") {
-      addLine(`${this.persona.masterTerm}您好！我是 ${this.persona.name}，${this.persona.title} 🦞`);
+      addLine(`${this.persona.masterTerm}您好！我是 ${this.persona.name}，${this.persona.title} 🧬`);
       addLine(`请问有什么可以帮您的？`);
       if (skillsList) {
         addLine(`我已经安装了以下技能：`);
@@ -5075,7 +5184,7 @@ document.addEventListener('DOMContentLoaded', () => {
     '你好！很高兴见到你！',
     '欢迎来到我的网页！',
     '祝你今天过得愉快！',
-    'Hello from EvoClaw! 🦞',
+    'Hello from EvoClaw! 🧬',
     '今天也是个好日子！',
   ];
 
