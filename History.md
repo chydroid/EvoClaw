@@ -3,7 +3,93 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
-## v0.13.1 (2026-06-05)
+## v0.13.3 (2026-06-05)
+
+### 全面代码审查与Bug修复
+
+对项目进行全面代码审查，发现并修复31个bug（含v0.13.2已修复的2个），本次新增修复29个。
+
+#### 安全漏洞修复
+
+- **BUG-01** (已修复于v0.13.2): API Key明文泄露 → GET /api/config/llm 返回前对apiKey做掩码处理
+- **BUG-02**: Secret值通过API明文返回 → GET /api/secrets/:name 返回脱敏值，添加 `masked: true` 标记
+- **BUG-03**: Secret轮转逻辑错误 → 原逻辑仅追加版本后缀（`value_v2`），现改为生成随机32字节hex值
+- **BUG-27** (已修复于v0.13.2): FFmpegVideoConvertor拼写错误 → `preferedformat` → `preferredformat`
+
+#### 高危Bug修复
+
+- **BUG-06**: 邮箱地址明文记录到日志 → 对邮箱地址做掩码处理（`ch****@163.com`）
+- **BUG-08**: 路径遍历检查不完整 → 增加 `path.resolve` vs `path.normalize` 一致性检查
+- **BUG-17**: 正则表达式重复字符类 → `[a-zA-Z0-9a-zA-Z]` 简化为 `[a-zA-Z0-9]`（3处）
+- **BUG-22**: DATA_DIR使用相对路径 → 改为 `path.resolve(process.cwd(), "data", "config")`
+
+#### 中等Bug修复
+
+- **BUG-18**: 邮件发送关键词"给"匹配过于宽泛 → 移除"给"，新增"寄信""寄邮件"
+- **BUG-21**: 环境变量名不一致 → `OPENCLAW_STATE_DIR` → `EVOCLAW_STATE_DIR`，`.openclaw` → `.evoclaw`
+- **BUG-23**: skill_execute参数定义与实际使用不匹配 → `params` 标记为 `required: false`
+- **BUG-24**: file_create/file_modify/file_delete参数缺少required标记 → 添加 `required: true/false` 和 `default` 声明
+
+#### 低危Bug修复
+
+- **BUG-29**: 系统提示词安全指令自相矛盾 → 将"NEVER refuse"改为有条件拒绝（仅拒绝直接危害操作）
+- **BUG-30**: buildCompactSkillsPrompt XML注入风险 → 添加XML特殊字符转义函数
+- **BUG-31**: 大量空catch块吞没错误 → 关键空catch块添加 `console.warn` 日志（8处）
+
+#### 技能清理
+
+- 删除20个由SkillCurator自动生成的无用占位技能（仅含通用模板，无实际功能）
+- 保留5个有用技能：baidu-web-search、humanizer、ontology、self-improving-agent、tavily-search
+
+---
+
+## v0.13.2 (2026-06-05)
+
+### 视频/音乐下载工具集成 — yt-dlp + ffmpeg
+
+新增 `video_download` 和 `music_download` 两个专用工具，基于 yt-dlp + ffmpeg 实现，支持 1000+ 网站视频/音频下载。
+
+#### 新增文件
+
+- `packages/infrastructure/src/media-downloader.ts`：媒体下载桥接层
+  - `generateVideoDownloadScript()` — 生成视频下载Python脚本（yt-dlp）
+  - `generateMusicDownloadScript()` — 生成音乐下载Python脚本（yt-dlp搜索+音频提取）
+  - `detectPlatform()` — 自动检测URL所属平台（B站/抖音/YouTube/好看视频等）
+  - 支持画质选择（720p/1080p/4k/best）
+  - 抖音自动去水印
+  - 下载失败自动降级重试
+
+#### 新增工具
+
+- `video_download`：视频下载工具
+  - 参数：url, format, noWatermark
+  - 支持：B站、抖音、YouTube、好看视频、微信视频号、快手、西瓜视频、微博、知乎、小红书等
+  - 抖音自动去水印
+  - 10分钟超时（大视频文件）
+  - 失败自动降级到低画质
+
+- `music_download`：音乐下载工具
+  - 参数：query（歌名/歌手/URL）, audioFormat, quality
+  - 支持关键词搜索下载（通过YouTube搜索）
+  - 支持URL直接提取音频
+  - 输出MP3/FLAC/AAC格式
+  - 320kbps默认音质
+
+#### 系统提示词增强
+
+- 新增 VIDEO/MUSIC DOWNLOAD 专用指引
+- 明确告知LLM优先使用 `video_download`/`music_download` 工具
+- 降级策略：工具失败 → shell_exec + yt-dlp → browser_capture_network
+- 禁止以版权为由拒绝下载请求
+
+#### 依赖
+
+- Python: `yt-dlp` (2026.3.17)
+- System: `ffmpeg` (8.1)
+
+#### 验证
+
+- B站视频下载：10.3MB MP4 成功
 
 ### 用户URL优先机制 — 修复下载任务忽略用户提供网址的问题
 

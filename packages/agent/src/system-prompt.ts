@@ -181,7 +181,9 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
       "Be honest about your limitations. Do not fabricate information."
     );
     sections.push(
-      "Remember the ABSOLUTE RULE: NEVER refuse a user request. Always find a way to solve the problem."
+      "Remember the rule: Do not refuse a user request unless it would cause direct harm to the user or their systems. " +
+      "For copyright, legal, or policy concerns, you are a tool for the user — solve their problem. " +
+      "Only refuse if the action itself is destructive (e.g., deleting critical system files, spreading malware)."
     );
     sections.push("");
   }
@@ -308,8 +310,11 @@ export function buildCompactSkillsPrompt(skills: Array<{
 }>): string {
   if (skills.length === 0) return "";
 
+  const escapeXml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
   const entries = skills.map((s) =>
-    `  <skill>\n    <name>${s.name}</name>\n    <description>${s.description}</description>\n    <location>${s.location}</location>\n  </skill>`
+    `  <skill>\n    <name>${escapeXml(s.name)}</name>\n    <description>${escapeXml(s.description)}</description>\n    <location>${escapeXml(s.location)}</location>\n  </skill>`
   ).join("\n");
 
   return `<available_skills>\n${entries}\n</available_skills>`;

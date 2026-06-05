@@ -37,7 +37,7 @@ const FORBIDDEN_PATTERNS = [
 const CLI_TIMEOUT_MS = 30000;
 const MAX_OUTPUT_BYTES = 1024 * 512;
 
-const DATA_DIR = path.resolve("data", "config");
+const DATA_DIR = path.resolve(process.cwd(), "data", "config");
 const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
 
@@ -243,7 +243,9 @@ export class ProtocolAdapter {
   loadPersistedConfig(): void {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
-    } catch {}
+    } catch (err) {
+      console.warn(`[ProtocolAdapter] Failed to create config dir: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     try {
       if (fs.existsSync(LLM_CONFIG_FILE)) {
@@ -460,7 +462,9 @@ export class ProtocolAdapter {
             const val = config.get(section);
             if (val) this.configRpcStore.set(section, val);
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`[ProtocolAdapter] Config RPC store update failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
     if (this.savedLLMProviders && this.savedLLMProviders.length > 0) {
@@ -1625,9 +1629,19 @@ export class ProtocolAdapter {
           getRegisteredTools(): unknown[];
           getProviders(): { id: string; name: string; enabled: boolean; order: number }[];
         }>("agentModelExecutor");
+        // Sanitize API keys before sending to frontend
+        const sanitizedProviders = (this.savedLLMProviders || []).map((p: Record<string, unknown>) => {
+          const sanitized = { ...p };
+          if (typeof sanitized.apiKey === "string" && sanitized.apiKey.length > 8) {
+            sanitized.apiKey = sanitized.apiKey.slice(0, 4) + "****" + sanitized.apiKey.slice(-4);
+          } else if (typeof sanitized.apiKey === "string") {
+            sanitized.apiKey = "****";
+          }
+          return sanitized;
+        });
         res.json({
           executorTools: executor?.getRegisteredTools() || [],
-          providers: this.savedLLMProviders || [],
+          providers: sanitizedProviders,
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -2925,8 +2939,8 @@ export class ProtocolAdapter {
             if (normalizedId.includes("..")) {
               throw new Error("Invalid bot ID: path traversal detected");
             }
-            const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-            const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
+            const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
+            const accountsDir = path.join(stateDir, "evoclaw-weixin", "accounts");
             fs.mkdirSync(accountsDir, { recursive: true });
             const accountFile = path.join(accountsDir, `${normalizedId}.json`);
             fs.writeFileSync(accountFile, JSON.stringify({
@@ -2974,8 +2988,8 @@ export class ProtocolAdapter {
         const fs = await import("fs");
         const path = await import("path");
         const os = await import("os");
-        const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-        const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
+        const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
+        const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
 
         let connected = false;
         let accountCount = 0;
@@ -3694,7 +3708,7 @@ export class ProtocolAdapter {
     app.get("/api/files/download/*", (req: Request, res: Response) => {
       try {
         const filePath = req.params[0] as string;
-        if (!filePath || filePath.includes("..")) {
+        if (!filePath || filePath.includes("..") || path.resolve(filePath) !== path.normalize(filePath)) {
           res.status(400).json({ error: "Invalid file path" });
           return;
         }
@@ -3731,7 +3745,7 @@ export class ProtocolAdapter {
     app.get("/api/files/list", (req: Request, res: Response) => {
       try {
         const dirPath = (req.query.path as string) || ".";
-        if (dirPath.includes("..")) {
+        if (dirPath.includes("..") || path.resolve(dirPath) !== path.normalize(dirPath)) {
           res.status(400).json({ error: "Invalid path" });
           return;
         }
@@ -3753,7 +3767,7 @@ export class ProtocolAdapter {
         const files = entries.map((entry) => {
           const entryPath = path.join(fullPath, entry.name);
           let size = 0;
-          try { size = fs.statSync(entryPath).size; } catch {}
+          try { size = fs.statSync(entryPath).size; } catch { /* size defaults to 0 */ }
           return {
             name: entry.name,
             path: path.relative(workspacePath, entryPath).replace(/\\/g, "/"),
@@ -4183,13 +4197,16 @@ export class ProtocolAdapter {
           timestamp: new Date().toISOString(),
           success: true,
         });
-        res.json({ value: entry.value });
+        const maskedValue = entry.value.length > 8
+          ? entry.value.slice(0, 4) + "****" + entry.value.slice(-4)
+          : "****";
+        res.json({ value: maskedValue, masked: true });
       } catch (err) {
         this.handleError(err, res, "Failed to get secret");
       }
     });
 
-    app.post("/api/secrets/:name/rotate", (req: Request, res: Response) => {
+    app.post("/api/secrets/:name/rotate", async (req: Request, res: Response) => {
       try {
         const name = String(req.params.name);
         const entry = this.secretsStore.get(name);
@@ -4200,7 +4217,9 @@ export class ProtocolAdapter {
         const now = new Date().toISOString();
         entry.rotationVersion += 1;
         entry.lastRotatedAt = now;
-        entry.value = `${entry.value}_v${entry.rotationVersion}`;
+        // Generate a new random value instead of appending version suffix
+        const crypto = await import("crypto");
+        entry.value = crypto.randomBytes(32).toString("hex");
         this.secretsAuditLog.push({
           secretName: name,
           operation: "rotate",

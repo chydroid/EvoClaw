@@ -11,7 +11,7 @@ function getServerVersion(): string {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
       if (pkg.version) return pkg.version;
     }
-  } catch {}
+  } catch { /* version detection failed, using fallback */ }
   return "0.9.5";
 }
 const SERVER_VERSION = getServerVersion();
@@ -692,9 +692,9 @@ export class EvoClawServer {
         name: "file_create",
         description: "Create a new file at the specified path with the given content. If the file already exists and overwrite is true, the file will be replaced. After creating a file, always inform the user of the file path and that they can download it via /api/files/download/{path}.",
         parameters: {
-          path: { type: "string", description: "Relative file path to create" },
-          content: { type: "string", description: "Content to write to the file" },
-          overwrite: { type: "boolean", description: "Whether to overwrite if file already exists (default: false)" },
+          path: { type: "string", description: "Relative file path to create", required: true },
+          content: { type: "string", description: "Content to write to the file", required: true },
+          overwrite: { type: "boolean", description: "Whether to overwrite if file already exists (default: false)", required: false, default: false },
         },
       },
       async (params: Record<string, unknown>) => {
@@ -724,8 +724,8 @@ export class EvoClawServer {
         name: "file_modify",
         description: "Modify an existing file's content",
         parameters: {
-          path: { type: "string", description: "Relative file path to modify" },
-          content: { type: "string", description: "New content for the file" },
+          path: { type: "string", description: "Relative file path to modify", required: true },
+          content: { type: "string", description: "New content for the file", required: true },
         },
       },
       async (params: Record<string, unknown>) => {
@@ -754,7 +754,7 @@ export class EvoClawServer {
         name: "file_delete",
         description: "Delete a file at the specified path",
         parameters: {
-          path: { type: "string", description: "Relative file path to delete" },
+          path: { type: "string", description: "Relative file path to delete", required: true },
         },
       },
       async (params: Record<string, unknown>) => {
@@ -862,8 +862,8 @@ export class EvoClawServer {
         name: "skill_execute",
         description: "Execute an installed skill by name or ID with parameters",
         parameters: {
-          skill: { type: "string", description: "Skill name or ID to execute" },
-          params: { type: "string", description: "JSON string of parameters to pass to the skill" },
+          skill: { type: "string", description: "Skill name or ID to execute", required: true },
+          params: { type: "string", description: "JSON string of parameters to pass to the skill (optional)", required: false },
         },
       },
       async (params: Record<string, unknown>) => {
@@ -1182,7 +1182,7 @@ export class EvoClawServer {
               metadata: { source: "bootstrap", sessionId: "bootstrap", userId: "default", tags: ["bootstrap"], importance: 0.9, associations: [], entities: [] },
               ttl: 365 * 24 * 3600 * 1000, embedding: null, id: "", createdAt: new Date(), accessedAt: new Date(),
             });
-          } catch { /* silent */ }
+          } catch { /* bootstrap memory store failure is non-critical */ }
         }
         return { completed: true, message: "Bootstrap ritual completed. Workspace initialized.", summary };
       }
@@ -2189,7 +2189,9 @@ export class EvoClawServer {
         for (const raw of rawEmails) {
           try {
             parsed.push(await this.emailClient.parseRawEmail(raw));
-          } catch {}
+          } catch (parseErr) {
+            console.warn(`[Email] Failed to parse email: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+          }
         }
         const analysis = this.emailClient.analyzeEmails(parsed);
         return {
@@ -2337,7 +2339,9 @@ export class EvoClawServer {
         for (const raw of config.rawEmails) {
           try {
             parsed.push(await this.emailClient.parseRawEmail(raw));
-          } catch {}
+          } catch (parseErr) {
+            console.warn(`[Email] Failed to parse email: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+          }
         }
         const analysis = this.emailClient.analyzeEmails(parsed);
         this.eventBus.publish("scheduler.email_checked", { taskId: task.id, analysis }, "scheduler");
@@ -2789,7 +2793,7 @@ export class EvoClawServer {
           } catch (err: any) {
             return { error: err.message || String(err), source };
           } finally {
-            try { fs.unlinkSync(tmpFile); } catch {}
+            try { fs.unlinkSync(tmpFile); } catch { /* temp file cleanup failure is non-critical */ }
           }
         }
 
@@ -3288,7 +3292,9 @@ except Exception as e:
             try {
               const parsed = JSON.parse(resultMatch[1]);
               return { success: true, ...parsed, warning: "Download completed with warnings" };
-            } catch {}
+            } catch (jsonErr) {
+              console.warn(`[VideoDownload] Failed to parse yt-dlp JSON output: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`);
+            }
           }
           return { success: false, error: stderr.slice(0, 5000) };
         }

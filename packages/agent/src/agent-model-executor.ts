@@ -516,7 +516,7 @@ export class AgentModelExecutor {
           const entry = JSON.parse(line);
           return { role: entry.role, content: entry.content };
         } catch {
-          return null;
+          return null; // skip malformed JSON lines in session history
         }
       }).filter((entry): entry is { role: string; content: string | null } => entry !== null);
     } catch (err) {
@@ -784,17 +784,17 @@ export class AgentModelExecutor {
     
     // Pattern 2: Direct email with auth code
     // Example: "chydroid@163.com 授权码：DCq4QHXN46bMPCc9"
-    const authCodePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s*(?:授权码|密码|password)[:：]\s*([a-zA-Z0-9a-zA-Z]{10,})/i;
+    const authCodePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s*(?:授权码|密码|password)[:：]\s*([a-zA-Z0-9]{10,})/i;
     const authCodeMatch = fixedMsg.match(authCodePattern);
     
     // Pattern 3: Key-value format
     // Example: "邮箱: xxx@xxx.com, 授权码: xxxxx"
-    const kvPattern = /(?:邮箱(?:地址)?|email)\s*[:：]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^a-zA-Z0-9]*?(?:授权码|密码|password)\s*[:：]\s*([a-zA-Z0-9a-zA-Z]{6,})/i;
+    const kvPattern = /(?:邮箱(?:地址)?|email)\s*[:：]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[^a-zA-Z0-9]*?(?:授权码|密码|password)\s*[:：]\s*([a-zA-Z0-9]{6,})/i;
     const kvMatch = originalMsg.match(kvPattern);
     
     // Pattern 4: Simple format "email password"
     // Example: "test@163.com MyPassword123"
-    const simplePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+([a-zA-Z0-9a-zA-Z!@#$%]{6,32})(?:\s|$)/i;
+    const simplePattern = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+([a-zA-Z0-9!@#$%]{6,32})(?:\s|$)/i;
     const simpleMatch = fixedMsg.match(simplePattern);
 
     // Extract email and password
@@ -828,7 +828,7 @@ export class AgentModelExecutor {
       return "163"; // Default to 163 for Chinese email
     };
     
-    console.log(`[AgentModelExecutor] Detected email account configuration: ${email}, password length: ${password.length}`);
+    console.log(`[AgentModelExecutor] Detected email account configuration: ${email.replace(/(.{2}).*(@.*)/, "$1****$2")}, password length: ${password.length}`);
     
     const provider = detectProvider(message);
     const displayName = email.split("@")[0];
@@ -855,8 +855,8 @@ export class AgentModelExecutor {
         // If the primary category is not email_handling, we might have false positive
         // But since we detected email credentials, we should still proceed
         console.log(`[AgentModelExecutor] Email config intent classification: ${result.primaryCategory} (confidence: ${result.confidence})`);
-      } catch {
-        // Ignore classification errors
+      } catch (classifyErr) {
+        console.warn(`[AgentModelExecutor] Email intent classification failed: ${classifyErr instanceof Error ? classifyErr.message : String(classifyErr)}`);
       }
     }
     
@@ -928,7 +928,7 @@ export class AgentModelExecutor {
       "批量处理邮件", "清理邮箱", "整理所有邮件"
     ];
 
-    const sendEmailKeywords = ["发邮件", "发送邮件", "给", "发信", "写信", "发一封", "发e-mail", "发email"];
+    const sendEmailKeywords = ["发邮件", "发送邮件", "发信", "写信", "发一封", "发e-mail", "发email", "寄信", "寄邮件"];
     const isSendEmailOp = sendEmailKeywords.some(kw => lowerMsg.includes(kw)) && /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(message);
     const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw)) || isSendEmailOp;
 
@@ -1173,8 +1173,8 @@ export class AgentModelExecutor {
         if (inboxData?.success && inboxData.emails) {
           emails = inboxData.emails;
         }
-      } catch {
-        // Ignore errors
+      } catch (inboxErr) {
+        console.warn(`[AgentModelExecutor] Failed to get email inbox: ${inboxErr instanceof Error ? inboxErr.message : String(inboxErr)}`);
       }
     }
 
@@ -2737,7 +2737,8 @@ export class AgentModelExecutor {
                   allFetchedContent.push({ title: r.title, url: r.url, content: cleanedContent.slice(0, 5000) });
                   allNewsContent += `## 网页正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 5000)}\n\n`;
                 }
-              } catch {
+              } catch (fetchErr) {
+                console.warn(`[AgentModelExecutor] Failed to fetch URL ${r.url}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
               }
             }
           }
@@ -3199,7 +3200,9 @@ export class AgentModelExecutor {
               onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
               break;
             }
-          } catch { }
+          } catch (retryErr) {
+            console.warn(`[AgentModelExecutor] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+          }
         }
 
         if (retryCount >= 2) {
