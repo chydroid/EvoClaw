@@ -2285,9 +2285,14 @@ export class AgentModelExecutor {
 
     // ── SkillDispatcher: try to auto-dispatch task via skill matching (before LLM) ──
     // Skip SkillDispatcher when user explicitly requests a claude-code-tools tool
+    // Skip SkillDispatcher when user provides a URL — go directly to LLM for URL-based tasks
     const claudeCodeToolNames = ["execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result"];
     const isExplicitToolCall = claudeCodeToolNames.some(name => message.includes(name));
-    if (this.hasActionIntent(message) && !isExplicitToolCall) {
+    const userProvidedUrl = /https?:\/\/[^\s<>"']+/i.test(message);
+    if (userProvidedUrl) {
+      console.log(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM`);
+    }
+    if (this.hasActionIntent(message) && !isExplicitToolCall && !userProvidedUrl) {
       try {
         const skillDispatcher = this.registry?.resolveService<{
           dispatch(ctx: { task: string; sessionId: string; allowAutoInstall?: boolean; fallbackToWebSearch?: boolean }): Promise<{
@@ -2514,14 +2519,20 @@ export class AgentModelExecutor {
     // ── Semantic intent detection + real-time search pre-processing ──
     let newsContext = "";
     let searchReason = "";
+    let shouldSearch = false;
+    
+    // If user provided a URL, skip search pre-processing entirely — the LLM should use the URL directly
+    const userProvidedUrlInChat = /https?:\/\/[^\s<>"']+/i.test(message);
+    
+    if (userProvidedUrlInChat) {
+      console.log(`[AgentModelExecutor] User provided URL in message — skipping search pre-processing`);
+    } else {
     
     // Try to use TaskClassifier for semantic intent detection
     const taskClassifier = this.registry?.resolveService<{
       classify(task: string): { primaryCategory: string; confidence: number; intentSimilarity?: Record<string, number> };
       needsWebSearch(task: string): { needed: boolean; confidence: number; reason: string };
     }>("taskClassifier");
-    
-    let shouldSearch = false;
     
     if (taskClassifier) {
       try {
@@ -2737,9 +2748,26 @@ export class AgentModelExecutor {
         console.warn(`[AgentModelExecutor] Multi-round search failed: ${err}`);
       }
     }
+    } // end of else (userProvidedUrlInChat)
 
     // ── 构建增强消息：根据任务类型注入不同的引导提示 ──
     const isDownloadTask = /(?:下载|download|爬取|scrape|抓取|批量|小说|novel|视频|video|mp3|mp4|文件|file)/i.test(message);
+
+    // When user provided a URL, inject strong URL-priority guidance
+    let urlPriorityHint = "";
+    if (userProvidedUrlInChat) {
+      const urlMatch = message.match(/https?:\/\/[^\s<>"']+/i);
+      const userUrl = urlMatch ? urlMatch[0] : "";
+      urlPriorityHint = `\n\n[⚠ 系统检测到用户提供了URL: ${userUrl}。你必须：
+1. 直接使用 web_fetch 或 scrapling_fetch 抓取该URL页面内容
+2. 分析页面HTML结构，找到章节列表或内容选择器
+3. 编写Python爬虫脚本，使用该URL作为起始页
+4. 用 shell_exec 运行脚本（timeout: '1200'）
+5. 验证输出文件存在，报告文件路径
+
+禁止搜索其他来源！用户已经提供了精确的URL，直接使用它！
+禁止说"技术上不可行"或"网站有反爬"——先尝试再说！]`;
+    }
 
     const newsEnhancedMessage = newsContext
       ? isDownloadTask
@@ -2772,17 +2800,25 @@ export class AgentModelExecutor {
         ? `${message}\n\n[系统提示：自动搜索预处理未能获取到有效结果。你必须使用 web_search 工具进行搜索以获取最新实时信息，绝对不能仅凭训练数据回答。如果 web_search 失败，请尝试 browser_launch + browser_navigate 使用真实浏览器搜索。禁止声称"无法获取实时信息"或"网络访问受限"——你有多种搜索工具可用，必须至少尝试一种。]`
         : message;
 
+    // Append URL priority hint when user provided a URL
+    const finalEnhancedMessage = urlPriorityHint
+      ? newsEnhancedMessage + urlPriorityHint
+      : newsEnhancedMessage;
+
     if (newsContext) {
       console.log(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"`);
     }
+    if (urlPriorityHint) {
+      console.log(`[AgentModelExecutor] URL priority hint injected for session "${sessionId}"`);
+    }
 
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
-    console.log(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${newsEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}`);
+    console.log(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}`);
 
     if (enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(newsEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext);
+      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -2886,6 +2922,11 @@ export class AgentModelExecutor {
 
   private parseMultipleTasks(message: string): string[] {
     const tasks: string[] = [];
+    
+    // If the message contains a URL, don't split it — the URL is part of the same task
+    if (/https?:\/\/[^\s<>"']+/i.test(message)) {
+      return [message];
+    }
     
     const isShortFollowup = (s: string): boolean => {
       return /^(帮我|给我|请帮我|麻烦|请问|你帮我|能帮我).{0,8}$/.test(s.trim());

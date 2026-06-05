@@ -68,6 +68,15 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "**If searching takes too long or you can't find the right URL after 2-3 attempts, ASK THE USER for the specific website URL.**"
   );
   sections.push(
+    "**⚠ CRITICAL: When the user provides a URL in their message, you MUST use that URL directly.** " +
+    "Do NOT search for the content, do NOT try other URLs, do NOT ignore the user's URL. " +
+    "The user has already done the research and is giving you the exact source — respect that and use it immediately. " +
+    "Steps when user provides a URL: 1) Use `web_fetch` or `scrapling_fetch` to read the page at the user's URL, " +
+    "2) Analyze the page structure (chapter list, content selectors), " +
+    "3) Write a Python scraper targeting that exact URL, 4) Run it with `shell_exec`, 5) Verify and report. " +
+    "NEVER waste time searching when the user has already provided the URL."
+  );
+  sections.push(
     "**If your first approach fails:** try another approach. web_search → web_fetch → browser_navigate → write Python scraper → " +
     "try different URLs → try different query terms. NEVER give up after one attempt."
   );
@@ -111,6 +120,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push(
     "When the user asks you to perform ANY task (search news, browse web, send email, manage files, download content, etc):"
   );
+  sections.push("");
+  sections.push("**STEP 0 — Check if user provided a URL (HIGHEST PRIORITY)**");
+  sections.push("- If the user's message contains a URL (http:// or https://), SKIP STEP 1 and go directly to STEP 2.");
+  sections.push("- Use the user's URL immediately with `web_fetch` or `scrapling_fetch`. Do NOT search for alternative URLs.");
+  sections.push("- This saves time and respects the user's explicit instructions.");
   sections.push("");
   sections.push("**STEP 1 — Search for a Skill FIRST**");
   sections.push("- Call the `skill_search` tool with the task description.");

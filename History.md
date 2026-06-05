@@ -3,6 +3,50 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.13.1 (2026-06-05)
+
+### 用户URL优先机制 — 修复下载任务忽略用户提供网址的问题
+
+**问题**：当用户在消息中提供了明确的URL（如小说目录页网址），EvoClaw仍然按既定流程搜索其他来源，忽略了用户提供的精确URL，导致浪费时间且成功率低。
+
+**根因分析**：
+1. SkillDispatcher 仍会拦截含URL的下载请求，路由到无关技能
+2. 搜索预处理逻辑仍会执行多轮搜索，即使URL已在消息中
+3. `parseMultipleTasks` 在句号处拆分消息，导致"下载小说。网址是：xxx"被拆成两个独立任务
+4. 系统提示词缺少"用户提供URL时优先使用"的明确指令
+
+**修复内容**：
+
+#### 1. SkillDispatcher URL跳过
+- `agent-model-executor.ts`：检测到用户消息包含URL时，跳过SkillDispatcher，直接进入LLM处理
+- 新增 `userProvidedUrl` 检测逻辑
+
+#### 2. 搜索预处理URL跳过
+- 当用户消息包含URL时，跳过整个搜索预处理流程（TaskClassifier + web_search + web_fetch）
+- 新增 `userProvidedUrlInChat` 检测，避免无意义的搜索开销
+
+#### 3. URL优先提示注入
+- 当检测到用户URL时，在LLM消息末尾注入强提示：
+  - 直接使用 `web_fetch` 或 `scrapling_fetch` 抓取用户URL
+  - 禁止搜索其他来源
+  - 编写Python爬虫脚本以用户URL为起始页
+
+#### 4. 任务拆分URL保护
+- `parseMultipleTasks`：消息包含URL时不拆分，作为整体任务处理
+- 避免将"下载小说。网址是：xxx"拆成"下载小说"和"网址是：xxx"两个独立任务
+
+#### 5. 系统提示词增强
+- 新增 STEP 0（最高优先级）：检查用户是否提供URL，有则跳过STEP 1
+- 新增 CRITICAL 规则：用户提供URL时必须直接使用，禁止搜索替代来源
+
+#### 验证结果
+
+| 测试用例 | 优化前 | 优化后 |
+|----------|--------|--------|
+| 用户提供URL下载小说 | 忽略URL，搜索其他来源 | 直接使用用户URL，1.5MB/114章 |
+| 任务拆分 | 拆成2个任务 | 整体处理，不拆分 |
+| SkillDispatcher拦截 | 路由到无关技能 | 跳过，直接LLM处理 |
+
 ---
 
 ## v0.13.0 (2026-06-05)
@@ -47,6 +91,48 @@
 
 - Python: `scrapling` (含 lxml, cssselect, orjson, tld, w3lib)
 - Node.js: `jsdom`, `cheerio` (全局)
+
+### 端到端测试与优化迭代 (2026-06-05)
+
+通过 10 个模拟用户对话测试用例（覆盖小说/音乐/视频/论文/源码下载），发现并修复以下问题：
+
+#### SkillDispatcher 空输出拦截修复
+
+- **问题**：英文下载请求（如 "Download Pride and Prejudice"）被 SkillDispatcher 路由到 `ontology` / `duplicate-deprecation-test-case` 等无实际功能的技能，0 tokens 即返回空结果
+- **修复**：在 `agent-model-executor.ts` 中新增 `isEmptyOutput` 检查，检测技能输出是否为无意义内容（"no scripts defined"、"executed successfully" 等），若为空则 fall through 到 LLM
+
+#### 下载任务超时优化
+
+- **问题**：下载任务被分类为 `simple`（300s 超时），实际 LLM 处理需要 5-10 分钟
+- **修复**：在 `protocol-adapter.ts` 的 `COMPLEXITY_PATTERNS` 中新增下载/爬取相关的复杂度匹配规则，将下载任务分类为 `complex`（1200s 超时）
+- 新增匹配：`下载.*(小说|音乐|视频|论文)`、`download.*(novel|music|video|paper)`、`爬取.*(小说|文章)` 等
+
+#### 任务拆分修复
+
+- **问题**：`parseMultipleTasks` 将书名中的 "and"（如 "Pride and Prejudice"、"War and Peace"）识别为任务分隔符，导致单条消息被错误拆分为多个任务
+- **修复**：检测引号/书名号内的连接词，跳过拆分；过滤纯连接词片段（如单独的 "and"）
+
+#### 品牌 Emoji 响应过滤
+
+- **问题**：LLM 响应中仍出现 🦞 emoji
+- **修复**：在 `collapseNewlines` 中增加 `🦞→🧬` 全局替换
+
+#### 测试结果
+
+| # | 类型 | 用例 | 结果 | 详情 |
+|---|------|------|------|------|
+| 1 | 小说(CN) | 逆天邪神 | ✅ | 20MB, 106s |
+| 2 | 小说(EN) | Pride and Prejudice | ✅ | 735KB, 506s |
+| 3 | 小说(CN) | 三体 | ✅ | 2.56MB, 101s |
+| 4 | 小说(EN) | War and Peace | ✅ | 3.27MB, 206s |
+| 5 | 音乐(CN) | 晴天 MP3 | ⚠️ | LLM超时（版权内容难获取） |
+| 6 | 音乐(EN) | Bohemian Rhapsody | ⚠️ | 修复后路由正常，LLM处理中 |
+| 7 | 视频(CN) | Python机器学习教程 | ⚠️ | LLM处理中（视频下载难度高） |
+| 8 | 论文(CN) | 深度学习Transformer | ⚠️ | LLM处理中 |
+| 9 | 论文(EN) | Attention is All You Need | ⚠️ | 路由修复后待验证 |
+| 10 | 源码 | 俄罗斯方块游戏源码 | ⚠️ | 路由修复后待验证 |
+
+> **结论**：小说下载任务完成率 100%（4/4），音乐/视频/论文下载因版权和来源限制需要用户提供具体URL以提升成功率。
 
 ---
 
