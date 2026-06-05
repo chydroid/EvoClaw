@@ -149,7 +149,7 @@ const LLM_PROVIDER_SCHEMA: SchemaDefinition = {
   baseURL: { type: "string", description: "Custom API base URL" },
   enabled: { type: "boolean", default: true },
   order: { type: "number", default: 0, min: 0 },
-  maxTokens: { type: "number", default: 4096, min: 1, max: 131072 },
+  maxTokens: { type: "number", default: 40960, min: 8192, max: 512000 },
   temperature: { type: "number", default: 0.7, min: 0, max: 2 },
   timeout: { type: "number", default: 60000, min: 1000, max: 300000 },
 };

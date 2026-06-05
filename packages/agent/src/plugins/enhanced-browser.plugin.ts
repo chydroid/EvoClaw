@@ -33,7 +33,7 @@ const SENSITIVE_OPERATIONS = new Set([
   "browser_execute_js",
 ]);
 
-/** Browser-related tool names */
+/** Browser-related tool names — aligned with registered tools in server/index.ts */
 const BROWSER_TOOLS = [
   "web_search",
   "web_fetch",
@@ -49,12 +49,19 @@ const BROWSER_TOOLS = [
   "browser_create_profile",
   "browser_delete_profile",
   "browser_execute_js",
+  "browser_js_eval",
   "browser_extract_content",
   "browser_capture_network",
   "browser_parallel_fetch",
   "browser_get_cookies",
   "browser_set_cookies",
   "browser_list_sessions",
+  "browser_get_text",
+  "browser_get_html",
+  "browser_find_elements",
+  "browser_fetch_json",
+  "browser_tabs",
+  "browser_search",
 ];
 
 /** Blocked URL patterns */
@@ -140,14 +147,86 @@ function formatWebResult(toolName: string, result: unknown): string | null {
   try {
     const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
     if (!resultStr || resultStr.length < 10) return null;
+
+    // ── Smart extraction for download/scraping scenarios ──
+    // Extract raw HTML from the result object for regex matching (JSON.stringify escapes HTML)
+    let rawHtmlForAnalysis = "";
+    if (typeof result === "object" && result !== null) {
+      const r = result as Record<string, unknown>;
+      rawHtmlForAnalysis = (r.html || r.text || r.body || r.content || "") as string;
+    } else if (typeof result === "string") {
+      rawHtmlForAnalysis = result;
+    }
+    const structuredInfo = rawHtmlForAnalysis ? extractStructuredContent(rawHtmlForAnalysis) : null;
+
     const maxLength = 8000;
     const truncated = resultStr.length > maxLength
       ? resultStr.substring(0, maxLength) + `\n...(truncated, ${resultStr.length} total chars)`
       : resultStr;
-    return `[Enhanced Browser] ${toolName} result:\n${truncated}`;
+
+    let header = `[Enhanced Browser] ${toolName} result:\n`;
+    if (structuredInfo) {
+      header += `\n## Structured Content Analysis\n${structuredInfo}\n\n---\n`;
+    }
+
+    return header + truncated;
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract structured content from web results to help Agent identify download targets.
+ * Focuses on: chapter links, download links, page structure for scraping.
+ */
+function extractStructuredContent(content: string): string | null {
+  const parts: string[] = [];
+
+  // Extract chapter list links (common in novel sites)
+  const chapterLinkPattern = /<a[^>]+href=["']([^"']*(?:chapter|\d+\.html|read|book|novel|article|view|thread|detail)[^"']*)["'][^>]*>([^<]*)<\/a>/gi;
+  const chapterLinks: Array<{ text: string; href: string }> = [];
+  let match;
+  while ((match = chapterLinkPattern.exec(content)) !== null && chapterLinks.length < 30) {
+    const text = match[2].replace(/<[^>]+>/g, "").trim();
+    if (text && text.length > 1 && text.length < 200) {
+      chapterLinks.push({ text, href: match[1] });
+    }
+  }
+  if (chapterLinks.length > 0) {
+    parts.push(`**Chapter Links Found (${chapterLinks.length}):**`);
+    chapterLinks.forEach((l, i) => {
+      parts.push(`  ${i + 1}. [${l.text}](${l.href})`);
+    });
+    if (chapterLinks.length >= 30) parts.push(`  ... (more links available)`);
+  }
+
+  // Extract download links
+  const downloadLinkPattern = /<a[^>]+href=["']([^"']*(?:download|txt|pdf|epub|zip|rar|7z|mp3|mp4|mkv|avi|file|attachment)[^"']*)["'][^>]*>([^<]*)<\/a>/gi;
+  const downloadLinks: Array<{ text: string; href: string }> = [];
+  while ((match = downloadLinkPattern.exec(content)) !== null && downloadLinks.length < 10) {
+    downloadLinks.push({ text: match[2].replace(/<[^>]+>/g, "").trim(), href: match[1] });
+  }
+  if (downloadLinks.length > 0) {
+    parts.push(`\n**Download Links Found (${downloadLinks.length}):**`);
+    downloadLinks.forEach((l, i) => {
+      parts.push(`  ${i + 1}. [${l.text}](${l.href})`);
+    });
+  }
+
+  // Extract page structure hints
+  const titleMatch = content.match(/<title[^>]*>([^<]*)<\/title>/i);
+  if (titleMatch) parts.push(`\n**Page Title:** ${titleMatch[1].trim()}`);
+
+  const charsetMatch = content.match(/charset=["']?([\w-]+)/i);
+  if (charsetMatch) parts.push(`**Encoding:** ${charsetMatch[1]}`);
+
+  const paginationPattern = /<a[^>]+href=["'][^"']*(?:page[=_\-\/]\d+|pn[=_\-\/]\d+|p[=_\-\/]\d+|index[=_\-\/]\d+)["'][^>]*>/gi;
+  if (paginationPattern.test(content)) parts.push("**Pagination detected** — multi-page structure");
+
+  const totalLinks = (content.match(/<a\s/gi) || []).length;
+  if (totalLinks > 0) parts.push(`**Total links on page:** ${totalLinks}`);
+
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 function extractLinksFromHtml(html: string): Array<{ text: string; href: string }> {

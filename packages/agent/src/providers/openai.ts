@@ -455,7 +455,7 @@ export class OpenAIProvider implements ProviderPlugin {
       model: request.model,
       messages: request.messages.map((m) => this.convertMessage(m)),
       temperature: request.temperature ?? 0.3,
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens ?? 40960,
       top_p: 1,
       stream,
     };

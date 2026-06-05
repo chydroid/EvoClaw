@@ -33,3 +33,4 @@ export type { ApiClientConfig, HttpRequestOptions, HttpResponse, PaginationOptio
 
 export { ResourcePool } from "./resource-pool";
 export type { PooledResource, ResourcePoolConfig, PoolStats } from "./resource-pool";
+export { isScraplingAvailable, generateAdaptiveScraperScript, generateSimpleFetchScript, getScraplingInfo } from "./scrapling-bridge";

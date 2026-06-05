@@ -58,7 +58,7 @@ export class ProgressReporter {
       phase: "init",
       step: 0,
       totalSteps,
-      message: `🦞 开始执行: ${taskDescription}`,
+      message: `🧬 开始执行: ${taskDescription}`,
       details: `共 ${phases.length} 个阶段，${totalSteps} 个步骤`,
     });
 

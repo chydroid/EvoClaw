@@ -455,7 +455,7 @@ export class GoogleProvider implements ProviderPlugin {
     // Generation config
     body.generationConfig = {
       temperature: request.temperature ?? 0.3,
-      maxOutputTokens: request.maxTokens ?? 4096,
+      maxOutputTokens: request.maxTokens ?? 40960,
     };
 
     if (request.stop && request.stop.length > 0) {

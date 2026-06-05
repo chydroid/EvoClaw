@@ -324,7 +324,7 @@ export class AnthropicProvider implements ProviderPlugin {
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens ?? 40960,
       stream,
     };
 

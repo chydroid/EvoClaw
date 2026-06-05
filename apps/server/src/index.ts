@@ -36,6 +36,7 @@ import type { ClassificationResult, OrchestrationPlan } from "@evoclaw/intellige
 import { SecurityMiddleware } from "@evoclaw/security";
 import { CopilotRouter, CredentialPool } from "@evoclaw/agent";
 import { SkillIndex } from "@evoclaw/skills";
+import { execSync, exec, spawn } from "child_process";
 
 export class EvoClawServer {
   private registry: ServiceRegistry;
@@ -3011,6 +3012,216 @@ export class EvoClawServer {
         const level0 = index.getLevel0Index();
         const count = index.getSize();
         return { count, index: level0 };
+      }
+    );
+
+    // ── shell_exec: 在安全前提下在沙箱外执行 shell 命令（支持 Python/Node.js） ──
+    // 支持：1200s 超时、30s 进度反馈、超时续接
+    this.agentModelExecutor.registerTool(
+      "shell_exec",
+      {
+        name: "shell_exec",
+        description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint.",
+        parameters: {
+          command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'" },
+          cwd: { type: "string", description: "Optional working directory for the command (default: workspace)" },
+          timeout: { type: "string", description: "Optional timeout in seconds (default: 120, max: 1200). Use higher values for crawler tasks." },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const command = String(params.command || "");
+        if (!command) return { error: "Command is required" };
+
+        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+        const cwd = params.cwd ? String(params.cwd) : workspaceDir;
+        const timeoutSec = Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200);
+
+        // ── 安全校验：阻止危险命令 ──
+        const DANGEROUS_PATTERNS = [
+          /rm\s+-rf\s+\//, /rm\s+-rf\s+\~/, /del\s+\/S\s+\/Q\s+C:\\/i,
+          /shutdown/, /reboot/, /format\s+[a-z]:/i,
+          /dd\s+if=/, /mkfs/, /fdisk/, /:\(\)\s*\{/, /fork\s*bomb/,
+          />\s*\/dev\/sda/, />\s*\/dev\/nvme/,
+          /chmod\s+777\s+\//, /chown\s+-R\s+\//,
+          /eval\s/, /\.\$\(/, /\$\(.*rm\s+-rf/,
+        ];
+        for (const pattern of DANGEROUS_PATTERNS) {
+          if (pattern.test(command)) {
+            return { error: `Command blocked by safety filter: matched dangerous pattern`, command };
+          }
+        }
+
+        // Build PATH with Python and Node.js locations
+        const pythonPaths = [
+          "C:\\Users\\huiyu\\AppData\\Local\\Programs\\Python\\Python313",
+          "C:\\Users\\huiyu\\AppData\\Local\\Programs\\Python\\Python313\\Scripts",
+          "C:\\Python313",
+          "C:\\Python3",
+        ];
+        const existingPath = process.env.PATH || process.env.Path || "";
+        const extendedPath = [...pythonPaths, existingPath].join(";");
+
+        const shell = process.platform === "win32" ? "cmd.exe" : "/bin/bash";
+        const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
+
+        // ── 使用 spawn 实现异步执行 + 进度反馈 ──
+        return new Promise((resolve) => {
+          console.log(`[shell_exec] Running: ${command} (cwd: ${cwd}, timeout: ${timeoutSec}s)`);
+
+          const child = spawn(shell, shellArgs, {
+            cwd,
+            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          });
+
+          let stdout = "";
+          let stderr = "";
+          let lastProgressTime = Date.now();
+          let lastProgressSent = 0;
+          const PROGRESS_INTERVAL = 30000; // 30s
+
+          child.stdout?.on("data", (data: Buffer) => {
+            const chunk = data.toString();
+            stdout += chunk;
+
+            // 每30秒输出进度反馈
+            const now = Date.now();
+            if (now - lastProgressTime >= PROGRESS_INTERVAL) {
+              const lines = stdout.split("\n").filter(Boolean);
+              const lastLines = lines.slice(-3).join(" | ");
+              const progressMsg = `⏳ [shell_exec ${Math.floor((now - lastProgressSent || now) / 1000)}s] 最新输出: ${lastLines.slice(0, 200)}`;
+              console.log(progressMsg);
+              lastProgressTime = now;
+              if (!lastProgressSent) lastProgressSent = now;
+            }
+          });
+
+          child.stderr?.on("data", (data: Buffer) => {
+            stderr += data.toString();
+          });
+
+          // 超时计时器
+          let resolved = false;
+          const timer = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              child.kill("SIGTERM");
+              const partial = stdout.slice(-2000);
+              const progressSeconds = Math.floor((Date.now() - lastProgressSent || Date.now()) / 1000);
+              console.log(`[shell_exec] TIMEOUT after ${timeoutSec}s, partial output: ${stdout.length} chars`);
+              resolve({
+                success: false,
+                timedOut: true,
+                timeout: timeoutSec,
+                output: stdout.slice(0, 50000),
+                partialOutput: partial,
+                error: `命令执行超时 (${timeoutSec}秒)，已运行约 ${progressSeconds} 秒。部分输出已保留。`,
+                resumeHint: "任务超时但进度已保存。你可以使用相同的命令继续执行，脚本会自动从检查点恢复。",
+                command,
+              });
+            }
+          }, timeoutSec * 1000);
+
+          child.on("close", (code) => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              const output = stdout.trim();
+              const errorOutput = stderr.trim();
+              console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars`);
+              if (code === 0) {
+                resolve({
+                  success: true,
+                  output: output.slice(0, 50000),
+                  stderr: errorOutput.slice(0, 5000) || undefined,
+                  command,
+                });
+              } else {
+                resolve({
+                  success: false,
+                  exitCode: code,
+                  error: errorOutput.slice(0, 10000) || output.slice(0, 10000),
+                  output: output.slice(0, 50000),
+                  command,
+                });
+              }
+            }
+          });
+
+          child.on("error", (err) => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              console.log(`[shell_exec] Process error: ${err.message}`);
+              resolve({ success: false, error: err.message, command });
+            }
+          });
+        });
+      }
+    );
+
+    // ── scrapling_fetch: 使用 Scrapling 框架进行高级抓取 ──
+    this.agentModelExecutor.registerTool(
+      "scrapling_fetch",
+      {
+        name: "scrapling_fetch",
+        description: "Fetch a URL using Scrapling's StealthyFetcher (bypasses Cloudflare, handles anti-bot). Returns page title, text content, and extracted links. Supports adaptive scraping that survives website redesigns.",
+        parameters: {
+          url: { type: "string", description: "The URL to fetch" },
+          selector: { type: "string", description: "Optional CSS selector to extract specific content" },
+          extractLinks: { type: "string", description: "Set to 'true' to extract all links from the page" },
+          headless: { type: "string", description: "Set to 'false' for faster non-headless mode (default: true)" },
+        },
+      },
+      async (params: Record<string, unknown>) => {
+        const url = String(params.url || "");
+        if (!url) return { error: "URL is required" };
+        const selector = params.selector ? String(params.selector) : "";
+        const extractLinks = String(params.extractLinks || "") === "true";
+        const headless = String(params.headless || "") !== "false";
+
+        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+        const pythonPaths = [
+          "C:\\Users\\huiyu\\AppData\\Local\\Programs\\Python\\Python313",
+          "C:\\Users\\huiyu\\AppData\\Local\\Programs\\Python\\Python313\\Scripts",
+        ];
+        const existingPath = process.env.PATH || process.env.Path || "";
+        const extendedPath = [...pythonPaths, existingPath].join(";");
+
+        const script = `#!/usr/bin/env python3
+import json, sys
+try:
+    from scrapling.fetchers import StealthyFetcher
+    page = StealthyFetcher.fetch(${JSON.stringify(url)}, headless=${headless ? "True" : "False"})
+    result = {
+        "title": page.css("title::text").get(""),
+        "url": str(page.url),
+        "status": page.status,
+        "text_preview": page.text_content()[:3000],
+    }
+    ${selector ? `result["selected"] = [el.text_content().strip()[:500] for el in page.css(${JSON.stringify(selector)})[:10]]` : ""}
+    ${extractLinks ? `result["links"] = [{"href": l.attrib.get("href", ""), "text": l.text_content().strip()[:100]} for l in page.css("a[href]")[:30]]` : ""}
+    print(json.dumps(result, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({"error": str(e)}, ensure_ascii=False))
+    sys.exit(1)
+`;
+
+        try {
+          const result = execSync(`python -c ${JSON.stringify(script)}`, {
+            cwd: workspaceDir,
+            timeout: 60000,
+            maxBuffer: 5 * 1024 * 1024,
+            encoding: "utf-8",
+            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+          });
+          const parsed = JSON.parse(result.trim());
+          return { success: true, ...parsed };
+        } catch (err: any) {
+          const stderr = err.stderr?.toString() || err.message || String(err);
+          return { success: false, error: stderr.slice(0, 5000) };
+        }
       }
     );
   }

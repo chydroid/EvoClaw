@@ -29,7 +29,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     selectedModel: "gpt-4.1",
     enabled: false,
     order: 1,
-    config: { temperature: 0.7, maxTokens: 4096, timeout: 60000, topP: 1 },
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
   {
     id: "anthropic",
@@ -40,7 +40,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     selectedModel: "claude-sonnet-4-6-20250217",
     enabled: false,
     order: 2,
-    config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
+    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
   {
     id: "deepseek",
@@ -51,7 +51,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     selectedModel: "deepseek-v4-flash",
     enabled: false,
     order: 3,
-    config: { temperature: 0.3, maxTokens: 4096, timeout: 60000, topP: 1 },
+    config: { temperature: 0.3, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
   {
     id: "local",
@@ -62,7 +62,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     selectedModel: "llama3",
     enabled: false,
     order: 4,
-    config: { temperature: 0.5, maxTokens: 2048, timeout: 120000, topP: 0.9 },
+    config: { temperature: 0.5, maxTokens: 40960, timeout: 120000, topP: 0.9 },
   },
   {
     id: "custom",
@@ -73,7 +73,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     selectedModel: "",
     enabled: false,
     order: 5,
-    config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
+    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
 ];
 
@@ -88,7 +88,7 @@ function newCustomProvider(index: number): LLMProvider {
     selectedModel: "",
     enabled: false,
     order: 100 + index,
-    config: { temperature: 0.5, maxTokens: 4096, timeout: 60000, topP: 1 },
+    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
   };
 }
 
@@ -527,11 +527,11 @@ export default function LLMConfig() {
                 <input
                   style={s.input}
                   type="number"
-                  min={256}
-                  max={128000}
+                  min={8192}
+                  max={512000}
                   step={256}
                   value={currentProvider.config.maxTokens}
-                  onChange={(e) => updateConfig(activeProvider, { maxTokens: parseInt(e.target.value) || 4096 })}
+                  onChange={(e) => updateConfig(activeProvider, { maxTokens: parseInt(e.target.value) || 40960 })}
                 />
               </div>
 

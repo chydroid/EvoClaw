@@ -88,7 +88,7 @@ export const defaultConfig: AppConfig = {
     title: "您的专属EvoClaw智能助理",
     masterTerm: "主人",
     tone: "warm",
-    introduction: `您好主人！我是 EvoClaw小助手，您的专属EvoClaw智能助理 🦞
+    introduction: `您好主人！我是 EvoClaw小助手，您的专属EvoClaw智能助理 🧬
 
 很高兴为您服务！以下是我能帮您做的事情：
 

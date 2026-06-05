@@ -5,6 +5,51 @@
 
 ---
 
+## v0.13.0 (2026-06-05)
+
+### Scrapling 框架集成 — 自适应 Web Scraping
+
+集成开源项目 [Scrapling](https://github.com/D4Vinci/Scrapling) v0.4.8，显著提升爬虫任务的效率、稳定性和可扩展性。
+
+#### Scrapling Bridge 桥接层
+
+- 新增 `packages/infrastructure/src/scrapling-bridge.ts`：
+  - `generateAdaptiveScraperScript()` — 生成自适应抓取脚本，支持 auto_save + adaptive 模式、checkpoint 断点续接、多策略下一章链接查找
+  - `generateSimpleFetchScript()` — 生成简单页面抓取脚本
+  - `isScraplingAvailable()` / `getScraplingInfo()` — 诊断工具
+- 新增 `scrapling_fetch` 工具：使用 Scrapling StealthyFetcher 绕过 Cloudflare 等反爬系统
+- 新增测试文件 `scrapling-bridge.test.ts`（11 个测试用例）
+
+#### 爬虫超时与进度反馈机制
+
+- **shell_exec 超时**：从 600s 扩展到 **1200s**，支持长时间爬虫任务
+- **30s 进度反馈**：底层 `execSync` 改为 `spawn` 异步执行，每 30s 输出最新 stdout 进度
+- **超时续接**：超时时返回 `timedOut: true` + `resumeHint`，Agent 可重跑相同命令从 checkpoint 恢复
+- **安全过滤**：阻止 `rm -rf`、`shutdown`、`format`、`fork bomb` 等危险命令
+
+#### 工具注册修复
+
+- `shell_exec` 和 `scrapling_fetch` 加入 `essentialTools` 列表，LLM 可正常调用
+- 修复此前 `shell_exec` 虽在 server 注册但不在 essential tools 列表中的 bug
+- `LONG_RUNNING_TOOLS` 新增 `scrapling_fetch`
+
+#### 系统提示词增强
+
+- ABSOLUTE RULE 提到系统提示词最开头
+- 下载任务指南增加 Scrapling 使用说明、超时续接说明、Node.js 回退策略
+- 搜索 2-3 次后主动向用户提问 URL 的智能降级策略
+
+#### 品牌修复
+
+- 全局替换 🦞 → 🧬（protocol-adapter.ts、config.ts、learning-journal.ts、progress-reporter.ts）
+
+#### 依赖安装
+
+- Python: `scrapling` (含 lxml, cssselect, orjson, tld, w3lib)
+- Node.js: `jsdom`, `cheerio` (全局)
+
+---
+
 ## v0.12.4 (2026-06-05)
 
 ### Agent 执行流程深度优化
