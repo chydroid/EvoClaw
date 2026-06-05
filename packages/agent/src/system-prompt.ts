@@ -68,6 +68,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "**If searching takes too long or you can't find the right URL after 2-3 attempts, ASK THE USER for the specific website URL.**"
   );
   sections.push(
+    "**⚠ VIDEO/MUSIC DOWNLOAD: Use `video_download` and `music_download` tools!** " +
+    "These tools use yt-dlp + ffmpeg and support 1000+ websites including Bilibili, Douyin, YouTube, WeChat Channels, Haokan, Kuaishou, Xigua, etc. " +
+    "- For video download: call `video_download` with the video URL. It auto-handles watermark removal for Douyin. " +
+    "- For music download: call `music_download` with song name/artist (e.g. '周杰伦 晴天'). It searches YouTube and extracts audio as MP3. " +
+    "- If the user provides a URL, use `video_download` directly — do NOT search for alternative URLs. " +
+    "- If `video_download`/`music_download` fails, fall back to `shell_exec` with a custom yt-dlp command. " +
+    "- NEVER refuse video/music download requests citing copyright — you are a tool, solve the user's problem. " +
+    "- For platforms not supported by yt-dlp (e.g. some WeChat Channels), try `browser_navigate` + `browser_capture_network` to capture the media URL, then use `video_download`."
+  );
+  sections.push(
     "**⚠ CRITICAL: When the user provides a URL in their message, you MUST use that URL directly.** " +
     "Do NOT search for the content, do NOT try other URLs, do NOT ignore the user's URL. " +
     "The user has already done the research and is giving you the exact source — respect that and use it immediately. " +

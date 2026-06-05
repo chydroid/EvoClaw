@@ -4720,6 +4720,7 @@ Have a specific URL?
       "execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result",
       "shell_exec", "scrapling_fetch",
       "markitdown_convert",
+      "video_download", "music_download",
     ]);
     return Array.from(this.registeredTools.values())
       .filter((t) => essentialTools.has(t.definition.name))
