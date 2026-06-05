@@ -1438,6 +1438,7 @@ export class AgentModelExecutor {
       .replace(/\n{3,}/g, "\n\n")
       .replace(/^\n+/, "")
       .replace(/\n+$/, "")
+      .replace(/🦞/g, "🧬")
       .trim();
   }
 
@@ -2361,7 +2362,26 @@ export class AgentModelExecutor {
 
           const outputHasError = !dispatchResult.success && classifiedError !== null;
 
-          if (dispatchResult.path === "skill" && dispatchResult.success && dispatchResult.output && !outputHasError) {
+          // Check if skill output is essentially empty/meaningless (e.g. "no scripts defined")
+          const isEmptyOutput = (() => {
+            if (!dispatchResult.output) return true;
+            if (typeof dispatchResult.output === "string") {
+              const s = dispatchResult.output.trim();
+              return s.length < 50 || s.includes("no scripts defined") || s.includes("executed successfully");
+            }
+            if (typeof dispatchResult.output === "object") {
+              const obj = dispatchResult.output as Record<string, unknown>;
+              // Check if it's just a status message with no actual content
+              const hasContent = obj.content || obj.text || obj.body || obj.data || obj.results;
+              if (!hasContent && obj.message && typeof obj.message === "string") {
+                return (obj.message as string).includes("no scripts defined");
+              }
+              return !hasContent;
+            }
+            return false;
+          })();
+
+          if (dispatchResult.path === "skill" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
             
             return {
@@ -2371,7 +2391,7 @@ export class AgentModelExecutor {
               permissionRequests: [],
               toolsExecuted: true,
             };
-          } else if (dispatchResult.path === "web_search" && dispatchResult.success && dispatchResult.output && !outputHasError) {
+          } else if (dispatchResult.path === "web_search" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
             
             return {
@@ -2390,6 +2410,8 @@ export class AgentModelExecutor {
               permissionRequests: [],
               toolsExecuted: true,
             };
+          } else if (isEmptyOutput && dispatchResult.path === "skill") {
+            console.log(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM`);
           } else if (dispatchResult.path === "none") {
             console.log(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
           } else {
@@ -2900,12 +2922,20 @@ export class AgentModelExecutor {
       /(and|also|then|next)/gi
     ];
     
+    const conjunctionWords = new Set(["and", "also", "then", "next", "同时", "并且", "然后", "接着", "还要", "另外", "也请"]);
+    
     for (const pattern of conjunctionPatterns) {
       if (pattern.test(message)) {
+        // Don't split if conjunction is inside quotes (e.g. book titles like "Pride and Prejudice" or 《War and Peace》)
+        const quotedConjunctions = message.match(/["'""「」『』《》][^"'"\n「」『』《》]*?(?:and|also|then|next|同时|并且|然后|接着|还要|另外|也请)[^"'"\n「」『』《》]*?["'""「」『』《》]/gi);
+        if (quotedConjunctions && quotedConjunctions.length > 0) {
+          continue; // Skip splitting — conjunction is part of a quoted title
+        }
         const parts = message.split(pattern);
         for (const part of parts) {
           const trimmed = part.trim();
-          if (trimmed && trimmed.length > 2) {
+          // Skip parts that are just the conjunction word itself
+          if (trimmed && trimmed.length > 2 && !conjunctionWords.has(trimmed.toLowerCase())) {
             tasks.push(trimmed);
           }
         }
