@@ -263,11 +263,11 @@ const dotStyle: CSSProperties = {
 };
 
 const loadingMessages = [
-  "正在分析你的需求...",
-  "正在检索相关信息...",
-  "正在处理中，请稍候...",
-  "正在生成回复...",
-  "马上就好，请耐心等待...",
+  "chat.loading.analyzing",
+  "chat.loading.searching",
+  "chat.loading.processing",
+  "chat.loading.generating",
+  "chat.loading.almost_done",
 ];
 
 const toolCallStyle: CSSProperties = {
@@ -397,24 +397,24 @@ interface ProgressStep {
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "/help", description: "显示所有可用命令", category: "通用" },
-  { name: "/new", description: "开始新会话", usage: "/new [模型]", category: "会话" },
-  { name: "/reset", description: "完全重置当前会话", category: "会话" },
-  { name: "/clear", description: "清空当前对话显示", category: "会话" },
-  { name: "/compact", description: "压缩会话上下文", category: "会话" },
-  { name: "/status", description: "查看系统状态", category: "系统" },
-  { name: "/health", description: "健康检查", category: "系统" },
-  { name: "/model", description: "查看或切换模型", usage: "/model [名称]", category: "模型" },
-  { name: "/skills", description: "列出已安装技能", category: "技能" },
-  { name: "/memory", description: "语义记忆搜索", usage: "/memory <查询>", category: "记忆" },
-  { name: "/thinking", description: "设置思考级别", usage: "/thinking off|low|medium|high", category: "设置" },
-  { name: "/verbose", description: "切换详细输出", usage: "/verbose on|off", category: "设置" },
-  { name: "/usage", description: "控制用量报告", usage: "/usage off|tokens|full", category: "设置" },
-  { name: "/cron", description: "查看定时任务", usage: "/cron list", category: "任务" },
-  { name: "/plugin", description: "查看插件列表", usage: "/plugin list", category: "插件" },
-  { name: "/focus", description: "聚焦上下文目标", usage: "/focus <type> <id>", category: "高级" },
-  { name: "/unfocus", description: "取消上下文聚焦", category: "高级" },
-  { name: "/agents", description: "列出可用上下文目标", category: "高级" },
+  { name: "/help", description: "chat.cmd.help_desc", category: "chat.cat.general" },
+  { name: "/new", description: "chat.cmd.new_desc", usage: "chat.cmd.new_usage", category: "chat.cat.session" },
+  { name: "/reset", description: "chat.cmd.reset_desc", category: "chat.cat.session" },
+  { name: "/clear", description: "chat.cmd.clear_desc", category: "chat.cat.session" },
+  { name: "/compact", description: "chat.cmd.compact_desc", category: "chat.cat.session" },
+  { name: "/status", description: "chat.cmd.status_desc", category: "chat.cat.system" },
+  { name: "/health", description: "chat.cmd.health_desc", category: "chat.cat.system" },
+  { name: "/model", description: "chat.cmd.model_desc", usage: "chat.cmd.model_usage", category: "chat.cat.model" },
+  { name: "/skills", description: "chat.cmd.skills_desc", category: "chat.cat.skills" },
+  { name: "/memory", description: "chat.cmd.memory_desc", usage: "chat.cmd.memory_usage", category: "chat.cat.memory" },
+  { name: "/thinking", description: "chat.cmd.thinking_desc", usage: "/thinking off|low|medium|high", category: "chat.cat.settings" },
+  { name: "/verbose", description: "chat.cmd.verbose_desc", usage: "/verbose on|off", category: "chat.cat.settings" },
+  { name: "/usage", description: "chat.cmd.usage_desc", usage: "/usage off|tokens|full", category: "chat.cat.settings" },
+  { name: "/cron", description: "chat.cmd.cron_desc", usage: "/cron list", category: "chat.cat.tasks" },
+  { name: "/plugin", description: "chat.cmd.plugin_desc", usage: "/plugin list", category: "chat.cat.plugins" },
+  { name: "/focus", description: "chat.cmd.focus_desc", usage: "/focus <type> <id>", category: "chat.cat.advanced" },
+  { name: "/unfocus", description: "chat.cmd.unfocus_desc", category: "chat.cat.advanced" },
+  { name: "/agents", description: "chat.cmd.agents_desc", category: "chat.cat.advanced" },
 ];
 
 const actionBtnStyle: CSSProperties = {
@@ -533,7 +533,7 @@ const permissionBtnStyle = (primary: boolean, destructive?: boolean): CSSPropert
 });
 
 export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionId?: string | null; avatars?: AvatarInfo }) {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -606,7 +606,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     const text = input.trim();
     if (!text) return;
     if (messageQueue.length >= 10) {
-      setStatusMessage("消息队列已满（最多10条）");
+      setStatusMessage(t("chat.queue_full"));
       setTimeout(() => setStatusMessage(null), 2000);
       return;
     }
@@ -709,7 +709,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     const userMsg: WebChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: text || (readyFiles.length > 0 ? `发送了 ${readyFiles.length} 个文件` : ""),
+      content: text || (readyFiles.length > 0 ? t("chat.files_sent").replace("{0}", String(readyFiles.length)) : ""),
       timestamp: new Date().toISOString(),
       attachments: attachmentsForMsg,
     };
@@ -752,14 +752,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           const status = await res.json();
           if (status && status.phase && status.phase !== "idle") {
             const phaseLabels: Record<string, string> = {
-              thinking: "思考中",
-              tool_calling: "执行中",
-              generating: "生成中",
-              done: "已完成",
-              error: "出错",
-              splitting: "任务拆分中",
-              subtask_executing: "子任务执行中",
-              resuming: "从检查点恢复",
+              thinking: t("chat.phase.thinking"),
+              tool_calling: t("chat.phase.tool_calling"),
+              generating: t("chat.phase.generating"),
+              done: t("chat.phase.done"),
+              error: t("chat.phase.error"),
+              splitting: t("chat.phase.splitting"),
+              subtask_executing: t("chat.phase.subtask_executing"),
+              resuming: t("chat.phase.resuming"),
             };
             const label = phaseLabels[status.phase] || status.phase;
             const subtaskInfo = status.subtaskIndex !== undefined && status.subtaskTotal !== undefined
@@ -807,8 +807,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           const wasUserAbort = userAbortedRef.current;
           userAbortedRef.current = false;
           const abortMsg = wasUserAbort
-            ? "🛑 已停止生成。"
-            : "⏱️ 请求超时，服务器可能繁忙或模型响应缓慢。请稍后重试或检查模型配置。";
+            ? t("chat.stopped")
+            : t("chat.timeout");
           setMessages((prev) =>
             prev.map((m) =>
               m.id === botMsgId
@@ -859,7 +859,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   if (currentEvent === "done") {
                     finalData = eventData;
                   } else if (currentEvent === "error") {
-                    const errMsg = eventData.message || "处理出错";
+                    const errMsg = eventData.message || t("chat.process_error");
                     setMessages((prev) =>
                       prev.map((m) =>
                         m.id === botMsgId
@@ -874,20 +874,20 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       timestamp: Date.now(),
                     };
                     setProgressSteps((prev) => [...prev, step]);
-                    setStatusMessage(`📋 ${eventData.text || "正在处理"}`);
+                    setStatusMessage(`📋 ${eventData.text || t("chat.processing")}`);
                   } else if (currentEvent === "progress_summary") {
                     const summaryType = eventData.type as string;
                     const summaryCount = eventData.count as number;
                     const detail = eventData.detail as string || "";
                     let label = "";
                     if (summaryType === "search_progress") {
-                      label = `✅ 已完成${summaryCount}轮网络搜索`;
+                      label = t("chat.search_progress").replace("{0}", String(summaryCount));
                     } else if (summaryType === "fetch_progress") {
-                      label = `✅ 已抓取${summaryCount}个网页内容`;
+                      label = t("chat.fetch_progress").replace("{0}", String(summaryCount));
                     } else if (summaryType === "search_done") {
-                      label = `✅ 网络搜索全部完成，共${summaryCount}轮`;
+                      label = t("chat.search_done").replace("{0}", String(summaryCount));
                     } else if (summaryType === "fetch_done") {
-                      label = `✅ 网页抓取全部完成，共${summaryCount}个`;
+                      label = t("chat.fetch_done").replace("{0}", String(summaryCount));
                     }
                     const step: ProgressStep = {
                       type: "progress_summary",
@@ -937,14 +937,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
                     if (eventData.phase) {
                       const phaseLabels: Record<string, string> = {
-                        thinking: "🧠 思考中",
-                        tool_calling: "🔧 执行工具",
-                        generating: "✍️ 生成回复",
-                        done: "✅ 完成",
-                        error: "❌ 出错",
-                        splitting: "📋 任务拆分中",
-                        subtask_executing: "⚙️ 子任务执行中",
-                        resuming: "🔄 从检查点恢复",
+                        thinking: t("chat.phase.thinking_emoji"),
+                        tool_calling: t("chat.phase.tool_calling_emoji"),
+                        generating: t("chat.phase.generating_emoji"),
+                        done: t("chat.phase.done_emoji"),
+                        error: t("chat.phase.error_emoji"),
+                        splitting: t("chat.phase.splitting_emoji"),
+                        subtask_executing: t("chat.phase.subtask_executing_emoji"),
+                        resuming: t("chat.phase.resuming_emoji"),
                       };
                       const label = phaseLabels[eventData.phase] || eventData.phase;
                       const subtaskInfo = eventData.subtaskIndex !== undefined && eventData.subtaskTotal !== undefined
@@ -967,7 +967,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           if (readErr instanceof DOMException && readErr.name === "AbortError") {
             const wasUserAbort = userAbortedRef.current;
             userAbortedRef.current = false;
-            const abortMsg = wasUserAbort ? "🛑 已停止生成。" : "⏱️ 请求超时。";
+            const abortMsg = wasUserAbort ? t("chat.stopped") : t("chat.timeout_short");
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === botMsgId
@@ -1176,7 +1176,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         setMessages((prev) =>
           prev.map((m) =>
             m.id === pendingPermissions[0]?.messageId
-              ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ 权限请求已被拒绝" : "⚠️ 权限请求已被拒绝" }
+              ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + t("chat.permission_denied") : "⚠️ " + t("chat.permission_denied") }
               : m,
           ),
         );
@@ -1326,7 +1326,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     const hour = String(d.getHours()).padStart(2, "0");
     const min = String(d.getMinutes()).padStart(2, "0");
     const sec = String(d.getSeconds()).padStart(2, "0");
-    return `${year}年${month}月${day}日 ${hour}:${min}:${sec}`;
+    return t("chat.date_format")
+      .replace("{0}", String(year))
+      .replace("{1}", month)
+      .replace("{2}", day)
+      .replace("{3}", hour)
+      .replace("{4}", min)
+      .replace("{5}", sec);
   };
 
   const getNickname = (role: string) => {
@@ -1366,7 +1372,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   // Export conversation as markdown
   const exportConversation = () => {
-    const lines: string[] = [`# 对话导出 - ${new Date().toLocaleString("zh-CN")}\n`];
+    const lines: string[] = [`# ${t("chat.export_title")} - ${new Date().toLocaleString(lang === "en" ? "en-US" : "zh-CN")}\n`];
     for (const msg of messages) {
       const nick = getNickname(msg.role);
       const time = msg.timestamp ? formatTime(msg.timestamp) : "";
@@ -1449,7 +1455,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     
     const tick = () => {
       if (token?.cancelled) {
-        setAttachedFiles(prev => prev.map(f => f.id === fileInfo.id ? { ...f, status: "error" as const, error: "已取消" } : f));
+        setAttachedFiles(prev => prev.map(f => f.id === fileInfo.id ? { ...f, status: "error" as const, error: t("chat.upload_cancelled") } : f));
         return;
       }
       const elapsed = Date.now() - startTime;
@@ -1498,11 +1504,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         
         // Duplicate check
         const isDuplicate = attachedFiles.some(f => f.name === file.name && f.size === file.size);
-        if (isDuplicate) { errors.push(`"${file.name}" 已添加`); continue; }
+        if (isDuplicate) { errors.push(t("chat.file_already_added").replace("{0}", file.name)); continue; }
 
         // Size check
         if (file.size > MAX_FILE_SIZE) {
-          errors.push(`"${file.name}" 超过 10MB 限制`);
+          errors.push(t("chat.file_too_large").replace("{0}", file.name));
           continue;
         }
 
@@ -1514,7 +1520,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         });
         const extAllowed = ALLOWED_EXTENSIONS.includes(ext);
         if (!isAllowedType && !extAllowed) {
-          errors.push(`"${file.name}" 格式不支持 (${ext})`);
+          errors.push(t("chat.file_type_unsupported").replace("{0}", file.name).replace("{1}", ext));
           continue;
         }
 
@@ -1612,9 +1618,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           {messages.length === 0 && (
             <div style={emptyStateStyle}>
               <img src="/assets/images/evoclaw-400-100.png" alt="EvoClaw" style={{ height: "48px", marginBottom: "12px" }} />
-              <div style={{ fontSize: "18px", fontWeight: 600, marginBottom: "6px" }}>已准备好对话</div>
+              <div style={{ fontSize: "18px", fontWeight: 600, marginBottom: "6px" }}>{t("chat.ready_to_chat")}</div>
               <div style={{ fontSize: "14px", maxWidth: "400px" }}>
-                在下方输入消息与你的 AI 助手对话，或输入／查看命令。
+                {t("chat.empty_state_desc")}
               </div>
             </div>
           )}
@@ -1746,7 +1752,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                         alignItems: "center",
                         transition: "color 0.15s",
                       }}
-                      title="复制为 Markdown"
+                      title={t("chat.copy_as_markdown")}
                       onClick={(e) => {
                         e.stopPropagation();
                         copyAsMarkdown(msg);
@@ -1775,7 +1781,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 {msg.thinking && (
                   <div style={thinkingBadgeStyle} onClick={() => toggleThinking(msg.id)}>
                     <span>{showThinking[msg.id] ? "💭" : "🧠"}</span>
-                    <span>思考中...</span>
+                    <span>{t("chat.thinking")}</span>
                     <span style={{ fontSize: "10px", transform: showThinking[msg.id] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
                   </div>
                 )}
@@ -1789,7 +1795,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 {msg.permissionRequests && msg.permissionRequests.length > 0 && (
                   <div style={{ ...thinkingBadgeStyle, background: "rgba(248,113,113,0.15)", borderColor: "var(--error, #f87171)", marginBottom: "8px" }}>
                     <span>🔐</span>
-                    <span>{msg.permissionRequests.length} 项权限请求</span>
+                    <span>{t("chat.permission_requests_count").replace("{0}", String(msg.permissionRequests.length))}</span>
                   </div>
                 )}
 
@@ -1893,7 +1899,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                       renderMessageContent(msg)
                     ) : isStreaming ? (
                       <div style={loadingIndicatorStyle}>
-                        <span>{statusMessage || loadingMessages[loadingMessageIndex]}</span>
+                        <span>{statusMessage || t(loadingMessages[loadingMessageIndex])}</span>
                         {progressSteps.length > 0 && (
                           <div style={{ marginTop: "8px", width: "100%", maxHeight: "240px", overflowY: "auto" }}>
                             {progressSteps.slice(-12).map((step, i) => {
@@ -1984,7 +1990,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           {showCommandPanel && (() => {
             const filtered = SLASH_COMMANDS.filter(cmd =>
               cmd.name.toLowerCase().includes("/" + commandFilter) ||
-              cmd.description.toLowerCase().includes(commandFilter)
+              t(cmd.description).toLowerCase().includes(commandFilter)
             );
             if (filtered.length === 0) return null;
             const categories = [...new Set(filtered.map(c => c.category))];
@@ -1999,12 +2005,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 animation: "slideDown 0.15s ease-out",
               }}>
                 <div style={{ padding: "8px 12px 4px", fontSize: "11px", fontWeight: 600, color: "var(--text-muted, #6e7681)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                  命令提示
+                  {t("chat.command_hints")}
                 </div>
                 {categories.map(cat => (
                   <div key={cat}>
                     <div style={{ padding: "4px 12px", fontSize: "10px", fontWeight: 600, color: "var(--text-muted, #6e7681)", textTransform: "uppercase", letterSpacing: "0.3px", borderTop: cat === categories[0] ? "none" : "1px solid var(--border, #30363d)" }}>
-                      {cat}
+                      {t(cat)}
                     </div>
                     {filtered.filter(c => c.category === cat).map((cmd) => {
                       const globalIdx = filtered.indexOf(cmd);
@@ -2033,11 +2039,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                             {cmd.name}
                           </span>
                           <span style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", flex: 1 }}>
-                            {cmd.description}
+                            {t(cmd.description)}
                           </span>
                           {cmd.usage && (
                             <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace", marginLeft: "8px", flexShrink: 0 }}>
-                              {cmd.usage}
+                              {t(cmd.usage)}
                             </span>
                           )}
                         </div>
@@ -2046,10 +2052,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   </div>
                 ))}
                 <div style={{ padding: "4px 12px 6px", fontSize: "10px", color: "var(--text-muted, #6e7681)", borderTop: "1px solid var(--border, #30363d)", display: "flex", gap: "12px" }}>
-                  <span>↑↓ 导航</span>
-                  <span>↵ 选择</span>
-                  <span>Tab 补全</span>
-                  <span>Esc 关闭</span>
+                  <span>{t("chat.nav_hint")}</span>
+                  <span>{t("chat.select_hint")}</span>
+                  <span>{t("chat.tab_hint")}</span>
+                  <span>{t("chat.esc_hint")}</span>
                 </div>
               </div>
             );
@@ -2079,7 +2085,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               onCompositionStart={() => { isComposingRef.current = true; }}
               onCompositionEnd={() => { isComposingRef.current = false; }}
               onBlur={() => { setTimeout(() => { setShowCommandPanel(false); }, 200); }}
-              placeholder={`给 ${getNickname("assistant")} 发消息 · Shift+Enter 换行 · Enter 发送`}
+              placeholder={t("chat.input_placeholder").replace("{0}", getNickname("assistant") || "EvoClaw")}
               rows={1}
               autoComplete="off"
               autoCorrect="off"
@@ -2102,7 +2108,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 zIndex: 5,
               }}
               onClick={() => setTextAreaExpanded(v => !v)}
-              title={textAreaExpanded ? "折叠输入框" : "展开为 5 行"}
+              title={textAreaExpanded ? t("chat.collapse_input") : t("chat.expand_input")}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
             >
@@ -2180,7 +2186,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                         </span>
                         {isError && (
                           <span style={{ fontSize: "10px", color: "var(--error, #f87171)", flexShrink: 0 }}>
-                            {file.error || "错误"}
+                            {file.error || t("chat.error")}
                           </span>
                         )}
                       </div>
@@ -2215,7 +2221,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                         justifyContent: "center", flexShrink: 0,
                         transition: "color 0.15s",
                       }}
-                      title={isUploading ? "取消上传" : "移除"}
+                      title={isUploading ? t("chat.cancel_upload") : t("chat.remove")}
                       onClick={() => isUploading ? cancelUpload(file.id) : removeAttachedFile(idx)}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error, #f87171)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
@@ -2234,7 +2240,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             <div style={{ display: "flex", alignItems: "center", gap: "2px", flexShrink: 0 }}>
               <button
                 style={inputBtnStyle}
-                title="附加文件"
+                title={t("chat.attach_file")}
                 onClick={handleFileAttach}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
@@ -2243,13 +2249,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               </button>
               <button
                 style={{ ...inputBtnStyle, display: "none" }}
-                title="语音输入（暂未支持）"
+                title={t("chat.voice_input")}
               >
                 🎤
               </button>
               <button
                 style={{ ...inputBtnStyle, display: "none" }}
-                title="打开设置"
+                title={t("chat.open_settings")}
                 onClick={() => { window.dispatchEvent(new CustomEvent("evoclaw-open-settings")); }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
@@ -2266,11 +2272,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               <span>{contextPercent}%</span>
               <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay} tokens</span>
               {messageQueue.length > 0 && (
-                <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>队列: {messageQueue.length}</span>
+                <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>{t("chat.queue_label").replace("{0}", String(messageQueue.length))}</span>
               )}
               <button
                 style={{ background: "none", border: "none", cursor: "pointer", fontSize: "11px", color: inputHistoryEnabled ? "var(--accent, #58a6ff)" : "var(--text-muted, #6e7681)", padding: "0 4px", transition: "color 0.15s" }}
-                title={inputHistoryEnabled ? `历史输入已启用 (↑↓浏览, 最多${inputHistoryMax}条)` : "历史输入已禁用"}
+                title={inputHistoryEnabled ? t("chat.history_enabled").replace("{0}", String(inputHistoryMax)) : t("chat.history_disabled")}
                 onClick={() => setInputHistoryEnabled(v => !v)}
               >
                 {inputHistoryEnabled ? "⏎" : "⏎̶"}
@@ -2281,7 +2287,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             <div style={{ display: "flex", alignItems: "center", gap: "16px", flexShrink: 0 }}>
               <button
                 style={inputBtnStyle}
-                title="导出对话记录"
+                title={t("chat.export_conversation")}
                 onClick={exportConversation}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; }}
@@ -2292,7 +2298,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               {isStreaming && (
                 <button
                   style={{ ...inputBtnStyle, position: "relative", color: "var(--accent, #58a6ff)" }}
-                  title={messageQueue.length >= 10 ? "队列已满（最多10条）" : `添加到消息队列${messageQueue.length > 0 ? ` (${messageQueue.length})` : ""}`}
+                  title={messageQueue.length >= 10 ? t("chat.queue_full_title") : t("chat.add_to_queue") + (messageQueue.length > 0 ? ` (${messageQueue.length})` : "")}
                   onClick={handleEnqueue}
                   disabled={!input.trim() || messageQueue.length >= 10}
                   onMouseEnter={(e) => { if (input.trim()) { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; } }}
@@ -2308,7 +2314,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 <button
                   style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px", background: "#ef4444" }}
                   onClick={handleStop}
-                  title="停止执行"
+                  title={t("chat.stop_execution")}
                   onMouseEnter={(e) => { e.currentTarget.style.background = "#dc2626"; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = "#ef4444"; }}
                 >
@@ -2320,7 +2326,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                     style={{ ...sendBtnStyle, width: "36px", height: "36px", fontSize: "16px" }}
                     onClick={() => handleSend()}
                     disabled={!input.trim() && attachedFiles.filter(f => f.status === "done").length === 0}
-                    title="发送消息"
+                    title={t("chat.send_message")}
                   >
                     ➤
                   </button>
@@ -2332,14 +2338,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           {/* Queue panel */}
           {showQueuePanel && messageQueue.length > 0 && (
             <div style={{ marginTop: "6px", padding: "8px 10px", borderRadius: "8px", background: "var(--bg-tertiary, #21262d)", border: "1px solid var(--border, #30363d)", maxHeight: "120px", overflowY: "auto" }}>
-              <div style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)", marginBottom: "6px", fontWeight: 600 }}>消息队列 ({messageQueue.length})</div>
+              <div style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)", marginBottom: "6px", fontWeight: 600 }}>{t("chat.message_queue_count").replace("{0}", String(messageQueue.length))}</div>
               {messageQueue.map((msg, idx) => (
                 <div key={idx} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 0", borderBottom: idx < messageQueue.length - 1 ? "1px solid var(--border, #30363d)" : "none" }}>
                   <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", flexShrink: 0 }}>#{idx + 1}</span>
                   <span style={{ fontSize: "12px", color: "var(--text-primary, #c9d1d9)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{msg}</span>
                   <button
                     style={{ width: 18, height: 18, borderRadius: 3, border: "none", background: "transparent", color: "var(--text-muted, #6e7681)", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                    title="移除"
+                    title={t("chat.remove")}
                     onClick={() => handleDequeue(idx)}
                     onMouseEnter={(e) => { e.currentTarget.style.color = "var(--error, #f87171)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
@@ -2357,9 +2363,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
       {showPermissionModal && (
         <div style={permissionModalStyle} onClick={() => {}}>
           <div style={permissionCardStyle} onClick={(e) => e.stopPropagation()}>
-            <div style={permissionTitleStyle}>🔐 权限请求</div>
+            <div style={permissionTitleStyle}>{t("chat.permission_title")}</div>
             <div style={permissionDescStyle}>
-              系统需要您的授权才能执行以下操作：
+              {t("chat.permission_desc")}
             </div>
             
             {pendingPermissions.map((perm) => (
@@ -2372,7 +2378,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 </div>
                 {perm.target && (
                   <div style={permissionTargetStyle}>
-                    目标: {perm.target}
+                    {t("chat.permission_target").replace("{0}", perm.target)}
                   </div>
                 )}
               </div>
@@ -2383,19 +2389,19 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 style={permissionBtnStyle(false)}
                 onClick={() => handlePermissionAction("approve")}
               >
-                本次确认
+                {t("chat.approve_once")}
               </button>
               <button
                 style={permissionBtnStyle(true)}
                 onClick={() => handlePermissionAction("approveAndWhitelist")}
               >
-                加入白名单
+                {t("chat.add_to_whitelist")}
               </button>
               <button
                 style={permissionBtnStyle(true, true)}
                 onClick={() => handlePermissionAction("deny")}
               >
-                拒绝
+                {t("chat.deny")}
               </button>
             </div>
           </div>

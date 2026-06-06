@@ -118,7 +118,7 @@ export default function ModelSwitcherPage() {
       setCurrentModelId(currentRes?.model?.id ?? null);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载模型失败");
+      setError(err instanceof Error ? err.message : t("model.load_fail", "加载模型失败"));
     } finally {
       setLoading(false);
     }
@@ -171,15 +171,15 @@ export default function ModelSwitcherPage() {
       <PageHeader
         title={t("model_switcher.title")}
         subtitle={t("model_switcher.subtitle")}
-        actions={<SecondaryButton onClick={fetchData} small>刷新</SecondaryButton>}
+        actions={<SecondaryButton onClick={fetchData} small>{t("model.refresh", "刷新")}</SecondaryButton>}
       />
 
       <StatsGrid
         items={[
-          { label: t("model_switcher.current"), value: currentModel?.name ?? "无", color: "var(--accent)" },
+          { label: t("model_switcher.current"), value: currentModel?.name ?? t("model.none", "无"), color: "var(--accent)" },
           { label: t("model_switcher.available"), value: availableCount },
-          { label: "活跃模型", value: activeCount, color: "var(--success)" },
-          { label: "未激活", value: availableCount - activeCount, color: "var(--text-muted)" },
+          { label: t("model.active_models", "活跃模型"), value: activeCount, color: "var(--success)" },
+          { label: t("model.inactive", "未激活"), value: availableCount - activeCount, color: "var(--text-muted)" },
         ]}
       />
 
@@ -191,7 +191,7 @@ export default function ModelSwitcherPage() {
                 <div style={s.modelName}>
                   <StatusDot status="active" size={10} />
                   {currentModel.name}
-                  <span style={s.activeLabel}>活跃</span>
+                  <span style={s.activeLabel}>{t("model.active", "活跃")}</span>
                 </div>
                 <div style={s.modelMeta}>
                   {currentModel.provider} / {currentModel.model}
@@ -208,17 +208,17 @@ export default function ModelSwitcherPage() {
               <span style={s.detailValue}>{currentModel.maxTokens.toLocaleString()}</span>
             </div>
             <div style={s.detailRow}>
-              <span style={s.detailLabel}>费用 (输入)</span>
+              <span style={s.detailLabel}>{t("model.cost_input", "费用 (输入)")}</span>
               <span style={s.detailValue}>${currentModel.costPer1k.input}/1k tokens</span>
             </div>
             <div style={s.detailRow}>
-              <span style={s.detailLabel}>费用 (输出)</span>
+              <span style={s.detailLabel}>{t("model.cost_output", "费用 (输出)")}</span>
               <span style={s.detailValue}>${currentModel.costPer1k.output}/1k tokens</span>
             </div>
             {testResults[currentModel.id] && (
               <div style={testResults[currentModel.id].success ? s.latencyResult : s.latencyError}>
                 {testResults[currentModel.id].success
-                  ? `延迟: ${testResults[currentModel.id].latencyMs}ms`
+                  ? t("model.latency_ms", "延迟: {0}ms").replace("{0}", String(testResults[currentModel.id].latencyMs))
                   : t("model_switcher.test_fail")}
               </div>
             )}
@@ -233,7 +233,7 @@ export default function ModelSwitcherPage() {
 
       <Section title={t("model_switcher.available")} style={{ marginTop: "24px" }}>
         {models.length === 0 ? (
-          <EmptyState icon="" title={t("model_switcher.no_models")} description="添加模型以开始使用" />
+          <EmptyState icon="" title={t("model_switcher.no_models")} description={t("model.add_to_start", "添加模型以开始使用")} />
         ) : (
           <div style={s.grid}>
             {models.map((model) => {
@@ -246,7 +246,7 @@ export default function ModelSwitcherPage() {
                       <div style={s.modelName}>
                         <StatusDot status={model.status} size={8} />
                         {model.name}
-                        {isActive && <span style={s.activeLabel}>活跃</span>}
+                        {isActive && <span style={s.activeLabel}>{t("model.active", "活跃")}</span>}
                       </div>
                       <div style={s.modelMeta}>
                         {model.provider} / {model.model}
@@ -263,13 +263,13 @@ export default function ModelSwitcherPage() {
                     <span style={s.detailValue}>{model.maxTokens.toLocaleString()}</span>
                   </div>
                   <div style={s.detailRow}>
-                    <span style={s.detailLabel}>费用 (输入/输出)</span>
+                    <span style={s.detailLabel}>{t("model.cost_input_output", "费用 (输入/输出)")}</span>
                     <span style={s.detailValue}>${model.costPer1k.input}/${model.costPer1k.output}</span>
                   </div>
                   {testResults[model.id] && (
                     <div style={testResults[model.id].success ? s.latencyResult : s.latencyError}>
                       {testResults[model.id].success
-                        ? `延迟: ${testResults[model.id].latencyMs}ms`
+                        ? t("model.latency_ms", "延迟: {0}ms").replace("{0}", String(testResults[model.id].latencyMs))
                         : t("model_switcher.test_fail")}
                     </div>
                   )}
@@ -283,7 +283,7 @@ export default function ModelSwitcherPage() {
                         disabled={switchingId === model.id}
                         small
                       >
-                        {switchingId === model.id ? "切换中..." : t("model_switcher.switch_to")}
+                        {switchingId === model.id ? t("model.switching", "切换中...") : t("model_switcher.switch_to")}
                       </SecondaryButton>
                     )}
                   </div>

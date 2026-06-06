@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface PermissionRequest {
   id: string;
@@ -68,6 +69,7 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export function PermissionsPage() {
+  const { t } = useTranslation();
   const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [history, setHistory] = useState<PermissionRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,31 +135,31 @@ export function PermissionsPage() {
     <div style={s.container}>
       <div style={s.header}>
         <div>
-          <div style={s.title}>权限中继 (Permission Relay)</div>
-          <div style={s.subtitle}>集中式权限控制 — 所有工具调用权限请求经此流转</div>
+          <div style={s.title}>{t("perms.title", "权限中继 (Permission Relay)")}</div>
+          <div style={s.subtitle}>{t("perms.subtitle", "集中式权限控制 — 所有工具调用权限请求经此流转")}</div>
         </div>
-        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>刷新</button>
+        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>{t("perms.refresh", "刷新")}</button>
       </div>
 
       {/* Pending Requests */}
       <div style={s.panel}>
         <div style={s.panelHeader}>
-          <span style={s.panelTitle}>待处理请求</span>
+          <span style={s.panelTitle}>{t("permissions.pending_header", "待处理请求")}</span>
           <span style={s.panelCount}>{pending.length}</span>
         </div>
         {pending.length === 0 ? (
-          <div style={s.empty}>{loading ? "加载中..." : "无待处理权限请求"}</div>
+          <div style={s.empty}>{loading ? t("sessions.loading", "加载中...") : t("permissions.no_pending", "无待处理权限请求")}</div>
         ) : (
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>工具</th>
-                <th style={s.th}>Agent</th>
-                <th style={s.th}>会话</th>
-                <th style={s.th}>分类</th>
-                <th style={s.th}>时间</th>
-                <th style={s.th}>参数</th>
-                <th style={s.th}>操作</th>
+                <th style={s.th}>{t("permissions.tool", "工具")}</th>
+                <th style={s.th}>{t("permissions.agent", "Agent")}</th>
+                <th style={s.th}>{t("perms.session", "会话")}</th>
+                <th style={s.th}>{t("perms.category", "分类")}</th>
+                <th style={s.th}>{t("permissions.time", "时间")}</th>
+                <th style={s.th}>{t("perms.params", "参数")}</th>
+                <th style={s.th}>{t("permissions.action", "操作")}</th>
               </tr>
             </thead>
             <tbody>
@@ -174,8 +176,8 @@ export function PermissionsPage() {
                     </code>
                   </td>
                   <td style={s.td}>
-                    <button style={{ ...s.actionBtn, background: "var(--success)", color: "#fff" }} onClick={() => approve(req.id)}>批准</button>
-                    <button style={{ ...s.actionBtn, background: "var(--error)", color: "#fff" }} onClick={() => deny(req.id)}>拒绝</button>
+                    <button style={{ ...s.actionBtn, background: "var(--success)", color: "#fff" }} onClick={() => approve(req.id)}>{t("permissions.approve", "批准")}</button>
+                    <button style={{ ...s.actionBtn, background: "var(--error)", color: "#fff" }} onClick={() => deny(req.id)}>{t("permissions.deny", "拒绝")}</button>
                   </td>
                 </tr>
               ))}
@@ -187,21 +189,21 @@ export function PermissionsPage() {
       {/* History */}
       <div style={s.panel}>
         <div style={s.panelHeader}>
-          <span style={s.panelTitle}>历史记录</span>
+          <span style={s.panelTitle}>{t("permissions.history", "历史记录")}</span>
           <span style={s.panelCount}>{history.length}</span>
         </div>
         {history.length === 0 ? (
-          <div style={s.empty}>暂无历史记录</div>
+          <div style={s.empty}>{t("permissions.no_history", "无历史记录")}</div>
         ) : (
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>工具</th>
-                <th style={s.th}>状态</th>
-                <th style={s.th}>决策者</th>
-                <th style={s.th}>原因</th>
-                <th style={s.th}>Agent</th>
-                <th style={s.th}>时间</th>
+                <th style={s.th}>{t("permissions.tool", "工具")}</th>
+                <th style={s.th}>{t("perms.status", "状态")}</th>
+                <th style={s.th}>{t("perms.decider", "决策者")}</th>
+                <th style={s.th}>{t("perms.reason", "原因")}</th>
+                <th style={s.th}>{t("permissions.agent", "Agent")}</th>
+                <th style={s.th}>{t("permissions.time", "时间")}</th>
               </tr>
             </thead>
             <tbody>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { renderMarkdown } from "./markdown-renderer";
+import { useTranslation } from "./i18n";
 
 interface EnvMeta {
   required?: boolean;
@@ -143,12 +144,12 @@ function configStatusColor(status: "configured" | "partial" | "unconfigured" | "
   }
 }
 
-function configStatusText(status: "configured" | "partial" | "unconfigured" | "none"): string {
+function configStatusText(status: "configured" | "partial" | "unconfigured" | "none", t: (key: string, fallback?: string) => string): string {
   switch (status) {
-    case "configured": return "已配置";
-    case "partial": return "部分配置";
-    case "unconfigured": return "未配置";
-    case "none": return "无需配置";
+    case "configured": return t("skills.configured", "已配置");
+    case "partial": return t("skills.partial_config", "部分配置");
+    case "unconfigured": return t("skills.unconfigured", "未配置");
+    case "none": return t("skills.no_config_needed", "无需配置");
   }
 }
 
@@ -158,10 +159,10 @@ function healthStatusColor(healthy: boolean, warnings?: string[]): string {
   return "var(--success)";
 }
 
-function healthStatusText(healthy: boolean, warnings?: string[]): string {
-  if (!healthy) return "错误";
-  if (warnings && warnings.length > 0) return "警告";
-  return "正常";
+function healthStatusText(healthy: boolean, warnings: string[] | undefined, t: (key: string, fallback?: string) => string): string {
+  if (!healthy) return t("skills.error_status", "错误");
+  if (warnings && warnings.length > 0) return t("skills.warning_status", "警告");
+  return t("skills.normal_status", "正常");
 }
 
 function healthStatusIcon(healthy: boolean, warnings?: string[]): string {
@@ -572,6 +573,7 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 export default function SkillsConfig() {
+  const { t } = useTranslation();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<SkillInfo | null>(null);
@@ -657,10 +659,10 @@ export default function SkillsConfig() {
       const res = await fetch("/api/skills/refresh", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
-        setMessage({ type: "success", text: `扫描完成: ${data.installed} 个新安装, ${data.skipped} 已跳过` });
+        setMessage({ type: "success", text: t("skills.scan_complete", "扫描完成: {0} 个新安装, {1} 已跳过").replace("{0}", String(data.installed)).replace("{1}", String(data.skipped)) });
       }
     } catch {
-      setMessage({ type: "error", text: "刷新失败" });
+      setMessage({ type: "error", text: t("skills.refresh_fail", "刷新失败") });
     }
     await loadSkills();
     setRefreshing(false);
@@ -685,7 +687,7 @@ export default function SkillsConfig() {
         body: JSON.stringify({ config: cleanConfig }),
       });
       if (res.ok) {
-        setMessage({ type: "success", text: "配置已保存" });
+        setMessage({ type: "success", text: t("skills.config_saved", "配置已保存") });
         await loadSkillDetail(selectedId);
         setValidating((prev) => ({ ...prev, [selectedId]: true }));
         try {
@@ -702,10 +704,10 @@ export default function SkillsConfig() {
         }
         setValidating((prev) => ({ ...prev, [selectedId]: false }));
       } else {
-        setMessage({ type: "error", text: "保存失败" });
+        setMessage({ type: "error", text: t("skills.save_fail", "保存失败") });
       }
     } catch {
-      setMessage({ type: "error", text: "保存失败" });
+      setMessage({ type: "error", text: t("skills.save_fail", "保存失败") });
     }
   }, [selectedId, configValues, configModes, loadSkillDetail]);
 
@@ -717,9 +719,9 @@ export default function SkillsConfig() {
         await loadSkillDetail(skillId);
       }
       await loadSkills();
-      setMessage({ type: "success", text: "健康检查完成" });
+      setMessage({ type: "success", text: t("skills.health_check_done", "健康检查完成") });
     } catch {
-      setMessage({ type: "error", text: "健康检查失败" });
+      setMessage({ type: "error", text: t("skills.health_check_fail", "健康检查失败") });
     }
     setHealthChecking((prev) => ({ ...prev, [skillId]: false }));
   }, [selectedId, loadSkillDetail, loadSkills]);
@@ -731,11 +733,11 @@ export default function SkillsConfig() {
       if (data.updates && typeof data.updates === "object") {
         setUpdateInfo(data.updates);
         const updateCount = Object.values(data.updates).filter((u: unknown) => (u as { updateAvailable: boolean }).updateAvailable).length;
-        setMessage({ type: updateCount > 0 ? "warning" : "success", text: updateCount > 0 ? `发现 ${updateCount} 个技能有可用更新` : "所有技能均为最新版本" });
+        setMessage({ type: updateCount > 0 ? "warning" : "success", text: updateCount > 0 ? t("skills.updates_found", "发现 {0} 个技能有可用更新").replace("{0}", String(updateCount)) : t("skills.all_up_to_date", "所有技能均为最新版本") });
       }
       await loadSkills();
     } catch {
-      setMessage({ type: "error", text: "检查更新失败" });
+      setMessage({ type: "error", text: t("skills.check_updates_fail", "检查更新失败") });
     }
     setCheckingUpdates(false);
   }, [loadSkills]);
@@ -744,11 +746,11 @@ export default function SkillsConfig() {
     setUpgrading((prev) => ({ ...prev, [skillId]: true }));
     try {
       await upgradeSkill(skillId);
-      setMessage({ type: "success", text: "升级成功" });
+      setMessage({ type: "success", text: t("skills.upgrade_ok", "升级成功") });
       await loadSkillDetail(skillId);
       await loadSkills();
     } catch {
-      setMessage({ type: "error", text: "升级失败" });
+      setMessage({ type: "error", text: t("skills.upgrade_fail", "升级失败") });
     }
     setUpgrading((prev) => ({ ...prev, [skillId]: false }));
   }, [loadSkillDetail, loadSkills]);
@@ -758,14 +760,14 @@ export default function SkillsConfig() {
     setBatchUpgrading(true);
     try {
       await batchUpgrade(Array.from(selectedSkills));
-      setMessage({ type: "success", text: `批量升级完成: ${selectedSkills.size} 个技能` });
+      setMessage({ type: "success", text: t("skills.batch_upgrade_ok", "批量升级完成: {0} 个技能").replace("{0}", String(selectedSkills.size)) });
       setSelectedSkills(new Set());
       await loadSkills();
       if (selectedId) {
         await loadSkillDetail(selectedId);
       }
     } catch {
-      setMessage({ type: "error", text: "批量升级失败" });
+      setMessage({ type: "error", text: t("skills.batch_upgrade_fail", "批量升级失败") });
     }
     setBatchUpgrading(false);
   }, [selectedSkills, loadSkills, loadSkillDetail, selectedId]);
@@ -781,7 +783,7 @@ export default function SkillsConfig() {
     } catch {
       setValidationResults((prev) => ({
         ...prev,
-        [skillId]: { valid: false, errors: ["验证请求失败"], warnings: [] },
+        [skillId]: { valid: false, errors: [t("skills.validate_request_fail", "验证请求失败")], warnings: [] },
       }));
     }
     setValidating((prev) => ({ ...prev, [skillId]: false }));
@@ -854,7 +856,7 @@ export default function SkillsConfig() {
       else if (scriptPath.endsWith(".ts")) exts.add("typescript");
       else if (scriptPath.endsWith(".js")) exts.add("javascript");
     }
-    return exts.size > 0 ? Array.from(exts).join(", ") : "未知";
+    return exts.size > 0 ? Array.from(exts).join(", ") : t("skills.unknown_type", "未知");
   };
 
   const getSandboxPolicy = (hooks: Record<string, string>): { allowNetwork: boolean; allowSubprocess: boolean; allowFileSystem: boolean } => {
@@ -887,7 +889,7 @@ export default function SkillsConfig() {
               onChange={toggleSelectAll}
               style={styles.checkbox}
             />
-            全选
+            {t("skills.select_all", "全选")}
           </label>
           <button
             style={{
@@ -898,27 +900,27 @@ export default function SkillsConfig() {
             onClick={handleBatchUpgrade}
             disabled={selectedSkills.size === 0 || batchUpgrading}
           >
-            {batchUpgrading ? "升级中..." : `批量升级 (${selectedSkills.size})`}
+            {batchUpgrading ? t("skills.upgrading", "升级中...") : t("skills.batch_upgrade", "批量升级 ({0})").replace("{0}", String(selectedSkills.size))}
           </button>
           <button
             style={{ ...styles.batchButton, opacity: refreshing ? 0.5 : 1 }}
             onClick={handleRefresh}
             disabled={refreshing}
           >
-            刷新
+            {t("skills.refresh", "刷新")}
           </button>
           <button
             style={{ ...styles.batchButton, opacity: checkingUpdates ? 0.5 : 1 }}
             onClick={handleCheckUpdates}
             disabled={checkingUpdates}
           >
-            {checkingUpdates ? "检查中..." : "检查所有更新"}
+            {checkingUpdates ? t("skills.checking", "检查中...") : t("skills.check_all_updates", "检查所有更新")}
           </button>
         </div>
         <div style={styles.sidebarList}>
           {skills.length === 0 ? (
             <div style={{ padding: "20px 14px", color: "var(--text-muted)", fontSize: "12px" }}>
-              暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。
+              {t("skills.no_skills_registered", "暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。")}
             </div>
           ) : (
             skills.map((skill) => {
@@ -952,13 +954,13 @@ export default function SkillsConfig() {
                       onClick={(e) => e.stopPropagation()}
                       style={styles.checkbox}
                     />
-                    <span style={{ ...styles.statusDot, background: dotColor }} title={configStatusText(cStatus)} />
+                    <span style={{ ...styles.statusDot, background: dotColor }} title={configStatusText(cStatus, t)} />
                     <span style={styles.skillItemName}>{skill.emoji ? `${skill.emoji} ` : ""}{skill.name}</span>
                     {hasUpdate && (
                       <span style={{ fontSize: "10px", color: "var(--accent)", fontWeight: "bold", marginLeft: "4px" }}>🆕</span>
                     )}
                   </div>
-                  <div style={{ ...styles.skillItemDesc, marginLeft: "36px" }}>{skill.description ? skill.description.slice(0, 60) : "无描述"}</div>
+                  <div style={{ ...styles.skillItemDesc, marginLeft: "36px" }}>{skill.description ? skill.description.slice(0, 60) : t("skills.no_description", "无描述")}</div>
                   <div style={{ display: "flex", gap: "4px", alignItems: "center", marginTop: "4px", marginLeft: "36px" }}>
                     <span style={statusBadgeStyle(skill.lifecycle.status)}>
                       {skill.lifecycle.status}
@@ -1018,11 +1020,11 @@ export default function SkillsConfig() {
                   background: "var(--primary-bg, rgba(0,123,255,0.1))",
                   marginLeft: "8px",
                 }}>
-                  🆕 有更新
+                  🆕 {t("skills.has_update", "有更新")}
                 </span>
               )}
             </div>
-            <div style={styles.detailDesc}>{selectedSkill.description || "无描述"}</div>
+            <div style={styles.detailDesc}>{selectedSkill.description || t("skills.no_description", "无描述")}</div>
             {selectedSkill.i18n?.description_zh && selectedSkill.i18n.description_zh !== selectedSkill.description && (
               <div style={{ ...styles.detailDesc, color: "var(--primary)", marginTop: "4px", borderLeft: "3px solid var(--primary)", paddingLeft: "8px" }}>
                 {selectedSkill.i18n.description_zh}
@@ -1070,7 +1072,7 @@ export default function SkillsConfig() {
                     background: cStatus === "configured" ? "var(--success-bg)" : cStatus === "partial" ? "var(--warning-bg)" : cStatus === "unconfigured" ? "var(--error-bg)" : "var(--bg-hover)",
                   }}>
                     <span style={{ ...styles.statusDot, background: configStatusColor(cStatus) }} />
-                    {configStatusText(cStatus)}
+                    {configStatusText(cStatus, t)}
                   </span>
                 );
               })()}
@@ -1078,26 +1080,26 @@ export default function SkillsConfig() {
           </div>
 
           <div style={styles.banner}>
-            <div>Skill 文件位置: <code style={{ color: "var(--section-title-color)" }}>{selectedSkill.installPath}</code></div>
+            <div>{t("skills.file_location", "Skill 文件位置")}: <code style={{ color: "var(--section-title-color)" }}>{selectedSkill.installPath}</code></div>
             <div style={styles.bannerTip}>
-              ZIP 文件请放入 skills/ 文件夹，系统每 30 秒自动扫描检测
+              {t("skills.zip_hint", "ZIP 文件请放入 skills/ 文件夹，系统每 30 秒自动扫描检测")}
             </div>
           </div>
 
-          <div style={styles.sectionTitle}>版本管理</div>
+          <div style={styles.sectionTitle}>{t("skills.version_management", "版本管理")}</div>
           <div style={styles.versionBox}>
             <div style={styles.infoRow}>
-              <span style={styles.infoLabel}>当前版本</span>
+              <span style={styles.infoLabel}>{t("skills.current_version", "当前版本")}</span>
               <span style={styles.infoValue}>v{selectedSkill.version}</span>
             </div>
             <div style={styles.infoRow}>
-              <span style={styles.infoLabel}>最新版本</span>
+              <span style={styles.infoLabel}>{t("skills.latest_version", "最新版本")}</span>
               <span style={styles.infoValue}>
                 {updateInfo[selectedSkill.id]?.latestVersion || selectedSkill.latestVersion
                   ? `v${updateInfo[selectedSkill.id]?.latestVersion || selectedSkill.latestVersion}`
-                  : "未检查"}
+                  : t("skills.not_checked", "未检查")}
                 {(selectedSkill.updateAvailable || updateInfo[selectedSkill.id]?.updateAvailable) && (
-                  <span style={{ color: "var(--accent)", marginLeft: "8px", fontWeight: "bold" }}>🆕 有更新</span>
+                  <span style={{ color: "var(--accent)", marginLeft: "8px", fontWeight: "bold" }}>🆕 {t("skills.has_update", "有更新")}</span>
                 )}
               </span>
             </div>
@@ -1110,7 +1112,7 @@ export default function SkillsConfig() {
                 onClick={handleCheckUpdates}
                 disabled={checkingUpdates}
               >
-                {checkingUpdates ? "检查中..." : "检查更新"}
+                {checkingUpdates ? t("skills.checking", "检查中...") : t("skills.check_update", "检查更新")}
               </button>
               {(selectedSkill.updateAvailable || updateInfo[selectedSkill.id]?.updateAvailable) && (
                 <button
@@ -1121,40 +1123,40 @@ export default function SkillsConfig() {
                   onClick={() => handleUpgradeSkill(selectedSkill.id)}
                   disabled={!!upgrading[selectedSkill.id]}
                 >
-                  {upgrading[selectedSkill.id] ? "升级中..." : "一键升级"}
+                  {upgrading[selectedSkill.id] ? t("skills.upgrading", "升级中...") : t("skills.one_click_upgrade", "一键升级")}
                 </button>
               )}
             </div>
           </div>
 
-          <div style={styles.sectionTitle}>基本信息</div>
+          <div style={styles.sectionTitle}>{t("skills.basic_info", "基本信息")}</div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>作者</span>
-            <span style={styles.infoValue}>{selectedSkill.author || "未知"}</span>
+            <span style={styles.infoLabel}>{t("skills.author", "作者")}</span>
+            <span style={styles.infoValue}>{selectedSkill.author || t("skills.unknown_type", "未知")}</span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>分类</span>
+            <span style={styles.infoLabel}>{t("skills.category", "分类")}</span>
             <span style={styles.infoValue}>{selectedSkill.category}</span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>版本</span>
+            <span style={styles.infoLabel}>{t("skills.version", "版本")}</span>
             <span style={styles.infoValue}>{selectedSkill.version}</span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>主页</span>
+            <span style={styles.infoLabel}>{t("skills.homepage", "主页")}</span>
             <span style={styles.infoValue}>{selectedSkill.homepage ? (
               <a href={selectedSkill.homepage} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>{selectedSkill.homepage}</a>
             ) : "-"}</span>
           </div>
           {selectedSkill.license && (
             <div style={styles.infoRow}>
-              <span style={styles.infoLabel}>许可证</span>
+              <span style={styles.infoLabel}>{t("skills.license", "许可证")}</span>
               <span style={styles.infoValue}>{selectedSkill.license}</span>
             </div>
           )}
           {selectedSkill.keywords.length > 0 && (
             <div style={styles.infoRow}>
-              <span style={styles.infoLabel}>关键词</span>
+              <span style={styles.infoLabel}>{t("skills.keywords", "关键词")}</span>
               <span style={styles.infoValue}>
                 {selectedSkill.keywords.map((k, i) => (
                   <span key={i} style={styles.triggerChip}>{k}</span>
@@ -1163,9 +1165,9 @@ export default function SkillsConfig() {
             </div>
           )}
 
-          <div style={styles.sectionTitle}>触发条件</div>
+          <div style={styles.sectionTitle}>{t("skills.trigger_conditions", "触发条件")}</div>
           {selectedSkill.triggers.length === 0 ? (
-            <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>无特定触发条件</div>
+            <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>{t("skills.no_triggers", "无特定触发词")}</div>
           ) : (
             selectedSkill.triggers.map((t, i) => (
               <div key={i} style={styles.infoRow}>
@@ -1177,9 +1179,9 @@ export default function SkillsConfig() {
             ))
           )}
 
-          <div style={styles.sectionTitle}>运行状态</div>
+          <div style={styles.sectionTitle}>{t("skills.runtime_status", "运行状态")}</div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>健康检查</span>
+            <span style={styles.infoLabel}>{t("skills.health_check", "健康检查")}</span>
             <span style={{
               ...styles.infoValue,
               color: selectedSkill.lifecycle.healthCheck
@@ -1187,22 +1189,22 @@ export default function SkillsConfig() {
                 : "var(--text-muted)",
             }}>
               {selectedSkill.lifecycle.healthCheck
-                ? `${healthStatusIcon(selectedSkill.lifecycle.healthCheck.healthy, selectedSkill.lifecycle.healthCheck.warnings)} ${healthStatusText(selectedSkill.lifecycle.healthCheck.healthy, selectedSkill.lifecycle.healthCheck.warnings)}`
-                : "未检查"}
+                ? `${healthStatusIcon(selectedSkill.lifecycle.healthCheck.healthy, selectedSkill.lifecycle.healthCheck.warnings)} ${healthStatusText(selectedSkill.lifecycle.healthCheck.healthy, selectedSkill.lifecycle.healthCheck.warnings, t)}`
+                : t("skills.not_checked", "未检查")}
             </span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>上次检查</span>
+            <span style={styles.infoLabel}>{t("skills.last_check", "上次检查")}</span>
             <span style={styles.infoValue}>
-              {selectedSkill.lifecycle.healthCheck?.lastCheck || "未检查"}
+              {selectedSkill.lifecycle.healthCheck?.lastCheck || t("skills.not_checked", "未检查")}
             </span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>调用次数</span>
+            <span style={styles.infoLabel}>{t("skills.invocation_count", "调用次数")}</span>
             <span style={styles.infoValue}>{selectedSkill.stats.invocationCount}</span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>成功率</span>
+            <span style={styles.infoLabel}>{t("skills.success_rate", "成功率")}</span>
             <span style={styles.infoValue}>
               {selectedSkill.stats.invocationCount > 0
                 ? `${Math.round((selectedSkill.stats.successCount / selectedSkill.stats.invocationCount) * 100)}%`
@@ -1210,7 +1212,7 @@ export default function SkillsConfig() {
             </span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>平均响应时间</span>
+            <span style={styles.infoLabel}>{t("skills.avg_response_time", "平均响应时间")}</span>
             <span style={styles.infoValue}>
               {selectedSkill.stats.averageDuration > 0
                 ? `${selectedSkill.stats.averageDuration}ms`
@@ -1218,13 +1220,13 @@ export default function SkillsConfig() {
             </span>
           </div>
           <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>配置状态</span>
+            <span style={styles.infoLabel}>{t("skills.config_status", "配置状态")}</span>
             <span style={{
               ...styles.infoValue,
               color: configStatusColor(getConfigStatus(selectedSkill)),
             }}>
               <span style={{ ...styles.statusDot, background: configStatusColor(getConfigStatus(selectedSkill)), marginRight: "6px", verticalAlign: "middle" }} />
-              {configStatusText(getConfigStatus(selectedSkill))}
+              {configStatusText(getConfigStatus(selectedSkill), t)}
             </span>
           </div>
           <div style={{ marginTop: "8px" }}>
@@ -1236,14 +1238,14 @@ export default function SkillsConfig() {
               onClick={() => handleHealthCheck(selectedSkill.id)}
               disabled={!!healthChecking[selectedSkill.id]}
             >
-              {healthChecking[selectedSkill.id] ? "检查中..." : "执行健康检查"}
+              {healthChecking[selectedSkill.id] ? t("skills.checking", "检查中...") : t("skills.run_health_check", "执行健康检查")}
             </button>
           </div>
 
           {(selectedSkill.lifecycle.healthCheck?.errors?.length ?? 0) > 0 && (
             <>
               <div style={{ color: "var(--error)", fontSize: "12px", marginTop: "12px", fontWeight: "bold" }}>
-                错误详情
+                {t("skills.error_details", "错误详情")}
               </div>
               {selectedSkill.lifecycle.healthCheck?.errors.map((e, i) => (
                 <div key={i} style={{ color: "var(--error)", fontSize: "11px", marginTop: "4px", display: "flex", alignItems: "center", gap: "4px" }}>
@@ -1257,13 +1259,13 @@ export default function SkillsConfig() {
                           configSection.scrollIntoView({ behavior: "smooth" });
                         }
                       } else if (e.toLowerCase().includes("depend") || e.toLowerCase().includes("install")) {
-                        setMessage({ type: "warning", text: `建议: 请先安装缺失的依赖项 - ${e}` });
+                        setMessage({ type: "warning", text: t("skills.suggest_install_dep", "建议: 请先安装缺失的依赖项 - {0}").replace("{0}", e) });
                       } else {
-                        setMessage({ type: "warning", text: `建议: ${e}` });
+                        setMessage({ type: "warning", text: t("skills.suggestion", "建议: {0}").replace("{0}", e) });
                       }
                     }}
                   >
-                    修复建议
+                    {t("skills.fix_suggestion", "修复建议")}
                   </button>
                 </div>
               ))}
@@ -1273,7 +1275,7 @@ export default function SkillsConfig() {
           {(selectedSkill.lifecycle.healthCheck?.warnings?.length ?? 0) > 0 && (
             <>
               <div style={{ color: "var(--warning)", fontSize: "12px", marginTop: "12px", fontWeight: "bold" }}>
-                警告详情
+                {t("skills.warning_details", "警告详情")}
               </div>
               {selectedSkill.lifecycle.healthCheck?.warnings?.map((w, i) => (
                 <div key={i} style={{ color: "var(--warning)", fontSize: "11px", marginTop: "2px" }}>
@@ -1283,11 +1285,11 @@ export default function SkillsConfig() {
             </>
           )}
 
-          <div style={styles.sectionTitle}>技术详情</div>
+          <div style={styles.sectionTitle}>{t("skills.tech_details", "技术详情")}</div>
           <div style={styles.techDetailBox}>
-            <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: "bold" }}>依赖项</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", fontWeight: "bold" }}>{t("skills.dependencies", "依赖项")}</div>
             {selectedSkill.requires.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>无依赖</div>
+              <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>{t("skills.no_deps", "无依赖项")}</div>
             ) : (
               selectedSkill.requires.map((d, i) => {
                 const isMissing = selectedSkill.lifecycle.healthCheck?.missingDependencies?.includes(d.name);
@@ -1300,7 +1302,7 @@ export default function SkillsConfig() {
                       {d.name}
                     </span>
                     <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>
-                      {d.version} {d.optional ? "(可选)" : "(必需)"}
+                      {d.version} {d.optional ? t("skills.optional", "(可选)") : t("skills.required", "(必需)")}
                     </span>
                   </div>
                 );
@@ -1311,7 +1313,7 @@ export default function SkillsConfig() {
               const sandbox = getSandboxPolicy(selectedSkill.body.hooks);
               return (
                 <>
-                  <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "12px", marginBottom: "8px", fontWeight: "bold" }}>沙箱策略</div>
+                  <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "12px", marginBottom: "8px", fontWeight: "bold" }}>{t("skills.sandbox_policy", "沙箱策略")}</div>
                   <div>
                     <span style={sandbox.allowNetwork ? styles.sandboxChip : styles.sandboxChipOff}>
                       {sandbox.allowNetwork ? "✓" : "✗"} allowNetwork
@@ -1327,32 +1329,32 @@ export default function SkillsConfig() {
               );
             })()}
 
-            <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "12px", marginBottom: "4px", fontWeight: "bold" }}>脚本类型</div>
+            <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "12px", marginBottom: "4px", fontWeight: "bold" }}>{t("skills.script_type", "脚本类型")}</div>
             <div style={{ color: "var(--text-primary)", fontSize: "12px" }}>
               {getScriptType(selectedSkill.body.scripts)}
             </div>
           </div>
 
-          <div style={styles.sectionTitle}>使用方法</div>
+          <div style={styles.sectionTitle}>{t("skills.usage", "使用方法")}</div>
           {selectedSkill.body.instructions ? (
             <div>
               <div style={styles.instructionsBlock} dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.body.instructions) }} />
               {selectedSkill.i18n?.instructions_zh && selectedSkill.i18n.instructions_zh !== selectedSkill.body.instructions && (
                 <div style={{ ...styles.instructionsBlock, borderLeft: "3px solid var(--primary)", marginTop: "8px" }}>
-                  <div style={{ fontSize: "10px", color: "var(--primary)", marginBottom: "6px", fontWeight: "bold" }}>中文翻译</div>
+                  <div style={{ fontSize: "10px", color: "var(--primary)", marginBottom: "6px", fontWeight: "bold" }}>{t("skills.zh_translation", "中文翻译")}</div>
                   <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.i18n.instructions_zh) }} />
                 </div>
               )}
             </div>
           ) : (
             <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "4px" }}>
-              该技能未提供详细使用说明。
+              {t("skills.no_instructions", "该技能未提供详细使用说明。")}
             </div>
           )}
 
           {selectedSkill.body.examples.length > 0 && (
             <>
-              <div style={styles.sectionTitle}>使用示例</div>
+              <div style={styles.sectionTitle}>{t("skills.examples", "使用示例")}</div>
               <div style={styles.examplesBlock}>
                 {selectedSkill.body.examples.map((ex, i) => (
                   <div key={i} style={styles.exampleItem}>
@@ -1371,17 +1373,17 @@ export default function SkillsConfig() {
           {configKeys.length > 0 && (
             <>
               <div id="skill-config-section" style={styles.sectionTitle}>
-                技能配置
-                {hasEnvConfig && <span style={{ fontSize: "10px", color: "var(--warning)", marginLeft: "8px" }}>需要设置</span>}
+                {t("skills.config", "技能配置")}
+                {hasEnvConfig && <span style={{ fontSize: "10px", color: "var(--warning)", marginLeft: "8px" }}>{t("skills.needs_setup", "需要设置")}</span>}
               </div>
               {primaryEnv && (
                 <div style={{ ...styles.configNoConfig, color: "var(--warning)", marginBottom: "8px", textAlign: "left" }}>
-                  <span style={{ fontWeight: "bold" }}>{primaryEnv}</span> 为必需配置项。请填入你的 API 密钥。
+                  <span style={{ fontWeight: "bold" }}>{primaryEnv}</span> {t("skills.primary_env_required", "为必需配置项。请填入你的 API 密钥。")}
                 </div>
               )}
               {requiredBins.length > 0 && (
                 <div style={{ ...styles.configNoConfig, color: "var(--success)", marginBottom: "8px", textAlign: "left" }}>
-                  需要系统工具: {requiredBins.join(", ")}
+                  {t("skills.requires_system_tools", "需要系统工具")}: {requiredBins.join(", ")}
                 </div>
               )}
               <div style={styles.configForm}>
@@ -1415,7 +1417,7 @@ export default function SkillsConfig() {
                                 }
                               }}
                             >
-                              直接输入
+                              {t("skills.direct_input", "直接输入")}
                             </button>
                             <button
                               style={mode === "env" ? styles.tabActive : styles.tab}
@@ -1426,7 +1428,7 @@ export default function SkillsConfig() {
                                 }
                               }}
                             >
-                              环境变量
+                              {t("skills.env_variable", "环境变量")}
                             </button>
                           </div>
                           {mode === "direct" ? (
@@ -1441,14 +1443,14 @@ export default function SkillsConfig() {
                                 onChange={(e) =>
                                   setConfigValues((prev) => ({ ...prev, [key]: e.target.value }))
                                 }
-                                placeholder={`设置 ${key}...`}
+                                placeholder={t("skills.set_key", "设置 {0}...").replace("{0}", key)}
                               />
                               <div style={{
                                 fontSize: "11px",
                                 marginTop: "4px",
                                 color: configValues[key] ? "var(--success)" : "var(--text-muted)",
                               }}>
-                                {configValues[key] ? "✓ 已配置 (通过直接输入)" : "✗ 未配置"}
+                                {configValues[key] ? t("skills.configured_direct", "✓ 已配置 (通过直接输入)") : t("skills.not_configured", "✗ 未配置")}
                               </div>
                             </>
                           ) : (
@@ -1458,11 +1460,11 @@ export default function SkillsConfig() {
                                 background: meta?.currentSource === "env" ? "var(--success-bg)" : "var(--error-bg)",
                                 color: meta?.currentSource === "env" ? "var(--success)" : "var(--error)",
                               }}>
-                                系统环境变量: {key}
+                                {t("skills.system_env_var", "系统环境变量")}: {key}
                                 <br />
                                 {meta?.currentSource === "env"
-                                  ? `✓ 已通过环境变量配置${meta.envValue ? ` (${meta.envValue.slice(0, 4)}****)` : ""}`
-                                  : "✗ 未设置 - 请在 .env 文件中添加"}
+                                  ? t("skills.configured_via_env", "✓ 已通过环境变量配置{0}").replace("{0}", meta.envValue ? ` (${meta.envValue.slice(0, 4)}****)` : "")
+                                  : t("skills.env_not_set", "✗ 未设置 - 请在 .env 文件中添加")}
                               </div>
                               {meta?.currentSource !== "env" && (
                                 <div style={{
@@ -1474,7 +1476,7 @@ export default function SkillsConfig() {
                                   borderRadius: "4px",
                                   border: "1px dashed var(--border-light)",
                                 }}>
-                                  提示: 在项目根目录的 .env 文件中添加:<br />
+                                  {t("skills.env_hint", "提示: 在项目根目录的 .env 文件中添加")}:<br />
                                   <code style={{ color: "var(--text-primary)" }}>{key}=your_api_key</code>
                                 </div>
                               )}
@@ -1499,7 +1501,7 @@ export default function SkillsConfig() {
                 })}
                 <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                   <button style={styles.saveButton} onClick={handleSaveConfig}>
-                    {hasEnvConfig ? "保存并激活技能" : "保存配置"}
+                    {hasEnvConfig ? t("skills.save_and_activate", "保存并激活技能") : t("skills.save_config", "保存配置")}
                   </button>
                   <button
                     style={{
@@ -1509,19 +1511,19 @@ export default function SkillsConfig() {
                     onClick={() => handleValidateConfig(selectedSkill.id)}
                     disabled={!!validating[selectedSkill.id]}
                   >
-                    {validating[selectedSkill.id] ? "验证中..." : "验证配置"}
+                    {validating[selectedSkill.id] ? t("skills.validating", "验证中...") : t("skills.validate_config", "验证配置")}
                   </button>
                 </div>
                 {validationResults[selectedSkill.id] && (
                   <div>
                     {validationResults[selectedSkill.id]!.valid && validationResults[selectedSkill.id]!.errors.length === 0 && validationResults[selectedSkill.id]!.warnings.length === 0 && (
                       <div style={styles.validationSuccess}>
-                        ✓ 配置有效
+                        {t("skills.config_valid", "✓ 配置有效")}
                       </div>
                     )}
                     {!validationResults[selectedSkill.id]!.valid && (
                       <div style={styles.validationError}>
-                        ✗ 配置无效:
+                        {t("skills.config_invalid", "✗ 配置无效")}:
                         <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
                           {validationResults[selectedSkill.id]!.errors.map((e, i) => (
                             <li key={i}>{e}</li>
@@ -1531,7 +1533,7 @@ export default function SkillsConfig() {
                     )}
                     {validationResults[selectedSkill.id]!.warnings.length > 0 && (
                       <div style={styles.validationWarning}>
-                        ⚠ 警告:
+                        {t("skills.validation_warnings", "⚠ 警告")}:
                         <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
                           {validationResults[selectedSkill.id]!.warnings.map((w, i) => (
                             <li key={i}>{w}</li>
@@ -1547,9 +1549,9 @@ export default function SkillsConfig() {
 
           {configKeys.length === 0 && (
             <>
-              <div style={styles.sectionTitle}>技能配置</div>
+              <div style={styles.sectionTitle}>{t("skills.config", "技能配置")}</div>
               <div style={styles.configNoConfig}>
-                该技能无需额外配置。
+                {t("skills.no_config", "无可用配置项")}
               </div>
             </>
           )}
@@ -1557,8 +1559,8 @@ export default function SkillsConfig() {
       ) : (
         <div style={styles.placeholder}>
           {skills.length === 0
-            ? "暂无已注册技能。将 .SKILL.md 文件放入 skills/ 文件夹即可自动发现。"
-            : "请从左侧选择一个技能查看详情。"}
+            ? t("skills.no_skills_discover", "暂无已注册技能。将 .SKILL.md 文件放入 skills/ 文件夹即可自动发现。")
+            : t("skills.select_skill", "请从左侧选择一个技能查看详情。")}
         </div>
       )}
     </div>

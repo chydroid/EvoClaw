@@ -351,9 +351,14 @@ export class AgentRouter {
     if (!fs.existsSync(filePath)) {
       return new AgentRouter();
     }
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const config = JSON.parse(raw) as RouterConfig;
-    return new AgentRouter(config);
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const config = JSON.parse(raw) as RouterConfig;
+      return new AgentRouter(config);
+    } catch (err) {
+      console.warn(`[AgentRouter] Failed to load config from ${filePath}, using defaults:`, err instanceof Error ? err.message : err);
+      return new AgentRouter();
+    }
   }
 
   // ── Internal ──

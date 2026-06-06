@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { showToast, ConfirmModal, Spinner } from "./shared";
+import { useTranslation } from "./i18n";
 
 interface CanvasFile {
   filename: string;
@@ -449,21 +450,21 @@ const st = {
   } as React.CSSProperties,
 };
 
-function formatTime(ts: number): string {
+function formatTime(ts: number, t: (key: string, fallback?: string) => string): string {
   const d = new Date(ts);
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "刚刚";
-  if (diffMin < 60) return `${diffMin}分钟前`;
+  if (diffMin < 1) return t("sessions.just_now", "刚刚");
+  if (diffMin < 60) return t("sessions.minutes_ago", "{0}分钟前").replace("{0}", String(diffMin));
   const diffH = Math.floor(diffMin / 60);
-  if (diffH < 24) return `${diffH}小时前`;
+  if (diffH < 24) return t("sessions.hours_ago", "{0}小时前").replace("{0}", String(diffH));
   const diffD = Math.floor(diffH / 24);
-  if (diffD < 7) return `${diffD}天前`;
+  if (diffD < 7) return t("sessions.days_ago", "{0}天前").replace("{0}", String(diffD));
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function renderA2UIChart(type: string, data: Record<string, any>): React.ReactNode {
+function renderA2UIChart(type: string, data: Record<string, any>, t: (key: string, fallback?: string) => string): React.ReactNode {
   if (type === "bar" && data.labels && data.values) {
     const max = Math.max(...data.values, 1);
     return (
@@ -528,10 +529,11 @@ function renderA2UIChart(type: string, data: Record<string, any>): React.ReactNo
       </svg>
     );
   }
-  return <div style={{ color: "var(--text-muted)", fontSize: 12 }}>不支持的图表类型</div>;
+  return <div style={{ color: "var(--text-muted)", fontSize: 12 }}>{t("canvas.unsupported_chart", "不支持的图表类型")}</div>;
 }
 
 export function CanvasPage() {
+  const { t } = useTranslation();
   const [projects, setProjects] = useState<CanvasProject[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -566,7 +568,7 @@ export function CanvasPage() {
         setProjects(data.projects || []);
       }
     } catch {
-      showToast("加载项目列表失败", "error");
+      showToast(t("canvas.load_projects_fail", "加载项目列表失败"), "error");
     } finally {
       setLoading(false);
     }
@@ -613,7 +615,7 @@ export function CanvasPage() {
         setEditorContent(text);
       }
     } catch {
-      showToast("加载文件失败", "error");
+      showToast(t("canvas.load_file_fail", "加载文件失败"), "error");
     }
   }, []);
 
@@ -627,10 +629,10 @@ export function CanvasPage() {
         } catch {}
       };
       es.onerror = () => {
-        setStatusMsg("SSE 连接断开，尝试重连...");
+        setStatusMsg(t("canvas.sse_disconnected", "SSE 连接断开，尝试重连..."));
       };
       sseRef.current = es;
-      setStatusMsg("A2UI 模式已激活，SSE 已连接");
+      setStatusMsg(t("canvas.a2ui_activated", "A2UI 模式已激活，SSE 已连接"));
       return () => {
         es.close();
         sseRef.current = null;
@@ -658,7 +660,7 @@ export function CanvasPage() {
       case "addButton":
         setA2uiElements((prev) => [
           ...prev,
-          { id: cmd.id || `btn-${Date.now()}`, type: "button", props: { label: cmd.label || "按钮" } },
+          { id: cmd.id || `btn-${Date.now()}`, type: "button", props: { label: cmd.label || t("canvas.button_default", "按钮") } },
         ]);
         break;
       case "addInput":
@@ -715,12 +717,12 @@ export function CanvasPage() {
         setSelectedId(proj.id || proj.project?.id);
         setShowNewProject(false);
         setNewProjectName("");
-        showToast("项目已创建", "success");
+        showToast(t("canvas.project_created", "项目已创建"), "success");
       } else {
-        showToast("创建项目失败", "error");
+        showToast(t("canvas.create_project_fail", "创建项目失败"), "error");
       }
     } catch {
-      showToast("创建项目失败", "error");
+      showToast(t("canvas.create_project_fail", "创建项目失败"), "error");
     }
   }
 
@@ -732,12 +734,12 @@ export function CanvasPage() {
           setSelectedId(null);
         }
         await fetchProjects();
-        showToast("项目已删除", "success");
+        showToast(t("canvas.project_deleted", "项目已删除"), "success");
       } else {
-        showToast("删除项目失败", "error");
+        showToast(t("canvas.delete_project_fail", "删除项目失败"), "error");
       }
     } catch {
-      showToast("删除项目失败", "error");
+      showToast(t("canvas.delete_project_fail", "删除项目失败"), "error");
     }
     setDeleteConfirm(null);
   }
@@ -752,14 +754,14 @@ export function CanvasPage() {
         body: JSON.stringify({ content: editorContent }),
       });
       if (res.ok) {
-        showToast("文件已保存", "success");
+        showToast(t("canvas.file_saved", "文件已保存"), "success");
         await fetchProjects();
-        setStatusMsg(`已保存 ${activeFile}`);
+        setStatusMsg(t("canvas.saved_file", "已保存 {0}").replace("{0}", activeFile));
       } else {
-        showToast("保存失败", "error");
+        showToast(t("canvas.save_fail", "保存失败"), "error");
       }
     } catch {
-      showToast("保存失败", "error");
+      showToast(t("canvas.save_fail", "保存失败"), "error");
     } finally {
       setSaving(false);
     }
@@ -773,7 +775,7 @@ export function CanvasPage() {
         if (iframeRef.current) iframeRef.current.src = src;
       }, 50);
     }
-    setStatusMsg("预览已刷新");
+    setStatusMsg(t("canvas.preview_refreshed", "预览已刷新"));
   }
 
   async function evalJS() {
@@ -789,15 +791,15 @@ export function CanvasPage() {
       if (res.ok) {
         const data = await res.json();
         setEvalResult(typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2));
-        showToast("执行完成", "success");
+        showToast(t("canvas.eval_complete", "执行完成"), "success");
       } else {
         const text = await res.text();
         setEvalResult(`Error: ${text}`);
-        showToast("执行失败", "error");
+        showToast(t("canvas.eval_fail", "执行失败"), "error");
       }
     } catch (e: any) {
       setEvalResult(`Error: ${e.message}`);
-      showToast("执行失败", "error");
+      showToast(t("canvas.eval_fail", "执行失败"), "error");
     } finally {
       setEvalLoading(false);
     }
@@ -807,7 +809,7 @@ export function CanvasPage() {
     if ((window as any).openclawSendUserAction) {
       (window as any).openclawSendUserAction({ action, elementId, value });
     }
-    setStatusMsg(`用户操作: ${action} on ${elementId}`);
+    setStatusMsg(t("canvas.user_action", "用户操作: {0} on {1}").replace("{0}", action).replace("{1}", elementId));
   }
 
   function renderA2UI() {
@@ -815,7 +817,7 @@ export function CanvasPage() {
       return (
         <div style={st.a2uiEmpty}>
           <span style={{ fontSize: 28, opacity: 0.3 }}>◉</span>
-          <span>等待 A2UI 推送...</span>
+          <span>{t("canvas.waiting_a2ui", "等待 A2UI 推送...")}</span>
         </div>
       );
     }
@@ -872,7 +874,7 @@ export function CanvasPage() {
             case "chart":
               return (
                 <div key={el.id} style={st.a2uiCard}>
-                  {renderA2UIChart(el.props.chartType, el.props.data)}
+                  {renderA2UIChart(el.props.chartType, el.props.data, t)}
                 </div>
               );
             default:
@@ -897,9 +899,9 @@ export function CanvasPage() {
     <div style={st.container}>
       {deleteConfirm && (
         <ConfirmModal
-          title="删除项目"
-          message={`确定要删除此项目吗？此操作不可撤销。`}
-          confirmLabel="删除"
+          title={t("canvas.delete_project", "删除项目")}
+          message={t("canvas.confirm_delete_project", "确定要删除此项目吗？此操作不可撤销。")}
+          confirmLabel={t("app.delete", "删除")}
           danger
           onConfirm={() => deleteProject(deleteConfirm)}
           onCancel={() => setDeleteConfirm(null)}
@@ -909,18 +911,18 @@ export function CanvasPage() {
       {evalModalOpen && (
         <div style={st.evalModal} onClick={() => setEvalModalOpen(false)}>
           <div style={st.evalCard} onClick={(e) => e.stopPropagation()}>
-            <div style={st.evalTitle}>执行 JavaScript</div>
+            <div style={st.evalTitle}>{t("canvas.eval_js", "执行 JavaScript")}</div>
             <textarea
               style={st.evalTextarea}
               value={evalScript}
               onChange={(e) => setEvalScript(e.target.value)}
-              placeholder="输入要执行的 JavaScript 代码..."
+              placeholder={t("canvas.eval_placeholder", "输入要执行的 JavaScript 代码...")}
               autoFocus
             />
             <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
-              <button style={st.btnSecondary} onClick={() => setEvalModalOpen(false)}>取消</button>
+              <button style={st.btnSecondary} onClick={() => setEvalModalOpen(false)}>{t("app.cancel", "取消")}</button>
               <button style={st.btnPrimary} onClick={evalJS} disabled={evalLoading}>
-                {evalLoading ? "执行中..." : "执行"}
+                {evalLoading ? t("canvas.executing", "执行中...") : t("canvas.execute", "执行")}
               </button>
             </div>
             {evalResult !== null && (
@@ -933,7 +935,7 @@ export function CanvasPage() {
       {!fullscreen && (
         <div style={st.leftPanel}>
           <div style={st.panelHeader}>
-            <span>项目</span>
+            <span>{t("canvas.projects", "项目")}</span>
           </div>
           <div style={st.projectList}>
             {projects.map((p) => (
@@ -956,7 +958,7 @@ export function CanvasPage() {
                 }}
               >
                 <span style={selectedId === p.id ? st.projectNameActive : st.projectName}>{p.name}</span>
-                <span style={st.projectTime}>{formatTime(p.updatedAt)}</span>
+                <span style={st.projectTime}>{formatTime(p.updatedAt, t)}</span>
                 <button
                   className="del-btn"
                   style={st.deleteBtn}
@@ -964,7 +966,7 @@ export function CanvasPage() {
                     e.stopPropagation();
                     setDeleteConfirm(p.id);
                   }}
-                  title="删除项目"
+                  title={t("canvas.delete_project", "删除项目")}
                 >
                   ✕
                 </button>
@@ -972,7 +974,7 @@ export function CanvasPage() {
             ))}
             {projects.length === 0 && (
               <div style={{ color: "var(--text-muted)", fontSize: 12, padding: "16px 10px", textAlign: "center" }}>
-                暂无项目
+                {t("canvas.no_projects", "暂无项目")}
               </div>
             )}
           </div>
@@ -986,17 +988,17 @@ export function CanvasPage() {
                   if (e.key === "Enter") createProject();
                   if (e.key === "Escape") { setShowNewProject(false); setNewProjectName(""); }
                 }}
-                placeholder="项目名称"
+                placeholder={t("canvas.project_name_placeholder", "项目名称")}
                 autoFocus
               />
               <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-                <button style={st.btnPrimary} onClick={createProject}>创建</button>
-                <button style={st.btnSecondary} onClick={() => { setShowNewProject(false); setNewProjectName(""); }}>取消</button>
+                <button style={st.btnPrimary} onClick={createProject}>{t("canvas.create", "创建")}</button>
+                <button style={st.btnSecondary} onClick={() => { setShowNewProject(false); setNewProjectName(""); }}>{t("app.cancel", "取消")}</button>
               </div>
             </div>
           ) : (
             <button style={st.addBtn} onClick={() => setShowNewProject(true)}>
-              + 新建项目
+              {t("canvas.new_project", "+ 新建项目")}
             </button>
           )}
         </div>
@@ -1004,13 +1006,13 @@ export function CanvasPage() {
 
       <div style={st.centerPanel}>
         <div style={st.toolbar}>
-          <button style={st.toolBtn(false)} onClick={refreshIframe} title="刷新预览">⟳ 刷新</button>
+          <button style={st.toolBtn(false)} onClick={refreshIframe} title={t("canvas.refresh", "刷新预览")}>{t("canvas.refresh_btn", "⟳ 刷新")}</button>
           <button
             style={st.toolBtn(fullscreen)}
             onClick={() => setFullscreen(!fullscreen)}
-            title={fullscreen ? "退出全屏" : "全屏"}
+            title={fullscreen ? t("canvas.exit_fullscreen", "退出全屏") : t("canvas.fullscreen", "全屏")}
           >
-            {fullscreen ? "⤓ 退出全屏" : "⤢ 全屏"}
+            {fullscreen ? t("canvas.exit_fullscreen_label", "⤓ 退出全屏") : t("canvas.fullscreen_label", "⤢ 全屏")}
           </button>
           <button
             style={st.toolBtn(a2uiMode)}
@@ -1021,16 +1023,16 @@ export function CanvasPage() {
                 setA2uiTitle("");
               }
             }}
-            title="A2UI 模式"
+            title={t("canvas.a2ui_mode", "A2UI 模式")}
           >
             ◉ A2UI
           </button>
           <div style={{ flex: 1 }} />
           {!rightCollapsed && (
-            <button style={st.btnSmall} onClick={() => setRightCollapsed(true)}>▸ 收起编辑器</button>
+            <button style={st.btnSmall} onClick={() => setRightCollapsed(true)}>{t("canvas.collapse_editor", "▸ 收起编辑器")}</button>
           )}
           {rightCollapsed && (
-            <button style={st.btnSmall} onClick={() => setRightCollapsed(false)}>◂ 展开编辑器</button>
+            <button style={st.btnSmall} onClick={() => setRightCollapsed(false)}>{t("canvas.expand_editor", "◂ 展开编辑器")}</button>
           )}
         </div>
 
@@ -1043,7 +1045,7 @@ export function CanvasPage() {
           {!selectedId ? (
             <div style={st.emptyState}>
               <span style={{ fontSize: 36, opacity: 0.2 }}>⊞</span>
-              <span>选择或创建一个项目开始</span>
+              <span>{t("canvas.select_or_create", "选择或创建一个项目开始")}</span>
             </div>
           ) : a2uiMode ? (
             renderA2UI()
@@ -1053,22 +1055,22 @@ export function CanvasPage() {
               style={st.iframe}
               sandbox="allow-scripts allow-same-origin"
               src={iframeSrc}
-              title="Canvas 预览"
+              title={t("canvas.preview", "Canvas 预览")}
             />
           )}
         </div>
 
         <div style={st.statusBar}>
           {statusMsg && <span>{statusMsg}</span>}
-          {selectedProject && <span>项目: {selectedProject.name}</span>}
-          {a2uiMode && <span style={{ color: "var(--accent)" }}>A2UI 已连接</span>}
+          {selectedProject && <span>{t("canvas.project_label", "项目: {0}").replace("{0}", selectedProject.name)}</span>}
+          {a2uiMode && <span style={{ color: "var(--accent)" }}>{t("canvas.a2ui_connected", "A2UI 已连接")}</span>}
         </div>
       </div>
 
       {!fullscreen && (
         <div style={st.rightPanel(rightCollapsed)}>
           <div style={st.panelHeader}>
-            <span>代码编辑</span>
+            <span>{t("canvas.code_editor", "代码编辑")}</span>
           </div>
           {selectedProject ? (
             <>
@@ -1095,10 +1097,10 @@ export function CanvasPage() {
                 />
                 <div style={st.editorFooter}>
                   <button style={st.btnPrimary} onClick={saveFile} disabled={saving}>
-                    {saving ? "保存中..." : "保存"}
+                    {saving ? t("canvas.saving", "保存中...") : t("canvas.save", "保存")}
                   </button>
                   <button style={st.btnSecondary} onClick={() => setEvalModalOpen(true)}>
-                    执行JS
+                    {t("canvas.run_js", "执行JS")}
                   </button>
                   <span style={{ flex: 1 }} />
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{activeFile}</span>
@@ -1108,7 +1110,7 @@ export function CanvasPage() {
           ) : (
             <div style={st.emptyState}>
               <span style={{ fontSize: 24, opacity: 0.2 }}>📄</span>
-              <span>选择项目查看代码</span>
+              <span>{t("canvas.select_project_code", "选择项目查看代码")}</span>
             </div>
           )}
         </div>

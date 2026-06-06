@@ -459,6 +459,24 @@ export class EvoClawServer {
     this.logger.info("server", "Loading persisted configuration...");
     this.gateway.loadPersistedConfig();
 
+    // Connect channel message handler to agent
+    this.channelManager.setMessageHandler(async (msg) => {
+      try {
+        this.logger.info("channel", `Message from ${msg.channel}: ${msg.from} -> ${msg.text?.slice(0, 50)}`);
+        const sessionId = `${msg.channel}-${msg.from}`;
+        const result = await this.agentModelExecutor.chat(msg.text, {
+          sessionId,
+          channel: msg.channel,
+          peerId: msg.from,
+        });
+        if (result?.reply && msg.isDirect) {
+          await this.channelManager.sendMessage(msg.channel, msg.from, result.reply);
+        }
+      } catch (err) {
+        this.logger.error("channel", `Failed to handle channel message: ${err}`);
+      }
+    });
+
     this.logger.info("server", "Agent pool starting...");
     this.logger.info("server", "Agent pool initialized");
 

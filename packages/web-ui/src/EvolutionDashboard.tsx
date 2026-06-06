@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useTranslation } from "./i18n";
 
 interface EvolutionData {
   cycles: EvolutionCycleInfo[];
@@ -133,6 +134,7 @@ const DEFAULT_DATA: EvolutionData = {
 };
 
 export default function EvolutionDashboard() {
+  const { t } = useTranslation();
   const [data, setData] = useState<EvolutionData>(DEFAULT_DATA);
   const [learningEntries, setLearningEntries] = useState<LearningEntry[]>([]);
   const [learningSessions, setLearningSessions] = useState<LearningSession[]>([]);
@@ -226,16 +228,16 @@ export default function EvolutionDashboard() {
         body: JSON.stringify({ description: triggerDesc.trim() }),
       });
       if (res.ok) {
-        setFeedbackMsg("✅ 进化周期已触发，正在处理中...");
+        setFeedbackMsg(t("evo.trigger_success"));
         setTriggerDesc("");
         setShowTrigger(false);
         loadEvolutionData();
       } else {
         const err = await res.json().catch(() => ({}));
-        setFeedbackMsg(`❌ 触发失败: ${(err as any).error || res.statusText}`);
+        setFeedbackMsg(t("evo.trigger_fail").replace("{0}", (err as any).error || res.statusText));
       }
     } catch {
-      setFeedbackMsg("❌ 网络错误，无法触发进化");
+      setFeedbackMsg(t("evo.trigger_network_error"));
     } finally {
       setTriggering(false);
     }
@@ -249,13 +251,13 @@ export default function EvolutionDashboard() {
         body: JSON.stringify({ cycleId, adopted, comment }),
       });
       if (res.ok) {
-        setFeedbackMsg(adopted ? "✅ 已采纳该进化建议" : "❌ 已拒绝该进化建议");
+        setFeedbackMsg(adopted ? t("evo.adopted") : t("evo.rejected_feedback"));
         loadEvolutionData();
       } else {
-        setFeedbackMsg("❌ 反馈提交失败");
+        setFeedbackMsg(t("evo.feedback_submit_fail"));
       }
     } catch {
-      setFeedbackMsg("❌ 网络错误，无法提交反馈");
+      setFeedbackMsg(t("evo.feedback_network_error"));
     }
   }
 
@@ -291,27 +293,27 @@ export default function EvolutionDashboard() {
 
   const getTriggerLabel = (trigger: string) => {
     const labels: Record<string, string> = {
-      command_failed: "命令失败",
-      user_correction: "用户纠正",
-      capability_gap: "能力缺口",
-      api_failure: "外部失败",
-      knowledge_outdated: "知识过时",
-      pattern_improvement: "模式改进",
-      task_failure: "任务失败",
-      user_feedback: "用户反馈",
+      command_failed: t("evo.trigger_command_failed"),
+      user_correction: t("evo.trigger_user_correction"),
+      capability_gap: t("evo.trigger_capability_gap"),
+      api_failure: t("evo.trigger_api_failure"),
+      knowledge_outdated: t("evo.trigger_knowledge_outdated"),
+      pattern_improvement: t("evo.trigger_pattern_improvement"),
+      task_failure: t("evo.trigger_task_failure"),
+      user_feedback: t("evo.trigger_user_feedback"),
     };
     return labels[trigger] || trigger;
   };
 
   const getCategoryLabel = (category: string) => {
     const labels: Record<string, string> = {
-      error_fix: "错误修复",
-      correction: "纠正",
-      new_capability_needed: "新能力需求",
-      better_approach: "更优方法",
-      external_dependency: "外部依赖",
-      knowledge_update: "知识更新",
-      process_improvement: "流程改进",
+      error_fix: t("evo.cat_error_fix"),
+      correction: t("evo.cat_correction"),
+      new_capability_needed: t("evo.cat_new_capability"),
+      better_approach: t("evo.cat_better_approach"),
+      external_dependency: t("evo.cat_external_dependency"),
+      knowledge_update: t("evo.cat_knowledge_update"),
+      process_improvement: t("evo.cat_process_improvement"),
     };
     return labels[category] || category;
   };
@@ -325,7 +327,7 @@ export default function EvolutionDashboard() {
   return (
     <div style={s.container}>
       <div style={s.header}>
-        <h2 style={s.title}>🧬 进化仪表盘</h2>
+        <h2 style={s.title}>{t("evo.dashboard_title")}</h2>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <button
             onClick={() => setShowTrigger(!showTrigger)}
@@ -340,7 +342,7 @@ export default function EvolutionDashboard() {
               fontWeight: 600,
             }}
           >
-            🧬 触发进化
+            {t("evo.trigger_evolution")}
           </button>
           <button
             onClick={loadEvolutionData}
@@ -382,7 +384,7 @@ export default function EvolutionDashboard() {
               fontSize: "13px",
               outline: "none",
             }}
-            placeholder="描述进化需求，例如：优化 weather 技能的超时处理..."
+            placeholder={t("evo.trigger_placeholder")}
             value={triggerDesc}
             onChange={(e) => setTriggerDesc(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleTriggerEvolution()}
@@ -401,7 +403,7 @@ export default function EvolutionDashboard() {
               fontWeight: 600,
             }}
           >
-            {triggering ? "执行中..." : "执行"}
+            {triggering ? t("evo.executing") : t("evo.execute")}
           </button>
           <button
             onClick={() => setShowTrigger(false)}
@@ -415,7 +417,7 @@ export default function EvolutionDashboard() {
               fontSize: "12px",
             }}
           >
-            取消
+            {t("evo.cancel")}
           </button>
         </div>
       )}
@@ -440,30 +442,30 @@ export default function EvolutionDashboard() {
       <div style={s.summaryRow}>
         <div style={s.summaryCard}>
           <div style={s.summaryValue}>{data.summary.totalCycles}</div>
-          <div style={s.summaryLabel}>进化周期</div>
+          <div style={s.summaryLabel}>{t("evo.evolution_cycles")}</div>
         </div>
         <div style={s.summaryCard}>
           <div style={s.summaryValue}>{Math.round(data.summary.successRate * 100)}%</div>
-          <div style={s.summaryLabel}>成功率</div>
+          <div style={s.summaryLabel}>{t("evo.success_rate")}</div>
         </div>
         <div style={s.summaryCard}>
           <div style={s.summaryValue}>{learning?.totalEntries ?? 0}</div>
-          <div style={s.summaryLabel}>学习条目</div>
+          <div style={s.summaryLabel}>{t("evo.learning_entries")}</div>
         </div>
         <div style={s.summaryCard}>
           <div style={s.summaryValue}>{learning?.resolvedEntries ?? 0}</div>
-          <div style={s.summaryLabel}>已解决</div>
+          <div style={s.summaryLabel}>{t("evo.resolved")}</div>
         </div>
       </div>
 
       <div style={s.subTabs}>
-        <button style={subTabStyle(activeSubTab === "overview")} onClick={() => setActiveSubTab("overview")}>概览</button>
-        <button style={subTabStyle(activeSubTab === "cycles")} onClick={() => setActiveSubTab("cycles")}>周期 ({data.cycles.length})</button>
-        <button style={subTabStyle(activeSubTab === "feedback")} onClick={() => setActiveSubTab("feedback")}>反馈 ({data.feedback.length})</button>
-        <button style={subTabStyle(activeSubTab === "learning")} onClick={() => setActiveSubTab("learning")}>📝 学习</button>
-        <button style={subTabStyle(activeSubTab === "progress")} onClick={() => setActiveSubTab("progress")}>📊 进度</button>
-        <button style={subTabStyle(activeSubTab === "patterns")} onClick={() => setActiveSubTab("patterns")}>模式</button>
-        <button style={subTabStyle(activeSubTab === "help")} onClick={() => setActiveSubTab("help")}>📖 帮助</button>
+        <button style={subTabStyle(activeSubTab === "overview")} onClick={() => setActiveSubTab("overview")}>{t("evo.tab_overview")}</button>
+        <button style={subTabStyle(activeSubTab === "cycles")} onClick={() => setActiveSubTab("cycles")}>{t("evo.tab_cycles")} ({data.cycles.length})</button>
+        <button style={subTabStyle(activeSubTab === "feedback")} onClick={() => setActiveSubTab("feedback")}>{t("evo.tab_feedback")} ({data.feedback.length})</button>
+        <button style={subTabStyle(activeSubTab === "learning")} onClick={() => setActiveSubTab("learning")}>{t("evo.tab_learning")}</button>
+        <button style={subTabStyle(activeSubTab === "progress")} onClick={() => setActiveSubTab("progress")}>{t("evo.tab_progress")}</button>
+        <button style={subTabStyle(activeSubTab === "patterns")} onClick={() => setActiveSubTab("patterns")}>{t("evo.tab_patterns")}</button>
+        <button style={subTabStyle(activeSubTab === "help")} onClick={() => setActiveSubTab("help")}>{t("evo.tab_help")}</button>
       </div>
 
       <div style={s.content}>
@@ -484,48 +486,48 @@ export default function EvolutionDashboard() {
         {data.cycles.length === 0 && (!learning || learning.totalEntries === 0) && compactions.length === 0 ? (
           <div style={s.emptyState}>
             <div style={s.emptyIcon}>🧬</div>
-            <div>暂无进化数据</div>
+            <div>{t("evo.no_data")}</div>
             <div style={s.emptyHint}>
-              当系统从任务失败、用户反馈、外部错误和学习中触发进化周期时，数据将在此显示
+              {t("evo.no_data_hint")}
             </div>
           </div>
         ) : (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
               <div style={s.chartSection}>
-                <h3 style={s.sectionTitle}>📈 进化统计</h3>
+                <h3 style={s.sectionTitle}>{t("evo.evolution_stats")}</h3>
                 <div style={s.overviewMetricRow}>
-                  <span style={s.overviewMetricLabel}>进化周期</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.evolution_cycles")}</span>
                   <span style={s.overviewMetricLarge}>{data.summary.totalCycles}</span>
                 </div>
                 <div style={s.progressBarTrack}>
                   <div style={{ ...s.progressBarFill, width: `${Math.round(data.summary.successRate * 100)}%`, background: "var(--success)" }} />
                 </div>
                 <div style={{ ...s.overviewMetricRow, marginTop: "8px" }}>
-                  <span style={s.overviewMetricLabel}>成功率</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.success_rate")}</span>
                   <span style={s.overviewMetricValue}>{Math.round(data.summary.successRate * 100)}%</span>
                 </div>
                 <div style={s.overviewMetricRow}>
-                  <span style={s.overviewMetricLabel}>候选方案</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.candidates")}</span>
                   <span style={s.overviewMetricValue}>{data.summary.totalCandidates}</span>
                 </div>
               </div>
 
               <div style={s.chartSection}>
-                <h3 style={s.sectionTitle}>📚 学习统计</h3>
+                <h3 style={s.sectionTitle}>{t("evo.learning_stats_title")}</h3>
                 <div style={s.overviewMetricRow}>
-                  <span style={s.overviewMetricLabel}>学习条目</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.learning_entries")}</span>
                   <span style={s.overviewMetricLarge}>{learning?.totalEntries ?? 0}</span>
                 </div>
                 <div style={s.progressBarTrack}>
                   <div style={{ ...s.progressBarFill, width: `${Math.round((learning?.resolutionRate ?? 0) * 100)}%`, background: "var(--accent)" }} />
                 </div>
                 <div style={{ ...s.overviewMetricRow, marginTop: "8px" }}>
-                  <span style={s.overviewMetricLabel}>解决率</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.resolution_rate")}</span>
                   <span style={s.overviewMetricValue}>{learning ? `${Math.round(learning.resolutionRate * 100)}%` : "N/A"}</span>
                 </div>
                 <div style={s.overviewMetricRow}>
-                  <span style={s.overviewMetricLabel}>已解决 / 待解决</span>
+                  <span style={s.overviewMetricLabel}>{t("evo.resolved_unresolved")}</span>
                   <span style={s.overviewMetricValue}>
                     <span style={{ color: "var(--success)" }}>{learning?.resolvedEntries ?? 0}</span>
                     {" / "}
@@ -536,9 +538,9 @@ export default function EvolutionDashboard() {
             </div>
 
             <div style={s.chartSection}>
-              <h3 style={s.sectionTitle}>🔄 压缩链</h3>
+              <h3 style={s.sectionTitle}>{t("evo.compaction_chain")}</h3>
               {compactions.length === 0 ? (
-                <div style={s.emptySmall}>暂无压缩记录</div>
+                <div style={s.emptySmall}>{t("evo.no_compactions")}</div>
               ) : (
                 <div style={s.compactionTimeline}>
                   {compactions.map((comp, i) => (
@@ -546,11 +548,11 @@ export default function EvolutionDashboard() {
                       <div style={s.compactionTimelineDot} />
                       <div>
                         <div style={s.compactionTimelineTitle}>
-                          压缩 #{i + 1}: {comp.parentSessionId} → {comp.successorSessionId}
+                          {t("evo.compaction_entry").replace("{0}", String(i + 1)).replace("{1}", comp.parentSessionId).replace("{2}", comp.successorSessionId)}
                         </div>
                         <div style={s.compactionTimelineDesc}>{comp.summary.slice(0, 200)}</div>
                         <div style={s.compactionTimelineTime}>
-                          {new Date(comp.timestamp).toLocaleString("zh-CN")} · {comp.compactedTurnCount} 轮压缩
+                          {new Date(comp.timestamp).toLocaleString("zh-CN")} · {t("evo.compacted_turns").replace("{0}", String(comp.compactedTurnCount))}
                         </div>
                         {comp.keyFacts.length > 0 && (
                           <div style={{ marginTop: "6px" }}>
@@ -581,7 +583,7 @@ export default function EvolutionDashboard() {
             </div>
 
             <div style={s.chartSection}>
-              <h3 style={s.sectionTitle}>近期进化周期</h3>
+              <h3 style={s.sectionTitle}>{t("evo.recent_cycles")}</h3>
               <div style={s.timeline}>
                 {data.cycles.slice(-10).reverse().map((cycle) => (
                   <div key={cycle.id} style={s.timelineItem}>
@@ -603,7 +605,7 @@ export default function EvolutionDashboard() {
             </div>
 
             <div style={s.chartSection}>
-              <h3 style={s.sectionTitle}>成功率趋势</h3>
+              <h3 style={s.sectionTitle}>{t("evo.success_rate_trend")}</h3>
               <div style={s.barChart}>
                 {data.feedback.slice(-20).map((fb, i) => (
                   <div key={i} style={s.barContainer}>
@@ -618,7 +620,7 @@ export default function EvolutionDashboard() {
                     <div style={s.barPercent}>{Math.round(fb.successRate * 100)}%</div>
                   </div>
                 ))}
-                {data.feedback.length === 0 && <div style={s.emptySmall}>暂无反馈数据</div>}
+                {data.feedback.length === 0 && <div style={s.emptySmall}>{t("evo.no_feedback_data")}</div>}
               </div>
             </div>
           </>
@@ -634,17 +636,17 @@ export default function EvolutionDashboard() {
           <thead>
             <tr>
               <th>ID</th>
-              <th>来源</th>
-              <th>状态</th>
-              <th>候选方案</th>
-              <th>用时</th>
-              <th>开始时间</th>
-              <th>操作</th>
+              <th>{t("evo.col_source")}</th>
+              <th>{t("evo.col_status")}</th>
+              <th>{t("evo.col_candidates")}</th>
+              <th>{t("evo.col_duration")}</th>
+              <th>{t("evo.col_start_time")}</th>
+              <th>{t("evo.col_actions")}</th>
             </tr>
           </thead>
           <tbody>
             {data.cycles.length === 0 ? (
-              <tr><td colSpan={7} style={s.emptyCell}>暂无进化周期记录</td></tr>
+              <tr><td colSpan={7} style={s.emptyCell}>{t("evo.no_cycle_records")}</td></tr>
             ) : (
               data.cycles.map((cycle) => (
                 <tr key={cycle.id}>
@@ -655,7 +657,7 @@ export default function EvolutionDashboard() {
                       {cycle.status}
                     </span>
                   </td>
-                  <td>{cycle.candidatesGenerated} / {cycle.candidatesPassed} 通过</td>
+                  <td>{t("evo.candidates_passed").replace("{0}", String(cycle.candidatesGenerated)).replace("{1}", String(cycle.candidatesPassed))}</td>
                   <td>{formatDuration(cycle.duration)}</td>
                   <td style={s.monoCell}>{new Date(cycle.startedAt).toLocaleString("zh-CN")}</td>
                   <td>
@@ -672,9 +674,9 @@ export default function EvolutionDashboard() {
                             cursor: "pointer",
                             fontSize: "11px",
                           }}
-                          title="采纳此进化建议"
+                          title={t("evo.adopt_suggestion")}
                         >
-                          ✅ 采纳
+                          {t("evo.adopt")}
                         </button>
                         <button
                           onClick={() => handleSubmitFeedback(cycle.id, false)}
@@ -687,20 +689,20 @@ export default function EvolutionDashboard() {
                             cursor: "pointer",
                             fontSize: "11px",
                           }}
-                          title="拒绝此进化建议"
+                          title={t("evo.reject_suggestion")}
                         >
-                          ❌ 拒绝
+                          {t("evo.reject")}
                         </button>
                       </div>
                     )}
                     {(cycle.status === "generating" || cycle.status === "evaluating" || cycle.status === "running" || cycle.status === "analyzing") && (
-                      <span style={{ fontSize: "11px", color: "var(--accent)" }}>⏳ 处理中</span>
+                      <span style={{ fontSize: "11px", color: "var(--accent)" }}>{t("evo.processing")}</span>
                     )}
                     {cycle.status === "failed" && (
-                      <span style={{ fontSize: "11px", color: "var(--error)" }}>⚠️ 失败</span>
+                      <span style={{ fontSize: "11px", color: "var(--error)" }}>{t("evo.failed")}</span>
                     )}
                     {cycle.status === "rejected" && (
-                      <span style={{ fontSize: "11px", color: "var(--warning)" }}>⊘ 已拒绝</span>
+                      <span style={{ fontSize: "11px", color: "var(--warning)" }}>{t("evo.already_rejected")}</span>
                     )}
                   </td>
                 </tr>
@@ -718,18 +720,18 @@ export default function EvolutionDashboard() {
         <table style={s.table}>
           <thead>
             <tr>
-              <th>周期</th>
-              <th>技能</th>
-              <th>成功率</th>
-              <th>采纳率</th>
-              <th>错误率</th>
+              <th>{t("evo.col_cycle")}</th>
+              <th>{t("evo.col_skill")}</th>
+              <th>{t("evo.col_success_rate")}</th>
+              <th>{t("evo.col_adoption_rate")}</th>
+              <th>{t("evo.col_error_rate")}</th>
               <th>Token</th>
-              <th>收集时间</th>
+              <th>{t("evo.col_collected_at")}</th>
             </tr>
           </thead>
           <tbody>
             {data.feedback.length === 0 ? (
-              <tr><td colSpan={7} style={s.emptyCell}>暂无反馈数据</td></tr>
+              <tr><td colSpan={7} style={s.emptyCell}>{t("evo.no_feedback_data")}</td></tr>
             ) : (
               data.feedback.map((fb, i) => (
                 <tr key={i}>
@@ -764,19 +766,19 @@ export default function EvolutionDashboard() {
           <div style={s.learningStats}>
             <div style={s.statCard}>
               <div style={s.statValue}>{ls.totalEntries}</div>
-              <div style={s.statLabel}>总条目</div>
+              <div style={s.statLabel}>{t("evo.total_entries")}</div>
             </div>
             <div style={s.statCard}>
               <div style={{ ...s.statValue, color: "var(--success)" }}>{Math.round(ls.resolutionRate * 100)}%</div>
-              <div style={s.statLabel}>解决率</div>
+              <div style={s.statLabel}>{t("evo.resolution_rate")}</div>
             </div>
             <div style={s.statCard}>
               <div style={{ ...s.statValue, color: "#f97316" }}>{ls.unresolvedEntries}</div>
-              <div style={s.statLabel}>待解决</div>
+              <div style={s.statLabel}>{t("evo.pending_resolve")}</div>
             </div>
             <div style={s.statCard}>
               <div style={{ ...s.statValue, color: "var(--accent)" }}>{ls.newThisWeek}</div>
-              <div style={s.statLabel}>本周新增</div>
+              <div style={s.statLabel}>{t("evo.new_this_week")}</div>
             </div>
           </div>
         )}
@@ -796,17 +798,17 @@ export default function EvolutionDashboard() {
             <thead>
               <tr>
                 <th style={{ width: "40px" }}></th>
-                <th>标题</th>
-                <th>触发</th>
-                <th>分类</th>
-                <th>来源</th>
-                <th>时间</th>
+                <th>{t("evo.col_title")}</th>
+                <th>{t("evo.col_trigger")}</th>
+                <th>{t("evo.col_category")}</th>
+                <th>{t("evo.col_source")}</th>
+                <th>{t("evo.col_time")}</th>
               </tr>
             </thead>
             <tbody>
               {learningEntries.length === 0 ? (
                 <tr><td colSpan={6} style={s.emptyCell}>
-                  {ls && ls.totalEntries > 0 ? "加载中..." : "🧬 暂无学习记录。当系统遇到错误、用户纠正或发现改进机会时，会自动记录。"}
+                  {ls && ls.totalEntries > 0 ? t("evo.loading") : t("evo.no_learning_records")}
                 </td></tr>
               ) : (
                 learningEntries.map((entry) => (
@@ -818,7 +820,7 @@ export default function EvolutionDashboard() {
                     </td>
                     <td>
                       <div style={{ fontWeight: 500, color: "var(--text-primary)" }}>{entry.title}</div>
-                      {entry.solution && <div style={{ fontSize: "11px", color: "var(--success)", marginTop: "2px" }}>解决: {entry.solution.slice(0, 80)}{entry.solution.length > 80 ? "..." : ""}</div>}
+                      {entry.solution && <div style={{ fontSize: "11px", color: "var(--success)", marginTop: "2px" }}>{t("evo.resolved_prefix")}{entry.solution.slice(0, 80)}{entry.solution.length > 80 ? "..." : ""}</div>}
                     </td>
                     <td>
                       <span style={{
@@ -851,7 +853,7 @@ export default function EvolutionDashboard() {
 
         {learningSessions.length > 0 && (
           <div style={{ marginTop: "16px" }}>
-            <h3 style={s.sectionTitle}>学习会话 ({learningSessions.length})</h3>
+            <h3 style={s.sectionTitle}>{t("evo.learning_sessions")} ({learningSessions.length})</h3>
             {learningSessions.slice(0, 10).map((session) => (
               <div key={session.id} style={s.sessionCard}>
                 <div style={s.sessionHeader}>
@@ -866,9 +868,9 @@ export default function EvolutionDashboard() {
                 </div>
                 {session.summary && <div style={s.sessionSummary}>{session.summary}</div>}
                 <div style={s.sessionMeta}>
-                  {session.entries.length} 条学习 · {session.completedAt
+                  {t("evo.entries_count").replace("{0}", String(session.entries.length))} · {session.completedAt
                     ? formatDuration(new Date(session.completedAt).getTime() - new Date(session.startedAt).getTime())
-                    : "进行中"}
+                    : t("evo.in_progress")}
                 </div>
               </div>
             ))}
@@ -882,7 +884,7 @@ export default function EvolutionDashboard() {
     return (
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={s.sectionTitle}>活跃进度 ({progressReports.length})</h3>
+          <h3 style={s.sectionTitle}>{t("evo.active_progress")} ({progressReports.length})</h3>
           <button
             onClick={loadProgressData}
             style={{
@@ -895,15 +897,15 @@ export default function EvolutionDashboard() {
               fontSize: "12px",
             }}
           >
-            🔄 刷新
+            {t("evo.refresh")}
           </button>
         </div>
 
         {progressReports.length === 0 ? (
           <div style={s.emptyState}>
             <div style={s.emptyIcon}>📊</div>
-            <div>暂无活跃的进度报告</div>
-            <div style={s.emptyHint}>当任务执行时，实时进度反馈将在此显示</div>
+            <div>{t("evo.no_active_progress")}</div>
+            <div style={s.emptyHint}>{t("evo.no_active_progress_hint")}</div>
           </div>
         ) : (
           progressReports.map((report) => (
@@ -937,7 +939,7 @@ export default function EvolutionDashboard() {
                 </div>
               </div>
               <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                步骤 {report.step}/{report.totalSteps} · {new Date(report.startedAt).toLocaleTimeString("zh-CN")}
+                {t("evo.step_progress").replace("{0}", String(report.step)).replace("{1}", String(report.totalSteps))} · {new Date(report.startedAt).toLocaleTimeString("zh-CN")}
               </div>
               {report.details && (
                 <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px", fontStyle: "italic" }}>
@@ -963,11 +965,11 @@ export default function EvolutionDashboard() {
                 background: pattern.count > 0 ? "#7c3aed22" : "#6666",
                 color: pattern.count > 0 ? "var(--section-title-color)" : "var(--text-secondary)",
               }}>
-                {pattern.count} 次
+                {t("evo.times_count").replace("{0}", String(pattern.count))}
               </div>
             </div>
             <div style={s.patternConfidence}>
-              <div style={s.confidenceLabel}>置信度: {Math.round(pattern.confidence * 100)}%</div>
+              <div style={s.confidenceLabel}>{t("evo.confidence").replace("{0}", String(Math.round(pattern.confidence * 100)))}</div>
               <div style={s.confidenceTrack}>
                 <div style={{
                   ...s.confidenceBar,
@@ -980,8 +982,8 @@ export default function EvolutionDashboard() {
         ))}
         <div style={s.emptyState}>
           <div style={s.emptyIcon}>📊</div>
-          <div>暂无检测到的模式</div>
-          <div style={s.emptyHint}>失败模式将在进化周期运行后自动检测</div>
+          <div>{t("evo.no_patterns")}</div>
+          <div style={s.emptyHint}>{t("evo.no_patterns_hint")}</div>
         </div>
       </div>
     );
@@ -991,116 +993,115 @@ export default function EvolutionDashboard() {
     return (
       <div style={s.helpContainer}>
         <div style={s.helpSection}>
-          <h3 style={s.helpTitle}>🧬 什么是进化功能？</h3>
+          <h3 style={s.helpTitle}>{t("evo.help_what_is")}</h3>
           <div style={s.helpText}>
-            进化功能是 EvoClaw 的核心自优化机制。系统能够从任务失败、用户反馈、外部错误和知识改进中自动学习，
-            生成改进方案并评估其有效性，最终将验证通过的改进应用到技能中，实现持续自我进化。
+            {t("evo.help_what_is_desc")}
           </div>
         </div>
 
         <div style={s.helpSection}>
-          <h3 style={s.helpTitle}>🎯 核心应用场景</h3>
+          <h3 style={s.helpTitle}>{t("evo.help_scenarios")}</h3>
           <div style={s.helpGrid}>
             <div style={s.helpCard}>
               <div style={s.helpCardIcon}>🔧</div>
-              <div style={s.helpCardTitle}>错误自动修复</div>
-              <div style={s.helpCardDesc}>当技能执行失败时，系统自动分析错误原因，生成修复方案并验证</div>
+              <div style={s.helpCardTitle}>{t("evo.help_auto_fix")}</div>
+              <div style={s.helpCardDesc}>{t("evo.help_auto_fix_desc")}</div>
             </div>
             <div style={s.helpCard}>
               <div style={s.helpCardIcon}>📈</div>
-              <div style={s.helpCardTitle}>性能优化</div>
-              <div style={s.helpCardDesc}>基于使用数据识别性能瓶颈，自动生成优化方案</div>
+              <div style={s.helpCardTitle}>{t("evo.help_perf_opt")}</div>
+              <div style={s.helpCardDesc}>{t("evo.help_perf_opt_desc")}</div>
             </div>
             <div style={s.helpCard}>
               <div style={s.helpCardIcon}>🆕</div>
-              <div style={s.helpCardTitle}>能力扩展</div>
-              <div style={s.helpCardDesc}>检测到能力缺口时，自动生成新技能或扩展现有技能</div>
+              <div style={s.helpCardTitle}>{t("evo.help_cap_expand")}</div>
+              <div style={s.helpCardDesc}>{t("evo.help_cap_expand_desc")}</div>
             </div>
             <div style={s.helpCard}>
               <div style={s.helpCardIcon}>🔄</div>
-              <div style={s.helpCardTitle}>知识更新</div>
-              <div style={s.helpCardDesc}>发现过时知识或更优方法时，自动更新技能内容</div>
+              <div style={s.helpCardTitle}>{t("evo.help_knowledge_update")}</div>
+              <div style={s.helpCardDesc}>{t("evo.help_knowledge_update_desc")}</div>
             </div>
           </div>
         </div>
 
         <div style={s.helpSection}>
-          <h3 style={s.helpTitle}>📋 使用指南</h3>
+          <h3 style={s.helpTitle}>{t("evo.help_guide")}</h3>
           <div style={s.helpSteps}>
             <div style={s.helpStep}>
               <div style={s.helpStepNum}>1</div>
               <div style={s.helpStepContent}>
-                <div style={s.helpStepTitle}>自动触发</div>
-                <div style={s.helpStepDesc}>系统在检测到任务失败、用户纠正、能力缺口或外部错误时，自动启动进化周期</div>
+                <div style={s.helpStepTitle}>{t("evo.help_auto_trigger")}</div>
+                <div style={s.helpStepDesc}>{t("evo.help_auto_trigger_desc")}</div>
               </div>
             </div>
             <div style={s.helpStep}>
               <div style={s.helpStepNum}>2</div>
               <div style={s.helpStepContent}>
-                <div style={s.helpStepTitle}>手动触发</div>
-                <div style={s.helpStepDesc}>点击顶部「🧬 触发进化」按钮，输入进化需求描述，手动启动进化周期</div>
+                <div style={s.helpStepTitle}>{t("evo.help_manual_trigger")}</div>
+                <div style={s.helpStepDesc}>{t("evo.help_manual_trigger_desc")}</div>
               </div>
             </div>
             <div style={s.helpStep}>
               <div style={s.helpStepNum}>3</div>
               <div style={s.helpStepContent}>
-                <div style={s.helpStepTitle}>查看进度</div>
-                <div style={s.helpStepDesc}>在「周期」标签页查看进化周期的状态、候选方案和评估结果</div>
+                <div style={s.helpStepTitle}>{t("evo.help_view_progress")}</div>
+                <div style={s.helpStepDesc}>{t("evo.help_view_progress_desc")}</div>
               </div>
             </div>
             <div style={s.helpStep}>
               <div style={s.helpStepNum}>4</div>
               <div style={s.helpStepContent}>
-                <div style={s.helpStepTitle}>反馈评价</div>
-                <div style={s.helpStepDesc}>对已完成的进化周期，使用「✅ 采纳」或「❌ 拒绝」按钮提供反馈，帮助系统持续改进</div>
+                <div style={s.helpStepTitle}>{t("evo.help_feedback")}</div>
+                <div style={s.helpStepDesc}>{t("evo.help_feedback_desc")}</div>
               </div>
             </div>
           </div>
         </div>
 
         <div style={s.helpSection}>
-          <h3 style={s.helpTitle}>⚙️ 进化流程</h3>
+          <h3 style={s.helpTitle}>{t("evo.help_flow")}</h3>
           <div style={s.helpFlow}>
             <div style={s.helpFlowNode}>
-              <div style={s.helpFlowLabel}>需求挖掘</div>
-              <div style={s.helpFlowDesc}>分析失败日志、用户反馈和性能数据</div>
+              <div style={s.helpFlowLabel}>{t("evo.help_flow_discover")}</div>
+              <div style={s.helpFlowDesc}>{t("evo.help_flow_discover_desc")}</div>
             </div>
             <div style={s.helpFlowArrow}>→</div>
             <div style={s.helpFlowNode}>
-              <div style={s.helpFlowLabel}>方案生成</div>
-              <div style={s.helpFlowDesc}>LLM 驱动生成改进代码和测试用例</div>
+              <div style={s.helpFlowLabel}>{t("evo.help_flow_generate")}</div>
+              <div style={s.helpFlowDesc}>{t("evo.help_flow_generate_desc")}</div>
             </div>
             <div style={s.helpFlowArrow}>→</div>
             <div style={s.helpFlowNode}>
-              <div style={s.helpFlowLabel}>安全评估</div>
-              <div style={s.helpFlowDesc}>安全审计、测试执行、质量评分</div>
+              <div style={s.helpFlowLabel}>{t("evo.help_flow_evaluate")}</div>
+              <div style={s.helpFlowDesc}>{t("evo.help_flow_evaluate_desc")}</div>
             </div>
             <div style={s.helpFlowArrow}>→</div>
             <div style={s.helpFlowNode}>
-              <div style={s.helpFlowLabel}>发布应用</div>
-              <div style={s.helpFlowDesc}>热重载应用改进，记录学习经验</div>
+              <div style={s.helpFlowLabel}>{t("evo.help_flow_deploy")}</div>
+              <div style={s.helpFlowDesc}>{t("evo.help_flow_deploy_desc")}</div>
             </div>
           </div>
         </div>
 
         <div style={s.helpSection}>
-          <h3 style={s.helpTitle}>📊 评估指标</h3>
+          <h3 style={s.helpTitle}>{t("evo.help_metrics")}</h3>
           <div style={s.helpMetrics}>
             <div style={s.helpMetric}>
-              <div style={s.helpMetricValue}>成功率</div>
-              <div style={s.helpMetricDesc}>完成 / 总周期数，衡量进化系统的整体效率</div>
+              <div style={s.helpMetricValue}>{t("evo.help_metric_success_rate")}</div>
+              <div style={s.helpMetricDesc}>{t("evo.help_metric_success_rate_desc")}</div>
             </div>
             <div style={s.helpMetric}>
-              <div style={s.helpMetricValue}>候选方案数</div>
-              <div style={s.helpMetricDesc}>每个周期生成的改进方案数量，反映生成能力</div>
+              <div style={s.helpMetricValue}>{t("evo.help_metric_candidates")}</div>
+              <div style={s.helpMetricDesc}>{t("evo.help_metric_candidates_desc")}</div>
             </div>
             <div style={s.helpMetric}>
-              <div style={s.helpMetricValue}>采纳率</div>
-              <div style={s.helpMetricDesc}>用户采纳 / 已反馈数，衡量改进的实用性</div>
+              <div style={s.helpMetricValue}>{t("evo.help_metric_adoption")}</div>
+              <div style={s.helpMetricDesc}>{t("evo.help_metric_adoption_desc")}</div>
             </div>
             <div style={s.helpMetric}>
-              <div style={s.helpMetricValue}>解决率</div>
-              <div style={s.helpMetricDesc}>学习条目的解决比例，反映知识积累效果</div>
+              <div style={s.helpMetricValue}>{t("evo.help_metric_resolution")}</div>
+              <div style={s.helpMetricDesc}>{t("evo.help_metric_resolution_desc")}</div>
             </div>
           </div>
         </div>

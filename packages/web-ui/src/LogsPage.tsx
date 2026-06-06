@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "./i18n";
 
 interface LogEntry {
   id: string;
@@ -110,6 +111,7 @@ function generateMockLogs(): LogEntry[] {
 }
 
 export function LogsPage() {
+  const { t } = useTranslation();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [queue, setQueue] = useState<{ queue: QueueItem[]; stats: { total: number; pending: number; processing: number; done: number; failed: number }; hasPending: boolean } | null>(null);
   const [filter, setFilter] = useState<string>("all");
@@ -155,27 +157,27 @@ export function LogsPage() {
     <div style={s.container}>
       <div style={s.header}>
         <div>
-          <div style={s.title}>系统日志与队列</div>
-          <div style={s.subtitle}>实时日志流 · 队列管理 · 每 8 秒自动刷新</div>
+          <div style={s.title}>{t("logs.logs_queue_title")}</div>
+          <div style={s.subtitle}>{t("logs.logs_queue_subtitle")}</div>
         </div>
       </div>
 
       {/* Log Controls */}
       <div style={s.controls}>
-        <button style={filter === "all" ? s.btnActive : s.btn} onClick={() => setFilter("all")}>全部</button>
+        <button style={filter === "all" ? s.btnActive : s.btn} onClick={() => setFilter("all")}>{t("logs.filter_all")}</button>
         <button style={filter === "info" ? s.btnActive : s.btn} onClick={() => setFilter("info")}>INFO</button>
         <button style={filter === "warn" ? s.btnActive : s.btn} onClick={() => setFilter("warn")}>WARN</button>
         <button style={filter === "error" ? s.btnActive : s.btn} onClick={() => setFilter("error")}>ERROR</button>
         <button style={filter === "debug" ? s.btnActive : s.btn} onClick={() => setFilter("debug")}>DEBUG</button>
         <button style={autoScroll ? s.btnActive : s.btn} onClick={() => setAutoScroll(!autoScroll)}>
-          {autoScroll ? "自动滚动: 开" : "自动滚动: 关"}
+          {autoScroll ? t("logs.auto_scroll_on") : t("logs.auto_scroll_off")}
         </button>
       </div>
 
       {/* Log List */}
       <div style={s.logList}>
         {filteredLogs.length === 0 ? (
-          <div style={s.empty}>无日志记录</div>
+          <div style={s.empty}>{t("logs.no_log_records")}</div>
         ) : (
           filteredLogs.map((log) => (
             <div key={log.id} style={s.logEntry}>
@@ -192,19 +194,19 @@ export function LogsPage() {
       {/* Queue Section */}
       <div style={s.queueSection}>
         <div style={s.sectionTitle}>
-          <span>消息队列</span>
+          <span>{t("logs.queue_header")}</span>
           <div style={{ display: "flex", gap: "8px" }}>
             {queue?.stats && (
               <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: "normal" }}>
-                总计: {queue.stats.total} · 待处理: {queue.stats.pending} · 处理中: {queue.stats.processing} · 完成: {queue.stats.done} · 失败: {queue.stats.failed}
+                {t("logs.total")}: {queue.stats.total} · {t("logs.pending")}: {queue.stats.pending} · {t("logs.processing")}: {queue.stats.processing} · {t("logs.done")}: {queue.stats.done} · {t("logs.failed")}: {queue.stats.failed}
               </span>
             )}
-            <button style={s.btn} onClick={loadData}>刷新</button>
-            <button style={s.btn} onClick={clearQueue}>清空队列</button>
+            <button style={s.btn} onClick={loadData}>{t("logs.refresh")}</button>
+            <button style={s.btn} onClick={clearQueue}>{t("logs.clear_queue")}</button>
           </div>
         </div>
         {!queue?.queue || queue.queue.length === 0 ? (
-          <div style={s.empty}>队列为空</div>
+          <div style={s.empty}>{t("logs.queue_empty")}</div>
         ) : (
           queue.queue.slice(0, 20).map((item) => (
             <div key={item.id} style={s.queueCard}>
@@ -220,8 +222,8 @@ export function LogsPage() {
               </div>
               <div style={s.queueMsg}>{item.message}</div>
               <div style={s.queueMeta}>
-                ID: {item.id} · 重试: {item.retryCount} · 会话: {item.sessionId}
-                {item.error && <span style={{ color: "var(--error)", marginLeft: "8px" }}>错误: {item.error}</span>}
+                {t("logs.id_label")}: {item.id} · {t("logs.retry")}: {item.retryCount} · {t("logs.session")}: {item.sessionId}
+                {item.error && <span style={{ color: "var(--error)", marginLeft: "8px" }}>{t("logs.error_label")}: {item.error}</span>}
               </div>
             </div>
           ))

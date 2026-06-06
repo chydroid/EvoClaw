@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties } from "react";
+import { useTranslation } from "./i18n";
 
 interface QueueItem {
   id: string;
@@ -202,11 +203,11 @@ const styles: Record<string, CSSProperties> = {
   },
 };
 
-const STATUS_COLORS: Record<string, { bg: string; text: string; label: string }> = {
-  pending: { bg: "#1a2332", text: "#58a6ff", label: "等待中" },
-  processing: { bg: "#2a1f00", text: "#d29922", label: "发送中" },
-  done: { bg: "#0d2a1a", text: "#3fb950", label: "已完成" },
-  failed: { bg: "#2d1518", text: "#f85149", label: "失败" },
+const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  pending: { bg: "#1a2332", text: "#58a6ff" },
+  processing: { bg: "#2a1f00", text: "#d29922" },
+  done: { bg: "#0d2a1a", text: "#3fb950" },
+  failed: { bg: "#2d1518", text: "#f85149" },
 };
 
 function formatTime(iso: string | undefined): string {
@@ -216,6 +217,7 @@ function formatTime(iso: string | undefined): string {
 }
 
 export default function QueueManagerPage() {
+  const { t } = useTranslation();
   const [allQueues, setAllQueues] = useState<Record<string, QueueItem[]>>({});
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -261,13 +263,13 @@ export default function QueueManagerPage() {
       const res = await fetch(`/api/queue/${encodeURIComponent(itemId)}`, { method: "DELETE" });
       const data = await res.json();
       if (data.success) {
-        showMsg("success", "已删除");
+        showMsg("success", t("queue.deleted", "已删除"));
         fetchQueues();
       } else {
-        showMsg("error", data.error || "删除失败");
+        showMsg("error", data.error || t("queue.delete_fail", "删除失败"));
       }
     } catch {
-      showMsg("error", "删除失败");
+      showMsg("error", t("queue.delete_fail", "删除失败"));
     }
   };
 
@@ -280,7 +282,7 @@ export default function QueueManagerPage() {
       });
       fetchQueues();
     } catch {
-      showMsg("error", "移动失败");
+      showMsg("error", t("queue.move_fail", "移动失败"));
     }
   };
 
@@ -301,13 +303,13 @@ export default function QueueManagerPage() {
       if (data.success) {
         setEditingId(null);
         setEditValue("");
-        showMsg("success", "已更新");
+        showMsg("success", t("queue.updated", "已更新"));
         fetchQueues();
       } else {
-        showMsg("error", data.error || "更新失败");
+        showMsg("error", data.error || t("queue.update_fail", "更新失败"));
       }
     } catch {
-      showMsg("error", "更新失败");
+      showMsg("error", t("queue.update_fail", "更新失败"));
     }
   };
 
@@ -325,13 +327,13 @@ export default function QueueManagerPage() {
       const data = await res.json();
       if (data.success) {
         setNewMessages((prev) => ({ ...prev, [sessionId]: "" }));
-        showMsg("success", "已添加");
+        showMsg("success", t("queue.added", "已添加"));
         fetchQueues();
       } else {
-        showMsg("error", data.error || "添加失败");
+        showMsg("error", data.error || t("queue.add_fail", "添加失败"));
       }
     } catch {
-      showMsg("error", "添加失败");
+      showMsg("error", t("queue.add_fail", "添加失败"));
     }
   };
 
@@ -369,7 +371,7 @@ export default function QueueManagerPage() {
         body: JSON.stringify({ sessionId, orderedIds }),
       });
     } catch {
-      showMsg("error", "排序失败");
+      showMsg("error", t("queue.reorder_fail", "排序失败"));
       fetchQueues(); // Revert
     }
 
@@ -379,8 +381,8 @@ export default function QueueManagerPage() {
   if (loading) {
     return (
       <div style={styles.container}>
-        <div style={styles.title}>消息队列管理</div>
-        <div style={{ color: "var(--text-secondary, #8b949e)", textAlign: "center", padding: "40px" }}>加载中...</div>
+        <div style={styles.title}>{t("queue.title", "消息队列管理")}</div>
+        <div style={{ color: "var(--text-secondary, #8b949e)", textAlign: "center", padding: "40px" }}>{t("sessions.loading", "加载中...")}</div>
       </div>
     );
   }
@@ -390,9 +392,9 @@ export default function QueueManagerPage() {
   return (
     <div style={styles.container}>
       <div style={styles.refreshBar}>
-        <div style={styles.title}>消息队列管理</div>
+        <div style={styles.title}>{t("queue.title", "消息队列管理")}</div>
         <button style={styles.refreshBtn} onClick={fetchQueues}>
-          🔄 刷新
+          {t("queue.refresh", "🔄 刷新")}
         </button>
       </div>
 
@@ -410,9 +412,9 @@ export default function QueueManagerPage() {
       {sessionIds.length === 0 && (
         <div style={styles.empty}>
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>📭</div>
-          <div>暂无消息队列</div>
+          <div>{t("queue.empty", "暂无消息队列")}</div>
           <div style={{ fontSize: "12px", marginTop: "8px", color: "var(--text-muted, #6e7681)" }}>
-            在聊天页面执行任务时，点击停止按钮旁的 📋 按钮将消息加入队列
+            {t("queue.empty_hint", "在聊天页面执行任务时，点击停止按钮旁的 📋 按钮将消息加入队列")}
           </div>
         </div>
       )}
@@ -424,9 +426,9 @@ export default function QueueManagerPage() {
         return (
           <div key={sessionId} style={styles.sessionCard}>
             <div style={styles.sessionHeader}>
-              <span>会话: {sessionId.slice(0, 12)}...</span>
+              <span>{t("queue.session_header", "会话: {0}").replace("{0}", sessionId.slice(0, 12))}...</span>
               <span style={{ color: "var(--text-secondary, #8b949e)", fontSize: "12px" }}>
-                {queue.length} 条消息 ({pendingCount} 等待中)
+                {t("queue.message_count", "{0} 条消息 ({1} 等待中)").replace("{0}", String(queue.length)).replace("{1}", String(pendingCount))}
               </span>
             </div>
 
@@ -435,6 +437,12 @@ export default function QueueManagerPage() {
                 {queue.map((item, index) => {
                   const isEditing = editingId === item.id;
                   const statusStyle = STATUS_COLORS[item.status] || STATUS_COLORS.pending;
+                  const statusLabelMap: Record<string, string> = {
+                    pending: t("queue.status_pending", "等待中"),
+                    processing: t("queue.status_processing", "发送中"),
+                    done: t("queue.status_done", "已完成"),
+                    failed: t("queue.status_failed", "失败"),
+                  };
 
                   return (
                     <li
@@ -451,7 +459,7 @@ export default function QueueManagerPage() {
                         <div style={styles.orderControls}>
                           <button
                             style={styles.orderBtn}
-                            title="上移"
+                            title={t("queue.move_up", "上移")}
                             onClick={() => handleMove(sessionId, item.id, "up")}
                             disabled={index === 0}
                           >
@@ -459,7 +467,7 @@ export default function QueueManagerPage() {
                           </button>
                           <button
                             style={styles.orderBtn}
-                            title="下移"
+                            title={t("queue.move_down", "下移")}
                             onClick={() => handleMove(sessionId, item.id, "down")}
                             disabled={index === queue.length - 1}
                           >
@@ -503,7 +511,7 @@ export default function QueueManagerPage() {
                         background: statusStyle.bg,
                         color: statusStyle.text,
                       }}>
-                        {statusStyle.label}
+                        {statusLabelMap[item.status] || item.status}
                       </span>
 
                       {/* Time */}
@@ -516,7 +524,7 @@ export default function QueueManagerPage() {
                         <>
                           <button
                             style={styles.actionBtn}
-                            title="编辑"
+                            title={t("queue.edit", "编辑")}
                             onClick={() => handleEdit(item)}
                             onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -525,7 +533,7 @@ export default function QueueManagerPage() {
                           </button>
                           <button
                             style={styles.actionBtn}
-                            title="删除"
+                            title={t("app.delete", "删除")}
                             onClick={() => handleDelete(item.id)}
                             onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(248,81,73,0.15)"; e.currentTarget.style.color = "#f85149"; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
@@ -538,7 +546,7 @@ export default function QueueManagerPage() {
                       {item.status === "done" && (
                         <button
                           style={styles.actionBtn}
-                          title="删除"
+                          title={t("app.delete", "删除")}
                           onClick={() => handleDelete(item.id)}
                           onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(248,81,73,0.15)"; e.currentTarget.style.color = "#f85149"; }}
                           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
@@ -550,11 +558,11 @@ export default function QueueManagerPage() {
                       {item.status === "failed" && (
                         <>
                           <span style={{ fontSize: "10px", color: "#f85149", maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.error}>
-                            {item.error || "失败"}
+                            {item.error || t("queue.status_failed", "失败")}
                           </span>
                           <button
                             style={styles.actionBtn}
-                            title="删除"
+                            title={t("app.delete", "删除")}
                             onClick={() => handleDelete(item.id)}
                             onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(248,81,73,0.15)"; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -576,13 +584,13 @@ export default function QueueManagerPage() {
                 value={newModes[sessionId] || "followup"}
                 onChange={(e) => setNewModes((prev) => ({ ...prev, [sessionId]: e.target.value }))}
               >
-                <option value="followup">后续</option>
-                <option value="steer">引导</option>
-                <option value="collect">收集</option>
+                <option value="followup">{t("queue.mode_followup", "后续")}</option>
+                <option value="steer">{t("queue.mode_steer", "引导")}</option>
+                <option value="collect">{t("queue.mode_collect", "收集")}</option>
               </select>
               <input
                 style={styles.addInput}
-                placeholder="输入新消息..."
+                placeholder={t("queue.new_message_placeholder", "输入新消息...")}
                 value={newMessages[sessionId] || ""}
                 onChange={(e) => setNewMessages((prev) => ({ ...prev, [sessionId]: e.target.value }))}
                 onKeyDown={(e) => {
@@ -594,7 +602,7 @@ export default function QueueManagerPage() {
                 onClick={() => handleAddToSession(sessionId)}
                 disabled={!newMessages[sessionId]?.trim()}
               >
-                + 添加
+                {t("queue.add", "+ 添加")}
               </button>
             </div>
           </div>

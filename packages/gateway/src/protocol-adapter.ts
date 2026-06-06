@@ -12,6 +12,9 @@ import { HealthAggregator } from "./health-aggregator";
 import { ReplyReferenceManager } from "./reply-reference";
 import { MessageTemplateEngine } from "./message-templates";
 import { CanvasHost } from "./canvas-host";
+import { FeishuAdapter } from "./channels/feishu";
+import { MatrixAdapter } from "./channels/matrix";
+import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -267,6 +270,7 @@ export class ProtocolAdapter {
         const data = JSON.parse(raw);
         if (data.channels && Array.isArray(data.channels)) {
           this.savedChannels = data.channels;
+          this.applyChannels(data.channels);
           console.log(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
         }
       }
@@ -324,15 +328,74 @@ export class ProtocolAdapter {
         model: (p.selectedModel as string) || (Array.isArray(p.models) ? (p.models as string[])[0] : "") || "",
         apiKey: (p.apiKey as string) || "",
         baseURL: (p.baseURL as string) || "",
-        maxTokens: (p.config as Record<string, unknown>)?.maxTokens as number || 4096,
-        temperature: (p.config as Record<string, unknown>)?.temperature as number || 0.3,
-        timeout: (p.config as Record<string, unknown>)?.timeout as number || 60000,
+        maxTokens: (p.config as Record<string, unknown>)?.maxTokens as number ?? 4096,
+        temperature: (p.config as Record<string, unknown>)?.temperature as number ?? 0.3,
+        timeout: (p.config as Record<string, unknown>)?.timeout as number ?? 60000,
         topP: (p.config as Record<string, unknown>)?.topP as number ?? 1,
         models: (p.models as string[]) || [],
       }));
 
     if (configs.length > 0) {
       executor.configureProviders(configs);
+    }
+  }
+
+  private applyChannels(channels: Record<string, unknown>[]): void {
+    const channelManager = this.registry.resolveService<{
+      registerChannel(config: ChannelConfig): void;
+      attachAdapter(adapter: ChannelAdapter): Promise<void>;
+      detachAdapter(type: ChannelType): Promise<void>;
+      getAdapter(type: ChannelType): ChannelAdapter | undefined;
+    }>("channelManager");
+
+    if (!channelManager) return;
+
+    for (const ch of channels) {
+      const type = (ch.type as ChannelType) || "";
+      const enabled = ch.enabled === true;
+      const settings = (ch.settings as Record<string, unknown>) || {};
+
+      // Register channel config
+      const config: ChannelConfig = {
+        type,
+        enabled,
+        label: (ch.label as string) || type,
+        dmPolicy: (ch.dmPolicy as "open" | "pairing" | "closed") || "open",
+        allowFrom: Array.isArray(ch.allowFrom) ? ch.allowFrom as string[] : [],
+        blockFrom: Array.isArray(ch.blockFrom) ? ch.blockFrom as string[] : [],
+        settings,
+      };
+      channelManager.registerChannel(config);
+
+      // Create and attach adapter for enabled channels
+      if (enabled) {
+        let adapter: ChannelAdapter | undefined;
+
+        switch (type) {
+          case "feishu": {
+            if (settings.appId && settings.appSecret) {
+              adapter = new FeishuAdapter(config);
+            }
+            break;
+          }
+          case "matrix": {
+            if (settings.homeserver) {
+              adapter = new MatrixAdapter(config);
+            }
+            break;
+          }
+          // Other channel types can be added here
+        }
+
+        if (adapter) {
+          channelManager.attachAdapter(adapter).catch((err: unknown) => {
+            console.error(`[ProtocolAdapter] Failed to attach ${type} adapter:`, err);
+          });
+          console.log(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})`);
+        } else if (type === "feishu" || type === "matrix") {
+          console.warn(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings`);
+        }
+      }
     }
   }
 
@@ -1695,17 +1758,33 @@ export class ProtocolAdapter {
       if (Array.isArray(channels)) {
         this.savedChannels = channels;
         this.persistChannels(channels);
+        this.applyChannels(channels);
       }
       res.json({ success: true });
     });
 
-    app.post("/api/channels/:id/test", (req: Request, res: Response) => {
+    app.post("/api/channels/:id/test", async (req: Request, res: Response) => {
       try {
         const channelId = String(req.params.id);
-        this.eventBus.publish("channel.test", { channelId }, "gateway");
-        res.json({ status: "ok", message: `Test initiated for channel ${channelId}` });
+        const channelManager = this.registry.resolveService<{
+          getAdapter(type: string): { healthCheck(): Promise<boolean> } | undefined;
+        }>("channelManager");
+        if (!channelManager) {
+          res.status(503).json({ status: "error", message: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter(channelId);
+        if (!adapter) {
+          res.status(404).json({ status: "error", message: `No adapter found for channel: ${channelId}` });
+          return;
+        }
+        const healthy = await adapter.healthCheck();
+        res.json({
+          status: healthy ? "ok" : "error",
+          message: healthy ? `Channel ${channelId} is healthy` : `Channel ${channelId} health check failed`,
+        });
       } catch (err) {
-        res.status(500).json({ error: String(err) });
+        res.status(500).json({ status: "error", message: String(err) });
       }
     });
 
@@ -2893,7 +2972,7 @@ export class ProtocolAdapter {
     app.post("/api/channels/feishu/webhook", async (req: Request, res: Response) => {
       try {
         const channelManager = this.registry.resolveService("channelManager") as {
-          getAdapter(type: string): { handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>): Promise<{ challenge?: string }> } | undefined;
+          getAdapter(type: string): { handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>, rawBody?: string): Promise<{ challenge?: string }> } | undefined;
         } | undefined;
         if (!channelManager) {
           res.status(503).json({ error: "Channel manager not available" });
@@ -2908,7 +2987,9 @@ export class ProtocolAdapter {
         for (const [key, value] of Object.entries(req.headers)) {
           if (typeof value === "string") headers[key] = value;
         }
-        const result = await adapter.handleWebhookEvent(req.body as Record<string, unknown>, headers);
+        // Pass raw body for signature verification
+        const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body);
+        const result = await adapter.handleWebhookEvent(req.body as Record<string, unknown>, headers, rawBody);
         res.json(result.challenge ? { challenge: result.challenge } : {});
       } catch (err) {
         res.status(500).json({ error: String(err) });

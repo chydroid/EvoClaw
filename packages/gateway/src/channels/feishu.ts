@@ -63,6 +63,11 @@ export class FeishuAdapter implements ChannelAdapter {
       return;
     }
 
+    // Reset AbortController so start() works after stop()
+    if (this.pollAbort.signal.aborted) {
+      this.pollAbort = new AbortController();
+    }
+
     // Get initial access token
     try {
       await this.refreshToken();
@@ -185,11 +190,12 @@ export class FeishuAdapter implements ChannelAdapter {
    * Handle incoming webhook event from Feishu Event Subscription.
    * Call this from your HTTP server's webhook route.
    */
-  async handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>): Promise<{ challenge?: string }> {
-    // Verify event signature
-    const rawBody = JSON.stringify(body);
-    if (!this.verifySignature(rawBody, headers?.["x-lark-signature"])) {
-      return {};
+  async handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>, rawBody?: string): Promise<{ challenge?: string }> {
+    // Verify event signature using raw body if available
+    if (rawBody && headers?.["x-lark-signature"]) {
+      if (!this.verifySignature(rawBody, headers["x-lark-signature"])) {
+        return {};
+      }
     }
 
     // URL verification challenge

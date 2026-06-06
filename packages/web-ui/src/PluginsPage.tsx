@@ -178,12 +178,12 @@ const statCardStyle: CSSProperties = {
 // ─── Available Plugins (community registry) ─────────────────────────────────
 
 const MOCK_AVAILABLE: AvailablePlugin[] = [
-  { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord 频道集成，支持斜杠命令", author: "community", downloads: 1230, rating: 4.5 },
-  { id: "slack-connector", name: "Slack Connector", version: "0.7.0", description: "Slack 工作区集成，支持线程回复", author: "community", downloads: 980, rating: 4.2 },
-  { id: "voice-synthesis", name: "Voice Synthesis", version: "1.0.0", description: "文本转语音，支持 ElevenLabs 和系统 TTS 回退", author: "evoclaw", downloads: 2500, rating: 4.8 },
-  { id: "canvas-renderer", name: "Canvas Renderer", version: "0.6.0", description: "实时画布，支持 A2UI 可视化输出", author: "evoclaw", downloads: 870, rating: 4.0 },
-  { id: "cron-enhancer", name: "Cron Enhancer", version: "0.5.0", description: "增强型 Cron 调度，支持自然语言时间表达式", author: "community", downloads: 540, rating: 4.3 },
-  { id: "sentiment-analyzer", name: "Sentiment Analyzer", version: "0.3.0", description: "分析用户情绪并自动调整回复语气", author: "community", downloads: 320, rating: 3.8 },
+  { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord channel integration with slash commands", author: "community", downloads: 1230, rating: 4.5 },
+  { id: "slack-connector", name: "Slack Connector", version: "0.7.0", description: "Slack workspace integration with threaded replies", author: "community", downloads: 980, rating: 4.2 },
+  { id: "voice-synthesis", name: "Voice Synthesis", version: "1.0.0", description: "Text-to-speech with ElevenLabs and system TTS fallback", author: "evoclaw", downloads: 2500, rating: 4.8 },
+  { id: "canvas-renderer", name: "Canvas Renderer", version: "0.6.0", description: "Real-time canvas with A2UI visual output", author: "evoclaw", downloads: 870, rating: 4.0 },
+  { id: "cron-enhancer", name: "Cron Enhancer", version: "0.5.0", description: "Enhanced Cron scheduling with natural language time expressions", author: "community", downloads: 540, rating: 4.3 },
+  { id: "sentiment-analyzer", name: "Sentiment Analyzer", version: "0.3.0", description: "Analyze user sentiment and auto-adjust reply tone", author: "community", downloads: 320, rating: 3.8 },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -336,37 +336,37 @@ export function PluginsPage() {
       <div style={statsRowStyle}>
         <div style={statCardStyle}>
           <div style={{ fontSize: "24px", fontWeight: 700, color: "var(--accent, #58a6ff)" }}>{plugins.length}</div>
-          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>已安装</div>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>{t("plugins.installed")}</div>
         </div>
         <div style={statCardStyle}>
           <div style={{ fontSize: "24px", fontWeight: 700, color: "#3fb950" }}>{activeCount}</div>
-          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>已激活</div>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>{t("plugins.active_count")}</div>
         </div>
         <div style={statCardStyle}>
           <div style={{ fontSize: "24px", fontWeight: 700, color: errorCount > 0 ? "#f85149" : "var(--text-secondary)" }}>{errorCount}</div>
-          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>错误</div>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>{t("plugins.error_count")}</div>
         </div>
         <div style={statCardStyle}>
           <div style={{ fontSize: "24px", fontWeight: 700, color: "var(--text-secondary)" }}>
             {filteredAvailable.length}
           </div>
-          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>可用</div>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary, #8b949e)", marginTop: "4px" }}>{t("plugins.available")}</div>
         </div>
       </div>
 
       {/* Header */}
       <div style={headerStyle}>
-        <div style={titleStyle}>插件管理</div>
+        <div style={titleStyle}>{t("plugins.management", "插件管理")}</div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <input
             style={searchInputStyle}
-            placeholder="搜索插件..."
+            placeholder={t("plugins.search", "搜索插件...")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           {activeTab === "installed" && (
             <button style={actionBtnStyle("primary")} onClick={() => setShowInstall(!showInstall)}>
-              + 安装
+              {t("plugins.install_short", "+ 安装")}
             </button>
           )}
         </div>
@@ -377,23 +377,23 @@ export function PluginsPage() {
         <div style={installFormStyle}>
           <input
             style={installInputStyle}
-            placeholder="输入插件 ID 或名称..."
+            placeholder={t("plugins.install_id_placeholder", "输入插件 ID 或名称...")}
             value={installId}
             onChange={(e) => setInstallId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleInstall()}
           />
-          <button style={actionBtnStyle("primary")} onClick={handleInstall}>安装</button>
-          <button style={actionBtnStyle("default")} onClick={() => setShowInstall(false)}>取消</button>
+          <button style={actionBtnStyle("primary")} onClick={handleInstall}>{t("plugins.install", "安装")}</button>
+          <button style={actionBtnStyle("default")} onClick={() => setShowInstall(false)}>{t("app.cancel", "取消")}</button>
         </div>
       )}
 
       {/* Tabs */}
       <div style={tabBarStyle}>
         <button style={tabStyle(activeTab === "installed")} onClick={() => setActiveTab("installed")}>
-          已安装 ({plugins.length})
+          {t("plugins.installed")} ({plugins.length})
         </button>
         <button style={tabStyle(activeTab === "available")} onClick={() => setActiveTab("available")}>
-          可用 ({filteredAvailable.length})
+          {t("plugins.available")} ({filteredAvailable.length})
         </button>
       </div>
 
@@ -459,20 +459,20 @@ export function PluginsPage() {
 
               <div style={{ display: "flex", gap: "8px", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  安装于: {plugin.installedAt}
+                  {t("plugins.installed_at", "安装于")}: {plugin.installedAt}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button
                     style={actionBtnStyle(plugin.status === "active" ? "default" : "primary")}
                     onClick={() => togglePlugin(plugin.id)}
                   >
-                    {plugin.status === "active" ? "停用" : "启用"}
+                    {plugin.status === "active" ? t("plugins.disable") : t("plugins.enable")}
                   </button>
                   <button
                     style={actionBtnStyle("danger")}
                     onClick={() => uninstallPlugin(plugin.id)}
                   >
-                    移除
+                    {t("plugins.remove", "移除")}
                   </button>
                 </div>
               </div>
@@ -480,7 +480,7 @@ export function PluginsPage() {
           ))}
           {filteredPlugins.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)" }}>
-              未找到匹配 "{search}" 的插件
+              {t("plugins.no_match", '未找到匹配 "{0}" 的插件').replace("{0}", search)}
             </div>
           )}
         </div>
@@ -509,7 +509,7 @@ export function PluginsPage() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  {plugin.downloads.toLocaleString()} 次下载
+                  {plugin.downloads.toLocaleString()} {t("plugins.downloads", "次下载")}
                 </span>
                 <button
                   style={{
@@ -519,7 +519,7 @@ export function PluginsPage() {
                   onClick={() => installAvailablePlugin(plugin.id)}
                   disabled={isInstalled}
                 >
-                  {isInstalled ? "已安装" : "安装"}
+                  {isInstalled ? t("plugins.installed") : t("plugins.install")}
                 </button>
               </div>
             </div>
@@ -527,7 +527,7 @@ export function PluginsPage() {
           })}
           {filteredAvailable.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)" }}>
-              未找到匹配 "{search}" 的可用插件
+              {t("plugins.no_available_match", '未找到匹配 "{0}" 的可用插件').replace("{0}", search)}
             </div>
           )}
         </div>

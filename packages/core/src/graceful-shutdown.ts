@@ -82,6 +82,7 @@ export class GracefulShutdownManager extends EventEmitter {
   private totalTimer: ReturnType<typeof setTimeout> | null = null;
   private forceTimer: ReturnType<typeof setTimeout> | null = null;
   private signalCount = 0;
+  private boundHandleSignal: ((signal: string) => void) | null = null;
 
   constructor(config?: Partial<GracefulShutdownConfig>) {
     super();
@@ -89,9 +90,10 @@ export class GracefulShutdownManager extends EventEmitter {
     this.status = this.createInitialStatus();
 
     if (this.config.trapSignals) {
+      this.boundHandleSignal = this.handleSignal.bind(this);
       for (const sig of this.config.signals) {
         try {
-          process.on(sig, this.handleSignal.bind(this));
+          process.on(sig, this.boundHandleSignal);
         } catch {
           // Signal may not be available on this platform
         }
@@ -206,8 +208,11 @@ export class GracefulShutdownManager extends EventEmitter {
    * Remove signal handlers (for cleanup in tests).
    */
   dispose(): void {
-    for (const sig of this.config.signals) {
-      process.removeListener(sig, this.handleSignal);
+    if (this.boundHandleSignal) {
+      for (const sig of this.config.signals) {
+        process.removeListener(sig, this.boundHandleSignal);
+      }
+      this.boundHandleSignal = null;
     }
     if (this.totalTimer) clearTimeout(this.totalTimer);
     if (this.forceTimer) clearTimeout(this.forceTimer);

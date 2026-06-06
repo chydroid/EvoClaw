@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface SystemStatus {
   online: boolean;
@@ -90,12 +91,13 @@ const s: Record<string, React.CSSProperties> = {
   error: { color: "var(--error)", fontSize: "11px", marginTop: "4px" },
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  idle: "空闲", thinking: "思考中", executing: "执行工具",
-  responding: "回复中", error: "出错", waiting_permission: "等待授权",
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  idle: "status.state_idle", thinking: "status.state_thinking", executing: "status.state_executing",
+  responding: "status.state_responding", error: "status.state_error", waiting_permission: "status.state_waiting_permission",
 };
 
 export function StatusPage() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [services, setServices] = useState<ServiceInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,7 +113,7 @@ export function StatusPage() {
       if (svcRes.ok) setServices(await svcRes.json());
       setError("");
     } catch (err) {
-      setError("无法连接到服务器");
+      setError(t("status.connection_error"));
     } finally {
       setLoading(false);
     }
@@ -123,29 +125,29 @@ export function StatusPage() {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>加载中...</div></div>;
+  if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>{t("app.loading")}</div></div>;
   if (error && !status) return <div style={s.container}><div style={{ color: "var(--error)" }}>{error}</div></div>;
 
   return (
     <div style={s.container}>
       <div style={s.header}>
-        <div style={s.title}>系统状态</div>
+        <div style={s.title}>{t("status.title")}</div>
         <div style={s.subtitle}>
-          运行时间: {status?.uptimeFormatted || "未知"} · {status?.platform || "?"} · Node {status?.nodeVersion || "?"}
+          {t("dashboard.uptime")}: {status?.uptimeFormatted || t("status.unknown")} · {status?.platform || "?"} · Node {status?.nodeVersion || "?"}
         </div>
       </div>
 
       {/* Stats Grid */}
       <div style={s.grid}>
         <div style={s.card}>
-          <div style={s.cardTitle}>运行状态</div>
+          <div style={s.cardTitle}>{t("status.run_status")}</div>
           <div style={{ ...s.cardValue, color: status?.online ? "var(--success)" : "var(--error)" }}>
-            {status?.online ? "在线" : "离线"}
+            {status?.online ? t("app.online") : t("app.offline")}
           </div>
-          <div style={s.cardSub}>运行时间: {status?.uptimeFormatted || "N/A"}</div>
+          <div style={s.cardSub}>{t("dashboard.uptime")}: {status?.uptimeFormatted || "N/A"}</div>
         </div>
         <div style={s.card}>
-          <div style={s.cardTitle}>内存使用</div>
+          <div style={s.cardTitle}>{t("status.memory_usage")}</div>
           <div style={s.cardValue}>{status?.memory?.heapUsed || 0} MB</div>
           <div style={s.cardSub}>RSS: {status?.memory?.rss || 0} MB</div>
           <div style={s.memoryBar}>
@@ -153,42 +155,42 @@ export function StatusPage() {
           </div>
         </div>
         <div style={s.card}>
-          <div style={s.cardTitle}>活跃会话</div>
+          <div style={s.cardTitle}>{t("dashboard.active_sessions")}</div>
           <div style={s.cardValue}>{status?.agentStatuses?.length || 0}</div>
           <div style={s.cardSub}>
-            {status?.agentStatuses?.filter(a => a.state === "thinking" || a.state === "executing").length || 0} 个活跃中
+            {status?.agentStatuses?.filter(a => a.state === "thinking" || a.state === "executing").length || 0} {t("status.active_suffix")}
           </div>
         </div>
         <div style={s.card}>
-          <div style={s.cardTitle}>服务数量</div>
+          <div style={s.cardTitle}>{t("status.service_count")}</div>
           <div style={s.cardValue}>{services.length}</div>
           <div style={s.cardSub}>
-            {services.filter(s => s.status === "running").length} 个运行中
+            {services.filter(s => s.status === "running").length} {t("status.running_suffix")}
           </div>
         </div>
       </div>
 
       {/* Agent Statuses */}
       <div style={s.section}>
-        <div style={s.sectionTitle}>Agent 状态</div>
+        <div style={s.sectionTitle}>{t("status.agent_status")}</div>
         {(status?.agentStatuses || []).length === 0 ? (
-          <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "16px" }}>当前无活跃 Agent 会话</div>
+          <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "16px" }}>{t("status.no_active_agents")}</div>
         ) : (
           (status?.agentStatuses || []).map((agent, i) => (
             <div key={i} style={s.statusRow}>
               <div style={statusIndicatorStyle(agent.state)} />
               <div style={s.statusText}>
                 <div style={s.statusSession}>{agent.sessionId}</div>
-                <div style={s.statusAction}>{agent.currentAction || "无操作"}</div>
+                <div style={s.statusAction}>{agent.currentAction || t("status.no_action")}</div>
                 {agent.toolCalls.length > 0 && (
                   <div style={s.statusMeta}>
-                    工具: {agent.toolCalls.map(t => `${t.name}(${t.status})`).join(", ")}
+                    {t("status.tools")}: {agent.toolCalls.map(tc => `${tc.name}(${tc.status})`).join(", ")}
                   </div>
                 )}
                 <div style={s.statusMeta}>
-                  状态: {STATUS_LABELS[agent.state] || agent.state} · 
-                  Token: {agent.tokensUsed} · 
-                  耗时: {(agent.duration / 1000).toFixed(1)}s · 
+                  {t("dashboard.providers_status")}: {t(STATUS_LABEL_KEYS[agent.state] || "", agent.state)} ·
+                  {t("status.token")}: {agent.tokensUsed} ·
+                  {t("status.duration")}: {(agent.duration / 1000).toFixed(1)}s ·
                   Run #{agent.runId}
                 </div>
                 {agent.progress && (
@@ -204,17 +206,17 @@ export function StatusPage() {
 
       {/* Services Table */}
       <div style={s.section}>
-        <div style={s.sectionTitle}>服务列表</div>
+        <div style={s.sectionTitle}>{t("status.service_list")}</div>
         {services.length === 0 ? (
-          <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "16px" }}>无服务数据</div>
+          <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "16px" }}>{t("status.no_services")}</div>
         ) : (
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>服务名称</th>
-                <th style={s.th}>版本</th>
-                <th style={s.th}>状态</th>
-                <th style={s.th}>错误</th>
+                <th style={s.th}>{t("ops.service_name")}</th>
+                <th style={s.th}>{t("status.version")}</th>
+                <th style={s.th}>{t("dashboard.providers_status")}</th>
+                <th style={s.th}>{t("plugins.error")}</th>
               </tr>
             </thead>
             <tbody>
@@ -237,7 +239,7 @@ export function StatusPage() {
 
       {/* Refresh hint */}
       <div style={{ color: "var(--text-muted)", fontSize: "10px", textAlign: "center" as const, marginTop: "8px" }}>
-        自动刷新中 (每 5 秒) · 最后更新: {status?.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "N/A"}
+        {t("status.auto_refreshing")} · {t("status.last_update")}: {status?.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "N/A"}
       </div>
     </div>
   );

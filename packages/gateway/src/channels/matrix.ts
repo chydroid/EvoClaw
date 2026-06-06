@@ -64,6 +64,11 @@ export class MatrixAdapter implements ChannelAdapter {
       return;
     }
 
+    // Reset AbortController so start() works after stop()
+    if (this.pollAbort.signal.aborted) {
+      this.pollAbort = new AbortController();
+    }
+
     try {
       // Login if using password
       if (!this.accessToken && this.config.password) {

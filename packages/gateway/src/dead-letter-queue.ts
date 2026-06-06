@@ -314,10 +314,16 @@ export class DeadLetterQueue {
       if (!fs.existsSync(p)) return [];
       try {
         const content = fs.readFileSync(p, "utf-8");
-        return content
-          .split("\n")
-          .filter((line) => line.trim())
-          .map((line) => JSON.parse(line) as DeadLetter);
+        const entries: DeadLetter[] = [];
+        for (const line of content.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            entries.push(JSON.parse(line) as DeadLetter);
+          } catch {
+            // Skip corrupted line instead of losing all entries
+          }
+        }
+        return entries;
       } catch (err) {
         console.warn(`[DeadLetterQueue] Failed to read channel file for "${channel}":`, err);
         return [];

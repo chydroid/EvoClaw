@@ -3,6 +3,45 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.13.8 (2026-06-07)
+
+### 飞书/Matrix通道消息处理修复（关键Bug）
+
+飞书通道配置和测试虽然显示成功，但实际消息无法到达Agent。根因是通道适配器从未被实例化和注册：
+
+- 新增 `applyChannels()` 方法：根据保存的通道配置动态创建适配器并注册到 ChannelManager
+- 在 `loadPersistedConfig()` 和 `PUT /api/config/channels` 中调用 `applyChannels()`
+- 在 server/index.ts 中连接 ChannelManager 消息处理器到 AgentModelExecutor
+- 修复测试接口：从假测试改为真正调用适配器的 `healthCheck()`
+- 修复飞书 webhook 签名验证：使用原始请求体而非重新序列化的 JSON
+- 修复飞书/Matrix适配器 stop() 后无法 restart 的问题：start() 中重置 AbortController
+
+### WebUI 全面国际化 (i18n)
+
+英文语言下大量页面仍显示中文，现已将所有硬编码中文改为根据语言设置动态显示：
+
+- WebChatPage.tsx：~60+ 处硬编码中文改为 t() 调用
+- EvolutionDashboard.tsx：~80+ 处硬编码中文改为 t() 调用
+- Dashboard.tsx：~25+ 处
+- StatusPage.tsx：~20+ 处
+- LogsPage.tsx：~15+ 处
+- CanvasPage.tsx：~40+ 处
+- OpsPage.tsx：~20+ 处
+- PluginsPage.tsx：~12+ 处
+- SkillsConfig.tsx：~90+ 处
+- PermissionsPage.tsx：~15+ 处
+- ModelSwitcherPage.tsx：~12+ 处
+- QueueManagerPage.tsx：~20+ 处
+- SecretsManagerPage.tsx：~26+ 处
+- i18n.ts 新增 400+ 个翻译键（zh + en 双语）
+
+### 代码质量修复
+
+- agent-router.ts：JSON.parse 添加 try/catch，配置文件损坏不再崩溃
+- protocol-adapter.ts：`||` 改为 `??`，修复 temperature=0 等合法值被错误覆盖为默认值的逻辑Bug
+- graceful-shutdown.ts：修复 bind() 导致信号处理器无法移除的泄漏问题
+- dead-letter-queue.ts / run-log.ts：单行损坏不再丢失全部数据，改为逐行解析跳过损坏行
+
 ## v0.13.7 (2026-06-06)
 
 ### 微信通道复杂度评估与自适应超时

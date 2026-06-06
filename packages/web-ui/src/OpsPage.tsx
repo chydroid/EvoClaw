@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface SystemHealth {
   status: "ok" | "degraded" | "down";
@@ -60,6 +61,7 @@ function statusDotStyle(st: string): React.CSSProperties {
 }
 
 export function OpsPage() {
+  const { t } = useTranslation();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,39 +121,39 @@ export function OpsPage() {
     <div style={s.container}>
       <div style={s.header}>
         <div>
-          <div style={s.title}>运维管理 (Crestodian)</div>
-          <div style={s.subtitle}>守护进程运维管理器 — 系统健康、诊断与操作审计</div>
+          <div style={s.title}>{t("ops.crestodian_title", "运维管理 (Crestodian)")}</div>
+          <div style={s.subtitle}>{t("ops.crestodian_subtitle", "守护进程运维管理器 — 系统健康、诊断与操作审计")}</div>
         </div>
-        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>刷新</button>
+        <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>{t("ops.refresh", "刷新")}</button>
       </div>
 
       {/* Health Cards */}
       <div style={s.grid}>
         <div style={s.card}>
-          <div style={s.cardTitle}>系统状态</div>
+          <div style={s.cardTitle}>{t("ops.system_status", "系统状态")}</div>
           <div style={{ ...s.cardValue, color: health?.status === "ok" ? "var(--success)" : "var(--error)" }}>
-            {health?.status === "ok" ? "正常" : health?.status || "未知"}
+            {health?.status === "ok" ? t("ops.normal", "正常") : health?.status || t("ops.unknown", "未知")}
           </div>
-          <div style={s.cardSub}>运行时间: {health ? fmtMs(health.uptimeMs) : "-"}</div>
+          <div style={s.cardSub}>{t("ops.uptime", "运行时间")}: {health ? fmtMs(health.uptimeMs) : "-"}</div>
         </div>
         <div style={s.card}>
           <div style={s.cardTitle}>CPU</div>
-          <div style={s.cardValue}>{health?.os?.cpus || "-"} 核</div>
-          <div style={s.cardSub}>进程: {health?.process ? getCpuPercent(health.process.cpuUser, health.process.cpuSystem) : "-"}%</div>
+          <div style={s.cardValue}>{health?.os?.cpus || "-"} {t("ops.cores", "核")}</div>
+          <div style={s.cardSub}>{t("ops.process", "进程")}: {health?.process ? getCpuPercent(health.process.cpuUser, health.process.cpuSystem) : "-"}%</div>
         </div>
         <div style={s.card}>
-          <div style={s.cardTitle}>内存</div>
+          <div style={s.cardTitle}>{t("ops.memory", "内存")}</div>
           <div style={s.cardValue}>{fmtMB(health?.process?.memoryRss || 0)}</div>
           <div style={s.cardSub}>
-            堆: {fmtMB(health?.process?.memoryHeapUsed || 0)} · 
-            系统: {fmtMB(health?.os?.freeMem || 0)} / {fmtMB(health?.os?.totalMem || 0)}
+            {t("ops.heap", "堆")}: {fmtMB(health?.process?.memoryHeapUsed || 0)} ·
+            {t("ops.system", "系统")}: {fmtMB(health?.os?.freeMem || 0)} / {fmtMB(health?.os?.totalMem || 0)}
           </div>
         </div>
         <div style={s.card}>
-          <div style={s.cardTitle}>进程</div>
+          <div style={s.cardTitle}>{t("ops.process_title", "进程")}</div>
           <div style={s.cardValue}>{health?.process?.pid || "-"}</div>
           <div style={s.cardSub}>
-            平台: {health?.os?.platform || "-"} · {health?.os?.hostname || "-"}
+            {t("ops.platform", "平台")}: {health?.os?.platform || "-"} · {health?.os?.hostname || "-"}
           </div>
         </div>
       </div>
@@ -159,21 +161,21 @@ export function OpsPage() {
       {/* Service Health Table */}
       <div style={s.panel}>
         <div style={s.panelHeader}>
-          <span style={s.panelTitle}>服务健康状态</span>
+          <span style={s.panelTitle}>{t("ops.service_health_status", "服务健康状态")}</span>
           <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-            {servicesArray.length} 个服务
+            {t("ops.service_count", "{0} 个服务").replace("{0}", String(servicesArray.length))}
           </span>
         </div>
         {servicesArray.length === 0 ? (
-          <div style={s.empty}>{loading ? "加载中..." : "无服务数据"}</div>
+          <div style={s.empty}>{loading ? t("app.loading", "加载中...") : t("ops.no_service_data", "无服务数据")}</div>
         ) : (
           <table style={s.table}>
             <thead>
               <tr>
-                <th style={s.th}>服务名称</th>
-                <th style={s.th}>状态</th>
-                <th style={s.th}>延迟</th>
-                <th style={s.th}>错误</th>
+                <th style={s.th}>{t("ops.service_name", "服务名称")}</th>
+                <th style={s.th}>{t("ops.service_status", "状态")}</th>
+                <th style={s.th}>{t("ops.latency", "延迟")}</th>
+                <th style={s.th}>{t("ops.errors", "错误")}</th>
               </tr>
             </thead>
             <tbody>
@@ -182,7 +184,7 @@ export function OpsPage() {
                   <td style={s.td}>{svc.name}</td>
                   <td style={s.td}>
                     <span style={statusDotStyle(svc.status)} />
-                    {svc.status === "ok" ? "正常" : svc.status === "error" ? "异常" : "未知"}
+                    {svc.status === "ok" ? t("ops.normal", "正常") : svc.status === "error" ? t("ops.abnormal", "异常") : t("ops.unknown", "未知")}
                   </td>
                   <td style={s.td}>{svc.latencyMs}ms</td>
                   <td style={s.td}>-</td>
@@ -196,7 +198,7 @@ export function OpsPage() {
       {/* Diagnostics Summary */}
       <div style={s.panel}>
         <div style={s.panelHeader}>
-          <span style={s.panelTitle}>诊断信息</span>
+          <span style={s.panelTitle}>{t("ops.diagnostics_info", "诊断信息")}</span>
           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
             {diagnostics?.collectedAt ? new Date(diagnostics.collectedAt).toLocaleTimeString() : "-"}
           </span>
@@ -211,7 +213,7 @@ export function OpsPage() {
               {JSON.stringify({ os: diagnostics.os, process: diagnostics.process }, null, 2)}
             </pre>
           ) : (
-            <div style={s.empty}>暂无诊断数据</div>
+            <div style={s.empty}>{t("ops.no_diag_data", "暂无诊断数据")}</div>
           )}
         </div>
       </div>
