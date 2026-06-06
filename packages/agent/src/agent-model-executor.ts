@@ -3221,7 +3221,12 @@ export class AgentModelExecutor {
       ? `🎉 所有 ${checkpoint.totalSubtasks} 个子任务已成功完成！`
       : `⚠️ ${checkpoint.totalSubtasks - failedCount}/${checkpoint.totalSubtasks} 个子任务完成，${failedCount} 个失败。`;
 
-    const reply = `${summaryHeader}\n\n${subtaskResults.join("\n\n")}\n\n---\n📊 总耗时: ${Math.floor((Date.now() - startTime) / 1000)}秒 | Token使用: ${totalTokensUsed}`;
+    // When some subtasks failed, append alternative suggestions
+    const failureFooter = failedCount > 0
+      ? `\n\n---\n💡 **替代方案建议：**\n① 尝试单独重新执行失败的任务，可能只是临时故障\n② 简化任务描述后重试，避免过于复杂的指令\n③ 如果是网络/下载相关任务，检查网络连接后重试\n④ 提供更多上下文信息，帮助我更准确地完成任务\n\n需要我帮您重新尝试失败的任务吗？`
+      : "";
+
+    const reply = `${summaryHeader}\n\n${subtaskResults.join("\n\n")}${failureFooter}\n\n---\n📊 总耗时: ${Math.floor((Date.now() - startTime) / 1000)}秒 | Token使用: ${totalTokensUsed}`;
 
     return {
       reply: AgentModelExecutor.collapseNewlines(reply),
@@ -4629,7 +4634,7 @@ Have a specific URL?
                 finalReply = summaryResult.message.content;
                 totalTokensUsed += summaryResult.tokensUsed;
               } else {
-                finalReply = "工具已执行完毕，但未能生成总结回复。";
+                finalReply = "工具已执行完毕，但未能生成总结回复。替代方案：① 请重新提问，我会尝试不同的方式回答；② 提供更多上下文信息帮助我理解您的需求。";
               }
             } catch {
               finalReply = "工具已执行完毕，但未能生成总结回复。";
@@ -4696,7 +4701,7 @@ Have a specific URL?
       }
     }
 
-    const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n可前往 Ops 页面查看详细诊断信息。";
+    const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n替代方案：\n① 前往 Ops 页面查看详细诊断信息并修复配置\n② 尝试切换到其他模型提供商（如 DeepSeek、Qwen 等）\n③ 检查网络代理设置是否正确\n\n需要我帮您排查具体哪个模型出了问题吗？";
     console.error(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.`);
     return {
       reply: fallbackReply,

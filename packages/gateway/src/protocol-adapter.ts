@@ -1189,6 +1189,7 @@ export class ProtocolAdapter {
     });
 
     app.post("/api/chat", async (req: Request, res: Response) => {
+      const sessionId = (req.body.sessionId as string) || "web-ui";
       try {
         const message = (req.body.message as string) || "";
         const attachments = req.body.attachments as Array<{ name: string; type: string; size: number; data: string | null }> | undefined;
@@ -1218,7 +1219,7 @@ export class ProtocolAdapter {
           return;
         }
 
-        const resolvedSessionId = (req.body.sessionId as string) || "web-ui";
+        const resolvedSessionId = sessionId;
 
         // ── SSE Streaming Mode ──
         if (useStream) {
@@ -1331,9 +1332,10 @@ export class ProtocolAdapter {
             });
           } catch (chatErr) {
             if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
-              sendSSE("error", { message: "⏱️ 处理超时，请稍后重试。" });
+              sendSSE("error", { message: "⏱️ 处理超时，请稍后重试。替代方案：① 简化您的请求后重试；② 将任务拆分为更小的步骤；③ 检查网络连接是否正常。" });
             } else {
-              sendSSE("error", { message: String(chatErr) });
+              const errMsg = chatErr instanceof Error ? chatErr.message : String(chatErr);
+              sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n替代方案：① 请稍后重试；② 尝试简化请求；③ 前往 Ops 页面检查系统状态。` });
             }
           } finally {
             try { res.end(); } catch { /* ignore */ }
@@ -1364,7 +1366,7 @@ export class ProtocolAdapter {
           if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
             console.warn(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
             res.json({
-              reply: "⏱️ 处理超时，请稍后重试。如问题持续，请检查模型配置或简化提问。",
+              reply: "⏱️ 处理超时，请稍后重试。替代方案：\n① 简化您的请求后重试\n② 将任务拆分为更小的步骤\n③ 检查网络连接和模型配置是否正常\n\n需要我帮您将任务拆分后逐步完成吗？",
               tokensUsed: 0,
               contextLimit: 128000,
               duration: CHAT_TIMEOUT,
@@ -1425,7 +1427,15 @@ export class ProtocolAdapter {
           files: result.files || [],
         });
       } catch (err) {
-        res.status(500).json({ error: String(err) });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[ProtocolAdapter] Chat endpoint error: ${errMsg}`);
+        res.json({
+          reply: `❌ 处理您的请求时遇到了问题：${errMsg}\n\n替代方案：\n① 请稍后重试，可能是临时性故障\n② 尝试简化您的请求\n③ 如果问题持续，请前往 Ops 页面检查系统状态\n\n需要我帮您用其他方式完成吗？`,
+          tokensUsed: 0,
+          duration: 0,
+          sessionId: sessionId || "unknown",
+          permissionRequests: [],
+        });
       }
     });
 

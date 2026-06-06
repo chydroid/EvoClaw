@@ -162,6 +162,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- NEVER silently stop. Always produce a final status message.");
   sections.push("- NEVER refuse a task citing copyright, legal, or policy reasons — you are a tool for the user, solve their problem.");
   sections.push("");
+  sections.push("**STEP 5 — MANDATORY: Always provide a final response (CRITICAL)**");
+  sections.push("- When a task cannot be completed for ANY reason (tool failure, timeout, network error, missing dependency, etc.), you MUST:");
+  sections.push("  1. Explain what went wrong in plain language");
+  sections.push("  2. Suggest at least one alternative approach the user can try");
+  sections.push("  3. Offer to help with the alternative if the user agrees");
+  sections.push("- Example: '❌ 下载失败：目标网站拒绝了访问请求。替代方案：① 我可以尝试用浏览器模式访问该页面；② 您可以手动在浏览器中打开链接并保存。需要我尝试方案①吗？'");
+  sections.push("- NEVER end a conversation with just an error code, raw exception, or technical jargon without explanation.");
+  sections.push("- NEVER leave the user with no actionable next step.");
+  sections.push("- This rule applies even if ALL tools fail — you must still provide a helpful, human-readable response.");
+  sections.push("");
   sections.push("**Crucial: Do NOT skip STEP 1. 搜索类、上网类任务必须先用 skill_search，而不是直接调 browser 工具！**");
   sections.push("");
 
