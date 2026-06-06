@@ -146,17 +146,17 @@ export function StatusPage() {
         </div>
         <div style={s.card}>
           <div style={s.cardTitle}>内存使用</div>
-          <div style={s.cardValue}>{status?.memory.heapUsed || 0} MB</div>
-          <div style={s.cardSub}>RSS: {status?.memory.rss || 0} MB</div>
+          <div style={s.cardValue}>{status?.memory?.heapUsed || 0} MB</div>
+          <div style={s.cardSub}>RSS: {status?.memory?.rss || 0} MB</div>
           <div style={s.memoryBar}>
-            <div style={memoryFillStyle(status?.memory.heapUsed || 0, status?.memory.heapTotal || 1)} />
+            <div style={memoryFillStyle(status?.memory?.heapUsed || 0, status?.memory?.heapTotal || 1)} />
           </div>
         </div>
         <div style={s.card}>
           <div style={s.cardTitle}>活跃会话</div>
-          <div style={s.cardValue}>{status?.agentStatuses.length || 0}</div>
+          <div style={s.cardValue}>{status?.agentStatuses?.length || 0}</div>
           <div style={s.cardSub}>
-            {status?.agentStatuses.filter(a => a.state === "thinking" || a.state === "executing").length || 0} 个活跃中
+            {status?.agentStatuses?.filter(a => a.state === "thinking" || a.state === "executing").length || 0} 个活跃中
           </div>
         </div>
         <div style={s.card}>

@@ -98,7 +98,7 @@ export function renderMarkdown(text: string): string {
     formatted = formatted.replace(/\[([^\]]+)\]\((\/[^\s)]+)\)/g, (match, text, link) => {
       const escapedText = htmlEscape(text);
       const escapedLink = htmlEscape(link);
-      const html = `<a href="${escapedLink}" style="color:var(--accent);">${escapedText}</a>`;
+      const html = `<a href="${escapedLink}" target="_blank" rel="noopener" style="color:var(--accent);">${escapedText}</a>`;
       const idx = linkPlaceholders.length;
       linkPlaceholders.push(html);
       return `\x00LINK${idx}\x00`;
@@ -107,8 +107,7 @@ export function renderMarkdown(text: string): string {
     const parts = formatted.split(/((?<!href=")(?:https?:\/\/[^\s<>\[\]()]+|\/api\/[^\s<>\[\]()]+))/g);
     formatted = parts.map((part, index) => {
       if (index % 2 === 1) {
-        const isExternal = part.startsWith("http://") || part.startsWith("https://");
-        const extraAttrs = isExternal ? ' target="_blank" rel="noopener"' : "";
+        const extraAttrs = ' target="_blank" rel="noopener"';
         return `<a href="${htmlEscape(part)}" style="color:var(--accent);"${extraAttrs}>${htmlEscape(part)}</a>`;
       } else {
         let text = htmlEscape(part);

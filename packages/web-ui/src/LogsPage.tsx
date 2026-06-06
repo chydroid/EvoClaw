@@ -194,7 +194,7 @@ export function LogsPage() {
         <div style={s.sectionTitle}>
           <span>消息队列</span>
           <div style={{ display: "flex", gap: "8px" }}>
-            {queue && (
+            {queue?.stats && (
               <span style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: "normal" }}>
                 总计: {queue.stats.total} · 待处理: {queue.stats.pending} · 处理中: {queue.stats.processing} · 完成: {queue.stats.done} · 失败: {queue.stats.failed}
               </span>
@@ -203,7 +203,7 @@ export function LogsPage() {
             <button style={s.btn} onClick={clearQueue}>清空队列</button>
           </div>
         </div>
-        {!queue || queue.queue.length === 0 ? (
+        {!queue?.queue || queue.queue.length === 0 ? (
           <div style={s.empty}>队列为空</div>
         ) : (
           queue.queue.slice(0, 20).map((item) => (

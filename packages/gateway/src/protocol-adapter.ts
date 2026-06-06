@@ -41,9 +41,9 @@ const DATA_DIR = path.resolve(process.cwd(), "data", "config");
 const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
 
-type TaskComplexity = "simple" | "medium" | "complex" | "very_complex";
+export type TaskComplexity = "simple" | "medium" | "complex" | "very_complex";
 
-interface ComplexityEstimate {
+export interface ComplexityEstimate {
   level: TaskComplexity;
   timeoutMs: number;
   shouldAutoSplit: boolean;
@@ -108,7 +108,7 @@ const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexit
   },
 ];
 
-function estimateTaskComplexity(message: string): ComplexityEstimate {
+export function estimateTaskComplexity(message: string): ComplexityEstimate {
   const lower = message.toLowerCase();
   let maxComplexity: TaskComplexity = "simple";
 
@@ -1727,18 +1727,47 @@ export class ProtocolAdapter {
         const feedback = evolutionEngine.getFeedbackHistory();
         const learning = evolutionEngine.getLearningStats();
         const cycleList = cycles as Array<Record<string, unknown>>;
+
+        // Get patterns from ExperienceAnalyzer
+        const experienceAnalyzer = this.registry.resolveService<{
+          getPatterns(): Array<{ id: string; type: string; category: string; description: string; confidence: number; frequency: number }>;
+        }>("experienceAnalyzer");
+        const rawPatterns = experienceAnalyzer?.getPatterns() || [];
+        const patterns = rawPatterns.map((p) => ({
+          name: p.category || p.type || p.id,
+          count: p.frequency || 0,
+          confidence: p.confidence || 0,
+        }));
+
+        // Map cycles to frontend-expected format
+        const mappedCycles = cycleList.map((c) => ({
+          id: String(c.id || ""),
+          source: String(c.source || c.trigger || ""),
+          status: String(c.status || "unknown"),
+          startedAt: c.startedAt ? new Date(c.startedAt as string | number).toISOString() : "",
+          completedAt: c.completedAt ? new Date(c.completedAt as string | number).toISOString() : null,
+          duration: c.startedAt && c.completedAt
+            ? new Date(c.completedAt as string | number).getTime() - new Date(c.startedAt as string | number).getTime()
+            : 0,
+          candidatesGenerated: Array.isArray(c.candidates) ? c.candidates.length : (c.candidatesGenerated as number || 0),
+          candidatesPassed: Array.isArray(c.candidates) ? (c.candidates as unknown[]).filter((x) => (x as Record<string, unknown>)?.passed).length : (c.candidatesPassed as number || 0),
+          evaluationScore: (c.evaluation as Record<string, unknown>)?.score as number || (c.evaluationScore as number || 0),
+        }));
+
         res.json({
-          cycles,
+          cycles: mappedCycles,
           feedback,
-          patterns: [],
+          patterns,
           learning,
           summary: {
             totalCycles: cycleList.length,
             successRate: cycleList.length > 0
               ? cycleList.filter((c) => c.status === "completed").length / cycleList.length
               : 0,
-            avgEvaluationScore: 0,
-            totalCandidates: cycleList.reduce((sum, c) => sum + ((c.candidates as unknown[])?.length || 0), 0),
+            avgEvaluationScore: mappedCycles.length > 0
+              ? mappedCycles.reduce((sum, c) => sum + c.evaluationScore, 0) / mappedCycles.length
+              : 0,
+            totalCandidates: mappedCycles.reduce((sum, c) => sum + c.candidatesGenerated, 0),
           },
         });
       } catch (err) {
@@ -3730,13 +3759,24 @@ export class ProtocolAdapter {
 
     app.get("/api/files/download/*", (req: Request, res: Response) => {
       try {
-        const filePath = req.params[0] as string;
-        if (!filePath || filePath.includes("..") || path.resolve(filePath) !== path.normalize(filePath)) {
+        let filePath = req.params[0] as string;
+        if (!filePath || filePath.includes("..")) {
           res.status(400).json({ error: "Invalid file path" });
           return;
         }
 
-        const workspacePath = process.env.EvoClaw_WORKSPACE || path.resolve(process.cwd(), "data", "workspace");
+        const workspacePath = path.resolve(process.env.EvoClaw_WORKSPACE || path.join(process.cwd(), "data", "workspace"));
+
+        // If the path starts with "data/workspace", strip it — it's an absolute-style path
+        // that should be relative to the workspace root
+        const workspacePrefix = "data/workspace/";
+        if (filePath.startsWith(workspacePrefix) || filePath.startsWith(workspacePrefix.replace(/\//g, "\\"))) {
+          filePath = filePath.slice(workspacePrefix.length);
+        }
+
+        // Also handle URL-decoded paths that may contain backslashes
+        filePath = filePath.replace(/\\/g, "/");
+
         const fullPath = path.resolve(workspacePath, filePath);
 
         if (!fullPath.startsWith(path.resolve(workspacePath))) {

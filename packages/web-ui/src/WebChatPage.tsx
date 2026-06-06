@@ -209,6 +209,7 @@ const messageRowStyle = (role: string): CSSProperties => ({
 
 const messageBubbleStyle = (role: string): CSSProperties => ({
   maxWidth: "75%",
+  minWidth: role === "assistant" ? "500px" : undefined,
   padding: "10px 16px",
   borderRadius: role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
   background: role === "user"
@@ -1800,6 +1801,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                         key={i}
                         href={f.downloadUrl}
                         download
+                        target="_blank"
+                        rel="noopener noreferrer"
                         style={{
                           display: "inline-flex", alignItems: "center", gap: "6px",
                           padding: "6px 12px", borderRadius: "8px",
@@ -2275,7 +2278,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             </div>
 
             {/* Right tools */}
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "16px", flexShrink: 0 }}>
               <button
                 style={inputBtnStyle}
                 title="导出对话记录"

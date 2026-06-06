@@ -160,7 +160,12 @@ export default function EvolutionDashboard() {
       ]);
       if (res.ok) {
         const json = await res.json();
-        setData(json);
+        setData({
+          ...DEFAULT_DATA,
+          ...json,
+          // Merge patterns: use API data if non-empty, otherwise keep defaults
+          patterns: json.patterns && json.patterns.length > 0 ? json.patterns : DEFAULT_DATA.patterns,
+        });
         setError(null);
       } else {
         setData(DEFAULT_DATA);

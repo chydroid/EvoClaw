@@ -3,6 +3,40 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.13.7 (2026-06-06)
+
+### 微信通道复杂度评估与自适应超时
+
+微信通道之前固定 5 分钟超时且无任务自动拆分，导致复杂任务（如下载歌曲、搜索+整合）在微信中完不成而 WebUI 可以。现已与 WebUI 对齐：
+
+- 微信通道新增 `estimateTaskComplexity` 复杂度评估，自适应超时：simple 5min / medium 10min / complex 20min / very_complex 30min
+- 微信通道新增 `shouldAutoSplit` / `maxSubtasks` 参数，复杂任务自动拆分为子任务逐步执行
+- 导出 `estimateTaskComplexity` 函数供 weixin-plugin-adapter 复用
+
+### 系统提示词增强
+
+- 新增 Brand Identity 规则：明确告知 LLM 使用 🧬 图标，禁止使用 🦞
+- 新增当前日期注入：系统提示词直接包含 "Today is: 2026年6月6日 星期五"，LLM 不再需要调用工具获取日期
+- 指示 LLM 将"今天/昨天/明天"等时间词解释为具体日期
+
+### 仪表盘模型调用统计修复
+
+- `generateBriefUnderstanding`（每次聊天都会调用）之前未记录统计，现已添加 `recordProviderSuccess`/`recordProviderFailure`
+- `callLLMOnce` 中 HTTP 200 但消息为空的路径现在也记录失败
+
+### 前端修复
+
+- Monitoring 页面崩溃修复：`queue.stats` / `queue.queue` 安全访问（`?.`）
+- StatusPage 不安全属性访问修复：`status?.memory?.heapUsed`
+- 新增 ErrorBoundary 组件，页面渲染崩溃时显示错误信息而非白屏
+- ErrorBoundary 使用英文提示（Render Error / Retry）
+- 进化页面数据映射修复：patterns 不再硬编码为空，cycles 映射为前端期望格式
+- 下载链接在新标签页打开（`target="_blank"`），不再跳转离开聊天页面
+- 下载链接路径修复：URL 中 `data/workspace/` 前缀自动剥离
+- Assistant 回复气泡最低宽度 500px
+- 终端输入框改为 textarea 双行高度，字体 14px
+- 导出按钮与发送按钮间距从 6px 增加到 16px
+
 ## v0.13.6 (2026-06-06)
 
 ### 简单问候快速通道大幅扩展

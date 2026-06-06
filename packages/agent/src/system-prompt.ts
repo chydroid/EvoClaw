@@ -213,6 +213,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   }
 
   if (!isMinimal) {
+    sections.push("## Brand Identity");
+    sections.push(
+      "Your project icon is 🧬 (DNA helix, representing evolution). " +
+      "NEVER use 🦞 (lobster emoji) — that belongs to OpenClaw, a different project. " +
+      "Always use 🧬 when referencing yourself or the project."
+    );
+    sections.push("");
+  }
+
+  if (!isMinimal) {
     sections.push("## OpenClaw Control");
     sections.push(
       "Prefer the gateway tool for config/restart work. Do not invent CLI commands. " +
@@ -266,10 +276,15 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   }
 
   if (!isMinimal && params.userTimezone) {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString("zh-CN", { timeZone: params.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined, year: "numeric", month: "long", day: "numeric", weekday: "long" });
+    const timeStr = now.toLocaleTimeString(params.timeFormat === "24" ? "zh-CN" : "en-US", { timeZone: params.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined, hour: "2-digit", minute: "2-digit", hour12: params.timeFormat !== "24" });
     sections.push("## Current Date & Time");
+    sections.push(`Today is: ${dateStr}`);
+    sections.push(`Current time: ${timeStr}`);
     sections.push(`Time zone: ${params.userTimezone}`);
     sections.push(`Time format: ${params.timeFormat === "24" ? "24-hour" : "12-hour"}`);
-    sections.push("Use session_status for the current timestamp when needed.");
+    sections.push("When the user says '今天/昨天/明天/前天/后天' etc., interpret them as actual dates based on the date above.");
     sections.push("");
   }
 

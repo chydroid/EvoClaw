@@ -4,6 +4,7 @@ import os from "os";
 import crypto from "crypto";
 import { EventBus } from "@evoclaw/core";
 import { AgentModelExecutor } from "@evoclaw/agent";
+import { estimateTaskComplexity } from "./protocol-adapter";
 
 const WEIXIN_API_BASE = "https://ilinkai.weixin.qq.com/";
 const PLUGIN_VERSION = "2.4.4";
@@ -1080,6 +1081,12 @@ export class WeixinPluginAdapter {
       if (imageAttachment) {
         chatContext.attachments = [imageAttachment];
       }
+
+      // ── 复杂度评估：与 WebUI 对齐，支持自适应超时和自动拆分 ──
+      const complexity = estimateTaskComplexity(text);
+      chatContext.complexity = complexity.level;
+      chatContext.shouldAutoSplit = complexity.shouldAutoSplit;
+      chatContext.maxSubtasks = complexity.maxSubtasks;
       console.log(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
 
     // ── 仅对复杂/长消息先发"收到"反馈，避免对简单问候产生重复回复 ──
@@ -1192,7 +1199,7 @@ export class WeixinPluginAdapter {
         }
       };
 
-      const WEIXIN_CHAT_TIMEOUT = 300_000;
+      const WEIXIN_CHAT_TIMEOUT = complexity.timeoutMs;
       let weixinTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       let result: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
       try {

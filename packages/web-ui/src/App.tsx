@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, Component, type ReactNode } from "react";
 import type { CSSProperties } from "react";
 import EvolutionDashboard from "./EvolutionDashboard";
 import LLMConfig from "./LLMConfig";
@@ -198,6 +198,23 @@ const DEFAULT_AVATARS: AvatarInfo = {
   userNickname: "Me",
   botNickname: "EvoClaw",
 };
+
+// ─── Error Boundary ────────────────────────────────────────────
+
+interface EBState { hasError: boolean; error: string }
+class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  state: EBState = { hasError: false, error: "" };
+  static getDerivedStateFromError(e: Error) { return { hasError: true, error: e.message }; }
+  render() {
+    if (this.state.hasError) {
+      return <div style={{ padding: 32, color: "#f85149", fontSize: 14, fontFamily: "monospace" }}>
+        <h3>Render Error</h3><p>{this.state.error}</p>
+        <button onClick={() => this.setState({ hasError: false, error: "" })} style={{ padding: "6px 16px", cursor: "pointer" }}>Retry</button>
+      </div>;
+    }
+    return this.props.children;
+  }
+}
 
 // ─── App Component ────────────────────────────────────────────
 
@@ -519,32 +536,32 @@ export default function App() {
       return React.createElement(WebChatPage as any, { key: chatKey, sessionId: activeSessionId, avatars });
     }
     switch (activeTab) {
-      case "status": return <StatusPage />;
-      case "dashboard": return <Dashboard />;
-      case "events": return <EventsPage />;
-      case "skills": return <SkillsConfig />;
-      case "bootstrap": return <BootstrapConfig />;
-      case "canvas": return <CanvasPage />;
-      case "monitoring": return <LogsPage />;
-      case "plugins": return <PluginsPage />;
-      case "permissions": return <PermissionsPage />;
-      case "cron": return <CronPage />;
-      case "llm": return <LLMConfig />;
-      case "channels": return <ChannelConfigPage />;
-      case "evolution": return <EvolutionDashboard />;
-      case "ops": return <OpsPage />;
-      case "cli": return <CLITerminal />;
-      case "secrets": return <SecretsManagerPage />;
-      case "dlq": return <DeadLetterQueuePage />;
-      case "config-rpc": return <ConfigRPCPage />;
-      case "retention": return <SessionRetentionPage />;
-      case "feature-flags": return <FeatureFlagsPage />;
-      case "config-migration": return <ConfigMigrationPage />;
-      case "config-doctor": return <ConfigDoctorPage />;
-      case "health-aggregator": return <HealthAggregatorPage />;
-      case "message-templates": return <MessageTemplatesPage />;
-      case "reply-refs": return <ReplyReferencePage />;
-      case "message-queue": return <QueueManagerPage />;
+      case "status": return <ErrorBoundary><StatusPage /></ErrorBoundary>;
+      case "dashboard": return <ErrorBoundary><Dashboard /></ErrorBoundary>;
+      case "events": return <ErrorBoundary><EventsPage /></ErrorBoundary>;
+      case "skills": return <ErrorBoundary><SkillsConfig /></ErrorBoundary>;
+      case "bootstrap": return <ErrorBoundary><BootstrapConfig /></ErrorBoundary>;
+      case "canvas": return <ErrorBoundary><CanvasPage /></ErrorBoundary>;
+      case "monitoring": return <ErrorBoundary><LogsPage /></ErrorBoundary>;
+      case "plugins": return <ErrorBoundary><PluginsPage /></ErrorBoundary>;
+      case "permissions": return <ErrorBoundary><PermissionsPage /></ErrorBoundary>;
+      case "cron": return <ErrorBoundary><CronPage /></ErrorBoundary>;
+      case "llm": return <ErrorBoundary><LLMConfig /></ErrorBoundary>;
+      case "channels": return <ErrorBoundary><ChannelConfigPage /></ErrorBoundary>;
+      case "evolution": return <ErrorBoundary><EvolutionDashboard /></ErrorBoundary>;
+      case "ops": return <ErrorBoundary><OpsPage /></ErrorBoundary>;
+      case "cli": return <ErrorBoundary><CLITerminal /></ErrorBoundary>;
+      case "secrets": return <ErrorBoundary><SecretsManagerPage /></ErrorBoundary>;
+      case "dlq": return <ErrorBoundary><DeadLetterQueuePage /></ErrorBoundary>;
+      case "config-rpc": return <ErrorBoundary><ConfigRPCPage /></ErrorBoundary>;
+      case "retention": return <ErrorBoundary><SessionRetentionPage /></ErrorBoundary>;
+      case "feature-flags": return <ErrorBoundary><FeatureFlagsPage /></ErrorBoundary>;
+      case "config-migration": return <ErrorBoundary><ConfigMigrationPage /></ErrorBoundary>;
+      case "config-doctor": return <ErrorBoundary><ConfigDoctorPage /></ErrorBoundary>;
+      case "health-aggregator": return <ErrorBoundary><HealthAggregatorPage /></ErrorBoundary>;
+      case "message-templates": return <ErrorBoundary><MessageTemplatesPage /></ErrorBoundary>;
+      case "reply-refs": return <ErrorBoundary><ReplyReferencePage /></ErrorBoundary>;
+      case "message-queue": return <ErrorBoundary><QueueManagerPage /></ErrorBoundary>;
       default: return <WebChatPage />;
     }
   }

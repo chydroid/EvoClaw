@@ -2118,15 +2118,23 @@ export class AgentModelExecutor {
 
       clearTimeout(timeoutId);
 
-      if (!response.ok) return "";
+      if (!response.ok) {
+        this.recordProviderFailure(provider.id, `HTTP ${response.status}`, "http_error");
+        return "";
+      }
 
       const data = await response.json() as {
         choices?: Array<{ message?: { content?: string } }>;
       };
 
       const content = data.choices?.[0]?.message?.content?.trim();
+      if (content) {
+        this.recordProviderSuccess(provider.id);
+      }
       return content || "";
-    } catch {
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.recordProviderFailure(provider.id, errMsg, "network_error");
       return "";
     }
   }
@@ -4891,7 +4899,10 @@ Have a specific URL?
 
       const choice = data.choices?.[0];
       const msg = choice?.message;
-      if (!msg) return null;
+      if (!msg) {
+        this.recordProviderFailure(provider.id, "Empty message in LLM response", "empty_response");
+        return null;
+      }
 
       const obs = this.registry?.resolveService<any>("observability");
       if (obs) {

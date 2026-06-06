@@ -206,7 +206,7 @@ export const CLITerminal: React.FC = () => {
 
   const entryIdRef = useRef(4);
   const outputRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<string[]>(loadHistory());
   const historyNavRef = useRef(-1);
   const historyDropdownRef = useRef<HTMLDivElement>(null);
@@ -278,7 +278,7 @@ export const CLITerminal: React.FC = () => {
     }
   }, [running, addEntry]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (showCompletions) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -483,8 +483,8 @@ export const CLITerminal: React.FC = () => {
     },
     inputArea: {
       display: "flex",
-      alignItems: "center",
-      padding: "6px 12px",
+      alignItems: "flex-end",
+      padding: "8px 12px",
       backgroundColor: "var(--bg-secondary)",
       borderTop: "1px solid var(--border)",
       flexShrink: 0,
@@ -495,8 +495,9 @@ export const CLITerminal: React.FC = () => {
       fontWeight: 600,
       marginRight: "6px",
       whiteSpace: "nowrap" as const,
-      fontSize: "13px",
+      fontSize: "14px",
       userSelect: "none" as const,
+      paddingBottom: "4px",
     },
     inputField: {
       flex: 1,
@@ -504,9 +505,12 @@ export const CLITerminal: React.FC = () => {
       border: "none",
       color: "var(--text-primary)",
       fontFamily: "inherit",
-      fontSize: "13px",
+      fontSize: "14px",
       outline: "none",
       caretColor: "#FF5A2D",
+      resize: "none" as const,
+      minHeight: "48px",
+      lineHeight: "1.5",
     },
     runningDot: {
       display: "inline-block",
@@ -694,10 +698,9 @@ export const CLITerminal: React.FC = () => {
 
       <div style={styles.inputArea}>
         <span style={styles.prompt}>EvoClaw $</span>
-        <input
+        <textarea
           ref={inputRef}
           style={styles.inputField}
-          type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -706,6 +709,7 @@ export const CLITerminal: React.FC = () => {
           autoComplete="off"
           spellCheck={false}
           autoFocus
+          rows={2}
         />
       </div>
     </div>
