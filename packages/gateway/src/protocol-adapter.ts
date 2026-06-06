@@ -968,7 +968,7 @@ export class ProtocolAdapter {
           return;
         }
         await skillManager.getMarketplace().refreshCatalog().catch(() => {});
-        const limit = parseInt(req.query.limit as string) || 10;
+        const limit = parseInt(req.query.limit as string, 10) || 10;
         const trending = skillManager.getMarketplace().getTrending(limit);
         res.json({ success: true, trending });
       } catch (err) {
@@ -1190,6 +1190,7 @@ export class ProtocolAdapter {
 
     app.post("/api/chat", async (req: Request, res: Response) => {
       const sessionId = (req.body.sessionId as string) || "web-ui";
+      let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         const message = (req.body.message as string) || "";
         const attachments = req.body.attachments as Array<{ name: string; type: string; size: number; data: string | null }> | undefined;
@@ -1274,10 +1275,13 @@ export class ProtocolAdapter {
           const complexity = estimateTaskComplexity(message);
           const CHAT_TIMEOUT = complexity.timeoutMs;
           console.log(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
+          let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
           try {
             const result = await Promise.race([
               agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
-              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
+              new Promise<never>((_, reject) => {
+                chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+              }),
             ]);
 
             let contextLimit = 128000;
@@ -1354,14 +1358,15 @@ export class ProtocolAdapter {
           shouldAutoSplit: complexity.shouldAutoSplit,
           maxSubtasks: complexity.maxSubtasks,
         });
-        
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)
-        );
-        
+
         let result;
         try {
-          result = await Promise.race([chatPromise, timeoutPromise]);
+          result = await Promise.race([
+            chatPromise,
+            new Promise<never>((_, reject) => {
+              chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+            }),
+          ]);
         } catch (raceErr) {
           if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
             console.warn(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
@@ -1377,6 +1382,7 @@ export class ProtocolAdapter {
           }
           throw raceErr;
         }
+        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
 
         // Resolve context limit from ContextEngine config
         let contextLimit = 128000;
@@ -1426,7 +1432,10 @@ export class ProtocolAdapter {
           permissionRequests: result.permissionRequests || [],
           files: result.files || [],
         });
+        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
+        return;
       } catch (err) {
+        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[ProtocolAdapter] Chat endpoint error: ${errMsg}`);
         res.json({
@@ -1464,6 +1473,7 @@ export class ProtocolAdapter {
       const sessionId = (req.body.sessionId as string) || "";
       const message = (req.body.message as string) || "";
       const useStream = (req.body.stream as boolean) || (req.query.stream === "true");
+      let resumeTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
       const agentExecutor = this.registry.resolveService<{
         chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
@@ -1494,7 +1504,9 @@ export class ProtocolAdapter {
         try {
           const result = await Promise.race([
             agentExecutor.chat(message, { sessionId, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT)),
+            new Promise<never>((_, reject) => {
+              resumeTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+            }),
           ]);
           sendSSE("done", { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, sessionId, resumed: true });
         } catch (chatErr) {
@@ -1504,6 +1516,7 @@ export class ProtocolAdapter {
             sendSSE("error", { message: String(chatErr) });
           }
         } finally {
+          if (resumeTimeoutHandle) clearTimeout(resumeTimeoutHandle);
           try { res.end(); } catch { /* ignore */ }
         }
         return;

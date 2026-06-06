@@ -3,6 +3,76 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.13.5 (2026-06-06)
+
+### 第二轮全面代码审查与Bug修复
+
+对项目进行第二轮全面代码审查，发现并修复以下问题：
+
+#### setTimeout资源泄漏修复
+
+Promise.race模式中的超时定时器在Promise完成后未清除，导致定时器悬挂和潜在的UnhandledPromiseRejection警告。
+
+- **agent-model-executor.ts** 第3165-3179行：subtask超时定时器在try/finally中正确清理
+- **agent-model-executor.ts** 第4458-4470行：工具执行超时定时器在try/finally中正确清理
+- **protocol-adapter.ts** 第1278-1435行：3处chat timeout（SSE流式、非流式、resume）合并为统一chatTimeoutHandle变量，在try成功/失败路径都正确清理
+- **weixin-plugin-adapter.ts** 第554-566行：微信插件chat timeout用try/finally包装
+
+#### parseInt缺少radix参数修复
+
+ESLint/TypeScript推荐始终显式指定radix以避免"012"被当作八进制等隐式行为：
+
+- **agent-model-executor.ts** 第1561、1596行：parseInt(level)、parseInt(idx) → parseInt(level, 10)、parseInt(idx, 10)
+- **protocol-adapter.ts** 第614、971行：同样修复
+- **plugins/code-analyzer.plugin.ts** 第105行：parseInt(n) → parseInt(n, 10)
+- **channels/whatsapp.ts** 第296行：parseInt(msg.timestamp) → parseInt(msg.timestamp, 10)
+
+#### fs.writeFileSync缺少try-catch修复
+
+- **session-manager.ts** 第134行：创建空transcript文件时添加try-catch，避免磁盘错误导致会话创建失败
+
+#### 内部质量提升
+
+- 统一了protocol-adapter.ts中3处chat timeout的变量名（chatTimeoutHandle），便于跟踪和清理
+- 增强了变量作用域管理，避免局部变量在外层catch中不可见的问题
+
+#### 验证
+
+- pnpm typecheck：所有17个包通过
+- pnpm -r build：所有包构建成功
+- 未引入新错误
+
+---
+
+## v0.13.4 (2026-06-06)
+
+### 任务失败时强制友好回复机制
+
+从多次测试中总结规律：当任务因任何原因未能完成时，系统必须给出解释和替代方案，不能没有最终反馈。
+
+#### 系统提示词增强
+
+- 新增 **STEP 5 — MANDATORY: Always provide a final response (CRITICAL)**
+- 明确要求：任务失败时必须 ① 解释原因 ② 建议替代方案 ③ 主动提供帮助
+- 禁止仅返回错误码、原始异常或技术术语而不做解释
+- 禁止让用户没有可操作的下一步
+
+#### 错误回复优化
+
+- **所有模型提供商失败**：原消息仅提示检查配置，现增加3个替代方案（切换模型/检查代理/诊断排查）
+- **工具执行完毕但无总结**：增加替代方案（重新提问/提供更多上下文）
+- **子任务部分失败**：新增"替代方案建议"区块（4个选项+主动帮助提议）
+- **Chat API异常**：从返回500错误码改为返回友好JSON回复（含解释+替代方案）
+- **SSE流式错误**：从原始错误字符串改为友好消息（含替代方案）
+- **超时回复**：从简单提示改为含3个替代方案的详细回复
+
+#### 不影响正常任务完成
+
+- 所有修改仅影响错误/失败路径，正常任务完成流程完全不变
+- 系统提示词的STEP 5指令仅指导LLM在失败时的行为，不干扰正常执行
+
+---
+
 ## v0.13.3 (2026-06-05)
 
 ### 全面代码审查与Bug修复

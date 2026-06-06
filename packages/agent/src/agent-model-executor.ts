@@ -1593,7 +1593,7 @@ export class AgentModelExecutor {
     text = text.replace(/\b(function|var|let|const|return|if|else|for|while|switch|case|break|continue|try|catch|finally|throw|new|this|class|extends|import|export|default|from|async|await|yield|typeof|instanceof|void|delete|in|of)\b[^;{}]*[;{}]/g, "");
     text = text.replace(/\b(window|document|console|navigator|localStorage|sessionStorage|fetch|XMLHttpRequest|addEventListener|querySelector|getElementById|createElement|appendChild|removeChild|setAttribute|getAttribute|classList|innerHTML|textContent|innerText|style|dataset)\b\.?\w*\s*[\(\[=;{]/g, "");
 
-    text = text.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, idx) => codeBlockPlaceholders[parseInt(idx)] || "");
+    text = text.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, idx) => codeBlockPlaceholders[parseInt(idx, 10)] || "");
 
     text = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
     text = text.replace(/\u200B|\u200C|\u200D|\uFEFF/g, "");
@@ -3163,15 +3163,19 @@ export class AgentModelExecutor {
           subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
           startTime, sessionId, pendingPermissions, attachments, onProgress
         );
-        const timeoutPromise = new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), SUBTASK_TIMEOUT)
-        );
-        const result = await Promise.race([resultPromise, timeoutPromise]);
-
-        if (result) {
-          subtaskResult = result.reply;
-          subtaskTokens = result.tokensUsed;
-          if (result.files) allFiles.push(...result.files);
+        let subtaskTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<null>((resolve) => {
+          subtaskTimeoutHandle = setTimeout(() => resolve(null), SUBTASK_TIMEOUT);
+        });
+        try {
+          const result = await Promise.race([resultPromise, timeoutPromise]);
+          if (result) {
+            subtaskResult = result.reply;
+            subtaskTokens = result.tokensUsed;
+            if (result.files) allFiles.push(...result.files);
+          }
+        } finally {
+          if (subtaskTimeoutHandle) clearTimeout(subtaskTimeoutHandle);
         }
       } catch (err) {
         console.warn(`[AgentModelExecutor] Subtask "${subtask.description}" failed:`, err);
@@ -4458,10 +4462,15 @@ Have a specific URL?
                     ]);
                     const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
                     const toolPromise = toolEntry.handler(args);
-                    const toolTimeoutPromise = new Promise<never>((_, reject) =>
-                      setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT)
-                    );
-                    rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
+                    let toolTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+                    const toolTimeoutPromise = new Promise<never>((_, reject) => {
+                      toolTimeoutHandle = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT);
+                    });
+                    try {
+                      rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
+                    } finally {
+                      if (toolTimeoutHandle) clearTimeout(toolTimeoutHandle);
+                    }
                     toolResult = JSON.stringify(rawResult);
                     // ── 缓存成功的工具结果 ──
                     if (toolResult && typeof toolResult === "string" && toolResult.length > 0) {

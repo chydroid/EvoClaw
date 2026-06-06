@@ -102,7 +102,7 @@ function scanCode(code: string, language?: string | ScanConfig): CodeIssue[] {
         issues.push({
           line: lineNum,
           severity,
-          message: message.replace(/\$(\d+)/g, (_, n) => match[parseInt(n)] || ""),
+          message: message.replace(/\$(\d+)/g, (_, n) => match[parseInt(n, 10)] || ""),
           pattern: match[0],
           category,
           code: lines[lineNum - 1]?.trim() || "",

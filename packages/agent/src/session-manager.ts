@@ -131,7 +131,11 @@ export class SessionManager {
 
     // Create empty transcript
     const transcriptPath = this.getTranscriptPath(agentId, sessionId);
-    fs.writeFileSync(transcriptPath, "", "utf-8");
+    try {
+      fs.writeFileSync(transcriptPath, "", "utf-8");
+    } catch (err) {
+      console.warn(`[SessionManager] Failed to create empty transcript: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // Cache
     this.sessionCache.set(sessionId, session);

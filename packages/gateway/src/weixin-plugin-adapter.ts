@@ -552,12 +552,18 @@ export class WeixinPluginAdapter {
       };
 
       const WEIXIN_CHAT_TIMEOUT = 300_000;
-      const result = await Promise.race([
-        this.agentExecutor.chat(text, chatContext, onProgress),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT)
-        ),
-      ]);
+      let weixinTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      let result: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
+      try {
+        result = await Promise.race([
+          this.agentExecutor.chat(text, chatContext, onProgress),
+          new Promise<never>((_, reject) => {
+            weixinTimeoutHandle = setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT);
+          }),
+        ]);
+      } finally {
+        if (weixinTimeoutHandle) clearTimeout(weixinTimeoutHandle);
+      }
 
       clearInterval(typingKeepalive);
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
