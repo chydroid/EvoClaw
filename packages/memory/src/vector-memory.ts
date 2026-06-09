@@ -84,9 +84,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 // ─── LocalEmbeddingProvider ──────────────────────────────────────────────────
 
 /**
- * A simple TF-IDF style embedding provider that works offline.
+ * A TF-IDF style embedding provider that works offline.
  * Uses word hashing to generate 256-dim vectors.
- * Not as good as real embeddings but much better than hash-based simulator.
+ * Supports both English and Chinese text.
  */
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions = 256;
@@ -107,6 +107,17 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     "your", "he", "him", "his", "she", "her", "it", "its", "they", "them",
   ]);
 
+  // Common Chinese stop words
+  private static readonly CN_STOP_WORDS = new Set([
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
+    "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有",
+    "看", "好", "自己", "这", "他", "她", "它", "们", "那", "些", "什么",
+    "怎么", "如何", "可以", "因为", "所以", "但是", "如果", "虽然", "而且",
+    "或者", "以及", "还是", "已经", "正在", "将要", "应该", "能够", "可能",
+    "这个", "那个", "这些", "那些", "这里", "那里", "为什么", "多少", "几个",
+    "没", "把", "被", "让", "给", "从", "向", "对", "与", "等", "之",
+  ]);
+
   async embed(text: string): Promise<number[]> {
     return this.textToVector(text);
   }
@@ -115,15 +126,73 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     return texts.map((t) => this.textToVector(t));
   }
 
+  /**
+   * Tokenize text into words, supporting both English and Chinese.
+   * - English: lowercase, split on non-alphanumeric, filter stop words
+   * - Chinese: each CJK character becomes a separate token (bigram pairs also generated)
+   */
+  private tokenize(text: string): string[] {
+    const words: string[] = [];
+    const lower = text.toLowerCase();
+    let i = 0;
+    let buffer = "";
+
+    while (i < lower.length) {
+      const ch = lower[i];
+      const code = ch.codePointAt(0)!;
+
+      // CJK Unified Ideographs
+      const isCJK = (code >= 0x4e00 && code <= 0x9fff) ||
+                    (code >= 0x3400 && code <= 0x4dbf);
+
+      if (isCJK) {
+        // Flush any buffered alphanumeric token
+        if (buffer.length > 1 && !LocalEmbeddingProvider.STOP_WORDS.has(buffer)) {
+          words.push(buffer);
+        }
+        buffer = "";
+
+        // Add individual CJK character as token (if not a stop word)
+        if (!LocalEmbeddingProvider.CN_STOP_WORDS.has(ch)) {
+          words.push(ch);
+        }
+
+        // Generate bigram for consecutive CJK characters
+        if (i + 1 < lower.length) {
+          const nextCode = lower.codePointAt(i + 1)!;
+          const nextIsCJK = (nextCode >= 0x4e00 && nextCode <= 0x9fff) ||
+                            (nextCode >= 0x3400 && nextCode <= 0x4dbf);
+          if (nextIsCJK) {
+            const bigram = ch + lower[i + 1];
+            words.push(bigram);
+          }
+        }
+      } else if (/[a-z0-9]/.test(ch)) {
+        buffer += ch;
+      } else {
+        // Non-alphanumeric, non-CJK: flush buffer
+        if (buffer.length > 1 && !LocalEmbeddingProvider.STOP_WORDS.has(buffer)) {
+          words.push(buffer);
+        }
+        buffer = "";
+      }
+
+      i++;
+    }
+
+    // Flush remaining buffer
+    if (buffer.length > 1 && !LocalEmbeddingProvider.STOP_WORDS.has(buffer)) {
+      words.push(buffer);
+    }
+
+    return words;
+  }
+
   private textToVector(text: string): number[] {
     const dim = this.dimensions;
     const vector = new Float64Array(dim);
 
-    // Tokenize: lowercase, split on non-alphanumeric, filter stop words
-    const words = text
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length > 1 && !LocalEmbeddingProvider.STOP_WORDS.has(w));
+    const words = this.tokenize(text);
 
     if (words.length === 0) {
       // Fallback: hash the entire string
@@ -188,6 +257,13 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 /**
  * Wraps a primary EmbeddingProvider and falls back to LocalEmbeddingProvider
  * if the primary fails (e.g. network error, missing API key).
+ *
+ * If no primary is provided, defaults to OpenAIEmbeddingProvider.
+ * To use local semantic embeddings, explicitly pass a TransformersEmbeddingProvider:
+ * ```ts
+ * import { TransformersEmbeddingProvider } from "./transformers-embedding";
+ * const provider = new FallbackEmbeddingProvider(new TransformersEmbeddingProvider());
+ * ```
  */
 export class FallbackEmbeddingProvider implements EmbeddingProvider {
   private primary: EmbeddingProvider;
@@ -412,25 +488,41 @@ export class VectorMemoryStore {
 /**
  * @deprecated Use EmbeddingProvider instead. This class uses a deterministic
  * hash-based approach that does not capture semantic similarity.
- * Prefer OpenAIEmbeddingProvider, LocalEmbeddingProvider, or FallbackEmbeddingProvider.
+ * Prefer OpenAIEmbeddingProvider, LocalEmbeddingProvider, TransformersEmbeddingProvider,
+ * or FallbackEmbeddingProvider.
  */
-export class EmbeddingSimulator {
-  private dim: number;
+export class EmbeddingSimulator implements EmbeddingProvider {
+  private _dim: number;
 
   constructor(dimension = DEFAULT_EMBEDDING_DIMENSION) {
-    this.dim = dimension;
+    this._dim = dimension;
   }
 
+  get dimensions(): number {
+    return this._dim;
+  }
+
+  async embed(text: string): Promise<number[]> {
+    return this.textToVector(text, this._dim);
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    return texts.map((t) => this.textToVector(t, this._dim));
+  }
+
+  /** @deprecated Use `embed()` instead. */
   async generate(text: string): Promise<number[]> {
-    return this.textToVector(text, this.dim);
+    return this.embed(text);
   }
 
+  /** @deprecated Use `embedBatch()` instead. */
   async batchGenerate(texts: string[]): Promise<number[][]> {
-    return texts.map((t) => this.textToVector(t, this.dim));
+    return this.embedBatch(texts);
   }
 
+  /** @deprecated Use `dimensions` property instead. */
   dimension(): number {
-    return this.dim;
+    return this._dim;
   }
 
   private textToVector(text: string, dim: number): number[] {

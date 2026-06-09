@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useTranslation } from "./i18n";
 
 declare const __APP_VERSION__: string;
 
@@ -203,6 +204,7 @@ export const CLITerminal: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showCompletions, setShowCompletions] = useState<{ list: string[]; selected: number } | null>(null);
+  const { t } = useTranslation();
 
   const entryIdRef = useRef(4);
   const outputRef = useRef<HTMLDivElement>(null);
@@ -242,7 +244,7 @@ export const CLITerminal: React.FC = () => {
     if (!cmd.trim() || running) return;
     const fullCmd = cmd.trim();
     if (!fullCmd.toLowerCase().startsWith("evoclaw ")) {
-      addEntry({ type: "error", text: `Error: Commands must start with "EvoClaw". Try "EvoClaw --help"` });
+      addEntry({ type: "error", text: t("cli.error_must_start", 'Error: Commands must start with "EvoClaw". Try "EvoClaw --help"') });
       return;
     }
 
@@ -264,14 +266,14 @@ export const CLITerminal: React.FC = () => {
       }
 
       if (data.timedOut) {
-        addEntry({ type: "error", text: "Command timed out after 30 seconds" });
+        addEntry({ type: "error", text: t("cli.timeout", "Command timed out after 30 seconds") });
       } else if (data.error && !data.success) {
         addEntry({ type: "error", text: data.error, duration: data.duration });
       } else if (data.success && data.duration !== undefined) {
-        addEntry({ type: "info", text: `Completed in ${data.duration}ms, exit code: ${data.exitCode}` });
+        addEntry({ type: "info", text: t("cli.completed", `Completed in ${data.duration}ms, exit code: ${data.exitCode}`) });
       }
     } catch (err) {
-      addEntry({ type: "error", text: `Connection error: ${err instanceof Error ? err.message : "Unknown"}` });
+      addEntry({ type: "error", text: t("cli.connection_error", `Connection error: ${err instanceof Error ? err.message : "Unknown"}`) });
     } finally {
       setRunning(false);
       inputRef.current?.focus();
@@ -413,8 +415,8 @@ export const CLITerminal: React.FC = () => {
 
   const clearTerminal = () => {
     setEntries([
-      { id: entryIdRef.current++, type: "info", text: "Terminal cleared" },
-      { id: entryIdRef.current++, type: "info", text: 'Type "EvoClaw --help" to start' },
+      { id: entryIdRef.current++, type: "info", text: t("cli.terminal_cleared", "Terminal cleared") },
+      { id: entryIdRef.current++, type: "info", text: t("cli.type_help", 'Type "EvoClaw --help" to start') },
     ]);
   };
 
@@ -483,7 +485,7 @@ export const CLITerminal: React.FC = () => {
     },
     inputArea: {
       display: "flex",
-      alignItems: "flex-end",
+      alignItems: "flex-start",
       padding: "8px 12px",
       backgroundColor: "var(--bg-secondary)",
       borderTop: "1px solid var(--border)",
@@ -497,7 +499,8 @@ export const CLITerminal: React.FC = () => {
       whiteSpace: "nowrap" as const,
       fontSize: "14px",
       userSelect: "none" as const,
-      paddingBottom: "4px",
+      paddingTop: "2px",
+      lineHeight: "1.5",
     },
     inputField: {
       flex: 1,
@@ -589,7 +592,7 @@ export const CLITerminal: React.FC = () => {
 
       <div style={styles.header}>
         <span style={styles.headerTitle}>
-          🧬 EvoClaw CLI Terminal
+          🧬 {t("cli.title", "EvoClaw CLI Terminal")}
           <span style={{ color: "var(--text-secondary)", marginLeft: "8px", fontWeight: 400 }}>
             v{__APP_VERSION__} — {osPlatform}
           </span>
@@ -598,14 +601,14 @@ export const CLITerminal: React.FC = () => {
           <button
             style={styles.headerBtn}
             onClick={() => setShowHistory((v) => !v)}
-            title="Command History"
+            title={t("cli.command_history", "Command History")}
           >
-            📜 History ({historyRef.current.length})
+            📜 {t("cli.history", "History")} ({historyRef.current.length})
           </button>
-          <button style={styles.headerBtn} onClick={clearTerminal} title="Clear Terminal">
-            🗑 Clear
+          <button style={styles.headerBtn} onClick={clearTerminal} title={t("cli.clear_terminal", "Clear Terminal")}>
+            🗑 {t("cli.clear", "Clear")}
           </button>
-          {running && <span style={styles.runningDot} title="Command running..." />}
+          {running && <span style={styles.runningDot} title={t("cli.command_running", "Command running...")} />}
         </div>
       </div>
 
@@ -672,12 +675,12 @@ export const CLITerminal: React.FC = () => {
       {showHistory && historyRef.current.length > 0 && (
         <div ref={historyDropdownRef} style={styles.historyDropdown}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 12px", borderBottom: "1px solid var(--border)" }}>
-            <span style={{ color: "var(--text-secondary)", fontSize: "11px" }}>Command History</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: "11px" }}>{t("cli.command_history", "Command History")}</span>
             <button
               onClick={(e) => { e.stopPropagation(); clearHistory(); }}
               style={{ ...styles.headerBtn, fontSize: "10px" }}
             >
-              Clear All
+              {t("cli.clear_all", "Clear All")}
             </button>
           </div>
           {historyRef.current.map((cmd, idx) => (
@@ -704,7 +707,7 @@ export const CLITerminal: React.FC = () => {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={running ? "Running..." : 'EvoClaw --help'}
+          placeholder={running ? t("cli.running", "Running...") : 'EvoClaw --help'}
           disabled={running}
           autoComplete="off"
           spellCheck={false}

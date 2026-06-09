@@ -149,7 +149,7 @@ export function StatusPage() {
         <div style={s.card}>
           <div style={s.cardTitle}>{t("status.memory_usage")}</div>
           <div style={s.cardValue}>{status?.memory?.heapUsed || 0} MB</div>
-          <div style={s.cardSub}>RSS: {status?.memory?.rss || 0} MB</div>
+          <div style={s.cardSub}>{t("status.rss_label", "RSS:") + " "}{status?.memory?.rss || 0} MB</div>
           <div style={s.memoryBar}>
             <div style={memoryFillStyle(status?.memory?.heapUsed || 0, status?.memory?.heapTotal || 1)} />
           </div>
@@ -191,7 +191,7 @@ export function StatusPage() {
                   {t("dashboard.providers_status")}: {t(STATUS_LABEL_KEYS[agent.state] || "", agent.state)} ·
                   {t("status.token")}: {agent.tokensUsed} ·
                   {t("status.duration")}: {(agent.duration / 1000).toFixed(1)}s ·
-                  Run #{agent.runId}
+                  {t("status.run_prefix", "Run #")}{agent.runId}
                 </div>
                 {agent.progress && (
                   <div style={s.progressBar}>
@@ -239,7 +239,7 @@ export function StatusPage() {
 
       {/* Refresh hint */}
       <div style={{ color: "var(--text-muted)", fontSize: "10px", textAlign: "center" as const, marginTop: "8px" }}>
-        {t("status.auto_refreshing")} · {t("status.last_update")}: {status?.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "N/A"}
+        {t("status.auto_refreshing")} · {t("status.last_update")}: {status?.timestamp ? new Date(status.timestamp).toLocaleTimeString() : t("status.na", "N/A")}
       </div>
     </div>
   );

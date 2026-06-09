@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface LLMProvider {
   id: string;
   name: string;
   apiKey: string;
+  hasApiKey?: boolean;
   baseURL: string;
   models: string[];
   selectedModel: string;
@@ -97,9 +99,11 @@ export default function LLMConfig() {
   const [activeProvider, setActiveProvider] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [statusIsSuccess, setStatusIsSuccess] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
+  const { t } = useTranslation();
 
   useEffect(() => {
     loadConfig();
@@ -156,12 +160,15 @@ export default function LLMConfig() {
         body: JSON.stringify({ providers }),
       });
       if (res.ok) {
-        setStatusMsg("Settings saved successfully");
+        setStatusMsg(t("llm.saved_ok"));
+        setStatusIsSuccess(true);
       } else {
-        setStatusMsg("Failed to save settings");
+        setStatusMsg(t("llm.saved_fail"));
+        setStatusIsSuccess(false);
       }
     } catch {
-      setStatusMsg("Server not reachable - config saved locally only");
+      setStatusMsg(t("llm.saved_local"));
+      setStatusIsSuccess(false);
     }
     setSaving(false);
     setTimeout(() => setStatusMsg(null), 3000);
@@ -182,7 +189,7 @@ export default function LLMConfig() {
   }
 
   function addCustomModel(providerId: string) {
-    const modelName = prompt("Enter model name:");
+    const modelName = prompt(t("llm.enter_model_name"));
     if (modelName) {
       setProviders((prev) =>
         prev.map((p) =>
@@ -281,18 +288,18 @@ export default function LLMConfig() {
   return (
     <div style={s.container}>
       <div style={s.header}>
-        <h2 style={s.title}>LLM Configuration</h2>
+        <h2 style={s.title}>{t("llm.title")}</h2>
         {statusMsg && (
           <div style={{
             ...s.statusBanner,
-            background: statusMsg.includes("success") ? "var(--success-bg)" : "var(--error-bg)",
-            color: statusMsg.includes("success") ? "var(--success)" : "var(--error)",
+            background: statusIsSuccess ? "var(--success-bg)" : "var(--error-bg)",
+            color: statusIsSuccess ? "var(--success)" : "var(--error)",
           }}>
             {statusMsg}
           </div>
         )}
         <button style={s.saveBtn} onClick={saveConfig} disabled={saving}>
-          {saving ? "Saving..." : "Save All"}
+          {saving ? t("llm.saving") : t("llm.save_all")}
         </button>
       </div>
 
@@ -318,7 +325,7 @@ export default function LLMConfig() {
                     }} />
                     {p.name}
                   </div>
-                  <div style={s.modelPreview}>{p.selectedModel || "No model"}</div>
+                  <div style={s.modelPreview}>{p.selectedModel || t("llm.no_model")}</div>
                 </div>
                 {sortedProviders.length > 1 && (
                   <div style={s.orderBtns} onClick={(e) => e.stopPropagation()}>
@@ -326,19 +333,19 @@ export default function LLMConfig() {
                       style={{ ...s.orderBtn, opacity: sortedProviders[0]?.id === p.id ? 0.3 : 1 }}
                       disabled={sortedProviders[0]?.id === p.id}
                       onClick={() => moveProvider(p.id, "up")}
-                      title="Move up (higher priority)"
+                      title={t("llm.move_up")}
                     >▲</button>
                     <button
                       style={{ ...s.orderBtn, opacity: sortedProviders[sortedProviders.length - 1]?.id === p.id ? 0.3 : 1 }}
                       disabled={sortedProviders[sortedProviders.length - 1]?.id === p.id}
                       onClick={() => moveProvider(p.id, "down")}
-                      title="Move down (lower priority)"
+                      title={t("llm.move_down")}
                     >▼</button>
                     {!BUILT_IN_IDS.has(p.id) && (
                       <button
                         style={s.deleteBtn}
                         onClick={() => deleteProvider(p.id)}
-                        title="Delete provider"
+                        title={t("llm.delete_provider")}
                       >✕</button>
                     )}
                   </div>
@@ -348,7 +355,7 @@ export default function LLMConfig() {
           ))}
           <div style={s.addBtnWrap}>
             <button style={s.addProviderBtn} onClick={addProvider}>
-              + Add Provider
+              {t("llm.add_provider")}
             </button>
           </div>
         </div>
@@ -359,7 +366,7 @@ export default function LLMConfig() {
           {currentProvider && (
             <div style={s.form}>
               <div style={s.formGroup}>
-                <label style={s.label}>Provider Name</label>
+                <label style={s.label}>{t("llm.provider_name")}</label>
                 <input
                   style={s.input}
                   value={currentProvider.name}
@@ -368,18 +375,18 @@ export default function LLMConfig() {
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>Priority Order</label>
+                <label style={s.label}>{t("llm.priority_order")}</label>
                 <div style={s.orderDisplay}>
                   <span style={s.orderNum}>#{currentProvider.order}</span>
                   <span style={s.orderHint}>
-                    {currentProvider.order === 1 ? "First priority - tried first" :
-                     `Fallback #${currentProvider.order} - tried after ${currentProvider.order - 1} higher priority providers fail`}
+                    {currentProvider.order === 1 ? t("llm.first_priority") :
+                     t("llm.fallback_priority", `Fallback #${currentProvider.order}`).replace("{0}", String(currentProvider.order)).replace("{1}", String(currentProvider.order - 1))}
                   </span>
                 </div>
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>Enable Provider</label>
+                <label style={s.label}>{t("llm.enable_provider")}</label>
                 <label style={s.toggle}>
                   <input
                     type="checkbox"
@@ -400,18 +407,27 @@ export default function LLMConfig() {
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>API Key</label>
+                <label style={s.label}>{t("llm.api_key")}</label>
                 <input
                   style={s.input}
                   type="password"
-                  value={currentProvider.apiKey}
+                  value={currentProvider.hasApiKey && currentProvider.apiKey.startsWith("${") ? "••••••••••" : currentProvider.apiKey}
                   placeholder="sk-..."
-                  onChange={(e) => updateProvider(activeProvider, { apiKey: e.target.value })}
+                  onChange={(e) => updateProvider(activeProvider, { apiKey: e.target.value, hasApiKey: !!e.target.value })}
+                  onFocus={() => {
+                    // Clear placeholder on focus so user can type a new key
+                    if (currentProvider.hasApiKey && currentProvider.apiKey.startsWith("${")) {
+                      updateProvider(activeProvider, { apiKey: "****" });
+                    }
+                  }}
                 />
+                {currentProvider.hasApiKey && (
+                  <span style={{ fontSize: 11, color: "#4caf50", marginLeft: 4 }}>{t("llm.configured")}</span>
+                )}
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>Base URL</label>
+                <label style={s.label}>{t("llm.base_url")}</label>
                 <input
                   style={s.input}
                   value={currentProvider.baseURL}
@@ -421,9 +437,9 @@ export default function LLMConfig() {
 
               <div style={s.formGroup}>
                 <label style={s.label}>
-                  Models (Priority Order)
+                  {t("llm.models_priority")}
                   <button style={s.addModelBtn} onClick={() => addCustomModel(activeProvider)}>
-                    + Add Model
+                    {t("llm.add_model")}
                   </button>
                 </label>
                 <div style={s.modelListContainer}>
@@ -433,7 +449,7 @@ export default function LLMConfig() {
                       <input
                         style={{ ...s.input, flex: 1 as const, width: "auto" }}
                         value=""
-                        placeholder="Enter model name (e.g. gpt-4.1, claude-sonnet-4-6-20250217)"
+                        placeholder={t("llm.model_name_placeholder")}
                         onChange={(e) => {
                           if (e.target.value.trim()) {
                             updateProvider(activeProvider, {
@@ -465,18 +481,18 @@ export default function LLMConfig() {
                           style={{ ...s.modelActionBtn, opacity: idx === 0 ? 0.3 : 1 }}
                           disabled={idx === 0}
                           onClick={() => moveModel(activeProvider, model, "up")}
-                          title="Move up (higher priority)"
+                          title={t("llm.move_up")}
                         >▲</button>
                         <button
                           style={{ ...s.modelActionBtn, opacity: idx === currentProvider.models.length - 1 ? 0.3 : 1 }}
                           disabled={idx === currentProvider.models.length - 1}
                           onClick={() => moveModel(activeProvider, model, "down")}
-                          title="Move down (lower priority)"
+                          title={t("llm.move_down")}
                         >▼</button>
                         <button
                           style={s.modelDeleteBtn}
                           onClick={() => removeModel(activeProvider, model)}
-                          title="Remove model"
+                          title={t("llm.remove_model")}
                         >✕</button>
                       </div>
                     </div>
@@ -484,8 +500,7 @@ export default function LLMConfig() {
                 </div>
                 {currentProvider.models.length > 1 && (
                   <div style={s.modelPriorityHint}>
-                    Models are tried in priority order. Highest priority (#1) is used first.
-                    If it fails, the system falls back to the next model.
+                    {t("llm.model_priority_hint")}
                   </div>
                 )}
               </div>
@@ -494,7 +509,7 @@ export default function LLMConfig() {
 
               <div style={s.formGroup}>
                 <label style={s.label}>
-                  Temperature: {currentProvider.config.temperature.toFixed(1)}
+                  {t("llm.temperature")}: {currentProvider.config.temperature.toFixed(1)}
                 </label>
                 <input
                   type="range"
@@ -509,7 +524,7 @@ export default function LLMConfig() {
 
               <div style={s.formGroup}>
                 <label style={s.label}>
-                  Top P: {currentProvider.config.topP.toFixed(1)}
+                  {t("llm.top_p")}: {currentProvider.config.topP.toFixed(1)}
                 </label>
                 <input
                   type="range"
@@ -523,7 +538,7 @@ export default function LLMConfig() {
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>Max Tokens</label>
+                <label style={s.label}>{t("llm.max_tokens")}</label>
                 <input
                   style={s.input}
                   type="number"
@@ -536,7 +551,7 @@ export default function LLMConfig() {
               </div>
 
               <div style={s.formGroup}>
-                <label style={s.label}>Timeout (ms)</label>
+                <label style={s.label}>{t("llm.timeout_ms")}</label>
                 <input
                   style={s.input}
                   type="number"

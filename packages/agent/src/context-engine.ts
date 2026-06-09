@@ -71,7 +71,7 @@ export interface LayeredContextResult extends ContextAssemblyResult {
 
 const DEFAULT_CONFIG: ContextConfig = {
   workspacePath: "data/workspace",
-  maxContextTokens: 60000,
+  maxContextTokens: 128000,
   reserveTokens: 4000,
   bootstrapFiles: ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"],
   maxBootstrapFileChars: 12000,

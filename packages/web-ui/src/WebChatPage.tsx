@@ -88,6 +88,7 @@ interface WebChatMessage {
   permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>;
   attachments?: AttachedFileInfo[];
   files?: Array<{ path: string; size: number; downloadUrl: string }>;
+  intermediateOutput?: string;
 }
 
 interface AttachedFileInfo {
@@ -209,7 +210,7 @@ const messageRowStyle = (role: string): CSSProperties => ({
 
 const messageBubbleStyle = (role: string): CSSProperties => ({
   maxWidth: "75%",
-  minWidth: role === "assistant" ? "500px" : undefined,
+  minWidth: role === "assistant" ? "460px" : "60px",
   padding: "10px 16px",
   borderRadius: role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
   background: role === "user"
@@ -532,7 +533,7 @@ const permissionBtnStyle = (primary: boolean, destructive?: boolean): CSSPropert
   transition: "all 0.15s",
 });
 
-export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionId?: string | null; avatars?: AvatarInfo }) {
+export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCreated }: { sessionId?: string | null; avatars?: AvatarInfo; onSessionCreated?: (sessionId: string) => void }) {
   const { t, lang } = useTranslation();
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -548,7 +549,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const [contextUsed, setContextUsed] = useState(0);
   const [contextLimit, setContextLimit] = useState(128000);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
-  const [textAreaExpanded, setTextAreaExpanded] = useState(false);
+  const [textAreaExpandLevel, setTextAreaExpandLevel] = useState(0); // 0=2行, 1=5行, 2=10行
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [showQueuePanel, setShowQueuePanel] = useState(false);
@@ -566,6 +567,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   const savedInputRef = useRef("");
   const lastArrowKeyTimeRef = useRef(0);
   const effectiveSessionIdRef = useRef<string | null>(null);
+  const hasLocalMessagesRef = useRef(false);
+  const sessionMessagesCache = useRef<Map<string, WebChatMessage[]>>(new Map());
+  const currentMessagesRef = useRef<WebChatMessage[]>([]);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -638,14 +642,36 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
   // ── Load messages when sessionId prop changes ──
   useEffect(() => {
+    const prevSessionId = effectiveSessionIdRef.current;
     effectiveSessionIdRef.current = initialSessionId || null;
+
+    // Save current messages to cache for the previous session
+    if (prevSessionId && currentMessagesRef.current.length > 0) {
+      sessionMessagesCache.current.set(prevSessionId, [...currentMessagesRef.current]);
+    }
+
     setContextUsed(0);
     setMessageQueue([]);
     setShowQueuePanel(false);
+
     if (!initialSessionId) {
       setMessages([]);
+      hasLocalMessagesRef.current = false;
       return;
     }
+
+    // Check cache first
+    const cached = sessionMessagesCache.current.get(initialSessionId);
+    if (cached && cached.length > 0) {
+      setMessages(cached);
+      hasLocalMessagesRef.current = true;
+      const allText = cached.map(t => t.content || "").join("");
+      setContextUsed(estimateTokens(allText));
+      return;
+    }
+
+    // No cache — load from server
+    hasLocalMessagesRef.current = false;
     (async () => {
       setIsLoadingHistory(true);
       try {
@@ -661,6 +687,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
         if (turns.length > 0) {
           setMessages(turns);
+          sessionMessagesCache.current.set(initialSessionId, turns);
+          hasLocalMessagesRef.current = true;
           const allText = turns.map(t => t.content || "").join("");
           setContextUsed(estimateTokens(allText));
         } else {
@@ -675,7 +703,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
   }, [initialSessionId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+  }, [messages]);
+
+  useEffect(() => {
+    currentMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    const sid = effectiveSessionIdRef.current;
+    if (sid && messages.length > 0) {
+      sessionMessagesCache.current.set(sid, [...messages]);
+    }
   }, [messages]);
 
   const handleSend = async (queuedText?: string) => {
@@ -698,6 +737,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           sessionId = data.session?.sessionId || data.sessionId;
           if (sessionId) {
             effectiveSessionIdRef.current = sessionId;
+            onSessionCreated?.(sessionId);
           }
         }
       } catch { /* ignore */ }
@@ -715,6 +755,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
     };
 
     setMessages((prev) => [...prev, userMsg]);
+    hasLocalMessagesRef.current = true;
     pushInputHistory(text);
     if (!queuedText) {
       setInput("");
@@ -817,7 +858,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             ),
           );
         } else {
-          const netErrMsg = "Network error — cannot reach server";
+          const netErrMsg = t("chat.network_error", "Network error — cannot reach server");
           setMessages((prev) =>
             prev.map((m) =>
               m.id === botMsgId
@@ -927,11 +968,22 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
                     if (eventData.phase === "generating" && eventData.reply) {
                       setMessages((prev) =>
-                        prev.map((m) =>
-                          m.id === botMsgId
-                            ? { ...m, content: eventData.reply }
-                            : m,
-                        ),
+                        prev.map((m) => {
+                          if (m.id !== botMsgId) return m;
+                          const newReply = eventData.reply as string;
+                          const currentContent = m.content || "";
+                          // If new reply is shorter than current content, this is a new LLM round
+                          // Move current content to intermediate output, start fresh with new round
+                          if (newReply.length < currentContent.length * 0.5 && currentContent.length > 50) {
+                            const prevIntermediate = m.intermediateOutput || "";
+                            return {
+                              ...m,
+                              intermediateOutput: prevIntermediate ? prevIntermediate + "\n\n---\n" + currentContent : currentContent,
+                              content: newReply,
+                            };
+                          }
+                          return { ...m, content: newReply };
+                        }),
                       );
                     }
 
@@ -1002,16 +1054,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
             prev.map((m) => {
               if (m.id !== botMsgId) return m;
               const finalReply = (finalData!.reply as string) || "";
-              const finalContent = finalReply || m.content || "(empty response from server)";
+              const finalContent = finalReply || m.content || t("chat.empty_response", "(empty response from server)");
               return {
                 ...m,
                 content: finalContent,
+                intermediateOutput: m.intermediateOutput, // keep intermediate output visible
                 files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
               };
             }),
           );
 
-          if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
+          // Use contextTokens (prompt_tokens from last LLM call) for context usage display,
+          // NOT tokensUsed (cumulative total_tokens which includes all rounds)
+          if (typeof finalData.contextTokens === "number" && (finalData.contextTokens as number) > 0) {
+            setContextUsed(finalData.contextTokens as number);
+          } else if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
             setContextUsed(finalData.tokensUsed as number);
           } else {
             const allText = messages.map(m => m.content).join("") + text + ((finalData.reply as string) || "");
@@ -1046,7 +1103,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
           prev.map((m) => {
             if (m.id !== botMsgId) return m;
             const nonStreamReply = data.reply || "";
-            const nonStreamContent = nonStreamReply || m.content || "(empty response from server)";
+            const nonStreamContent = nonStreamReply || m.content || t("chat.empty_response", "(empty response from server)");
             return {
               ...m,
               content: nonStreamContent,
@@ -1076,7 +1133,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
         );
       }
     } catch {
-      const unexpErrMsg = "Unexpected error — please retry";
+      const unexpErrMsg = t("chat.unexpected_error", "Unexpected error — please retry");
       setMessages((prev) =>
         prev.map((m) =>
           m.id === botMsgId
@@ -1627,7 +1684,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
 
           {messages.map((msg) => (
             <div key={msg.id} style={messageRowStyle(msg.role)}>
-              <div>
+              <div style={{ display: "inline-flex", flexDirection: "column", maxWidth: "75%", alignItems: msg.role === "user" ? "flex-end" : "flex-start" }}>
                 {/* Nickname + timestamp + avatar above bubble */}
                 {(() => {
                   const nick = getNickname(msg.role);
@@ -1895,6 +1952,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                   </div>
                 ) : (
                   <div>
+                    {msg.intermediateOutput && (
+                      <details style={{ marginBottom: "8px" }}>
+                        <summary style={{ fontSize: "11px", color: "var(--text-muted)", cursor: "pointer", userSelect: "none" }}>
+                          {t("chat.intermediate_output", "中间过程")}
+                        </summary>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", opacity: 0.8, maxHeight: "200px", overflowY: "auto", marginTop: "4px" }}>
+                          <div dangerouslySetInnerHTML={{ __html: renderMessageHtml(msg.intermediateOutput) }} />
+                        </div>
+                      </details>
+                    )}
                     {msg.content !== "" ? (
                       renderMessageContent(msg)
                     ) : isStreaming ? (
@@ -2074,8 +2141,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
               style={{
                 ...textAreaStyle,
                 width: "100%",
-                minHeight: textAreaExpanded ? "130px" : "60px",
-                maxHeight: textAreaExpanded ? "300px" : "120px",
+                minHeight: textAreaExpandLevel === 0 ? "60px" : textAreaExpandLevel === 1 ? "130px" : "260px",
+                maxHeight: textAreaExpandLevel === 0 ? "120px" : textAreaExpandLevel === 1 ? "300px" : "500px",
                 transition: "min-height 0.2s ease",
                 paddingRight: "32px",
               }}
@@ -2107,12 +2174,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 transition: "opacity 0.15s, background 0.15s",
                 zIndex: 5,
               }}
-              onClick={() => setTextAreaExpanded(v => !v)}
-              title={textAreaExpanded ? t("chat.collapse_input") : t("chat.expand_input")}
+              onClick={() => setTextAreaExpandLevel(v => (v + 1) % 3)}
+              title={textAreaExpandLevel === 0 ? t("chat.expand_input") : textAreaExpandLevel === 1 ? t("chat.expand_input_10") : t("chat.collapse_input")}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted, #6e7681)"; }}
             >
-              {textAreaExpanded ? "⤒" : "⤓"}
+              {textAreaExpandLevel === 2 ? "⤒" : "⤓"}
             </div>
             {/* History position hint */}
             {historyPositionHint && (
@@ -2270,7 +2337,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars }: { sessionI
                 <div style={contextProgressFillStyle(contextPercent)} />
               </div>
               <span>{contextPercent}%</span>
-              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay} tokens</span>
+              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay} {t("sessions.tokens")}</span>
               {messageQueue.length > 0 && (
                 <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>{t("chat.queue_label").replace("{0}", String(messageQueue.length))}</span>
               )}

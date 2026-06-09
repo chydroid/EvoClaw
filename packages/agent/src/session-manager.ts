@@ -593,9 +593,12 @@ export class SessionManager {
   }
 
   private estimateTurnTokens(turn: SessionTurn): number {
-    // Simple heuristic: ~4 chars per token
-    let charCount = (turn.content?.length ?? 0) + JSON.stringify(turn.toolCalls ?? {}).length;
-    return Math.ceil(charCount / 4);
+    const content = turn.content ?? "";
+    // CJK characters use ~1.5 tokens each, other characters ~4 chars per token
+    const cjkChars = (content.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
+    const otherChars = content.length - cjkChars;
+    const toolCallTokens = Math.ceil(JSON.stringify(turn.toolCalls ?? {}).length / 4);
+    return Math.ceil(cjkChars * 1.5 + otherChars / 4) + toolCallTokens;
   }
 
   private isProcessAlive(pid: number): boolean {

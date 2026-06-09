@@ -116,7 +116,7 @@ export function BootstrapConfig() {
     try {
       const res = await fetch("/api/bootstrap/complete", { method: "POST" });
       const json = await res.json();
-      setMessage(json.message || "Bootstrap ritual completed");
+      setMessage(json.message || t("bootstrap.ritual_completed", "Bootstrap ritual completed"));
       loadFiles();
     } catch (err) {
       setMessage(t("bootstrap.op_fail") + String(err));

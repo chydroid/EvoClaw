@@ -3,8 +3,13 @@ export { AgentPoolManager } from "./agent-pool";
 export { ActorSystem } from "./actor-system";
 export { DAGExecutor } from "./dag-executor";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
-export { AgentModelExecutor, taskStatusTracker, taskCheckpointManager } from "./agent-model-executor";
-export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, TaskCheckpoint, AutoSplitConfig } from "./agent-model-executor";
+export { AgentModelExecutor } from "./agent-model-executor";
+export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
+export type { TaskCheckpoint } from "./task-checkpoint-manager";
+export { taskStatusTracker } from "./task-status-tracker";
+export { taskCheckpointManager } from "./task-checkpoint-manager";
+export { ExecutionCheckpointStore } from "./execution-checkpoint";
+export type { ExecutionState, ExecutionSnapshot } from "./execution-checkpoint";
 export { TaskPlanner } from "./task-planner";
 export { BootstrapManager } from "./bootstrap-manager";
 export { CompactionManager } from "./compaction-manager";
@@ -13,7 +18,7 @@ export { QueueManager } from "./queue-manager";
 export { buildAgentSystemPrompt, buildCompactSkillsPrompt } from "./system-prompt";
 export { classifyLLMError, isContextOverflowError, isRateLimitError, estimateTokensFromText, estimateMessagesTokens, LLMErrorType } from "./error-classifier";
 export type { DAGBuilderConfig, BuildContext } from "./dynamic-dag-builder";
-export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./agent-model-executor";
+export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./types";
 export type { SubTask, TaskPlan, ProjectTemplate } from "./task-planner";
 export type { PromptMode, SystemPromptParams } from "./system-prompt";
 export type { ClassifiedError } from "./error-classifier";
@@ -67,6 +72,9 @@ export type { SessionEntry, RetentionPolicy, RetentionConfig, RetentionResult } 
 export { ContextFocusManager } from "./context-focus";
 export type { FocusTarget, FocusContext, ContextFocusConfig } from "./context-focus";
 
+export { HumanApprovalManager } from "./human-approval";
+export type { PendingApproval, ApprovalConfig, TrustRule, RiskLevel } from "./human-approval";
+
 export { ModelSwitcher } from "./model-switcher";
 export type { ModelAlias, ModelPreset, ActiveModel, ModelSwitchEvent, ModelSwitcherConfig } from "./model-switcher";
 
@@ -75,3 +83,14 @@ export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision } from "./c
 
 export { CredentialPool } from "./credential-pool";
 export type { CredentialEntry, CredentialPoolConfig } from "./credential-pool";
+
+// Text processing utilities
+export { stripWebNoise, collapseNewlines, summarizeToolResult, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
+
+// Evals system
+export { EvalRunner, BUILTIN_EVAL_CASES } from "./evals";
+export type { EvalCase, EvalResult, EvalRunSummary, EvalConfig } from "./evals";
+
+// A2A (Agent-to-Agent) protocol
+export { A2AClient, A2AServer } from "./a2a";
+export type { A2AAgentCard, A2ACapability, A2ATask, A2ATaskResult, A2AMessage, A2AClientConfig, A2AServerConfig } from "./a2a";

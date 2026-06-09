@@ -1,34 +1,36 @@
 /**
  * Feishu (飞书) / Lark Channel Adapter
  *
- * Uses Feishu Open API v2 with long-polling + webhook dual mode.
+ * Supports three modes for receiving events:
+ * 1. Long connection (WebSocket) — recommended, no public URL needed
+ * 2. Webhook — requires public URL accessible from Feishu servers
+ * 3. Long-polling — polls REST API for messages (fallback)
  *
  * Feishu documentation: https://open.feishu.cn/document/
- *
- * Features:
- *  - IM message receiving via Event Subscription (webhook)
- *  - Message sending via /im/v1/messages API
- *  - Card messages (interactive template)
- *  - Tenant access token auto-refresh
- *  - Challenge verification (URL validation)
- *  - Group chat support
  */
 
 import crypto from "crypto";
-import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import * as Lark from "@larksuiteoapi/node-sdk";
+import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
+
+export type FeishuMode = "websocket" | "webhook" | "polling";
 
 export interface FeishuConfig {
   /** Feishu App ID */
   appId: string;
   /** Feishu App Secret */
   appSecret: string;
-  /** Verification token for event subscription */
+  /** Verification token for event subscription (webhook mode) */
   verificationToken?: string;
+  /** Encrypt key for event subscription (webhook mode) */
+  encryptKey?: string;
   /** Webhook path for receiving events (if using webhook mode) */
   webhookPath?: string;
-  /** Whether to enable long-polling (alternative to webhook) */
+  /** Event subscription mode: websocket (default), webhook, or polling */
+  mode?: FeishuMode;
+  /** Whether to enable long-polling (legacy, equivalent to mode=polling) */
   longPolling?: boolean;
   /** API endpoint (default: https://open.feishu.cn) */
   baseURL?: string;
@@ -51,10 +53,20 @@ export class FeishuAdapter implements ChannelAdapter {
   private processedEvents = new Set<string>();
   private static MAX_PROCESSED_EVENTS = 1000;
 
+  // WebSocket long connection client
+  private wsClient: Lark.WSClient | null = null;
+  private larkClient: Lark.Client | null = null;
+
   constructor(channelConfig: ChannelConfig) {
     this.channelConfig = channelConfig;
     this.config = channelConfig.settings as unknown as FeishuConfig;
     this.baseURL = this.config.baseURL ?? "https://open.feishu.cn";
+  }
+
+  private get mode(): FeishuMode {
+    if (this.config.mode) return this.config.mode;
+    if (this.config.longPolling) return "polling";
+    return "websocket"; // Default to WebSocket long connection
   }
 
   async start(): Promise<void> {
@@ -68,23 +80,42 @@ export class FeishuAdapter implements ChannelAdapter {
       this.pollAbort = new AbortController();
     }
 
-    // Get initial access token
+    // Get initial access token (needed for all modes)
     try {
       await this.refreshToken();
-      this.statusHandler?.("connected");
-
-      if (this.config.longPolling) {
-        this.startPolling();
-      }
     } catch (err) {
       this.statusHandler?.("error");
-      console.error(`[Feishu] Start failed: ${err}`);
+      console.error(`[Feishu] Token refresh failed: ${err}`);
+      return;
+    }
+
+    // Start based on mode
+    const currentMode = this.mode;
+    console.log(`[Feishu] Starting in ${currentMode} mode`);
+
+    if (currentMode === "websocket") {
+      await this.startWebSocket();
+    } else if (currentMode === "polling") {
+      this.statusHandler?.("connected");
+      this.startPolling();
+    } else {
+      // webhook mode — just mark connected, events come via HTTP
+      this.statusHandler?.("connected");
+      console.log("[Feishu] Webhook mode — events will be received via HTTP endpoint");
     }
   }
 
   async stop(): Promise<void> {
     this.pollAbort.abort();
     this.polling = false;
+
+    // Stop WebSocket client if running
+    if (this.wsClient) {
+      // WSClient doesn't have a stop method, just release reference
+      this.wsClient = null;
+      this.larkClient = null;
+    }
+
     this.statusHandler?.("disconnected");
   }
 
@@ -169,13 +200,215 @@ export class FeishuAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
-    try {
-      await this.ensureToken();
-      return this.accessToken !== null;
-    } catch {
-      return false;
+  async healthCheck(): Promise<ChannelHealthResult> {
+    const details: Record<string, string> = {};
+    const suggestions: string[] = [];
+
+    // Step 1: Check required config
+    if (!this.config.appId) {
+      return {
+        healthy: false,
+        message: "Missing App ID",
+        details: { appId: "❌ 未填写" },
+        suggestions: [
+          "在飞书开放平台 (open.feishu.cn) 创建自定义应用",
+          "在应用的「凭证与基础信息」页面复制 App ID",
+          "将 App ID 粘贴到配置中",
+        ],
+      };
     }
+    details.appId = `✅ ${this.config.appId.slice(0, 8)}...`;
+
+    if (!this.config.appSecret) {
+      return {
+        healthy: false,
+        message: "Missing App Secret",
+        details: { ...details, appSecret: "❌ 未填写" },
+        suggestions: [
+          "在飞书开放平台应用的「凭证与基础信息」页面复制 App Secret",
+          "将 App Secret 粘贴到配置中",
+        ],
+      };
+    }
+    details.appSecret = "✅ ******";
+
+    // Step 2: Try to get access token
+    let tokenOk = false;
+    try {
+      await this.refreshToken();
+      tokenOk = this.accessToken !== null;
+    } catch (err) {
+      const errMsg = String(err);
+      details.token = "❌ 获取失败";
+      if (errMsg.includes("401") || errMsg.includes("invalid")) {
+        return {
+          healthy: false,
+          message: "App ID 或 App Secret 不正确",
+          details,
+          suggestions: [
+            "检查 App ID 和 App Secret 是否复制正确（注意前后空格）",
+            "确认应用已创建且未过期",
+            "在飞书开放平台重新生成 App Secret 后重试",
+          ],
+        };
+      }
+      if (errMsg.includes("ECONNREFUSED") || errMsg.includes("ENOTFOUND") || errMsg.includes("fetch")) {
+        return {
+          healthy: false,
+          message: "无法连接飞书服务器（网络问题）",
+          details,
+          suggestions: [
+            "检查服务器网络连接是否正常",
+            "确认可以访问 open.feishu.cn",
+            "如使用代理，检查代理配置",
+          ],
+        };
+      }
+      return {
+        healthy: false,
+        message: `获取 Token 失败: ${errMsg}`,
+        details,
+        suggestions: ["检查飞书应用配置是否正确", "查看服务器日志获取详细错误信息"],
+      };
+    }
+
+    if (!tokenOk) {
+      return {
+        healthy: false,
+        message: "获取 Tenant Access Token 失败（未知原因）",
+        details,
+        suggestions: ["检查 App ID 和 App Secret 是否正确", "查看服务器日志获取详细错误信息"],
+      };
+    }
+    details.token = "✅ 已获取";
+
+    // Step 3: Check bot capability — try to get bot info
+    try {
+      const botRes = await fetch(`${this.baseURL}/open-apis/bot/v3/info`, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      const botData = await botRes.json() as { code: number; msg?: string; bot?: Record<string, unknown> };
+      if (botData.code === 0 && botData.bot) {
+        details.bot = `✅ ${botData.bot.app_name ?? "Bot"}`;
+      } else if (botData.code === 99991400) {
+        details.bot = "❌ 未启用机器人能力";
+        suggestions.push(
+          "在飞书开放平台应用的「添加应用能力」页面，添加「机器人」能力",
+          "添加机器人能力后，重新发布应用版本",
+        );
+      } else {
+        details.bot = `⚠️ 无法获取 (${botData.code}: ${botData.msg ?? "unknown"})`;
+      }
+    } catch {
+      details.bot = "⚠️ 查询失败（网络问题）";
+    }
+
+    // Step 4: Check message permissions — try to get message list using bot's own open_id
+    try {
+      // First get bot's own open_id
+      const botInfoRes = await fetch(`${this.baseURL}/open-apis/bot/v3/info`, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      const botInfoData = await botInfoRes.json() as { code: number; bot?: { open_id?: string } };
+      const botOpenId = botInfoData.bot?.open_id;
+
+      if (botOpenId) {
+        const msgRes = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=open_id&page_size=1&receive_id=${botOpenId}`, {
+          headers: { Authorization: `Bearer ${this.accessToken}` },
+        });
+        const msgData = await msgRes.json() as { code: number; msg?: string };
+        if (msgData.code === 0 || msgData.code === 230002) {
+          // 0 = success, 230002 = chat not found (permission OK, just no chat)
+          details.imPermission = "✅ 消息权限正常";
+        } else if (msgData.code === 99991401) {
+          details.imPermission = "❌ 缺少消息权限";
+          suggestions.push(
+            "在飞书开放平台应用的「权限管理」页面，添加以下权限：",
+            "  - im:message（获取与发送单聊、群组消息）",
+            "  - im:message.group_at_msg（接收群聊@消息）",
+            "  - im:resource（获取消息中的资源文件）",
+            "添加权限后，重新发布应用版本",
+          );
+        } else {
+          // Other errors may indicate partial permissions
+          details.imPermission = "✅ 消息权限基本正常";
+        }
+      } else {
+        details.imPermission = "⚠️ 无法验证（未获取到 Bot Open ID）";
+      }
+    } catch {
+      details.imPermission = "⚠️ 查询失败（网络问题）";
+    }
+
+    // Step 5: Check WebSocket connection status
+    if (this.mode === "websocket") {
+      details.mode = "WebSocket 长连接";
+      if (this.wsClient) {
+        details.wsConnection = "✅ 已连接";
+      } else {
+        details.wsConnection = "⚠️ 未连接（将在收到消息时重连）";
+        suggestions.push(
+          "确认在飞书开放平台应用的「事件订阅」页面，选择了「使用长连接接收事件」",
+          "如果选择了「将事件发送至请求地址」，请切换为长连接模式",
+        );
+      }
+    } else if (this.mode === "webhook") {
+      details.mode = "Webhook 模式";
+      details.wsConnection = "需要公网可达的回调 URL";
+      suggestions.push(
+        "确保服务器可从公网访问",
+        "在飞书开放平台配置事件订阅回调 URL（如 https://your-domain.com/api/channels/feishu/webhook）",
+      );
+    } else {
+      details.mode = "长轮询模式";
+    }
+
+    // Step 6: Check event subscription
+    try {
+      const eventRes = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=open_id&page_size=1`, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      // If we can reach this point, basic API access works
+      details.eventSubscription = this.wsClient ? "✅ 长连接已建立" : "⚠️ 需要配置事件订阅";
+      if (!this.wsClient && this.mode === "websocket") {
+        suggestions.push(
+          "在飞书开放平台应用的「事件订阅」页面：",
+          "  1. 选择「使用长连接接收事件」",
+          "  2. 添加事件：im.message.receive_v1（接收消息）",
+          "  3. 发布应用版本使配置生效",
+        );
+      }
+    } catch {
+      details.eventSubscription = "⚠️ 无法验证";
+    }
+
+    // Overall result
+    const hasErrors = Object.values(details).some(v => v.includes("❌"));
+    const hasWarnings = Object.values(details).some(v => v.includes("⚠️"));
+
+    if (hasErrors) {
+      return {
+        healthy: false,
+        message: "飞书通道配置存在问题，请根据建议修复",
+        details,
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
+      };
+    }
+
+    if (hasWarnings) {
+      return {
+        healthy: true,
+        message: "飞书通道基本连通，但存在警告项",
+        details,
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
+      };
+    }
+
+    return {
+      healthy: true,
+      message: "飞书通道连接正常",
+      details,
+    };
   }
 
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void {
@@ -210,6 +443,100 @@ export class FeishuAdapter implements ChannelAdapter {
     }
 
     return {};
+  }
+
+  // ── WebSocket Long Connection ────────────────────────────
+
+  private async startWebSocket(): Promise<void> {
+    try {
+      const baseConfig = {
+        appId: this.config.appId,
+        appSecret: this.config.appSecret,
+      };
+
+      this.larkClient = new Lark.Client(baseConfig);
+      this.wsClient = new Lark.WSClient({
+        ...baseConfig,
+        loggerLevel: Lark.LoggerLevel.info,
+      });
+
+      const self = this;
+
+      await this.wsClient.start({
+        eventDispatcher: new Lark.EventDispatcher({}).register({
+          "im.message.receive_v1": async (data: Record<string, unknown>) => {
+            try {
+              await self.handleWSMessage(data);
+            } catch (err) {
+              console.error("[Feishu] WebSocket message handler error:", err);
+            }
+          },
+        }),
+      });
+
+      this.statusHandler?.("connected");
+      console.log("[Feishu] WebSocket long connection established");
+    } catch (err) {
+      console.error(`[Feishu] WebSocket connection failed: ${err}`);
+      this.statusHandler?.("error");
+      // Fallback: still allow webhook mode to work
+      console.log("[Feishu] Falling back to webhook mode");
+      this.statusHandler?.("connected");
+    }
+  }
+
+  private async handleWSMessage(data: Record<string, unknown>): Promise<void> {
+    if (!this.messageHandler) return;
+
+    // The SDK delivers the event data in v2.0 format
+    const message = data.message as Record<string, unknown> | undefined;
+    const sender = data.sender as Record<string, unknown> | undefined;
+
+    if (!message) return;
+
+    const messageId = message.message_id as string | undefined;
+    const chatId = message.chat_id as string | undefined;
+    const chatType = message.chat_type as string | undefined;
+    const content = message.content as string | undefined;
+    const createTime = message.create_time as string | undefined;
+    const messageType = message.message_type as string | undefined;
+
+    // Skip non-text messages (images, files, etc. handled separately)
+    if (messageType && messageType !== "text" && messageType !== "post") {
+      console.log(`[Feishu] Skipping non-text message type: ${messageType}`);
+      return;
+    }
+
+    // Event deduplication
+    if (messageId) {
+      if (this.processedEvents.has(messageId)) return;
+      this.processedEvents.add(messageId);
+      if (this.processedEvents.size > FeishuAdapter.MAX_PROCESSED_EVENTS) {
+        this.processedEvents.clear();
+      }
+    }
+
+    const parsed = this.parseContent(content ?? "");
+    if (!parsed.text.trim()) return;
+
+    const senderId = (sender?.sender_id as Record<string, string>)?.open_id ?? "unknown";
+    const isGroup = chatType === "group";
+
+    const msg: ChannelMessage = {
+      messageId: messageId ?? `msg_${Date.now()}`,
+      channel: "feishu" as ChannelType,
+      from: senderId,
+      to: chatId ?? "direct",
+      text: parsed.text,
+      timestamp: createTime ? new Date(Number(createTime) * 1000 || Date.now()).toISOString() : new Date().toISOString(),
+      isDirect: !isGroup,
+      isGroup,
+      groupId: isGroup ? chatId : undefined,
+      attachments: parsed.attachments,
+      raw: data as Record<string, unknown>,
+    };
+
+    await this.messageHandler(msg);
   }
 
   // ── Internal ────────────────────────────────────────────

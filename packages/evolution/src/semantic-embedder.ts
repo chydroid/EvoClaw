@@ -45,6 +45,11 @@ export class SemanticEmbedder {
   private cacheHitCount = 0;
   private fallbackCount = 0;
 
+  /** The dimensionality of the embedding vectors produced by this embedder. */
+  get dimensions(): number {
+    return this.config.dimension;
+  }
+
   constructor(registry?: ServiceRegistry, config?: Partial<SemanticEmbedderConfig>) {
     this.registry = registry;
     this.config = { ...DEFAULT_EMBEDDER_CONFIG, ...config };

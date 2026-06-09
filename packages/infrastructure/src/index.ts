@@ -28,6 +28,8 @@ export { UpdateManager } from "./update-manager";
 export type { UpdateConfig, ReleaseInfo, UpdateCheckResult, UpdateProgress } from "./update-manager";
 export { Observability } from "./observability";
 export type { MetricDef, MetricLabel, MetricValue, MetricType, TraceSpan, HealthReport, ObservabilityConfig } from "./observability";
+export { TracingService } from "./tracing";
+export type { TracingConfig } from "./tracing";
 export { ApiClient, QueryBuilder, WebhookSender, GraphQLClient, PageScraper } from "./api-toolkit";
 export type { ApiClientConfig, HttpRequestOptions, HttpResponse, PaginationOptions, DbQuery, WebhookPayload, PageMetadata } from "./api-toolkit";
 

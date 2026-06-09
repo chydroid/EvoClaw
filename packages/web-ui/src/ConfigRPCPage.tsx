@@ -43,7 +43,7 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.get(path);
       setCurrentValue(res.value);
     } catch (err: unknown) {
-      setValueError(err instanceof Error ? err.message : "读取值失败");
+      setValueError(err instanceof Error ? err.message : t("config_rpc.get_fail"));
     } finally {
       setValueLoading(false);
     }
@@ -61,9 +61,9 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.set(dotPath, parsed);
       setCurrentValue(res.value);
       setSetMode(false);
-      showToast(`"${dotPath}" 已更新`, "success");
+      showToast(t("config_rpc.set_ok", dotPath), "success");
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "写入值失败", "error");
+      showToast(err instanceof Error ? err.message : t("config_rpc.set_fail"), "error");
     }
   };
 
@@ -73,7 +73,7 @@ export default function ConfigRPCPage() {
       const res = await configRpcApi.list(browsePrefix || undefined);
       setEntries(res.entries);
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "浏览配置失败", "error");
+      showToast(err instanceof Error ? err.message : t("config_rpc.browse_fail"), "error");
     } finally {
       setBrowseLoading(false);
     }
@@ -97,7 +97,7 @@ export default function ConfigRPCPage() {
         subtitle={t("config_rpc.subtitle")}
       />
 
-      <Section title="读取 / 写入">
+      <Section title={t("config_rpc.read_write_section")}>
         <Card>
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap", marginBottom: "16px" }}>
             <div style={{ flex: 1, minWidth: "240px" }}>
@@ -151,7 +151,7 @@ export default function ConfigRPCPage() {
               marginTop: "8px",
             }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--accent)", textTransform: "uppercase", marginBottom: "8px" }}>
-                新值 (JSON 或纯文本)
+                {t("config_rpc.new_value_label")}
               </div>
               <textarea
                 value={setValue}
@@ -174,23 +174,23 @@ export default function ConfigRPCPage() {
       </Section>
 
       <div style={{ marginTop: "24px" }} />
-      <Section title="浏览">
+      <Section title={t("config_rpc.browse_section")}>
         <Card>
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", marginBottom: "16px" }}>
             <div style={{ flex: 1, maxWidth: "400px" }}>
               <TextInput
                 value={browsePrefix}
                 onChange={setBrowsePrefix}
-                placeholder={"按前缀筛选，如 \"agent.\""}
+                placeholder={t("config_rpc.filter_prefix_placeholder")}
               />
             </div>
-            <SecondaryButton small onClick={loadBrowse}>刷新</SecondaryButton>
+            <SecondaryButton small onClick={loadBrowse}>{t("config_rpc.refresh_btn")}</SecondaryButton>
           </div>
 
           {browseLoading ? (
             <Loading text={t("app.loading")} />
           ) : entries.length === 0 ? (
-            <EmptyState title={t("config_rpc.no_entries")} description="未找到配置项" />
+            <EmptyState title={t("config_rpc.no_entries")} description={t("config_rpc.no_entries_found")} />
           ) : (
             <DataTable
               columns={[

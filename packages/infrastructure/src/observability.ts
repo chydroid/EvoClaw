@@ -14,6 +14,8 @@
  */
 
 import { randomBytes } from "crypto";
+import { TracingService, type TracingConfig } from "./tracing";
+import { SpanStatusCode, type Span } from "@opentelemetry/api";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -95,6 +97,8 @@ export class Observability {
   private metricDefs = new Map<string, MetricDef>();
   private spans: TraceSpan[] = [];
   private activeSpans = new Map<string, TraceSpan>();
+  private otelSpans = new Map<string, Span>();
+  private tracingService: TracingService;
   private config: Required<ObservabilityConfig>;
   private startTime: number;
   private healthComponents = new Map<string, { status: HealthReport["components"][0]["status"]; message?: string; lastCheck: number }>();
@@ -107,6 +111,15 @@ export class Observability {
       includeProcessMetrics: config.includeProcessMetrics ?? true,
     };
     this.startTime = Date.now();
+    this.tracingService = new TracingService({
+      serviceName: this.config.metricsPrefix,
+      enabled: true,
+    });
+  }
+
+  /** Get the TracingService instance for OpenTelemetry-compatible span tracing */
+  getTracingService(): TracingService {
+    return this.tracingService;
   }
 
   // ── Metric Registration ─────────────────────────────────
@@ -243,6 +256,15 @@ export class Observability {
     };
 
     this.activeSpans.set(span.spanId, span);
+
+    // Also create an OTEL span via TracingService
+    const parentOtelSpan = parentSpanId ? this.otelSpans.get(parentSpanId) : undefined;
+    const otelSpan = this.tracingService.startSpan(name, {
+      attributes: attributes,
+      parentSpan: parentOtelSpan,
+    });
+    this.otelSpans.set(span.spanId, otelSpan);
+
     return span;
   }
 
@@ -271,6 +293,19 @@ export class Observability {
     if (error) {
       span.attributes["error.message"] = error.message;
       span.attributes["error.type"] = error.name;
+    }
+
+    // End the corresponding OTEL span
+    const otelSpan = this.otelSpans.get(spanId);
+    if (otelSpan) {
+      if (error) {
+        otelSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+        otelSpan.recordException(error);
+      } else {
+        otelSpan.setStatus({ code: SpanStatusCode.OK });
+      }
+      otelSpan.end();
+      this.otelSpans.delete(spanId);
     }
 
     this.activeSpans.delete(spanId);
@@ -397,6 +432,7 @@ export class Observability {
     this.histograms.clear();
     this.spans = [];
     this.activeSpans.clear();
+    this.otelSpans.clear();
     this.healthComponents.clear();
     this.startTime = Date.now();
   }

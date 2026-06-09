@@ -13,6 +13,7 @@
 
 import type {
   ChannelAdapter,
+  ChannelHealthResult,
   ChannelMessage,
   ChannelSendResult,
   ChannelType,
@@ -189,15 +190,18 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const result = await this.whatsappApi<{ verified_name?: string }>(
         "GET",
         `/${this.phoneNumberId}`
       );
-      return !!result.verified_name;
-    } catch {
-      return false;
+      if (result.verified_name) {
+        return { healthy: true, message: "WhatsApp Cloud API is reachable" };
+      }
+      return { healthy: false, message: "WhatsApp phone number not verified" };
+    } catch (err) {
+      return { healthy: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 

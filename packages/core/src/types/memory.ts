@@ -93,9 +93,12 @@ export interface LongTermMemory {
 }
 
 export interface EmbeddingProvider {
-  generate(text: string): Promise<number[]>;
-  batchGenerate(texts: string[]): Promise<number[][]>;
-  dimension(): number;
+  /** Generate an embedding vector for a single text. */
+  embed(text: string): Promise<number[]>;
+  /** Generate embedding vectors for multiple texts. */
+  embedBatch(texts: string[]): Promise<number[][]>;
+  /** The dimensionality of the embedding vectors produced by this provider. */
+  readonly dimensions: number;
 }
 
 export const DEFAULT_EMBEDDING_DIMENSION = 1536;

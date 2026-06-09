@@ -161,7 +161,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
 
   if (healthy && issues.length === 0) {
     return {
-      label: "健康",
+      labelKey: "config_doctor.healthy",
       bg: "var(--success-bg)",
       border: "var(--success)",
       iconBg: "var(--success)",
@@ -171,7 +171,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
   }
   if (hasErrors) {
     return {
-      label: "异常",
+      labelKey: "config_doctor.error",
       bg: "var(--error-bg)",
       border: "var(--error)",
       iconBg: "var(--error)",
@@ -181,7 +181,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
   }
   if (hasWarnings) {
     return {
-      label: "降级",
+      labelKey: "config_doctor.warning",
       bg: "var(--warning-bg)",
       border: "var(--warning)",
       iconBg: "var(--warning)",
@@ -190,7 +190,7 @@ function healthConfig(healthy: boolean, issues: ConfigIssue[]) {
     };
   }
   return {
-    label: "健康",
+    labelKey: "config_doctor.healthy",
     bg: "var(--success-bg)",
     border: "var(--success)",
     iconBg: "var(--success)",
@@ -218,7 +218,7 @@ export default function ConfigDoctorPage() {
       setIssues(result.issues);
       setHealthy(result.healthy);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "诊断失败");
+      setError(err instanceof Error ? err.message : t("config_doctor.diag_fail"));
     } finally {
       setDiagnosing(false);
       setLoading(false);
@@ -236,13 +236,13 @@ export default function ConfigDoctorPage() {
     try {
       const result = await configDoctorApi.fix(issue.path, value);
       if (result.fixed) {
-        showToast(`已修复: ${issue.path}`, "success");
+        showToast(t("config_doctor.fixed_path", "已修复: {0}").replace("{0}", issue.path), "success");
         await runDiagnosis();
       } else {
-        showToast(`无法修复: ${issue.path}`, "error");
+        showToast(t("config_doctor.cannot_fix", "无法修复: {0}").replace("{0}", issue.path), "error");
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "修复失败", "error");
+      showToast(err instanceof Error ? err.message : t("config_doctor.fix_failed"), "error");
     } finally {
       setFixingId(null);
     }
@@ -254,10 +254,10 @@ export default function ConfigDoctorPage() {
     try {
       const result = await configDoctorApi.fixAll();
       setFixResult(result);
-      showToast(`已修复 ${result.fixed} 个问题, ${result.remaining} 个待处理`, result.remaining === 0 ? "success" : "info");
+      showToast(t("config_doctor.fixed_summary", "已修复 {0} 个问题, {1} 个待处理").replace("{0}", String(result.fixed)).replace("{1}", String(result.remaining)), result.remaining === 0 ? "success" : "info");
       await runDiagnosis();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "全部修复失败", "error");
+      showToast(err instanceof Error ? err.message : t("config_doctor.fix_all_fail"), "error");
     } finally {
       setFixingAll(false);
     }
@@ -299,25 +299,23 @@ export default function ConfigDoctorPage() {
         </div>
         <div style={s.healthText}>
           <div style={{ ...s.healthTitle, color: hc.border }}>
-            系统状态: {hc.label}
+            {t("config_doctor.system_status_label", "系统状态: {0}").replace("{0}", t(hc.labelKey))}
           </div>
           <div style={s.healthSub}>
-            发现 {issues.length} 个问题
+            {t("config_doctor.issues_found_count", "发现 {0} 个问题").replace("{0}", String(issues.length))}
             {" "}&bull;{" "}
-            {errorCount} 个错误,
-            {" "}{warnCount} 个警告,
-            {" "}{infoCount} 个提示
+            {t("config_doctor.issue_summary", "{0} 个错误, {1} 个警告, {2} 个提示").replace("{0}", String(errorCount)).replace("{1}", String(warnCount)).replace("{2}", String(infoCount))}
           </div>
           {issues.length > 0 && (
             <div style={s.actions}>
               <PrimaryButton onClick={handleFixAll} disabled={fixingAll || fixingId !== null}>
-                {fixingAll ? "修复全部中..." : t("config_doctor.fix_all")}
+                {fixingAll ? t("config_doctor.fixing_all") : t("config_doctor.fix_all")}
               </PrimaryButton>
             </div>
           )}
           {fixResult && (
             <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--success)", fontWeight: 600 }}>
-              已修复 {fixResult.fixed} 个问题, {fixResult.remaining} 个待处理
+              {t("config_doctor.fixed_summary", "已修复 {0} 个问题, {1} 个待处理").replace("{0}", String(fixResult.fixed)).replace("{1}", String(fixResult.remaining))}
             </div>
           )}
         </div>
@@ -325,7 +323,7 @@ export default function ConfigDoctorPage() {
 
       {issues.length === 0 ? (
         <Card>
-          <EmptyState icon="" title={t("config_doctor.no_issues")} description="所有配置检查均已通过" />
+          <EmptyState icon="" title={t("config_doctor.no_issues")} description={t("config_doctor.all_passed")} />
         </Card>
       ) : (
         grouped.map((group) => {
@@ -341,7 +339,7 @@ export default function ConfigDoctorPage() {
                 >
                   {group.severity.toUpperCase()}
                 </Badge>
-                <span style={{ color: "var(--text-muted)" }}>{group.items.length} 个问题</span>
+                <span style={{ color: "var(--text-muted)" }}>{t("config_doctor.issue_count", "{0} 个问题").replace("{0}", String(group.items.length))}</span>
               </div>
               {group.items.map((issue) => (
                 <div key={issue.path} style={s.issueCard}>
@@ -367,7 +365,7 @@ export default function ConfigDoctorPage() {
                     onClick={() => handleFix(issue, issue.currentValue)}
                     disabled={fixingId === issue.path || fixingAll}
                   >
-                    {fixingId === issue.path ? "修复中..." : t("config_doctor.fix")}
+                    {fixingId === issue.path ? t("config_doctor.fixing") : t("config_doctor.fix")}
                   </button>
                 </div>
               ))}

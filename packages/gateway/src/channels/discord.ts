@@ -12,6 +12,7 @@
 
 import type {
   ChannelAdapter,
+  ChannelHealthResult,
   ChannelMessage,
   ChannelSendResult,
   ChannelType,
@@ -215,12 +216,15 @@ export class DiscordAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const info = await this.discordApi<{ id: string }>("/users/@me");
-      return !!info.id;
-    } catch {
-      return false;
+      if (info.id) {
+        return { healthy: true, message: "Discord API is reachable" };
+      }
+      return { healthy: false, message: "Discord API returned invalid response" };
+    } catch (err) {
+      return { healthy: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 

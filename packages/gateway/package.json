@@ -22,6 +22,8 @@
     "@evoclaw/agent": "workspace:*",
     "@evoclaw/core": "workspace:*",
     "@evoclaw/infrastructure": "workspace:*",
+    "@larksuiteoapi/node-sdk": "^1.66.1",
+    "@opentelemetry/api": "^1.9.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.0",

@@ -210,14 +210,14 @@ const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   failed: { bg: "#2d1518", text: "#f85149" },
 };
 
-function formatTime(iso: string | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 export default function QueueManagerPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+
+  function formatTime(iso: string | undefined): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
   const [allQueues, setAllQueues] = useState<Record<string, QueueItem[]>>({});
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);

@@ -498,9 +498,9 @@ export class SkillCurator {
       .trim()
       .split(/\s+/)
       .filter(w => w.length > 1)
-      .slice(0, 4)
+      .slice(0, 8)
       .join("-")
-      .slice(0, 60);
+      .slice(0, 120);
 
     if (!cleaned || cleaned.length < 3) {
       // Use a timestamp-based fallback that will pass validation

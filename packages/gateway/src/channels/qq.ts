@@ -14,7 +14,7 @@
  *  - Auto-reconnect with exponential backoff
  */
 
-import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
 
@@ -150,14 +150,17 @@ export class QQAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const res = await fetch(`${this.baseURL}/gateway`, {
         headers: { Authorization: `Bot ${this.config.appId}.${this.config.token}` },
       });
-      return res.ok;
-    } catch {
-      return false;
+      if (res.ok) {
+        return { healthy: true, message: "QQ Bot gateway is reachable" };
+      }
+      return { healthy: false, message: `QQ Bot gateway returned status ${res.status}` };
+    } catch (err) {
+      return { healthy: false, message: (err as Error).message };
     }
   }
 

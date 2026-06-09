@@ -28,6 +28,8 @@ export interface SystemPromptParams {
   hostInfo?: { os: string; arch: string; nodeVersion: string };
   appendSystemContext?: string;
   prependSystemContext?: string;
+  channel?: string;
+  thinkingLevel?: "off" | "low" | "medium" | "high";
 }
 
 export function buildAgentSystemPrompt(params: SystemPromptParams): string {
@@ -115,16 +117,115 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "When the user asks about a specific entity (company, product, person), you MUST search for the latest information, not rely on your training data."
   );
   sections.push("");
+  if (params.channel) {
+    sections.push("## Current Channel");
+    sections.push(`Current communication channel: ${params.channel}`);
+    sections.push("- If channel is \"webchat\" or \"cli\": You can use localhost URLs and Markdown links for file downloads");
+    sections.push("- If channel is \"feishu\", \"weixin\", \"wechat\", or other IM channels: Users cannot access localhost URLs. For file references:");
+    sections.push("  - Text content: Reply directly in the chat message");
+    sections.push("  - Files (reports, documents, etc.): Create the file locally, then tell the user the file is saved locally and provide the file path. Do NOT use localhost download links.");
+    sections.push("  - Media files (audio, video): Create the file locally, tell the user the file is saved locally with the path. If the server has a public URL configured, provide the public download link instead.");
+    sections.push("");
+  }
+
+  sections.push("## Music Playback");
+  sections.push(
+    "When the user expresses a desire to LISTEN to music (e.g., \"想听XXX的歌\", \"播放XXX\", \"来首XXX\", \"play some XXX\"):"
+  );
+  sections.push("1. This is a PLAYBACK request, NOT a download request. Do NOT use music_download or file_create.");
+  sections.push("2. Use web_search to find the artist's most famous/hit songs.");
+  sections.push(
+    "3. Present a numbered list of songs with the artist name, e.g.:\n" +
+    "   🎵 XXX 的热门歌曲：\n" +
+    "   1. 歌名1\n" +
+    "   2. 歌名2\n" +
+    "   ..."
+  );
+  sections.push(
+    "4. For each song, add a clickable search link that opens the user's default music app/browser:\n" +
+    "   Format: [🎵 歌名](https://music.163.com/#/search/m/?s=歌手+歌名&type=1)\n" +
+    "   (This links to NetEase Cloud Music search, which works on all devices)"
+  );
+  sections.push("5. Ask the user if they want to download any specific song.");
+  sections.push("");
+  sections.push(
+    "When the user explicitly asks to DOWNLOAD music (e.g., \"下载XXX的歌\", \"保存XXX的mp3\"):\n" +
+    "- Then use the music_download tool as normal."
+  );
+  sections.push("");
+
   sections.push("## File Operations");
   sections.push(
     "When creating files for the user (documents, tutorials, reports, etc.):"
   );
   sections.push("1. Use `file_create` with the file path and content. Set `overwrite: true` if updating an existing file.");
   sections.push("2. Always save files to the `data/workspace/` directory (e.g., `data/workspace/macOS-tutorial.md`).");
-  sections.push("3. After creating a file, tell the user: the file path, and that they can download it via the download link.");
-  sections.push("4. Format: 📄 文件已保存: `{path}` | [点击下载](/api/files/download/{path})");
-  sections.push("5. For large content, create the file directly — do NOT output the full content in your reply text. Just summarize what was created and provide the download link.");
+  sections.push("3. **IMPORTANT — Reply directly in chat by default. Only write to a file when:**");
+  sections.push("   - The user explicitly asks for a detailed report, research paper, or long document (expected >3000 chars)");
+  sections.push("   - The content is too large for a single chat message (e.g., full code files, large datasets)");
+  sections.push("   - The user asks to download or export something");
+  sections.push("4. For simple questions, news summaries, brief analysis — reply directly in chat. Do NOT create files.");
+  sections.push("5. When you DO create a file, tell the user the file path. For download links:");
+  sections.push("   - If the current channel is `webchat` or `cli`: provide download link like 📄 文件已保存: `{path}` | [点击下载](/api/files/download/{path})");
+  sections.push("   - If the current channel is `feishu`, `wechat`, or other IM: just tell the user the local file path (e.g., 📄 文件已保存至本地: `{path}`). Do NOT provide localhost download links — they are not accessible from external channels.");
+  sections.push("6. For large content written to a file, do NOT output the full content in your reply text. Just summarize what was created.");
   sections.push("");
+
+  // ── Sequential Thinking / Reasoning Framework ──
+  const thinkingLevel = params.thinkingLevel || "medium";
+  if (thinkingLevel !== "off") {
+    sections.push("## Reasoning Framework");
+    if (thinkingLevel === "low") {
+      sections.push("Before acting on complex tasks, briefly analyze the problem and consider your approach.");
+      sections.push("Use the `sequential_thinking` tool for multi-step problems to organize your reasoning.");
+    } else if (thinkingLevel === "medium") {
+      sections.push("For complex tasks, use structured reasoning BEFORE taking action:");
+      sections.push("1. **Understand**: Identify the core problem, constraints, and requirements");
+      sections.push("2. **Plan**: Break the problem into steps, estimate effort for each");
+      sections.push("3. **Execute**: Work through steps systematically, using tools as needed");
+      sections.push("4. **Verify**: Check results against original requirements");
+      sections.push("5. **Reflect**: If results don't match expectations, revise your approach");
+      sections.push("");
+      sections.push("Use the `sequential_thinking` tool to:");
+      sections.push("- Break down complex problems into numbered thinking steps");
+      sections.push("- Revise previous thoughts when new information contradicts them (isRevision=true)");
+      sections.push("- Branch into alternative approaches when uncertain (branchFromThought, branchId)");
+      sections.push("- Adjust the total number of steps as your understanding evolves");
+      sections.push("- Generate hypotheses and verify them before presenting conclusions");
+    } else { // high
+      sections.push("ALWAYS use structured deep reasoning for any non-trivial task. Use the `sequential_thinking` tool extensively.");
+      sections.push("");
+      sections.push("### Deep Reasoning Protocol");
+      sections.push("1. **Problem Decomposition** (2-3 thoughts):");
+      sections.push("   - Identify the core problem and all sub-problems");
+      sections.push("   - List constraints, assumptions, and unknowns");
+      sections.push("   - Enumerate possible approaches with pros/cons");
+      sections.push("");
+      sections.push("2. **Hypothesis Generation** (1-2 thoughts):");
+      sections.push("   - Formulate a specific solution hypothesis");
+      sections.push("   - Identify what evidence would confirm/refute it");
+      sections.push("");
+      sections.push("3. **Execution Planning** (1-2 thoughts):");
+      sections.push("   - Plan the exact sequence of tool calls");
+      sections.push("   - Anticipate failure modes and prepare fallbacks");
+      sections.push("");
+      sections.push("4. **Execution & Monitoring** (ongoing):");
+      sections.push("   - Execute steps while monitoring for deviations");
+      sections.push("   - Use isRevision=true when intermediate results contradict assumptions");
+      sections.push("   - Use branchFromThought to explore alternatives without losing progress");
+      sections.push("");
+      sections.push("5. **Verification & Reflection** (1-2 thoughts):");
+      sections.push("   - Verify the solution meets ALL original requirements");
+      sections.push("   - Reflect on what worked and what didn't");
+      sections.push("   - If verification fails, branch or revise and iterate");
+      sections.push("");
+      sections.push("### When to Branch or Revise");
+      sections.push("- **Revise** (isRevision=true): When new information contradicts a previous thought");
+      sections.push("- **Branch** (branchFromThought=N): When you want to explore an alternative without abandoning current progress");
+      sections.push("- **Extend** (needsMoreThoughts=true): When you reach the planned end but realize more analysis is needed");
+    }
+    sections.push("");
+  }
 
   sections.push("## Execution Strategy (MANDATORY)");
   sections.push(

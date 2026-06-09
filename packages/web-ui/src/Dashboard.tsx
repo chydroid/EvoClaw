@@ -184,9 +184,9 @@ export default function Dashboard() {
     const d = Math.floor(seconds / 86400);
     const h = Math.floor((seconds % 86400) / 3600);
     const m = Math.floor((seconds % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
+    if (d > 0) return `${d}${t("dashboard.uptime_d")} ${h}${t("dashboard.uptime_h")}`;
+    if (h > 0) return `${h}${t("dashboard.uptime_h")} ${m}${t("dashboard.uptime_m")}`;
+    return `${m}${t("dashboard.uptime_m")}`;
   }
 
   function compactCount(sessions: SessionInfo[]): number {

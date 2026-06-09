@@ -13,11 +13,11 @@ import { useTranslation } from "./i18n";
 
 type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
 
-const STATUS_CONFIG: Record<HealthStatus, { color: string; bg: string; icon: string; label: string }> = {
-  healthy:   { color: "var(--success)", bg: "var(--success-bg)", icon: "\u2705", label: "健康" },
-  degraded:  { color: "var(--warning)", bg: "var(--warning-bg)", icon: "\u26a0\ufe0f", label: "降级" },
-  unhealthy: { color: "var(--error)", bg: "var(--error-bg)", icon: "\u274c", label: "异常" },
-  unknown:   { color: "var(--text-muted)", bg: "var(--bg-hover)", icon: "\u2753", label: "未知" },
+const STATUS_CONFIG: Record<HealthStatus, { color: string; bg: string; icon: string; labelKey: string }> = {
+  healthy:   { color: "var(--success)", bg: "var(--success-bg)", icon: "\u2705", labelKey: "health_aggregator.healthy" },
+  degraded:  { color: "var(--warning)", bg: "var(--warning-bg)", icon: "\u26a0\ufe0f", labelKey: "health_aggregator.degraded" },
+  unhealthy: { color: "var(--error)", bg: "var(--error-bg)", icon: "\u274c", labelKey: "health_aggregator.unhealthy" },
+  unknown:   { color: "var(--text-muted)", bg: "var(--bg-hover)", icon: "\u2753", labelKey: "health_aggregator.unknown" },
 };
 
 function statusVariant(s: string): "success" | "warning" | "error" | "default" {
@@ -27,9 +27,9 @@ function statusVariant(s: string): "success" | "warning" | "error" | "default" {
   return "default";
 }
 
-function formatTime(ts: string): string {
+function formatTime(ts: string, locale: string): string {
   if (!ts) return "-";
-  return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ts).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 const s: Record<string, React.CSSProperties> = {
@@ -71,7 +71,8 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export default function HealthAggregatorPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [overall, setOverall] = useState<string>("loading");
   const [components, setComponents] = useState<ComponentHealth[]>([]);
   const [timestamp, setTimestamp] = useState<string>("");
@@ -86,11 +87,11 @@ export default function HealthAggregatorPage() {
       setTimestamp(data.timestamp);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载健康数据失败");
+      setError(err instanceof Error ? err.message : t("health_aggregator.load_fail"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadHealth();
@@ -102,11 +103,11 @@ export default function HealthAggregatorPage() {
     try {
       const updated = await healthApi.check(name);
       setComponents((prev) => prev.map((c) => (c.name === updated.name ? updated : c)));
-      showToast(`${name} 重新检查完成`, "success");
+      showToast(t("health_aggregator.recheck_done").replace("{0}", name), "success");
     } catch {
-      showToast(`${name} 重新检查失败`, "error");
+      showToast(t("health_aggregator.recheck_fail").replace("{0}", name), "error");
     }
-  }, []);
+  }, [t]);
 
   const healthyCount = components.filter((c) => c.status === "healthy").length;
   const degradedCount = components.filter((c) => c.status === "degraded").length;
@@ -125,7 +126,7 @@ export default function HealthAggregatorPage() {
         {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
           <div key={key} style={s.legendItem}>
             <span style={{ ...s.legendDot, background: cfg.color }} />
-            {cfg.label}
+            {t(cfg.labelKey)}
           </div>
         ))}
       </div>
@@ -133,10 +134,10 @@ export default function HealthAggregatorPage() {
       <div style={{ ...s.overallCard, borderColor: overallCfg.color + "60" }}>
         <div style={s.overallIcon}>{overallCfg.icon}</div>
         <div style={s.overallInfo}>
-          <div style={{ ...s.overallStatus, color: overallCfg.color }}>{overallCfg.label}</div>
-          <div style={s.overallTimestamp}>上次更新: {formatTime(timestamp)}</div>
+          <div style={{ ...s.overallStatus, color: overallCfg.color }}>{t(overallCfg.labelKey)}</div>
+          <div style={s.overallTimestamp}>{t("health_aggregator.last_update_label")} {formatTime(timestamp, locale)}</div>
           <div style={s.overallSummary}>
-            {healthyCount} 健康 / {degradedCount} 降级 / {unhealthyCount} 异常 &mdash; 共 {components.length} 个组件
+            {t("health_aggregator.summary").replace("{0}", String(healthyCount)).replace("{1}", String(degradedCount)).replace("{2}", String(unhealthyCount))} &mdash; {t("health_aggregator.total_components").replace("{0}", String(components.length))}
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", minWidth: "200px" }}>
@@ -144,7 +145,7 @@ export default function HealthAggregatorPage() {
             { label: t("health_aggregator.healthy"), value: healthyCount, color: "var(--success)" },
             { label: t("health_aggregator.degraded"), value: degradedCount, color: "var(--warning)" },
             { label: t("health_aggregator.unhealthy"), value: unhealthyCount, color: "var(--error)" },
-            { label: "总计", value: components.length },
+            { label: t("health_aggregator.total_label"), value: components.length },
           ].map((item, i) => (
             <div key={i} style={{
               background: "var(--bg-input)", border: "1px solid var(--border-light)",
@@ -157,9 +158,9 @@ export default function HealthAggregatorPage() {
         </div>
       </div>
 
-      <Section title={`组件 (${components.length})`}>
+      <Section title={t("health_aggregator.components_header").replace("{0}", String(components.length))}>
         {components.length === 0 ? (
-          <EmptyState title="暂无组件" description="暂无组件健康数据" />
+          <EmptyState title={t("health_aggregator.no_components")} description={t("health_aggregator.no_components_desc")} />
         ) : (
           <div style={s.componentGrid}>
             {components.map((comp) => (
@@ -176,7 +177,7 @@ export default function HealthAggregatorPage() {
                     <span style={{ color: "var(--text-muted)" }}>{t("health_aggregator.latency")}:</span> {comp.latencyMs}ms
                   </span>
                   <span style={s.metaItem}>
-                    <span style={{ color: "var(--text-muted)" }}>{t("health_aggregator.last_check")}:</span> {formatTime(comp.lastCheck)}
+                    <span style={{ color: "var(--text-muted)" }}>{t("health_aggregator.last_check")}:</span> {formatTime(comp.lastCheck, locale)}
                   </span>
                 </div>
                 {comp.message && <div style={s.message}>{comp.message}</div>}
@@ -190,7 +191,7 @@ export default function HealthAggregatorPage() {
       </Section>
 
       <div style={s.footer}>
-        每 10 秒自动刷新 &middot; 上次更新: {formatTime(timestamp)}
+        {t("health_aggregator.auto_refresh")} &middot; {t("health_aggregator.last_update_label")} {formatTime(timestamp, locale)}
       </div>
     </div>
   );

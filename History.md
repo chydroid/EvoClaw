@@ -3,6 +3,72 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.14.0 (2026-06-08)
+
+### 代码架构重构 — 拆分巨型文件（第8项）
+
+- `agent-model-executor.ts` 从 6843 行减至约 1613 行（-76%），提取 17+ 个独立模块
+- `server/index.ts` 从 3473 行减至约 1383 行（-60%），工具注册提取到 `tools/` 目录
+- 采用"提取模块 + 委托方法"模式，保持公共 API 不变
+
+### 可观测性 — OpenTelemetry Tracing 集成（第1项）
+
+- 新增 `TracingService`（`@evoclaw/infrastructure`），基于 `@opentelemetry/api`
+- 服务器端 `initTracing()` 初始化 OTEL NodeSDK（OTLP exporter + auto-instrumentations）
+- `ObservabilityService` 集成 OTEL span 创建/结束
+- Gateway HTTP 请求追踪 span
+- LLM 调用链路追踪（`llm.try_call`、`llm.call_once`、`llm.stream_parse`、`tool.execute`）
+
+### 持久化执行与检查点（第2项）
+
+- 新增 `ExecutionCheckpointStore`（`@evoclaw/agent`）
+- 支持执行快照保存、崩溃恢复、时间旅行调试
+- 每个工具调用后自动保存快照
+- 新增 `/checkpoints`、`/resume` 斜杠命令
+
+### Human-in-the-Loop 审批工作流（第3项）
+
+- 新增 `HumanApprovalManager`（`@evoclaw/agent`）
+- 风险分级：low/medium/high/critical
+- 信任白名单、超时自动拒绝
+- 工具执行前检查是否需要审批
+- Gateway 审批路由 API
+- 新增 `/pending`、`/approve`、`/reject`、`/trust`、`/untrust` 斜杠命令
+
+### Evals 评估体系（第4项）
+
+- 新增 `EvalRunner`（`@evoclaw/agent`）
+- 启发式评分：输出非空 0.1 + 模式匹配 0.3 + 相关性 0.3 + 无幻觉 0.3
+- 11 个内置评估用例
+- 新增 `/eval` 斜杠命令
+
+### A2A 协议支持（第5项）
+
+- 新增 `A2AClient` / `A2AServer`（`@evoclaw/agent`）
+- Agent Card 注册与发现、Task 发送与处理
+- Gateway A2A 路由
+- 新增 `/a2a` 斜杠命令
+
+### 流式工具调用解析（第6项）
+
+- Anthropic Provider：处理 `content_block_start` → `content_block_delta` → `content_block_stop`
+- Google Provider：检查 `functionCall` 字段，累积并返回完整 `tool_calls`
+
+### 向量嵌入升级（第7项）
+
+- 新增 `TransformersEmbeddingProvider`：基于 `@huggingface/transformers` 的 `all-MiniLM-L6-v2`（384维）
+  - 动态 import，依赖可选
+  - 懒加载单例模型缓存
+  - `isAvailable()` / `warmUp()` API
+- 新增 RAG Pipeline（`@evoclaw/memory`）：
+  - `chunkDocument()`：3 种分块策略（fixed/paragraph/sentence），支持中文
+  - `RAGPipeline`：文档索引 + 向量检索 + 可选重排序
+  - `SimpleReranker`：70% 嵌入分数 + 30% 关键词重叠
+- `LocalEmbeddingProvider` 改进：支持中文分词（CJK 字符 + bigram + 中文停用词）
+- 统一 `EmbeddingProvider` 接口：`embed()` / `embedBatch()` / `readonly dimensions`
+- `SemanticEmbedder` 新增 `dimensions` 属性
+- `EmbeddingSimulator` 实现新接口，保留旧方法（标记 deprecated）
+
 ## v0.13.8 (2026-06-07)
 
 ### 飞书/Matrix通道消息处理修复（关键Bug）

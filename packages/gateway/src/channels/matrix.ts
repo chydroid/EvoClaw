@@ -15,7 +15,7 @@
  *  - E2E encrypted room support (basic, via session)
  */
 
-import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
 
@@ -178,13 +178,16 @@ export class MatrixAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const res = await fetch(`${this.config.homeserver.replace(/\/+$/, "")}/_matrix/client/versions`);
       const data = await res.json() as { versions?: string[] };
-      return Array.isArray(data.versions);
-    } catch {
-      return false;
+      if (Array.isArray(data.versions)) {
+        return { healthy: true, message: "Matrix server is reachable", details: { versions: data.versions.join(", ") } };
+      }
+      return { healthy: false, message: "Matrix server returned unexpected response" };
+    } catch (err) {
+      return { healthy: false, message: `Cannot reach Matrix server: ${(err as Error).message}` };
     }
   }
 

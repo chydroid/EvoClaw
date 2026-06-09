@@ -20,6 +20,7 @@ import type {
   ModelResponse,
   StreamChunk,
   ChatMessage,
+  ToolCall,
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
 
@@ -199,6 +200,8 @@ export class AnthropicProvider implements ProviderPlugin {
     let finishReason = "stop";
     let inputTokens = 0;
     let outputTokens = 0;
+    const toolCalls: Partial<ToolCall>[] = [];
+    let currentToolCallIndex = -1;
 
     try {
       while (true) {
@@ -218,11 +221,33 @@ export class AnthropicProvider implements ProviderPlugin {
             const event = JSON.parse(data) as AnthropicStreamEvent;
 
             switch (event.type) {
+              case "content_block_start":
+                if (event.content_block?.type === "tool_use") {
+                  currentToolCallIndex = toolCalls.length;
+                  toolCalls.push({
+                    id: event.content_block.id,
+                    type: "function",
+                    function: {
+                      name: event.content_block.name ?? "",
+                      arguments: "",
+                    },
+                  });
+                  onChunk({ toolCalls: [...toolCalls] });
+                }
+                break;
+
               case "content_block_delta":
                 if (event.delta?.type === "text_delta" && event.delta.text) {
                   finalContent += event.delta.text;
                   onChunk({ text: event.delta.text });
+                } else if (event.delta?.type === "input_json_delta" && event.delta.partial_json != null && currentToolCallIndex >= 0) {
+                  toolCalls[currentToolCallIndex].function!.arguments += event.delta.partial_json;
+                  onChunk({ toolCalls: [...toolCalls] });
                 }
+                break;
+
+              case "content_block_stop":
+                currentToolCallIndex = -1;
                 break;
 
               case "message_delta":
@@ -250,6 +275,19 @@ export class AnthropicProvider implements ProviderPlugin {
       reader.releaseLock();
     }
 
+    const finalToolCalls: ToolCall[] = toolCalls
+      .filter((tc): tc is ToolCall & { function: { name: string; arguments: string } } =>
+        !!tc?.function?.name
+      )
+      .map((tc) => ({
+        id: tc.id || `call_${Date.now()}`,
+        type: "function" as const,
+        function: {
+          name: tc.function!.name,
+          arguments: tc.function!.arguments,
+        },
+      }));
+
     const totalTokens = inputTokens + outputTokens;
     this.recordUsage(totalTokens, model);
 
@@ -257,12 +295,13 @@ export class AnthropicProvider implements ProviderPlugin {
       id: `msg_${Date.now()}`,
       model,
       content: finalContent,
+      toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
       usage: {
         promptTokens: inputTokens,
         completionTokens: outputTokens,
         totalTokens,
       },
-      finishReason: finishReason as ModelResponse["finishReason"],
+      finishReason: finalToolCalls.length > 0 ? "tool_calls" : (finishReason as ModelResponse["finishReason"]),
     };
   }
 
@@ -542,10 +581,18 @@ interface AnthropicResponse {
 
 interface AnthropicStreamEvent {
   type: string;
+  index?: number;
+  content_block?: {
+    type: string;
+    id?: string;
+    name?: string;
+    text?: string;
+  };
   delta?: {
     type?: string;
     text?: string;
     stop_reason?: string;
+    partial_json?: string;
   };
   message?: {
     usage?: { input_tokens?: number };

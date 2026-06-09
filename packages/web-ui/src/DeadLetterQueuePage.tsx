@@ -17,7 +17,7 @@ import { useTranslation } from "./i18n";
 const STATUS_FILTERS = ["All", "Pending", "Dead", "Retrying"] as const;
 
 const STATUS_LABELS: Record<string, string> = {
-  All: "全部",
+  All: "dlq.all",
   Pending: "dlq.pending",
   Dead: "dlq.dead",
   Retrying: "dlq.retrying",
@@ -46,7 +46,7 @@ export default function DeadLetterQueuePage() {
       setTotal(res.total);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载死信队列失败");
+      setError(err instanceof Error ? err.message : t("dlq.load_fail"));
     } finally {
       setLoading(false);
     }
@@ -57,42 +57,42 @@ export default function DeadLetterQueuePage() {
   const handleRetry = async (id: string) => {
     try {
       await dlqApi.retry(id);
-      showToast("消息已加入重试队列", "success");
+      showToast(t("dlq.retry_ok"), "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "重试失败", "error");
+      showToast(err instanceof Error ? err.message : t("dlq.retry_fail_msg"), "error");
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await dlqApi.delete(id);
-      showToast("消息已删除", "success");
+      showToast(t("dlq.delete_ok"), "success");
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "删除失败", "error");
+      showToast(err instanceof Error ? err.message : t("dlq.delete_fail_msg"), "error");
     }
   };
 
   const handleRetryAll = async () => {
     try {
       const res = await dlqApi.retryAll();
-      showToast(`${res.retried} 条消息已加入重试队列`, "success");
+      showToast(t("dlq.retry_all_ok").replace("{0}", String(res.retried)), "success");
       setConfirmAction(null);
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "全部重试失败", "error");
+      showToast(err instanceof Error ? err.message : t("dlq.retry_all_fail"), "error");
     }
   };
 
   const handlePurge = async () => {
     try {
       const res = await dlqApi.purge();
-      showToast(`${res.deleted} 条消息已清除`, "success");
+      showToast(t("dlq.purge_ok").replace("{0}", String(res.deleted)), "success");
       setConfirmAction(null);
       load();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "清空失败", "error");
+      showToast(err instanceof Error ? err.message : t("dlq.purge_fail"), "error");
     }
   };
 
@@ -118,7 +118,7 @@ export default function DeadLetterQueuePage() {
       {error && <ErrorBanner message={error} onRetry={load} />}
 
       <StatsGrid items={[
-        { label: "总计", value: total },
+        { label: t("dlq.total_label"), value: total },
         { label: t("dlq.pending"), value: pendingCount, color: "var(--warning)" },
         { label: t("dlq.dead"), value: deadCount, color: "var(--error)" },
         { label: t("dlq.retrying"), value: retryingCount, color: "var(--accent)" },
@@ -152,7 +152,7 @@ export default function DeadLetterQueuePage() {
             cursor: "pointer",
           }}
         >
-          <option value="">全部类型</option>
+          <option value="">{t("dlq.all_types")}</option>
           {uniqueTypes.map((ut) => (
             <option key={ut} value={ut}>{ut}</option>
           ))}
@@ -162,9 +162,9 @@ export default function DeadLetterQueuePage() {
       {loading ? (
         <Loading text={t("app.loading")} />
       ) : messages.length === 0 ? (
-        <EmptyState title={t("dlq.no_messages")} description="死信队列为空" />
+        <EmptyState title={t("dlq.no_messages")} description={t("dlq.empty_desc")} />
       ) : (
-        <Section title="消息列表">
+        <Section title={t("dlq.message_list")}>
           <Card>
             <DataTable
               columns={[
@@ -210,7 +210,7 @@ export default function DeadLetterQueuePage() {
                   ),
                 },
                 {
-                  key: "actions", label: "操作",
+                  key: "actions", label: t("dlq.actions"),
                   render: (m: DeadLetter) => (
                     <div style={{ display: "flex", gap: "4px" }}>
                       <GhostButton small onClick={() => handleRetry(m.id)}>{t("dlq.retry")}</GhostButton>
@@ -233,7 +233,7 @@ export default function DeadLetterQueuePage() {
                   background: "var(--bg-hover)", border: "1px solid var(--border)",
                 }}>
                   <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "8px" }}>
-                    消息内容 {msg.id}
+                    {t("dlq.message_content")} {msg.id}
                   </div>
                   <pre style={{
                     margin: 0, fontSize: "12px", color: "var(--text-primary)",
@@ -251,7 +251,7 @@ export default function DeadLetterQueuePage() {
 
       {confirmAction && (
         <Modal
-          title={confirmAction.type === "retryAll" ? "全部重试" : "清空队列"}
+          title={confirmAction.type === "retryAll" ? t("dlq.retry_all_title") : t("dlq.purge_title")}
           onClose={() => setConfirmAction(null)}
           footer={
             <>
@@ -267,8 +267,8 @@ export default function DeadLetterQueuePage() {
         >
           <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "14px", lineHeight: "1.6" }}>
             {confirmAction.type === "retryAll"
-              ? `确认重试队列中的 ${total} 条消息？`
-              : `确认永久删除 ${total} 条消息？此操作不可撤销。`}
+              ? t("dlq.confirm_retry_msg").replace("{0}", String(total))
+              : t("dlq.confirm_purge_msg").replace("{0}", String(total))}
           </p>
         </Modal>
       )}

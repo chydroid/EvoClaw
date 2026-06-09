@@ -33,6 +33,7 @@ import HealthAggregatorPage from "./HealthAggregatorPage";
 import MessageTemplatesPage from "./MessageTemplatesPage";
 import ReplyReferencePage from "./ReplyReferencePage";
 import QueueManagerPage from "./QueueManagerPage";
+import ChannelMessagesPage from "./ChannelMessagesPage";
 
 type TabId =
   | "chat" | "status" | "dashboard"
@@ -41,7 +42,8 @@ type TabId =
   | "ops" | "cli"
   | "secrets" | "dlq" | "config-rpc" | "retention"
   | "feature-flags" | "config-migration" | "config-doctor"
-  | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue";
+  | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
+  | "channel-messages";
 
 interface NavGroup {
   id: string;
@@ -122,6 +124,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "reply-refs", i18nKey: "nav.reply_refs", iconId: "reply-refs" },
       { id: "message-templates", i18nKey: "nav.templates", iconId: "message-templates" },
       { id: "message-queue", i18nKey: "nav.message_queue", iconId: "message-queue" },
+      { id: "channel-messages", i18nKey: "nav.channel_messages", iconId: "channels" },
     ],
   },
   {
@@ -156,19 +159,19 @@ function normalizeSpaces(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-function relativeTime(timestamp: number | undefined, lang: Lang): string {
+function relativeTime(timestamp: number | undefined, t: (key: string, fallback?: string) => string): string {
   if (!timestamp) return "";
   const now = Date.now();
   const diff = now - new Date(timestamp).getTime();
   if (diff < 0) return "";
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return lang === "zh" ? "刚刚" : "just now";
+  if (seconds < 60) return t("sessions.just_now");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return lang === "zh" ? `${minutes}分钟前` : `${minutes}m ago`;
+  if (minutes < 60) return t("sessions.minutes_ago").replace("{0}", String(minutes));
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return lang === "zh" ? `${hours}小时前` : `${hours}h ago`;
+  if (hours < 24) return t("sessions.hours_ago").replace("{0}", String(hours));
   const days = Math.floor(hours / 24);
-  return lang === "zh" ? `${days}天前` : `${days}d ago`;
+  return t("sessions.days_ago").replace("{0}", String(days));
 }
 
 function estimateTokens(text: string | undefined, messageCount: number | undefined): number {
@@ -220,7 +223,19 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("chat");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    try { return localStorage.getItem("evoclaw_active_session"); } catch { return null; }
+  });
+  const setActiveSession = (id: string | null) => {
+    setActiveSessionId(id);
+    try {
+      if (id) {
+        localStorage.setItem("evoclaw_active_session", id);
+      } else {
+        localStorage.removeItem("evoclaw_active_session");
+      }
+    } catch { /* ignore */ }
+  };
   const [newChatCounter, setNewChatCounter] = useState(0);
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
   const [authenticated, setAuthenticated] = useState(false);
@@ -285,12 +300,19 @@ export default function App() {
           status: s.status,
           preview: s.preview || "",
           customName: s.customName || "",
-          tokenEstimate: estimateTokens(s.preview || "", s.turnCount || s.messageCount || 0),
+          tokenEstimate: s.tokenEstimate || estimateTokens(s.preview || "", s.turnCount || s.messageCount || 0),
         }));
         list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
         setSessions(list);
-        if (!activeSessionId && list.length > 0) {
-          setActiveSessionId(list[0].sessionId);
+        // If the restored activeSessionId doesn't exist in the session list, pick the first one
+        if (activeSessionId && !list.some(s => s.sessionId === activeSessionId)) {
+          if (list.length > 0) {
+            setActiveSession(list[0].sessionId);
+          } else {
+            setActiveSession(null);
+          }
+        } else if (!activeSessionId && list.length > 0) {
+          setActiveSession(list[0].sessionId);
         }
       }
     } catch { /* ignore */ }
@@ -315,7 +337,7 @@ export default function App() {
           createdAt: new Date().toISOString(),
         };
         setSessions(prev => [entry, ...prev]);
-        setActiveSessionId(entry.sessionId);
+        setActiveSession(entry.sessionId);
         setNewChatCounter(prev => prev + 1);
         setActiveTab("chat");
         setMobileMenuOpen(false);
@@ -331,9 +353,9 @@ export default function App() {
         setSessions(remaining);
         if (activeSessionId === sessionId) {
           if (remaining.length > 0) {
-            setActiveSessionId(remaining[0].sessionId);
+            setActiveSession(remaining[0].sessionId);
           } else {
-            setActiveSessionId(null);
+            setActiveSession(null);
             setNewChatCounter(prev => prev + 1);
           }
         }
@@ -348,7 +370,7 @@ export default function App() {
       await Promise.all(ids.map(id => fetch(`/api/sessions/default/${id}`, { method: "DELETE" })));
     } catch { /* ignore */ }
     setSessions([]);
-    setActiveSessionId(null);
+    setActiveSession(null);
     setNewChatCounter(prev => prev + 1);
     setClearAllConfirm(false);
   }
@@ -391,7 +413,7 @@ export default function App() {
   }
 
   function handleSessionClick(sessionId: string) {
-    setActiveSessionId(sessionId);
+    setActiveSession(sessionId);
     setActiveTab("chat");
     setMobileMenuOpen(false);
   }
@@ -532,8 +554,8 @@ export default function App() {
   function renderPage() {
     // Pass sessionId to WebChatPage with unique key for remount
     if (activeTab === "chat") {
-      const chatKey = activeSessionId || `_new_${newChatCounter}`;
-      return React.createElement(WebChatPage as any, { key: chatKey, sessionId: activeSessionId, avatars });
+      const chatKey = "webchat-main";
+      return React.createElement(WebChatPage as any, { key: chatKey, sessionId: activeSessionId, avatars, onSessionCreated: (sid: string) => { setActiveSession(sid); fetchSessions(); } });
     }
     switch (activeTab) {
       case "status": return <ErrorBoundary><StatusPage /></ErrorBoundary>;
@@ -562,6 +584,7 @@ export default function App() {
       case "message-templates": return <ErrorBoundary><MessageTemplatesPage /></ErrorBoundary>;
       case "reply-refs": return <ErrorBoundary><ReplyReferencePage /></ErrorBoundary>;
       case "message-queue": return <ErrorBoundary><QueueManagerPage /></ErrorBoundary>;
+      case "channel-messages": return <ErrorBoundary><ChannelMessagesPage /></ErrorBoundary>;
       default: return <WebChatPage />;
     }
   }
@@ -569,7 +592,7 @@ export default function App() {
   function handleNavClick(id: TabId) {
     if (id === "chat" && activeTab === "chat") return; // stay
     setActiveTab(id);
-    if (id !== "chat") setActiveSessionId(null);
+    // Don't clear activeSession when navigating away — preserve it so returning to chat restores the session
     setMobileMenuOpen(false);
   }
 
@@ -666,7 +689,7 @@ export default function App() {
           <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={onFileSelected} />
           {avatarFile && (
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Selected: {avatarFile.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t("profile.selected")}: {avatarFile.name}</span>
               <button style={css.avatarActionBtn} onClick={applyAvatar}>{t("profile.apply")}</button>
             </div>
           )}
@@ -692,10 +715,15 @@ export default function App() {
                 <input
                   id="evoclaw-sidebar-search"
                   name="sidebar_search"
+                  type="search"
                   style={css.sidebarSearch}
                   value={sidebarSearch}
                   onChange={e => setSidebarSearch(e.target.value)}
                   placeholder={t("sidebar.search")}
+                  autoComplete="off"
+                  data-lpignore="true"
+                  data-1p-ignore
+                  data-form-type="other"
                 />
               </div>
 
@@ -716,9 +744,14 @@ export default function App() {
                           <IconSearch size={12} style={{ position: "absolute", left: 8, top: 9, color: "var(--text-muted)", pointerEvents: "none" as const }} />
                           <input
                             style={css.sessionSearchInput}
+                            type="search"
                             value={sessionSearch}
                             onChange={e => setSessionSearch(e.target.value)}
                             placeholder={t("sessions.search")}
+                            autoComplete="off"
+                            data-lpignore="true"
+                            data-1p-ignore
+                            data-form-type="other"
                           />
                         </div>
 
@@ -766,7 +799,7 @@ export default function App() {
                               const cleaned = normalizeSpaces(sess.preview);
                               return cleaned.length > 23 ? cleaned.slice(0, 23) + "..." : cleaned;
                             })() : `Session ${sess.sessionId.slice(-8)}`);
-                          const timeStr = relativeTime(sess.updatedAt, lang);
+                          const timeStr = relativeTime(sess.updatedAt, t);
                           const tokenStr = formatTokenCount(sess.tokenEstimate || estimateTokens(sess.preview, sess.messageCount));
 
                           return (
@@ -823,7 +856,7 @@ export default function App() {
                                   <button
                                     style={sessionDeleteBtnStyle(hoveredSessionId === sess.sessionId)}
                                     onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(sess.sessionId); }}
-                                    title={lang === "zh" ? "删除会话" : "Delete session"}
+                                    title={t("sessions.delete_session")}
                                   >
                                     &#10005;
                                   </button>
@@ -835,11 +868,11 @@ export default function App() {
                         {sessionsVisible < sessions.length ? (
                           <button style={css.loadMoreBtn} onClick={handleLoadMoreSessions}>
                             <IconPlus size={12} />
-                            {t("sessions.load_more")} ({sessions.length - sessionsVisible} {lang === "zh" ? "条剩余" : "left"})
+                            {t("sessions.load_more")} ({sessions.length - sessionsVisible} {t("sessions.remaining")})
                           </button>
                         ) : sessionsVisible > SESSIONS_DEFAULT_SHOW ? (
                           <button style={css.loadMoreBtn} onClick={() => setSessionsVisible(SESSIONS_DEFAULT_SHOW)}>
-                            &#9650; {lang === "zh" ? "折叠 (显示3条)" : "Collapse (show 3)"}
+                            &#9650; {t("sessions.collapse_show_3")}
                           </button>
                         ) : null}
                       </>
@@ -1125,6 +1158,20 @@ const GLOBAL_CSS = `
   @keyframes EvoClaw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   
   * { box-sizing: border-box; }
+
+  /* ── Prevent browser autofill from breaking dark theme ── */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 1000px var(--bg-input, #1a1a2e) inset !important;
+    -webkit-text-fill-color: var(--text-primary, #c9d1d9) !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
+  /* Firefox autofill */
+  input:-moz-autofill, input:-moz-autofill-preview {
+    filter: none;
+  }
 
   /* ── Custom sidebar scrollbar ── */
   .sidebar-scroll::-webkit-scrollbar { width: 4px; }

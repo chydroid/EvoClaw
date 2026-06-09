@@ -9,6 +9,8 @@ interface ChannelConfig {
   type: "feishu" | "wecom" | "personal_wechat";
   appId: string;
   appSecret: string;
+  hasAppId?: boolean;
+  hasAppSecret?: boolean;
   verificationToken: string;
   encryptKey: string;
   webhookUrl: string;
@@ -120,6 +122,16 @@ function generateQrToken(): string {
 }
 
 // ─── Component ───────────────────────────────────────────────
+
+const FEATURE_LABEL_MAP: Record<string, string> = {
+  messageReceive: "channels.feature_message_receive",
+  messageReply: "channels.feature_message_reply",
+  groupChat: "channels.feature_group_chat",
+  fileReceive: "channels.feature_file_receive",
+  imageProcess: "channels.feature_image_process",
+  voiceProcess: "channels.feature_voice_process",
+  commandTrigger: "channels.feature_command_trigger",
+};
 
 export default function ChannelConfigPage() {
   const { t } = useTranslation();
@@ -373,23 +385,33 @@ export default function ChannelConfigPage() {
     setTimeout(() => { setStatusMsg(null); setStatusType(null); }, 3000);
   }
 
+  const [testResult, setTestResult] = React.useState<{
+    status: string;
+    message: string;
+    details?: Record<string, string>;
+    suggestions?: string[];
+  } | null>(null);
+
   async function testConnection(channelId: string) {
     setTesting(channelId);
+    setTestResult(null);
     try {
       const res = await fetch(`/api/channels/${channelId}/test`, { method: "POST" });
-      if (res.ok) {
+      const data = await res.json();
+      setTestResult(data);
+      if (data.status === "ok") {
         setStatusMsg(t("channels.test_ok"));
         setStatusType("success");
       } else {
-        setStatusMsg(t("channels.test_fail"));
+        setStatusMsg(data.message || t("channels.test_fail"));
         setStatusType("error");
       }
     } catch {
       setStatusMsg(t("channels.saved_local"));
       setStatusType("error");
+      setTestResult({ status: "error", message: t("channels.saved_local") });
     }
     setTesting(null);
-    setTimeout(() => { setStatusMsg(null); setStatusType(null); }, 3000);
   }
 
   function updateChannel(id: string, updates: Partial<ChannelConfig>) {
@@ -434,6 +456,7 @@ export default function ChannelConfigPage() {
   const currentChannel = channels.find((c) => c.id === activeChannel);
   const currentTemplate = templates.find((tm) => tm.id === activeChannel);
   const isWechat = currentChannel?.type === "personal_wechat";
+  const isFeishu = currentChannel?.type === "feishu";
 
   return (
     <div style={styles.container}>
@@ -595,15 +618,17 @@ export default function ChannelConfigPage() {
                         style={styles.checkbox}
                       />
                     </div>
-                    <div style={styles.formGroup}>
-                      <label style={styles.label}>{t("channels.bot_name")}</label>
-                      <input
-                        style={styles.input}
-                        value={currentChannel.botName}
-                        onChange={(e) => updateChannel(activeChannel, { botName: e.target.value })}
-                      />
-                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_botname_hint")}</div>}
-                    </div>
+                    {!isFeishu && (
+                      <div style={styles.formGroup}>
+                        <label style={styles.label}>{t("channels.bot_name")}</label>
+                        <input
+                          style={styles.input}
+                          value={currentChannel.botName}
+                          onChange={(e) => updateChannel(activeChannel, { botName: e.target.value })}
+                        />
+                        {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_botname_hint")}</div>}
+                      </div>
+                    )}
                   </div>
 
                   <div style={styles.formRow}>
@@ -613,14 +638,22 @@ export default function ChannelConfigPage() {
                       </label>
                       <input
                         style={styles.input}
-                        value={currentChannel.appId}
-                        onChange={(e) => updateChannel(activeChannel, { appId: e.target.value })}
+                        value={currentChannel.hasAppId && currentChannel.appId.startsWith("${") ? "••••••••••" : currentChannel.appId}
+                        onChange={(e) => updateChannel(activeChannel, { appId: e.target.value, hasAppId: !!e.target.value })}
+                        onFocus={() => {
+                          if (currentChannel.hasAppId && currentChannel.appId.startsWith("${")) {
+                            updateChannel(activeChannel, { appId: "****" });
+                          }
+                        }}
                         placeholder={
                           currentChannel.type === "feishu" ? "cli_xxxxxxxxxxxx"
                             : currentChannel.type === "wecom" ? "ww1234567890abcdef"
                             : t("channels.wechat_nickname_placeholder")
                         }
                       />
+                      {currentChannel.hasAppId && !isWechat && (
+                        <span style={{ fontSize: 11, color: "#4caf50", marginLeft: 4 }}>✓</span>
+                      )}
                       {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_nickname_hint")}</div>}
                     </div>
                     <div style={styles.formGroup}>
@@ -630,48 +663,58 @@ export default function ChannelConfigPage() {
                       <input
                         style={styles.input}
                         type={isWechat ? "text" : "password"}
-                        value={currentChannel.appSecret}
-                        onChange={(e) => updateChannel(activeChannel, { appSecret: e.target.value })}
+                        value={currentChannel.hasAppSecret && currentChannel.appSecret.startsWith("${") ? "••••••••••" : currentChannel.appSecret}
+                        onChange={(e) => updateChannel(activeChannel, { appSecret: e.target.value, hasAppSecret: !!e.target.value })}
+                        onFocus={() => {
+                          if (currentChannel.hasAppSecret && currentChannel.appSecret.startsWith("${")) {
+                            updateChannel(activeChannel, { appSecret: "****" });
+                          }
+                        }}
                         placeholder={isWechat ? t("channels.wechat_token_placeholder") : ""}
                       />
+                      {currentChannel.hasAppSecret && !isWechat && (
+                        <span style={{ fontSize: 11, color: "#4caf50", marginLeft: 4 }}>✓</span>
+                      )}
                       {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_token_hint")}</div>}
                     </div>
                   </div>
 
-                  <div style={styles.formRow}>
-                    <div style={styles.formGroup}>
-                      <label style={styles.label}>
-                        {currentChannel.type === "feishu"
-                          ? t("channels.verification_token")
-                          : t("channels.token")}
-                      </label>
-                      <input
-                        style={styles.input}
-                        value={currentChannel.verificationToken}
-                        onChange={(e) => updateChannel(activeChannel, { verificationToken: e.target.value })}
-                        placeholder={isWechat ? t("channels.wechat_verify_hint") : ""}
-                      />
-                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_verify_desc")}</div>}
+                  {!isFeishu && (
+                    <div style={styles.formRow}>
+                      <div style={styles.formGroup}>
+                        <label style={styles.label}>
+                          {currentChannel.type === "feishu"
+                            ? t("channels.verification_token")
+                            : t("channels.token")}
+                        </label>
+                        <input
+                          style={styles.input}
+                          value={currentChannel.verificationToken}
+                          onChange={(e) => updateChannel(activeChannel, { verificationToken: e.target.value })}
+                          placeholder={isWechat ? t("channels.wechat_verify_hint") : ""}
+                        />
+                        {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_verify_desc")}</div>}
+                      </div>
+                      <div style={styles.formGroup}>
+                        <label style={styles.label}>
+                          {isWechat ? t("channels.ws_url") : t("channels.webhook_url")}
+                        </label>
+                        <input
+                          style={styles.input}
+                          value={currentChannel.webhookUrl}
+                          onChange={(e) => updateChannel(activeChannel, { webhookUrl: e.target.value })}
+                          placeholder={
+                            currentChannel.type === "feishu" ? "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+                              : currentChannel.type === "wecom" ? "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+                              : "ws://localhost:8765"
+                          }
+                        />
+                        {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_ws_hint")}</div>}
+                      </div>
                     </div>
-                    <div style={styles.formGroup}>
-                      <label style={styles.label}>
-                        {isWechat ? t("channels.ws_url") : t("channels.webhook_url")}
-                      </label>
-                      <input
-                        style={styles.input}
-                        value={currentChannel.webhookUrl}
-                        onChange={(e) => updateChannel(activeChannel, { webhookUrl: e.target.value })}
-                        placeholder={
-                          currentChannel.type === "feishu" ? "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-                            : currentChannel.type === "wecom" ? "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-                            : "ws://localhost:8765"
-                        }
-                      />
-                      {isWechat && <div style={styles.fieldHint}>{t("channels.wechat_ws_hint")}</div>}
-                    </div>
-                  </div>
+                  )}
 
-                  {(currentChannel.type === "feishu" || currentChannel.type === "wecom") && (
+                  {!isFeishu && (currentChannel.type === "wecom") && (
                     <div style={styles.formRow}>
                       <div style={styles.formGroup}>
                         <label style={styles.label}>{t("channels.encrypt_key")}</label>
@@ -686,38 +729,44 @@ export default function ChannelConfigPage() {
                     </div>
                   )}
 
-                  <div style={styles.formGroup}>
-                    <label style={styles.label}>{t("channels.welcome_msg")}</label>
-                    <textarea
-                      style={{ ...styles.input, minHeight: "60px", resize: "vertical" }}
-                      value={currentChannel.welcomeMessage}
-                      onChange={(e) => updateChannel(activeChannel, { welcomeMessage: e.target.value })}
-                      rows={2}
-                    />
-                  </div>
+                  {!isFeishu && (
+                    <div style={styles.formGroup}>
+                      <label style={styles.label}>{t("channels.welcome_msg")}</label>
+                      <textarea
+                        style={{ ...styles.input, minHeight: "60px", resize: "vertical" }}
+                        value={currentChannel.welcomeMessage}
+                        onChange={(e) => updateChannel(activeChannel, { welcomeMessage: e.target.value })}
+                        rows={2}
+                      />
+                    </div>
+                  )}
 
                   <div style={styles.divider} />
 
-                  <h3 style={styles.sectionTitle}>{t("channels.features")}</h3>
-                  <div style={styles.featuresGrid}>
-                    {Object.entries(currentChannel?.features || {}).map(([key, value]) => (
-                      <div key={key} style={styles.featureItem}>
-                        <input
-                          type="checkbox"
-                          checked={value}
-                          onChange={(e) =>
-                            updateFeatures(activeChannel, key as keyof ChannelConfig["features"], e.target.checked)
-                          }
-                          style={styles.checkbox}
-                        />
-                        <span style={styles.featureLabel}>
-                          {key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
-                        </span>
-                      </div>
+                  {!isFeishu && (
+                    <>
+                      <h3 style={styles.sectionTitle}>{t("channels.features")}</h3>
+                      <div style={styles.featuresGrid}>
+                        {Object.entries(currentChannel?.features || {}).map(([key, value]) => (
+                          <div key={key} style={styles.featureItem}>
+                            <input
+                              type="checkbox"
+                              checked={value}
+                              onChange={(e) =>
+                                updateFeatures(activeChannel, key as keyof ChannelConfig["features"], e.target.checked)
+                              }
+                              style={styles.checkbox}
+                            />
+                            <span style={styles.featureLabel}>
+                              {t(FEATURE_LABEL_MAP[key] || key, key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()))}
+                            </span>
+                          </div>
                     ))}
                   </div>
 
                   <div style={styles.divider} />
+                    </>
+                  )}
 
                   <div style={styles.formGroup}>
                     <label style={styles.label}>
@@ -752,6 +801,40 @@ export default function ChannelConfigPage() {
                       {testing === activeChannel ? t("channels.testing") : t("channels.test_connection")}
                     </button>
                   </div>
+
+                  {testResult && (
+                    <div style={{
+                      marginTop: "12px",
+                      padding: "12px",
+                      borderRadius: "8px",
+                      background: testResult.status === "ok"
+                        ? "rgba(34,197,94,0.08)"
+                        : "rgba(239,68,68,0.08)",
+                      border: `1px solid ${testResult.status === "ok" ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+                    }}>
+                      <div style={{ fontWeight: 600, fontSize: "13px", marginBottom: "8px", color: testResult.status === "ok" ? "#16a34a" : "#dc2626" }}>
+                        {testResult.status === "ok" ? "✅" : "❌"} {testResult.message}
+                      </div>
+                      {testResult.details && Object.keys(testResult.details).length > 0 && (
+                        <div style={{ fontSize: "12px", lineHeight: 1.8, color: "var(--text-secondary)" }}>
+                          {Object.entries(testResult.details).map(([key, value]) => (
+                            <div key={key}>
+                              <span style={{ color: "var(--text-primary)", fontWeight: 500 }}>{key}: </span>
+                              {value}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {testResult.suggestions && testResult.suggestions.length > 0 && (
+                        <div style={{ marginTop: "8px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                          <div style={{ fontWeight: 600, marginBottom: "4px" }}>💡 {t("channels.suggestions")}</div>
+                          {testResult.suggestions.map((s, i) => (
+                            <div key={i} style={{ paddingLeft: "8px", lineHeight: 1.8 }}>{s}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </>

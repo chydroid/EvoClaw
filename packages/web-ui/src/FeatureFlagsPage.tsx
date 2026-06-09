@@ -45,7 +45,7 @@ export default function FeatureFlagsPage() {
       setFlags(res.flags);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载功能开关失败");
+      setError(err instanceof Error ? err.message : t("feature_flags.load_fail"));
     } finally {
       setLoading(false);
     }
@@ -59,9 +59,9 @@ export default function FeatureFlagsPage() {
       setFlags((prev) =>
         prev.map((f) => (f.key === key ? { ...f, enabled } : f)),
       );
-      showToast(`开关 "${key}" ${enabled ? "已启用" : "已禁用"}`, "success");
+      showToast(t("feature_flags.toggle_ok").replace("{0}", key).replace("{1}", enabled ? t("feature_flags.enabled") : t("feature_flags.disabled")), "success");
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "切换失败", "error");
+      showToast(err instanceof Error ? err.message : t("feature_flags.toggle_fail"), "error");
       load();
     }
   };
@@ -74,7 +74,7 @@ export default function FeatureFlagsPage() {
       const res = await featureFlagsApi.evaluate(flag.key);
       setEvalResult(res);
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : "评估失败", "error");
+      showToast(err instanceof Error ? err.message : t("feature_flags.evaluate_fail"), "error");
     } finally {
       setEvalLoading(false);
     }
@@ -111,15 +111,15 @@ export default function FeatureFlagsPage() {
         <div style={{ display: "flex", gap: "12px", marginBottom: "16px", flexWrap: "wrap" }}>
           <div style={{ padding: "10px 16px", borderRadius: "8px", background: "var(--bg-secondary)", border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ fontSize: "20px", fontWeight: 700, color: "var(--text-primary)" }}>{flags.length}</span>
-            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>总开关</span>
+            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{t("feature_flags.total_flags")}</span>
           </div>
           <div style={{ padding: "10px 16px", borderRadius: "8px", background: "var(--success-bg)", border: "1px solid var(--success)40", display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ fontSize: "20px", fontWeight: 700, color: "var(--success)" }}>{enabledCount}</span>
-            <span style={{ fontSize: "12px", color: "var(--success)" }}>已启用</span>
+            <span style={{ fontSize: "12px", color: "var(--success)" }}>{t("feature_flags.enabled_count")}</span>
           </div>
           <div style={{ padding: "10px 16px", borderRadius: "8px", background: "var(--error-bg)", border: "1px solid var(--error)40", display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ fontSize: "20px", fontWeight: 700, color: "var(--error)" }}>{disabledCount}</span>
-            <span style={{ fontSize: "12px", color: "var(--error)" }}>已禁用</span>
+            <span style={{ fontSize: "12px", color: "var(--error)" }}>{t("feature_flags.disabled_count")}</span>
           </div>
         </div>
       )}
@@ -130,7 +130,7 @@ export default function FeatureFlagsPage() {
           <TextInput
             value={search}
             onChange={setSearch}
-            placeholder="搜索功能开关..."
+            placeholder={t("feature_flags.search_placeholder")}
           />
         </div>
         {owners.length > 1 && (
@@ -143,7 +143,7 @@ export default function FeatureFlagsPage() {
                 color: filterOwner === "all" ? "#fff" : "var(--text-secondary)",
                 fontSize: "11px", cursor: "pointer", fontWeight: 600,
               }}
-            >全部</button>
+            >{t("feature_flags.filter_all")}</button>
             {owners.map(owner => (
               <button
                 key={owner}
@@ -164,11 +164,11 @@ export default function FeatureFlagsPage() {
         <Loading text={t("app.loading")} />
       ) : filteredFlags.length === 0 ? (
         <EmptyState
-          title={search ? "无匹配的开关" : t("feature_flags.no_flags")}
-          description={search ? "尝试不同的搜索词" : "配置功能开关后将在此显示"}
+          title={search ? t("feature_flags.no_match") : t("feature_flags.no_flags")}
+          description={search ? t("feature_flags.no_match_desc") : t("feature_flags.no_flags_config_desc")}
         />
       ) : (
-        <Section title={`功能开关 (${filteredFlags.length})`}>
+        <Section title={t("feature_flags.flags_header").replace("{0}", String(filteredFlags.length))}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "12px" }}>
             {filteredFlags.map((flag) => (
               <Card key={flag.key}>
@@ -210,12 +210,12 @@ export default function FeatureFlagsPage() {
                 )}
                 {flag.environments && flag.environments.length > 0 && (
                   <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px" }}>
-                    环境: {flag.environments.join(", ")}
+                    {t("feature_flags.environment")} {flag.environments.join(", ")}
                   </div>
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    更新: {new Date(flag.updatedAt).toLocaleDateString()}
+                    {t("feature_flags.updated")} {new Date(flag.updatedAt).toLocaleDateString()}
                   </span>
                   <GhostButton small onClick={() => handleEvaluate(flag)}>{t("feature_flags.evaluate")}</GhostButton>
                 </div>
@@ -227,19 +227,19 @@ export default function FeatureFlagsPage() {
 
       {evalFlag && (
         <Modal
-          title={`评估: ${evalFlag.key}`}
+          title={t("feature_flags.evaluate_title").replace("{0}", evalFlag.key)}
           onClose={() => { setEvalFlag(null); setEvalResult(null); }}
-          footer={<GhostButton onClick={() => { setEvalFlag(null); setEvalResult(null); }}>关闭</GhostButton>}
+          footer={<GhostButton onClick={() => { setEvalFlag(null); setEvalResult(null); }}>{t("feature_flags.close")}</GhostButton>}
           width={440}
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div>
-              <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>开关</div>
+              <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>{t("feature_flags.toggle_label")}</div>
               <div style={{ fontSize: "14px", color: "var(--text-primary)", fontWeight: 600 }}>{evalFlag.name}</div>
               <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>{evalFlag.description}</div>
             </div>
             {evalLoading ? (
-              <Loading text="评估中..." />
+              <Loading text={t("feature_flags.evaluating")} />
             ) : evalResult ? (
               <div style={{
                 padding: "14px", borderRadius: "8px",
@@ -247,7 +247,7 @@ export default function FeatureFlagsPage() {
                 border: `1px solid ${evalResult.enabled ? "var(--success)" : "var(--error)"}40`,
               }}>
                 <div style={{ fontSize: "16px", fontWeight: 700, color: evalResult.enabled ? "var(--success)" : "var(--error)", marginBottom: "6px" }}>
-                  {evalResult.enabled ? "✓ 已启用" : "✗ 已禁用"}
+                  {evalResult.enabled ? t("feature_flags.eval_enabled") : t("feature_flags.eval_disabled")}
                 </div>
                 <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                   {evalResult.reason}

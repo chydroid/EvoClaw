@@ -12,6 +12,7 @@
 
 import type {
   ChannelAdapter,
+  ChannelHealthResult,
   ChannelMessage,
   ChannelSendResult,
   ChannelType,
@@ -187,12 +188,15 @@ export class SlackAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const result = await this.api<{ ok: boolean }>("auth.test");
-      return result.ok === true;
-    } catch {
-      return false;
+      if (result.ok === true) {
+        return { healthy: true, message: "Slack API is reachable" };
+      }
+      return { healthy: false, message: "Slack auth.test returned not ok" };
+    } catch (err) {
+      return { healthy: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 

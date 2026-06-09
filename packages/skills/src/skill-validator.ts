@@ -8,7 +8,7 @@ import {
 } from "@evoclaw/core";
 
 const SEMVER_REGEX = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/;
-const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
+const NAME_REGEX = /^[a-z][a-z0-9_-]*$/;
 const VALID_TRIGGER_TYPES: SkillTrigger["type"][] = [
   "keyword",
   "intent",
@@ -46,14 +46,14 @@ export class SkillValidator {
       errors.push("Skill name is required");
     } else if (!NAME_REGEX.test(meta.name)) {
       errors.push(
-        `Skill name "${meta.name}" does not follow naming convention (lowercase, starts with letter, alphanumeric and hyphens only)`
+        `Skill name "${meta.name}" does not follow naming convention (lowercase, starts with letter, alphanumeric, hyphens and underscores only)`
       );
     } else {
       if (meta.name.length < 3) {
         warnings.push(`Skill name "${meta.name}" is very short — consider a more descriptive name`);
       }
-      if (meta.name.length > 64) {
-        errors.push(`Skill name "${meta.name}" exceeds 64 characters`);
+      if (meta.name.length > 128) {
+        errors.push(`Skill name "${meta.name}" exceeds 128 characters`);
       }
       for (const prefix of RESERVED_PREFIXES) {
         if (meta.name.startsWith(prefix)) {

@@ -7,6 +7,24 @@
 
 import { htmlEscape } from "./highlight";
 
+/**
+ * Simple inline format for text that shouldn't go through the full markdown pipeline.
+ * Handles bold, italic, code, and emoji - but not links or auto-linking.
+ */
+function inlineFormatSimple(s: string): string {
+  let formatted = htmlEscape(s);
+  formatted = formatted.replace(/`([^`]+)`/g, (_, code) => {
+    return `<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:13px;">${code}</code>`;
+  });
+  formatted = formatted.replace(/\*\*(.+?)\*\*/g, (_, bold) => {
+    return `<strong style="color:var(--text-primary);">${bold}</strong>`;
+  });
+  formatted = formatted.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, (_, italic) => {
+    return `<em>${italic}</em>`;
+  });
+  return formatted;
+}
+
 export function renderMarkdown(text: string): string {
   const decoded = text
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
@@ -26,7 +44,32 @@ export function renderMarkdown(text: string): string {
     .replace(/&ldquo;/g, '"')
     .replace(/&rdquo;/g, '"');
 
-  const lines = decoded.split("\n");
+  // ── Pre-process: extract <details>...</details> blocks and replace with placeholders ──
+  // This prevents the markdown parser from escaping the HTML tags inside details blocks.
+  const detailsBlocks: string[] = [];
+  const preprocessed = decoded.replace(/<details([^>]*)>([\s\S]*?)<\/details>/gi, (match, attrs, content) => {
+    // Parse the content: extract <summary>...</summary> and body
+    const summaryMatch = content.match(/<summary([^>]*)>([\s\S]*?)<\/summary>/i);
+    const summaryText = summaryMatch ? summaryMatch[2].trim() : "Details";
+    const bodyContent = summaryMatch
+      ? content.slice(summaryMatch.index! + summaryMatch[0].length).trim()
+      : content.trim();
+
+    // Render the body content through markdown (recursive)
+    const renderedBody = renderMarkdown(bodyContent);
+    const renderedSummary = inlineFormatSimple(summaryText);
+
+    const idx = detailsBlocks.length;
+    detailsBlocks.push(
+      `<details${attrs} style="margin:8px 0;border:1px solid var(--border,rgba(255,255,255,0.1));border-radius:6px;padding:0;">` +
+      `<summary${summaryMatch ? summaryMatch[1] : ""} style="cursor:pointer;padding:8px 12px;font-weight:500;color:var(--text-primary);user-select:none;">${renderedSummary}</summary>` +
+      `<div style="padding:4px 12px 12px;border-top:1px solid var(--border,rgba(255,255,255,0.1));">${renderedBody}</div>` +
+      `</details>`
+    );
+    return `\x00DETAILS${idx}\x00`;
+  });
+
+  const lines = preprocessed.split("\n");
   const result: string[] = [];
   let inCodeBlock = false;
   let codeBlockLang = "";
@@ -244,5 +287,11 @@ export function renderMarkdown(text: string): string {
   closeList();
   closeTable();
 
-  return result.join("");
+  // Restore <details> block placeholders
+  let finalResult = result.join("");
+  for (let i = detailsBlocks.length - 1; i >= 0; i--) {
+    finalResult = finalResult.replace(`\x00DETAILS${i}\x00`, detailsBlocks[i]);
+  }
+
+  return finalResult;
 }

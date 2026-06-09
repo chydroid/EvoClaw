@@ -60,7 +60,7 @@ const s = {
 };
 
 export default function SessionRetentionPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -96,7 +96,7 @@ export default function SessionRetentionPage() {
       setStats(statsRes);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载保留策略数据失败");
+      setError(err instanceof Error ? err.message : t("retention.load_fail"));
     } finally {
       setLoading(false);
     }
@@ -135,7 +135,7 @@ export default function SessionRetentionPage() {
       showToast(t("retention.cleaned_count", String(result.cleaned)), "success");
       await fetchData();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "清理失败", "error");
+      showToast(err instanceof Error ? err.message : t("retention.clean_fail"), "error");
     } finally {
       setCleaning(false);
     }
@@ -143,7 +143,7 @@ export default function SessionRetentionPage() {
 
   const formatDate = (dateStr: string) => {
     if (!dateStr) return t("retention.never");
-    return new Date(dateStr).toLocaleString("zh-CN");
+    return new Date(dateStr).toLocaleString(lang === "zh" ? "zh-CN" : "en-US");
   };
 
   if (loading) return <Loading text={t("app.loading")} />;
@@ -153,7 +153,7 @@ export default function SessionRetentionPage() {
       <PageHeader
         title={t("retention.title")}
         subtitle={t("retention.subtitle")}
-        actions={<SecondaryButton onClick={fetchData} small>刷新</SecondaryButton>}
+        actions={<SecondaryButton onClick={fetchData} small>{t("retention.refresh_btn")}</SecondaryButton>}
       />
 
       {error && <ErrorBanner message={error} onRetry={fetchData} />}
@@ -163,11 +163,11 @@ export default function SessionRetentionPage() {
           { label: t("retention.total_sessions"), value: stats.totalSessions, color: "var(--accent)" },
           { label: t("retention.expired"), value: stats.expiredSessions, color: "var(--warning)" },
           { label: t("retention.cleaned"), value: stats.cleanedUp, color: "var(--success)" },
-          { label: t("retention.last_run"), value: stats.lastRun ? new Date(stats.lastRun).toLocaleDateString("zh-CN") : t("retention.never"), sub: stats.lastRun ? new Date(stats.lastRun).toLocaleTimeString("zh-CN") : undefined },
+          { label: t("retention.last_run"), value: stats.lastRun ? new Date(stats.lastRun).toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US") : t("retention.never"), sub: stats.lastRun ? new Date(stats.lastRun).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US") : undefined },
         ]}
       />
 
-      <Section title="策略配置" style={{ marginTop: "20px" }}>
+      <Section title={t("retention.policy_config")} style={{ marginTop: "20px" }}>
         <Card>
           <div style={s.toggleRow}>
             <Toggle checked={enabled} onChange={setEnabled} label={enabled ? t("retention.enabled") : t("feature_flags.disabled")} />
@@ -216,23 +216,23 @@ export default function SessionRetentionPage() {
           </div>
           <div style={s.actions}>
             <PrimaryButton onClick={handleSave} disabled={saving}>
-              {saving ? "保存中..." : t("retention.save")}
+              {saving ? t("retention.saving") : t("retention.save")}
             </PrimaryButton>
           </div>
         </Card>
       </Section>
 
-      <Section title="手动清理" style={{ marginTop: "24px" }}>
+      <Section title={t("retention.manual_cleanup")} style={{ marginTop: "24px" }}>
         <Card>
           <div style={{ marginBottom: "12px", fontSize: "13px", color: "var(--text-secondary)" }}>
-            超过保留阈值的会话将被删除。上次执行: {formatDate(stats.lastRun)}
+            {t("retention.cleanup_desc")} {formatDate(stats.lastRun)}
           </div>
           <PrimaryButton onClick={handleRunCleanup} disabled={cleaning} danger>
-            {cleaning ? "清理中..." : t("retention.run_now")}
+            {cleaning ? t("retention.cleaning") : t("retention.run_now")}
           </PrimaryButton>
           {cleanResult !== null && (
             <div style={s.cleanupResult}>
-              已清理 {cleanResult} 个会话
+              {t("retention.cleaned_result", String(cleanResult))}
             </div>
           )}
         </Card>

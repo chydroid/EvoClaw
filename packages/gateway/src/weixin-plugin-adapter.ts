@@ -729,8 +729,8 @@ export class WeixinPluginAdapter {
    */
   findConfiguredAccounts(): string[] {
     try {
-      const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-      const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
+      const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
+      const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
 
       if (!fs.existsSync(indexPath)) {
         console.log("[Weixin] No accounts index found");
@@ -755,8 +755,8 @@ export class WeixinPluginAdapter {
       return null;
     }
     try {
-      const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-      const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
+      const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
+      const accountsDir = path.join(stateDir, "evoclaw-weixin", "accounts");
       const accountFile = path.join(accountsDir, `${accountId}.json`);
 
       if (!fs.existsSync(accountFile)) {
@@ -837,7 +837,7 @@ export class WeixinPluginAdapter {
     try {
       const baseUrl = (account.baseUrl || WEIXIN_API_BASE).replace(/\/+$/, "");
       const url = `${baseUrl}/ilink/bot/sendmessage`;
-      const clientId = `openclaw-weixin-${crypto.randomUUID()}`;
+      const clientId = `evoclaw-weixin-${crypto.randomUUID()}`;
       const runId = crypto.randomUUID();
 
       const body = {
@@ -1663,7 +1663,7 @@ export class WeixinPluginAdapter {
    * 获取同步文件路径
    */
   private getSyncPath(accountId: string): string {
-    const tmpDir = path.join(os.tmpdir(), "openclaw-weixin");
+    const tmpDir = path.join(os.tmpdir(), "evoclaw-weixin");
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
     }
@@ -1726,14 +1726,14 @@ export class WeixinPluginAdapter {
    */
   removeAccount(accountId: string): void {
     try {
-      const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-      const accountsDir = path.join(stateDir, "openclaw-weixin", "accounts");
+      const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
+      const accountsDir = path.join(stateDir, "evoclaw-weixin", "accounts");
       const accountFile = path.join(accountsDir, `${accountId}.json`);
       if (fs.existsSync(accountFile)) {
         fs.unlinkSync(accountFile);
       }
       // 更新索引
-      const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
+      const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
       if (fs.existsSync(indexPath)) {
         const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
         const newIndex = index.filter((id: string) => id !== accountId);

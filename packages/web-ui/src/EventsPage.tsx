@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface LedgerEvent {
   id: string;
@@ -74,6 +75,8 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export function EventsPage() {
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [events, setEvents] = useState<LedgerEvent[]>([]);
   const [snapshot, setSnapshot] = useState<Record<string, unknown>>({});
   const [filterType, setFilterType] = useState("");
@@ -106,7 +109,7 @@ export function EventsPage() {
   }, [loadEvents]);
 
   const formatTime = (ts: number) => {
-    return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return new Date(ts).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   };
 
   const typeCounts: Record<string, number> = {};
@@ -118,19 +121,19 @@ export function EventsPage() {
     <div style={s.container}>
       <div style={s.header}>
         <div>
-          <div style={s.title}>事件账本 (Event Ledger)</div>
+          <div style={s.title}>{t("events.title")}</div>
           <div style={s.subtitle}>
-            序列 #{(snapshot as any).firstSeq || 0} - #{(snapshot as any).lastSeq || 0} · 共 {(snapshot as any).entries || events.length} 条记录
+            {t("events.sequence_info").replace("{0}", String((snapshot as any).firstSeq || 0)).replace("{1}", String((snapshot as any).lastSeq || 0)).replace("{2}", String((snapshot as any).entries || events.length))}
           </div>
         </div>
         <div style={s.controls}>
           <select style={s.select} value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            <option value="">全部类型</option>
-            {EVENT_TYPES.map((t) => (
-              <option key={t} value={t}>{t}</option>
+            <option value="">{t("events.all_types")}</option>
+            {EVENT_TYPES.map((et) => (
+              <option key={et} value={et}>{et}</option>
             ))}
           </select>
-          <button style={s.refreshBtn} onClick={loadEvents}>刷新</button>
+          <button style={s.refreshBtn} onClick={loadEvents}>{t("events.refresh_btn")}</button>
         </div>
       </div>
 
@@ -142,24 +145,24 @@ export function EventsPage() {
           </div>
         ))}
         {Object.keys(typeCounts).length === 0 && (
-          <div style={s.statItem}>暂无事件记录</div>
+          <div style={s.statItem}>{t("events.no_events")}</div>
         )}
       </div>
 
       {events.length === 0 ? (
         <div style={s.empty}>
-          {loading ? "加载中..." : "暂无事件 — 系统开始处理请求后，事件将在此显示"}
+          {loading ? t("events.loading") : t("events.no_events_desc")}
         </div>
       ) : (
         <table style={s.table}>
           <thead>
             <tr>
-              <th style={s.th}>#</th>
-              <th style={s.th}>类型</th>
-              <th style={s.th}>时间</th>
-              <th style={s.th}>会话</th>
-              <th style={s.th}>Agent</th>
-              <th style={s.th}>详情</th>
+              <th style={s.th}>{t("events.col_number")}</th>
+              <th style={s.th}>{t("events.table_type")}</th>
+              <th style={s.th}>{t("events.table_time")}</th>
+              <th style={s.th}>{t("events.col_session")}</th>
+              <th style={s.th}>{t("events.col_agent")}</th>
+              <th style={s.th}>{t("events.col_details")}</th>
             </tr>
           </thead>
           <tbody>

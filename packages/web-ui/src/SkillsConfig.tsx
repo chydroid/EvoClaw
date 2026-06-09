@@ -590,6 +590,10 @@ export default function SkillsConfig() {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [upgrading, setUpgrading] = useState<Record<string, boolean>>({});
   const [batchUpgrading, setBatchUpgrading] = useState(false);
+  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
 
@@ -809,6 +813,63 @@ export default function SkillsConfig() {
     }
   }, [selectedSkills, skills]);
 
+  const handleDeleteSkill = useCallback(async (skillId: string) => {
+    setDeleting((prev) => ({ ...prev, [skillId]: true }));
+    try {
+      const res = await fetch(`/api/skills/${skillId}`, { method: "DELETE" });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: "success", text: t("skills.delete_ok", "已删除技能: {0}").replace("{0}", data.name || skillId) });
+        if (selectedId === skillId) {
+          setSelectedId(null);
+          setSelectedSkill(null);
+        }
+        await loadSkills();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setMessage({ type: "error", text: t("skills.delete_fail", "删除失败: {0}").replace("{0}", data.error || "Unknown error") });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("skills.delete_fail", "删除失败") });
+    }
+    setDeleting((prev) => ({ ...prev, [skillId]: false }));
+    setConfirmDeleteId(null);
+  }, [selectedId, loadSkills]);
+
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedSkills.size === 0) return;
+    setBatchDeleting(true);
+    try {
+      const res = await fetch("/api/skills/batch-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skillIds: Array.from(selectedSkills) }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const successCount = data.success?.length || 0;
+        const failCount = data.failed?.length || 0;
+        if (failCount > 0) {
+          setMessage({ type: "warning", text: t("skills.batch_delete_partial", "批量删除完成: {0} 成功, {1} 失败").replace("{0}", String(successCount)).replace("{1}", String(failCount)) });
+        } else {
+          setMessage({ type: "success", text: t("skills.batch_delete_ok", "已删除 {0} 个技能").replace("{0}", String(successCount)) });
+        }
+        setSelectedSkills(new Set());
+        if (selectedId && data.success?.includes(selectedId)) {
+          setSelectedId(null);
+          setSelectedSkill(null);
+        }
+        await loadSkills();
+      } else {
+        setMessage({ type: "error", text: t("skills.batch_delete_fail", "批量删除失败") });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("skills.batch_delete_fail", "批量删除失败") });
+    }
+    setBatchDeleting(false);
+    setConfirmBatchDelete(false);
+  }, [selectedSkills, selectedId, loadSkills]);
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging.current || !sidebarRef.current) return;
@@ -878,7 +939,7 @@ export default function SkillsConfig() {
             onClick={handleRefresh}
             disabled={refreshing}
           >
-            {refreshing ? "Scanning..." : "Scan"}
+            {refreshing ? t("skills.checking") : t("skills.refresh")}
           </button>
         </div>
         <div style={styles.batchBar}>
@@ -901,6 +962,19 @@ export default function SkillsConfig() {
             disabled={selectedSkills.size === 0 || batchUpgrading}
           >
             {batchUpgrading ? t("skills.upgrading", "升级中...") : t("skills.batch_upgrade", "批量升级 ({0})").replace("{0}", String(selectedSkills.size))}
+          </button>
+          <button
+            style={{
+              ...styles.batchButton,
+              opacity: selectedSkills.size > 0 && !batchDeleting ? 1 : 0.5,
+              cursor: selectedSkills.size > 0 && !batchDeleting ? "pointer" : "not-allowed",
+              color: "var(--error)",
+              borderColor: "var(--error)",
+            }}
+            onClick={() => setConfirmBatchDelete(true)}
+            disabled={selectedSkills.size === 0 || batchDeleting}
+          >
+            {batchDeleting ? t("skills.deleting", "删除中...") : t("skills.batch_delete", "批量删除 ({0})").replace("{0}", String(selectedSkills.size))}
           </button>
           <button
             style={{ ...styles.batchButton, opacity: refreshing ? 0.5 : 1 }}
@@ -1002,6 +1076,42 @@ export default function SkillsConfig() {
               >
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Batch delete confirmation overlay */}
+          {confirmBatchDelete && (
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
+              zIndex: 1000,
+            }}>
+              <div style={{
+                background: "var(--bg-secondary)", border: "1px solid var(--error)", borderRadius: "8px",
+                padding: "20px 24px", maxWidth: "400px", width: "90%",
+              }}>
+                <div style={{ color: "var(--error)", fontSize: "14px", fontWeight: "bold", marginBottom: "12px" }}>
+                  {t("skills.batch_delete_confirm_title", "确认批量删除")}
+                </div>
+                <div style={{ color: "var(--text-secondary)", fontSize: "13px", marginBottom: "16px" }}>
+                  {t("skills.batch_delete_confirm", "确定要删除选中的 {0} 个技能吗？此操作不可撤销。").replace("{0}", String(selectedSkills.size))}
+                </div>
+                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                  <button
+                    style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", border: "1px solid var(--border-light)", padding: "6px 16px", borderRadius: "4px", cursor: "pointer", fontSize: "13px" }}
+                    onClick={() => setConfirmBatchDelete(false)}
+                  >
+                    {t("skills.cancel", "取消")}
+                  </button>
+                  <button
+                    style={{ background: "var(--error)", color: "#fff", border: "none", padding: "6px 16px", borderRadius: "4px", cursor: "pointer", fontSize: "13px" }}
+                    onClick={handleBatchDelete}
+                    disabled={batchDeleting}
+                  >
+                    {batchDeleting ? t("skills.deleting", "删除中...") : t("skills.confirm", "确认删除")}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1130,6 +1240,38 @@ export default function SkillsConfig() {
           </div>
 
           <div style={styles.sectionTitle}>{t("skills.basic_info", "基本信息")}</div>
+          {/* Single delete button + confirm dialog */}
+          <div style={{ marginBottom: "16px" }}>
+            {confirmDeleteId === selectedSkill.id ? (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", padding: "8px 12px", background: "var(--error-bg)", borderRadius: "4px", border: "1px solid var(--error)" }}>
+                <span style={{ fontSize: "12px", color: "var(--error)" }}>{t("skills.confirm_delete", "确定要删除技能 \"{0}\" 吗？此操作不可撤销。").replace("{0}", selectedSkill.name)}</span>
+                <button
+                  style={{ background: "var(--error)", color: "#fff", border: "none", padding: "4px 12px", borderRadius: "4px", cursor: "pointer", fontSize: "12px" }}
+                  onClick={() => handleDeleteSkill(selectedSkill.id)}
+                  disabled={!!deleting[selectedSkill.id]}
+                >
+                  {deleting[selectedSkill.id] ? t("skills.deleting", "删除中...") : t("skills.confirm", "确认删除")}
+                </button>
+                <button
+                  style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", border: "1px solid var(--border-light)", padding: "4px 12px", borderRadius: "4px", cursor: "pointer", fontSize: "12px" }}
+                  onClick={() => setConfirmDeleteId(null)}
+                >
+                  {t("skills.cancel", "取消")}
+                </button>
+              </div>
+            ) : (
+              <button
+                style={{
+                  ...styles.batchButton,
+                  color: "var(--error)",
+                  borderColor: "var(--error)",
+                }}
+                onClick={() => setConfirmDeleteId(selectedSkill.id)}
+              >
+                {t("skills.delete_skill", "删除此技能")}
+              </button>
+            )}
+          </div>
           <div style={styles.infoRow}>
             <span style={styles.infoLabel}>{t("skills.author", "作者")}</span>
             <span style={styles.infoValue}>{selectedSkill.author || t("skills.unknown_type", "未知")}</span>
@@ -1386,7 +1528,7 @@ export default function SkillsConfig() {
                   {t("skills.requires_system_tools", "需要系统工具")}: {requiredBins.join(", ")}
                 </div>
               )}
-              <div style={styles.configForm}>
+              <form autoComplete="off" onSubmit={e => e.preventDefault()} style={styles.configForm}>
                 {configKeys.map((key) => {
                   const meta = envMeta[key];
                   const isEnvKey = /^[A-Z_]+$/.test(key);
@@ -1409,6 +1551,7 @@ export default function SkillsConfig() {
                         <>
                           <div style={styles.tabContainer}>
                             <button
+                              type="button"
                               style={mode === "direct" ? styles.tabActive : styles.tab}
                               onClick={() => {
                                 setConfigModes((prev) => ({ ...prev, [key]: "direct" }));
@@ -1420,6 +1563,7 @@ export default function SkillsConfig() {
                               {t("skills.direct_input", "直接输入")}
                             </button>
                             <button
+                              type="button"
                               style={mode === "env" ? styles.tabActive : styles.tab}
                               onClick={() => {
                                 setConfigModes((prev) => ({ ...prev, [key]: "env" }));
@@ -1444,6 +1588,7 @@ export default function SkillsConfig() {
                                   setConfigValues((prev) => ({ ...prev, [key]: e.target.value }))
                                 }
                                 placeholder={t("skills.set_key", "设置 {0}...").replace("{0}", key)}
+                                autoComplete="new-password"
                               />
                               <div style={{
                                 fontSize: "11px",
@@ -1543,7 +1688,7 @@ export default function SkillsConfig() {
                     )}
                   </div>
                 )}
-              </div>
+              </form>
             </>
           )}
 

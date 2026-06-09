@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { VectorMemoryStore, EmbeddingSimulator } from "./vector-memory";
+import { VectorMemoryStore, EmbeddingSimulator, LocalEmbeddingProvider } from "./vector-memory";
 
 describe("VectorMemoryStore", () => {
   it("should add and search vectors", async () => {
@@ -111,3 +111,42 @@ function cosineSimilarity(a: number[], b: number[]): number {
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
 }
+
+describe("LocalEmbeddingProvider", () => {
+  it("should generate vectors for Chinese text", async () => {
+    const provider = new LocalEmbeddingProvider();
+    const vector = await provider.embed("人工智能是未来的发展方向");
+    expect(vector).toHaveLength(256);
+
+    const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0));
+    expect(norm).toBeCloseTo(1.0, 5);
+  });
+
+  it("should produce similar vectors for similar Chinese text", async () => {
+    const provider = new LocalEmbeddingProvider();
+
+    const v1 = await provider.embed("人工智能技术");
+    const v2 = await provider.embed("人工智能技术");
+    const v3 = await provider.embed("今天天气很好");
+
+    const similarity12 = cosineSimilarity(v1, v2);
+    const similarity13 = cosineSimilarity(v1, v3);
+
+    expect(similarity12).toBeCloseTo(1.0, 5);
+    expect(similarity13).toBeLessThan(1.0);
+  });
+
+  it("should handle mixed English-Chinese text", async () => {
+    const provider = new LocalEmbeddingProvider();
+
+    const v1 = await provider.embed("Python编程语言很受欢迎");
+    const v2 = await provider.embed("Python编程语言很受欢迎");
+    const v3 = await provider.embed("Java是一种面向对象的语言");
+
+    const similarity12 = cosineSimilarity(v1, v2);
+    const similarity13 = cosineSimilarity(v1, v3);
+
+    expect(similarity12).toBeCloseTo(1.0, 5);
+    expect(similarity13).toBeLessThan(1.0);
+  });
+});

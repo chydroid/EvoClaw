@@ -69,7 +69,7 @@ const s: Record<string, React.CSSProperties> = {
 };
 
 export function PermissionsPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [pending, setPending] = useState<PermissionRequest[]>([]);
   const [history, setHistory] = useState<PermissionRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -118,7 +118,7 @@ export function PermissionsPage() {
       const res = await fetch(`/api/permission-relay/${id}/deny`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "Denied from Web UI" }),
+        body: JSON.stringify({ reason: t("permissions.denied_from_webui", "Denied from Web UI") }),
       });
       if (res.ok) await loadData();
     } catch (err) {
@@ -128,7 +128,7 @@ export function PermissionsPage() {
 
   const formatTime = (ts?: number) => {
     if (!ts) return "-";
-    return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return new Date(ts).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   };
 
   return (

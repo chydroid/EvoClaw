@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "./i18n";
 
 interface BootstrapFileEntry {
   path: string;
@@ -10,10 +11,10 @@ interface BootstrapFileEntry {
 const FILES = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
 
 const FILE_META: Record<string, { label: string; icon: string; description: string }> = {
-  "AGENTS.md": { label: "AGENTS.md", icon: "🤖", description: "Operating instructions and memory — how the agent should behave" },
-  "SOUL.md": { label: "SOUL.md", icon: "💫", description: "Persona, tone, and boundaries — defines the agent's character" },
-  "TOOLS.md": { label: "TOOLS.md", icon: "🔧", description: "Tool usage notes — user-maintained guidance on tools" },
-  "IDENTITY.md": { label: "IDENTITY.md", icon: "🆔", description: "Identity card — agent name, vibe, and emoji" },
+  "AGENTS.md": { label: "AGENTS.md", icon: "🤖", description: "bootstrap.desc_instructions" },
+  "SOUL.md": { label: "SOUL.md", icon: "💫", description: "bootstrap.desc_persona" },
+  "TOOLS.md": { label: "TOOLS.md", icon: "🔧", description: "bootstrap.desc_tools" },
+  "IDENTITY.md": { label: "IDENTITY.md", icon: "🆔", description: "bootstrap.desc_identity" },
 };
 
 const s = {
@@ -71,12 +72,14 @@ const s = {
 };
 
 export default function BootstrapEditor() {
+  const { t } = useTranslation();
   const [files, setFiles] = useState<Record<string, BootstrapFileEntry>>({});
   const [activeFile, setActiveFile] = useState<string>(FILES[0]);
   const [editContent, setEditContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [saveStatusType, setSaveStatusType] = useState<"success" | "error" | null>(null);
   const [dirty, setDirty] = useState(false);
 
   const loadFiles = useCallback(async () => {
@@ -117,6 +120,7 @@ export default function BootstrapEditor() {
 
     setSaving(true);
     setSaveStatus(null);
+    setSaveStatusType(null);
     try {
       const res = await fetch(`/api/system/bootstrap-file/${activeFile}`, {
         method: "PUT",
@@ -127,13 +131,16 @@ export default function BootstrapEditor() {
         files[activeFile] = { ...file, content: editContent };
         setFiles({ ...files, [activeFile]: { ...file, content: editContent } });
         setDirty(false);
-        setSaveStatus("Saved successfully! Agent will pick up changes on next system prompt build.");
+        setSaveStatus(t("bootstrap.save_success"));
+        setSaveStatusType("success");
       } else {
         const err = await res.text();
-        setSaveStatus(`Save failed: ${err.slice(0, 100)}`);
+        setSaveStatus(t("bootstrap.save_fail") + err.slice(0, 100));
+        setSaveStatusType("error");
       }
     } catch (err) {
-      setSaveStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setSaveStatus(t("bootstrap.op_fail") + (err instanceof Error ? err.message : t("bootstrap.unknown_error")));
+      setSaveStatusType("error");
     }
     setSaving(false);
 
@@ -154,7 +161,7 @@ export default function BootstrapEditor() {
     return (
       <div style={s.container}>
         <div style={{ textAlign: "center", padding: "60px", color: "var(--text-muted)" }}>
-          Loading bootstrap files...
+          {t("bootstrap.loading")}
         </div>
       </div>
     );
@@ -181,24 +188,24 @@ export default function BootstrapEditor() {
             <div style={s.editorTitle}>
               {meta.icon} {meta.label}
               {currentFile && !currentFile.editable && currentFile.exists && (
-                <span style={{ ...s.readOnlyBadge, marginLeft: "8px" }}>Read-only</span>
+                <span style={{ ...s.readOnlyBadge, marginLeft: "8px" }}>{t("bootstrap.read_only")}</span>
               )}
               {currentFile && !currentFile.exists && (
-                <span style={{ ...s.readOnlyBadge, marginLeft: "8px" }}>Not found</span>
+                <span style={{ ...s.readOnlyBadge, marginLeft: "8px" }}>{t("bootstrap.not_found")}</span>
               )}
             </div>
-            <div style={s.editorDesc}>{meta.description}</div>
+            <div style={s.editorDesc}>{t(meta.description)}</div>
           </div>
           <div style={s.btnGroup}>
             <button style={s.resetBtn} onClick={handleReset} disabled={!dirty}>
-              Reset
+              {t("bootstrap.reset")}
             </button>
             <button
               style={s.saveBtn}
               onClick={handleSave}
               disabled={!dirty || !currentFile?.editable || saving}
             >
-              {saving ? "Saving..." : "Save"}
+              {saving ? t("bootstrap.saving") : t("bootstrap.save")}
             </button>
           </div>
         </div>
@@ -207,7 +214,7 @@ export default function BootstrapEditor() {
           <div style={{ padding: "0 16px", marginTop: "8px" }}>
             <div style={{
               ...s.successBanner,
-              ...(saveStatus.startsWith("Error") || saveStatus.startsWith("Save failed")
+              ...(saveStatusType === "error"
                 ? { background: "#ef444418", border: "1px solid #ef444440", color: "var(--error)" }
                 : {}),
             }}>
@@ -221,14 +228,14 @@ export default function BootstrapEditor() {
           value={editContent}
           onChange={(e) => { setEditContent(e.target.value); setDirty(true); }}
           placeholder={currentFile?.editable === false
-            ? "This file does not exist or is not editable"
-            : "# Enter your content here..."}
+            ? t("bootstrap.file_not_exist")
+            : t("bootstrap.enter_content")}
           readOnly={currentFile?.editable === false}
         />
 
         <div style={{ padding: "6px 16px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--text-muted)" }}>
           <span>{editContent.split("\n").length} lines · {editContent.length} chars</span>
-          <span>{dirty ? "Unsaved changes" : "No changes"}</span>
+          <span>{dirty ? t("bootstrap.unsaved_changes") : t("bootstrap.no_changes")}</span>
         </div>
       </div>
     </div>

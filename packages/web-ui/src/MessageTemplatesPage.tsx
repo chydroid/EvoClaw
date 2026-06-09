@@ -90,15 +90,16 @@ function extractVariables(template: string): string[] {
   return Array.from(vars);
 }
 
-function formatDate(ts: string): string {
+function formatDate(ts: string, locale: string): string {
   if (!ts) return "-";
-  return new Date(ts).toLocaleDateString("zh-CN", { year: "numeric", month: "short", day: "numeric" });
+  return new Date(ts).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MessageTemplatesPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -126,7 +127,7 @@ export default function MessageTemplatesPage() {
       setTemplates(data.templates || []);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载模板失败");
+      setError(err instanceof Error ? err.message : t("message_templates.load_fail"));
     } finally {
       setLoading(false);
     }
@@ -173,7 +174,7 @@ export default function MessageTemplatesPage() {
 
   const handleSave = useCallback(async () => {
     if (!formName.trim() || !formContent.trim()) {
-      showToast("名称和模板内容为必填项", "error");
+      showToast(t("message_templates.name_content_required"), "error");
       return;
     }
     setSaving(true);
@@ -186,7 +187,7 @@ export default function MessageTemplatesPage() {
           template: formContent,
           variables: formVariables,
         });
-        showToast("模板已更新", "success");
+        showToast(t("message_templates.updated_ok"), "success");
       } else {
         await templatesApi.create({
           name: formName.trim(),
@@ -195,28 +196,28 @@ export default function MessageTemplatesPage() {
           template: formContent,
           variables: formVariables,
         });
-        showToast("模板已创建", "success");
+        showToast(t("message_templates.created_ok"), "success");
       }
       setShowModal(false);
       resetForm();
       await loadTemplates();
     } catch {
-      showToast("保存模板失败", "error");
+      showToast(t("message_templates.save_fail"), "error");
     } finally {
       setSaving(false);
     }
   }, [formName, formDesc, formCategory, formContent, formVariables, editingId, resetForm, loadTemplates]);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!window.confirm("确认删除此模板？")) return;
+    if (!window.confirm(t("message_templates.confirm_delete"))) return;
     try {
       await templatesApi.delete(id);
-      showToast("模板已删除", "success");
+      showToast(t("message_templates.deleted_ok"), "success");
       setExpandedId(null);
       setTestTemplateId(null);
       await loadTemplates();
     } catch {
-      showToast("删除模板失败", "error");
+      showToast(t("message_templates.delete_fail"), "error");
     }
   }, [loadTemplates]);
 
@@ -237,7 +238,7 @@ export default function MessageTemplatesPage() {
       const data = await templatesApi.render(id, testVars);
       setTestResult(data.rendered);
     } catch {
-      showToast("渲染失败", "error");
+      showToast(t("message_templates.render_fail"), "error");
     }
   }, [testVars]);
 
@@ -266,7 +267,7 @@ export default function MessageTemplatesPage() {
 
       {templates.length === 0 ? (
         <Card>
-          <EmptyState title={t("message_templates.no_templates")} description="创建第一个消息模板以开始使用" />
+          <EmptyState title={t("message_templates.no_templates")} description={t("message_templates.create_first")} />
         </Card>
       ) : (
         templates.map((tpl) => {
@@ -279,16 +280,16 @@ export default function MessageTemplatesPage() {
               <div style={s.templateHeader}>
                 <div>
                   <div style={s.templateName}>{tpl.name}</div>
-                  <div style={s.templateDesc}>{tpl.description || "无描述"}</div>
+                  <div style={s.templateDesc}>{tpl.description || t("message_templates.no_desc")}</div>
                 </div>
-                <Badge variant="info">{tpl.category || "未分类"}</Badge>
+                <Badge variant="info">{tpl.category || t("message_templates.uncategorized")}</Badge>
               </div>
               <div style={s.templateMeta}>
                 <span style={s.metaValue}>
                   <span style={s.metaLabel}>{t("message_templates.variables") + ": "}</span>{varCount}
                 </span>
                 <span style={s.metaValue}>
-                  <span style={s.metaLabel}>{t("message_templates.created_at") + ": "}</span>{formatDate(tpl.createdAt)}
+                  <span style={s.metaLabel}>{t("message_templates.created_at") + ": "}</span>{formatDate(tpl.createdAt, locale)}
                 </span>
               </div>
 
@@ -316,7 +317,7 @@ export default function MessageTemplatesPage() {
 
                   {isTesting && (
                     <div style={s.testSection}>
-                      <div style={s.testTitle}>渲染测试</div>
+                      <div style={s.testTitle}>{t("message_templates.render_test")}</div>
                       {(tpl.variables || []).map((v) => (
                         <div key={v} style={s.testVarRow}>
                           <span style={s.testVarLabel}>{`{{${v}}}`}</span>
@@ -324,7 +325,7 @@ export default function MessageTemplatesPage() {
                             <TextInput
                               value={testVars[v] || ""}
                               onChange={(val) => setTestVars((prev) => ({ ...prev, [v]: val }))}
-                              placeholder={`${v} 的值...`}
+                              placeholder={t("message_templates.var_placeholder", "{0} 的值...").replace("{0}", v)}
                             />
                           </div>
                         </div>
@@ -333,7 +334,7 @@ export default function MessageTemplatesPage() {
                         <PrimaryButton small onClick={() => handleRender(tpl.id)}>{t("message_templates.render")}</PrimaryButton>
                       </div>
                       {testResult !== null && (
-                        <div style={s.testResult}>{testResult || "(空结果)"}</div>
+                        <div style={s.testResult}>{testResult || t("message_templates.empty_result")}</div>
                       )}
                     </div>
                   )}
@@ -352,22 +353,22 @@ export default function MessageTemplatesPage() {
             <>
               <SecondaryButton onClick={() => setShowModal(false)}>{t("message_templates.cancel")}</SecondaryButton>
               <PrimaryButton onClick={handleSave} disabled={saving}>
-                {saving ? "保存中..." : editingId ? "更新" : "创建"}
+                {saving ? t("message_templates.saving") : editingId ? t("message_templates.update_btn") : t("message_templates.create_btn")}
               </PrimaryButton>
             </>
           }
         >
           <div style={s.formGroup}>
             <label style={s.formLabel}>{t("message_templates.name")}</label>
-            <TextInput value={formName} onChange={setFormName} placeholder="模板名称..." />
+            <TextInput value={formName} onChange={setFormName} placeholder={t("message_templates.name_placeholder")} />
           </div>
           <div style={s.formGroup}>
             <label style={s.formLabel}>{t("message_templates.description")}</label>
-            <TextInput value={formDesc} onChange={setFormDesc} placeholder="简要描述..." />
+            <TextInput value={formDesc} onChange={setFormDesc} placeholder={t("message_templates.desc_placeholder")} />
           </div>
           <div style={s.formGroup}>
             <label style={s.formLabel}>{t("message_templates.category")}</label>
-            <TextInput value={formCategory} onChange={setFormCategory} placeholder="如 greeting, notification..." />
+            <TextInput value={formCategory} onChange={setFormCategory} placeholder={t("message_templates.category_placeholder")} />
           </div>
           <div style={s.formGroup}>
             <label style={s.formLabel}>{t("message_templates.template")}</label>
@@ -375,11 +376,11 @@ export default function MessageTemplatesPage() {
               style={s.formTextarea}
               value={formContent}
               onChange={(e) => handleContentChange(e.target.value)}
-              placeholder="输入模板内容，使用 {{变量名}}..."
+              placeholder={t("message_templates.content_placeholder")}
             />
           </div>
           <div style={s.formGroup}>
-            <label style={s.formLabel}>检测到的变量</label>
+            <label style={s.formLabel}>{t("message_templates.detected_vars")}</label>
             {formVariables.length > 0 ? (
               <div style={s.variablesList}>
                 {formVariables.map((v) => (
@@ -387,14 +388,14 @@ export default function MessageTemplatesPage() {
                 ))}
               </div>
             ) : (
-              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{"未检测到变量。在模板中使用 {{变量名}}。"}</div>
+              <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>{t("message_templates.no_vars")}</div>
             )}
           </div>
         </Modal>
       )}
 
       <div style={s.footer}>
-        每 15 秒自动刷新 &middot; {templates.length} 个模板
+        {t("message_templates.auto_refresh")} &middot; {templates.length} {t("message_templates.count_unit")}
       </div>
     </div>
   );

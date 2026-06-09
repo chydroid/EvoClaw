@@ -447,7 +447,7 @@ export function PluginsPage() {
               {/* Hooks */}
               <div style={{ marginBottom: "10px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-secondary, #8b949e)", marginBottom: "4px" }}>
-                  Hooks ({plugin.hookCount})
+                  {t("plugins.hooks")} ({plugin.hookCount})
                 </div>
                 {plugin.hooks.map((h, i) => (
                   <span key={i} style={hookChipStyle}>

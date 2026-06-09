@@ -21,6 +21,7 @@ import type {
   ModelResponse,
   StreamChunk,
   ChatMessage,
+  ToolCall,
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
 
@@ -261,6 +262,7 @@ export class GoogleProvider implements ProviderPlugin {
     let finishReason = "stop";
     let promptTokens = 0;
     let completionTokens = 0;
+    const toolCalls: Partial<ToolCall>[] = [];
 
     try {
       while (true) {
@@ -289,6 +291,16 @@ export class GoogleProvider implements ProviderPlugin {
                       if (part.text) {
                         finalContent += part.text;
                         onChunk({ text: part.text });
+                      } else if (part.functionCall) {
+                        toolCalls.push({
+                          id: `call_${Date.now()}_${toolCalls.length}`,
+                          type: "function",
+                          function: {
+                            name: part.functionCall.name,
+                            arguments: JSON.stringify(part.functionCall.args ?? {}),
+                          },
+                        });
+                        onChunk({ toolCalls: [...toolCalls] });
                       }
                     }
                   }
@@ -313,6 +325,19 @@ export class GoogleProvider implements ProviderPlugin {
       reader.releaseLock();
     }
 
+    const finalToolCalls: ToolCall[] = toolCalls
+      .filter((tc): tc is ToolCall & { function: { name: string; arguments: string } } =>
+        !!tc?.function?.name
+      )
+      .map((tc) => ({
+        id: tc.id || `call_${Date.now()}`,
+        type: "function" as const,
+        function: {
+          name: tc.function!.name,
+          arguments: tc.function!.arguments,
+        },
+      }));
+
     const totalTokens = promptTokens + completionTokens;
     this.recordUsage(totalTokens, model);
 
@@ -320,12 +345,13 @@ export class GoogleProvider implements ProviderPlugin {
       id: `gemini_${Date.now()}`,
       model,
       content: finalContent,
+      toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
       usage: {
         promptTokens,
         completionTokens,
         totalTokens,
       },
-      finishReason: finishReason as ModelResponse["finishReason"],
+      finishReason: finalToolCalls.length > 0 ? "tool_calls" : (finishReason as ModelResponse["finishReason"]),
     };
   }
 

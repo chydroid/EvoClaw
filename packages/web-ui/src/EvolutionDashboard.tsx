@@ -134,7 +134,8 @@ const DEFAULT_DATA: EvolutionData = {
 };
 
 export default function EvolutionDashboard() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [data, setData] = useState<EvolutionData>(DEFAULT_DATA);
   const [learningEntries, setLearningEntries] = useState<LearningEntry[]>([]);
   const [learningSessions, setLearningSessions] = useState<LearningSession[]>([]);
@@ -178,7 +179,7 @@ export default function EvolutionDashboard() {
       }
     } catch {
       setData(DEFAULT_DATA);
-      if (loading) setError("Server not available - showing empty dashboard");
+      if (loading) setError(t("evo.server_unavailable", "Server not available - showing empty dashboard"));
     } finally {
       setLoading(false);
     }
@@ -319,7 +320,7 @@ export default function EvolutionDashboard() {
   };
 
   if (loading) {
-    return <div style={s.placeholder}>Loading evolution data...</div>;
+    return <div style={s.placeholder}>{t("evo.loading", "Loading evolution data...")}</div>;
   }
 
   const learning = data.learning;
@@ -552,7 +553,7 @@ export default function EvolutionDashboard() {
                         </div>
                         <div style={s.compactionTimelineDesc}>{comp.summary.slice(0, 200)}</div>
                         <div style={s.compactionTimelineTime}>
-                          {new Date(comp.timestamp).toLocaleString("zh-CN")} · {t("evo.compacted_turns").replace("{0}", String(comp.compactedTurnCount))}
+                          {new Date(comp.timestamp).toLocaleString(locale)} · {t("evo.compacted_turns").replace("{0}", String(comp.compactedTurnCount))}
                         </div>
                         {comp.keyFacts.length > 0 && (
                           <div style={{ marginTop: "6px" }}>
@@ -596,7 +597,7 @@ export default function EvolutionDashboard() {
                         </span>
                       </div>
                       <div style={s.timelineMeta}>
-                        {cycle.candidatesGenerated} candidates · {formatDuration(cycle.duration)}
+                        {cycle.candidatesGenerated} {t("evo.candidates", "candidates")} · {formatDuration(cycle.duration)}
                       </div>
                     </div>
                   </div>
@@ -635,7 +636,7 @@ export default function EvolutionDashboard() {
         <table style={s.table}>
           <thead>
             <tr>
-              <th>ID</th>
+              <th>{t("evo.col_id", "ID")}</th>
               <th>{t("evo.col_source")}</th>
               <th>{t("evo.col_status")}</th>
               <th>{t("evo.col_candidates")}</th>
@@ -659,7 +660,7 @@ export default function EvolutionDashboard() {
                   </td>
                   <td>{t("evo.candidates_passed").replace("{0}", String(cycle.candidatesGenerated)).replace("{1}", String(cycle.candidatesPassed))}</td>
                   <td>{formatDuration(cycle.duration)}</td>
-                  <td style={s.monoCell}>{new Date(cycle.startedAt).toLocaleString("zh-CN")}</td>
+                  <td style={s.monoCell}>{new Date(cycle.startedAt).toLocaleString(locale)}</td>
                   <td>
                     {cycle.status === "completed" && (
                       <div style={{ display: "flex", gap: "4px" }}>
@@ -725,7 +726,7 @@ export default function EvolutionDashboard() {
               <th>{t("evo.col_success_rate")}</th>
               <th>{t("evo.col_adoption_rate")}</th>
               <th>{t("evo.col_error_rate")}</th>
-              <th>Token</th>
+              <th>{t("evo.col_token", "Token")}</th>
               <th>{t("evo.col_collected_at")}</th>
             </tr>
           </thead>
@@ -747,7 +748,7 @@ export default function EvolutionDashboard() {
                     {Math.round(fb.errorRate * 100)}%
                   </td>
                   <td>{fb.tokenConsumption.toLocaleString()}</td>
-                  <td style={s.monoCell}>{new Date(fb.collectedAt).toLocaleString("zh-CN")}</td>
+                  <td style={s.monoCell}>{new Date(fb.collectedAt).toLocaleString(locale)}</td>
                 </tr>
               ))
             )}
@@ -939,7 +940,7 @@ export default function EvolutionDashboard() {
                 </div>
               </div>
               <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                {t("evo.step_progress").replace("{0}", String(report.step)).replace("{1}", String(report.totalSteps))} · {new Date(report.startedAt).toLocaleTimeString("zh-CN")}
+                {t("evo.step_progress").replace("{0}", String(report.step)).replace("{1}", String(report.totalSteps))} · {new Date(report.startedAt).toLocaleTimeString(locale)}
               </div>
               {report.details && (
                 <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px", fontStyle: "italic" }}>

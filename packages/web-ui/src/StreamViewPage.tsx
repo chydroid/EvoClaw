@@ -13,6 +13,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
+import { useTranslation } from "./i18n";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -176,6 +177,8 @@ const TYPE_COLORS: Record<string, string> = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function StreamViewPage() {
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [filter, setFilter] = useState<StreamFilter>({
     types: new Set(["lifecycle", "tool", "assistant", "thinking", "error", "compaction", "permission", "heartbeat"]),
@@ -327,13 +330,13 @@ export function StreamViewPage() {
             ))}
           </div>
           <button style={autoScrollBtnStyle(autoScroll)} onClick={() => setAutoScroll(!autoScroll)}>
-            {autoScroll ? "Auto↓" : "Manual"}
+            {autoScroll ? t("stream.auto") : t("stream.manual")}
           </button>
           <button style={autoScrollBtnStyle(false)} onClick={() => setPaused(!paused)}>
-            {paused ? "▶ Play" : "⏸ Pause"}
+            {paused ? t("stream.play") : t("stream.pause")}
           </button>
           <button style={autoScrollBtnStyle(false)} onClick={clearEvents}>
-            Clear
+            {t("stream.clear")}
           </button>
         </div>
       </div>
@@ -419,8 +422,8 @@ export function StreamViewPage() {
         fontSize: "11px",
         color: "var(--text-secondary, #8b949e)",
       }}>
-        <span>Total: {filteredEvents.length} events (showing {filteredEvents.length} filtered)</span>
-        <span>{paused ? "PAUSED" : "LIVE"}</span>
+        <span>{t("stream.total_events").replace("{0}", String(events.length)).replace("{1}", String(filteredEvents.length))}</span>
+        <span>{paused ? t("stream.paused") : t("stream.live")}</span>
       </div>
     </div>
   );

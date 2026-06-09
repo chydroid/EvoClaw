@@ -61,15 +61,16 @@ function truncate(text: string, maxLen = 80): string {
   return text.length > maxLen ? text.slice(0, maxLen) + "..." : text;
 }
 
-function formatTs(ts: string): string {
+function formatTs(ts: string, locale: string): string {
   if (!ts) return "-";
-  return new Date(ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" });
+  return new Date(ts).toLocaleString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit", month: "short", day: "numeric" });
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ReplyReferencePage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [refs, setRefs] = useState<ReplyRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -99,7 +100,7 @@ export default function ReplyReferencePage() {
       setRefs(data.refs || []);
       setError("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载引用记录失败");
+      setError(err instanceof Error ? err.message : t("reply_refs.load_fail"));
     } finally {
       setLoading(false);
     }
@@ -121,7 +122,7 @@ export default function ReplyReferencePage() {
       const data = await replyRefApi.getChain(rootId);
       setChainData(data.chain || []);
     } catch {
-      showToast("加载回复链失败", "error");
+      showToast(t("reply_refs.load_chain_fail"), "error");
     } finally {
       setChainLoading(false);
     }
@@ -135,7 +136,7 @@ export default function ReplyReferencePage() {
       const data = await replyRefApi.getTree(rootId);
       setTreeData(data.tree);
     } catch {
-      showToast("加载对话树失败", "error");
+      showToast(t("reply_refs.load_tree_fail"), "error");
     } finally {
       setTreeLoading(false);
     }
@@ -213,22 +214,22 @@ export default function ReplyReferencePage() {
           />
         </div>
         <div style={s.filterGroup}>
-          <span style={s.filterLabel}>根消息 ID</span>
+          <span style={s.filterLabel}>{t("reply_refs.root_id")}</span>
           <TextInput
             value={filterRootId}
             onChange={setFilterRootId}
-            placeholder="按根消息 ID 筛选..."
+            placeholder={t("reply_refs.root_id_placeholder")}
           />
         </div>
         <div style={s.filterActions}>
-          <PrimaryButton small onClick={handleFilter}>应用</PrimaryButton>
-          <GhostButton small onClick={() => { setFilterChannelId(""); setFilterRootId(""); }}>清除</GhostButton>
+          <PrimaryButton small onClick={handleFilter}>{t("reply_refs.apply")}</PrimaryButton>
+          <GhostButton small onClick={() => { setFilterChannelId(""); setFilterRootId(""); }}>{t("reply_refs.clear")}</GhostButton>
         </div>
       </div>
 
       <Card>
         {refs.length === 0 ? (
-          <EmptyState title={t("reply_refs.no_refs")} description="未找到匹配当前筛选条件的引用记录" />
+          <EmptyState title={t("reply_refs.no_refs")} description={t("reply_refs.no_match")} />
         ) : (
           <DataTable
             columns={[
@@ -249,10 +250,10 @@ export default function ReplyReferencePage() {
                 <span style={{ fontFamily: "monospace", fontSize: "11px" }}>{r.channelId || "-"}</span>
               )},
               { key: "timestamp", label: t("reply_refs.timestamp"), render: (r: ReplyRef) => (
-                <span style={{ fontSize: "12px" }}>{formatTs(r.timestamp)}</span>
+                <span style={{ fontSize: "12px" }}>{formatTs(r.timestamp, locale)}</span>
               )},
               {
-                key: "actions", label: "操作", render: (r: ReplyRef) => (
+                key: "actions", label: t("reply_refs.actions"), render: (r: ReplyRef) => (
                   <div style={{ display: "flex", gap: "4px" }}>
                     <GhostButton small onClick={() => handleViewChain(r.rootId)}>
                       {t("reply_refs.chain_view")}
@@ -273,14 +274,14 @@ export default function ReplyReferencePage() {
 
       {chainModal && (
         <Modal
-          title="回复链"
+          title={t("reply_refs.reply_chain")}
           onClose={() => setChainModal(false)}
           width={680}
         >
           {chainLoading ? (
             <Loading text={t("app.loading")} />
           ) : chainData.length === 0 ? (
-            <EmptyState title="空链" description="此链中未找到回复" />
+            <EmptyState title={t("reply_refs.empty_chain")} description={t("reply_refs.empty_chain_desc")} />
           ) : (
             <div style={s.timelineContainer}>
               {chainData.map((ref, idx) => (
@@ -288,12 +289,12 @@ export default function ReplyReferencePage() {
                   {idx < chainData.length - 1 && <div style={s.timelineLine} />}
                   <div style={s.timelineDot}>{idx + 1}</div>
                   <div style={s.timelineContent}>
-                    <div style={s.timelineAuthor}>{ref.author || "未知"}</div>
+                    <div style={s.timelineAuthor}>{ref.author || t("reply_refs.unknown")}</div>
                     <div style={s.timelineText}>{ref.content}</div>
                     <div style={s.timelineMeta}>
                       <span>ID: {ref.id.slice(0, 12)}...</span>
-                      <span>{formatTs(ref.timestamp)}</span>
-                      {ref.channelId && <span>通道: {ref.channelId}</span>}
+                      <span>{formatTs(ref.timestamp, locale)}</span>
+                      {ref.channelId && <span>{t("reply_refs.channel_label")} {ref.channelId}</span>}
                     </div>
                   </div>
                 </div>
@@ -305,14 +306,14 @@ export default function ReplyReferencePage() {
 
       {treeModal && (
         <Modal
-          title="对话树"
+          title={t("reply_refs.conversation_tree")}
           onClose={() => setTreeModal(false)}
           width={720}
         >
           {treeLoading ? (
             <Loading text={t("app.loading")} />
           ) : !treeData || Object.keys(treeData.nodes).length === 0 ? (
-            <EmptyState title="空树" description="无对话树数据" />
+            <EmptyState title={t("reply_refs.empty_tree")} description={t("reply_refs.empty_tree_desc")} />
           ) : (
             <div style={s.treeContainer}>
               {(() => {
@@ -330,7 +331,7 @@ export default function ReplyReferencePage() {
       )}
 
       <div style={s.footer}>
-        每 15 秒自动刷新 &middot; {refs.length} 条引用
+        {t("reply_refs.auto_refresh")} &middot; {t("reply_refs.ref_count").replace("{0}", String(refs.length))}
       </div>
     </div>
   );

@@ -395,11 +395,245 @@ export class GatewayServer {
       this.protocolAdapter.mountREST(this.app);
     }
 
+    this.setupApprovalRoutes();
+
+    this.setupA2ARoutes();
+
     this.setupWebUI();
 
     this.app.use(this.errorHandler.bind(this));
     this.app.use((_req: Request, res: Response) => {
       res.status(404).json({ error: "Not Found" });
+    });
+  }
+
+  private setupApprovalRoutes(): void {
+    // GET /api/approvals/pending — list all pending approvals
+    this.app.get("/api/approvals/pending", (req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        getPendingApprovals(sessionId?: string): Array<{
+          id: string; sessionId: string; toolName: string; toolArgs: Record<string, unknown>;
+          riskLevel: string; reason: string; createdAt: number; requestedBy: string; status: string;
+        }>;
+        getHumanApprovalManager(): { getConfig(): { riskLevels: Record<string, string>; requireApproval: Record<string, boolean>; approvalTimeout: number; maxPendingPerSession: number }; getTrustRules(): Array<{ toolName: string; trustedBy: string; createdAt: number; expiresAt: number }> } | null;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+
+      const sessionId = req.query.sessionId as string | undefined;
+      const pending = agentExecutor.getPendingApprovals(sessionId);
+      res.json({ pending, count: pending.length });
+    });
+
+    // POST /api/approvals/:id/approve — approve an operation
+    this.app.post("/api/approvals/:id/approve", (req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        approveOperation(approvalId: string, decidedBy: string, trustFuture?: boolean, modifiedArgs?: Record<string, unknown>): boolean;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+
+      const { id } = req.params as { id: string };
+      const { decidedBy, trustFuture, modifiedArgs } = req.body as {
+        decidedBy?: string;
+        trustFuture?: boolean;
+        modifiedArgs?: Record<string, unknown>;
+      };
+
+      const success = agentExecutor.approveOperation(
+        id,
+        decidedBy || "api-user",
+        trustFuture,
+        modifiedArgs,
+      );
+
+      if (success) {
+        res.json({ success: true, approvalId: id, decision: "approved" });
+      } else {
+        res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+      }
+    });
+
+    // POST /api/approvals/:id/reject — reject an operation
+    this.app.post("/api/approvals/:id/reject", (req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        rejectOperation(approvalId: string, decidedBy: string, reason?: string): boolean;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+
+      const { id } = req.params as { id: string };
+      const { decidedBy, reason } = req.body as {
+        decidedBy?: string;
+        reason?: string;
+      };
+
+      const success = agentExecutor.rejectOperation(
+        id,
+        decidedBy || "api-user",
+        reason,
+      );
+
+      if (success) {
+        res.json({ success: true, approvalId: id, decision: "rejected" });
+      } else {
+        res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+      }
+    });
+
+    // GET /api/approvals/config — get approval configuration
+    this.app.get("/api/approvals/config", (_req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        getHumanApprovalManager(): {
+          getConfig(): {
+            riskLevels: Record<string, string>;
+            requireApproval: Record<string, boolean>;
+            approvalTimeout: number;
+            maxPendingPerSession: number;
+          };
+          getTrustRules(): Array<{
+            toolName: string;
+            trustedBy: string;
+            createdAt: number;
+            expiresAt: number;
+          }>;
+        } | null;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+
+      const manager = agentExecutor.getHumanApprovalManager();
+      if (!manager) {
+        res.json({ enabled: false, message: "Human approval system is not enabled" });
+        return;
+      }
+
+      const config = manager.getConfig();
+      const trustRules = manager.getTrustRules();
+      res.json({ enabled: true, config, trustRules });
+    });
+
+    // PUT /api/approvals/config — update approval configuration
+    this.app.put("/api/approvals/config", (req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        getHumanApprovalManager(): {
+          updateConfig(config: Record<string, unknown>): void;
+          addTrustRule(rule: { toolName: string; trustedBy: string; createdAt: number; expiresAt: number }): void;
+          removeTrustRule(toolName: string): void;
+        } | null;
+      }>("agentModelExecutor");
+
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+
+      const manager = agentExecutor.getHumanApprovalManager();
+      if (!manager) {
+        res.status(400).json({ error: "Human approval system is not enabled" });
+        return;
+      }
+
+      const { config, addTrust, removeTrust } = req.body as {
+        config?: Record<string, unknown>;
+        addTrust?: { toolName: string; expiresAt?: number };
+        removeTrust?: string;
+      };
+
+      if (config) {
+        manager.updateConfig(config);
+      }
+      if (addTrust) {
+        manager.addTrustRule({
+          toolName: addTrust.toolName,
+          trustedBy: "api-user",
+          createdAt: Date.now(),
+          expiresAt: addTrust.expiresAt ?? 0,
+        });
+      }
+      if (removeTrust) {
+        manager.removeTrustRule(removeTrust);
+      }
+
+      res.json({ success: true });
+    });
+  }
+
+  private setupA2ARoutes(): void {
+    // GET /a2a/card — return this agent's A2A agent card
+    this.app.get("/a2a/card", (_req: Request, res: Response) => {
+      const a2aServer = this.registry.resolveService<{
+        getAgentCard(): { name: string; description: string; url: string; version: string; capabilities: Array<{ id: string; name: string; description: string; inputSchema: Record<string, unknown> }>; authentication?: { type: string } };
+        isEnabled(): boolean;
+      }>("a2aServer");
+
+      if (!a2aServer || !a2aServer.isEnabled()) {
+        res.status(503).json({ error: "A2A server not enabled" });
+        return;
+      }
+
+      res.json(a2aServer.getAgentCard());
+    });
+
+    // POST /a2a/task — handle an incoming A2A task
+    this.app.post("/a2a/task", async (req: Request, res: Response) => {
+      const a2aServer = this.registry.resolveService<{
+        isEnabled(): boolean;
+        validateAuth(apiKey?: string): boolean;
+        handleTask(task: { id: string; capabilityId: string; input: unknown; metadata?: Record<string, unknown> }): Promise<{ taskId: string; status: string; output?: unknown; error?: string; durationMs?: number }>;
+      }>("a2aServer");
+
+      if (!a2aServer || !a2aServer.isEnabled()) {
+        res.status(503).json({ error: "A2A server not enabled" });
+        return;
+      }
+
+      // Validate authentication
+      const authHeader = req.headers["authorization"] as string | undefined;
+      const apiKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+      if (!a2aServer.validateAuth(apiKey)) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const task = req.body as { id?: string; capabilityId?: string; input?: unknown };
+      if (!task.id || !task.capabilityId) {
+        res.status(400).json({ error: "Missing required fields: id, capabilityId" });
+        return;
+      }
+
+      try {
+        const result = await a2aServer.handleTask(task as { id: string; capabilityId: string; input: unknown; metadata?: Record<string, unknown> });
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /a2a/agents — list known remote agents (from the A2A client)
+    this.app.get("/a2a/agents", (_req: Request, res: Response) => {
+      const a2aClient = this.registry.resolveService<{
+        listAgents(): Array<{ name: string; description: string; url: string; version: string }>;
+      }>("a2aClient");
+
+      if (!a2aClient) {
+        res.json({ agents: [] });
+        return;
+      }
+
+      res.json({ agents: a2aClient.listAgents() });
     });
   }
 
@@ -417,13 +651,38 @@ export class GatewayServer {
 
   private requestLogger(req: Request, res: Response, next: NextFunction): void {
     const start = Date.now();
-    res.on("finish", () => {
-      const latencyMs = Date.now() - start;
-      const observability = this.registry.resolveService<Observability>("observability");
-      if (observability) {
-        observability.recordRequestLatency(req.path, req.method, res.statusCode, latencyMs);
-      }
-    });
+
+    // Create a tracing span for the incoming HTTP request
+    const observability = this.registry.resolveService<Observability>("observability");
+    const tracing = observability?.getTracingService?.();
+
+    if (tracing?.isEnabled()) {
+      tracing.withSpan("http.request", async (span) => {
+        span.setAttribute("http.method", req.method);
+        span.setAttribute("http.url", req.path);
+        span.setAttribute("http.user_agent", req.get("user-agent") || "unknown");
+
+        return new Promise<void>((resolve) => {
+          res.on("finish", () => {
+            const latencyMs = Date.now() - start;
+            span.setAttribute("http.status_code", res.statusCode);
+            span.setAttribute("http.response_time_ms", latencyMs);
+            if (observability) {
+              observability.recordRequestLatency(req.path, req.method, res.statusCode, latencyMs);
+            }
+            resolve();
+          });
+        });
+      }).catch(() => { /* tracing errors are non-critical */ });
+    } else {
+      res.on("finish", () => {
+        const latencyMs = Date.now() - start;
+        if (observability) {
+          observability.recordRequestLatency(req.path, req.method, res.statusCode, latencyMs);
+        }
+      });
+    }
+
     console.log(`[Gateway] ${req.method} ${req.path}`);
     next();
   }

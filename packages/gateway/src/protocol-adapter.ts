@@ -43,6 +43,133 @@ const MAX_OUTPUT_BYTES = 1024 * 512;
 const DATA_DIR = path.resolve(process.cwd(), "data", "config");
 const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
+const ENV_FILE = path.resolve(process.cwd(), ".env");
+
+// ── EnvSecretManager: manages sensitive credentials in .env ──────────────────
+// JSON configs store "${VAR_NAME}" references; real values live in .env
+const ENV_REF_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+class EnvSecretManager {
+  private cache: Map<string, string> = new Map();
+  private loaded = false;
+
+  /** Load .env file into cache */
+  load(): void {
+    this.cache.clear();
+    try {
+      if (!fs.existsSync(ENV_FILE)) { this.loaded = true; return; }
+      const lines = fs.readFileSync(ENV_FILE, "utf-8").split("\n");
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq < 1) continue;
+        const key = line.slice(0, eq).trim();
+        let val = line.slice(eq + 1).trim();
+        // Remove surrounding quotes if present
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        this.cache.set(key, val);
+      }
+    } catch { /* ignore */ }
+    this.loaded = true;
+  }
+
+  /** Get a value from .env cache (also checks process.env) */
+  get(key: string): string | undefined {
+    if (!this.loaded) this.load();
+    return this.cache.get(key) ?? process.env[key];
+  }
+
+  /** Set a value in .env cache and persist to file */
+  set(key: string, value: string): void {
+    if (!this.loaded) this.load();
+    this.cache.set(key, value);
+    this.persist();
+  }
+
+  /** Delete a key from .env cache and persist */
+  delete(key: string): void {
+    if (!this.loaded) this.load();
+    this.cache.delete(key);
+    this.persist();
+  }
+
+  /** Resolve a value: if it's a ${VAR} reference, return the real value; otherwise return as-is */
+  resolve(value: unknown): unknown {
+    if (typeof value !== "string") return value;
+    const m = value.match(ENV_REF_RE);
+    if (m) {
+      const resolved = this.get(m[1]);
+      return resolved ?? value; // Return reference itself if not found in .env
+    }
+    return value;
+  }
+
+  /** Check if a value is a ${VAR} reference */
+  isRef(value: unknown): boolean {
+    return typeof value === "string" && ENV_REF_RE.test(value);
+  }
+
+  /** Generate an env var name for a provider/channel secret */
+  static makeLLMKeyVar(providerId: string): string {
+    const safe = providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+    return `LLM_${safe}_API_KEY`;
+  }
+
+  static makeChannelVar(channelId: string, field: string): string {
+    const safe = channelId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+    const safeField = field.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+    return `CHANNEL_${safe}_${safeField}`;
+  }
+
+  /** Persist all cached values to .env file, preserving comments and structure */
+  private persist(): void {
+    try {
+      // Read existing file to preserve comments and non-secret keys
+      const existingLines: string[] = [];
+      const existingKeys = new Set<string>();
+      if (fs.existsSync(ENV_FILE)) {
+        const raw = fs.readFileSync(ENV_FILE, "utf-8");
+        for (const line of raw.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) {
+            existingLines.push(line);
+            continue;
+          }
+          const eq = trimmed.indexOf("=");
+          if (eq < 1) { existingLines.push(line); continue; }
+          const key = trimmed.slice(0, eq).trim();
+          existingKeys.add(key);
+          if (this.cache.has(key)) {
+            // Update with new value
+            existingLines.push(`${key}=${this.cache.get(key)}`);
+          } else {
+            existingLines.push(line);
+          }
+        }
+      }
+
+      // Add new keys that don't exist in file yet
+      const newKeys = [...this.cache.keys()].filter((k) => !existingKeys.has(k));
+      if (newKeys.length > 0) {
+        existingLines.push("");
+        existingLines.push("# Auto-managed credentials (do not edit manually)");
+        for (const key of newKeys) {
+          existingLines.push(`${key}=${this.cache.get(key)}`);
+        }
+      }
+
+      fs.writeFileSync(ENV_FILE, existingLines.join("\n") + "\n", "utf-8");
+    } catch (err) {
+      console.warn("[EnvSecretManager] Failed to persist .env:", err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+// Sensitive field names for channels
+const CHANNEL_SECRET_FIELDS = ["appId", "appSecret", "verificationToken", "encryptKey"];
 
 export type TaskComplexity = "simple" | "medium" | "complex" | "very_complex";
 
@@ -87,14 +214,15 @@ const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexit
       /API.*服务/i, /api.*server/i,
       /React.*组件/i, /react.*component/i,
       // Download/resource fetching tasks — need more time for web search + fetch + file creation
-      /下载.*(?:小说|音乐|视频|论文|电子书|书籍|电影|歌曲)/i,
-      /download.*(?:novel|music|video|paper|ebook|book|movie|song|mp3)/i,
+      // NOTE: "想听/播放/来首" are PLAYBACK intents, NOT download — excluded below via negative lookahead
+      /^(?!.*(?:想听|播放|来首|听歌|听一下|放一首)).*下载.*(?:小说|音乐|视频|论文|电子书|书籍|电影|歌曲)/i,
+      /^(?!.*(?:want to (?:listen|hear|play)|play some)).*download.*(?:novel|music|video|paper|ebook|book|movie|song|mp3)/i,
       /爬取.*(?:小说|文章|内容|数据)/i,
       /scrape.*(?:novel|article|content|data)/i,
       /(?:小说|音乐|视频|论文).*下载/i,
       /(?:novel|music|video|paper).*download/i,
-      /帮我.*(?:下载|找.*下载|爬取|抓取)/i,
-      /find.*download.*(?:novel|music|video|paper|book|song)/i,
+      /^(?!.*(?:想听|播放|来首|听歌|听一下|放一首)).*帮我.*(?:下载|找.*下载|爬取|抓取)/i,
+      /^(?!.*(?:want to (?:listen|hear|play)|play some)).*find.*download.*(?:novel|music|video|paper|book|song)/i,
     ],
     complexity: "complex",
   },
@@ -219,6 +347,7 @@ export class ProtocolAdapter {
   private savedChannels: Record<string, unknown>[] | null = null;
   private incomingWebhookManager: IncomingWebhookManager;
   private canvasHost: CanvasHost;
+  private envSecrets: EnvSecretManager;
 
   constructor(
     private registry: ServiceRegistry,
@@ -237,6 +366,8 @@ export class ProtocolAdapter {
       return { statusCode: 200, response: { received: true, action } };
     });
     this.canvasHost = new CanvasHost();
+    this.envSecrets = new EnvSecretManager();
+    this.envSecrets.load();
   }
 
   getIncomingWebhookManager(): IncomingWebhookManager {
@@ -255,8 +386,26 @@ export class ProtocolAdapter {
         const raw = fs.readFileSync(LLM_CONFIG_FILE, "utf-8");
         const data = JSON.parse(raw);
         if (data.providers && Array.isArray(data.providers)) {
+          // Migrate: convert plaintext apiKeys to ${VAR} references + store in .env
+          let needsRewrite = false;
+          for (const p of data.providers) {
+            const apiKey = p.apiKey as string | undefined;
+            if (apiKey && !this.envSecrets.isRef(apiKey) && apiKey !== "" && !apiKey.includes("****")) {
+              const varName = EnvSecretManager.makeLLMKeyVar(p.id as string);
+              this.envSecrets.set(varName, apiKey);
+              p.apiKey = `\${${varName}}`;
+              needsRewrite = true;
+            }
+          }
+          if (needsRewrite) {
+            this.persistLLMProviders(data.providers);
+            console.log("[ProtocolAdapter] Migrated LLM API keys to .env references");
+          }
+
           this.savedLLMProviders = data.providers;
-          this.applyLLMProviders(data.providers);
+          // Resolve references before applying
+          const resolved = this.resolveLLMProviders(data.providers);
+          this.applyLLMProviders(resolved);
           console.log(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk`);
         }
       }
@@ -269,14 +418,64 @@ export class ProtocolAdapter {
         const raw = fs.readFileSync(CHANNELS_CONFIG_FILE, "utf-8");
         const data = JSON.parse(raw);
         if (data.channels && Array.isArray(data.channels)) {
+          // Migrate: convert plaintext channel secrets to ${VAR} references + store in .env
+          let needsRewrite = false;
+          for (const ch of data.channels) {
+            for (const field of CHANNEL_SECRET_FIELDS) {
+              const val = ch[field] as string | undefined;
+              if (val && !this.envSecrets.isRef(val) && val !== "" && !val.includes("****")) {
+                const varName = EnvSecretManager.makeChannelVar(ch.id as string, field);
+                this.envSecrets.set(varName, val);
+                ch[field] = `\${${varName}}`;
+                needsRewrite = true;
+              }
+            }
+          }
+          if (needsRewrite) {
+            this.persistChannels(data.channels);
+            console.log("[ProtocolAdapter] Migrated channel secrets to .env references");
+          }
+
           this.savedChannels = data.channels;
-          this.applyChannels(data.channels);
+          // Resolve references before applying
+          const resolved = this.resolveChannelConfigs(data.channels);
+          this.applyChannels(resolved);
           console.log(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
         }
       }
     } catch (err) {
       console.warn("[ProtocolAdapter] Failed to load channels config:", err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** Resolve ${VAR} references in LLM providers for runtime use */
+  private resolveLLMProviders(providers: Record<string, unknown>[]): Record<string, unknown>[] {
+    return providers.map((p) => ({
+      ...p,
+      apiKey: this.envSecrets.resolve(p.apiKey),
+      config: p.config
+        ? Object.fromEntries(
+            Object.entries(p.config as Record<string, unknown>).map(([k, v]) => [k, this.envSecrets.resolve(v)])
+          )
+        : p.config,
+    }));
+  }
+
+  /** Resolve ${VAR} references in channel configs for runtime use */
+  private resolveChannelConfigs(channels: Record<string, unknown>[]): Record<string, unknown>[] {
+    return channels.map((ch) => {
+      const resolved: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(ch)) {
+        resolved[key] = this.envSecrets.resolve(value);
+      }
+      // Also resolve nested settings
+      if (ch.settings && typeof ch.settings === "object") {
+        resolved.settings = Object.fromEntries(
+          Object.entries(ch.settings as Record<string, unknown>).map(([k, v]) => [k, this.envSecrets.resolve(v)])
+        );
+      }
+      return resolved;
+    });
   }
 
   private persistLLMProviders(providers: Record<string, unknown>[]): void {
@@ -353,13 +552,22 @@ export class ProtocolAdapter {
     for (const ch of channels) {
       const type = (ch.type as ChannelType) || "";
       const enabled = ch.enabled === true;
-      const settings = (ch.settings as Record<string, unknown>) || {};
+
+      // Merge top-level channel fields into settings (channels.json stores appId/appSecret at top level)
+      const rawSettings = (ch.settings as Record<string, unknown>) || {};
+      const settings: Record<string, unknown> = { ...rawSettings };
+      const knownMetaKeys = new Set(["id", "name", "type", "enabled", "label", "dmPolicy", "allowFrom", "blockFrom", "settings"]);
+      for (const [key, value] of Object.entries(ch)) {
+        if (!knownMetaKeys.has(key) && value !== undefined && value !== "") {
+          settings[key] = value;
+        }
+      }
 
       // Register channel config
       const config: ChannelConfig = {
         type,
         enabled,
-        label: (ch.label as string) || type,
+        label: (ch.label as string) || (ch.name as string) || type,
         dmPolicy: (ch.dmPolicy as "open" | "pairing" | "closed") || "open",
         allowFrom: Array.isArray(ch.allowFrom) ? ch.allowFrom as string[] : [],
         blockFrom: Array.isArray(ch.blockFrom) ? ch.blockFrom as string[] : [],
@@ -769,6 +977,63 @@ export class ProtocolAdapter {
           skipped: result.skipped.length,
           details: result,
         });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ── Delete a single skill ──
+    app.delete("/api/skills/:id", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          uninstallSkill(id: string): Promise<void>;
+          getSkill(id: string): Promise<{ id: string; name: string; installPath: string } | undefined>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillId = req.params.id as string;
+        const skill = await skillManager.getSkill(skillId);
+        if (!skill) {
+          res.status(404).json({ error: `Skill "${skillId}" not found` });
+          return;
+        }
+        await skillManager.uninstallSkill(skillId);
+        res.json({ success: true, name: skill.name });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ── Batch delete skills ──
+    app.post("/api/skills/batch-delete", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          uninstallSkill(id: string): Promise<void>;
+          getSkill(id: string): Promise<{ id: string; name: string } | undefined>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillIds: string[] = req.body.skillIds || [];
+        const success: string[] = [];
+        const failed: Array<{ id: string; reason: string }> = [];
+        for (const id of skillIds) {
+          try {
+            const skill = await skillManager.getSkill(id);
+            if (!skill) {
+              failed.push({ id, reason: "Not found" });
+              continue;
+            }
+            await skillManager.uninstallSkill(id);
+            success.push(id);
+          } catch (err) {
+            failed.push({ id, reason: String(err) });
+          }
+        }
+        res.json({ success, failed, total: skillIds.length });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1391,6 +1656,7 @@ export class ProtocolAdapter {
             sendSSE("done", {
               reply: result.reply,
               tokensUsed: result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed,
+              contextTokens: ("contextTokens" in result ? (result as Record<string, unknown>).contextTokens : 0) || 0,
               contextLimit,
               duration: result.duration,
               sessionId: resolvedSessionId,
@@ -1715,19 +1981,25 @@ export class ProtocolAdapter {
           getRegisteredTools(): unknown[];
           getProviders(): { id: string; name: string; enabled: boolean; order: number }[];
         }>("agentModelExecutor");
-        // Sanitize API keys before sending to frontend
-        const sanitizedProviders = (this.savedLLMProviders || []).map((p: Record<string, unknown>) => {
-          const sanitized = { ...p };
-          if (typeof sanitized.apiKey === "string" && sanitized.apiKey.length > 8) {
-            sanitized.apiKey = sanitized.apiKey.slice(0, 4) + "****" + sanitized.apiKey.slice(-4);
-          } else if (typeof sanitized.apiKey === "string") {
-            sanitized.apiKey = "****";
+        // API keys are now ${VAR} references in JSON — safe to return directly
+        // Add hasApiKey flag so frontend knows if a key is configured
+        const providers = (this.savedLLMProviders || []).map((p: Record<string, unknown>) => {
+          const apiKey = p.apiKey as string | undefined;
+          // hasApiKey: true only if there's a real key (not empty, not **** mask, not unresolved reference)
+          let hasApiKey = false;
+          if (apiKey && !apiKey.includes("****")) {
+            if (this.envSecrets.isRef(apiKey)) {
+              const resolved = this.envSecrets.resolve(apiKey);
+              hasApiKey = !!(resolved && typeof resolved === "string" && !resolved.includes("****"));
+            } else {
+              hasApiKey = true;
+            }
           }
-          return sanitized;
+          return { ...p, hasApiKey };
         });
         res.json({
           executorTools: executor?.getRegisteredTools() || [],
-          providers: sanitizedProviders,
+          providers,
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -1738,10 +2010,33 @@ export class ProtocolAdapter {
       try {
         const { providers } = req.body || {};
         if (Array.isArray(providers)) {
-          this.savedLLMProviders = providers;
-          this.persistLLMProviders(providers);
+          const existingProviders = this.savedLLMProviders || [];
+          const processedProviders = providers.map((p: Record<string, unknown>) => {
+            const existing = existingProviders.find((e: Record<string, unknown>) => e.id === p.id);
+            const result = { ...p };
 
-          this.applyLLMProviders(providers);
+            if (typeof result.apiKey === "string") {
+              const apiKey = result.apiKey;
+              if (apiKey.includes("****")) {
+                // Frontend sent a masked key — keep the existing reference
+                result.apiKey = existing?.apiKey ?? "";
+              } else if (apiKey && !this.envSecrets.isRef(apiKey)) {
+                // Frontend sent a new plaintext key — store in .env, save reference
+                const varName = EnvSecretManager.makeLLMKeyVar(result.id as string);
+                this.envSecrets.set(varName, apiKey);
+                result.apiKey = `\${${varName}}`;
+              }
+              // If it's already a ${VAR} reference, keep as-is
+            }
+
+            return result;
+          });
+          this.savedLLMProviders = processedProviders;
+          this.persistLLMProviders(processedProviders);
+
+          // Resolve references before applying
+          const resolved = this.resolveLLMProviders(processedProviders);
+          this.applyLLMProviders(resolved);
         }
         res.json({ success: true });
       } catch (err) {
@@ -1750,15 +2045,67 @@ export class ProtocolAdapter {
     });
 
     app.get("/api/config/channels", (_req: Request, res: Response) => {
-      res.json({ channels: this.savedChannels || [] });
+      // Channel secrets are now ${VAR} references — safe to return directly
+      // Add has* flags so frontend knows which secrets are configured
+      const channels = (this.savedChannels || []).map((ch: Record<string, unknown>) => {
+        const result = { ...ch };
+        for (const field of CHANNEL_SECRET_FIELDS) {
+          const val = ch[field] as string | undefined;
+          const hasKey = `has${field.charAt(0).toUpperCase()}${field.slice(1)}`;
+          let configured = false;
+          if (val && !val.includes("****")) {
+            if (this.envSecrets.isRef(val)) {
+              const resolved = this.envSecrets.resolve(val);
+              configured = !!(resolved && typeof resolved === "string" && !resolved.includes("****"));
+            } else {
+              configured = true;
+            }
+          }
+          (result as Record<string, unknown>)[hasKey] = configured;
+        }
+        return result;
+      });
+      res.json({ channels });
     });
 
     app.put("/api/config/channels", (req: Request, res: Response) => {
       const { channels } = req.body || {};
       if (Array.isArray(channels)) {
-        this.savedChannels = channels;
-        this.persistChannels(channels);
-        this.applyChannels(channels);
+        const existingChannels = this.savedChannels || [];
+        const processedChannels = channels.map((ch: Record<string, unknown>) => {
+          const existing = existingChannels.find((e: Record<string, unknown>) => e.id === ch.id || e.type === ch.type);
+          const result: Record<string, unknown> = existing ? { ...existing, ...ch } : { ...ch };
+
+          // Preserve settings sub-object if it exists in existing but not in new
+          if (existing?.settings && !ch.settings) {
+            result.settings = existing.settings;
+          }
+
+          // Process sensitive fields: store plaintext in .env, save ${VAR} reference
+          for (const field of CHANNEL_SECRET_FIELDS) {
+            const val = result[field] as string | undefined;
+            if (typeof val === "string") {
+              if (val.includes("****")) {
+                // Frontend sent a masked value — keep the existing reference
+                result[field] = existing?.[field] ?? "";
+              } else if (val && !this.envSecrets.isRef(val)) {
+                // Frontend sent a new plaintext value — store in .env, save reference
+                const varName = EnvSecretManager.makeChannelVar(ch.id as string, field);
+                this.envSecrets.set(varName, val);
+                result[field] = `\${${varName}}`;
+              }
+              // If it's already a ${VAR} reference, keep as-is
+            }
+          }
+
+          return result;
+        });
+        this.savedChannels = processedChannels;
+        this.persistChannels(processedChannels);
+
+        // Resolve references before applying
+        const resolved = this.resolveChannelConfigs(processedChannels);
+        this.applyChannels(resolved);
       }
       res.json({ success: true });
     });
@@ -1767,7 +2114,7 @@ export class ProtocolAdapter {
       try {
         const channelId = String(req.params.id);
         const channelManager = this.registry.resolveService<{
-          getAdapter(type: string): { healthCheck(): Promise<boolean> } | undefined;
+          getAdapter(type: string): { healthCheck(): Promise<import("./channel-manager.js").ChannelHealthResult> } | undefined;
         }>("channelManager");
         if (!channelManager) {
           res.status(503).json({ status: "error", message: "Channel manager not available" });
@@ -1775,13 +2122,15 @@ export class ProtocolAdapter {
         }
         const adapter = channelManager.getAdapter(channelId);
         if (!adapter) {
-          res.status(404).json({ status: "error", message: `No adapter found for channel: ${channelId}` });
+          res.status(404).json({ status: "error", message: `No adapter found for channel: ${channelId}. Please save the configuration first and ensure the channel is enabled.` });
           return;
         }
-        const healthy = await adapter.healthCheck();
+        const result = await adapter.healthCheck();
         res.json({
-          status: healthy ? "ok" : "error",
-          message: healthy ? `Channel ${channelId} is healthy` : `Channel ${channelId} health check failed`,
+          status: result.healthy ? "ok" : "error",
+          message: result.message,
+          details: result.details,
+          suggestions: result.suggestions,
         });
       } catch (err) {
         res.status(500).json({ status: "error", message: String(err) });
@@ -3083,7 +3432,7 @@ export class ProtocolAdapter {
               ...(data.ilink_user_id ? { userId: data.ilink_user_id } : {}),
             }, null, 2), "utf-8");
             // Update accounts index
-            const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
+            const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
             let index: string[] = [];
             try { if (fs.existsSync(indexPath)) index = JSON.parse(fs.readFileSync(indexPath, "utf-8")); } catch { /* */ }
             if (!index.includes(normalizedId)) {

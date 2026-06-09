@@ -85,6 +85,13 @@ export interface ChannelSendResult {
   channel: ChannelType;
 }
 
+export interface ChannelHealthResult {
+  healthy: boolean;
+  message: string;
+  details?: Record<string, string>;
+  suggestions?: string[];
+}
+
 export interface ChannelAdapter {
   /** Channel type identifier */
   readonly type: ChannelType;
@@ -98,7 +105,7 @@ export interface ChannelAdapter {
     attachments?: ChannelMessage["attachments"];
   }): Promise<ChannelSendResult>;
   /** Check channel health */
-  healthCheck(): Promise<boolean>;
+  healthCheck(): Promise<ChannelHealthResult>;
   /** Handle incoming message callback */
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void;
   /** Handle connection status changes */

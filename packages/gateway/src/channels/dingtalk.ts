@@ -15,7 +15,7 @@
  */
 
 import crypto from "node:crypto";
-import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
 
@@ -101,12 +101,15 @@ export class DingtalkAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       await this.ensureToken();
-      return this.accessToken !== null;
-    } catch {
-      return false;
+      if (this.accessToken !== null) {
+        return { healthy: true, message: "DingTalk API is reachable" };
+      }
+      return { healthy: false, message: "Failed to obtain access token" };
+    } catch (err) {
+      return { healthy: false, message: (err as Error).message };
     }
   }
 

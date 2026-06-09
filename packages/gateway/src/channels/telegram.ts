@@ -12,6 +12,7 @@
 
 import type {
   ChannelAdapter,
+  ChannelHealthResult,
   ChannelMessage,
   ChannelSendResult,
   ChannelType,
@@ -262,12 +263,15 @@ export class TelegramAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       const me = await this.telegramApi<{ ok: boolean }>("getMe");
-      return me.ok === true;
-    } catch {
-      return false;
+      if (me.ok === true) {
+        return { healthy: true, message: "Telegram Bot API is reachable" };
+      }
+      return { healthy: false, message: "Telegram Bot API returned not ok" };
+    } catch (err) {
+      return { healthy: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 

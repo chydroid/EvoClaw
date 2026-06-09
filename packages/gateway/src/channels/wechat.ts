@@ -17,7 +17,7 @@
  */
 
 import { createHash, createHmac } from "crypto";
-import type { ChannelAdapter, ChannelConfig, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
 
 // ── Config ────────────────────────────────────────────────
 
@@ -110,14 +110,20 @@ export class WeChatAdapter implements ChannelAdapter {
     }
   }
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(): Promise<ChannelHealthResult> {
     try {
       if (this.config.mode === "wecom") {
-        return !!this.accessToken || !!this.config.botKey;
+        if (this.accessToken || this.config.botKey) {
+          return { healthy: true, message: "WeCom is healthy" };
+        }
+        return { healthy: false, message: "WeCom access token and bot key are both missing" };
       }
-      return !!this.accessToken;
-    } catch {
-      return false;
+      if (this.accessToken) {
+        return { healthy: true, message: "WeChat Official Account is healthy" };
+      }
+      return { healthy: false, message: "WeChat access token is missing" };
+    } catch (err) {
+      return { healthy: false, message: (err as Error).message };
     }
   }
 

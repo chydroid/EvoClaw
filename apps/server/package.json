@@ -24,6 +24,13 @@
     "@evoclaw/scheduler": "workspace:*",
     "@evoclaw/reporting": "workspace:*",
     "@evoclaw/intelligence": "workspace:*",
+    "@opentelemetry/sdk-node": "^0.55.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.52.0",
+    "@opentelemetry/instrumentation-http": "^0.55.0",
+    "@opentelemetry/instrumentation-express": "^0.44.0",
+    "@opentelemetry/resources": "^1.27.0",
+    "@opentelemetry/semantic-conventions": "^1.27.0",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {
