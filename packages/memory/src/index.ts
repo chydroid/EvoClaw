@@ -1,4 +1,5 @@
 export { MemoryHub } from "./memory-hub";
+export type { MemoryHubEmbeddingOptions } from "./memory-hub";
 export { ShortTermMemoryStore } from "./short-term-memory";
 export { LongTermMemoryStore } from "./long-term-memory";
 export { KnowledgeGraphStore } from "./knowledge-graph";
