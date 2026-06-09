@@ -71,8 +71,13 @@ export class Semaphore {
     // Queue for a permit
     return new Promise<() => void>((resolve, reject) => {
       const waiter: Waiter = {
+        // When resolve is called (by release passing a permit to us),
+        // the permit has already been handed off — available was 0 and the
+        // next release() call will give it to the next waiter. Do not
+        // decrement available here; doing so would drive the counter negative
+        // because the slow-path acquire does not pre-decrement like the fast
+        // path does.
         resolve: () => {
-          this.available--;
           resolve(() => this.release());
         },
         reject,

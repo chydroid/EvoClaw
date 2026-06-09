@@ -22,6 +22,7 @@ const DANGEROUS_PATTERNS = [
 
 export class EvolutionEvaluator {
   private evaluationHistory = new Map<string, EvolutionEvaluation>();
+  private maxEvaluationHistory = 500;
 
   constructor(
     private registry: ServiceRegistry,
@@ -56,6 +57,16 @@ export class EvolutionEvaluator {
     };
 
     this.evaluationHistory.set(candidate.id, evaluation);
+
+    // Cap the in-memory history. Using a Map and removing the oldest
+    // inserted key (Map preserves insertion order) keeps memory bounded
+    // for long-running evolution engines that evaluate many candidates.
+    if (this.evaluationHistory.size > this.maxEvaluationHistory) {
+      const oldestKey = this.evaluationHistory.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.evaluationHistory.delete(oldestKey);
+      }
+    }
 
     return evaluation;
   }

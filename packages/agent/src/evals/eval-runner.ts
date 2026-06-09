@@ -73,12 +73,16 @@ export class EvalRunner {
       const startTime = Date.now();
       const sessionId = `eval-${evalCase.id}-${Date.now()}`;
 
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         const output = await Promise.race([
           chatFn(evalCase.input, sessionId),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout")), config.timeoutPerCase)
-          ),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error("Timeout")),
+              config.timeoutPerCase
+            );
+          }),
         ]);
 
         const durationMs = Date.now() - startTime;
@@ -99,6 +103,10 @@ export class EvalRunner {
           hallucinationDetected: false,
           error: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        if (timeoutHandle !== undefined) {
+          clearTimeout(timeoutHandle);
+        }
       }
     }
 

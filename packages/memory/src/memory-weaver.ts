@@ -120,6 +120,23 @@ export class MemoryWeaver {
     // Link related fragments
     this.linkRelated(full);
 
+    // Enforce per-session fragment cap to avoid unbounded memory growth.
+    // When the cap is exceeded, drop the oldest, least important fragments
+    // from the affected session.
+    const sessionCount = this.fragments.filter((f) => f.sessionId === full.sessionId).length;
+    if (sessionCount > this.config.maxFragmentsPerSession) {
+      const sessionFragments = this.fragments
+        .filter((f) => f.sessionId === full.sessionId)
+        .sort((a, b) => {
+          // Keep the most recent, most important fragments
+          if (a.importance !== b.importance) return a.importance - b.importance;
+          return a.timestamp - b.timestamp;
+        });
+      const toRemove = sessionCount - this.config.maxFragmentsPerSession;
+      const removeIds = new Set(sessionFragments.slice(0, toRemove).map((f) => f.id));
+      this.fragments = this.fragments.filter((f) => !removeIds.has(f.id));
+    }
+
     // Trigger consolidation if threshold exceeded
     if (this.fragments.length >= this.config.consolidationThreshold) {
       this.consolidate();

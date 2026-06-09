@@ -52,7 +52,7 @@ export class ProgressReporter {
 
     const totalSteps = phases.reduce((sum, p) => sum + p.totalSteps, 0);
 
-    this.report({
+    this.report(reportId, {
       sessionId,
       taskId,
       phase: "init",
@@ -88,7 +88,7 @@ export class ProgressReporter {
 
     const progress = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
-    const report = this.report({
+    const report = this.report(reportId, {
       sessionId: task.sessionId,
       taskId: task.taskId,
       phase: phase.name,
@@ -114,7 +114,7 @@ export class ProgressReporter {
     const nextPhase = task.phases[task.currentPhaseIndex];
     if (!nextPhase) return null;
 
-    return this.report({
+    return this.report(reportId, {
       sessionId: task.sessionId,
       taskId: task.taskId,
       phase: nextPhase.name,
@@ -145,7 +145,7 @@ export class ProgressReporter {
     const totalSteps = task.phases.reduce((sum, p) => sum + p.totalSteps, 0);
     const duration = Date.now() - task.startedAt.getTime();
 
-    const finalReport = this.report({
+    const finalReport = this.report(reportId, {
       sessionId: task.sessionId,
       taskId: task.taskId,
       phase: "complete",
@@ -183,7 +183,7 @@ export class ProgressReporter {
       completedSteps += task.phases[i].totalSteps;
     }
 
-    const report = this.report({
+    const report = this.report(reportId, {
       sessionId: task.sessionId,
       taskId: task.taskId,
       phase: phaseName,
@@ -223,16 +223,19 @@ export class ProgressReporter {
     );
   }
 
-  private report(params: {
-    sessionId: string;
-    taskId: string;
-    phase: string;
-    step: number;
-    totalSteps: number;
-    progress?: number;
-    message: string;
-    details: string | null;
-  }): ProgressReport {
+  private report(
+    reportId: string,
+    params: {
+      sessionId: string;
+      taskId: string;
+      phase: string;
+      step: number;
+      totalSteps: number;
+      progress?: number;
+      message: string;
+      details: string | null;
+    }
+  ): ProgressReport {
     const report: ProgressReport = {
       id: uuid(),
       sessionId: params.sessionId,
@@ -273,8 +276,12 @@ export class ProgressReporter {
       );
     }
 
-    const reports = this.activeReports.get(params.taskId) || [];
-    this.activeReports.set(params.taskId, [...reports, report]);
+    // Use the actual reportId as the storage key so all reports for a given
+    // task batch live in the same list. Previously this used params.taskId,
+    // which is the user's task identifier rather than the per-task report
+    // batch id, causing reports to be lost or fragmented across keys.
+    const reports = this.activeReports.get(reportId) || [];
+    this.activeReports.set(reportId, [...reports, report]);
 
     return report;
   }

@@ -43,7 +43,17 @@ export class ConstraintGate {
 
   private sizeGate(candidate: EvolutionCandidate): GateResult {
     const totalSize = candidate.codeArtifacts.reduce(
-      (sum, artifact) => sum + Buffer.byteLength(artifact.source, "utf-8") + Buffer.byteLength(artifact.tests, "utf-8"),
+      (sum, artifact) => {
+        const sourceSize = artifact.source
+          ? Buffer.byteLength(artifact.source, "utf-8")
+          : 0;
+        // `tests` is optional on CodeArtifact; coerce safely so a missing
+        // field doesn't throw a TypeError that would block the whole gate.
+        const testsSize = artifact.tests
+          ? Buffer.byteLength(artifact.tests, "utf-8")
+          : 0;
+        return sum + sourceSize + testsSize;
+      },
       0
     );
 

@@ -71,12 +71,21 @@ export class RAGPipeline {
 
   /** Index a document: chunk it and store embeddings */
   async indexDocument(document: RAGDocument): Promise<void> {
+    // If this document was already indexed, remove the old chunks first to
+    // avoid stale entries and incorrect chunk counts.
+    if (this.documentChunks.has(document.id)) {
+      await this.removeDocument(document.id);
+    }
+
     const chunks = chunkDocument(document.text, this.chunkOptions);
+    if (chunks.length === 0) return;
+
     const chunkIds: string[] = [];
 
     // Prepare batch entries
     const entries = chunks.map((chunk, i) => {
-      const chunkId = `${document.id}_chunk_${i}`;
+      // Use a delimiter that cannot appear in document IDs to avoid collisions
+      const chunkId = `${document.id}::chunk::${i}`;
       chunkIds.push(chunkId);
 
       const metadata: Record<string, unknown> = {

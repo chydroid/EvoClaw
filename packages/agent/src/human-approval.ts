@@ -103,6 +103,8 @@ export class HumanApprovalManager {
     reject: (error: Error) => void;
   }>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  /** Track active timeout handles so they can be cleared on destroy */
+  private pendingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(config?: Partial<ApprovalConfig>) {
     this.config = {
@@ -173,6 +175,7 @@ export class HumanApprovalManager {
     return new Promise((resolve, reject) => {
       this.approvalResolvers.set(id, {
         resolve: (decision, modifiedArgs) => {
+          this.clearPendingTimeout(id);
           pending.status = decision === "modified" ? "modified" : decision;
           pending.decidedAt = Date.now();
           if (modifiedArgs) pending.modifiedArgs = modifiedArgs;
@@ -181,6 +184,7 @@ export class HumanApprovalManager {
           resolve({ decision, modifiedArgs });
         },
         reject: (error) => {
+          this.clearPendingTimeout(id);
           pending.status = "rejected";
           pending.decidedAt = Date.now();
           pending.rejectionReason = error.message;
@@ -190,8 +194,9 @@ export class HumanApprovalManager {
         },
       });
 
-      // Set timeout
-      setTimeout(() => {
+      // Set timeout and track handle so it can be cleared on destroy()
+      const timeoutId = setTimeout(() => {
+        this.pendingTimeouts.delete(id);
         if (this.approvalResolvers.has(id)) {
           pending.status = "expired";
           pending.decidedAt = Date.now();
@@ -200,7 +205,17 @@ export class HumanApprovalManager {
           resolve({ decision: "rejected" });
         }
       }, this.config.approvalTimeout);
+      this.pendingTimeouts.set(id, timeoutId);
     });
+  }
+
+  /** Clear the pending timeout for a given approval id (if any) */
+  private clearPendingTimeout(id: string): void {
+    const handle = this.pendingTimeouts.get(id);
+    if (handle !== undefined) {
+      clearTimeout(handle);
+      this.pendingTimeouts.delete(id);
+    }
   }
 
   /** Approve a pending operation */
@@ -327,6 +342,7 @@ export class HumanApprovalManager {
           pending.decidedAt = now;
           const resolver = this.approvalResolvers.get(id);
           if (resolver) {
+            this.clearPendingTimeout(id);
             resolver.resolve("rejected");
             this.approvalResolvers.delete(id);
           }
@@ -341,12 +357,17 @@ export class HumanApprovalManager {
     }, 30_000);
   }
 
-  /** Stop the cleanup timer */
+  /** Stop the cleanup timer and reject all pending approvals */
   destroy(): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    // Clear all pending timeouts
+    for (const [, handle] of this.pendingTimeouts) {
+      clearTimeout(handle);
+    }
+    this.pendingTimeouts.clear();
     // Reject all pending approvals
     for (const [, resolver] of this.approvalResolvers) {
       resolver.resolve("rejected");

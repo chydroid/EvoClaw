@@ -216,6 +216,7 @@ export class AnthropicProvider implements ProviderPlugin {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data: ")) continue;
           const data = trimmed.slice(6);
+          if (!data || data === "[DONE]") continue;
 
           try {
             const event = JSON.parse(data) as AnthropicStreamEvent;

@@ -65,9 +65,23 @@ export class HotReloadManager {
     this.isReloading = true;
 
     try {
+      // Drain the queue, but do not let a single event failure take the
+      // whole batch down. Each event is processed in its own try/catch so
+      // the loop keeps going and `isReloading` is always released, even
+      // when the publisher throws. The remaining items in the queue are
+      // processed in subsequent calls (or by the same loop) so events
+      // are not silently lost.
       while (this.reloadQueue.length > 0) {
         const event = this.reloadQueue.shift()!;
-        await this.processEvent(event);
+        try {
+          await this.processEvent(event);
+        } catch (err) {
+          console.error(
+            `[HotReload] Failed to process ${event.action} for "${event.skillId}":`,
+            err instanceof Error ? err.message : String(err)
+          );
+          // Continue with the next event rather than aborting the batch.
+        }
       }
     } finally {
       this.isReloading = false;

@@ -17,11 +17,14 @@ export class RateLimiterService implements RateLimiter {
   private entries = new Map<string, RateLimitEntry>();
   private defaultLimit = 100;
   private windowMs = 60000;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
-  ) {}
+  ) {
+    this.startCleanupTimer();
+  }
 
   config(limit: number, windowMs: number): void {
     this.defaultLimit = limit;
@@ -83,5 +86,25 @@ export class RateLimiterService implements RateLimiter {
 
   async reset(key: string): Promise<void> {
     this.entries.delete(key);
+  }
+
+  /** Stop the cleanup timer. Call this when the service is being shut down. */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
+  /** Periodically evict expired entries to prevent unbounded memory growth */
+  private startCleanupTimer(): void {
+    this.cleanupTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.entries) {
+        if (now > entry.resetAt.getTime()) {
+          this.entries.delete(key);
+        }
+      }
+    }, 60_000);
   }
 }

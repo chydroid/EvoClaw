@@ -67,6 +67,7 @@ export class SandboxExecutor {
     success: boolean;
     durationMs: number;
   }> = [];
+  private maxExecutionHistory = 200;
 
   constructor(
     private registry: ServiceRegistry,
@@ -275,6 +276,16 @@ export class SandboxExecutor {
       success: overallSuccess,
       durationMs,
     });
+
+    // Keep the history bounded so long-running processes don't accumulate
+    // unbounded memory. The most recent entries are the most diagnostically
+    // useful, so we trim from the front.
+    if (this.executionHistory.length > this.maxExecutionHistory) {
+      this.executionHistory.splice(
+        0,
+        this.executionHistory.length - this.maxExecutionHistory
+      );
+    }
 
     // 构建 ExecutionTrace 供反思系统使用
     const executionTrace: ExecutionTrace = {

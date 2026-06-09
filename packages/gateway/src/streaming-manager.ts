@@ -355,15 +355,13 @@ export class StreamingManager {
 
       // Pacing delay between chunks
       if (!chunk.isLast && this.config.minChunkIntervalMs > 0) {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, this.config.minChunkIntervalMs);
-          const onAbort = () => { clearTimeout(timer); reject(new Error("Aborted")); };
-          signal.addEventListener("abort", onAbort, { once: true });
-          setTimeout(() => {
-            signal.removeEventListener("abort", onAbort);
+          const onAbort = () => {
             clearTimeout(timer);
             resolve();
-          }, this.config.minChunkIntervalMs);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
         }).catch(() => {
           // Aborted during wait
         });

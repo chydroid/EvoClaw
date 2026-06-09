@@ -82,7 +82,12 @@ export class AgentPoolManager implements AgentPool {
     }
 
     if (agents.length < this.poolConfig.maxAgents) {
-      return this.createAgent(role || "executor");
+      // When creating a new agent, mark it as busy before returning so callers
+      // can rely on the "busy" invariant for all acquired agents.
+      const newAgent = this.createAgent(role || "executor");
+      newAgent.state.status = "busy";
+      newAgent.state.lastHeartbeat = new Date();
+      return newAgent;
     }
 
     return null;

@@ -546,9 +546,32 @@ export class LearningJournal {
     const titleLine = lines[0].replace(/^✅ |📝 |🔴 |🟠 |🟡 |🔵 |⚪ /, "").trim();
     if (!titleLine) return null;
 
+    // Parse the entry fields first so we can build a stable id from the
+    // timestamp + source + title. Using a fresh uuid on every parse meant
+    // the same persisted journal entry would be reloaded as a brand-new
+    // record each time, defeating the deduplication check in
+    // parseJournalMarkdown and growing the in-memory set without bound.
+    let parsedTimestamp: Date = new Date();
+    let parsedSource: string | null = null;
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("- **时间**:")) {
+        const dateStr = line.replace("- **时间**:", "").trim();
+        const parsed = new Date(dateStr);
+        if (!Number.isNaN(parsed.getTime())) {
+          parsedTimestamp = parsed;
+        }
+      } else if (line.startsWith("- **来源**:")) {
+        parsedSource = line.replace("- **来源**:", "").trim();
+      }
+    }
+
+    const stableId = this.computeParsedEntryId(parsedTimestamp, parsedSource || "unknown", titleLine);
+
     const entry: LearningEntry = {
-      id: uuid(),
-      timestamp: new Date(),
+      id: stableId,
+      timestamp: parsedTimestamp,
       trigger: "task_failure",
       category: "error_fix",
       title: titleLine,
@@ -558,7 +581,7 @@ export class LearningJournal {
       correction: null,
       solution: null,
       codeSnippet: null,
-      source: "unknown",
+      source: parsedSource || "unknown",
       severity: "medium",
       resolved: lines[0].startsWith("✅"),
       resolvedAt: null,
@@ -590,8 +613,7 @@ export class LearningJournal {
       }
 
       if (line.startsWith("- **时间**:")) {
-        const dateStr = line.replace("- **时间**:", "").trim();
-        try { entry.timestamp = new Date(dateStr); } catch { /* keep default */ }
+        // Already consumed during the pre-pass that built the stable id.
         continue;
       }
 
@@ -605,7 +627,7 @@ export class LearningJournal {
       }
 
       if (line.startsWith("- **来源**:")) {
-        entry.source = line.replace("- **来源**:", "").trim();
+        // Already captured during the pre-pass; keep value authoritative.
         continue;
       }
 
@@ -654,6 +676,26 @@ export class LearningJournal {
     }
 
     return entry;
+  }
+
+  /**
+   * Generate a stable id for a parsed journal entry. The id is derived from
+   * the (timestamp, source, title) tuple so that re-parsing the same journal
+   * produces the same id, which lets the deduplication guard in
+   * parseJournalMarkdown actually dedupe.
+   */
+  private computeParsedEntryId(timestamp: Date, source: string, title: string): string {
+    const key = `${timestamp.getTime()}|${source}|${title}`;
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      const char = key.charCodeAt(i);
+      hash = ((hash << 5) - hash + char) | 0;
+    }
+    // Match the uuid v4 layout loosely so consumers expecting a uuid-shaped
+    // string (e.g. logging tools) still work. The exact value is irrelevant
+    // as long as it is deterministic for the same input.
+    const hex = Math.abs(hash).toString(16).padStart(8, "0").slice(0, 8);
+    return `parsed-${hex}-${timestamp.getTime().toString(36)}`;
   }
 
   private inferSeverity(category: LearningCategory, trigger: LearningTrigger): LearningSeverity {

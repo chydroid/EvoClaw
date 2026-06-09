@@ -58,6 +58,8 @@ const LLM_REQUIREMENT_ANALYSIS_PROMPT = `你是 EvoClaw 自进化引擎的需求
 export class RequirementMiner {
   private observedPatterns = new Map<string, number>();
   private llmEnabled = true;
+  private maxObservedPatterns = 500;
+  private cleanupCounter = 0;
 
   constructor(
     private registry: ServiceRegistry,
@@ -221,6 +223,25 @@ export class RequirementMiner {
   private observeFailure(skillId: string): void {
     const key = `failure:${skillId}`;
     this.observedPatterns.set(key, (this.observedPatterns.get(key) || 0) + 1);
+
+    // Periodically prune the map so it cannot grow without bound. We evict
+    // the least-frequently-seen patterns, keeping the cap at
+    // maxObservedPatterns. A counter is used instead of a timer to avoid
+    // leaving a setInterval running for the lifetime of the miner.
+    this.cleanupCounter++;
+    if (
+      this.cleanupCounter >= 100 &&
+      this.observedPatterns.size > this.maxObservedPatterns
+    ) {
+      this.cleanupCounter = 0;
+      const entries = Array.from(this.observedPatterns.entries()).sort(
+        (a, b) => a[1] - b[1]
+      );
+      const removeCount = this.observedPatterns.size - this.maxObservedPatterns;
+      for (let i = 0; i < removeCount; i++) {
+        this.observedPatterns.delete(entries[i][0]);
+      }
+    }
   }
 
   private extractFailurePattern(log: string): string | null {
