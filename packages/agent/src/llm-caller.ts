@@ -20,6 +20,91 @@ import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWeb
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 
+// ── Circuit breaker for tool execution ──
+// Tracks consecutive failures per tool. After MAX_CONSECUTIVE_FAILURES,
+// the tool is "tripped" (disabled) for COOLDOWN_MS. This prevents the
+// LLM from repeatedly calling a broken tool and wasting tokens.
+
+const MAX_CONSECUTIVE_FAILURES = 3;
+const COOLDOWN_MS = 60_000; // 1 minute cooldown after tripping
+
+const toolFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
+
+function isToolTripped(toolName: string): boolean {
+  const tracker = toolFailureTracker.get(toolName);
+  if (!tracker || !tracker.trippedAt) return false;
+  // Auto-recover after cooldown
+  if (Date.now() - tracker.trippedAt > COOLDOWN_MS) {
+    toolFailureTracker.delete(toolName);
+    return false;
+  }
+  return true;
+}
+
+function recordToolFailure(toolName: string): void {
+  const tracker = toolFailureTracker.get(toolName) || { count: 0, trippedAt: null };
+  tracker.count++;
+  if (tracker.count >= MAX_CONSECUTIVE_FAILURES) {
+    tracker.trippedAt = Date.now();
+    console.warn(`[CircuitBreaker] Tool "${toolName}" tripped after ${tracker.count} consecutive failures. Cooldown: ${COOLDOWN_MS / 1000}s`);
+  }
+  toolFailureTracker.set(toolName, tracker);
+}
+
+function recordToolSuccess(toolName: string): void {
+  toolFailureTracker.delete(toolName);
+}
+
+// ── Tool parameter validation ──
+// Validates that LLM-generated tool parameters match the expected schema.
+// Returns a descriptive error if validation fails, or null if OK.
+
+function validateToolParams(
+  toolName: string,
+  args: Record<string, unknown>,
+  definition: { parameters: Record<string, unknown> }
+): string | null {
+  const params = definition.parameters;
+  for (const [key, schema] of Object.entries(params)) {
+    const p = schema as Record<string, unknown>;
+    const isRequired = p.required !== false && p.default === undefined;
+    const value = args[key];
+
+    // Check required parameters
+    if (isRequired && (value === undefined || value === null || value === "")) {
+      return `Missing required parameter "${key}" for tool "${toolName}". Expected type: ${p.type || "string"}. Description: ${p.description || key}`;
+    }
+
+    // Type check if value is provided
+    if (value !== undefined && value !== null && p.type) {
+      const expectedType = String(p.type);
+      const actualType = Array.isArray(value) ? "array" : typeof value;
+
+      // Allow numeric strings for number params (LLM often sends "42" instead of 42)
+      if (expectedType === "number" && typeof value === "string") {
+        const num = Number(value);
+        if (!isNaN(num)) {
+          args[key] = num; // auto-coerce
+          continue;
+        }
+      }
+
+      // Allow boolean strings for boolean params
+      if (expectedType === "boolean" && typeof value === "string") {
+        if (value === "true" || value === "false") {
+          args[key] = value === "true"; // auto-coerce
+          continue;
+        }
+      }
+
+      if (expectedType !== actualType && !(expectedType === "number" && actualType === "number")) {
+        return `Parameter "${key}" for tool "${toolName}" has wrong type: expected ${expectedType}, got ${actualType}. Value: ${JSON.stringify(value).slice(0, 100)}`;
+      }
+    }
+  }
+  return null;
+}
+
 // ── Shared message types ──
 
 export interface ToolCallEntry {
@@ -164,6 +249,44 @@ function cleanToolCache(cache: Map<string, ToolResultCacheEntry>): void {
   }
 }
 
+// ── Idempotency cache for write operations ──
+// Prevents duplicate file creates, email sends, etc. when the LLM retries
+// a tool call with identical parameters within the TTL window.
+const idempotencyCache = new Map<string, { result: string; timestamp: number }>();
+const IDEMPOTENCY_TTL = 5 * 60 * 1000; // 5 minutes
+const IDEMPOTENT_TOOLS = new Set([
+  "file_create", "file_modify", "file_delete",
+  "email_send",
+  "scheduler_create", "scheduler_delete",
+]);
+
+function getIdempotencyKey(toolName: string, args: Record<string, unknown>): string {
+  // Only include fields that affect the write outcome
+  const relevantFields: Record<string, unknown> = {};
+  if (toolName === "file_create" || toolName === "file_modify") {
+    relevantFields.path = args.path;
+  } else if (toolName === "email_send") {
+    relevantFields.to = args.to;
+    relevantFields.subject = args.subject;
+  } else if (toolName === "scheduler_create") {
+    relevantFields.name = args.name;
+    relevantFields.cronExpression = args.cronExpression;
+  } else {
+    // Generic: hash all args
+    return `${toolName}:${JSON.stringify(args)}`;
+  }
+  return `${toolName}:${JSON.stringify(relevantFields)}`;
+}
+
+function cleanIdempotencyCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of idempotencyCache) {
+    if (now - entry.timestamp > IDEMPOTENCY_TTL) {
+      idempotencyCache.delete(key);
+    }
+  }
+}
+
 // ── Helper: dynamic tool limit ──
 
 function computeDynamicToolLimit(
@@ -230,26 +353,84 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
   };
 }
 
+// ── Tool groups for dynamic loading ──
+// Tools are organized into groups by capability. The LLM receives the
+// "core" group always, plus groups that match the current task intent.
+// This reduces the number of tool definitions sent to the LLM (best
+// practice: ≤15 tools per request) and improves tool selection accuracy.
+
+const TOOL_GROUPS: Record<string, { tools: string[]; keywords: string[] }> = {
+  core: {
+    tools: [
+      "web_search", "web_fetch", "file_read", "file_create", "file_modify",
+      "file_list", "file_delete", "shell_exec", "sequential_thinking",
+    ],
+    keywords: [], // always included
+  },
+  browser: {
+    tools: [
+      "browser_navigate", "browser_search", "browser_launch", "browser_screenshot",
+      "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",
+      "browser_find_elements", "browser_submit_form", "browser_tabs", "browser_js_eval",
+      "browser_fill_form", "browser_login",
+    ],
+    keywords: ["browse", "browser", "网页", "网站", "打开", "navigate", "click", "screenshot", "登录", "login", "网页操作", "填写表单"],
+  },
+  skill: {
+    tools: ["skill_execute", "skill_install", "skill_search", "skill_find_and_install", "skill_view", "skill_index_list"],
+    keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能"],
+  },
+  email: {
+    tools: ["email_send", "email_add_account"],
+    keywords: ["email", "邮件", "发送邮件", "send email", "inbox", "收件箱"],
+  },
+  coding: {
+    tools: ["execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result"],
+    keywords: ["programming", "编程", "代码", "code", "开发", "程序", "写代码", "实现功能"],
+  },
+  media: {
+    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert"],
+    keywords: ["video", "视频", "download", "下载", "music", "音乐", "歌曲", "youtube", "b站", "抖音"],
+  },
+  scheduler: {
+    tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history"],
+    keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务"],
+  },
+};
+
 // ── buildOpenAITools ──
 
-export function buildOpenAITools(registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown> }>): OpenAIToolEntry[] {
-  const essentialTools = new Set([
-    "web_search", "web_fetch", "fetch_node_page", "file_read", "file_create",
-    "file_modify", "file_list", "file_delete", "skill_execute", "skill_install",
-    "skill_search", "skill_find_and_install", "skill_view", "skill_index_list",
-    "email_send", "email_add_account",
-    "browser_navigate", "browser_search", "browser_launch", "browser_screenshot",
-    "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",
-    "browser_find_elements", "browser_submit_form", "browser_tabs", "browser_js_eval",
-    "browser_fill_form", "browser_login", "browser_capture_network",
-    "execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result",
-    "shell_exec", "scrapling_fetch",
-    "markitdown_convert",
-    "video_download", "music_download",
-    "sequential_thinking",
-  ]);
+export function buildOpenAITools(
+  registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown> }>,
+  message?: string,
+): OpenAIToolEntry[] {
+  // Determine which tool groups to include based on the user message.
+  // Core group is always included. Other groups are included if the
+  // message contains relevant keywords.
+  const activeTools = new Set(TOOL_GROUPS.core.tools);
+  if (message) {
+    const lowerMsg = message.toLowerCase();
+    for (const [, group] of Object.entries(TOOL_GROUPS)) {
+      if (group.keywords.length > 0 && group.keywords.some(kw => lowerMsg.includes(kw.toLowerCase()))) {
+        for (const t of group.tools) activeTools.add(t);
+      }
+    }
+    // If the message doesn't match any specific group, include all tools
+    // (fallback to avoid missing capabilities for ambiguous requests).
+    if (activeTools.size <= TOOL_GROUPS.core.tools.length) {
+      for (const [, group] of Object.entries(TOOL_GROUPS)) {
+        for (const t of group.tools) activeTools.add(t);
+      }
+    }
+  } else {
+    // No message provided — include all tools for backward compatibility
+    for (const [, group] of Object.entries(TOOL_GROUPS)) {
+      for (const t of group.tools) activeTools.add(t);
+    }
+  }
+
   return Array.from(registeredTools.values())
-    .filter((t) => essentialTools.has(t.definition.name))
+    .filter((t) => activeTools.has(t.definition.name))
     .map((t) => {
       const props: Record<string, unknown> = {};
       const required: string[] = [];
@@ -755,7 +936,7 @@ Have a specific URL?
         messages.push({ role: "user", content: message });
       }
 
-      let tools = buildOpenAITools(deps.registeredTools);
+      let tools = buildOpenAITools(deps.registeredTools, message);
 
       const SEARCH_ONLY_TOOLS = new Set(["web_search", "browser_search", "browser_navigate"]);
       if (searchPreDone) {
@@ -939,18 +1120,71 @@ Have a specific URL?
             }
           }
 
-          let toolResult: string;
+          let toolResult: string = "";
           let toolErrored = false;
           let toolError: string | undefined;
           let rawResult: unknown = undefined;
           let cacheHit = false;
 
+          // ── Retry with exponential backoff for network tools ──
+          // Network tools (web_search, web_fetch, etc.) are prone to transient
+          // failures (5xx, timeout, rate-limit). Retry up to 2 times with
+          // 1s → 2s backoff. Non-network tools (file, shell) are not retried
+          // because they may not be idempotent.
+          const NETWORK_TOOLS = new Set([
+            "web_search", "web_fetch", "fetch_node_page", "scrapling_fetch",
+            "browser_search", "browser_navigate", "browser_fetch_json",
+            "browser_launch", "browser_login",
+          ]);
+          const MAX_RETRIES = NETWORK_TOOLS.has(toolName) ? 2 : 0;
+          const isNetworkTool = NETWORK_TOOLS.has(toolName);
+
           if (toolEntry) {
+            // ── Parameter schema validation ──
+            const paramError = validateToolParams(toolName, args, toolEntry.definition);
+            if (paramError) {
+              toolResult = JSON.stringify({
+                error: paramError,
+                suggestion: "Check the parameter names and types against the tool's schema. Make sure all required parameters are provided with correct types.",
+                validationError: true,
+                toolName,
+              });
+              toolErrored = true;
+              toolError = paramError;
+              console.warn(`[AgentModelExecutor] Parameter validation failed for "${toolName}": ${paramError}`);
+            } else {
+            // ── Circuit breaker check ──
+            if (isToolTripped(toolName)) {
+              toolResult = JSON.stringify({
+                error: `Tool "${toolName}" is temporarily disabled due to repeated failures`,
+                suggestion: "This tool has failed multiple times in a row. Try an alternative tool or approach. The tool will be re-enabled automatically after a cooldown period.",
+                circuitBreaker: true,
+                toolName,
+              });
+              toolErrored = true;
+              toolError = `Circuit breaker: ${toolName} is tripped`;
+              console.warn(`[AgentModelExecutor] Circuit breaker: skipping ${toolName}`);
+            } else {
             try {
-              if (skipWithResult !== undefined) {
+              // ── Idempotency check for write operations ──
+              let idempotencyHit = false;
+              if (IDEMPOTENT_TOOLS.has(toolName)) {
+                const idemKey = getIdempotencyKey(toolName, args);
+                const idemEntry = idempotencyCache.get(idemKey);
+                if (idemEntry && Date.now() - idemEntry.timestamp < IDEMPOTENCY_TTL) {
+                  console.log(`[AgentModelExecutor] Idempotency hit: ${toolName} (skipping duplicate write)`);
+                  toolResult = idemEntry.result;
+                  toolErrored = false;
+                  cacheHit = true; // treat as cache hit to skip further processing
+                  // Parse the cached result as rawResult for downstream processing
+                  try { rawResult = JSON.parse(idemEntry.result); } catch { rawResult = idemEntry.result; }
+                  idempotencyHit = true;
+                }
+              }
+              if (!idempotencyHit && skipWithResult !== undefined) {
                 rawResult = skipWithResult;
                 toolResult = JSON.stringify(skipWithResult);
-              } else {
+              } else if (!idempotencyHit) {
                 const cacheKey = getToolCacheKey(toolName, args);
                 const cached = deps.toolResultCache.get(cacheKey);
                 if (cached && Date.now() - cached.timestamp < TOOL_CACHE_TTL) {
@@ -965,29 +1199,56 @@ Have a specific URL?
                     "get_task_result", "shell_exec", "scrapling_fetch",
                   ]);
                   const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
-                  const toolExecFn = async () => {
-                    const toolPromise = toolEntry.handler(args);
-                    let toolTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-                    const toolTimeoutPromise = new Promise<never>((_, reject) => {
-                      toolTimeoutHandle = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT);
-                    });
+
+                  // Execute with retry for network tools
+                  let lastExecError: Error | null = null;
+                  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
                     try {
-                      rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
-                    } finally {
-                      if (toolTimeoutHandle) clearTimeout(toolTimeoutHandle);
+                      if (attempt > 0) {
+                        const backoffMs = Math.pow(2, attempt - 1) * 1000;
+                        console.log(`[AgentModelExecutor] Retrying tool "${toolName}" (attempt ${attempt + 1}/${MAX_RETRIES + 1}) after ${backoffMs}ms backoff`);
+                        await new Promise(resolve => setTimeout(resolve, backoffMs));
+                      }
+                      const toolExecFn = async () => {
+                        const toolPromise = toolEntry.handler(args);
+                        let toolTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+                        const toolTimeoutPromise = new Promise<never>((_, reject) => {
+                          toolTimeoutHandle = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT);
+                        });
+                        try {
+                          rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
+                        } finally {
+                          if (toolTimeoutHandle) clearTimeout(toolTimeoutHandle);
+                        }
+                      };
+                      if (tracing?.isEnabled()) {
+                        await tracing.withSpan("tool.execute", async (span: Span) => {
+                          span.setAttribute("tool.name", toolName);
+                          span.setAttribute("tool.timeout", TOOL_TIMEOUT);
+                          if (attempt > 0) span.setAttribute("tool.retry_attempt", attempt);
+                          await toolExecFn();
+                        });
+                      } else {
+                        await toolExecFn();
+                      }
+                      lastExecError = null;
+                      break; // success — exit retry loop
+                    } catch (retryErr: unknown) {
+                      lastExecError = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
+                      if (attempt < MAX_RETRIES) {
+                        console.warn(`[AgentModelExecutor] Tool "${toolName}" attempt ${attempt + 1} failed: ${lastExecError.message}, will retry`);
+                      }
                     }
-                  };
-                  if (tracing?.isEnabled()) {
-                    await tracing.withSpan("tool.execute", async (span: Span) => {
-                      span.setAttribute("tool.name", toolName);
-                      span.setAttribute("tool.timeout", TOOL_TIMEOUT);
-                      await toolExecFn();
-                    });
-                  } else {
-                    await toolExecFn();
                   }
+                  if (lastExecError) throw lastExecError;
                   toolResult = JSON.stringify(rawResult);
                   if (toolResult && typeof toolResult === "string" && toolResult.length > 0) {
+                    // Record in idempotency cache for write operations
+                    if (IDEMPOTENT_TOOLS.has(toolName)) {
+                      const idemKey = getIdempotencyKey(toolName, args);
+                      idempotencyCache.set(idemKey, { result: toolResult, timestamp: Date.now() });
+                      cleanIdempotencyCache();
+                    }
                     deps.toolResultCache.set(cacheKey, { result: toolResult, timestamp: Date.now() });
                     cleanToolCache(deps.toolResultCache);
                   }
@@ -1070,6 +1331,7 @@ Have a specific URL?
               }
               console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               successfulToolCalls++;
+              recordToolSuccess(toolName);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
               try {
                 const toolObs = deps.registry?.resolveService<any>("observability");
@@ -1080,10 +1342,37 @@ Have a specific URL?
                 }
               } catch { /* observability is best-effort */ }
             } catch (err: unknown) {
-              toolResult = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+              const errMsg = err instanceof Error ? err.message : String(err);
+              // Build a structured, actionable error message that helps the LLM
+              // self-correct rather than just repeating the same failed call.
+              const isTimeout = errMsg.includes("timed out");
+              const isNotFound = errMsg.includes("not found") || errMsg.includes("404");
+              const isAuth = errMsg.includes("401") || errMsg.includes("403") || errMsg.includes("auth");
+              const isNetwork = errMsg.includes("ECONNREFUSED") || errMsg.includes("ENOTFOUND") || errMsg.includes("fetch failed");
+
+              let suggestion = "";
+              if (isTimeout) {
+                suggestion = "Suggestion: The operation timed out. Try a simpler query, reduce the scope, or use a different tool.";
+              } else if (isNotFound) {
+                suggestion = "Suggestion: The resource was not found. Verify the URL/path is correct, or try a different search query.";
+              } else if (isAuth) {
+                suggestion = "Suggestion: Authentication failed. This resource requires credentials. Try a public alternative or inform the user.";
+              } else if (isNetwork) {
+                suggestion = "Suggestion: Network error. The remote server may be down. Try again later or use a different source.";
+              } else {
+                suggestion = "Suggestion: Try different parameters, use an alternative tool, or break the task into smaller steps.";
+              }
+
+              toolResult = JSON.stringify({
+                error: errMsg,
+                suggestion,
+                retried: isNetworkTool && MAX_RETRIES > 0,
+                toolName,
+              });
               toolErrored = true;
-              toolError = err instanceof Error ? err.message : String(err);
-              console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, toolResult);
+              toolError = errMsg;
+              recordToolFailure(toolName);
+              console.warn(`[AgentModelExecutor] Tool "${toolName}" failed after ${isNetworkTool ? MAX_RETRIES + 1 : 1} attempt(s):`, errMsg);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1 });
 
               try {
@@ -1100,8 +1389,14 @@ Have a specific URL?
                 ledger.append("error", { tool: toolName, params: args, error: toolError }, { agentId: "default", sessionId, duration: Date.now() - toolStartTime });
               }
             }
+            } // end circuit-breaker else
+            } // end parameter-validation else
           } else {
-            toolResult = JSON.stringify({ error: `Tool "${toolName}" not found` });
+            toolResult = JSON.stringify({
+              error: `Tool "${toolName}" is not registered`,
+              suggestion: "Check the tool name for typos. Use only tools that are available in your tool list. If you need a capability not available, inform the user.",
+              toolName,
+            });
             toolErrored = true;
             toolError = `Tool "${toolName}" not found`;
           }

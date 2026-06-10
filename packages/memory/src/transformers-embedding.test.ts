@@ -26,6 +26,26 @@ describe("TransformersEmbeddingProvider", () => {
     expect(provider.dimensions).toBe(768);
   });
 
+  it("isLoaded() returns false before warmUp()", () => {
+    const provider = new TransformersEmbeddingProvider();
+    expect(provider.isLoaded()).toBe(false);
+    expect(provider.getLoadError()).toBeNull();
+  });
+
+  it("warmUp() returns false and captures the error when the model can't load (offline / missing weights)", async () => {
+    if (!TransformersEmbeddingProvider.isAvailable()) return;
+    // Point at a non-existent model path so warmUp() must fail. We do NOT
+    // touch the real @huggingface/transformers — the test only verifies the
+    // error capture contract, not the real ONNX runtime.
+    const provider = new TransformersEmbeddingProvider({
+      model: "this-model-definitely-does-not-exist-xyz",
+    });
+    const ok = await provider.warmUp();
+    expect(ok).toBe(false);
+    expect(provider.isLoaded()).toBe(false);
+    expect(provider.getLoadError()).toBeInstanceOf(Error);
+  });
+
   // This test requires network access to download the model from huggingface.co
   // Skip if the package is not installed OR if we're in a network-restricted environment
   it.runIf(

@@ -43,14 +43,55 @@ export class AuthProvider {
   }
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
+    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
 
     if (publicPaths.includes(req.path)) {
       return next();
     }
 
-    // Allow all sub-paths under these public API prefixes
-    if (req.path.startsWith("/api/skills/") || req.path.startsWith("/api/config/") || req.path.startsWith("/api/config-rpc") || req.path.startsWith("/api/bootstrap/") || req.path.startsWith("/api/events") || req.path.startsWith("/api/permission-relay/") || req.path.startsWith("/api/crestodian/") || req.path.startsWith("/api/sessions/") || req.path.startsWith("/api/evolution/") || req.path.startsWith("/api/compactions") || req.path.startsWith("/api/scheduler/") || req.path.startsWith("/api/channels/") || req.path.startsWith("/api/plugins") || req.path.startsWith("/api/permission/") || req.path.startsWith("/api/retention/") || req.path.startsWith("/api/health/") || req.path.startsWith("/api/models/") || req.path.startsWith("/api/dead-letter-queue/") || req.path.startsWith("/api/message-templates") || req.path.startsWith("/api/reply-refs") || req.path.startsWith("/api/canvas/") || req.path.startsWith("/api/feature-flags") || req.path.startsWith("/api/queue") || req.path.startsWith("/api/agent/") || req.path.startsWith("/api/memory/") || req.path.startsWith("/api/tools") || req.path.startsWith("/api/sandbox/") || req.path.startsWith("/api/reporting/") || req.path.startsWith("/api/system/") || req.path.startsWith("/api/security/") || req.path.startsWith("/api/file/") || req.path.startsWith("/api/logs") || req.path.startsWith("/api/version")) {
+    // Allow all sub-paths under these public API prefixes (with or without trailing slash)
+    if (
+      req.path.startsWith("/api/skills/") || req.path === "/api/skills" ||
+      req.path.startsWith("/api/config/") || req.path === "/api/config" ||
+      req.path.startsWith("/api/config-rpc") ||
+      req.path.startsWith("/api/bootstrap/") || req.path === "/api/bootstrap" ||
+      req.path.startsWith("/api/events") ||
+      req.path.startsWith("/api/permission-relay/") ||
+      req.path.startsWith("/api/crestodian/") ||
+      req.path.startsWith("/api/sessions/") || req.path === "/api/sessions" ||
+      req.path.startsWith("/api/evolution/") ||
+      req.path.startsWith("/api/compactions") ||
+      req.path.startsWith("/api/scheduler/") ||
+      req.path.startsWith("/api/channels/") ||
+      req.path.startsWith("/api/plugins") ||
+      req.path.startsWith("/api/permission/") ||
+      req.path.startsWith("/api/retention/") ||
+      req.path.startsWith("/api/health/") ||
+      req.path.startsWith("/api/models/") ||
+      req.path.startsWith("/api/dead-letter-queue/") ||
+      req.path.startsWith("/api/message-templates") ||
+      req.path.startsWith("/api/reply-refs") ||
+      req.path.startsWith("/api/canvas/") ||
+      req.path.startsWith("/api/feature-flags") ||
+      req.path.startsWith("/api/queue") ||
+      req.path.startsWith("/api/agent/") ||
+      req.path.startsWith("/api/memory/") || req.path === "/api/memory" ||
+      req.path.startsWith("/api/tools") ||
+      req.path.startsWith("/api/sandbox/") ||
+      req.path.startsWith("/api/reporting/") ||
+      req.path.startsWith("/api/system/") ||
+      req.path.startsWith("/api/security/") ||
+      req.path.startsWith("/api/file/") ||
+      req.path.startsWith("/api/logs") ||
+      req.path.startsWith("/api/version") ||
+      req.path.startsWith("/api/approvals/") ||
+      req.path.startsWith("/api/tracing/") ||
+      req.path.startsWith("/api/evals/") ||
+      req.path === "/api/executions" ||
+      req.path.startsWith("/api/executions/") ||
+      req.path.startsWith("/a2a/") ||
+      req.path === "/a2a"
+    ) {
       return next();
     }
 

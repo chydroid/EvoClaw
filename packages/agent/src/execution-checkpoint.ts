@@ -102,6 +102,63 @@ export class ExecutionCheckpointStore {
     return this.activeExecutions.get(sessionId);
   }
 
+  /**
+   * Convenience alias used by the gateway `/api/executions/:id` endpoint.
+   */
+  getById(id: string): ExecutionState | undefined {
+    return this.getExecution(id);
+  }
+
+  /**
+   * Return the most recently updated executions across the in-memory map,
+   * ordered by `lastCheckpointTime` descending. Used by `/api/executions` to
+   * drive the WebUI execution list.
+   */
+  getRecent(options?: { limit?: number }): ExecutionState[] {
+    const limit = options?.limit ?? 50;
+    return Array.from(this.activeExecutions.values())
+      .sort((a, b) => (b.lastCheckpointTime ?? 0) - (a.lastCheckpointTime ?? 0))
+      .slice(0, limit);
+  }
+
+  /**
+   * Resume a stored execution by id. If the store has a checkpoint, returns
+   * a "resumable handle" pointing at the latest snapshot. The actual
+   * re-invocation of the LLM is the caller's job (the gateway simply returns
+   * the snapshot so the WebUI can show progress and offer a Resume button).
+   *
+   * `fromSnapshotIndex` is optional; defaults to the latest available.
+   */
+  resume(id: string, fromSnapshotIndex?: number): {
+    executionId: string;
+    fromSnapshotIndex: number;
+    messages: ExecutionSnapshot["messages"];
+    originalMessage: string;
+    status: string;
+  } | null {
+    const exec = this.activeExecutions.get(id);
+    if (!exec) return null;
+    const snapshots = exec.snapshots;
+    const idx = fromSnapshotIndex ?? Math.max(0, snapshots.length - 1);
+    const snap = snapshots[idx];
+    if (!snap) {
+      return {
+        executionId: id,
+        fromSnapshotIndex: idx,
+        messages: [],
+        originalMessage: exec.originalMessage,
+        status: exec.status,
+      };
+    }
+    return {
+      executionId: id,
+      fromSnapshotIndex: idx,
+      messages: snap.messages,
+      originalMessage: exec.originalMessage,
+      status: exec.status,
+    };
+  }
+
   /** Find all interrupted/failed executions that can be resumed */
   getResumableExecutions(): ExecutionState[] {
     return Array.from(this.activeExecutions.values())

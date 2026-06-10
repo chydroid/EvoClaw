@@ -14,7 +14,7 @@ import { LongTermMemoryStore } from "./long-term-memory";
 import { KnowledgeGraphStore } from "./knowledge-graph";
 import { FTS5SearchEngine, type FTS5SearchResult } from "./fts5-search";
 import { MemoryCurator, type MemorySnapshot } from "./memory-curator";
-import { VectorMemoryStore } from "./vector-memory";
+import { VectorMemoryStore, LocalEmbeddingProvider, type EmbeddingProvider } from "./vector-memory";
 import { TransformersEmbeddingProvider, type TransformersEmbeddingProviderOptions } from "./transformers-embedding";
 
 /** Options for configuring the MemoryHub's embedding provider. */
@@ -33,8 +33,13 @@ export class MemoryHub {
   private fts5: FTS5SearchEngine;
   private curator: MemoryCurator;
   private vectorStore: VectorMemoryStore | null = null;
-  private embeddingProvider: TransformersEmbeddingProvider | null = null;
-  private embeddingProviderStatus: "transformers" | "unavailable" | "disabled" = "unavailable";
+  private embeddingProvider: EmbeddingProvider | null = null;
+  /** Provider label for /api/memory/status and diagnostics. */
+  private embeddingProviderLabel: "transformers" | "local-tfidf" | "unavailable" | "disabled" = "unavailable";
+  /** Optional transformers provider instance for isLoaded() reporting. */
+  private transformersProvider: TransformersEmbeddingProvider | null = null;
+  /** Tracked when transformers warmup fails — surfaced via status. */
+  private embeddingLoadError: string | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -49,31 +54,120 @@ export class MemoryHub {
     this.curator = new MemoryCurator(this.fts5);
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
-    // (all-MiniLM-L6-v2, 384-dim) when available so semantic search works
-    // out of the box without an external API key. The provider is exposed via
-    // getVectorStore() so RAG pipelines, semantic recall, and the Web UI can
-    // use real neural embeddings rather than the hash-based simulator.
+    // (all-MiniLM-L6-v2, 384-dim) when the model can be loaded. The status
+    // reflects what's actually usable: "transformers" (model loaded),
+    // "local-tfidf" (fallback to TF-IDF when transformers can't load,
+    // e.g. offline / no model weights), "unavailable" (no embedding at all),
+    // or "disabled" (explicitly turned off).
     const wantTransformers = embeddingOptions?.useTransformers ?? true;
+
     if (wantTransformers && TransformersEmbeddingProvider.isAvailable()) {
       try {
-        this.embeddingProvider = new TransformersEmbeddingProvider(embeddingOptions?.transformersOptions);
-        this.vectorStore = new VectorMemoryStore(registry, eventBus, this.embeddingProvider);
-        this.embeddingProviderStatus = "transformers";
+        const transformers = new TransformersEmbeddingProvider({
+          // transformers.js v4 ships ONNX-converted models under the
+          // `Xenova/` namespace on HF Hub. Using bare "all-MiniLM-L6-v2"
+          // resolves to the original (PyTorch) repo and returns 404. The
+          // Xenova/all-MiniLM-L6-v2 model is the canonical ONNX one and
+          // is mirrored on hf-mirror.com.
+          ...(embeddingOptions?.transformersOptions ?? {}),
+          model: embeddingOptions?.transformersOptions?.model ?? "Xenova/all-MiniLM-L6-v2",
+        });
+        this.transformersProvider = transformers;
+        this.embeddingProvider = transformers;
+        this.vectorStore = new VectorMemoryStore(registry, eventBus, transformers);
+        this.embeddingProviderLabel = "transformers";
+        this.embeddingLoadError = null;
+        // Eagerly verify the model actually loads. The first call downloads
+        // weights from huggingface.co, which can take 5–30s on a cold cache.
+        // We do not block the constructor — the provider stays attached and
+        // the status flips to "local-tfidf" if warmup ultimately fails.
+        this.warmUpTransformers(transformers);
       } catch (err) {
-        // Construction never throws (lazy loading), but be defensive.
-        this.embeddingProviderStatus = "unavailable";
+        this.embeddingProviderLabel = "unavailable";
         this.embeddingProvider = null;
         this.vectorStore = null;
+        this.embeddingLoadError = err instanceof Error ? err.message : String(err);
       }
     } else if (wantTransformers) {
-      this.embeddingProviderStatus = "unavailable";
+      // Package not installed — fall back to local TF-IDF so we still have
+      // vector-backed semantic-ish search instead of pure lexical.
+      this.installLocalFallback();
     } else {
-      this.embeddingProviderStatus = "disabled";
+      this.embeddingProviderLabel = "disabled";
     }
 
     registry.registerService("memoryHub", this);
     // Note: VectorMemoryStore's constructor already registers itself as
     // "vectorMemory" in the registry, so we do not register it again here.
+  }
+
+  /**
+   * Try to load the transformers model in the background. On failure, swap
+   * the embedding provider to a local TF-IDF implementation so the system
+   * still has a working vector store (with semantic-ish search via word
+   * n-gram hashing) instead of silently doing nothing.
+   */
+  private warmUpTransformers(transformers: TransformersEmbeddingProvider): void {
+    // Hard cap the warmup so a stalled download doesn't keep the status
+    // stuck on "transformers" forever.
+    const TIMEOUT_MS = 60_000;
+    const timer = setTimeout(() => {
+      this.embeddingLoadError = `Transformers warmup timed out after ${TIMEOUT_MS}ms`;
+      this.installLocalFallback(transformers);
+    }, TIMEOUT_MS);
+
+    transformers
+      .warmUp()
+      .then((ok) => {
+        clearTimeout(timer);
+        if (ok) {
+          console.log("[MemoryHub] Transformers embedding model loaded successfully");
+          return;
+        }
+        // Warmup failed — switch to local TF-IDF
+        const err = transformers.getLoadError();
+        this.embeddingLoadError = err ? err.message : "Transformers warmup failed";
+        console.warn(
+          `[MemoryHub] Transformers warmup failed (${this.embeddingLoadError}); falling back to local TF-IDF embeddings`
+        );
+        this.installLocalFallback(transformers);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        this.embeddingLoadError = err instanceof Error ? err.message : String(err);
+        console.warn(`[MemoryHub] Transformers warmup threw: ${this.embeddingLoadError}`);
+        this.installLocalFallback(transformers);
+      });
+  }
+
+  /**
+   * Swap in the local TF-IDF embedding provider. Uses the same 384-dim
+   * vector store so callers don't need to know which backend is active.
+   */
+  private installLocalFallback(transformersToReplace?: TransformersEmbeddingProvider): void {
+    if (this.embeddingProviderLabel === "local-tfidf") return; // already installed
+    const local = new LocalEmbeddingProvider();
+    this.embeddingProvider = local;
+    this.transformersProvider = null;
+    this.embeddingProviderLabel = "local-tfidf";
+    // The first VectorMemoryStore already registered "vectorMemory" with
+    // the service registry. We need to construct a new one (so its
+    // internal provider points at the local TF-IDF) and replace the
+    // registry pointer. The VectorMemoryStore constructor calls
+    // registerService() unconditionally, which throws if the key still
+    // exists — so we delete the old key first, then let the constructor
+    // register, then re-assert via replaceService() to keep the API
+    // explicit.
+    if (this.registry.hasService("vectorMemory")) {
+      this.registry.unregisterService("vectorMemory");
+    }
+    this.vectorStore = new VectorMemoryStore(this.registry, this.eventBus, local);
+    this.registry.replaceService("vectorMemory", this.vectorStore);
+    if (transformersToReplace) {
+      // Drop the transformers reference so the heavy static pipeline cache
+      // can be GC'd if no other provider holds it.
+      void transformersToReplace;
+    }
   }
 
   getShortTerm(): ShortTermMemory {
@@ -96,23 +190,44 @@ export class MemoryHub {
     return this.curator;
   }
 
-  /** Get the vector store (uses local Transformers embeddings by default).
-   *  Returns null when the Transformers provider is unavailable. */
+  /** Get the vector store. Returns null when no embedding backend is wired. */
   getVectorStore(): VectorMemoryStore | null {
     return this.vectorStore;
   }
 
-  /** Get the embedding provider instance (TransformersEmbeddingProvider). */
-  getEmbeddingProvider(): TransformersEmbeddingProvider | null {
+  /** Get the active embedding provider (Transformers or Local TF-IDF). */
+  getEmbeddingProvider(): EmbeddingProvider | null {
     return this.embeddingProvider;
   }
 
   /** Describe which embedding backend is active:
-   *  - "transformers": all-MiniLM-L6-v2 via @huggingface/transformers
-   *  - "unavailable": requested but @huggingface/transformers not installed
+   *  - "transformers": all-MiniLM-L6-v2 via @huggingface/transformers (model loaded)
+   *  - "local-tfidf": local TF-IDF (used when transformers can't load)
+   *  - "unavailable": no embedding backend available
    *  - "disabled": explicitly disabled via MemoryHubEmbeddingOptions */
-  getEmbeddingProviderStatus(): "transformers" | "unavailable" | "disabled" {
-    return this.embeddingProviderStatus;
+  getEmbeddingProviderStatus(): "transformers" | "local-tfidf" | "unavailable" | "disabled" {
+    return this.embeddingProviderLabel;
+  }
+
+  /** Error message from the most recent failed embedding warmup, or null. */
+  getEmbeddingLoadError(): string | null {
+    return this.embeddingLoadError;
+  }
+
+  /** True when the active embedding provider has been warmed up successfully. */
+  isEmbeddingReady(): boolean {
+    if (this.embeddingProviderLabel === "transformers") {
+      return !!this.transformersProvider?.isLoaded();
+    }
+    if (this.embeddingProviderLabel === "local-tfidf") {
+      return true; // TF-IDF is always ready (no model load required)
+    }
+    return false;
+  }
+
+  /** Number of vectors currently stored (for /api/memory/status diagnostics). */
+  getVectorIndexSize(): number {
+    return this.vectorStore?.size() ?? 0;
   }
 
   /**

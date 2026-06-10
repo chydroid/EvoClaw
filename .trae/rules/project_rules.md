@@ -18,7 +18,7 @@
 ## Version Control
 
 - Version number is defined in root `package.json` and read dynamically by all sub-packages
-- After any major change, update: version number, History.md, then commit and push to GitHub
+- After any major change, rebuild, reboot server, and update: version number, History.md, then commit and push to GitHub
 - Commit messages should follow conventional commits format: `feat:`, `fix:`, `docs:`, `refactor:`, etc.
 
 ## Code Style

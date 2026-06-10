@@ -368,6 +368,47 @@ export class GatewayServer {
       });
     });
 
+    // ── Auth endpoints (public, no JWT required) ───────────────────
+    // Simple username/password login. Credentials come from env (with safe
+    // defaults so local dev works out of the box). In production, set
+    // EVOCLAW_ADMIN_USER and EVOCLAW_ADMIN_PASSWORD.
+    this.app.post("/api/auth/login", (req: Request, res: Response) => {
+      const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+      if (!username || !password) {
+        res.status(400).json({ error: "Username and password are required" });
+        return;
+      }
+      const expectedUser = process.env.EVOCLAW_ADMIN_USER || "admin";
+      const expectedPass = process.env.EVOCLAW_ADMIN_PASSWORD || "admin";
+      if (username !== expectedUser || password !== expectedPass) {
+        res.status(401).json({ error: "Invalid credentials" });
+        return;
+      }
+      const token = this.authProvider.generateToken(username, ["admin", "user"]);
+      res.json({ token, user: { id: username, roles: ["admin", "user"] } });
+    });
+
+    this.app.post("/api/auth/register", (_req: Request, res: Response) => {
+      // EvoClaw runs in single-tenant mode by default. Registration is
+      // disabled; point users to the admin user configured in .env.
+      res.status(403).json({ error: "Registration is disabled; contact your admin" });
+    });
+
+    this.app.post("/api/auth/refresh", (req: Request, res: Response) => {
+      const { token } = (req.body ?? {}) as { token?: string };
+      if (!token) {
+        res.status(400).json({ error: "token is required" });
+        return;
+      }
+      try {
+        const decoded = this.authProvider.verifyToken(token);
+        const fresh = this.authProvider.generateToken(decoded.userId, decoded.roles);
+        res.json({ token: fresh });
+      } catch {
+        res.status(401).json({ error: "Invalid or expired token" });
+      }
+    });
+
     this.app.get("/api/health", (_req: Request, res: Response) => {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       res.json({
@@ -398,6 +439,12 @@ export class GatewayServer {
     this.setupApprovalRoutes();
 
     this.setupA2ARoutes();
+
+    // ── New feature endpoints registered before the 404 catch-all ─────
+    this.setupTracingRoutes();
+    this.setupEvalsRoutes();
+    this.setupExecutionRoutes();
+    this.setupMemoryRoutes();
 
     this.setupWebUI();
 
@@ -646,6 +693,246 @@ export class GatewayServer {
     this.app.use("/assets/images", express.static(userAssetsPath));
     this.app.get(/^(?!\/api\/|\/health|\/live|\/ready).*/, (_req: Request, res: Response) => {
       res.sendFile(path.join(webUiPath, "index.html"));
+    });
+  }
+
+  // ── Tracing endpoints (in-memory OTel span collector) ─────────────
+  private setupTracingRoutes(): void {
+    // GET /api/tracing/spans?sessionId=xxx&limit=50&nameContains=llm&traceId=...
+    this.app.get("/api/tracing/spans", (req: Request, res: Response) => {
+      const collector = this.registry.resolveService<{
+        recent(filter?: { sessionId?: string; limit?: number; nameContains?: string; traceId?: string; sinceMs?: number }): unknown[];
+        byTrace(traceId: string): unknown[];
+        size(): number;
+      }>("spanCollector");
+
+      if (!collector) {
+        res.status(503).json({ error: "Span collector not initialized" });
+        return;
+      }
+
+      const { sessionId, limit, nameContains, traceId, sinceMs } = req.query as Record<string, string>;
+      const filter: { sessionId?: string; limit?: number; nameContains?: string; traceId?: string; sinceMs?: number } = {};
+      if (sessionId) filter.sessionId = sessionId;
+      if (limit) filter.limit = Math.min(parseInt(limit, 10) || 50, 500);
+      else filter.limit = 50;
+      if (nameContains) filter.nameContains = nameContains;
+      if (traceId) filter.traceId = traceId;
+      if (sinceMs) filter.sinceMs = parseInt(sinceMs, 10);
+
+      const spans = collector.recent(filter);
+      res.json({ spans, count: spans.length, total: collector.size() });
+    });
+
+    // GET /api/tracing/traces/:traceId — get all spans for a trace
+    this.app.get("/api/tracing/traces/:traceId", (req: Request, res: Response) => {
+      const collector = this.registry.resolveService<{ byTrace(id: string): unknown[] }>("spanCollector");
+      if (!collector) {
+        res.status(503).json({ error: "Span collector not initialized" });
+        return;
+      }
+      const spans = collector.byTrace(String(req.params.traceId));
+      res.json({ traceId: String(req.params.traceId), spans, count: spans.length });
+    });
+
+    // GET /api/tracing/stats — diagnostic info
+    this.app.get("/api/tracing/stats", (_req: Request, res: Response) => {
+      const collector = this.registry.resolveService<{ size(): number; recent(filter?: { limit?: number }): unknown[] }>("spanCollector");
+      if (!collector) {
+        res.status(503).json({ error: "Span collector not initialized" });
+        return;
+      }
+      res.json({ totalSpans: collector.size(), recentSpans: collector.recent({ limit: 10 }) });
+    });
+
+    // DELETE /api/tracing/spans — clear the buffer
+    this.app.delete("/api/tracing/spans", (_req: Request, res: Response) => {
+      const collector = this.registry.resolveService<{ clear(): void; size(): number }>("spanCollector");
+      if (!collector) {
+        res.status(503).json({ error: "Span collector not initialized" });
+        return;
+      }
+      const before = collector.size();
+      collector.clear();
+      res.json({ cleared: before });
+    });
+  }
+
+  // ── Evals endpoints (LLM evaluation framework) ────────────────────
+  private setupEvalsRoutes(): void {
+    // GET /api/evals/cases — list available eval cases
+    this.app.get("/api/evals/cases", (_req: Request, res: Response) => {
+      const runner = this.registry.resolveService<{ getAllCases(): unknown[] }>("evalRunner");
+      if (!runner) {
+        res.json({ cases: [], count: 0, note: "EvalRunner not registered" });
+        return;
+      }
+      const cases = runner.getAllCases();
+      res.json({ cases, count: cases.length });
+    });
+
+    // POST /api/evals/run — run the full eval suite (non-blocking: returns runId)
+    this.app.post("/api/evals/run", (req: Request, res: Response) => {
+      const runner = this.registry.resolveService<{ runAll(options?: unknown): Promise<{ runId: string; total: number; passed: number; failed: number; averageScore: number; durationMs: number }> }>("evalRunner");
+      if (!runner) {
+        res.status(503).json({ error: "EvalRunner not registered" });
+        return;
+      }
+      runner.runAll(req.body ?? {}).then(
+        (summary) => res.json(summary),
+        (err) => res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+      );
+    });
+
+    // GET /api/evals/runs — list past runs
+    this.app.get("/api/evals/runs", (_req: Request, res: Response) => {
+      const runner = this.registry.resolveService<{ getRunHistory(): unknown[] }>("evalRunner");
+      if (!runner) {
+        res.json({ runs: [], count: 0 });
+        return;
+      }
+      const runs = runner.getRunHistory();
+      res.json({ runs, count: runs.length });
+    });
+
+    // GET /api/evals/runs/:id — get details of a single run
+    this.app.get("/api/evals/runs/:id", (req: Request, res: Response) => {
+      const runner = this.registry.resolveService<{ getRunById(id: string): unknown }>("evalRunner");
+      if (!runner) {
+        res.status(503).json({ error: "EvalRunner not registered" });
+        return;
+      }
+      const run = runner.getRunById(String(req.params.id));
+      if (!run) {
+        res.status(404).json({ error: "Run not found" });
+        return;
+      }
+      res.json(run);
+    });
+  }
+
+  // ── Memory (semantic + full-text search) endpoints ──────────────────
+  private setupMemoryRoutes(): void {
+    // GET /api/memory/search?query=...&limit=10 — semantic search using the
+    // local Transformers embeddings (all-MiniLM-L6-v2, 384-dim). Falls back
+    // to FTS5 lexical search when the embedding provider is unavailable.
+    this.app.get("/api/memory/search", async (req: Request, res: Response) => {
+      const memoryHub = this.registry.resolveService<{
+        semanticSearch(query: string, limit?: number): Promise<Array<{ id: string; score: number; text: string; metadata: Record<string, unknown> }>>;
+        getEmbeddingProviderStatus(): "transformers" | "unavailable" | "disabled";
+      }>("memoryHub");
+
+      if (!memoryHub) {
+        res.status(503).json({ error: "MemoryHub not initialized" });
+        return;
+      }
+
+      const query = String(req.query.query ?? "").trim();
+      if (!query) {
+        res.status(400).json({ error: "query parameter is required" });
+        return;
+      }
+
+      const limit = Math.min(parseInt(String(req.query.limit ?? "10"), 10) || 10, 50);
+
+      try {
+        const results = await memoryHub.semanticSearch(query, limit);
+        const status = memoryHub.getEmbeddingProviderStatus();
+        res.json({
+          query,
+          limit,
+          count: results.length,
+          embeddingBackend: status,
+          results: results.map((r) => ({
+            id: r.id,
+            score: Number(r.score.toFixed(4)),
+            text: r.text,
+            metadata: r.metadata,
+          })),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/memory/status — describe which embedding backend is active
+    this.app.get("/api/memory/status", (_req: Request, res: Response) => {
+      const memoryHub = this.registry.resolveService<{
+        getEmbeddingProviderStatus(): "transformers" | "local-tfidf" | "unavailable" | "disabled";
+        getEmbeddingProvider(): { dimensions?: number } | null;
+        getVectorStore(): { size(): number } | null;
+        getEmbeddingLoadError(): string | null;
+        isEmbeddingReady(): boolean;
+        getVectorIndexSize(): number;
+      }>("memoryHub");
+
+      if (!memoryHub) {
+        res.status(503).json({ error: "MemoryHub not initialized" });
+        return;
+      }
+
+      const status = memoryHub.getEmbeddingProviderStatus();
+      const provider = memoryHub.getEmbeddingProvider();
+      const vectorStoreSize = memoryHub.getVectorIndexSize();
+      const loadError = memoryHub.getEmbeddingLoadError();
+      const ready = memoryHub.isEmbeddingReady();
+
+      // Surface a human-readable model description based on the active backend
+      const model = provider
+        ? status === "transformers"
+          ? { name: "all-MiniLM-L6-v2 (transformers.js)", dimension: provider.dimensions ?? 384 }
+          : { name: "Local TF-IDF (offline fallback)", dimension: provider.dimensions ?? 256 }
+        : null;
+
+      res.json({
+        embeddingBackend: status,
+        ready,
+        model,
+        vectorIndexSize: vectorStoreSize,
+        loadError: loadError ?? undefined,
+      });
+    });
+  }
+
+  // ── Execution Checkpoint endpoints ─────────────────────────────────
+  private setupExecutionRoutes(): void {
+    // GET /api/executions — list recent executions
+    this.app.get("/api/executions", (_req: Request, res: Response) => {
+      const store = this.registry.resolveService<{ getRecent(opts?: { limit?: number }): unknown[] }>("executionCheckpointStore");
+      if (!store) {
+        res.json({ executions: [], count: 0, note: "ExecutionCheckpointStore not registered" });
+        return;
+      }
+      const limit = parseInt((_req.query.limit as string) || "50", 10);
+      const executions = store.getRecent({ limit: Math.min(limit, 200) });
+      res.json({ executions, count: executions.length });
+    });
+
+    // GET /api/executions/:id — get a single execution with all snapshots
+    this.app.get("/api/executions/:id", (req: Request, res: Response) => {
+      const store = this.registry.resolveService<{ getById(id: string): unknown }>("executionCheckpointStore");
+      if (!store) {
+        res.status(503).json({ error: "ExecutionCheckpointStore not registered" });
+        return;
+      }
+      const execution = store.getById(String(req.params.id));
+      if (!execution) {
+        res.status(404).json({ error: "Execution not found" });
+        return;
+      }
+      res.json(execution);
+    });
+
+    // POST /api/executions/:id/resume — resume an interrupted execution
+    this.app.post("/api/executions/:id/resume", (req: Request, res: Response) => {
+      const store = this.registry.resolveService<{ resume(id: string, fromSnapshotIndex?: number): unknown }>("executionCheckpointStore");
+      if (!store) {
+        res.status(503).json({ error: "ExecutionCheckpointStore not registered" });
+        return;
+      }
+      const fromSnapshotIndex = typeof req.body?.fromSnapshotIndex === "number" ? req.body.fromSnapshotIndex : undefined;
+      const result = store.resume(String(req.params.id), fromSnapshotIndex);
+      res.json(result);
     });
   }
 

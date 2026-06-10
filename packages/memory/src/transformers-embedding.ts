@@ -8,6 +8,14 @@ export interface TransformersEmbeddingProviderOptions {
   model?: string;
   /** Dimensionality of the embedding vectors produced by the model. Defaults to `384`. */
   dimensions?: number;
+  /**
+   * Custom Hugging Face endpoint URL for model downloads. Useful in regions
+   * where the default `huggingface.co` is unreachable. Common choices:
+   *   - `"https://hf-mirror.com"` (community China mirror, default if HF_ENDPOINT env unset)
+   *   - `"https://www.modelscope.cn"` (ModelScope, requires `model_name` mapping)
+   *   - `"https://huggingface.co"` (official, default)
+   */
+  endpoint?: string;
 }
 
 /**
@@ -44,6 +52,11 @@ type FeatureExtractionPipeline = (
 export class TransformersEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
   private modelName: string;
+  private endpoint: string;
+  /** True once the underlying pipeline has been loaded at least once. */
+  private _loaded = false;
+  /** Set when loadPipeline() throws — surfaced to callers via embed() */
+  private _loadError: Error | null = null;
 
   /**
    * Static cache for the loaded pipeline promise, keyed by model name.
@@ -52,8 +65,18 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
   private static pipelineCache = new Map<string, Promise<FeatureExtractionPipeline>>();
 
   constructor(options?: TransformersEmbeddingProviderOptions) {
-    this.modelName = options?.model ?? "all-MiniLM-L6-v2";
+    // transformers.js v4 ships ONNX-converted weights under the Xenova/ namespace
+    // on the HF Hub. The bare "all-MiniLM-L6-v2" name resolves to the original
+    // (PyTorch) repo and 404s at download time. Use Xenova/... by default.
+    this.modelName = options?.model ?? "Xenova/all-MiniLM-L6-v2";
     this.dimensions = options?.dimensions ?? 384;
+    // Resolve endpoint priority: explicit option > HF_ENDPOINT env > default mirror.
+    // Default to hf-mirror.com for users in CN; set endpoint option to "https://huggingface.co"
+    // to force the official endpoint.
+    this.endpoint =
+      options?.endpoint ??
+      process.env.HF_ENDPOINT ??
+      "https://hf-mirror.com";
   }
 
   /**
@@ -73,9 +96,34 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
   /**
    * Pre-load the model so that subsequent calls to {@link embed} / {@link embedBatch}
    * do not incur the one-time loading cost.
+   *
+   * Resolves with `true` if the model is now ready, `false` if loading failed
+   * (e.g. no network access, model file not cached). Callers can use
+   * {@link isLoaded} afterwards to check status.
    */
-  async warmUp(): Promise<void> {
-    await this.getPipeline();
+  async warmUp(): Promise<boolean> {
+    try {
+      await this.getPipeline();
+      // Force a real inference so the ONNX session is fully initialized
+      // and any silent tokenizer/config issues surface here.
+      await this.embed("__warmup__");
+      this._loaded = true;
+      return true;
+    } catch (err) {
+      this._loadError = err instanceof Error ? err : new Error(String(err));
+      this._loaded = false;
+      return false;
+    }
+  }
+
+  /** True once the model has been successfully warmed up. */
+  isLoaded(): boolean {
+    return this._loaded;
+  }
+
+  /** The error from the most recent failed warmUp(), or null. */
+  getLoadError(): Error | null {
+    return this._loadError;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -113,6 +161,12 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
   /**
    * Dynamically import @huggingface/transformers and create the pipeline.
    * Throws a descriptive error if the package is not installed.
+   *
+   * The HF endpoint is configured by patching `env.remoteHost` (transformers.js
+   * v4 ignores the `HF_ENDPOINT` env var; the field is hard-coded to
+   * "https://huggingface.co/"). We rewrite it to the configured mirror before
+   * any pipeline() call, so weight/tokenizer/config downloads go to the
+   * mirror.
    */
   private async loadPipeline(): Promise<FeatureExtractionPipeline> {
     let transformers: typeof import("@huggingface/transformers");
@@ -123,6 +177,24 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
         "@huggingface/transformers is not installed. " +
           "Install it with `pnpm add @huggingface/transformers` to use TransformersEmbeddingProvider."
       );
+    }
+
+    // Patch the live env object so all subsequent fetches use our mirror.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const env = (transformers as any).env;
+      if (env && typeof env === "object") {
+        const endpoint = this.endpoint.endsWith("/") ? this.endpoint : this.endpoint + "/";
+        env.remoteHost = endpoint;
+        for (const k of Object.keys(env)) {
+          const v = env[k];
+          if (typeof v === "string" && v.includes("huggingface.co")) {
+            env[k] = v.replace(/https?:\/\/huggingface\.co\/?/g, endpoint);
+          }
+        }
+      }
+    } catch {
+      /* env may be sealed — fall through to default */
     }
 
     const { pipeline } = transformers;

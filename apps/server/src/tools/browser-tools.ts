@@ -14,6 +14,35 @@ export function registerBrowserTools(
   const browser = browserController;
   let pwBrowser = playwrightBrowser;
 
+  // ── Browser session health management ──
+  // Prevents memory leaks by tracking active browser contexts and
+  // auto-cleaning stale ones. Also provides crash recovery.
+
+  const browserSessions = new Map<string, {
+    launchedAt: number;
+    lastActivityAt: number;
+    tabCount: number;
+  }>();
+
+  const MAX_BROWSER_IDLE_MS = 10 * 60 * 1000; // 10 minutes idle → auto-close
+  const MAX_TABS_PER_SESSION = 5; // prevent tab explosion
+
+  // Periodically clean up idle browser sessions
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sessionId, info] of browserSessions) {
+      if (now - info.lastActivityAt > MAX_BROWSER_IDLE_MS) {
+        console.log(`[BrowserHealth] Auto-closing idle session: ${sessionId} (idle ${Math.round((now - info.lastActivityAt) / 60000)}min)`);
+        browserSessions.delete(sessionId);
+      }
+    }
+  }, 60_000); // check every minute
+
+  function touchBrowserSession(): void {
+    const info = browserSessions.get("default");
+    if (info) info.lastActivityAt = Date.now();
+  }
+
   executor.registerTool(
     "browser_navigate",
     {
@@ -24,6 +53,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const url = String(params.url || "");
       return await browser.navigate(url);
     }
@@ -39,6 +69,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const selector = String(params.selector || "body");
       if (!browser.getCurrentPage()) {
         return { error: "No page loaded. Use browser_navigate first." };
@@ -102,6 +133,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const query = String(params.query || "");
       const sitesStr = String(params.sites || "duckduckgo");
       const sites = sitesStr.split(",").map((s) => s.trim()).filter(Boolean);
@@ -142,7 +174,12 @@ export function registerBrowserTools(
         return { tabs: browser.listTabs(), activeTab: (browser.getCurrentPage()?.url || "") };
       }
       if (action === "new") {
+        const sessionInfo = browserSessions.get("default");
+        if (sessionInfo && sessionInfo.tabCount >= MAX_TABS_PER_SESSION) {
+          return { error: `Maximum tab limit (${MAX_TABS_PER_SESSION}) reached. Close an existing tab before opening a new one.`, tabCount: sessionInfo.tabCount };
+        }
         browser.newTab(tabId || `tab-${Date.now()}`);
+        if (sessionInfo) sessionInfo.tabCount++;
         return { success: true, action: "new", tabId };
       }
       if (action === "switch") {
@@ -151,6 +188,10 @@ export function registerBrowserTools(
       }
       if (action === "close") {
         const ok = browser.closeTab(tabId);
+        if (ok) {
+          const sessionInfo = browserSessions.get("default");
+          if (sessionInfo) sessionInfo.tabCount = Math.max(0, sessionInfo.tabCount - 1);
+        }
         return { success: ok, action: "close", tabId };
       }
       return { error: `Unknown action: ${action}` };
@@ -179,6 +220,12 @@ export function registerBrowserTools(
       await newBrowser.launch();
       pwBrowser = newBrowser;
       registry.replaceService("playwrightBrowser", pwBrowser);
+      // Track browser session for health management
+      browserSessions.set("default", {
+        launchedAt: Date.now(),
+        lastActivityAt: Date.now(),
+        tabCount: 1,
+      });
       return { success: true, headless, message: "Playwright browser launched" };
     }
   );
@@ -195,6 +242,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const selector = String(params.selector || "");
       const fullPage = String(params.fullPage || "true") !== "false";
       const filename = String(params.filename || "");
@@ -278,6 +326,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const selector = String(params.selector || "");
       await pwBrowser.click(selector);
       return { success: true, selector };

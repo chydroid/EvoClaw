@@ -25,7 +25,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import { TaskCheckpoint, taskCheckpointManager } from "./task-checkpoint-manager";
 import { ExecutionCheckpointStore } from "./execution-checkpoint";
 import { collapseNewlines as collapseNewlinesImpl, stripWebNoise as stripWebNoiseImpl, summarizeToolResult as summarizeToolResultFn, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
-import { tryQuickReply as tryQuickReplyFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
+import { tryQuickReply as tryQuickReplyFn, tryQuickReplyExtended as tryQuickReplyExtendedFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
 import { handleSlashCommand as handleSlashCommandFn, type SlashCommandDeps, type SlashCommandResult } from "./slash-commands";
 import { HeartbeatManager, type HeartbeatHandlerDeps } from "./heartbeat";
 import { sessionFilePath as sessionFilePathFn, persistSessionTurn as persistSessionTurnFn, persistEarlyReturn as persistEarlyReturnFn, loadSessionHistory as loadSessionHistoryFn, needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, type SessionPersistenceDeps } from "./session-persistence";
@@ -38,6 +38,7 @@ import { generateBriefUnderstanding as generateBriefUnderstandingFn, type BriefU
 import { registerSequentialThinkingTool as registerSequentialThinkingToolFn, type ThinkingHistoryMap } from "./sequential-thinking-tool";
 import { execute as dagExecute, executeSkillDirectly as dagExecuteSkillDirectly, generateReasoning as dagGenerateReasoning, extractToolParams as dagExtractToolParams, generateDefaultOutput as dagGenerateDefaultOutput, extractKeywords as dagExtractKeywords, type DAGExecutionDeps } from "./dag-execution";
 import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type TrustRule, type RiskLevel } from "./human-approval";
+import { SemanticQuickReply } from "./semantic-quick-reply";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -73,7 +74,13 @@ export class AgentModelExecutor {
   private thinkingLevel: "off" | "low" | "medium" | "high" = "medium";
   private sequentialThinkingHistory: ThinkingHistoryMap = new Map();
   private autoCompactionEnabled = true;
-  private memoryHub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } } | null = null;
+  private memoryHub: {
+    getLongTerm(): {
+      store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>;
+      search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]>;
+    };
+    remember?(entry: Omit<import("@evoclaw/core").MemoryEntry, "id" | "createdAt" | "accessedAt">): Promise<import("@evoclaw/core").MemoryEntry>;
+  } | null = null;
   private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
   private compactionManager: import("./compaction-manager").CompactionManager | null = null;
   private lifecycleManager: import("./agent-lifecycle").AgentLifecycleManager | null = null;
@@ -89,6 +96,9 @@ export class AgentModelExecutor {
 
   /** Human-in-the-Loop approval manager for high-risk tool operations */
   private humanApprovalManager: HumanApprovalManager | null = null;
+
+  /** Semantic quick-reply classifier using local Transformers embedding */
+  private semanticQuickReply = new SemanticQuickReply();
 
   /** Eval runner for agent behavior evaluation */
   private evalRunner: import("./evals").EvalRunner | null = null;
@@ -123,9 +133,28 @@ export class AgentModelExecutor {
   }
 
   /** Set memory hub for session/memory integration */
-  setMemoryHub(hub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } }): void {
+  setMemoryHub(hub: {
+    getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> };
+    remember?(entry: Omit<import("@evoclaw/core").MemoryEntry, "id" | "createdAt" | "accessedAt">): Promise<import("@evoclaw/core").MemoryEntry>;
+    getEmbeddingProvider?(): { embed(text: string): Promise<number[]>; embedBatch?(texts: string[]): Promise<number[][]>; dimensions?: number } | null;
+  }): void {
     this.memoryHub = hub;
     console.log(`[AgentModelExecutor] Memory hub integrated`);
+    // Wire up the semantic quick-reply classifier with the embedding provider
+    // so it can classify user intent locally without calling the LLM.
+    try {
+      const provider = hub.getEmbeddingProvider?.();
+      if (provider && typeof provider.embed === "function") {
+        // Bind the embed method to preserve the `this` context of the
+        // original TransformersEmbeddingProvider instance. Without binding,
+        // calling embed() loses the `this` pointer and getPipeline() fails.
+        const boundEmbed = provider.embed.bind(provider);
+        this.semanticQuickReply.setProvider({ embed: boundEmbed, dimensions: provider.dimensions });
+        console.log(`[AgentModelExecutor] Semantic quick-reply enabled (embedding dims=${provider.dimensions ?? "?"})`);
+      }
+    } catch {
+      // Non-fatal: semantic quick reply is best-effort
+    }
   }
 
   /** Set bootstrap manager */
@@ -968,10 +997,13 @@ export class AgentModelExecutor {
     }
 
     // ── Quick reply for simple greetings and queries (no LLM needed) ──
+    // Use the extended version which adds a capability block for hello/identity
+    // categories, so first-time users get a useful self-introduction.
     const quickReply = (() => {
-      const result = this.tryQuickReply(effectiveMessage);
+      const result = this.tryQuickReplyExtended(effectiveMessage);
       if (result && tracing?.isEnabled()) {
         parentSpan?.setAttribute("agent.quick_reply", true);
+        parentSpan?.setAttribute("agent.quick_reply.length", result.length);
       }
       return result;
     })();
@@ -981,6 +1013,24 @@ export class AgentModelExecutor {
         hour: "2-digit", minute: "2-digit",
       });
       const finalReply = `📅 ${timestamp}\n\n${quickReply}`;
+      this.persistEarlyReturn(sessionId, message, finalReply);
+      return { reply: finalReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
+    }
+
+    // ── Semantic quick reply (local Transformers embedding) ──
+    // Catches paraphrased greetings / simple intents that the regex table
+    // misses (e.g. "你今天有没有空帮我看看", "how are you doing today").
+    // Best-effort: if the embedding provider is not ready, this is a no-op.
+    const semanticReply = await this.semanticQuickReply.classify(effectiveMessage, this.persona);
+    if (semanticReply) {
+      const timestamp = new Date().toLocaleString("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit",
+      });
+      const finalReply = `📅 ${timestamp}\n\n${semanticReply}`;
+      if (tracing?.isEnabled()) {
+        parentSpan?.setAttribute("agent.semantic_quick_reply", true);
+      }
       this.persistEarlyReturn(sessionId, message, finalReply);
       return { reply: finalReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
     }
@@ -1336,6 +1386,9 @@ export class AgentModelExecutor {
           minute: "2-digit",
         });
         const reply = `📅 ${timestamp}\n\n${AgentModelExecutor.collapseNewlines(result.reply)}`;
+        // Save the interaction to long-term memory (and mirror into the
+        // vector store when the memory hub exposes remember()).
+        this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
         if (pendingPermissions.length > 0) {
           return { reply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted, files: result.files };
         }
@@ -1407,11 +1460,13 @@ export class AgentModelExecutor {
 
   /** Asynchronously save an interaction to long-term memory */
   private rememberInteraction(userMsg: string, agentReply: string, sessionId: string): void {
-    if (!this.memoryHub) return;
+    if (!this.memoryHub) {
+      console.warn(`[AgentModelExecutor] rememberInteraction: memoryHub is null`);
+      return;
+    }
     try {
-      const longTerm = this.memoryHub.getLongTerm();
       const content = `User: ${userMsg}\nAgent: ${agentReply}`;
-      longTerm.store({
+      const entry: Omit<import("@evoclaw/core").MemoryEntry, "id" | "createdAt" | "accessedAt"> = {
         content,
         type: "conversation",
         metadata: {
@@ -1425,12 +1480,27 @@ export class AgentModelExecutor {
         },
         ttl: 7 * 24 * 3600 * 1000, // 7 days
         embedding: null,
-        id: "",
-        createdAt: new Date(),
-        accessedAt: new Date(),
-      }).catch((err) => console.warn(`[AgentModelExecutor] Memory save failed: ${err}`));
-    } catch {
-      // Silent fallback
+      };
+      const useRemember = !!this.memoryHub.remember;
+      console.log(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember}`);
+      // Prefer memory hub's remember() so the entry is mirrored into the
+      // vector store (Transformers embeddings). Fallback to longTerm.store
+      // when remember() is not provided by the injected hub.
+      const persist = this.memoryHub.remember
+        ? this.memoryHub.remember(entry)
+        : this.memoryHub.getLongTerm().store({
+            ...entry,
+            id: "",
+            createdAt: new Date(),
+            accessedAt: new Date(),
+          } as import("@evoclaw/core").MemoryEntry);
+      persist.then((stored) => {
+        console.log(`[AgentModelExecutor] Memory saved: id=${stored.id} session=${sessionId}`);
+      }, (err) => {
+        console.warn(`[AgentModelExecutor] Memory save failed: ${err}`);
+      });
+    } catch (err) {
+      console.warn(`[AgentModelExecutor] rememberInteraction threw: ${err}`);
     }
   }
 
@@ -1699,6 +1769,23 @@ export class AgentModelExecutor {
       workspacePath: this.workspacePath,
     };
     return tryQuickReplyFn(deps, message);
+  }
+
+  /**
+   * Extended quick reply that also appends a capability block for hello /
+   * identity / capability categories so the user gets a useful first-time
+   * introduction. Mirrors the WeChat channel's reply style.
+   */
+  private tryQuickReplyExtended(message: string): string | null {
+    const deps: QuickReplyDeps = {
+      persona: this.persona,
+      registeredTools: this.registeredTools,
+      config: this.config,
+      providers: this.providers,
+      hasBeenGreeted: this.greeted,
+      workspacePath: this.workspacePath,
+    };
+    return tryQuickReplyExtendedFn(deps, message);
   }
 
   private async generateChatResponse(

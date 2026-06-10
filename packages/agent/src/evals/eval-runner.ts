@@ -27,6 +27,32 @@ export class EvalRunner {
     return [...this.cases];
   }
 
+  /** Alias for getCases() — WebUI expects this name. */
+  getAllCases(): EvalCase[] {
+    return this.getCases();
+  }
+
+  /**
+   * Run a quick eval pass against an injected chat function. If no chat
+   * function is provided, each case is scored on length/pattern checks only
+   * (useful for dry-runs in CI without a live LLM).
+   */
+  async runAll(options?: {
+    chatFn?: (message: string, sessionId: string) => Promise<string>;
+    config?: Partial<EvalConfig>;
+    categoryFilter?: string;
+  }): Promise<EvalRunSummary> {
+    const config: EvalConfig = {
+      name: options?.config?.name ?? "auto-run",
+      timeoutPerCase: options?.config?.timeoutPerCase ?? 30_000,
+      passThreshold: options?.config?.passThreshold ?? 0.6,
+      useLLMJudge: options?.config?.useLLMJudge ?? false,
+      judgeProvider: options?.config?.judgeProvider,
+    };
+    const chatFn = options?.chatFn ?? (async (input: string) => `[dry-run] would process: ${input}`);
+    return this.run(chatFn, config, options?.categoryFilter);
+  }
+
   /** Get cases filtered by category */
   getCasesByCategory(category: string): EvalCase[] {
     return this.cases.filter(c => c.category === category);

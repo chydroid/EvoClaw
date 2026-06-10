@@ -4,6 +4,18 @@ import type { PermissionManager, PermissionRelay } from "@evoclaw/security";
 import type { ErrorRecoveryManager } from "@evoclaw/security";
 import type { FileSystemManager } from "@evoclaw/infrastructure";
 
+/** Validate that a resolved path stays within the allowed base directory.
+ *  Prevents path traversal attacks (e.g. `../../etc/passwd`). */
+function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
+  const normalizedBase = path.resolve(baseDir);
+  // On Windows, normalize drive letters for comparison
+  const normalizedTarget = path.resolve(resolvedPath);
+  if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
+    return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}". Use relative paths within the workspace only.`;
+  }
+  return null;
+}
+
 export function registerFileTools(
   executor: AgentModelExecutor,
   permissionManager: PermissionManager,
@@ -33,6 +45,8 @@ export function registerFileTools(
       const content = String(params.content || "");
       const overwrite = params.overwrite === true;
       const resolvedPath = path.resolve(fsBase, filePath);
+      const pathError = validatePathWithinBase(resolvedPath, fsBase);
+      if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
         return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content, overwrite));
@@ -63,6 +77,8 @@ export function registerFileTools(
       const filePath = String(params.path || "");
       const content = String(params.content || "");
       const resolvedPath = path.resolve(fsBase, filePath);
+      const pathError = validatePathWithinBase(resolvedPath, fsBase);
+      if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
         return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
@@ -91,6 +107,8 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       const resolvedPath = path.resolve(fsBase, filePath);
+      const pathError = validatePathWithinBase(resolvedPath, fsBase);
+      if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
         return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
@@ -124,6 +142,9 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
+      const resolvedPath = path.resolve(fsBase, filePath);
+      const pathError = validatePathWithinBase(resolvedPath, fsBase);
+      if (pathError) return { success: false, error: pathError };
       return await errRecovery.executeWithRetry("file_read", filePath, async () => {
         const content = await fsMgr.readFile(filePath);
         return { path: filePath, content };
@@ -142,6 +163,9 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const dirPath = String(params.path || ".");
+      const resolvedPath = path.resolve(fsBase, dirPath);
+      const pathError = validatePathWithinBase(resolvedPath, fsBase);
+      if (pathError) return { success: false, error: pathError };
       return await errRecovery.executeWithRetry("file_list", dirPath, () => fsMgr.listAll(dirPath));
     }
   );

@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import * as path from "path";
 import * as fs from "fs";
-import { initTracing, shutdownTracing } from "./tracing";
+import { initTracing, shutdownTracing, spanCollector } from "./tracing";
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
@@ -120,6 +120,9 @@ export class EvoClawServer {
   constructor() {
     this.registry = new ServiceRegistry();
     this.eventBus = new EventBus();
+    // Expose the in-memory OTel span collector as a registry service so the
+    // gateway can surface live traces via the /api/tracing/* endpoints.
+    this.registry.registerService("spanCollector", spanCollector);
     this.configManager = new ConfigManager();
     this.configManager.loadFromEnv();
 
@@ -181,8 +184,8 @@ export class EvoClawServer {
       { key: "emailIntegration", description: "邮件集成 — 邮件收发与分析功能", enabled: false, owner: "integration", updatedAt: Date.now() },
       { key: "scheduledTasks", description: "定时任务 — Cron定时执行预设操作", enabled: true, owner: "scheduler", updatedAt: Date.now() },
       { key: "rolloutCanary", description: "金丝雀发布 — 百分比灰度发布新功能（仅对10%请求启用）", enabled: false, rolloutPercent: 10, owner: "devops", updatedAt: Date.now() },
-      { key: "humanApproval", description: "人工审批 — 高风险工具操作需人工确认后执行", enabled: false, owner: "security", updatedAt: Date.now() },
-      { key: "a2a", description: "A2A协议 — Agent-to-Agent跨框架通信协议支持", enabled: false, owner: "integration", updatedAt: Date.now() },
+      { key: "humanApproval", description: "人工审批 — 高风险工具操作需人工确认后执行", enabled: true, owner: "security", updatedAt: Date.now() },
+      { key: "a2a", description: "A2A协议 — Agent-to-Agent跨框架通信协议支持", enabled: true, owner: "integration", updatedAt: Date.now() },
     ]);
     this.registry.registerService("featureFlagStore", this.featureFlagStore);
 

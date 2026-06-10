@@ -3,6 +3,48 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.15.0 (2026-06-11)
+
+### 任务执行可靠性全面提升
+
+基于对 OpenAI Agents SDK、LangGraph、CrewAI、AutoGPT、MetaGPT、Dify、Coze 等主流框架的深度对比研究，系统性提升任务执行可靠性。
+
+#### P0 紧急修复（已完成）
+
+- **文件路径遍历防护**：所有5个文件工具（file_create/modify/delete/read/list）新增 `validatePathWithinBase()` 校验，阻止 `../../etc/passwd` 等路径遍历攻击
+- **网络工具重试+指数退避**：web_search/web_fetch/scrapling_fetch/browser_* 等8个网络工具自动重试2次，退避间隔 1s→2s，非网络工具不重试（避免非幂等操作重复）
+- **工具错误信息增强**：错误返回包含 `error`+`suggestion`+`retried`+`toolName`，按错误类型（超时/404/认证/网络）给出不同修正建议，引导LLM自我修正
+
+#### P1 高优先级改进（已完成）
+
+- **工具结果智能摘要**：增强 `summarizeToolResult()` 函数，新增5个专用摘要器：
+  - `summarizeShellOutput`：保留首20行+末15行，中间省略
+  - `summarizeSearchResults`：提取标题+摘要+URL，限制8条
+  - `summarizeWebContent`：段落级摘要，首2段+末1段+中间采样
+  - `summarizeEmailResult`：保留主题+发件人+日期+正文前150字符
+  - `summarizeTextBody`：通用文本摘要
+- **写操作幂等性键**：file_create/file_modify/file_delete/email_send/scheduler_create/scheduler_delete 添加5分钟幂等性缓存，防止LLM重试导致重复写入
+- **工具动态加载**：按任务意图只发送相关工具定义给LLM，7个工具分组（core/browser/skill/email/coding/media/scheduler），关键词匹配+回退全量加载
+
+#### P2 中优先级改进（已完成）
+
+- **浏览器崩溃恢复+内存泄漏防护**：新增 `browserSessions` 会话管理器，10分钟空闲自动关闭，标签页上限5个，常用工具自动更新活动时间
+- **连续失败计数器+熔断器**：工具连续失败3次后自动熔断1分钟，返回结构化错误信息引导LLM换工具，成功后自动恢复
+- **工具参数Schema校验**：`validateToolParams()` 校验必填参数+类型检查，支持数字/布尔字符串自动类型转换
+
+### 本地 Transformers 嵌入集成
+
+- **hf-mirror.com 镜像支持**：`TransformersEmbeddingProvider` 新增 `endpoint` 选项，默认使用 `https://hf-mirror.com`，解决国内网络限制
+- **Xenova/all-MiniLM-L6-v2 模型**：默认模型改为 `Xenova/all-MiniLM-L6-v2`（transformers.js v4 约定），384维语义嵌入
+- **模型预下载脚本**：新增 `scripts/download-embedding-model.js`，支持从镜像预下载模型到本地缓存
+- **TF-IDF 降级机制**：Transformers 加载失败时自动降级到 LocalEmbeddingProvider，修复 `Service already registered` 错误
+
+### 语义快速回复
+
+- **SemanticQuickReply**：利用本地 Transformers 嵌入做语义级意图分类，15个意图类心（presence/hello/identity/status/howareyou/thanks/bye/capability/mood/worry/laugh/apology/ack/encourage/hug）
+- 在正则快速回复之后、LLM之前插入，变体表达也能被本地处理（如"how are you doing today"、"我心情不太好"）
+- 阈值0.45，缓存命中后延迟仅22ms
+
 ## v0.14.0 (2026-06-08)
 
 ### 代码架构重构 — 拆分巨型文件（第8项）

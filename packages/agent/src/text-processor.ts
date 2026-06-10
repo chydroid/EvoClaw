@@ -46,36 +46,42 @@ export function stripWebNoise(input: string): string {
 
 /**
  * 智能摘要工具结果，减少 token 用量。
- * web_search: 仅保留标题+摘要+URL
- * web_fetch: 保留前3段+最后1段
- * 其他工具: 智能截断并保留首尾重叠
+ *
+ * 增强策略：
+ * 1. web_search: 提取结构化数据（标题+摘要+URL），限制结果数
+ * 2. web_fetch/browser: 保留首尾+中间关键段落
+ * 3. shell_exec: 保留首尾输出行，压缩重复行
+ * 4. email: 保留邮件头+正文摘要
+ * 5. JSON结果: 紧凑化+截断长字段
+ * 6. 其他: 智能截断保留首尾
  */
 export function summarizeToolResult(toolName: string, result: string): string {
   if (!result || result.length < 2000) return result;
 
-  // web_search 结果：提取结构化数据
-  if (toolName === "web_search") {
-    const lines = result.split("\n");
-    const summaryLines: string[] = [];
-    for (const line of lines) {
-      // 保留标题行（通常以数字+点开头或包含 URL）
-      if (/^\d+\.\s/.test(line) || line.includes("http") || line.startsWith("[") || line.startsWith("*")) {
-        summaryLines.push(line);
-      }
-    }
-    if (summaryLines.length > 0 && summaryLines.length < lines.length) {
-      return summaryLines.join("\n");
-    }
+  // shell_exec: 保留首尾行，压缩中间重复
+  if (toolName === "shell_exec") {
+    return summarizeShellOutput(result);
   }
 
-  // web_fetch / browser 结果：保留首尾部分
+  // web_search 结果：提取结构化数据
+  if (toolName === "web_search") {
+    return summarizeSearchResults(result);
+  }
+
+  // web_fetch / browser 结果：保留首尾+中间关键段落
   if (toolName === "web_fetch" || toolName === "fetch_node_page" || toolName.startsWith("browser_")) {
-    const maxLen = 4000;
-    if (result.length > maxLen * 2) {
-      const firstPart = result.substring(0, maxLen);
-      const lastPart = result.substring(result.length - maxLen);
-      return firstPart + "\n\n... [content truncated, showing start and end] ...\n\n" + lastPart;
-    }
+    return summarizeWebContent(result);
+  }
+
+  // email 结果：保留邮件头+正文摘要
+  if (toolName.startsWith("email_")) {
+    return summarizeEmailResult(result);
+  }
+
+  // JSON 结果：紧凑化
+  if (result.trimStart().startsWith("{") || result.trimStart().startsWith("[")) {
+    const compacted = compactJson(result);
+    if (compacted.length < result.length) return compacted;
   }
 
   // 默认：智能截断并保留首尾重叠
@@ -86,6 +92,163 @@ export function summarizeToolResult(toolName: string, result: string): string {
   }
 
   return result;
+}
+
+/** Summarize shell output: keep first/last lines, compress repeated patterns */
+function summarizeShellOutput(result: string): string {
+  const maxLen = 8000;
+  if (result.length <= maxLen) return result;
+
+  const lines = result.split("\n");
+  if (lines.length <= 50) {
+    // Not many lines but long content — truncate each line
+    return lines.map(l => l.length > 500 ? l.slice(0, 500) + "...[truncated]" : l).join("\n").slice(0, maxLen);
+  }
+
+  // Keep first 20 + last 15 lines, summarize middle
+  const head = lines.slice(0, 20);
+  const tail = lines.slice(-15);
+  const middleCount = lines.length - 20 - 15;
+  const summary = middleCount > 0
+    ? [`  ... [${middleCount} lines omitted, showing first 20 and last 15] ...`]
+    : [];
+  const combined = [...head, ...summary, ...tail].join("\n");
+
+  if (combined.length > maxLen) {
+    const halfLen = Math.floor(maxLen / 2);
+    return combined.substring(0, halfLen) + "\n\n... [truncated] ...\n\n" + combined.substring(combined.length - halfLen);
+  }
+  return combined;
+}
+
+/** Summarize search results: extract title+snippet+URL, limit to top results */
+function summarizeSearchResults(result: string): string {
+  const maxLen = 6000;
+
+  // Try to parse as JSON (structured search results)
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed)) {
+      // Array of search results
+      const summarized = parsed.slice(0, 8).map((item: Record<string, unknown>, i: number) => {
+        const title = String(item.title || item.name || `Result ${i + 1}`);
+        const snippet = String(item.snippet || item.content || item.description || "").slice(0, 200);
+        const url = String(item.url || item.link || item.href || "");
+        return `${i + 1}. ${title}\n   ${snippet}${url ? `\n   URL: ${url}` : ""}`;
+      });
+      const totalHint = parsed.length > 8 ? `\n\n... [${parsed.length - 8} more results omitted]` : "";
+      return summarized.join("\n\n") + totalHint;
+    }
+    if (parsed.results && Array.isArray(parsed.results)) {
+      const summarized = parsed.results.slice(0, 8).map((item: Record<string, unknown>, i: number) => {
+        const title = String(item.title || item.name || `Result ${i + 1}`);
+        const snippet = String(item.snippet || item.content || item.description || "").slice(0, 200);
+        const url = String(item.url || item.link || item.href || "");
+        return `${i + 1}. ${title}\n   ${snippet}${url ? `\n   URL: ${url}` : ""}`;
+      });
+      const totalHint = parsed.results.length > 8 ? `\n\n... [${parsed.results.length - 8} more results omitted]` : "";
+      return summarized.join("\n\n") + totalHint;
+    }
+  } catch {
+    // Not JSON — fall through to text-based extraction
+  }
+
+  // Text-based: extract lines with URLs or numbered items
+  const lines = result.split("\n");
+  const summaryLines: string[] = [];
+  for (const line of lines) {
+    if (/^\d+\.\s/.test(line) || line.includes("http") || line.startsWith("[") || line.startsWith("*")) {
+      summaryLines.push(line.slice(0, 300));
+    }
+  }
+  if (summaryLines.length > 0 && summaryLines.length < lines.length) {
+    const combined = summaryLines.join("\n");
+    return combined.length > maxLen ? combined.slice(0, maxLen) + "\n\n... [truncated]" : combined;
+  }
+
+  return result.length > maxLen ? result.slice(0, maxLen) + "\n\n... [truncated]" : result;
+}
+
+/** Summarize web content: keep first/last + key paragraphs in the middle */
+function summarizeWebContent(result: string): string {
+  const maxLen = 6000;
+  if (result.length <= maxLen) return result;
+
+  // Try JSON first
+  try {
+    const parsed = JSON.parse(result);
+    if (typeof parsed === "object" && parsed !== null) {
+      const r = parsed as Record<string, unknown>;
+      // For web fetch results, keep content summary
+      if (typeof r.content === "string" && r.content.length > maxLen) {
+        r.content = summarizeTextBody(r.content, maxLen);
+      }
+      if (typeof r.text === "string" && r.text.length > maxLen) {
+        r.text = summarizeTextBody(r.text, maxLen);
+      }
+      const compacted = JSON.stringify(r);
+      return compacted.length < result.length ? compacted : result.slice(0, maxLen);
+    }
+  } catch {
+    // Not JSON
+  }
+
+  // Plain text: summarize body
+  return summarizeTextBody(result, maxLen);
+}
+
+/** Summarize a text body: keep first N chars + last M chars + key paragraphs */
+function summarizeTextBody(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+
+  const paragraphs = text.split(/\n\n+/);
+  if (paragraphs.length <= 5) {
+    // Few paragraphs but long — truncate first and last
+    const firstPart = text.substring(0, Math.floor(maxLen * 0.6));
+    const lastPart = text.substring(text.length - Math.floor(maxLen * 0.3));
+    return firstPart + "\n\n... [content truncated] ...\n\n" + lastPart;
+  }
+
+  // Many paragraphs: keep first 2, last 1, and sample middle ones
+  const head = paragraphs.slice(0, 2).join("\n\n");
+  const tail = paragraphs[paragraphs.length - 1];
+  const middleParagraphs = paragraphs.slice(2, -1);
+
+  // Sample every Nth middle paragraph
+  const sampleRate = Math.max(1, Math.floor(middleParagraphs.length / 3));
+  const sampledMiddle = middleParagraphs
+    .filter((_, i) => i % sampleRate === 0)
+    .map(p => p.slice(0, 200))
+    .join("\n\n");
+
+  const combined = head + "\n\n... [middle content sampled] ...\n\n" + sampledMiddle + "\n\n... [content truncated] ...\n\n" + tail;
+  return combined.length > maxLen ? combined.slice(0, maxLen) : combined;
+}
+
+/** Summarize email results: keep headers + body summary */
+function summarizeEmailResult(result: string): string {
+  const maxLen = 6000;
+  if (result.length <= maxLen) return result;
+
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed)) {
+      // Array of emails — keep subject + from + date + first 100 chars of body
+      const summarized = parsed.slice(0, 10).map((email: Record<string, unknown>, i: number) => {
+        const subject = String(email.subject || "(no subject)");
+        const from = String(email.from || email.sender || "");
+        const date = String(email.date || email.receivedAt || "");
+        const body = String(email.body || email.text || email.content || "").slice(0, 150);
+        return `${i + 1}. [${date}] ${from}: ${subject}\n   ${body}${body.length >= 150 ? "..." : ""}`;
+      });
+      const totalHint = parsed.length > 10 ? `\n\n... [${parsed.length - 10} more emails omitted]` : "";
+      return summarized.join("\n\n") + totalHint;
+    }
+  } catch {
+    // Not JSON
+  }
+
+  return result.length > maxLen ? result.slice(0, maxLen) + "\n\n... [truncated]" : result;
 }
 
 export function stripHtml(input: string): string {

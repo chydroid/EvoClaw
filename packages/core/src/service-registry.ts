@@ -38,6 +38,14 @@ export class ServiceRegistry implements IPluginRegistry {
     }
   }
 
+  /** Remove a service entry from the registry. No-op if not present. */
+  unregisterService(name: string): void {
+    this.services.delete(name);
+    this.serviceInfos.delete(name);
+    this.lifecycles.delete(name);
+    this.startOrder = this.startOrder.filter((n) => n !== name);
+  }
+
   resolveService<T>(name: string): T | undefined {
     return this.services.get(name) as T | undefined;
   }

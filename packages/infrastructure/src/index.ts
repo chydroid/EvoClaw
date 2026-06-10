@@ -30,6 +30,8 @@ export { Observability } from "./observability";
 export type { MetricDef, MetricLabel, MetricValue, MetricType, TraceSpan, HealthReport, ObservabilityConfig } from "./observability";
 export { TracingService } from "./tracing";
 export type { TracingConfig } from "./tracing";
+export { InMemorySpanCollector } from "./span-collector";
+export type { RecordedSpan } from "./span-collector";
 export { ApiClient, QueryBuilder, WebhookSender, GraphQLClient, PageScraper } from "./api-toolkit";
 export type { ApiClientConfig, HttpRequestOptions, HttpResponse, PaginationOptions, DbQuery, WebhookPayload, PageMetadata } from "./api-toolkit";
 
