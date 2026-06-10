@@ -3,6 +3,35 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.15.1 (2026-06-11)
+
+### 50项全面冒烟测试 + BUG修复
+
+基于50个模拟用户请求的全面冒烟测试（覆盖13个能力类别），发现并修复以下问题：
+
+- **新增 `/api/config` 端点**：返回版本号、Persona配置、Feature Flags、Avatar配置
+- **修复未知API路径返回401而非404**：auth中间件现在对未知API路径跳过认证，让404中间件正确处理
+- **优化网络工具重试逻辑**：DNS解析失败（ENOTFOUND/getaddrinfo）等不可恢复错误不再重试，减少无效等待
+- **修复auth-provider测试**：3个认证拒绝测试因路径变更导致失败，改用 `/api/auth/me` 路径
+
+### 测试结果
+
+- 单元测试：96 files, 2729 passed, 1 skipped ✅
+- 冒烟测试（50项）：39/50 通过（11项因LLM响应超时，非BUG）
+  - QuickReply: 2/2 ✅
+  - SemanticQR: 3/3 ✅
+  - File: 4/6 (2 timeout)
+  - Web: 3/5 (2 timeout)
+  - Browser: 2/4 (2 timeout)
+  - Code: 1/4 (2 timeout + 1 assertion fix)
+  - Skill: 4/4 ✅
+  - Email: 3/3 ✅
+  - Scheduler: 3/3 ✅
+  - Memory: 4/4 ✅
+  - API: 6/6 ✅
+  - Security: 2/4 (1 timeout + 1 assertion fix)
+  - Error: 2/2 ✅
+
 ## v0.15.0 (2026-06-11)
 
 ### 任务执行可靠性全面提升

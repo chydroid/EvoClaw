@@ -99,6 +99,30 @@ export class AuthProvider {
       return next();
     }
 
+    // For paths that don't match any known API prefix, skip auth and let
+    // the 404 middleware handle them. This avoids returning 401 for routes
+    // that simply don't exist, which leaks no information and gives a
+    // more accurate response.
+    if (req.path.startsWith("/api/") && !req.path.startsWith("/api/auth/")) {
+      // Known API prefixes that should require auth if no public match
+      const knownApiPrefixes = [
+        "/api/chat", "/api/skills", "/api/config", "/api/bootstrap", "/api/events",
+        "/api/permission-relay", "/api/crestodian", "/api/sessions", "/api/evolution",
+        "/api/compactions", "/api/scheduler", "/api/channels", "/api/plugins",
+        "/api/permission", "/api/retention", "/api/health", "/api/models",
+        "/api/dead-letter-queue", "/api/message-templates", "/api/reply-refs",
+        "/api/canvas", "/api/feature-flags", "/api/queue", "/api/agent",
+        "/api/memory", "/api/tools", "/api/sandbox", "/api/reporting",
+        "/api/system", "/api/security", "/api/file", "/api/logs", "/api/version",
+        "/api/approvals", "/api/tracing", "/api/evals", "/api/executions",
+      ];
+      const isKnownApi = knownApiPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"));
+      if (!isKnownApi) {
+        // Unknown API path — skip auth, let 404 handler deal with it
+        return next();
+      }
+    }
+
     const cookieToken = this.getCookie(req, "web_ui_token");
     if (cookieToken && this.safeEqual(cookieToken, this.webUiToken)) {
       return next();

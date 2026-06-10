@@ -424,6 +424,18 @@ export class GatewayServer {
       res.json({ avatars: this.avatarConfig });
     });
 
+    // GET /api/config — general configuration info
+    this.app.get("/api/config", (_req: Request, res: Response) => {
+      const persona = this.registry.resolveService<{ name?: string; masterTerm?: string }>("personaConfig");
+      const featureFlags = this.registry.resolveService<{ getAll?(): Record<string, unknown> }>("featureFlagStore");
+      res.json({
+        version: (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ ?? "unknown",
+        persona: persona ? { name: persona.name, masterTerm: persona.masterTerm } : null,
+        features: featureFlags?.getAll?.() ?? {},
+        avatars: this.avatarConfig,
+      });
+    });
+
     this.app.put("/api/config/avatars", (req: Request, res: Response) => {
       const { avatars } = req.body as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
       if (avatars) {

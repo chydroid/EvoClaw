@@ -6,7 +6,7 @@ import type { Request, Response, NextFunction } from "express";
 
 function mockRequest(overrides: Partial<Request> = {}): Request {
   return {
-    path: "/api/some-protected",
+    path: "/api/reporting/some-protected",
     headers: {},
     query: {},
     ...overrides,
@@ -176,7 +176,7 @@ describe("AuthProvider", () => {
 
   it("should reject request without auth header", async () => {
     const auth = new AuthProvider(jwtSecret, registry);
-    const req = mockRequest({ path: "/api/protected" });
+    const req = mockRequest({ path: "/api/auth/me" });
     const res = mockResponse();
     await auth.authenticate(req, res, mockNext);
     expect(res.status).toHaveBeenCalledWith(401);
@@ -186,7 +186,7 @@ describe("AuthProvider", () => {
   it("should reject request with invalid Bearer token", async () => {
     const auth = new AuthProvider(jwtSecret, registry);
     const req = mockRequest({
-      path: "/api/protected",
+      path: "/api/auth/me",
       headers: { authorization: "Bearer invalid" },
     });
     const res = mockResponse();
@@ -197,7 +197,7 @@ describe("AuthProvider", () => {
   it("should reject malformed auth header", async () => {
     const auth = new AuthProvider(jwtSecret, registry);
     const req = mockRequest({
-      path: "/api/protected",
+      path: "/api/auth/me",
       headers: { authorization: "Basic something" },
     });
     const res = mockResponse();

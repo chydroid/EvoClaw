@@ -1235,8 +1235,17 @@ Have a specific URL?
                       break; // success — exit retry loop
                     } catch (retryErr: unknown) {
                       lastExecError = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
+                      // Don't retry on non-recoverable errors (DNS failure, auth errors, etc.)
+                      const errMsg = lastExecError.message;
+                      const isNonRecoverable = errMsg.includes("ENOTFOUND") || errMsg.includes("getaddrinfo");
+                      if (isNonRecoverable || attempt >= MAX_RETRIES) {
+                        if (attempt < MAX_RETRIES) {
+                          console.warn(`[AgentModelExecutor] Tool "${toolName}" non-recoverable error, skipping retry: ${errMsg}`);
+                        }
+                        break;
+                      }
                       if (attempt < MAX_RETRIES) {
-                        console.warn(`[AgentModelExecutor] Tool "${toolName}" attempt ${attempt + 1} failed: ${lastExecError.message}, will retry`);
+                        console.warn(`[AgentModelExecutor] Tool "${toolName}" attempt ${attempt + 1} failed: ${errMsg}, will retry`);
                       }
                     }
                   }
