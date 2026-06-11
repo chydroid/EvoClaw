@@ -41,6 +41,7 @@ export class MemoryHub {
   /** Tracked when transformers warmup fails — surfaced via status. */
   private embeddingLoadError: string | null = null;
   private memoryCuratorV2: import("./memory-curator-v2").MemoryCuratorV2 | null = null;
+  private memoryDreaming: import("./memory-dreaming").MemoryDreaming | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -58,6 +59,11 @@ export class MemoryHub {
       const { MemoryCuratorV2 } = require("./memory-curator-v2");
       this.memoryCuratorV2 = new MemoryCuratorV2();
     } catch {}
+
+    try {
+      const { MemoryDreaming } = require("./memory-dreaming");
+      this.memoryDreaming = new MemoryDreaming(this);
+    } catch { /* memory dreaming not available */ }
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
     // (all-MiniLM-L6-v2, 384-dim) when the model can be loaded. The status
@@ -379,5 +385,20 @@ export class MemoryHub {
     } catch {
       return null;
     }
+  }
+
+  async dream(phase?: import("./memory-dreaming").DreamPhase): Promise<import("./memory-dreaming").DreamSession | null> {
+    if (!this.memoryDreaming) return null;
+    return this.memoryDreaming.dream(phase);
+  }
+
+  getDreamDiary(): import("./memory-dreaming").DreamDiary | null {
+    if (!this.memoryDreaming) return null;
+    return this.memoryDreaming.getDiary();
+  }
+
+  shouldDream(): boolean {
+    if (!this.memoryDreaming) return false;
+    return this.memoryDreaming.shouldDream();
   }
 }

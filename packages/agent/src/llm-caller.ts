@@ -228,6 +228,13 @@ export interface LLMCallerDeps {
   checkAndReflect?: (sessionId: string) => Promise<import("./reflection-engine").ReflectionResult | null>;
   // Planning step update (optional — enables plan progress tracking)
   updatePlanStep?: (sessionId: string, stepId: string, update: { status: string; result?: string; error?: string }) => void;
+  // Guardrails integration (optional — enables input/output/tool safety checks)
+  checkInputGuardrail?: (input: string) => import("./guardrails").GuardrailResult;
+  checkOutputGuardrail?: (output: string) => import("./guardrails").GuardrailResult;
+  checkToolGuardrail?: (toolName: string, args: Record<string, unknown>) => import("./guardrails").GuardrailResult;
+  // Observability integration (optional — enables trace/span recording)
+  observability?: import("./agent-observability").AgentObservability;
+  currentTraceId?: string;
 }
 
 // ── Helper: tool cache ──
@@ -1093,6 +1100,28 @@ Have a specific URL?
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore parse errors */ }
           onProgress?.({ type: "tool_call", phase: "tool_calling", detail: `正在执行工具: ${toolName}`, progress: 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolArgs: args, round: round + 1 });
 
+          // ── Observability: start tool span ──
+          let toolSpanId: string | undefined;
+          if (deps.observability && deps.currentTraceId) {
+            const span = deps.observability.startSpan(deps.currentTraceId, "tool", `tool:${toolName}`);
+            toolSpanId = span.spanId;
+            deps.observability.addSpanAttribute(deps.currentTraceId, span.spanId, "tool.name", toolName);
+          }
+
+          // ── Guardrails: tool call validation ──
+          let toolResult: string = "";
+          let toolErrored = false;
+          let toolError: string | undefined;
+          if (deps.checkToolGuardrail) {
+            const toolCheck = deps.checkToolGuardrail(toolName, args);
+            if (!toolCheck.passed && toolCheck.severity === "high") {
+              toolResult = JSON.stringify({ error: `[工具安全拦截] ${toolCheck.reason}` });
+              toolErrored = true;
+              toolError = toolCheck.reason;
+              // Skip actual tool execution — will be handled below
+            }
+          }
+
           // Plugin hook: before_tool_call
           let skipWithResult: unknown = undefined;
 
@@ -1184,9 +1213,6 @@ Have a specific URL?
             }
           }
 
-          let toolResult: string = "";
-          let toolErrored = false;
-          let toolError: string | undefined;
           let rawResult: unknown = undefined;
           let cacheHit = false;
 
@@ -1203,7 +1229,10 @@ Have a specific URL?
           const MAX_RETRIES = NETWORK_TOOLS.has(toolName) ? 2 : 0;
           const isNetworkTool = NETWORK_TOOLS.has(toolName);
 
-          if (toolEntry) {
+          // ── Guardrails: skip tool execution if blocked ──
+          if (toolErrored && toolError) {
+            // Tool was blocked by guardrails — skip execution, push result directly
+          } else if (toolEntry) {
             // ── Parameter schema validation ──
             const paramError = validateToolParams(toolName, args, toolEntry.definition);
             if (paramError) {
@@ -1496,6 +1525,12 @@ Have a specific URL?
             deps.recordToolTrace(sessionId, toolName, args, toolResult.slice(0, 500), !toolErrored, Date.now() - toolStartTime, toolError);
           }
 
+          // ── Observability: end tool span ──
+          if (deps.observability && deps.currentTraceId && toolSpanId) {
+            deps.observability.addSpanAttribute(deps.currentTraceId, toolSpanId, "tool.success", !toolErrored);
+            deps.observability.endSpan(deps.currentTraceId, toolSpanId, toolErrored ? "error" : "ok");
+          }
+
           // ── Update planning step status ──
           if (deps.updatePlanStep) {
             deps.updatePlanStep(sessionId, toolName, {
@@ -1589,6 +1624,16 @@ Have a specific URL?
       }
 
       if (finalReply) {
+        // ── Guardrails: output validation ──
+        if (deps.checkOutputGuardrail && finalReply) {
+          const outputCheck = deps.checkOutputGuardrail(finalReply);
+          if (!outputCheck.passed && outputCheck.severity === "high") {
+            finalReply = `[输出安全过滤] ${outputCheck.reason}`;
+          } else if (outputCheck.sanitizedOutput) {
+            finalReply = outputCheck.sanitizedOutput;
+          }
+        }
+
         if (deps.sessionManager) {
           try {
             const agentId = "default";

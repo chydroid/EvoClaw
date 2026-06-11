@@ -95,6 +95,26 @@ export type { EvalCase, EvalResult, EvalRunSummary, EvalConfig } from "./evals";
 export { A2AClient, A2AServer } from "./a2a";
 export type { A2AAgentCard, A2ACapability, A2ATask, A2ATaskResult, A2AMessage, A2AClientConfig, A2AServerConfig } from "./a2a";
 
+// ACP (Agent Delegation Protocol)
+export { ACPProtocolHandler } from "./acp-delegation";
+export type { ACPAgent, ACPDelegationRequest, ACPDelegationResult } from "./acp-delegation";
+
 // ToolChain system
 export { ToolChainExecutor, type ToolChainDefinition, type ToolChainResult, type ToolChainStep } from "./tool-chain";
 export { ToolChainRegistry, createBuiltinToolChainRegistry } from "./tool-chain-registry";
+
+// Guardrails system
+export { GuardrailsManager, InputGuardrail, OutputGuardrail, ToolGuardrail } from "./guardrails";
+export type { GuardrailResult, GuardrailConfig, GuardrailStats, InputRule, OutputRule, ToolRule, Severity, GuardrailAction } from "./guardrails";
+
+// Structured Output system
+export { StructuredOutputParser, SchemaRegistry } from "./structured-output";
+export type { OutputSchema, StructuredOutputResult, StructuredOutputConfig } from "./structured-output";
+
+// Observability system
+export { AgentObservability } from "./agent-observability";
+export type { Span, Trace, TraceSummary, Metric, SpanKind, SpanEvent, ObservabilityConfig } from "./agent-observability";
+
+// Prompt Cache system
+export { PromptCache } from "./prompt-cache";
+export type { PromptCacheConfig, CacheEntry, CacheStats } from "./prompt-cache";

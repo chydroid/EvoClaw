@@ -3,6 +3,55 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.19.0 (2026-06-12)
+
+### 对标OpenClaw 2026.4.5 — 六大核心能力提升
+
+基于对OpenClaw 2026.4.5最新版本（视频/音乐生成、Dreaming记忆巩固、Guardrails安全闸门、Prompt Cache优化、ACP委派协议、全链路可观测性）的深度对比，识别出6项关键差距并系统性实施改进。96个测试文件、2740个测试用例全部通过。
+
+---
+
+#### 新增模块
+
+| 模块 | 包 | 功能 | 对标 |
+|------|-----|------|------|
+| **GuardrailsManager** | agent | 三层安全闸门（输入/输出/工具），Prompt注入检测、PII脱敏、有害内容过滤、工具参数安全校验 | OpenClaw安全加固 + OpenAI Agents SDK Guardrails |
+| **MemoryDreaming** | memory | 三阶段记忆巩固（Light/Deep/REM），空闲时自动回放历史提取持久事实，Jaccard去重+合并 | OpenClaw 2026.4.5 Dreaming GA |
+| **StructuredOutputParser** | agent | 结构化输出解析，4种解析策略（直接JSON/Markdown代码块/大括号提取/键值对），JSON修复+Schema验证 | OpenAI Structured Output |
+| **SchemaRegistry** | agent | 内置3个常用Schema（task-result/analysis/code-review），自定义Schema注册 | — |
+| **PromptCache** | agent | 提示词前缀缓存，djb2哈希O(1)查找，LRU淘汰+TTL过期，节省重复token消耗 | OpenClaw 2026.4.5 Prompt Cache |
+| **ACPProtocolHandler** | agent | Agent委派协议，4个内置代理（code-generator/reviewer/researcher/analyst），能力匹配+超时控制 | OpenClaw ACP委派协议 |
+| **AgentObservability** | agent | 全链路可观测性，Trace/Span/Metric三层模型，OpenTelemetry兼容导出+Prometheus指标格式 | OpenClaw可观测性 + SITS2026最佳实践 |
+
+#### 集成方式
+
+| 模块 | 集成点 | 说明 |
+|------|--------|------|
+| GuardrailsManager | chat()输入/输出 + llm-caller工具执行 | 输入拦截high级威胁，输出过滤敏感内容，工具调用校验危险参数 |
+| MemoryDreaming | MemoryHub | 新增dream()/shouldDream()/getDreamDiary()方法 |
+| StructuredOutputParser | AgentModelExecutor | 初始化+Schema注册，可用于LLM输出解析 |
+| PromptCache | chat()系统提示构建后 | 前缀匹配缓存命中，节省token |
+| ACPProtocolHandler | AgentModelExecutor | 初始化+4个内置代理，getACPAgents()查询 |
+| AgentObservability | chat()全流程 + llm-caller工具执行 | Trace生命周期管理，Span记录工具/LLM调用 |
+
+#### 新增文件清单
+
+| 文件 | 包 | 功能 |
+|------|-----|------|
+| `guardrails.ts` | agent | 三层安全闸门系统 |
+| `structured-output.ts` | agent | 结构化输出解析器 |
+| `prompt-cache.ts` | agent | 提示词前缀缓存 |
+| `acp-delegation.ts` | agent | Agent委派协议 |
+| `agent-observability.ts` | agent | 全链路可观测性 |
+| `memory-dreaming.ts` | memory | 记忆巩固梦境系统 |
+
+#### 测试结果
+
+| 测试类型 | 结果 |
+|----------|------|
+| 构建 | 17/17包编译通过 |
+| 单元测试 | 96/96文件通过，2740/2741用例通过 |
+
 ## v0.18.0 (2026-06-11)
 
 ### 集成审计与深度修复 — 确保所有改进真正工作

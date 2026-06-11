@@ -121,6 +121,16 @@ export class AgentModelExecutor {
   /** Eval runner for agent behavior evaluation */
   private evalRunner: import("./evals").EvalRunner | null = null;
 
+  private guardrailsManager: import("./guardrails").GuardrailsManager | null = null;
+  private structuredOutputParser: import("./structured-output").StructuredOutputParser | null = null;
+  private schemaRegistry: import("./structured-output").SchemaRegistry | null = null;
+  private promptCache: import("./prompt-cache").PromptCache | null = null;
+  private acpHandler: import("./acp-delegation").ACPProtocolHandler | null = null;
+  private observability: import("./agent-observability").AgentObservability | null = null;
+
+  /** Current observability trace ID for the active chat session */
+  private _currentTraceId: string | undefined;
+
   /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
   private static TOOL_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
@@ -405,6 +415,37 @@ export class AgentModelExecutor {
       const { createBuiltinToolChainRegistry } = require("./tool-chain-registry") as { createBuiltinToolChainRegistry: () => import("./tool-chain-registry").ToolChainRegistry };
       this.toolChainRegistry = createBuiltinToolChainRegistry();
     } catch { /* tool-chain-registry not available */ }
+
+    // Guardrails
+    try {
+      const { GuardrailsManager } = require("./guardrails");
+      this.guardrailsManager = new GuardrailsManager();
+    } catch { /* guardrails not available */ }
+
+    // Structured Output
+    try {
+      const { StructuredOutputParser, SchemaRegistry } = require("./structured-output");
+      this.structuredOutputParser = new StructuredOutputParser();
+      this.schemaRegistry = new SchemaRegistry();
+    } catch { /* structured output not available */ }
+
+    // Prompt Cache
+    try {
+      const { PromptCache } = require("./prompt-cache");
+      this.promptCache = new PromptCache();
+    } catch { /* prompt cache not available */ }
+
+    // ACP Delegation
+    try {
+      const { ACPProtocolHandler } = require("./acp-delegation");
+      this.acpHandler = new ACPProtocolHandler();
+    } catch { /* ACP not available */ }
+
+    // Observability
+    try {
+      const { AgentObservability } = require("./agent-observability");
+      this.observability = new AgentObservability();
+    } catch { /* observability not available */ }
   }
 
   /** Register built-in virtual agents in the swarm */
@@ -609,6 +650,11 @@ export class AgentModelExecutor {
       recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
       checkAndReflect: (sessionId: string) => this.checkAndReflect(sessionId),
       updatePlanStep: (sessionId: string, stepId: string, update: { status: string; result?: string; error?: string }) => this.updatePlanStep(sessionId, stepId, update),
+      checkInputGuardrail: this.guardrailsManager ? (input: string) => this.guardrailsManager!.checkInput(input) : undefined,
+      checkOutputGuardrail: this.guardrailsManager ? (output: string) => this.guardrailsManager!.checkOutput(output) : undefined,
+      checkToolGuardrail: this.guardrailsManager ? (toolName: string, args: Record<string, unknown>) => this.guardrailsManager!.checkToolCall(toolName, args) : undefined,
+      observability: this.observability ?? undefined,
+      currentTraceId: this._currentTraceId,
     };
   }
 
@@ -1047,6 +1093,25 @@ export class AgentModelExecutor {
       effectiveMessage = parts.join("\n") + userMsgLine;
     }
 
+    // ── Guardrails: input validation ──
+    if (this.guardrailsManager) {
+      const inputCheck = this.guardrailsManager.checkInput(effectiveMessage);
+      if (!inputCheck.passed && inputCheck.severity === "high") {
+        return { reply: `[安全拦截] ${inputCheck.reason}`, tokensUsed: 0, contextTokens: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
+      }
+      if (inputCheck.sanitizedInput) {
+        effectiveMessage = inputCheck.sanitizedInput;
+      }
+    }
+
+    // ── Observability: start trace ──
+    let currentTraceId: string | undefined;
+    if (this.observability) {
+      const trace = this.observability.startTrace(sessionId, { userId: effectiveMessage.slice(0, 100) });
+      currentTraceId = trace.traceId;
+      this._currentTraceId = currentTraceId;
+    }
+
     // ── Session management ──
     const sessionLoadFn = async () => {
       let session = this.sessionManager?.loadSessionMeta(agentId, sessionId) ?? null;
@@ -1451,6 +1516,18 @@ export class AgentModelExecutor {
     }
 
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
+
+    // ── Prompt Cache: check for cached prefix ──
+    let cacheEntry: import("./prompt-cache").CacheEntry | null = null;
+    if (this.promptCache) {
+      const historyEntries = (this.conversationHistory.get(sessionId) || []).map(h => ({ role: h.role, content: h.content || "" }));
+      const cacheMessages = [{ role: "system", content: systemPrompt }, ...historyEntries];
+      cacheEntry = this.promptCache.findMatchingPrefix(cacheMessages);
+      if (cacheEntry) {
+        console.log(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens`);
+      }
+    }
+
     const installedSkills = await skillManager?.listSkills() || [];
 
     // ── ToolChain: check if a predefined tool chain matches this request ──
@@ -1559,10 +1636,27 @@ export class AgentModelExecutor {
         // Save the interaction to long-term memory (and mirror into the
         // vector store when the memory hub exposes remember()).
         this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
-        if (pendingPermissions.length > 0) {
-          return { reply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted, files: result.files };
+
+        // ── Guardrails: output validation ──
+        let guardrailedReply = reply;
+        if (this.guardrailsManager && guardrailedReply) {
+          const outputCheck = this.guardrailsManager.checkOutput(guardrailedReply);
+          if (!outputCheck.passed && outputCheck.severity === "high") {
+            guardrailedReply = `[输出安全过滤] ${outputCheck.reason}`;
+          } else if (outputCheck.sanitizedOutput) {
+            guardrailedReply = outputCheck.sanitizedOutput;
+          }
         }
-        return { reply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted, files: result.files };
+
+        // ── Observability: end trace ──
+        if (this.observability && currentTraceId) {
+          this.observability.endTrace(currentTraceId);
+        }
+
+        if (pendingPermissions.length > 0) {
+          return { reply: guardrailedReply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted, files: result.files };
+        }
+        return { reply: guardrailedReply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted, files: result.files };
       }
     }
 
@@ -1587,7 +1681,22 @@ export class AgentModelExecutor {
     
     // Save important interaction to long-term memory
     this.rememberInteraction(message.slice(0, 200), reply.slice(0, 200), sessionId);
-    
+
+    // ── Guardrails: output validation ──
+    if (this.guardrailsManager && reply) {
+      const outputCheck = this.guardrailsManager.checkOutput(reply);
+      if (!outputCheck.passed && outputCheck.severity === "high") {
+        reply = `[输出安全过滤] ${outputCheck.reason}`;
+      } else if (outputCheck.sanitizedOutput) {
+        reply = outputCheck.sanitizedOutput;
+      }
+    }
+
+    // ── Observability: end trace ──
+    if (this.observability && currentTraceId) {
+      this.observability.endTrace(currentTraceId);
+    }
+
     // ── Plugin hook: agent_end ──
     const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions], toolsExecuted: false };
     if (tracing?.isEnabled()) {
@@ -1604,6 +1713,7 @@ export class AgentModelExecutor {
     } finally {
       // Mark session as idle so heartbeat can resume
       this.markSessionIdle(sessionId);
+      this._currentTraceId = undefined;
     }
   }
 
@@ -2235,5 +2345,25 @@ export class AgentModelExecutor {
   getSwarmStatus(): { agentCount: number; activeDelegations: number; agents: Array<{ id: string; name: string; role: string; status: string }> } {
     if (!this.swarmOrchestrator) return { agentCount: 0, activeDelegations: 0, agents: [] };
     return this.swarmOrchestrator.getStatus();
+  }
+
+  getGuardrailsStatus(): { enabled: boolean; stats?: import("./guardrails").GuardrailStats } {
+    if (!this.guardrailsManager) return { enabled: false };
+    return { enabled: true, stats: this.guardrailsManager.getStats() };
+  }
+
+  getObservabilityTraces(): import("./agent-observability").Trace[] {
+    if (!this.observability) return [];
+    return this.observability.getActiveTraces();
+  }
+
+  getPromptCacheStats(): import("./prompt-cache").CacheStats | null {
+    if (!this.promptCache) return null;
+    return this.promptCache.getCacheStats();
+  }
+
+  getACPAgents(): import("./acp-delegation").ACPAgent[] {
+    if (!this.acpHandler) return [];
+    return this.acpHandler.listAgents();
   }
 }

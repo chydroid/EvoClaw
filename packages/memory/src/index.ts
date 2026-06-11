@@ -19,5 +19,7 @@ export { MemoryCurator } from "./memory-curator";
 export type { CurationDecision, MemorySnapshot } from "./memory-curator";
 export { MemoryCuratorV2 } from "./memory-curator-v2";
 export type { MemoryEntryInput, MemoryEntryWithId, CompressibleEntry, CompressedMemory, CurationResult } from "./memory-curator-v2";
+export { MemoryDreaming, DreamPhase } from "./memory-dreaming";
+export type { DreamSession, DreamFact, DreamDiary, DreamingConfig } from "./memory-dreaming";
 export { chunkDocument, RAGPipeline, SimpleReranker } from "./rag";
 export type { ChunkOptions, DocumentChunk, RAGPipelineConfig, RAGDocument, RAGRetrievalResult, RerankInput, RerankResult } from "./rag";
