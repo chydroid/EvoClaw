@@ -25,3 +25,5 @@ export type { TfidfMatchResult } from "./tfidf-matcher";
 export type { SkillVersion, SkillEvolutionEntry, ExtractionInput, ImprovementInput } from "./skill-curator";
 export { SkillMarketplace } from "./marketplace";
 export type { SkillPackage, SkillReview, SearchQuery, SearchResult, InstallResult, MarketplaceConfig } from "./marketplace";
+export { SkillEcosystem } from "./skill-ecosystem";
+export type { EcosystemStats, SkillRecommendation, QualityReport, SkillCategory } from "./skill-ecosystem";

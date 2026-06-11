@@ -3,6 +3,51 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.18.0 (2026-06-11)
+
+### 集成审计与深度修复 — 确保所有改进真正工作
+
+对v0.17.0新增的12个模块进行全面集成审计，发现6个模块完全未集成、3个部分集成、3个严重运行时Bug。逐一修复并验证。
+
+---
+
+#### 集成审计发现与修复
+
+| 问题类型 | 模块 | 问题描述 | 修复方式 |
+|----------|------|----------|----------|
+| **完全未集成** | ToolChain | 创建了文件但从未被运行时代码导入 | 接入AgentModelExecutor：chat()中匹配工具链、注册execute_tool_chain工具 |
+| **完全未集成** | SkillAutoGenerator | 创建了文件但EvolutionEngine未调用 | EvolutionEngine进化发布后自动调用generateFromEvolution() |
+| **完全未集成** | EvolutionABTest | 创建了文件但EvolutionEngine未调用 | EvolutionEngine进化发布后自动启动A/B测试 |
+| **完全未集成** | MemoryCuratorV2 | 创建了文件但MemoryHub未调用 | MemoryHub新增curateMemories()方法 |
+| **完全未集成** | MCPProtocolHandler | 创建了文件但Gateway未接入 | Gateway新增POST /api/mcp端点 |
+| **完全未集成** | SkillEcosystem | 创建了文件但SkillManager未调用 | SkillManager新增质量验证和推荐方法 |
+| **部分集成** | SwarmOrchestrator | 委派无实际执行（缺completeDelegation） | 实现完整的trySwarmDelegation()含completeDelegation |
+| **部分集成** | DAGExecutor | fromExecutionPlan()未连入主流程 | chat()中5+步骤计划自动生成DAG上下文 |
+| **部分集成** | KnowledgeGraph | 新增4个推理方法不可达 | MemoryHub新增reasonWithKnowledgeGraph()方法 |
+
+#### 严重Bug修复
+
+| Bug | 文件 | 描述 | 修复 |
+|-----|------|------|------|
+| **fromExecutionPlan非命名导出** | agent-model-executor.ts | `require("./dag-executor").fromExecutionPlan`得到undefined，DAG功能静默失效 | 改为内联DAG转换逻辑 |
+| **MemoryCuratorV2 age单位不匹配** | memory-hub.ts | age传入毫秒值但接口期望天数，导致衰减逻辑完全失效 | 转换为天数：`ms / (24*60*60*1000)` |
+| **MCPProtocolHandler构造函数参数错误** | gateway-server.ts | 传入`tools: new Map()`但构造函数期望`toolRegistry?: ToolRegistry` | 改为正确的`toolRegistry`参数 |
+| **execute_tool_chain工具注册格式错误** | agent-model-executor.ts | 直接设置`{description, parameters, handler}`但Map期望`{definition, handler}` | 改为`{definition: {name, description, parameters}, handler}` |
+| **ToolChainExecutor类型不兼容** | agent-model-executor.ts | `this.registeredTools`类型与`ToolChainExecutor`构造函数不匹配 | 构建兼容的toolMap |
+
+#### ChannelAdapterFramework统一
+
+| 问题 | 修复 |
+|------|------|
+| channel-adapter-framework.ts的`ChannelAdapter`抽象类与channel-manager.ts的`ChannelAdapter`接口是两套并行体系 | 重命名为`ChannelAdapterBase`并`implements ChannelAdapterInterface`，统一方法签名（sendMessage返回ChannelSendResult、onMessage接收ChannelMessage、新增healthCheck/onStatusChange），WebhookChannelAdapter和TelegramChannelAdapter同步更新 |
+
+#### 测试结果
+
+| 测试类型 | 结果 |
+|----------|------|
+| 构建 | 17/17包编译通过 |
+| 单元测试 | 96/96文件通过，2740/2741用例通过 |
+
 ## v0.17.0 (2026-06-11)
 
 ### 全面对标主流Agent框架 — 四阶段能力提升

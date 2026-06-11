@@ -94,3 +94,7 @@ export type { EvalCase, EvalResult, EvalRunSummary, EvalConfig } from "./evals";
 // A2A (Agent-to-Agent) protocol
 export { A2AClient, A2AServer } from "./a2a";
 export type { A2AAgentCard, A2ACapability, A2ATask, A2ATaskResult, A2AMessage, A2AClientConfig, A2AServerConfig } from "./a2a";
+
+// ToolChain system
+export { ToolChainExecutor, type ToolChainDefinition, type ToolChainResult, type ToolChainStep } from "./tool-chain";
+export { ToolChainRegistry, createBuiltinToolChainRegistry } from "./tool-chain-registry";

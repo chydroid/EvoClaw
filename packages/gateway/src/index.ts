@@ -54,3 +54,9 @@ export { ReplyReferenceManager } from "./reply-reference";
 export type { ReplyRef, ReplyChainContext, ReplyNode, ReplyTree, ReplyReferenceConfig, MentionInfo } from "./reply-reference";
 
 export { WeixinPluginAdapter } from "./weixin-plugin-adapter.js";
+
+export { MCPProtocolHandler } from "./mcp-protocol-handler";
+export type { ToolDefinition, ToolRegistry, ResourceDefinition, PromptDefinition } from "./mcp-protocol-handler";
+
+export { ChannelAdapterBase, WebhookChannelAdapter, TelegramChannelAdapter } from "./channel-adapter-framework";
+export type { ChannelAdapterConfig, ChannelAdapterStatus, WebhookChannelConfig, TelegramChannelConfig } from "./channel-adapter-framework";

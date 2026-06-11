@@ -38,6 +38,7 @@ export class SkillManager {
   private processedItems = new Map<string, number>();
   private isScanning = false;
   private marketplace: SkillMarketplace;
+  private skillEcosystem: import("./skill-ecosystem").SkillEcosystem | null = null;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -57,6 +58,11 @@ export class SkillManager {
     this.validator = new SkillValidator();
     this.hookEngine = new SkillHookEngine(svcRegistry, eventBus);
     this.marketplace = new SkillMarketplace(eventBus, {}, this);
+
+    try {
+      const { SkillEcosystem } = require("./skill-ecosystem");
+      this.skillEcosystem = new SkillEcosystem();
+    } catch {}
 
     svcRegistry.registerService("skillManager", this);
   }
@@ -124,6 +130,16 @@ export class SkillManager {
       for (const w of validation.warnings) {
         console.warn(`[SkillManager] ⚠ ${w}`);
       }
+    }
+
+    // Validate skill quality before installing
+    if (this.skillEcosystem) {
+      try {
+        const quality = await this.skillEcosystem.validateSkillQuality(skillPath);
+        if (quality.score < 0.3) {
+          console.warn(`[SkillManager] Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`);
+        }
+      } catch { /* quality validation is non-critical */ }
     }
 
     const warnings: string[] = [];
@@ -1157,6 +1173,11 @@ export class SkillManager {
 
   async healthCheck(): Promise<boolean> {
     return true;
+  }
+
+  recommendSkills(userHistory: string[]): Array<{ skillId: string; reason: string; relevanceScore: number }> {
+    if (!this.skillEcosystem) return [];
+    return this.skillEcosystem.recommendSkills(userHistory);
   }
 
   async checkAndTranslateInstalledSkills(): Promise<{ checked: number; translated: number }> {

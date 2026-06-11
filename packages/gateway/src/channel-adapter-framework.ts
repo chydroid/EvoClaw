@@ -2,10 +2,19 @@
  * Channel Adapter Framework — base framework for implementing message channel adapters.
  *
  * Provides:
- *  - Abstract ChannelAdapter base class with lifecycle and messaging contract
+ *  - Abstract ChannelAdapterBase base class that implements the ChannelAdapter interface
+ *    from channel-manager.ts, ensuring unified adapter contract
  *  - WebhookChannelAdapter — generic webhook-based adapter
  *  - TelegramChannelAdapter — Telegram Bot API adapter (polling mode)
  */
+
+import type {
+  ChannelAdapter as ChannelAdapterInterface,
+  ChannelType,
+  ChannelMessage,
+  ChannelSendResult,
+  ChannelHealthResult,
+} from "./channel-manager";
 
 // ─── Channel Adapter Base ────────────────────────────────────────────────────
 
@@ -13,17 +22,30 @@ export interface ChannelAdapterConfig {
   channelId: string;
   channelName: string;
   enabled: boolean;
+  /** Channel type for ChannelAdapter interface compliance */
+  channelType?: ChannelType;
 }
 
 export type ChannelAdapterStatus = "stopped" | "starting" | "running" | "stopping" | "error";
 
-export abstract class ChannelAdapter {
+/**
+ * Abstract base class for channel adapters.
+ * Implements the ChannelAdapter interface from channel-manager.ts for unified contract.
+ * Subclasses must implement start(), stop(), and sendMessage().
+ */
+export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
   protected readonly config: ChannelAdapterConfig;
   protected status: ChannelAdapterStatus = "stopped";
-  protected messageHandlers: Array<(peerId: string, message: string) => Promise<void>> = [];
+  protected messageHandlers: Array<(msg: ChannelMessage) => Promise<void>> = [];
+  protected statusChangeHandlers: Array<(status: "connected" | "disconnected" | "reconnecting" | "error") => void> = [];
 
   constructor(config: ChannelAdapterConfig) {
     this.config = config;
+  }
+
+  /** Channel type identifier (implements ChannelAdapter interface) */
+  get type(): ChannelType {
+    return this.config.channelType ?? "custom";
   }
 
   /** Start the channel adapter (connect, begin listening, etc.) */
@@ -32,12 +54,28 @@ export abstract class ChannelAdapter {
   /** Stop the channel adapter (disconnect, cleanup, etc.) */
   abstract stop(): Promise<void>;
 
-  /** Send a message to a specific peer */
-  abstract sendMessage(peerId: string, message: string): Promise<boolean>;
+  /** Send a message to a specific peer (simplified signature) */
+  abstract sendMessage(target: string, text: string, options?: {
+    replyTo?: string;
+    attachments?: ChannelMessage["attachments"];
+  }): Promise<ChannelSendResult>;
 
-  /** Register a handler for incoming messages */
-  onMessage(handler: (peerId: string, message: string) => Promise<void>): void {
+  /** Register a handler for incoming messages (implements ChannelAdapter interface) */
+  onMessage(handler: (msg: ChannelMessage) => Promise<void>): void {
     this.messageHandlers.push(handler);
+  }
+
+  /** Handle connection status changes (implements ChannelAdapter interface) */
+  onStatusChange(handler: (status: "connected" | "disconnected" | "reconnecting" | "error") => void): void {
+    this.statusChangeHandlers.push(handler);
+  }
+
+  /** Check channel health (implements ChannelAdapter interface) */
+  async healthCheck(): Promise<ChannelHealthResult> {
+    return {
+      healthy: this.status === "running",
+      message: this.status === "running" ? "Channel is running" : `Channel is ${this.status}`,
+    };
   }
 
   /** Get the current status of the adapter */
@@ -56,10 +94,10 @@ export abstract class ChannelAdapter {
   }
 
   /** Dispatch an incoming message to all registered handlers */
-  protected async dispatchMessage(peerId: string, message: string): Promise<void> {
+  protected async dispatchMessage(msg: ChannelMessage): Promise<void> {
     for (const handler of this.messageHandlers) {
       try {
-        await handler(peerId, message);
+        await handler(msg);
       } catch (err) {
         console.error(
           `[ChannelAdapter:${this.config.channelId}] Message handler error:`,
@@ -67,6 +105,36 @@ export abstract class ChannelAdapter {
         );
       }
     }
+  }
+
+  /** Notify status change handlers */
+  protected notifyStatusChange(status: "connected" | "disconnected" | "reconnecting" | "error"): void {
+    for (const handler of this.statusChangeHandlers) {
+      try {
+        handler(status);
+      } catch (err) {
+        console.error(
+          `[ChannelAdapter:${this.config.channelId}] Status change handler error:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  }
+
+  /** Helper: create a ChannelMessage from basic fields */
+  protected createChannelMessage(from: string, text: string, extra?: Partial<ChannelMessage>): ChannelMessage {
+    return {
+      messageId: `${this.config.channelId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      channel: this.type,
+      from,
+      to: this.config.channelId,
+      text,
+      timestamp: new Date().toISOString(),
+      isDirect: true,
+      isGroup: false,
+      raw: {},
+      ...extra,
+    };
   }
 }
 
@@ -85,7 +153,7 @@ export interface WebhookChannelConfig extends ChannelAdapterConfig {
   timeoutMs?: number;
 }
 
-export class WebhookChannelAdapter extends ChannelAdapter {
+export class WebhookChannelAdapter extends ChannelAdapterBase {
   private readonly webhookUrl: string;
   private readonly secret: string;
   private readonly incomingPath: string;
@@ -136,17 +204,20 @@ export class WebhookChannelAdapter extends ChannelAdapter {
     }
   }
 
-  async sendMessage(peerId: string, message: string): Promise<boolean> {
+  async sendMessage(target: string, text: string, _options?: {
+    replyTo?: string;
+    attachments?: ChannelMessage["attachments"];
+  }): Promise<ChannelSendResult> {
     if (!this.registered) {
       console.warn(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started`);
-      return false;
+      return { success: false, error: "Adapter not started", channel: this.type };
     }
 
     try {
       const body = JSON.stringify({
         channelId: this.config.channelId,
-        peerId,
-        message,
+        peerId: target,
+        message: text,
         timestamp: new Date().toISOString(),
       });
 
@@ -177,16 +248,16 @@ export class WebhookChannelAdapter extends ChannelAdapter {
         console.warn(
           `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}`,
         );
-        return false;
+        return { success: false, error: `HTTP ${response.status}`, channel: this.type };
       }
 
-      return true;
+      return { success: true, channel: this.type };
     } catch (err) {
       console.error(
         `[WebhookChannel:${this.config.channelId}] Send error:`,
         err instanceof Error ? err.message : String(err),
       );
-      return false;
+      return { success: false, error: err instanceof Error ? err.message : String(err), channel: this.type };
     }
   }
 
@@ -212,7 +283,7 @@ export class WebhookChannelAdapter extends ChannelAdapter {
       return;
     }
 
-    await this.dispatchMessage(String(peerId), String(message));
+    await this.dispatchMessage(this.createChannelMessage(String(peerId), String(message), { raw: payload }));
   }
 
   /** Get the incoming webhook path for route registration */
@@ -278,7 +349,7 @@ interface TelegramApiResponse<T> {
   description?: string;
 }
 
-export class TelegramChannelAdapter extends ChannelAdapter {
+export class TelegramChannelAdapter extends ChannelAdapterBase {
   private readonly botToken: string;
   private readonly pollingIntervalMs: number;
   private readonly longPollTimeout: number;
@@ -344,11 +415,14 @@ export class TelegramChannelAdapter extends ChannelAdapter {
     }
   }
 
-  async sendMessage(peerId: string, message: string): Promise<boolean> {
+  async sendMessage(target: string, text: string, _options?: {
+    replyTo?: string;
+    attachments?: ChannelMessage["attachments"];
+  }): Promise<ChannelSendResult> {
     try {
       const result = await this.telegramApi<{ message_id: number }>("sendMessage", {
-        chat_id: peerId,
-        text: message,
+        chat_id: target,
+        text,
         parse_mode: "HTML",
         disable_web_page_preview: true,
       });
@@ -357,16 +431,16 @@ export class TelegramChannelAdapter extends ChannelAdapter {
         console.warn(
           `[TelegramChannel:${this.config.channelId}] Send failed: ${result.description}`,
         );
-        return false;
+        return { success: false, error: result.description, channel: this.type };
       }
 
-      return true;
+      return { success: true, messageId: String(result.result?.message_id), channel: this.type };
     } catch (err) {
       console.error(
         `[TelegramChannel:${this.config.channelId}] Send error:`,
         err instanceof Error ? err.message : String(err),
       );
-      return false;
+      return { success: false, error: err instanceof Error ? err.message : String(err), channel: this.type };
     }
   }
 
@@ -420,7 +494,11 @@ export class TelegramChannelAdapter extends ChannelAdapter {
     }
 
     const peerId = String(chatId);
-    await this.dispatchMessage(peerId, msg.text);
+    await this.dispatchMessage(this.createChannelMessage(peerId, msg.text, {
+      isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
+      groupId: msg.chat.type !== "private" ? peerId : undefined,
+      raw: update as unknown as Record<string, unknown>,
+    }));
   }
 
   // ── Telegram API Helper ─────────────────────────────────────────────────

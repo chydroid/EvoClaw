@@ -40,6 +40,7 @@ export class MemoryHub {
   private transformersProvider: TransformersEmbeddingProvider | null = null;
   /** Tracked when transformers warmup fails — surfaced via status. */
   private embeddingLoadError: string | null = null;
+  private memoryCuratorV2: import("./memory-curator-v2").MemoryCuratorV2 | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -52,6 +53,11 @@ export class MemoryHub {
     this.fts5 = new FTS5SearchEngine();
     this.fts5.initialize();
     this.curator = new MemoryCurator(this.fts5);
+
+    try {
+      const { MemoryCuratorV2 } = require("./memory-curator-v2");
+      this.memoryCuratorV2 = new MemoryCuratorV2();
+    } catch {}
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
     // (all-MiniLM-L6-v2, 384-dim) when the model can be loaded. The status
@@ -335,6 +341,43 @@ export class MemoryHub {
   async clearShortTerm(): Promise<void> {
     if (this.shortTerm) {
       this.shortTerm.clear();
+    }
+  }
+
+  async curateMemories(): Promise<{ retained: number; decayed: number; compressed: number }> {
+    if (!this.memoryCuratorV2) return { retained: 0, decayed: 0, compressed: 0 };
+    // Get all memories from long-term store
+    const memories = await this.longTerm.search({ query: "", limit: 1000 });
+    const entries = memories.map(m => ({
+      id: m.entry.id,
+      content: m.entry.content,
+      type: m.entry.type as string || "conversation",
+      accessCount: 0,
+      age: m.entry.createdAt ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000) : 0,
+      importance: m.entry.metadata?.importance as number | undefined,
+    }));
+    const curation = this.memoryCuratorV2.curateMemories(entries);
+    // Remove decayed memories
+    for (const id of curation.decay) {
+      await this.longTerm.delete(id);
+    }
+    // Compress old memories (age is in days, 30 days threshold)
+    const oldEntries = entries.filter(e => e.age > 30);
+    const compressed = this.memoryCuratorV2.compressOldMemories(oldEntries);
+    return {
+      retained: curation.retain.length,
+      decayed: curation.decay.length,
+      compressed: compressed.length,
+    };
+  }
+
+  async reasonWithKnowledgeGraph(query: string): Promise<import("@evoclaw/core").ReasoningResult | null> {
+    const kg = this.graph;
+    if (!kg || typeof (kg as any).reason !== "function") return null;
+    try {
+      return await (kg as any).reason(query);
+    } catch {
+      return null;
     }
   }
 }

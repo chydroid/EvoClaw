@@ -226,6 +226,8 @@ export interface LLMCallerDeps {
   // Planning & Reflection integration (optional — enables Plan→Reflect→Replan)
   recordToolTrace?: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => void;
   checkAndReflect?: (sessionId: string) => Promise<import("./reflection-engine").ReflectionResult | null>;
+  // Planning step update (optional — enables plan progress tracking)
+  updatePlanStep?: (sessionId: string, stepId: string, update: { status: string; result?: string; error?: string }) => void;
 }
 
 // ── Helper: tool cache ──
@@ -1492,6 +1494,15 @@ Have a specific URL?
           // ── Record tool execution trace for reflection ──
           if (deps.recordToolTrace) {
             deps.recordToolTrace(sessionId, toolName, args, toolResult.slice(0, 500), !toolErrored, Date.now() - toolStartTime, toolError);
+          }
+
+          // ── Update planning step status ──
+          if (deps.updatePlanStep) {
+            deps.updatePlanStep(sessionId, toolName, {
+              status: toolErrored ? "failed" : "completed",
+              result: toolResult.slice(0, 200),
+              error: toolError,
+            });
           }
 
           // ── Reflection: check if we should reflect after this tool call ──

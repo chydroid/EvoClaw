@@ -115,6 +115,9 @@ export class AgentModelExecutor {
   /** Swarm orchestrator for multi-agent delegation */
   private swarmOrchestrator: import("./swarm-orchestrator").SwarmOrchestrator | null = null;
 
+  /** ToolChain registry for predefined tool chain matching */
+  private toolChainRegistry: import("./tool-chain-registry").ToolChainRegistry | null = null;
+
   /** Eval runner for agent behavior evaluation */
   private evalRunner: import("./evals").EvalRunner | null = null;
 
@@ -397,6 +400,11 @@ export class AgentModelExecutor {
       this.swarmOrchestrator = new SwarmOrchestrator(this.eventBus, { maxAgents: 10, defaultTimeoutMs: 60000 });
       this.registerBuiltinSwarmAgents();
     } catch { /* swarm-orchestrator not available in test env */ }
+
+    try {
+      const { createBuiltinToolChainRegistry } = require("./tool-chain-registry") as { createBuiltinToolChainRegistry: () => import("./tool-chain-registry").ToolChainRegistry };
+      this.toolChainRegistry = createBuiltinToolChainRegistry();
+    } catch { /* tool-chain-registry not available */ }
   }
 
   /** Register built-in virtual agents in the swarm */
@@ -418,6 +426,35 @@ export class AgentModelExecutor {
 
   private registerBuiltinTools(): void {
     registerSequentialThinkingToolFn(this, this.sequentialThinkingHistory);
+
+    this.registeredTools.set("execute_tool_chain", {
+      definition: {
+        name: "execute_tool_chain",
+        description: "Execute a predefined tool chain by name. Use this when the task matches a known workflow pattern.",
+        parameters: {
+          type: "object",
+          properties: {
+            chain_name: { type: "string", description: "Name of the tool chain to execute" },
+            initial_params: { type: "object", description: "Optional initial parameters for the chain" },
+          },
+          required: ["chain_name"],
+        },
+      },
+      handler: async (params: Record<string, unknown>) => {
+        if (!this.toolChainRegistry) return JSON.stringify({ error: "ToolChain system not available" });
+        const chain = this.toolChainRegistry.get(params.chain_name as string);
+        if (!chain) return JSON.stringify({ error: `Tool chain "${params.chain_name}" not found. Available: ${this.toolChainRegistry.list().map(c => c.name).join(", ")}` });
+        const { ToolChainExecutor } = require("./tool-chain") as { ToolChainExecutor: new (registry: Map<string, { handler: (params: Record<string, unknown>) => Promise<unknown> }>) => import("./tool-chain").ToolChainExecutor };
+        // Build a compatible map: registeredTools has { definition, handler }, ToolChainExecutor expects { handler }
+        const toolMap = new Map<string, { handler: (params: Record<string, unknown>) => Promise<unknown> }>();
+        for (const [name, entry] of this.registeredTools) {
+          toolMap.set(name, { handler: entry.handler });
+        }
+        const executor = new ToolChainExecutor(toolMap);
+        const result = await executor.execute(chain, params.initial_params as Record<string, unknown> | undefined);
+        return JSON.stringify(result);
+      },
+    });
   }
 
   private setupEventListeners(): void {
@@ -571,6 +608,7 @@ export class AgentModelExecutor {
       humanApprovalManager: this.humanApprovalManager ?? undefined,
       recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
       checkAndReflect: (sessionId: string) => this.checkAndReflect(sessionId),
+      updatePlanStep: (sessionId: string, stepId: string, update: { status: string; result?: string; error?: string }) => this.updatePlanStep(sessionId, stepId, update),
     };
   }
 
@@ -1415,6 +1453,17 @@ export class AgentModelExecutor {
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
     const installedSkills = await skillManager?.listSkills() || [];
 
+    // ── ToolChain: check if a predefined tool chain matches this request ──
+    let chainContext = "";
+    if (this.toolChainRegistry) {
+      const matchedChain = this.toolChainRegistry.findRelevantChain(effectiveMessage);
+      if (matchedChain) {
+        chainContext = `[工具链匹配] 检测到任务可使用预定义工具链 "${matchedChain.name}" (${matchedChain.description})，包含 ${matchedChain.steps.length} 个步骤。建议按此链执行。`;
+        console.log(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"`);
+        onProgress?.({ type: "status", phase: "planning", detail: `匹配到工具链: ${matchedChain.name}`, progress: 20 });
+      }
+    }
+
     // ── Planning: generate explicit execution plan for complex tasks ──
     let planContext = "";
     if (this.planningEngine && this.hasActionIntent(effectiveMessage)) {
@@ -1429,6 +1478,22 @@ export class AgentModelExecutor {
           console.log(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}`);
           taskStatusTracker.set(sessionId, "planning", `已生成执行计划：${plan.steps.length} 个步骤`, 25);
           onProgress?.({ type: "status", phase: "planning", detail: `已生成执行计划：${plan.steps.length} 个步骤`, progress: 25 });
+
+          // ── For complex plans (5+ steps), offer DAG execution context ──
+          if (plan.steps.length >= 5) {
+            try {
+              // Inline DAG conversion: each PlanStep becomes a DAGNode
+              const dagNodes = plan.steps.map((step) => ({
+                id: step.id,
+                action: step.description,
+                skill: step.toolHint,
+                dependencies: step.dependsOn ?? [],
+                params: {},
+                timeout: 30000,
+              }));
+              planContext += `\n\n[DAG任务图] 该计划已转换为DAG任务图，共 ${dagNodes.length} 个节点，支持并行执行无依赖步骤。`;
+            } catch { /* dag conversion failed */ }
+          }
 
           // ── Swarm delegation: delegate to specialized agent if plan has clear tool group ──
           if (this.swarmOrchestrator) {
@@ -1445,7 +1510,7 @@ export class AgentModelExecutor {
       }
     }
 
-    const enhancedSystemPrompt = systemPrompt + (planContext ? "\n\n[执行计划]\n" + planContext : "");
+    const enhancedSystemPrompt = systemPrompt + (planContext ? "\n\n[执行计划]\n" + planContext : "") + (chainContext ? "\n\n" + chainContext : "");
 
     // ── Semantic intent detection + real-time search pre-processing ──
     const searchDeps: SearchPreprocessorDeps = {
@@ -2090,6 +2155,31 @@ export class AgentModelExecutor {
     // Keep last 20 traces per session
     if (traces.length > 20) traces.splice(0, traces.length - 20);
     this.executionTraces.set(sessionId, traces);
+  }
+
+  /** Update planning step status after tool execution */
+  private updatePlanStep(sessionId: string, toolName: string, update: { status: string; result?: string; error?: string }): void {
+    const plan = this.activePlans.get(sessionId);
+    if (!plan || !this.planningEngine) return;
+    // Find the step that matches this tool
+    const matchingStep = plan.steps.find(s => s.toolHint === toolName && s.status === "in_progress");
+    if (matchingStep) {
+      this.planningEngine.updateStep(plan.id, matchingStep.id, {
+        status: update.status as "completed" | "failed",
+        result: update.result,
+        error: update.error,
+      });
+    } else {
+      // Mark the next pending step as in_progress if this tool matches its hint
+      const nextStep = plan.steps.find(s => s.toolHint === toolName && s.status === "pending");
+      if (nextStep) {
+        this.planningEngine.updateStep(plan.id, nextStep.id, {
+          status: update.status as "completed" | "failed",
+          result: update.result,
+          error: update.error,
+        });
+      }
+    }
   }
 
   /** Check if reflection should be triggered and execute it */

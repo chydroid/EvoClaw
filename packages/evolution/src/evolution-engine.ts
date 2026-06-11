@@ -45,6 +45,8 @@ export class EvolutionEngine {
   private sandboxExecutor: SandboxExecutor;
   private geneticEngine: GeneticEvolutionEngine;
   private experienceDistiller: ExperienceDistiller;
+  private skillAutoGenerator: import("./skill-auto-generator").SkillAutoGenerator | null = null;
+  private evolutionABTest: import("./evolution-ab-test").EvolutionABTest | null = null;
 
   private cycles = new Map<string, EvolutionCycle>();
   private feedbackStore: ReinforcementFeedback[] = [];
@@ -69,6 +71,15 @@ export class EvolutionEngine {
     this.sandboxExecutor = new SandboxExecutor(registry, eventBus);
     this.geneticEngine = new GeneticEvolutionEngine(registry, eventBus);
     this.experienceDistiller = new ExperienceDistiller(registry, eventBus);
+
+    try {
+      const { SkillAutoGenerator } = require("./skill-auto-generator");
+      this.skillAutoGenerator = new SkillAutoGenerator();
+    } catch {}
+    try {
+      const { EvolutionABTest } = require("./evolution-ab-test");
+      this.evolutionABTest = new EvolutionABTest();
+    } catch {}
 
     registry.registerService("evolutionEngine", this);
 
@@ -496,6 +507,37 @@ export class EvolutionEngine {
             "evolution-engine"
           );
 
+          // Auto-generate skill from successful evolution
+          if (this.skillAutoGenerator) {
+            try {
+              const skillResult = await this.skillAutoGenerator.generateFromEvolution({
+                trigger: cycle.source,
+                solution: candidate.proposedChanges.description || "",
+                beforeCode: "",
+                afterCode: candidate.codeArtifacts.map((a) => a.source).join("\n") || "",
+              });
+              if (skillResult) {
+                console.log(`[EvolutionEngine] Auto-generated skill: ${skillResult.skillName} at ${skillResult.skillPath}`);
+              }
+            } catch (err) {
+              console.warn(`[EvolutionEngine] Skill auto-generation failed: ${err}`);
+            }
+          }
+
+          // Start A/B test for the evolution
+          if (this.evolutionABTest) {
+            try {
+              const testId = this.evolutionABTest.startTest(
+                cycle.id,
+                "original",
+                "evolved"
+              );
+              console.log(`[EvolutionEngine] A/B test started: ${testId} for evolution ${cycle.id}`);
+            } catch (err) {
+              console.warn(`[EvolutionEngine] A/B test start failed: ${err}`);
+            }
+          }
+
           await this.curateFromEvolutionCandidate(candidate, cycle);
         }
         cycle.status = "completed";
@@ -554,6 +596,38 @@ export class EvolutionEngine {
                   { cycleId: cycle.id, candidateId: geneticResult.bestCandidate.id, source: "genetic" },
                   "evolution-engine"
                 );
+
+                // Auto-generate skill from successful genetic evolution
+                if (this.skillAutoGenerator) {
+                  try {
+                    const skillResult = await this.skillAutoGenerator.generateFromEvolution({
+                      trigger: cycle.source,
+                      solution: geneticResult.bestCandidate.proposedChanges.description || "",
+                      beforeCode: "",
+                      afterCode: geneticResult.bestCandidate.codeArtifacts.map((a) => a.source).join("\n") || "",
+                    });
+                    if (skillResult) {
+                      console.log(`[EvolutionEngine] Auto-generated skill (genetic): ${skillResult.skillName} at ${skillResult.skillPath}`);
+                    }
+                  } catch (err) {
+                    console.warn(`[EvolutionEngine] Skill auto-generation failed (genetic): ${err}`);
+                  }
+                }
+
+                // Start A/B test for the genetic evolution
+                if (this.evolutionABTest) {
+                  try {
+                    const testId = this.evolutionABTest.startTest(
+                      cycle.id,
+                      "original",
+                      "evolved"
+                    );
+                    console.log(`[EvolutionEngine] A/B test started (genetic): ${testId} for evolution ${cycle.id}`);
+                  } catch (err) {
+                    console.warn(`[EvolutionEngine] A/B test start failed (genetic): ${err}`);
+                  }
+                }
+
                 await this.curateFromEvolutionCandidate(geneticResult.bestCandidate, cycle);
                 cycle.status = "completed";
               }

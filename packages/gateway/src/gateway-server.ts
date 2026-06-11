@@ -36,6 +36,7 @@ export class GatewayServer {
   private protocolHandler: ProtocolHandler;
   private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
+  private mcpProtocolHandler: import("./mcp-protocol-handler").MCPProtocolHandler | null = null;
   private avatarConfig: { user: string; bot: string; userNickname: string; botNickname: string } = {
     user: "assets/images/user.png",
     bot: "assets/images/favicon-32x32.png",
@@ -457,6 +458,23 @@ export class GatewayServer {
     this.setupEvalsRoutes();
     this.setupExecutionRoutes();
     this.setupMemoryRoutes();
+
+    // MCP JSON-RPC endpoint
+    try {
+      const { MCPProtocolHandler } = require("./mcp-protocol-handler");
+      this.mcpProtocolHandler = new MCPProtocolHandler({
+        serverName: "EvoClaw-Gateway",
+        serverVersion: "1.0.0",
+        resources: [],
+        prompts: [],
+      });
+
+      this.app.post("/api/mcp", async (req: Request, res: Response) => {
+        if (!this.mcpProtocolHandler) return res.status(503).json({ error: "MCP not available" });
+        const result = await this.mcpProtocolHandler.routeMessage(req.body);
+        res.json(result);
+      });
+    } catch {}
 
     this.setupWebUI();
 
