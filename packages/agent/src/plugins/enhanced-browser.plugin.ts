@@ -135,6 +135,7 @@ interface ExtractionResult {
   duration: number;
   strategy: ExtractionOptions["strategy"];
   screenshot?: string; // base64
+  error?: string;
 }
 
 // ── Helper Functions ──────────────────────────────────
@@ -332,6 +333,22 @@ async function lightweightExtract(
     };
 
     return result;
+  } catch (err) {
+    const isAbort = err instanceof DOMException && err.name === "AbortError"
+      || (err instanceof Error && err.message.includes("aborted"));
+    return {
+      url,
+      title: "",
+      text: "",
+      html: "",
+      links: [],
+      forms: [],
+      meta: {},
+      status: isAbort ? 0 : 503,
+      duration: Date.now() - startTime,
+      strategy: "lightweight",
+      error: isAbort ? "Request timed out" : (err instanceof Error ? err.message : String(err)),
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -369,7 +386,8 @@ async function parallelFetch(
             maxLength: 5000,
             timeout: 10000,
           }, session);
-          return { url, success: true, title: result.title, text: result.text.slice(0, 1000), status: result.status, duration: result.duration };
+          const ok = result.status >= 200 && result.status < 400;
+          return { url, success: ok, title: result.title, text: result.text.slice(0, 1000), status: result.status, duration: result.duration, error: result.error };
         } catch (err) {
           return { url, success: false, title: "", text: "", status: 0, duration: 0, error: String(err) };
         }
