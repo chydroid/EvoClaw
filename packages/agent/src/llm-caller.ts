@@ -848,6 +848,8 @@ export async function tryCallLLM(
   let anyToolExecuted = false;
   let toolCallCount = 0;
   const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
+  // Track HITL rejections per session to avoid repeated 30s timeouts
+  let hitlRejectCount = 0;
 
   // ── Execution checkpoint: start tracking ──
   const checkpointStore = deps.executionCheckpointStore;
@@ -918,12 +920,45 @@ Have a specific URL?
 
       messages.push(...history);
 
+      // ── User message length guard ──
+      // Truncate excessively long messages to avoid LLM timeout and token waste.
+      // 4000 chars ≈ 2000-4000 tokens (CJK chars are ~1-2 tokens each).
+      const MAX_USER_MESSAGE_LEN = 4000;
+      let effectiveMessage = message;
+
+      // ── XSS / injection sanitization ──
+      // Strip dangerous HTML/script patterns from user input before sending to LLM.
+      // This prevents XSS payloads from being echoed back and ensures consistent
+      // safety behavior regardless of LLM judgment.
+      const XSS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+        { pattern: /<script[\s\S]*?>[\s\S]*?<\/script>/gi, replacement: "[filtered:script-tag]" },
+        { pattern: /\s+on\w+\s*=\s*["'][^"']*["']/gi, replacement: " [filtered:event-handler]" },
+        { pattern: /&#x?[0-9a-f]+;/gi, replacement: "" },
+      ];
+      let xssFiltered = false;
+      for (const { pattern, replacement } of XSS_PATTERNS) {
+        if (pattern.test(effectiveMessage)) {
+          effectiveMessage = effectiveMessage.replace(pattern, replacement);
+          xssFiltered = true;
+        }
+      }
+      if (xssFiltered) {
+        effectiveMessage += "\n\n[系统提示：检测到潜在的安全风险内容，已自动过滤。]";
+        console.log(`[AgentModelExecutor] XSS/injection patterns filtered in user message for session "${sessionId}"`);
+      }
+
+      if (message.length >= MAX_USER_MESSAGE_LEN) {
+        const truncated = message.slice(0, MAX_USER_MESSAGE_LEN);
+        effectiveMessage = truncated + `\n\n[系统提示：原始消息过长(${message.length}字符)，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;
+        console.log(`[AgentModelExecutor] User message truncated: ${message.length} → ${effectiveMessage.length} chars for session "${sessionId}"`);
+      }
+
       // Build user message — use multimodal format when images are attached
       const imageAtts = attachments?.filter(a => a.type.startsWith("image/") && a.data?.startsWith("data:"));
       if (imageAtts && imageAtts.length > 0) {
         const contentParts: ChatContent[] = [];
-        if (message) {
-          contentParts.push({ type: "text", text: message });
+        if (effectiveMessage) {
+          contentParts.push({ type: "text", text: effectiveMessage });
         }
         for (const img of imageAtts) {
           contentParts.push({
@@ -933,7 +968,7 @@ Have a specific URL?
         }
         messages.push({ role: "user", content: contentParts });
       } else {
-        messages.push({ role: "user", content: message });
+        messages.push({ role: "user", content: effectiveMessage });
       }
 
       let tools = buildOpenAITools(deps.registeredTools, message);
@@ -1082,6 +1117,25 @@ Have a specific URL?
           // ── Human-in-the-Loop approval check ──
           if (deps.humanApprovalManager && deps.humanApprovalManager.requiresApproval(toolName, args)) {
             const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName);
+
+            // If we've already had a HITL rejection in this session,
+            // skip the approval request entirely (instant reject) to avoid
+            // repeated timeouts that cause the overall request to time out.
+            if (hitlRejectCount >= 1) {
+              console.log(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)`);
+              conversationMessages.push({
+                role: "tool",
+                tool_call_id: tc.id,
+                name: toolName,
+                content: JSON.stringify({
+                  skipped: true,
+                  reason: "rejected_by_user",
+                  hint: `Previous ${riskLevel}-risk operations were not approved. Do NOT attempt any more high/critical-risk tools (shell_exec, file_modify, file_delete, browser_navigate). Respond to the user directly without executing tools.`,
+                }),
+              });
+              continue;
+            }
+
             onProgress?.({
               type: "approval_pending",
               phase: "waiting_approval",
@@ -1102,12 +1156,17 @@ Have a specific URL?
             );
 
             if (approvalResult.decision === "rejected") {
-              console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" rejected by user`);
+              hitlRejectCount++;
+              console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" rejected (timeout or user denied, total rejections: ${hitlRejectCount})`);
               conversationMessages.push({
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({ skipped: true, reason: "rejected_by_user" }),
+                content: JSON.stringify({
+                  skipped: true,
+                  reason: "rejected_by_user",
+                  hint: `The user did not approve this ${riskLevel}-risk operation. Do NOT retry this tool or try alternative high-risk tools (shell_exec, file_modify, file_delete, browser_navigate). Instead, respond to the user directly explaining what you wanted to do and ask them to approve, or provide the information without executing any tools.`,
+                }),
               });
               continue;
             }
