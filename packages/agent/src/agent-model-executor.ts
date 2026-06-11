@@ -100,6 +100,21 @@ export class AgentModelExecutor {
   /** Semantic quick-reply classifier using local Transformers embedding */
   private semanticQuickReply = new SemanticQuickReply();
 
+  /** Planning engine for explicit Plan→Verify→Execute */
+  private planningEngine: import("./planning-engine").PlanningEngine | null = null;
+
+  /** Reflection engine for Reflect→Replan mechanism */
+  private reflectionEngine: import("./reflection-engine").ReflectionEngine | null = null;
+
+  /** Active execution plans per session */
+  private activePlans = new Map<string, import("./planning-engine").ExecutionPlan>();
+
+  /** Tool execution traces per session for reflection */
+  private executionTraces = new Map<string, import("./reflection-engine").ToolExecutionTrace[]>();
+
+  /** Swarm orchestrator for multi-agent delegation */
+  private swarmOrchestrator: import("./swarm-orchestrator").SwarmOrchestrator | null = null;
+
   /** Eval runner for agent behavior evaluation */
   private evalRunner: import("./evals").EvalRunner | null = null;
 
@@ -343,6 +358,62 @@ export class AgentModelExecutor {
     registry.registerService("agentModelExecutor", this);
     this.setupEventListeners();
     this.registerBuiltinTools();
+    this.initPlanningAndReflection();
+  }
+
+  /** Initialize Planning and Reflection engines */
+  private initPlanningAndReflection(): void {
+    try {
+      const { PlanningEngine } = require("./planning-engine") as { PlanningEngine: new (providers: ProviderConfig[]) => import("./planning-engine").PlanningEngine };
+      this.planningEngine = new PlanningEngine(this.providers);
+    } catch { /* planning-engine not available in test env */ }
+
+    try {
+      const { ReflectionEngine } = require("./reflection-engine") as { ReflectionEngine: new (config?: Partial<import("./reflection-engine").ReflectionConfig>, callLLMFn?: (prompt: string, systemPrompt: string) => Promise<string>) => import("./reflection-engine").ReflectionEngine };
+      this.reflectionEngine = new ReflectionEngine(
+        { enabled: true, reflectAfterNTools: 3, reflectOnFailure: true, maxReflections: 3, confidenceThreshold: 0.3 },
+        async (prompt: string, _systemPrompt: string) => {
+          // Use the first enabled provider for reflection LLM calls
+          const enabled = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
+          if (enabled.length === 0) return '{"shouldContinue":true,"shouldReplan":false,"shouldRetry":false,"analysis":"No LLM available for reflection","confidence":0.3}';
+          try {
+            const resp = await fetch(`${enabled[0].baseURL}/chat/completions`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${enabled[0].apiKey}` },
+              body: JSON.stringify({ model: enabled[0].model, messages: [{ role: "user", content: prompt }], max_tokens: 500, temperature: 0.3 }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const json = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+            return json.choices?.[0]?.message?.content ?? '{"shouldContinue":true,"shouldReplan":false,"shouldRetry":false,"analysis":"Empty response","confidence":0.3}';
+          } catch {
+            return '{"shouldContinue":true,"shouldReplan":false,"shouldRetry":false,"analysis":"Reflection LLM call failed","confidence":0.3}';
+          }
+        }
+      );
+    } catch { /* reflection-engine not available in test env */ }
+
+    try {
+      const { SwarmOrchestrator } = require("./swarm-orchestrator") as { SwarmOrchestrator: new (eventBus: EventBus, config?: import("./swarm-orchestrator").SwarmConfig) => import("./swarm-orchestrator").SwarmOrchestrator };
+      this.swarmOrchestrator = new SwarmOrchestrator(this.eventBus, { maxAgents: 10, defaultTimeoutMs: 60000 });
+      this.registerBuiltinSwarmAgents();
+    } catch { /* swarm-orchestrator not available in test env */ }
+  }
+
+  /** Register built-in virtual agents in the swarm */
+  private registerBuiltinSwarmAgents(): void {
+    if (!this.swarmOrchestrator) return;
+    const builtinAgents: Array<{ name: string; role: import("./swarm-orchestrator").AgentRole; capabilities: string[] }> = [
+      { name: "PlannerAgent", role: "planner", capabilities: ["planning", "decomposition", "task-analysis"] },
+      { name: "ResearchAgent", role: "researcher", capabilities: ["web-search", "web-fetch", "browser-navigate", "information-retrieval"] },
+      { name: "CodeAgent", role: "executor", capabilities: ["shell-exec", "file-create", "file-modify", "file-read", "coding", "programming"] },
+      { name: "BrowserAgent", role: "executor", capabilities: ["browser-navigate", "browser-click", "browser-fill-form", "browser-select", "browser-check", "browser-wait", "browser-screenshot", "web-automation"] },
+      { name: "ReviewAgent", role: "reviewer", capabilities: ["review", "quality-check", "validation", "verification"] },
+    ];
+    for (const agent of builtinAgents) {
+      try {
+        this.swarmOrchestrator.registerAgent(agent);
+      } catch { /* max agents reached */ }
+    }
   }
 
   private registerBuiltinTools(): void {
@@ -498,6 +569,8 @@ export class AgentModelExecutor {
       buildSkillsPromptForRun: () => this.buildSkillsPromptForRun(),
       executionCheckpointStore: this.executionCheckpointStore,
       humanApprovalManager: this.humanApprovalManager ?? undefined,
+      recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
+      checkAndReflect: (sessionId: string) => this.checkAndReflect(sessionId),
     };
   }
 
@@ -1342,6 +1415,38 @@ export class AgentModelExecutor {
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
     const installedSkills = await skillManager?.listSkills() || [];
 
+    // ── Planning: generate explicit execution plan for complex tasks ──
+    let planContext = "";
+    if (this.planningEngine && this.hasActionIntent(effectiveMessage)) {
+      const toolNames = Array.from(this.registeredTools.keys());
+      try {
+        const plan = await this.planningEngine.generatePlan(effectiveMessage, toolNames, sessionId);
+        const validation = this.planningEngine.validatePlan(plan);
+        if (validation.valid) {
+          plan.status = "validated";
+          this.activePlans.set(sessionId, plan);
+          planContext = this.planningEngine.formatPlanForContext(plan);
+          console.log(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}`);
+          taskStatusTracker.set(sessionId, "planning", `已生成执行计划：${plan.steps.length} 个步骤`, 25);
+          onProgress?.({ type: "status", phase: "planning", detail: `已生成执行计划：${plan.steps.length} 个步骤`, progress: 25 });
+
+          // ── Swarm delegation: delegate to specialized agent if plan has clear tool group ──
+          if (this.swarmOrchestrator) {
+            const delegatedContext = await this.trySwarmDelegation(plan, effectiveMessage, sessionId);
+            if (delegatedContext) {
+              planContext += "\n\n" + delegatedContext;
+            }
+          }
+        } else {
+          console.warn(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}`);
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Planning failed: ${err}`);
+      }
+    }
+
+    const enhancedSystemPrompt = systemPrompt + (planContext ? "\n\n[执行计划]\n" + planContext : "");
+
     // ── Semantic intent detection + real-time search pre-processing ──
     const searchDeps: SearchPreprocessorDeps = {
       registry: this.registry!,
@@ -1374,7 +1479,7 @@ export class AgentModelExecutor {
     if (enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel);
+      const result = await this.tryCallLLM(finalEnhancedMessage, enhancedSystemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -1911,5 +2016,134 @@ export class AgentModelExecutor {
     activeConversations: number;
   } {
     return this.heartbeatManager.getStatus();
+  }
+
+  // ====== Planning & Reflection Integration ======
+
+  /** Try to delegate subtasks to specialized swarm agents */
+  private async trySwarmDelegation(
+    plan: import("./planning-engine").ExecutionPlan,
+    userMessage: string,
+    sessionId: string
+  ): Promise<string | null> {
+    if (!this.swarmOrchestrator) return null;
+
+    // Analyze plan steps to find delegation opportunities
+    const delegationHints: string[] = [];
+    const toolHints = plan.steps.map(s => s.toolHint).filter(Boolean) as string[];
+
+    // Map tool hints to agent capabilities
+    const capabilityMap: Record<string, string> = {
+      "web_search": "web-search", "web_fetch": "web-fetch", "browser_navigate": "browser-navigate",
+      "browser_click": "browser-click", "browser_fill_form": "browser-fill-form",
+      "browser_select": "browser-select", "browser_check": "browser-check",
+      "browser_wait": "browser-wait", "browser_screenshot": "browser-screenshot",
+      "shell_exec": "shell-exec", "file_create": "file-create", "file_modify": "file-modify",
+      "file_read": "file-read", "file_delete": "file-delete",
+    };
+
+    const requiredCapabilities = toolHints
+      .map(h => capabilityMap[h] || h)
+      .filter(Boolean);
+
+    if (requiredCapabilities.length === 0) return null;
+
+    // Find the best agent for these capabilities
+    const bestAgent = this.swarmOrchestrator.findBestAgent(requiredCapabilities, "medium");
+    if (!bestAgent) return null;
+
+    // Delegate the task
+    try {
+      const delegationResult = await this.swarmOrchestrator.delegate({
+        fromAgentId: "main",
+        toAgentId: bestAgent.id,
+        task: userMessage,
+        context: plan.steps.map(s => s.description).join("; "),
+        requiredCapabilities,
+        priority: "medium",
+        timeoutMs: 60000,
+      });
+
+      if (delegationResult.success) {
+        delegationHints.push(`[Swarm] 任务已委派给 ${bestAgent.name} (${bestAgent.role})，专长: ${bestAgent.capabilities.join(", ")}`);
+        console.log(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned for session "${sessionId}"`);
+      }
+    } catch (err) {
+      console.warn(`[AgentModelExecutor] Swarm delegation failed: ${err}`);
+    }
+
+    return delegationHints.length > 0 ? delegationHints.join("\n") : null;
+  }
+
+  /** Record a tool execution trace for reflection */
+  recordToolTrace(sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string): void {
+    const traces = this.executionTraces.get(sessionId) || [];
+    traces.push({
+      toolName,
+      params,
+      result: typeof result === "string" ? result.slice(0, 500) : JSON.stringify(result).slice(0, 500),
+      success,
+      duration,
+      timestamp: Date.now(),
+      error,
+    });
+    // Keep last 20 traces per session
+    if (traces.length > 20) traces.splice(0, traces.length - 20);
+    this.executionTraces.set(sessionId, traces);
+  }
+
+  /** Check if reflection should be triggered and execute it */
+  async checkAndReflect(sessionId: string): Promise<import("./reflection-engine").ReflectionResult | null> {
+    if (!this.reflectionEngine) return null;
+    const traces = this.executionTraces.get(sessionId) || [];
+    if (!this.reflectionEngine.shouldReflect(traces)) return null;
+
+    const plan = this.activePlans.get(sessionId);
+    const planContext = plan ? this.planningEngine?.formatPlanForContext(plan) : undefined;
+
+    try {
+      // Try quick reflection first (no LLM cost)
+      const quickResult = this.reflectionEngine.quickReflect(traces);
+      if (quickResult.shouldReplan || quickResult.shouldRetry) {
+        console.log(`[AgentModelExecutor] Quick reflection triggered: ${quickResult.analysis}`);
+        return quickResult;
+      }
+
+      // Use LLM-based reflection for deeper analysis
+      const result = await this.reflectionEngine.reflect(traces, planContext);
+      console.log(`[AgentModelExecutor] Reflection result: continue=${result.shouldContinue}, replan=${result.shouldReplan}, retry=${result.shouldRetry}, confidence=${result.confidence}`);
+
+      // Handle replan
+      if (result.shouldReplan && plan && this.planningEngine) {
+        const failedSteps = plan.steps.filter(s => s.status === "failed").length;
+        if (this.planningEngine.shouldReplan(plan, failedSteps)) {
+          const toolNames = Array.from(this.registeredTools.keys());
+          const newPlan = await this.planningEngine.replan(plan, plan.goal, toolNames);
+          this.activePlans.set(sessionId, newPlan);
+          console.log(`[AgentModelExecutor] Replanned: ${newPlan.steps.length} steps (replan #${newPlan.replanCount})`);
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.warn(`[AgentModelExecutor] Reflection failed: ${err}`);
+      return null;
+    }
+  }
+
+  /** Get the active plan for a session */
+  getActivePlan(sessionId: string): import("./planning-engine").ExecutionPlan | undefined {
+    return this.activePlans.get(sessionId);
+  }
+
+  /** Get execution traces for a session */
+  getExecutionTraces(sessionId: string): import("./reflection-engine").ToolExecutionTrace[] {
+    return this.executionTraces.get(sessionId) || [];
+  }
+
+  /** Get swarm status */
+  getSwarmStatus(): { agentCount: number; activeDelegations: number; agents: Array<{ id: string; name: string; role: string; status: string }> } {
+    if (!this.swarmOrchestrator) return { agentCount: 0, activeDelegations: 0, agents: [] };
+    return this.swarmOrchestrator.getStatus();
   }
 }

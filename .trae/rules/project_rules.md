@@ -32,4 +32,5 @@
 
 - Project icon: 🧬 (DNA double helix, representing "evolution")
 - NOT 🦞 (lobster emoji) — that belongs to OpenClaw
-- Title styling: "Evo" in near-white (#f0f0f0), "Claw" in accent color
+- Title styling: "Evo" in near-white (#f0f0f0), "Claw" in accent color (#007bff)
+- Logo: 🧬 (DNA double helix, representing "evolution")

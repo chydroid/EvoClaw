@@ -17,5 +17,7 @@ export { FTS5SearchEngine } from "./fts5-search";
 export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";
 export { MemoryCurator } from "./memory-curator";
 export type { CurationDecision, MemorySnapshot } from "./memory-curator";
+export { MemoryCuratorV2 } from "./memory-curator-v2";
+export type { MemoryEntryInput, MemoryEntryWithId, CompressibleEntry, CompressedMemory, CurationResult } from "./memory-curator-v2";
 export { chunkDocument, RAGPipeline, SimpleReranker } from "./rag";
 export type { ChunkOptions, DocumentChunk, RAGPipelineConfig, RAGDocument, RAGRetrievalResult, RerankInput, RerankResult } from "./rag";

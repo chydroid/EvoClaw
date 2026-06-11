@@ -68,6 +68,35 @@ export interface GraphQueryResult {
   paths: GraphPath[];
 }
 
+export interface ReasoningFact {
+  subject: string;
+  relation: string;
+  object: string;
+  confidence: number;
+}
+
+export interface InferredRelation {
+  subject: string;
+  relation: string;
+  object: string;
+  source: string;
+}
+
+export interface ReasoningResult {
+  query: string;
+  facts: ReasoningFact[];
+  inferred: InferredRelation[];
+  answer?: string;
+}
+
+export interface InferredRelationWithConfidence {
+  subject: string;
+  relation: string;
+  object: string;
+  confidence: number;
+  basis: string;
+}
+
 export interface GraphPath {
   nodes: GraphNode[];
   edges: GraphEdge[];

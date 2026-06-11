@@ -26,3 +26,7 @@ export { SandboxExecutor } from "./sandbox-executor";
 export type { SandboxConfig, SandboxResult } from "./sandbox-executor";
 export { ExperienceDistiller } from "./experience-distiller";
 export type { DistilledStrategy, DistillerConfig } from "./experience-distiller";
+export { SkillAutoGenerator } from "./skill-auto-generator";
+export type { EvolutionResult, GeneratedSkill } from "./skill-auto-generator";
+export { EvolutionABTest } from "./evolution-ab-test";
+export type { TestStatus } from "./evolution-ab-test";

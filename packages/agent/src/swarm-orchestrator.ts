@@ -704,4 +704,16 @@ export class SwarmOrchestrator {
       }
     }
   }
+
+  /** Get swarm status summary */
+  getStatus(): { agentCount: number; activeDelegations: number; agents: Array<{ id: string; name: string; role: string; status: string }> } {
+    const agents = Array.from(this.agents.values()).map(a => ({
+      id: a.id, name: a.name, role: a.role, status: a.status,
+    }));
+    return {
+      agentCount: this.agents.size,
+      activeDelegations: this.activeDelegations.size,
+      agents,
+    };
+  }
 }

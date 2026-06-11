@@ -223,6 +223,9 @@ export interface LLMCallerDeps {
   humanApprovalManager?: HumanApprovalManager;
   // Eval runner (optional — enables evaluation system)
   evalRunner?: import("./evals").EvalRunner;
+  // Planning & Reflection integration (optional — enables Plan→Reflect→Replan)
+  recordToolTrace?: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => void;
+  checkAndReflect?: (sessionId: string) => Promise<import("./reflection-engine").ReflectionResult | null>;
 }
 
 // ── Helper: tool cache ──
@@ -1483,6 +1486,35 @@ Have a specific URL?
             const mergedATC = merged as Partial<import("@evoclaw/core").AfterToolCallResult>;
             if (mergedATC.result !== undefined) {
               toolResult = typeof mergedATC.result === "string" ? mergedATC.result : JSON.stringify(mergedATC.result);
+            }
+          }
+
+          // ── Record tool execution trace for reflection ──
+          if (deps.recordToolTrace) {
+            deps.recordToolTrace(sessionId, toolName, args, toolResult.slice(0, 500), !toolErrored, Date.now() - toolStartTime, toolError);
+          }
+
+          // ── Reflection: check if we should reflect after this tool call ──
+          if (deps.checkAndReflect && toolCallCount > 0 && toolCallCount % 3 === 0) {
+            try {
+              const reflectionResult = await deps.checkAndReflect(sessionId);
+              if (reflectionResult) {
+                if (reflectionResult.shouldReplan) {
+                  // Inject replan hint into conversation
+                  conversationMessages.push({
+                    role: "system",
+                    content: `[反思] ${reflectionResult.analysis}\n建议: ${reflectionResult.nextStepSuggestion || "重新规划任务"}`,
+                  });
+                } else if (reflectionResult.shouldRetry && reflectionResult.retrySuggestion) {
+                  // Inject retry hint
+                  conversationMessages.push({
+                    role: "system",
+                    content: `[反思] ${reflectionResult.analysis}\n重试建议: ${reflectionResult.retrySuggestion}`,
+                  });
+                }
+              }
+            } catch (reflectErr) {
+              console.warn(`[LLMCaller] Reflection check failed: ${reflectErr}`);
             }
           }
 

@@ -1,0 +1,447 @@
+/**
+ * Channel Adapter Framework — base framework for implementing message channel adapters.
+ *
+ * Provides:
+ *  - Abstract ChannelAdapter base class with lifecycle and messaging contract
+ *  - WebhookChannelAdapter — generic webhook-based adapter
+ *  - TelegramChannelAdapter — Telegram Bot API adapter (polling mode)
+ */
+
+// ─── Channel Adapter Base ────────────────────────────────────────────────────
+
+export interface ChannelAdapterConfig {
+  channelId: string;
+  channelName: string;
+  enabled: boolean;
+}
+
+export type ChannelAdapterStatus = "stopped" | "starting" | "running" | "stopping" | "error";
+
+export abstract class ChannelAdapter {
+  protected readonly config: ChannelAdapterConfig;
+  protected status: ChannelAdapterStatus = "stopped";
+  protected messageHandlers: Array<(peerId: string, message: string) => Promise<void>> = [];
+
+  constructor(config: ChannelAdapterConfig) {
+    this.config = config;
+  }
+
+  /** Start the channel adapter (connect, begin listening, etc.) */
+  abstract start(): Promise<void>;
+
+  /** Stop the channel adapter (disconnect, cleanup, etc.) */
+  abstract stop(): Promise<void>;
+
+  /** Send a message to a specific peer */
+  abstract sendMessage(peerId: string, message: string): Promise<boolean>;
+
+  /** Register a handler for incoming messages */
+  onMessage(handler: (peerId: string, message: string) => Promise<void>): void {
+    this.messageHandlers.push(handler);
+  }
+
+  /** Get the current status of the adapter */
+  getStatus(): ChannelAdapterStatus {
+    return this.status;
+  }
+
+  /** Check if the adapter is currently running */
+  isRunning(): boolean {
+    return this.status === "running";
+  }
+
+  /** Get the channel identifier */
+  getChannelId(): string {
+    return this.config.channelId;
+  }
+
+  /** Dispatch an incoming message to all registered handlers */
+  protected async dispatchMessage(peerId: string, message: string): Promise<void> {
+    for (const handler of this.messageHandlers) {
+      try {
+        await handler(peerId, message);
+      } catch (err) {
+        console.error(
+          `[ChannelAdapter:${this.config.channelId}] Message handler error:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  }
+}
+
+// ─── Webhook Channel Adapter ─────────────────────────────────────────────────
+
+export interface WebhookChannelConfig extends ChannelAdapterConfig {
+  /** URL to send outgoing messages to */
+  webhookUrl: string;
+  /** Secret for HMAC signature verification */
+  secret?: string;
+  /** Path to register for incoming webhook payloads */
+  incomingPath?: string;
+  /** Custom headers to include in outgoing requests */
+  headers?: Record<string, string>;
+  /** Request timeout in ms (default: 10000) */
+  timeoutMs?: number;
+}
+
+export class WebhookChannelAdapter extends ChannelAdapter {
+  private readonly webhookUrl: string;
+  private readonly secret: string;
+  private readonly incomingPath: string;
+  private readonly customHeaders: Record<string, string>;
+  private readonly timeoutMs: number;
+  private registered = false;
+
+  constructor(config: WebhookChannelConfig) {
+    super(config);
+    this.webhookUrl = config.webhookUrl;
+    this.secret = config.secret ?? "";
+    this.incomingPath = config.incomingPath ?? `/webhook/${config.channelId}`;
+    this.customHeaders = config.headers ?? {};
+    this.timeoutMs = config.timeoutMs ?? 10000;
+  }
+
+  async start(): Promise<void> {
+    if (this.status === "running") return;
+
+    this.status = "starting";
+    try {
+      // Register the webhook endpoint
+      this.registered = true;
+      this.status = "running";
+      console.log(
+        `[WebhookChannel:${this.config.channelId}] Started — outgoing URL: ${this.webhookUrl}, incoming path: ${this.incomingPath}`,
+      );
+    } catch (err) {
+      this.status = "error";
+      throw new Error(
+        `WebhookChannel "${this.config.channelId}" start failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.status = "stopping";
+    try {
+      // Unregister the webhook endpoint
+      this.registered = false;
+      this.status = "stopped";
+      console.log(`[WebhookChannel:${this.config.channelId}] Stopped`);
+    } catch (err) {
+      this.status = "error";
+      throw new Error(
+        `WebhookChannel "${this.config.channelId}" stop failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async sendMessage(peerId: string, message: string): Promise<boolean> {
+    if (!this.registered) {
+      console.warn(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started`);
+      return false;
+    }
+
+    try {
+      const body = JSON.stringify({
+        channelId: this.config.channelId,
+        peerId,
+        message,
+        timestamp: new Date().toISOString(),
+      });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "User-Agent": "EvoClaw-WebhookAdapter/1.0",
+        "X-Channel-Id": this.config.channelId,
+        ...this.customHeaders,
+      };
+
+      if (this.secret) {
+        headers["X-Webhook-Signature"] = this.signPayload(body);
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      const response = await fetch(this.webhookUrl, {
+        method: "POST",
+        headers,
+        body,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        console.warn(
+          `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}`,
+        );
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      console.error(
+        `[WebhookChannel:${this.config.channelId}] Send error:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Handle an incoming webhook payload.
+   * Call this from your HTTP server when a request arrives at the incoming path.
+   */
+  async handleIncomingPayload(payload: {
+    peerId?: string;
+    message?: string;
+    [key: string]: unknown;
+  }): Promise<void> {
+    if (this.status !== "running") {
+      console.warn(`[WebhookChannel:${this.config.channelId}] Ignoring payload — adapter not running`);
+      return;
+    }
+
+    const peerId = payload.peerId ?? "unknown";
+    const message = payload.message ?? "";
+
+    if (!message) {
+      console.warn(`[WebhookChannel:${this.config.channelId}] Ignoring payload — empty message`);
+      return;
+    }
+
+    await this.dispatchMessage(String(peerId), String(message));
+  }
+
+  /** Get the incoming webhook path for route registration */
+  getIncomingPath(): string {
+    return this.incomingPath;
+  }
+
+  /** Check if the webhook endpoint is registered */
+  isRegistered(): boolean {
+    return this.registered;
+  }
+
+  private signPayload(body: string): string {
+    if (!this.secret) return "";
+    const encoder = new TextEncoder();
+    const key = encoder.encode(this.secret);
+    const data = encoder.encode(body);
+
+    // Use SubtleCrypto for HMAC-SHA256
+    // Synchronous fallback for environments without SubtleCrypto
+    try {
+      // Simple HMAC implementation using crypto module
+      const crypto = require("crypto");
+      const hmac = crypto.createHmac("sha256", this.secret);
+      hmac.update(body);
+      return `sha256=${hmac.digest("hex")}`;
+    } catch {
+      // Fallback: no signature
+      return "";
+    }
+  }
+}
+
+// ─── Telegram Channel Adapter ────────────────────────────────────────────────
+
+export interface TelegramChannelConfig extends ChannelAdapterConfig {
+  /** Bot token from @BotFather */
+  botToken: string;
+  /** Polling interval in ms (default: 2000) */
+  pollingIntervalMs?: number;
+  /** Long polling timeout in seconds (default: 30) */
+  longPollTimeout?: number;
+  /** Allowed chat IDs (empty = allow all) */
+  allowedChats?: number[];
+  /** Blocked chat IDs */
+  blockedChats?: number[];
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    from?: { id: number; first_name?: string; username?: string };
+    chat: { id: number; type: string };
+    date: number;
+    text?: string;
+  };
+}
+
+interface TelegramApiResponse<T> {
+  ok: boolean;
+  result?: T;
+  description?: string;
+}
+
+export class TelegramChannelAdapter extends ChannelAdapter {
+  private readonly botToken: string;
+  private readonly pollingIntervalMs: number;
+  private readonly longPollTimeout: number;
+  private readonly allowedChats: Set<number>;
+  private readonly blockedChats: Set<number>;
+  private readonly apiBase: string;
+
+  private pollingTimer: ReturnType<typeof setInterval> | null = null;
+  private lastUpdateId = 0;
+  private botUsername: string | null = null;
+
+  constructor(config: TelegramChannelConfig) {
+    super(config);
+    this.botToken = config.botToken;
+    this.pollingIntervalMs = config.pollingIntervalMs ?? 2000;
+    this.longPollTimeout = config.longPollTimeout ?? 30;
+    this.allowedChats = new Set(config.allowedChats ?? []);
+    this.blockedChats = new Set(config.blockedChats ?? []);
+    this.apiBase = `https://api.telegram.org/bot${this.botToken}`;
+  }
+
+  async start(): Promise<void> {
+    if (this.status === "running") return;
+
+    this.status = "starting";
+    try {
+      // Verify bot token
+      const me = await this.telegramApi<{ id: number; first_name: string; username?: string }>("getMe");
+      if (!me.ok || !me.result) {
+        throw new Error(me.description ?? "Failed to verify bot token");
+      }
+
+      this.botUsername = me.result.username ?? me.result.first_name;
+      console.log(
+        `[TelegramChannel:${this.config.channelId}] Connected as @${this.botUsername} (id: ${me.result.id})`,
+      );
+
+      // Start polling
+      this.startPolling();
+      this.status = "running";
+    } catch (err) {
+      this.status = "error";
+      throw new Error(
+        `TelegramChannel "${this.config.channelId}" start failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.status = "stopping";
+    try {
+      if (this.pollingTimer) {
+        clearInterval(this.pollingTimer);
+        this.pollingTimer = null;
+      }
+      this.status = "stopped";
+      console.log(`[TelegramChannel:${this.config.channelId}] Stopped`);
+    } catch (err) {
+      this.status = "error";
+      throw new Error(
+        `TelegramChannel "${this.config.channelId}" stop failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async sendMessage(peerId: string, message: string): Promise<boolean> {
+    try {
+      const result = await this.telegramApi<{ message_id: number }>("sendMessage", {
+        chat_id: peerId,
+        text: message,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+
+      if (!result.ok) {
+        console.warn(
+          `[TelegramChannel:${this.config.channelId}] Send failed: ${result.description}`,
+        );
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      console.error(
+        `[TelegramChannel:${this.config.channelId}] Send error:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+  }
+
+  /** Get the bot username (available after start) */
+  getBotUsername(): string | null {
+    return this.botUsername;
+  }
+
+  // ── Polling ─────────────────────────────────────────────────────────────
+
+  private startPolling(): void {
+    this.pollingTimer = setInterval(async () => {
+      try {
+        const updates = await this.telegramApi<TelegramUpdate[]>("getUpdates", {
+          offset: this.lastUpdateId + 1,
+          timeout: this.longPollTimeout,
+          allowed_updates: ["message"],
+        });
+
+        if (!updates.ok || !updates.result) return;
+
+        for (const update of updates.result) {
+          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+          await this.processUpdate(update);
+        }
+      } catch (err) {
+        if (this.status === "running") {
+          console.error(
+            `[TelegramChannel:${this.config.channelId}] Polling error:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+    }, this.pollingIntervalMs);
+  }
+
+  private async processUpdate(update: TelegramUpdate): Promise<void> {
+    const msg = update.message;
+    if (!msg?.text) return;
+
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+
+    // Access control
+    if (this.blockedChats.has(chatId)) return;
+    if (userId && this.blockedChats.has(userId)) return;
+    if (this.allowedChats.size > 0) {
+      if (!this.allowedChats.has(chatId) && (!userId || !this.allowedChats.has(userId))) {
+        return;
+      }
+    }
+
+    const peerId = String(chatId);
+    await this.dispatchMessage(peerId, msg.text);
+  }
+
+  // ── Telegram API Helper ─────────────────────────────────────────────────
+
+  private async telegramApi<T>(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<TelegramApiResponse<T>> {
+    const url = `${this.apiBase}/${method}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: params ? JSON.stringify(params) : undefined,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Telegram API ${method}: HTTP ${response.status} — ${text.slice(0, 200)}`);
+    }
+
+    return response.json() as Promise<TelegramApiResponse<T>>;
+  }
+}

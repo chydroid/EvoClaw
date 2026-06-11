@@ -1,0 +1,1254 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.EvoClawServer = void 0;
+exports.main = main;
+const dotenv_1 = __importDefault(require("dotenv"));
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const tracing_1 = require("./tracing");
+dotenv_1.default.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
+function getServerVersion() {
+    try {
+        const pkgPath = path.resolve(__dirname, "../../../../package.json");
+        if (fs.existsSync(pkgPath)) {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+            if (pkg.version)
+                return pkg.version;
+        }
+    }
+    catch { /* version detection failed, using fallback */ }
+    return "0.9.5";
+}
+const SERVER_VERSION = getServerVersion();
+const core_1 = require("@evoclaw/core");
+const gateway_1 = require("@evoclaw/gateway");
+const agent_1 = require("@evoclaw/agent");
+const skills_1 = require("@evoclaw/skills");
+const evolution_1 = require("@evoclaw/evolution");
+const memory_1 = require("@evoclaw/memory");
+const security_1 = require("@evoclaw/security");
+const infrastructure_1 = require("@evoclaw/infrastructure");
+const email_1 = require("@evoclaw/email");
+const scheduler_1 = require("@evoclaw/scheduler");
+const reporting_1 = require("@evoclaw/reporting");
+const intelligence_1 = require("@evoclaw/intelligence");
+const security_2 = require("@evoclaw/security");
+const agent_2 = require("@evoclaw/agent");
+const skills_2 = require("@evoclaw/skills");
+const tools_1 = require("./tools");
+class EvoClawServer {
+    registry;
+    eventBus;
+    configManager;
+    logger;
+    gateway;
+    taskOrchestrator;
+    agentPool;
+    actorSystem;
+    agentModelExecutor;
+    skillManager;
+    evolutionEngine;
+    memoryHub;
+    securityGovernor;
+    auditCenter;
+    tenantManager;
+    selfHealing;
+    messageQueue;
+    processManager;
+    fileSystemManager;
+    autoSkillManager;
+    skillDispatcher;
+    taskPlanner;
+    permissionManager;
+    errorRecoveryManager;
+    browserController;
+    playwrightBrowser;
+    emailClient;
+    scheduleManager;
+    bootstrapManager;
+    compactionManager;
+    lifecycleManager;
+    queueManager;
+    pluginManager;
+    sessionManager;
+    contextEngine;
+    channelManager;
+    protocolHandler;
+    reportGenerator;
+    taskClassifier;
+    skillOrchestrator;
+    // Weixin plugin adapter
+    weixinPluginAdapter;
+    // ── New modules (OpenClaw parity) ──
+    agentRouter;
+    toolPolicyManager;
+    dmPairingManager;
+    semanticMemory;
+    subagentRegistry;
+    cronScheduler;
+    configValidator;
+    configWatcher;
+    // ── New P0/P1 modules ──
+    autoReplyEngine;
+    commitmentManager;
+    memoryHost;
+    // ── ACP + Operations modules (Round 4) ──
+    eventLedger;
+    permissionRelay;
+    crestodian;
+    observability;
+    securityMiddleware;
+    copilotRouter;
+    credentialPool;
+    skillIndex;
+    featureFlagStore;
+    evalRunner;
+    constructor() {
+        this.registry = new core_1.ServiceRegistry();
+        this.eventBus = new core_1.EventBus();
+        this.configManager = new core_1.ConfigManager();
+        this.configManager.loadFromEnv();
+        // ── Initialize structured logger (OpenClaw parity) ──
+        this.logger = infrastructure_1.Logger.getInstance({
+            minLevel: process.env.LOG_LEVEL || "info",
+            prettyPrint: process.env.NODE_ENV !== "production",
+        });
+        this.registry.registerService("logger", this.logger);
+        this.observability = new infrastructure_1.Observability({ metricsPrefix: "evoclaw" });
+        this.observability.registerMetric({ name: "evoclaw_llm_calls_total", type: "counter", help: "Total LLM API calls", labels: ["provider", "model", "status"] });
+        this.observability.registerMetric({ name: "evoclaw_llm_latency_ms", type: "histogram", help: "LLM call latency in milliseconds", labels: ["provider", "model", "status"] });
+        this.observability.registerMetric({ name: "evoclaw_tool_calls_total", type: "counter", help: "Total tool invocations", labels: ["tool", "status"] });
+        this.observability.registerMetric({ name: "evoclaw_tool_latency_ms", type: "histogram", help: "Tool invocation latency in milliseconds", labels: ["tool", "status"] });
+        this.observability.registerMetric({ name: "evoclaw_active_sessions", type: "gauge", help: "Currently active sessions" });
+        this.observability.registerMetric({ name: "evoclaw_evolution_cycles_total", type: "counter", help: "Total evolution engine cycles" });
+        this.registry.registerService("observability", this.observability);
+        this.observability.registerHealthComponent("gateway");
+        this.observability.registerHealthComponent("taskOrchestrator");
+        this.observability.registerHealthComponent("agentPool");
+        this.observability.registerHealthComponent("skillManager");
+        this.observability.registerHealthComponent("evolutionEngine");
+        this.observability.registerHealthComponent("memoryHub");
+        this.observability.registerHealthComponent("securityGovernor");
+        this.observability.registerHealthComponent("messageQueue");
+        this.securityMiddleware = new security_2.SecurityMiddleware(this.registry, this.eventBus);
+        this.copilotRouter = new agent_2.CopilotRouter();
+        this.registry.registerService("copilotRouter", this.copilotRouter);
+        this.credentialPool = new agent_2.CredentialPool();
+        this.registry.registerService("credentialPool", this.credentialPool);
+        this.skillIndex = new skills_2.SkillIndex();
+        this.registry.registerService("skillIndex", this.skillIndex);
+        // ── Feature Flag Store (runtime feature toggles) ──
+        this.featureFlagStore = new core_1.FeatureFlagStore({
+            environment: process.env.NODE_ENV || "development",
+            auditEvaluations: true,
+            defaultEnabled: false,
+        });
+        this.featureFlagStore.registerAll([
+            { key: "evolution", description: "自进化引擎 — 自动优化Agent行为和配置", enabled: true, owner: "core", updatedAt: Date.now() },
+            { key: "compaction", description: "上下文压缩 — 长对话自动摘要以节省Token", enabled: true, owner: "core", updatedAt: Date.now() },
+            { key: "sandbox", description: "技能沙箱 — 在隔离环境中执行用户自定义技能", enabled: true, owner: "security", updatedAt: Date.now() },
+            { key: "mcp", description: "MCP协议支持 — Model Context Protocol工具集成", enabled: true, owner: "integration", updatedAt: Date.now() },
+            { key: "a2ui", description: "A2UI协议 — Agent驱动的Canvas可视化界面", enabled: true, owner: "canvas", updatedAt: Date.now() },
+            { key: "autoSkill", description: "自动技能发现与安装 — 根据任务自动匹配技能", enabled: true, owner: "skills", updatedAt: Date.now() },
+            { key: "permissionFastTrack", description: "权限快速通道 — 白名单目录操作自动审批", enabled: true, owner: "security", updatedAt: Date.now() },
+            { key: "copilotRouter", description: "Copilot路由 — 低价值任务自动降级到廉价模型", enabled: true, owner: "optimization", updatedAt: Date.now() },
+            { key: "hotReload", description: "热重载 — 配置文件变更自动生效无需重启", enabled: true, owner: "devops", updatedAt: Date.now() },
+            { key: "semanticMemory", description: "语义记忆 — 基于TF-IDF的语义搜索记忆存储", enabled: true, owner: "memory", updatedAt: Date.now() },
+            { key: "selfHealing", description: "自愈管理 — 自动检测和恢复服务异常", enabled: true, owner: "devops", updatedAt: Date.now() },
+            { key: "weixinIntegration", description: "微信集成 — 微信公众号/企业微信消息通道", enabled: false, owner: "integration", updatedAt: Date.now() },
+            { key: "playwrightBrowser", description: "Playwright浏览器 — 高级网页自动化操作", enabled: true, owner: "browser", updatedAt: Date.now() },
+            { key: "emailIntegration", description: "邮件集成 — 邮件收发与分析功能", enabled: false, owner: "integration", updatedAt: Date.now() },
+            { key: "scheduledTasks", description: "定时任务 — Cron定时执行预设操作", enabled: true, owner: "scheduler", updatedAt: Date.now() },
+            { key: "rolloutCanary", description: "金丝雀发布 — 百分比灰度发布新功能（仅对10%请求启用）", enabled: false, rolloutPercent: 10, owner: "devops", updatedAt: Date.now() },
+            { key: "humanApproval", description: "人工审批 — 高风险工具操作需人工确认后执行", enabled: false, owner: "security", updatedAt: Date.now() },
+            { key: "a2a", description: "A2A协议 — Agent-to-Agent跨框架通信协议支持", enabled: false, owner: "integration", updatedAt: Date.now() },
+        ]);
+        this.registry.registerService("featureFlagStore", this.featureFlagStore);
+        // ── Config validation (OpenClaw parity) ──
+        this.configValidator = new core_1.ConfigValidator(core_1.CONFIG_SCHEMA);
+        this.registry.registerService("configValidator", this.configValidator);
+        this.registry.registerService("config", this.configManager);
+        this.configWatcher = new core_1.ConfigWatcher();
+        this.configWatcher.onChange((filePath) => {
+            this.logger.info("config", `Config file changed: ${filePath}, reloading...`);
+            // Re-load configuration from env (hot-reload support)
+            this.configManager.loadFromEnv();
+        });
+        this.registry.registerService("configWatcher", this.configWatcher);
+        // ── Agent Router (OpenClaw parity) ──
+        this.agentRouter = new agent_1.AgentRouter({
+            defaultAgentId: "default",
+            baseWorkspaceDir: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+            baseSessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+        });
+        // Register the default agent
+        this.agentRouter.registerAgent({
+            id: "default",
+            name: "EvoClaw",
+            persona: this.configManager.get("persona") || {},
+            workspace: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+            sessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+            enabled: true,
+            dmPolicy: "open",
+            sandbox: "off",
+        });
+        this.registry.registerService("agentRouter", this.agentRouter);
+        // ── Tool Policy Manager (OpenClaw parity) ──
+        this.toolPolicyManager = new security_1.ToolPolicyManager();
+        this.toolPolicyManager.assignPolicy("default", "main-agent-full-access");
+        this.registry.registerService("toolPolicyManager", this.toolPolicyManager);
+        // ── DM Pairing Manager (OpenClaw parity) ──
+        this.dmPairingManager = new security_1.DMPairingManager(this.eventBus, {
+            pairingStorePath: path.resolve(__dirname, "..", "..", "..", "data", "pairing-store.json"),
+        });
+        this.dmPairingManager.setChannelPolicy({
+            channel: "webchat",
+            policy: process.env.DM_POLICY || "open",
+        });
+        this.registry.registerService("dmPairingManager", this.dmPairingManager);
+        // ── Semantic Memory (OpenClaw parity, TF-IDF based) ──
+        this.semanticMemory = new memory_1.SemanticMemoryStore({
+            threshold: 0.05,
+            defaultLimit: 10,
+        });
+        this.registry.registerService("semanticMemory", this.semanticMemory);
+        // ── Subagent Registry (OpenClaw parity) ──
+        this.subagentRegistry = new agent_1.SubagentRegistry(this.eventBus, 10);
+        this.registry.registerService("subagentRegistry", this.subagentRegistry);
+        // ── Enhanced Cron Scheduler (OpenClaw parity) ──
+        this.cronScheduler = new scheduler_1.CronScheduler({ maxConcurrentJobs: 5 });
+        this.cronScheduler.on("job:start", (record) => {
+            this.logger.info("cron", `Job "${record.jobName}" started`, { jobId: record.jobId });
+        });
+        this.cronScheduler.on("job:complete", (record) => {
+            this.logger.info("cron", `Job "${record.jobName}" completed`, { jobId: record.jobId, duration: record.duration });
+        });
+        this.cronScheduler.on("job:error", (record) => {
+            this.logger.error("cron", `Job "${record.jobName}" failed`, record.error);
+        });
+        this.registry.registerService("cronScheduler", this.cronScheduler);
+        // ── Auto-Reply Engine (OpenClaw parity) ──
+        this.autoReplyEngine = new agent_1.AutoReplyEngine(this.eventBus);
+        this.autoReplyEngine.configure({
+            enabled: true,
+            globalCooldownMs: 10_000,
+            rules: [
+                {
+                    id: "dm-welcome",
+                    label: "DM Welcome",
+                    trigger: "dm",
+                    template: "你好 {{sender}}！我是 EvoClaw 助手。请问有什么可以帮你的？",
+                    priority: 10,
+                    cooldownMs: 60_000,
+                },
+            ],
+        });
+        this.registry.registerService("autoReplyEngine", this.autoReplyEngine);
+        // ── Commitment Manager (OpenClaw parity) ──
+        this.commitmentManager = new agent_1.CommitmentManager(this.eventBus, {
+            storePath: path.resolve(__dirname, "..", "..", "..", "data", "commitments.json"),
+        });
+        this.registry.registerService("commitmentManager", this.commitmentManager);
+        // ── Memory Host SDK (OpenClaw parity) ──
+        this.memoryHost = new memory_1.MemoryHost({
+            maxEntries: 10_000,
+            defaultTtlMs: 86_400_000, // 24 hours
+            storePath: path.resolve(__dirname, "..", "..", "..", "data", "memory-host.json"),
+        }, this.eventBus);
+        this.registry.registerService("memoryHost", this.memoryHost);
+        // ── Event Ledger (ACP: event sourcing) ──
+        this.eventLedger = new agent_1.EventLedger({
+            storeDir: path.resolve(__dirname, "..", "..", "..", "data", "ledger"),
+            maxEntriesPerFile: 10_000,
+            autoFlushMs: 5_000,
+        });
+        this.registry.registerService("eventLedger", this.eventLedger);
+        // ── Permission Relay (ACP: centralized permission control) ──
+        this.permissionRelay = new security_1.PermissionRelay({
+            autoApprovePatterns: ["file_read", "file_list", "task_status", "skill_search", "error_stats", "permission_status"],
+            autoDenyPatterns: [],
+            defaultTimeoutMs: 30_000,
+            maxPending: 50,
+        }, this.eventBus);
+        this.registry.registerService("permissionRelay", this.permissionRelay);
+        // ── Crestodian (Daemon Operations Manager) ──
+        this.crestodian = new infrastructure_1.Crestodian({
+            checkIntervalMs: 60_000,
+            maxOperationHistory: 500,
+        }, this.eventBus);
+        // Register all key services with Crestodian for Ops tab health monitoring
+        this.crestodian.setServiceHealth("agentModelExecutor", "ok", { version: "1.0" });
+        this.crestodian.setServiceHealth("gatewayServer", "ok", { port: process.env.EvoClaw_PORT || "17788" });
+        this.crestodian.setServiceHealth("autoSkillManager", "ok");
+        this.crestodian.setServiceHealth("skillDispatcher", "ok");
+        this.crestodian.setServiceHealth("eventLedger", "ok");
+        this.crestodian.setServiceHealth("permissionManager", "ok");
+        this.crestodian.setServiceHealth("taskOrchestrator", "ok");
+        this.crestodian.setServiceHealth("featureFlagStore", "ok");
+        this.registry.registerService("crestodian", this.crestodian);
+        this.registry.registerService("registry", this.registry);
+        this.registry.registerService("eventBus", this.eventBus);
+        this.gateway = new gateway_1.GatewayServer(this.registry, this.eventBus);
+        this.taskOrchestrator = new agent_1.TaskOrchestrator(this.registry, this.eventBus);
+        this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
+        this.agentPool = new agent_1.AgentPoolManager(this.registry, this.eventBus);
+        this.registry.registerService("agentPool", this.agentPool);
+        this.actorSystem = new agent_1.ActorSystem();
+        this.registry.registerService("actorSystem", this.actorSystem);
+        this.agentModelExecutor = new agent_1.AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
+        // Register the execution checkpoint store as a service for system-wide access
+        const executionCheckpointStore = this.agentModelExecutor.getExecutionCheckpointStore();
+        this.registry.registerService("executionCheckpointStore", executionCheckpointStore);
+        this.skillManager = new skills_1.SkillManager(this.registry, this.eventBus);
+        this.evolutionEngine = new evolution_1.EvolutionEngine(this.registry, this.eventBus);
+        // EvolutionEngine self-registers in its constructor — no manual registerService needed
+        this.crestodian.setServiceHealth("evolutionEngine", "ok");
+        this.memoryHub = new memory_1.MemoryHub(this.registry, this.eventBus);
+        this.agentModelExecutor.setMemoryHub(this.memoryHub);
+        this.bootstrapManager = new agent_1.BootstrapManager(this.configManager);
+        this.agentModelExecutor.setBootstrapManager(this.bootstrapManager);
+        this.registry.registerService("bootstrapManager", this.bootstrapManager);
+        this.bootstrapManager.initialize().then((ctx) => {
+            this.logger.info("server", `Bootstrap initialized: bootstrapPending=${ctx.bootstrapPending}, missingFiles=${ctx.missingFiles.join(",") || "none"}`);
+        });
+        this.compactionManager = new agent_1.CompactionManager();
+        this.agentModelExecutor.setCompactionManager(this.compactionManager);
+        this.registry.registerService("compactionManager", this.compactionManager);
+        this.lifecycleManager = new agent_1.AgentLifecycleManager(this.eventBus);
+        this.agentModelExecutor.setLifecycleManager(this.lifecycleManager);
+        this.registry.registerService("lifecycleManager", this.lifecycleManager);
+        this.queueManager = new agent_1.QueueManager(this.eventBus);
+        this.agentModelExecutor.setQueueManager(this.queueManager);
+        this.registry.registerService("queueManager", this.queueManager);
+        this.queueManager.loadPersistedQueues();
+        this.pluginManager = new core_1.PluginManager(path.resolve(__dirname, "..", "..", "..", "data", "plugins"));
+        this.pluginManager.setEventBus(this.eventBus);
+        this.pluginManager.setRegistry(this.registry);
+        this.agentModelExecutor.setPluginManager(this.pluginManager);
+        this.registry.registerService("pluginManager", this.pluginManager);
+        this.sessionManager = new agent_1.SessionManager({
+            sessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
+            writeLockTimeoutMs: 60000,
+            truncateAfterCompaction: true,
+        });
+        this.agentModelExecutor.setSessionManager(this.sessionManager);
+        this.registry.registerService("sessionManager", this.sessionManager);
+        this.contextEngine = new agent_1.ContextEngine({
+            workspacePath: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
+            maxContextTokens: 128000,
+            reserveTokens: 4000,
+        });
+        this.agentModelExecutor.setContextEngine(this.contextEngine);
+        this.registry.registerService("contextEngine", this.contextEngine);
+        this.channelManager = new gateway_1.ChannelManager(this.eventBus);
+        this.agentModelExecutor.setChannelManager(this.channelManager);
+        this.registry.registerService("channelManager", this.channelManager);
+        // ── Human-in-the-Loop Approval Manager (feature-flagged, default: off) ──
+        if (this.featureFlagStore.isEnabled("humanApproval")) {
+            const humanApprovalManager = new agent_1.HumanApprovalManager();
+            this.agentModelExecutor.setHumanApprovalManager(humanApprovalManager);
+            this.registry.registerService("humanApprovalManager", humanApprovalManager);
+            this.logger.info("server", "Human-in-the-Loop approval system enabled");
+        }
+        // ── A2A (Agent-to-Agent) Protocol (feature-flagged, default: off) ──
+        const a2aClient = new agent_2.A2AClient();
+        this.registry.registerService("a2aClient", a2aClient);
+        const a2aServer = new agent_2.A2AServer({
+            publicUrl: process.env.EVOCLAW_A2A_URL || `http://localhost:${process.env.EvoClaw_PORT || "3000"}`,
+            enabled: this.featureFlagStore.isEnabled("a2a"),
+            authType: process.env.EVOCLAW_A2A_AUTH || "none",
+            validApiKeys: process.env.EVOCLAW_A2A_API_KEYS?.split(",").map(k => k.trim()).filter(Boolean),
+        });
+        a2aServer.setTaskHandler(async (task) => {
+            const input = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
+            const result = await this.agentModelExecutor.chat(input, { sessionId: `a2a-${task.id}` });
+            return result;
+        });
+        a2aServer.buildCapabilitiesFromTools(this.agentModelExecutor.getRegisteredTools());
+        this.registry.registerService("a2aServer", a2aServer);
+        if (a2aServer.isEnabled()) {
+            this.logger.info("server", "A2A protocol server enabled");
+        }
+        this.protocolHandler = new gateway_1.ProtocolHandler({
+            serverVersion: SERVER_VERSION,
+            autoApproveLoopback: true,
+        });
+        this.protocolHandler.setEventBus(this.eventBus);
+        this.registry.registerService("protocolHandler", this.protocolHandler);
+        this.securityGovernor = new security_1.SecurityGovernor(this.registry, this.eventBus);
+        this.auditCenter = new security_1.AuditCenter(this.registry, this.eventBus);
+        this.tenantManager = new security_1.TenantManager(this.registry, this.eventBus);
+        this.selfHealing = new security_1.SelfHealingManager(this.registry, this.eventBus);
+        this.messageQueue = new infrastructure_1.MessageQueue(this.registry, this.eventBus);
+        this.processManager = new infrastructure_1.ProcessManager(this.registry, this.eventBus);
+        this.fileSystemManager = new infrastructure_1.FileSystemManager(this.registry, this.eventBus);
+        this.autoSkillManager = new skills_1.AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "data", "workspace", "skills"));
+        this.skillDispatcher = new skills_1.SkillDispatcher(this.registry, this.eventBus);
+        this.skillDispatcher.initialize();
+        this.taskPlanner = new agent_1.TaskPlanner(this.registry, this.eventBus);
+        this.permissionManager = new security_1.PermissionManager(this.registry, this.eventBus);
+        this.registry.registerService("permissionManager", this.permissionManager);
+        this.errorRecoveryManager = new security_1.ErrorRecoveryManager(this.registry, this.eventBus);
+        this.browserController = new infrastructure_1.BrowserController(this.registry, this.eventBus);
+        this.playwrightBrowser = new infrastructure_1.PlaywrightBrowser(this.registry, this.eventBus, {
+            headless: true,
+            cookieStorageDir: path.resolve(__dirname, "..", "..", ".."),
+        });
+        this.registry.registerService("playwrightBrowser", this.playwrightBrowser);
+        this.emailClient = new email_1.EmailClient(this.registry, this.eventBus);
+        this.registry.registerService("emailClient", this.emailClient);
+        this.scheduleManager = new scheduler_1.ScheduleManager(this.registry, this.eventBus, {
+            dataDir: path.resolve(__dirname, "..", "..", "..", "data", "scheduler"),
+        });
+        this.registry.registerService("scheduleManager", this.scheduleManager);
+        this.reportGenerator = new reporting_1.ReportGenerator(this.registry, this.eventBus, {
+            templateDir: path.resolve(__dirname, "..", "..", "..", "packages", "reporting", "src", "templates"),
+        });
+        this.registry.registerService("reportGenerator", this.reportGenerator);
+        this.taskClassifier = new intelligence_1.TaskClassifier(this.registry, this.eventBus);
+        this.registry.registerService("taskClassifier", this.taskClassifier);
+        this.skillOrchestrator = new intelligence_1.SkillOrchestrator(this.registry, this.eventBus);
+        this.registry.registerService("skillOrchestrator", this.skillOrchestrator);
+        // ── Eval Runner (Agent behavior evaluation) ──
+        this.evalRunner = new agent_2.EvalRunner();
+        this.evalRunner.addCases(agent_2.BUILTIN_EVAL_CASES);
+        this.registry.registerService("evalRunner", this.evalRunner);
+        this.agentModelExecutor.setEvalRunner(this.evalRunner);
+        // Initialize Weixin plugin adapter
+        this.weixinPluginAdapter = new gateway_1.WeixinPluginAdapter(this.eventBus, this.agentModelExecutor);
+    }
+    async start() {
+        // Initialize OpenTelemetry tracing before any other initialization
+        (0, tracing_1.initTracing)("evoclaw", SERVER_VERSION, process.env.EVOCLAW_OTLP_ENDPOINT);
+        this.logger.info("server", "============================================");
+        this.logger.info("server", `  EvoClaw v${SERVER_VERSION} - Self-Evolving Agent OS`);
+        this.logger.info("server", "============================================");
+        await this.eventBus.publish(core_1.SystemEvents.SYSTEM_STARTING, null, "server");
+        // ── Compat layer: check for legacy env vars ──
+        (0, core_1.printMigrationHints)();
+        const jwtSecret = process.env.JWT_SECRET || "";
+        const jwtValidation = this.securityMiddleware.validateJWTSecret(jwtSecret);
+        if (!jwtValidation.valid) {
+            this.logger.warn("security", `JWT secret validation failed: ${jwtValidation.reason}. Please set a strong JWT_SECRET environment variable.`);
+            if (process.env.NODE_ENV === "production") {
+                this.logger.fatal("security", "Refusing to start in production with weak JWT secret");
+                process.exit(1);
+            }
+        }
+        this.logger.info("server", "Starting all services...");
+        this.logger.info("server", "Gateway server starting...");
+        await this.gateway.start();
+        this.logger.info("server", "Starting Weixin plugin adapter...");
+        this.weixinPluginAdapter.startAllConfiguredMonitors();
+        // Listen for Weixin monitor start events
+        this.eventBus.subscribe("weixin:start-monitor", async (_event) => {
+            this.logger.info("server", "Received Weixin monitor start request");
+            this.weixinPluginAdapter.startAllConfiguredMonitors();
+        });
+        this.logger.info("server", "Loading persisted configuration...");
+        this.gateway.loadPersistedConfig();
+        // Connect channel message handler to agent
+        this.channelManager.setMessageHandler(async (msg) => {
+            try {
+                this.logger.info("channel", `Message from ${msg.channel}: ${msg.from} -> ${msg.text?.slice(0, 50)}`);
+                const sessionId = `${msg.channel}-${msg.from}`;
+                const result = await this.agentModelExecutor.chat(msg.text, {
+                    sessionId,
+                    channel: msg.channel,
+                    peerId: msg.from,
+                });
+                if (result?.reply && msg.isDirect) {
+                    let replyText = result.reply;
+                    // For IM channels, append file info if files were created
+                    if (result.files && result.files.length > 0 && msg.channel !== "webchat" && msg.channel !== "cli") {
+                        const fileInfo = result.files
+                            .filter(f => f.path)
+                            .map(f => `📄 文件已保存至本地: ${f.path}`)
+                            .join("\n");
+                        if (fileInfo) {
+                            replyText += "\n\n" + fileInfo;
+                        }
+                    }
+                    await this.channelManager.sendMessage(msg.channel, msg.from, replyText);
+                }
+            }
+            catch (err) {
+                this.logger.error("channel", `Failed to handle channel message: ${err}`);
+            }
+        });
+        this.logger.info("server", "Agent pool starting...");
+        this.logger.info("server", "Agent pool initialized");
+        this.logger.info("server", "Skill manager starting...");
+        this.logger.info("server", "Skill manager ready");
+        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+        if (!fs.existsSync(workspaceDir)) {
+            fs.mkdirSync(workspaceDir, { recursive: true });
+        }
+        const skillsDir = path.join(workspaceDir, "skills");
+        if (!fs.existsSync(skillsDir)) {
+            fs.mkdirSync(skillsDir, { recursive: true });
+        }
+        this.skillManager.startAutoScan(skillsDir, 30000);
+        this.eventBus.subscribe(core_1.SystemEvents.SKILL_INSTALLED, async (event) => {
+            try {
+                const skill = event?.data;
+                if (skill)
+                    this.skillIndex.indexSkill(skill);
+            }
+            catch { /* non-critical */ }
+        });
+        this.eventBus.subscribe(core_1.SystemEvents.SKILL_UNINSTALLED, async (event) => {
+            try {
+                const skill = event?.data;
+                if (skill?.id)
+                    this.skillIndex.removeSkill(skill.id);
+            }
+            catch { /* non-critical */ }
+        });
+        this.eventBus.subscribe(core_1.SystemEvents.SKILL_EXECUTED, async (event) => {
+            try {
+                const data = event?.data;
+                if (data?.skillId)
+                    this.skillIndex.updateStats(data.skillId, true);
+            }
+            catch { /* non-critical */ }
+        });
+        this.eventBus.subscribe(core_1.SystemEvents.SKILL_FAILED, async (event) => {
+            try {
+                const data = event?.data;
+                if (data?.skillId)
+                    this.skillIndex.updateStats(data.skillId, false);
+            }
+            catch { /* non-critical */ }
+        });
+        setTimeout(async () => {
+            try {
+                await this.skillManager.checkAndTranslateInstalledSkills();
+            }
+            catch { /* non-critical */ }
+        }, 10000);
+        const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
+        for (const fileName of bootstrapFiles) {
+            const fpath = path.join(workspaceDir, fileName);
+            if (!fs.existsSync(fpath)) {
+                fs.writeFileSync(fpath, `# ${fileName.replace(".md", "")}\n\nSee ${workspaceDir}/${fileName} for documentation.\n`, "utf-8");
+            }
+        }
+        this.agentModelExecutor.setWorkspacePath(workspaceDir);
+        this.logger.info("server", `Workspace initialized at ${workspaceDir}`);
+        // Whitelist workspace and skills directories — file operations within
+        // these paths are auto-approved without user confirmation.
+        this.permissionManager.addDirectoryWhitelist(workspaceDir, ["file_create", "file_modify", "file_delete"]);
+        this.permissionManager.addDirectoryWhitelist(skillsDir, ["file_create", "file_modify", "file_delete"]);
+        // Also whitelist project root — bare filenames (like "notes.txt") resolve here
+        // because FileSystemManager.setBasePath restricts everything to the project root.
+        const projectRoot = path.resolve(__dirname, "..", "..", "..");
+        this.permissionManager.addDirectoryWhitelist(projectRoot, ["file_create", "file_modify", "file_delete"]);
+        this.logger.info("server", `File operations whitelisted for workspace, skills & project root directories`);
+        const fsBase = path.resolve(__dirname, "..", "..", "..");
+        this.fileSystemManager.setBasePath(fsBase);
+        this.registerFileTools(fsBase);
+        this.registerAutoSkillTool();
+        this.registerSkillIndexTools();
+        this.registerTaskPlannerTool();
+        this.registerBootstrapTool();
+        this.registerPermissionTools();
+        this.registerBrowserTools();
+        await this.emailClient.initialize();
+        await this.scheduleManager.initialize();
+        await this.reportGenerator.initialize();
+        this.registerSchedulerTools();
+        this.registerReportingTools();
+        this.registerIntelligenceTools();
+        this.registerMarkItDownTools();
+        this.scheduleManager.start();
+        // Register all built-in plugins
+        try {
+            const { BUILTIN_PLUGIN_FACTORIES } = await import("@evoclaw/agent/plugins");
+            for (const factory of BUILTIN_PLUGIN_FACTORIES) {
+                try {
+                    const plugin = factory();
+                    await this.pluginManager.registerPlugin(plugin);
+                }
+                catch (err) {
+                    this.logger.error("server", `Failed to register built-in plugin: ${err}`);
+                }
+            }
+        }
+        catch (err) {
+            this.logger.error("server", `Failed to load built-in plugins: ${err}`);
+        }
+        this.securityMiddleware.registerHooks(this.pluginManager);
+        await this.pluginManager.registerPlugin({
+            manifest: { name: "copilot-router", version: "1.0.0", description: "Routes low-value tasks to cheaper models" },
+            hooks: [
+                {
+                    hookType: "before_model_resolve",
+                    priority: "normal",
+                    handler: async (hook) => {
+                        const taskDesc = hook?.context?.text || hook?.context?.message || "";
+                        if (!taskDesc || !this.copilotRouter)
+                            return;
+                        const currentModel = hook?.model || "unknown";
+                        const currentProvider = hook?.provider || "unknown";
+                        const decision = this.copilotRouter.route(taskDesc, currentModel, currentProvider);
+                        if (decision.shouldDowngrade) {
+                            hook.model = decision.routedModel;
+                            hook.provider = decision.routedProvider;
+                            this.logger.info("copilot", `Routed to ${decision.routedModel} (${decision.routedProvider}): ${decision.reason}`);
+                            return { model: decision.routedModel, provider: decision.routedProvider };
+                        }
+                        return;
+                    },
+                },
+            ],
+        });
+        this.eventBus.subscribe("agent_end", async (event) => {
+            try {
+                const data = event?.data;
+                if (!data?.userMessage || !data?.agentResponse)
+                    return;
+                await this.memoryHub.curateFromTurn(data.userMessage, data.agentResponse, data.context || {});
+            }
+            catch { /* non-critical */ }
+        });
+        this.eventBus.subscribe("memory_stored", async () => {
+            try {
+                this.memoryHub.freezeMemorySnapshot();
+                if (this.contextEngine) {
+                    this.contextEngine.invalidateFrozen();
+                }
+            }
+            catch { /* non-critical */ }
+        });
+        this.logger.info("server", "Evolution engine starting...");
+        this.logger.info("server", "Evolution engine online");
+        this.logger.info("server", "Memory hub starting...");
+        this.logger.info("server", "Memory hub active");
+        this.logger.info("server", "Security governor engaged");
+        this.logger.info("server", "Audit center online");
+        this.logger.info("server", "Tenant manager starting...");
+        this.logger.info("server", "Tenant manager ready");
+        this.logger.info("server", "Self-healing monitor starting...");
+        this.selfHealing.start();
+        this.tenantManager.createTenant("default", {
+            defaultLanguage: "zh-CN",
+            timezone: "Asia/Shanghai",
+        });
+        await this.eventBus.publish(core_1.SystemEvents.SYSTEM_READY, {
+            version: SERVER_VERSION,
+            serviceCount: this.registry.getRegisteredServices().length,
+        }, "server");
+        this.logger.info("server", "All systems ready!");
+        this.logger.info("server", `Registered services: ${this.registry.getRegisteredServices().join(", ")}`);
+        this.eventBus.subscribe("system.shutdown", async () => {
+            await this.shutdown();
+        });
+        process.on("SIGINT", async () => {
+            this.logger.info("server", "Received SIGINT");
+            await this.shutdown();
+            process.exit(0);
+        });
+        process.on("SIGTERM", async () => {
+            this.logger.info("server", "Received SIGTERM");
+            await this.shutdown();
+            process.exit(0);
+        });
+        process.on("uncaughtException", (err) => {
+            this.logger.fatal("server", "Uncaught exception", err);
+            process.exit(1);
+        });
+        process.on("unhandledRejection", (reason) => {
+            this.logger.error("server", "Unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
+        });
+    }
+    async shutdown() {
+        this.logger.info("server", "Shutting down...");
+        this.selfHealing.stop();
+        this.scheduleManager.stop();
+        this.configWatcher.stopAll();
+        // Stop Weixin plugin adapter
+        this.weixinPluginAdapter.stopAllMonitors();
+        this.logger.info("server", "Stopping subsystems...");
+        await this.eventBus.publish(core_1.SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
+        await this.processManager.killAll();
+        await this.gateway.stop();
+        await this.registry.stopAll();
+        await (0, tracing_1.shutdownTracing)();
+        this.logger.info("server", "Goodbye!");
+    }
+    registerFileTools(fsBase) {
+        (0, tools_1.registerFileTools)(this.agentModelExecutor, this.permissionManager, this.permissionRelay, this.errorRecoveryManager, this.fileSystemManager, fsBase);
+    }
+    registerAutoSkillTool() {
+        (0, tools_1.registerAutoSkillTools)(this.agentModelExecutor, this.autoSkillManager, this.skillManager, this.registry);
+    }
+    registerTaskPlannerTool() {
+        const planner = this.taskPlanner;
+        this.agentModelExecutor.registerTool("task_decompose", {
+            name: "task_decompose",
+            description: "Decompose a complex task into executable subtasks with dependency ordering",
+            parameters: {
+                task: { type: "string", description: "The task description to decompose" },
+            },
+        }, async (params) => {
+            const task = String(params.task || "");
+            const plan = planner.decompose(task);
+            return {
+                planId: plan.id,
+                task: plan.task,
+                subtaskCount: plan.subtasks.length,
+                subtasks: plan.subtasks.map((s) => ({
+                    id: s.id,
+                    description: s.description,
+                    tool: s.tool,
+                    dependencies: s.dependencies,
+                    status: s.status,
+                })),
+            };
+        });
+        this.agentModelExecutor.registerTool("task_status", {
+            name: "task_status",
+            description: "Get the status of a task plan",
+            parameters: {
+                planId: { type: "string", description: "The plan ID to check" },
+            },
+        }, async (params) => {
+            const planId = String(params.planId || "");
+            const plan = planner.getPlan(planId);
+            if (!plan)
+                return { error: "Plan not found" };
+            return {
+                planId: plan.id,
+                status: plan.status,
+                progress: plan.progress,
+                subtasks: plan.subtasks.map((s) => ({
+                    id: s.id,
+                    description: s.description,
+                    status: s.status,
+                    result: s.result,
+                    error: s.error,
+                    retryCount: s.retryCount,
+                })),
+            };
+        });
+    }
+    registerBootstrapTool() {
+        const bm = this.bootstrapManager;
+        const mh = this.memoryHub;
+        this.agentModelExecutor.registerTool("complete_bootstrap", {
+            name: "complete_bootstrap",
+            description: "Complete the initial bootstrap ritual. Call after finishing the first-run setup in BOOTSTRAP.md. Deletes BOOTSTRAP.md permanently.",
+            parameters: {
+                summary: { type: "string", description: "Brief summary of what was accomplished" },
+            },
+        }, async (params) => {
+            if (!bm)
+                return { error: "Bootstrap manager not initialized" };
+            const ctx = bm.getContext();
+            if (!ctx.bootstrapPending)
+                return { completed: false, message: "Bootstrap not pending." };
+            bm.completeBootstrap();
+            const summary = String(params.summary || "Bootstrap completed");
+            if (mh) {
+                try {
+                    await mh.getLongTerm().store({
+                        content: `Bootstrap: ${summary}`, type: "system",
+                        metadata: { source: "bootstrap", sessionId: "bootstrap", userId: "default", tags: ["bootstrap"], importance: 0.9, associations: [], entities: [] },
+                        ttl: 365 * 24 * 3600 * 1000, embedding: null, id: "", createdAt: new Date(), accessedAt: new Date(),
+                    });
+                }
+                catch { /* bootstrap memory store failure is non-critical */ }
+            }
+            return { completed: true, message: "Bootstrap ritual completed. Workspace initialized.", summary };
+        });
+    }
+    registerPermissionTools() {
+        const permMgr = this.permissionManager;
+        this.agentModelExecutor.registerTool("permission_status", {
+            name: "permission_status",
+            description: "Check the status of pending permission requests",
+            parameters: {},
+        }, async () => {
+            const pending = permMgr.getPendingRequests();
+            return {
+                pendingCount: pending.length,
+                requests: pending.map((r) => ({
+                    id: r.id,
+                    operation: r.operation,
+                    target: r.target,
+                    description: r.description,
+                    status: r.status,
+                    requestedAt: r.requestedAt,
+                })),
+            };
+        });
+        this.agentModelExecutor.registerTool("error_stats", {
+            name: "error_stats",
+            description: "Get error statistics and recovery status",
+            parameters: {},
+        }, async () => {
+            return this.errorRecoveryManager.getErrorStats();
+        });
+    }
+    registerBrowserTools() {
+        (0, tools_1.registerBrowserTools)(this.agentModelExecutor, this.browserController, this.playwrightBrowser, this.registry, this.eventBus, this.fileSystemManager);
+        (0, tools_1.registerWebTools)(this.agentModelExecutor, this.skillManager);
+        (0, tools_1.registerEmailTools)(this.agentModelExecutor, this.emailClient, this.permissionManager);
+    }
+    registerSchedulerTools() {
+        (0, tools_1.registerSchedulerTools)(this.agentModelExecutor, this.scheduleManager, this.emailClient, this.eventBus, this.reportGenerator, this.playwrightBrowser);
+    }
+    registerReportingTools() {
+        const reportGen = this.reportGenerator;
+        this.agentModelExecutor.registerTool("report_generate", {
+            name: "report_generate",
+            description: "Generate an HTML report from data sections",
+            parameters: {
+                title: { type: "string", description: "Report title" },
+                templateName: { type: "string", description: "Template name: default-report, email-digest, weekly-report" },
+                sections: { type: "string", description: "JSON array of report sections" },
+                summary: { type: "string", description: "JSON object for summary {totalItems, highlights[], recommendations[]}" },
+                outputPath: { type: "string", description: "File path to save the report HTML" },
+            },
+        }, async (params) => {
+            const title = String(params.title || "Report");
+            const templateName = String(params.templateName || "default-report");
+            let sections = [];
+            try {
+                sections = JSON.parse(String(params.sections || "[]"));
+            }
+            catch {
+                return { error: "sections must be a valid JSON array" };
+            }
+            let summary;
+            try {
+                if (params.summary) {
+                    summary = JSON.parse(String(params.summary));
+                }
+            }
+            catch {
+                return { error: "summary must be valid JSON" };
+            }
+            const outputPath = String(params.outputPath || "");
+            try {
+                const html = reportGen.generateReport({ title, generatedAt: new Date().toLocaleString("zh-CN"), sections, summary }, { templateName, outputPath: outputPath || undefined });
+                if (outputPath) {
+                    return { success: true, outputPath, length: html.length };
+                }
+                return { success: true, html: html.substring(0, 5000) + (html.length > 5000 ? "... [truncated]" : ""), length: html.length };
+            }
+            catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        });
+        this.agentModelExecutor.registerTool("report_templates", {
+            name: "report_templates",
+            description: "List available report templates",
+            parameters: {},
+        }, async () => {
+            const names = reportGen.getTemplateNames();
+            const templates = names.map((n) => {
+                const t = reportGen.getTemplate(n);
+                return { name: t?.name, title: t?.title, description: t?.description };
+            });
+            return { success: true, templates };
+        });
+        this.agentModelExecutor.registerTool("report_email_digest", {
+            name: "report_email_digest",
+            description: "Generate an email digest report from email data",
+            parameters: {
+                emails: { type: "string", description: "JSON array of email summaries with from, subject, date, snippet, categories, priority, hasAttachments" },
+                dateRange: { type: "string", description: "Date range label for the report" },
+                outputPath: { type: "string", description: "File path to save the report HTML" },
+            },
+        }, async (params) => {
+            let emails = [];
+            try {
+                emails = JSON.parse(String(params.emails || "[]"));
+            }
+            catch {
+                return { error: "emails must be a valid JSON array" };
+            }
+            const dateRange = String(params.dateRange || "");
+            const outputPath = String(params.outputPath || "");
+            const categoriesBreakdown = {};
+            for (const e of emails) {
+                for (const cat of e.categories || []) {
+                    categoriesBreakdown[cat] = (categoriesBreakdown[cat] || 0) + 1;
+                }
+            }
+            const templateData = {
+                title: "邮件摘要报告",
+                totalEmails: emails.length,
+                dateRange: dateRange || undefined,
+                categoriesBreakdown: Object.entries(categoriesBreakdown).map(([name, count]) => ({ name, count })),
+                emails,
+                generatedAt: new Date().toLocaleString("zh-CN"),
+            };
+            try {
+                const html = reportGen.generateReport({
+                    title: "邮件摘要报告",
+                    generatedAt: new Date().toLocaleString("zh-CN"),
+                    sections: [],
+                }, { templateName: "email-digest", outputPath: outputPath || undefined });
+                return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
+            }
+            catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        });
+        this.agentModelExecutor.registerTool("report_weekly", {
+            name: "report_weekly",
+            description: "Generate a weekly summary report with metrics and table data",
+            parameters: {
+                title: { type: "string", description: "Report title" },
+                periodStart: { type: "string", description: "Period start date string" },
+                periodEnd: { type: "string", description: "Period end date string" },
+                metrics: { type: "string", description: "JSON array of metric items: {label, value, change?, trend?, unit?}" },
+                sections: { type: "string", description: "JSON array of sections: {title, tableData?, content?}" },
+                outputPath: { type: "string", description: "File path to save the report HTML" },
+            },
+        }, async (params) => {
+            const title = String(params.title || "周报");
+            const periodStart = String(params.periodStart || "");
+            const periodEnd = String(params.periodEnd || "");
+            let metrics = [];
+            try {
+                metrics = JSON.parse(String(params.metrics || "[]"));
+            }
+            catch {
+                return { error: "metrics must be valid JSON array" };
+            }
+            let sections = [];
+            try {
+                sections = JSON.parse(String(params.sections || "[]"));
+            }
+            catch {
+                return { error: "sections must be valid JSON array" };
+            }
+            const outputPath = String(params.outputPath || "");
+            try {
+                const html = reportGen.generateReport({
+                    title: title,
+                    generatedAt: new Date().toLocaleString("zh-CN"),
+                    sections,
+                }, { templateName: "weekly-report", outputPath: outputPath || undefined });
+                return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
+            }
+            catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        });
+    }
+    registerMarkItDownTools() {
+        const { execFile } = require("child_process");
+        const { promisify } = require("util");
+        const fs = require("fs");
+        const path = require("path");
+        const os = require("os");
+        const execFileAsync = promisify(execFile);
+        let mdAvailable = null;
+        const checkAvailable = async () => {
+            if (mdAvailable !== null)
+                return mdAvailable !== "";
+            try {
+                await execFileAsync("markitdown", ["--version"], { timeout: 5000 });
+                mdAvailable = "markitdown";
+            }
+            catch {
+                try {
+                    await execFileAsync("python", ["-m", "markitdown", "--version"], { timeout: 5000 });
+                    mdAvailable = "python -m markitdown";
+                }
+                catch {
+                    try {
+                        await execFileAsync("python3", ["-m", "markitdown", "--version"], { timeout: 5000 });
+                        mdAvailable = "python3 -m markitdown";
+                    }
+                    catch {
+                        mdAvailable = "";
+                        console.log("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'");
+                    }
+                }
+            }
+            return mdAvailable !== "";
+        };
+        const doConvert = async (inputPath) => {
+            const available = await checkAvailable();
+            if (!available || !mdAvailable)
+                return null;
+            try {
+                const parts = mdAvailable.split(" ");
+                const cmd = parts[0];
+                const baseArgs = parts.slice(1);
+                const args = [...baseArgs, inputPath];
+                const { stdout } = await execFileAsync(cmd, args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: "utf-8", env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } });
+                return stdout || null;
+            }
+            catch (err) {
+                return null;
+            }
+        };
+        this.agentModelExecutor.registerTool("markitdown_convert", {
+            name: "markitdown_convert",
+            description: "Convert documents (PDF, Word, Excel, PowerPoint, HTML, etc.) or web pages to Markdown format for better readability. Uses microsoft/markitdown. Supports: .pdf .docx .pptx .xlsx .html .csv .json .xml .epub and more. Does NOT support images or videos.",
+            parameters: {
+                source: { type: "string", description: "File path or URL to convert. Can be a local file path or an HTTP/HTTPS URL." },
+                output_format: { type: "string", description: "Output format: 'markdown' (default) or 'text' (plain text without markdown formatting)" },
+            },
+        }, async (params) => {
+            const source = String(params.source || "");
+            const outputFormat = String(params.output_format || "markdown");
+            if (!source)
+                return { error: "Source file path or URL is required" };
+            const skipExts = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp", ".ico",
+                ".mp4", ".avi", ".mkv", ".mov", ".mp3", ".wav", ".ogg", ".flac",
+                ".zip", ".tar", ".gz", ".7z", ".rar", ".exe", ".dll"];
+            const ext = path.extname(source.split("?")[0]).toLowerCase();
+            if (skipExts.includes(ext)) {
+                return { error: `File type '${ext}' is not supported. MarkItDown converts documents (PDF, Word, Excel, PPT, HTML, etc.), not images/videos/archives.` };
+            }
+            const isUrl = source.startsWith("http://") || source.startsWith("https://");
+            if (isUrl) {
+                const tmpDir = os.tmpdir();
+                const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}${ext || ".html"}`);
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 15000);
+                    const response = await fetch(source, {
+                        headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
+                        signal: controller.signal,
+                        redirect: "follow",
+                    });
+                    clearTimeout(timeout);
+                    if (!response.ok) {
+                        return { error: `HTTP ${response.status} fetching URL`, source };
+                    }
+                    const buffer = await response.arrayBuffer();
+                    fs.writeFileSync(tmpFile, Buffer.from(buffer));
+                    const markdown = await doConvert(tmpFile);
+                    if (!markdown) {
+                        return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
+                    }
+                    const result = outputFormat === "text"
+                        ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
+                        : markdown;
+                    return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
+                }
+                catch (err) {
+                    return { error: err.message || String(err), source };
+                }
+                finally {
+                    try {
+                        fs.unlinkSync(tmpFile);
+                    }
+                    catch { /* temp file cleanup failure is non-critical */ }
+                }
+            }
+            if (!fs.existsSync(source)) {
+                return { error: `File not found: ${source}` };
+            }
+            const stat = fs.statSync(source);
+            if (stat.size > 50 * 1024 * 1024) {
+                return { error: `File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB. Maximum: 50MB.` };
+            }
+            const markdown = await doConvert(source);
+            if (!markdown) {
+                return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
+            }
+            const result = outputFormat === "text"
+                ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
+                : markdown;
+            return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
+        });
+    }
+    registerIntelligenceTools() {
+        const classifier = this.taskClassifier;
+        const orchestrator = this.skillOrchestrator;
+        const planner = this.taskPlanner;
+        this.agentModelExecutor.registerTool("classify_task", {
+            name: "classify_task",
+            description: "Classify a user task to determine category, complexity, and suggest tools/skills",
+            parameters: {
+                task: { type: "string", description: "The task description to classify" },
+            },
+        }, async (params) => {
+            const task = String(params.task || "");
+            const result = classifier.classify(task);
+            return {
+                success: true,
+                primaryCategory: result.primaryCategory,
+                categories: result.categories,
+                confidence: result.confidence,
+                complexity: result.complexity,
+                suggestedTools: result.suggestedTools,
+                suggestedSkills: result.suggestedSkills,
+                keywords: result.keywords,
+                estimatedSteps: result.estimatedSteps,
+                language: result.language,
+                hasCode: result.hasCode,
+                requiresAuth: result.requiresAuth,
+                entities: result.entities,
+            };
+        });
+        this.agentModelExecutor.registerTool("classification_stats", {
+            name: "classification_stats",
+            description: "Get task classification statistics for a batch of tasks",
+            parameters: {
+                tasks: { type: "string", description: "JSON array of task descriptions" },
+            },
+        }, async (params) => {
+            let tasks = [];
+            try {
+                tasks = JSON.parse(String(params.tasks || "[]"));
+            }
+            catch {
+                return { error: "tasks must be a valid JSON array of strings" };
+            }
+            const results = tasks.map((t) => classifier.classify(t));
+            const categoryStats = {};
+            const complexityStats = { simple: 0, medium: 0, complex: 0 };
+            for (const r of results) {
+                categoryStats[r.primaryCategory] = (categoryStats[r.primaryCategory] || 0) + 1;
+                complexityStats[r.complexity] = (complexityStats[r.complexity] || 0) + 1;
+            }
+            return {
+                success: true,
+                totalTasks: tasks.length,
+                categoryDistribution: categoryStats,
+                complexityDistribution: complexityStats,
+                averageConfidence: results.reduce((sum, r) => sum + r.confidence, 0) / results.length,
+            };
+        });
+        this.agentModelExecutor.registerTool("orchestrate_skills", {
+            name: "orchestrate_skills",
+            description: "Create and execute a skill orchestration plan with multiple skills in pipeline",
+            parameters: {
+                name: { type: "string", description: "Plan name" },
+                description: { type: "string", description: "Plan description" },
+                steps: { type: "string", description: "JSON array of steps: [{name, skillName, dependsOn[], params{}, mergeStrategy}]" },
+            },
+        }, async (params) => {
+            const name = String(params.name || "orchestration");
+            const description = String(params.description || "");
+            let steps = [];
+            try {
+                steps = JSON.parse(String(params.steps || "[]"));
+            }
+            catch {
+                return { error: "steps must be a valid JSON array" };
+            }
+            try {
+                const plan = orchestrator.createPlan({ name, description, steps });
+                const result = await orchestrator.execute(plan.id);
+                return {
+                    success: result.success,
+                    planId: result.planId,
+                    totalDuration: result.totalDuration,
+                    resultCount: result.results.length,
+                    aggregatedOutput: result.aggregatedOutput,
+                    results: result.results.map((r) => ({
+                        stepId: r.stepId,
+                        skillName: r.skillName,
+                        success: r.success,
+                        duration: r.duration,
+                        error: r.error,
+                    })),
+                };
+            }
+            catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        });
+        this.agentModelExecutor.registerTool("task_templates", {
+            name: "task_templates",
+            description: "List available project templates for task decomposition",
+            parameters: {},
+        }, async () => {
+            const templates = planner.getAvailableTemplates();
+            return { success: true, templates, count: templates.length };
+        });
+        this.agentModelExecutor.registerTool("task_decompose_with_template", {
+            name: "task_decompose_with_template",
+            description: "Decompose a task using a specific project template",
+            parameters: {
+                task: { type: "string", description: "The task description to decompose" },
+                template: { type: "string", description: "Template name: static_website, react_app, api_server, cli_tool, fullstack_app, data_pipeline" },
+            },
+        }, async (params) => {
+            const task = String(params.task || "");
+            const template = String(params.template || "");
+            const plan = planner.decomposeWithTemplate(task, template);
+            return {
+                planId: plan.id,
+                task: plan.task,
+                subtaskCount: plan.subtasks.length,
+                subtasks: plan.subtasks.map((s) => ({
+                    id: s.id,
+                    description: s.description,
+                    tool: s.tool,
+                    dependencies: s.dependencies,
+                })),
+                structure: planner.getTemplateStructure(template),
+            };
+        });
+    }
+    registerSkillIndexTools() {
+        (0, tools_1.registerSkillIndexTools)(this.agentModelExecutor, this.skillIndex);
+        (0, tools_1.registerShellMediaTools)(this.agentModelExecutor);
+    }
+    getRegistry() {
+        return this.registry;
+    }
+    getEventBus() {
+        return this.eventBus;
+    }
+}
+exports.EvoClawServer = EvoClawServer;
+async function main() {
+    const server = new EvoClawServer();
+    await server.start();
+}
+main().catch((err) => {
+    const logger = infrastructure_1.Logger.getInstance();
+    logger.fatal("server", "Failed to start", err);
+    process.exit(1);
+});
+//# sourceMappingURL=index.js.map

@@ -60,7 +60,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
 
 // ── Task Status Tracker: real-time progress feedback for long-running tasks ──
 export interface TaskStatus {
-  phase: "thinking" | "tool_calling" | "generating" | "done" | "error" | "splitting" | "subtask_executing" | "resuming" | "waiting_approval";
+  phase: "thinking" | "tool_calling" | "generating" | "done" | "error" | "splitting" | "subtask_executing" | "resuming" | "waiting_approval" | "planning" | "reflecting";
   detail: string;
   progress: number; // 0-100
   updatedAt: number;

@@ -28,7 +28,8 @@ export type TaskStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "rolled_back";
+  | "rolled_back"
+  | "skipped";
 
 export interface TaskContext {
   sessionId: string;
@@ -48,6 +49,9 @@ export interface DAGNode {
   params: Record<string, unknown>;
   timeout: number;
   condition?: string;
+  retryCount?: number;
+  retryDelay?: number;
+  timeoutMs?: number;
 }
 
 export interface ExecutionStep {
