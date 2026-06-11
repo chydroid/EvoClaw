@@ -83,6 +83,25 @@ const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   file_list: "low",
   memory_search: "low",
   memory_store: "low",
+  // Browser automation - low risk (read-only navigation & interaction)
+  browser_navigate: "low",
+  browser_get_text: "low",
+  browser_find_elements: "low",
+  browser_submit_form: "low",
+  browser_search: "low",
+  browser_fetch_json: "low",
+  browser_tabs: "low",
+  browser_launch: "low",
+  browser_screenshot: "low",
+  browser_js_eval: "low",
+  browser_click: "low",
+  browser_fill_form: "low",
+  browser_get_html: "low",
+  browser_select: "low",
+  browser_check: "low",
+  browser_wait: "low",
+  browser_hover: "low",
+  browser_scroll: "low",
 };
 
 const DEFAULT_REQUIRE_APPROVAL: Record<RiskLevel, boolean> = {

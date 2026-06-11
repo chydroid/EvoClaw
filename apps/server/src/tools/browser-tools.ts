@@ -366,4 +366,133 @@ export function registerBrowserTools(
       return { success: true, length: html.length, html: html.substring(0, 10000) + (html.length > 10000 ? "... [truncated]" : "") };
     }
   );
+
+  // ── Advanced browser automation tools ──
+
+  executor.registerTool(
+    "browser_select",
+    {
+      name: "browser_select",
+      description: "Select an option in a dropdown (select) element by value or label",
+      parameters: {
+        selector: { type: "string", description: "CSS selector for the select element" },
+        value: { type: "string", description: "Value or label of the option to select" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const selector = String(params.selector || "");
+      const value = String(params.value || "");
+      if (!selector) return { error: "CSS selector is required" };
+      if (!value) return { error: "Option value is required" };
+      try {
+        const selected = await pwBrowser.selectOption(selector, value);
+        return { success: true, selector, value, selectedValues: selected };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Select failed: ${msg}`, selector, value };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_check",
+    {
+      name: "browser_check",
+      description: "Check or uncheck a checkbox or radio button",
+      parameters: {
+        selector: { type: "string", description: "CSS selector for the checkbox/radio element" },
+        checked: { type: "string", description: "true to check, false to uncheck (default: true)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const selector = String(params.selector || "");
+      const checked = String(params.checked || "true") !== "false";
+      if (!selector) return { error: "CSS selector is required" };
+      try {
+        await pwBrowser.checkCheckbox(selector, checked);
+        return { success: true, selector, checked };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Check/uncheck failed: ${msg}`, selector };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_wait",
+    {
+      name: "browser_wait",
+      description: "Wait for an element to appear, disappear, or reach a specific state on the page. Essential for dynamic content and SPA pages.",
+      parameters: {
+        selector: { type: "string", description: "CSS selector to wait for" },
+        state: { type: "string", description: "State to wait for: visible (default), hidden, attached, detached" },
+        timeout: { type: "string", description: "Maximum wait time in milliseconds (default: 30000)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const selector = String(params.selector || "");
+      const state = String(params.state || "visible") as "attached" | "visible" | "hidden" | "detached";
+      const timeout = parseInt(String(params.timeout || "30000"), 10) || 30000;
+      if (!selector) return { error: "CSS selector is required" };
+      try {
+        const found = await pwBrowser.waitForElement(selector, timeout, state);
+        return { success: found, selector, state, timeout, found };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Wait failed: ${msg}`, selector, state, timeout };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_hover",
+    {
+      name: "browser_hover",
+      description: "Hover over an element on the page (triggers hover menus, tooltips, etc.)",
+      parameters: {
+        selector: { type: "string", description: "CSS selector of element to hover over" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const selector = String(params.selector || "");
+      if (!selector) return { error: "CSS selector is required" };
+      try {
+        await pwBrowser.hover(selector);
+        return { success: true, selector };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Hover failed: ${msg}`, selector };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_scroll",
+    {
+      name: "browser_scroll",
+      description: "Scroll the page or a specific element in a direction",
+      parameters: {
+        selector: { type: "string", description: "CSS selector for scrollable element (optional, scrolls page if empty)" },
+        direction: { type: "string", description: "Direction: up, down, left, right (default: down)" },
+        amount: { type: "string", description: "Pixels to scroll (default: 300)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const selector = String(params.selector || "") || null;
+      const direction = String(params.direction || "down") as "up" | "down" | "left" | "right";
+      const amount = parseInt(String(params.amount || "300"), 10) || 300;
+      try {
+        await pwBrowser.scroll(selector, direction, amount);
+        return { success: true, selector: selector || "page", direction, amount };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `Scroll failed: ${msg}` };
+      }
+    }
+  );
 }

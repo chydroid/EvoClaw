@@ -232,6 +232,68 @@ export class PlaywrightBrowser {
     }
   }
 
+  async selectOption(selector: string, value: string): Promise<string[]> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    await page.waitForSelector(selector, { timeout: 10000 });
+    return await page.selectOption(selector, value);
+  }
+
+  async checkCheckbox(selector: string, checked: boolean = true): Promise<void> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    await page.waitForSelector(selector, { timeout: 10000 });
+    const isChecked = await page.isChecked(selector);
+    if (isChecked !== checked) {
+      await page.click(selector);
+    }
+  }
+
+  async waitForElement(selector: string, timeout: number = 30000, state: "attached" | "visible" | "hidden" | "detached" = "visible"): Promise<boolean> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    try {
+      await page.waitForSelector(selector, { timeout, state });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async hover(selector: string): Promise<void> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    await page.waitForSelector(selector, { timeout: 10000 });
+    await page.hover(selector);
+  }
+
+  async scroll(selector: string | null, direction: "up" | "down" | "left" | "right", amount: number = 300): Promise<void> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    const scrollMap: Record<string, [number, number]> = {
+      up: [0, -amount],
+      down: [0, amount],
+      left: [-amount, 0],
+      right: [amount, 0],
+    };
+    const [dx, dy] = scrollMap[direction] || [0, amount];
+    if (selector) {
+      await page.waitForSelector(selector, { timeout: 10000 });
+      await page.evaluate(
+        ([sel, ddx, ddy]) => {
+          const el = document.querySelector(sel as string);
+          if (el) el.scrollBy(ddx as number, ddy as number);
+        },
+        [selector, dx, dy] as [string, number, number]
+      );
+    } else {
+      await page.evaluate(
+        ([ddx, ddy]) => window.scrollBy(ddx as number, ddy as number),
+        [dx, dy] as [number, number]
+      );
+    }
+  }
+
   async login(
     loginUrl: string,
     usernameSelector: string,
