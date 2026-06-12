@@ -98,6 +98,22 @@ const CATEGORY_TEMPLATES: Record<string, string[]> = {
   hug: [
     "抱抱", "摸摸头", "亲亲", "hug me",
   ],
+  // ── Action-oriented intent categories (for skill/tool routing) ──
+  skill_install: [
+    "帮我装一个翻译技能", "安装翻译技能", "装个技能", "安装一个skill",
+    "帮我安装技能", "有没有翻译的技能", "找一个技能装上",
+    "install a translate skill", "install a skill for me",
+    "add a translation skill", "find and install a skill",
+    "装一个天气技能", "安装新闻技能", "帮我装个邮件技能",
+  ],
+  action_task: [
+    "帮我创建一个文件", "搜索一下天气", "读取这个文件", "帮我翻译这段话",
+    "帮我抓取网页内容", "执行这个脚本", "帮我发一封邮件",
+    "create a file for me", "search the weather", "read this file",
+    "translate this for me", "fetch the webpage", "run this script",
+    "帮我写一段代码", "生成一个报告", "下载这个文件",
+    "帮我分析一下数据", "总结一下这篇文章",
+  ],
 };
 
 // ── Cosine similarity ──────────────────────────────────────────────────────
@@ -263,6 +279,37 @@ export class SemanticQuickReply {
     const mt = persona.masterTerm || "主人";
     const me = persona.name || "EvoClaw";
     return reply.replace(/MT/g, mt).replace(/ME/g, me);
+  }
+
+  /**
+   * Classify user intent for routing purposes (not for quick-reply).
+   * Returns the best matching category and its confidence score, or null if
+   * no category exceeds the threshold. This is used by the agent to decide
+   * whether to auto-trigger skill_search, route to tools, etc.
+   */
+  async classifyIntent(message: string): Promise<{ category: string; score: number } | null> {
+    const trimmed = message.trim();
+    if (trimmed.length < 2) return null;
+    if (!this.provider) return null;
+
+    await this.initialize();
+    if (this.centroids.length === 0) return null;
+
+    let msgVec: number[];
+    try { msgVec = await this.provider.embed(trimmed); } catch { return null; }
+
+    let bestCategory: string | null = null;
+    let bestScore = -1;
+    for (const centroid of this.centroids) {
+      const score = cosineSimilarity(msgVec, centroid.vector);
+      if (score > bestScore) {
+        bestScore = score;
+        bestCategory = centroid.category;
+      }
+    }
+
+    if (!bestCategory || bestScore < this.threshold) return null;
+    return { category: bestCategory, score: bestScore };
   }
 
   /** Expose state for diagnostics */

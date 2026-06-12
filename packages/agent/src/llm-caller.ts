@@ -239,6 +239,8 @@ export interface LLMCallerDeps {
   recordStaleContext?: (sessionId: string, toolName: string) => void;
   // Steer integration (optional — injects real-time instructions into conversation)
   getSteerMessage?: (sessionId: string) => string | null;
+  // Semantic intent classifier (optional — replaces keyword matching for intent routing)
+  semanticIntentClassifier?: { classifyIntent(message: string): Promise<{ category: string; score: number } | null> };
 }
 
 // ── Helper: tool cache ──
@@ -1170,18 +1172,32 @@ Have a specific URL?
 
         const toolCalls = assistantMsg.tool_calls;
         if (!toolCalls || toolCalls.length === 0) {
-          // ── Fallback: auto-trigger skill_search for install/skill intents ──
+          // ── Fallback: auto-trigger skill_search for skill-install intents ──
           // When the LLM returns a chat reply without calling any tool, but the
-          // user message clearly asks to install/find a skill, we auto-trigger
-          // skill_search as a safety net.
-          const lowerMsg = (conversationMessages[conversationMessages.length - 1]?.content as string || "").toLowerCase();
-          const skillIntentKeywords = ["install", "安装", "装一个", "装个", "技能", "skill", "查找技能", "搜索技能"];
-          const hasSkillIntent = skillIntentKeywords.some(kw => lowerMsg.includes(kw));
-          if (hasSkillIntent && deps.registeredTools.has("skill_search")) {
-            console.log(`[AgentModelExecutor] LLM did not call tools for skill-intent message, auto-triggering skill_search`);
+          // user message semantically matches a skill-install or action intent,
+          // we auto-trigger skill_search as a safety net.
+          // Prefer semantic classification (embedding-based) over keyword matching.
+          let shouldTriggerSkillSearch = false;
+          const classifier = deps.semanticIntentClassifier;
+          if (classifier) {
+            try {
+              const intent = await classifier.classifyIntent(message);
+              if (intent && (intent.category === "skill_install" || intent.category === "action_task")) {
+                console.log(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)}, auto-triggering skill_search`);
+                shouldTriggerSkillSearch = true;
+              }
+            } catch { /* best-effort */ }
+          }
+          // Fallback to keyword matching if semantic classifier is unavailable
+          if (!shouldTriggerSkillSearch && !classifier) {
+            const lowerMsg = (conversationMessages[conversationMessages.length - 1]?.content as string || "").toLowerCase();
+            const skillIntentKeywords = ["install", "安装", "装一个", "装个", "技能", "skill"];
+            shouldTriggerSkillSearch = skillIntentKeywords.some(kw => lowerMsg.includes(kw));
+          }
+          if (shouldTriggerSkillSearch && deps.registeredTools.has("skill_search")) {
             try {
               const searchTool = deps.registeredTools.get("skill_search")!;
-              const searchResult = await searchTool.handler({ task: lowerMsg });
+              const searchResult = await searchTool.handler({ task: message });
               const searchStr = typeof searchResult === "string" ? searchResult : JSON.stringify(searchResult);
               if (finalReply) {
                 finalReply += `\n\n🔍 自动技能搜索结果：\n${searchStr}`;

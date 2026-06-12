@@ -685,6 +685,7 @@ export class AgentModelExecutor {
       currentTraceId: this._currentTraceId,
       recordStaleContext: this.staleContextManager ? (sessionId: string, toolName: string) => this.staleContextManager!.recordToolResult(sessionId, toolName) : undefined,
       getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
+      semanticIntentClassifier: this.semanticQuickReply,
     };
   }
 

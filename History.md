@@ -3,6 +3,34 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.27.0 (2026-06-12)
+
+### 语义意图分类替代关键词匹配
+
+用本地Transformers embedding语义理解替代脆弱的关键词匹配，判断用户意图是否需要触发skill_search或工具路由。
+
+---
+
+#### 核心改进
+
+| 改进 | 说明 | 文件 |
+|------|------|------|
+| SemanticQuickReply新增skill_install和action_task类别 | 添加语义模板句子，embedding模型自动理解"装个技能"、"帮我翻译"等意图 | semantic-quick-reply.ts |
+| 新增classifyIntent方法 | 返回意图类别和置信度分数，供工具路由决策使用 | semantic-quick-reply.ts |
+| llm-caller.ts skill_search fallback改用语义分类 | 优先使用embedding语义分类，仅在分类器不可用时降级为关键词匹配 | llm-caller.ts |
+| LLMCallerDeps新增semanticIntentClassifier | 将语义分类器注入到LLM调用链中 | llm-caller.ts |
+| agent-model-executor.ts注入semanticQuickReply | 复用已有的embedding基础设施 | agent-model-executor.ts |
+
+#### 语义分类 vs 关键词匹配
+
+| 特性 | 关键词匹配 | 语义分类 |
+|------|-----------|---------|
+| 理解"帮我装个翻译的" | ❌ 可能漏匹配 | ✅ 语义相似度匹配 |
+| 误匹配"你有没有技能" | ❌ 可能误触发 | ✅ 区分询问vs操作意图 |
+| 跨语言支持 | ❌ 需要每种语言的关键词 | ✅ embedding天然跨语言 |
+| 性能开销 | 无 | ~5ms (本地embedding) |
+| 离线可用 | ✅ | ✅ (本地模型) |
+
 ## v0.26.0 (2026-06-12)
 
 ### 技能安装意图自动路由 + 输入历史持久化
