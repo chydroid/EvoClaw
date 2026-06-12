@@ -412,6 +412,10 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: string[] }> = {
     tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history"],
     keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务"],
   },
+  memory: {
+    tools: ["memory_store", "memory_retrieve", "memory_search", "memory_delete"],
+    keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索"],
+  },
 };
 
 // ── buildOpenAITools ──
@@ -446,7 +450,12 @@ export function buildOpenAITools(
   }
 
   return Array.from(registeredTools.values())
-    .filter((t) => activeTools.has(t.definition.name))
+    .filter((t) => {
+      // Include tool if it's in the active set OR if it's not in any TOOL_GROUP
+      // (i.e., dynamically registered tools not covered by groups are always included)
+      const isInAnyGroup = Object.values(TOOL_GROUPS).some(g => g.tools.includes(t.definition.name));
+      return activeTools.has(t.definition.name) || !isInAnyGroup;
+    })
     .map((t) => {
       const props: Record<string, unknown> = {};
       const required: string[] = [];
@@ -1086,6 +1095,71 @@ Have a specific URL?
         }
 
         const assistantMsg = result.message;
+
+        // ── Parse XML-format tool calls from non-standard LLM providers ──
+        // Some providers (Mimo/MiniMax, etc.) embed tool calls as XML in the
+        // content field instead of using the standard tool_calls field. We need
+        // to parse these into proper tool_calls BEFORE stripping them.
+        if (assistantMsg.content && (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0)) {
+          const parsedCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
+          let callIdx = 0;
+
+          // Parse <invoke name="tool_name"><parameter name="p">value</parameter>...</invoke>
+          const invokeRegex = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g;
+          let invokeMatch: RegExpExecArray | null;
+          while ((invokeMatch = invokeRegex.exec(assistantMsg.content)) !== null) {
+            const fnName = invokeMatch[1];
+            const paramBlock = invokeMatch[2];
+            const params: Record<string, unknown> = {};
+            const paramRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+            let paramMatch: RegExpExecArray | null;
+            while ((paramMatch = paramRegex.exec(paramBlock)) !== null) {
+              let val: unknown = paramMatch[2].trim();
+              // Try to parse JSON values (numbers, booleans, objects, arrays)
+              try { val = JSON.parse(val as string); } catch { /* keep as string */ }
+              params[paramMatch[1]] = val;
+            }
+            parsedCalls.push({
+              id: `parsed_invoke_${callIdx++}`,
+              type: "function",
+              function: { name: fnName, arguments: JSON.stringify(params) },
+            });
+          }
+
+          // Parse <minimax:tool_call> blocks with nested <function_calls>
+          const minimaxRegex = /<minimax:tool_call>([\s\S]*?)<\/minimax:tool_call>/g;
+          let minimaxMatch: RegExpExecArray | null;
+          while ((minimaxMatch = minimaxRegex.exec(assistantMsg.content)) !== null) {
+            const block = minimaxMatch[1];
+            const fnRegex = /<function_name>([^<]+)<\/function_name>\s*<parameters>([\s\S]*?)<\/parameters>/g;
+            let fnMatch: RegExpExecArray | null;
+            while ((fnMatch = fnRegex.exec(block)) !== null) {
+              const fnName = fnMatch[1].trim();
+              const paramStr = fnMatch[2].trim();
+              let params: Record<string, unknown> = {};
+              try { params = JSON.parse(paramStr); } catch {
+                // Fallback: try XML-style params
+                const pRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+                let pMatch: RegExpExecArray | null;
+                while ((pMatch = pRegex.exec(paramStr)) !== null) {
+                  let val: unknown = pMatch[2].trim();
+                  try { val = JSON.parse(val as string); } catch { /* keep as string */ }
+                  params[pMatch[1]] = val;
+                }
+              }
+              parsedCalls.push({
+                id: `parsed_minimax_${callIdx++}`,
+                type: "function",
+                function: { name: fnName, arguments: JSON.stringify(params) },
+              });
+            }
+          }
+
+          if (parsedCalls.length > 0) {
+            assistantMsg.tool_calls = parsedCalls;
+            console.log(`[AgentModelExecutor] Parsed ${parsedCalls.length} XML tool call(s) from content: ${parsedCalls.map(c => c.function.name).join(", ")}`);
+          }
+        }
 
         if (assistantMsg.content) {
           finalReply = assistantMsg.content;

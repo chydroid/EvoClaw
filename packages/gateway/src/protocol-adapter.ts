@@ -2332,13 +2332,10 @@ export class ProtocolAdapter {
           return;
         }
         const { targetSkill, description, source } = req.body || {};
-        if (!description) {
-          res.status(400).json({ error: "Description is required" });
-          return;
-        }
+        const effectiveDescription = description || `Manual evolution triggered at ${new Date().toISOString()}`;
         const cycle = await evolutionEngine.triggerManualEvolution(
           targetSkill || null,
-          description,
+          effectiveDescription,
           source
         );
         res.json({ success: true, cycle: { id: cycle.id, status: cycle.status, source: cycle.source, startedAt: cycle.startedAt } });
@@ -4932,6 +4929,21 @@ export class ProtocolAdapter {
           ? this.modelsStore.get(this.currentModelId)
           : null;
         if (!model) {
+          // Fallback: return the first active provider from saved LLM providers
+          const providers = this.savedLLMProviders;
+          if (providers && providers.length > 0) {
+            const activeProvider = providers.find((p: any) => p.enabled !== false) || providers[0];
+            res.json({
+              model: {
+                id: (activeProvider as any).id || (activeProvider as any).name,
+                name: (activeProvider as any).name || (activeProvider as any).id,
+                provider: (activeProvider as any).provider || (activeProvider as any).name,
+                model: (activeProvider as any).model || (activeProvider as any).defaultModel || "",
+                status: "active",
+              },
+            });
+            return;
+          }
           res.status(404).json({ error: "No current model configured" });
           return;
         }
