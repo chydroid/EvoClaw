@@ -160,8 +160,8 @@ export class SkillManager {
     if (this.skillEcosystem) {
       try {
         const quality = await this.skillEcosystem.validateSkillQuality(skillPath);
-        if (quality.score < 0.3) {
-          console.warn(`[SkillManager] Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`);
+        if (quality.overallScore < 0.3) {
+          console.warn(`[SkillManager] Skill quality too low (${quality.overallScore.toFixed(2)}): ${quality.issues.map(i => i.message).join("; ")}`);
         }
       } catch { /* quality validation is non-critical */ }
     }
@@ -1201,7 +1201,8 @@ export class SkillManager {
 
   recommendSkills(userHistory: string[]): Array<{ skillId: string; reason: string; relevanceScore: number }> {
     if (!this.skillEcosystem) return [];
-    return this.skillEcosystem.recommendSkills(userHistory);
+    const recs = this.skillEcosystem.recommendSkills(userHistory);
+    return recs.map(r => ({ skillId: r.skillId, reason: r.reason, relevanceScore: r.confidence }));
   }
 
   getSkillWorkshop(): import("./skill-workshop").SkillWorkshop | null {
