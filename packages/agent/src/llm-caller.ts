@@ -394,7 +394,7 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: string[] }> = {
   },
   skill: {
     tools: ["skill_execute", "skill_install", "skill_search", "skill_find_and_install", "skill_view", "skill_index_list"],
-    keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能"],
+    keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能", "翻译", "translate", "转换", "convert", "查找技能", "执行技能"],
   },
   email: {
     tools: ["email_send", "email_add_account"],

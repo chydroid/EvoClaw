@@ -713,8 +713,13 @@ export function hasActionIntent(message: string): boolean {
     "安装", "卸载", "install", "uninstall", "搜索", "search",
     "保存", "save",
     "搜索", "查找", "获取", "总结", "分析", "整理",
+    "翻译", "转换", "转化", "translate", "convert", "transform",
     "新闻", "热搜", "天气", "邮件",
     "下载", "爬取", "抓取", "小说", "download", "scrape", "crawl", "novel",
+    "计算", "运行", "执行", "启动", "compute", "run", "execute", "start",
+    "发送", "推送", "通知", "send", "push", "notify",
+    "压缩", "解压", "打包", "compress", "extract", "archive",
+    "格式化", "美化", "format", "prettify",
   ];
   const excludePatterns = [
     /系统\s*中/i,

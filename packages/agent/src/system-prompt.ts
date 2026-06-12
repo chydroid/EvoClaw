@@ -242,10 +242,12 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- If a matching skill is found: call `skill_install` to install it, then call `skill_execute` to run it.");
   sections.push("- If NO matching skill exists → proceed to STEP 2.");
   sections.push("");
-  sections.push("**STEP 2 — Use built-in tools**");
+  sections.push("**STEP 2 — Use built-in tools or your own capabilities**");
   sections.push("- For search/web tasks: use `web_search` → `web_fetch` → browser tools, in that order.");
   sections.push("- For file/code tasks: use `file_create`, `shell_exec`, etc.");
-  sections.push("- If built-in tools work → done. If they fail or are insufficient → proceed to STEP 3.");
+  sections.push("- For translation/rewriting/summarization/explanation tasks: you can do these DIRECTLY with your language abilities — no tool needed. Just respond with the translated/rewritten/summarized content.");
+  sections.push("- For math/calculation tasks: use `shell_exec` with Python, or compute directly if simple.");
+  sections.push("- If built-in tools or your own capabilities work → done. If they fail or are insufficient → proceed to STEP 3.");
   sections.push("");
   sections.push("**STEP 3 — Write code to solve the problem**");
   sections.push("- When built-in tools cannot directly accomplish the task, WRITE A SCRIPT (Python/Node.js) to do it.");
