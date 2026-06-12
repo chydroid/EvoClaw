@@ -3,6 +3,104 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.21.0 (2026-06-12)
+
+### 对标OpenClaw 2026.5.1-6.1 — 可靠性与编排能力提升
+
+基于对OpenClaw 2026.5.1-6.1全版本链的深度对比，审计EvoClaw 12项关键特性，发现4项缺失、3项部分实现。逐一补齐并验证。
+
+---
+
+#### 审计结果：12项特性对标
+
+| 特性 | OpenClaw版本 | EvoClaw状态 | 本次处理 |
+|------|-------------|------------|---------|
+| Agent/CLI Recovery | 2026.5.x | **已存在** | — |
+| Computed Status | 2026.5.7 | **部分**→已补齐 | 新增ComputedStatusEngine |
+| Stale Context Invalidation | 2026.5.7 | **部分**→已补齐 | 新增StaleContextManager |
+| Transcript System | 2026.5.26 | **已存在** | — |
+| /steer Command | 2026.5.4 | **缺失**→已补齐 | 新增SteerManager |
+| Workboard | 2026.6.1 | **缺失**→已补齐 | 新增Workboard |
+| False Delivery Prevention | 2026.5.7 | **已存在** | — |
+| Boundary Credential | 2026.5.7 | **部分** | 待后续 |
+| Plugin Artifact Verification | 2026.5.7 | **缺失** | 待后续 |
+| Reaction Approvals | 2026.5.26 | **缺失** | 待后续 |
+| Context Budget | 2026.5.26 | **已存在** | — |
+| Cron/Scheduled Tasks | 2026.5.26 | **已存在** | — |
+
+#### 新增模块
+
+| 模块 | 包 | 功能 | 对标 |
+|------|-----|------|------|
+| **ComputedStatusEngine** | agent | 从实际执行状态派生任务状态，检测false success（完成但无输出），检测stale results | OpenClaw 2026.5.7 Computed Status |
+| **StaleContextManager** | agent | 工具结果时间戳跟踪，区分普通工具（30min）和快速过期工具（5min），生成过期警告注入对话 | OpenClaw 2026.5.7 Stale Context Invalidation |
+| **SteerManager** | agent | 运行时指令注入，支持redirect/constraint/emphasis/cancel/info 5种类型，按优先级排序消费 | OpenClaw 2026.5.4 /steer Command |
+| **Workboard** | agent | 多Agent任务板，5列看板（Backlog/To Do/In Progress/Review/Done），任务认领/依赖/子任务/评论/Run管理 | OpenClaw 2026.6.1 Workboard |
+
+#### 集成方式
+
+| 模块 | 集成点 | 说明 |
+|------|--------|------|
+| ComputedStatusEngine | AgentModelExecutor | 初始化+getComputedStatus()暴露 |
+| StaleContextManager | chat()+llm-caller | 记录工具结果时间戳+生成过期警告注入对话 |
+| SteerManager | chat()+llm-caller | 每轮LLM调用前检查steer指令+格式化注入对话 |
+| Workboard | AgentModelExecutor | 初始化+getWorkboard()暴露 |
+
+#### 测试结果
+
+| 测试类型 | 结果 |
+|----------|------|
+| 构建 | 17/17包编译通过 |
+| 单元测试 | 96/96文件通过，2740/2741用例通过 |
+
+## v0.20.0 (2026-06-12)
+
+### 深度审计与真实差距修复 — 对标OpenClaw 2026.6.5
+
+对v0.19.0进行深度代码审计，发现5个"已有但未真正工作"的功能和3个OpenClaw 2026.6.1-6.5新增而我们缺失的功能。逐一修复并验证。
+
+---
+
+#### A. 已有但未真正工作的功能修复（5项）
+
+| 问题 | 严重程度 | 修复 |
+|------|---------|------|
+| **PromptCache写入缺失** | 严重 | 缓存查找存在但从不写入，添加`cachePrefix()`调用，缓存现在能真正命中 |
+| **MCP端点功能为空** | 严重 | 未注入toolRegistry，创建桥接toolRegistry连接agent工具系统，MCP客户端可正常列出/执行工具 |
+| **StructuredOutputParser完全未使用** | 严重 | 初始化但从未调用，添加schema指令注入+LLM输出解析，检测关键词时自动结构化 |
+| **ACP委派是模拟的** | 严重 | 返回"已收到任务"确认，改为能力映射+工具建议+主流程集成，作为Swarm后备方案 |
+| **Observability数据不导出** | 中等 | flushExport()空操作，实现JSONL文件导出+Prometheus指标，数据持久化到`data/observability/` |
+
+#### B. OpenClaw 2026.6.1-6.5新增功能对齐（3项）
+
+| 功能 | OpenClaw版本 | EvoClaw实现 |
+|------|-------------|------------|
+| **Skill Workshop技能工坊** | 2026.6.1 | 完整提案-审核生命周期：draft→submitted→under_review→approved/rejected/quarantined，支持修订、文件哈希校验、回滚 |
+| **Operator Install Policy** | 2026.6.2 | 策略化安装管控替代扫描器：5条内置规则（阻止不受信shell/网络访问、审查archive文件访问、允许ClawHub/受信任作者），支持自定义策略和审计日志 |
+| **MCP工具结果兼容** | 2026.6.5 | 非text/image块（resource_link/audio等）自动转换为text，防止Anthropic 400错误 |
+
+#### C. 其他改进
+
+| 改进 | 说明 |
+|------|------|
+| **Guardrails检测模式增强** | 新增8条规则：Markdown图片渗出、Base64编码注入、中文注入变体、开发者模式绕过、输出PII检测（邮箱/电话/SSN）、SQL注入 |
+| **healthCheck()真实检查** | 从永远返回true改为检查providers和registeredTools |
+| **estimateTokenCount()中文优化** | 从length/4改为CJK字符1.5 tokens/字符+ASCII 0.25 tokens/字符 |
+
+#### 新增文件
+
+| 文件 | 包 | 功能 |
+|------|-----|------|
+| `skill-workshop.ts` | skills | 技能提案-审核生命周期管理 |
+| `install-policy.ts` | skills | 策略化安装管控 |
+
+#### 测试结果
+
+| 测试类型 | 结果 |
+|----------|------|
+| 构建 | 17/17包编译通过 |
+| 单元测试 | 96/96文件通过，2740/2741用例通过 |
+
 ## v0.19.0 (2026-06-12)
 
 ### 对标OpenClaw 2026.4.5 — 六大核心能力提升

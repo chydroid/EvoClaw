@@ -118,3 +118,19 @@ export type { Span, Trace, TraceSummary, Metric, SpanKind, SpanEvent, Observabil
 // Prompt Cache system
 export { PromptCache } from "./prompt-cache";
 export type { PromptCacheConfig, CacheEntry, CacheStats } from "./prompt-cache";
+
+// /steer real-time control command
+export { SteerManager } from "./steer-command";
+export type { SteerInstruction, SteerResult } from "./steer-command";
+
+// Workboard multi-agent orchestration
+export { Workboard } from "./workboard";
+export type { BoardTask, BoardComment, BoardRun, BoardColumn } from "./workboard";
+
+// Computed Status system
+export { ComputedStatusEngine } from "./computed-status";
+export type { ComputedStatusResult, StatusSource } from "./computed-status";
+
+// Stale Context Invalidation system
+export { StaleContextManager } from "./stale-context";
+export type { StaleContextConfig, ToolResultMeta } from "./stale-context";

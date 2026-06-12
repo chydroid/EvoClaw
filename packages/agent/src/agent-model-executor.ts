@@ -127,6 +127,10 @@ export class AgentModelExecutor {
   private promptCache: import("./prompt-cache").PromptCache | null = null;
   private acpHandler: import("./acp-delegation").ACPProtocolHandler | null = null;
   private observability: import("./agent-observability").AgentObservability | null = null;
+  private computedStatusEngine: import("./computed-status").ComputedStatusEngine | null = null;
+  private staleContextManager: import("./stale-context").StaleContextManager | null = null;
+  private steerManager: import("./steer-command").SteerManager | null = null;
+  private workboard: import("./workboard").Workboard | null = null;
 
   /** Current observability trace ID for the active chat session */
   private _currentTraceId: string | undefined;
@@ -446,6 +450,30 @@ export class AgentModelExecutor {
       const { AgentObservability } = require("./agent-observability");
       this.observability = new AgentObservability();
     } catch { /* observability not available */ }
+
+    // Computed Status Engine
+    try {
+      const { ComputedStatusEngine } = require("./computed-status");
+      this.computedStatusEngine = new ComputedStatusEngine();
+    } catch { /* computed status not available */ }
+
+    // Stale Context Manager
+    try {
+      const { StaleContextManager } = require("./stale-context");
+      this.staleContextManager = new StaleContextManager();
+    } catch { /* stale context not available */ }
+
+    // Steer Manager
+    try {
+      const { SteerManager } = require("./steer-command");
+      this.steerManager = new SteerManager();
+    } catch { /* steer not available */ }
+
+    // Workboard
+    try {
+      const { Workboard } = require("./workboard");
+      this.workboard = new Workboard();
+    } catch { /* workboard not available */ }
   }
 
   /** Register built-in virtual agents in the swarm */
@@ -655,6 +683,8 @@ export class AgentModelExecutor {
       checkToolGuardrail: this.guardrailsManager ? (toolName: string, args: Record<string, unknown>) => this.guardrailsManager!.checkToolCall(toolName, args) : undefined,
       observability: this.observability ?? undefined,
       currentTraceId: this._currentTraceId,
+      recordStaleContext: this.staleContextManager ? (sessionId: string, toolName: string) => this.staleContextManager!.recordToolResult(sessionId, toolName) : undefined,
+      getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
     };
   }
 
@@ -1104,6 +1134,15 @@ export class AgentModelExecutor {
       }
     }
 
+    // ── Steer: check for real-time instructions ──
+    let planContext = "";
+    if (this.steerManager) {
+      const steerMessage = this.steerManager.formatSteerMessage(sessionId);
+      if (steerMessage) {
+        planContext += "\n\n" + steerMessage;
+      }
+    }
+
     // ── Observability: start trace ──
     let currentTraceId: string | undefined;
     if (this.observability) {
@@ -1517,6 +1556,14 @@ export class AgentModelExecutor {
 
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
 
+    // ── Stale Context: warn about expired tool results ──
+    if (this.staleContextManager) {
+      const staleWarnings = this.staleContextManager.generateStaleWarnings(sessionId);
+      if (staleWarnings.length > 0) {
+        planContext += "\n\n" + staleWarnings.join("\n");
+      }
+    }
+
     // ── Prompt Cache: check for cached prefix ──
     let cacheEntry: import("./prompt-cache").CacheEntry | null = null;
     let cacheMessages: Array<{role: string; content: string}> = [];
@@ -1551,7 +1598,6 @@ export class AgentModelExecutor {
     }
 
     // ── Planning: generate explicit execution plan for complex tasks ──
-    let planContext = "";
     if (this.planningEngine && this.hasActionIntent(effectiveMessage)) {
       const toolNames = Array.from(this.registeredTools.keys());
       try {
@@ -2447,5 +2493,18 @@ export class AgentModelExecutor {
   getACPAgents(): import("./acp-delegation").ACPAgent[] {
     if (!this.acpHandler) return [];
     return this.acpHandler.listAgents();
+  }
+
+  getWorkboard(): import("./workboard").Workboard | null {
+    return this.workboard;
+  }
+
+  getComputedStatus(): import("./computed-status").ComputedStatusEngine | null {
+    return this.computedStatusEngine;
+  }
+
+  steer(sessionId: string, instruction: string, priority?: "low" | "normal" | "high" | "critical"): import("./steer-command").SteerResult | null {
+    if (!this.steerManager) return null;
+    return this.steerManager.steer(sessionId, instruction, { priority });
   }
 }

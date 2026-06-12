@@ -235,6 +235,10 @@ export interface LLMCallerDeps {
   // Observability integration (optional — enables trace/span recording)
   observability?: import("./agent-observability").AgentObservability;
   currentTraceId?: string;
+  // Stale Context integration (optional — records tool result timestamps for staleness tracking)
+  recordStaleContext?: (sessionId: string, toolName: string) => void;
+  // Steer integration (optional — injects real-time instructions into conversation)
+  getSteerMessage?: (sessionId: string) => string | null;
 }
 
 // ── Helper: tool cache ──
@@ -1001,6 +1005,14 @@ Have a specific URL?
       for (let round = 0; round < maxToolRounds; round++) {
         onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
 
+        // ── Steer: inject real-time instructions ──
+        if (deps.getSteerMessage) {
+          const steerMsg = deps.getSteerMessage(sessionId);
+          if (steerMsg) {
+            conversationMessages.push({ role: "system", content: steerMsg });
+          }
+        }
+
         const tc: "auto" | "none" = "auto";
         if (successfulToolCalls >= 4) {
           console.log(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1})`);
@@ -1523,6 +1535,11 @@ Have a specific URL?
           // ── Record tool execution trace for reflection ──
           if (deps.recordToolTrace) {
             deps.recordToolTrace(sessionId, toolName, args, toolResult.slice(0, 500), !toolErrored, Date.now() - toolStartTime, toolError);
+          }
+
+          // ── Stale Context: record tool result timestamp ──
+          if (deps.recordStaleContext) {
+            deps.recordStaleContext(sessionId, toolName);
           }
 
           // ── Observability: end tool span ──
