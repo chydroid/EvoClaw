@@ -563,6 +563,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const abortControllerRef = useRef<AbortController | null>(null);
   const userAbortedRef = useRef(false);
   const inputHistoryRef = useRef<string[]>([]);
+  // Load persisted input history from localStorage
+  if (inputHistoryRef.current.length === 0) {
+    try {
+      const saved = localStorage.getItem("evoclaw_input_history");
+      if (saved) inputHistoryRef.current = JSON.parse(saved);
+    } catch { /* ignore */ }
+  }
   const historyIndexRef = useRef(-1);
   const savedInputRef = useRef("");
   const lastArrowKeyTimeRef = useRef(0);
@@ -596,6 +603,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     if (idx !== -1) hist.splice(idx, 1);
     hist.unshift(text);
     if (hist.length > inputHistoryMax) hist.length = inputHistoryMax;
+    try { localStorage.setItem("evoclaw_input_history", JSON.stringify(hist)); } catch { /* quota exceeded */ }
   }, [inputHistoryEnabled, inputHistoryMax]);
 
   const showHistoryHint = useCallback((index: number) => {

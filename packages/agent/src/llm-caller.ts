@@ -1170,6 +1170,28 @@ Have a specific URL?
 
         const toolCalls = assistantMsg.tool_calls;
         if (!toolCalls || toolCalls.length === 0) {
+          // ── Fallback: auto-trigger skill_search for install/skill intents ──
+          // When the LLM returns a chat reply without calling any tool, but the
+          // user message clearly asks to install/find a skill, we auto-trigger
+          // skill_search as a safety net.
+          const lowerMsg = (conversationMessages[conversationMessages.length - 1]?.content as string || "").toLowerCase();
+          const skillIntentKeywords = ["install", "安装", "装一个", "装个", "技能", "skill", "查找技能", "搜索技能"];
+          const hasSkillIntent = skillIntentKeywords.some(kw => lowerMsg.includes(kw));
+          if (hasSkillIntent && deps.registeredTools.has("skill_search")) {
+            console.log(`[AgentModelExecutor] LLM did not call tools for skill-intent message, auto-triggering skill_search`);
+            try {
+              const searchTool = deps.registeredTools.get("skill_search")!;
+              const searchResult = await searchTool.handler({ task: lowerMsg });
+              const searchStr = typeof searchResult === "string" ? searchResult : JSON.stringify(searchResult);
+              if (finalReply) {
+                finalReply += `\n\n🔍 自动技能搜索结果：\n${searchStr}`;
+              } else {
+                finalReply = `🔍 技能搜索结果：\n${searchStr}`;
+              }
+            } catch (err) {
+              console.warn(`[AgentModelExecutor] Auto skill_search failed:`, err);
+            }
+          }
           conversationMessages.push(assistantMsg);
           break;
         }

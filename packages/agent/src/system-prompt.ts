@@ -240,6 +240,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("**STEP 1 — Search for a Skill FIRST**");
   sections.push("- Call the `skill_search` tool with the task description.");
   sections.push("- If a matching skill is found: call `skill_install` to install it, then call `skill_execute` to run it.");
+  sections.push("- If the user explicitly asks to install/setup a skill (e.g., 'install translate skill', '装翻译技能'), you MUST call `skill_search` first, then `skill_install` — do NOT just chat about it.");
   sections.push("- If NO matching skill exists → proceed to STEP 2.");
   sections.push("");
   sections.push("**STEP 2 — Use built-in tools or your own capabilities**");
