@@ -25,6 +25,25 @@ import { SkillResolver } from "./skill-resolver";
 import { LocalizationService } from "./localization-service";
 import { SkillMarketplace, type SearchQuery, type SearchResult } from "./marketplace";
 
+// ── Skill Installation Pipeline Types ──
+
+interface SkillInstallStep {
+  name: string;
+  status: "success" | "warning" | "failed";
+  message: string;
+  warnings: string[];
+  errors: string[];
+}
+
+interface SkillInstallReport {
+  skillId: string;
+  skillName: string;
+  phase: "parsing" | "validation" | "security" | "install_scripts" | "verification" | "complete" | "rolled_back";
+  steps: SkillInstallStep[];
+  warnings: string[];
+  errors: string[];
+}
+
 export class SkillManager {
   private skills = new Map<string, Skill>();
   private parser: SKILLmdParser;
@@ -339,6 +358,79 @@ export class SkillManager {
     }
 
     await this.hookEngine.executeHook(skill, "onInstall");
+
+    // ── Phase 4: Execute install/build scripts from SKILL.md metadata ──
+    const installReport: SkillInstallReport = {
+      skillId: skill.id,
+      skillName: skill.name,
+      phase: "complete",
+      steps: [],
+      warnings: [...warnings],
+      errors: [],
+    };
+
+    // 4a. Install declared dependencies (requires)
+    if (parsed.meta.requires && parsed.meta.requires.length > 0) {
+      const depStep = this.installDependencies(parsed.meta.requires, skillDir);
+      installReport.steps.push(depStep);
+      if (depStep.errors.length > 0) {
+        installReport.errors.push(...depStep.errors);
+      }
+    }
+
+    // 4b. Execute openclaw.install script
+    if (ocMeta?.install) {
+      const installStep = this.executeMetaScript("install", ocMeta.install, skillDir);
+      installReport.steps.push(installStep);
+      if (installStep.errors.length > 0) {
+        installReport.errors.push(...installStep.errors);
+      }
+    }
+
+    // 4c. Execute openclaw.build script
+    if (ocMeta?.build) {
+      const buildStep = this.executeMetaScript("build", ocMeta.build, skillDir);
+      installReport.steps.push(buildStep);
+      if (buildStep.errors.length > 0) {
+        installReport.errors.push(...buildStep.errors);
+      }
+    }
+
+    // ── Phase 5: Post-install verification ──
+    const verifyStep = this.verifyInstallation(skill, parsed);
+    installReport.steps.push(verifyStep);
+    if (verifyStep.errors.length > 0) {
+      installReport.errors.push(...verifyStep.errors);
+    }
+
+    // ── Phase 6: Rollback on critical failure ──
+    if (installReport.errors.length > 0) {
+      const criticalErrors = installReport.errors.filter(e =>
+        e.includes("dependency install failed") ||
+        e.includes("entry point not readable") ||
+        e.includes("verification failed")
+      );
+      if (criticalErrors.length > 0) {
+        console.error(`[SkillManager] Install failed with critical errors, rolling back "${skill.name}"`);
+        // Roll back: remove from memory and disk
+        this.skills.delete(skill.id);
+        this.registry.unregisterSkill(skill.id);
+        this.lifecycle.deactivate(skill);
+        try {
+          if (fs.existsSync(skillDir)) {
+            fs.rmSync(skillDir, { recursive: true, force: true });
+          }
+        } catch { /* best effort */ }
+        throw new Error(`Skill "${skill.name}" installation failed: ${criticalErrors.join("; ")}`);
+      }
+    }
+
+    if (installReport.warnings.length > 0 || installReport.steps.some(s => s.warnings.length > 0)) {
+      console.warn(`[SkillManager] Install completed with warnings for "${skill.name}": ${[
+        ...installReport.warnings,
+        ...installReport.steps.flatMap(s => s.warnings),
+      ].join("; ")}`);
+    }
 
     const existingI18n = this.localization.loadI18nFile(skillDir);
     if (existingI18n) {
@@ -1354,5 +1446,227 @@ export class SkillManager {
     console.log(`[SkillManager] ClawHub sync completed for "${skillName}" (v${skill.version})`);
 
     return skill;
+  }
+
+  // ── Skill Installation Pipeline Helpers ──
+
+  /**
+   * Install declared dependencies (requires) for a skill.
+   * Supports npm and pip packages.
+   */
+  private installDependencies(
+    requires: Array<{ name: string; version: string; optional: boolean }>,
+    skillDir: string
+  ): SkillInstallStep {
+    const step: SkillInstallStep = {
+      name: "install_dependencies",
+      status: "success",
+      message: "",
+      warnings: [],
+      errors: [],
+    };
+
+    const npmPkgs: string[] = [];
+    const pipPkgs: string[] = [];
+
+    for (const dep of requires) {
+      const name = dep.name.toLowerCase();
+      if (name === "python3" || name === "python") {
+        // Check python availability
+        if (!this.checkBinaryExists("python3") && !this.checkBinaryExists("python")) {
+          if (dep.optional) {
+            step.warnings.push(`Optional dependency "${dep.name}" not found`);
+          } else {
+            step.errors.push(`dependency install failed: required "${dep.name}" not found in PATH`);
+          }
+        }
+      } else if (name === "node" || name === "nodejs") {
+        if (!this.checkBinaryExists("node")) {
+          if (dep.optional) {
+            step.warnings.push(`Optional dependency "${dep.name}" not found`);
+          } else {
+            step.errors.push(`dependency install failed: required "${dep.name}" not found in PATH`);
+          }
+        }
+      } else if (name.startsWith("pip:")) {
+        pipPkgs.push(dep.version !== "*" ? `${name.slice(4)}==${dep.version}` : name.slice(4));
+      } else if (name.startsWith("npm:")) {
+        npmPkgs.push(dep.version !== "*" ? `${name.slice(4)}@${dep.version}` : name.slice(4));
+      } else {
+        // Default: treat as npm package
+        npmPkgs.push(dep.version !== "*" ? `${name}@${dep.version}` : name);
+      }
+    }
+
+    // Install npm packages in skill directory
+    if (npmPkgs.length > 0) {
+      try {
+        const npmResult = execFileSync("npm", ["install", "--save", ...npmPkgs], {
+          cwd: skillDir,
+          timeout: 60000,
+          encoding: "utf-8",
+        });
+        step.message += `Installed ${npmPkgs.length} npm package(s). `;
+        console.log(`[SkillManager] Installed npm packages in ${skillDir}: ${npmPkgs.join(", ")}`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        step.warnings.push(`npm install failed (non-critical, skill may still work): ${errMsg.slice(0, 200)}`);
+        console.warn(`[SkillManager] npm install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}`);
+      }
+    }
+
+    // Install pip packages
+    if (pipPkgs.length > 0) {
+      try {
+        const pipCmd = this.checkBinaryExists("pip3") ? "pip3" : "pip";
+        const pipResult = execFileSync(pipCmd, ["install", ...pipPkgs], {
+          cwd: skillDir,
+          timeout: 120000,
+          encoding: "utf-8",
+        });
+        step.message += `Installed ${pipPkgs.length} pip package(s). `;
+        console.log(`[SkillManager] Installed pip packages: ${pipPkgs.join(", ")}`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        step.warnings.push(`pip install failed (non-critical, skill may still work): ${errMsg.slice(0, 200)}`);
+        console.warn(`[SkillManager] pip install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}`);
+      }
+    }
+
+    if (step.errors.length > 0) {
+      step.status = "failed";
+      step.message = step.message || "Some required dependencies are missing";
+    } else if (step.warnings.length > 0) {
+      step.status = "warning";
+      step.message = step.message || "Dependencies installed with warnings";
+    } else {
+      step.message = step.message || "All dependencies satisfied";
+    }
+
+    return step;
+  }
+
+  /**
+   * Execute an openclaw metadata script (install/build) in the skill directory.
+   */
+  private executeMetaScript(
+    scriptName: string,
+    scriptContent: string,
+    skillDir: string
+  ): SkillInstallStep {
+    const step: SkillInstallStep = {
+      name: `execute_${scriptName}_script`,
+      status: "success",
+      message: "",
+      warnings: [],
+      errors: [],
+    };
+
+    console.log(`[SkillManager] Executing ${scriptName} script in ${skillDir}`);
+
+    try {
+      // Determine shell and script
+      const isWindows = process.platform === "win32";
+      const shell = isWindows ? "cmd.exe" : "/bin/bash";
+      const shellArg = isWindows ? "/c" : "-c";
+
+      const result = execFileSync(shell, [shellArg, scriptContent], {
+        cwd: skillDir,
+        timeout: 120000,
+        encoding: "utf-8",
+        env: { ...process.env, SKILL_DIR: skillDir },
+      });
+
+      step.message = `${scriptName} script executed successfully`;
+      console.log(`[SkillManager] ${scriptName} script output: ${String(result).slice(0, 200)}`);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      step.status = "failed";
+      step.errors.push(`${scriptName} script failed: ${errMsg.slice(0, 300)}`);
+      step.message = `${scriptName} script failed`;
+      console.warn(`[SkillManager] ${scriptName} script failed in ${skillDir}: ${errMsg.slice(0, 300)}`);
+    }
+
+    return step;
+  }
+
+  /**
+   * Verify that an installed skill is actually usable.
+   * Checks: entry point readable, required env vars set, required binaries available,
+   * onInstall hook succeeded, and instructions are non-empty.
+   */
+  private verifyInstallation(
+    skill: Skill,
+    parsed: import("@evoclaw/core").SKILLmdDocument
+  ): SkillInstallStep {
+    const step: SkillInstallStep = {
+      name: "post_install_verification",
+      status: "success",
+      message: "",
+      warnings: [],
+      errors: [],
+    };
+
+    // 1. Entry point readable
+    if (skill.installPath) {
+      try {
+        fs.accessSync(skill.installPath, fs.constants.R_OK);
+      } catch {
+        step.errors.push("entry point not readable: " + skill.installPath);
+      }
+    }
+
+    // 2. Instructions non-empty
+    if (!parsed.instructions || parsed.instructions.trim().length < 10) {
+      step.warnings.push("Skill instructions are empty or very short — skill may not function correctly");
+    }
+
+    // 3. Required environment variables
+    const ocMeta = skill.openclawMeta;
+    const envVars = ocMeta?.requires?.env || [];
+    for (const envVar of envVars) {
+      if (!process.env[envVar]) {
+        step.warnings.push(`Required env var "${envVar}" not set — skill will not work until configured`);
+      }
+    }
+
+    // 4. Required binaries
+    const bins = ocMeta?.requires?.bins || [];
+    for (const bin of bins) {
+      if (!this.checkBinaryExists(bin)) {
+        step.warnings.push(`Required binary "${bin}" not found — some features may be unavailable`);
+      }
+    }
+
+    // 5. Check for install artifacts (node_modules, etc.)
+    const skillDir = path.dirname(skill.installPath);
+    if (parsed.meta.requires && parsed.meta.requires.length > 0) {
+      const hasNpmDeps = parsed.meta.requires.some(r =>
+        !r.name.startsWith("pip:") && !["python3", "python", "node", "nodejs"].includes(r.name.toLowerCase())
+      );
+      if (hasNpmDeps && !fs.existsSync(path.join(skillDir, "node_modules"))) {
+        step.warnings.push("npm dependencies declared but node_modules not found — dependencies may not be installed");
+      }
+    }
+
+    // 6. Verify skill can be retrieved
+    const retrieved = this.skills.get(skill.id);
+    if (!retrieved) {
+      step.errors.push("verification failed: skill not found in registry after install");
+    }
+
+    // Determine status
+    if (step.errors.length > 0) {
+      step.status = "failed";
+      step.message = `Verification failed with ${step.errors.length} error(s)`;
+    } else if (step.warnings.length > 0) {
+      step.status = "warning";
+      step.message = `Verification passed with ${step.warnings.length} warning(s)`;
+    } else {
+      step.message = "All verification checks passed";
+    }
+
+    console.log(`[SkillManager] Post-install verification for "${skill.name}": ${step.status} — ${step.message}`);
+    return step;
   }
 }

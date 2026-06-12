@@ -3,6 +3,62 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.30.0 (2026-06-12)
+
+### 技能安装流程系统性完善
+
+对标OpenClaw的技能完整安装过程，对EvoClaw的技能安装流程进行系统性完善，建立6阶段安装管道。
+
+---
+
+#### 安装管道架构
+
+```
+Phase 1: SKILL.md解析 → SKILLmdParser.parseFromFile()
+Phase 2: 元数据验证 → SkillValidator.validate()
+Phase 3: 安全扫描 → SkillValidator.securityScan()
+Phase 4: 安装脚本执行 → [新增] installDependencies() + executeMetaScript()
+Phase 5: 安装后验证 → [新增] verifyInstallation()
+Phase 6: 失败回滚 → [新增] 自动回滚策略
+```
+
+#### 新增功能
+
+| 功能 | 说明 | 文件 |
+|------|------|------|
+| `installDependencies()` | 安装SKILL.md中声明的依赖（npm/pip），检查python/node可用性 | skill-manager.ts |
+| `executeMetaScript()` | 执行openclaw.install和openclaw.build脚本 | skill-manager.ts |
+| `verifyInstallation()` | 6项安装后验证：入口可读、指令非空、环境变量、二进制可用、依赖检查、注册表检索 | skill-manager.ts |
+| 安装失败回滚 | 关键错误时自动回滚：内存删除+磁盘删除+注册表注销 | skill-manager.ts |
+| `SkillInstallReport` | 完整的安装报告：阶段、步骤、警告、错误 | skill-manager.ts |
+| `SkillInstallStep` | 单步安装报告：名称、状态、消息、警告、错误 | skill-manager.ts |
+
+#### 依赖安装支持
+
+| 依赖类型 | 声明方式 | 安装方式 |
+|----------|---------|---------|
+| npm包 | `requires: [name]` 或 `requires: [npm:name]` | `npm install --save` 在技能目录 |
+| pip包 | `requires: [pip:name]` | `pip install` |
+| Python运行时 | `requires: [python3]` | 检查PATH可用性 |
+| Node运行时 | `requires: [node]` | 检查PATH可用性 |
+
+#### 安装后验证清单
+
+1. 入口文件可读性检查
+2. 指令内容非空检查（>=10字符）
+3. 必需环境变量设置检查
+4. 必需二进制可用性检查
+5. npm依赖安装产物检查（node_modules）
+6. 技能注册表检索验证
+
+#### 回滚策略
+
+当安装过程中出现关键错误时：
+- 从内存中删除技能记录
+- 从注册表中注销技能
+- 从磁盘上删除技能目录
+- 抛出包含详细错误信息的异常
+
 ## v0.29.0 (2026-06-12)
 
 ### 修复手动删除技能文件后WebUI仍显示的问题
