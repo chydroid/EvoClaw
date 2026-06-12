@@ -39,6 +39,8 @@ export class SkillManager {
   private isScanning = false;
   private marketplace: SkillMarketplace;
   private skillEcosystem: import("./skill-ecosystem").SkillEcosystem | null = null;
+  private skillWorkshop: import("./skill-workshop").SkillWorkshop | null = null;
+  private installPolicyManager: import("./install-policy").InstallPolicyManager | null = null;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -64,6 +66,16 @@ export class SkillManager {
       this.skillEcosystem = new SkillEcosystem();
     } catch {}
 
+    try {
+      const { SkillWorkshop } = require("./skill-workshop");
+      this.skillWorkshop = new SkillWorkshop();
+    } catch { /* skill workshop not available */ }
+
+    try {
+      const { InstallPolicyManager } = require("./install-policy");
+      this.installPolicyManager = new InstallPolicyManager();
+    } catch { /* install policy not available */ }
+
     svcRegistry.registerService("skillManager", this);
   }
 
@@ -73,6 +85,18 @@ export class SkillManager {
     );
     if (existing) {
       return existing;
+    }
+
+    // ── Install Policy: check if installation is allowed ──
+    if (this.installPolicyManager) {
+      const decision = this.installPolicyManager.checkInstall(skillPath, "source", undefined);
+      if (decision.action === "block") {
+        throw new Error(`Install blocked by policy: ${decision.reason}`);
+      }
+      if (decision.action === "review") {
+        console.warn(`[SkillManager] Install requires review: ${decision.reason}`);
+        // Continue but log the review requirement
+      }
     }
 
     const parsed = await this.parser.parseFromFile(skillPath);
@@ -1178,6 +1202,14 @@ export class SkillManager {
   recommendSkills(userHistory: string[]): Array<{ skillId: string; reason: string; relevanceScore: number }> {
     if (!this.skillEcosystem) return [];
     return this.skillEcosystem.recommendSkills(userHistory);
+  }
+
+  getSkillWorkshop(): import("./skill-workshop").SkillWorkshop | null {
+    return this.skillWorkshop;
+  }
+
+  getInstallPolicyManager(): import("./install-policy").InstallPolicyManager | null {
+    return this.installPolicyManager;
   }
 
   async checkAndTranslateInstalledSkills(): Promise<{ checked: number; translated: number }> {

@@ -167,6 +167,39 @@ const BUILTIN_INPUT_RULES: InputRule[] = [
     action: "block",
     description: "Harmful content: weapon manufacturing",
   },
+
+  // Indirect injection via markdown images
+  {
+    id: "injection-markdown-image",
+    pattern: /!\[.*?\]\(https?:\/\/[^\s)]+\?[^\s)]*\w/gi,
+    severity: "high",
+    action: "block",
+    description: "Markdown image exfiltration attempt",
+  },
+  // Base64 encoded injection
+  {
+    id: "injection-base64",
+    pattern: /(?:[A-Za-z0-9+/]{40,}={0,2})/g,
+    severity: "medium",
+    action: "warn",
+    description: "Potential base64-encoded injection",
+  },
+  // Chinese injection variants
+  {
+    id: "injection-chinese",
+    pattern: /(?:忽略[之前上]的[指令说明]|假装[你是]|你[现在]是|不要[遵守遵循]|绕过[安全限制]|解除[限制模式])/gi,
+    severity: "high",
+    action: "block",
+    description: "Chinese prompt injection attempt",
+  },
+  // Developer mode bypass
+  {
+    id: "injection-dev-mode",
+    pattern: /(?:developer\s*mode|debug\s*mode|maintenance\s*mode|god\s*mode|admin\s*mode|root\s*access|jailbreak|DAN\s*mode)/gi,
+    severity: "high",
+    action: "block",
+    description: "Developer/debug mode bypass attempt",
+  },
 ];
 
 // ─── Built-in Output Rules ──────────────────────────────────────────────────
@@ -218,6 +251,29 @@ const BUILTIN_OUTPUT_RULES: OutputRule[] = [
     severity: "high",
     action: "block",
     description: "Output: illegal activity instructions",
+  },
+
+  // Output PII detection
+  {
+    id: "output-pii-email",
+    pattern: /[\w.+-]+@[\w-]+\.[\w.]+/g,
+    severity: "medium",
+    action: "sanitize",
+    description: "PII: email address in output",
+  },
+  {
+    id: "output-pii-phone",
+    pattern: /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g,
+    severity: "medium",
+    action: "sanitize",
+    description: "PII: phone number in output",
+  },
+  {
+    id: "output-pii-ssn",
+    pattern: /\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/g,
+    severity: "high",
+    action: "sanitize",
+    description: "PII: SSN in output",
   },
 ];
 
@@ -284,6 +340,16 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     severity: "medium",
     action: "warn",
     description: "Tool: permission modification",
+  },
+
+  // SQL injection in tool args
+  {
+    id: "tool-sql-injection",
+    toolPattern: /./,
+    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|1\s*=\s*1|OR\s+1\s*=\s*1|'\s+OR\s+'|--\s*$)/im,
+    severity: "high",
+    action: "block",
+    description: "SQL injection pattern in tool arguments",
   },
 ];
 

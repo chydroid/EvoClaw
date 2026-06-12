@@ -143,11 +143,12 @@ export class MCPProtocolHandler {
 
     try {
       const result = await this.toolRegistry.executeTool(name, args);
+      const sanitized = this.sanitizeToolResult(result);
       return {
         content: [
           {
             type: "text",
-            text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
+            text: typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized, null, 2),
           },
         ],
       };
@@ -161,6 +162,33 @@ export class MCPProtocolHandler {
         ],
       };
     }
+  }
+
+  /**
+   * Sanitize MCP tool result blocks — convert non-text/image blocks to text
+   * to prevent API errors (e.g., Anthropic 400 on resource_link/audio blocks)
+   * Inspired by OpenClaw 2026.6.5 MCP tool result compatibility
+   */
+  private sanitizeToolResult(result: unknown): unknown {
+    if (!result || typeof result !== "object") return result;
+
+    const obj = result as Record<string, unknown>;
+
+    // If result has content array (MCP tool result format)
+    if (Array.isArray(obj.content)) {
+      obj.content = obj.content.map((block: Record<string, unknown>) => {
+        if (block.type === "text" || block.type === "image") {
+          return block; // Keep text and image blocks as-is
+        }
+        // Convert resource_link, audio, resource, and other non-standard blocks to text
+        return {
+          type: "text",
+          text: `[${block.type || "unknown"}] ${JSON.stringify(block)}`,
+        };
+      });
+    }
+
+    return obj;
   }
 
   handleResourcesList(): Array<{

@@ -601,8 +601,45 @@ export class AgentObservability {
   }
 
   private flushExport(): void {
-    // No-op placeholder — in production this would push to an OTLP endpoint
-    // or write to a file. For now, metrics & traces stay in memory.
+    try {
+      // Export completed traces to a JSONL file for persistence
+      const completedTraces = Array.from(this.traces.values())
+        .filter(t => t.endTime !== undefined);
+
+      if (completedTraces.length === 0) return;
+
+      const fs = require("fs");
+      const path = require("path");
+      const dir = path.join(process.cwd(), "data", "observability");
+
+      // Ensure directory exists
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+
+      // Append traces as JSONL
+      const traceFile = path.join(dir, `traces-${new Date().toISOString().slice(0, 10)}.jsonl`);
+      const lines = completedTraces
+        .map(t => JSON.stringify(this.exportTrace(t.traceId)))
+        .join("\n") + "\n";
+      fs.appendFileSync(traceFile, lines, "utf-8");
+
+      // Export metrics to file
+      const metricsFile = path.join(dir, `metrics-${new Date().toISOString().slice(0, 10)}.txt`);
+      const metricsText = this.exportMetrics();
+      fs.writeFileSync(metricsFile, metricsText, "utf-8");
+
+      // Clean up old traces from memory (keep last 100)
+      const toKeep = 100;
+      if (this.traces.size > toKeep) {
+        const sorted = Array.from(this.traces.entries())
+          .sort((a, b) => (b[1].endTime || 0) - (a[1].endTime || 0));
+        this.traces.clear();
+        for (let i = 0; i < Math.min(toKeep, sorted.length); i++) {
+          this.traces.set(sorted[i][0], sorted[i][1]);
+        }
+      }
+    } catch {
+      // Export failure should not crash the agent
+    }
   }
 }
 

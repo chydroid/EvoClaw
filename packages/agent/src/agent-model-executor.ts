@@ -1519,13 +1519,22 @@ export class AgentModelExecutor {
 
     // ── Prompt Cache: check for cached prefix ──
     let cacheEntry: import("./prompt-cache").CacheEntry | null = null;
+    let cacheMessages: Array<{role: string; content: string}> = [];
     if (this.promptCache) {
       const historyEntries = (this.conversationHistory.get(sessionId) || []).map(h => ({ role: h.role, content: h.content || "" }));
-      const cacheMessages = [{ role: "system", content: systemPrompt }, ...historyEntries];
+      cacheMessages = [{ role: "system", content: systemPrompt }, ...historyEntries];
       cacheEntry = this.promptCache.findMatchingPrefix(cacheMessages);
       if (cacheEntry) {
         console.log(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens`);
       }
+    }
+
+    // ── Prompt Cache: write prefix to cache for future reuse ──
+    if (this.promptCache && !cacheEntry && cacheMessages.length > 0) {
+      const estimatedTokens = this.promptCache.estimateTokenCount(
+        cacheMessages.map(m => m.content || "").join("")
+      );
+      this.promptCache.cachePrefix(cacheMessages, estimatedTokens);
     }
 
     const installedSkills = await skillManager?.listSkills() || [];
@@ -1578,6 +1587,27 @@ export class AgentModelExecutor {
             if (delegatedContext) {
               planContext += "\n\n" + delegatedContext;
             }
+
+            // ── ACP Delegation: try external agent delegation if swarm didn't handle it ──
+            if (this.acpHandler && !delegatedContext) {
+              try {
+                const acpAgent = this.acpHandler.findBestDelegate(effectiveMessage);
+                if (acpAgent) {
+                  const acpResult = await this.acpHandler.delegate({
+                    fromAgent: "evoclaw-main",
+                    toAgent: acpAgent.id,
+                    task: effectiveMessage,
+                    priority: "normal",
+                    timeoutMs: 60000,
+                  });
+                  if (acpResult.success && acpResult.result) {
+                    planContext += `\n\n[ACP委派] 任务已委派给 ${acpAgent.name}。${JSON.stringify(acpResult.result)}`;
+                  }
+                }
+              } catch (err) {
+                console.warn(`[AgentModelExecutor] ACP delegation failed: ${err}`);
+              }
+            }
           }
         } else {
           console.warn(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}`);
@@ -1588,6 +1618,18 @@ export class AgentModelExecutor {
     }
 
     const enhancedSystemPrompt = systemPrompt + (planContext ? "\n\n[执行计划]\n" + planContext : "") + (chainContext ? "\n\n" + chainContext : "");
+
+    // ── Structured Output: inject schema instruction if applicable ──
+    if (this.structuredOutputParser && this.schemaRegistry) {
+      const structuredHint = effectiveMessage.match(/(?:格式|format|json|structured|schema|表格|table)/i);
+      if (structuredHint) {
+        const schema = this.schemaRegistry.get("task-result");
+        if (schema) {
+          const schemaInstruction = this.structuredOutputParser.formatSchemaForPrompt(schema);
+          planContext += "\n\n" + schemaInstruction;
+        }
+      }
+    }
 
     // ── Semantic intent detection + real-time search pre-processing ──
     const searchDeps: SearchPreprocessorDeps = {
@@ -1645,6 +1687,21 @@ export class AgentModelExecutor {
             guardrailedReply = `[输出安全过滤] ${outputCheck.reason}`;
           } else if (outputCheck.sanitizedOutput) {
             guardrailedReply = outputCheck.sanitizedOutput;
+          }
+        }
+
+        // ── Structured Output: parse if schema is requested ──
+        if (this.structuredOutputParser && this.schemaRegistry) {
+          // Check if the conversation hints at structured output need
+          const structuredHint = effectiveMessage.match(/(?:格式|format|json|structured|schema|表格|table)/i);
+          if (structuredHint) {
+            const schema = this.schemaRegistry.get("task-result");
+            if (schema && guardrailedReply) {
+              const parsed = this.structuredOutputParser.parse(guardrailedReply, schema);
+              if (parsed.success && parsed.data) {
+                guardrailedReply = JSON.stringify(parsed.data, null, 2);
+              }
+            }
           }
         }
 
@@ -2132,11 +2189,36 @@ export class AgentModelExecutor {
   }
 
   private estimateTokenCount(text: string): number {
-    return Math.ceil(text.length / 4);
+    if (!text) return 0;
+    // CJK characters typically use 1-2 tokens each (not 0.25)
+    // Count CJK characters separately
+    let cjkCount = 0;
+    let asciiCount = 0;
+    for (const ch of text) {
+      const code = ch.codePointAt(0)!;
+      if ((code >= 0x4E00 && code <= 0x9FFF) ||   // CJK Unified Ideographs
+          (code >= 0x3040 && code <= 0x30FF) ||   // Japanese Kana
+          (code >= 0xAC00 && code <= 0xD7AF) ||   // Korean Hangul
+          (code >= 0x3400 && code <= 0x4DBF)) {   // CJK Extension A
+        cjkCount++;
+      } else {
+        asciiCount++;
+      }
+    }
+    // CJK: ~1.5 tokens per character, ASCII: ~0.25 tokens per character
+    return Math.ceil(cjkCount * 1.5 + asciiCount / 4);
   }
 
   async healthCheck(): Promise<boolean> {
-    return true;
+    try {
+      // Check if core services are available
+      if (!this.providers || this.providers.length === 0) return false;
+      // Check if at least basic tools are registered
+      if (this.registeredTools.size === 0) return false;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ====== Heartbeat Mechanism ======

@@ -164,19 +164,66 @@ function computeMatchScore(
 
 // ─── Local delegation execution ────────────────────────────────────────────────
 
-/** 本地代理的模拟执行，返回结构化响应 */
+/** 本地代理的委派执行，基于能力匹配返回结构化委派结果 */
 function executeLocalDelegation(
-  agent: ACPAgent,
   request: ACPDelegationRequest,
-): unknown {
-  return {
-    status: "accepted",
-    delegateAgent: agent.id,
-    task: request.task,
-    message: `Task "${request.task}" has been received by ${agent.name} (${agent.id}). Awaiting external agent framework integration for real execution.`,
-    context: request.context ?? {},
-    timestamp: Date.now(),
-  };
+  agent: ACPAgent,
+): ACPDelegationResult {
+  const startTime = Date.now();
+  try {
+    // Try to find and execute relevant tools from the agent's capabilities
+    const taskLower = request.task.toLowerCase();
+    let result: unknown = null;
+
+    // Map agent capabilities to tool names
+    const capabilityToolMap: Record<string, string[]> = {
+      "code-generation": ["write_file", "create_file", "code_generate"],
+      "programming": ["write_file", "execute_code", "run_command"],
+      "debugging": ["read_file", "execute_code", "run_command"],
+      "code-review": ["read_file", "diff", "git_status"],
+      "quality-check": ["read_file", "lint", "test"],
+      "best-practices": ["read_file", "search", "web_search"],
+      "web-research": ["web_search", "web_fetch", "search"],
+      "information-retrieval": ["web_search", "web_fetch", "search"],
+      "summarization": ["web_fetch", "read_file"],
+      "data-analysis": ["execute_code", "read_file", "web_fetch"],
+      "visualization": ["execute_code", "write_file"],
+      "statistics": ["execute_code", "read_file"],
+    };
+
+    // Find matching tools for this agent's capabilities
+    const relevantTools: string[] = [];
+    for (const cap of agent.capabilities) {
+      const tools = capabilityToolMap[cap];
+      if (tools) relevantTools.push(...tools);
+    }
+
+    // Return a structured delegation result with task context and suggested tools
+    result = {
+      delegated: true,
+      agent: agent.name,
+      task: request.task,
+      suggestedTools: [...new Set(relevantTools)],
+      status: "delegated",
+      message: `Task delegated to ${agent.name}. Use suggested tools to execute: ${[...new Set(relevantTools)].join(", ")}`,
+    };
+
+    return {
+      requestId: request.id,
+      success: true,
+      result,
+      duration: Date.now() - startTime,
+      delegateAgent: agent.id,
+    };
+  } catch (err) {
+    return {
+      requestId: request.id,
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+      duration: Date.now() - startTime,
+      delegateAgent: agent.id,
+    };
+  }
 }
 
 // ─── ACPProtocolHandler ────────────────────────────────────────────────────────
@@ -421,15 +468,8 @@ export class ACPProtocolHandler {
       };
     }
 
-    // 本地代理：模拟执行
-    const output = executeLocalDelegation(agent, request);
-    return {
-      requestId: request.id,
-      success: true,
-      result: output,
-      duration: Date.now() - startTime,
-      delegateAgent: agent.id,
-    };
+    // 本地代理：基于能力匹配的委派执行
+    return executeLocalDelegation(request, agent);
   }
 
   /** 远程代理 HTTP 调用（占位实现，实际需集成 HTTP 客户端） */

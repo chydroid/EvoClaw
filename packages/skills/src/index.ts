@@ -27,3 +27,7 @@ export { SkillMarketplace } from "./marketplace";
 export type { SkillPackage, SkillReview, SearchQuery, SearchResult, InstallResult, MarketplaceConfig } from "./marketplace";
 export { SkillEcosystem } from "./skill-ecosystem";
 export type { EcosystemStats, SkillRecommendation, QualityReport, SkillCategory } from "./skill-ecosystem";
+export { SkillWorkshop } from "./skill-workshop";
+export type { SkillProposal, SkillProposalFile, SkillWorkshopConfig } from "./skill-workshop";
+export { InstallPolicyManager } from "./install-policy";
+export type { InstallPolicy, InstallRule, InstallContext, InstallDecision } from "./install-policy";

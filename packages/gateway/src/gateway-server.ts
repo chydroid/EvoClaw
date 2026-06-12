@@ -462,9 +462,42 @@ export class GatewayServer {
     // MCP JSON-RPC endpoint
     try {
       const { MCPProtocolHandler } = require("./mcp-protocol-handler");
+      // Create a toolRegistry that bridges to the agent's registered tools
+      const toolRegistry = this.registry ? {
+        listTools: () => {
+          const tools: Array<{name: string; description: string; inputSchema: Record<string, unknown>}> = [];
+          // Access registered tools from the agent executor
+          const executor = this.registry.resolveService<any>("agentModelExecutor");
+          if (executor?.registeredTools) {
+            for (const [name, entry] of executor.registeredTools) {
+              tools.push({
+                name,
+                description: entry.definition?.description || name,
+                inputSchema: entry.definition?.parameters || { type: "object", properties: {} },
+              });
+            }
+          }
+          return tools;
+        },
+        executeTool: async (name: string, args: Record<string, unknown>) => {
+          const executor = this.registry.resolveService<any>("agentModelExecutor");
+          if (!executor?.registeredTools || !executor.registeredTools.has(name)) {
+            return { error: `Tool "${name}" not found` };
+          }
+          try {
+            const entry = executor.registeredTools.get(name);
+            const result = await entry.handler(args);
+            return { result: typeof result === "string" ? result : JSON.stringify(result) };
+          } catch (err) {
+            return { error: err instanceof Error ? err.message : String(err) };
+          }
+        },
+      } : undefined;
+
       this.mcpProtocolHandler = new MCPProtocolHandler({
         serverName: "EvoClaw-Gateway",
         serverVersion: "1.0.0",
+        toolRegistry,
         resources: [],
         prompts: [],
       });
