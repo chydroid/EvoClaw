@@ -459,6 +459,123 @@ export class GatewayServer {
     this.setupExecutionRoutes();
     this.setupMemoryRoutes();
 
+    // ── Agent Capabilities API (v0.19.0+) ──
+
+    // Guardrails stats
+    this.app.get("/api/guardrails/stats", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json({ enabled: false }); return; }
+        const status = executor.getGuardrailsStatus?.();
+        res.json(status || { enabled: false });
+      } catch { res.json({ enabled: false }); }
+    });
+
+    // Prompt Cache stats
+    this.app.get("/api/prompt-cache/stats", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json({ enabled: false }); return; }
+        const stats = executor.getPromptCacheStats?.();
+        res.json(stats || { enabled: false });
+      } catch { res.json({ enabled: false }); }
+    });
+
+    // ACP Agents
+    this.app.get("/api/acp/agents", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json([]); return; }
+        const agents = executor.getACPAgents?.();
+        res.json(agents || []);
+      } catch { res.json([]); }
+    });
+
+    // Observability traces
+    this.app.get("/api/observability/traces", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json([]); return; }
+        const traces = executor.getObservabilityTraces?.();
+        res.json(traces || []);
+      } catch { res.json([]); }
+    });
+
+    // Steer - inject real-time instruction
+    this.app.post("/api/steer", async (req: any, res: any) => {
+      try {
+        const { sessionId, instruction, priority } = req.body || {};
+        if (!sessionId || !instruction) {
+          res.status(400).json({ error: "sessionId and instruction are required" });
+          return;
+        }
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.status(503).json({ error: "Agent not available" }); return; }
+        const result = executor.steer?.(sessionId, instruction, priority);
+        res.json(result || { accepted: false, message: "Steer not available" });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Workboard
+    this.app.get("/api/workboard", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json({ tasks: {}, stats: null }); return; }
+        const board = executor.getWorkboard?.();
+        if (!board) { res.json({ tasks: {}, stats: null }); return; }
+        res.json({ tasks: board.getBoardView(), stats: board.getStats() });
+      } catch { res.json({ tasks: {}, stats: null }); }
+    });
+
+    this.app.post("/api/workboard/tasks", async (req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.status(503).json({ error: "Agent not available" }); return; }
+        const board = executor.getWorkboard?.();
+        if (!board) { res.status(503).json({ error: "Workboard not available" }); return; }
+        const task = board.createTask(req.body);
+        res.json(task);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Memory Dreaming
+    this.app.get("/api/memory/dreaming", async (_req: any, res: any) => {
+      try {
+        const memoryHub = this.registry.resolveService("memoryHub") as any;
+        if (!memoryHub) { res.json({ enabled: false }); return; }
+        const diary = memoryHub.getDreamDiary?.();
+        const shouldDream = memoryHub.shouldDream?.();
+        res.json({ enabled: true, diary, shouldDream });
+      } catch { res.json({ enabled: false }); }
+    });
+
+    this.app.post("/api/memory/dreaming/trigger", async (req: any, res: any) => {
+      try {
+        const memoryHub = this.registry.resolveService("memoryHub") as any;
+        if (!memoryHub) { res.status(503).json({ error: "Memory not available" }); return; }
+        const { phase } = req.body || {};
+        const session = await memoryHub.dream?.(phase);
+        res.json(session);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Computed Status
+    this.app.get("/api/computed-status", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json({ sources: [] }); return; }
+        const engine = executor.getComputedStatus?.();
+        if (!engine) { res.json({ sources: [] }); return; }
+        res.json({ sources: engine.getSources() });
+      } catch { res.json({ sources: [] }); }
+    });
+
     // MCP JSON-RPC endpoint
     try {
       const { MCPProtocolHandler } = require("./mcp-protocol-handler");

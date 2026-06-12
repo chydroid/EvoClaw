@@ -3,6 +3,60 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.22.0 (2026-06-12)
+
+### WebUI增强 + Gateway API补全 — 新功能可视化
+
+为v0.19.0-v0.21.0新增的12个功能模块补充Gateway REST API端点和WebUI管理页面，使所有新功能可通过Web界面监控和操作。
+
+---
+
+#### 新增Gateway API端点（10个）
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/guardrails/stats` | GET | Guardrails安全门控统计 |
+| `/api/prompt-cache/stats` | GET | Prompt Cache缓存统计 |
+| `/api/acp/agents` | GET | ACP代理列表 |
+| `/api/observability/traces` | GET | 可观测性追踪数据 |
+| `/api/steer` | POST | 实时指令注入 |
+| `/api/workboard` | GET | Workboard看板视图 |
+| `/api/workboard/tasks` | POST | 创建Workboard任务 |
+| `/api/memory/dreaming` | GET | Memory Dreaming状态 |
+| `/api/memory/dreaming/trigger` | POST | 触发Memory Dreaming |
+| `/api/computed-status` | GET | Computed Status状态源 |
+
+#### 新增WebUI页面（4个）
+
+| 页面 | 导航分组 | 功能 |
+|------|---------|------|
+| **ObservabilityPage** | System | 全链路追踪可视化：活跃Traces、Spans、错误统计 |
+| **GuardrailsPage** | Security | 三层安全门控状态：Input/Output/Tool层统计 |
+| **WorkboardPage** | Config | 多Agent看板：5列Kanban视图+任务创建 |
+| **SteerPage** | Config | 实时指令注入：会话选择+优先级+分类 |
+
+#### 注册已有但未注册的页面（2个）
+
+| 页面 | 导航分组 | 功能 |
+|------|---------|------|
+| **ModelSwitcherPage** | System | 模型切换与连通性测试 |
+| **StreamViewPage** | System | 实时事件流查看器 |
+
+#### Bug修复
+
+| 修复 | 说明 |
+|------|------|
+| skill-ecosystem.ts缺失 | 创建完整版SkillEcosystem类，对齐skill-manager.ts接口 |
+| skill-manager.ts类型不匹配 | `quality.score`替代`quality.overallScore`，`issues`从对象数组改为字符串数组 |
+| StreamViewPage导入方式 | 命名导出`{ StreamViewPage }`替代默认导出 |
+
+#### 测试结果
+
+| 测试类型 | 结果 |
+|----------|------|
+| 构建 | 17/17包编译通过 |
+| 单元测试 | 96/96文件通过，2740/2741用例通过 |
+
 ## v0.21.0 (2026-06-12)
 
 ### 对标OpenClaw 2026.5.1-6.1 — 可靠性与编排能力提升

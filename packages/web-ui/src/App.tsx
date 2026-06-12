@@ -34,6 +34,12 @@ import MessageTemplatesPage from "./MessageTemplatesPage";
 import ReplyReferencePage from "./ReplyReferencePage";
 import QueueManagerPage from "./QueueManagerPage";
 import ChannelMessagesPage from "./ChannelMessagesPage";
+import ObservabilityPage from "./ObservabilityPage";
+import GuardrailsPage from "./GuardrailsPage";
+import WorkboardPage from "./WorkboardPage";
+import SteerPage from "./SteerPage";
+import ModelSwitcherPage from "./ModelSwitcherPage";
+import { StreamViewPage } from "./StreamViewPage";
 
 type TabId =
   | "chat" | "status" | "dashboard"
@@ -43,7 +49,8 @@ type TabId =
   | "secrets" | "dlq" | "config-rpc" | "retention"
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
-  | "channel-messages";
+  | "channel-messages"
+  | "observability" | "guardrails" | "workboard" | "steer" | "model-switcher" | "stream-view";
 
 interface NavGroup {
   id: string;
@@ -79,6 +86,9 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "bootstrap", i18nKey: "nav.bootstrap", iconId: "bootstrap" },
       { id: "canvas", i18nKey: "nav.canvas", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
+      { id: "observability" as TabId, i18nKey: "nav.observability", iconId: "observability" },
+      { id: "model-switcher" as TabId, i18nKey: "nav.model_switcher", iconId: "model-switcher" },
+      { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
     ],
   },
   {
@@ -92,6 +102,8 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "llm", i18nKey: "nav.llm", iconId: "llm" },
       { id: "channels", i18nKey: "nav.channels", iconId: "channels" },
       { id: "evolution", i18nKey: "nav.evolution", iconId: "evolution" },
+      { id: "workboard" as TabId, i18nKey: "nav.workboard", iconId: "workboard" },
+      { id: "steer" as TabId, i18nKey: "nav.steer", iconId: "steer" },
     ],
   },
   {
@@ -102,6 +114,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "secrets", i18nKey: "nav.secrets", iconId: "secrets" },
       { id: "dlq", i18nKey: "nav.dlq", iconId: "dlq" },
       { id: "feature-flags", i18nKey: "nav.feature_flags", iconId: "feature-flags" },
+      { id: "guardrails" as TabId, i18nKey: "nav.guardrails", iconId: "guardrails" },
     ],
   },
   {
@@ -585,6 +598,12 @@ export default function App() {
       case "reply-refs": return <ErrorBoundary><ReplyReferencePage /></ErrorBoundary>;
       case "message-queue": return <ErrorBoundary><QueueManagerPage /></ErrorBoundary>;
       case "channel-messages": return <ErrorBoundary><ChannelMessagesPage /></ErrorBoundary>;
+      case "observability": return <ErrorBoundary><ObservabilityPage /></ErrorBoundary>;
+      case "guardrails": return <ErrorBoundary><GuardrailsPage /></ErrorBoundary>;
+      case "workboard": return <ErrorBoundary><WorkboardPage /></ErrorBoundary>;
+      case "steer": return <ErrorBoundary><SteerPage /></ErrorBoundary>;
+      case "model-switcher": return <ErrorBoundary><ModelSwitcherPage /></ErrorBoundary>;
+      case "stream-view": return <ErrorBoundary><StreamViewPage /></ErrorBoundary>;
       default: return <WebChatPage />;
     }
   }
