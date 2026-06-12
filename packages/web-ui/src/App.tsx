@@ -25,7 +25,7 @@ import { useTranslation, type Lang } from "./i18n";
 import SecretsManagerPage from "./SecretsManagerPage";
 import DeadLetterQueuePage from "./DeadLetterQueuePage";
 import ConfigRPCPage from "./ConfigRPCPage";
-import SessionRetentionPage from "./SessionRetentionPage";
+import SessionManagementPage from "./SessionManagementPage";
 import FeatureFlagsPage from "./FeatureFlagsPage";
 import ConfigMigrationPage from "./ConfigMigrationPage";
 import ConfigDoctorPage from "./ConfigDoctorPage";
@@ -46,7 +46,7 @@ type TabId =
   | "events" | "skills" | "bootstrap" | "canvas" | "monitoring"
   | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
   | "ops" | "cli"
-  | "secrets" | "dlq" | "config-rpc" | "retention"
+  | "secrets" | "dlq" | "config-rpc" | "session-mgmt"
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
@@ -123,7 +123,7 @@ const NAV_GROUPS: NavGroup[] = [
     iconId: "admin",
     items: [
       { id: "config-rpc", i18nKey: "nav.config_rpc", iconId: "config-rpc" },
-      { id: "retention", i18nKey: "nav.retention", iconId: "retention" },
+      { id: "session-mgmt", i18nKey: "nav.session_mgmt", iconId: "retention" },
       { id: "config-migration", i18nKey: "nav.config_migration", iconId: "config-migration" },
       { id: "config-doctor", i18nKey: "nav.config_doctor", iconId: "config-doctor" },
     ],
@@ -273,7 +273,6 @@ export default function App() {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [clearAllConfirm, setClearAllConfirm] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -375,17 +374,6 @@ export default function App() {
       }
     } catch { /* ignore */ }
     setDeleteConfirmId(null);
-  }
-
-  async function clearAllSessions() {
-    const ids = sessions.map(s => s.sessionId);
-    try {
-      await Promise.all(ids.map(id => fetch(`/api/sessions/default/${id}`, { method: "DELETE" })));
-    } catch { /* ignore */ }
-    setSessions([]);
-    setActiveSession(null);
-    setNewChatCounter(prev => prev + 1);
-    setClearAllConfirm(false);
   }
 
   function startRename(sessionId: string, currentName: string) {
@@ -589,7 +577,7 @@ export default function App() {
       case "secrets": return <ErrorBoundary><SecretsManagerPage /></ErrorBoundary>;
       case "dlq": return <ErrorBoundary><DeadLetterQueuePage /></ErrorBoundary>;
       case "config-rpc": return <ErrorBoundary><ConfigRPCPage /></ErrorBoundary>;
-      case "retention": return <ErrorBoundary><SessionRetentionPage /></ErrorBoundary>;
+      case "session-mgmt": return <ErrorBoundary><SessionManagementPage /></ErrorBoundary>;
       case "feature-flags": return <ErrorBoundary><FeatureFlagsPage /></ErrorBoundary>;
       case "config-migration": return <ErrorBoundary><ConfigMigrationPage /></ErrorBoundary>;
       case "config-doctor": return <ErrorBoundary><ConfigDoctorPage /></ErrorBoundary>;
@@ -774,7 +762,7 @@ export default function App() {
                           />
                         </div>
 
-                        {/* New Chat + Clear All buttons */}
+                        {/* New Chat button */}
                         <div style={css.sessionActionsRow}>
                           <button
                             style={{ ...css.sessionActionBtn, color: "var(--accent)" }}
@@ -783,22 +771,6 @@ export default function App() {
                             <IconNewChat size={14} />
                             {t("nav.new_chat")}
                           </button>
-                          {sessions.length > 1 && (
-                            clearAllConfirm ? (
-                              <div style={css.clearAllConfirmRow}>
-                                <span style={{ fontSize: 10, color: "var(--error, #da3633)" }}>{t("sessions.confirm_clear")}</span>
-                                <button style={css.clearAllYesBtn} onClick={clearAllSessions}>{t("sessions.yes")}</button>
-                                <button style={css.clearAllNoBtn} onClick={() => setClearAllConfirm(false)}>{t("sessions.no")}</button>
-                              </div>
-                            ) : (
-                              <button
-                                style={{ ...css.sessionActionBtn, color: "var(--text-muted)" }}
-                                onClick={() => setClearAllConfirm(true)}
-                              >
-                                {t("sessions.clear_all")}
-                              </button>
-                            )
-                          )}
                         </div>
 
                         {sessions
