@@ -518,6 +518,17 @@ export class SkillManager {
       this.registry.unregisterSkill(skillId);
       this.skills.delete(skillId);
 
+      // Delete skill files from disk to prevent auto-scan from reinstalling
+      try {
+        const skillDir = path.dirname(skill.installPath);
+        if (fs.existsSync(skillDir)) {
+          fs.rmSync(skillDir, { recursive: true, force: true });
+          console.log(`[SkillManager] Deleted skill directory: ${skillDir}`);
+        }
+      } catch (err) {
+        console.warn(`[SkillManager] Failed to delete skill directory: ${err instanceof Error ? err.message : err}`);
+      }
+
       // Clean up processedItems cache
       for (const [key] of this.processedItems) {
         if (key.includes(skill.name) || key.includes(skillId)) {
