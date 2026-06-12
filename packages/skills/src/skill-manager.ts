@@ -456,6 +456,24 @@ export class SkillManager {
   }
 
   async listSkills(): Promise<Skill[]> {
+    // Prune skills whose files no longer exist on disk
+    const staleIds: string[] = [];
+    for (const [id, skill] of this.skills) {
+      if (skill.installPath && !fs.existsSync(skill.installPath)) {
+        staleIds.push(id);
+      }
+    }
+    if (staleIds.length > 0) {
+      for (const id of staleIds) {
+        const skill = this.skills.get(id);
+        if (skill) {
+          this.registry.unregisterSkill(id);
+          this.skills.delete(id);
+          console.log(`[SkillManager] Pruned stale skill "${skill.name}" (files deleted from disk)`);
+        }
+      }
+    }
+
     const skills = Array.from(this.skills.values());
     for (const skill of skills) {
       if (!skill.openclawMeta) {
