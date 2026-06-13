@@ -626,8 +626,12 @@ export class GatewayServer {
 
       this.app.post("/api/mcp", async (req: Request, res: Response) => {
         if (!this.mcpProtocolHandler) return res.status(503).json({ error: "MCP not available" });
-        const result = await this.mcpProtocolHandler.routeMessage(req.body);
-        res.json(result);
+        try {
+          const result = await this.mcpProtocolHandler.routeMessage(req.body);
+          res.json(result);
+        } catch (err) {
+          res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        }
       });
     } catch (err) {
       console.error("[Gateway] Failed to initialize MCP protocol handler:", err);

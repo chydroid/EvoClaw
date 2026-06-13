@@ -348,7 +348,7 @@ function classifyCategory(toolName: string): PermissionRequest["category"] {
 function globMatch(pattern: string, value: string): boolean {
   const regex = new RegExp(
     "^" +
-      pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") +
+      pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") +
       "$",
     "i",
   );

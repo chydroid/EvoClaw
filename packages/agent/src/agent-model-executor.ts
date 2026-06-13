@@ -502,12 +502,8 @@ export class AgentModelExecutor {
         name: "execute_tool_chain",
         description: "Execute a predefined tool chain by name. Use this when the task matches a known workflow pattern.",
         parameters: {
-          type: "object",
-          properties: {
-            chain_name: { type: "string", description: "Name of the tool chain to execute" },
-            initial_params: { type: "object", description: "Optional initial parameters for the chain" },
-          },
-          required: ["chain_name"],
+          chain_name: { type: "string", description: "Name of the tool chain to execute" },
+          initial_params: { type: "object", description: "Optional initial parameters for the chain" },
         },
       },
       handler: async (params: Record<string, unknown>) => {
@@ -968,9 +964,13 @@ export class AgentModelExecutor {
     if (sessionId) {
       this.conversationHistory.delete(sessionId);
       this.sequentialThinkingHistory.delete(sessionId);
+      this.executionTraces.delete(sessionId);
+      this.activePlans.delete(sessionId);
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
+      this.executionTraces.clear();
+      this.activePlans.clear();
     }
   }
 
@@ -2353,7 +2353,7 @@ export class AgentModelExecutor {
   }
 
   private computeDynamicToolLimit(message: string, baseLimit: number, cap: number): number {
-    return computeDynamicToolLimitFn(this.getTaskAnalyzerDeps(), message, baseLimit, cap);
+    return computeDynamicToolLimitFn(this.getTaskAnalyzerDeps(), message, baseLimit, cap, "default");
   }
 
   private hasActionIntent(message: string): boolean {

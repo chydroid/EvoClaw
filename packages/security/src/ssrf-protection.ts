@@ -139,6 +139,23 @@ export class SSRFProtection {
    * Check if an IP address is allowed.
    */
   checkIP(ip: string): SSRFCheckResult {
+    // Handle IPv6 addresses before ipToInt (which returns null for IPv6)
+    if (isIPv6(ip)) {
+      if (ip === "::1") {
+        return { allowed: false, reason: `IPv6 loopback blocked: ${ip}` };
+      }
+      // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+      const v4MappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+      if (v4MappedMatch) {
+        return this.checkIP(v4MappedMatch[1]); // Recursively check the embedded IPv4
+      }
+      // Block IPv6 private/link-local ranges
+      if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80")) {
+        return { allowed: false, reason: `IPv6 private/link-local address blocked: ${ip}` };
+      }
+      return { allowed: true };
+    }
+
     const ipInt = ipToInt(ip);
     if (ipInt === null) {
       return { allowed: false, reason: `Invalid IP: ${ip}` };
@@ -149,7 +166,7 @@ export class SSRFProtection {
       const { network, prefix } = parseCIDR(cidr);
       const networkInt = ipToInt(network);
       if (networkInt === null) continue;
-      const mask = ~((1 << (32 - prefix)) - 1);
+      const mask = prefix === 0 ? 0 : ~((1 << (32 - prefix)) - 1);
       if ((ipInt & mask) === (networkInt & mask)) {
         return { allowed: true };
       }
@@ -160,22 +177,13 @@ export class SSRFProtection {
       const { network, prefix } = parseCIDR(cidr);
       const networkInt = ipToInt(network);
       if (networkInt === null) continue;
-      const mask = ~((1 << (32 - prefix)) - 1);
+      const mask = prefix === 0 ? 0 : ~((1 << (32 - prefix)) - 1);
       if ((ipInt & mask) === (networkInt & mask)) {
         return { allowed: false, reason: `IP blocked by custom rule: ${ip} matches ${cidr}` };
       }
     }
 
-    // IPv6 special handling
-    if (isIPv6(ip)) {
-      if (ip === "::1") {
-        return { allowed: false, reason: "IPv6 loopback blocked: ::1" };
-      }
-      // Allow IPv6 generally (private ranges are more complex for IPv6)
-      return { allowed: true };
-    }
-
-    // Check private ranges
+    // Check private/reserved IP ranges
     if (this.config.blockPrivateIPs) {
       for (const range of PRIVATE_IP_RANGES) {
         if (ipInt >= range.start! && ipInt <= range.end!) {
@@ -224,11 +232,12 @@ export class SSRFProtection {
     const { promises: dns } = await import("node:dns");
 
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.config.dnsTimeoutMs);
-
-      const addresses = await dns.resolve4(hostname);
-      clearTimeout(timeout);
+      const addresses = await Promise.race([
+        dns.resolve4(hostname),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("DNS resolution timed out")), this.config.dnsTimeoutMs)
+        ),
+      ]);
 
       if (addresses.length === 0) {
         return { allowed: false, reason: `DNS resolution returned no addresses for: ${hostname}` };
@@ -329,9 +338,10 @@ function isIPv6(ip: string): boolean {
 
 function parseCIDR(cidr: string): { network: string; prefix: number } {
   const [network, prefixStr] = cidr.split("/");
+  const parsed = parseInt(prefixStr, 10);
   return {
     network: network.trim(),
-    prefix: parseInt(prefixStr, 10) || 32,
+    prefix: (isNaN(parsed) || parsed < 0 || parsed > 32) ? 32 : parsed,
   };
 }
 

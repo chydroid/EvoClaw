@@ -381,7 +381,7 @@ export default function SessionManagementPage() {
     try {
       const result = await retentionApi.runNow();
       setCleanResult(result.cleaned);
-      showToast(t("retention.cleaned_count", String(result.cleaned)), "success");
+      showToast(t("retention.cleaned_count").replace("{0}", String(result.cleaned)), "success");
       await fetchData();
     } catch (err) {
       showToast(err instanceof Error ? err.message : t("retention.clean_fail"), "error");
@@ -400,11 +400,11 @@ export default function SessionManagementPage() {
     const diff = Date.now() - new Date(dateStr).getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return t("sessions.just_now");
-    if (mins < 60) return t("sessions.minutes_ago", String(mins));
+    if (mins < 60) return t("sessions.minutes_ago").replace("{0}", String(mins));
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return t("sessions.hours_ago", String(hours));
+    if (hours < 24) return t("sessions.hours_ago").replace("{0}", String(hours));
     const days = Math.floor(hours / 24);
-    return t("sessions.days_ago", String(days));
+    return t("sessions.days_ago").replace("{0}", String(days));
   };
 
   if (loading) return <Loading text={t("app.loading")} />;
@@ -458,7 +458,7 @@ export default function SessionManagementPage() {
                 style={s.dangerBtn}
                 onClick={() => setConfirmAction("deleteSelected")}
               >
-                {t("session_mgmt.delete_selected", String(selectedIds.size))}
+                {t("session_mgmt.delete_selected").replace("{0}", String(selectedIds.size))}
               </button>
             )}
             {sessions.length > 0 && (
@@ -487,7 +487,7 @@ export default function SessionManagementPage() {
                       <input
                         type="checkbox"
                         style={s.checkbox}
-                        checked={pagedSessions.length > 0 && selectedIds.size === pagedSessions.length}
+                        checked={pagedSessions.length > 0 && pagedSessions.every(s => selectedIds.has(s.sessionId))}
                         onChange={toggleSelectAll}
                       />
                     </th>
@@ -558,7 +558,7 @@ export default function SessionManagementPage() {
                   const start = (page - 1) * PAGE_SIZE + 1;
                   const end = Math.min(page * PAGE_SIZE, filteredSessions.length);
                   const total = filteredSessions.length;
-                  return t("session_mgmt.showing", `${start}-${end}/${total}`);
+                  return t("session_mgmt.showing").replace("{0}", String(start)).replace("{1}", String(end)).replace("{2}", String(total));
                 })()}
               </span>
               <div style={{ display: "flex", gap: 6 }}>
@@ -642,7 +642,7 @@ export default function SessionManagementPage() {
           </PrimaryButton>
           {cleanResult !== null && (
             <div style={s.cleanupResult}>
-              {t("retention.cleaned_result", String(cleanResult))}
+              {t("retention.cleaned_result").replace("{0}", String(cleanResult))}
             </div>
           )}
         </Card>

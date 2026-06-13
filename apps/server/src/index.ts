@@ -728,13 +728,13 @@ export class EvoClawServer {
 
     process.on("SIGINT", async () => {
       this.logger.info("server", "Received SIGINT");
-      await this.shutdown();
+      try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
       process.exit(0);
     });
 
     process.on("SIGTERM", async () => {
       this.logger.info("server", "Received SIGTERM");
-      await this.shutdown();
+      try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
       process.exit(0);
     });
 

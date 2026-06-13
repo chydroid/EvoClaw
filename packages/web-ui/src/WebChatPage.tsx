@@ -791,7 +791,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     if (!queuedText) {
       setInput("");
       if (readyFiles.length > 0) {
-        setAttachedFiles(prev => prev.filter(f => f.status !== "done"));
+        setAttachedFiles(prev => {
+        const done = prev.filter(f => f.status === "done");
+        done.forEach(f => { if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+        return prev.filter(f => f.status !== "done");
+      });
       }
     }
     setIsStreaming(true);
@@ -1102,7 +1106,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           } else if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
             setContextUsed(finalData.tokensUsed as number);
           } else {
-            const allText = messages.map(m => m.content).join("") + text + ((finalData.reply as string) || "");
+            const allText = (currentMessagesRef.current || messages).map(m => m.content).join("") + text + ((finalData.reply as string) || "");
             setContextUsed(estimateTokens(allText));
           }
           if (typeof finalData.contextLimit === "number") {
@@ -1146,7 +1150,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
           setContextUsed(data.tokensUsed);
         } else {
-          const allText = messages.map(m => m.content).join("") + text + (data.reply || "");
+          const allText = (currentMessagesRef.current || messages).map(m => m.content).join("") + text + (data.reply || "");
           setContextUsed(estimateTokens(allText));
         }
         if (typeof data.contextLimit === "number" && data.contextLimit > 0) {

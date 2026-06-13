@@ -257,7 +257,7 @@ export class SkillManager {
     // Determine sandbox policy based on skill requirements
     // Only grant permissions explicitly declared via requires, not inferred from description text
     const needsNetwork = parsed.meta.requires?.some(r =>
-      r.name === "python3" || r.name === "python" || r.name === "curl" || r.name === "web-search"
+      r.name === "curl" || r.name === "web-search"
     ) || allEnvVars.length > 0;
     const needsSubprocess = parsed.meta.requires?.some(r =>
       r.name === "python3" || r.name === "python" || r.name === "node"

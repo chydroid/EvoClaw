@@ -154,6 +154,7 @@ export class SemanticQuickReply {
     this.provider = provider;
     this.initialized = false;
     this.centroids = [];
+    this.initPromise = null;
   }
 
   /**

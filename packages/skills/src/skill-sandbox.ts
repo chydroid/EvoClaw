@@ -254,7 +254,8 @@ export class SkillSandbox {
       if (!fs.existsSync(tmpDir)) {
         fs.mkdirSync(tmpDir, { recursive: true });
       }
-      tmpFile = path.join(tmpDir, `skill-${skill.name}-${Date.now()}.py`);
+      const safeName = skill.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+      tmpFile = path.join(tmpDir, `skill-${safeName}-${Date.now()}.py`);
       const cleanCode = code.replace(/^python3?\s+\S+\s*/m, "").trim();
       fs.writeFileSync(tmpFile, cleanCode || code, "utf-8");
       scriptFile = tmpFile;
@@ -344,6 +345,8 @@ export class SkillSandbox {
       />(?!\>)/,        // Output redirection >
       />>/,             // Append redirection >>
       /</,              // Input redirection <
+      /\n/,             // Newline injection
+      /\r/,             // Carriage return injection
       /\b(rm|del|format|shutdown|reboot|wget|curl)\b\s+/i,  // Dangerous commands
     ];
     for (const pat of dangerousPatterns) {
@@ -591,7 +594,7 @@ export class SkillSandbox {
       Function: undefined,
     };
 
-    if (policy.allowNetwork && policy.allowedHosts.length > 0) {
+    if (policy.allowNetwork && (policy.allowedHosts || []).length > 0) {
       sandbox["fetch"] = this.createControlledFetch(policy);
     }
 

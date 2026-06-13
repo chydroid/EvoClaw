@@ -68,7 +68,7 @@ export function registerAutoSkillTools(
           execParams = JSON.parse(rawParams);
         }
       } catch {
-        execParams = {};
+        return { success: false, error: "Invalid JSON in params parameter" };
       }
       try {
         const result = await skillManager.executeSkill(skillName, execParams);

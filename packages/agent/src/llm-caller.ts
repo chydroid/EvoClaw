@@ -482,7 +482,8 @@ function computeDynamicToolLimit(
   message: string,
   baseLimit: number,
   cap: number,
-  conversationHistory: Map<string, Array<SessionHistoryEntry>>
+  conversationHistory: Map<string, Array<SessionHistoryEntry>>,
+  sessionId: string
 ): number {
   const lower = message.toLowerCase();
   let limit = baseLimit;
@@ -518,7 +519,7 @@ function computeDynamicToolLimit(
     limit = Math.min(cap, limit + 5);
   }
 
-  const sessionHistory = conversationHistory.get("default") || [];
+  const sessionHistory = conversationHistory.get(sessionId) || [];
   if (sessionHistory.length > 20) {
     limit = Math.max(baseLimit, limit - 5);
   }
@@ -1043,7 +1044,7 @@ export async function tryCallLLM(
   const MAX_TOOL_ROUNDS_CAP = 50;
   const MAX_CONSECUTIVE_ERRORS = 3;
 
-  const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory);
+  const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
   console.log(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})`);
 
   let totalTokensUsed = 0;

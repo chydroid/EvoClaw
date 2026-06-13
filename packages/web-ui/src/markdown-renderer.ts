@@ -141,9 +141,12 @@ export function renderMarkdown(text: string): string {
 
     // Preserve <span style="color:...">...</span> tags before escaping
     formatted = formatted.replace(/<span\s+style="color:[^"]*"[^>]*>[\s\S]*?<\/span>/gi, (match) => {
-      const idx = colorSpanPlaceholders.length;
-      colorSpanPlaceholders.push(match);
-      return `\x00COLORSPAN${idx}\x00`;
+      const styleMatch = match.match(/style="([^"]*)"/i);
+      if (!styleMatch) return match;
+      const styleContent = styleMatch[1];
+      if (!/^color:\s*[^;]+;?\s*$/i.test(styleContent)) return match;
+      const innerMatch = match.match(/<span[^>]*>([\s\S]*?)<\/span>/i);
+      return `<span style="${styleMatch[0].slice(7, -1)}">${innerMatch ? innerMatch[1] : ""}</span>`;
     });
 
     formatted = formatted.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {

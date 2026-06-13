@@ -36,7 +36,7 @@ export class AuthProvider {
     if (!header) return undefined;
     const cookies = header.split(";").reduce<Record<string, string>>((acc, c) => {
       const [k, ...v] = c.trim().split("=");
-      if (k) acc[k] = decodeURIComponent(v.join("="));
+      if (k) { try { acc[k] = decodeURIComponent(v.join("=")); } catch { acc[k] = v.join("="); } }
       return acc;
     }, {});
     return cookies[name];
@@ -172,9 +172,13 @@ export class AuthProvider {
     }
 
     if (tokenFromUrl && !this.safeEqual(tokenFromUrl, this.webUiToken)) {
-      res.cookie("web_ui_token", "", { maxAge: 0 });
-      res.status(401).send("Unauthorized: invalid token");
-      return;
+      // Only reject if cookie is also invalid
+      if (!tokenFromCookie || !this.safeEqual(tokenFromCookie, this.webUiToken)) {
+        res.cookie("web_ui_token", "", { maxAge: 0 });
+        res.status(401).send("Unauthorized: invalid token");
+        return;
+      }
+      // Cookie is valid, ignore invalid URL token
     }
 
     // Validate cookie token when no URL token is provided

@@ -407,6 +407,8 @@ except Exception as e:
           }
         }
         return { success: false, error: stderr.slice(0, 5000) };
+      } finally {
+        try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
       }
     }
   );
@@ -492,6 +494,8 @@ except Exception as e:
         } catch (err: any) {
           const stderr = err.stderr?.toString() || err.message || String(err);
           return { success: false, error: stderr.slice(0, 5000) };
+        } finally {
+          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
         }
       } else {
         // Search and download music
@@ -522,6 +526,8 @@ except Exception as e:
         } catch (err: any) {
           const stderr = err.stderr?.toString() || err.message || String(err);
           return { success: false, error: stderr.slice(0, 5000) };
+        } finally {
+          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
         }
       }
     }

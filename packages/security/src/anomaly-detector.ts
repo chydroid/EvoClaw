@@ -63,7 +63,7 @@ export class AnomalyDetector {
         source: "anomaly-detector",
         description: `${metric} deviated from baseline: ${baseline.deviation.toFixed(2)}`,
         detectedAt: new Date(),
-        indicators: [baseline],
+        indicators: [{ ...baseline }],
         suggestedAction: "Review system metrics and investigate the spike",
         autoResolved: false,
       };

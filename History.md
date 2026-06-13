@@ -3,6 +3,57 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.32.0 (2026-06-13)
+
+### 三轮商业级代码审计与BUG修复
+
+经过三轮全面代码审计，跨6个包共发现并修复40+个BUG，涵盖安全漏洞、逻辑错误、内存泄漏和UI问题。
+
+---
+
+#### 安全修复 (Critical)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| SemanticQuickReply永久失效 | setProvider()未清除initPromise，语义分类器无法重新初始化 | semantic-quick-reply.ts |
+| IPv4-mapped IPv6绕过SSRF | ::ffff:127.0.0.1等地址绕过所有SSRF防护 | ssrf-protection.ts |
+| IPv6死代码 | checkIP中IPv6处理在ipToInt之后，永远不可达 | ssrf-protection.ts |
+| CIDR /0掩码溢出 | JS位移溢出导致/0规则语义反转 | ssrf-protection.ts |
+| executeShell命令注入 | queryParams含换行符可绕过危险模式检查 | skill-sandbox.ts |
+| Cookie decodeURIComponent崩溃 | 畸形Cookie值导致URIError请求挂起 | auth-provider.ts |
+| 无效URL token强制登出 | 攻击者可强制已认证用户登出 | auth-provider.ts |
+| XSS: span标签事件处理器 | color span保留未过滤的onclick等属性 | markdown-renderer.ts |
+| 临时文件路径遍历 | skill.name未净化可写入任意位置 | skill-sandbox.ts |
+
+#### 逻辑修复 (Major)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| computeDynamicToolLimit硬编码 | 使用"default"会话而非实际会话 | llm-caller.ts |
+| allowedHosts空值崩溃 | policy.allowedHosts未做null检查 | skill-sandbox.ts |
+| executionTraces/activePlans泄漏 | clearChatHistory未清理这两个Map | agent-model-executor.ts |
+| execute_tool_chain参数格式 | 嵌套格式与buildOpenAITools不兼容 | agent-model-executor.ts |
+| python3误判网络权限 | Python依赖不应自动推断网络权限 | skill-manager.ts |
+| 配对码可预测 | Math.random改为crypto.randomInt | channel-manager.ts |
+| 告警数据篡改 | baseline引用共享改为浅拷贝 | anomaly-detector.ts |
+| glob匹配?未转义 | glob的?应转为正则的. | permission-relay.ts |
+| DNS超时失效 | AbortController改为Promise.race | ssrf-protection.ts |
+| MCP端点异常挂起 | async路由添加try/catch | gateway-server.ts |
+| SIGINT/SIGTERM异常 | shutdown()异常未捕获导致进程僵尸 | index.ts |
+| skill_execute静默吞错误 | JSON解析失败返回错误而非空参数 | skill-tools.ts |
+| 临时脚本不清理 | video/music下载脚本添加finally清理 | shell-media-tools.ts |
+| i18n占位符未替换 | 8处t()调用改为.replace("{0}",value) | SessionManagementPage.tsx |
+| 上下文token闭包过期 | 使用currentMessagesRef.current替代messages | WebChatPage.tsx |
+| toggleSelectAll判断错误 | 改为pagedSessions.every() | SessionManagementPage.tsx |
+| report_email_digest数据丢失 | 邮件数据未传入报告生成器 | index.ts |
+| report_weekly数据丢失 | 指标/时间段数据未传入生成器 | index.ts |
+
+#### 内存泄漏修复
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| Blob URL泄漏 | 发送成功后文件预览URL未释放 | WebChatPage.tsx |
+
 ## v0.31.0 (2026-06-13)
 
 ### 商业级代码审计与BUG修复
