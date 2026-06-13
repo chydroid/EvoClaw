@@ -69,6 +69,9 @@ export class AnomalyDetector {
       };
 
       this.alerts.push(alert);
+      if (this.alerts.length > 1000) {
+        this.alerts = this.alerts.slice(-500);
+      }
 
       await this.eventBus.publish(
         SystemEvents.SECURITY_ALERT,

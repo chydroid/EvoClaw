@@ -30,6 +30,175 @@ const COOLDOWN_MS = 60_000; // 1 minute cooldown after tripping
 
 const toolFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
 
+// ── Format command output into readable text ──
+function formatNum(v: unknown, digits = 2): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return n.toFixed(digits);
+}
+
+function fmtMoney(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  if (Math.abs(n) >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (Math.abs(n) >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
+  return n.toFixed(2);
+}
+
+function formatCommandOutput(execObj: Record<string, unknown> | null, execStr: string): string {
+  const rawOutput = String(execObj?.output || execStr);
+  let outputData: unknown;
+  try {
+    outputData = JSON.parse(rawOutput);
+  } catch {
+    return `✅ 已执行您批准的命令，结果如下：\n\`\`\`\n${rawOutput.slice(0, 4000)}\n\`\`\``;
+  }
+
+  // Market ranking data
+  if (outputData && typeof outputData === "object" && !Array.isArray(outputData)) {
+    const d = outputData as Record<string, unknown>;
+    if (Array.isArray(d.items) && d.items.length > 0 && typeof d.items[0] === "object" && d.items[0] !== null) {
+      const first = d.items[0] as Record<string, unknown>;
+      if ("code" in first && "name" in first) {
+        // Market ranking
+        const items = d.items as Array<Record<string, unknown>>;
+        const sortName = String(d.sort_name || "排行");
+        const total = d.total || items.length;
+        let result = `📊 **A股${sortName}**（共 ${total} 只，显示前 ${items.length} 只）\n\n`;
+        result += "| # | 代码 | 名称 | 现价 | 昨收 | 涨跌幅 | 成交额 |\n";
+        result += "|---|------|------|------|------|--------|--------|\n";
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const prevClose = Number(item.previous_close || 0);
+          const currentPrice = Number(item.current_price || 0);
+          const changePercent = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
+          const amount = Number(item.amount || 0);
+          const amountStr = amount >= 1e8 ? `${(amount / 1e8).toFixed(2)}亿` : amount >= 1e4 ? `${(amount / 1e4).toFixed(0)}万` : String(amount);
+          // A股惯例：红涨绿跌
+          const changeText = changePercent >= 0 ? `+${changePercent.toFixed(2)}%` : `${changePercent.toFixed(2)}%`;
+          const changeColor = changePercent >= 0 ? "#e74c3c" : "#2ecc71";
+          const changeStr = `<span style="color:${changeColor};font-weight:600;">${changeText}</span>`;
+          const priceColor = currentPrice >= prevClose ? "#e74c3c" : currentPrice < prevClose ? "#2ecc71" : "inherit";
+          const priceStr = `<span style="color:${priceColor};">${currentPrice.toFixed(2)}</span>`;
+          result += `| ${i + 1} | ${String(item.code || "")} | ${String(item.name || "")} | ${priceStr} | ${prevClose.toFixed(2)} | ${changeStr} | ${amountStr} |\n`;
+        }
+        return result;
+      }
+      if ("title" in first) {
+        // News data (direct items array)
+        const items = d.items as Array<Record<string, unknown>>;
+        let result = `📰 **资讯热榜**（共 ${items.length} 条）\n\n`;
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const title = String(item.title || "无标题");
+          const link = String(item.redirect_url || item.out_detail_url || item.detail_url || "");
+          result += `${i + 1}. **${title}**${link ? ` ([详情](${link}))` : ""}\n`;
+          const meta: string[] = [];
+          if (item.source) meta.push(`来源：${String(item.source)}`);
+          if (item.pub_time || item.publish_time) meta.push(`时间：${String(item.pub_time || item.publish_time)}`);
+          if (meta.length > 0) result += `   ${meta.join(" | ")}\n`;
+        }
+        return result;
+      }
+    }
+    // CICC hot-news wraps content under data.rsp.content_list
+    if (d.data && typeof d.data === "object") {
+      const rsp = (d.data as Record<string, unknown>).rsp as Record<string, unknown> | undefined;
+      if (rsp && Array.isArray(rsp.content_list) && rsp.content_list.length > 0 &&
+        typeof rsp.content_list[0] === "object" &&
+        ("title" in (rsp.content_list[0] as object))) {
+        const items = rsp.content_list as Array<Record<string, unknown>>;
+        const specName = String(rsp.spec_subject_name || "今日热榜");
+        const total = Number(rsp.total || items.length);
+        let result = `📰 **${specName}**（共 ${total} 条，显示前 ${items.length} 条）\n\n`;
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const title = String(item.title || "无标题");
+          const link = String(item.redirect_url || item.out_detail_url || item.detail_url || "");
+          result += `${i + 1}. **${title}**${link ? ` ([详情](${link}))` : ""}\n`;
+          const meta: string[] = [];
+          if (item.source) meta.push(`来源：${String(item.source)}`);
+          if (item.pub_time) meta.push(`时间：${String(item.pub_time)}`);
+          if (Array.isArray(item.stock_info) && (item.stock_info as unknown[]).length > 0) {
+            const stocks = (item.stock_info as Array<Record<string, unknown>>)
+              .map((s) => s.stock_name || s.stock_code)
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(", ");
+            if (stocks) meta.push(`相关：${stocks}`);
+          }
+          if (meta.length > 0) result += `   ${meta.join(" | ")}\n`;
+        }
+        return result;
+      }
+    }
+  }
+
+  // Financial indicator data: items with rq + financial fields (top-level)
+  if (outputData && typeof outputData === "object" && !Array.isArray(outputData)) {
+    const d = outputData as Record<string, unknown>;
+    if (Array.isArray(d.items) && d.items.length > 0 && typeof d.items[0] === "object" && d.items[0] !== null) {
+      const first = d.items[0] as Record<string, unknown>;
+      if ("rq" in first && ("yysr" in first || "jlr" in first || "xsmll" in first || "jzzsyl" in first || "kfjlr" in first)) {
+        const items = d.items as Array<Record<string, unknown>>;
+        const statementName = String(d.statement_name || "财务数据");
+        const code = String(d.code || "");
+        // Pick the most useful columns
+        const colMap: Array<{ key: string; label: string; fmt?: (v: unknown) => string }> = [
+          { key: "rq", label: "报告期" },
+          { key: "yysr", label: "营业收入", fmt: fmtMoney },
+          { key: "lrze", label: "利润总额", fmt: fmtMoney },
+          { key: "kfjlr", label: "扣非净利润", fmt: fmtMoney },
+          { key: "mgsy", label: "每股收益", fmt: (v) => `${formatNum(v, 2)}元` },
+          { key: "xsmll", label: "毛利率", fmt: (v) => `${formatNum(v, 2)}%` },
+          { key: "xsjll", label: "净利率", fmt: (v) => `${formatNum(v, 2)}%` },
+          { key: "jzzsyl", label: "ROE", fmt: (v) => `${formatNum(v, 2)}%` },
+          { key: "zcfzl", label: "资产负债率", fmt: (v) => `${formatNum(v, 2)}%` },
+        ];
+        // Only keep columns that have data
+        const activeCols = colMap.filter((c) => items.some((it) => it[c.key] !== undefined && it[c.key] !== ""));
+        let result = `📊 **${code} ${statementName}**（最近 ${items.length} 期）\n\n`;
+        result += `| ${activeCols.map((c) => c.label).join(" | ")} |\n`;
+        result += `|${activeCols.map(() => "---").join("|")}|\n`;
+        for (const item of items) {
+          const row = activeCols.map((c) => {
+            const v = item[c.key];
+            if (v === undefined || v === "") return "—";
+            return c.fmt ? c.fmt(v) : String(v);
+          });
+          result += `| ${row.join(" | ")} |\n`;
+        }
+        return result;
+      }
+    }
+  }
+
+  // Array data
+  if (Array.isArray(outputData)) {
+    const arr = outputData as unknown[];
+    let result = `✅ 已执行您批准的命令，返回 ${arr.length} 条结果：\n\n`;
+    for (let i = 0; i < Math.min(arr.length, 20); i++) {
+      const item = arr[i];
+      if (typeof item === "object" && item !== null) {
+        const entries = Object.entries(item as Record<string, unknown>).slice(0, 6);
+        result += `${i + 1}. ${entries.map(([k, v]) => `${k}=${String(v).slice(0, 30)}`).join(", ")}\n`;
+      } else {
+        result += `${i + 1}. ${String(item).slice(0, 100)}\n`;
+      }
+    }
+    if (arr.length > 20) result += `\n... 还有 ${arr.length - 20} 条结果`;
+    return result;
+  }
+
+  // Generic JSON
+  try {
+    const pretty = JSON.stringify(outputData, null, 2);
+    return `✅ 已执行您批准的命令，结果如下：\n\`\`\`json\n${pretty.slice(0, 4000)}\n\`\`\``;
+  } catch {
+    return `✅ 已执行您批准的命令，结果如下：\n\`\`\`\n${rawOutput.slice(0, 4000)}\n\`\`\``;
+  }
+}
+
 function isToolTripped(toolName: string): boolean {
   const tracker = toolFailureTracker.get(toolName);
   if (!tracker || !tracker.trippedAt) return false;
@@ -241,6 +410,8 @@ export interface LLMCallerDeps {
   getSteerMessage?: (sessionId: string) => string | null;
   // Semantic intent classifier (optional — replaces keyword matching for intent routing)
   semanticIntentClassifier?: { classifyIntent(message: string): Promise<{ category: string; score: number } | null> };
+  // Pending approval commands (optional — enables chat-based approval for rejected shell commands)
+  pendingApprovalCommands?: Map<string, { command: string; rejectedAt: number }>;
 }
 
 // ── Helper: tool cache ──
@@ -501,7 +672,11 @@ export async function parseStreamingResponse(
   const tracing = observability?.getTracingService?.();
 
   const doParse = async (): Promise<ParseStreamingResponseResult | null> => {
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    console.warn(`[LLMCaller] Stream response has no body`);
+    return null;
+  }
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -900,6 +1075,75 @@ export async function tryCallLLM(
 
   const skillsPrompt = await deps.buildSkillsPromptForRun();
 
+  // ── Approval intent detection: if user says "同意/执行/yes/approve",
+  //    auto-execute the pending rejected shell command ──
+  //    This MUST run BEFORE the provider loop so the approval is handled
+  //    immediately without going through LLM (which would treat it as chat).
+  const APPROVAL_PATTERNS = /^(同意|批准|允许|执行|确认|yes|approve|confirm|go ahead|do it|run it|ok|okay|好的|可以|没问题)[\s!.。！？?]*$/i;
+  const isApprovalIntent = APPROVAL_PATTERNS.test(message.trim());
+  const pendingCmd = deps.pendingApprovalCommands?.get(sessionId);
+  if (isApprovalIntent && pendingCmd && deps.pendingApprovalCommands) {
+    // TTL check: expire after 30 minutes
+    const PENDING_CMD_TTL = 30 * 60 * 1000;
+    if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
+      console.log(`[AgentModelExecutor] Pending command expired (>${PENDING_CMD_TTL / 60000}min), discarding: ${pendingCmd.command}`);
+      deps.pendingApprovalCommands.delete(sessionId);
+    } else {
+      console.log(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}`);
+      deps.pendingApprovalCommands.delete(sessionId);
+      // Reset HITL reject count so the command can go through
+      hitlRejectCount = 0;
+      // Add the pending command's tool to trust rules temporarily
+      if (deps.humanApprovalManager) {
+        deps.humanApprovalManager.addTrustRule({
+          toolName: "shell_exec",
+          argPattern: { command: pendingCmd.command },
+          trustedBy: "chat_approval",
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
+        });
+      }
+      // Execute the pending command directly and return immediately
+      try {
+        const shellExecTool = deps.registeredTools.get("shell_exec");
+        if (shellExecTool) {
+          const execResult = await shellExecTool.handler({ command: pendingCmd.command, timeout: "30" });
+          const execStr = typeof execResult === "string" ? execResult : JSON.stringify(execResult);
+          const execObj = typeof execResult === "object" ? execResult as Record<string, unknown> : null;
+          if (execObj?.success !== false && execStr && execStr.length > 0) {
+            return {
+              reply: formatCommandOutput(execObj, execStr),
+              tokensUsed: 0,
+              duration: Date.now() - startTime,
+              permissionRequests: [],
+              toolsExecuted: true,
+              files: [],
+            };
+          } else {
+            return {
+              reply: `⚠️ 命令执行失败：${execStr.slice(0, 500)}`,
+              tokensUsed: 0,
+              duration: Date.now() - startTime,
+              permissionRequests: [],
+              toolsExecuted: true,
+              files: [],
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Pending command execution failed: ${err}`);
+        return {
+          reply: `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`,
+          tokensUsed: 0,
+          duration: Date.now() - startTime,
+          permissionRequests: [],
+          toolsExecuted: false,
+          files: [],
+        };
+      }
+    }
+  }
+
   for (const provider of expandedProviders) {
     let consecutiveErrors = 0;
 
@@ -974,10 +1218,9 @@ Have a specific URL?
         console.log(`[AgentModelExecutor] XSS/injection patterns filtered in user message for session "${sessionId}"`);
       }
 
-      if (message.length >= MAX_USER_MESSAGE_LEN) {
-        const truncated = message.slice(0, MAX_USER_MESSAGE_LEN);
-        effectiveMessage = truncated + `\n\n[系统提示：原始消息过长(${message.length}字符)，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;
-        console.log(`[AgentModelExecutor] User message truncated: ${message.length} → ${effectiveMessage.length} chars for session "${sessionId}"`);
+      if (effectiveMessage.length >= MAX_USER_MESSAGE_LEN) {
+        effectiveMessage = effectiveMessage.slice(0, MAX_USER_MESSAGE_LEN) + `\n\n[系统提示：原始消息过长，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;
+        console.log(`[AgentModelExecutor] User message truncated for session "${sessionId}"`);
       }
 
       // Build user message — use multimodal format when images are attached
@@ -1012,6 +1255,7 @@ Have a specific URL?
       let finalReply = "";
       let successfulToolCalls = 0;
       let lastPromptTokens = 0;
+      let skillFallbackResult: string | null = null;
 
       for (let round = 0; round < maxToolRounds; round++) {
         onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
@@ -1171,6 +1415,24 @@ Have a specific URL?
         }
 
         const toolCalls = assistantMsg.tool_calls;
+        // Check if LLM used web_search or tavily-search but user intent matches an installed skill
+        // Also check if SearchPreprocessor auto-executed a search (searchPreDone)
+        const usedWebSearch = toolCalls && toolCalls.some(tc => {
+          const args = JSON.stringify(tc.function.arguments || {});
+          return tc.function.name === "web_search" ||
+            (tc.function.name === "skill_execute" && args.includes("tavily")) ||
+            tc.function.name === "scrapling_fetch";
+        });
+        const usedCiccSkill = toolCalls && toolCalls.some(tc => {
+          const args = JSON.stringify(tc.function.arguments || {});
+          return (tc.function.name === "skill_execute" && args.includes("cicc")) ||
+            (tc.function.name === "shell_exec" && args.includes("cicc"));
+        });
+        const searchWasDone = usedWebSearch || searchPreDone;
+        if (searchWasDone && !usedCiccSkill) {
+          console.log(`[AgentModelExecutor] Search was done (preDone=${searchPreDone}, webSearch=${usedWebSearch}) but no CICC skill — will check for skill fallback`);
+        }
+
         if (!toolCalls || toolCalls.length === 0) {
           // ── Fallback: auto-trigger skill_search for skill-install intents ──
           // When the LLM returns a chat reply without calling any tool, but the
@@ -1186,7 +1448,7 @@ Have a specific URL?
                 console.log(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)}, auto-triggering skill_search`);
                 shouldTriggerSkillSearch = true;
               }
-            } catch { /* best-effort */ }
+            } catch (err) { console.warn(`[AgentModelExecutor] Skill fallback error:`, err); /* best-effort */ }
           }
           // Fallback to keyword matching if semantic classifier is unavailable
           if (!shouldTriggerSkillSearch && !classifier) {
@@ -1316,6 +1578,14 @@ Have a specific URL?
             if (approvalResult.decision === "rejected") {
               hitlRejectCount++;
               console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" rejected (timeout or user denied, total rejections: ${hitlRejectCount})`);
+              // Store the rejected command for potential chat-based approval
+              if (toolName === "shell_exec" && args.command && deps.pendingApprovalCommands) {
+                deps.pendingApprovalCommands.set(sessionId, {
+                  command: String(args.command),
+                  rejectedAt: Date.now(),
+                });
+                console.log(`[AgentModelExecutor] Stored pending approval command for session "${sessionId}": ${args.command}`);
+              }
               conversationMessages.push({
                 role: "tool",
                 tool_call_id: tc.id,
@@ -1323,7 +1593,7 @@ Have a specific URL?
                 content: JSON.stringify({
                   skipped: true,
                   reason: "rejected_by_user",
-                  hint: `The user did not approve this ${riskLevel}-risk operation. Do NOT retry this tool or try alternative high-risk tools (shell_exec, file_modify, file_delete, browser_navigate). Instead, respond to the user directly explaining what you wanted to do and ask them to approve, or provide the information without executing any tools.`,
+                  hint: `The user did not approve this ${riskLevel}-risk operation. Tell the user what you wanted to do and that they can reply "同意" or "approve" to allow it. Do NOT retry the command.`,
                 }),
               });
               continue;
@@ -1733,6 +2003,57 @@ Have a specific URL?
           } catch { /* skill extraction is best-effort */ }
         }
 
+        // ── Fallback: auto-execute installed skill when LLM used web_search instead ──
+        // When the LLM chose web_search over an installed skill, and the user intent
+        // matches an installed skill, we auto-execute the skill's script and store
+        // the result to append to the final reply later.
+        if (searchWasDone && !usedCiccSkill && deps.registeredTools.has("skill_search")) {
+          try {
+            const classifier = deps.semanticIntentClassifier;
+            let shouldAutoExecute = false;
+            if (classifier) {
+              const intent = await classifier.classifyIntent(message);
+              console.log(`[AgentModelExecutor] Skill fallback intent: category=${intent?.category} score=${intent?.score}`);
+              if (intent && intent.category === "action_task" && intent.score > 0.6) {
+                shouldAutoExecute = true;
+              }
+            } else {
+              console.log(`[AgentModelExecutor] Skill fallback: no semantic classifier available`);
+            }
+            if (shouldAutoExecute) {
+              const searchTool = deps.registeredTools.get("skill_search")!;
+              const searchResult = await searchTool.handler({ task: message });
+              console.log(`[AgentModelExecutor] Skill fallback search result:`, JSON.stringify(searchResult).slice(0, 500));
+              const searchObj = typeof searchResult === "object" ? searchResult as Record<string, unknown> : null;
+              if (searchObj?.installed && searchObj.commands && Array.isArray(searchObj.commands)) {
+                const commands = searchObj.commands as string[];
+                const skillDir = searchObj.installPath
+                  ? String(searchObj.installPath).replace(/SKILL\.md$/i, "").replace(/[/\\]$/, "")
+                  : "";
+                // Execute the first relevant command
+                const cmd = commands[0];
+                if (cmd && skillDir) {
+                  const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
+                  console.log(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}`);
+                  const shellExecTool = deps.registeredTools.get("shell_exec");
+                  if (shellExecTool) {
+                    try {
+                      const execResult = await shellExecTool.handler({ command: resolvedCmd, timeout: "30" });
+                      const execStr = typeof execResult === "string" ? execResult : JSON.stringify(execResult);
+                      const execObj = typeof execResult === "object" ? execResult as Record<string, unknown> : null;
+                      if (execObj?.success !== false && execStr && execStr.length > 10) {
+                        skillFallbackResult = `\n\n---\n📊 **来自${searchObj.skillName || '技能'}的实时数据：**\n\`\`\`\n${execStr.slice(0, 3000)}\n\`\`\``;
+                      }
+                    } catch (err) {
+                      console.warn(`[AgentModelExecutor] Auto skill execution failed: ${err}`);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (err) { console.warn(`[AgentModelExecutor] Skill fallback error:`, err); /* best-effort */ }
+        }
+
         if (!finalReply && round === maxToolRounds - 1) {
           try {
             const summaryMessages = [
@@ -1753,6 +2074,10 @@ Have a specific URL?
       }
 
       if (finalReply) {
+        // Append skill fallback result if available
+        if (skillFallbackResult) {
+          finalReply += skillFallbackResult;
+        }
         // ── Guardrails: output validation ──
         if (deps.checkOutputGuardrail && finalReply) {
           const outputCheck = deps.checkOutputGuardrail(finalReply);

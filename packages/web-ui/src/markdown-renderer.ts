@@ -59,10 +59,14 @@ export function renderMarkdown(text: string): string {
     const renderedBody = renderMarkdown(bodyContent);
     const renderedSummary = inlineFormatSimple(summaryText);
 
+    // Instead of using attrs directly, filter to only safe attributes (including unquoted values)
+    const filterOnAttrs = (s: string) => s.replace(/\s*on\w+\s*=\s*"[^"]*"/gi, '').replace(/\s*on\w+\s*=\s*'[^']*'/gi, '').replace(/\s*on\w+\s*=\s*[^\s>]+/gi, '');
+    const safeAttrs = filterOnAttrs(attrs);
+
     const idx = detailsBlocks.length;
     detailsBlocks.push(
-      `<details${attrs} style="margin:8px 0;border:1px solid var(--border,rgba(255,255,255,0.1));border-radius:6px;padding:0;">` +
-      `<summary${summaryMatch ? summaryMatch[1] : ""} style="cursor:pointer;padding:8px 12px;font-weight:500;color:var(--text-primary);user-select:none;">${renderedSummary}</summary>` +
+      `<details${safeAttrs} style="margin:8px 0;border:1px solid var(--border,rgba(255,255,255,0.1));border-radius:6px;padding:0;">` +
+      `<summary${summaryMatch ? filterOnAttrs(summaryMatch[1]) : ""} style="cursor:pointer;padding:8px 12px;font-weight:500;color:var(--text-primary);user-select:none;">${renderedSummary}</summary>` +
       `<div style="padding:4px 12px 12px;border-top:1px solid var(--border,rgba(255,255,255,0.1));">${renderedBody}</div>` +
       `</details>`
     );
@@ -96,12 +100,16 @@ export function renderMarkdown(text: string): string {
     if (inTable && tableRows.length > 0) {
       const headerRow = tableRows[0];
       const bodyRows = tableRows.slice(1);
-      result.push('<table style="border-collapse:collapse;margin:8px 0;width:100%;font-size:13px;">');
+      // Force the table to fill the bubble width. Cells keep content on one
+      // line; the wrapping div scrolls horizontally when the content is wider
+      // than the bubble.
+      result.push('<div style="overflow-x:auto;width:100%;margin:8px 0;">');
+      result.push('<table style="border-collapse:collapse;width:100%;font-size:13px;table-layout:auto;">');
       result.push("<thead><tr>");
       headerRow.forEach((cell, i) => {
         const align = tableAlign[i] || "left";
         result.push(
-          `<th style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 10px;text-align:${align};background:var(--bg-tertiary,#21262d);font-weight:600;">${cell}</th>`
+          `<th style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 12px;text-align:${align};background:var(--bg-tertiary,#21262d);font-weight:600;white-space:nowrap;word-break:keep-all;">${cell}</th>`
         );
       });
       result.push("</tr></thead>");
@@ -112,14 +120,14 @@ export function renderMarkdown(text: string): string {
           row.forEach((cell, i) => {
             const align = tableAlign[i] || "left";
             result.push(
-              `<td style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 10px;text-align:${align};">${cell}</td>`
+              `<td style="border:1px solid var(--border,rgba(255,255,255,0.1));padding:6px 12px;text-align:${align};white-space:nowrap;word-break:keep-all;">${cell}</td>`
             );
           });
           result.push("</tr>");
         });
         result.push("</tbody>");
       }
-      result.push("</table>");
+      result.push("</table></div>");
       inTable = false;
       tableRows = [];
       tableAlign = [];
@@ -129,6 +137,14 @@ export function renderMarkdown(text: string): string {
   const inlineFormat = (s: string): string => {
     let formatted = s;
     const linkPlaceholders: string[] = [];
+    const colorSpanPlaceholders: string[] = [];
+
+    // Preserve <span style="color:...">...</span> tags before escaping
+    formatted = formatted.replace(/<span\s+style="color:[^"]*"[^>]*>[\s\S]*?<\/span>/gi, (match) => {
+      const idx = colorSpanPlaceholders.length;
+      colorSpanPlaceholders.push(match);
+      return `\x00COLORSPAN${idx}\x00`;
+    });
 
     formatted = formatted.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {
       const escapedText = htmlEscape(text);
@@ -170,6 +186,22 @@ export function renderMarkdown(text: string): string {
     for (let i = linkPlaceholders.length - 1; i >= 0; i--) {
       formatted = formatted.replace(`\x00LINK${i}\x00`, linkPlaceholders[i]);
     }
+
+    for (let i = colorSpanPlaceholders.length - 1; i >= 0; i--) {
+      formatted = formatted.replace(`\x00COLORSPAN${i}\x00`, colorSpanPlaceholders[i]);
+    }
+
+    // In the color span replacement, validate that only color property is used
+    formatted = formatted.replace(/style="color:[^"]*"/g, (match) => {
+      const styleContent = match.match(/style="([^"]*)"/)?.[1] || '';
+      // Only allow color property
+      if (/^color:/i.test(styleContent.trim()) && !/;(?!\s*$)/.test(styleContent.replace(/color:[^;]+;?/i, ''))) {
+        return match;
+      }
+      // If there are other properties, extract only color
+      const colorMatch = styleContent.match(/color:\s*[^;]+/i);
+      return colorMatch ? `style="${colorMatch[0]}"` : '';
+    });
 
     return formatted;
   };

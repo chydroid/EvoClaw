@@ -360,7 +360,7 @@ export class SecretManager {
     if (!entry) return false;
 
     entry.active = true;
-    this.logAccess(name, "system", "revoke", true, "Secret re-activated");
+    this.logAccess(name, "system", "register", true, "Secret re-activated");
     return true;
   }
 

@@ -328,7 +328,7 @@ export default function SessionManagementPage() {
           fetch(`/api/sessions/default/${id}`, { method: "DELETE" })
         )
       );
-      showToast(t("session_mgmt.deleted_count", String(selectedIds.size)), "success");
+      showToast(t("session_mgmt.deleted_count").replace("{0}", String(selectedIds.size)), "success");
       setSelectedIds(new Set());
       setConfirmAction(null);
       await fetchData();
@@ -655,7 +655,7 @@ export default function SessionManagementPage() {
             <h3 style={{ margin: "0 0 12px 0", fontSize: 16 }}>
               {confirmAction === "clearAll"
                 ? t("session_mgmt.confirm_clear_all")
-                : t("session_mgmt.confirm_delete_selected", String(selectedIds.size))}
+                : t("session_mgmt.confirm_delete_selected").replace("{0}", String(selectedIds.size))}
             </h3>
             <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: "0 0 20px 0" }}>
               {t("session_mgmt.confirm_desc")}

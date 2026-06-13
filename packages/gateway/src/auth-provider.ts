@@ -43,7 +43,7 @@ export class AuthProvider {
   }
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/permission/approve", "/api/permission/deny", "/api/sessions"];
+    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/sessions"];
 
     if (publicPaths.includes(req.path)) {
       return next();
@@ -64,7 +64,6 @@ export class AuthProvider {
       req.path.startsWith("/api/scheduler/") ||
       req.path.startsWith("/api/channels/") ||
       req.path.startsWith("/api/plugins") ||
-      req.path.startsWith("/api/permission/") ||
       req.path.startsWith("/api/retention/") ||
       req.path.startsWith("/api/health/") ||
       req.path.startsWith("/api/models/") ||
@@ -115,6 +114,8 @@ export class AuthProvider {
         "/api/memory", "/api/tools", "/api/sandbox", "/api/reporting",
         "/api/system", "/api/security", "/api/file", "/api/logs", "/api/version",
         "/api/approvals", "/api/tracing", "/api/evals", "/api/executions",
+        "/api/steer", "/api/workboard", "/api/mcp", "/api/guardrails",
+        "/api/prompt-cache", "/api/acp", "/api/observability", "/api/computed-status",
       ];
       const isKnownApi = knownApiPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"));
       if (!isKnownApi) {
@@ -173,6 +174,19 @@ export class AuthProvider {
     if (tokenFromUrl && !this.safeEqual(tokenFromUrl, this.webUiToken)) {
       res.cookie("web_ui_token", "", { maxAge: 0 });
       res.status(401).send("Unauthorized: invalid token");
+      return;
+    }
+
+    // Validate cookie token when no URL token is provided
+    if (!tokenFromUrl && tokenFromCookie && !this.safeEqual(tokenFromCookie, this.webUiToken)) {
+      res.cookie("web_ui_token", "", { maxAge: 0 });
+      res.status(401).send("Unauthorized: invalid token");
+      return;
+    }
+
+    // Require authentication if token is configured but neither URL nor cookie provides a valid token
+    if (!tokenFromUrl && !tokenFromCookie) {
+      res.status(401).send("Unauthorized: authentication required");
       return;
     }
 

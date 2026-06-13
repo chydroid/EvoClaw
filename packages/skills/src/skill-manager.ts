@@ -304,7 +304,7 @@ export class SkillManager {
       },
       installPath: skillPath,
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
-      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig, detectedEnvVars),
+      config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig, detectedEnvVars, skillDir),
       openclawMeta: ocMeta,
       requires: parsed.meta.requires || [],
       provides: [],
@@ -378,7 +378,7 @@ export class SkillManager {
       }
     }
 
-    // 4b. Execute openclaw.install script
+    // 4c. Execute openclaw.install script
     if (ocMeta?.install) {
       const installStep = this.executeMetaScript("install", ocMeta.install, skillDir);
       installReport.steps.push(installStep);
@@ -478,7 +478,17 @@ export class SkillManager {
     skillId: string,
     params: Record<string, unknown>
   ): Promise<SkillExecutionResult> {
-    const skill = this.skills.get(skillId);
+    // Try exact ID lookup first, then fallback to name-based lookup
+    let skill = this.skills.get(skillId);
+    if (!skill) {
+      // Search by skill name (e.g., "ciccwm_hot_news_analysis" or "ciccwm-market-analysis")
+      for (const [, s] of this.skills) {
+        if (s.name === skillId || s.name.replace(/[_-]/g, "") === skillId.replace(/[_-]/g, "")) {
+          skill = s;
+          break;
+        }
+      }
+    }
     if (!skill) {
       return {
         skillId,
@@ -491,7 +501,7 @@ export class SkillManager {
     }
 
     const startTime = Date.now();
-    skill.stats.invocationCount++;
+    const currentCount = skill.stats.invocationCount++;
 
     try {
       await this.hookEngine.executeHook(skill, "onBeforeExecute", { params });
@@ -502,8 +512,8 @@ export class SkillManager {
       skill.stats.successCount++;
       skill.stats.lastInvocation = new Date();
       skill.stats.averageDuration =
-        (skill.stats.averageDuration * (skill.stats.invocationCount - 1) + duration) /
-        skill.stats.invocationCount;
+        (skill.stats.averageDuration * currentCount + duration) /
+        (currentCount + 1);
 
       await this.eventBus.publish(SystemEvents.SKILL_EXECUTED, { skillId, params, result }, "skill-manager");
 
@@ -808,6 +818,7 @@ export class SkillManager {
 
     runScan(skillsDir);
     const timer = setInterval(() => runScan(skillsDir), intervalMs);
+    timer.unref();
     this.scanTimers.push(timer);
   }
 
@@ -974,6 +985,56 @@ export class SkillManager {
     }
   }
 
+  /** Load .env file values by searching from skill dir upward to project root.
+   *  Returns a flat key-value map of all variables found in .env files.
+   *  Closer .env files take precedence (child overrides parent).
+   */
+  private loadDotenvValues(skillDir: string): Record<string, string> {
+    const result: Record<string, string> = {};
+
+    // Collect .env files from root → skill dir (later overrides earlier)
+    const envFiles: string[] = [];
+    let current = path.resolve(skillDir);
+    const root = path.parse(current).root;
+
+    for (let i = 0; i < 10; i++) {
+      const envPath = path.join(current, ".env");
+      if (fs.existsSync(envPath)) {
+        envFiles.push(envPath);
+      }
+      const parent = path.dirname(current);
+      if (parent === current || parent === root) break;
+      current = parent;
+    }
+
+    // Parse from root-level first, then override with closer .env
+    for (const envPath of envFiles.reverse()) {
+      try {
+        const content = fs.readFileSync(envPath, "utf-8");
+        for (const line of content.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIndex = trimmed.indexOf("=");
+          if (eqIndex === -1) continue;
+          const key = trimmed.slice(0, eqIndex).trim();
+          let value = trimmed.slice(eqIndex + 1).trim();
+          // Strip surrounding quotes
+          if ((value.startsWith('"') && value.endsWith('"')) ||
+              (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+          }
+          if (key) {
+            result[key] = value;
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+
+    return result;
+  }
+
   /** Detect environment variable requirements from SKILL.md body content.
    *  Scans sections like "Requirements", "Prerequisites", "Configuration" etc.
    *  for patterns like `SOME_API_KEY`, "environment variable: `VAR_NAME`", or `VAR_NAME=...`
@@ -1038,27 +1099,35 @@ export class SkillManager {
     return envVars;
   }
 
-  /** Merge OpenClaw metadata required env vars and auto-detected env vars into skill config */
+  /** Merge OpenClaw metadata required env vars and auto-detected env vars into skill config.
+   *  Priority chain: process.env → .env file → _config.json (savedConfig) → empty
+   */
   private buildSkillConfig(
     baseConfig: Record<string, unknown>,
     ocMeta: OpenClawSkillMeta | null | undefined,
     savedConfig: Record<string, unknown> | null = null,
-    detectedEnvVars: string[] = []
+    detectedEnvVars: string[] = [],
+    skillDir?: string
   ): Record<string, unknown> {
     const config: Record<string, unknown> = { ...baseConfig };
 
-    const envMeta: Record<string, { required: boolean; description: string; currentSource: "env" | "config" | "none" }> = {};
-    const envSource: Record<string, "env" | "config" | "none"> = {};
+    const envMeta: Record<string, { required: boolean; description: string; currentSource: "env" | "dotenv" | "config" | "none" }> = {};
+    const envSource: Record<string, "env" | "dotenv" | "config" | "none"> = {};
 
     // Merge declared env vars (from metadata.openclaw) and auto-detected env vars
     const declaredEnv = ocMeta?.requires?.env || [];
     const allEnvVars = [...new Set([...declaredEnv, ...detectedEnvVars])];
 
+    // Load .env file values (search from skill dir upward to project root)
+    const dotenvValues = skillDir ? this.loadDotenvValues(skillDir) : {};
+
     for (const envVar of allEnvVars) {
       const savedValue = savedConfig?.[envVar] as string | undefined;
       const envValue = process.env[envVar];
+      const dotenvValue = dotenvValues[envVar];
       const isDeclared = declaredEnv.includes(envVar);
 
+      // Priority: process.env > .env file > _config.json > empty
       if (envValue) {
         config[envVar] = envValue;
         envMeta[envVar] = {
@@ -1067,6 +1136,14 @@ export class SkillManager {
           currentSource: "env",
         };
         envSource[envVar] = "env";
+      } else if (dotenvValue) {
+        config[envVar] = dotenvValue;
+        envMeta[envVar] = {
+          required: isDeclared,
+          description: `${envVar} configuration (from .env)`,
+          currentSource: "dotenv",
+        };
+        envSource[envVar] = "dotenv";
       } else if (savedValue !== undefined && savedValue !== "") {
         config[envVar] = savedValue;
         envMeta[envVar] = {
@@ -1273,6 +1350,7 @@ export class SkillManager {
 
       this.lifecycle.update(skill, remoteEntry.version);
 
+      const oldVersion = skill.version;
       skill.version = remoteEntry.version;
       skill.lifecycle.lastUpdated = new Date();
       skill.lifecycle.status = "active";
@@ -1289,7 +1367,7 @@ export class SkillManager {
 
       return {
         success: true,
-        message: `Skill "${skill.name}" upgraded from v${skill.version} to v${remoteEntry.version}`,
+        message: `Skill "${skill.name}" upgraded from v${oldVersion} to v${remoteEntry.version}`,
         newVersion: remoteEntry.version,
       };
     } catch (err) {
@@ -1451,8 +1529,80 @@ export class SkillManager {
   // ── Skill Installation Pipeline Helpers ──
 
   /**
+   * Resolve the Python executable path. Searches common installation locations
+   * when python3/python is not found in PATH.
+   * Returns the found path or null.
+   */
+  private resolvePythonPath(): string | null {
+    // First check PATH
+    if (this.checkBinaryExists("python3")) return "python3";
+    if (this.checkBinaryExists("python")) return "python";
+
+    // Search common installation locations
+    const candidates: string[] = [];
+
+    if (process.platform === "win32") {
+      // Windows: check AppData\Local\Programs\Python\Python*
+      const localAppData = process.env.LOCALAPPDATA || "";
+      const userProfile = process.env.USERPROFILE || "";
+      const searchRoots = [localAppData, userProfile].filter(Boolean);
+
+      for (const root of searchRoots) {
+        const pythonDir = path.join(root, "Programs", "Python");
+        if (fs.existsSync(pythonDir)) {
+          try {
+            const entries = fs.readdirSync(pythonDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isDirectory() && /^Python\d+/.test(entry.name)) {
+                const exePath = path.join(pythonDir, entry.name, "python.exe");
+                if (fs.existsSync(exePath)) {
+                  candidates.push(exePath);
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Also check common system locations
+      const systemPaths = [
+        "C:\\Python313\\python.exe",
+        "C:\\Python312\\python.exe",
+        "C:\\Python311\\python.exe",
+        "C:\\Python310\\python.exe",
+      ];
+      for (const p of systemPaths) {
+        if (fs.existsSync(p)) candidates.push(p);
+      }
+    } else {
+      // Unix: check common paths
+      const unixPaths = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/opt/local/bin/python3",
+      ];
+      for (const p of unixPaths) {
+        if (fs.existsSync(p)) candidates.push(p);
+      }
+    }
+
+    // Verify candidates are actually executable
+    for (const candidate of candidates) {
+      try {
+        execFileSync(candidate, ["--version"], { stdio: "pipe", timeout: 5000 });
+        return candidate;
+      } catch {
+        // Not executable, skip
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Install declared dependencies (requires) for a skill.
-   * Supports npm and pip packages.
+   * Supports npm and pip packages. Auto-discovers Python when not in PATH.
    */
   private installDependencies(
     requires: Array<{ name: string; version: string; optional: boolean }>,
@@ -1472,13 +1622,23 @@ export class SkillManager {
     for (const dep of requires) {
       const name = dep.name.toLowerCase();
       if (name === "python3" || name === "python") {
-        // Check python availability
-        if (!this.checkBinaryExists("python3") && !this.checkBinaryExists("python")) {
+        // Check python availability, with auto-discovery fallback
+        const pythonPath = this.resolvePythonPath();
+        if (!pythonPath) {
           if (dep.optional) {
-            step.warnings.push(`Optional dependency "${dep.name}" not found`);
+            step.warnings.push(`Optional dependency "${dep.name}" not found in PATH and auto-discovery failed`);
           } else {
-            step.errors.push(`dependency install failed: required "${dep.name}" not found in PATH`);
+            step.errors.push(`dependency install failed: required "${dep.name}" not found in PATH and auto-discovery failed`);
           }
+        } else if (pythonPath !== "python3" && pythonPath !== "python") {
+          // Found Python via auto-discovery, not in default PATH
+          step.message += `Python auto-discovered at: ${pythonPath}. `;
+          step.warnings.push(
+            `Python not in PATH — found at "${pythonPath}". ` +
+            `Consider adding it to your system PATH, or skill scripts using "python3" may fail. ` +
+            `You can add it by: setx PATH "%PATH%;${path.dirname(pythonPath)}"`
+          );
+          console.log(`[SkillManager] Python auto-discovered at: ${pythonPath}`);
         }
       } else if (name === "node" || name === "nodejs") {
         if (!this.checkBinaryExists("node")) {
@@ -1630,10 +1790,22 @@ export class SkillManager {
       }
     }
 
-    // 4. Required binaries
+    // 4. Required binaries (with auto-discovery for Python)
     const bins = ocMeta?.requires?.bins || [];
     for (const bin of bins) {
-      if (!this.checkBinaryExists(bin)) {
+      if ((bin === "python3" || bin === "python") && !this.checkBinaryExists(bin)) {
+        const pythonPath = this.resolvePythonPath();
+        if (pythonPath && pythonPath !== "python3" && pythonPath !== "python") {
+          step.warnings.push(
+            `"${bin}" not in PATH but Python found at "${pythonPath}". ` +
+            `Skill scripts using "python3" may fail. Add to PATH: setx PATH "%PATH%;${path.dirname(pythonPath)}"`
+          );
+          // Store discovered Python path in skill config for runtime use
+          skill.config._pythonPath = pythonPath;
+        } else if (!pythonPath) {
+          step.warnings.push(`Required binary "${bin}" not found — some features may be unavailable`);
+        }
+      } else if (!this.checkBinaryExists(bin)) {
         step.warnings.push(`Required binary "${bin}" not found — some features may be unavailable`);
       }
     }

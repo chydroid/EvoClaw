@@ -1,5 +1,6 @@
 import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
+import crypto from "crypto";
 import http from "http";
 import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
@@ -381,7 +382,11 @@ export class GatewayServer {
       }
       const expectedUser = process.env.EVOCLAW_ADMIN_USER || "admin";
       const expectedPass = process.env.EVOCLAW_ADMIN_PASSWORD || "admin";
-      if (username !== expectedUser || password !== expectedPass) {
+      const userMatch = username === expectedUser;
+      const passBuf = Buffer.from(String(password));
+      const expectedBuf = Buffer.from(String(expectedPass));
+      const passMatch = passBuf.length === expectedBuf.length && crypto.timingSafeEqual(passBuf, expectedBuf);
+      if (!userMatch || !passMatch) {
         res.status(401).json({ error: "Invalid credentials" });
         return;
       }
@@ -624,7 +629,9 @@ export class GatewayServer {
         const result = await this.mcpProtocolHandler.routeMessage(req.body);
         res.json(result);
       });
-    } catch {}
+    } catch (err) {
+      console.error("[Gateway] Failed to initialize MCP protocol handler:", err);
+    }
 
     this.setupWebUI();
 

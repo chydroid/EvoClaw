@@ -323,6 +323,57 @@ export const IconTranslate = Icon(
   </>
 );
 
+export const IconObservability = Icon(
+  <>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 1v2" />
+    <path d="M12 21v2" />
+    <path d="M4.22 4.22l1.42 1.42" />
+    <path d="M18.36 18.36l1.42 1.42" />
+    <path d="M1 12h2" />
+    <path d="M21 12h2" />
+    <path d="M4.22 19.78l1.42-1.42" />
+    <path d="M18.36 5.64l1.42-1.42" />
+  </>
+);
+
+export const IconStreamView = Icon(
+  <>
+    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
+    <circle cx="12" cy="12" r="3" />
+    <path d="M2 4h20" />
+    <path d="M2 20h20" />
+  </>
+);
+
+export const IconWorkboard = Icon(
+  <>
+    <rect x="3" y="3" width="7" height="9" rx="1" />
+    <rect x="14" y="3" width="7" height="5" rx="1" />
+    <rect x="14" y="12" width="7" height="9" rx="1" />
+    <rect x="3" y="16" width="7" height="5" rx="1" />
+  </>
+);
+
+export const IconSteer = Icon(
+  <>
+    <circle cx="12" cy="12" r="10" />
+    <circle cx="12" cy="12" r="2" />
+    <line x1="12" y1="2" x2="12" y2="6" />
+    <line x1="12" y1="18" x2="12" y2="22" />
+    <line x1="2" y1="12" x2="6" y2="12" />
+    <line x1="18" y1="12" x2="22" y2="12" />
+  </>
+);
+
+export const IconGuardrails = Icon(
+  <>
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <line x1="12" y1="8" x2="12" y2="14" />
+    <line x1="9" y1="11" x2="15" y2="11" />
+  </>
+);
+
 export const IconNewChat = Icon(
   <>
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -366,4 +417,9 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   "message-queue": IconMessageQueue,
   ops: IconOps,
   cli: IconTerminal,
+  observability: IconObservability,
+  "stream-view": IconStreamView,
+  workboard: IconWorkboard,
+  steer: IconSteer,
+  guardrails: IconGuardrails,
 };

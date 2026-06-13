@@ -238,8 +238,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- This saves time and respects the user's explicit instructions.");
   sections.push("");
   sections.push("**STEP 1 — Search for a Skill FIRST**");
-  sections.push("- Call the `skill_search` tool with the task description.");
-  sections.push("- If a matching skill is found: call `skill_install` to install it, then call `skill_execute` to run it.");
+  sections.push("- Check <available_skills> at the bottom of this prompt. If a skill matches the user's task, use it FIRST before any other approach.");
+  sections.push("- If a matching skill is found: READ the skill's SKILL.md instructions (use the `read` tool on the `<location>` path).");
+  sections.push("- If the skill's instructions contain shell commands (e.g., `python3 {baseDir}/scripts/xxx.py`), use `shell_exec` to execute them — NOT `skill_execute`.");
+  sections.push("- Only use `skill_execute` for skills that have embedded scripts (defined in SKILL.md metadata). Most skills with external Python/shell scripts should be run via `shell_exec`.");
+  sections.push("- If no installed skill matches, call `skill_search` to find and install one.");
   sections.push("- If the user explicitly asks to install/setup a skill (e.g., 'install translate skill', '装翻译技能'), you MUST call `skill_search` first, then `skill_install` — do NOT just chat about it.");
   sections.push("- If NO matching skill exists → proceed to STEP 2.");
   sections.push("");

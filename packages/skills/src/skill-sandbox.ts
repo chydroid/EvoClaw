@@ -146,22 +146,84 @@ export class SkillSandbox {
 
   /** Resolve the Python binary name, preferring python3 over python */
   private resolvePythonBin(): string {
+    const { execSync } = require("child_process");
+
     // Check python3 first (common on Linux/macOS)
     try {
-      const { execSync } = require("child_process");
       execSync("python3 --version", { stdio: "pipe", timeout: 3000 });
       return "python3";
     } catch {
       // Fall back to python
       try {
-        const { execSync } = require("child_process");
         execSync("python --version", { stdio: "pipe", timeout: 3000 });
         return "python";
       } catch {
-        console.warn("[SkillSandbox] Neither python3 nor python found in PATH");
+        // Search common installation locations
+        const candidates = this.findPythonCandidates();
+        for (const candidate of candidates) {
+          try {
+            execSync(`"${candidate}" --version`, { stdio: "pipe", timeout: 5000 });
+            console.log(`[SkillSandbox] Python auto-discovered at: ${candidate}`);
+            return candidate;
+          } catch {
+            // Not executable, skip
+          }
+        }
+        console.warn("[SkillSandbox] Neither python3 nor python found in PATH, and auto-discovery found nothing");
         return "python3"; // Default to python3, will fail with clear error
       }
     }
+  }
+
+  /** Search common Python installation locations */
+  private findPythonCandidates(): string[] {
+    const candidates: string[] = [];
+    const fsMod = require("fs");
+    const pathMod = require("path");
+
+    if (process.platform === "win32") {
+      const localAppData = process.env.LOCALAPPDATA || "";
+      const userProfile = process.env.USERPROFILE || "";
+      const searchRoots = [localAppData, userProfile].filter(Boolean);
+
+      for (const root of searchRoots) {
+        const pythonDir = pathMod.join(root, "Programs", "Python");
+        try {
+          const entries = fsMod.readdirSync(pythonDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && /^Python\d+/.test(entry.name)) {
+              const exePath = pathMod.join(pythonDir, entry.name, "python.exe");
+              if (fsMod.existsSync(exePath)) {
+                candidates.push(exePath);
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Also check common system locations
+      const systemPaths = [
+        "C:\\Python313\\python.exe",
+        "C:\\Python312\\python.exe",
+        "C:\\Python311\\python.exe",
+        "C:\\Python310\\python.exe",
+      ];
+      for (const p of systemPaths) {
+        if (fsMod.existsSync(p)) candidates.push(p);
+      }
+    } else {
+      const unixPaths = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/opt/local/bin/python3",
+      ];
+      for (const p of unixPaths) {
+        if (fsMod.existsSync(p)) candidates.push(p);
+      }
+    }
+
+    return candidates;
   }
 
   /** Execute a Python script via subprocess */
@@ -388,7 +450,7 @@ export class SkillSandbox {
 
       child.on("close", (code) => {
         clearTimeout(timeoutId);
-        if (code === 0 || stdout) {
+        if (code === 0) {
           try {
             resolve(JSON.parse(stdout));
           } catch {
@@ -438,6 +500,7 @@ export class SkillSandbox {
           timeout: policy.maxExecutionTime,
         });
       });
+      executionPromise.catch(() => {}); // Prevent unhandled rejection if timeout wins the race
 
       const result = await Promise.race([executionPromise, timeoutPromise]);
 
@@ -688,6 +751,72 @@ export class SkillSandbox {
     skill: Skill,
     params: Record<string, unknown>
   ): unknown {
+    // Check if the skill has command templates in its instructions
+    // (e.g., `python3 {baseDir}/scripts/xxx.py` in SKILL.md)
+    const instructions = skill.body?.instructions || "";
+    const commandLines = this.extractCommandTemplates(instructions);
+
+    if (commandLines.length > 0) {
+      // Enforce sandbox policy - same check as executePython/execCommand
+      const policy = skill.sandboxPolicy;
+      if (!policy.allowSubprocess) {
+        return {
+          skillName: skill.name,
+          skillVersion: skill.version,
+          executedAt: new Date().toISOString(),
+          params,
+          result: {
+            status: "error",
+            message: `Skill "${skill.name}" requires subprocess execution but sandbox policy denies it. Use shell_exec tool instead.`,
+          },
+        };
+      }
+
+      // Execute the first command template
+      const cmd = commandLines[0];
+      const skillDir = skill.installPath
+        ? require("path").dirname(skill.installPath)
+        : "";
+      const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
+
+      try {
+        const { execSync } = require("child_process");
+        const pythonBin = this.resolvePythonBin();
+        // Replace python3 with the resolved python path
+        const finalCmd = resolvedCmd.replace(/^python3\b/, pythonBin).replace(/^python\b/, pythonBin);
+
+        const result = execSync(finalCmd, {
+          cwd: skillDir || undefined,
+          timeout: 30000,
+          encoding: "utf-8",
+          env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+          windowsHide: true,
+        });
+        return {
+          skillName: skill.name,
+          skillVersion: skill.version,
+          executedAt: new Date().toISOString(),
+          params,
+          result: {
+            status: "completed",
+            data: result.slice(0, 8000),
+          },
+        };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        return {
+          skillName: skill.name,
+          skillVersion: skill.version,
+          executedAt: new Date().toISOString(),
+          params,
+          result: {
+            status: "error",
+            message: `Command execution failed: ${errMsg.slice(0, 500)}`,
+          },
+        };
+      }
+    }
+
     return {
       skillName: skill.name,
       skillVersion: skill.version,
@@ -698,5 +827,27 @@ export class SkillSandbox {
         message: `Skill "${skill.name}" executed successfully (no scripts defined)`,
       },
     };
+  }
+
+  /** Extract command templates from SKILL.md instructions */
+  private extractCommandTemplates(instructions: string): string[] {
+    const commands: string[] = [];
+    const codeBlockRegex = /```(?:bash|shell|sh)?\s*\n([\s\S]*?)```/g;
+    let blockMatch: RegExpExecArray | null;
+    while ((blockMatch = codeBlockRegex.exec(instructions)) !== null) {
+      const block = blockMatch[1];
+      for (const line of block.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed && (
+          trimmed.startsWith("python") ||
+          trimmed.startsWith("node ") ||
+          trimmed.startsWith("bash ") ||
+          trimmed.startsWith("sh ")
+        )) {
+          commands.push(trimmed);
+        }
+      }
+    }
+    return commands;
   }
 }

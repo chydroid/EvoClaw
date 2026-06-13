@@ -748,7 +748,11 @@ export class EvoClawServer {
     });
   }
 
+  private shuttingDown = false;
+
   async shutdown(): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
     this.logger.info("server", "Shutting down...");
     this.selfHealing.stop();
     this.scheduleManager.stop();
@@ -1303,7 +1307,7 @@ export class EvoClawServer {
           totalTasks: tasks.length,
           categoryDistribution: categoryStats,
           complexityDistribution: complexityStats,
-          averageConfidence: results.reduce((sum, r) => sum + r.confidence, 0) / results.length,
+          averageConfidence: results.length > 0 ? results.reduce((sum, r) => sum + r.confidence, 0) / results.length : 0,
         };
       }
     );

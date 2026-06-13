@@ -54,7 +54,7 @@ export function registerAutoSkillTools(
       description: "Execute an installed skill by name or ID with parameters",
       parameters: {
         skill: { type: "string", description: "Skill name or ID to execute", required: true },
-        params: { type: "string", description: "JSON string of parameters to pass to the skill (optional)", required: false },
+        params: { type: "object", description: "Parameters to pass to the skill as a JSON object (optional). Can also be a JSON string.", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -247,7 +247,7 @@ export function registerAutoSkillTools(
       try {
         const fsMgr = registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
         const skillDir = `skills/${name}`;
-        const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/"/g, '\\"')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
+        const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
         if (fsMgr) {
           await fsMgr.createFile(`${skillDir}/SKILL.md`, skillContent);
         } else {
@@ -277,13 +277,46 @@ export function registerAutoSkillTools(
       const task = String(params.task || "");
       const match = await autoSkill.findSkillForTask(task);
       if (!match) return { found: false, reason: "No matching skill found" };
-      return {
+
+      // If the skill is already installed, include its command templates
+      const result: Record<string, unknown> = {
         found: true,
         skillName: match.skillName,
         skillPath: match.skillPath,
         relevance: match.relevance,
         reason: match.reason,
       };
+
+      try {
+        const skills = await skillManager.listSkills();
+        const installed = skills.find(s =>
+          s.name === match.skillName || s.name.replace(/[_-]/g, "") === match.skillName.replace(/[_-]/g, "")
+        );
+        if (installed) {
+          result.installed = true;
+          result.installPath = installed.installPath;
+          // Extract command templates from SKILL.md instructions
+          const instructions = installed.body?.instructions || "";
+          const commandLines: string[] = [];
+          const codeBlockRegex = /```(?:bash|shell|sh)?\s*\n([\s\S]*?)```/g;
+          let blockMatch: RegExpExecArray | null;
+          while ((blockMatch = codeBlockRegex.exec(instructions)) !== null) {
+            const block = blockMatch[1];
+            for (const line of block.split("\n")) {
+              const trimmed = line.trim();
+              if (trimmed && (trimmed.startsWith("python") || trimmed.startsWith("node") || trimmed.startsWith("bash") || trimmed.startsWith("sh "))) {
+                commandLines.push(trimmed);
+              }
+            }
+          }
+          if (commandLines.length > 0) {
+            result.commands = commandLines;
+            result.hint = "Use shell_exec to run these commands. Replace {baseDir} with the skill's directory.";
+          }
+        }
+      } catch { /* best-effort */ }
+
+      return result;
     }
   );
 }

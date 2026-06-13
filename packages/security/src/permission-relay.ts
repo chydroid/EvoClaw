@@ -112,6 +112,9 @@ export class PermissionRelay {
       req.decidedBy = "auto";
       req.reason = "Auto-approved by pattern";
       this.history.push(req);
+      if (this.history.length > 10000) {
+        this.history = this.history.slice(-5000);
+      }
       this.eventBus?.publish("permission.auto_approved", req, "permission-relay");
       return req;
     }
@@ -121,6 +124,9 @@ export class PermissionRelay {
       req.decidedBy = "auto";
       req.reason = "Auto-denied by pattern";
       this.history.push(req);
+      if (this.history.length > 10000) {
+        this.history = this.history.slice(-5000);
+      }
       this.eventBus?.publish("permission.auto_denied", req, "permission-relay");
       return req;
     }
@@ -132,6 +138,9 @@ export class PermissionRelay {
       req.decidedBy = "system";
       req.reason = "Too many pending requests";
       this.history.push(req);
+      if (this.history.length > 10000) {
+        this.history = this.history.slice(-5000);
+      }
       return req;
     }
 
@@ -148,6 +157,9 @@ export class PermissionRelay {
         this.pending.delete(id);
         this.timers.delete(id);
         this.history.push(existing);
+        if (this.history.length > 10000) {
+          this.history = this.history.slice(-5000);
+        }
         this.eventBus?.publish("permission.timed_out", existing, "permission-relay");
       }
     }, timeoutMs);
@@ -172,6 +184,9 @@ export class PermissionRelay {
     this.pending.delete(id);
     this.clearTimer(id);
     this.history.push(req);
+    if (this.history.length > 10000) {
+      this.history = this.history.slice(-5000);
+    }
 
     this.eventBus?.publish("permission.approved", req, "permission-relay");
     return req;
@@ -191,6 +206,9 @@ export class PermissionRelay {
     this.pending.delete(id);
     this.clearTimer(id);
     this.history.push(req);
+    if (this.history.length > 10000) {
+      this.history = this.history.slice(-5000);
+    }
 
     this.eventBus?.publish("permission.denied", req, "permission-relay");
     return req;

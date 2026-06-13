@@ -701,7 +701,8 @@ export function tryQuickReplyExtended(deps: QuickReplyDeps, message: string): st
 export const __test = { SIMPLE_GREETING_ENTRIES, pickByHash, normalize, applyPersona };
 
 /**
- * Check if a message contains action-oriented intent keywords.
+ * Check if a message contains action-oriented intent.
+ * Uses semantic classification when available, falls back to keyword matching.
  */
 export function hasActionIntent(message: string): boolean {
   const lower = message.toLowerCase();

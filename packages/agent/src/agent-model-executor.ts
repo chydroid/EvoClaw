@@ -343,6 +343,7 @@ export class AgentModelExecutor {
   private _cachedSkillNames: Set<string> = new Set();
   
   private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string; toolName: string; toolArgs: Record<string, unknown> }>();
+  private pendingApprovalCommands = new Map<string, { command: string; rejectedAt: number }>();
   private isProcessingQueue = false;
 
   // ── Heartbeat mechanism ──
@@ -661,6 +662,7 @@ export class AgentModelExecutor {
       registry: this.registry,
       sessionManager: this.sessionManager,
       pendingOperations: this.pendingOperations,
+      pendingApprovalCommands: this.pendingApprovalCommands,
       toolResultCache: this.toolResultCache,
       sessionDataDir: this.sessionDataDir,
       sessionPersistenceEnabled: this.sessionPersistenceEnabled,
@@ -889,7 +891,7 @@ export class AgentModelExecutor {
       registeredToolNames: toolNames,
       skillsPrompt,
       workspacePath,
-      userTimezone: "Asia/Shanghai",
+      userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
       timeFormat: "24",
       hostInfo: {
         os: process.platform,
@@ -1210,6 +1212,57 @@ export class AgentModelExecutor {
     if (slashResult) {
       this.persistEarlyReturn(sessionId, message, slashResult.reply);
       return slashResult;
+    }
+
+    // ── Chat-based approval: if user says "同意/执行/yes/approve",
+    //    auto-execute the pending rejected shell command ──
+    //    This MUST run BEFORE SemanticQuickReply, which would otherwise
+    //    classify "同意" as a mood/greeting and return a chat reply.
+    const APPROVAL_PATTERNS = /^(同意|批准|允许|执行|确认|yes|approve|confirm|go ahead|do it|run it|ok|okay|好的|可以|没问题)[\s!.。！？?]*$/i;
+    const isApprovalIntent = APPROVAL_PATTERNS.test(effectiveMessage.trim());
+    const pendingCmd = this.pendingApprovalCommands.get(sessionId);
+    if (isApprovalIntent && pendingCmd) {
+      const PENDING_CMD_TTL = 30 * 60 * 1000;
+      if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
+        console.log(`[AgentModelExecutor] Pending command expired, discarding: ${pendingCmd.command}`);
+        this.pendingApprovalCommands.delete(sessionId);
+      } else {
+        console.log(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}`);
+        this.pendingApprovalCommands.delete(sessionId);
+        // Add temporary trust rule
+        if (this.humanApprovalManager) {
+          this.humanApprovalManager.addTrustRule({
+            toolName: "shell_exec",
+            argPattern: { command: pendingCmd.command },
+            trustedBy: "chat_approval",
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 5 * 60 * 1000,
+          });
+        }
+        // Execute the pending command directly
+        try {
+          const shellExecTool = this.registeredTools.get("shell_exec");
+          if (shellExecTool) {
+            const execResult = await shellExecTool.handler({ command: pendingCmd.command, timeout: "30" });
+            const execStr = typeof execResult === "string" ? execResult : JSON.stringify(execResult);
+            const execObj = typeof execResult === "object" ? execResult as Record<string, unknown> : null;
+            let reply: string;
+            if (execObj?.success !== false && execStr && execStr.length > 0) {
+              // Try to format the output as a readable table
+              reply = this.formatCommandOutput(execObj, execStr);
+            } else {
+              reply = `⚠️ 命令执行失败：${execStr.slice(0, 500)}`;
+            }
+            this.persistEarlyReturn(sessionId, message, reply);
+            return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: true, files: [] };
+          }
+        } catch (err) {
+          console.warn(`[AgentModelExecutor] Pending command execution failed: ${err}`);
+          const reply = `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`;
+          this.persistEarlyReturn(sessionId, message, reply);
+          return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
+        }
+      }
     }
 
     // ── Quick reply for simple greetings and queries (no LLM needed) ──
@@ -1987,6 +2040,217 @@ export class AgentModelExecutor {
       toolsExecuted: result.toolsExecuted,
       files: result.files,
     };
+  }
+
+  // ── Format command output into readable text ──
+  private formatNum(v: unknown, digits = 2): string {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    return n.toFixed(digits);
+  }
+
+  private fmtMoney(v: unknown): string {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    if (Math.abs(n) >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+    if (Math.abs(n) >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
+    return n.toFixed(2);
+  }
+
+  private formatCommandOutput(execObj: Record<string, unknown> | null, execStr: string): string {
+    // Try to parse the output field if it contains JSON
+    let outputData: unknown = null;
+    const rawOutput = String(execObj?.output || execStr);
+
+    try {
+      outputData = JSON.parse(rawOutput);
+    } catch {
+      // Not JSON, return as-is
+      return `✅ 已执行您批准的命令，结果如下：\n\`\`\`\n${rawOutput.slice(0, 4000)}\n\`\`\``;
+    }
+
+    // Check if it's a market ranking result (has items array with stock data)
+    if (this.isMarketRankingData(outputData)) {
+      return this.formatMarketRanking(outputData as Record<string, unknown>);
+    }
+
+    // Check if it's a news/hot topics result
+    if (this.isNewsData(outputData)) {
+      return this.formatNewsData(outputData as Record<string, unknown>);
+    }
+
+    // Check if it's financial indicator data
+    if (this.isFinanceData(outputData)) {
+      return this.formatFinanceData(outputData as Record<string, unknown>);
+    }
+
+    // Check if it's an array of items
+    if (Array.isArray(outputData)) {
+      return this.formatArrayData(outputData);
+    }
+
+    // Generic JSON formatting: pretty print with key highlights
+    try {
+      const pretty = JSON.stringify(outputData, null, 2);
+      return `✅ 已执行您批准的命令，结果如下：\n\`\`\`json\n${pretty.slice(0, 4000)}\n\`\`\``;
+    } catch {
+      return `✅ 已执行您批准的命令，结果如下：\n\`\`\`\n${rawOutput.slice(0, 4000)}\n\`\`\``;
+    }
+  }
+
+  private isFinanceData(data: unknown): boolean {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const d = data as Record<string, unknown>;
+    if (!Array.isArray(d.items) || d.items.length === 0) return false;
+    const first = d.items[0];
+    if (!first || typeof first !== "object") return false;
+    const f = first as Record<string, unknown>;
+    return "rq" in f && ("yysr" in f || "jlr" in f || "xsmll" in f || "jzzsyl" in f || "kfjlr" in f);
+  }
+
+  private formatFinanceData(data: Record<string, unknown>): string {
+    const items = (data.items as Array<Record<string, unknown>>) || [];
+    const statementName = String(data.statement_name || "财务数据");
+    const code = String(data.code || "");
+    const colMap: Array<{ key: string; label: string; fmt?: (v: unknown) => string }> = [
+      { key: "rq", label: "报告期" },
+      { key: "yysr", label: "营业收入", fmt: (v) => this.fmtMoney(v) },
+      { key: "lrze", label: "利润总额", fmt: (v) => this.fmtMoney(v) },
+      { key: "kfjlr", label: "扣非净利润", fmt: (v) => this.fmtMoney(v) },
+      { key: "mgsy", label: "每股收益", fmt: (v) => `${this.formatNum(v, 2)}元` },
+      { key: "xsmll", label: "毛利率", fmt: (v) => `${this.formatNum(v, 2)}%` },
+      { key: "xsjll", label: "净利率", fmt: (v) => `${this.formatNum(v, 2)}%` },
+      { key: "jzzsyl", label: "ROE", fmt: (v) => `${this.formatNum(v, 2)}%` },
+      { key: "zcfzl", label: "资产负债率", fmt: (v) => `${this.formatNum(v, 2)}%` },
+    ];
+    const activeCols = colMap.filter((c) => items.some((it) => it[c.key] !== undefined && it[c.key] !== ""));
+    let result = `📊 **${code} ${statementName}**（最近 ${items.length} 期）\n\n`;
+    result += `| ${activeCols.map((c) => c.label).join(" | ")} |\n`;
+    result += `|${activeCols.map(() => "---").join("|")}|\n`;
+    for (const item of items) {
+      const row = activeCols.map((c) => {
+        const v = item[c.key];
+        if (v === undefined || v === "") return "—";
+        return c.fmt ? c.fmt(v) : String(v);
+      });
+      result += `| ${row.join(" | ")} |\n`;
+    }
+    return result;
+  }
+
+  private isMarketRankingData(data: unknown): boolean {
+    if (!data || typeof data !== "object") return false;
+    const d = data as Record<string, unknown>;
+    return Array.isArray(d.items) && d.items.length > 0 &&
+      typeof d.items[0] === "object" && d.items[0] !== null &&
+      ("code" in (d.items[0] as object)) && ("name" in (d.items[0] as object));
+  }
+
+  private isNewsData(data: unknown): boolean {
+    if (!data || typeof data !== "object") return false;
+    const d = data as Record<string, unknown>;
+    // Direct items array
+    if (Array.isArray(d.items) && d.items.length > 0 &&
+      typeof d.items[0] === "object" && d.items[0] !== null &&
+      ("title" in (d.items[0] as object))) return true;
+    // CICC hot-news: data.rsp.content_list
+    if (d.data && typeof d.data === "object") {
+      const rsp = (d.data as Record<string, unknown>).rsp as Record<string, unknown> | undefined;
+      if (rsp && Array.isArray(rsp.content_list) && rsp.content_list.length > 0 &&
+        typeof rsp.content_list[0] === "object" &&
+        ("title" in (rsp.content_list[0] as object))) return true;
+    }
+    return false;
+  }
+
+  private formatMarketRanking(data: Record<string, unknown>): string {
+    const items = (data.items as Array<Record<string, unknown>>) || [];
+    const sortName = String(data.sort_name || "排行");
+    const total = data.total || items.length;
+
+    let result = `📊 **A股${sortName}**（共 ${total} 只，显示前 ${items.length} 只）\n\n`;
+    result += "| # | 代码 | 名称 | 现价 | 昨收 | 涨跌幅 | 成交额 |\n";
+    result += "|---|------|------|------|------|--------|--------|\n";
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const prevClose = Number(item.previous_close || 0);
+      const currentPrice = Number(item.current_price || 0);
+      const changePercent = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
+      const amount = Number(item.amount || 0);
+      const amountStr = amount >= 1e8 ? `${(amount / 1e8).toFixed(2)}亿` : amount >= 1e4 ? `${(amount / 1e4).toFixed(0)}万` : String(amount);
+      // A股惯例：红涨绿跌
+      const changeText = changePercent >= 0 ? `+${changePercent.toFixed(2)}%` : `${changePercent.toFixed(2)}%`;
+      const changeColor = changePercent >= 0 ? "#e74c3c" : "#2ecc71";
+      const changeStr = `<span style="color:${changeColor};font-weight:600;">${changeText}</span>`;
+      const priceColor = currentPrice >= prevClose ? "#e74c3c" : currentPrice < prevClose ? "#2ecc71" : "inherit";
+      const priceStr = `<span style="color:${priceColor};">${currentPrice.toFixed(2)}</span>`;
+
+      result += `| ${i + 1} | ${String(item.code || "")} | ${String(item.name || "")} | ${priceStr} | ${prevClose.toFixed(2)} | ${changeStr} | ${amountStr} |\n`;
+    }
+
+    return result;
+  }
+
+  private formatNewsData(data: Record<string, unknown>): string {
+    // CICC hot-news response wraps content under data.rsp.content_list
+    let items: Array<Record<string, unknown>> = [];
+    let specName = "";
+    const d = data as Record<string, unknown>;
+    if (Array.isArray(d.items)) {
+      items = d.items as Array<Record<string, unknown>>;
+    } else if (d.data && typeof d.data === "object") {
+      const inner = (d.data as Record<string, unknown>).rsp as Record<string, unknown> | undefined;
+      if (inner && Array.isArray(inner.content_list)) {
+        items = inner.content_list as Array<Record<string, unknown>>;
+        specName = String(inner.spec_subject_name || "");
+      } else if (Array.isArray((d.data as Record<string, unknown>).content_list)) {
+        items = (d.data as Record<string, unknown>).content_list as Array<Record<string, unknown>>;
+      }
+    }
+
+    if (items.length === 0) return "✅ 已执行您批准的命令，资讯接口未返回可用数据。";
+
+    const total = String(data.page_size || items.length);
+    let result = `📰 **${specName || "资讯热榜"}**（共 ${total} 条，显示前 ${items.length} 条）\n\n`;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const title = String(item.title || "无标题");
+      const link = String(item.redirect_url || item.out_detail_url || item.detail_url || "");
+      result += `${i + 1}. **${title}**${link ? ` ([详情](${link}))` : ""}\n`;
+      const meta: string[] = [];
+      if (item.source) meta.push(`来源：${String(item.source)}`);
+      if (item.pub_time) meta.push(`时间：${String(item.pub_time)}`);
+      if (Array.isArray(item.stock_info) && (item.stock_info as unknown[]).length > 0) {
+        const stocks = (item.stock_info as Array<Record<string, unknown>>)
+          .map((s) => s.stock_name || s.stock_code)
+          .filter(Boolean)
+          .slice(0, 3)
+          .join(", ");
+        if (stocks) meta.push(`相关：${stocks}`);
+      }
+      if (meta.length > 0) result += `   ${meta.join(" | ")}\n`;
+    }
+
+    return result;
+  }
+
+  private formatArrayData(data: unknown[]): string {
+    if (data.length === 0) return "✅ 命令执行成功，返回结果为空。";
+
+    let result = `✅ 已执行您批准的命令，返回 ${data.length} 条结果：\n\n`;
+    for (let i = 0; i < Math.min(data.length, 20); i++) {
+      const item = data[i];
+      if (typeof item === "object" && item !== null) {
+        const entries = Object.entries(item as Record<string, unknown>).slice(0, 6);
+        const summary = entries.map(([k, v]) => `${k}=${String(v).slice(0, 30)}`).join(", ");
+        result += `${i + 1}. ${summary}\n`;
+      } else {
+        result += `${i + 1}. ${String(item).slice(0, 100)}\n`;
+      }
+    }
+    if (data.length > 20) result += `\n... 还有 ${data.length - 20} 条结果`;
+    return result;
   }
 
   // ── System Config Query: direct response without LLM ──

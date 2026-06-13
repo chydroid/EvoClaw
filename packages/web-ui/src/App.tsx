@@ -466,6 +466,14 @@ export default function App() {
   useEffect(() => { if (authenticated) loadAvatars(); }, [authenticated]);
 
   async function saveAvatars(updated: AvatarInfo) {
+    // Revoke old blob URLs to prevent memory leaks
+    for (const key of ["user", "bot"] as const) {
+      const oldUrl = avatars[key];
+      const newUrl = updated[key];
+      if (oldUrl !== newUrl && oldUrl.startsWith("blob:")) {
+        try { URL.revokeObjectURL(oldUrl); } catch {}
+      }
+    }
     try {
       await fetch("/api/config/avatars", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatars: updated }) });
     } catch { /* save locally */ }
@@ -556,7 +564,7 @@ export default function App() {
     // Pass sessionId to WebChatPage with unique key for remount
     if (activeTab === "chat") {
       const chatKey = "webchat-main";
-      return React.createElement(WebChatPage as any, { key: chatKey, sessionId: activeSessionId, avatars, onSessionCreated: (sid: string) => { setActiveSession(sid); fetchSessions(); } });
+      return <ErrorBoundary>{React.createElement(WebChatPage as any, { key: chatKey, sessionId: activeSessionId, avatars, onSessionCreated: (sid: string) => { setActiveSession(sid); fetchSessions(); } })}</ErrorBoundary>;
     }
     switch (activeTab) {
       case "status": return <ErrorBoundary><StatusPage /></ErrorBoundary>;
@@ -592,7 +600,7 @@ export default function App() {
       case "steer": return <ErrorBoundary><SteerPage /></ErrorBoundary>;
       case "model-switcher": return <ErrorBoundary><ModelSwitcherPage /></ErrorBoundary>;
       case "stream-view": return <ErrorBoundary><StreamViewPage /></ErrorBoundary>;
-      default: return <WebChatPage />;
+      default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }
 
@@ -1035,7 +1043,7 @@ const css: Record<string, CSSProperties> = {
   sessionSearchWrap: { position: "relative" as const, padding: "2px 8px 4px" },
   sessionSearchInput: { width: "100%", padding: "4px 8px 4px 24px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", boxSizing: "border-box" },
   sessionActionsRow: { display: "flex", alignItems: "center", gap: 4, padding: "2px 8px 4px" },
-  sessionActionBtn: { display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" as const },
+  sessionActionBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "5px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" as const, width: "100%" },
   sessionInfoWrap: { display: "flex", flexDirection: "column" as const, minWidth: 0, flex: 1 },
   sessionMetaRow: { display: "flex", gap: 6, marginTop: 1, flexWrap: "wrap" as const },
   sessionMetaTag: { fontSize: 9, color: "var(--text-muted)", background: "var(--bg-hover)", padding: "0 4px", borderRadius: 3, whiteSpace: "nowrap" as const, lineHeight: "14px" },

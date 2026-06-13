@@ -42,4 +42,19 @@ test-*.json
 *-report.txt
 _i18n.json
 logs/
-skills/
+data/workspace/skills/
+
+# Build artifacts
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+Desktop.ini
+
+# Temporary download scripts
+_video_dl_*.py
+_music_dl_*.py

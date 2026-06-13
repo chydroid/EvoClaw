@@ -208,9 +208,32 @@ const messageRowStyle = (role: string): CSSProperties => ({
   justifyContent: role === "user" ? "flex-end" : "flex-start",
 });
 
-const messageBubbleStyle = (role: string): CSSProperties => ({
-  maxWidth: "75%",
-  minWidth: role === "assistant" ? "460px" : "60px",
+// Estimate the display width budget for assistant messages. Short replies
+// look better in a narrower bubble, but tables and other wide content need
+// a larger minimum width to render fully without squashing.
+const assistantMinWidth = (content: unknown): string => {
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((c) => (typeof c === "object" && c && "text" in c ? String((c as { text?: unknown }).text || "") : "")).join("")
+      : "";
+  // Strip markdown noise so the length reflects actual rendered text.
+  const stripped = text
+    .replace(/```[\s\S]*?```/g, "") // fenced code blocks
+    .replace(/`[^`]*`/g, "")        // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "") // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // links
+    .replace(/[#>*_~|-]+/g, " ")   // md punctuation
+    .replace(/\|/g, "")             // table separators
+    .replace(/\s+/g, "");
+  return stripped.length > 300 ? "580px" : "460px";
+};
+
+const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => ({
+  maxWidth: role === "assistant" ? "min(85%, 1100px)" : "75%",
+  minWidth: role === "assistant"
+    ? assistantMinWidth(content)
+    : role === "user" ? "60px" : "0",
   padding: "10px 16px",
   borderRadius: role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
   background: role === "user"
@@ -815,7 +838,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
               ? ` (${status.subtaskIndex + 1}/${status.subtaskTotal})`
               : "";
             setStatusMessage(`${label}${subtaskInfo}: ${status.detail}`);
-            setCurrentProgress(Math.max(currentProgress, status.progress || 0));
+            setCurrentProgress(prev => Math.max(prev, status.progress || 0));
           }
         }
       } catch { /* ignore polling errors */ }
@@ -1746,10 +1769,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                 })()}
               <div
                 style={{
-                  ...messageBubbleStyle(msg.role),
+                  ...messageBubbleStyle(msg.role, msg.content),
                   border: hoveredMsgId === msg.id && msg.role === "assistant"
                     ? "1px solid var(--accent, #58a6ff)"
-                    : messageBubbleStyle(msg.role).border,
+                    : messageBubbleStyle(msg.role, msg.content).border,
                   boxShadow: hoveredMsgId === msg.id && msg.role === "assistant"
                     ? "0 0 12px rgba(88, 166, 255, 0.2)"
                     : "none",

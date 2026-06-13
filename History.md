@@ -3,6 +3,69 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.31.0 (2026-06-13)
+
+### 商业级代码审计与BUG修复
+
+经过两轮全面代码审计，修复了跨6个包的30+个BUG，涵盖安全漏洞、逻辑错误、内存泄漏和资源管理问题。
+
+---
+
+#### 安全修复 (Critical)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| 审批意图被快速回复拦截 | 将审批检查移到快速回复之前，避免用户说"同意"审批命令时被问候回复拦截 | agent-model-executor.ts |
+| 权限审批端点免认证 | 从publicPaths移除/api/permission/approve和/api/permission/deny | auth-provider.ts |
+| WebUI认证绕过 | webUiAuthMiddleware从未验证cookie令牌，任何人无需认证即可访问 | auth-provider.ts |
+| 登录密码时序攻击 | 密码比较从`!==`改为`crypto.timingSafeEqual` | gateway-server.ts |
+| XSS过滤被截断覆盖 | 长消息截断使用effectiveMessage而非原始message | llm-caller.ts |
+| 非零退出码误判成功 | `if (code === 0 || stdout)` 改为 `if (code === 0)` | skill-sandbox.ts |
+| XSS: details标签属性 | 过滤on*事件属性（含无引号值），summary标签也做过滤 | markdown-renderer.ts |
+| XSS: span style属性 | 仅允许color CSS属性，剔除其他属性 | markdown-renderer.ts |
+| 缺失API前缀绕过认证 | 添加8个缺失前缀到knownApiPrefixes | auth-provider.ts |
+
+#### 逻辑修复 (Major)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| upgradeSkill版本号显示 | 保存oldVersion后再覆盖，消息正确显示升级前后版本 | skill-manager.ts |
+| averageDuration竞态条件 | 使用快照currentCount消除并发统计错误 | skill-manager.ts |
+| PATH分隔符跨平台 | `.join(";")` 改为 `.join(path.delimiter)` | shell-media-tools.ts |
+| 超时进度计算 | lastProgressSent初始化为Date.now()，使用startTime计算 | shell-media-tools.ts |
+| 子进程超时强制终止 | SIGTERM后5秒追加SIGKILL | shell-media-tools.ts |
+| stdout/stderr缓冲区限制 | 5MB上限防止OOM | shell-media-tools.ts |
+| 临时脚本文件名冲突 | 使用唯一文件名(Date.now+random) | shell-media-tools.ts |
+| YAML注入 | description转义换行符和回车符 | skill-tools.ts |
+| shutdown重入保护 | 添加shuttingDown标志防止重复关闭 | index.ts |
+| 空数组除零 | classification_stats空数组保护 | index.ts |
+| VM沙箱未处理Promise拒绝 | executionPromise添加.catch() | skill-sandbox.ts |
+| setInterval阻止退出 | startAutoScan定时器调用.unref() | skill-manager.ts |
+| 时区硬编码 | 使用Intl.DateTimeFormat获取系统时区 | agent-model-executor.ts |
+| response.body空值检查 | 流式响应body为null时安全返回 | llm-caller.ts |
+| 进度条闭包过期 | setCurrentProgress使用函数式更新器 | WebChatPage.tsx |
+| i18n占位符未替换 | SessionManagementPage中t()调用改为.replace("{0}", value) | SessionManagementPage.tsx |
+| SecretManager日志错误 | activate()操作类型从"revoke"改为"register" | secret-manager.ts |
+| MCP初始化错误吞没 | 空catch块添加console.error | gateway-server.ts |
+
+#### 内存泄漏修复
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| PermissionRelay.history无限增长 | 超过10000条时裁剪到5000条 | permission-relay.ts |
+| AnomalyDetector.alerts无限增长 | 超过1000条时裁剪到500条 | anomaly-detector.ts |
+| Avatar Object URL泄漏 | 更换头像时revokeObjectURL释放旧URL | App.tsx |
+
+#### UI修复
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| WebChatPage缺ErrorBoundary | 聊天页面添加ErrorBoundary保护 | App.tsx |
+| default分支缺ErrorBoundary | renderPage的default分支添加ErrorBoundary | App.tsx |
+| 缺失导航图标 | 添加5个图标(observability/stream-view/workboard/steer/guardrails) | icons.tsx |
+| 缺失i18n导航键 | 添加5个导航键的中英文翻译 | i18n.ts |
+| 缺失i18n聊天键 | 添加chat.cmd.model_usage等4个缺失键 | i18n.ts |
+
 ## v0.30.0 (2026-06-12)
 
 ### 技能安装流程系统性完善
