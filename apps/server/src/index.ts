@@ -408,7 +408,7 @@ export class EvoClawServer {
     const a2aServer = new A2AServer({
       publicUrl: process.env.EVOCLAW_A2A_URL || `http://localhost:${process.env.EvoClaw_PORT || "3000"}`,
       enabled: this.featureFlagStore.isEnabled("a2a"),
-      authType: (process.env.EVOCLAW_A2A_AUTH as "none" | "api_key") || "none",
+      authType: (process.env.EVOCLAW_A2A_AUTH as "none" | "api_key") || "api_key",
       validApiKeys: process.env.EVOCLAW_A2A_API_KEYS?.split(",").map(k => k.trim()).filter(Boolean),
     });
     a2aServer.setTaskHandler(async (task) => {
@@ -1057,7 +1057,30 @@ export class EvoClawServer {
             {
               title: "邮件摘要报告",
               generatedAt: new Date().toLocaleString("zh-CN"),
-              sections: [],
+              sections: [
+                {
+                  id: "overview",
+                  title: "概览",
+                  type: "table" as const,
+                  data: {
+                    headers: ["指标", "值"],
+                    rows: [
+                      ["邮件总数", String(templateData.totalEmails)],
+                      ["时间范围", templateData.dateRange || "全部"],
+                      ["分类数", String(templateData.categoriesBreakdown.length)],
+                    ],
+                  },
+                },
+                {
+                  id: "categories",
+                  title: "分类统计",
+                  type: "table" as const,
+                  data: {
+                    headers: ["分类", "数量"],
+                    rows: templateData.categoriesBreakdown.map(c => [c.name, String(c.count)]),
+                  },
+                },
+              ],
             },
             { templateName: "email-digest", outputPath: outputPath || undefined }
           );
@@ -1190,6 +1213,15 @@ export class EvoClawServer {
         const isUrl = source.startsWith("http://") || source.startsWith("https://");
 
         if (isUrl) {
+          // SSRF protection: validate URL before fetching
+          const ssrfProtection = this.registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
+          if (ssrfProtection) {
+            const ssrfResult = await ssrfProtection.checkURL(source);
+            if (!ssrfResult.allowed) {
+              return { error: `URL blocked by security policy: ${ssrfResult.reason}`, source };
+            }
+          }
+
           const tmpDir = os.tmpdir();
           const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}${ext || ".html"}`);
           try {

@@ -233,18 +233,18 @@ export class GatewayServer {
 
     this.protocolHandler.registerMethod("channels.list", async () => {
       const channelManager = this.registry.resolveService<{
-        getChannelStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
+        getAllStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
       }>("channelManager");
       if (!channelManager) return { channels: [] };
-      return { channels: channelManager.getChannelStatuses() };
+      return { channels: channelManager.getAllStatuses() };
     });
 
     this.protocolHandler.registerMethod("channels.status", async () => {
       const channelManager = this.registry.resolveService<{
-        getChannelStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
+        getAllStatuses(): Array<{ type: string; enabled: boolean; connected: boolean }>;
       }>("channelManager");
       if (!channelManager) return { channels: [] };
-      return { channels: channelManager.getChannelStatuses() };
+      return { channels: channelManager.getAllStatuses() };
     });
 
     this.protocolHandler.registerMethod("config.get", async (params) => {
@@ -380,12 +380,22 @@ export class GatewayServer {
         res.status(400).json({ error: "Username and password are required" });
         return;
       }
-      const expectedUser = process.env.EVOCLAW_ADMIN_USER || "admin";
-      const expectedPass = process.env.EVOCLAW_ADMIN_PASSWORD || "admin";
+      const expectedUser = process.env.EVOCLAW_ADMIN_USER || (process.env.NODE_ENV === "production" ? "" : "admin");
+      const expectedPass = process.env.EVOCLAW_ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "admin");
+      if (!expectedUser || !expectedPass) {
+        res.status(403).json({ error: "Login disabled: admin credentials not configured. Set EVOCLAW_ADMIN_USER and EVOCLAW_ADMIN_PASSWORD environment variables." });
+        return;
+      }
       const userMatch = username === expectedUser;
       const passBuf = Buffer.from(String(password));
       const expectedBuf = Buffer.from(String(expectedPass));
-      const passMatch = passBuf.length === expectedBuf.length && crypto.timingSafeEqual(passBuf, expectedBuf);
+      // Constant-time comparison regardless of length to avoid timing leaks
+      const maxLen = Math.max(passBuf.length, expectedBuf.length);
+      const paddedPass = Buffer.alloc(maxLen);
+      const paddedExpected = Buffer.alloc(maxLen);
+      passBuf.copy(paddedPass, maxLen - passBuf.length);
+      expectedBuf.copy(paddedExpected, maxLen - expectedBuf.length);
+      const passMatch = crypto.timingSafeEqual(paddedPass, paddedExpected);
       if (!userMatch || !passMatch) {
         res.status(401).json({ error: "Invalid credentials" });
         return;
@@ -407,7 +417,11 @@ export class GatewayServer {
         return;
       }
       try {
-        const decoded = this.authProvider.verifyToken(token);
+        const decoded = this.authProvider.verifyToken(token) as any;
+        if (decoded.type !== "refresh") {
+          res.status(401).json({ error: "Not a refresh token" });
+          return;
+        }
         const fresh = this.authProvider.generateToken(decoded.userId, decoded.roles);
         res.json({ token: fresh });
       } catch {

@@ -52,9 +52,12 @@ export class PermissionManager {
    */
   isPathAutoApproved(resolvedPath: string, operation: string): boolean {
     const normalized = resolvedPath.replace(/\\/g, "/");
+    // Remove path traversal components
+    const safePath = normalized.replace(/\/\.\.\//g, "/").replace(/\/\.\//g, "/");
     for (const entry of this.whitelistedDirs) {
       if (!entry.operations.includes(operation) && !entry.operations.includes("*")) continue;
-      if (normalized.startsWith(entry.dirPath)) return true;
+      const safeDir = entry.dirPath.replace(/\/\.\.\//g, "/").replace(/\/\.\//g, "/");
+      if (safePath.startsWith(safeDir)) return true;
     }
     return false;
   }

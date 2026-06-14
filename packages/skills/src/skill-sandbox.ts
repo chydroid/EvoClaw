@@ -266,7 +266,7 @@ export class SkillSandbox {
     const env = { ...process.env };
     if (skill.config && typeof skill.config === "object") {
       for (const [k, v] of Object.entries(skill.config as Record<string, unknown>)) {
-        if (typeof v === "string") env[k] = v;
+        if (typeof v === "string" && !k.startsWith("_")) env[k] = v;
       }
     }
 
@@ -330,10 +330,16 @@ export class SkillSandbox {
   ): Promise<unknown> {
     const queryParams = typeof params.query === "string" ? params.query : JSON.stringify(params);
 
-    // Replace template placeholders
+    // Replace template placeholders with proper shell escaping
+    const jsonPayload = JSON.stringify({ query: queryParams });
+    // Escape single quotes for safe insertion into single-quoted shell argument
+    const escapedJson = jsonPayload.replace(/'/g, "'\\''");
+    // Escape shell-special characters in QUERY value
+    const escapedQuery = queryParams.replace(/'/g, "'\\''").replace(/\\/g, "\\\\");
+
     let cmd = code
-      .replace(/'<JSON>'|"<JSON>"/g, `'${JSON.stringify({ query: queryParams })}'`)
-      .replace(/<QUERY>/g, queryParams);
+      .replace(/'<JSON>'|"<JSON>"/g, `'${escapedJson}'`)
+      .replace(/<QUERY>/g, `'${escapedQuery}'`);
 
     const dangerousPatterns = [
       /\$\(/,           // Command substitution $()
@@ -750,10 +756,10 @@ export class SkillSandbox {
     };
   }
 
-  private createDefaultResult(
+  private async createDefaultResult(
     skill: Skill,
     params: Record<string, unknown>
-  ): unknown {
+  ): Promise<unknown> {
     // Check if the skill has command templates in its instructions
     // (e.g., `python3 {baseDir}/scripts/xxx.py` in SKILL.md)
     const instructions = skill.body?.instructions || "";
@@ -783,17 +789,26 @@ export class SkillSandbox {
       const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
 
       try {
-        const { execSync } = require("child_process");
+        const { execFile } = require("child_process");
         const pythonBin = this.resolvePythonBin();
         // Replace python3 with the resolved python path
         const finalCmd = resolvedCmd.replace(/^python3\b/, pythonBin).replace(/^python\b/, pythonBin);
 
-        const result = execSync(finalCmd, {
-          cwd: skillDir || undefined,
-          timeout: 30000,
-          encoding: "utf-8",
-          env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-          windowsHide: true,
+        // Use async execFile to avoid blocking the event loop
+        // Split command into program and args to avoid shell injection with shell:true
+        const cmdParts = finalCmd.split(/\s+/);
+        const program = cmdParts[0];
+        const cmdArgs = cmdParts.slice(1);
+        const result = await new Promise<string>((resolve, reject) => {
+          const child = execFile(program, cmdArgs, {
+            cwd: skillDir || undefined,
+            timeout: 30000,
+            encoding: "utf-8",
+            env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+            windowsHide: true,
+          }, (err: Error | null, stdout: string, stderr: string) => {
+            if (err) { reject(err); } else { resolve(stdout); }
+          });
         });
         return {
           skillName: skill.name,

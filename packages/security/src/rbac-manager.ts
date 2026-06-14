@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 
 export type Permission = "read" | "write" | "execute" | "admin" | "deploy";
@@ -218,18 +219,13 @@ export class RBACManager {
     const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
     let key = "";
     for (let i = 0; i < 48; i++) {
-      key += chars[Math.floor(Math.random() * chars.length)];
+      key += chars[crypto.randomInt(chars.length)];
     }
     return key;
   }
 
   private hashKey(key: string): string {
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) {
-      const char = key.charCodeAt(i);
-      hash = ((hash << 5) - hash + char) | 0;
-    }
-    return Math.abs(hash).toString(16).padStart(8, "0");
+    return crypto.createHash("sha256").update(key).digest("hex");
   }
 
   getUser(userId: string): RBACUser | undefined {

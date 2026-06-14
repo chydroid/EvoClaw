@@ -146,7 +146,10 @@ export function renderMarkdown(text: string): string {
       const styleContent = styleMatch[1];
       if (!/^color:\s*[^;]+;?\s*$/i.test(styleContent)) return match;
       const innerMatch = match.match(/<span[^>]*>([\s\S]*?)<\/span>/i);
-      return `<span style="${styleMatch[0].slice(7, -1)}">${innerMatch ? innerMatch[1] : ""}</span>`;
+      const html = `<span style="${styleMatch[0].slice(7, -1)}">${innerMatch ? htmlEscape(innerMatch[1]) : ""}</span>`;
+      const idx = colorSpanPlaceholders.length;
+      colorSpanPlaceholders.push(html);
+      return `\x00COLORSPAN${idx}\x00`;
     });
 
     formatted = formatted.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {

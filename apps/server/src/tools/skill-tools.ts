@@ -1,3 +1,4 @@
+import path from "path";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { AutoSkillManager, SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
@@ -246,7 +247,7 @@ export function registerAutoSkillTools(
       // --- Create the skill ---
       try {
         const fsMgr = registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
-        const skillDir = `skills/${name}`;
+        const skillDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace", "skills", name);
         const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
         if (fsMgr) {
           await fsMgr.createFile(`${skillDir}/SKILL.md`, skillContent);

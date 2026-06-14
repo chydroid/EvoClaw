@@ -226,12 +226,14 @@ export class FileSystemManager {
   private resolvePath(relativePath: string): string {
     const normalized = relativePath.replace(/\\/g, "/");
 
-    if (/^[a-zA-Z]:/.test(normalized)) {
-      return normalized;
+    // Block absolute paths - all paths must be relative to basePath
+    if (/^[a-zA-Z]:/.test(normalized) || normalized.startsWith("/")) {
+      throw new Error(`Access denied: absolute paths are not allowed. Use relative paths within the workspace.`);
     }
 
-    if (normalized.startsWith("/")) {
-      return normalized;
+    // Block path traversal
+    if (normalized.includes("..")) {
+      throw new Error(`Access denied: path traversal ("..") is not allowed.`);
     }
 
     return `${this.basePath}/${normalized}`.replace(/\/+/g, "/");
@@ -239,12 +241,11 @@ export class FileSystemManager {
 
   private async validatePath(fullPath: string): Promise<void> {
     const normalizedFull = path.resolve(fullPath);
+    const normalizedBase = path.resolve(this.basePath);
 
-    const dangerousPatterns = ["/etc/passwd", "/etc/shadow", "/proc/", "/sys/", "C:\\Windows\\System32", "/dev/null"];
-    for (const pattern of dangerousPatterns) {
-      if (normalizedFull.toLowerCase().includes(pattern.toLowerCase())) {
-        throw new Error(`Access denied: restricted path pattern detected`);
-      }
+    // Whitelist approach: only allow paths within basePath
+    if (!normalizedFull.startsWith(normalizedBase + path.sep) && normalizedFull !== normalizedBase) {
+      throw new Error(`Access denied: path outside base directory`);
     }
   }
 

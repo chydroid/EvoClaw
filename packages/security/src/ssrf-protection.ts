@@ -232,12 +232,17 @@ export class SSRFProtection {
     const { promises: dns } = await import("node:dns");
 
     try {
-      const addresses = await Promise.race([
-        dns.resolve4(hostname),
+      // Resolve both IPv4 and IPv6 addresses
+      const [v4Result, v6Result] = await Promise.race([
+        Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("DNS resolution timed out")), this.config.dnsTimeoutMs)
         ),
       ]);
+
+      const addresses: string[] = [];
+      if (v4Result.status === "fulfilled") addresses.push(...v4Result.value);
+      if (v6Result.status === "fulfilled") addresses.push(...v6Result.value);
 
       if (addresses.length === 0) {
         return { allowed: false, reason: `DNS resolution returned no addresses for: ${hostname}` };
@@ -310,8 +315,8 @@ export class SSRFProtection {
       }
     }
 
-    // Without DNS resolution, assume safe (will be checked at runtime)
-    return { allowed: true };
+    // Without DNS resolution, block by default for safety
+    return { allowed: false, reason: "DNS resolution required but not available in sync mode" };
   }
 }
 

@@ -91,9 +91,9 @@ export class SecurityGovernor {
           return rule.action === "allow" ? "allow" : "deny";
         }
       }
-      return policy.defaultAction;
+      // If no rule matched in this policy, continue to the next policy
     }
-    return "allow";
+    return "deny";
   }
 
   private matchCondition(

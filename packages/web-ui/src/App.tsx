@@ -361,16 +361,24 @@ export default function App() {
     try {
       const res = await fetch(`/api/sessions/default/${sessionId}`, { method: "DELETE" });
       if (res.ok) {
-        const remaining = sessions.filter(s => s.sessionId !== sessionId);
-        setSessions(remaining);
-        if (activeSessionId === sessionId) {
-          if (remaining.length > 0) {
-            setActiveSession(remaining[0].sessionId);
-          } else {
-            setActiveSession(null);
+        setSessions(prev => {
+          const remaining = prev.filter(s => s.sessionId !== sessionId);
+          // Use functional update for activeSessionId to avoid stale closure
+          setActiveSessionId(prevActive => {
+            if (prevActive === sessionId) {
+              if (remaining.length > 0) {
+                return remaining[0].sessionId;
+              } else {
+                return null;
+              }
+            }
+            return prevActive;
+          });
+          if (remaining.length === 0) {
             setNewChatCounter(prev => prev + 1);
           }
-        }
+          return remaining;
+        });
       }
     } catch { /* ignore */ }
     setDeleteConfirmId(null);
@@ -481,8 +489,8 @@ export default function App() {
   }
 
   function handleAvatarUpload(target: "user" | "bot") {
-    fileInputRef.current?.click();
     fileInputRef.current?.setAttribute("data-target", target);
+    fileInputRef.current?.click();
   }
 
   function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {

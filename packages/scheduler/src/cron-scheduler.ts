@@ -468,13 +468,18 @@ export class CronScheduler extends EventEmitter {
       return job.task();
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(
         () => reject(new Error(`Job "${job.name}" timed out after ${job.timeout}ms`)),
         job.timeout,
-      ),
-    );
+      );
+    });
 
-    return Promise.race([job.task(), timeoutPromise]);
+    try {
+      return await Promise.race([job.task(), timeoutPromise]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 }

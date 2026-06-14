@@ -443,6 +443,7 @@ function cleanToolCache(cache: Map<string, ToolResultCacheEntry>): void {
 // a tool call with identical parameters within the TTL window.
 const idempotencyCache = new Map<string, { result: string; timestamp: number }>();
 const IDEMPOTENCY_TTL = 5 * 60 * 1000; // 5 minutes
+const IDEMPOTENCY_MAX = 200;
 const IDEMPOTENT_TOOLS = new Set([
   "file_create", "file_modify", "file_delete",
   "email_send",
@@ -472,6 +473,14 @@ function cleanIdempotencyCache(): void {
   for (const [key, entry] of idempotencyCache) {
     if (now - entry.timestamp > IDEMPOTENCY_TTL) {
       idempotencyCache.delete(key);
+    }
+  }
+  if (idempotencyCache.size > IDEMPOTENCY_MAX) {
+    const entries = Array.from(idempotencyCache.entries())
+      .sort((a, b) => b[1].timestamp - a[1].timestamp);
+    idempotencyCache.clear();
+    for (let i = 0; i < IDEMPOTENCY_MAX && i < entries.length; i++) {
+      idempotencyCache.set(entries[i][0], entries[i][1]);
     }
   }
 }
@@ -1484,7 +1493,10 @@ Have a specific URL?
 
           taskStatusTracker.set(sessionId, "tool_calling", `正在执行: ${toolName}...`, 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20));
           let args: Record<string, unknown> = {};
-          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore parse errors */ }
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch (parseErr) {
+            console.warn(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+            args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
+          }
           onProgress?.({ type: "tool_call", phase: "tool_calling", detail: `正在执行工具: ${toolName}`, progress: 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolArgs: args, round: round + 1 });
 
           // ── Observability: start tool span ──
@@ -1941,7 +1953,7 @@ Have a specific URL?
           }
 
           // ── Reflection: check if we should reflect after this tool call ──
-          if (deps.checkAndReflect && toolCallCount > 0 && toolCallCount % 3 === 0) {
+          if (deps.checkAndReflect && toolCallCount > 0 && (toolCallCount + 1) % 3 === 0) {
             try {
               const reflectionResult = await deps.checkAndReflect(sessionId);
               if (reflectionResult) {

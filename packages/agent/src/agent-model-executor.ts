@@ -1149,7 +1149,7 @@ export class AgentModelExecutor {
     // ── Observability: start trace ──
     let currentTraceId: string | undefined;
     if (this.observability) {
-      const trace = this.observability.startTrace(sessionId, { userId: effectiveMessage.slice(0, 100) });
+      const trace = this.observability.startTrace(sessionId, { userId: sessionId.split("-")[0] || "unknown" });
       currentTraceId = trace.traceId;
       this._currentTraceId = currentTraceId;
     }
@@ -1167,10 +1167,17 @@ export class AgentModelExecutor {
       if (this.sessionManager && sessionId) {
         const loadedHistory = this.sessionManager.loadTranscript(agentId, sessionId);
         if (loadedHistory.length > 0) {
-          this.conversationHistory.set(sessionId, loadedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => ({
-            role: t.role,
-            content: t.content,
-          })));
+          this.conversationHistory.set(sessionId, loadedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => {
+            const entry: Record<string, unknown> = {
+              role: t.role,
+              content: t.content,
+            };
+            // Preserve tool_calls for assistant messages to maintain conversation context
+            if (t.role === "assistant" && (t as any).tool_calls) {
+              entry.tool_calls = (t as any).tool_calls;
+            }
+            return entry as any;
+          }));
         }
       }
     };
@@ -1927,7 +1934,7 @@ export class AgentModelExecutor {
         ? this.memoryHub.remember(entry)
         : this.memoryHub.getLongTerm().store({
             ...entry,
-            id: "",
+            id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             createdAt: new Date(),
             accessedAt: new Date(),
           } as import("@evoclaw/core").MemoryEntry);

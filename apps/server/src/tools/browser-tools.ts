@@ -28,7 +28,7 @@ export function registerBrowserTools(
   const MAX_TABS_PER_SESSION = 5; // prevent tab explosion
 
   // Periodically clean up idle browser sessions
-  setInterval(() => {
+  const browserHealthInterval = setInterval(() => {
     const now = Date.now();
     for (const [sessionId, info] of browserSessions) {
       if (now - info.lastActivityAt > MAX_BROWSER_IDLE_MS) {
@@ -37,6 +37,7 @@ export function registerBrowserTools(
       }
     }
   }, 60_000); // check every minute
+  browserHealthInterval.unref();
 
   function touchBrowserSession(): void {
     const info = browserSessions.get("default");

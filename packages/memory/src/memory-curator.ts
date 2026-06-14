@@ -24,7 +24,7 @@ const USER_PREFERENCE_PATTERNS = [
 ];
 
 const ENVIRONMENT_FACT_PATTERNS = [
-  /\/[\w.-]+\/[\w.-]+/g,
+  /\/[\w.-]+\/[\w.-]+/,
   /\bversion\b/i, /\bv\d+\.\d+/i,
   /\bconfig/i, /\bsetting/i,
   /\bpath\s*(?:is|=)\s*/i,

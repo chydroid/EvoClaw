@@ -326,15 +326,25 @@ except Exception as e:
 `;
 
       try {
-        const result = execSync(`python -c ${JSON.stringify(script)}`, {
-          cwd: workspaceDir,
-          timeout: 60000,
-          maxBuffer: 5 * 1024 * 1024,
-          encoding: "utf-8",
-          env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-        });
-        const parsed = JSON.parse(result.trim());
-        return { success: true, ...parsed };
+        // Write script to temp file instead of using python -c (which fails with multiline scripts)
+        const scriptPath = path.join(workspaceDir, `_scrapling_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
+        fs.writeFileSync(scriptPath, script, "utf-8");
+        try {
+          const result = execSync(`python ${path.basename(scriptPath)}`, {
+            cwd: workspaceDir,
+            timeout: 60000,
+            maxBuffer: 5 * 1024 * 1024,
+            encoding: "utf-8",
+            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+          });
+          const parsed = JSON.parse(result.trim());
+          return { success: true, ...parsed };
+        } catch (err: any) {
+          const stderr = err.stderr?.toString() || err.message || String(err);
+          return { success: false, error: stderr.slice(0, 5000) };
+        } finally {
+          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
+        }
       } catch (err: any) {
         const stderr = err.stderr?.toString() || err.message || String(err);
         return { success: false, error: stderr.slice(0, 5000) };

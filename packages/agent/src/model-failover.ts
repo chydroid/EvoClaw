@@ -142,6 +142,10 @@ export class ModelFailoverManager {
   unregisterProvider(providerId: string): void {
     this.providers.delete(providerId);
     this.health.delete(providerId);
+    const timer = this.circuitTimers.get(providerId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
     this.circuitTimers.delete(providerId);
   }
 

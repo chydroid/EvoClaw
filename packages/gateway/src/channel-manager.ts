@@ -319,6 +319,13 @@ export class ChannelManager {
     const entry = this.pairingCodes.get(code);
     if (!entry) return false;
 
+    // Pairing codes expire after 5 minutes
+    if (Date.now() - entry.createdAt > 5 * 60 * 1000) {
+      this.pairingCodes.delete(code);
+      console.warn(`[ChannelManager] Pairing code expired for peer ${entry.peerId} on ${entry.channel}`);
+      return false;
+    }
+
     const approved = this.approvedPeers.get(entry.channel);
     if (approved) {
       approved.add(entry.peerId);

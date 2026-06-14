@@ -561,6 +561,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const isStreamingRef = useRef(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
@@ -584,6 +585,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [historyPositionHint, setHistoryPositionHint] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
   const userAbortedRef = useRef(false);
   const inputHistoryRef = useRef<string[]>([]);
   // Load persisted input history from localStorage
@@ -616,6 +619,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       abortControllerRef.current = null;
     }
     setIsStreaming(false);
+    isStreamingRef.current = false;
     setStatusMessage(null);
   }, []);
 
@@ -748,12 +752,26 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     }
   }, [messages]);
 
+  // Cleanup: revoke blob URLs and clear intervals/timers on unmount
+  useEffect(() => {
+    return () => {
+      attachedFiles.forEach(f => {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+      });
+      intervalsRef.current.forEach(id => clearInterval(id));
+      intervalsRef.current = [];
+      timersRef.current.forEach(id => clearTimeout(id));
+      timersRef.current = [];
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSend = async (queuedText?: string) => {
     userAbortedRef.current = false;
     const text = (queuedText || input).trim();
     const readyFiles = queuedText ? [] : attachedFiles.filter(f => f.status === "done");
     const hasContent = text.length > 0 || readyFiles.length > 0;
-    if (!hasContent || isStreaming) return;
+    if (!hasContent || isStreamingRef.current) return;
 
     let sessionId = effectiveSessionIdRef.current;
     if (!sessionId) {
@@ -799,6 +817,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       }
     }
     setIsStreaming(true);
+    isStreamingRef.current = true;
     setLoadingMessageIndex(0);
     setCurrentProgress(0);
 
@@ -820,6 +839,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1;
       setLoadingMessageIndex(msgIndex);
     }, 3000);
+    intervalsRef.current.push(progressInterval);
 
     const statusInterval = setInterval(async () => {
       try {
@@ -847,6 +867,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         }
       } catch { /* ignore polling errors */ }
     }, 1500);
+    intervalsRef.current.push(statusInterval);
 
     try {
       const attachmentPayload = readyFiles.length > 0 ? readyFiles.map(f => ({
@@ -1179,8 +1200,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     } finally {
       clearInterval(progressInterval);
       clearInterval(statusInterval);
+      intervalsRef.current = intervalsRef.current.filter(id => id !== progressInterval && id !== statusInterval);
       setStatusMessage(null);
       setIsStreaming(false);
+    isStreamingRef.current = false;
       setCurrentProgress(100);
       setProgressSteps([]);
       abortControllerRef.current = null;
@@ -1239,6 +1262,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         const lastUserMsg = messages.find((m) => m.role === "user");
         if (lastUserMsg && effectiveSessionIdRef.current) {
           setIsStreaming(true);
+    isStreamingRef.current = true;
           const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1278,6 +1302,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     }
     
     setIsStreaming(false);
+    isStreamingRef.current = false;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1482,7 +1507,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     a.href = url;
     a.download = `evoclaw-chat-${Date.now()}.md`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   // ─── File upload constants ───
@@ -1544,7 +1569,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const simulateUpload = (fileInfo: AttachedFileInfo): void => {
     const token = fileInfo.cancelToken;
     const startTime = Date.now();
-    
+
     const tick = () => {
       if (token?.cancelled) {
         setAttachedFiles(prev => prev.map(f => f.id === fileInfo.id ? { ...f, status: "error" as const, error: t("chat.upload_cancelled") } : f));
@@ -1561,7 +1586,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       );
 
       if (progress < 100) {
-        setTimeout(tick, 80 + Math.random() * 60);
+        const tid = setTimeout(tick, 80 + Math.random() * 60);
+        timersRef.current.push(tid);
       } else {
         setAttachedFiles(prev =>
           prev.map(f =>

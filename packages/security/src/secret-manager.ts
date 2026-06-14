@@ -133,8 +133,11 @@ export class SecretManager {
   private accessLogs: SecretAccessLog[] = [];
   private envMasked = new Set<string>();
 
+  private hmacKey: string;
+
   constructor(config?: Partial<SecretManagerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.hmacKey = process.env.EVOCLAW_SECRET_HMAC_KEY || randomBytes(32).toString("hex");
   }
 
   // ── Registration ────────────────────────────────────────
@@ -377,8 +380,13 @@ export class SecretManager {
     try {
       const stored = Buffer.from(entry.value, "utf-8");
       const input = Buffer.from(candidate, "utf-8");
-      if (stored.length !== input.length) return false;
-      const result = timingSafeEqual(stored, input);
+      // Use constant-time comparison even with different lengths to avoid timing leaks
+      const maxLen = Math.max(stored.length, input.length);
+      const paddedStored = Buffer.alloc(maxLen);
+      const paddedInput = Buffer.alloc(maxLen);
+      stored.copy(paddedStored, maxLen - stored.length);
+      input.copy(paddedInput, maxLen - input.length);
+      const result = timingSafeEqual(paddedStored, paddedInput);
       this.logAccess(name, "system", "verify", result, result ? "Match" : "Mismatch");
       return result;
     } catch {
@@ -554,6 +562,6 @@ export class SecretManager {
 
   private hashValue(value: string): string {
     if (!this.config.hashStoredValues) return "";
-    return createHmac("sha256", "secret-manager-internal").update(value).digest("hex").slice(0, 16);
+    return createHmac("sha256", this.hmacKey).update(value).digest("hex").slice(0, 16);
   }
 }

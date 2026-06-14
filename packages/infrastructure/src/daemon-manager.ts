@@ -57,8 +57,13 @@ export class DaemonManager {
   private config: Required<DaemonConfig>;
 
   constructor(config: DaemonConfig = {}) {
+    const serviceName = config.serviceName ?? "evoclaw";
+    // Validate serviceName to prevent command injection in shell commands
+    if (!/^[a-zA-Z0-9_-]+$/.test(serviceName)) {
+      throw new Error("serviceName must only contain alphanumeric characters, hyphens, and underscores");
+    }
     this.config = {
-      serviceName: config.serviceName ?? "evoclaw",
+      serviceName,
       displayName: config.displayName ?? "EvoClaw Agent",
       description: config.description ?? "EvoClaw — Self-Evolving AI Agent Operating System",
       executablePath: config.executablePath ?? process.execPath,

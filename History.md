@@ -3,6 +3,87 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.33.0 (2026-06-14)
+
+### 五轮商业级代码审计与BUG修复
+
+经过五轮全面代码审计，跨12个包共发现并修复80+个BUG，涵盖安全漏洞、逻辑错误、内存泄漏、资源管理和UI问题。
+
+---
+
+#### 安全修复 (Critical)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| Shell注入：单引号逃逸 | queryParams含单引号可逃逸shell引号 | skill-sandbox.ts |
+| Shell注入：QUERY模板 | `<QUERY>`模板替换未转义特殊字符 | skill-sandbox.ts |
+| execFile+shell:true等同exec | createDefaultResult使用shell:true可执行任意命令 | skill-sandbox.ts |
+| 认证中间件黑名单模式 | 几乎所有API端点跳过认证，改为白名单默认拒绝 | auth-provider.ts |
+| 生产环境空WEB_UI_TOKEN | 空token允许任意访问，生产环境拒绝 | auth-provider.ts |
+| RBAC API密钥可预测 | Math.random改为crypto.randomInt | rbac-manager.ts |
+| RBAC哈希不安全 | djb2改为SHA-256 | rbac-manager.ts |
+| SSRF checkURLSync默认放行 | 改为默认拒绝 | ssrf-protection.ts |
+| SSRF DNS仅查IPv4 | 同时解析IPv4/IPv6防止绕过 | ssrf-protection.ts |
+| FileSystemManager任意文件读写 | 黑名单改为白名单，强制路径在basePath内 | filesystem-manager.ts |
+| 路径遍历：绝对路径 | resolvePath允许绝对路径访问任意文件 | filesystem-manager.ts |
+| SSH私钥文件泄露 | 临时密钥文件未在finally中清理 | ssh-sandbox.ts |
+| SSH workdir命令注入 | workdir参数可注入shell命令 | ssh-sandbox.ts |
+| VM沙箱定时器逃逸 | setTimeout创建的定时器在沙箱退出后仍运行 | sandbox-executor.ts |
+| DAG条件执行注入 | evaluateCondition可执行任意代码 | dag-executor.ts |
+| sessionId路径遍历 | sessionId含`../`可读写任意文件 | execution-checkpoint.ts |
+| 密码比较时序攻击 | 非常量时间比较泄露密码信息 | gateway-server.ts |
+| 刷新令牌类型未验证 | 攻击者可用access_token刷新 | gateway-server.ts |
+| 默认凭据生产环境可用 | 默认admin/admin在生产环境应拒绝 | gateway-server.ts |
+| Secret verify非常量时间 | 不同长度密钥直接返回false泄露信息 | secret-manager.ts |
+| Secret HMAC密钥可预测 | 使用固定字符串生成hmacKey | secret-manager.ts |
+| 内部配置键泄露 | `_`开头的内部键不应暴露给技能 | skill-sandbox.ts |
+| 安全扫描时序问题 | 先注册再扫描，恶意技能可先执行 | skill-manager.ts |
+| isPathAutoApproved路径遍历 | `..`组件未被阻止 | permission-manager.ts |
+| 邮件加密密钥硬编码 | 固定加密密钥可被反编译获取 | email-client.ts |
+| daemon serviceName注入 | serviceName未验证可注入shell命令 | daemon-manager.ts |
+
+#### 逻辑修复 (Major)
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| 会话历史丢失tool_calls | 加载历史时过滤掉tool_calls导致工具调用断裂 | agent-model-executor.ts |
+| 记忆条目ID重复 | 使用时间戳+随机数生成唯一ID | agent-model-executor.ts |
+| userId使用sessionId | 不同会话的记忆互相干扰 | agent-model-executor.ts |
+| 工具参数解析静默失败 | 解析失败记录警告+保留原始参数 | llm-caller.ts |
+| 反射触发off-by-one | 索引计算错误导致反射条件判断偏差 | llm-caller.ts |
+| idempotencyCache无上限 | 缓存无限增长导致内存泄漏 | llm-caller.ts |
+| evaluatePolicy提前返回 | defaultAction导致后续策略被跳过 | security-governor.ts |
+| 截断日志丢失原始长度 | 截断后无法知道原始数据大小 | content-guard.ts |
+| permission-relay ID可预测 | 使用Math.random改为crypto.randomBytes | permission-relay.ts |
+| rate-limiter remaining变负数 | 先扣减再检查导致剩余数变负 | rate-limiter.ts |
+| 配对码5分钟无过期 | 配对码永不过期存在安全风险 | channel-manager.ts |
+| long-term-memory expire无检查 | ttl<=0时仍设置过期导致逻辑错误 | long-term-memory.ts |
+| memory-curator正则/g标志 | 全局标志导致状态残留 | memory-curator.ts |
+| skillDir使用相对路径 | 相对路径在不同工作目录下行为不一致 | skill-tools.ts |
+| email_analyze无上限 | 大量邮件导致内存溢出 | email-tools.ts |
+| report_email_digest数据丢失 | sections数据未传入报告生成器 | index.ts |
+| markitdown_convert SSRF | URL未做SSRF防护 | index.ts |
+| A2A默认认证不安全 | 默认认证方式应为api_key | index.ts |
+| scrapling_fetch命令注入 | python -c参数含特殊字符可注入 | shell-media-tools.ts |
+| deleteSession状态竞争 | 使用函数式更新避免闭包过期 | App.tsx |
+| handleAvatarUpload时序 | 先setAttribute再click确保值正确 | App.tsx |
+| isStreaming闭包过期 | useRef追踪isStreaming防止过期闭包 | WebChatPage.tsx |
+| 定时器资源泄漏 | useRef追踪timers/intervals并在卸载时清理 | WebChatPage.tsx |
+| Blob URL卸载泄漏 | 组件卸载时未释放blob URL | WebChatPage.tsx |
+| colorSpan XSS | 占位符机制+htmlEscape防注入 | markdown-renderer.ts |
+
+#### 内存泄漏与资源管理修复
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| VM沙箱定时器泄漏 | setTimeout创建的定时器未清理 | sandbox-executor.ts |
+| cron-scheduler定时器泄漏 | runWithTimeout定时器未在finally中清理 | cron-scheduler.ts |
+| browser-tools setInterval泄漏 | setInterval未调用.unref()阻止进程退出 | browser-tools.ts |
+| model-failover定时器泄漏 | unregisterProvider未清理定时器 | model-failover.ts |
+| session-manager TOCTOU | acquireLock使用wx flag消除竞态条件 | session-manager.ts |
+| session-manager sleepSync | 忙等待改为Atomics.wait | session-manager.ts |
+| self-healing anomalies无上限 | 列表无限增长导致内存溢出 | self-healing.ts |
+
 ## v0.32.0 (2026-06-13)
 
 ### 三轮商业级代码审计与BUG修复

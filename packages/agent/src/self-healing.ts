@@ -577,6 +577,10 @@ export class SelfHealingEngine extends EventEmitter {
     }
 
     this.anomalies.push(...newAnomalies);
+    // Cap anomalies list to prevent unbounded memory growth
+    if (this.anomalies.length > 1000) {
+      this.anomalies = this.anomalies.slice(-500);
+    }
 
     for (const anomaly of newAnomalies) {
       this.emit("anomaly-detected", { anomaly });

@@ -325,11 +325,7 @@ export class SkillManager {
       },
     };
 
-    this.skills.set(skill.id, skill);
-    this.registry.registerSkill(skill);
-    this.lifecycle.activate(skill);
-
-    // Security scan after skill creation
+    // Security scan BEFORE registering the skill
     const securityResult = this.validator.securityScan(skill);
     if (securityResult.findings.length > 0) {
       const criticalFindings = securityResult.findings.filter(f => f.severity === "critical");
@@ -339,7 +335,6 @@ export class SkillManager {
       if (criticalFindings.length > 0) {
         // Roll back: uninstall the skill
         this.skills.delete(skill.id);
-        this.registry.unregisterSkill(skill.id);
         this.lifecycle.deactivate(skill);
         const criticalDescs = criticalFindings.map(f => `[${f.type}] ${f.description} (${f.location})`).join("; ");
         throw new Error(`Security scan rejected skill "${skill.name}": critical findings: ${criticalDescs}`);
@@ -356,6 +351,11 @@ export class SkillManager {
         }
       }
     }
+
+    // Register skill only after security scan passes
+    this.skills.set(skill.id, skill);
+    this.registry.registerSkill(skill);
+    this.lifecycle.activate(skill);
 
     await this.hookEngine.executeHook(skill, "onInstall");
 

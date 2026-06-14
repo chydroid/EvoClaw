@@ -316,7 +316,7 @@ export class LongTermMemoryStore implements LongTermMemory {
     let expired = 0;
     const now = Date.now();
     for (const [id, entry] of this.entries) {
-      if (entry.createdAt.getTime() + entry.ttl < now) {
+      if (entry.ttl > 0 && entry.createdAt.getTime() + entry.ttl < now) {
         this.entries.delete(id);
         if (this.sqliteDb) {
           try {

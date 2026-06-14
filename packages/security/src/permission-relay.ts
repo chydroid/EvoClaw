@@ -15,6 +15,7 @@
  * This is the ACP permission-relay pattern from OpenClaw — a single
  * point of control for all tool access decisions.
  */
+import crypto from "crypto";
 import type { EventBus } from "@evoclaw/core";
 
 // ──────────────────────────────────────────────────────────────
@@ -88,7 +89,7 @@ export class PermissionRelay {
     category?: PermissionRequest["category"];
     timeoutMs?: number;
   }): PermissionRequest {
-    const id = `perm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const id = `perm_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
     const timeoutMs = params.timeoutMs ?? this.defaultTimeoutMs;
 
     const req: PermissionRequest = {

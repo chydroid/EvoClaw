@@ -113,8 +113,10 @@ export class SandboxExecutor {
       // 创建临时目录
       const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), this.config.tmpDirPrefix));
 
+      // Track timers created by sandbox for cleanup (declared outside try for finally access)
+      const sandboxTimers: ReturnType<typeof setTimeout>[] = [];
+
       try {
-        // 准备沙箱上下文
         const sandbox: Record<string, unknown> = {
           console: {
             log: (...args: unknown[]) => {
@@ -143,11 +145,17 @@ export class SandboxExecutor {
             },
           },
           setTimeout: (fn: () => void, ms: number) => {
-            // 限制最长超时
+            // 限制最长超时，并追踪定时器以便清理
             const limitedMs = Math.min(ms, this.config.timeoutMs);
-            return globalThis.setTimeout(fn, limitedMs);
+            const id = globalThis.setTimeout(fn, limitedMs);
+            sandboxTimers.push(id);
+            return id;
           },
-          clearTimeout: globalThis.clearTimeout.bind(globalThis),
+          clearTimeout: (id: ReturnType<typeof setTimeout>) => {
+            globalThis.clearTimeout(id);
+            const idx = sandboxTimers.indexOf(id);
+            if (idx >= 0) sandboxTimers.splice(idx, 1);
+          },
           setInterval: () => {
             throw new Error("setInterval is not allowed in sandbox");
           },
@@ -248,6 +256,12 @@ export class SandboxExecutor {
           }
         }
       } finally {
+        // Clean up sandbox timers
+        for (const id of sandboxTimers) {
+          globalThis.clearTimeout(id);
+        }
+        sandboxTimers.length = 0;
+
         // 清理临时目录
         try {
           await fs.rm(tmpDir, { recursive: true, force: true });

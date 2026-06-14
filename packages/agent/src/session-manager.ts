@@ -336,8 +336,8 @@ export class SessionManager {
 
     while (Date.now() - startedAt < timeoutMs) {
       try {
-        // Write lock file with PID if it doesn't exist
-        if (!fs.existsSync(lockPath)) {
+        // Try to create lock file directly (atomic operation with wx flag)
+        try {
           fs.writeFileSync(lockPath, String(pid), { flag: "wx" });
           const lock: SessionLock = {
             sessionId,
@@ -348,6 +348,9 @@ export class SessionManager {
           };
           this.activeLocks.set(sessionId, lock);
           return lock;
+        } catch (writeErr: any) {
+          if (writeErr.code !== "EEXIST") throw writeErr;
+          // Lock file already exists, check for stale lock below
         }
 
         // Check for stale lock (process no longer exists)
@@ -612,9 +615,13 @@ export class SessionManager {
   }
 
   private sleepSync(ms: number): void {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      // Busy-wait for short sync delays (acceptable for lock contention)
+    // Use Atomics.wait for non-busy synchronous sleep (Node.js only)
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    } catch {
+      // Fallback: busy-wait for environments where Atomics.wait is unavailable
+      const end = Date.now() + ms;
+      while (Date.now() < end) { /* busy-wait */ }
     }
   }
 }

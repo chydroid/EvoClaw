@@ -43,92 +43,47 @@ export class AuthProvider {
   }
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const publicPaths = ["/health", "/healthz", "/live", "/ready", "/readyz", "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/cli/execute", "/api/config/llm", "/api/config/avatars", "/api/config/channels", "/api/status", "/api/chat", "/api/skills", "/api/skills/refresh", "/api/bootstrap", "/api/events/snapshot", "/api/permission-relay/pending", "/api/permission-relay/history", "/api/crestodian/health", "/api/crestodian/overview", "/api/crestodian/diagnostics", "/api/sessions"];
+    // ── Public paths that never require authentication ──
+    const publicExactPaths = new Set([
+      "/health", "/healthz", "/live", "/ready", "/readyz",
+      "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh",
+      "/api/status", "/api/bootstrap",
+    ]);
 
-    if (publicPaths.includes(req.path)) {
+    if (publicExactPaths.has(req.path)) {
       return next();
     }
 
-    // Allow all sub-paths under these public API prefixes (with or without trailing slash)
-    if (
-      req.path.startsWith("/api/skills/") || req.path === "/api/skills" ||
-      req.path.startsWith("/api/config/") || req.path === "/api/config" ||
-      req.path.startsWith("/api/config-rpc") ||
-      req.path.startsWith("/api/bootstrap/") || req.path === "/api/bootstrap" ||
-      req.path.startsWith("/api/events") ||
-      req.path.startsWith("/api/permission-relay/") ||
-      req.path.startsWith("/api/crestodian/") ||
-      req.path.startsWith("/api/sessions/") || req.path === "/api/sessions" ||
-      req.path.startsWith("/api/evolution/") ||
-      req.path.startsWith("/api/compactions") ||
-      req.path.startsWith("/api/scheduler/") ||
-      req.path.startsWith("/api/channels/") ||
-      req.path.startsWith("/api/plugins") ||
-      req.path.startsWith("/api/retention/") ||
-      req.path.startsWith("/api/health/") ||
-      req.path.startsWith("/api/models/") ||
-      req.path.startsWith("/api/dead-letter-queue/") ||
-      req.path.startsWith("/api/message-templates") ||
-      req.path.startsWith("/api/reply-refs") ||
-      req.path.startsWith("/api/canvas/") ||
-      req.path.startsWith("/api/feature-flags") ||
-      req.path.startsWith("/api/queue") ||
-      req.path.startsWith("/api/agent/") ||
-      req.path.startsWith("/api/memory/") || req.path === "/api/memory" ||
-      req.path.startsWith("/api/tools") ||
-      req.path.startsWith("/api/sandbox/") ||
-      req.path.startsWith("/api/reporting/") ||
-      req.path.startsWith("/api/system/") ||
-      req.path.startsWith("/api/security/") ||
-      req.path.startsWith("/api/file/") ||
-      req.path.startsWith("/api/logs") ||
-      req.path.startsWith("/api/version") ||
-      req.path.startsWith("/api/approvals/") ||
-      req.path.startsWith("/api/tracing/") ||
-      req.path.startsWith("/api/evals/") ||
-      req.path === "/api/executions" ||
-      req.path.startsWith("/api/executions/") ||
-      req.path.startsWith("/a2a/") ||
-      req.path === "/a2a"
-    ) {
+    // ── Public path prefixes (read-only, non-sensitive) ──
+    const publicPrefixes = [
+      "/api/config/llm",      // LLM config needed for UI bootstrap
+      "/api/config/avatars",  // Avatar config needed for UI
+      "/api/config/channels", // Channel config needed for UI
+      "/api/events",          // SSE event stream (has its own auth via query param)
+    ];
+
+    if (publicPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"))) {
       return next();
     }
 
+    // ── Static assets and UI pages ──
     if (req.path === "/" || req.path.startsWith("/ui") || req.path.startsWith("/assets/") || req.path.match(/\.(html|js|css|png|ico|svg|json)$/)) {
       return next();
     }
 
-    // For paths that don't match any known API prefix, skip auth and let
-    // the 404 middleware handle them. This avoids returning 401 for routes
-    // that simply don't exist, which leaks no information and gives a
-    // more accurate response.
-    if (req.path.startsWith("/api/") && !req.path.startsWith("/api/auth/")) {
-      // Known API prefixes that should require auth if no public match
-      const knownApiPrefixes = [
-        "/api/chat", "/api/skills", "/api/config", "/api/bootstrap", "/api/events",
-        "/api/permission-relay", "/api/crestodian", "/api/sessions", "/api/evolution",
-        "/api/compactions", "/api/scheduler", "/api/channels", "/api/plugins",
-        "/api/permission", "/api/retention", "/api/health", "/api/models",
-        "/api/dead-letter-queue", "/api/message-templates", "/api/reply-refs",
-        "/api/canvas", "/api/feature-flags", "/api/queue", "/api/agent",
-        "/api/memory", "/api/tools", "/api/sandbox", "/api/reporting",
-        "/api/system", "/api/security", "/api/file", "/api/logs", "/api/version",
-        "/api/approvals", "/api/tracing", "/api/evals", "/api/executions",
-        "/api/steer", "/api/workboard", "/api/mcp", "/api/guardrails",
-        "/api/prompt-cache", "/api/acp", "/api/observability", "/api/computed-status",
-      ];
-      const isKnownApi = knownApiPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"));
-      if (!isKnownApi) {
-        // Unknown API path — skip auth, let 404 handler deal with it
-        return next();
-      }
+    // ── A2A paths use their own auth (api_key or none based on config) ──
+    if (req.path.startsWith("/a2a/") || req.path === "/a2a") {
+      return next();
     }
 
+    // ── All other /api/ paths REQUIRE authentication ──
+    // Check cookie token first
     const cookieToken = this.getCookie(req, "web_ui_token");
     if (cookieToken && this.safeEqual(cookieToken, this.webUiToken)) {
       return next();
     }
 
+    // Check Bearer token
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -157,6 +112,10 @@ export class AuthProvider {
     }
 
     if (!this.webUiToken || this.webUiToken.length === 0) {
+      if (process.env.NODE_ENV === "production") {
+        res.status(401).send("Unauthorized: WEB_UI_TOKEN not configured");
+        return;
+      }
       return next();
     }
 

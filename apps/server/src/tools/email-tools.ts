@@ -98,6 +98,9 @@ export function registerEmailTools(
       } catch {
         return { error: "rawEmails must be a valid JSON array of email strings" };
       }
+      if (rawEmails.length > 100) {
+        return { error: "rawEmails array too large, maximum 100 items" };
+      }
       const parsed: ParsedEmail[] = [];
       for (const raw of rawEmails) {
         try {

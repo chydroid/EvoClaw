@@ -44,9 +44,7 @@ export class RateLimiterService implements RateLimiter {
       this.entries.set(key, entry);
     }
 
-    entry.remaining -= points;
-
-    if (entry.remaining < 0) {
+    if (entry.remaining - points < 0) {
       await this.eventBus.publish(
         SystemEvents.RATE_LIMIT_EXCEEDED,
         { key, remaining: entry.remaining },
@@ -54,11 +52,13 @@ export class RateLimiterService implements RateLimiter {
       );
       return {
         allowed: false,
-        remaining: 0,
+        remaining: Math.max(0, entry.remaining),
         resetAt: entry.resetAt,
         retryAfter: entry.resetAt.getTime() - now,
       };
     }
+
+    entry.remaining -= points;
 
     return {
       allowed: true,

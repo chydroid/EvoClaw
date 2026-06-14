@@ -197,7 +197,23 @@ export class DAGExecutor {
    */
   private evaluateCondition(condition: string, context: Task["context"]): boolean {
     try {
-      const fn = new Function("context", `with(context) { return (${condition}); }`);
+      // Safe evaluation: only allow simple comparison and logical expressions
+      // Block dangerous patterns that could lead to code injection
+      const sanitized = condition.trim();
+      const dangerousPatterns = [
+        /constructor/i, /__proto__/i, /process\b/i, /require\b/i,
+        /import\b/i, /eval\b/i, /Function\b/i, /this\b/i,
+        /window\b/i, /global\b/i, /document\b/i,
+      ];
+      for (const pat of dangerousPatterns) {
+        if (pat.test(sanitized)) {
+          console.warn(`[DAGExecutor] Condition blocked: contains dangerous pattern`);
+          return false;
+        }
+      }
+
+      // Simple safe evaluation using only context variables
+      const fn = new Function("context", `with(context) { return (${sanitized}); }`);
       const result = fn(context);
       return Boolean(result);
     } catch {

@@ -216,7 +216,12 @@ export class ExecutionCheckpointStore {
 
   private persistToDisk(sessionId: string, state: ExecutionState): void {
     try {
-      const filePath = path.join(this.storeDir, `${sessionId}.json`);
+      const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filePath = path.join(this.storeDir, `${safeId}.json`);
+      // Ensure resolved path is within storeDir
+      if (!path.resolve(filePath).startsWith(path.resolve(this.storeDir))) {
+        throw new Error("Invalid session ID: path traversal detected");
+      }
       fs.writeFileSync(filePath, JSON.stringify(state), "utf-8");
     } catch (err) {
       console.warn(`[ExecutionCheckpointStore] Failed to persist execution ${sessionId}:`, err);

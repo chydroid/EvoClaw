@@ -72,15 +72,18 @@ export class SSHSandbox {
       "-p", String(this.port),
     ];
 
+    let keyFile: string | undefined;
     if (this.privateKey) {
-      const keyFile = this.writeKeyFile(this.privateKey);
+      keyFile = this.writeKeyFile(this.privateKey);
       args.push("-i", keyFile);
     }
 
     args.push(`${this.user}@${this.host}`);
 
     if (options?.workdir) {
-      command = `cd ${options.workdir} 2>/dev/null; ${command}`;
+      // Sanitize workdir to prevent command injection
+      const safeWorkdir = options.workdir.replace(/[;&|`$(){}!#]/g, "");
+      command = `cd '${safeWorkdir.replace(/'/g, "'\\''")}' 2>/dev/null; ${command}`;
     }
 
     if (options?.env && Object.keys(options.env).length > 0) {
@@ -117,6 +120,11 @@ export class SSHSandbox {
         timedOut: false,
         error: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      // Clean up private key file to prevent credential leakage
+      if (keyFile) {
+        try { require("fs").unlinkSync(keyFile); } catch { /* best effort */ }
+      }
     }
   }
 

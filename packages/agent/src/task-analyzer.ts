@@ -591,6 +591,7 @@ export function computeDynamicToolLimit(
   message: string,
   baseLimit: number,
   cap: number,
+  sessionId: string,
 ): number {
   const lower = message.toLowerCase();
   let limit = baseLimit;
@@ -626,7 +627,7 @@ export function computeDynamicToolLimit(
     limit = Math.min(cap, limit + 5);
   }
 
-  const sessionHistory = deps.conversationHistory.get("default") || [];
+  const sessionHistory = deps.conversationHistory.get(sessionId) || [];
   if (sessionHistory.length > 20) {
     limit = Math.max(baseLimit, limit - 5);
   }

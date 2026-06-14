@@ -236,8 +236,9 @@ export class ContentGuard {
 
     // Truncate overlong content
     if (content.length > this.config.maxContentLength) {
+      const originalLength = content.length;
       content = content.slice(0, this.config.maxContentLength);
-      findings.push(`Content truncated from ${content.length} chars`);
+      findings.push(`Content truncated from ${originalLength} chars`);
     }
 
     // Sanitize input

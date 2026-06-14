@@ -104,7 +104,7 @@ const PROVIDER_DEFAULTS: Record<string, { smtpHost: string; smtpPort: number; im
   custom: { smtpHost: "", smtpPort: 587, imapHost: "", imapPort: 993 },
 };
 
-const ENCRYPTION_KEY = Buffer.from(process.env.EvoClaw_EMAIL_KEY || "evoclaw-email-key-32-bytes-here!", "utf-8").subarray(0, 32);
+const ENCRYPTION_KEY = Buffer.from(process.env.EvoClaw_EMAIL_KEY || "", "utf-8").subarray(0, 32);
 
 export class EmailClient {
   private accounts: Map<string, EmailAccount> = new Map();
@@ -127,7 +127,10 @@ export class EmailClient {
   }
 
   addAccount(email: string, password: string, provider: EmailAccount["provider"] = "custom", displayName?: string): EmailAccount {
-    const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    if (ENCRYPTION_KEY.length < 32) {
+      throw new Error("Cannot add email account: EvoClaw_EMAIL_KEY environment variable must be set (32+ bytes) for credential encryption");
+    }
+    const id = `acct-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv("aes-256-cbc", ENCRYPTION_KEY, iv);
     let encrypted = cipher.update(password, "utf-8", "hex");
