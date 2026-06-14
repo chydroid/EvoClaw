@@ -19,7 +19,7 @@ interface QueueItem {
 const styles: Record<string, CSSProperties> = {
   container: {
     padding: "24px",
-    maxWidth: "900px",
+    maxWidth: "1440px",
     margin: "0 auto",
     color: "var(--text-primary, #c9d1d9)",
   },

@@ -406,7 +406,7 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   "feature-flags": IconFlag,
   admin: IconAdmin,
   "config-rpc": IconSettings,
-  "model-switcher": IconModel,
+
   retention: IconRetention,
   "config-migration": IconMigration,
   "config-doctor": IconDoctor,

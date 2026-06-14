@@ -7,18 +7,26 @@ dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
 function getServerVersion(): string {
   try {
-    const pkgPath = path.resolve(__dirname, "../../../../package.json");
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      if (pkg.version) return pkg.version;
+    // Try multiple paths to find root package.json
+    const candidates = [
+      path.resolve(__dirname, "../../../../package.json"),
+      path.resolve(__dirname, "../../../package.json"),
+      path.resolve(__dirname, "../../package.json"),
+      path.resolve(process.cwd(), "package.json"),
+    ];
+    for (const pkgPath of candidates) {
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        if (pkg.version && pkg.name === "evoclaw") return pkg.version;
+      }
     }
   } catch { /* version detection failed, using fallback */ }
-  return "0.9.5";
+  return "0.33.0";
 }
 const SERVER_VERSION = getServerVersion();
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
-import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter } from "@evoclaw/gateway";
+import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
@@ -141,6 +149,7 @@ export class EvoClawServer {
     this.observability.registerMetric({ name: "evoclaw_active_sessions", type: "gauge", help: "Currently active sessions" });
     this.observability.registerMetric({ name: "evoclaw_evolution_cycles_total", type: "counter", help: "Total evolution engine cycles" });
     this.registry.registerService("observability", this.observability);
+    // Agent-layer observability will be registered after agentModelExecutor is created
     this.observability.registerHealthComponent("gateway");
     this.observability.registerHealthComponent("taskOrchestrator");
     this.observability.registerHealthComponent("agentPool");
@@ -345,6 +354,11 @@ export class EvoClawServer {
     this.actorSystem = new ActorSystem();
     this.registry.registerService("actorSystem", this.actorSystem);
     this.agentModelExecutor = new AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
+    // Register agent-layer observability for /metrics endpoint
+    const agentObs = this.agentModelExecutor.getAgentObservability();
+    if (agentObs) {
+      this.registry.registerService("agentObservability", agentObs);
+    }
     // Register the execution checkpoint store as a service for system-wide access
     const executionCheckpointStore = this.agentModelExecutor.getExecutionCheckpointStore();
     this.registry.registerService("executionCheckpointStore", executionCheckpointStore);
@@ -392,6 +406,28 @@ export class EvoClawServer {
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
     this.registry.registerService("channelManager", this.channelManager);
+
+    // ── Dead Letter Queue ──
+    const dlq = new DeadLetterQueue({ storageDir: path.resolve("data", "dlq") });
+    this.registry.registerService("deadLetterQueue", dlq);
+    this.channelManager.onSendFailure((channel, target, text, error) => {
+      try {
+        dlq.enqueue({
+          channel,
+          target,
+          content: text,
+          contentType: "text",
+          error,
+          retryCount: 0,
+          originalSentAt: new Date().toISOString(),
+          failureType: "unknown",
+        });
+      } catch { /* non-critical */ }
+    });
+
+    // ── Reply Reference Manager ──
+    const replyRefManager = new ReplyReferenceManager({ autoClean: true, cleanIntervalMs: 300_000 });
+    this.registry.registerService("replyReferenceManager", replyRefManager);
 
     // ── Human-in-the-Loop Approval Manager (feature-flagged, default: off) ──
     if (this.featureFlagStore.isEnabled("humanApproval")) {
@@ -512,6 +548,9 @@ export class EvoClawServer {
 
     this.logger.info("server", "Loading persisted configuration...");
     this.gateway.loadPersistedConfig();
+
+    // Initialize migration system (detect version changes, load persisted records)
+    this.gateway.initMigrations(path.resolve("data"), SERVER_VERSION);
 
     // Connect channel message handler to agent
     this.channelManager.setMessageHandler(async (msg) => {

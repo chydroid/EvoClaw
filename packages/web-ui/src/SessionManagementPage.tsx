@@ -324,9 +324,11 @@ export default function SessionManagementPage() {
     setDeleting(true);
     try {
       await Promise.all(
-        Array.from(selectedIds).map(id =>
-          fetch(`/api/sessions/default/${id}`, { method: "DELETE" })
-        )
+        Array.from(selectedIds).map(id => {
+          const sess = sessions.find(s => s.sessionId === id);
+          const agentId = sess?.agentId || "default";
+          return fetch(`/api/sessions/${encodeURIComponent(agentId)}/${id}`, { method: "DELETE" });
+        })
       );
       showToast(t("session_mgmt.deleted_count").replace("{0}", String(selectedIds.size)), "success");
       setSelectedIds(new Set());
@@ -344,7 +346,7 @@ export default function SessionManagementPage() {
     try {
       await Promise.all(
         sessions.map(s =>
-          fetch(`/api/sessions/default/${s.sessionId}`, { method: "DELETE" })
+          fetch(`/api/sessions/${encodeURIComponent(s.agentId || "default")}/${s.sessionId}`, { method: "DELETE" })
         )
       );
       showToast(t("session_mgmt.all_cleared"), "success");
@@ -534,7 +536,7 @@ export default function SessionManagementPage() {
                           style={{ ...s.dangerBtn, padding: "3px 8px", fontSize: "11px" }}
                           onClick={async () => {
                             try {
-                              await fetch(`/api/sessions/default/${sess.sessionId}`, { method: "DELETE" });
+                              await fetch(`/api/sessions/${encodeURIComponent(sess.agentId || "default")}/${sess.sessionId}`, { method: "DELETE" });
                               showToast(t("session_mgmt.deleted_one"), "success");
                               await fetchData();
                             } catch { showToast(t("session_mgmt.delete_fail"), "error"); }

@@ -271,7 +271,9 @@ export default function ChannelMessagesPage() {
   const fetchSessionDetail = useCallback(async (sessionId: string) => {
     setLoadingMessages(true);
     try {
-      const res = await fetch(`/api/sessions/default/${sessionId}`);
+      const sess = sessions.find(s => s.sessionId === sessionId);
+      const agentId = sess?.agentId || "default";
+      const res = await fetch(`/api/sessions/${encodeURIComponent(agentId)}/${sessionId}`);
       if (res.ok) {
         const data = await res.json();
         const transcript: TranscriptMessage[] = Array.isArray(data?.transcript)
@@ -287,7 +289,7 @@ export default function ChannelMessagesPage() {
       }
     } catch { /* ignore */ }
     setLoadingMessages(false);
-  }, []);
+  }, [sessions]);
 
   // Effects
   useEffect(() => { fetchChannels(); }, [fetchChannels]);

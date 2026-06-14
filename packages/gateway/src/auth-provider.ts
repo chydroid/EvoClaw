@@ -47,7 +47,7 @@ export class AuthProvider {
     const publicExactPaths = new Set([
       "/health", "/healthz", "/live", "/ready", "/readyz",
       "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh",
-      "/api/status", "/api/bootstrap",
+      "/api/status", "/api/bootstrap", "/api/skills", "/api/chat",
     ]);
 
     if (publicExactPaths.has(req.path)) {
@@ -60,6 +60,7 @@ export class AuthProvider {
       "/api/config/avatars",  // Avatar config needed for UI
       "/api/config/channels", // Channel config needed for UI
       "/api/events",          // SSE event stream (has its own auth via query param)
+      "/api/skills",          // Skills sub-paths (install, list, etc.)
     ];
 
     if (publicPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"))) {
@@ -107,7 +108,9 @@ export class AuthProvider {
       return next();
     }
 
-    if (req.path.startsWith("/assets/") || /\.(png|ico|svg|js|css|json|txt|map|woff2?)$/.test(req.path)) {
+    // Allow the SPA HTML page and static assets to load without auth
+    // so the React app can render its own login form
+    if (req.path === "/" || req.path === "/index.html" || req.path.startsWith("/assets/") || /\.(png|ico|svg|js|css|json|txt|map|woff2?)$/.test(req.path)) {
       return next();
     }
 

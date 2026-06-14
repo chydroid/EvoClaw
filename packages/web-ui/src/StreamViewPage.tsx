@@ -11,9 +11,11 @@
  * - Permissions
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "./i18n";
+
+const API = (window as any).__EVOCLAW_API__ || "";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -174,6 +176,19 @@ const TYPE_COLORS: Record<string, string> = {
   system: "#8b949e",
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function mapApiEvent(e: Record<string, unknown>, index: number): StreamEvent {
+  return {
+    id: (e.id as string) || `evt-${index}`,
+    type: (e.type as StreamEvent["type"]) || "system",
+    timestamp: (e.timestamp as string) || new Date().toISOString(),
+    sessionId: e.sessionId as string | undefined,
+    runId: (e.runId as string) || (e.agentId as string),
+    data: (e.data as Record<string, unknown>) || {},
+  };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function StreamViewPage() {
@@ -186,91 +201,61 @@ export function StreamViewPage() {
   });
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [loading, setLoading] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
-  const eventCounter = useRef(0);
+  const lastTimestampRef = useRef<number>(0);
 
-  // Simulate real-time event stream
+  // Fetch events from backend API
+  const fetchInitialEvents = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/events?limit=100`);
+      const data = await res.json();
+      if (data.events && data.events.length > 0) {
+        const mapped = data.events.map(mapApiEvent);
+        setEvents(mapped);
+        const lastTs = mapped[mapped.length - 1].timestamp;
+        lastTimestampRef.current = new Date(lastTs).getTime();
+      }
+    } catch {
+      // ignore — will retry on next poll
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const pollNewEvents = useCallback(async () => {
+    try {
+      const fromTime = lastTimestampRef.current || Date.now() - 60000;
+      const res = await fetch(`${API}/api/events?fromTime=${fromTime}&limit=50`);
+      const data = await res.json();
+      if (data.events && data.events.length > 0) {
+        setEvents(prev => {
+          const incoming = data.events.map((e: Record<string, unknown>, i: number) =>
+            mapApiEvent(e, prev.length + i)
+          );
+          const next = [...prev, ...incoming];
+          // Update lastTimestampRef from the newest event
+          const lastTs = incoming[incoming.length - 1].timestamp;
+          lastTimestampRef.current = new Date(lastTs).getTime();
+          return next.length > 500 ? next.slice(-500) : next;
+        });
+      }
+    } catch {
+      // ignore — will retry on next poll
+    }
+  }, []);
+
+  // Initial load + polling
   useEffect(() => {
     if (paused) return;
 
-    const eventTypes = ["lifecycle", "tool", "assistant", "thinking", "error", "compaction", "permission", "heartbeat", "system"];
-    const sessions = ["sess_main", "sess_dev"];
-    const runIds = ["run_001", "run_002"];
+    fetchInitialEvents();
 
-    const generateEvent = (): StreamEvent => {
-      const type = eventTypes[Math.floor(Math.random() * 7)]; // bias towards frequent types
-      eventCounter.current++;
-
-      const dataMap: Record<string, Record<string, unknown>> = {
-        lifecycle: {
-          phase: ["start", "end", "error"][Math.floor(Math.random() * 3)],
-          sessionId: sessions[Math.floor(Math.random() * sessions.length)],
-          runId: runIds[Math.floor(Math.random() * runIds.length)],
-        },
-        tool: {
-          name: ["read_file", "write_file", "web_search", "bash_exec", "skill_execute", "send_message"][Math.floor(Math.random() * 6)],
-          status: ["start", "progress", "done", "error"][Math.floor(Math.random() * 4)],
-          duration: Math.floor(Math.random() * 5000),
-        },
-        assistant: {
-          delta: "这是流式回复的内容片段...".slice(0, Math.floor(Math.random() * 20) + 5),
-          tokensSoFar: Math.floor(Math.random() * 2000),
-        },
-        thinking: {
-          reasoning: ["分析用户意图...", "规划工具调用...", "评估结果...", "生成最终回复..."][Math.floor(Math.random() * 4)],
-          confidence: Math.round(Math.random() * 100) / 100,
-        },
-        error: {
-          code: ["RATE_LIMIT", "CONTEXT_OVERFLOW", "TOOL_ERROR", "TIMEOUT"][Math.floor(Math.random() * 4)],
-          message: "An error occurred during execution",
-          sessionId: sessions[Math.floor(Math.random() * sessions.length)],
-        },
-        compaction: {
-          reason: ["auto", "manual", "overflow"][Math.floor(Math.random() * 3)],
-          turnsCompacted: Math.floor(Math.random() * 50) + 10,
-          summaryLength: Math.floor(Math.random() * 500) + 100,
-        },
-        permission: {
-          operation: "exec_command",
-          target: "rm -rf /tmp/cache",
-          status: ["requested", "approved", "denied"][Math.floor(Math.random() * 3)],
-        },
-        heartbeat: {
-          activeSessions: Math.floor(Math.random() * 5) + 1,
-          uptime: Math.floor(Math.random() * 86400),
-        },
-      };
-
-      return {
-        id: `evt-${eventCounter.current}`,
-        type: type as StreamEvent["type"],
-        timestamp: new Date().toISOString(),
-        sessionId: sessions[Math.floor(Math.random() * sessions.length)],
-        runId: runIds[Math.floor(Math.random() * runIds.length)],
-        data: dataMap[type] ?? {},
-      };
-    };
-
-    // Initial events
-    const initialEvents: StreamEvent[] = [];
-    for (let i = 0; i < 20; i++) {
-      initialEvents.push(generateEvent());
-    }
-    setEvents(initialEvents);
-
-    // Periodic new events
-    const interval = setInterval(() => {
-      setEvents((prev) => {
-        const newEvent = generateEvent();
-        const MAX_EVENTS = 500;
-        const next = [...prev, newEvent];
-        return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next;
-      });
-    }, 1500 + Math.random() * 2000);
-
+    const interval = setInterval(pollNewEvents, 3000);
     return () => clearInterval(interval);
-  }, [paused]);
+  }, [paused, fetchInitialEvents, pollNewEvents]);
 
+  // Auto-scroll
   useEffect(() => {
     if (autoScroll && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -291,7 +276,7 @@ export function StreamViewPage() {
 
   const clearEvents = () => {
     setEvents([]);
-    eventCounter.current = 0;
+    lastTimestampRef.current = 0;
   };
 
   const filteredEvents = events.filter((e) => {
@@ -313,7 +298,7 @@ export function StreamViewPage() {
     <div style={containerStyle}>
       {/* Header */}
       <div style={headerStyle}>
-        <div style={titleStyle}>Stream Monitor</div>
+        <div style={titleStyle}>{t("stream.title")}</div>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <div style={statsBarStyle}>
             {Object.entries(typeCounts).map(([type, count]) => (
@@ -365,7 +350,7 @@ export function StreamViewPage() {
               width: "160px",
               outline: "none",
             }}
-            placeholder="Filter..."
+            placeholder={t("stream.filter_placeholder")}
             value={filter.searchText}
             onChange={(e) => setFilter((f) => ({ ...f, searchText: e.target.value }))}
           />
@@ -374,10 +359,28 @@ export function StreamViewPage() {
 
       {/* Event List */}
       <div ref={listRef} style={eventListStyle}>
+        {loading && events.length === 0 && (
+          <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)", fontSize: "14px" }}>
+            {t("stream.loading", "Loading events...")}
+          </div>
+        )}
+
+        {!loading && events.length === 0 && (
+          <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)", fontSize: "14px" }}>
+            {paused ? t("stream.paused_hint") : t("stream.no_events")}
+          </div>
+        )}
+
+        {filteredEvents.length === 0 && events.length > 0 && (
+          <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)", fontSize: "14px" }}>
+            {t("stream.no_events")}
+          </div>
+        )}
+
         {filteredEvents.map((event) => (
           <div key={event.id} style={eventItemStyle}>
             <span style={eventTimeStyle}>
-              {new Date(event.timestamp).toLocaleTimeString("zh-CN", {
+              {new Date(event.timestamp).toLocaleTimeString(locale, {
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
@@ -404,12 +407,6 @@ export function StreamViewPage() {
             </span>
           </div>
         ))}
-
-        {filteredEvents.length === 0 && (
-          <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary, #8b949e)", fontSize: "14px" }}>
-            {paused ? "Stream paused — click Play to resume" : "No events matching current filters"}
-          </div>
-        )}
       </div>
 
       {/* Bottom Bar */}

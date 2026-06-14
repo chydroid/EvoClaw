@@ -112,6 +112,11 @@ class EnvSecretManager {
     return typeof value === "string" && ENV_REF_RE.test(value);
   }
 
+  /** Get all key names from cache */
+  keys(): string[] {
+    return Array.from(this.cache.keys());
+  }
+
   /** Generate an env var name for a provider/channel secret */
   static makeLLMKeyVar(providerId: string): string {
     const safe = providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
@@ -446,6 +451,64 @@ export class ProtocolAdapter {
     } catch (err) {
       console.warn("[ProtocolAdapter] Failed to load channels config:", err instanceof Error ? err.message : String(err));
     }
+
+    // Sync env secrets to secretsStore so they appear in the Secrets Manager UI
+    this.syncEnvSecretsToStore();
+
+    // Load persisted secrets from data/secrets.json
+    this.loadPersistedSecrets();
+  }
+
+  /** Sync .env secrets into the secretsStore for UI display */
+  private syncEnvSecretsToStore(): void {
+    const SECRET_PATTERNS = [
+      /API_KEY/i, /SECRET/i, /TOKEN/i, /PASSWORD/i, /PRIVATE_KEY/i,
+      /APP_ID/i, /APP_SECRET/i, /ENCRYPT_KEY/i, /VERIFICATION_TOKEN/i,
+    ];
+    for (const key of this.envSecrets.keys()) {
+      if (!this.secretsStore.has(key) && SECRET_PATTERNS.some(p => p.test(key))) {
+        const value = this.envSecrets.get(key) || "";
+        this.secretsStore.set(key, {
+          name: key,
+          source: "env",
+          createdAt: new Date().toISOString(),
+          revoked: false,
+          rotationVersion: 0,
+        });
+      }
+    }
+  }
+
+  /** Load persisted secrets from data/secrets.json */
+  private loadPersistedSecrets(): void {
+    try {
+      const secretsFile = path.join(DATA_DIR, "secrets.json");
+      if (fs.existsSync(secretsFile)) {
+        const data = JSON.parse(fs.readFileSync(secretsFile, "utf-8"));
+        if (data.secrets) {
+          for (const s of data.secrets) {
+            if (!this.secretsStore.has(s.name)) {
+              this.secretsStore.set(s.name, s);
+            }
+          }
+        }
+        if (data.auditLog) {
+          this.secretsAuditLog = data.auditLog;
+        }
+      }
+    } catch { /* start fresh */ }
+  }
+
+  /** Persist secrets to data/secrets.json */
+  private persistSecrets(): void {
+    try {
+      const secretsFile = path.join(DATA_DIR, "secrets.json");
+      const data = {
+        secrets: Array.from(this.secretsStore.values()),
+        auditLog: this.secretsAuditLog,
+      };
+      fs.writeFileSync(secretsFile, JSON.stringify(data, null, 2), "utf-8");
+    } catch { /* non-critical */ }
   }
 
   /** Resolve ${VAR} references in LLM providers for runtime use */
@@ -644,7 +707,75 @@ export class ProtocolAdapter {
   private migrationsStore: Map<string, any> = new Map();
   private configSnapshots: Map<string, { config: any; timestamp: string }> = new Map();
   private migrationVersion: number = 0;
+  private migrationDataDir: string = "";
   private doctorIssues: Array<any> = [];
+
+  /**
+   * Initialize migration system: load persisted records and detect version changes.
+   */
+  initMigrations(dataDir: string, currentVersion: string): void {
+    this.migrationDataDir = dataDir;
+    // Load persisted migration records
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const migrationFile = path.join(dataDir, "migrations.json");
+      if (fs.existsSync(migrationFile)) {
+        const saved = JSON.parse(fs.readFileSync(migrationFile, "utf-8"));
+        if (saved.migrations) {
+          for (const m of saved.migrations) {
+            this.migrationsStore.set(m.id, m);
+          }
+        }
+        this.migrationVersion = saved.version || 0;
+      }
+    } catch { /* start fresh */ }
+
+    // Detect version change and create migration record
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const versionFile = path.join(dataDir, "last-version.txt");
+      let lastVersion = "";
+      if (fs.existsSync(versionFile)) {
+        lastVersion = fs.readFileSync(versionFile, "utf-8").trim();
+      }
+      if (lastVersion && lastVersion !== currentVersion) {
+        const id = `migration-${lastVersion}-to-${currentVersion}-${Date.now()}`;
+        const now = new Date().toISOString();
+        const migration = {
+          id,
+          fromVersion: lastVersion,
+          toVersion: currentVersion,
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+          changes: [
+            { action: "version_upgrade", path: "system.version", description: `Version upgraded from ${lastVersion} to ${currentVersion}`, from: lastVersion, to: currentVersion },
+          ],
+        };
+        this.migrationsStore.set(id, migration);
+        this.migrationVersion++;
+        this.persistMigrations();
+      }
+      // Save current version
+      fs.writeFileSync(versionFile, currentVersion, "utf-8");
+    } catch { /* non-critical */ }
+  }
+
+  private persistMigrations(): void {
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      if (!this.migrationDataDir) return;
+      const migrationFile = path.join(this.migrationDataDir, "migrations.json");
+      const data = {
+        version: this.migrationVersion,
+        migrations: Array.from(this.migrationsStore.values()),
+      };
+      fs.writeFileSync(migrationFile, JSON.stringify(data, null, 2), "utf-8");
+    } catch { /* non-critical */ }
+  }
 
   private getDeadLetterQueue(): DeadLetterQueue {
     if (!this.deadLetterQueue) {
@@ -1752,6 +1883,14 @@ export class ProtocolAdapter {
 
         const totalTokensUsed = result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed;
 
+        // Record reply reference: user message → agent reply
+        try {
+          const rm = this.getReplyReferenceManager();
+          const userMsgId = `msg_${resolvedSessionId}_${Date.now() - Math.round(result.duration)}`;
+          const agentMsgId = `msg_${resolvedSessionId}_${Date.now()}`;
+          rm.record(userMsgId, agentMsgId, { channel: "webchat", peer: "user" });
+        } catch { /* non-critical */ }
+
         res.json({
           reply: result.reply,
           tokensUsed: totalTokensUsed,
@@ -2477,6 +2616,15 @@ export class ProtocolAdapter {
           return;
         }
 
+        // Sync to PermissionRelay so the Permissions page shows the decision
+        const permRelay = this.registry.resolveService<{
+          approve(id: string, by?: string): unknown;
+          deny(id: string, reason?: string, by?: string): unknown;
+        }>("permissionRelay");
+        if (permRelay) {
+          permRelay.approve(String(requestId), "webui");
+        }
+
         res.json({ success: true, request: result });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -2505,6 +2653,15 @@ export class ProtocolAdapter {
         if (!result) {
           res.status(404).json({ error: "Request not found or already processed" });
           return;
+        }
+
+        // Sync to PermissionRelay so the Permissions page shows the decision
+        const permRelay = this.registry.resolveService<{
+          approve(id: string, by?: string): unknown;
+          deny(id: string, reason?: string, by?: string): unknown;
+        }>("permissionRelay");
+        if (permRelay) {
+          permRelay.deny(String(requestId), "Denied from Web UI", "webui");
         }
 
         res.json({ success: true, request: result });
@@ -4281,11 +4438,36 @@ export class ProtocolAdapter {
         const query: Record<string, unknown> = {};
         if (req.query.channel) query.channel = String(req.query.channel);
         if (req.query.type) query.failureType = String(req.query.type);
-        if (req.query.status === "unreplayed") query.unreplayed = true;
+        // Frontend sends: "pending" (unreplayed), "dead" (replayed), "retrying" (replayed with retries)
+        const statusParam = String(req.query.status || "").toLowerCase();
+        if (statusParam === "pending") query.unreplayed = true;
         if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10);
         const messages = dlq.query(query as any);
         const stats = dlq.getStats();
-        res.json({ success: true, messages, stats });
+        // Map backend DeadLetter to frontend-compatible format
+        let mapped = messages.map((m: any) => ({
+          id: m.id,
+          type: m.channel,
+          payload: m.content,
+          reason: m.error,
+          attempts: m.retryCount,
+          maxAttempts: 3,
+          enqueuedAt: m.deadLetteredAt,
+          lastAttemptAt: m.deadLetteredAt,
+          status: m.replayed ? "dead" : "pending",
+          // Extra fields for detail view
+          channel: m.channel,
+          target: m.target,
+          contentType: m.contentType,
+          failureType: m.failureType,
+          originalSentAt: m.originalSentAt,
+          metadata: m.metadata,
+        }));
+        // Client-side status filtering for "dead" (replayed) entries
+        if (statusParam === "dead") {
+          mapped = mapped.filter((m: any) => m.status === "dead");
+        }
+        res.json({ success: true, messages: mapped, total: stats.total, stats });
       } catch (err) {
         this.handleError(err, res, "Failed to query dead letter queue");
       }
@@ -4321,6 +4503,24 @@ export class ProtocolAdapter {
       }
     });
 
+    app.delete("/api/dlq/purge", (_req: Request, res: Response) => {
+      try {
+        const dlq = this.getDeadLetterQueue();
+        // Purge all: delete all DLQ entries
+        const channels = dlq.listChannels();
+        let deleted = 0;
+        for (const ch of channels) {
+          const entries = dlq.query({ channel: ch });
+          for (const entry of entries) {
+            if (dlq.delete(entry.id)) deleted++;
+          }
+        }
+        res.json({ success: true, deleted });
+      } catch (err) {
+        this.handleError(err, res, "Failed to purge dead letter queue");
+      }
+    });
+
     app.delete("/api/dlq/:id", (req: Request, res: Response) => {
       try {
         const dlq = this.getDeadLetterQueue();
@@ -4333,16 +4533,6 @@ export class ProtocolAdapter {
         res.json({ success: true, id });
       } catch (err) {
         this.handleError(err, res, "Failed to delete dead letter");
-      }
-    });
-
-    app.delete("/api/dlq/purge", (_req: Request, res: Response) => {
-      try {
-        const dlq = this.getDeadLetterQueue();
-        const purged = dlq.purge();
-        res.json({ success: true, purged });
-      } catch (err) {
-        this.handleError(err, res, "Failed to purge dead letter queue");
       }
     });
 
@@ -4424,16 +4614,38 @@ export class ProtocolAdapter {
           totalRefs: rm.countRefs(),
           totalChains: rm.countChains(),
         };
+
         if (rootId) {
           const tree = rm.getReplyTree(rootId);
           const nodesObj: Record<string, unknown> = {};
           for (const [key, value] of tree.nodes) {
             nodesObj[key] = value;
           }
-          res.json({ success: true, stats, tree: { ...tree, nodes: nodesObj } });
+          res.json({ success: true, stats, refs: [], tree: { ...tree, nodes: nodesObj } });
           return;
         }
-        res.json({ success: true, stats, channelId: channelId || null });
+
+        // Return all reply refs for the listing page
+        const refs: Array<Record<string, unknown>> = [];
+        // Iterate chains to build flat ref list
+        for (const ref of (rm as any).refs.values() as Iterable<import("./reply-reference").ReplyRef>) {
+          const entry: Record<string, unknown> = {
+            id: ref.childId,
+            parentId: ref.parentId,
+            rootId: ref.chainId,
+            author: ref.peer || "agent",
+            content: `[reply] ${ref.parentId.slice(0, 8)}... → ${ref.childId.slice(0, 8)}...`,
+            timestamp: new Date(ref.timestamp).toISOString(),
+            channelId: ref.channel,
+            depth: ref.depth,
+            crossChannel: ref.crossChannel,
+          };
+          // Filter by channelId if specified
+          if (channelId && ref.channel !== channelId) continue;
+          refs.push(entry);
+        }
+
+        res.json({ success: true, stats, refs, channelId: channelId || null });
       } catch (err) {
         this.handleError(err, res, "Failed to list reply references");
       }
@@ -4614,6 +4826,7 @@ export class ProtocolAdapter {
           timestamp: now,
           success: true,
         });
+        this.persistSecrets();
         res.status(201).json({
           name: entry.name,
           source: entry.source,
@@ -4661,6 +4874,7 @@ export class ProtocolAdapter {
           timestamp: now,
           success: true,
         });
+        this.persistSecrets();
         res.json({ apiKey: key, name });
       } catch (err) {
         this.handleError(err, res, "Failed to generate API key");
@@ -4717,6 +4931,7 @@ export class ProtocolAdapter {
           timestamp: now,
           success: true,
         });
+        this.persistSecrets();
         res.json({
           name: entry.name,
           source: entry.source,
@@ -4747,6 +4962,7 @@ export class ProtocolAdapter {
           timestamp: new Date().toISOString(),
           success: true,
         });
+        this.persistSecrets();
         res.status(204).end();
       } catch (err) {
         this.handleError(err, res, "Failed to revoke secret");
@@ -4768,6 +4984,7 @@ export class ProtocolAdapter {
           timestamp: new Date().toISOString(),
           success: true,
         });
+        this.persistSecrets();
         res.status(204).end();
       } catch (err) {
         this.handleError(err, res, "Failed to delete secret");
@@ -5237,7 +5454,7 @@ export class ProtocolAdapter {
         const id = String(req.params.id);
         const now = new Date().toISOString();
         const config = this.registry.resolveService<any>("config");
-        const currentConfig = config?.get ? config.get("") : {};
+        const currentConfig = config?.get ? (config.get("") || {}) : {};
         const snapshotId = `pre-migration-${id}`;
         this.configSnapshots.set(snapshotId, { config: JSON.parse(JSON.stringify(currentConfig)), timestamp: now });
         const migration = {
@@ -5252,6 +5469,7 @@ export class ProtocolAdapter {
         };
         this.migrationVersion++;
         this.migrationsStore.set(id, migration);
+        this.persistMigrations();
         res.json(migration);
       } catch (err) {
         this.handleError(err, res, "Failed to run migration");
@@ -5279,6 +5497,7 @@ export class ProtocolAdapter {
         migration.status = "rolled_back";
         migration.completedAt = new Date().toISOString();
         this.migrationVersion = Math.max(0, this.migrationVersion - 1);
+        this.persistMigrations();
         res.json({ ...migration, rollbackFailures: failedKeys.length > 0 ? failedKeys : undefined });
       } catch (err) {
         this.handleError(err, res, "Failed to rollback migration");
@@ -5287,12 +5506,12 @@ export class ProtocolAdapter {
 
     app.get("/api/config/migration-status", (_req: Request, res: Response) => {
       const migrations = Array.from(this.migrationsStore.values());
-      const lastMigration = migrations[migrations.length - 1];
+      const lastMigration = migrations.length > 0 ? migrations[migrations.length - 1] : undefined;
       const pendingCount = migrations.filter((m: any) => m.status === "pending").length;
       res.json({
         currentVersion: String(this.migrationVersion),
         pendingCount,
-        lastMigration: lastMigration?.completedAt || null,
+        lastMigration,
       });
     });
 

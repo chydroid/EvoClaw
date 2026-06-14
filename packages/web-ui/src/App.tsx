@@ -38,7 +38,7 @@ import ObservabilityPage from "./ObservabilityPage";
 import GuardrailsPage from "./GuardrailsPage";
 import WorkboardPage from "./WorkboardPage";
 import SteerPage from "./SteerPage";
-import ModelSwitcherPage from "./ModelSwitcherPage";
+
 import { StreamViewPage } from "./StreamViewPage";
 
 type TabId =
@@ -50,7 +50,7 @@ type TabId =
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
-  | "observability" | "guardrails" | "workboard" | "steer" | "model-switcher" | "stream-view";
+  | "observability" | "guardrails" | "workboard" | "steer" | "stream-view";
 
 interface NavGroup {
   id: string;
@@ -87,7 +87,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "canvas", i18nKey: "nav.canvas", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
       { id: "observability" as TabId, i18nKey: "nav.observability", iconId: "observability" },
-      { id: "model-switcher" as TabId, i18nKey: "nav.model_switcher", iconId: "model-switcher" },
+
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
     ],
   },
@@ -253,6 +253,22 @@ export default function App() {
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
   const [authenticated, setAuthenticated] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
+
+  // Global 401 interceptor: redirect to login when any API call returns 401
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    window.fetch = function (...args: Parameters<typeof fetch>) {
+      return originalFetch.apply(this, args).then((response) => {
+        if (response.status === 401) {
+          // Clear cookie and auth state
+          document.cookie = "web_ui_token=; path=/; max-age=0";
+          setAuthenticated(false);
+        }
+        return response;
+      });
+    };
+    return () => { window.fetch = originalFetch; };
+  }, []);
   const [authChecked, setAuthChecked] = useState(false);
   const [avatars, setAvatars] = useState<AvatarInfo>(DEFAULT_AVATARS);
   const [showAvatarEditor, setShowAvatarEditor] = useState(false);
@@ -606,7 +622,7 @@ export default function App() {
       case "guardrails": return <ErrorBoundary><GuardrailsPage /></ErrorBoundary>;
       case "workboard": return <ErrorBoundary><WorkboardPage /></ErrorBoundary>;
       case "steer": return <ErrorBoundary><SteerPage /></ErrorBoundary>;
-      case "model-switcher": return <ErrorBoundary><ModelSwitcherPage /></ErrorBoundary>;
+
       case "stream-view": return <ErrorBoundary><StreamViewPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }

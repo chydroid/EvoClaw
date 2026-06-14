@@ -838,7 +838,7 @@ export default function EvolutionDashboard() {
                     <td style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{getCategoryLabel(entry.category)}</td>
                     <td style={s.monoCell}>{entry.source.slice(0, 20)}</td>
                     <td style={s.monoCell}>
-                      {new Date(entry.timestamp).toLocaleString("zh-CN", {
+                      {new Date(entry.timestamp).toLocaleString(locale, {
                         month: "short",
                         day: "numeric",
                         hour: "2-digit",
@@ -981,11 +981,13 @@ export default function EvolutionDashboard() {
             </div>
           </div>
         ))}
-        <div style={s.emptyState}>
-          <div style={s.emptyIcon}>📊</div>
-          <div>{t("evo.no_patterns")}</div>
-          <div style={s.emptyHint}>{t("evo.no_patterns_hint")}</div>
-        </div>
+        {data.patterns.length === 0 && (
+          <div style={s.emptyState}>
+            <div style={s.emptyIcon}>📊</div>
+            <div>{t("evo.no_patterns")}</div>
+            <div style={s.emptyHint}>{t("evo.no_patterns_hint")}</div>
+          </div>
+        )}
       </div>
     );
   }

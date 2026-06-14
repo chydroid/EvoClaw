@@ -64,7 +64,7 @@ export function Card({ title, children, style, actions }: {
 // Badge
 // ═══════════════════════════════════════════════
 
-type BadgeVariant = "success" | "error" | "warning" | "info" | "default";
+export type BadgeVariant = "success" | "error" | "warning" | "info" | "default";
 
 const badgeColors: Record<BadgeVariant, { bg: string; fg: string }> = {
   success: { bg: "var(--success-bg)", fg: "var(--success)" },

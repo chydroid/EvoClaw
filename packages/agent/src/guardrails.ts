@@ -187,7 +187,7 @@ const BUILTIN_INPUT_RULES: InputRule[] = [
   // Chinese injection variants
   {
     id: "injection-chinese",
-    pattern: /(?:忽略[之前上]的[指令说明]|假装[你是]|你[现在]是|不要[遵守遵循]|绕过[安全限制]|解除[限制模式])/gi,
+    pattern: /(?:忽略(?:之前|之上|以上)的[指令说明]|假装[你是]|你(?:现在|如今)是|不要[遵守遵循]|绕过[安全限制]|解除[限制模式])/gi,
     severity: "high",
     action: "block",
     description: "Chinese prompt injection attempt",
@@ -292,7 +292,7 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   {
     id: "tool-shell-injection",
     toolPattern: /(?:shell|exec|command|run|bash|cmd|terminal|powershell)/i,
-    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|curl|wget|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*(?:rm|del|format)`|\$\([^)]*(?:rm|del|format)[^)]*\))/i,
+    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|curl|wget|nc|ncat)|\|\s*(?:rm|del|format|shutdown|curl|wget)|&&\s*(?:rm|del|format|shutdown|curl|wget)|`[^`]*(?:rm|del|format|curl|wget)`|\$\([^)]*(?:rm|del|format|curl|wget)[^)]*\))/i,
     severity: "high",
     action: "block",
     description: "Tool: shell injection pattern in arguments",

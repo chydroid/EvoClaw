@@ -4,6 +4,7 @@ import { SkillManager } from "../src/skill-manager";
 import type { Skill, SkillExecutionResult } from "@evoclaw/core";
 import * as path from "path";
 import * as fs from "fs/promises";
+import * as os from "os";
 
 const TEST_SKILL_CONTENT = `---
 name: test-math-helper
@@ -277,7 +278,7 @@ _result = {
 \`\`\`
 `;
 
-    const testPath = path.join(process.cwd(), "test-security-check.SKILL.md");
+    const testPath = path.join(os.tmpdir(), "test-security-check.SKILL.md");
     await fs.writeFile(testPath, safeSkillContent, "utf-8");
 
     const skill = await skillManager.installSkill(testPath);

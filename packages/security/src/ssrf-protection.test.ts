@@ -28,12 +28,14 @@ describe("SSRFProtection", () => {
     });
 
     it("should allow normal HTTPS URLs", () => {
-      const result = ssrf.checkURLSync("https://example.com/path");
+      const ssrfWithAllowlist = new SSRFProtection({ allowlistHosts: ["example.com"] });
+      const result = ssrfWithAllowlist.checkURLSync("https://example.com/path");
       expect(result.allowed).toBe(true);
     });
 
     it("should allow normal HTTP URLs", () => {
-      const result = ssrf.checkURLSync("http://example.com/path");
+      const ssrfWithAllowlist = new SSRFProtection({ allowlistHosts: ["example.com"] });
+      const result = ssrfWithAllowlist.checkURLSync("http://example.com/path");
       expect(result.allowed).toBe(true);
     });
   });

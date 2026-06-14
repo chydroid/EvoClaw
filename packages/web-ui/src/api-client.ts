@@ -132,7 +132,7 @@ export interface ChatResponse {
 }
 
 export interface ChatSession {
-  sessionId: string; label?: string; preview?: string;
+  sessionId: string; agentId?: string; label?: string; preview?: string;
   createdAt?: string; updatedAt?: string;
   turnCount?: number; status?: string;
 }
@@ -258,26 +258,6 @@ export const configRpcApi = {
     post<{ subscriptionId: string }>(`/api/config-rpc/${encodeURIComponent(dotPath)}/watch`),
   batchGet: (paths: string[]) =>
     post<{ results: Array<{ path: string; value: unknown }> }>("/api/config-rpc/batch", { paths }),
-};
-
-// ═══════════════════════════════════════════════
-// Model Switcher
-// ═══════════════════════════════════════════════
-
-export interface ModelInfo {
-  id: string; name: string; provider: string;
-  model: string; capabilities: string[];
-  maxTokens: number; costPer1k: { input: number; output: number };
-  status: "active" | "inactive" | "error";
-}
-
-export const modelApi = {
-  list: () => getSafe<{ models: ModelInfo[] }>("/api/models", { models: [] }),
-  switch: (modelId: string) =>
-    post<{ previous: string; current: string }>("/api/models/switch", { modelId }),
-  current: () => get<{ model: ModelInfo }>("/api/models/current"),
-  test: (modelId: string) =>
-    post<{ success: boolean; latencyMs: number }>("/api/models/test", { modelId }),
 };
 
 // ═══════════════════════════════════════════════

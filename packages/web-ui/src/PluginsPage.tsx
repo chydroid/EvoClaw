@@ -175,15 +175,19 @@ const statCardStyle: CSSProperties = {
   textAlign: "center",
 };
 
-// ─── Available Plugins (community registry) ─────────────────────────────────
+// ─── Available Plugins (built-in plugins not yet installed) ──────────────────
 
-const MOCK_AVAILABLE: AvailablePlugin[] = [
-  { id: "discord-connector", name: "Discord Connector", version: "0.8.0", description: "Discord channel integration with slash commands", author: "community", downloads: 1230, rating: 4.5 },
-  { id: "slack-connector", name: "Slack Connector", version: "0.7.0", description: "Slack workspace integration with threaded replies", author: "community", downloads: 980, rating: 4.2 },
-  { id: "voice-synthesis", name: "Voice Synthesis", version: "1.0.0", description: "Text-to-speech with ElevenLabs and system TTS fallback", author: "evoclaw", downloads: 2500, rating: 4.8 },
-  { id: "canvas-renderer", name: "Canvas Renderer", version: "0.6.0", description: "Real-time canvas with A2UI visual output", author: "evoclaw", downloads: 870, rating: 4.0 },
-  { id: "cron-enhancer", name: "Cron Enhancer", version: "0.5.0", description: "Enhanced Cron scheduling with natural language time expressions", author: "community", downloads: 540, rating: 4.3 },
-  { id: "sentiment-analyzer", name: "Sentiment Analyzer", version: "0.3.0", description: "Analyze user sentiment and auto-adjust reply tone", author: "community", downloads: 320, rating: 3.8 },
+const BUILTIN_AVAILABLE: AvailablePlugin[] = [
+  { id: "memory-enhancer", name: "Memory Enhancer", version: "2.0.0", description: "ECC-style memory persistence: auto-save insights on session end, restore context on start", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "code-analyzer", name: "Code Analyzer", version: "3.0.0", description: "Static code analysis: security, quality, type safety, performance, architecture scanning", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "web-browser", name: "Web Browser", version: "1.0.0", description: "URL safety detection and browser result formatting", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "system-logger", name: "System Logger", version: "1.0.0", description: "Operation activity logging for requests, responses, and tool calls", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "cost-tracker", name: "Cost Tracker", version: "1.0.0", description: "Token usage tracking and cost estimation across 13 model types", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "response-validator", name: "Response Validator", version: "2.0.0", description: "AI reply quality validation and auto-repair for empty/incomplete responses", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "conversation-summarizer", name: "Conversation Summarizer", version: "1.0.0", description: "Auto-summarize long conversations after 10 rounds, inject into system prompt", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "claude-code-tools", name: "Claude Code Tools", version: "1.0.0", description: "Programming task dispatch system adapter with code execution tools", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "markitdown", name: "MarkItDown", version: "1.0.0", description: "Document to Markdown conversion (requires: pip install 'markitdown[all]')", author: "evoclaw", downloads: 0, rating: 5.0 },
+  { id: "enhanced-browser", name: "Enhanced Browser", version: "2.0.0", description: "Enterprise browsing: session isolation, confirmation gates, network capture, parallel fetch", author: "evoclaw", downloads: 0, rating: 5.0 },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -283,7 +287,7 @@ export function PluginsPage() {
   };
 
   const installAvailablePlugin = async (id: string) => {
-    const plugin = MOCK_AVAILABLE.find((p) => p.id === id);
+    const plugin = BUILTIN_AVAILABLE.find((p) => p.id === id);
     if (!plugin) return;
     try {
       const res = await fetch("/api/plugins/install", {
@@ -310,7 +314,7 @@ export function PluginsPage() {
       p.description.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const filteredAvailable = MOCK_AVAILABLE.filter(
+  const filteredAvailable = BUILTIN_AVAILABLE.filter(
     (p) =>
       !plugins.some((inst) => inst.name.toLowerCase() === p.name.toLowerCase() || inst.id === p.id) &&
       (p.name.toLowerCase().includes(search.toLowerCase()) ||

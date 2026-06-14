@@ -92,6 +92,10 @@ export class GatewayServer {
     this.protocolAdapter.loadPersistedConfig();
   }
 
+  initMigrations(dataDir: string, currentVersion: string): void {
+    this.protocolAdapter.initMigrations(dataDir, currentVersion);
+  }
+
   async start(): Promise<void> {
     this.setupMiddleware();
     this.setupRoutes();
@@ -171,7 +175,13 @@ export class GatewayServer {
         res.status(503).set("Content-Type", "text/plain").send("observability service unavailable");
         return;
       }
-      res.status(200).set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").send(observability.exportPrometheus());
+      let output = observability.exportPrometheus();
+      // Merge agent-layer metrics if available
+      const agentObs = this.registry.resolveService<{ exportMetrics: () => string }>("agentObservability");
+      if (agentObs) {
+        output += "\n" + agentObs.exportMetrics();
+      }
+      res.status(200).set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").send(output);
     });
 
     this.app.use(this.requestLogger.bind(this));
@@ -350,9 +360,11 @@ export class GatewayServer {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       const unhealthy = serviceInfos.filter((info: { status: string }) => info.status === "error");
       const memUsage = process.memoryUsage();
+      const observability = this.registry.resolveService<Observability>("observability");
+      const healthReport = observability?.getHealthReport();
       res.json({
         status: unhealthy.length > 0 ? "degraded" : "ok",
-        version: "0.4.0",
+        version: process.env.npm_package_version || "0.0.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         node: process.version,
@@ -367,7 +379,18 @@ export class GatewayServer {
           healthy: serviceInfos.length - unhealthy.length,
           unhealthy: unhealthy.map((s: { name: string }) => s.name),
         },
+        metrics: healthReport?.metrics,
       });
+    });
+
+    // Full health report from Observability (P50/P90/P99, error rate, component status)
+    this.app.get("/health/report", (_req: Request, res: Response) => {
+      const observability = this.registry.resolveService<Observability>("observability");
+      if (!observability) {
+        res.status(503).json({ error: "observability service unavailable" });
+        return;
+      }
+      res.json(observability.getHealthReport());
     });
 
     // ── Auth endpoints (public, no JWT required) ───────────────────
@@ -490,6 +513,82 @@ export class GatewayServer {
       } catch { res.json({ enabled: false }); }
     });
 
+    // Guardrails config & rules
+    this.app.get("/api/guardrails/config", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor?.guardrailsManager) { res.json({ enabled: false }); return; }
+        const config = executor.guardrailsManager.getConfig();
+        const rules = {
+          input: (config.inputRules || []).map((r: any) => ({
+            id: r.id, severity: r.severity, action: r.action, description: r.description,
+          })),
+          output: (config.outputRules || []).map((r: any) => ({
+            id: r.id, severity: r.severity, action: r.action, description: r.description,
+          })),
+          tool: (config.toolRules || []).map((r: any) => ({
+            id: r.id, severity: r.severity, action: r.action, description: r.description,
+            toolPattern: r.toolPattern.source,
+          })),
+        };
+        res.json({
+          enabled: config.enabled,
+          inputEnabled: config.inputEnabled,
+          outputEnabled: config.outputEnabled,
+          toolEnabled: config.toolEnabled,
+          defaultSeverity: config.defaultSeverity,
+          rules,
+        });
+      } catch { res.json({ enabled: false }); }
+    });
+
+    // Guardrails test — check content against all rules
+    this.app.post("/api/guardrails/test", async (req: any, res: any) => {
+      try {
+        const { content, layer } = req.body || {};
+        if (!content) { res.status(400).json({ error: "content is required" }); return; }
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor?.guardrailsManager) { res.json({ enabled: false }); return; }
+        const gm = executor.guardrailsManager;
+        let result: any;
+        if (layer === "output") {
+          result = gm.checkOutput(content);
+        } else if (layer === "tool") {
+          // Use a tool name that matches common toolPatterns (shell/exec/command)
+          // so the guardrail rules can actually inspect the content
+          result = gm.checkToolCall("shell_exec", { command: content, input: content });
+        } else {
+          result = gm.checkInput(content);
+        }
+        res.json({ result, layer: layer || "input" });
+      } catch (err: any) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Guardrails toggle layer
+    this.app.post("/api/guardrails/toggle", async (req: any, res: any) => {
+      try {
+        const { layer, enabled } = req.body || {};
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor?.guardrailsManager) { res.json({ success: false }); return; }
+        const config = executor.guardrailsManager.getConfig();
+        if (layer === "input") config.inputEnabled = enabled;
+        else if (layer === "output") config.outputEnabled = enabled;
+        else if (layer === "tool") config.toolEnabled = enabled;
+        else if (layer === "all") { config.enabled = enabled; }
+        res.json({ success: true, layer, enabled });
+      } catch (err: any) { res.status(500).json({ error: err.message }); }
+    });
+
+    // Guardrails reset stats
+    this.app.post("/api/guardrails/reset-stats", async (_req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor?.guardrailsManager) { res.json({ success: false }); return; }
+        executor.guardrailsManager.resetStats();
+        res.json({ success: true });
+      } catch (err: any) { res.status(500).json({ error: err.message }); }
+    });
+
     // Prompt Cache stats
     this.app.get("/api/prompt-cache/stats", async (_req: any, res: any) => {
       try {
@@ -556,6 +655,38 @@ export class GatewayServer {
         if (!board) { res.status(503).json({ error: "Workboard not available" }); return; }
         const task = board.createTask(req.body);
         res.json(task);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Update task status
+    this.app.post("/api/workboard/tasks/:id/status", async (req: any, res: any) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body || {};
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.status(503).json({ error: "Agent not available" }); return; }
+        const board = executor.getWorkboard?.();
+        if (!board) { res.status(503).json({ error: "Workboard not available" }); return; }
+        const task = board.updateTaskStatus?.(id, status);
+        if (!task) { res.status(404).json({ error: "Task not found" }); return; }
+        res.json(task);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // Delete task
+    this.app.delete("/api/workboard/tasks/:id", async (req: any, res: any) => {
+      try {
+        const { id } = req.params;
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.status(503).json({ error: "Agent not available" }); return; }
+        const board = executor.getWorkboard?.();
+        if (!board) { res.status(503).json({ error: "Workboard not available" }); return; }
+        board.deleteTask?.(id);
+        res.json({ success: true });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }

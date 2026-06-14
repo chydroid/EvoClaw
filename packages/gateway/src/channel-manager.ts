@@ -134,9 +134,15 @@ export class ChannelManager {
   private approvedPeers = new Map<ChannelType, Set<string>>();
   private blocklistedPeers = new Map<ChannelType, Set<string>>();
   private eventBus: EventBus | null = null;
+  private sendFailureHandler: ((channel: ChannelType, target: string, text: string, error: string) => void) | null = null;
 
   constructor(eventBus?: EventBus) {
     this.eventBus = eventBus ?? null;
+  }
+
+  /** Set a callback for when message delivery fails (for DLQ integration) */
+  onSendFailure(handler: (channel: ChannelType, target: string, text: string, error: string) => void): void {
+    this.sendFailureHandler = handler;
   }
 
   // ─── Channel Registration ─────────────────────────────────────────────────
@@ -288,10 +294,15 @@ export class ChannelManager {
   ): Promise<ChannelSendResult> {
     const adapter = this.adapters.get(channel);
     if (!adapter) {
-      return { success: false, error: `No adapter for channel: ${channel}`, channel };
+      const error = `No adapter for channel: ${channel}`;
+      this.sendFailureHandler?.(channel, target, text, error);
+      return { success: false, error, channel };
     }
 
     const result = await adapter.sendMessage(target, text, options);
+    if (!result.success && result.error) {
+      this.sendFailureHandler?.(channel, target, text, result.error);
+    }
     return result;
   }
 

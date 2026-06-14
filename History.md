@@ -3,6 +3,66 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.34.0 (2026-06-14)
+
+### WebUI功能完善与CI/CD修复
+
+在五轮代码审计基础上，全面检查并修复WebUI空页面问题，丰富功能内容，修复CI/CD测试失败。
+
+---
+
+#### WebUI页面修复与丰富化
+
+| 页面 | 修复前 | 修复后 |
+|------|--------|--------|
+| **工作台(Workboard)** | 102行，prompt()弹窗，无i18n | 647行完整看板：5列看板+创建Modal+状态变更+删除+自动刷新+i18n |
+| **引导控制(Steer)** | 108行，手动输入Session ID | 685行引导控制面板：Session下拉选择器+指令历史+快捷模板+优先级可视化+i18n |
+| **可观测性(Observability)** | 82行半成品占位 | 582行完整仪表板：3个Tab(Overview/Traces/Executions)+自动刷新+i18n |
+| **安全护栏(Guardrails)** | 67行3个统计数字 | 443行4-Tab仪表板：Overview/Rules/Test/Audit+8个QuickTest+5个API端点 |
+| **流视图(StreamView)** | 430行纯模拟数据 | 接入真实API，替换generateEvent()为GET /api/events轮询 |
+
+#### 后端新增API端点
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/api/workboard/tasks/:id/status` | POST | 更新任务状态 |
+| `/api/workboard/tasks/:id` | DELETE | 删除任务 |
+| `/api/guardrails/config` | GET | 获取护栏规则列表和配置状态 |
+| `/api/guardrails/test` | POST | 内容安全检测测试 |
+| `/api/guardrails/toggle` | POST | 开关护栏层 |
+| `/api/guardrails/reset-stats` | POST | 重置护栏统计 |
+
+#### 认证与安全修复
+
+| 修复项 | 说明 | 文件 |
+|--------|------|------|
+| 401未跳转登录页 | 后端拦截SPA HTML请求返回401纯文本，前端无法渲染登录表单 | auth-provider.ts, App.tsx |
+| 全局401拦截器 | 前端添加fetch拦截器，API返回401时自动清除认证并跳转登录 | App.tsx |
+| SteerPage Session字段映射 | 后端返回sessionId/updatedAt，前端期望id/lastActivity，导致.length报错 | SteerPage.tsx |
+| EvolutionDashboard空状态bug | 空状态提示在模式列表后无条件渲染 | EvolutionDashboard.tsx |
+| 时间格式硬编码 | toLocaleString("zh-CN")改为使用locale变量 | EvolutionDashboard.tsx |
+| agentId硬编码 | SessionManagementPage和ChannelMessagesPage删除/查询会话时硬编码"default" | SessionManagementPage.tsx, ChannelMessagesPage.tsx |
+
+#### CI/CD测试修复
+
+| 测试 | 根因 | 修复 |
+|------|------|------|
+| auth-provider: public API paths | /api/skills和/api/chat不在公开路径列表 | 添加到publicExactPaths |
+| auth-provider: skills sub-paths | 前缀带尾部斜杠导致双斜杠匹配失败 | 添加/api/skills到publicPrefixes |
+| integration: sandbox security | process.cwd()在CI中无写权限 | 改用os.tmpdir() |
+| ssrf-protection: allow HTTPS/HTTP | checkURLSync对非IP主机名默认拒绝 | 测试中配置allowlistHosts |
+
+#### i18n新增翻译键
+
+- `workboard.*` — 44个键（中英文）
+- `steer.*` — 50+个键（中英文）
+- `observability.*` — 38个键（中英文）
+
+#### 测试结果
+
+- 96个测试文件全部通过
+- 2740个测试通过，0失败
+
 ## v0.33.0 (2026-06-14)
 
 ### 五轮商业级代码审计与BUG修复

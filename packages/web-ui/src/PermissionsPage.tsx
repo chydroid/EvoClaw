@@ -16,10 +16,13 @@ interface PermissionRequest {
   params: Record<string, unknown>;
   category: string;
   createdAt: number;
-  status: "pending" | "approved" | "denied" | "timed_out";
+  status: "pending" | "approved" | "denied" | "timed_out" | "expired";
   decidedAt?: number;
   decidedBy?: string;
   reason?: string;
+  operation?: string;
+  target?: string;
+  description?: string;
 }
 
 const statusBadgeStyle = (st: string): React.CSSProperties => ({
@@ -78,18 +81,61 @@ export function PermissionsPage() {
   const loadData = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
     try {
-      const [pendRes, histRes] = await Promise.all([
+      // Fetch from both PermissionRelay and PermissionManager
+      const [pendRes, histRes, mgrRes] = await Promise.all([
         fetch("/api/permission-relay/pending"),
         fetch("/api/permission-relay/history?limit=50"),
+        fetch("/api/permission/requests"),
       ]);
+
+      const relayPending: PermissionRequest[] = [];
+      const relayHistory: PermissionRequest[] = [];
+      const mgrPending: PermissionRequest[] = [];
+      const mgrHistory: PermissionRequest[] = [];
+
       if (pendRes.ok) {
         const d = await pendRes.json();
-        setPending(d.requests || []);
+        relayPending.push(...(d.requests || []));
       }
       if (histRes.ok) {
         const d = await histRes.json();
-        setHistory(d.history || []);
+        relayHistory.push(...(d.history || []));
       }
+      if (mgrRes.ok) {
+        const d = await mgrRes.json();
+        // PermissionManager returns all requests; separate pending from history
+        for (const req of d.requests || []) {
+          const mapped: PermissionRequest = {
+            id: req.id,
+            agentId: req.requestedBy || "agent",
+            sessionId: "",
+            toolName: req.operation || "unknown",
+            params: req.details || {},
+            category: req.operation?.startsWith("file_") ? "file" :
+                      req.operation?.startsWith("browser_") ? "browser" :
+                      req.operation?.startsWith("email_") ? "email" : "other",
+            createdAt: new Date(req.requestedAt).getTime(),
+            status: req.status === "expired" ? "expired" : req.status,
+            decidedAt: req.respondedAt ? new Date(req.respondedAt).getTime() : undefined,
+            operation: req.operation,
+            target: req.target,
+            description: req.description,
+          };
+          if (req.status === "pending") {
+            mgrPending.push(mapped);
+          } else {
+            mgrHistory.push(mapped);
+          }
+        }
+      }
+
+      // Merge: deduplicate by id (relay takes precedence)
+      const relayIds = new Set([...relayPending, ...relayHistory].map(r => r.id));
+      const extraMgrPending = mgrPending.filter(r => !relayIds.has(r.id));
+      const extraMgrHistory = mgrHistory.filter(r => !relayIds.has(r.id));
+
+      setPending([...relayPending, ...extraMgrPending]);
+      setHistory([...relayHistory, ...extraMgrHistory]);
     } catch {
       // silent
     } finally {
@@ -106,8 +152,16 @@ export function PermissionsPage() {
 
   const approve = async (id: string) => {
     try {
-      const res = await fetch(`/api/permission-relay/${id}/approve`, { method: "POST" });
-      if (res.ok) await loadData();
+      // Try both PermissionRelay and PermissionManager
+      await Promise.allSettled([
+        fetch(`/api/permission-relay/${id}/approve`, { method: "POST" }),
+        fetch("/api/permission/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: id }),
+        }),
+      ]);
+      await loadData();
     } catch (err) {
       console.error("Failed to approve permission request:", err);
     }
@@ -115,12 +169,20 @@ export function PermissionsPage() {
 
   const deny = async (id: string) => {
     try {
-      const res = await fetch(`/api/permission-relay/${id}/deny`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: t("permissions.denied_from_webui", "Denied from Web UI") }),
-      });
-      if (res.ok) await loadData();
+      // Try both PermissionRelay and PermissionManager
+      await Promise.allSettled([
+        fetch(`/api/permission-relay/${id}/deny`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: t("permissions.denied_from_webui", "Denied from Web UI") }),
+        }),
+        fetch("/api/permission/deny", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: id }),
+        }),
+      ]);
+      await loadData();
     } catch (err) {
       console.error("Failed to deny permission request:", err);
     }
@@ -199,9 +261,9 @@ export function PermissionsPage() {
             <thead>
               <tr>
                 <th style={s.th}>{t("permissions.tool", "工具")}</th>
+                <th style={s.th}>{t("perms.target", "目标")}</th>
                 <th style={s.th}>{t("perms.status", "状态")}</th>
                 <th style={s.th}>{t("perms.decider", "决策者")}</th>
-                <th style={s.th}>{t("perms.reason", "原因")}</th>
                 <th style={s.th}>{t("permissions.agent", "Agent")}</th>
                 <th style={s.th}>{t("permissions.time", "时间")}</th>
               </tr>
@@ -210,9 +272,9 @@ export function PermissionsPage() {
               {history.map((req) => (
                 <tr key={req.id}>
                   <td style={s.td}><code style={{ fontSize: "11px" }}>{req.toolName}</code></td>
+                  <td style={s.td}>{req.target ? <code style={{ fontSize: "10px" }}>{req.target.length > 40 ? req.target.slice(0, 40) + "..." : req.target}</code> : "-"}</td>
                   <td style={s.td}><span style={statusBadgeStyle(req.status)}>{req.status}</span></td>
                   <td style={s.td}>{req.decidedBy || "-"}</td>
-                  <td style={s.td}>{req.reason || "-"}</td>
                   <td style={s.td}>{req.agentId}</td>
                   <td style={s.td}>{formatTime(req.decidedAt || req.createdAt)}</td>
                 </tr>

@@ -2757,6 +2757,10 @@ export class AgentModelExecutor {
     return this.observability.getActiveTraces();
   }
 
+  getAgentObservability(): import("./agent-observability").AgentObservability | null {
+    return this.observability;
+  }
+
   getPromptCacheStats(): import("./prompt-cache").CacheStats | null {
     if (!this.promptCache) return null;
     return this.promptCache.getCacheStats();

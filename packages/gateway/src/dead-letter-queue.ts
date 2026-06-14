@@ -347,7 +347,7 @@ export class DeadLetterQueue {
     fs.writeFileSync(p, content, "utf-8");
   }
 
-  private listChannels(): string[] {
+  listChannels(): string[] {
     try {
       return fs
         .readdirSync(this.config.storageDir)
