@@ -39,6 +39,8 @@ import { registerSequentialThinkingTool as registerSequentialThinkingToolFn, typ
 import { execute as dagExecute, executeSkillDirectly as dagExecuteSkillDirectly, generateReasoning as dagGenerateReasoning, extractToolParams as dagExtractToolParams, generateDefaultOutput as dagGenerateDefaultOutput, extractKeywords as dagExtractKeywords, type DAGExecutionDeps } from "./dag-execution";
 import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type TrustRule, type RiskLevel } from "./human-approval";
 import { SemanticQuickReply } from "./semantic-quick-reply";
+import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
+import { IterationBudget, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -87,6 +89,8 @@ export class AgentModelExecutor {
   private queueManager: import("./queue-manager").QueueManager | null = null;
   private sessionManager: import("./session-manager").SessionManager | null = null;
   private contextEngine: import("./context-engine").ContextEngine | null = null;
+  private copilotRouter: CopilotRouter | null = null;
+  private iterationBudgets = new Map<string, IterationBudget>();
   private pluginManager: import("@evoclaw/core").PluginManager | null = null;
   // ChannelManager integration — avoids cross-package import using any
   private channelManager: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> } | null = null;
@@ -134,6 +138,9 @@ export class AgentModelExecutor {
 
   /** Current observability trace ID for the active chat session */
   private _currentTraceId: string | undefined;
+
+  /** Current ContextEngine result for the active chat session (set by chatInner) */
+  private _currentContextEngineResult: import("./context-engine").LayeredContextResult | null = null;
 
   /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
@@ -228,6 +235,30 @@ export class AgentModelExecutor {
   setContextEngine(ce: import("./context-engine").ContextEngine): void {
     this.contextEngine = ce;
     console.log(`[AgentModelExecutor] Context engine integrated`);
+  }
+
+  /** Set copilot router */
+  setCopilotRouter(config?: Partial<CopilotRouterConfig>): void {
+    this.copilotRouter = new CopilotRouter(config);
+    console.log(`[AgentModelExecutor] Copilot router integrated (enabled=${this.copilotRouter !== null})`);
+  }
+
+  /** Get or create iteration budget for a session */
+  getIterationBudget(sessionId: string): IterationBudget {
+    let budget = this.iterationBudgets.get(sessionId);
+    if (!budget) {
+      budget = new IterationBudget({ maxIterations: 20, enableGraceCall: true });
+      this.iterationBudgets.set(sessionId, budget);
+    }
+    return budget;
+  }
+
+  /** Reset iteration budget for a session (call at start of new turn) */
+  resetIterationBudget(sessionId: string): void {
+    const budget = this.iterationBudgets.get(sessionId);
+    if (budget) {
+      budget.reset();
+    }
   }
 
   /** Set plugin manager */
@@ -1617,6 +1648,40 @@ export class AgentModelExecutor {
 
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
 
+    // ── ContextEngine: use layered context assembly when available ──
+    // This replaces the manual message assembly with ContextEngine.assembleContext()
+    // which provides frozen/ephemeral prompt separation, bootstrap file loading,
+    // token-aware context truncation, and cache control annotations.
+    let contextEngineResult: import("./context-engine").LayeredContextResult | null = null;
+    if (this.contextEngine) {
+      try {
+        const skillsPrompt = await this.buildSkillsPromptForRun();
+        const history = this.conversationHistory.get(sessionId) || [];
+        contextEngineResult = this.contextEngine.assembleContext({
+          conversationHistory: history,
+          systemPrompt,
+          skillsContext: skillsPrompt || undefined,
+          memoryContext: memoryContext || undefined,
+          compactionSummary: undefined, // handled by compactionManager separately
+          pluginPrependContext: undefined,
+          pluginAppendContext: undefined,
+          currentTask: effectiveMessage,
+        });
+        if (contextEngineResult.warnings.length > 0) {
+          console.log(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}`);
+        }
+        if (contextEngineResult.truncated) {
+          console.log(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"`);
+        }
+        console.log(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...`);
+        // Store for use by tryCallLLM
+        this._currentContextEngineResult = contextEngineResult;
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] ContextEngine assembly failed, falling back to manual assembly:`, err instanceof Error ? err.message : String(err));
+        contextEngineResult = null;
+      }
+    }
+
     // ── Stale Context: warn about expired tool results ──
     if (this.staleContextManager) {
       const staleWarnings = this.staleContextManager.generateStaleWarnings(sessionId);
@@ -1767,10 +1832,49 @@ export class AgentModelExecutor {
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
     console.log(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}`);
 
-    if (enabledProviders.length > 0) {
+    // ── CopilotRouter: route simple tasks to cheaper models ──
+    // Inspired by Hermes's stable/ephemeral prompt separation and OpenClaw's
+    // model routing. When a simple task is detected, downgrade to a cheaper
+    // model to save costs while preserving quality for complex tasks.
+    let routedProviders = enabledProviders;
+    let routingDecision: RoutingDecision | null = null;
+    if (this.copilotRouter && enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
+      routingDecision = this.copilotRouter.route(
+        effectiveMessage,
+        primaryProvider.model,
+        primaryProvider.provider || "openai",
+      );
+      if (routingDecision.shouldDowngrade) {
+        console.log(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})`);
+        // Create a modified provider list with the routed model
+        routedProviders = enabledProviders.map((p, i) => {
+          if (i === 0) {
+            return {
+              ...p,
+              model: routingDecision!.routedModel,
+              provider: routingDecision!.routedProvider,
+              // Preserve the original model info for reference
+              _originalModel: p.model,
+              _originalProvider: p.provider,
+            } as ProviderConfig;
+          }
+          return p;
+        });
+      } else {
+        console.log(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})`);
+      }
+    }
+
+    // ── IterationBudget: reset for new turn ──
+    // Each user turn gets a fresh iteration budget. The budget is consumed
+    // by tool calls in the LLM loop and supports Grace Call when exhausted.
+    this.resetIterationBudget(sessionId);
+
+    if (routedProviders.length > 0) {
+      const primaryProvider = routedProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(finalEnhancedMessage, enhancedSystemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel);
+      const result = await this.tryCallLLM(finalEnhancedMessage, enhancedSystemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -2380,7 +2484,11 @@ export class AgentModelExecutor {
     searchPreDone: boolean = false,
     channel?: string
   ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
-    return tryCallLLMFn(this.getLLMCallerDeps(), {
+    const deps = this.getLLMCallerDeps();
+    // Inject iteration budget and context engine result for this session
+    deps.iterationBudget = this.getIterationBudget(sessionId);
+    deps.contextEngineResult = this._currentContextEngineResult ?? undefined;
+    return tryCallLLMFn(deps, {
       message, systemPrompt, installedSkills, providers, startTime,
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,

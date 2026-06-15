@@ -147,3 +147,12 @@ export type { ComputedStatusResult, StatusSource } from "./computed-status";
 // Stale Context Invalidation system
 export { StaleContextManager } from "./stale-context";
 export type { StaleContextConfig, ToolResultMeta } from "./stale-context";
+
+// Iteration Budget system
+export { IterationBudget } from "./iteration-budget";
+export type { IterationBudgetConfig, IterationBudgetStatus } from "./iteration-budget";
+
+// Input Pipeline system
+export { PipelineRunner } from "./input-pipeline";
+export type { PipelineContext, PipelineStage } from "./input-pipeline";
+export { createXssSanitizeStage, createLengthGuardStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } from "./input-pipeline";

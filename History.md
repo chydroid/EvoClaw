@@ -3,6 +3,203 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.37.0 (2026-06-16)
+
+### 对照OpenClaw/Hermes第三轮提升 — 信息处理流程优化
+
+在v0.36.0基础上，重点对照OpenClaw和Hermes在**用户信息输入处理、技能/插件调度、LLM调用流程**方面的设计，优化EvoClaw的信息处理流程。
+
+---
+
+#### 1. ContextEngine集成到主流程 — 冻结/临时提示词分离
+
+**对标**：Hermes稳定前缀+临时层分离，最大化Provider侧缓存命中率；OpenClaw可插拔ContextEngine
+
+| 改进 | 说明 |
+|------|------|
+| `ContextEngine.assembleContext()` | 在chatInner()中调用，替代手动消息拼装 |
+| 冻结/临时分离 | 系统提示词+bootstrap+skills+memory为冻结层，时区/平台/当前任务为临时层 |
+| Token感知截断 | ContextEngine自动根据maxContextTokens截断历史，避免上下文溢出 |
+| 缓存控制注解 | 生成cache_control注解，支持Provider侧缓存优化 |
+| Bootstrap文件加载 | 自动加载AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md等工作区文件 |
+| 降级兼容 | ContextEngine不可用时自动回退到手动消息拼装 |
+
+**修改文件**：[agent-model-executor.ts](file:///d:/abc/EvoClaw/packages/agent/src/agent-model-executor.ts), [llm-caller.ts](file:///d:/abc/EvoClaw/packages/agent/src/llm-caller.ts)
+
+---
+
+#### 2. CopilotRouter集成到主流程 — 简单任务自动降级
+
+**对标**：Hermes稳定/临时提示词分离 + OpenClaw模型路由
+
+| 改进 | 说明 |
+|------|------|
+| `CopilotRouter.route()` | 在chatInner()中调用，对简单任务自动降级到廉价模型 |
+| 规则匹配 | 问候/格式化/翻译等简单任务路由到gpt-4o-mini |
+| 代码/数学保护 | 代码编写和数学计算任务保持使用完整模型 |
+| 成本优化 | 简单任务使用廉价模型，复杂任务保持质量 |
+| 可配置 | 支持自定义路由规则和默认模型 |
+
+**修改文件**：[agent-model-executor.ts](file:///d:/abc/EvoClaw/packages/agent/src/agent-model-executor.ts), [index.ts(server)](file:///d:/abc/EvoClaw/apps/server/src/index.ts)
+
+---
+
+#### 3. 迭代预算系统 + Grace Call机制
+
+**对标**：Hermes迭代预算系统(consume/refund) + Grace Call(预算耗尽时剥离工具做最后调用)
+
+| 新增 | 说明 |
+|------|------|
+| `IterationBudget` | Hermes风格的迭代预算追踪器，支持consume/refund |
+| `Grace Call` | 预算耗尽后允许一次无工具调用，产出最终文本回答 |
+| 线程安全 | 简单锁机制防止async操作交错导致状态不一致 |
+| `getBudgetStatus()` | 获取预算状态快照(total/consumed/remaining/exhausted/graceCallAvailable) |
+| 会话级预算 | 每个session独立的迭代预算，新轮次自动重置 |
+
+**新增文件**：[iteration-budget.ts](file:///d:/abc/EvoClaw/packages/agent/src/iteration-budget.ts)
+
+---
+
+#### 4. 输入处理管道模块
+
+**对标**：OpenClaw管道模式(预处理→上下文组装→LLM调用→工具执行→后处理)
+
+| 新增 | 说明 |
+|------|------|
+| `PipelineRunner` | 顺序执行管道阶段，支持短路退出 |
+| `PipelineContext` | 管道上下文，包含消息/会话/附件/元数据 |
+| `createXssSanitizeStage()` | XSS清理阶段(清除script/事件处理器/javascript:URI) |
+| `createLengthGuardStage()` | 消息长度限制阶段 |
+| `createAttachmentInjectionStage()` | 附件内容注入阶段 |
+| `createGuardrailsStage()` | 安全门控检查阶段 |
+| `createPluginPreProcessStage()` | 插件预处理阶段(before_agent_start) |
+
+**新增文件**：[input-pipeline.ts](file:///d:/abc/EvoClaw/packages/agent/src/input-pipeline.ts)
+
+---
+
+#### 5. API端点补充
+
+| 新增 | 说明 |
+|------|------|
+| `GET /api/version` | 版本信息端点 |
+| `GET /api/steer/instructions` | 获取活跃的steer指令列表 |
+
+**修改文件**：[gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)
+
+---
+
+#### 6. 测试验证
+
+| 测试类型 | 结果 |
+|----------|------|
+| TypeScript类型检查 | 全部通过(17个包) |
+| 单元测试 | 2799个测试全部通过 |
+| 50项模拟用户需求测试 | 92%通过率(46/50)，4个超时为搜索API耗时 |
+| WebUI API端点测试 | 19/20可用(1个actor-system端点未实现) |
+
+---
+
+## v0.36.0 (2026-06-15)
+
+### 对照OpenClaw/Hermes第二轮提升 — 安全强化 + API修复 + 代码质量
+
+在v0.35.0基础上，对照OpenClaw v2026.6.6和Hermes v0.16源码进行第二轮差距分析和提升，重点强化安全策略、修复API端点、提升代码质量。
+
+---
+
+#### 1. Token追踪增强 — prompt/completion/reasoning三分离计量 + 预算限制
+
+**对标**：OpenClaw prompt/completion/reasoning分离计量 + 硬/软预算限制
+
+| 新增 | 说明 |
+|------|------|
+| `reasoningTokens` / `reasoningCost` | 支持o1/o3等推理模型的推理token独立计量 |
+| `reasoningCostPer1k` | ModelCostInfo新增推理成本字段 |
+| `BudgetLimiter` | 预算限制器，支持硬/软预算、daily/weekly/monthly/total周期 |
+| `canProceed()` | 检查是否允许新LLM调用（超硬预算拒绝） |
+| `getBudgetStatus()` | 获取预算使用百分比和剩余额度 |
+| 推理模型价格 | 新增o1/o1-mini/o3-mini价格索引 |
+
+**修改文件**：[token-usage-tracker.ts](file:///d:/abc/EvoClaw/packages/agent/src/token-usage-tracker.ts)
+
+---
+
+#### 2. 审批超时fail-closed强化 — askFallback机制
+
+**对标**：OpenClaw approval timeout fail-closed语义
+
+| 新增 | 说明 |
+|------|------|
+| `askFallback` | 超时回退策略：deny/allow/fail-closed（默认fail-closed） |
+| `fallbackOverride` | 单个请求可覆盖全局fallback策略 |
+| `ApprovalAuditEntry` | 审批审计日志接口 |
+| `getAuditLog()` | 获取审批审计日志 |
+| shutdown行为 | 根据askFallback决定pending请求处理方式 |
+
+**修改文件**：[approval-timeout-manager.ts](file:///d:/abc/EvoClaw/packages/security/src/approval-timeout-manager.ts)
+
+---
+
+#### 3. Telegram通道安全强化 — 未授权DM拦截
+
+**对标**：OpenClaw Telegram unauthorized DM blocking
+
+| 新增 | 说明 |
+|------|------|
+| `rejectUnauthorizedDm` | 拒绝未授权私聊DM（默认true） |
+| `unauthorizedDmReply` | 未授权DM自动回复消息 |
+| `onlyRespondToMentions` | 群组中只响应@bot消息 |
+| `dmPairingHandler` | DM配对管理器（动态授权DM） |
+| `botUsername` | 自动保存bot用户名用于@mention检测 |
+
+**修改文件**：[telegram.ts](file:///d:/abc/EvoClaw/packages/gateway/src/channels/telegram.ts)
+
+---
+
+#### 4. API端点修复 — 3个404 + 2个503
+
+| 问题 | 修复 |
+|------|------|
+| `/api/approvals/history` 404 | 新增路由，返回审批历史+统计 |
+| `/api/approvals/timeout-config` 404 | 新增路由，返回fail-closed配置 |
+| `/api/channels` 404 | 新增路由，返回频道列表+状态 |
+| `/api/transcript-redactor/scan` 503 | 在server中注册TranscriptRedactor服务 |
+| `/api/mcp-scanner/scan` 503 | 在server中注册MCPToolPoisoningScanner服务 |
+
+**修改文件**：[gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)、[index.ts](file:///d:/abc/EvoClaw/apps/server/src/index.ts)
+
+---
+
+#### 5. WebUI修复 — SessionRetentionPage导航 + i18n语义
+
+| 修复 | 说明 |
+|------|------|
+| SessionRetentionPage | 注册到App.tsx导航（TabId + NavGroup + Route） |
+| 翻译key语义不匹配 | 修复TokenUsagePage中4处key语义错误 |
+| STATUS_VARIANT死代码 | 清理TokenUsagePage中未使用的常量 |
+| 新增i18n键 | session_retention、approval fail-closed等20+键 |
+
+---
+
+#### 6. 代码质量提升 — 空catch块添加debug日志
+
+| 文件 | 修复数 | 说明 |
+|------|--------|------|
+| agent-model-executor.ts | 14处 | `catch { /* not available */ }` → `console.debug()` |
+| approval-timeout-manager.ts | 3处 | `catch { /* swallow */ }` → `console.debug()` |
+| telegram.ts | 2处 | `catch { /* ignore */ }` → `console.debug()` |
+| protocol-adapter.ts | 20处 | 空catch块 → `console.debug()` |
+
+---
+
+#### 7. 版本号同步
+
+- `package.json`: 0.35.0 → 0.36.0
+- `server/index.ts` fallback: 0.35.0 → 0.36.0
+
+---
+
 ## v0.35.0 (2026-06-15)
 
 ### 对标OpenClaw v2026.6.6与Hermes v0.16 — 全面能力提升

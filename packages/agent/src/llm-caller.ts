@@ -412,6 +412,10 @@ export interface LLMCallerDeps {
   semanticIntentClassifier?: { classifyIntent(message: string): Promise<{ category: string; score: number } | null> };
   // Pending approval commands (optional — enables chat-based approval for rejected shell commands)
   pendingApprovalCommands?: Map<string, { command: string; rejectedAt: number }>;
+  // Iteration budget (optional — enables Hermes-style budget tracking with Grace Call)
+  iterationBudget?: import("./iteration-budget").IterationBudget;
+  // ContextEngine result (optional — enables layered context with frozen/ephemeral separation)
+  contextEngineResult?: import("./context-engine").LayeredContextResult;
 }
 
 // ── Helper: tool cache ──
@@ -1195,11 +1199,33 @@ Have a specific URL?
         compactConversationHistoryFn(sessionPDeps, sessionId);
       }
 
-      const messages: Array<LLMMessage> = [
-        { role: "system", content: fullSystemPrompt + searchPreDoneNotice },
-      ];
-
-      messages.push(...history);
+      // ── ContextEngine: use pre-assembled layered context when available ──
+      // When ContextEngine has already assembled the context (with frozen/ephemeral
+      // separation, bootstrap files, token-aware truncation), use its messages
+      // instead of building them manually. This ensures consistent context management.
+      let messages: Array<LLMMessage>;
+      if (deps.contextEngineResult) {
+        // Use ContextEngine's pre-assembled messages (includes system prompt,
+        // bootstrap files, skills context, memory, and truncated history)
+        messages = deps.contextEngineResult.messages.map(m => ({
+          role: m.role,
+          content: m.content,
+        })) as Array<LLMMessage>;
+        // Add search pre-done notice if applicable
+        if (searchPreDoneNotice) {
+          const sysMsg = messages.find(m => m.role === "system");
+          if (sysMsg && typeof sysMsg.content === "string") {
+            sysMsg.content += searchPreDoneNotice;
+          }
+        }
+        console.log(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens`);
+      } else {
+        // Fallback: manual message assembly (original behavior)
+        messages = [
+          { role: "system", content: fullSystemPrompt + searchPreDoneNotice },
+        ];
+        messages.push(...history);
+      }
 
       // ── User message length guard ──
       // Truncate excessively long messages to avoid LLM timeout and token waste.
@@ -1267,7 +1293,34 @@ Have a specific URL?
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
 
+      // ── IterationBudget integration ──
+      // When available, use the Hermes-style budget system instead of the
+      // simple round counter. The budget supports consume/refund and Grace Call.
+      const budget = deps.iterationBudget;
+
       for (let round = 0; round < maxToolRounds; round++) {
+        // ── IterationBudget: check if budget allows this iteration ──
+        if (budget) {
+          if (budget.isExhausted) {
+            // Budget exhausted — try Grace Call (one final call without tools)
+            if (budget.graceCallAvailable) {
+              console.log(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)`);
+              budget.useGraceCall();
+              // Make one final LLM call without tools to produce a text answer
+              const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps);
+              if (graceResult && graceResult.message?.content) {
+                finalReply = graceResult.message.content;
+                totalTokensUsed += graceResult.tokensUsed;
+              }
+              break; // Exit loop after Grace Call
+            }
+            // No Grace Call available — force exit
+            console.log(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary`);
+            break;
+          }
+          budget.consume(1);
+        }
+
         onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
 
         // ── Steer: inject real-time instructions ──

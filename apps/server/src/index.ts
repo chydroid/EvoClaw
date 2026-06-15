@@ -21,7 +21,7 @@ function getServerVersion(): string {
       }
     }
   } catch { /* version detection failed, using fallback */ }
-  return "0.36.0";
+  return "0.37.0";
 }
 const SERVER_VERSION = getServerVersion();
 
@@ -403,6 +403,15 @@ export class EvoClawServer {
     });
     this.agentModelExecutor.setContextEngine(this.contextEngine);
     this.registry.registerService("contextEngine", this.contextEngine);
+
+    // ── CopilotRouter: route simple tasks to cheaper models ──
+    this.agentModelExecutor.setCopilotRouter({
+      enabled: true,
+      defaultModel: "gpt-4o-mini",
+      defaultProvider: "openai",
+    });
+    console.log(`[Server] CopilotRouter initialized`);
+
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
     this.registry.registerService("channelManager", this.channelManager);

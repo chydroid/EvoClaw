@@ -671,6 +671,32 @@ export class GatewayServer {
       }
     });
 
+    // Steer - get active instructions for a session
+    this.app.get("/api/steer/instructions", async (req: any, res: any) => {
+      try {
+        const executor = this.registry.resolveService("agentModelExecutor") as any;
+        if (!executor) { res.json({ instructions: [] }); return; }
+        const steerManager = executor.getSteerManager?.();
+        if (!steerManager) { res.json({ instructions: [] }); return; }
+        const sessionId = req.query.sessionId as string | undefined;
+        const instructions = sessionId
+          ? steerManager.getInstructions?.(sessionId) || []
+          : steerManager.getAllInstructions?.() || [];
+        res.json({ instructions });
+      } catch { res.json({ instructions: [] }); }
+    });
+
+    // Version info
+    this.app.get("/api/version", async (_req: any, res: any) => {
+      try {
+        const pkg = this.registry.resolveService("packageJson") as Record<string, unknown> | null;
+        const version = pkg?.version || "unknown";
+        res.json({ version, name: pkg?.name || "evoclaw" });
+      } catch {
+        res.json({ version: "unknown", name: "evoclaw" });
+      }
+    });
+
     // Workboard
     this.app.get("/api/workboard", async (_req: any, res: any) => {
       try {
