@@ -58,3 +58,8 @@ Desktop.ini
 # Temporary download scripts
 _video_dl_*.py
 _music_dl_*.py
+
+# Temporary test/debug scratch directory
+# Put all test-only scratch files, debug scripts, and throwaway experiments here.
+# This directory is NOT tracked by git.
+tests-tmp/

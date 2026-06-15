@@ -73,7 +73,7 @@ describe("SkillManager Integration", () => {
 
     skillManager = new SkillManager(registry, eventBus);
 
-    testSkillPath = path.join(process.cwd(), "test-test-math.SKILL.md");
+    testSkillPath = path.join(os.tmpdir(), "test-test-math.SKILL.md");
     await fs.writeFile(testSkillPath, TEST_SKILL_CONTENT, "utf-8");
   });
 
@@ -223,7 +223,7 @@ describe("SkillRegistry Integration", () => {
     registry.registerService("eventBus", eventBus);
     skillManager = new SkillManager(registry, eventBus);
 
-    const testPath = path.join(process.cwd(), "test-registry2.SKILL.md");
+    const testPath = path.join(os.tmpdir(), "test-registry2.SKILL.md");
     await fs.writeFile(testPath, TEST_SKILL_CONTENT, "utf-8");
     await skillManager.installSkill(testPath);
     await fs.unlink(testPath).catch(() => {});
