@@ -27,6 +27,19 @@ export type { AgentStatus, ToolCallStatus, LifecycleEventData, ErrorEvent, ToolC
 export type { QueueMode, QueueItem, QueueConfig } from "./queue-manager";
 export { SessionManager } from "./session-manager";
 export type { SessionConfig, SessionInfo, SessionTurn, SessionLoadResult, SessionLock } from "./session-manager";
+
+// v0.35: 性能与可用性增强
+export { LazySkillLoader } from "./lazy-skill-loader";
+export type { LazySkill, LazySkillEntry, LazyLoaderConfig, LoadStatus } from "./lazy-skill-loader";
+export { FirstEventTracer } from "./first-event-tracer";
+export type { FirstEventTrace, TraceStage, FirstEventTracerConfig } from "./first-event-tracer";
+export { TokenUsageTracker } from "./token-usage-tracker";
+export type { UsageRecord, UsageSummary, TokenUsageTrackerConfig, ModelCostInfo, ModelCostProvider } from "./token-usage-tracker";
+export { DEFAULT_MODEL_COSTS } from "./token-usage-tracker";
+export { SessionUndoManager } from "./session-undo-manager";
+export type { UndoUnit, SessionUndoConfig } from "./session-undo-manager";
+export { SessionFTSSearch } from "./session-fts-search";
+export type { IndexedMessage, FTSResult, SessionFTSSearchConfig } from "./session-fts-search";
 export { ContextEngine } from "./context-engine";
 export type { ContextConfig, ContextAssemblyInput, ContextAssemblyResult, PromptLayer, PromptSection, FrozenPromptState, LayeredContextResult } from "./context-engine";
 export { AgentRouter } from "./agent-router";

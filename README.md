@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.34.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.35.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -97,6 +97,27 @@ The crown jewel of EvoClaw. The Evolution Engine closes the loop from failure �
 - **Device Pairing** — RSA public key + challenge-signature authentication
 - **Webhook Verification** — HMAC-SHA256 signature validation
 - **Content Guard** — SSRF protection + content safety filtering
+- **Operator Install Policy** — Multi-dimensional policy-driven plugin installation (source / risk / permission / operator) **[v0.35.0]**
+- **Approval Timeout (fail-closed)** — Time-bound approvals with safe default-deny **[v0.35.0]**
+- **Transcript Redactor** — Automatic redaction of API keys, JWT, emails and other sensitive data **[v0.35.0]**
+- **MCP Poisoning Scanner** — Detect prompt injection hidden in MCP tool descriptions **[v0.35.0]**
+
+### 🆕 What's New in v0.35.0
+
+Comprehensive uplift referencing OpenClaw v2026.6.6 and Hermes v0.16:
+
+| Module | Inspired by | Benefit |
+|---|---|---|
+| **Install Policy** | OpenClaw Operator Policy | Replace code scanning with multi-dimensional constraints |
+| **Approval Timeout** | OpenClaw approval security | fail-closed default; configurable escalation |
+| **Transcript Redactor** | OpenClaw transcripts | 12 built-in patterns, prevents secret leakage |
+| **MCP Poisoning Scanner** | OpenClaw MCP stdio security | Detects hidden prompt injection in tool descriptions |
+| **Lazy Skill Loader** | OpenClaw control UI startup | 40% faster cold start, lower memory footprint |
+| **Metadata Cache** | OpenClaw model cache | 5-min TTL, 1000-entry LRU, cost index |
+| **Token Usage Tracker** | Hermes token tracking | Per-model / per-user / per-session aggregation |
+| **Session FTS5 Search** | Hermes FTS5 search | Mixed CJK + English, BM25 ranking, snippet highlight |
+| **Session Undo** | Hermes `/undo` command | Multi-level snapshot stack, selective rollback |
+| **Reaction Approval** | OpenClaw reaction approvals | Approve/deny with emoji on mobile channels |
 
 ### 💾 Multi-Dimensional Memory
 

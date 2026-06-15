@@ -31,3 +31,40 @@ export type { SecurityMiddlewareConfig, SecurityScanResult } from "./security-mi
 
 export { SecretManager } from "./secret-manager";
 export type { SecretEntry, SecretAccessLog, SecretRotationResult, SecretManagerConfig, SecretQuery, SecretScope, SecretProvider } from "./secret-manager";
+
+// v0.35: 安全策略与防御层
+export { InstallPolicyManager, DEFAULT_INSTALL_POLICY } from "./install-policy";
+export type {
+  InstallPolicy,
+  InstallRequest,
+  InstallSource,
+  PolicyAction,
+  PolicyEvaluation,
+  InstallAuditEntry,
+  InstallPolicyConfig,
+  PermissionScope,
+  RiskLevel,
+  PolicyRuleType,
+} from "./install-policy";
+export { ApprovalTimeoutManager } from "./approval-timeout-manager";
+export type {
+  ApprovalRequest,
+  ApprovalDecision,
+  ApprovalStatus,
+  ApprovalTimeoutConfig,
+} from "./approval-timeout-manager";
+export { TranscriptRedactor } from "./transcript-redactor";
+export type {
+  RedactionResult,
+  RedactorConfig,
+  RedactionPattern,
+  CustomRedaction,
+} from "./transcript-redactor";
+export { MCPToolPoisoningScanner } from "./mcp-poisoning-scanner";
+export type {
+  MCPToolDescription,
+  PoisoningScanResult,
+  PoisoningThreat,
+  PoisoningType,
+  PoisoningScannerConfig,
+} from "./mcp-poisoning-scanner";

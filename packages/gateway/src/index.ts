@@ -29,6 +29,20 @@ export type { MessageState, LifecycleRecord, StateTransition, LifecycleEvent, Li
 export { RetryPolicy, isRetryableError, RetryPresets } from "./retry-policy";
 export type { RetryConfig, RetryResult, RetryAttempt, RetryCallbacks } from "./retry-policy";
 
+// v0.35: 性能与可用性增强
+export { GatewayMetadataCache, DEFAULT_MODEL_COSTS } from "./gateway-metadata-cache";
+export type { GatewayMetadata, ModelCostInfo, GatewayMetadataCacheConfig } from "./gateway-metadata-cache";
+export { DispatchDedupeStore } from "./dispatch-dedupe-store";
+export type { DispatchDedupeKey, DispatchDedupeEntry, DispatchDedupeConfig } from "./dispatch-dedupe-store";
+export { ReactionApprovalHandler } from "./reaction-approval-handler";
+export type {
+  ReactionChannel,
+  ApprovalType,
+  ReactionApprovalRequest,
+  ReactionDecision,
+  ReactionApprovalConfig,
+} from "./reaction-approval-handler";
+
 export { StreamingManager } from "./streaming-manager";
 export type { StreamChunk, StreamConfig, StreamSession, StreamEvent, StreamCallback } from "./streaming-manager";
 

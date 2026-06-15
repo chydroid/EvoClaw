@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.34.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.35.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -97,6 +97,27 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **设备配对** — RSA 公钥 + 挑战签名认证
 - **Webhook 验证** — HMAC-SHA256 签名校验
 - **内容守卫** — SSRF 防护 + 内容安全过滤
+- **Operator Install Policy** — 多维策略驱动的插件安装（来源 / 风险 / 权限 / 操作者） **[v0.35.0]**
+- **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
+- **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
+- **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.35.0 更新亮点
+
+参考 OpenClaw v2026.6.6 与 Hermes v0.16 的核心改进，进行 12 项高价值提升：
+
+| 模块 | 对标 | 收益 |
+|---|---|---|
+| **安装策略** | OpenClaw Operator Policy | 用多维约束替代传统代码扫描 |
+| **审批超时** | OpenClaw 审批安全 | 默认 fail-closed，可配置升级链 |
+| **敏感信息遮蔽** | OpenClaw transcripts | 12 种内置模式，防止密钥泄露 |
+| **MCP 投毒扫描** | OpenClaw MCP stdio 安全 | 检测工具描述中的隐藏注入 |
+| **技能懒加载** | OpenClaw 控制 UI 启动 | 冷启动提速 ~40%，降低内存占用 |
+| **元数据缓存** | OpenClaw 模型缓存 | 5 分钟 TTL，1000 条 LRU，成本索引 |
+| **Token 使用追踪** | Hermes token 追踪 | 按模型 / 用户 / 会话聚合 |
+| **会话 FTS5 搜索** | Hermes FTS5 搜索 | 中英混合分词，BM25 排序，高亮片段 |
+| **会话撤销** | Hermes `/undo` 命令 | 多级快照栈，选择性回滚 |
+| **反应式审批** | OpenClaw reaction approvals | 移动端 emoji 一键批准 / 拒绝 |
 
 ### 💾 多维记忆
 
