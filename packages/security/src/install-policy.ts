@@ -353,6 +353,11 @@ export class InstallPolicyManager {
     return result;
   }
 
+  /** 获取审计日志 (alias for queryAudit without filter) */
+  getAuditLog(limit = 100): InstallAuditEntry[] {
+    return this.auditLog.slice(-limit);
+  }
+
   /** 持久化审计日志 */
   private persistAudit(): void {
     if (!this.auditPath) return;

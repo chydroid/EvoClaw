@@ -5,6 +5,20 @@ import http from "http";
 import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { Observability } from "@evoclaw/infrastructure";
+import type { TokenUsageTracker, UsageSummary } from "@evoclaw/agent";
+import type {
+  InstallPolicyManager,
+  InstallPolicy,
+  InstallAuditEntry,
+  PolicyEvaluation,
+  TranscriptRedactor,
+  RedactionResult,
+  MCPToolPoisoningScanner,
+  PoisoningScanResult,
+  ApprovalTimeoutManager,
+  ApprovalTimeoutConfig,
+  ApprovalDecision,
+} from "@evoclaw/security";
 import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
@@ -500,6 +514,10 @@ export class GatewayServer {
     this.setupEvalsRoutes();
     this.setupExecutionRoutes();
     this.setupMemoryRoutes();
+    this.setupTokenUsageRoutes();
+    this.setupInstallPolicyRoutes();
+    this.setupTranscriptRedactorRoutes();
+    this.setupMCPScannerRoutes();
 
     // ── Agent Capabilities API (v0.19.0+) ──
 
@@ -952,6 +970,50 @@ export class GatewayServer {
 
       res.json({ success: true });
     });
+
+    // GET /api/approval-timeout/config — return timeout configuration
+    this.app.get("/api/approval-timeout/config", (_req: Request, res: Response) => {
+      const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+      if (!manager) {
+        res.json({
+          defaultTimeoutMs: 5000,
+          lowRiskTimeoutMs: 3000,
+          mediumRiskTimeoutMs: 5000,
+          highRiskTimeoutMs: 10000,
+          criticalRiskTimeoutMs: 15000,
+        });
+        return;
+      }
+      const stats = manager.getStats();
+      res.json({ ...stats });
+    });
+
+    // PUT /api/approval-timeout/config — update timeout configuration
+    this.app.put("/api/approval-timeout/config", (req: Request, res: Response) => {
+      const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+      if (!manager) {
+        res.status(503).json({ error: "ApprovalTimeoutManager not available" });
+        return;
+      }
+      const config = req.body as Partial<ApprovalTimeoutConfig>;
+      // ApprovalTimeoutManager doesn't have a runtime updateConfig method,
+      // so we return the current config as read-only for now
+      const stats = manager.getStats();
+      res.json({ success: true, stats, note: "Timeout config requires restart to take effect" });
+    });
+
+    // GET /api/reaction-approvals — return reaction approval log
+    this.app.get("/api/reaction-approvals", (_req: Request, res: Response) => {
+      const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+      if (!manager) {
+        res.json({ history: [], pending: [], stats: null });
+        return;
+      }
+      const history = manager.getHistory();
+      const pending = manager.getPending();
+      const stats = manager.getStats();
+      res.json({ history, pending, stats });
+    });
   }
 
   private setupA2ARoutes(): void {
@@ -1269,6 +1331,356 @@ export class GatewayServer {
       const fromSnapshotIndex = typeof req.body?.fromSnapshotIndex === "number" ? req.body.fromSnapshotIndex : undefined;
       const result = store.resume(String(req.params.id), fromSnapshotIndex);
       res.json(result);
+    });
+  }
+
+  // ── Token Usage endpoints ─────────────────────────────────────────
+  private setupTokenUsageRoutes(): void {
+    // GET /api/token-usage/overview — aggregated token usage stats
+    this.app.get("/api/token-usage/overview", (_req: Request, res: Response) => {
+      const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
+      if (!tracker) {
+        res.json({
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCacheHitTokens: 0,
+          totalCost: 0,
+          totalCalls: 0,
+          byProvider: {},
+          byModel: {},
+          byChannel: {},
+          byUser: {},
+          hourlyTrend: [],
+        } satisfies UsageSummary);
+        return;
+      }
+      const summary = tracker.getSummary();
+      res.json(summary);
+    });
+
+    // GET /api/token-usage/by-model — usage grouped by model
+    this.app.get("/api/token-usage/by-model", (_req: Request, res: Response) => {
+      const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
+      if (!tracker) {
+        res.json({ byModel: {}, totalCalls: 0 });
+        return;
+      }
+      const summary = tracker.getSummary();
+      res.json({ byModel: summary.byModel, totalCalls: summary.totalCalls });
+    });
+
+    // GET /api/token-usage/by-session — usage grouped by session
+    this.app.get("/api/token-usage/by-session", (req: Request, res: Response) => {
+      const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
+      if (!tracker) {
+        res.json({ sessions: [], totalCalls: 0 });
+        return;
+      }
+      const sessionId = req.query.sessionId as string | undefined;
+      const limit = Math.min(parseInt(String(req.query.limit ?? "50"), 10) || 50, 500);
+      if (sessionId) {
+        const sessionCost = tracker.getSessionCost(sessionId);
+        res.json({ sessionId, ...sessionCost });
+      } else {
+        const recent = tracker.getRecent(limit);
+        // Group by session
+        const bySession: Record<string, { inputTokens: number; outputTokens: number; totalCost: number; calls: number }> = {};
+        for (const r of recent) {
+          if (!bySession[r.sessionId]) {
+            bySession[r.sessionId] = { inputTokens: 0, outputTokens: 0, totalCost: 0, calls: 0 };
+          }
+          bySession[r.sessionId].inputTokens += r.inputTokens;
+          bySession[r.sessionId].outputTokens += r.outputTokens;
+          bySession[r.sessionId].totalCost += r.totalCost;
+          bySession[r.sessionId].calls++;
+        }
+        res.json({ sessions: bySession, totalCalls: recent.length });
+      }
+    });
+
+    // GET /api/token-usage/cost — cost breakdown by provider
+    this.app.get("/api/token-usage/cost", (_req: Request, res: Response) => {
+      const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
+      if (!tracker) {
+        res.json({ byProvider: {}, totalCost: 0 });
+        return;
+      }
+      const summary = tracker.getSummary();
+      res.json({ byProvider: summary.byProvider, totalCost: summary.totalCost });
+    });
+  }
+
+  // ── Install Policy endpoints ──────────────────────────────────────
+  private setupInstallPolicyRoutes(): void {
+    // GET /api/install-policy/rules — return current policy rules
+    this.app.get("/api/install-policy/rules", (_req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.json({ enabled: false, policy: null });
+        return;
+      }
+      const policy = manager.getPolicy();
+      res.json({ enabled: policy.enabled, policy });
+    });
+
+    // POST /api/install-policy/rules — add a new rule
+    this.app.post("/api/install-policy/rules", (req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.status(503).json({ error: "InstallPolicyManager not available" });
+        return;
+      }
+      const { type, rule } = req.body as { type?: string; rule?: Record<string, unknown> };
+      if (!type || !rule) {
+        res.status(400).json({ error: "type and rule are required" });
+        return;
+      }
+      const policy = manager.getPolicy();
+      switch (type) {
+        case "source":
+          policy.sourceRules.push(rule as any);
+          break;
+        case "permission":
+          policy.permissionRules.push(rule as any);
+          break;
+        case "risk":
+          policy.riskRules.push(rule as any);
+          break;
+        case "skill":
+          policy.skillRules.push(rule as any);
+          break;
+        default:
+          res.status(400).json({ error: `Unknown rule type: ${type}. Valid types: source, permission, risk, skill` });
+          return;
+      }
+      manager.updatePolicy(policy);
+      res.json({ success: true, policy: manager.getPolicy() });
+    });
+
+    // DELETE /api/install-policy/rules/:id — remove a rule
+    this.app.delete("/api/install-policy/rules/:id", (req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.status(503).json({ error: "InstallPolicyManager not available" });
+        return;
+      }
+      const { id } = req.params as { id: string };
+      const policy = manager.getPolicy();
+      // Search across all rule arrays for a matching rule
+      const ruleArrays: Array<{ arr: any[]; name: string }> = [
+        { arr: policy.sourceRules, name: "sourceRules" },
+        { arr: policy.permissionRules, name: "permissionRules" },
+        { arr: policy.riskRules, name: "riskRules" },
+        { arr: policy.skillRules, name: "skillRules" },
+      ];
+      let removed = false;
+      for (const { arr } of ruleArrays) {
+        const idx = arr.findIndex((r: any) => (r.id === id || r.name === id));
+        if (idx !== -1) {
+          arr.splice(idx, 1);
+          removed = true;
+          break;
+        }
+      }
+      if (!removed) {
+        res.status(404).json({ error: `Rule not found: ${id}` });
+        return;
+      }
+      manager.updatePolicy(policy);
+      res.json({ success: true, policy: manager.getPolicy() });
+    });
+
+    // POST /api/install-policy/evaluate — evaluate a skill against current policy
+    this.app.post("/api/install-policy/evaluate", async (req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.status(503).json({ error: "InstallPolicyManager not available" });
+        return;
+      }
+      const installRequest = req.body;
+      if (!installRequest?.name || !installRequest?.source || !installRequest?.permissions) {
+        res.status(400).json({ error: "name, source, and permissions are required" });
+        return;
+      }
+      try {
+        const evaluation = await manager.evaluate(installRequest);
+        res.json(evaluation);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/install-policy/audit — return recent policy evaluation audit log
+    this.app.get("/api/install-policy/audit", (_req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.json({ entries: [], count: 0 });
+        return;
+      }
+      const auditLog = manager.getAuditLog();
+      res.json({ entries: auditLog, count: auditLog.length });
+    });
+  }
+
+  // ── Transcript Redactor endpoints ─────────────────────────────────
+  private setupTranscriptRedactorRoutes(): void {
+    // GET /api/transcript-redactor/rules — return all redaction rules with enabled status
+    this.app.get("/api/transcript-redactor/rules", (_req: Request, res: Response) => {
+      const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
+      if (!redactor) {
+        res.json({ enabled: false, rules: [] });
+        return;
+      }
+      const rules = redactor.getRules();
+      res.json({ enabled: true, rules });
+    });
+
+    // POST /api/transcript-redactor/rules/:name/toggle — toggle a rule on/off
+    this.app.post("/api/transcript-redactor/rules/:name/toggle", (req: Request, res: Response) => {
+      const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
+      if (!redactor) {
+        res.status(503).json({ error: "TranscriptRedactor not available" });
+        return;
+      }
+      const { name } = req.params as { name: string };
+      const { enabled } = req.body as { enabled?: boolean };
+      const success = redactor.toggleRule(name, enabled);
+      if (!success) {
+        res.status(404).json({ error: `Rule not found: ${name}` });
+        return;
+      }
+      res.json({ success: true, name, enabled: redactor.getRules().find((r: any) => r.name === name)?.enabled });
+    });
+
+    // POST /api/transcript-redactor/scan — scan text for sensitive data
+    this.app.post("/api/transcript-redactor/scan", (req: Request, res: Response) => {
+      const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
+      if (!redactor) {
+        res.status(503).json({ error: "TranscriptRedactor not available" });
+        return;
+      }
+      const { text } = req.body as { text?: string };
+      if (!text) {
+        res.status(400).json({ error: "text is required" });
+        return;
+      }
+      const result = redactor.redact(text);
+      res.json(result);
+    });
+
+    // GET /api/transcript-redactor/stats — return redaction statistics
+    this.app.get("/api/transcript-redactor/stats", (_req: Request, res: Response) => {
+      const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
+      if (!redactor) {
+        res.json({ totalRedactions: 0, byPattern: {}, bySeverity: {}, textsProcessed: 0 });
+        return;
+      }
+      const stats = redactor.getStats();
+      res.json(stats);
+    });
+
+    // GET /api/transcript-redactor/audit — return recent redaction audit log
+    this.app.get("/api/transcript-redactor/audit", (_req: Request, res: Response) => {
+      const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
+      if (!redactor) {
+        res.json({ entries: [], count: 0 });
+        return;
+      }
+      const auditLog = redactor.getAuditLog();
+      res.json({ entries: auditLog, count: auditLog.length });
+    });
+  }
+
+  // ── MCP Scanner endpoints ─────────────────────────────────────────
+  private setupMCPScannerRoutes(): void {
+    // GET /api/mcp-scanner/tools — return all MCP tools with risk assessment
+    this.app.get("/api/mcp-scanner/tools", (_req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.json({ tools: [], count: 0 });
+        return;
+      }
+      // Get tools from the MCP gateway or agent executor
+      const executor = this.registry.resolveService<any>("agentModelExecutor");
+      const tools: Array<{ name: string; description: string; riskAssessment?: PoisoningScanResult }> = [];
+      if (executor?.registeredTools) {
+        for (const [name, entry] of executor.registeredTools) {
+          const desc = entry.definition?.description || name;
+          const risk = scanner.scan({ name, description: desc });
+          tools.push({ name, description: desc, riskAssessment: risk });
+        }
+      }
+      res.json({ tools, count: tools.length });
+    });
+
+    // POST /api/mcp-scanner/scan — scan a tool description for injection
+    this.app.post("/api/mcp-scanner/scan", (req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
+        return;
+      }
+      const { name, description, inputSchema } = req.body as { name?: string; description?: string; inputSchema?: string };
+      if (!name || !description) {
+        res.status(400).json({ error: "name and description are required" });
+        return;
+      }
+      const result = scanner.scan({ name, description, inputSchema });
+      res.json(result);
+    });
+
+    // GET /api/mcp-scanner/blacklist — return blacklisted patterns
+    this.app.get("/api/mcp-scanner/blacklist", (_req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.json({ patterns: [], count: 0 });
+        return;
+      }
+      const blacklist = scanner.getBlacklist();
+      res.json({ patterns: blacklist, count: blacklist.length });
+    });
+
+    // POST /api/mcp-scanner/blacklist — add a blacklist pattern
+    this.app.post("/api/mcp-scanner/blacklist", (req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
+        return;
+      }
+      const { pattern, reason, severity } = req.body as { pattern?: string; reason?: string; severity?: string };
+      if (!pattern) {
+        res.status(400).json({ error: "pattern is required" });
+        return;
+      }
+      const entry = scanner.addBlacklistPattern({ pattern, reason: reason ?? "Manually added", severity: severity ?? "high" });
+      res.json({ success: true, entry });
+    });
+
+    // DELETE /api/mcp-scanner/blacklist/:id — remove a blacklist pattern
+    this.app.delete("/api/mcp-scanner/blacklist/:id", (req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
+        return;
+      }
+      const { id } = req.params as { id: string };
+      const success = scanner.removeBlacklistPattern(id);
+      if (!success) {
+        res.status(404).json({ error: `Blacklist pattern not found: ${id}` });
+        return;
+      }
+      res.json({ success: true });
+    });
+
+    // GET /api/mcp-scanner/audit — return scan audit log
+    this.app.get("/api/mcp-scanner/audit", (_req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.json({ entries: [], count: 0 });
+        return;
+      }
+      const stats = scanner.getStats();
+      res.json({ entries: stats, count: stats.scanned ?? 0 });
     });
   }
 

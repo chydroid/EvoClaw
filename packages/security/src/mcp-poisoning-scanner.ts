@@ -186,6 +186,8 @@ const SEVERITY_WEIGHTS: Record<string, number> = {
 export class MCPToolPoisoningScanner {
   private config: Required<PoisoningScannerConfig>;
   private patterns: typeof POISONING_PATTERNS;
+  private blacklist: Array<{ id: string; pattern: string; reason: string; severity: string; createdAt: number }> = [];
+  private scanAuditLog: Array<{ toolName: string; riskScore: number; recommendation: string; threats: number; timestamp: number }> = [];
   private stats = {
     scanned: 0,
     safe: 0,
@@ -268,6 +270,18 @@ export class MCPToolPoisoningScanner {
       sanitizedDescription = this.sanitizeDescription(tool.description, threats);
     }
 
+    // Record audit entry
+    this.scanAuditLog.push({
+      toolName: tool.name,
+      riskScore,
+      recommendation,
+      threats: threats.length,
+      timestamp: Date.now(),
+    });
+    if (this.scanAuditLog.length > 1000) {
+      this.scanAuditLog.shift();
+    }
+
     return {
       safe,
       riskScore,
@@ -327,5 +341,31 @@ export class MCPToolPoisoningScanner {
       ...this.stats,
       threatsByType: Object.fromEntries(this.stats.threatsByType),
     };
+  }
+
+  /** 获取黑名单模式 */
+  getBlacklist(): Array<{ id: string; pattern: string; reason: string; severity: string; createdAt: number }> {
+    return [...this.blacklist];
+  }
+
+  /** 添加黑名单模式 */
+  addBlacklistPattern(entry: { pattern: string; reason: string; severity: string }): { id: string; pattern: string; reason: string; severity: string; createdAt: number } {
+    const id = `bl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const record = { id, pattern: entry.pattern, reason: entry.reason, severity: entry.severity, createdAt: Date.now() };
+    this.blacklist.push(record);
+    return record;
+  }
+
+  /** 移除黑名单模式 */
+  removeBlacklistPattern(id: string): boolean {
+    const idx = this.blacklist.findIndex((e) => e.id === id);
+    if (idx === -1) return false;
+    this.blacklist.splice(idx, 1);
+    return true;
+  }
+
+  /** 获取扫描审计日志 */
+  getAuditLog(limit = 100): Array<{ toolName: string; riskScore: number; recommendation: string; threats: number; timestamp: number }> {
+    return this.scanAuditLog.slice(-limit);
   }
 }

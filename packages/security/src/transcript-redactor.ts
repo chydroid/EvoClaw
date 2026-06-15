@@ -173,6 +173,8 @@ const DEFAULT_PATTERNS: RedactionPattern[] = [
 export class TranscriptRedactor {
   private config: Required<RedactorConfig>;
   private patterns: RedactionPattern[];
+  private disabledRules = new Set<string>();
+  private auditLog: Array<{ text: string; redactions: RedactionResult["redactions"]; totalRedactions: number; timestamp: number }> = [];
   private stats = {
     totalRedactions: 0,
     byPattern: new Map<string, number>(),
@@ -235,6 +237,8 @@ export class TranscriptRedactor {
 
     for (const p of this.patterns) {
       if (total >= this.config.maxRedactionsPerText) break;
+      // Skip disabled rules
+      if (this.disabledRules.has(p.name)) continue;
       // 每次重置lastIndex以避免lastIndex状态问题
       p.pattern.lastIndex = 0;
       const matches = result.match(p.pattern);
@@ -259,6 +263,18 @@ export class TranscriptRedactor {
       severity: info.severity,
       count: info.count,
     }));
+    // Record audit entry
+    if (redactions.length > 0) {
+      this.auditLog.push({
+        text: text.slice(0, 200),
+        redactions,
+        totalRedactions: total,
+        timestamp: Date.now(),
+      });
+      if (this.auditLog.length > 1000) {
+        this.auditLog.shift();
+      }
+    }
     return {
       text: result,
       redactions,
@@ -329,5 +345,30 @@ export class TranscriptRedactor {
         });
       } catch { /* ignore */ }
     }
+  }
+
+  /** 获取所有规则及其启用状态 */
+  getRules(): Array<RedactionPattern & { enabled: boolean }> {
+    return this.patterns.map((p) => ({
+      ...p,
+      enabled: !this.disabledRules.has(p.name),
+    }));
+  }
+
+  /** 切换规则启用/禁用 */
+  toggleRule(name: string, enabled?: boolean): boolean {
+    const rule = this.patterns.find((p) => p.name === name);
+    if (!rule) return false;
+    if (enabled === false || (enabled === undefined && !this.disabledRules.has(name))) {
+      this.disabledRules.add(name);
+    } else {
+      this.disabledRules.delete(name);
+    }
+    return true;
+  }
+
+  /** 获取审计日志 */
+  getAuditLog(limit = 100): Array<{ text: string; redactions: RedactionResult["redactions"]; totalRedactions: number; timestamp: number }> {
+    return this.auditLog.slice(-limit);
   }
 }

@@ -301,6 +301,9 @@ importers:
       '@evoclaw/infrastructure':
         specifier: workspace:*
         version: link:../infrastructure
+      '@evoclaw/security':
+        specifier: workspace:*
+        version: link:../security
       '@larksuiteoapi/node-sdk':
         specifier: ^1.66.1
         version: 1.66.1
