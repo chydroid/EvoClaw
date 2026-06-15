@@ -89,6 +89,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     "nav.workboard": "工作台",
     "nav.steer": "引导控制",
     "nav.guardrails": "安全护栏",
+    "nav.token_usage": "Token 用量",
+    "nav.install_policy": "安装策略",
+    "nav.transcript_redactor": "信息遮蔽",
+    "nav.approval_center": "审批中心",
+    "nav.mcp_scanner": "MCP 扫描",
 
     // ─── Channel Messages ──────────────────────────────────
     "nav.channel_messages": "通道消息",
@@ -1679,6 +1684,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     "nav.workboard": "Workboard",
     "nav.steer": "Steer",
     "nav.guardrails": "Guardrails",
+    "nav.token_usage": "Token Usage",
+    "nav.install_policy": "Install Policy",
+    "nav.transcript_redactor": "Redaction",
+    "nav.approval_center": "Approvals",
+    "nav.mcp_scanner": "MCP Scanner",
 
     // ─── Channel Messages ──────────────────────────────────
     "nav.channel_messages": "Channel Messages",

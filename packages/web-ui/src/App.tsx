@@ -40,6 +40,11 @@ import WorkboardPage from "./WorkboardPage";
 import SteerPage from "./SteerPage";
 
 import { StreamViewPage } from "./StreamViewPage";
+import TokenUsagePage from "./TokenUsagePage";
+import InstallPolicyPage from "./InstallPolicyPage";
+import TranscriptRedactorPage from "./TranscriptRedactorPage";
+import ApprovalCenterPage from "./ApprovalCenterPage";
+import MCPScannerPage from "./MCPScannerPage";
 
 type TabId =
   | "chat" | "status" | "dashboard"
@@ -50,7 +55,8 @@ type TabId =
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
-  | "observability" | "guardrails" | "workboard" | "steer" | "stream-view";
+  | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
+  | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner";
 
 interface NavGroup {
   id: string;
@@ -87,6 +93,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "canvas", i18nKey: "nav.canvas", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
       { id: "observability" as TabId, i18nKey: "nav.observability", iconId: "observability" },
+      { id: "token-usage" as TabId, i18nKey: "nav.token_usage", iconId: "monitoring" },
 
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
     ],
@@ -115,6 +122,10 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "dlq", i18nKey: "nav.dlq", iconId: "dlq" },
       { id: "feature-flags", i18nKey: "nav.feature_flags", iconId: "feature-flags" },
       { id: "guardrails" as TabId, i18nKey: "nav.guardrails", iconId: "guardrails" },
+      { id: "install-policy" as TabId, i18nKey: "nav.install_policy", iconId: "permissions" },
+      { id: "transcript-redactor" as TabId, i18nKey: "nav.transcript_redactor", iconId: "secrets" },
+      { id: "approval-center" as TabId, i18nKey: "nav.approval_center", iconId: "permissions" },
+      { id: "mcp-scanner" as TabId, i18nKey: "nav.mcp_scanner", iconId: "plugins" },
     ],
   },
   {
@@ -624,6 +635,11 @@ export default function App() {
       case "steer": return <ErrorBoundary><SteerPage /></ErrorBoundary>;
 
       case "stream-view": return <ErrorBoundary><StreamViewPage /></ErrorBoundary>;
+      case "token-usage": return <ErrorBoundary><TokenUsagePage /></ErrorBoundary>;
+      case "install-policy": return <ErrorBoundary><InstallPolicyPage /></ErrorBoundary>;
+      case "transcript-redactor": return <ErrorBoundary><TranscriptRedactorPage /></ErrorBoundary>;
+      case "approval-center": return <ErrorBoundary><ApprovalCenterPage /></ErrorBoundary>;
+      case "mcp-scanner": return <ErrorBoundary><MCPScannerPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }
