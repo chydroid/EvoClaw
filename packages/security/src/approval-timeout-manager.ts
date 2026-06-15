@@ -17,6 +17,8 @@ export interface ApprovalRequest {
   riskLevel: "low" | "medium" | "high" | "critical";
   channel?: string; // 来自哪个channel (telegram/discord/signal等)
   metadata?: Record<string, unknown>;
+  /** 单个请求的 fallback 覆盖（优先于全局配置） */
+  fallbackOverride?: "deny" | "allow" | "fail-closed";
 }
 
 /** 审批决策 */
@@ -41,6 +43,20 @@ export interface ApprovalTimeoutConfig {
   onApproved?: (request: ApprovalRequest) => Promise<void> | void;
   onDenied?: (request: ApprovalRequest, reason?: string) => Promise<void> | void;
   cleanupIntervalMs?: number; // 清理间隔(默认60000ms)
+  /** 超时后的回退策略，默认 "fail-closed"（fail-closed） */
+  askFallback?: "deny" | "allow" | "fail-closed";
+}
+
+/** 审计日志条目 */
+export interface ApprovalAuditEntry {
+  id: string;
+  requestId: string;
+  action: "timeout" | "approved" | "denied" | "fail-closed";
+  riskLevel: string;
+  timeoutMs: number;
+  timestamp: number;
+  fallbackPolicy: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** 审批等待Promise解析器 */
@@ -62,9 +78,11 @@ export class ApprovalTimeoutManager {
   private onApproved?: (req: ApprovalRequest) => Promise<void> | void;
   private onDenied?: (req: ApprovalRequest, reason?: string) => Promise<void> | void;
   private cleanupIntervalMs: number;
+  private askFallback: "deny" | "allow" | "fail-closed";
 
   private pending = new Map<string, PendingApproval>();
   private history: ApprovalDecision[] = [];
+  private auditLog: ApprovalAuditEntry[] = [];
   private cleanupTimer?: NodeJS.Timeout;
   private approvalCounter = 0;
   private stats = {
@@ -89,6 +107,7 @@ export class ApprovalTimeoutManager {
     this.onApproved = config.onApproved;
     this.onDenied = config.onDenied;
     this.cleanupIntervalMs = config.cleanupIntervalMs ?? 60000;
+    this.askFallback = config.askFallback ?? "fail-closed";
 
     // 启动定期清理
     this.cleanupTimer = setInterval(() => this.cleanup(), this.cleanupIntervalMs);
@@ -116,16 +135,40 @@ export class ApprovalTimeoutManager {
 
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(async () => {
-        // FAIL-CLOSED: 超时默认拒绝
-        await this.expireApproval(id, fullRequest);
-        const decision: ApprovalDecision = {
-          id: `decision-${id}-expired`,
-          requestId: id,
-          status: "expired",
-          decidedAt: Date.now(),
-          reason: `Approval timed out after ${timeoutMs}ms - fail-closed policy: denied`,
-          autoDecisionReason: "timeout",
-        };
+        // 根据 askFallback 决定超时行为
+        const fallback = fullRequest.fallbackOverride ?? this.askFallback;
+        await this.expireApproval(id, fullRequest, fallback);
+
+        let decision: ApprovalDecision;
+        if (fallback === "allow") {
+          decision = {
+            id: `decision-${id}-timeout-allow`,
+            requestId: id,
+            status: "approved",
+            decidedAt: Date.now(),
+            reason: `Approval timed out after ${timeoutMs}ms - fallback policy: allow`,
+            autoDecisionReason: "timeout-allow",
+          };
+        } else if (fallback === "deny") {
+          decision = {
+            id: `decision-${id}-timeout-deny`,
+            requestId: id,
+            status: "denied",
+            decidedAt: Date.now(),
+            reason: `Approval timed out after ${timeoutMs}ms - fallback policy: deny`,
+            autoDecisionReason: "timeout-deny",
+          };
+        } else {
+          // fail-closed: 拒绝并记录审计日志
+          decision = {
+            id: `decision-${id}-expired`,
+            requestId: id,
+            status: "expired",
+            decidedAt: Date.now(),
+            reason: `Approval timed out after ${timeoutMs}ms - fail-closed policy: denied`,
+            autoDecisionReason: "timeout",
+          };
+        }
         resolve(decision);
       }, timeoutMs);
       this.pending.set(id, { request: fullRequest, resolve, timer });
@@ -153,7 +196,7 @@ export class ApprovalTimeoutManager {
     };
     this.history.push(decision);
     if (this.onApproved) {
-      try { await this.onApproved(pending.request); } catch { /* swallow */ }
+      try { await this.onApproved(pending.request); } catch (err) { console.debug("[ApprovalTimeout]", err); }
     }
     pending.resolve(decision);
     return true;
@@ -187,11 +230,25 @@ export class ApprovalTimeoutManager {
   }
 
   /** 触发过期 */
-  private async expireApproval(id: string, request: ApprovalRequest): Promise<void> {
+  private async expireApproval(id: string, request: ApprovalRequest, fallback: "deny" | "allow" | "fail-closed"): Promise<void> {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
     this.stats.expired++;
+
+    // 记录审计日志
+    const auditAction = fallback === "fail-closed" ? "fail-closed" : "timeout";
+    this.auditLog.push({
+      id: `audit-${id}-${Date.now()}`,
+      requestId: id,
+      action: auditAction,
+      riskLevel: request.riskLevel,
+      timeoutMs: request.timeoutMs,
+      timestamp: Date.now(),
+      fallbackPolicy: fallback,
+      metadata: request.metadata,
+    });
+
     const decision: ApprovalDecision = {
       id: `decision-${id}-expired`,
       requestId: id,
@@ -202,7 +259,7 @@ export class ApprovalTimeoutManager {
     };
     this.history.push(decision);
     if (this.onExpired) {
-      try { await this.onExpired(request); } catch { /* swallow */ }
+      try { await this.onExpired(request); } catch (err) { console.debug("[ApprovalTimeout]", err); }
     }
   }
 
@@ -218,7 +275,12 @@ export class ApprovalTimeoutManager {
 
   /** 获取统计 */
   getStats() {
-    return { ...this.stats, pendingCount: this.pending.size };
+    return { ...this.stats, pendingCount: this.pending.size, askFallback: this.askFallback };
+  }
+
+  /** 获取审计日志 */
+  getAuditLog(limit = 100): ApprovalAuditEntry[] {
+    return this.auditLog.slice(-limit);
   }
 
   /** 清理已完成的过期entries */
@@ -232,17 +294,31 @@ export class ApprovalTimeoutManager {
   /** 关闭管理器 */
   shutdown(): void {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
-    // 拒绝所有pending
+    // 根据 askFallback 决定如何处理 pending 请求
+    const fallback = this.askFallback;
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timer);
-      pending.resolve({
-        id: `decision-${id}-shutdown`,
-        requestId: id,
-        status: "denied",
-        decidedAt: Date.now(),
-        reason: "Manager shutdown - fail-closed",
-        autoDecisionReason: "shutdown",
-      });
+      if (fallback === "allow") {
+        // 放行所有 pending
+        pending.resolve({
+          id: `decision-${id}-shutdown`,
+          requestId: id,
+          status: "approved",
+          decidedAt: Date.now(),
+          reason: "Manager shutdown - fallback policy: allow",
+          autoDecisionReason: "shutdown-allow",
+        });
+      } else {
+        // deny / fail-closed: 拒绝所有 pending
+        pending.resolve({
+          id: `decision-${id}-shutdown`,
+          requestId: id,
+          status: "denied",
+          decidedAt: Date.now(),
+          reason: "Manager shutdown - fail-closed",
+          autoDecisionReason: "shutdown",
+        });
+      }
     }
     this.pending.clear();
   }

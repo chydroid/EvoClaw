@@ -27,6 +27,17 @@ export interface TelegramConfig {
   allowedChats?: number[];
   /** Blocked user/chat IDs */
   blockedChats?: number[];
+  /** 是否拒绝未授权的私聊DM（OpenClaw安全策略） */
+  rejectUnauthorizedDm?: boolean;
+  /** 未授权DM的自动回复消息（空则不回复） */
+  unauthorizedDmReply?: string;
+  /** 是否在群组中只响应@bot的消息 */
+  onlyRespondToMentions?: boolean;
+  /** DM配对管理器（可选，用于动态授权DM） */
+  dmPairingHandler?: {
+    isPaired: (userId: number) => Promise<boolean> | boolean;
+    requestPairing: (userId: number, chatId: number) => Promise<void>;
+  };
 }
 
 interface TelegramUpdate {
@@ -79,6 +90,11 @@ export class TelegramAdapter implements ChannelAdapter {
   private webhookUrl?: string;
   private allowedChats: Set<number>;
   private blockedChats: Set<number>;
+  private rejectUnauthorizedDm: boolean;
+  private unauthorizedDmReply: string | undefined;
+  private onlyRespondToMentions: boolean;
+  private dmPairingHandler: TelegramConfig["dmPairingHandler"];
+  private botUsername: string | undefined;
 
   private messageHandlers: Array<(msg: ChannelMessage) => Promise<void>> = [];
   private statusHandlers: Array<(status: "connected" | "disconnected" | "reconnecting" | "error") => void> = [];
@@ -94,6 +110,10 @@ export class TelegramAdapter implements ChannelAdapter {
     this.webhookUrl = config.webhookUrl;
     this.allowedChats = new Set(config.allowedChats ?? []);
     this.blockedChats = new Set(config.blockedChats ?? []);
+    this.rejectUnauthorizedDm = config.rejectUnauthorizedDm ?? true;
+    this.unauthorizedDmReply = config.unauthorizedDmReply;
+    this.onlyRespondToMentions = config.onlyRespondToMentions ?? false;
+    this.dmPairingHandler = config.dmPairingHandler;
     this.apiBase = `https://api.telegram.org/bot${this.botToken}`;
   }
 
@@ -116,6 +136,8 @@ export class TelegramAdapter implements ChannelAdapter {
         ? `@${me.result.username}`
         : me.result.first_name;
       console.log(`[Telegram] Connected as ${botName} (id: ${me.result.id})`);
+
+      this.botUsername = me.result.username;
 
       this.running = true;
       this.connected = true;
@@ -344,6 +366,40 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     }
 
+    const isDirect = msg.chat.type === "private";
+    const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+
+    // 未授权DM拦截（OpenClaw安全策略）
+    if (this.rejectUnauthorizedDm && isDirect) {
+      const isAllowed = this.allowedChats.size === 0
+        || this.allowedChats.has(chatId)
+        || (userId && this.allowedChats.has(userId));
+
+      if (!isAllowed) {
+        // 检查DM配对
+        const isPaired = this.dmPairingHandler
+          ? await this.dmPairingHandler.isPaired(userId ?? chatId)
+          : false;
+
+        if (!isPaired) {
+          console.warn(`[Telegram] Rejected unauthorized DM from user ${userId} (chat ${chatId})`);
+          if (this.unauthorizedDmReply) {
+            await this.sendMessage(String(chatId), this.unauthorizedDmReply);
+          }
+          return;
+        }
+      }
+    }
+
+    // 群组中只响应@bot的消息
+    if (this.onlyRespondToMentions && isGroup) {
+      const isMentioned = msg.entities?.some(e => e.type === "mention")
+        && msg.text?.includes(`@${this.botUsername}`);
+      if (!isMentioned && !msg.reply_to_message) {
+        return; // 忽略未@bot的群组消息
+      }
+    }
+
     const text = msg.text || msg.caption || "";
 
     const channelMsg: ChannelMessage = {
@@ -353,9 +409,9 @@ export class TelegramAdapter implements ChannelAdapter {
       to: String(chatId),
       text,
       timestamp: new Date(msg.date * 1000).toISOString(),
-      isDirect: msg.chat.type === "private",
-      isGroup: msg.chat.type === "group" || msg.chat.type === "supergroup",
-      groupId: msg.chat.type !== "private" ? String(chatId) : undefined,
+      isDirect,
+      isGroup,
+      groupId: !isDirect ? String(chatId) : undefined,
       replyTo: msg.reply_to_message ? String(msg.reply_to_message.message_id) : undefined,
       attachments: this.extractAttachments(msg),
       raw: msg as unknown as Record<string, unknown>,
@@ -474,9 +530,7 @@ export class TelegramAdapter implements ChannelAdapter {
     for (const handler of this.statusHandlers) {
       try {
         handler(status);
-      } catch {
-        // swallow
-      }
+      } catch (err) { console.debug("[Telegram]", err instanceof Error ? err.message : String(err)); }
     }
   }
 }

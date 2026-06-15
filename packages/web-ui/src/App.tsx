@@ -26,6 +26,7 @@ import SecretsManagerPage from "./SecretsManagerPage";
 import DeadLetterQueuePage from "./DeadLetterQueuePage";
 import ConfigRPCPage from "./ConfigRPCPage";
 import SessionManagementPage from "./SessionManagementPage";
+import SessionRetentionPage from "./SessionRetentionPage";
 import FeatureFlagsPage from "./FeatureFlagsPage";
 import ConfigMigrationPage from "./ConfigMigrationPage";
 import ConfigDoctorPage from "./ConfigDoctorPage";
@@ -56,7 +57,8 @@ type TabId =
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
   | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
-  | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner";
+  | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner"
+  | "session-retention";
 
 interface NavGroup {
   id: string;
@@ -135,6 +137,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "config-rpc", i18nKey: "nav.config_rpc", iconId: "config-rpc" },
       { id: "session-mgmt", i18nKey: "nav.session_mgmt", iconId: "retention" },
+      { id: "session-retention" as TabId, i18nKey: "nav.session_retention", iconId: "retention" },
       { id: "config-migration", i18nKey: "nav.config_migration", iconId: "config-migration" },
       { id: "config-doctor", i18nKey: "nav.config_doctor", iconId: "config-doctor" },
     ],
@@ -621,6 +624,7 @@ export default function App() {
       case "dlq": return <ErrorBoundary><DeadLetterQueuePage /></ErrorBoundary>;
       case "config-rpc": return <ErrorBoundary><ConfigRPCPage /></ErrorBoundary>;
       case "session-mgmt": return <ErrorBoundary><SessionManagementPage /></ErrorBoundary>;
+      case "session-retention": return <ErrorBoundary><SessionRetentionPage /></ErrorBoundary>;
       case "feature-flags": return <ErrorBoundary><FeatureFlagsPage /></ErrorBoundary>;
       case "config-migration": return <ErrorBoundary><ConfigMigrationPage /></ErrorBoundary>;
       case "config-doctor": return <ErrorBoundary><ConfigDoctorPage /></ErrorBoundary>;

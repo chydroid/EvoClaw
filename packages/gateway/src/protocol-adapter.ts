@@ -508,7 +508,7 @@ export class ProtocolAdapter {
         auditLog: this.secretsAuditLog,
       };
       fs.writeFileSync(secretsFile, JSON.stringify(data, null, 2), "utf-8");
-    } catch { /* non-critical */ }
+    } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
   }
 
   /** Resolve ${VAR} references in LLM providers for runtime use */
@@ -760,7 +760,7 @@ export class ProtocolAdapter {
       }
       // Save current version
       fs.writeFileSync(versionFile, currentVersion, "utf-8");
-    } catch { /* non-critical */ }
+    } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
   }
 
   private persistMigrations(): void {
@@ -1698,7 +1698,7 @@ export class ProtocolAdapter {
             if (understanding) {
               sendSSE("understanding", { text: understanding });
             }
-          } catch { /* non-critical */ }
+          } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
 
           let webSearchCount = 0;
           let webFetchCount = 0;
@@ -1768,21 +1768,21 @@ export class ProtocolAdapter {
                   if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
                 }
               }
-            } catch { /* use default */ }
+            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             try {
               const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
               if (contextEngine) {
                 const cfgMax = contextEngine.getConfig().maxContextTokens as number;
                 if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
               }
-            } catch { /* use default */ }
+            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             try {
               const lifecycleMgr = this.registry.resolveService<{ getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number }> }>("lifecycleManager");
               if (lifecycleMgr) {
                 const s = lifecycleMgr.getAllStatuses().find(s => s.sessionId === resolvedSessionId);
                 if (s?.tokensUsed) sessionTokensUsed = s.tokensUsed;
               }
-            } catch { /* ignore */ }
+            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
 
             sendSSE("done", {
               reply: result.reply,
@@ -1802,7 +1802,7 @@ export class ProtocolAdapter {
               sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n替代方案：① 请稍后重试；② 尝试简化请求；③ 前往 Ops 页面检查系统状态。` });
             }
           } finally {
-            try { res.end(); } catch { /* ignore */ }
+            try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
           return;
         }
@@ -1858,7 +1858,7 @@ export class ProtocolAdapter {
               else if (activeProvider.model.includes("qwen")) contextLimit = 131072;
             }
           }
-        } catch { /* use default */ }
+        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
         try {
           const contextEngine = this.registry.resolveService("contextEngine") as {
             getConfig(): Record<string, unknown>;
@@ -1867,7 +1867,7 @@ export class ProtocolAdapter {
             const cfgMax = contextEngine.getConfig().maxContextTokens as number;
             if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
           }
-        } catch { /* use default */ }
+        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
         try {
           const lifecycleMgr = this.registry.resolveService<{
             getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number; compactionCount?: number }>;
@@ -1879,7 +1879,7 @@ export class ProtocolAdapter {
               sessionTokensUsed = sessionStatus.tokensUsed;
             }
           }
-        } catch { /* ignore */ }
+        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
 
         const totalTokensUsed = result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed;
 
@@ -1889,7 +1889,7 @@ export class ProtocolAdapter {
           const userMsgId = `msg_${resolvedSessionId}_${Date.now() - Math.round(result.duration)}`;
           const agentMsgId = `msg_${resolvedSessionId}_${Date.now()}`;
           rm.record(userMsgId, agentMsgId, { channel: "webchat", peer: "user" });
-        } catch { /* non-critical */ }
+        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
 
         res.json({
           reply: result.reply,
@@ -1985,7 +1985,7 @@ export class ProtocolAdapter {
           }
         } finally {
           if (resumeTimeoutHandle) clearTimeout(resumeTimeoutHandle);
-          try { res.end(); } catch { /* ignore */ }
+          try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
         }
         return;
       }
@@ -2796,7 +2796,7 @@ export class ProtocolAdapter {
               if (description_zh && description_zh !== p.manifest.description) {
                 result.i18n = { description_zh, translatedAt: new Date().toISOString() };
               }
-            } catch { /* non-critical */ }
+            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
 
           return result;
@@ -2842,7 +2842,7 @@ export class ProtocolAdapter {
         try {
           const { BUILTIN_PLUGIN_FACTORIES } = await import("@evoclaw/agent/plugins");
           const factory = BUILTIN_PLUGIN_FACTORIES.find((f: () => { manifest: { name: string } }) => {
-            try { return f().manifest.name.toLowerCase() === name.toLowerCase(); } catch { return false; }
+            try { return f().manifest.name.toLowerCase() === name.toLowerCase(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); return false; }
           });
           if (factory) {
             const plugin = factory();
@@ -3588,7 +3588,7 @@ export class ProtocolAdapter {
             // Update accounts index
             const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
             let index: string[] = [];
-            try { if (fs.existsSync(indexPath)) index = JSON.parse(fs.readFileSync(indexPath, "utf-8")); } catch { /* */ }
+            try { if (fs.existsSync(indexPath)) index = JSON.parse(fs.readFileSync(indexPath, "utf-8")); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             if (!index.includes(normalizedId)) {
               index.push(normalizedId);
               fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
@@ -5321,7 +5321,7 @@ export class ProtocolAdapter {
     const getFlagStore = (): FeatureFlagStore | null => {
       try {
         return this.registry.resolveService<FeatureFlagStore>("featureFlagStore") ?? null;
-      } catch { return null; }
+      } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); return null; }
     };
 
     app.get("/api/feature-flags", (_req: Request, res: Response) => {

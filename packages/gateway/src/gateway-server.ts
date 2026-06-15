@@ -24,6 +24,7 @@ import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
 import { ProtocolHandler } from "./ws-protocol";
 import { WSServerTransport } from "./ws-server-transport";
+import type { ChannelManager } from "./channel-manager";
 
 export interface GatewayConfig {
   port: number;
@@ -466,6 +467,22 @@ export class GatewayServer {
       }
     });
 
+    // GET /api/channels — list all registered channels
+    this.app.get("/api/channels", (_req: Request, res: Response) => {
+      const channelMgr = this.registry.resolveService<ChannelManager>("channelManager");
+      if (!channelMgr) {
+        res.json({ channels: [], count: 0 });
+        return;
+      }
+      try {
+        const statuses = channelMgr.getAllStatuses?.() || {};
+        const active = channelMgr.getActiveChannels?.() || [];
+        res.json({ channels: statuses, activeChannels: active, count: Object.keys(statuses).length });
+      } catch {
+        res.json({ channels: [], count: 0 });
+      }
+    });
+
     this.app.get("/api/health", (_req: Request, res: Response) => {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       res.json({
@@ -889,6 +906,29 @@ export class GatewayServer {
       } else {
         res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
       }
+    });
+
+    // GET /api/approvals/history — approval history
+    this.app.get("/api/approvals/history", (_req: Request, res: Response) => {
+      const approvalMgr = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+      if (approvalMgr) {
+        const history = approvalMgr.getHistory(100);
+        const stats = approvalMgr.getStats();
+        res.json({ history, stats });
+        return;
+      }
+      res.json({ history: [], stats: { total: 0, approved: 0, denied: 0, expired: 0 } });
+    });
+
+    // GET /api/approvals/timeout-config — get timeout configuration
+    this.app.get("/api/approvals/timeout-config", (_req: Request, res: Response) => {
+      const approvalMgr = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+      if (approvalMgr) {
+        const stats = approvalMgr.getStats();
+        res.json({ askFallback: stats.askFallback ?? "fail-closed", stats });
+        return;
+      }
+      res.json({ askFallback: "fail-closed", timeoutSeconds: 300, defaultAction: "deny" });
     });
 
     // GET /api/approvals/config — get approval configuration
@@ -1346,6 +1386,7 @@ export class GatewayServer {
           totalCacheHitTokens: 0,
           totalCost: 0,
           totalCalls: 0,
+          totalReasoningTokens: 0,
           byProvider: {},
           byModel: {},
           byChannel: {},

@@ -425,7 +425,7 @@ export class AgentModelExecutor {
     try {
       const { GuardrailsManager } = require("./guardrails");
       this.guardrailsManager = new GuardrailsManager();
-    } catch { /* guardrails not available */ }
+    } catch (err) { console.debug("[AgentModelExecutor] guardrails not available:", err instanceof Error ? err.message : String(err)); }
 
     // Structured Output
     try {
@@ -456,7 +456,7 @@ export class AgentModelExecutor {
     try {
       const { ComputedStatusEngine } = require("./computed-status");
       this.computedStatusEngine = new ComputedStatusEngine();
-    } catch { /* computed status not available */ }
+    } catch (err) { console.debug("[AgentModelExecutor] computed status not available:", err instanceof Error ? err.message : String(err)); }
 
     // Stale Context Manager
     try {
@@ -490,7 +490,7 @@ export class AgentModelExecutor {
     for (const agent of builtinAgents) {
       try {
         this.swarmOrchestrator.registerAgent(agent);
-      } catch { /* max agents reached */ }
+      } catch (err) { console.debug("[AgentModelExecutor] max agents reached:", err instanceof Error ? err.message : String(err)); }
     }
   }
 

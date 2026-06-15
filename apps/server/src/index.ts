@@ -21,7 +21,7 @@ function getServerVersion(): string {
       }
     }
   } catch { /* version detection failed, using fallback */ }
-  return "0.33.0";
+  return "0.36.0";
 }
 const SERVER_VERSION = getServerVersion();
 
@@ -31,7 +31,7 @@ import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, Ta
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
-import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay } from "@evoclaw/security";
+import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
@@ -478,6 +478,15 @@ export class EvoClawServer {
     this.permissionManager = new PermissionManager(this.registry, this.eventBus);
     this.registry.registerService("permissionManager", this.permissionManager);
     this.errorRecoveryManager = new ErrorRecoveryManager(this.registry, this.eventBus);
+
+    // Security services: TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager
+    const transcriptRedactor = new TranscriptRedactor();
+    this.registry.registerService("transcriptRedactor", transcriptRedactor);
+    const mcpPoisoningScanner = new MCPToolPoisoningScanner();
+    this.registry.registerService("mcpPoisoningScanner", mcpPoisoningScanner);
+    const approvalTimeoutManager = new ApprovalTimeoutManager({ askFallback: "fail-closed" });
+    this.registry.registerService("approvalTimeoutManager", approvalTimeoutManager);
+
     this.browserController = new BrowserController(this.registry, this.eventBus);
     this.playwrightBrowser = new PlaywrightBrowser(this.registry, this.eventBus, {
       headless: true,

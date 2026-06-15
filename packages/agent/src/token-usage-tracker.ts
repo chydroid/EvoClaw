@@ -8,6 +8,8 @@ export interface ModelCostInfo {
   model: string;
   inputCostPer1k: number;
   outputCostPer1k: number;
+  /** 推理token每千个的成本（o1/o3等推理模型使用） */
+  reasoningCostPer1k?: number;
   contextWindow: number;
   updatedAt: number;
 }
@@ -23,9 +25,13 @@ export interface UsageRecord {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** 推理token数（o1/o3等推理模型使用） */
+  reasoningTokens?: number;
   /** 估算成本(USD) */
   inputCost: number;
   outputCost: number;
+  /** 推理成本(USD) */
+  reasoningCost?: number;
   totalCost: number;
   /** 调用时间 */
   calledAt: number;
@@ -41,6 +47,7 @@ export interface UsageRecord {
 export interface UsageSummary {
   totalInputTokens: number;
   totalOutputTokens: number;
+  totalReasoningTokens: number;
   totalCacheHitTokens: number;
   totalCost: number;
   totalCalls: number;
@@ -60,13 +67,31 @@ export interface TokenUsageTrackerConfig {
   /** 价格未配置时的默认值 */
   defaultInputCostPer1k?: number;
   defaultOutputCostPer1k?: number;
+  /** 默认推理token每千个成本 */
+  defaultReasoningCostPer1k?: number;
   /** 回调 - 每次记录后 */
   onRecord?: (record: UsageRecord) => void;
+  /** 预算限制配置 */
+  budget?: BudgetConfig;
 }
 
 /** 简化的Model cost provider接口 - 兼容GatewayMetadataCache */
 export interface ModelCostProvider {
   getModelCost(provider: string, model: string): ModelCostInfo | undefined;
+}
+
+/** 预算限制配置 */
+export interface BudgetConfig {
+  /** 硬预算限制(USD)，超过后拒绝所有LLM调用 */
+  hardBudgetUsd?: number;
+  /** 软预算限制(USD)，超过后发出警告但仍允许调用 */
+  softBudgetUsd?: number;
+  /** 预算周期：daily/weekly/monthly/total */
+  budgetPeriod: "daily" | "weekly" | "monthly" | "total";
+  /** 超过软预算时的回调 */
+  onSoftBudgetExceeded?: (currentSpend: number, softLimit: number) => void;
+  /** 超过硬预算时的回调 */
+  onHardBudgetExceeded?: (currentSpend: number, hardLimit: number) => void;
 }
 
 /**
@@ -78,17 +103,21 @@ export const DEFAULT_MODEL_COSTS: ModelCostInfo[] = [
   { provider: "openai", model: "gpt-4", inputCostPer1k: 0.03, outputCostPer1k: 0.06, contextWindow: 8192, updatedAt: 0 },
   { provider: "openai", model: "gpt-4-turbo", inputCostPer1k: 0.01, outputCostPer1k: 0.03, contextWindow: 128000, updatedAt: 0 },
   { provider: "openai", model: "gpt-3.5-turbo", inputCostPer1k: 0.0005, outputCostPer1k: 0.0015, contextWindow: 16385, updatedAt: 0 },
-  { provider: "anthropic", model: "claude-3-5-sonnet-20241022", inputCostPer1k: 0.003, outputCostPer1k: 0.015, contextWindow: 200000, updatedAt: 0 },
+  { provider: "openai", model: "o1", inputCostPer1k: 0.015, outputCostPer1k: 0.06, reasoningCostPer1k: 0.06, contextWindow: 128000, updatedAt: 0 },
+  { provider: "openai", model: "o1-mini", inputCostPer1k: 0.003, outputCostPer1k: 0.012, reasoningCostPer1k: 0.012, contextWindow: 128000, updatedAt: 0 },
+  { provider: "openai", model: "o3-mini", inputCostPer1k: 0.0011, outputCostPer1k: 0.0044, reasoningCostPer1k: 0.0044, contextWindow: 200000, updatedAt: 0 },
+  { provider: "anthropic", model: "claude-3-5-sonnet-20241022", inputCostPer1k: 0.003, outputCostPer1k: 0.015, reasoningCostPer1k: 0.015, contextWindow: 200000, updatedAt: 0 },
   { provider: "anthropic", model: "claude-3-haiku-20240307", inputCostPer1k: 0.00025, outputCostPer1k: 0.00125, contextWindow: 200000, updatedAt: 0 },
   { provider: "google", model: "gemini-1.5-pro", inputCostPer1k: 0.00125, outputCostPer1k: 0.005, contextWindow: 2000000, updatedAt: 0 },
   { provider: "google", model: "gemini-1.5-flash", inputCostPer1k: 0.000075, outputCostPer1k: 0.0003, contextWindow: 1000000, updatedAt: 0 },
 ];
 
 export class TokenUsageTracker {
-  private config: Required<TokenUsageTrackerConfig>;
+  private config: Omit<Required<TokenUsageTrackerConfig>, "cache" | "budget"> & { cache?: ModelCostProvider; budget?: BudgetConfig };
   private records: UsageRecord[] = [];
   private cache?: ModelCostProvider;
   private counter = 0;
+  private budgetLimiter?: BudgetLimiter;
 
   constructor(config: Partial<TokenUsageTrackerConfig> = {}) {
     this.config = {
@@ -96,9 +125,14 @@ export class TokenUsageTracker {
       retainCount: config.retainCount ?? 10000,
       defaultInputCostPer1k: config.defaultInputCostPer1k ?? 0.002,
       defaultOutputCostPer1k: config.defaultOutputCostPer1k ?? 0.006,
+      defaultReasoningCostPer1k: config.defaultReasoningCostPer1k ?? 0.006,
       onRecord: config.onRecord ?? (() => {}),
+      budget: config.budget,
     };
     this.cache = this.config.cache;
+    if (this.config.budget) {
+      this.budgetLimiter = new BudgetLimiter(this, this.config.budget);
+    }
   }
 
   /**
@@ -113,11 +147,12 @@ export class TokenUsageTracker {
     model: string;
     inputTokens: number;
     outputTokens: number;
+    reasoningTokens?: number;
     cacheHitTokens?: number;
     durationMs?: number;
     toolCalls?: number;
   }): UsageRecord {
-    const cost = this.calculateCost(usage.provider, usage.model, usage.inputTokens, usage.outputTokens);
+    const cost = this.calculateCost(usage.provider, usage.model, usage.inputTokens, usage.outputTokens, usage.reasoningTokens);
     const record: UsageRecord = {
       id: `usage-${++this.counter}-${Date.now()}`,
       sessionId: usage.sessionId,
@@ -128,8 +163,10 @@ export class TokenUsageTracker {
       model: usage.model,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      reasoningTokens: usage.reasoningTokens,
       inputCost: cost.input,
       outputCost: cost.output,
+      reasoningCost: cost.reasoning,
       totalCost: cost.total,
       calledAt: Date.now(),
       durationMs: usage.durationMs,
@@ -145,16 +182,18 @@ export class TokenUsageTracker {
   }
 
   /** 计算成本 */
-  private calculateCost(provider: string, model: string, inputTokens: number, outputTokens: number): { input: number; output: number; total: number } {
+  private calculateCost(provider: string, model: string, inputTokens: number, outputTokens: number, reasoningTokens?: number): { input: number; output: number; reasoning: number; total: number } {
     let costInfo: ModelCostInfo | undefined;
     if (this.cache) {
       costInfo = this.cache.getModelCost(provider, model);
     }
     const inputPer1k = costInfo?.inputCostPer1k ?? this.config.defaultInputCostPer1k;
     const outputPer1k = costInfo?.outputCostPer1k ?? this.config.defaultOutputCostPer1k;
+    const reasoningPer1k = costInfo?.reasoningCostPer1k ?? this.config.defaultReasoningCostPer1k;
     const input = (inputTokens / 1000) * inputPer1k;
     const output = (outputTokens / 1000) * outputPer1k;
-    return { input, output, total: input + output };
+    const reasoning = reasoningTokens ? (reasoningTokens / 1000) * reasoningPer1k : 0;
+    return { input, output, reasoning, total: input + output + reasoning };
   }
 
   /** 获取最近records */
@@ -189,6 +228,7 @@ export class TokenUsageTracker {
     const summary: UsageSummary = {
       totalInputTokens: 0,
       totalOutputTokens: 0,
+      totalReasoningTokens: 0,
       totalCacheHitTokens: 0,
       totalCost: 0,
       totalCalls: records.length,
@@ -202,6 +242,7 @@ export class TokenUsageTracker {
     for (const r of records) {
       summary.totalInputTokens += r.inputTokens;
       summary.totalOutputTokens += r.outputTokens;
+      summary.totalReasoningTokens += r.reasoningTokens ?? 0;
       summary.totalCacheHitTokens += r.cacheHitTokens ?? 0;
       summary.totalCost += r.totalCost;
 
@@ -264,5 +305,67 @@ export class TokenUsageTracker {
   /** 设置缓存 */
   setCache(cache: ModelCostProvider): void {
     this.cache = cache;
+  }
+
+  /** 获取预算限制器 */
+  getBudgetLimiter(): BudgetLimiter | undefined {
+    return this.budgetLimiter;
+  }
+}
+
+/**
+ * BudgetLimiter
+ * 预算限制器，基于TokenUsageTracker的消费数据检查预算
+ */
+export class BudgetLimiter {
+  private config: BudgetConfig;
+  private tracker: TokenUsageTracker;
+
+  constructor(tracker: TokenUsageTracker, config: BudgetConfig) {
+    this.tracker = tracker;
+    this.config = config;
+  }
+
+  /** 获取当前预算周期内的消费 */
+  private getCurrentPeriodSpend(): number {
+    const periodMs: Record<string, number> = {
+      daily: 24 * 60 * 60 * 1000,
+      weekly: 7 * 24 * 60 * 60 * 1000,
+      monthly: 30 * 24 * 60 * 60 * 1000,
+      total: Infinity,
+    };
+    const sinceMs = this.config.budgetPeriod === "total" ? undefined : periodMs[this.config.budgetPeriod];
+    const summary = this.tracker.getSummary(sinceMs ? { sinceMs } : undefined);
+    return summary.totalCost;
+  }
+
+  /** 检查是否允许新的LLM调用 */
+  canProceed(): { allowed: boolean; reason?: string; currentSpend: number } {
+    const currentSpend = this.getCurrentPeriodSpend();
+
+    if (this.config.hardBudgetUsd !== undefined && currentSpend >= this.config.hardBudgetUsd) {
+      this.config.onHardBudgetExceeded?.(currentSpend, this.config.hardBudgetUsd);
+      return { allowed: false, reason: `Hard budget exceeded: $${currentSpend.toFixed(4)} >= $${this.config.hardBudgetUsd}`, currentSpend };
+    }
+
+    if (this.config.softBudgetUsd !== undefined && currentSpend >= this.config.softBudgetUsd) {
+      this.config.onSoftBudgetExceeded?.(currentSpend, this.config.softBudgetUsd);
+    }
+
+    return { allowed: true, currentSpend };
+  }
+
+  /** 获取预算使用情况 */
+  getBudgetStatus(): { currentSpend: number; softLimit?: number; hardLimit?: number; percentUsed: number; period: string } {
+    const currentSpend = this.getCurrentPeriodSpend();
+    const limit = this.config.hardBudgetUsd ?? this.config.softBudgetUsd ?? 0;
+    const percentUsed = limit > 0 ? (currentSpend / limit) * 100 : 0;
+    return {
+      currentSpend,
+      softLimit: this.config.softBudgetUsd,
+      hardLimit: this.config.hardBudgetUsd,
+      percentUsed,
+      period: this.config.budgetPeriod,
+    };
   }
 }
