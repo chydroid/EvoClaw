@@ -53,10 +53,6 @@ interface ProviderCost {
 
 type TabId = "overview" | "by-model" | "by-session" | "cost";
 
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  completed: "success", active: "info", failed: "error", timeout: "warning",
-};
-
 const PROVIDER_COLORS: Record<string, string> = {
   openai: "#10b981", anthropic: "#f59e0b", google: "#3b82f6",
   mistral: "#8b5cf6", local: "#6b7280",
@@ -327,7 +323,7 @@ export default function TokenUsagePage() {
             <Section title={t("tokenUsage.sessionSummary")} style={{ marginTop: 20 }}>
               <StatsGrid items={[
                 {
-                  label: t("tokenUsage.stats.totalCalls"),
+                  label: t("tokenUsage.stats.activeSessions"),
                   value: sessionUsage.filter(s => {
                     const diff = Date.now() - new Date(s.lastActive).getTime();
                     return diff < 24 * 60 * 60 * 1000;
@@ -335,17 +331,17 @@ export default function TokenUsagePage() {
                   color: "var(--success)",
                 },
                 {
-                  label: t("tokenUsage.col.cost"),
+                  label: t("tokenUsage.stats.avgCostPerSession"),
                   value: formatCost(sessionUsage.reduce((sum, s) => sum + s.cost, 0) / Math.max(sessionUsage.length, 1)),
                   color: "var(--warning)",
                 },
                 {
-                  label: t("tokenUsage.col.total"),
+                  label: t("tokenUsage.stats.highestCostSession"),
                   value: formatCost(Math.max(...sessionUsage.map(s => s.cost), 0)),
                   color: "var(--error)",
                 },
                 {
-                  label: t("tokenUsage.col.session"),
+                  label: t("tokenUsage.stats.totalSessionTokens"),
                   value: formatTokens(sessionUsage.reduce((sum, s) => sum + s.inputTokens + s.outputTokens, 0)),
                   color: "var(--accent)",
                 },
@@ -362,7 +358,7 @@ export default function TokenUsagePage() {
             { label: t("tokenUsage.stats.totalCost"), value: formatCost(overview.totalCost), color: "var(--warning)" },
             { label: t("tokenUsage.cost.threshold"), value: formatCost(costThreshold), color: costAlertTriggered ? "var(--error)" : "var(--text-primary)" },
             { label: t("tokenUsage.cost.withinBudget"), value: formatCost(Math.max(costThreshold - overview.totalCost, 0)), color: "var(--success)" },
-            { label: t("tokenUsage.stats.totalCalls"), value: formatCost(overview.totalCost / Math.max(overview.totalCalls, 1)), color: "var(--text-primary)" },
+            { label: t("tokenUsage.stats.avgCostPerCall"), value: formatCost(overview.totalCost / Math.max(overview.totalCalls, 1)), color: "var(--text-primary)" },
           ]} />
 
           <Section title={t("tokenUsage.cost.byProvider")} style={{ marginTop: 24 }}>

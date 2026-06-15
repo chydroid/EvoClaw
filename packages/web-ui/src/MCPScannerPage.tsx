@@ -28,6 +28,13 @@ interface MCPTool {
   lastScanned: string;
   status: Status;
   detectedPatterns: string[];
+  threats?: ThreatDetail[];
+}
+
+interface ThreatDetail {
+  type: string;
+  severity: RiskLevel;
+  evidence: string;
 }
 
 interface BlacklistEntry {
@@ -61,6 +68,33 @@ const STATUS_VARIANT: Record<Status, BadgeVariant> = {
   clean: "success", flagged: "warning", blacklisted: "error",
 };
 
+/** Client-side fallback threat detection when backend is unavailable */
+const THREAT_PATTERNS: { type: string; pattern: RegExp; severity: RiskLevel }[] = [
+  { type: "instruction_override", pattern: /ignore\s+(?:previous|above|all|prior)\s+instructions?/i, severity: "critical" },
+  { type: "fake_authority", pattern: /(?:system|admin|root|sudo):\s+/i, severity: "high" },
+  { type: "data_exfiltration", pattern: /(?:send|transmit|upload|post|forward)\s+(?:the\s+)?(?:user|session|conversation|chat)\s+(?:data|history|log|content)/i, severity: "critical" },
+  { type: "credential_harvesting", pattern: /(?:read|fetch|obtain|get|retrieve|collect|exfiltrate)\s+(?:the\s+)?(?:user(?:'s|s)\s+)?(?:\.env|\.ssh|credentials?|id_rsa|id_ed25519|secrets?|api[_-]?keys?|passwords?)/i, severity: "critical" },
+  { type: "hidden_directive", pattern: /(?:never|do\s+not|don't)\s+(?:mention|reveal|show|display|tell|report|warn)\s+/i, severity: "high" },
+  { type: "code_execution", pattern: /(?:exec|eval|spawn|child_process|subprocess|os\.system|Runtime\.getRuntime)/i, severity: "critical" },
+  { type: "phishing_link", pattern: /https?:\/\/[^\s"']+\.(tk|ml|ga|cf|gq)\b/i, severity: "medium" },
+  { type: "social_engineering", pattern: /(?:urgent|emergency|immediately|right\s+away|asap).*?(?:verify|confirm|update|provide|share)/i, severity: "high" },
+  { type: "scope_escape", pattern: /(?:escape|break\s+out|bypass)\s+(?:the\s+)?(?:sandbox|container|jail|restriction|boundary)/i, severity: "critical" },
+];
+
+function detectThreats(text: string): { riskLevel: RiskLevel; threats: ScanThreat[] } {
+  const threats: ScanThreat[] = [];
+  for (const tp of THREAT_PATTERNS) {
+    if (tp.pattern.test(text)) {
+      threats.push({ type: tp.type, description: `Matched pattern: ${tp.type}`, severity: tp.severity });
+    }
+  }
+  const riskLevel: RiskLevel = threats.some(t => t.severity === "critical") ? "critical"
+    : threats.some(t => t.severity === "high") ? "high"
+    : threats.some(t => t.severity === "medium") ? "medium"
+    : threats.length > 0 ? "low" : "none";
+  return { riskLevel, threats };
+}
+
 export default function MCPScannerPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabId>("overview");
@@ -78,6 +112,8 @@ export default function MCPScannerPage() {
   const [newReason, setNewReason] = useState("");
   const [viewTool, setViewTool] = useState<MCPTool | null>(null);
   const [removeTarget, setRemoveTarget] = useState<BlacklistEntry | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [scanningAll, setScanningAll] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -103,6 +139,13 @@ export default function MCPScannerPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Auto-refresh
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(loadData, 10000);
+    return () => clearInterval(id);
+  }, [autoRefresh, loadData]);
 
   const handleAddBlacklist = async () => {
     if (!newPattern.trim()) return;
@@ -149,9 +192,26 @@ export default function MCPScannerPage() {
         redacted: data.redacted ?? scanInput,
       });
     } catch {
-      setScanResult({ riskLevel: "none", threats: [], redacted: scanInput });
+      // Fallback to client-side detection when backend is unavailable
+      const fallback = detectThreats(scanInput);
+      setScanResult({ riskLevel: fallback.riskLevel, threats: fallback.threats, redacted: scanInput });
+      if (fallback.threats.length > 0) {
+        showToast(t("mcpScanner.scan.fallbackWarning"), "info");
+      }
     }
     setScanLoading(false);
+  };
+
+  const handleScanAll = async () => {
+    setScanningAll(true);
+    try {
+      await fetch(`${API}/api/mcp-scanner/scan-all`, { method: "POST" });
+      showToast(t("mcpScanner.scanAllDone"), "success");
+      loadData();
+    } catch {
+      showToast(t("mcpScanner.scanAllError"), "error");
+    }
+    setScanningAll(false);
   };
 
   if (loading) return <Loading />;
@@ -175,7 +235,15 @@ export default function MCPScannerPage() {
       <PageHeader
         title={t("mcpScanner.title")}
         subtitle={t("mcpScanner.subtitle")}
-        actions={<SecondaryButton small onClick={loadData}>↻</SecondaryButton>}
+        actions={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
+              {t("mcpScanner.autoRefresh")}
+            </label>
+            <SecondaryButton small onClick={loadData}>↻</SecondaryButton>
+          </div>
+        }
       />
 
       <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
@@ -277,7 +345,13 @@ export default function MCPScannerPage() {
 
       {/* ── Tools Tab ── */}
       {tab === "tools" && (
-        <Card>
+        <div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+            <PrimaryButton small onClick={handleScanAll} disabled={scanningAll}>
+              {scanningAll ? "..." : t("mcpScanner.scanAll")}
+            </PrimaryButton>
+          </div>
+          <Card>
           {tools.length === 0 ? (
             <EmptyState title={t("mcpScanner.empty.tools")} />
           ) : (
@@ -312,6 +386,7 @@ export default function MCPScannerPage() {
             />
           )}
         </Card>
+        </div>
       )}
 
       {/* ── Blacklist Tab ── */}
@@ -435,6 +510,24 @@ export default function MCPScannerPage() {
                 <strong>{t("mcpScanner.col.detected")}:</strong>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
                   {viewTool.detectedPatterns.map((p, i) => <Badge key={i} variant="warning">{p}</Badge>)}
+                </div>
+              </div>
+            )}
+            {viewTool.threats && viewTool.threats.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <strong>{t("mcpScanner.threatDetails")}:</strong>
+                <div style={{ marginTop: 6 }}>
+                  {viewTool.threats.map((th, i) => (
+                    <div key={i} style={{ padding: "8px 10px", marginBottom: 6, background: "var(--bg-input)", borderRadius: 6, borderLeft: `3px solid ${th.severity === "critical" || th.severity === "high" ? "var(--error)" : "var(--warning)"}` }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <Badge variant={RISK_VARIANT[th.severity] || "default"}>{th.severity}</Badge>
+                        <code style={{ fontSize: 11, color: "var(--accent)" }}>{th.type}</code>
+                      </div>
+                      {th.evidence && (
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace" }}>{th.evidence}</div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

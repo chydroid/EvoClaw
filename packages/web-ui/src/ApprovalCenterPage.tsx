@@ -20,6 +20,8 @@ interface PendingRequest {
   id: string;
   operation: string;
   target: string;
+  description?: string;
+  channel?: string;
   requester: string;
   requestedAt: string;
   expiresAt: string;
@@ -50,8 +52,10 @@ interface ReactionEntry {
 
 interface TimeoutConfig {
   timeoutSeconds: number;
-  defaultAction: "deny" | "allow";
+  defaultAction: "deny" | "allow" | "fail-closed";
   behaviorMode: "immediate" | "debounced" | "scheduled";
+  debounceWindowMs: number;
+  scheduleCron: string;
   escalationEnabled: boolean;
   escalationTimeout: number;
 }
@@ -84,6 +88,7 @@ export default function ApprovalCenterPage() {
   const [reactions, setReactions] = useState<ReactionEntry[]>([]);
   const [config, setConfig] = useState<TimeoutConfig>({
     timeoutSeconds: 300, defaultAction: "deny", behaviorMode: "immediate",
+    debounceWindowMs: 5000, scheduleCron: "",
     escalationEnabled: false, escalationTimeout: 60,
   });
   const [confirmAction, setConfirmAction] = useState<{ type: "approve" | "deny"; req: PendingRequest } | null>(null);
@@ -115,6 +120,8 @@ export default function ApprovalCenterPage() {
           timeoutSeconds: Number(configRes.timeoutSeconds ?? configRes.timeout ?? 300),
           defaultAction: configRes.defaultAction ?? "deny",
           behaviorMode: configRes.behaviorMode ?? "immediate",
+          debounceWindowMs: Number(configRes.debounceWindowMs ?? 5000),
+          scheduleCron: configRes.scheduleCron ?? "",
           escalationEnabled: !!configRes.escalationEnabled,
           escalationTimeout: Number(configRes.escalationTimeout ?? 60),
         });
@@ -155,7 +162,11 @@ export default function ApprovalCenterPage() {
 
   const handleDeny = async (req: PendingRequest) => {
     try {
-      await fetch(`${API}/api/approvals/${req.id}/reject`, { method: "POST" });
+      await fetch(`${API}/api/approvals/${req.id}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: t("approval.deny") }),
+      });
       showToast(t("approval.denySuccess"), "success");
       setPending(prev => prev.filter(p => p.id !== req.id));
     } catch (e: any) {
@@ -228,8 +239,12 @@ export default function ApprovalCenterPage() {
                         <Badge variant={RISK_VARIANT[req.riskLevel] || "default"}>{req.riskLevel}</Badge>
                       </div>
                       <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{req.operation}</div>
+                      {req.description && (
+                        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 4 }}>{req.description}</div>
+                      )}
                       <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                         {req.target && <span>{req.target} · </span>}
+                        {req.channel && <span>{req.channel} · </span>}
                         {req.requester && <span>{req.requester} · </span>}
                         {req.requestedAt && <span>{new Date(req.requestedAt).toLocaleString()}</span>}
                       </div>
@@ -367,6 +382,7 @@ export default function ApprovalCenterPage() {
                     style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 13, outline: "none" }}>
                     <option value="deny">{t("approval.settings.action.deny")}</option>
                     <option value="allow">{t("approval.settings.action.allow")}</option>
+                    <option value="fail-closed">{t("approval.settings.action.failClosed")}</option>
                   </select>
                 </div>
                 <div>
@@ -380,6 +396,26 @@ export default function ApprovalCenterPage() {
                     <option value="scheduled">{t("approval.settings.behavior.scheduled")}</option>
                   </select>
                 </div>
+                {config.behaviorMode === "debounced" && (
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                      {t("approval.settings.debounceWindow")}
+                    </label>
+                    <input type="number" value={config.debounceWindowMs}
+                      onChange={e => setConfig(c => ({ ...c, debounceWindowMs: Number(e.target.value) }))}
+                      style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 13, outline: "none" }} />
+                  </div>
+                )}
+                {config.behaviorMode === "scheduled" && (
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                      {t("approval.settings.scheduleCron")}
+                    </label>
+                    <input type="text" value={config.scheduleCron} placeholder="*/5 * * * *"
+                      onChange={e => setConfig(c => ({ ...c, scheduleCron: e.target.value }))}
+                      style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+                  </div>
+                )}
                 <div>
                   <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
                     {t("approval.settings.escalationTimeout")}
@@ -400,6 +436,7 @@ export default function ApprovalCenterPage() {
                 <PrimaryButton onClick={handleSaveConfig}>✓ {t("approval.settings.save")}</PrimaryButton>
                 <SecondaryButton onClick={() => setConfig({
                   timeoutSeconds: 300, defaultAction: "deny", behaviorMode: "immediate",
+                  debounceWindowMs: 5000, scheduleCron: "",
                   escalationEnabled: false, escalationTimeout: 60,
                 })}>↺</SecondaryButton>
               </div>

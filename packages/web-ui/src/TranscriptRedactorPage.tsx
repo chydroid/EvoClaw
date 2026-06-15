@@ -54,6 +54,38 @@ const SEVERITY_VARIANT: Record<Severity, BadgeVariant> = {
   critical: "error", high: "warning", medium: "info", low: "default",
 };
 
+/** Highlight redacted portions in scan result */
+function highlightRedacted(text: string, replacements: string[]): React.ReactNode {
+  if (replacements.length === 0) return text;
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  let keyIdx = 0;
+  for (const rep of replacements) {
+    const idx = remaining.indexOf(rep);
+    if (idx === -1) continue;
+    if (idx > 0) parts.push(remaining.slice(0, idx));
+    parts.push(
+      <span key={keyIdx++} style={{ background: "var(--error-bg, rgba(220,38,38,0.1))", color: "var(--error)", padding: "1px 4px", borderRadius: 3, fontWeight: 600 }}>
+        {rep}
+      </span>
+    );
+    remaining = remaining.slice(idx + rep.length);
+  }
+  if (remaining) parts.push(remaining);
+  return <>{parts}</>;
+}
+
+const QUICK_TEST_EXAMPLES = [
+  { label: "OpenAI Key", text: "My key is sk-abc123def456ghi789jkl012mno345pqr678" },
+  { label: "AWS Key", text: "Access key: AKIAIOSFODNN7EXAMPLE" },
+  { label: "Email", text: "Contact me at admin@evoclaw.dev for details" },
+  { label: "Phone CN", text: "My number is 13912345678" },
+  { label: "JWT", text: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" },
+  { label: "ENV Secret", text: "DATABASE_PASSWORD=super_secret_2024" },
+  { label: "IPv4", text: "Server is at 192.168.1.100 on port 8080" },
+  { label: "Credit Card", text: "Card number: 4111 1111 1111 1111" },
+];
+
 export default function TranscriptRedactorPage() {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabId>("overview");
@@ -68,6 +100,7 @@ export default function TranscriptRedactorPage() {
   const [testInput, setTestInput] = useState("");
   const [testResult, setTestResult] = useState<{ redacted: string; matches: ScanMatch[] } | null>(null);
   const [testLoading, setTestLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -108,6 +141,43 @@ export default function TranscriptRedactorPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Auto-refresh
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(loadData, 10000);
+    return () => clearInterval(id);
+  }, [autoRefresh, loadData]);
+
+  const handleEnableAll = async () => {
+    const updates = rules.map(r => ({ name: r.name, enabled: true }));
+    setRules(prev => prev.map(r => ({ ...r, enabled: true })));
+    try {
+      for (const u of updates) {
+        await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: true }),
+        });
+      }
+    } catch { /* ignore */ }
+    showToast(t("redactor.enableAllSuccess"), "success");
+  };
+
+  const handleDisableAll = async () => {
+    const updates = rules.map(r => ({ name: r.name, enabled: false }));
+    setRules(prev => prev.map(r => ({ ...r, enabled: false })));
+    try {
+      for (const u of updates) {
+        await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        });
+      }
+    } catch { /* ignore */ }
+    showToast(t("redactor.disableAllSuccess"), "info");
+  };
 
   const handleToggleRule = async (ruleName: string, enabled: boolean) => {
     try {
@@ -157,7 +227,13 @@ export default function TranscriptRedactorPage() {
         title={t("redactor.title")}
         subtitle={t("redactor.subtitle")}
         actions={
-          <SecondaryButton small onClick={loadData}>↻</SecondaryButton>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
+              {t("redactor.autoRefresh")}
+            </label>
+            <SecondaryButton small onClick={loadData}>↻</SecondaryButton>
+          </div>
         }
       />
 
@@ -211,7 +287,12 @@ export default function TranscriptRedactorPage() {
 
       {/* ── Rules Tab ── */}
       {tab === "rules" && (
-        <Card>
+        <div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 12 }}>
+            <SecondaryButton small onClick={handleEnableAll}>{t("redactor.enableAll")}</SecondaryButton>
+            <SecondaryButton small onClick={handleDisableAll}>{t("redactor.disableAll")}</SecondaryButton>
+          </div>
+          <Card>
           {rules.length === 0 ? (
             <EmptyState title={t("redactor.empty.rules")} />
           ) : (
@@ -238,6 +319,7 @@ export default function TranscriptRedactorPage() {
             />
           )}
         </Card>
+        </div>
       )}
 
       {/* ── Test Tab ── */}
@@ -266,6 +348,22 @@ export default function TranscriptRedactorPage() {
             </Card>
           </Section>
 
+          <Card style={{ marginTop: 16 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-secondary)" }}>{t("redactor.quickExamples")}</h4>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {QUICK_TEST_EXAMPLES.map(ex => (
+                <button key={ex.label} onClick={() => { setTestInput(ex.text); setTestResult(null); }}
+                  style={{
+                    padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)",
+                    background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 11,
+                    cursor: "pointer",
+                  }}>
+                  {ex.label}
+                </button>
+              ))}
+            </div>
+          </Card>
+
           {testResult && (
             <>
               <Section title={t("redactor.test.redacted")} style={{ marginTop: 20 }}>
@@ -274,7 +372,7 @@ export default function TranscriptRedactorPage() {
                     margin: 0, padding: 12, background: "var(--bg-input)",
                     border: "1px solid var(--border)", borderRadius: 6,
                     fontSize: 12, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-all",
-                  }}>{testResult.redacted}</pre>
+                  }}>{highlightRedacted(testResult.redacted, testResult.matches.map(m => m.match))}</pre>
                 </Card>
               </Section>
 
