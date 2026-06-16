@@ -60,7 +60,7 @@ export const SUPPORTED_LOCAL_MODELS: Record<string, LocalModelSpec> = {
   "0.8b": {
     name: "Qwen3.5-0.8B",
     description: "轻量本地模型，适合简单对话、翻译、格式化等任务（推荐）",
-    downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX",
+    downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
     sizeApprox: "~1GB (ONNX格式)",
     vramApprox: "~1.6GB (BF16) / ~0.5GB (4-bit量化)",
   },
@@ -77,14 +77,14 @@ export const SUPPORTED_LOCAL_MODELS: Record<string, LocalModelSpec> = {
 export const LOCAL_MODEL_INFO = {
   name: "Qwen3.5-0.8B",
   description: "轻量本地模型，适合简单对话、翻译、格式化等任务",
-  downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX",
+  downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
   sizeApprox: "~1GB (ONNX格式)",
   instructions: [
     "推荐模型：Qwen3.5-0.8B（~1GB，速度快）或 Qwen3.5-2B（~2.7GB，质量更高）",
     "",
     "方式一：下载 Qwen3.5-0.8B（推荐）",
     "  git lfs install",
-    "  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX local-model",
+    "  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT local-model",
     "",
     "方式二：下载 Qwen3.5-2B（质量更高）",
     "  git lfs install",

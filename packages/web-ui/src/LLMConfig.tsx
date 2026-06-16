@@ -340,7 +340,7 @@ export default function LLMConfig() {
   git lfs install
 
   # 推荐：Qwen3.5-0.8B
-  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX local-model
+  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT local-model
 
   # 或：Qwen3.5-2B（质量更高）
   git clone https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX local-model
