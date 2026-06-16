@@ -404,6 +404,33 @@ export class EvoClawServer {
     this.agentModelExecutor.setContextEngine(this.contextEngine);
     this.registry.registerService("contextEngine", this.contextEngine);
 
+    // ── ContextPruning: trim large tool results and clear old ones ──
+    const { ContextPruningManager } = require("@evoclaw/agent");
+    const contextPruningManager = new ContextPruningManager({
+      softTrimThreshold: 4000,
+      hardClearTurnThreshold: 10,
+      enableSoftTrim: true,
+      enableHardClear: true,
+    });
+    this.agentModelExecutor.setContextPruningManager(contextPruningManager);
+    this.registry.registerService("contextPruningManager", contextPruningManager);
+    console.log(`[Server] ContextPruning initialized`);
+
+    // ── InputPipeline: sequential stage-based input processing ──
+    const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("@evoclaw/agent");
+    const inputPipeline = new PipelineRunner([
+      createXssSanitizeStage(),
+      createSystemTagSanitizeStage(),
+      createLengthGuardStage(4000),
+      createEchoDetectionStage(),
+      createAttachmentInjectionStage(),
+      createGuardrailsStage(this.guardrailsManager),
+      createPluginPreProcessStage(this.pluginManager),
+    ]);
+    this.agentModelExecutor.setInputPipeline(inputPipeline);
+    this.registry.registerService("inputPipeline", inputPipeline);
+    console.log(`[Server] InputPipeline initialized with 7 stages`);
+
     // ── CopilotRouter: route simple tasks to cheaper models ──
     this.agentModelExecutor.setCopilotRouter({
       enabled: true,

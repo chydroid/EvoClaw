@@ -273,6 +273,18 @@ export class AgentModelExecutor {
     console.log(`[AgentModelExecutor] Channel manager integrated`);
   }
 
+  /** Set context pruning manager */
+  setContextPruningManager(pm: import("./context-pruning").ContextPruningManager): void {
+    (this as any).contextPruningManager = pm;
+    console.log(`[AgentModelExecutor] Context pruning manager integrated`);
+  }
+
+  /** Set input pipeline */
+  setInputPipeline(pipeline: import("./input-pipeline").PipelineRunner): void {
+    (this as any).inputPipeline = pipeline;
+    console.log(`[AgentModelExecutor] Input pipeline integrated`);
+  }
+
   /** Set human approval manager */
   setHumanApprovalManager(manager: HumanApprovalManager): void {
     this.humanApprovalManager = manager;
@@ -1086,85 +1098,140 @@ export class AgentModelExecutor {
       ledger.append("session_start", { channel, peerId }, { agentId, sessionId });
     }
 
-    // ── Plugin hook: before_agent_start ──
+    // ── Input Pipeline: run through preprocessing stages ──
+    // Inspired by OpenClaw's pipeline pattern. The pipeline handles:
+    // 1. XSS sanitization
+    // 2. System tag sanitization (prevent prompt injection)
+    // 3. Length guard
+    // 4. Echo detection (prevent self-reply loops)
+    // 5. Attachment injection
+    // 6. Guardrails input validation
+    // 7. Plugin pre-process hooks
     let effectiveMessage = message;
-    if (this.pluginManager?.hasHooks("before_agent_start")) {
-      const pluginResult = tracing?.isEnabled()
-        ? await tracing.withSpan("agent.plugin.before_start", async (s: Span) => {
-            s.setAttribute("session.id", sessionId);
-            return this.pluginManager!.runHooksMerged({
+    const attachments = context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined;
+    
+    const inputPipeline = (this as any).inputPipeline as import("./input-pipeline").PipelineRunner | undefined;
+    if (inputPipeline) {
+      const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("./input-pipeline");
+      
+      // Build pipeline with all stages
+      const pipeline = new PipelineRunner([
+        createXssSanitizeStage(),
+        createSystemTagSanitizeStage(),
+        createLengthGuardStage(4000),
+        createEchoDetectionStage(this.conversationHistory.get(sessionId)),
+        createAttachmentInjectionStage(),
+        createGuardrailsStage(this.guardrailsManager),
+        createPluginPreProcessStage(this.pluginManager),
+      ]);
+      
+      const pipelineContext = {
+        message,
+        effectiveMessage: message,
+        sessionId,
+        channel,
+        peerId,
+        agentId,
+        attachments,
+        metadata: {},
+        shortCircuit: false,
+        warnings: [],
+      };
+      
+      const result = await pipeline.run(pipelineContext);
+      
+      // Handle pipeline warnings
+      if (result.warnings.length > 0) {
+        console.log(`[AgentModelExecutor] Input pipeline warnings: ${result.warnings.join("; ")}`);
+      }
+      
+      // Handle short-circuit (echo detection, guardrails block, etc.)
+      if (result.shortCircuit && result.shortCircuitReply) {
+        this.persistEarlyReturn(sessionId, message, result.shortCircuitReply);
+        return { reply: result.shortCircuitReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
+      }
+      
+      effectiveMessage = result.effectiveMessage;
+    } else {
+      // Fallback: inline processing (original behavior)
+      // ── Plugin hook: before_agent_start ──
+      if (this.pluginManager?.hasHooks("before_agent_start")) {
+        const pluginResult = tracing?.isEnabled()
+          ? await tracing.withSpan("agent.plugin.before_start", async (s: Span) => {
+              s.setAttribute("session.id", sessionId);
+              return this.pluginManager!.runHooksMerged({
+                type: "before_agent_start",
+                context: { sessionId, agentId, channel, peerId },
+                message,
+                attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
+              });
+            })
+          : await this.pluginManager.runHooksMerged({
               type: "before_agent_start",
               context: { sessionId, agentId, channel, peerId },
               message,
               attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
             });
-          })
-        : await this.pluginManager.runHooksMerged({
-            type: "before_agent_start",
-            context: { sessionId, agentId, channel, peerId },
-            message,
-            attachments: context?.attachments as Array<{ name: string; type: string; url?: string; data?: Buffer }> | undefined,
-          });
-      const { blocked, blockReason, merged } = pluginResult;
-      if (blocked) {
-        this.persistEarlyReturn(sessionId, message, blockReason ?? "Message blocked by plugin");
-        return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, contextTokens: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
-      }
-      const mergedBA = merged as Partial<import("@evoclaw/core").BeforeAgentStartResult>;
-      if (mergedBA.syntheticReply) {
-        this.persistEarlyReturn(sessionId, message, mergedBA.syntheticReply);
-        return { reply: mergedBA.syntheticReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
-      }
-      if (mergedBA.message) effectiveMessage = mergedBA.message;
-    }
-
-    // ── Inject attachment content into the message ──
-    const attachments = context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined;
-    if (attachments && attachments.length > 0) {
-      const parts: string[] = [];
-      parts.push("\n\n---\n📎 **用户上传了以下文件：**\n");
-      for (const att of attachments) {
-        const sizeStr = att.size > 1024 * 1024 
-          ? `${(att.size / (1024 * 1024)).toFixed(1)}MB` 
-          : att.size > 1024 
-            ? `${(att.size / 1024).toFixed(1)}KB` 
-            : `${att.size}B`;
-        parts.push(`\n### 📄 ${att.name} (${sizeStr}, ${att.type})`);
-        
-        if (att.data) {
-          if (att.type.startsWith("image/")) {
-            // Image: attached as vision input — model can analyze it directly
-            parts.push(`  - 类型: 图片 (${att.type})`);
-            parts.push(`  - 上传为 vision 输入，请直接分析图片内容`);
-          } else if (att.type.startsWith("text/") || att.type === "application/json") {
-            // Text file: include content inline (truncated to 8000 chars)
-            const maxLen = 8000;
-            const content = att.data.length > maxLen 
-              ? att.data.substring(0, maxLen) + `\n...(共 ${att.data.length} 字符，已截断)` 
-              : att.data;
-            parts.push(`\n\`\`\`\n${content}\n\`\`\``);
-          } else {
-            parts.push(`  - (二进制文件，内容不可直接读取)`);
-          }
-        } else {
-          parts.push(`  - (文件数据不可直接读取)`);
+        const { blocked, blockReason, merged } = pluginResult;
+        if (blocked) {
+          this.persistEarlyReturn(sessionId, message, blockReason ?? "Message blocked by plugin");
+          return { reply: blockReason ?? "Message blocked by plugin", tokensUsed: 0, contextTokens: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
         }
+        const mergedBA = merged as Partial<import("@evoclaw/core").BeforeAgentStartResult>;
+        if (mergedBA.syntheticReply) {
+          this.persistEarlyReturn(sessionId, message, mergedBA.syntheticReply);
+          return { reply: mergedBA.syntheticReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
+        }
+        if (mergedBA.message) effectiveMessage = mergedBA.message;
       }
-      parts.push("\n---\n");
-      
-      // Prepend attachment context before user message so LLM knows about files
-      const userMsgLine = effectiveMessage.trim() ? `\n\n📝 **用户消息**: ${effectiveMessage}` : "\n\n📝 **用户未附带文字说明**";
-      effectiveMessage = parts.join("\n") + userMsgLine;
-    }
 
-    // ── Guardrails: input validation ──
-    if (this.guardrailsManager) {
-      const inputCheck = this.guardrailsManager.checkInput(effectiveMessage);
-      if (!inputCheck.passed && inputCheck.severity === "high") {
-        return { reply: `[安全拦截] ${inputCheck.reason}`, tokensUsed: 0, contextTokens: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
+      // ── Inject attachment content into the message ──
+      if (attachments && attachments.length > 0) {
+        const parts: string[] = [];
+        parts.push("\n\n---\n📎 **用户上传了以下文件：**\n");
+        for (const att of attachments) {
+          const sizeStr = att.size > 1024 * 1024 
+            ? `${(att.size / (1024 * 1024)).toFixed(1)}MB` 
+            : att.size > 1024 
+              ? `${(att.size / 1024).toFixed(1)}KB` 
+              : `${att.size}B`;
+          parts.push(`\n### 📄 ${att.name} (${sizeStr}, ${att.type})`);
+          
+          if (att.data) {
+            if (att.type.startsWith("image/")) {
+              // Image: attached as vision input — model can analyze it directly
+              parts.push(`  - 类型: 图片 (${att.type})`);
+              parts.push(`  - 上传为 vision 输入，请直接分析图片内容`);
+            } else if (att.type.startsWith("text/") || att.type === "application/json") {
+              // Text file: include content inline (truncated to 8000 chars)
+              const maxLen = 8000;
+              const content = att.data.length > maxLen 
+                ? att.data.substring(0, maxLen) + `\n...(共 ${att.data.length} 字符，已截断)` 
+                : att.data;
+              parts.push(`\n\`\`\`\n${content}\n\`\`\``);
+            } else {
+              parts.push(`  - (二进制文件，内容不可直接读取)`);
+            }
+          } else {
+            parts.push(`  - (文件数据不可直接读取)`);
+          }
+        }
+        parts.push("\n---\n");
+        
+        // Prepend attachment context before user message so LLM knows about files
+        const userMsgLine = effectiveMessage.trim() ? `\n\n📝 **用户消息**: ${effectiveMessage}` : "\n\n📝 **用户未附带文字说明**";
+        effectiveMessage = parts.join("\n") + userMsgLine;
       }
-      if (inputCheck.sanitizedInput) {
-        effectiveMessage = inputCheck.sanitizedInput;
+
+      // ── Guardrails: input validation ──
+      if (this.guardrailsManager) {
+        const inputCheck = this.guardrailsManager.checkInput(effectiveMessage);
+        if (!inputCheck.passed && inputCheck.severity === "high") {
+          return { reply: `[安全拦截] ${inputCheck.reason}`, tokensUsed: 0, contextTokens: 0, duration: 0, permissionRequests: [], toolsExecuted: false, files: [] };
+        }
+        if (inputCheck.sanitizedInput) {
+          effectiveMessage = inputCheck.sanitizedInput;
+        }
       }
     }
 

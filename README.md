@@ -448,7 +448,7 @@ pnpm test                           # Run all tests
 pnpm --filter @evoclaw/core test    # Run specific package tests
 ```
 
-Framework: **Vitest** | Convention: `*.test.ts` | Coverage: **78 test files, 1795 test cases**
+Framework: **Vitest** | Convention: `*.test.ts` | Coverage: **78 test files, 2799 test cases**
 
 ---
 

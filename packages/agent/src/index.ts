@@ -155,4 +155,8 @@ export type { IterationBudgetConfig, IterationBudgetStatus } from "./iteration-b
 // Input Pipeline system
 export { PipelineRunner } from "./input-pipeline";
 export type { PipelineContext, PipelineStage } from "./input-pipeline";
-export { createXssSanitizeStage, createLengthGuardStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } from "./input-pipeline";
+export { createXssSanitizeStage, createLengthGuardStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage, createSystemTagSanitizeStage, createEchoDetectionStage } from "./input-pipeline";
+
+// Context Pruning system
+export { ContextPruningManager } from "./context-pruning";
+export type { ContextPruningConfig, PruningResult } from "./context-pruning";

@@ -249,3 +249,137 @@ export function createPluginPreProcessStage(pluginManager: any): PipelineStage {
     },
   };
 }
+
+/**
+ * Sanitizes system tags from user input to prevent prompt injection.
+ * Removes or escapes tags like <system>, <available_skills>, ## Tooling, etc.
+ * Inspired by OpenClaw's sanitizeInboundSystemTags().
+ */
+export function createSystemTagSanitizeStage(): PipelineStage {
+  return {
+    name: "system-tag-sanitize",
+    async execute(ctx: PipelineContext): Promise<PipelineContext> {
+      let msg = ctx.effectiveMessage;
+      let sanitized = false;
+
+      // Remove <system>...</system> blocks (common in prompt injection)
+      const systemTagPattern = /<system\b[^>]*>[\s\S]*?<\/system>/gi;
+      if (systemTagPattern.test(msg)) {
+        msg = msg.replace(systemTagPattern, "[filtered:system-tag]");
+        sanitized = true;
+      }
+
+      // Remove <available_skills>...</available_skills> blocks
+      const skillsTagPattern = /<available_skills\b[^>]*>[\s\S]*?<\/available_skills>/gi;
+      if (skillsTagPattern.test(msg)) {
+        msg = msg.replace(skillsTagPattern, "[filtered:skills-tag]");
+        sanitized = true;
+      }
+
+      // Remove ## Tooling, ## Skills, ## Instructions headers (OpenClaw system prompt markers)
+      const headerPattern = /^##\s+(Tooling|Skills|Instructions|System|Context|Tools)\b.*$/gim;
+      if (headerPattern.test(msg)) {
+        msg = msg.replace(headerPattern, "[filtered:system-header]");
+        sanitized = true;
+      }
+
+      // Remove <available_tools>...</available_tools> blocks
+      const toolsTagPattern = /<available_tools\b[^>]*>[\s\S]*?<\/available_tools>/gi;
+      if (toolsTagPattern.test(msg)) {
+        msg = msg.replace(toolsTagPattern, "[filtered:tools-tag]");
+        sanitized = true;
+      }
+
+      // Remove <context>...</context> blocks
+      const contextTagPattern = /<context\b[^>]*>[\s\S]*?<\/context>/gi;
+      if (contextTagPattern.test(msg)) {
+        msg = msg.replace(contextTagPattern, "[filtered:context-tag]");
+        sanitized = true;
+      }
+
+      if (sanitized) {
+        ctx.effectiveMessage = msg;
+        ctx.warnings.push("System tags filtered from user input to prevent prompt injection");
+      }
+
+      return ctx;
+    },
+  };
+}
+
+/**
+ * Detects echo loops by checking if the current message matches recent assistant replies.
+ * Prevents the bot from responding to its own messages in a loop.
+ * Inspired by OpenClaw's EchoTracker.
+ */
+export function createEchoDetectionStage(recentMessages?: Array<{ role: string; content: string }>): PipelineStage {
+  return {
+    name: "echo-detection",
+    async execute(ctx: PipelineContext): Promise<PipelineContext> {
+      if (!recentMessages || recentMessages.length === 0) {
+        return ctx;
+      }
+
+      const currentMsg = ctx.effectiveMessage.trim().toLowerCase();
+      if (!currentMsg) {
+        return ctx;
+      }
+
+      // Check last 3 assistant messages for exact or near-exact matches
+      const recentAssistantMsgs = recentMessages
+        .filter(m => m.role === "assistant")
+        .slice(-3);
+
+      for (const assistantMsg of recentAssistantMsgs) {
+        const assistantContent = assistantMsg.content.trim().toLowerCase();
+        
+        // Exact match
+        if (currentMsg === assistantContent) {
+          ctx.shortCircuit = true;
+          ctx.shortCircuitReply = "检测到回环消息，已自动终止。";
+          ctx.warnings.push("Echo detected: user message matches recent assistant reply");
+          return ctx;
+        }
+
+        // Near match (>90% similarity for messages >50 chars)
+        if (currentMsg.length > 50 && assistantContent.length > 50) {
+          const similarity = calculateSimilarity(currentMsg, assistantContent);
+          if (similarity > 0.9) {
+            ctx.shortCircuit = true;
+            ctx.shortCircuitReply = "检测到回环消息，已自动终止。";
+            ctx.warnings.push(`Echo detected: ${Math.round(similarity * 100)}% similarity to recent assistant reply`);
+            return ctx;
+          }
+        }
+      }
+
+      return ctx;
+    },
+  };
+}
+
+/**
+ * Calculate simple string similarity (Jaccard index on character bigrams).
+ */
+function calculateSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+
+  const bigramsA = new Set<string>();
+  for (let i = 0; i < a.length - 1; i++) {
+    bigramsA.add(a.slice(i, i + 2));
+  }
+
+  const bigramsB = new Set<string>();
+  for (let i = 0; i < b.length - 1; i++) {
+    bigramsB.add(b.slice(i, i + 2));
+  }
+
+  let intersection = 0;
+  for (const bigram of bigramsA) {
+    if (bigramsB.has(bigram)) intersection++;
+  }
+
+  const union = bigramsA.size + bigramsB.size - intersection;
+  return intersection / union;
+}
