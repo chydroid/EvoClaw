@@ -432,12 +432,33 @@ export class EvoClawServer {
     console.log(`[Server] InputPipeline initialized with 7 stages`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
+    // v0.42.0: No longer defaults to gpt-4o-mini. Uses user's LLM config order.
+    // When local model is available, simple tasks route to local Qwen2.5-0.5B.
     this.agentModelExecutor.setCopilotRouter({
       enabled: true,
-      defaultModel: "gpt-4o-mini",
-      defaultProvider: "openai",
+      defaultModel: "",  // Will use first enabled user provider
+      defaultProvider: "",  // Will use first enabled user provider
     });
-    console.log(`[Server] CopilotRouter initialized`);
+    console.log(`[Server] CopilotRouter initialized (respects user LLM config order)`);
+
+    // ── Local LLM Service: initialize and try to load local model ──
+    try {
+      const { getLocalLLMService } = require("@evoclaw/agent");
+      const localLLM = getLocalLLMService();
+      // Initialize asynchronously — don't block server startup
+      localLLM.initialize().then((status: any) => {
+        if (status.available) {
+          console.log(`[Server] ✅ Local LLM loaded: ${status.modelName} — simple tasks will use local model`);
+        } else {
+          console.log(`[Server] ℹ️ Local LLM not available (${status.error || "model not downloaded"}). All tasks use remote API.`);
+        }
+      }).catch((err: any) => {
+        console.log(`[Server] ℹ️ Local LLM initialization failed: ${err}. All tasks use remote API.`);
+      });
+      this.registry.registerService("localLLMService", localLLM);
+    } catch (err) {
+      console.log(`[Server] ℹ️ Local LLM service not available: ${err}. All tasks use remote API.`);
+    }
 
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);

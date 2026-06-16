@@ -354,6 +354,18 @@ export class ProtocolAdapter {
   private canvasHost: CanvasHost;
   private envSecrets: EnvSecretManager;
 
+  private getLocalModelStatus(): { available: boolean; modelName: string | null; error: string | null } {
+    try {
+      const localLLM = this.registry.resolveService<{
+        getStatus(): { available: boolean; modelName: string | null; error: string | null };
+      }>("localLLMService");
+      if (localLLM) {
+        return localLLM.getStatus();
+      }
+    } catch { /* not available */ }
+    return { available: false, modelName: null, error: "Service not initialized" };
+  }
+
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
@@ -599,6 +611,23 @@ export class ProtocolAdapter {
 
     if (configs.length > 0) {
       executor.configureProviders(configs);
+    }
+
+    // Sync provider info to CopilotRouter so it knows user's LLM config order
+    const copilotRouter = this.registry.resolveService<{
+      updateUserProviders(providers: Array<{ id: string; name: string; enabled: boolean; order: number; selectedModel: string; baseURL: string }>): void;
+    }>("copilotRouter");
+    if (copilotRouter) {
+      copilotRouter.updateUserProviders(
+        providers.map((p) => ({
+          id: (p.id as string) || "",
+          name: (p.name as string) || "",
+          enabled: (p.enabled as boolean) ?? false,
+          order: (p.order as number) ?? 1,
+          selectedModel: (p.selectedModel as string) || "",
+          baseURL: (p.baseURL as string) || "",
+        }))
+      );
     }
   }
 
@@ -2180,6 +2209,7 @@ export class ProtocolAdapter {
         res.json({
           executorTools: executor?.getRegisteredTools() || [],
           providers,
+          localModel: this.getLocalModelStatus(),
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });

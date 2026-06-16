@@ -68,23 +68,29 @@ describe("CopilotRouter", () => {
     expect(result.shouldDowngrade).toBe(false);
   });
 
-  it("route downgrades casual chat", () => {
-    const result = router.route(
+  it("route downgrades casual chat to first enabled user provider", () => {
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+        { id: "openai", name: "OpenAI", enabled: false, order: 2, selectedModel: "gpt-4o", baseURL: "https://api.openai.com/v1" },
+      ],
+    });
+    const result = customRouter.route(
       "Hello, how are you?",
       "claude-3-opus",
       "anthropic"
     );
     expect(result.shouldDowngrade).toBe(true);
-    expect(result.routedModel).toBe("gpt-4o-mini");
-    expect(result.routedProvider).toBe("openai");
+    expect(result.routedModel).toBe("deepseek-chat");
+    expect(result.routedProvider).toBe("deepseek");
     expect(result.originalModel).toBe("claude-3-opus");
   });
 
   it("route downgrades Chinese casual chat with custom rule", () => {
     router.addRule({
       pattern: /^你好/i,
-      targetModel: "gpt-4o-mini",
-      targetProvider: "openai",
+      targetModel: "deepseek-chat",
+      targetProvider: "deepseek",
       description: "Chinese greeting",
     });
     const result = router.route(
@@ -95,27 +101,43 @@ describe("CopilotRouter", () => {
     expect(result.shouldDowngrade).toBe(true);
   });
 
-  it("route downgrades simple greeting", () => {
-    const result = router.route(
+  it("route downgrades simple greeting to user provider", () => {
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "mimo", name: "Mimo", enabled: true, order: 1, selectedModel: "mimo-v2.5", baseURL: "https://token-plan-cn.xiaomimimo.com/v1" },
+      ],
+    });
+    const result = customRouter.route(
       "Hey what's up?",
       "gpt-4o",
       "openai"
     );
     expect(result.shouldDowngrade).toBe(true);
+    expect(result.routedProvider).toBe("mimo");
   });
 
-  it("route downgrades simple formatting", () => {
-    const result = router.route(
+  it("route downgrades simple formatting to user provider", () => {
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+      ],
+    });
+    const result = customRouter.route(
       "Format this text as a bullet list",
       "claude-3-opus",
       "anthropic"
     );
     expect(result.shouldDowngrade).toBe(true);
-    expect(result.routedModel).toBe("gpt-4o-mini");
+    expect(result.routedModel).toBe("deepseek-chat");
   });
 
   it("route downgrades summarize in one sentence", () => {
-    const result = router.route(
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+      ],
+    });
+    const result = customRouter.route(
       "Summarize in one sentence: the quick brown fox",
       "claude-3-opus",
       "anthropic"
@@ -124,12 +146,29 @@ describe("CopilotRouter", () => {
   });
 
   it("route downgrades translation tasks", () => {
-    const result = router.route(
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+      ],
+    });
+    const result = customRouter.route(
       "Translate this to French: Hello world",
       "gpt-4o",
       "openai"
     );
     expect(result.shouldDowngrade).toBe(true);
+  });
+
+  it("simple task without user providers keeps current model", () => {
+    // No user providers configured — no downgrade target
+    const result = router.route(
+      "Hello, how are you?",
+      "claude-3-opus",
+      "anthropic"
+    );
+    // Local model not available, no user providers → keeps current
+    expect(result.shouldDowngrade).toBe(false);
+    expect(result.routedModel).toBe("claude-3-opus");
   });
 
   it("route does not downgrade when disabled", () => {
@@ -157,8 +196,8 @@ describe("CopilotRouter", () => {
   it("addRule adds a custom routing rule", () => {
     router.addRule({
       pattern: /^generate haiku/i,
-      targetModel: "gpt-4o-mini",
-      targetProvider: "openai",
+      targetModel: "deepseek-chat",
+      targetProvider: "deepseek",
       description: "Haiku generation",
     });
 
@@ -174,8 +213,8 @@ describe("CopilotRouter", () => {
   it("addRule with string pattern", () => {
     router.addRule({
       pattern: "^tell me a joke",
-      targetModel: "gpt-4o-mini",
-      targetProvider: "openai",
+      targetModel: "deepseek-chat",
+      targetProvider: "deepseek",
       description: "Joke requests",
     });
 
@@ -188,13 +227,19 @@ describe("CopilotRouter", () => {
   });
 
   it("removeRule removes an existing rule", () => {
+    router.addRule({
+      pattern: /^test rule/i,
+      targetModel: "deepseek-chat",
+      targetProvider: "deepseek",
+      description: "Test rule for removal",
+    });
     const initialRules = router.getRules();
-    const rulePattern = initialRules[0].pattern;
-    const patternSource = typeof rulePattern === "string" ? rulePattern : rulePattern.source;
+    expect(initialRules.length).toBe(1);
 
-    const removed = router.removeRule(patternSource);
+    // RegExp.source for /^test rule/i is "^test rule"
+    const removed = router.removeRule("^test rule");
     expect(removed).toBe(true);
-    expect(router.getRules().length).toBe(initialRules.length - 1);
+    expect(router.getRules().length).toBe(0);
   });
 
   it("removeRule returns false for non-existent pattern", () => {
@@ -203,6 +248,12 @@ describe("CopilotRouter", () => {
   });
 
   it("getRules returns all current rules", () => {
+    router.addRule({
+      pattern: /^test/i,
+      targetModel: "deepseek-chat",
+      targetProvider: "deepseek",
+      description: "Test rule",
+    });
     const rules = router.getRules();
     expect(rules.length).toBeGreaterThan(0);
     expect(rules[0]).toHaveProperty("pattern");
@@ -211,22 +262,26 @@ describe("CopilotRouter", () => {
     expect(rules[0]).toHaveProperty("description");
   });
 
-  it("custom default model and provider are used for low-value tasks", () => {
+  it("user providers are used in order for simple tasks", () => {
     const customRouter = new CopilotRouter({
-      defaultModel: "custom-mini",
-      defaultProvider: "custom-provider",
+      userProviders: [
+        { id: "mimo", name: "Mimo", enabled: true, order: 1, selectedModel: "mimo-v2.5", baseURL: "https://token-plan-cn.xiaomimimo.com/v1" },
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 2, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+        { id: "openai", name: "OpenAI", enabled: false, order: 3, selectedModel: "gpt-4o", baseURL: "https://api.openai.com/v1" },
+      ],
     });
     const result = customRouter.route(
-      "What is the capital of France?",
+      "Hello",
       "claude-3-opus",
       "anthropic"
     );
     expect(result.shouldDowngrade).toBe(true);
-    expect(result.routedModel).toBe("custom-mini");
-    expect(result.routedProvider).toBe("custom-provider");
+    // First enabled provider is Mimo (order 1), not OpenAI (disabled)
+    expect(result.routedProvider).toBe("mimo");
+    expect(result.routedModel).toBe("mimo-v2.5");
   });
 
-  it("custom rules override default rules", () => {
+  it("custom rules override default routing", () => {
     const customRouter = new CopilotRouter({
       rules: [
         {
@@ -254,5 +309,36 @@ describe("CopilotRouter", () => {
     );
     expect(result.originalModel).toBe("claude-3-opus");
     expect(result.originalProvider).toBe("anthropic");
+  });
+
+  it("updateUserProviders updates provider list", () => {
+    router.updateUserProviders([
+      { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+    ]);
+    const result = router.route(
+      "你好",
+      "claude-3-opus",
+      "anthropic"
+    );
+    expect(result.shouldDowngrade).toBe(true);
+    expect(result.routedProvider).toBe("deepseek");
+  });
+
+  it("does not default to GPT-4o for simple tasks", () => {
+    const customRouter = new CopilotRouter({
+      userProviders: [
+        { id: "deepseek", name: "DeepSeek", enabled: true, order: 1, selectedModel: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+        { id: "openai", name: "OpenAI", enabled: true, order: 2, selectedModel: "gpt-4o", baseURL: "https://api.openai.com/v1" },
+      ],
+    });
+    const result = customRouter.route(
+      "Hello",
+      "claude-3-opus",
+      "anthropic"
+    );
+    expect(result.shouldDowngrade).toBe(true);
+    // Should route to DeepSeek (order 1), NOT OpenAI/GPT-4o (order 2)
+    expect(result.routedProvider).toBe("deepseek");
+    expect(result.routedModel).toBe("deepseek-chat");
   });
 });

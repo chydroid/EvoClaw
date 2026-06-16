@@ -92,7 +92,11 @@ export { ModelSwitcher } from "./model-switcher";
 export type { ModelAlias, ModelPreset, ActiveModel, ModelSwitchEvent, ModelSwitcherConfig } from "./model-switcher";
 
 export { CopilotRouter } from "./copilot-router";
-export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision } from "./copilot-router";
+export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision, UserLLMProvider } from "./copilot-router";
+
+// Local LLM Service
+export { LocalLLMService, getLocalLLMService, resetLocalLLMService, LOCAL_MODEL_INFO } from "./local-llm-service";
+export type { LocalLLMStatus, LocalLLMConfig } from "./local-llm-service";
 
 export { CredentialPool } from "./credential-pool";
 export type { CredentialEntry, CredentialPoolConfig } from "./credential-pool";

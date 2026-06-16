@@ -1838,8 +1838,11 @@ export class AgentModelExecutor {
     // Inspired by Hermes's stable/ephemeral prompt separation and OpenClaw's
     // model routing. When a simple task is detected, downgrade to a cheaper
     // model to save costs while preserving quality for complex tasks.
+    // v0.42.0: Support local model routing — simple tasks → local Qwen2.5-0.5B
     let routedProviders = enabledProviders;
     let routingDecision: RoutingDecision | null = null;
+    let useLocalModel = false;
+
     if (this.copilotRouter && enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
       routingDecision = this.copilotRouter.route(
@@ -1848,23 +1851,51 @@ export class AgentModelExecutor {
         primaryProvider.provider || "openai",
       );
       if (routingDecision.shouldDowngrade) {
-        console.log(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})`);
-        // Create a modified provider list with the routed model
-        routedProviders = enabledProviders.map((p, i) => {
-          if (i === 0) {
-            return {
-              ...p,
-              model: routingDecision!.routedModel,
-              provider: routingDecision!.routedProvider,
-              // Preserve the original model info for reference
-              _originalModel: p.model,
-              _originalProvider: p.provider,
-            } as ProviderConfig;
-          }
-          return p;
-        });
+        if (routingDecision.useLocalModel) {
+          // Route to local model instead of remote API
+          useLocalModel = true;
+          console.log(`[AgentModelExecutor] CopilotRouter: routing to LOCAL model (${routingDecision.reason})`);
+        } else {
+          console.log(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})`);
+          // Create a modified provider list with the routed model
+          routedProviders = enabledProviders.map((p, i) => {
+            if (i === 0) {
+              return {
+                ...p,
+                model: routingDecision!.routedModel,
+                provider: routingDecision!.routedProvider,
+                _originalModel: p.model,
+                _originalProvider: p.provider,
+              } as ProviderConfig;
+            }
+            return p;
+          });
+        }
       } else {
         console.log(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})`);
+      }
+    }
+
+    // ── Local Model: generate response using local LLM ──
+    if (useLocalModel && this.copilotRouter) {
+      try {
+        const localReply = await this.copilotRouter.generateLocal(effectiveMessage);
+        if (localReply && localReply.trim().length > 0) {
+          console.log(`[AgentModelExecutor] Local model replied (${localReply.length} chars)`);
+          taskStatusTracker.set(sessionId, "done", "本地模型响应完成", 100);
+          onProgress?.({ type: "final", phase: "done", detail: "本地模型响应完成", progress: 100, reply: localReply, tokensUsed: 0, duration: Date.now() - startTime });
+          this.persistEarlyReturn(sessionId, message, localReply);
+          return {
+            reply: localReply,
+            tokensUsed: 0,
+            duration: Date.now() - startTime,
+            permissionRequests: [],
+            toolsExecuted: false,
+          };
+        }
+      } catch (err) {
+        console.warn(`[AgentModelExecutor] Local model failed, falling back to remote API:`, err);
+        // Fall through to remote API
       }
     }
 

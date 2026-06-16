@@ -3,6 +3,73 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.42.0 (2026-06-16)
+
+### 本地轻量LLM集成 + CopilotRouter路由优化
+
+在v0.41.0基础上，集成本地轻量LLM推理服务（Qwen2.5-0.5B ONNX），优化CopilotRouter路由逻辑，实现简单任务本地处理、大幅节省Token费用。
+
+---
+
+#### 1. 本地轻量LLM推理服务 (LocalLLMService)
+
+**新增模块**：`packages/agent/src/local-llm-service.ts`
+
+| 特性 | 说明 |
+|------|------|
+| 推理引擎策略 | onnxruntime-genai（首选）→ onnxruntime-node → @huggingface/transformers |
+| 模型格式 | Qwen2.5-0.5B-Instruct ONNX (~500MB) |
+| Chat模板 | Qwen2.5 `<\|im_start\|>system...<\|im_end\|>` 格式 |
+| 可选依赖 | 通过 `.d.ts` 类型声明避免TS2307编译错误 |
+| 模型目录 | `local-model/`（已加入.gitignore，不上传GitHub） |
+
+#### 2. CopilotRouter路由逻辑重写
+
+**关键变更**：不再默认GPT-4o/GPT-4o-mini，严格按用户配置顺序路由
+
+| 路由策略 | 说明 |
+|----------|------|
+| 复杂任务（代码/数学） | 保持原模型，不降级 |
+| 简单任务（问候/翻译/格式化） | 本地模型优先 → 用户配置的第一个已启用Provider |
+| 自定义规则 | 优先于简单任务检测，用户可完全控制路由 |
+| 无Provider配置 | 保持当前模型，不降级 |
+
+#### 3. LLM配置页面本地模型提示
+
+| 状态 | 显示 |
+|------|------|
+| 本地模型已激活 | 绿色Banner："本地模型已激活: Qwen2.5-0.5B — 简单任务将使用本地模型" |
+| 本地模型未下载 | 橙色Banner："省Token小贴士：下载本地轻量模型"，含下载步骤和命令行 |
+
+#### 4. Provider同步机制
+
+- ProtocolAdapter在加载/更新LLM配置时，同步Provider信息到CopilotRouter
+- CopilotRouter的`updateUserProviders()`方法接收用户Provider列表
+- 确保路由决策基于最新的用户配置顺序
+
+#### 5. 服务器集成
+
+- 服务器启动时异步初始化LocalLLMService，不阻塞启动
+- 模型未下载时正确提示下载指引，所有任务正常路由到远程API
+- API端点 `/api/config/llm` 返回 `localModel` 状态字段
+
+---
+
+#### 修改文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `packages/agent/src/local-llm-service.ts` | 新增：本地LLM推理服务 |
+| `packages/agent/src/copilot-router.ts` | 重写：路由逻辑+本地模型集成+Provider顺序 |
+| `packages/agent/src/agent-model-executor.ts` | 修改：集成本地模型生成到主循环 |
+| `packages/agent/src/optional-deps.d.ts` | 新增：可选依赖类型声明 |
+| `packages/agent/src/copilot-router.test.ts` | 重写：25个测试用例全部通过 |
+| `packages/agent/src/index.ts` | 修改：导出新模块 |
+| `apps/server/src/index.ts` | 修改：初始化本地LLM+CopilotRouter配置 |
+| `packages/gateway/src/protocol-adapter.ts` | 修改：Provider同步+本地模型状态API |
+| `packages/web-ui/src/LLMConfig.tsx` | 修改：本地模型状态Banner |
+| `.gitignore` | 修改：排除local-model/目录 |
+
 ## v0.41.0 (2026-06-16)
 
 ### 对照OpenClaw第七轮提升 — 技能系统全面兼容与UI增强
