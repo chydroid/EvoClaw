@@ -3,6 +3,133 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.39.0 (2026-06-16)
+
+### 对照OpenClaw第五轮提升 — 工具系统架构优化
+
+在v0.38.0基础上，借鉴OpenClaw的工具规划、可用性评估和钩子系统架构，实现完整的工具生命周期管理。
+
+---
+
+#### 1. 工具可用性评估系统
+
+**对标**：OpenClaw的ToolAvailabilityExpression和信号评估机制
+
+| 新增模块 | 说明 |
+|----------|------|
+| `tool-availability.ts` | 实现工具可用性评估核心逻辑 |
+| 信号类型 | 支持 always/auth/config/env/plugin-enabled/context 六种信号 |
+| 表达式评估 | 支持 allOf/anyOf 复合表达式递归评估 |
+| 诊断信息 | 生成详细的不可用原因诊断报告 |
+
+**修改文件**：[tool-availability.ts](file:///d:/abc/EvoClaw/packages/agent/src/tool-availability.ts)
+
+---
+
+#### 2. 工具规划器 (Tool Planner)
+
+**对标**：OpenClaw的buildToolPlan确定性规划器
+
+| 新增模块 | 说明 |
+|----------|------|
+| `tool-planner.ts` | 实现工具规划核心逻辑 |
+| 排序去重 | 按sortKey/name确定性排序，验证唯一名称 |
+| 可见/隐藏分离 | 根据可用性评估分离可见工具和隐藏工具 |
+| 执行器验证 | 确保可见工具必须有执行器引用 |
+| 合规错误 | 定义ToolPlanContractError处理契约违规 |
+
+**修改文件**：[tool-planner.ts](file:///d:/abc/EvoClaw/packages/agent/src/tool-planner.ts)
+
+---
+
+#### 3. 工具协议标准化
+
+**对标**：OpenClaw的toOpenAITools/toAnthropicTools协议转换
+
+| 新增模块 | 说明 |
+|----------|------|
+| `tool-protocol.ts` | 实现工具协议转换核心逻辑 |
+| OpenAI格式 | 转换为OpenAI function calling格式 |
+| Anthropic格式 | 转换为Anthropic tool use格式 |
+| 通用格式 | 支持generic格式的工具描述符 |
+
+**修改文件**：[tool-protocol.ts](file:///d:/abc/EvoClaw/packages/agent/src/tool-protocol.ts)
+
+---
+
+#### 4. 工具类型定义
+
+**对标**：OpenClaw的ToolDescriptor和ToolExecutor类型系统
+
+| 新增模块 | 说明 |
+|----------|------|
+| `tool-types.ts` | 定义工具系统核心类型 |
+| ToolDescriptor | 工具描述符接口（name/description/inputSchema/availability/executor） |
+| ToolExecutor | 工具执行器函数类型 |
+| ToolResult | 工具执行结果接口（success/output/error/metadata） |
+| ToolRegistry | 工具注册表接口 |
+| 验证函数 | validateToolDescriptor/createToolDescriptor |
+
+**修改文件**：[tool-types.ts](file:///d:/abc/EvoClaw/packages/agent/src/tool-types.ts)
+
+---
+
+#### 5. 增强钩子系统
+
+**对标**：OpenClaw的HookRunner和执行策略
+
+| 新增模块 | 说明 |
+|----------|------|
+| `hook-runner.ts` | 实现增强钩子执行器 |
+| 执行策略 | 支持 void/modifying/claiming 三种策略 |
+| 优先级排序 | 按priority排序执行钩子处理器 |
+| 超时控制 | 支持自定义超时时间，防止钩子阻塞 |
+| 失败策略 | 支持 fail-open/fail-closed 错误处理策略 |
+| 预定义钩子 | 定义BEFORE/AFTER_AGENT_START/TOOL_CALL等标准钩子名 |
+
+**修改文件**：[hook-runner.ts](file:///d:/abc/EvoClaw/packages/agent/src/hook-runner.ts)
+
+---
+
+#### 6. 增强Agent执行器
+
+**新增**：整合工具规划和钩子系统的增强执行器
+
+| 新增模块 | 说明 |
+|----------|------|
+| `enhanced-agent-executor.ts` | 增强Agent执行器原型 |
+| 工具规划集成 | 在执行前调用buildToolPlan规划可用工具 |
+| 协议转换 | 根据LLM提供商类型转换工具格式 |
+| 钩子集成 | 在agent_turn/tool_call前后运行钩子 |
+| Agent循环 | 实现完整的LLM→工具执行→反馈循环 |
+
+**修改文件**：[enhanced-agent-executor.ts](file:///d:/abc/EvoClaw/packages/agent/src/enhanced-agent-executor.ts)
+
+---
+
+#### 7. 测试验证结果
+
+**66项用户需求测试**：
+
+| 指标 | 结果 |
+|------|------|
+| 总测试数 | 66 |
+| 通过 | 54 |
+| 超时 | 11 |
+| 错误 | 1（空消息400，预期行为） |
+| 通过率 | **81.8%** |
+
+**WebUI功能模块测试**：
+
+| 指标 | 结果 |
+|------|------|
+| 总测试数 | 38 |
+| 通过 | 38 |
+| 失败 | 0 |
+| 通过率 | **100%** |
+
+---
+
 ## v0.38.0 (2026-06-16)
 
 ### 对照OpenClaw/Hermes第四轮提升 — 技能调度优化与测试验证
