@@ -14,7 +14,7 @@ export interface ContextPruningConfig {
 }
 
 export interface PruningResult {
-  prunedMessages: Array<{ role: string; content: string; tool_calls?: any[] }>;
+  prunedMessages: Array<{ role: string; content: string | unknown[] | null; tool_calls?: any[] }>;
   stats: {
     softTrimmed: number;
     hardCleared: number;
@@ -43,7 +43,7 @@ export class ContextPruningManager {
   /**
    * Prune conversation messages to reduce context size
    */
-  prune(messages: Array<{ role: string; content: string; tool_calls?: any[] }>): PruningResult {
+  prune(messages: Array<{ role: string; content: string | unknown[] | null; tool_calls?: any[] }>): PruningResult {
     const stats = {
       softTrimmed: 0,
       hardCleared: 0,

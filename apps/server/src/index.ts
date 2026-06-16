@@ -424,7 +424,7 @@ export class EvoClawServer {
       createLengthGuardStage(4000),
       createEchoDetectionStage(),
       createAttachmentInjectionStage(),
-      createGuardrailsStage(this.guardrailsManager),
+      createGuardrailsStage(this.agentModelExecutor.getGuardrailsManager()),
       createPluginPreProcessStage(this.pluginManager),
     ]);
     this.agentModelExecutor.setInputPipeline(inputPipeline);

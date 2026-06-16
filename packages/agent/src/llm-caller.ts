@@ -416,6 +416,8 @@ export interface LLMCallerDeps {
   iterationBudget?: import("./iteration-budget").IterationBudget;
   // ContextEngine result (optional — enables layered context with frozen/ephemeral separation)
   contextEngineResult?: import("./context-engine").LayeredContextResult;
+  // ContextPruning manager (optional — enables soft trim and hard clear of tool results)
+  contextPruningManager?: import("./context-pruning").ContextPruningManager;
 }
 
 // ── Helper: tool cache ──
@@ -1227,32 +1229,38 @@ Have a specific URL?
         messages.push(...history);
       }
 
+      // ── ContextPruning: trim large tool results and clear old ones ──
+      // Apply context pruning to reduce token usage and prevent context overflow.
+      // This is especially important for long conversations with many tool calls.
+      if (deps.contextPruningManager) {
+        // Cast to expected type — prune() only modifies string content (tool results)
+        const pruningInput = messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : "",
+          tool_calls: m.tool_calls,
+        }));
+        const pruningResult = deps.contextPruningManager.prune(pruningInput);
+        if (pruningResult.stats.softTrimmed > 0 || pruningResult.stats.hardCleared > 0) {
+          console.log(`[AgentModelExecutor] ContextPruning applied: ${pruningResult.stats.softTrimmed} soft trimmed, ${pruningResult.stats.hardCleared} hard cleared, saved ~${pruningResult.stats.charsSaved} chars`);
+          // Apply pruned content back to original messages
+          messages = messages.map((orig, idx) => {
+            const pruned = pruningResult.prunedMessages[idx];
+            if (pruned && typeof orig.content === "string" && typeof pruned.content === "string" && pruned.content !== orig.content) {
+              return { ...orig, content: pruned.content };
+            }
+            return orig;
+          });
+        }
+      }
+
       // ── User message length guard ──
       // Truncate excessively long messages to avoid LLM timeout and token waste.
       // 4000 chars ≈ 2000-4000 tokens (CJK chars are ~1-2 tokens each).
       const MAX_USER_MESSAGE_LEN = 4000;
       let effectiveMessage = message;
 
-      // ── XSS / injection sanitization ──
-      // Strip dangerous HTML/script patterns from user input before sending to LLM.
-      // This prevents XSS payloads from being echoed back and ensures consistent
-      // safety behavior regardless of LLM judgment.
-      const XSS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-        { pattern: /<script[\s\S]*?>[\s\S]*?<\/script>/gi, replacement: "[filtered:script-tag]" },
-        { pattern: /\s+on\w+\s*=\s*["'][^"']*["']/gi, replacement: " [filtered:event-handler]" },
-        { pattern: /&#x?[0-9a-f]+;/gi, replacement: "" },
-      ];
-      let xssFiltered = false;
-      for (const { pattern, replacement } of XSS_PATTERNS) {
-        if (pattern.test(effectiveMessage)) {
-          effectiveMessage = effectiveMessage.replace(pattern, replacement);
-          xssFiltered = true;
-        }
-      }
-      if (xssFiltered) {
-        effectiveMessage += "\n\n[系统提示：检测到潜在的安全风险内容，已自动过滤。]";
-        console.log(`[AgentModelExecutor] XSS/injection patterns filtered in user message for session "${sessionId}"`);
-      }
+      // XSS sanitization is now handled by InputPipeline's createXssSanitizeStage()
+      // No need to duplicate the logic here.
 
       if (effectiveMessage.length >= MAX_USER_MESSAGE_LEN) {
         effectiveMessage = effectiveMessage.slice(0, MAX_USER_MESSAGE_LEN) + `\n\n[系统提示：原始消息过长，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;

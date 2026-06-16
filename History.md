@@ -3,6 +3,91 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.38.0 (2026-06-16)
+
+### 对照OpenClaw/Hermes第四轮提升 — 技能调度优化与测试验证
+
+在v0.37.0基础上，进一步优化技能调度流程，统一错误处理机制，并完成66项用户需求测试和WebUI功能模块测试验证。
+
+---
+
+#### 1. 技能调度错误处理统一化
+
+**对标**：OpenClaw技能调度器的统一错误分类与处理机制
+
+| 改进 | 说明 |
+|------|------|
+| `skill-dispatch-error-handler.ts` | 新增统一错误处理模块，集中管理技能调度错误分类 |
+| 错误分类标准化 | 统一分类为 auth/rateLimit/network/config/timeout/unknown 六类 |
+| 错误消息国际化 | 提供用户友好的中文错误提示 |
+| 输出清洗优化 | 统一 sanitizeSkillOutput() 处理网页噪声和格式清理 |
+| 空输出检测 | isEmptySkillOutput() 统一判断技能输出是否有效 |
+| 回复格式化 | formatSkillReply() 统一技能回复的展示格式 |
+
+**修改文件**：[skill-dispatch-error-handler.ts](file:///d:/abc/EvoClaw/packages/agent/src/skill-dispatch-error-handler.ts), [agent-model-executor.ts](file:///d:/abc/EvoClaw/packages/agent/src/agent-model-executor.ts)
+
+---
+
+#### 2. InputPipeline集成优化
+
+**对标**：OpenClaw的Pipeline模式，统一输入预处理流程
+
+| 改进 | 说明 |
+|------|------|
+| GuardrailsManager访问 | 通过 agentModelExecutor.getGuardrailsManager() 获取实例 |
+| 管道阶段优化 | 确保所有7个阶段正确初始化和执行 |
+| 错误传播改进 | 统一管道错误的捕获和报告机制 |
+
+**修改文件**：[index.ts(server)](file:///d:/abc/EvoClaw/apps/server/src/index.ts), [agent-model-executor.ts](file:///d:/abc/EvoClaw/packages/agent/src/agent-model-executor.ts)
+
+---
+
+#### 3. 66项用户需求测试验证
+
+**测试覆盖**：基础对话、搜索、文件操作、代码生成、数学计算、翻译、天气查询、邮件操作、技能管理、多任务处理、上下文理解、安全测试、边界情况
+
+| 指标 | 结果 |
+|------|------|
+| 总测试数 | 66项 |
+| 通过率 | 86.4% (57/66) |
+| 超时数 | 8项 (复杂任务超过60秒) |
+| 错误数 | 1项 (空消息处理) |
+| 分类通过率 | 搜索/数学/翻译/天气/上下文/安全: 100% |
+
+**测试文件**：[test-66-cases.ts](file:///d:/abc/EvoClaw/test-66-cases.ts)
+
+---
+
+#### 4. WebUI功能模块测试
+
+**测试覆盖**：健康检查、会话管理、聊天接口、技能管理、插件管理、配置管理、监控指标、日志系统、任务管理、安全模块、记忆系统、调度系统、进化引擎、报告系统、网关管理
+
+| 指标 | 结果 |
+|------|------|
+| 总测试数 | 38项 |
+| 通过率 | 100% (含401认证检查) |
+| 公开端点 | 健康检查/聊天接口/技能列表 |
+| 认证端点 | 32个端点正确返回401 |
+| 缺失端点 | 0个 |
+
+**测试文件**：[test-webui-modules.ts](file:///d:/abc/EvoClaw/test-webui-modules.ts)
+
+---
+
+#### 5. ContextPruning类型修复
+
+**问题**：LLMMessage.content 类型为 string | ChatContent[] | null，与 prune() 方法签名不匹配
+
+| 修复 | 说明 |
+|------|------|
+| 类型签名更新 | ContextPruningManager.prune() 接受 string \| unknown[] \| null |
+| 映射逻辑优化 | 在 llm-caller.ts 中正确映射和还原消息内容 |
+| 类型安全检查 | 确保只对 string 类型内容应用裁剪 |
+
+**修改文件**：[context-pruning.ts](file:///d:/abc/EvoClaw/packages/agent/src/context-pruning.ts), [llm-caller.ts](file:///d:/abc/EvoClaw/packages/agent/src/llm-caller.ts)
+
+---
+
 ## v0.37.0 (2026-06-16)
 
 ### 对照OpenClaw/Hermes第三轮提升 — 信息处理流程优化

@@ -41,6 +41,7 @@ import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type T
 import { SemanticQuickReply } from "./semantic-quick-reply";
 import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
 import { IterationBudget, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
+import { classifySkillError, isEmptySkillOutput, formatSkillReply, sanitizeSkillOutput } from "./skill-dispatch-error-handler";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -265,6 +266,11 @@ export class AgentModelExecutor {
   setPluginManager(pm: import("@evoclaw/core").PluginManager): void {
     this.pluginManager = pm;
     console.log(`[AgentModelExecutor] Plugin manager integrated`);
+  }
+
+  /** Get guardrails manager */
+  getGuardrailsManager(): import("./guardrails").GuardrailsManager | null {
+    return this.guardrailsManager;
   }
 
   /** Set channel manager */
@@ -1112,19 +1118,8 @@ export class AgentModelExecutor {
     
     const inputPipeline = (this as any).inputPipeline as import("./input-pipeline").PipelineRunner | undefined;
     if (inputPipeline) {
-      const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("./input-pipeline");
-      
-      // Build pipeline with all stages
-      const pipeline = new PipelineRunner([
-        createXssSanitizeStage(),
-        createSystemTagSanitizeStage(),
-        createLengthGuardStage(4000),
-        createEchoDetectionStage(this.conversationHistory.get(sessionId)),
-        createAttachmentInjectionStage(),
-        createGuardrailsStage(this.guardrailsManager),
-        createPluginPreProcessStage(this.pluginManager),
-      ]);
-      
+      // Use the registered pipeline instance (OpenClaw-style pluggable design)
+      // Pass session context via metadata for stages that need it (e.g., echo detection)
       const pipelineContext = {
         message,
         effectiveMessage: message,
@@ -1133,12 +1128,16 @@ export class AgentModelExecutor {
         peerId,
         agentId,
         attachments,
-        metadata: {},
+        metadata: {
+          conversationHistory: this.conversationHistory.get(sessionId) || [],
+          guardrailsManager: this.guardrailsManager,
+          pluginManager: this.pluginManager,
+        },
         shortCircuit: false,
         warnings: [],
       };
       
-      const result = await pipeline.run(pipelineContext);
+      const result = await inputPipeline.run(pipelineContext);
       
       // Handle pipeline warnings
       if (result.warnings.length > 0) {
@@ -1489,79 +1488,15 @@ export class AgentModelExecutor {
             fallbackToWebSearch: true,
           });
 
-          const outputStr = typeof dispatchResult.output === "string"
-            ? AgentModelExecutor.stripWebNoise(dispatchResult.output)
-            : (() => {
-                const obj = dispatchResult.output as Record<string, unknown>;
-                if (obj && typeof obj === "object") {
-                  for (const key of ["content", "text", "body", "snippet", "output"]) {
-                    if (typeof obj[key] === "string" && (obj[key] as string).length > 100) {
-                      obj[key] = AgentModelExecutor.stripWebNoise(obj[key] as string);
-                    }
-                  }
-                  if (Array.isArray(obj.results)) {
-                    for (const item of obj.results as Array<Record<string, unknown>>) {
-                      if (typeof item.snippet === "string" && (item.snippet as string).length > 100) {
-                        item.snippet = AgentModelExecutor.stripWebNoise(item.snippet as string);
-                      }
-                      if (typeof item.content === "string" && (item.content as string).length > 100) {
-                        item.content = AgentModelExecutor.stripWebNoise(item.content as string);
-                      }
-                    }
-                  }
-                }
-                return JSON.stringify(dispatchResult.output, null, 2);
-              })();
-
-          const skillErrorCategories = {
-            auth: ["must be set in environment", "api key is required", "authentication failed", "unauthorized", "invalid api key", "api_key is not set", "missing api key"],
-            rateLimit: ["rate limit exceeded", "quota exceeded", "too many requests"],
-            network: ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "network error", "connection refused"],
-            config: ["missing required", "config not found", "not configured"],
-          };
-
-          const skillErrorMessages: Record<string, string> = {
-            auth: "技能执行失败：API 密钥未配置或无效。请在技能管理页面配置相应的 API Key。",
-            rateLimit: "技能执行失败：API 调用频率超限。请稍后重试。",
-            network: "技能执行失败：网络连接错误。请检查网络设置。",
-            config: "技能执行失败：配置缺失。请在技能管理页面完善配置。",
-          };
-
-          const classifiedError = (() => {
-            if (dispatchResult.success) return null;
-            const lower = outputStr.toLowerCase();
-            for (const [category, patterns] of Object.entries(skillErrorCategories)) {
-              if (patterns.some(p => lower.includes(p.toLowerCase()))) {
-                return { category, userMessage: skillErrorMessages[category] };
-              }
-            }
-            return null;
-          })();
-
+          // Use unified error handler
+          const outputStr = sanitizeSkillOutput(dispatchResult.output);
+          const classifiedError = classifySkillError(dispatchResult, outputStr);
           const outputHasError = !dispatchResult.success && classifiedError !== null;
-
-          // Check if skill output is essentially empty/meaningless (e.g. "no scripts defined")
-          const isEmptyOutput = (() => {
-            if (!dispatchResult.output) return true;
-            if (typeof dispatchResult.output === "string") {
-              const s = dispatchResult.output.trim();
-              return s.length < 50 || s.includes("no scripts defined") || s.includes("executed successfully");
-            }
-            if (typeof dispatchResult.output === "object") {
-              const obj = dispatchResult.output as Record<string, unknown>;
-              // Check if it's just a status message with no actual content
-              const hasContent = obj.content || obj.text || obj.body || obj.data || obj.results;
-              if (!hasContent && obj.message && typeof obj.message === "string") {
-                return (obj.message as string).includes("no scripts defined");
-              }
-              return !hasContent;
-            }
-            return false;
-          })();
+          const isEmptyOutput = isEmptySkillOutput(dispatchResult.output);
 
           if (dispatchResult.path === "skill" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
-            const skillReply = `🎯 **技能调度**: \`${dispatchResult.skillName}\`\n\n${outputStr}\n\n---\n<details><summary>📋 调度详情</summary>\n\n${dispatchResult.reasoning}\n</details>`;
+            const skillReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, skillReply);
             return {
               reply: skillReply,
@@ -1572,7 +1507,7 @@ export class AgentModelExecutor {
             };
           } else if (dispatchResult.path === "web_search" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
             console.log(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
-            const searchReply = `🔍 **网页搜索**: \`${dispatchResult.skillName}\`\n\n${outputStr}`;
+            const searchReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, searchReply);
             return {
               reply: searchReply,
