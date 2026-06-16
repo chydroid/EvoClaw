@@ -1576,11 +1576,10 @@ Have a specific URL?
               const searchTool = deps.registeredTools.get("skill_search")!;
               const searchResult = await searchTool.handler({ task: message });
               const searchStr = typeof searchResult === "string" ? searchResult : JSON.stringify(searchResult);
-              if (finalReply) {
-                finalReply += `\n\n🔍 自动技能搜索结果：\n${searchStr}`;
-              } else {
-                finalReply = `🔍 技能搜索结果：\n${searchStr}`;
-              }
+              // Log the search result but do NOT append to user-facing reply.
+              // The skill search is informational only; if a matching skill
+              // was found, the SkillDispatcher would have handled it earlier.
+              console.log(`[AgentModelExecutor] Auto skill_search result: ${searchStr.slice(0, 200)}`);
             } catch (err) {
               console.warn(`[AgentModelExecutor] Auto skill_search failed:`, err);
             }
