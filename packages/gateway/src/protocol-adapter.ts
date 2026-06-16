@@ -1025,8 +1025,49 @@ export class ProtocolAdapter {
           return;
         }
         
-        // Otherwise list all installed skills
+        // Otherwise list all installed skills with optional sorting
         const skills = await skillManager.listSkills();
+        const sortBy = req.query.sortBy as string;
+        const sortOrder = req.query.sortOrder as string;
+        
+        if (sortBy && Array.isArray(skills)) {
+          const sorted = [...skills].sort((a: any, b: any) => {
+            let valA: any, valB: any;
+            switch (sortBy) {
+              case "name":
+                valA = (a.name || "").toLowerCase();
+                valB = (b.name || "").toLowerCase();
+                break;
+              case "category":
+                valA = a.category || "zzz";
+                valB = b.category || "zzz";
+                break;
+              case "status":
+                valA = a.lifecycle?.status || "zzz";
+                valB = b.lifecycle?.status || "zzz";
+                break;
+              case "invocations":
+                valA = a.stats?.invocationCount || 0;
+                valB = b.stats?.invocationCount || 0;
+                break;
+              case "rating":
+                valA = a.stats?.userRating || 0;
+                valB = b.stats?.userRating || 0;
+                break;
+              case "updated":
+                valA = a.lifecycle?.lastUpdated || "";
+                valB = b.lifecycle?.lastUpdated || "";
+                break;
+              default:
+                return 0;
+            }
+            const cmp = valA < valB ? -1 : valA > valB ? 1 : 0;
+            return sortOrder === "desc" ? -cmp : cmp;
+          });
+          res.json(sorted);
+          return;
+        }
+        
         res.json(skills);
       } catch (err) {
         res.status(500).json({ error: String(err) });

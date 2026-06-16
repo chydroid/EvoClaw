@@ -3,6 +3,109 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.41.0 (2026-06-16)
+
+### 对照OpenClaw第七轮提升 — 技能系统全面兼容与UI增强
+
+在v0.40.0基础上，深入对比OpenClaw的技能搜索、安装、调度流程，实现OpenClaw技能格式完全兼容和技能页面UI重大升级。
+
+---
+
+#### 1. SKILL.md格式完全兼容OpenClaw
+
+**对标**：OpenClaw的frontmatter schema（name/description/metadata.openclaw/allowed-tools/disable-model-invocation等）
+
+| 新增字段 | 说明 |
+|----------|------|
+| `allowed-tools` | 限制技能可使用的工具列表 |
+| `disable-model-invocation` | 是否禁止模型自动调用 |
+| `user-invocable` | 是否允许用户通过斜杠命令调用 |
+| `command-dispatch` | 命令分派类型（支持"tool"） |
+| `command-tool` | 当command-dispatch=tool时指定工具名 |
+| `command-arg-mode` | 参数传递模式 |
+| `metadata.openclaw.requires.config` | 配置路径依赖 |
+| `metadata.openclaw.install` (数组) | 结构化安装规格（brew/node/go/uv/apt/pip/download） |
+| `metadata.openclaw.skillKey` | 技能唯一键 |
+| `metadata.openclaw.always` | 是否始终包含 |
+
+**修改文件**：
+- [skill.ts](file:///d:/abc/EvoClaw/packages/core/src/types/skill.ts) — 类型定义扩展
+- [skill-md-parser.ts](file:///d:/abc/EvoClaw/packages/skills/src/skill-md-parser.ts) — 解析器扩展
+- [skill-manager.ts](file:///d:/abc/EvoClaw/packages/skills/src/skill-manager.ts) — 结构化安装执行
+
+---
+
+#### 2. 技能页面UI重大升级
+
+**对标**：OpenClaw的CLI `skills search/list/install` + Web搜索能力
+
+| 新功能 | 说明 |
+|--------|------|
+| 搜索框 | 实时过滤已安装技能（名称/描述/分类/关键词/中文翻译） |
+| 排序功能 | 按名称/分类/状态/调用次数/评分/更新时间排序，支持升降序切换 |
+| 技能市场标签页 | 已安装/技能市场双标签切换 |
+| 一键搜索市场 | 输入关键词搜索ClawHub技能市场 |
+| 一键安装 | 搜索结果中点击"安装"按钮直接安装 |
+| 热门技能展示 | 打开市场标签页自动加载热门技能列表 |
+
+**修改文件**：[SkillsConfig.tsx](file:///d:/abc/EvoClaw/packages/web-ui/src/SkillsConfig.tsx)
+
+---
+
+#### 3. 技能列表API增强
+
+**对标**：OpenClaw的skills list + search API
+
+| 新增参数 | 说明 |
+|----------|------|
+| `sortBy` | 排序字段（name/category/status/invocations/rating/updated） |
+| `sortOrder` | 排序方向（asc/desc） |
+
+**修改文件**：[protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)
+
+---
+
+#### 4. 结构化安装规格执行
+
+**对标**：OpenClaw的SkillInstallSpec（5种安装方式）
+
+| 安装方式 | 说明 |
+|----------|------|
+| `brew` | Homebrew formula安装 |
+| `node` | npm全局包安装 |
+| `go` | Go module安装 |
+| `uv`/`pip` | Python包安装 |
+| `apt` | apt-get包安装 |
+| `download` | 下载安装（需手动） |
+
+**修改文件**：[skill-manager.ts](file:///d:/abc/EvoClaw/packages/skills/src/skill-manager.ts) — 新增`executeStructuredInstall()`方法
+
+---
+
+#### 5. 测试验证结果
+
+**66项用户需求测试**：
+
+| 指标 | v0.40.0 | v0.41.0 |
+|------|---------|---------|
+| 通过 | 53 | **61** |
+| 超时 | 12 | 4 |
+| 错误 | 1 | 1 |
+| 通过率 | 80.3% | **92.4%** |
+
+> 通过率从80.3%提升到92.4%，提升12.1个百分点！
+
+**WebUI功能模块测试**：
+
+| 指标 | 结果 |
+|------|------|
+| 总测试数 | 38 |
+| 通过 | 38 |
+| 失败 | 0 |
+| 通过率 | **100%** |
+
+---
+
 ## v0.40.0 (2026-06-16)
 
 ### 对照OpenClaw第六轮提升 — Agent执行循环核心优化

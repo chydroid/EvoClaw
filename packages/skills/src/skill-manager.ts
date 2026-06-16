@@ -380,10 +380,26 @@ export class SkillManager {
 
     // 4c. Execute openclaw.install script
     if (ocMeta?.install) {
-      const installStep = this.executeMetaScript("install", ocMeta.install, skillDir);
-      installReport.steps.push(installStep);
-      if (installStep.errors.length > 0) {
-        installReport.errors.push(...installStep.errors);
+      // install can be a string (script) or SkillInstallSpec[] (structured)
+      if (typeof ocMeta.install === "string") {
+        const installStep = this.executeMetaScript("install", ocMeta.install, skillDir);
+        installReport.steps.push(installStep);
+        if (installStep.errors.length > 0) {
+          installReport.errors.push(...installStep.errors);
+        }
+      } else if (Array.isArray(ocMeta.install)) {
+        // Structured install specs - find matching spec for current OS and execute
+        const currentOs = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+        for (const spec of ocMeta.install) {
+          if (!spec.os || spec.os.includes(currentOs)) {
+            const installStep = this.executeStructuredInstall(spec, skillDir);
+            installReport.steps.push(installStep);
+            if (installStep.errors.length > 0) {
+              installReport.errors.push(...installStep.errors);
+            }
+            if (installStep.status === "success") break; // First successful install is enough
+          }
+        }
       }
     }
 
@@ -1701,6 +1717,70 @@ export class SkillManager {
       step.message = step.message || "Dependencies installed with warnings";
     } else {
       step.message = step.message || "All dependencies satisfied";
+    }
+
+    return step;
+  }
+
+  /**
+   * Execute a structured install spec (OpenClaw SkillInstallSpec format).
+   * Supports brew, node, go, uv, download, apt, pip install kinds.
+   */
+  private executeStructuredInstall(
+    spec: import("@evoclaw/core").SkillInstallSpec,
+    skillDir: string
+  ): SkillInstallStep {
+    const step: SkillInstallStep = {
+      name: `install_${spec.kind}_${spec.id}`,
+      status: "success",
+      message: spec.label || `Install via ${spec.kind}`,
+      warnings: [],
+      errors: [],
+    };
+
+    try {
+      const { execSync } = require("child_process") as typeof import("child_process");
+      let command = "";
+
+      switch (spec.kind) {
+        case "brew":
+          command = `brew install ${spec.formula || spec.package || ""}`;
+          break;
+        case "node":
+          command = `npm install -g ${spec.package || ""}`;
+          break;
+        case "go":
+          command = `go install ${spec.module || ""}`;
+          break;
+        case "uv":
+          command = `uv pip install ${spec.package || ""}`;
+          break;
+        case "apt":
+          command = `apt-get install -y ${spec.package || ""}`;
+          break;
+        case "pip":
+          command = `pip install ${spec.package || ""}`;
+          break;
+        case "download":
+          step.warnings.push(`Download install requires manual setup: ${spec.url || "no URL provided"}`);
+          step.status = "warning";
+          return step;
+        default:
+          step.warnings.push(`Unknown install kind: ${spec.kind}`);
+          step.status = "warning";
+          return step;
+      }
+
+      if (command) {
+        console.log(`[SkillManager] Executing structured install: ${command}`);
+        execSync(command, { cwd: skillDir, timeout: 120_000, stdio: "pipe" });
+        step.message = `Successfully installed via ${spec.kind}`;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      step.errors.push(`Install failed (${spec.kind}): ${errMsg}`);
+      step.status = "failed";
+      step.message = `Failed to install via ${spec.kind}`;
     }
 
     return step;

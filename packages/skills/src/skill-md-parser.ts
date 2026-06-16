@@ -37,6 +37,13 @@ export class SKILLmdParser {
       homepage: openClawMeta?.homepage || data.homepage,
       emoji: openClawMeta?.emoji || data.emoji,
       os: openClawMeta?.os || data.os,
+      // OpenClaw compatibility fields
+      allowedTools: Array.isArray(data["allowed-tools"]) ? data["allowed-tools"] as string[] : undefined,
+      disableModelInvocation: Boolean(data["disable-model-invocation"]),
+      userInvocable: data["user-invocable"] !== undefined ? Boolean(data["user-invocable"]) : true,
+      commandDispatch: typeof data["command-dispatch"] === "string" ? data["command-dispatch"] : undefined,
+      commandTool: typeof data["command-tool"] === "string" ? data["command-tool"] : undefined,
+      commandArgMode: typeof data["command-arg-mode"] === "string" ? data["command-arg-mode"] : undefined,
       metadata: openClawMeta
         ? {
             openclaw: openClawMeta,
@@ -100,12 +107,27 @@ export class SKILLmdParser {
     }
     if (typeof ocMeta.install === "string") {
       result.install = ocMeta.install;
+    } else if (Array.isArray(ocMeta.install)) {
+      result.install = ocMeta.install as any[];
     }
     if (typeof ocMeta.source === "string") {
       result.source = ocMeta.source;
     }
     if (typeof ocMeta.build === "string") {
       result.build = ocMeta.build;
+    }
+    if (typeof ocMeta.skillKey === "string") {
+      result.skillKey = ocMeta.skillKey;
+    }
+    if (typeof ocMeta.always === "boolean") {
+      result.always = ocMeta.always;
+    }
+    // Parse requires.config (OpenClaw compatibility)
+    if (ocMeta.requires && typeof ocMeta.requires === "object") {
+      const req = ocMeta.requires as Record<string, unknown>;
+      if (Array.isArray(req.config)) {
+        result.requires = { ...result.requires, config: req.config as string[] };
+      }
     }
 
     return result;

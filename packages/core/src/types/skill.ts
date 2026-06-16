@@ -142,6 +142,13 @@ export interface SKILLmdMeta {
   emoji?: string;
   os?: string[];
   metadata?: OpenClawMetadata;
+  // OpenClaw compatibility fields
+  allowedTools?: string[];
+  disableModelInvocation?: boolean;
+  userInvocable?: boolean;
+  commandDispatch?: string;
+  commandTool?: string;
+  commandArgMode?: string;
 }
 
 export interface OpenClawMetadata {
@@ -155,14 +162,33 @@ export interface OpenClawSkillMeta {
     env?: string[];
     bins?: string[];
     anyBins?: string[];
+    config?: string[];
   };
   primaryEnv?: string;
   emoji?: string;
   homepage?: string;
   os?: string[];
-  install?: string;
+  install?: string | SkillInstallSpec[];
   source?: string;
   build?: string;
+  skillKey?: string;
+  always?: boolean;
+}
+
+export interface SkillInstallSpec {
+  id: string;
+  kind: "brew" | "node" | "go" | "uv" | "download" | "apt" | "pip";
+  label?: string;
+  bins?: string[];
+  os?: string[];
+  formula?: string;
+  package?: string;
+  module?: string;
+  url?: string;
+  archive?: string;
+  extract?: boolean;
+  stripComponents?: number;
+  targetDir?: string;
 }
 
 export interface SKILLmdDocument {

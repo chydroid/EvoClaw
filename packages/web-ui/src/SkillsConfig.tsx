@@ -594,6 +594,15 @@ export default function SkillsConfig() {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  // Search, sort, and marketplace state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"name" | "category" | "status" | "invocations" | "rating" | "updated">("name");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const [marketplaceTab, setMarketplaceTab] = useState(false);
+  const [marketplaceResults, setMarketplaceResults] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
+  const [marketplaceSearching, setMarketplaceSearching] = useState(false);
+  const [marketplaceInstalling, setMarketplaceInstalling] = useState<string | null>(null);
+  const [trendingSkills, setTrendingSkills] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
 
@@ -671,6 +680,83 @@ export default function SkillsConfig() {
     await loadSkills();
     setRefreshing(false);
   }, [loadSkills]);
+
+  // ── Search & Sort ──
+  const filteredAndSortedSkills = useCallback(() => {
+    let result = [...skills];
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(s =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        (s.category || "").toLowerCase().includes(q) ||
+        (s.keywords || []).some(k => k.toLowerCase().includes(q)) ||
+        (s.i18n?.description_zh || "").toLowerCase().includes(q)
+      );
+    }
+    // Sort
+    result.sort((a, b) => {
+      let valA: any, valB: any;
+      switch (sortBy) {
+        case "name": valA = a.name.toLowerCase(); valB = b.name.toLowerCase(); break;
+        case "category": valA = a.category || "zzz"; valB = b.category || "zzz"; break;
+        case "status": valA = a.lifecycle?.status || "zzz"; valB = b.lifecycle?.status || "zzz"; break;
+        case "invocations": valA = a.stats?.invocationCount || 0; valB = b.stats?.invocationCount || 0; break;
+        case "rating": valA = a.stats?.userRating || 0; valB = b.stats?.userRating || 0; break;
+        case "updated": valA = a.lifecycle?.lastUpdated || ""; valB = b.lifecycle?.lastUpdated || ""; break;
+        default: return 0;
+      }
+      const cmp = valA < valB ? -1 : valA > valB ? 1 : 0;
+      return sortOrder === "desc" ? -cmp : cmp;
+    });
+    return result;
+  }, [skills, searchQuery, sortBy, sortOrder]);
+
+  // ── Marketplace search ──
+  const handleMarketplaceSearch = useCallback(async (query: string) => {
+    if (!query.trim()) { setMarketplaceResults([]); return; }
+    setMarketplaceSearching(true);
+    try {
+      const res = await fetch(`/api/marketplace/search?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setMarketplaceResults(Array.isArray(data.results) ? data.results : []);
+      }
+    } catch { /* marketplace not available */ }
+    setMarketplaceSearching(false);
+  }, []);
+
+  const handleMarketplaceInstall = useCallback(async (skillName: string) => {
+    setMarketplaceInstalling(skillName);
+    try {
+      const res = await fetch("/api/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: skillName }),
+      });
+      if (res.ok) {
+        setMessage({ type: "success", text: t("skills.install_success", "技能 {0} 安装成功").replace("{0}", skillName) });
+        await loadSkills();
+      } else {
+        const err = await res.json().catch(() => ({ error: "Install failed" }));
+        setMessage({ type: "error", text: String(err.error || "Install failed") });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("skills.install_fail", "安装失败") });
+    }
+    setMarketplaceInstalling(null);
+  }, [loadSkills]);
+
+  // Load trending on marketplace tab open
+  useEffect(() => {
+    if (marketplaceTab && trendingSkills.length === 0) {
+      fetch("/api/marketplace/trending?limit=20")
+        .then(r => r.ok ? r.json() : { skills: [] })
+        .then(data => setTrendingSkills(Array.isArray(data.skills) ? data.skills : []))
+        .catch(() => {});
+    }
+  }, [marketplaceTab, trendingSkills.length]);
 
   const handleSaveConfig = useCallback(async () => {
     if (!selectedId) return;
@@ -942,6 +1028,128 @@ export default function SkillsConfig() {
             {refreshing ? t("skills.checking") : t("skills.refresh")}
           </button>
         </div>
+        {/* ── Search & Sort Bar ── */}
+        <div style={{ padding: "6px 10px", borderBottom: "1px solid var(--border)" }}>
+          <input
+            type="text"
+            placeholder={t("skills.search_placeholder", "搜索技能...")}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              width: "100%", boxSizing: "border-box", padding: "5px 8px",
+              fontSize: "12px", borderRadius: "4px", border: "1px solid var(--border)",
+              background: "var(--bg-primary)", color: "var(--text-primary)",
+            }}
+          />
+          <div style={{ display: "flex", gap: "4px", marginTop: "4px", alignItems: "center" }}>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              style={{ flex: 1, fontSize: "11px", padding: "2px 4px", borderRadius: "3px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }}
+            >
+              <option value="name">{t("skills.sort_name", "名称")}</option>
+              <option value="category">{t("skills.sort_category", "分类")}</option>
+              <option value="status">{t("skills.sort_status", "状态")}</option>
+              <option value="invocations">{t("skills.sort_invocations", "调用次数")}</option>
+              <option value="rating">{t("skills.sort_rating", "评分")}</option>
+              <option value="updated">{t("skills.sort_updated", "更新时间")}</option>
+            </select>
+            <button
+              onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
+              style={{ fontSize: "11px", padding: "2px 6px", borderRadius: "3px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", cursor: "pointer" }}
+              title={sortOrder === "asc" ? "升序" : "降序"}
+            >
+              {sortOrder === "asc" ? "↑" : "↓"}
+            </button>
+          </div>
+        </div>
+        {/* ── Tab: Installed / Marketplace ── */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
+          <button
+            onClick={() => setMarketplaceTab(false)}
+            style={{
+              flex: 1, padding: "6px 0", fontSize: "11px", fontWeight: marketplaceTab ? "normal" : "bold",
+              border: "none", borderBottom: marketplaceTab ? "none" : "2px solid var(--accent)",
+              background: "transparent", color: marketplaceTab ? "var(--text-muted)" : "var(--text-primary)", cursor: "pointer",
+            }}
+          >
+            {t("skills.tab_installed", "已安装")}
+          </button>
+          <button
+            onClick={() => setMarketplaceTab(true)}
+            style={{
+              flex: 1, padding: "6px 0", fontSize: "11px", fontWeight: marketplaceTab ? "bold" : "normal",
+              border: "none", borderBottom: marketplaceTab ? "2px solid var(--accent)" : "none",
+              background: "transparent", color: marketplaceTab ? "var(--text-primary)" : "var(--text-muted)", cursor: "pointer",
+            }}
+          >
+            {t("skills.tab_marketplace", "技能市场")}
+          </button>
+        </div>
+        {/* ── Marketplace Tab Content ── */}
+        {marketplaceTab && (
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+            <input
+              type="text"
+              placeholder={t("skills.search_marketplace", "搜索技能市场...")}
+              onKeyDown={(e) => { if (e.key === "Enter") handleMarketplaceSearch((e.target as HTMLInputElement).value); }}
+              style={{
+                width: "100%", boxSizing: "border-box", padding: "5px 8px",
+                fontSize: "12px", borderRadius: "4px", border: "1px solid var(--border)",
+                background: "var(--bg-primary)", color: "var(--text-primary)",
+              }}
+            />
+            {marketplaceSearching && <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "4px 0" }}>搜索中...</div>}
+            {marketplaceResults.length > 0 && (
+              <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+                {marketplaceResults.map((ms, idx) => (
+                  <div key={idx} style={{ padding: "6px 4px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "12px", fontWeight: 500, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {ms.displayName || ms.name}
+                      </div>
+                      {ms.summary && <div style={{ fontSize: "10px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ms.summary}</div>}
+                    </div>
+                    <button
+                      onClick={() => handleMarketplaceInstall(ms.slug || ms.name)}
+                      disabled={marketplaceInstalling === (ms.slug || ms.name)}
+                      style={{
+                        marginLeft: "6px", padding: "2px 8px", fontSize: "10px", borderRadius: "3px",
+                        border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff",
+                        cursor: marketplaceInstalling === (ms.slug || ms.name) ? "wait" : "pointer",
+                        opacity: marketplaceInstalling === (ms.slug || ms.name) ? 0.6 : 1,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {marketplaceInstalling === (ms.slug || ms.name) ? "安装中..." : "安装"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!marketplaceSearching && marketplaceResults.length === 0 && trendingSkills.length > 0 && (
+              <div>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>{t("skills.trending", "热门技能")}</div>
+                {trendingSkills.map((ts, idx) => (
+                  <div key={idx} style={{ padding: "4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "11px", color: "var(--text-primary)" }}>{ts.displayName || ts.name}</span>
+                    <button
+                      onClick={() => handleMarketplaceInstall(ts.slug || ts.name)}
+                      disabled={marketplaceInstalling === (ts.slug || ts.name)}
+                      style={{
+                        padding: "1px 6px", fontSize: "10px", borderRadius: "3px",
+                        border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)",
+                        cursor: marketplaceInstalling === (ts.slug || ts.name) ? "wait" : "pointer",
+                      }}
+                    >
+                      {marketplaceInstalling === (ts.slug || ts.name) ? "..." : "+"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div style={styles.batchBar}>
           <label style={{ fontSize: "11px", color: "var(--text-secondary)", display: "flex", alignItems: "center", cursor: "pointer" }}>
             <input
@@ -992,12 +1200,12 @@ export default function SkillsConfig() {
           </button>
         </div>
         <div style={styles.sidebarList}>
-          {skills.length === 0 ? (
+          {marketplaceTab ? null : filteredAndSortedSkills().length === 0 ? (
             <div style={{ padding: "20px 14px", color: "var(--text-muted)", fontSize: "12px" }}>
-              {t("skills.no_skills_registered", "暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。")}
+              {searchQuery ? t("skills.no_search_results", "未找到匹配的技能") : t("skills.no_skills_registered", "暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。")}
             </div>
-          ) : (
-            skills.map((skill) => {
+          ) : marketplaceTab ? null : (
+            filteredAndSortedSkills().map((skill) => {
               const cStatus = getConfigStatus(skill);
               const dotColor = configStatusColor(cStatus);
               const hasUpdate = skill.updateAvailable || updateInfo[skill.id]?.updateAvailable;
