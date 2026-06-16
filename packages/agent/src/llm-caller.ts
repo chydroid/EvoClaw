@@ -30,6 +30,41 @@ const COOLDOWN_MS = 60_000; // 1 minute cooldown after tripping
 
 const toolFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
 
+// ── Provider circuit breaker ──
+// Inspired by OpenClaw's tool policy pipeline. Tracks consecutive LLM
+// provider failures. After MAX_PROVIDER_FAILURES, the provider is
+// "tripped" for PROVIDER_COOLDOWN_MS, allowing failover to the next
+// provider instead of wasting time on a broken one.
+
+const MAX_PROVIDER_FAILURES = 2;
+const PROVIDER_COOLDOWN_MS = 120_000; // 2 minute cooldown
+
+const providerFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
+
+function isProviderTripped(providerName: string): boolean {
+  const entry = providerFailureTracker.get(providerName);
+  if (!entry || !entry.trippedAt) return false;
+  if (Date.now() - entry.trippedAt > PROVIDER_COOLDOWN_MS) {
+    providerFailureTracker.delete(providerName);
+    return false;
+  }
+  return true;
+}
+
+function recordProviderFailure(providerName: string): void {
+  const entry = providerFailureTracker.get(providerName) || { count: 0, trippedAt: null };
+  entry.count++;
+  if (entry.count >= MAX_PROVIDER_FAILURES) {
+    entry.trippedAt = Date.now();
+    console.warn(`[LLMCaller] Provider "${providerName}" circuit breaker tripped after ${entry.count} failures — cooldown ${PROVIDER_COOLDOWN_MS / 1000}s`);
+  }
+  providerFailureTracker.set(providerName, entry);
+}
+
+function recordProviderSuccess(providerName: string): void {
+  providerFailureTracker.delete(providerName);
+}
+
 // ── Format command output into readable text ──
 function formatNum(v: unknown, digits = 2): string {
   const n = Number(v);
@@ -624,12 +659,12 @@ export function buildOpenAITools(
         for (const t of group.tools) activeTools.add(t);
       }
     }
-    // If the message doesn't match any specific group, include all tools
-    // (fallback to avoid missing capabilities for ambiguous requests).
+    // If the message doesn't match any specific group, include core + skill
+    // groups only (inspired by OpenClaw's tool profile strategy).
+    // The skill_execute tool can dynamically discover and run other skills,
+    // so we don't need to include ALL tools for ambiguous requests.
     if (activeTools.size <= TOOL_GROUPS.core.tools.length) {
-      for (const [, group] of Object.entries(TOOL_GROUPS)) {
-        for (const t of group.tools) activeTools.add(t);
-      }
+      for (const t of TOOL_GROUPS.skill.tools) activeTools.add(t);
     }
   } else {
     // No message provided — include all tools for backward compatibility
@@ -1161,6 +1196,12 @@ export async function tryCallLLM(
   }
 
   for (const provider of expandedProviders) {
+    // ── Provider circuit breaker: skip tripped providers ──
+    if (isProviderTripped(provider.name)) {
+      console.log(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active`);
+      continue;
+    }
+
     let consecutiveErrors = 0;
 
     try {
@@ -1352,6 +1393,7 @@ Have a specific URL?
 
         if (!result) {
           consecutiveErrors++;
+          recordProviderFailure(provider.name);
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
           continue;
         }
@@ -1359,6 +1401,7 @@ Have a specific URL?
         const classified = result.classifiedError;
         if (classified && classified.type !== LLMErrorType.UNKNOWN) {
           consecutiveErrors++;
+          recordProviderFailure(provider.name);
           console.warn(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}`);
 
           if (classified.type === LLMErrorType.CONTEXT_OVERFLOW && classified.shouldCompact) {
@@ -1394,6 +1437,7 @@ Have a specific URL?
         }
 
         consecutiveErrors = 0;
+        recordProviderSuccess(provider.name);
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
 
@@ -1547,7 +1591,45 @@ Have a specific URL?
 
         conversationMessages.push(assistantMsg);
 
-        for (const tc of toolCalls) {
+        // ── Parallel tool execution (inspired by OpenClaw's executeToolCallsParallel) ──
+        // Tools that are read-only and independent can be executed in parallel.
+        // Tools with side-effects or dependencies must be executed sequentially.
+        const PARALLEL_SAFE_TOOLS = new Set([
+          "web_search", "web_fetch", "file_read", "file_list",
+          "skill_execute", "skill_search", "skill_view", "skill_index_list",
+          "browser_navigate", "browser_search", "browser_screenshot",
+          "browser_get_text", "browser_get_html", "browser_find_elements",
+          "browser_fetch_json", "memory_retrieve", "memory_search",
+          "sequential_thinking", "assess_coding_capability",
+          "scrapling_fetch", "fetch_node_page", "markitdown_convert",
+        ]);
+
+        // Separate tool calls into parallel-safe and sequential groups
+        const parallelCalls: typeof toolCalls = [];
+        const sequentialCalls: typeof toolCalls = [];
+
+        if (toolCalls.length > 1) {
+          // If ALL tool calls are parallel-safe, execute them all in parallel
+          const allParallelSafe = toolCalls.every(tc => PARALLEL_SAFE_TOOLS.has(tc.function.name));
+          if (allParallelSafe) {
+            parallelCalls.push(...toolCalls);
+          } else {
+            // Mixed: execute parallel-safe ones first (in parallel), then sequential ones
+            for (const tc of toolCalls) {
+              if (PARALLEL_SAFE_TOOLS.has(tc.function.name)) {
+                parallelCalls.push(tc);
+              } else {
+                sequentialCalls.push(tc);
+              }
+            }
+          }
+        } else {
+          sequentialCalls.push(...toolCalls);
+        }
+
+        // Helper: execute a single tool call and return the result message
+        // (extracted from the original for-loop body below)
+        const executeSingleToolCall = async (tc: typeof toolCalls[0]): Promise<{ role: string; tool_call_id: string; name: string; content: string }> => {
           const toolStartTime = Date.now();
           const toolName = tc.function.name;
           const toolEntry = deps.registeredTools.get(toolName);
@@ -1578,7 +1660,6 @@ Have a specific URL?
               toolResult = JSON.stringify({ error: `[工具安全拦截] ${toolCheck.reason}` });
               toolErrored = true;
               toolError = toolCheck.reason;
-              // Skip actual tool execution — will be handled below
             }
           }
 
@@ -1593,13 +1674,12 @@ Have a specific URL?
               params: args,
             });
             if (cancelled || blocked) {
-              conversationMessages.push({
+              return {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
                 content: JSON.stringify({ skipped: true, reason: blocked ? "blocked" : "cancelled" }),
-              });
-              continue;
+              };
             }
             const mergedBTC = merged as Partial<import("@evoclaw/core").BeforeToolCallResult>;
             if (mergedBTC.params) args = mergedBTC.params as Record<string, unknown>;
@@ -1612,247 +1692,124 @@ Have a specific URL?
           if (deps.humanApprovalManager && deps.humanApprovalManager.requiresApproval(toolName, args)) {
             const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName);
 
-            // If we've already had a HITL rejection in this session,
-            // skip the approval request entirely (instant reject) to avoid
-            // repeated timeouts that cause the overall request to time out.
             if (hitlRejectCount >= 1) {
               console.log(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)`);
-              conversationMessages.push({
+              return {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({
-                  skipped: true,
-                  reason: "rejected_by_user",
-                  hint: `Previous ${riskLevel}-risk operations were not approved. Do NOT attempt any more high/critical-risk tools (shell_exec, file_modify, file_delete, browser_navigate). Respond to the user directly without executing tools.`,
-                }),
-              });
-              continue;
+                content: JSON.stringify({ error: "Operation requires approval but was auto-rejected due to a previous rejection in this session. Please explicitly confirm if you want to proceed.", riskLevel }),
+              };
             }
 
-            onProgress?.({
-              type: "approval_pending",
-              phase: "waiting_approval",
-              detail: `等待人工审批: ${toolName} (${riskLevel})`,
-              progress: 50,
-              toolName,
-              toolArgs: args,
-              round: round + 1,
-            });
+            const approvalRequest = {
+              id: `hitl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              operation: toolName,
+              params: args,
+              riskLevel: riskLevel || "medium",
+              description: `Tool "${toolName}" requires approval (${riskLevel || "medium"} risk)`,
+              target: toolName,
+            };
+            pendingPermissions.push(approvalRequest);
+            return {
+              role: "tool",
+              tool_call_id: tc.id,
+              name: toolName,
+              content: JSON.stringify({ pendingApproval: true, requestId: approvalRequest.id, message: "This operation requires your approval. Please approve or reject it." }),
+            };
+          }
 
-            console.log(`[AgentModelExecutor] HITL: Requesting approval for tool "${toolName}" (risk: ${riskLevel}) in session "${sessionId}"`);
-
-            const approvalResult = await deps.humanApprovalManager.requestApproval(
-              sessionId,
-              toolName,
-              args,
-              "agent",
-            );
-
-            if (approvalResult.decision === "rejected") {
-              hitlRejectCount++;
-              console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" rejected (timeout or user denied, total rejections: ${hitlRejectCount})`);
-              // Store the rejected command for potential chat-based approval
-              if (toolName === "shell_exec" && args.command && deps.pendingApprovalCommands) {
-                deps.pendingApprovalCommands.set(sessionId, {
-                  command: String(args.command),
-                  rejectedAt: Date.now(),
-                });
-                console.log(`[AgentModelExecutor] Stored pending approval command for session "${sessionId}": ${args.command}`);
-              }
-              conversationMessages.push({
+          // ── Parameter validation ──
+          if (!args._parseError) {
+            const paramError = validateToolParams(toolName, args, toolEntry?.definition || { parameters: {} });
+            if (paramError) {
+              return {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({
-                  skipped: true,
-                  reason: "rejected_by_user",
-                  hint: `The user did not approve this ${riskLevel}-risk operation. Tell the user what you wanted to do and that they can reply "同意" or "approve" to allow it. Do NOT retry the command.`,
-                }),
-              });
-              continue;
-            }
-
-            if (approvalResult.decision === "modified" && approvalResult.modifiedArgs) {
-              console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" approved with modified arguments`);
-              args = approvalResult.modifiedArgs;
-            } else {
-              console.log(`[AgentModelExecutor] HITL: Tool "${toolName}" approved`);
+                content: JSON.stringify({ error: `Invalid parameters: ${paramError}`, suggestion: "Check the parameter types and required fields." }),
+              };
             }
           }
 
           let rawResult: unknown = undefined;
-          let cacheHit = false;
 
-          // ── Retry with exponential backoff for network tools ──
-          // Network tools (web_search, web_fetch, etc.) are prone to transient
-          // failures (5xx, timeout, rate-limit). Retry up to 2 times with
-          // 1s → 2s backoff. Non-network tools (file, shell) are not retried
-          // because they may not be idempotent.
-          const NETWORK_TOOLS = new Set([
-            "web_search", "web_fetch", "fetch_node_page", "scrapling_fetch",
-            "browser_search", "browser_navigate", "browser_fetch_json",
-            "browser_launch", "browser_login",
-          ]);
-          const MAX_RETRIES = NETWORK_TOOLS.has(toolName) ? 2 : 0;
-          const isNetworkTool = NETWORK_TOOLS.has(toolName);
+          if (!toolEntry) {
+            return {
+              role: "tool",
+              tool_call_id: tc.id,
+              name: toolName,
+              content: JSON.stringify({
+                error: `Tool "${toolName}" is not registered`,
+                suggestion: "Check the tool name for typos. Use only tools that are available in your tool list.",
+                toolName,
+              }),
+            };
+          }
 
-          // ── Guardrails: skip tool execution if blocked ──
-          if (toolErrored && toolError) {
-            // Tool was blocked by guardrails — skip execution, push result directly
-          } else if (toolEntry) {
-            // ── Parameter schema validation ──
-            const paramError = validateToolParams(toolName, args, toolEntry.definition);
-            if (paramError) {
-              toolResult = JSON.stringify({
-                error: paramError,
-                suggestion: "Check the parameter names and types against the tool's schema. Make sure all required parameters are provided with correct types.",
-                validationError: true,
-                toolName,
-              });
-              toolErrored = true;
-              toolError = paramError;
-              console.warn(`[AgentModelExecutor] Parameter validation failed for "${toolName}": ${paramError}`);
-            } else {
-            // ── Circuit breaker check ──
-            if (isToolTripped(toolName)) {
-              toolResult = JSON.stringify({
-                error: `Tool "${toolName}" is temporarily disabled due to repeated failures`,
-                suggestion: "This tool has failed multiple times in a row. Try an alternative tool or approach. The tool will be re-enabled automatically after a cooldown period.",
-                circuitBreaker: true,
-                toolName,
-              });
-              toolErrored = true;
-              toolError = `Circuit breaker: ${toolName} is tripped`;
-              console.warn(`[AgentModelExecutor] Circuit breaker: skipping ${toolName}`);
-            } else {
+          // ── Circuit breaker check ──
+          if (isToolTripped(toolName)) {
+            return {
+              role: "tool",
+              tool_call_id: tc.id,
+              name: toolName,
+              content: JSON.stringify({ error: `Tool "${toolName}" is temporarily disabled due to repeated failures. Try a different approach.`, cooldownRemaining: "60s" }),
+            };
+          }
+
+          // ── Idempotency cache for write operations ──
+          const IDEMPOTENT_TOOLS = new Set(["file_create", "file_modify", "email_send", "scheduler_create"]);
+          if (IDEMPOTENT_TOOLS.has(toolName)) {
+            const cacheKey = `${toolName}:${JSON.stringify(args)}`;
+            const cached = idempotencyCache.get(cacheKey);
+            if (cached && Date.now() - cached.timestamp < 60_000) {
+              console.log(`[AgentModelExecutor] Idempotent cache hit for ${toolName}`);
+              return { role: "tool", tool_call_id: tc.id, name: toolName, content: cached.result };
+            }
+          }
+
+          // ── Tool result cache ──
+          const resultCacheKey = `${toolName}:${JSON.stringify(args)}`;
+          const cachedResult = deps.toolResultCache?.get(resultCacheKey);
+          if (cachedResult && Date.now() - cachedResult.timestamp < 300_000) {
+            console.log(`[AgentModelExecutor] Cache hit for ${toolName}`);
+            return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult.result };
+          }
+
+          // ── Skip with result from plugin hook ──
+          if (skipWithResult !== undefined) {
+            toolResult = typeof skipWithResult === "string" ? skipWithResult : JSON.stringify(skipWithResult);
+          } else if (!toolErrored) {
+            // ── Execute the tool ──
+            const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_search", "browser_fetch_json", "scrapling_fetch", "fetch_node_page", "skill_execute"].includes(toolName);
+            const MAX_RETRIES = isNetworkTool ? 2 : 0;
+            const isBrowser = toolName.startsWith("browser_");
+
             try {
-              // ── Idempotency check for write operations ──
-              let idempotencyHit = false;
-              if (IDEMPOTENT_TOOLS.has(toolName)) {
-                const idemKey = getIdempotencyKey(toolName, args);
-                const idemEntry = idempotencyCache.get(idemKey);
-                if (idemEntry && Date.now() - idemEntry.timestamp < IDEMPOTENCY_TTL) {
-                  console.log(`[AgentModelExecutor] Idempotency hit: ${toolName} (skipping duplicate write)`);
-                  toolResult = idemEntry.result;
-                  toolErrored = false;
-                  cacheHit = true; // treat as cache hit to skip further processing
-                  // Parse the cached result as rawResult for downstream processing
-                  try { rawResult = JSON.parse(idemEntry.result); } catch { rawResult = idemEntry.result; }
-                  idempotencyHit = true;
-                }
-              }
-              if (!idempotencyHit && skipWithResult !== undefined) {
-                rawResult = skipWithResult;
-                toolResult = JSON.stringify(skipWithResult);
-              } else if (!idempotencyHit) {
-                const cacheKey = getToolCacheKey(toolName, args);
-                const cached = deps.toolResultCache.get(cacheKey);
-                if (cached && Date.now() - cached.timestamp < TOOL_CACHE_TTL) {
-                  console.log(`[AgentModelExecutor] Tool cache hit: ${toolName}`);
-                  toolResult = cached.result;
-                  cacheHit = true;
-                } else {
-                  const LONG_RUNNING_TOOLS = new Set([
-                    "execute_programming_task", "decompose_programming_task",
-                    "browser_launch", "browser_screenshot", "browser_login",
-                    "browser_navigate", "browser_submit_form", "browser_js_eval",
-                    "get_task_result", "shell_exec", "scrapling_fetch",
+              for (let retry = 0; retry <= MAX_RETRIES; retry++) {
+                try {
+                  const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
+                  rawResult = await Promise.race([
+                    toolEntry.handler(args),
+                    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout)),
                   ]);
-                  const TOOL_TIMEOUT = LONG_RUNNING_TOOLS.has(toolName) ? 300000 : 30000;
-
-                  // Execute with retry for network tools
-                  let lastExecError: Error | null = null;
-                  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-                    try {
-                      if (attempt > 0) {
-                        const backoffMs = Math.pow(2, attempt - 1) * 1000;
-                        console.log(`[AgentModelExecutor] Retrying tool "${toolName}" (attempt ${attempt + 1}/${MAX_RETRIES + 1}) after ${backoffMs}ms backoff`);
-                        await new Promise(resolve => setTimeout(resolve, backoffMs));
-                      }
-                      const toolExecFn = async () => {
-                        const toolPromise = toolEntry.handler(args);
-                        let toolTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-                        const toolTimeoutPromise = new Promise<never>((_, reject) => {
-                          toolTimeoutHandle = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT / 1000}s`)), TOOL_TIMEOUT);
-                        });
-                        try {
-                          rawResult = await Promise.race([toolPromise, toolTimeoutPromise]);
-                        } finally {
-                          if (toolTimeoutHandle) clearTimeout(toolTimeoutHandle);
-                        }
-                      };
-                      if (tracing?.isEnabled()) {
-                        await tracing.withSpan("tool.execute", async (span: Span) => {
-                          span.setAttribute("tool.name", toolName);
-                          span.setAttribute("tool.timeout", TOOL_TIMEOUT);
-                          if (attempt > 0) span.setAttribute("tool.retry_attempt", attempt);
-                          await toolExecFn();
-                        });
-                      } else {
-                        await toolExecFn();
-                      }
-                      lastExecError = null;
-                      break; // success — exit retry loop
-                    } catch (retryErr: unknown) {
-                      lastExecError = retryErr instanceof Error ? retryErr : new Error(String(retryErr));
-                      // Don't retry on non-recoverable errors (DNS failure, auth errors, etc.)
-                      const errMsg = lastExecError.message;
-                      const isNonRecoverable = errMsg.includes("ENOTFOUND") || errMsg.includes("getaddrinfo");
-                      if (isNonRecoverable || attempt >= MAX_RETRIES) {
-                        if (attempt < MAX_RETRIES) {
-                          console.warn(`[AgentModelExecutor] Tool "${toolName}" non-recoverable error, skipping retry: ${errMsg}`);
-                        }
-                        break;
-                      }
-                      if (attempt < MAX_RETRIES) {
-                        console.warn(`[AgentModelExecutor] Tool "${toolName}" attempt ${attempt + 1} failed: ${errMsg}, will retry`);
-                      }
-                    }
-                  }
-                  if (lastExecError) throw lastExecError;
-                  toolResult = JSON.stringify(rawResult);
-                  if (toolResult && typeof toolResult === "string" && toolResult.length > 0) {
-                    // Record in idempotency cache for write operations
-                    if (IDEMPOTENT_TOOLS.has(toolName)) {
-                      const idemKey = getIdempotencyKey(toolName, args);
-                      idempotencyCache.set(idemKey, { result: toolResult, timestamp: Date.now() });
-                      cleanIdempotencyCache();
-                    }
-                    deps.toolResultCache.set(cacheKey, { result: toolResult, timestamp: Date.now() });
-                    cleanToolCache(deps.toolResultCache);
+                  break; // success
+                } catch (retryErr) {
+                  if (retry < MAX_RETRIES && isNetworkTool) {
+                    const delay = Math.min(1000 * Math.pow(2, retry), 5000);
+                    console.warn(`[AgentModelExecutor] Tool "${toolName}" retry ${retry + 1}/${MAX_RETRIES} after ${delay}ms: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+                    await new Promise(r => setTimeout(r, delay));
+                  } else {
+                    throw retryErr;
                   }
                 }
               }
-              anyToolExecuted = true;
 
-              if ((toolName === "file_create" || toolName === "file_modify") && rawResult && typeof rawResult === "object") {
+              // Process result
+              if (typeof rawResult === "string") {
+                toolResult = rawResult;
+              } else if (rawResult !== null && rawResult !== undefined) {
                 const r = rawResult as Record<string, unknown>;
-                if (r.path && typeof r.path === "string") {
-                  const isImChannel = channel ? !["webchat", "cli", "web-ui"].includes(channel) : false;
-                  createdFiles.push({
-                    path: r.path as string,
-                    size: (r.size as number) || 0,
-                    downloadUrl: isImChannel ? "" : `/api/files/download/${(r.path as string).replace(/\\/g, "/")}`,
-                  });
-                }
-              }
-
-              const ledger = deps.getEventLedger();
-              if (ledger) {
-                ledger.recordToolExecution(toolName, args, rawResult, Date.now() - toolStartTime, { agentId: "default", sessionId });
-              }
-
-              const isBrowser = toolName.startsWith("browser_");
-              const isWebTool = toolName === "web_search" || toolName === "web_fetch" || toolName === "fetch_node_page" || toolName === "skill_execute" || toolName === "browser_search" || toolName === "browser_navigate";
-              if (isWebTool && rawResult && typeof rawResult === "object") {
-                const r = rawResult as Record<string, unknown>;
-                if (typeof r.content === "string" && r.content.length > 100) {
-                  r.content = stripWebNoiseImpl(r.content);
-                }
-                if (typeof r.text === "string" && r.text.length > 100) {
-                  r.text = stripWebNoiseImpl(r.text);
-                }
                 if (typeof r.body === "string" && r.body.length > 100) {
                   r.body = stripWebNoiseImpl(r.body);
                 }
@@ -1876,14 +1833,20 @@ Have a specific URL?
               }
               const MAX_RESULT_LEN = isBrowser ? 8000 : 16000;
               if (toolResult.length > MAX_RESULT_LEN) {
-                const truncated = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)，请使用 browser_get_text 获取特定内容` });
-                toolResult = truncated;
+                toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
               }
-              if (!cacheHit) {
-                toolResult = summarizeToolResultFn(toolName, toolResult);
+              toolResult = summarizeToolResultFn(toolName, toolResult);
+
+              // Cache result
+              if (deps.toolResultCache) {
+                deps.toolResultCache.set(resultCacheKey, { result: toolResult, timestamp: Date.now() });
               }
+              if (IDEMPOTENT_TOOLS.has(toolName)) {
+                idempotencyCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
+              }
+
               if ((toolName === "web_search" || toolName === "skill_execute" || toolName === "web_fetch" || toolName === "fetch_node_page") && successfulToolCalls >= 2) {
-                toolResult += "\n\n[SYSTEM HINT: You have search results now. Do NOT search again. Provide your answer directly in chat. Only create a file if the user explicitly asked for a detailed report or the content exceeds 3000 chars.]";
+                toolResult += "\n\n[SYSTEM HINT: You have search results now. Do NOT search again. Provide your answer directly in chat.]";
               }
               if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
                 const r = rawResult as Record<string, unknown>;
@@ -1894,117 +1857,73 @@ Have a specific URL?
                   description: (r.description as string) || "需要权限确认",
                   target: (r.target as string) || tc.function.name,
                 });
-
                 if (requestId) {
-                  deps.pendingOperations.set(requestId, { sessionId: sessionId, message: message, requestId: requestId, toolName: toolName, toolArgs: args });
+                  deps.pendingOperations.set(requestId, { sessionId, message, requestId, toolName, toolArgs: args });
                 }
               }
               console.log(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               successfulToolCalls++;
               recordToolSuccess(toolName);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
-              try {
-                const toolObs = deps.registry?.resolveService<any>("observability");
-                if (toolObs) {
-                  const latency = Date.now() - toolStartTime;
-                  toolObs.counterIncrement("evoclaw_tool_calls_total", [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "success" }], 1);
-                  toolObs.histogramObserve("evoclaw_tool_latency_ms", latency, [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "success" }]);
-                }
-              } catch { /* observability is best-effort */ }
             } catch (err: unknown) {
               const errMsg = err instanceof Error ? err.message : String(err);
-              // Build a structured, actionable error message that helps the LLM
-              // self-correct rather than just repeating the same failed call.
               const isTimeout = errMsg.includes("timed out");
               const isNotFound = errMsg.includes("not found") || errMsg.includes("404");
               const isAuth = errMsg.includes("401") || errMsg.includes("403") || errMsg.includes("auth");
               const isNetwork = errMsg.includes("ECONNREFUSED") || errMsg.includes("ENOTFOUND") || errMsg.includes("fetch failed");
 
               let suggestion = "";
-              if (isTimeout) {
-                suggestion = "Suggestion: The operation timed out. Try a simpler query, reduce the scope, or use a different tool.";
-              } else if (isNotFound) {
-                suggestion = "Suggestion: The resource was not found. Verify the URL/path is correct, or try a different search query.";
-              } else if (isAuth) {
-                suggestion = "Suggestion: Authentication failed. This resource requires credentials. Try a public alternative or inform the user.";
-              } else if (isNetwork) {
-                suggestion = "Suggestion: Network error. The remote server may be down. Try again later or use a different source.";
-              } else {
-                suggestion = "Suggestion: Try different parameters, use an alternative tool, or break the task into smaller steps.";
-              }
+              if (isTimeout) suggestion = "Suggestion: The operation timed out. Try a simpler query or use a different tool.";
+              else if (isNotFound) suggestion = "Suggestion: The resource was not found. Verify the URL/path is correct.";
+              else if (isAuth) suggestion = "Suggestion: Authentication failed. Try a public alternative.";
+              else if (isNetwork) suggestion = "Suggestion: Network error. Try again later or use a different source.";
+              else suggestion = "Suggestion: Try different parameters or use an alternative tool.";
 
-              toolResult = JSON.stringify({
-                error: errMsg,
-                suggestion,
-                retried: isNetworkTool && MAX_RETRIES > 0,
-                toolName,
-              });
+              toolResult = JSON.stringify({ error: errMsg, suggestion, retried: isNetworkTool && MAX_RETRIES > 0, toolName });
               toolErrored = true;
               toolError = errMsg;
               recordToolFailure(toolName);
-              console.warn(`[AgentModelExecutor] Tool "${toolName}" failed after ${isNetworkTool ? MAX_RETRIES + 1 : 1} attempt(s):`, errMsg);
+              console.warn(`[AgentModelExecutor] Tool "${toolName}" failed:`, errMsg);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1 });
-
-              try {
-                const toolErrObs = deps.registry?.resolveService<any>("observability");
-                if (toolErrObs) {
-                  const latency = Date.now() - toolStartTime;
-                  toolErrObs.counterIncrement("evoclaw_tool_calls_total", [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "error" }], 1);
-                  toolErrObs.histogramObserve("evoclaw_tool_latency_ms", latency, [{ key: "tool", value: toolName || "unknown" }, { key: "status", value: "error" }]);
-                }
-              } catch { /* observability is best-effort */ }
-
-              const ledger = deps.getEventLedger();
-              if (ledger) {
-                ledger.append("error", { tool: toolName, params: args, error: toolError }, { agentId: "default", sessionId, duration: Date.now() - toolStartTime });
-              }
             }
-            } // end circuit-breaker else
-            } // end parameter-validation else
-          } else {
-            toolResult = JSON.stringify({
-              error: `Tool "${toolName}" is not registered`,
-              suggestion: "Check the tool name for typos. Use only tools that are available in your tool list. If you need a capability not available, inform the user.",
-              toolName,
-            });
-            toolErrored = true;
-            toolError = `Tool "${toolName}" not found`;
           }
 
           // Plugin hook: after_tool_call
           if (deps.pluginManager?.hasHooks("after_tool_call")) {
-            const { merged } = await deps.pluginManager.runHooksMerged({
-              type: "after_tool_call",
-              context: { sessionId, agentId: "default", channel: "web-ui" },
-              toolName,
-              params: args,
-              result: (() => { try { return JSON.parse(toolResult); } catch { return toolResult; } })(),
-              errored: toolErrored,
-              error: toolError,
-            });
-            const mergedATC = merged as Partial<import("@evoclaw/core").AfterToolCallResult>;
-            if (mergedATC.result !== undefined) {
-              toolResult = typeof mergedATC.result === "string" ? mergedATC.result : JSON.stringify(mergedATC.result);
+            try {
+              const { merged } = await deps.pluginManager.runHooksMerged({
+                type: "after_tool_call",
+                context: { sessionId, agentId: "default", channel: "web-ui" },
+                toolName,
+                params: args,
+                result: (() => { try { return JSON.parse(toolResult); } catch { return toolResult; } })(),
+                errored: toolErrored,
+                error: toolError,
+              });
+              const mergedATC = merged as Partial<import("@evoclaw/core").AfterToolCallResult>;
+              if (mergedATC.result !== undefined) {
+                toolResult = typeof mergedATC.result === "string" ? mergedATC.result : JSON.stringify(mergedATC.result);
+              }
+            } catch (hookErr) {
+              console.warn(`[LLMCaller] after_tool_call hook failed for ${toolName}:`, hookErr);
             }
           }
 
-          // ── Record tool execution trace for reflection ──
+          // Record tool trace
           if (deps.recordToolTrace) {
             deps.recordToolTrace(sessionId, toolName, args, toolResult.slice(0, 500), !toolErrored, Date.now() - toolStartTime, toolError);
           }
-
-          // ── Stale Context: record tool result timestamp ──
           if (deps.recordStaleContext) {
             deps.recordStaleContext(sessionId, toolName);
           }
 
-          // ── Observability: end tool span ──
+          // Observability: end tool span
           if (deps.observability && deps.currentTraceId && toolSpanId) {
             deps.observability.addSpanAttribute(deps.currentTraceId, toolSpanId, "tool.success", !toolErrored);
             deps.observability.endSpan(deps.currentTraceId, toolSpanId, toolErrored ? "error" : "ok");
           }
 
-          // ── Update planning step status ──
+          // Update planning step status
           if (deps.updatePlanStep) {
             deps.updatePlanStep(sessionId, toolName, {
               status: toolErrored ? "failed" : "completed",
@@ -2013,38 +1932,7 @@ Have a specific URL?
             });
           }
 
-          // ── Reflection: check if we should reflect after this tool call ──
-          if (deps.checkAndReflect && toolCallCount > 0 && (toolCallCount + 1) % 3 === 0) {
-            try {
-              const reflectionResult = await deps.checkAndReflect(sessionId);
-              if (reflectionResult) {
-                if (reflectionResult.shouldReplan) {
-                  // Inject replan hint into conversation
-                  conversationMessages.push({
-                    role: "system",
-                    content: `[反思] ${reflectionResult.analysis}\n建议: ${reflectionResult.nextStepSuggestion || "重新规划任务"}`,
-                  });
-                } else if (reflectionResult.shouldRetry && reflectionResult.retrySuggestion) {
-                  // Inject retry hint
-                  conversationMessages.push({
-                    role: "system",
-                    content: `[反思] ${reflectionResult.analysis}\n重试建议: ${reflectionResult.retrySuggestion}`,
-                  });
-                }
-              }
-            } catch (reflectErr) {
-              console.warn(`[LLMCaller] Reflection check failed: ${reflectErr}`);
-            }
-          }
-
-          conversationMessages.push({
-            role: "tool",
-            tool_call_id: tc.id,
-            name: toolName,
-            content: toolResult,
-          });
-
-          // ── Execution checkpoint: save snapshot after tool result ──
+          // Execution checkpoint
           if (checkpointStore) {
             checkpointStore.saveSnapshot(sessionId, {
               sessionId,
@@ -2065,8 +1953,9 @@ Have a specific URL?
             });
           }
 
-          // Auto skill extraction consideration (GEPA-inspired)
           toolCallCount++;
+
+          // Skill extraction consideration
           try {
             const skillCurator = deps.registry?.resolveService<{
               considerExtraction(sessionId: string, toolCallCount: number, lastToolResult: unknown, taskDescription: string): void;
@@ -2075,6 +1964,52 @@ Have a specific URL?
               skillCurator.considerExtraction(sessionId, toolCallCount, rawResult, message);
             }
           } catch { /* skill extraction is best-effort */ }
+
+          return { role: "tool", tool_call_id: tc.id, name: toolName, content: toolResult };
+        };
+
+        // ── Execute parallel-safe tools concurrently ──
+        if (parallelCalls.length > 1) {
+          console.log(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}`);
+          const parallelResults = await Promise.allSettled(parallelCalls.map(tc => executeSingleToolCall(tc)));
+          for (const result of parallelResults) {
+            if (result.status === "fulfilled") {
+              conversationMessages.push(result.value);
+            } else {
+              console.warn(`[AgentModelExecutor] Parallel tool execution failed:`, result.reason);
+            }
+          }
+        } else if (parallelCalls.length === 1) {
+          const result = await executeSingleToolCall(parallelCalls[0]);
+          conversationMessages.push(result);
+        }
+
+        // ── Execute sequential tools one by one ──
+        for (const tc of sequentialCalls) {
+          // Reflection check before each sequential tool
+          if (deps.checkAndReflect && toolCallCount > 0 && toolCallCount % 3 === 0) {
+            try {
+              const reflectionResult = await deps.checkAndReflect(sessionId);
+              if (reflectionResult) {
+                if (reflectionResult.shouldReplan) {
+                  conversationMessages.push({
+                    role: "system",
+                    content: `[反思] ${reflectionResult.analysis}\n建议: ${reflectionResult.nextStepSuggestion || "重新规划任务"}`,
+                  });
+                } else if (reflectionResult.shouldRetry && reflectionResult.retrySuggestion) {
+                  conversationMessages.push({
+                    role: "system",
+                    content: `[反思] ${reflectionResult.analysis}\n重试建议: ${reflectionResult.retrySuggestion}`,
+                  });
+                }
+              }
+            } catch (reflectErr) {
+              console.warn(`[LLMCaller] Reflection check failed: ${reflectErr}`);
+            }
+          }
+
+          const result = await executeSingleToolCall(tc);
+          conversationMessages.push(result);
         }
 
         // ── Fallback: auto-execute installed skill when LLM used web_search instead ──
