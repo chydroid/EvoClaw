@@ -329,18 +329,23 @@ export default function LLMConfig() {
             <strong style={{ color: "var(--text-primary)" }}>{t("llm.local_model_tip_title", "省Token小贴士：下载本地轻量模型")}</strong>
           </div>
           <div style={{ lineHeight: "1.6" }}>
-            {t("llm.local_model_tip_desc", "下载 Qwen2.5-0.5B (~500MB) 到本地后，简单对话、翻译、格式化等任务将自动使用本地模型，无需调用远程API，大幅节省Token费用。")}
+            {t("llm.local_model_tip_desc", "下载 Qwen3.5-0.8B (~1GB) 或 Qwen3.5-2B (~2.7GB) 到本地后，简单对话、翻译、格式化等任务将自动使用本地模型，无需调用远程API，大幅节省Token费用。")}
           </div>
           <div style={{ marginTop: "6px", padding: "6px 10px", background: "var(--bg-primary)", borderRadius: "4px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "var(--text-muted)" }}>
-{`下载步骤：
-1. 访问 https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-Onnx
-2. 下载所有文件到项目的 local-model/ 目录
-3. 重启EvoClaw服务
+{`推荐模型（二选一）：
+  Qwen3.5-0.8B (~1GB) — 速度快，适合简单任务
+  Qwen3.5-2B  (~2.7GB) — 质量更高，支持思考模式
 
-或使用命令行：
-  cd ${window.location?.origin ? "EvoClaw项目目录" : "."}
+下载命令（在EvoClaw项目目录执行）：
   git lfs install
-  git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-Onnx local-model`}
+
+  # 推荐：Qwen3.5-0.8B
+  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX local-model
+
+  # 或：Qwen3.5-2B（质量更高）
+  git clone https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX local-model
+
+下载完成后重启EvoClaw服务`}
           </div>
         </div>
       )}

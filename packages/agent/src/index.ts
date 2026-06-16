@@ -95,8 +95,8 @@ export { CopilotRouter } from "./copilot-router";
 export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision, UserLLMProvider } from "./copilot-router";
 
 // Local LLM Service
-export { LocalLLMService, getLocalLLMService, resetLocalLLMService, LOCAL_MODEL_INFO } from "./local-llm-service";
-export type { LocalLLMStatus, LocalLLMConfig } from "./local-llm-service";
+export { LocalLLMService, getLocalLLMService, resetLocalLLMService, LOCAL_MODEL_INFO, SUPPORTED_LOCAL_MODELS } from "./local-llm-service";
+export type { LocalLLMStatus, LocalLLMConfig, LocalModelSpec } from "./local-llm-service";
 
 export { CredentialPool } from "./credential-pool";
 export type { CredentialEntry, CredentialPoolConfig } from "./credential-pool";

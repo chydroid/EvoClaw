@@ -263,6 +263,7 @@ export class CopilotRouter {
     const cheapModels = [
       "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4.1-nano",
       "claude-haiku", "deepseek-v4-flash", "deepseek-chat",
+      "qwen3.5-0.8b", "qwen3.5-2b",  // Local models are cheap
     ];
     return cheapModels.some(m => model.toLowerCase().includes(m));
   }

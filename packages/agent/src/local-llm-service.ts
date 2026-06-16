@@ -1,9 +1,13 @@
 /**
  * Local LLM Service — 本地轻量LLM推理服务
  *
- * 使用 ONNX Runtime GenAI 加载 Qwen2.5-0.5B-Instruct ONNX 模型，
+ * 使用 ONNX Runtime GenAI 加载 Qwen3.5 系列本地 ONNX 模型，
  * 为简单任务（问候、翻译、格式化）提供快速本地推理，
  * 大幅节省远程API token消耗。
+ *
+ * 支持模型：
+ *   - Qwen3.5-0.8B (~1GB ONNX) — 推荐，体积小，速度快
+ *   - Qwen3.5-2B (~2.7GB ONNX) — 质量更高，适合稍强硬件
  *
  * 模型文件不随项目发布，用户需自行下载。
  * 未下载时，CopilotRouter正常路由到远程API。
@@ -43,21 +47,50 @@ const DEFAULT_CONFIG: LocalLLMConfig = {
 
 // ── Model download info ──
 
+/** 支持的本地模型规格 */
+export interface LocalModelSpec {
+  name: string;
+  description: string;
+  downloadUrl: string;
+  sizeApprox: string;
+  vramApprox: string;
+}
+
+export const SUPPORTED_LOCAL_MODELS: Record<string, LocalModelSpec> = {
+  "0.8b": {
+    name: "Qwen3.5-0.8B",
+    description: "轻量本地模型，适合简单对话、翻译、格式化等任务（推荐）",
+    downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX",
+    sizeApprox: "~1GB (ONNX格式)",
+    vramApprox: "~1.6GB (BF16) / ~0.5GB (4-bit量化)",
+  },
+  "2b": {
+    name: "Qwen3.5-2B",
+    description: "更强本地模型，支持思考模式，适合需要更好质量的场景",
+    downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX",
+    sizeApprox: "~2.7GB (ONNX格式)",
+    vramApprox: "~4GB (BF16) / ~1.5GB (4-bit量化)",
+  },
+};
+
+/** 默认模型信息（向后兼容） */
 export const LOCAL_MODEL_INFO = {
-  name: "Qwen2.5-0.5B-Instruct",
+  name: "Qwen3.5-0.8B",
   description: "轻量本地模型，适合简单对话、翻译、格式化等任务",
-  downloadUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-Onnx",
-  sizeApprox: "~500MB (ONNX格式)",
+  downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX",
+  sizeApprox: "~1GB (ONNX格式)",
   instructions: [
-    "1. 访问 https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-Onnx",
-    "2. 下载所有文件到项目的 local-model/ 目录",
-    "3. 确保目录中包含 model.onnx 和 tokenizer.json",
-    "4. 重启EvoClaw服务，本地模型将自动加载",
+    "推荐模型：Qwen3.5-0.8B（~1GB，速度快）或 Qwen3.5-2B（~2.7GB，质量更高）",
     "",
-    "或者使用 git clone (需要 git-lfs):",
-    "  cd <EvoClaw项目目录>",
+    "方式一：下载 Qwen3.5-0.8B（推荐）",
     "  git lfs install",
-    "  git clone https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-Onnx local-model",
+    "  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX local-model",
+    "",
+    "方式二：下载 Qwen3.5-2B（质量更高）",
+    "  git lfs install",
+    "  git clone https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX local-model",
+    "",
+    "下载完成后重启EvoClaw服务，本地模型将自动加载",
   ].join("\n"),
 };
 
@@ -100,7 +133,10 @@ export class LocalLLMService {
     }
 
     this.status.modelPath = modelDir;
-    this.status.modelName = LOCAL_MODEL_INFO.name;
+    // modelName is already set by detectModelName in findModelDir
+    if (!this.status.modelName) {
+      this.status.modelName = LOCAL_MODEL_INFO.name;
+    }
 
     // Step 2: Try to load ONNX Runtime GenAI
     this.status.loading = true;
@@ -196,13 +232,17 @@ export class LocalLLMService {
         const hasOnnx = files.some(f => f.endsWith(".onnx") || f.endsWith(".onnx_data"));
         const hasTokenizer = files.some(f => f.includes("tokenizer") || f.includes("config.json"));
         if (hasOnnx) {
+          // Auto-detect model name from config.json
+          this.detectModelName(dir, files);
           return dir;
         }
         // Check subdirectories (e.g., model was cloned with subfolder)
         for (const sub of files) {
           const subPath = join(dir, sub);
           try {
-            if (existsSync(subPath) && readdirSync(subPath).some(f => f.endsWith(".onnx"))) {
+            const subFiles = readdirSync(subPath);
+            if (subFiles.some(f => f.endsWith(".onnx"))) {
+              this.detectModelName(subPath, subFiles);
               return subPath;
             }
           } catch { /* not a directory */ }
@@ -214,6 +254,28 @@ export class LocalLLMService {
       }
     }
     return null;
+  }
+
+  /** Auto-detect model name from config.json or directory structure */
+  private detectModelName(dir: string, files: string[]): void {
+    try {
+      const configPath = join(dir, "config.json");
+      if (existsSync(configPath)) {
+        const configContent = require("fs").readFileSync(configPath, "utf-8");
+        const config = JSON.parse(configContent);
+        if (config.model_type?.includes("qwen3") || config._name?.includes("Qwen3.5")) {
+          // Detect from hidden_size: 1024 = 0.8B, 2048 = 2B
+          if (config.hidden_size === 2048) {
+            this.status.modelName = "Qwen3.5-2B";
+          } else {
+            this.status.modelName = "Qwen3.5-0.8B";
+          }
+          return;
+        }
+      }
+    } catch { /* ignore parse errors */ }
+    // Fallback: default name
+    this.status.modelName = LOCAL_MODEL_INFO.name;
   }
 
   private async loadModel(modelDir: string): Promise<void> {

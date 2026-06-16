@@ -3,6 +3,24 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.42.1 (2026-06-16)
+
+### 本地模型升级：Qwen2.5-0.5B → Qwen3.5系列
+
+原Qwen2.5-0.5B-Instruct ONNX模型已过时无法下载，升级为Qwen3.5系列：
+
+| 模型 | 大小 | VRAM | 特点 |
+|------|------|------|------|
+| Qwen3.5-0.8B (推荐) | ~1GB ONNX | ~1.6GB BF16 / ~0.5GB 4-bit | 速度快，混合架构(Gated DeltaNet + Attention) |
+| Qwen3.5-2B | ~2.7GB ONNX | ~4GB BF16 / ~1.5GB 4-bit | 质量更高，支持思考模式，MMLU-Pro 55.3 |
+
+变更：
+- 更新下载URL为 `onnx-community/Qwen3.5-0.8B-ONNX` 和 `onnx-community/Qwen3.5-2B-ONNX`
+- 新增 `SUPPORTED_LOCAL_MODELS` 和 `LocalModelSpec` 类型
+- 自动检测模型名称（通过config.json的hidden_size区分0.8B/2B）
+- 更新LLM配置页UI提示，展示两种模型选项
+- 更新CopilotRouter的cheap model列表
+
 ## v0.42.0 (2026-06-16)
 
 ### 本地轻量LLM集成 + CopilotRouter路由优化
