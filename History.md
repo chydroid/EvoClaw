@@ -3,6 +3,47 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.43.0 (2026-06-17)
+
+### 本地LLM集成完成：Qwen3-0.6B ONNX + onnxruntime-node 原生推理
+
+经过多轮调试，成功集成Qwen3-0.6B本地轻量模型，实现简单任务本地推理，大幅节省Token费用。
+
+#### 关键技术决策
+
+| 问题 | 解决方案 |
+|------|----------|
+| Qwen3.5-0.8B使用混合架构(Linear+Full Attention)，ONNX含自定义算子CausalConvWithState | 改用Qwen3-0.6B（标准Attention架构），完全兼容 |
+| @huggingface/transformers的WASM后端加载大模型时崩溃(STATUS_STACK_BUFFER_OVERRUN) | 改用onnxruntime-node原生推理引擎，无WASM内存限制 |
+| @huggingface/transformers的onnxruntime-web与onnxruntime-node原生模块冲突(Access Violation) | 使用子进程隔离tokenization，避免WASM/native模块冲突 |
+| model_quantized.onnx(589MB)导致ACCESS_VIOLATION | 改用model_q4.onnx(877MB)，使用MatMulNBits contrib op更稳定 |
+
+#### 架构
+
+```
+用户输入 → CopilotRouter → 简单任务? → LocalLLMService
+                                          ├── onnxruntime-node (InferenceSession, 原生推理)
+                                          └── @huggingface/transformers (子进程, 仅tokenization)
+                                        → 复杂任务 → 远程API (按用户配置顺序)
+```
+
+#### 文件变更
+
+- `packages/agent/src/local-llm-service.ts` - 重写loadModel/generate，使用onnxruntime-node + 子进程tokenizer
+- `packages/agent/src/copilot-router.ts` - 路由优化，本地模型优先
+- `packages/web-ui/src/LLMConfig.tsx` - 本地模型状态UI
+- `packages/agent/src/optional-deps.d.ts` - 可选依赖类型声明
+- `packages/agent/package.json` - 添加@huggingface/transformers, onnxruntime-node依赖
+- `.gitignore` - 排除local-model/目录
+
+#### 模型下载
+
+```bash
+git lfs install
+git clone https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX local-model
+# 国内镜像: git clone https://hf-mirror.com/onnx-community/Qwen3-0.6B-ONNX local-model
+```
+
 ## v0.42.1 (2026-06-16)
 
 ### 本地模型升级：Qwen2.5-0.5B → Qwen3.5系列
