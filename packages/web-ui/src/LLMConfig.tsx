@@ -329,21 +329,21 @@ export default function LLMConfig() {
             <strong style={{ color: "var(--text-primary)" }}>{t("llm.local_model_tip_title", "省Token小贴士：下载本地轻量模型")}</strong>
           </div>
           <div style={{ lineHeight: "1.6" }}>
-            {t("llm.local_model_tip_desc", "下载 Qwen3.5-0.8B (~1GB) 或 Qwen3.5-2B (~2.7GB) 到本地后，简单对话、翻译、格式化等任务将自动使用本地模型，无需调用远程API，大幅节省Token费用。")}
+            {t("llm.local_model_tip_desc", "下载 Qwen3-0.6B (~1.2GB) 到本地后，简单对话、翻译、格式化等任务将自动使用本地模型，无需调用远程API，大幅节省Token费用。")}
           </div>
           <div style={{ marginTop: "6px", padding: "6px 10px", background: "var(--bg-primary)", borderRadius: "4px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "var(--text-muted)" }}>
-{`推荐模型（二选一）：
-  Qwen3.5-0.8B (~1GB) — 速度快，适合简单任务
-  Qwen3.5-2B  (~2.7GB) — 质量更高，支持思考模式
+{`推荐模型：Qwen3-0.6B（标准架构，兼容性好）
+  Qwen3-0.6B (~1.2GB) — 标准Attention，完全兼容
+  Qwen3.5-0.8B (~700MB) — 混合架构，需onnxruntime-node
 
 下载命令（在EvoClaw项目目录执行）：
   git lfs install
 
-  # 推荐：Qwen3.5-0.8B
-  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT local-model
+  # 推荐：Qwen3-0.6B
+  git clone https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX local-model
 
-  # 或：Qwen3.5-2B（质量更高）
-  git clone https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX local-model
+国内镜像（huggingface.co无法访问时）：
+  git clone https://hf-mirror.com/onnx-community/Qwen3-0.6B-ONNX local-model
 
 下载完成后重启EvoClaw服务`}
           </div>

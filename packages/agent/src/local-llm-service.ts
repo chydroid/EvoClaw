@@ -57,38 +57,42 @@ export interface LocalModelSpec {
 }
 
 export const SUPPORTED_LOCAL_MODELS: Record<string, LocalModelSpec> = {
+  "0.6b": {
+    name: "Qwen3-0.6B",
+    description: "轻量本地模型，标准Attention架构，完全兼容Transformers.js（推荐）",
+    downloadUrl: "https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX",
+    sizeApprox: "~1.2GB (q4量化 ONNX)",
+    vramApprox: "~0.6GB (q4量化)",
+  },
   "0.8b": {
     name: "Qwen3.5-0.8B",
-    description: "轻量本地模型，适合简单对话、翻译、格式化等任务（推荐）",
+    description: "混合架构模型（需onnxruntime-node，不支持Transformers.js）",
     downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
-    sizeApprox: "~1GB (ONNX格式)",
-    vramApprox: "~1.6GB (BF16) / ~0.5GB (4-bit量化)",
-  },
-  "2b": {
-    name: "Qwen3.5-2B",
-    description: "更强本地模型，支持思考模式，适合需要更好质量的场景",
-    downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX",
-    sizeApprox: "~2.7GB (ONNX格式)",
-    vramApprox: "~4GB (BF16) / ~1.5GB (4-bit量化)",
+    sizeApprox: "~700MB (q4量化 ONNX)",
+    vramApprox: "~0.5GB (q4量化)",
   },
 };
 
 /** 默认模型信息（向后兼容） */
 export const LOCAL_MODEL_INFO = {
-  name: "Qwen3.5-0.8B",
-  description: "轻量本地模型，适合简单对话、翻译、格式化等任务",
-  downloadUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
-  sizeApprox: "~1GB (ONNX格式)",
+  name: "Qwen3-0.6B",
+  description: "轻量本地模型，标准Attention架构，完全兼容Transformers.js",
+  downloadUrl: "https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX",
+  sizeApprox: "~1.2GB (q4量化 ONNX)",
   instructions: [
-    "推荐模型：Qwen3.5-0.8B（~1GB，速度快）或 Qwen3.5-2B（~2.7GB，质量更高）",
+    "推荐模型：Qwen3-0.6B（~1.2GB，标准架构，兼容性好）",
     "",
-    "方式一：下载 Qwen3.5-0.8B（推荐）",
+    "方式一：git clone（需要 git-lfs）",
     "  git lfs install",
-    "  git clone https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT local-model",
+    "  git clone https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX local-model",
     "",
-    "方式二：下载 Qwen3.5-2B（质量更高）",
+    "方式二：使用国内镜像（huggingface.co 无法访问时）",
     "  git lfs install",
-    "  git clone https://huggingface.co/onnx-community/Qwen3.5-2B-ONNX local-model",
+    "  git clone https://hf-mirror.com/onnx-community/Qwen3-0.6B-ONNX local-model",
+    "",
+    "注意：Qwen3.5-0.8B 使用混合架构（Linear+Full Attention），",
+    "  其ONNX模型包含自定义算子，仅onnxruntime-node支持，",
+    "  @huggingface/transformers 不兼容。推荐使用 Qwen3-0.6B。",
     "",
     "下载完成后重启EvoClaw服务，本地模型将自动加载",
   ].join("\n"),
@@ -165,24 +169,40 @@ export class LocalLLMService {
       throw new Error("Local LLM is not available");
     }
 
-    const fullPrompt = systemPrompt
-      ? `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`
-      : `<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`;
-
     try {
-      // Use ONNX Runtime GenAI for inference
-      if (this.generator && typeof this.generator.generate === "function") {
-        const result = await this.generator.generate(fullPrompt, {
-          maxTokens: this.config.maxTokens,
+      // @huggingface/transformers pipeline: call directly with messages format
+      if (typeof this.generator === "function") {
+        const messages = [];
+        if (systemPrompt) {
+          messages.push({ role: "system", content: systemPrompt });
+        }
+        messages.push({ role: "user", content: prompt });
+
+        const result = await this.generator(messages, {
+          max_new_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
-          topP: this.config.topP,
+          top_p: this.config.topP,
+          do_sample: true,
         });
-        return this.extractResponse(result);
+
+        // pipeline returns [{ generated_text: [...] }] or [{ generated_text: "..." }]
+        if (Array.isArray(result) && result.length > 0) {
+          const genText = result[0].generated_text;
+          // If it's an array of messages, extract the last assistant message
+          if (Array.isArray(genText)) {
+            const lastMsg = genText[genText.length - 1];
+            if (lastMsg?.role === "assistant" && lastMsg?.content) {
+              return this.cleanResponse(lastMsg.content);
+            }
+          }
+          return this.cleanResponse(this.extractResponse(result[0]));
+        }
+        return this.cleanResponse(this.extractResponse(result));
       }
 
-      // Fallback: Use ONNX Runtime directly
-      if (this.ort && this.tokenizer) {
-        return await this.generateWithORT(fullPrompt);
+      // Fallback: Use @huggingface/transformers with tokenizer+model
+      if (this.generator && this.tokenizer) {
+        return await this.generateWithTransformers(prompt, systemPrompt);
       }
 
       throw new Error("No inference engine available");
@@ -223,36 +243,57 @@ export class LocalLLMService {
   // ── Private methods ──
 
   private findModelDir(): string | null {
-    const dirs = [this.config.modelDir, join(process.cwd(), "local-model")];
+    const searchDirs = [this.config.modelDir, join(process.cwd(), "local-model")];
 
-    for (const dir of dirs) {
-      if (existsSync(dir)) {
-        // Check for ONNX model files
-        const files = readdirSync(dir);
-        const hasOnnx = files.some(f => f.endsWith(".onnx") || f.endsWith(".onnx_data"));
-        const hasTokenizer = files.some(f => f.includes("tokenizer") || f.includes("config.json"));
-        if (hasOnnx) {
-          // Auto-detect model name from config.json
-          this.detectModelName(dir, files);
-          return dir;
-        }
-        // Check subdirectories (e.g., model was cloned with subfolder)
-        for (const sub of files) {
-          const subPath = join(dir, sub);
-          try {
-            const subFiles = readdirSync(subPath);
-            if (subFiles.some(f => f.endsWith(".onnx"))) {
-              this.detectModelName(subPath, subFiles);
-              return subPath;
-            }
-          } catch { /* not a directory */ }
-        }
-        // Has tokenizer but no onnx yet (partial download)
-        if (hasTokenizer) {
-          console.log(`[LocalLLM] Found tokenizer in ${dir} but no ONNX model files yet.`);
-        }
-      }
+    for (const baseDir of searchDirs) {
+      if (!existsSync(baseDir)) continue;
+
+      // Try to find a valid model directory (contains config.json + onnx/ subfolder)
+      const found = this.searchModelDir(baseDir, 3); // depth 3
+      if (found) return found;
     }
+    return null;
+  }
+
+  /** Recursively search for a model directory containing config.json and onnx/ */
+  private searchModelDir(dir: string, depth: number): string | null {
+    if (depth <= 0) return null;
+    try {
+      const files = readdirSync(dir, { withFileTypes: true });
+      const names = files.map(f => f.name);
+
+      // Check if this dir is a valid model root (has config.json AND onnx/ subfolder)
+      const hasConfig = names.some(n => n === "config.json");
+      const hasOnnxDir = files.some(f => f.isDirectory() && f.name === "onnx");
+
+      if (hasConfig && hasOnnxDir) {
+        // Verify onnx/ actually contains .onnx files
+        const onnxDir = join(dir, "onnx");
+        try {
+          const onnxFiles = readdirSync(onnxDir);
+          if (onnxFiles.some(f => f.endsWith(".onnx"))) {
+            this.detectModelName(dir, names);
+            return dir;
+          }
+        } catch { /* onnx dir not readable */ }
+      }
+
+      // Check if this dir has .onnx files directly (flat structure)
+      if (names.some(f => f.endsWith(".onnx"))) {
+        this.detectModelName(dir, names);
+        return dir;
+      }
+
+      // Recurse into subdirectories (e.g., local-model/Qwen3.5-0.8B-ONNX-OPT/)
+      for (const entry of files) {
+        if (!entry.isDirectory()) continue;
+        // Skip hidden dirs and node_modules
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        const subPath = join(dir, entry.name);
+        const found = this.searchModelDir(subPath, depth - 1);
+        if (found) return found;
+      }
+    } catch { /* dir not readable */ }
     return null;
   }
 
@@ -279,56 +320,73 @@ export class LocalLLMService {
   }
 
   private async loadModel(modelDir: string): Promise<void> {
-    // Strategy 1: Try onnxruntime-genai (preferred)
+    // Strategy 1: Try @huggingface/transformers pipeline (most compatible)
+    // For OPT models with custom ops (CausalConvWithState), we must use the non-OPT variant
+    // pipeline() handles model loading, tokenization, and generation end-to-end
     try {
-      // @ts-ignore - optional dependency, may not be installed
-      const genai = await import("onnxruntime-genai");
-      console.log(`[LocalLLM] Loading model with onnxruntime-genai from: ${modelDir}`);
-      this.generator = await genai.Generator.create(modelDir);
-      console.log(`[LocalLLM] Model loaded successfully via onnxruntime-genai`);
+      const transformers = await import(/* webpackIgnore: true */ "@huggingface/transformers") as any;
+      console.log(`[LocalLLM] Loading model with @huggingface/transformers...`);
+
+      // Determine model ID for HuggingFace Hub
+      // Qwen3 uses standard Attention — compatible with @huggingface/transformers
+      // Qwen3.5 uses hybrid Attention (Linear+Full) — requires custom ONNX ops, NOT compatible
+      let modelId = "onnx-community/Qwen3-0.6B-ONNX"; // standard Attention, compatible
+      if (this.status.modelName?.includes("3.5") || this.status.modelName?.includes("Qwen3.5")) {
+        // Qwen3.5 models have custom ops, try anyway but will likely fail
+        modelId = "onnx-community/Qwen3.5-0.8B-ONNX";
+      }
+
+      // Try loading from local dir first, fall back to Hub download
+      // Use q4 quantization for smallest size and fastest inference
+      const generator = await transformers.pipeline("text-generation", modelId, {
+        dtype: "q4",
+        device: "cpu",
+        model_file_name: "model", // non-OPT uses model.onnx, not decoder_model_merged
+        local_model_path: modelDir, // try local first
+      });
+      this.generator = generator;
+      console.log(`[LocalLLM] Model loaded via @huggingface/transformers (model: ${modelId})`);
       return;
     } catch (err) {
-      console.log(`[LocalLLM] onnxruntime-genai not available: ${err instanceof Error ? err.message : String(err)}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.log(`[LocalLLM] @huggingface/transformers pipeline failed: ${errMsg}`);
+
+      // If local model failed (likely OPT format), try downloading from Hub
+      if (errMsg.includes("CausalConvWithState") || errMsg.includes("not a registered")) {
+        console.log(`[LocalLLM] Local model uses OPT format with custom ops. Trying Hub download of standard ONNX...`);
+        try {
+          const transformers = await import(/* webpackIgnore: true */ "@huggingface/transformers") as any;
+          const modelId = "onnx-community/Qwen3-0.6B-ONNX";
+          const generator = await transformers.pipeline("text-generation", modelId, {
+            dtype: "q4",
+            device: "cpu",
+          });
+          this.generator = generator;
+          console.log(`[LocalLLM] Model loaded from HuggingFace Hub: ${modelId}`);
+          return;
+        } catch (hubErr) {
+          console.log(`[LocalLLM] Hub download also failed: ${hubErr instanceof Error ? hubErr.message : String(hubErr)}`);
+        }
+      }
     }
 
-    // Strategy 2: Try onnxruntime-node
+    // Strategy 2: Try onnxruntime-node (supports custom ops natively)
     try {
-      // @ts-ignore - optional dependency, may not be installed
       const ort = await import("onnxruntime-node");
       this.ort = ort;
-      console.log(`[LocalLLM] onnxruntime-node available, will use for inference`);
-      try {
-        const { readFileSync } = await import("fs");
-        const tokenizerPath = join(modelDir, "tokenizer.json");
-        if (existsSync(tokenizerPath)) {
-          console.log(`[LocalLLM] Tokenizer file found at ${tokenizerPath}`);
-        }
-      } catch { /* tokenizer not available */ }
+      console.log(`[LocalLLM] onnxruntime-node available, loading model...`);
+      // onnxruntime-node supports custom ops but needs manual tokenization
+      // For now, just note it's available
       return;
     } catch (err) {
       console.log(`[LocalLLM] onnxruntime-node not available: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Strategy 3: Try @huggingface/transformers (already a project dependency)
-    try {
-      const transformers = await import(/* webpackIgnore: true */ "@huggingface/transformers") as any;
-      const pipeline = transformers.pipeline;
-      console.log(`[LocalLLM] Loading model with @huggingface/transformers from: ${modelDir}`);
-      this.generator = await pipeline("text-generation", modelDir, {
-        dtype: "q4",
-        device: "cpu",
-      });
-      console.log(`[LocalLLM] Model loaded via @huggingface/transformers`);
-      return;
-    } catch (err) {
-      console.log(`[LocalLLM] @huggingface/transformers text-generation failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
     throw new Error(
       "No ONNX inference engine available. Install one of:\n" +
-      "  - onnxruntime-genai (recommended): pnpm add onnxruntime-genai\n" +
+      "  - @huggingface/transformers (recommended): pnpm add @huggingface/transformers\n" +
       "  - onnxruntime-node: pnpm add onnxruntime-node\n" +
-      "Or ensure @huggingface/transformers is installed."
+      "Note: OPT format models require non-OPT ONNX for @huggingface/transformers compatibility."
     );
   }
 
@@ -346,6 +404,39 @@ export class LocalLLMService {
     if (result?.generated_text) return result.generated_text.trim();
     if (result?.content) return result.content.trim();
     return String(result).trim();
+  }
+
+  /** Clean Qwen3.5 response: remove thinking tags and special tokens */
+  private cleanResponse(text: string): string {
+    // Remove Qwen3.5 thinking block: <think>...</think>
+    text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    // Remove any remaining special tokens
+    text = text.replace(/<\|im_end\|>/g, "").trim();
+    text = text.replace(/<\|im_start\|>/g, "").trim();
+    return text;
+  }
+
+  /** Generate using @huggingface/transformers (AutoModelForCausalLM + AutoTokenizer) */
+  private async generateWithTransformers(prompt: string, systemPrompt?: string): Promise<string> {
+    if (!this.tokenizer || !this.generator) {
+      throw new Error("Transformer model not loaded");
+    }
+    const fullPrompt = systemPrompt
+      ? `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`
+      : `<|im_start|>user\n${prompt}<|im_end|>\n<|im_start|>assistant\n`;
+    const inputs = await this.tokenizer(fullPrompt, { return_tensors: "pt" });
+    const output = await this.generator.generate({
+      ...inputs,
+      max_new_tokens: this.config.maxTokens,
+      temperature: this.config.temperature,
+      top_p: this.config.topP,
+      do_sample: true,
+    });
+    const decoded = this.tokenizer.decode(output[0], { skip_special_tokens: true });
+    // Remove the prompt portion from the response
+    const assistantIdx = decoded.indexOf("assistant");
+    const response = assistantIdx >= 0 ? decoded.slice(assistantIdx + "assistant".length).trim() : decoded.trim();
+    return this.cleanResponse(response);
   }
 
   private async generateWithORT(prompt: string): Promise<string> {

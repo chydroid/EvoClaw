@@ -21,4 +21,14 @@ declare module "@huggingface/transformers" {
     model: string,
     options?: Record<string, unknown>
   ): Promise<any>;
+
+  export const AutoModelForCausalLM: {
+    from_pretrained(modelId: string, options?: Record<string, unknown>): Promise<any>;
+  };
+
+  export const AutoTokenizer: {
+    from_pretrained(modelId: string, options?: Record<string, unknown>): Promise<any>;
+  };
+
+  export const TextGenerationPipeline: any;
 }
