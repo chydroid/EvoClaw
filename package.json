@@ -1,6 +1,6 @@
 {
   "name": "evoclaw",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "private": true,
   "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
@@ -22,8 +22,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
-      "esbuild",
-      "onnxruntime-node"
+      "esbuild"
     ]
   },
   "devDependencies": {
@@ -32,6 +31,7 @@
     "vitest": "4.1.6"
   },
   "dependencies": {
-    "@tencent-weixin/openclaw-weixin": "^2.4.4"
+    "@tencent-weixin/openclaw-weixin": "^2.4.4",
+    "better-sqlite3": "^12.10.0"
   }
 }

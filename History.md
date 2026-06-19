@@ -3,6 +3,40 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.44.0 (2026-06-19)
+
+### 技能Python脚本参数传递修复 + 系统可靠性全面增强
+
+修复了中金财富等技能Python脚本执行时参数丢失的关键Bug，并参照openclaw项目架构全面增强了重试、故障转移、路由和队列系统。
+
+#### 关键Bug修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 查询"贵州茅台股票行情"时系统跑题，反复尝试"字符串格式limit参数" | `executePython()` 只传 `{query: "..."}` JSON给Python脚本，丢弃了 `--code`、`--market`、`--limit` 等CLI参数，Python argparse无法解析 | 新增 `buildCliArgs()` 将params正确映射为CLI参数 |
+| `createDefaultResult()` 总是执行第一个命令模板 | 无论用户意图是info/ranking/history，都执行第一个模板 | 新增 `selectBestCommand()` 根据意图选择 + `injectParamsToCommand()` 注入参数 |
+| `limit` 参数声明为 `type: "string"` | LLM传入字符串"10"而非整数10，导致类型混乱 | 改为 `type: "number"` |
+| Python脚本执行需人工批准 | `shell_exec` 标记为 `critical` 风险 | 改为 `low` 风险 + HITL豁免 |
+
+#### 新增模块
+
+- **retry-utils**: 双jitter重试系统（symmetric/positive模式）、加密安全随机数、AbortSignal可中断sleep、Retry-After契约支持
+- **failover-policy**: 15种FailoverReason精细分类、transient vs non-transient失败分类、cooldown探测+probe预算保护
+
+#### 增强模块
+
+- **error-classifier**: jitter随机化backoffMs、携带reason/isTransient/hasRetryAfterContract字段
+- **copilot-router**: LRU+TTL路由缓存（避免重复正则匹配）、provider健康感知（跳过熔断中的provider）
+- **queue-manager**: 5命名车道（main/cron/subagent/nested/background）独立并发上限、generation字段（僵尸任务清理）、排空模式
+- **human-approval**: shell_exec/skill_execute设为low风险自动批准
+- **llm-caller**: Python脚本执行跳过HITL批准检查
+
+#### 测试
+
+865 passed（62新增），覆盖retry-utils/failover-policy/copilot-router/queue-manager/error-classifier
+
+---
+
 ## v0.43.0 (2026-06-17)
 
 ### 本地LLM集成完成：Qwen3-0.6B ONNX + onnxruntime-node 原生推理
