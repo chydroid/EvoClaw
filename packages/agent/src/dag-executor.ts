@@ -207,7 +207,7 @@ export class DAGExecutor {
       ];
       for (const pat of dangerousPatterns) {
         if (pat.test(sanitized)) {
-          console.warn(`[DAGExecutor] Condition blocked: contains dangerous pattern`);
+          process.stderr.write(`[DAGExecutor] Condition blocked: contains dangerous pattern`);
           return false;
         }
       }

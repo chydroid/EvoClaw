@@ -39,7 +39,7 @@ export interface GatewayConfig {
 }
 
 const DEFAULT_CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173").split(",").map((s) => s.trim());
-const DEFAULT_PORT = parseInt(process.env.EvoClaw_PORT || "3000", 10);
+const DEFAULT_PORT = parseInt(process.env.EvoClaw_PORT || "27788", 10);
 const DEFAULT_HOST = process.env.EvoClaw_HOST || "0.0.0.0";
 
 export class GatewayServer {
@@ -78,7 +78,7 @@ export class GatewayServer {
     };
 
     if (!this.config.jwtSecret || this.config.jwtSecret.length === 0) {
-      console.warn("[Gateway] WARNING: JWT secret is not set. Authentication will not work properly. Please set JWT_SECRET environment variable.");
+      process.stderr.write("[Gateway] WARNING: JWT secret is not set. Authentication will not work properly. Please set JWT_SECRET environment variable.\n");
     }
 
     this.authProvider = new AuthProvider(this.config.jwtSecret, registry);
@@ -121,27 +121,27 @@ export class GatewayServer {
 
     const { port, host } = this.config;
     this.server = this.app.listen(port, host, () => {
-      console.log(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}`);
+      process.stdout.write(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}\n`);
 
       if (this.server) {
         this.server.requestTimeout = 1_800_000;
         this.server.headersTimeout = 120_000;
         this.server.keepAliveTimeout = 30_000;
-        console.log(`[Gateway] Server timeouts: request=${this.server.requestTimeout}ms, headers=${this.server.headersTimeout}ms`);
+        process.stdout.write(`[Gateway] Server timeouts: request=${this.server.requestTimeout}ms, headers=${this.server.headersTimeout}ms\n`);
       }
 
       if (this.config.enableWS && this.server) {
         this.wsTransport = new WSServerTransport(this.protocolHandler, this.eventBus);
         this.wsTransport.attach(this.server);
-        console.log(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws`);
+        process.stdout.write(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws\n`);
       }
 
-      this.eventBus.publish("system.ready", { port, host }, "gateway").catch((err) => { console.debug("[Gateway] Event publish error:", err); });
+      this.eventBus.publish("system.ready", { port, host }, "gateway").catch(() => {});
     });
   }
 
   async stop(): Promise<void> {
-    console.log("[Gateway] Shutting down...");
+    process.stdout.write("[Gateway] Shutting down...\n");
 
     if (this.wsTransport) {
       this.wsTransport.detach();
@@ -151,17 +151,17 @@ export class GatewayServer {
     if (this.server) {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          console.log("[Gateway] Force closing after timeout");
+          process.stdout.write("[Gateway] Force closing after timeout\n");
           resolve();
         }, 10000);
 
         this.server!.close((err) => {
           clearTimeout(timeout);
           if (err) {
-            console.error("[Gateway] Error during close:", err.message);
+            process.stderr.write(`[Gateway] Error during close: ${err.message}\n`);
             reject(err);
           } else {
-            console.log("[Gateway] All connections closed gracefully");
+            process.stdout.write("[Gateway] All connections closed gracefully\n");
             resolve();
           }
         });
@@ -840,7 +840,7 @@ export class GatewayServer {
         }
       });
     } catch (err) {
-      console.error("[Gateway] Failed to initialize MCP protocol handler:", err);
+      process.stderr.write(`[Gateway] Failed to initialize MCP protocol handler: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
     this.setupWebUI();
@@ -1785,12 +1785,12 @@ export class GatewayServer {
       });
     }
 
-    console.log(`[Gateway] ${req.method} ${req.path}`);
+    process.stdout.write(`[Gateway] ${req.method} ${req.path}\n`);
     next();
   }
 
   private errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
-    console.error("[Gateway] Error:", err.message);
+    process.stderr.write(`[Gateway] Error: ${err.message}\n`);
     const isProduction = process.env.NODE_ENV === "production";
     res.status(500).json({
       error: "Internal Server Error",

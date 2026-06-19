@@ -337,7 +337,7 @@ export class LearningJournal {
         "learning-journal"
       );
     } catch (err) {
-      console.error("[LearningJournal] Failed to persist journal:", err);
+      process.stderr.write("[LearningJournal] Failed to persist journal:" + " " + err);
     }
   }
 
@@ -349,7 +349,7 @@ export class LearningJournal {
       const content = fs.readFileSync(journalPath, "utf-8");
       this.parseJournalMarkdown(content);
     } catch (err) {
-      console.warn("[LearningJournal] Could not load journal from disk:", err);
+      process.stderr.write("[LearningJournal] Could not load journal from disk:" + " " + err);
     }
   }
 
@@ -537,7 +537,7 @@ export class LearningJournal {
     }
 
     if (parsedCount > 0) {
-      console.log(`[LearningJournal] Loaded ${parsedCount} entries from journal`);
+      process.stdout.write(`[LearningJournal] Loaded ${parsedCount} entries from journal`);
     }
   }
 

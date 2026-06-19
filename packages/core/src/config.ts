@@ -68,7 +68,7 @@ export interface AppConfig {
 
 export const defaultConfig: AppConfig = {
   server: {
-    port: 3000,
+    port: 27788,
     host: "127.0.0.1",
     corsOrigins: ["http://localhost:5173"],
   },
@@ -203,7 +203,7 @@ export class ConfigManager {
       if (process.env.NODE_ENV === "production") {
         throw new Error("[Config] FATAL: JWT secret uses default/weak value. Set JWT_SECRET env var with a strong random secret (>= 16 chars) before running in production.");
       }
-      console.warn("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.");
+      process.stderr.write("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.");
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
     this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";

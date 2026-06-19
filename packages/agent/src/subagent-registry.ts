@@ -123,7 +123,7 @@ export class SubagentRegistry {
     this.subagents.set(info.id, info);
     this.emit("spawn", info);
 
-    console.log(
+    process.stdout.write(
       `[SubagentRegistry] Spawned subagent "${info.id}" for parent "${info.parentAgentId}"`,
     );
 
@@ -147,7 +147,7 @@ export class SubagentRegistry {
     info.status = "done";
     info.lastActive = new Date().toISOString();
     this.emit("complete", info);
-    console.log(`[SubagentRegistry] Subagent "${id}" completed`);
+    process.stdout.write(`[SubagentRegistry] Subagent "${id}" completed`);
     return true;
   }
 
@@ -160,7 +160,7 @@ export class SubagentRegistry {
     info.error = error;
     info.lastActive = new Date().toISOString();
     this.emit("error", info);
-    console.error(`[SubagentRegistry] Subagent "${id}" errored: ${error}`);
+    process.stderr.write(`[SubagentRegistry] Subagent "${id}" errored: ${error}`);
     return true;
   }
 
@@ -182,7 +182,7 @@ export class SubagentRegistry {
 
     this.subagents.delete(id);
     this.emit("kill", info);
-    console.log(`[SubagentRegistry] Killed subagent "${id}"`);
+    process.stdout.write(`[SubagentRegistry] Killed subagent "${id}"`);
     return true;
   }
 
@@ -235,7 +235,7 @@ export class SubagentRegistry {
     }
 
     if (removed > 0) {
-      console.log(`[SubagentRegistry] Cleaned up ${removed} subagent(s)`);
+      process.stdout.write(`[SubagentRegistry] Cleaned up ${removed} subagent(s)`);
     }
 
     return removed;
@@ -268,7 +268,7 @@ export class SubagentRegistry {
     };
 
     this.eventBus.publish(`subagent.${event}`, payload, "subagent-registry").catch((err) => {
-      console.error(`[SubagentRegistry] EventBus publish failed for "${event}":`, err);
+      process.stderr.write(`[SubagentRegistry] EventBus publish failed for "${event}":` + " " + err);
     });
   }
 }

@@ -71,7 +71,7 @@ export class ClaudeCodePlugin {
     });
 
     this.initialized = true;
-    console.log(`[ClaudeCodePlugin] Initialized — ${CLAUDE_CODE_PLUGIN_INFO.name} v${CLAUDE_CODE_PLUGIN_INFO.version}`);
+    process.stdout.write(`[ClaudeCodePlugin] Initialized — ${CLAUDE_CODE_PLUGIN_INFO.name} v${CLAUDE_CODE_PLUGIN_INFO.version}`);
   }
 
   /**
@@ -95,7 +95,7 @@ export class ClaudeCodePlugin {
     if (result.capabilityAssessment.needsUpgrade) {
       const actions = this.upgrader.analyzeExecution(result);
       if (actions.length > 0) {
-        console.log(`[ClaudeCodePlugin] Capability upgrade needed: ${actions.length} actions`);
+        process.stdout.write(`[ClaudeCodePlugin] Capability upgrade needed: ${actions.length} actions`);
         // Apply top priority action
         await this.upgrader.applyAction(actions[0]);
       }
@@ -299,7 +299,7 @@ export class ClaudeCodePlugin {
   }
 
   private async handleCapabilityUpgradeNeeded(assessment: CapabilityAssessment): Promise<void> {
-    console.log(`[ClaudeCodePlugin] Capability upgrade triggered — level: ${assessment.level}, failureRate: ${(assessment.failureRate * 100).toFixed(0)}%`);
+    process.stdout.write(`[ClaudeCodePlugin] Capability upgrade triggered — level: ${assessment.level}, failureRate: ${(assessment.failureRate * 100).toFixed(0)}%`);
 
     // Create a synthetic execution result for analysis
     const syntheticResult: ExecutionResult = {
@@ -319,7 +319,7 @@ export class ClaudeCodePlugin {
     // Apply the highest priority action
     if (actions.length > 0) {
       const result = await this.upgrader.applyAction(actions[0]);
-      console.log(`[ClaudeCodePlugin] Upgrade applied: ${result.message}`);
+      process.stdout.write(`[ClaudeCodePlugin] Upgrade applied: ${result.message}`);
     }
   }
 
@@ -348,7 +348,7 @@ export class ClaudeCodePlugin {
       .then((result) => {
         taskInfo.status = "completed";
         taskInfo.result = result;
-        console.log(`[ClaudeCodePlugin] Task ${taskId} completed — success: ${result.success}, duration: ${result.totalDurationMs}ms`);
+        process.stdout.write(`[ClaudeCodePlugin] Task ${taskId} completed — success: ${result.success}, duration: ${result.totalDurationMs}ms`);
       })
       .catch((err) => {
         taskInfo.status = "error";
@@ -371,7 +371,7 @@ export class ClaudeCodePlugin {
             needsUpgrade: true,
           },
         };
-        console.error(`[ClaudeCodePlugin] Task ${taskId} failed:`, err);
+        process.stderr.write(`[ClaudeCodePlugin] Task ${taskId} failed:`, err);
       });
   }
 }

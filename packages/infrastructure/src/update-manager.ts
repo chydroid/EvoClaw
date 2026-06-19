@@ -184,8 +184,8 @@ export class UpdateManager {
       }
     }, this.config.checkIntervalMs);
 
-    console.log(
-      `[UpdateManager] Periodic checks started (every ${this.config.checkIntervalMs / 1000}s)`
+    process.stdout.write(
+      `[UpdateManager] Periodic checks started (every ${this.config.checkIntervalMs / 1000}s)\n`
     );
   }
 
@@ -331,7 +331,7 @@ export class UpdateManager {
         }
       }
 
-      console.log("[UpdateManager] Rollback completed");
+      process.stdout.write("[UpdateManager] Rollback completed");
       return {
         success: true,
         message: "Rollback completed. Restart required.",
@@ -553,7 +553,7 @@ export class UpdateManager {
         stdio: "inherit",
       });
 
-      console.log(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.`);
+      process.stdout.write(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.`);
     } else if (assetName.endsWith(".exe") || assetName.endsWith(".AppImage")) {
       // Binary replacement
       const destPath = path.join(cwd, path.basename(downloadPath));
@@ -563,10 +563,10 @@ export class UpdateManager {
         fs.chmodSync(destPath, 0o755);
       }
 
-      console.log(`[UpdateManager] Binary installed at ${destPath}`);
+      process.stdout.write(`[UpdateManager] Binary installed at ${destPath}`);
     } else {
       // Unknown format, just save to cache
-      console.log(`[UpdateManager] Unknown asset format, saved to ${downloadPath}`);
+      process.stdout.write(`[UpdateManager] Unknown asset format, saved to ${downloadPath}`);
     }
   }
 

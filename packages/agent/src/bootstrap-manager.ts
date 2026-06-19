@@ -163,7 +163,7 @@ export class BootstrapManager {
     }
 
     if (createdAny) {
-      console.log(`[BootstrapManager] Created default bootstrap files in ${this.workspacePath}`);
+      process.stdout.write(`[BootstrapManager] Created default bootstrap files in ${this.workspacePath}`);
     }
 
     return this.getContext();
@@ -229,7 +229,7 @@ export class BootstrapManager {
       try {
         fs.unlinkSync(filePath);
       } catch (e) {
-        console.warn(`[BootstrapManager] Failed to delete ${filePath}: ${e}`);
+        process.stderr.write(`[BootstrapManager] Failed to delete ${filePath}: ${e}`);
       }
     }
   }
@@ -239,7 +239,7 @@ export class BootstrapManager {
     const bootstrapPath = path.join(this.workspacePath, "BOOTSTRAP.md");
     if (fs.existsSync(bootstrapPath)) {
       this.deleteBootstrapFile("BOOTSTRAP.md");
-      console.log("[BootstrapManager] Bootstrap ritual completed — BOOTSTRAP.md deleted");
+      process.stdout.write("[BootstrapManager] Bootstrap ritual completed — BOOTSTRAP.md deleted");
     }
   }
 
@@ -302,7 +302,7 @@ export class BootstrapManager {
       try {
         fs.mkdirSync(dir, { recursive: true });
       } catch (e) {
-        console.warn(`[BootstrapManager] Failed to create dir ${dir}: ${e}`);
+        process.stderr.write(`[BootstrapManager] Failed to create dir ${dir}: ${e}`);
       }
     }
   }
@@ -311,7 +311,7 @@ export class BootstrapManager {
     try {
       return fs.readFileSync(filePath, "utf-8");
     } catch (err) {
-      console.warn(`[BootstrapManager] Failed to read ${filePath}: ${err}`);
+      process.stderr.write(`[BootstrapManager] Failed to read ${filePath}: ${err}`);
       return "";
     }
   }
@@ -320,7 +320,7 @@ export class BootstrapManager {
     try {
       fs.writeFileSync(filePath, content, "utf-8");
     } catch (e) {
-      console.warn(`[BootstrapManager] Failed to write ${filePath}: ${e}`);
+      process.stderr.write(`[BootstrapManager] Failed to write ${filePath}: ${e}`);
     }
   }
 }

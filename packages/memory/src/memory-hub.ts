@@ -133,21 +133,21 @@ export class MemoryHub {
       .then((ok) => {
         clearTimeout(timer);
         if (ok) {
-          console.log("[MemoryHub] Transformers embedding model loaded successfully");
+          process.stdout.write("[MemoryHub] Transformers embedding model loaded successfully\n");
           return;
         }
         // Warmup failed — switch to local TF-IDF
         const err = transformers.getLoadError();
         this.embeddingLoadError = err ? err.message : "Transformers warmup failed";
-        console.warn(
-          `[MemoryHub] Transformers warmup failed (${this.embeddingLoadError}); falling back to local TF-IDF embeddings`
+        process.stderr.write(
+          `[MemoryHub] Transformers warmup failed (${this.embeddingLoadError}); falling back to local TF-IDF embeddings\n`
         );
         this.installLocalFallback(transformers);
       })
       .catch((err) => {
         clearTimeout(timer);
         this.embeddingLoadError = err instanceof Error ? err.message : String(err);
-        console.warn(`[MemoryHub] Transformers warmup threw: ${this.embeddingLoadError}`);
+        process.stderr.write(`[MemoryHub] Transformers warmup threw: ${this.embeddingLoadError}\n`);
         this.installLocalFallback(transformers);
       });
   }

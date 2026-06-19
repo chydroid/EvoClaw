@@ -19,7 +19,7 @@ export class AuthProvider {
       throw new Error("JWT secret must be a non-empty string. Set JWT_SECRET environment variable or pass it in config.");
     }
     if (jwtSecret.length < 16) {
-      console.warn("[AuthProvider] WARNING: JWT secret is shorter than 16 characters. This is insecure for production use.");
+      process.stderr.write("[AuthProvider] WARNING: JWT secret is shorter than 16 characters. This is insecure for production use.");
     }
     this.webUiToken = process.env.WEB_UI_TOKEN || "";
   }

@@ -76,7 +76,7 @@ class TaskCheckpointManager {
       const filePath = path.join(this.checkpointDir, `${sessionId}.json`);
       fs.writeFileSync(filePath, JSON.stringify(checkpoint, null, 2), "utf-8");
     } catch (err) {
-      console.warn(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:`, err);
+      process.stderr.write(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:` + " " + err);
     }
   }
 
@@ -98,7 +98,7 @@ class TaskCheckpointManager {
         } catch { /* skip corrupt files */ }
       }
     } catch { /* ignore */ }
-    console.log(`[TaskCheckpointManager] Loaded ${this.checkpoints.size} checkpoints from disk`);
+    process.stdout.write(`[TaskCheckpointManager] Loaded ${this.checkpoints.size} checkpoints from disk`);
   }
 }
 

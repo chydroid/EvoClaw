@@ -67,7 +67,7 @@ export class MessageQueue {
           try {
             await handler(message);
           } catch (err) {
-            console.error(`[MessageQueue] Handler error for "${topic}":`, err);
+            process.stderr.write(`[MessageQueue] Handler error for "${topic}": ${err instanceof Error ? err.message : String(err)}\n`);
 
             if (message.retryCount < message.maxRetries) {
               message.retryCount++;

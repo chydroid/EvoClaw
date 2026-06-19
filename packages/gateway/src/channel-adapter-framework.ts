@@ -99,9 +99,8 @@ export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
       try {
         await handler(msg);
       } catch (err) {
-        console.error(
-          `[ChannelAdapter:${this.config.channelId}] Message handler error:`,
-          err instanceof Error ? err.message : String(err),
+        process.stderr.write(
+          `[ChannelAdapter:${this.config.channelId}] Message handler error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }
@@ -113,9 +112,8 @@ export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
       try {
         handler(status);
       } catch (err) {
-        console.error(
-          `[ChannelAdapter:${this.config.channelId}] Status change handler error:`,
-          err instanceof Error ? err.message : String(err),
+        process.stderr.write(
+          `[ChannelAdapter:${this.config.channelId}] Status change handler error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }
@@ -178,7 +176,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
       // Register the webhook endpoint
       this.registered = true;
       this.status = "running";
-      console.log(
+      process.stdout.write(
         `[WebhookChannel:${this.config.channelId}] Started — outgoing URL: ${this.webhookUrl}, incoming path: ${this.incomingPath}`,
       );
     } catch (err) {
@@ -195,7 +193,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
       // Unregister the webhook endpoint
       this.registered = false;
       this.status = "stopped";
-      console.log(`[WebhookChannel:${this.config.channelId}] Stopped`);
+      process.stdout.write(`[WebhookChannel:${this.config.channelId}] Stopped`);
     } catch (err) {
       this.status = "error";
       throw new Error(
@@ -209,7 +207,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     attachments?: ChannelMessage["attachments"];
   }): Promise<ChannelSendResult> {
     if (!this.registered) {
-      console.warn(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started`);
       return { success: false, error: "Adapter not started", channel: this.type };
     }
 
@@ -245,7 +243,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        console.warn(
+        process.stderr.write(
           `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}`,
         );
         return { success: false, error: `HTTP ${response.status}`, channel: this.type };
@@ -253,9 +251,8 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
 
       return { success: true, channel: this.type };
     } catch (err) {
-      console.error(
-        `[WebhookChannel:${this.config.channelId}] Send error:`,
-        err instanceof Error ? err.message : String(err),
+      process.stderr.write(
+        `[WebhookChannel:${this.config.channelId}] Send error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
       return { success: false, error: err instanceof Error ? err.message : String(err), channel: this.type };
     }
@@ -271,7 +268,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     [key: string]: unknown;
   }): Promise<void> {
     if (this.status !== "running") {
-      console.warn(`[WebhookChannel:${this.config.channelId}] Ignoring payload — adapter not running`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — adapter not running`);
       return;
     }
 
@@ -279,7 +276,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     const message = payload.message ?? "";
 
     if (!message) {
-      console.warn(`[WebhookChannel:${this.config.channelId}] Ignoring payload — empty message`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — empty message`);
       return;
     }
 
@@ -383,7 +380,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
       }
 
       this.botUsername = me.result.username ?? me.result.first_name;
-      console.log(
+      process.stdout.write(
         `[TelegramChannel:${this.config.channelId}] Connected as @${this.botUsername} (id: ${me.result.id})`,
       );
 
@@ -406,7 +403,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
         this.pollingTimer = null;
       }
       this.status = "stopped";
-      console.log(`[TelegramChannel:${this.config.channelId}] Stopped`);
+      process.stdout.write(`[TelegramChannel:${this.config.channelId}] Stopped`);
     } catch (err) {
       this.status = "error";
       throw new Error(
@@ -428,7 +425,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
       });
 
       if (!result.ok) {
-        console.warn(
+        process.stderr.write(
           `[TelegramChannel:${this.config.channelId}] Send failed: ${result.description}`,
         );
         return { success: false, error: result.description, channel: this.type };
@@ -436,9 +433,8 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
 
       return { success: true, messageId: String(result.result?.message_id), channel: this.type };
     } catch (err) {
-      console.error(
-        `[TelegramChannel:${this.config.channelId}] Send error:`,
-        err instanceof Error ? err.message : String(err),
+      process.stderr.write(
+        `[TelegramChannel:${this.config.channelId}] Send error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
       return { success: false, error: err instanceof Error ? err.message : String(err), channel: this.type };
     }
@@ -468,9 +464,8 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
         }
       } catch (err) {
         if (this.status === "running") {
-          console.error(
-            `[TelegramChannel:${this.config.channelId}] Polling error:`,
-            err instanceof Error ? err.message : String(err),
+          process.stderr.write(
+            `[TelegramChannel:${this.config.channelId}] Polling error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
           );
         }
       }

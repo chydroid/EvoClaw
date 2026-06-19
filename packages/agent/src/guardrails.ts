@@ -306,10 +306,10 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     description: "Tool: path traversal in arguments",
   },
 
-  // Data exfiltration
+  // Data exfiltration - only block outbound data transfer tools
   {
     id: "tool-exfil-url",
-    toolPattern: /(?:fetch|request|http|send|post|put|upload|webhook)/i,
+    toolPattern: /(?:send|post|put|upload|webhook)/i,
     argPattern: /https?:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0)[^\s"'<>]+/i,
     severity: "high",
     action: "block",

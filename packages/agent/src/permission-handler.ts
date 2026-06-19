@@ -42,7 +42,7 @@ export async function onPermissionApproved(
   const pending = deps.pendingOperations.get(requestId);
   if (!pending) return;
   deps.pendingOperations.delete(requestId);
-  console.log(`[PermissionHandler] Permission approved for request "${requestId}". Notifying via event...`);
+  process.stdout.write(`[PermissionHandler] Permission approved for request "${requestId}". Notifying via event...`);
   deps.eventBus.publish("permission.approved_fast", {
     requestId,
     sessionId: pending.sessionId,
@@ -65,7 +65,7 @@ export async function approveAndExecute(
   }
   deps.pendingOperations.delete(requestId);
 
-  console.log(`[PermissionHandler] approveAndExecute: re-executing tool "${pending.toolName}" for request "${requestId}"`);
+  process.stdout.write(`[PermissionHandler] approveAndExecute: re-executing tool "${pending.toolName}" for request "${requestId}"`);
 
   // 1. 先在 PermissionManager 中批准该操作（加入白名单，5分钟内同类操作自动通过）
   const permManager = deps.registry?.resolveService<any>("permissionManager");
@@ -73,7 +73,7 @@ export async function approveAndExecute(
     try {
       permManager.approveRequest(requestId, addToWhitelist);
     } catch (err) {
-      console.warn(`[PermissionHandler] approveAndExecute: failed to approve in PermissionManager:`, err);
+      process.stderr.write(`[PermissionHandler] approveAndExecute: failed to approve in PermissionManager:` + " " + err);
     }
   }
 
@@ -127,11 +127,11 @@ export async function approveAndExecute(
 
     const reply = `✅ ${toolLabel}${targetInfo} 已完成\n\n${resultText.length > 2000 ? resultText.slice(0, 2000) + "\n...(结果已截断)" : resultText}`;
 
-    console.log(`[PermissionHandler] approveAndExecute: tool "${pending.toolName}" executed successfully in ${duration}ms`);
+    process.stdout.write(`[PermissionHandler] approveAndExecute: tool "${pending.toolName}" executed successfully in ${duration}ms`);
     return { success: true, reply, toolName: pending.toolName };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.warn(`[PermissionHandler] approveAndExecute: tool "${pending.toolName}" failed:`, errMsg);
+    process.stderr.write(`[PermissionHandler] approveAndExecute: tool "${pending.toolName}" failed:` + " " + errMsg);
     return { success: false, reply: `❌ 工具执行失败: ${errMsg}`, toolName: pending.toolName };
   }
 }
@@ -154,10 +154,10 @@ export function rejectPermission(
     try {
       permManager.denyRequest(requestId);
     } catch (err) {
-      console.warn(`[PermissionHandler] rejectPermission: failed to deny in PermissionManager:`, err);
+      process.stderr.write(`[PermissionHandler] rejectPermission: failed to deny in PermissionManager:` + " " + err);
     }
   }
 
-  console.log(`[PermissionHandler] rejectPermission: request "${requestId}" rejected`);
+  process.stdout.write(`[PermissionHandler] rejectPermission: request "${requestId}" rejected`);
   return { success: true, reply: "❌ 操作已取消。" };
 }

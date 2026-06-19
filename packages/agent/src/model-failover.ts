@@ -248,7 +248,7 @@ export class ModelFailoverManager {
     if (!provider?.apiKeys || provider.apiKeys.length <= 1 || !h) return false;
 
     h.currentKeyIndex = (h.currentKeyIndex + 1) % provider.apiKeys.length;
-    console.log(
+    process.stdout.write(
       `[ModelFailover] Rotated API key for "${providerId}" to index ${h.currentKeyIndex}`
     );
     return true;
@@ -346,7 +346,7 @@ export class ModelFailoverManager {
 
     h.circuitState = "open";
     h.halfOpenProbeCount = 0;
-    console.warn(
+    process.stderr.write(
       `[ModelFailover] Circuit OPEN for "${providerId}" after ${h.failureCount} failures`
     );
 
@@ -357,7 +357,7 @@ export class ModelFailoverManager {
         if (health?.circuitState === "open") {
           health.circuitState = "half-open";
           health.halfOpenProbeCount = 0;
-          console.log(
+          process.stdout.write(
             `[ModelFailover] Circuit HALF-OPEN for "${providerId}"`
           );
         }
@@ -379,7 +379,7 @@ export class ModelFailoverManager {
     h.circuitState = "closed";
     h.failureCount = 0;
     h.halfOpenProbeCount = 0;
-    console.log(
+    process.stdout.write(
       `[ModelFailover] Circuit RESET to CLOSED for "${providerId}"`
     );
 
@@ -573,7 +573,7 @@ export class ModelFailoverManager {
             h.circuitState = "closed";
             h.failureCount = 0;
             h.halfOpenProbeCount = 0;
-            console.log(
+            process.stdout.write(
               `[ModelFailover] Provider "${id}" recovered — circuit CLOSED`
             );
           }

@@ -167,7 +167,7 @@ export class SelfHealingManager {
     if (this.healInterval) return;
     this.healInterval = setInterval(() => {
       this.runHealthCheck().catch((err) => {
-        console.warn("[SelfHealing] Health check failed:", err instanceof Error ? err.message : String(err));
+        process.stderr.write(`[SelfHealing] Health check failed: ${err instanceof Error ? err.message : String(err)}\n`);
       });
     }, this.checkIntervalMs);
   }
@@ -255,7 +255,7 @@ export class SelfHealingManager {
     try {
       healthResults = await this.registry.healthCheckAll();
     } catch (checkErr) {
-      console.warn("[SelfHealing] Health check collection failed:", checkErr instanceof Error ? checkErr.message : String(checkErr));
+      process.stderr.write(`[SelfHealing] Health check collection failed: ${checkErr instanceof Error ? checkErr.message : String(checkErr)}\n`);
       return;
     }
 
@@ -588,7 +588,7 @@ export class SelfHealingManager {
             await orchestrator.cancelTask(task.id);
             cancelled++;
           } catch (taskErr) {
-            console.warn(`[SelfHealing] Failed to cancel stuck task ${task.id}:`, taskErr instanceof Error ? taskErr.message : String(taskErr));
+            process.stderr.write(`[SelfHealing] Failed to cancel stuck task ${task.id}: ${taskErr instanceof Error ? taskErr.message : String(taskErr)}\n`);
           }
         }
         action.result = {

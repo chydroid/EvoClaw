@@ -356,7 +356,7 @@ export class AgentRouter {
       const config = JSON.parse(raw) as RouterConfig;
       return new AgentRouter(config);
     } catch (err) {
-      console.warn(`[AgentRouter] Failed to load config from ${filePath}, using defaults:`, err instanceof Error ? err.message : err);
+      process.stderr.write(`[AgentRouter] Failed to load config from ${filePath}, using defaults:` + " " + (err instanceof Error ? err.message : String(err)) + "\n");
       return new AgentRouter();
     }
   }

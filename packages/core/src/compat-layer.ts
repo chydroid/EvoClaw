@@ -164,10 +164,10 @@ export function detectLegacyEnv(): string[] {
 export function printMigrationHints(): void {
   const hints = detectLegacyEnv();
   if (hints.length > 0) {
-    console.warn("\n[Migration Hints]");
+    process.stderr.write("\n[Migration Hints]");
     for (const hint of hints) {
-      console.warn(`  - ${hint}`);
+      process.stderr.write(`  - ${hint}`);
     }
-    console.warn("");
+    process.stderr.write("");
   }
 }

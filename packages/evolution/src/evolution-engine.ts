@@ -158,7 +158,7 @@ export class EvolutionEngine {
         );
 
         if (!thresholdCheck.allowed) {
-          console.log(`[EvolutionEngine] Evolution threshold blocked: ${thresholdCheck.reason}`);
+          process.stdout.write(`[EvolutionEngine] Evolution threshold blocked: ${thresholdCheck.reason}`);
           return;
         }
 
@@ -240,7 +240,7 @@ export class EvolutionEngine {
         if (data.triggerEvolution !== false) {
           const thresholdCheck = this.evolutionThreshold.check("usage_pattern", null);
           if (!thresholdCheck.allowed) {
-            console.log(`[EvolutionEngine] Evolution threshold blocked (capability gap): ${thresholdCheck.reason}`);
+            process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (capability gap): ${thresholdCheck.reason}`);
             return;
           }
           this.evolutionThreshold.recordEvolution();
@@ -290,7 +290,7 @@ export class EvolutionEngine {
       if (data.triggerEvolution !== false) {
         const thresholdCheck = this.evolutionThreshold.check("performance_degradation", null);
         if (!thresholdCheck.allowed) {
-          console.log(`[EvolutionEngine] Evolution threshold blocked (external failure): ${thresholdCheck.reason}`);
+          process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (external failure): ${thresholdCheck.reason}`);
           return;
         }
         this.evolutionThreshold.recordEvolution();
@@ -337,7 +337,7 @@ export class EvolutionEngine {
       if (data.triggerEvolution !== false) {
         const thresholdCheck = this.evolutionThreshold.check("manual", null);
         if (!thresholdCheck.allowed) {
-          console.log(`[EvolutionEngine] Evolution threshold blocked (knowledge improvement): ${thresholdCheck.reason}`);
+          process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (knowledge improvement): ${thresholdCheck.reason}`);
           return;
         }
         this.evolutionThreshold.recordEvolution();
@@ -433,7 +433,7 @@ export class EvolutionEngine {
               .filter((r) => !r.passed)
               .map((r) => `${r.gateName}: ${r.reason}`)
               .join("; ");
-            console.warn(`[EvolutionEngine] Candidate ${candidate.id} failed constraint gate: ${failedGates}`);
+            process.stderr.write(`[EvolutionEngine] Candidate ${candidate.id} failed constraint gate: ${failedGates}`);
             await this.eventBus.publish(
               "evolution.constraint_gate_failed" as any,
               { cycleId: cycle.id, candidateId: candidate.id, gateResults: gateResult.results },
@@ -458,7 +458,7 @@ export class EvolutionEngine {
             // 沙箱执行失败，拒绝候选并阻断发布
             cycle.status = "rejected";
             cycle.feedback = { ...cycle.feedback, rejectionReason: `Sandbox validation failed: ${sandboxResult.error}` };
-            console.warn(
+            process.stderr.write(
               `[EvolutionEngine] Evolution candidate rejected: sandbox validation failed for candidate ${candidate.id} - ${sandboxResult.error}`
             );
 
@@ -517,10 +517,10 @@ export class EvolutionEngine {
                 afterCode: candidate.codeArtifacts.map((a) => a.source).join("\n") || "",
               });
               if (skillResult) {
-                console.log(`[EvolutionEngine] Auto-generated skill: ${skillResult.skillName} at ${skillResult.skillPath}`);
+                process.stdout.write(`[EvolutionEngine] Auto-generated skill: ${skillResult.skillName} at ${skillResult.skillPath}`);
               }
             } catch (err) {
-              console.warn(`[EvolutionEngine] Skill auto-generation failed: ${err}`);
+              process.stderr.write(`[EvolutionEngine] Skill auto-generation failed: ${err}`);
             }
           }
 
@@ -532,9 +532,9 @@ export class EvolutionEngine {
                 "original",
                 "evolved"
               );
-              console.log(`[EvolutionEngine] A/B test started: ${testId} for evolution ${cycle.id}`);
+              process.stdout.write(`[EvolutionEngine] A/B test started: ${testId} for evolution ${cycle.id}`);
             } catch (err) {
-              console.warn(`[EvolutionEngine] A/B test start failed: ${err}`);
+              process.stderr.write(`[EvolutionEngine] A/B test start failed: ${err}`);
             }
           }
 
@@ -544,7 +544,7 @@ export class EvolutionEngine {
       } else {
         // 无候选方案通过评估，尝试遗传算法优化
         if (cycle.candidates.length > 0) {
-          console.log(`[EvolutionEngine] No candidates passed evaluation, attempting genetic optimization...`);
+          process.stdout.write(`[EvolutionEngine] No candidates passed evaluation, attempting genetic optimization...`);
           const geneticResult = await this.geneticEngine.tryGeneticOptimization(cycle.candidates);
           if (geneticResult && geneticResult.bestCandidate) {
             cycle.candidates.push(geneticResult.bestCandidate);
@@ -558,13 +558,13 @@ export class EvolutionEngine {
 
                 const sandboxResult = await this.sandboxExecutor.execute(geneticResult.bestCandidate);
                 if (!sandboxResult.success) {
-                  console.warn(
+                  process.stderr.write(
                     `[EvolutionEngine] Genetic candidate sandbox failed: ${sandboxResult.error}`
                   );
                   // 沙箱执行失败，拒绝候选并阻断发布
                   cycle.status = "rejected";
                   cycle.feedback = { ...cycle.feedback, rejectionReason: `Sandbox validation failed (genetic): ${sandboxResult.error}` };
-                  console.warn(
+                  process.stderr.write(
                     `[EvolutionEngine] Evolution candidate rejected: sandbox validation failed for genetic candidate - ${sandboxResult.error}`
                   );
 
@@ -607,10 +607,10 @@ export class EvolutionEngine {
                       afterCode: geneticResult.bestCandidate.codeArtifacts.map((a) => a.source).join("\n") || "",
                     });
                     if (skillResult) {
-                      console.log(`[EvolutionEngine] Auto-generated skill (genetic): ${skillResult.skillName} at ${skillResult.skillPath}`);
+                      process.stdout.write(`[EvolutionEngine] Auto-generated skill (genetic): ${skillResult.skillName} at ${skillResult.skillPath}`);
                     }
                   } catch (err) {
-                    console.warn(`[EvolutionEngine] Skill auto-generation failed (genetic): ${err}`);
+                    process.stderr.write(`[EvolutionEngine] Skill auto-generation failed (genetic): ${err}`);
                   }
                 }
 
@@ -622,9 +622,9 @@ export class EvolutionEngine {
                       "original",
                       "evolved"
                     );
-                    console.log(`[EvolutionEngine] A/B test started (genetic): ${testId} for evolution ${cycle.id}`);
+                    process.stdout.write(`[EvolutionEngine] A/B test started (genetic): ${testId} for evolution ${cycle.id}`);
                   } catch (err) {
-                    console.warn(`[EvolutionEngine] A/B test start failed (genetic): ${err}`);
+                    process.stderr.write(`[EvolutionEngine] A/B test start failed (genetic): ${err}`);
                   }
                 }
 
@@ -641,7 +641,7 @@ export class EvolutionEngine {
       }
     } catch (err) {
       cycle.status = "failed";
-      console.error("[EvolutionEngine] Cycle failed:", err);
+      process.stderr.write("[EvolutionEngine] Cycle failed:" + " " + err);
     }
 
     cycle.completedAt = new Date();
@@ -671,14 +671,14 @@ export class EvolutionEngine {
       try {
         await this.experienceAnalyzer.analyzeFailures(recentFailures);
       } catch (analyzeErr) {
-        console.warn("[EvolutionEngine] Experience analysis failed:", analyzeErr);
+        process.stderr.write("[EvolutionEngine] Experience analysis failed:" + " " + analyzeErr);
       }
     }
 
     try {
       await this.reinforcement.processFeedback(fullFeedback);
     } catch (reinforceErr) {
-      console.warn("[EvolutionEngine] Reinforcement feedback processing failed:", reinforceErr);
+      process.stderr.write("[EvolutionEngine] Reinforcement feedback processing failed:" + " " + reinforceErr);
     }
   }
 
@@ -897,7 +897,7 @@ export class EvolutionEngine {
 
       await skillCurator.extractSkillFromSolution(task, solution, context);
     } catch (err) {
-      console.warn("[EvolutionEngine] SkillCurator extraction failed:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[EvolutionEngine] SkillCurator extraction failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 
@@ -923,7 +923,7 @@ export class EvolutionEngine {
 
       await skillCurator.improveSkill(cycle.targetSkill, executionResult, comment || null);
     } catch (err) {
-      console.warn("[EvolutionEngine] SkillCurator improvement failed:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[EvolutionEngine] SkillCurator improvement failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 

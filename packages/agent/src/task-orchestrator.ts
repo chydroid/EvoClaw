@@ -13,6 +13,8 @@ import { v4 as uuid } from "uuid";
 import { DAGExecutor } from "./dag-executor";
 import { AgentPoolManager } from "./agent-pool";
 
+const LOG = "task-orchestrator";
+
 export class TaskOrchestrator implements ITaskExecutor {
   private taskQueue: TaskQueue;
   private activeTasks = new Map<string, Task>();
@@ -67,10 +69,11 @@ export class TaskOrchestrator implements ITaskExecutor {
     await this.taskQueue.enqueue(task);
     this.activeTasks.set(task.id, task);
 
-    await this.eventBus.publish(SystemEvents.TASK_CREATED, task, "task-orchestrator");
+    await this.eventBus.publish(SystemEvents.TASK_CREATED, task, LOG);
 
     this.processQueue().catch((err) => {
-      console.error("[TaskOrchestrator] Queue processing error:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[${LOG}] Queue processing error: ${msg}\n`);
     });
 
     return task;
@@ -81,7 +84,7 @@ export class TaskOrchestrator implements ITaskExecutor {
     task.updatedAt = new Date();
     this.activeTasks.set(task.id, task);
 
-    await this.eventBus.publish(SystemEvents.TASK_STARTED, task, "task-orchestrator");
+    await this.eventBus.publish(SystemEvents.TASK_STARTED, task, LOG);
 
     try {
       if (task.dag.length > 0) {
@@ -104,19 +107,19 @@ export class TaskOrchestrator implements ITaskExecutor {
       task.completedAt = new Date();
       task.updatedAt = new Date();
 
-      await this.eventBus.publish(SystemEvents.TASK_COMPLETED, task, "task-orchestrator");
+      await this.eventBus.publish(SystemEvents.TASK_COMPLETED, task, LOG);
     } catch (err) {
       task.status = "failed";
       task.updatedAt = new Date();
       const message = err instanceof Error ? err.message : String(err);
 
-      await this.eventBus.publish(SystemEvents.TASK_FAILED, { task, error: message }, "task-orchestrator");
+      await this.eventBus.publish(SystemEvents.TASK_FAILED, { task, error: message }, LOG);
 
       if (task.retryCount < task.maxRetries) {
         task.retryCount++;
         task.status = "queued";
         await this.taskQueue.enqueue(task);
-        await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, "task-orchestrator");
+        await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, LOG);
       }
     }
 
@@ -129,7 +132,7 @@ export class TaskOrchestrator implements ITaskExecutor {
       task.status = "cancelled";
       task.updatedAt = new Date();
       await this.taskQueue.remove(taskId);
-      await this.eventBus.publish(SystemEvents.TASK_CANCELLED, task, "task-orchestrator");
+      await this.eventBus.publish(SystemEvents.TASK_CANCELLED, task, LOG);
     }
   }
 
@@ -147,7 +150,10 @@ export class TaskOrchestrator implements ITaskExecutor {
       task.status = "queued";
       task.updatedAt = new Date();
       await this.taskQueue.enqueue(task);
-      this.processQueue().catch(console.error);
+      this.processQueue().catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[${LOG}] Queue processing error on resume: ${msg}\n`);
+      });
     }
   }
 
@@ -194,20 +200,20 @@ export class TaskOrchestrator implements ITaskExecutor {
     }
 
     if (iterations >= maxIterations) {
-      console.warn("[TaskOrchestrator] Queue processing reached max iterations, stopping to prevent infinite loop");
+      process.stderr.write(`[${LOG}] Queue processing reached max iterations, stopping to prevent infinite loop\n`);
     }
   }
 }
 
 class InMemoryTaskQueue implements TaskQueue {
   private queues = new Map<string, Task[]>();
+  private head = new Map<string, number>();
 
   constructor() {
-    this.queues.set("critical", []);
-    this.queues.set("high", []);
-    this.queues.set("normal", []);
-    this.queues.set("low", []);
-    this.queues.set("background", []);
+    for (const p of ["critical", "high", "normal", "low", "background"]) {
+      this.queues.set(p, []);
+      this.head.set(p, 0);
+    }
   }
 
   async enqueue(task: Task): Promise<void> {
@@ -218,8 +224,16 @@ class InMemoryTaskQueue implements TaskQueue {
   async dequeue(): Promise<Task | null> {
     for (const priority of ["critical", "high", "normal", "low", "background"]) {
       const queue = this.queues.get(priority)!;
-      if (queue.length > 0) {
-        return queue.shift()!;
+      const h = this.head.get(priority)!;
+      if (h < queue.length) {
+        const task = queue[h];
+        this.head.set(priority, h + 1);
+        // Compact when queue is mostly consumed
+        if (h + 1 > 64 && h + 1 > queue.length >> 1) {
+          this.queues.set(priority, queue.slice(h + 1));
+          this.head.set(priority, 0);
+        }
+        return task;
       }
     }
     return null;
@@ -228,8 +242,9 @@ class InMemoryTaskQueue implements TaskQueue {
   async peek(): Promise<Task | null> {
     for (const priority of ["critical", "high", "normal", "low", "background"]) {
       const queue = this.queues.get(priority)!;
-      if (queue.length > 0) {
-        return queue[0];
+      const h = this.head.get(priority)!;
+      if (h < queue.length) {
+        return queue[h];
       }
     }
     return null;
@@ -237,31 +252,35 @@ class InMemoryTaskQueue implements TaskQueue {
 
   async size(): Promise<number> {
     let total = 0;
-    for (const queue of this.queues.values()) {
-      total += queue.length;
+    for (const [priority, queue] of this.queues) {
+      total += queue.length - this.head.get(priority)!;
     }
     return total;
   }
 
   async remove(taskId: string): Promise<boolean> {
-    for (const queue of this.queues.values()) {
-      const index = queue.findIndex((t) => t.id === taskId);
-      if (index !== -1) {
-        queue.splice(index, 1);
-        return true;
+    for (const [priority, queue] of this.queues) {
+      const h = this.head.get(priority)!;
+      for (let i = h; i < queue.length; i++) {
+        if (queue[i].id === taskId) {
+          queue.splice(i, 1);
+          return true;
+        }
       }
     }
     return false;
   }
 
   async reorder(taskId: string, priority: string): Promise<void> {
-    for (const queue of this.queues.values()) {
-      const index = queue.findIndex((t) => t.id === taskId);
-      if (index !== -1) {
-        const task = queue.splice(index, 1)[0];
-        task.priority = priority as Task["priority"];
-        await this.enqueue(task);
-        return;
+    for (const [p, queue] of this.queues) {
+      const h = this.head.get(p)!;
+      for (let i = h; i < queue.length; i++) {
+        if (queue[i].id === taskId) {
+          const [task] = queue.splice(i, 1);
+          task.priority = priority as Task["priority"];
+          await this.enqueue(task);
+          return;
+        }
       }
     }
   }

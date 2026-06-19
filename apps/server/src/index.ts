@@ -414,7 +414,7 @@ export class EvoClawServer {
     });
     this.agentModelExecutor.setContextPruningManager(contextPruningManager);
     this.registry.registerService("contextPruningManager", contextPruningManager);
-    console.log(`[Server] ContextPruning initialized`);
+    process.stdout.write(`[Server] ContextPruning initialized`);
 
     // ── InputPipeline: sequential stage-based input processing ──
     const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("@evoclaw/agent");
@@ -429,7 +429,7 @@ export class EvoClawServer {
     ]);
     this.agentModelExecutor.setInputPipeline(inputPipeline);
     this.registry.registerService("inputPipeline", inputPipeline);
-    console.log(`[Server] InputPipeline initialized with 7 stages`);
+    process.stdout.write(`[Server] InputPipeline initialized with 7 stages`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // v0.42.0: No longer defaults to gpt-4o-mini. Uses user's LLM config order.
@@ -439,26 +439,7 @@ export class EvoClawServer {
       defaultModel: "",  // Will use first enabled user provider
       defaultProvider: "",  // Will use first enabled user provider
     });
-    console.log(`[Server] CopilotRouter initialized (respects user LLM config order)`);
-
-    // ── Local LLM Service: initialize and try to load local model ──
-    try {
-      const { getLocalLLMService } = require("@evoclaw/agent");
-      const localLLM = getLocalLLMService();
-      // Initialize asynchronously — don't block server startup
-      localLLM.initialize().then((status: any) => {
-        if (status.available) {
-          console.log(`[Server] ✅ Local LLM loaded: ${status.modelName} — simple tasks will use local model`);
-        } else {
-          console.log(`[Server] ℹ️ Local LLM not available (${status.error || "model not downloaded"}). All tasks use remote API.`);
-        }
-      }).catch((err: any) => {
-        console.log(`[Server] ℹ️ Local LLM initialization failed: ${err}. All tasks use remote API.`);
-      });
-      this.registry.registerService("localLLMService", localLLM);
-    } catch (err) {
-      console.log(`[Server] ℹ️ Local LLM service not available: ${err}. All tasks use remote API.`);
-    }
+    process.stdout.write(`[Server] CopilotRouter initialized (respects user LLM config order)`);
 
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
@@ -1270,7 +1251,7 @@ export class EvoClawServer {
             mdAvailable = "python3 -m markitdown";
           } catch {
             mdAvailable = "";
-            console.log("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'");
+            process.stdout.write("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'");
           }
         }
       }

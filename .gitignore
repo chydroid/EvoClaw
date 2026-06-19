@@ -11,9 +11,6 @@ coverage/
 data/
 !data/workspace/
 
-# Local LLM model files (too large for git, users download separately)
-local-model/
-
 IMPROVEMENT_PLAN.md
 
 *.pem
@@ -66,3 +63,4 @@ _music_dl_*.py
 # Put all test-only scratch files, debug scripts, and throwaway experiments here.
 # This directory is NOT tracked by git.
 tests-tmp/
+local-models/

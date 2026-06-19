@@ -371,13 +371,13 @@ export class CompactionManager {
       if (fs.existsSync(filePath)) {
         try {
           existing = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        } catch (err) { console.warn(`[CompactionManager] Failed to parse existing compaction file "${filePath}":`, err); }
+        } catch (err) { process.stderr.write(`[CompactionManager] Failed to parse existing compaction file "${filePath}":` + " " + err); }
       }
 
       existing.push(compaction);
       fs.writeFileSync(filePath, JSON.stringify(existing, null, 2), "utf-8");
     } catch (err) {
-      console.warn(
+      process.stderr.write(
         `[CompactionManager] Failed to persist compaction: ${err}`,
       );
     }
@@ -395,7 +395,7 @@ export class CompactionManager {
         }
       }
     } catch (err) {
-      console.warn(
+      process.stderr.write(
         `[CompactionManager] Failed to load compaction chain: ${err}`,
       );
     }

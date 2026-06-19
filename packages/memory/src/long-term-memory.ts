@@ -42,10 +42,10 @@ export class LongTermMemoryStore implements LongTermMemory {
       this.sqliteDb.exec(
         "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, type TEXT, content TEXT, importance REAL, tags TEXT, createdAt TEXT, updatedAt TEXT, ttl INTEGER, data TEXT)"
       );
-      console.log(`[LongTermMemory] SQLite backend opened at ${SQLITE_FILE}`);
+      process.stdout.write(`[LongTermMemory] SQLite backend opened at ${SQLITE_FILE}\n`);
     } catch {
       this.sqliteDb = null;
-      console.warn(`[LongTermMemory] better-sqlite3 not available, SQLite backend disabled`);
+      process.stderr.write(`[LongTermMemory] better-sqlite3 not available, SQLite backend disabled\n`);
     }
   }
 
@@ -70,11 +70,11 @@ export class LongTermMemoryStore implements LongTermMemory {
               // skip malformed rows
             }
           }
-          console.log(`[LongTermMemory] Loaded ${this.entries.size} entries from SQLite`);
+          process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from SQLite\n`);
           return;
         }
       } catch (err) {
-        console.warn(`[LongTermMemory] Failed to load from SQLite: ${err}`);
+        process.stderr.write(`[LongTermMemory] Failed to load from SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
 
@@ -92,11 +92,11 @@ export class LongTermMemoryStore implements LongTermMemory {
             };
             this.entries.set(entry.id, entry);
           }
-          console.log(`[LongTermMemory] Loaded ${this.entries.size} entries from disk`);
+          process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from disk\n`);
         }
       }
     } catch (err) {
-      console.warn(`[LongTermMemory] Failed to load from disk: ${err}`);
+      process.stderr.write(`[LongTermMemory] Failed to load from disk: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -122,7 +122,7 @@ export class LongTermMemoryStore implements LongTermMemory {
       }));
       fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
-      console.warn(`[LongTermMemory] Failed to save: ${err}`);
+      process.stderr.write(`[LongTermMemory] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -149,7 +149,7 @@ export class LongTermMemoryStore implements LongTermMemory {
         data
       );
     } catch (err) {
-      console.warn(`[LongTermMemory] Failed to save to SQLite: ${err}`);
+      process.stderr.write(`[LongTermMemory] Failed to save to SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -216,7 +216,7 @@ export class LongTermMemoryStore implements LongTermMemory {
         results.sort((a, b) => b.score - a.score);
         return query.limit ? results.slice(0, query.limit) : results;
       } catch (err) {
-        console.warn(`[LongTermMemory] SQLite search failed, falling back to in-memory: ${err}`);
+        process.stderr.write(`[LongTermMemory] SQLite search failed, falling back to in-memory: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
 
@@ -279,7 +279,7 @@ export class LongTermMemoryStore implements LongTermMemory {
           entry = sqliteEntry;
         }
       } catch (err) {
-        console.warn(`[LongTermMemory] Failed to retrieve from SQLite: ${err}`);
+        process.stderr.write(`[LongTermMemory] Failed to retrieve from SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
     if (entry) {
@@ -306,7 +306,7 @@ export class LongTermMemoryStore implements LongTermMemory {
         const stmt = this.sqliteDb.prepare("DELETE FROM memories WHERE id = ?");
         stmt.run(id);
       } catch (err) {
-        console.warn(`[LongTermMemory] Failed to delete from SQLite: ${err}`);
+        process.stderr.write(`[LongTermMemory] Failed to delete from SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
     this.scheduleSave();

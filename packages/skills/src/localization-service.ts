@@ -46,7 +46,7 @@ export class LocalizationService {
       this.saveToCache(cacheKey, translated);
       return translated;
     } catch (err) {
-      console.warn(`[LocalizationService] Translation failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[LocalizationService] Translation failed: ${err instanceof Error ? err.message : String(err)}`);
       return text;
     }
   }
@@ -110,7 +110,7 @@ export class LocalizationService {
       const merged = { ...existing, ...i18n };
       fs.writeFileSync(i18nPath, JSON.stringify(merged, null, 2), "utf-8");
     } catch (err) {
-      console.warn(`[LocalizationService] Failed to save i18n file: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[LocalizationService] Failed to save i18n file: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -145,7 +145,7 @@ export class LocalizationService {
       return existingI18n || undefined;
     }
 
-    console.log(`[LocalizationService] Translating skill "${skill.name}" to Chinese...`);
+    process.stdout.write(`[LocalizationService] Translating skill "${skill.name}" to Chinese...`);
 
     try {
       const i18n = await this.translateSkillContent(
@@ -163,10 +163,10 @@ export class LocalizationService {
       };
 
       this.saveI18nFile(skillDir, merged);
-      console.log(`[LocalizationService] Skill "${skill.name}" translated successfully`);
+      process.stdout.write(`[LocalizationService] Skill "${skill.name}" translated successfully`);
       return merged;
     } catch (err) {
-      console.warn(`[LocalizationService] Failed to translate skill "${skill.name}": ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[LocalizationService] Failed to translate skill "${skill.name}": ${err instanceof Error ? err.message : String(err)}`);
       return existingI18n || undefined;
     }
   }
@@ -178,14 +178,14 @@ export class LocalizationService {
       return undefined;
     }
 
-    console.log(`[LocalizationService] Translating plugin "${plugin.name}" to Chinese...`);
+    process.stdout.write(`[LocalizationService] Translating plugin "${plugin.name}" to Chinese...`);
 
     try {
       const result = await this.translatePluginContent(plugin.description, plugin.name);
-      console.log(`[LocalizationService] Plugin "${plugin.name}" translated successfully`);
+      process.stdout.write(`[LocalizationService] Plugin "${plugin.name}" translated successfully`);
       return result;
     } catch (err) {
-      console.warn(`[LocalizationService] Failed to translate plugin "${plugin.name}": ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[LocalizationService] Failed to translate plugin "${plugin.name}": ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
   }
@@ -205,7 +205,7 @@ export class LocalizationService {
         try {
           await task();
         } catch (err) {
-          console.warn(`[LocalizationService] Queue task failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.stderr.write(`[LocalizationService] Queue task failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }

@@ -107,7 +107,7 @@ function generateSubQueries(query: string): string[] {
     }
   }
 
-  return [...new Set(subQueries)].slice(0, 6);
+  return [...new Set(subQueries)].slice(0, 3);  // Reduced from 6 to 3 for faster response
 }
 
 // ── Main search pre-processing ──
@@ -132,7 +132,7 @@ export async function preprocessSearch(
   const userProvidedUrl = /https?:\/\/[^\s<>"']+/i.test(userMessage);
 
   if (userProvidedUrl) {
-    console.log(`[SearchPreprocessor] User provided URL in message — skipping search pre-processing`);
+    process.stdout.write(`[SearchPreprocessor] User provided URL in message — skipping search pre-processing`);
     return { newsContext, searchReason, shouldSearch };
   }
 
@@ -148,10 +148,10 @@ export async function preprocessSearch(
       shouldSearch = searchCheck.needed && searchCheck.confidence > 0.35;
       if (shouldSearch) {
         searchReason = searchCheck.reason;
-        console.log(`[SearchPreprocessor] Semantic intent detection: ${searchCheck.reason} (confidence: ${(searchCheck.confidence * 100).toFixed(0)}%)`);
+        process.stdout.write(`[SearchPreprocessor] Semantic intent detection: ${searchCheck.reason} (confidence: ${(searchCheck.confidence * 100).toFixed(0)}%)`);
       }
     } catch (err) {
-      console.warn(`[SearchPreprocessor] TaskClassifier failed: ${err}`);
+      process.stderr.write(`[SearchPreprocessor] TaskClassifier failed: ${err}`);
     }
   }
 
@@ -193,7 +193,7 @@ export async function preprocessSearch(
       else if (/\d{4}年/.test(searchQuery) || /最新|current|latest|recent/i.test(lowerQuery)) freshness = "py";
 
       const subQueries = generateSubQueries(searchQuery);
-      console.log(`[SearchPreprocessor] Multi-round search: ${subQueries.length} sub-queries for "${searchQuery}"`);
+      process.stdout.write(`[SearchPreprocessor] Multi-round search: ${subQueries.length} sub-queries for "${searchQuery}"`);
 
       const entry = registeredTools.get("web_search")!;
       let allSearchResults: Array<{ title: string; url: string; snippet: string }> = [];
@@ -236,7 +236,7 @@ export async function preprocessSearch(
             toolResult: `Found ${results.length} results for "${subQ}"`,
           });
         } catch (err) {
-          console.warn(`[SearchPreprocessor] Sub-query "${subQ}" failed: ${err}`);
+          process.stderr.write(`[SearchPreprocessor] Sub-query "${subQ}" failed: ${err}`);
         }
       }
 
@@ -254,7 +254,7 @@ export async function preprocessSearch(
           const fetchTool = registeredTools.get("fetch_node_page")!;
           const urlsToFetch = allSearchResults
             .filter(r => r.url && r.url.startsWith("http") && !r.url.includes("baidu.com/link"))
-            .slice(0, 8);
+            .slice(0, 3);  // Reduced from 8 to 3 for faster response
           let fetchedCount = 0;
 
           for (const r of urlsToFetch) {
@@ -263,12 +263,15 @@ export async function preprocessSearch(
                 type: "tool_call",
                 phase: "tool_calling",
                 detail: `正在抓取网页内容: ${r.title.slice(0, 40)}`,
-                progress: 50 + fetchedCount * 3,
+                progress: 50 + fetchedCount * 10,
                 toolName: "fetch_node_page",
                 toolArgs: { url: r.url },
               });
 
-              const fetchResult = await fetchTool.handler({ url: r.url, maxLength: 5000 });
+              const fetchResult = await Promise.race([
+                fetchTool.handler({ url: r.url, maxLength: 5000 }),
+                new Promise<null>((_, reject) => setTimeout(() => reject(new Error("fetch timeout")), 10000)),
+              ]);
               const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
               const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
               const cleanedContent = stripNoise(content);
@@ -278,15 +281,15 @@ export async function preprocessSearch(
                 allNewsContent += `## 网页正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 5000)}\n\n`;
               }
             } catch (fetchErr) {
-              console.warn(`[SearchPreprocessor] Failed to fetch URL ${r.url}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
+              process.stderr.write(`[SearchPreprocessor] Failed to fetch URL ${r.url}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
             }
           }
         }
         newsContext = allNewsContent;
-        console.log(`[SearchPreprocessor] Multi-round search complete: ${subQueries.length} queries, ${allSearchResults.length} results, ${allFetchedContent.length} pages fetched, ${newsContext.length} chars`);
+        process.stdout.write(`[SearchPreprocessor] Multi-round search complete: ${subQueries.length} queries, ${allSearchResults.length} results, ${allFetchedContent.length} pages fetched, ${newsContext.length} chars`);
       }
     } catch (err) {
-      console.warn(`[SearchPreprocessor] Multi-round search failed: ${err}`);
+      process.stderr.write(`[SearchPreprocessor] Multi-round search failed: ${err}`);
     }
   }
 
@@ -367,10 +370,10 @@ export function buildEnhancedMessage(
     : newsEnhancedMessage;
 
   if (newsContext) {
-    console.log(`[SearchPreprocessor] News context added: ${newsContext.length} chars`);
+    process.stdout.write(`[SearchPreprocessor] News context added: ${newsContext.length} chars`);
   }
   if (urlPriorityHint) {
-    console.log(`[SearchPreprocessor] URL priority hint injected`);
+    process.stdout.write(`[SearchPreprocessor] URL priority hint injected`);
   }
 
   return finalEnhancedMessage;

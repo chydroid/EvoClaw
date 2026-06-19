@@ -455,7 +455,7 @@ export class ConfigWatcher {
       try {
         await handler(newConfig, oldConfig, changes);
       } catch (err) {
-        console.error("[ConfigWatcher] Handler error:", err instanceof Error ? err.message : String(err));
+        process.stderr.write("[ConfigWatcher] Handler error:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
       }
     }
   }

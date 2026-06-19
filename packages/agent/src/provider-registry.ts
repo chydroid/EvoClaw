@@ -123,7 +123,7 @@ export class DefaultProviderRegistry implements ProviderRegistry {
         this.modelCache.set(provider, { models, timestamp: now });
         allModels.push(...models);
       } catch (err) {
-        console.warn(`[ProviderRegistry] Failed to list models for "${provider}": ${err}`);
+        process.stderr.write(`[ProviderRegistry] Failed to list models for "${provider}": ${err}`);
         // Use stale cache if available
         if (cached) {
           allModels.push(...cached.models);

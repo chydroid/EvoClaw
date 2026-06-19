@@ -444,7 +444,7 @@ export class PlaywrightBrowser {
         fs.writeFileSync(this.cookieFile, JSON.stringify(cookies, null, 2), "utf-8");
       }
     } catch (err) {
-      console.error("[PlaywrightBrowser] Failed to save cookies:", err);
+      process.stderr.write(`[PlaywrightBrowser] Failed to save cookies: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

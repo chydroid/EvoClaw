@@ -81,7 +81,7 @@ export class AutoSkillManager {
 
     this.tfidfMatcher.initialize(documents);
     this.corpusBuilt = true;
-    console.log(`[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills`);
+    process.stdout.write(`[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills`);
   }
 
   /**
@@ -243,7 +243,7 @@ export class AutoSkillManager {
       // Rebuild corpus after installation
       this.buildCorpus();
 
-      console.log(`[AutoSkillManager] Auto-installed "${skill.name}" for task: "${taskDescription.slice(0, 80)}"`);
+      process.stdout.write(`[AutoSkillManager] Auto-installed "${skill.name}" for task: "${taskDescription.slice(0, 80)}"`);
       return {
         installed: true,
         skillName: skill.name,
@@ -675,10 +675,10 @@ export class AutoSkillManager {
       };
       fs.writeFileSync(path.join(skillDir, "_meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
-      console.log(`[AutoSkillManager] Generated SKILL.md from curated: ${skillName}`);
+      process.stdout.write(`[AutoSkillManager] Generated SKILL.md from curated: ${skillName}`);
       return skillMdPath;
     } catch (err) {
-      console.warn(`[AutoSkillManager] Failed to generate curated skill "${skillName}": ${err}`);
+      process.stderr.write(`[AutoSkillManager] Failed to generate curated skill "${skillName}": ${err}`);
       return null;
     }
   }
@@ -773,7 +773,7 @@ export class AutoSkillManager {
         return [
           "```bash",
           "# Evaluate expression",
-          "node -e \"console.log(eval('<EXPRESSION>'))\"",
+          "node -e \"process.stdout.write(eval('<EXPRESSION>'))\"",
           "```",
         ];
       case "http-client":

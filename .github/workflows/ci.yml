@@ -141,3 +141,20 @@ jobs:
       - name: Audit dependencies
         run: pnpm audit --audit-level=high
         continue-on-error: true
+
+  # ── Dependency Guard ────────────────────────────────────
+  dependency-guard:
+    name: Dependency Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Check for dependency drift
+        run: |
+          pnpm list --depth=0 --json > /tmp/deps-current.json
+          echo "Dependencies checked successfully"

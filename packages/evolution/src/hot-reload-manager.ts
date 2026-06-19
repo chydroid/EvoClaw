@@ -76,9 +76,8 @@ export class HotReloadManager {
         try {
           await this.processEvent(event);
         } catch (err) {
-          console.error(
-            `[HotReload] Failed to process ${event.action} for "${event.skillId}":`,
-            err instanceof Error ? err.message : String(err)
+          process.stderr.write(
+            `[HotReload] Failed to process ${event.action} for "${event.skillId}":` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
           );
           // Continue with the next event rather than aborting the batch.
         }
@@ -89,7 +88,7 @@ export class HotReloadManager {
   }
 
   private async processEvent(event: HotReloadEvent): Promise<void> {
-    console.log(
+    process.stdout.write(
       `[HotReload] ${event.action} skill "${event.skillId}" (${event.strategy})`
     );
 

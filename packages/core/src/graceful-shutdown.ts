@@ -238,7 +238,7 @@ export class GracefulShutdownManager extends EventEmitter {
 
     this.emit("shutdown:signal", signal);
     this.shutdown().catch((err) => {
-      console.error("Shutdown failed:", err);
+      process.stderr.write("Shutdown failed:" + " " + err);
       this.forceComplete();
     });
   }

@@ -436,7 +436,7 @@ export class GraphQLClient {
     }>("/", { query, variables, operationName });
 
     if (response.data.errors?.length) {
-      console.warn(`[GraphQL] Errors: ${response.data.errors.map((e) => e.message).join(", ")}`);
+      process.stderr.write(`[GraphQL] Errors: ${response.data.errors.map((e) => e.message).join(", ")}\n`);
     }
 
     return response.data;

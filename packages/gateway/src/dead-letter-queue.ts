@@ -325,7 +325,7 @@ export class DeadLetterQueue {
         }
         return entries;
       } catch (err) {
-        console.warn(`[DeadLetterQueue] Failed to read channel file for "${channel}":`, err);
+        process.stderr.write(`[DeadLetterQueue] Failed to read channel file for "${channel}":` + " " + err);
         return [];
       }
     }

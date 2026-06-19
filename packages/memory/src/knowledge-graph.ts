@@ -58,10 +58,10 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
         if (data.edges && Array.isArray(data.edges)) {
           this.edges = data.edges;
         }
-        console.log(`[KnowledgeGraph] Loaded ${this.nodes.size} nodes, ${this.edges.length} edges from disk`);
+        process.stdout.write(`[KnowledgeGraph] Loaded ${this.nodes.size} nodes, ${this.edges.length} edges from disk\n`);
       }
     } catch (err) {
-      console.warn(`[KnowledgeGraph] Failed to load from disk: ${err}`);
+      process.stderr.write(`[KnowledgeGraph] Failed to load from disk: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -85,7 +85,7 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
       };
       fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
-      console.warn(`[KnowledgeGraph] Failed to save: ${err}`);
+      process.stderr.write(`[KnowledgeGraph] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

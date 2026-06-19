@@ -108,9 +108,8 @@ export class GeneticEvolutionEngine {
         const score = await evaluator(candidate);
         scores.push(score);
       } catch (evaluationErr) {
-        console.warn(
-          `[GeneticEngine] Evaluation failed for candidate ${candidate.id}:`,
-          evaluationErr instanceof Error ? evaluationErr.message : String(evaluationErr)
+        process.stderr.write(
+          `[GeneticEngine] Evaluation failed for candidate ${candidate.id}:` + " " + (evaluationErr instanceof Error ? evaluationErr.message : String(evaluationErr)) + "\n"
         );
         scores.push({
           candidateId: candidate.id,
@@ -256,7 +255,7 @@ export class GeneticEvolutionEngine {
     fitnessStats: { average: number; max: number; min: number };
   } | null> {
     if (candidates.length < 1) {
-      console.warn("[GeneticEngine] Need at least 1 candidate for genetic optimization");
+      process.stderr.write("[GeneticEngine] Need at least 1 candidate for genetic optimization");
       return null;
     }
 
@@ -299,7 +298,7 @@ export class GeneticEvolutionEngine {
         },
       };
     } catch (err) {
-      console.warn("[GeneticEngine] Genetic optimization failed:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[GeneticEngine] Genetic optimization failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
       return null;
     }
   }

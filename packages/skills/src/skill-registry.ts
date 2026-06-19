@@ -235,9 +235,8 @@ export class SkillRegistry {
         allEntries = allEntries.concat(result.value.entries);
         total += result.value.total;
       } else {
-        console.warn(
-          `[SkillRegistry] Failed to query remote registry "${enabledRemotes[i].url}":`,
-          result.reason instanceof Error ? result.reason.message : String(result.reason)
+        process.stderr.write(
+          `[SkillRegistry] Failed to query remote registry "${enabledRemotes[i].url}":` + " " + (result.reason instanceof Error ? result.reason.message : String(result.reason)) + "\n"
         );
       }
     }

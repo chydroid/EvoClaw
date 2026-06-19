@@ -68,7 +68,7 @@ export class EnhancedAgentExecutor {
       // Availability context can be passed here if needed
     });
 
-    console.log(`[EnhancedAgent] Planned ${plan.visible.length} visible tools, ${plan.hidden.length} hidden`);
+    process.stdout.write(`[EnhancedAgent] Planned ${plan.visible.length} visible tools, ${plan.hidden.length} hidden`);
 
     // 2. Convert tools to LLM provider format
     const tools = this.config.llmProvider === 'openai'
@@ -126,7 +126,7 @@ export class EnhancedAgentExecutor {
         const tool = plan.visible.find((t) => t.descriptor.name === toolCall.name);
         
         if (!tool) {
-          console.warn(`[EnhancedAgent] Tool not found in plan: ${toolCall.name}`);
+          process.stderr.write(`[EnhancedAgent] Tool not found in plan: ${toolCall.name}`);
           messages.push({
             role: 'tool',
             content: `Error: Tool ${toolCall.name} not found`,
@@ -148,7 +148,7 @@ export class EnhancedAgentExecutor {
         try {
           result = await tool.executor(toolCall.args as any);
         } catch (error) {
-          console.error(`[EnhancedAgent] Tool execution failed: ${toolCall.name}`, error);
+          process.stderr.write(`[EnhancedAgent] Tool execution failed: ${toolCall.name}` + " " + error);
           result = {
             success: false,
             error: error instanceof Error ? error.message : String(error),
@@ -177,7 +177,7 @@ export class EnhancedAgentExecutor {
     }
 
     // Max iterations reached
-    console.warn(`[EnhancedAgent] Max iterations (${this.maxIterations}) reached`);
+    process.stderr.write(`[EnhancedAgent] Max iterations (${this.maxIterations}) reached`);
     return 'I apologize, but I was unable to complete the task within the maximum number of iterations.';
   }
 }

@@ -121,7 +121,7 @@ export class ContextEngine {
         files.push({ path: fileName, content });
         totalChars += content.length;
       } catch (err) {
-        console.warn(`[ContextEngine] Failed to read bootstrap file ${filePath}:`, err);
+        process.stderr.write(`[ContextEngine] Failed to read bootstrap file ${filePath}:` + " " + err);
       }
     }
 

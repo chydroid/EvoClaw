@@ -73,8 +73,8 @@ export class DockerSandbox {
       this.available = true;
     } catch {
       this.available = false;
-      console.warn(
-        "[DockerSandbox] Docker is not available — sandbox features disabled"
+      process.stderr.write(
+        "[DockerSandbox] Docker is not available — sandbox features disabled\n"
       );
     }
 

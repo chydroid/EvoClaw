@@ -146,14 +146,14 @@ JSON response:`;
           // Validate: each task should be a non-empty string
           const validTasks = parsed.tasks.filter((t: unknown) => typeof t === "string" && t.trim().length > 0);
           if (validTasks.length > 0) {
-            console.log(`[TaskAnalyzer] LLM task analysis: ${validTasks.length} task(s) detected`);
+            process.stdout.write(`[TaskAnalyzer] LLM task analysis: ${validTasks.length} task(s) detected`);
             return validTasks;
           }
         }
       }
     }
   } catch (err) {
-    console.warn(`[TaskAnalyzer] LLM task analysis failed, treating as single task: ${err}`);
+    process.stderr.write(`[TaskAnalyzer] LLM task analysis failed, treating as single task: ${err}`);
   }
 
   // Fallback: treat as single task
@@ -223,7 +223,7 @@ JSON response:`;
       }
     }
   } catch (err) {
-    console.warn(`[TaskAnalyzer] LLM task decomposition failed, using fallback: ${err}`);
+    process.stderr.write(`[TaskAnalyzer] LLM task decomposition failed, using fallback: ${err}`);
   }
 
   // Fallback
@@ -518,7 +518,7 @@ export async function executeSubtasksFromCheckpoint(
         if (subtaskTimeoutHandle) clearTimeout(subtaskTimeoutHandle);
       }
     } catch (err) {
-      console.warn(`[TaskAnalyzer] Subtask "${subtask.description}" failed:`, err);
+      process.stderr.write(`[TaskAnalyzer] Subtask "${subtask.description}" failed:` + " " + err);
     }
 
     if (subtaskResult) {
@@ -530,7 +530,7 @@ export async function executeSubtasksFromCheckpoint(
       let retryCount = 0;
       while (retryCount < 2) {
         retryCount++;
-        console.log(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
+        process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
         try {
           const retryResult = await deps.tryCallLLM(
             subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
@@ -545,7 +545,7 @@ export async function executeSubtasksFromCheckpoint(
             break;
           }
         } catch (retryErr) {
-          console.warn(`[TaskAnalyzer] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+          process.stderr.write(`[TaskAnalyzer] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
         }
       }
 

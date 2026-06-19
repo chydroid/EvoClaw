@@ -83,11 +83,11 @@ export function convertToCorePlugin(sdkPlugin: Plugin): CorePlugin {
         list: () => [],
       };
       const logger: PluginLogger = {
-        fatal(msg: string, ...args: unknown[]) { console.error(`[Plugin:${manifest.id}]`, msg, ...args); },
-        error(msg: string, ...args: unknown[]) { console.error(`[Plugin:${manifest.id}]`, msg, ...args); },
-        warn(msg: string, ...args: unknown[]) { console.warn(`[Plugin:${manifest.id}]`, msg, ...args); },
-        info(msg: string, ...args: unknown[]) { console.log(`[Plugin:${manifest.id}]`, msg, ...args); },
-        debug(msg: string, ...args: unknown[]) { console.debug(`[Plugin:${manifest.id}]`, msg, ...args); },
+        fatal(msg: string, ...args: unknown[]) { process.stderr.write(`[Plugin:${manifest.id}] ${msg} ${args.map(String).join(" ")}\n`); },
+        error(msg: string, ...args: unknown[]) { process.stderr.write(`[Plugin:${manifest.id}] ${msg} ${args.map(String).join(" ")}\n`); },
+        warn(msg: string, ...args: unknown[]) { process.stderr.write(`[Plugin:${manifest.id}] ${msg} ${args.map(String).join(" ")}\n`); },
+        info(msg: string, ...args: unknown[]) { process.stdout.write(`[Plugin:${manifest.id}] ${msg} ${args.map(String).join(" ")}\n`); },
+        debug(msg: string, ...args: unknown[]) { process.stdout.write(`[Plugin:${manifest.id}] ${msg} ${args.map(String).join(" ")}\n`); },
         trace() {},
       };
       await sdkPlugin.init(serviceLocator, logger);
@@ -155,7 +155,7 @@ export class PluginHost {
     if (this.pluginManager) {
       const corePlugin = convertToCorePlugin(plugin);
       this.pluginManager.registerPlugin(corePlugin).catch((err) => {
-        console.error(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}":`, err);
+        process.stderr.write(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}":`, err);
       });
 
       // Still track locally for state queries
@@ -196,7 +196,7 @@ export class PluginHost {
 
     if (this.config.autoActivate) {
       this.activate(manifest.id).catch((err) => {
-        console.error(`[PluginHost] Auto-activation failed for "${manifest.id}":`, err);
+        process.stderr.write(`[PluginHost] Auto-activation failed for "${manifest.id}":`, err);
       });
     }
   }
@@ -320,9 +320,8 @@ export class PluginHost {
           ),
         ]);
       } catch (err) {
-        console.error(
-          `[PluginHost] Hook error for "${pluginId}" on "${hookName}":`,
-          err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `[PluginHost] Hook error for "${pluginId}" on "${hookName}":` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }
@@ -425,7 +424,7 @@ export class PluginHost {
         try {
           await entry.plugin.shutdown();
         } catch (err) {
-          console.error(`[PluginHost] Shutdown error for "${id}":`, err);
+          process.stderr.write(`[PluginHost] Shutdown error for "${id}":` + " " + (err instanceof Error ? err.message : String(err)) + "\n");
         }
       }
     }
@@ -453,11 +452,11 @@ export class PluginHost {
   private createLogger(pluginId: string): PluginLogger {
     const prefix = `[Plugin:${pluginId}]`;
     return {
-      fatal(msg: string, ...args: unknown[]) { console.error(prefix, msg, ...args); },
-      error(msg: string, ...args: unknown[]) { console.error(prefix, msg, ...args); },
-      warn(msg: string, ...args: unknown[]) { console.warn(prefix, msg, ...args); },
-      info(msg: string, ...args: unknown[]) { console.log(prefix, msg, ...args); },
-      debug(msg: string, ...args: unknown[]) { console.debug(prefix, msg, ...args); },
+      fatal(msg: string, ...args: unknown[]) { process.stderr.write(`${prefix} ${msg} ${args.map(String).join(" ")}\n`); },
+      error(msg: string, ...args: unknown[]) { process.stderr.write(`${prefix} ${msg} ${args.map(String).join(" ")}\n`); },
+      warn(msg: string, ...args: unknown[]) { process.stderr.write(`${prefix} ${msg} ${args.map(String).join(" ")}\n`); },
+      info(msg: string, ...args: unknown[]) { process.stdout.write(`${prefix} ${msg} ${args.map(String).join(" ")}\n`); },
+      debug(msg: string, ...args: unknown[]) { process.stdout.write(`${prefix} ${msg} ${args.map(String).join(" ")}\n`); },
       trace(msg: string, ...args: unknown[]) {},
     };
   }

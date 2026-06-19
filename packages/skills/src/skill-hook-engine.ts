@@ -50,12 +50,12 @@ export class SkillHookEngine {
       ]);
 
       if (!result.success) {
-        console.warn(
+        process.stderr.write(
           `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${result.errors?.join("; ") || "unknown error"}`
         );
       }
     } catch (err) {
-      console.warn(
+      process.stderr.write(
         `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {

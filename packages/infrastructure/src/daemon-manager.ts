@@ -227,7 +227,7 @@ export class DaemonManager {
         execSync(`systemctl enable ${this.config.serviceName}`);
       }
 
-      console.log(`[DaemonManager] systemd service installed at ${unitPath}`);
+      process.stdout.write(`[DaemonManager] systemd service installed at ${unitPath}\n`);
       return {
         success: true,
         message: `systemd service "${this.config.serviceName}" installed`,
@@ -365,7 +365,7 @@ ${envDict}
         execSync(`launchctl load ${plistPath}`);
       }
 
-      console.log(`[DaemonManager] launchd agent installed at ${plistPath}`);
+      process.stdout.write(`[DaemonManager] launchd agent installed at ${plistPath}`);
       return {
         success: true,
         message: `launchd agent "${this.config.serviceName}" installed`,
@@ -455,7 +455,7 @@ ${envDict}
         execSync(`nssm set ${this.config.serviceName} AppEnvironmentExtra ${k}=${v}`);
       }
 
-      console.log(`[DaemonManager] Windows Service installed via nssm`);
+      process.stdout.write(`[DaemonManager] Windows Service installed via nssm`);
       return {
         success: true,
         message: `Windows Service "${this.config.serviceName}" installed (nssm)`,
@@ -534,7 +534,7 @@ ${envEntries}
         );
       }
 
-      console.log(`[DaemonManager] Windows Service installed via sc`);
+      process.stdout.write(`[DaemonManager] Windows Service installed via sc`);
       return {
         success: true,
         message: `Windows Service "${this.config.serviceName}" installed (sc)`,

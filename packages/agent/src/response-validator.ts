@@ -265,7 +265,7 @@ export class ResponseValidator {
       if (this.rescueEnabled) {
         const rescued = rescueToolCalls(message.content, this.availableToolNames);
         if (rescued) {
-          console.log(
+          process.stdout.write(
             `[ResponseValidator] 🔧 Rescued ${rescued.length} tool call(s) from text response`
           );
           return { toolCalls: rescued, nudge: null, needsRetry: false };

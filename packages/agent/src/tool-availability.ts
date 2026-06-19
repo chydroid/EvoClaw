@@ -283,9 +283,9 @@ function evaluateExpression(
  * });
  * 
  * if (diagnostics.length === 0) {
- *   console.log('Tool is available');
+ *   process.stdout.write('Tool is available');
  * } else {
- *   console.log('Tool is unavailable:', diagnostics);
+ *   process.stdout.write('Tool is unavailable:' + " " + diagnostics);
  * }
  * ```
  */

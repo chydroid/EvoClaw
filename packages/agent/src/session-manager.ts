@@ -134,13 +134,13 @@ export class SessionManager {
     try {
       fs.writeFileSync(transcriptPath, "", "utf-8");
     } catch (err) {
-      console.warn(`[SessionManager] Failed to create empty transcript: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[SessionManager] Failed to create empty transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Cache
     this.sessionCache.set(sessionId, session);
 
-    console.log(`[SessionManager] Created session ${sessionId} for agent "${agentId}"`);
+    process.stdout.write(`[SessionManager] Created session ${sessionId} for agent "${agentId}"`);
     return session;
   }
 
@@ -187,7 +187,7 @@ export class SessionManager {
 
     session.status = "archived";
     this.updateSessionMeta(session);
-    console.log(`[SessionManager] Archived session ${sessionId}: ${reason}`);
+    process.stdout.write(`[SessionManager] Archived session ${sessionId}: ${reason}`);
   }
 
   /** Delete a session completely */
@@ -195,7 +195,7 @@ export class SessionManager {
     try {
       const sessionDir = path.join(this.getAgentDir(agentId), sessionId);
       if (!fs.existsSync(sessionDir)) {
-        console.warn(`[SessionManager] Session ${sessionId} not found for deletion`);
+        process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion`);
         return false;
       }
 
@@ -212,10 +212,10 @@ export class SessionManager {
       this.sessionCache.delete(sessionId);
       this.activeLocks.delete(sessionId);
 
-      console.log(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"`);
+      process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"`);
       return true;
     } catch (err) {
-      console.error(`[SessionManager] Failed to delete session ${sessionId}:`, err);
+      process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err);
       return false;
     }
   }
@@ -373,12 +373,12 @@ export class SessionManager {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes("EEXIST") && !msg.includes("ENOENT")) {
-          console.error(`[SessionManager] Lock error for ${sessionId}:`, err);
+          process.stderr.write(`[SessionManager] Lock error for ${sessionId}:` + " " + err);
         }
       }
     }
 
-    console.warn(`[SessionManager] Failed to acquire lock for ${sessionId} after ${timeoutMs}ms`);
+    process.stderr.write(`[SessionManager] Failed to acquire lock for ${sessionId} after ${timeoutMs}ms`);
     return null;
   }
 
@@ -390,7 +390,7 @@ export class SessionManager {
         fs.unlinkSync(lock.lockPath);
       }
     } catch (err) {
-      console.error(`[SessionManager] Failed to release lock for ${lock.sessionId}:`, err);
+      process.stderr.write(`[SessionManager] Failed to release lock for ${lock.sessionId}:` + " " + err);
     }
   }
 
@@ -450,7 +450,7 @@ export class SessionManager {
       this.updateSessionMeta(successor);
     }
 
-    console.log(`[SessionManager] Compaction chain: ${parentSessionId} -> ${successorSessionId}`);
+    process.stdout.write(`[SessionManager] Compaction chain: ${parentSessionId} -> ${successorSessionId}`);
   }
 
   // ─── List / Query ──────────────────────────────────────────────────────────

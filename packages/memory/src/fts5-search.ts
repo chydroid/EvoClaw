@@ -58,12 +58,12 @@ export class FTS5SearchEngine {
       this.db = new BetterSqlite3(this.dbPath) as SqliteDatabase;
       this.useFallback = false;
       if (this.dbPath !== ":memory:") {
-        console.log(`[FTS5Search] Using persistent database at ${this.dbPath}`);
+        process.stdout.write(`[FTS5Search] Using persistent database at ${this.dbPath}\n`);
       }
     } catch {
       this.db = null;
       this.useFallback = true;
-      console.warn(`[FTS5Search] better-sqlite3 not available, falling back to in-memory mode`);
+      process.stderr.write(`[FTS5Search] better-sqlite3 not available, falling back to in-memory mode\n`);
     }
   }
 

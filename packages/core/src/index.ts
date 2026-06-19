@@ -14,6 +14,25 @@ export * from "./types/evolution";
 export * from "./types/memory";
 export * from "./types/security";
 export * from "./types/mcp";
+export {
+  EvoError,
+  ConfigError,
+  AuthError,
+  ProviderError,
+  RateLimitError,
+  ContextOverflowError,
+  TaskError,
+  PluginError,
+  isEvoError,
+  isProviderError,
+  isRateLimitError,
+  isContextOverflowError,
+  isConfigError,
+  isAuthError,
+  isTaskError,
+  isPluginError,
+} from "./types/errors";
+export type {} from "./types/errors";
 export { ServiceRegistry } from "./service-registry";
 export { EventBus } from "./event-bus";
 export { ConfigManager, defaultConfig } from "./config";

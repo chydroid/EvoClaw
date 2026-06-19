@@ -70,20 +70,20 @@ export class HeartbeatManager {
         this.start();
       }
     }
-    console.log(`[HeartbeatManager] Heartbeat configured: enabled=${this.enabled}, interval=${this.intervalMs}ms`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat configured: enabled=${this.enabled}, interval=${this.intervalMs}ms`);
   }
 
   /** Start the heartbeat timer */
   start(): void {
     if (this.timer) return; // already running
     if (!this.enabled) {
-      console.log("[HeartbeatManager] Heartbeat is disabled, not starting timer");
+      process.stdout.write("[HeartbeatManager] Heartbeat is disabled, not starting timer");
       return;
     }
 
     this.nextFireTime = new Date(Date.now() + this.intervalMs);
     this.timer = setInterval(() => this.onHeartbeat(), this.intervalMs);
-    console.log(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})`);
   }
 
   /** Stop the heartbeat timer */
@@ -92,7 +92,7 @@ export class HeartbeatManager {
       clearInterval(this.timer);
       this.timer = null;
       this.nextFireTime = null;
-      console.log("[HeartbeatManager] Heartbeat stopped");
+      process.stdout.write("[HeartbeatManager] Heartbeat stopped");
     }
   }
 
@@ -128,7 +128,7 @@ export class HeartbeatManager {
   private async onHeartbeat(): Promise<void> {
     // Skip if agent is actively processing conversations
     if (!this.isIdle()) {
-      console.log("[HeartbeatManager] Heartbeat skipped — agent is busy");
+      process.stdout.write("[HeartbeatManager] Heartbeat skipped — agent is busy");
       this.nextFireTime = new Date(Date.now() + this.intervalMs);
       return;
     }
@@ -136,7 +136,7 @@ export class HeartbeatManager {
     this.lastFireTime = new Date();
     this.nextFireTime = new Date(Date.now() + this.intervalMs);
 
-    console.log(`[HeartbeatManager] Heartbeat fired at ${this.lastFireTime.toISOString()}`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat fired at ${this.lastFireTime.toISOString()}`);
 
     const heartbeatResults: {
       queueItemsProcessed: number;
@@ -150,7 +150,7 @@ export class HeartbeatManager {
 
     try {
       if (!this.handlerDeps) {
-        console.warn("[HeartbeatManager] No handler deps set, skipping heartbeat processing");
+        process.stderr.write("[HeartbeatManager] No handler deps set, skipping heartbeat processing");
         return;
       }
 
@@ -164,7 +164,7 @@ export class HeartbeatManager {
             const item = queueManager.dequeue(sessionId);
             if (item) {
               heartbeatResults.queueItemsProcessed++;
-              console.log(`[HeartbeatManager] Heartbeat processing queued item [${item.mode}] for session "${sessionId}": "${item.message.slice(0, 80)}"`);
+              process.stdout.write(`[HeartbeatManager] Heartbeat processing queued item [${item.mode}] for session "${sessionId}": "${item.message.slice(0, 80)}"`);
               try {
                 const result = await processChatMessage(item.message, {
                   sessionId,
@@ -175,7 +175,7 @@ export class HeartbeatManager {
               } catch (err) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 queueManager.markFailed(item.id, errorMsg);
-                console.warn(`[HeartbeatManager] Heartbeat queue item failed: ${errorMsg}`);
+                process.stderr.write(`[HeartbeatManager] Heartbeat queue item failed: ${errorMsg}`);
               }
               // Only process one item per heartbeat to avoid overload
               break;
@@ -195,11 +195,11 @@ export class HeartbeatManager {
         for (const task of tasks) {
           if (task.enabled && task.nextRun && new Date(task.nextRun) <= now) {
             heartbeatResults.cronTasksDue++;
-            console.log(`[HeartbeatManager] Heartbeat found due cron task: "${task.name}" (${task.id})`);
+            process.stdout.write(`[HeartbeatManager] Heartbeat found due cron task: "${task.name}" (${task.id})`);
             try {
               await scheduleManager.executeTask(task.id);
             } catch (err) {
-              console.warn(`[HeartbeatManager] Heartbeat cron task execution failed: ${err instanceof Error ? err.message : String(err)}`);
+              process.stderr.write(`[HeartbeatManager] Heartbeat cron task execution failed: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
         }
@@ -215,7 +215,7 @@ export class HeartbeatManager {
           });
           heartbeatResults.memoryReminders = results.length;
           if (results.length > 0) {
-            console.log(`[HeartbeatManager] Heartbeat found ${results.length} memory reminders`);
+            process.stdout.write(`[HeartbeatManager] Heartbeat found ${results.length} memory reminders`);
           }
         } catch {
           // Memory search is best-effort
@@ -235,7 +235,7 @@ export class HeartbeatManager {
       }
 
     } catch (err) {
-      console.error(`[HeartbeatManager] Heartbeat error: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[HeartbeatManager] Heartbeat error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

@@ -164,7 +164,7 @@ export class ChannelManager {
     this.approvedPeers.set(config.type, new Set(config.allowFrom));
     this.blocklistedPeers.set(config.type, new Set(config.blockFrom));
 
-    console.log(`[ChannelManager] Registered channel: ${config.type} (${config.label})`);
+    process.stdout.write(`[ChannelManager] Registered channel: ${config.type} (${config.label})`);
   }
 
   /** Attach a channel adapter */
@@ -196,9 +196,9 @@ export class ChannelManager {
         await adapter.start();
         const channelStatus = this.statuses.get(adapter.type);
         if (channelStatus) channelStatus.connected = true;
-        console.log(`[ChannelManager] Started adapter: ${adapter.type}`);
+        process.stdout.write(`[ChannelManager] Started adapter: ${adapter.type}`);
       } catch (err) {
-        console.error(`[ChannelManager] Failed to start adapter ${adapter.type}:`, err);
+        process.stderr.write(`[ChannelManager] Failed to start adapter ${adapter.type}:` + " " + err);
       }
     }
   }
@@ -261,14 +261,14 @@ export class ChannelManager {
       }
 
       if (policy === "closed" && !this.isPeerApproved(msg.channel, msg.from)) {
-        console.log(`[ChannelManager] Blocked DM from unapproved peer on ${msg.channel}: ${msg.from}`);
+        process.stdout.write(`[ChannelManager] Blocked DM from unapproved peer on ${msg.channel}: ${msg.from}`);
         return;
       }
     }
 
     // Check blocklist
     if (this.isPeerBlocklisted(msg.channel, msg.from)) {
-      console.log(`[ChannelManager] Blocked message from blocklisted peer on ${msg.channel}: ${msg.from}`);
+      process.stdout.write(`[ChannelManager] Blocked message from blocklisted peer on ${msg.channel}: ${msg.from}`);
       return;
     }
 
@@ -277,7 +277,7 @@ export class ChannelManager {
       try {
         await this.messageHandler(msg);
       } catch (err) {
-        console.error(`[ChannelManager] Message handler error:`, err);
+        process.stderr.write(`[ChannelManager] Message handler error:` + " " + err);
       }
     }
   }
@@ -333,7 +333,7 @@ export class ChannelManager {
     // Pairing codes expire after 5 minutes
     if (Date.now() - entry.createdAt > 5 * 60 * 1000) {
       this.pairingCodes.delete(code);
-      console.warn(`[ChannelManager] Pairing code expired for peer ${entry.peerId} on ${entry.channel}`);
+      process.stderr.write(`[ChannelManager] Pairing code expired for peer ${entry.peerId} on ${entry.channel}`);
       return false;
     }
 
@@ -343,7 +343,7 @@ export class ChannelManager {
     }
 
     this.pairingCodes.delete(code);
-    console.log(`[ChannelManager] Approved peer ${entry.peerId} on ${entry.channel}`);
+    process.stdout.write(`[ChannelManager] Approved peer ${entry.peerId} on ${entry.channel}`);
     return true;
   }
 
@@ -414,9 +414,9 @@ export class ChannelManager {
           await adapter.start();
           const status = this.statuses.get(type);
           if (status) status.connected = true;
-          console.log(`[ChannelManager] Started ${type}`);
+          process.stdout.write(`[ChannelManager] Started ${type}`);
         } catch (err) {
-          console.error(`[ChannelManager] Failed to start ${type}:`, err);
+          process.stderr.write(`[ChannelManager] Failed to start ${type}:` + " " + err);
         }
       }
     }
@@ -429,9 +429,9 @@ export class ChannelManager {
         await adapter.stop();
         const status = this.statuses.get(type);
         if (status) status.connected = false;
-        console.log(`[ChannelManager] Stopped ${type}`);
+        process.stdout.write(`[ChannelManager] Stopped ${type}`);
       } catch (err) {
-        console.error(`[ChannelManager] Failed to stop ${type}:`, err);
+        process.stderr.write(`[ChannelManager] Failed to stop ${type}:` + " " + err);
       }
     }
   }

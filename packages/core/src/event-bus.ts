@@ -5,8 +5,11 @@ export class EventBus implements IEventBus {
   private subscriptions = new Map<string, Map<string, EventSubscription>>();
   private history: EvoEvent[] = [];
   private historyLimit = 1000;
+  private closed = false;
 
   async publish<T>(eventType: string, data: T, source: string): Promise<void> {
+    if (this.closed) return;
+
     const event: EvoEvent<T> = {
       id: uuid(),
       type: eventType,
@@ -29,7 +32,8 @@ export class EventBus implements IEventBus {
             await sub.handler(event);
           }
         } catch (err) {
-          console.error(`EventBus: handler error for "${eventType}":`, err);
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`EventBus: handler error for "${eventType}": ${msg}\n`);
         }
       })
     );
@@ -89,10 +93,25 @@ export class EventBus implements IEventBus {
     this.history = [];
   }
 
+  /** Gracefully shut down the event bus — stops accepting new events */
+  shutdown(): void {
+    this.closed = true;
+    this.subscriptions.clear();
+  }
+
   private recordHistory(event: EvoEvent): void {
     this.history.push(event);
     if (this.history.length > this.historyLimit) {
       this.history = this.history.slice(-this.historyLimit);
     }
+  }
+
+  /** Number of active subscriptions */
+  subscriptionCount(): number {
+    let count = 0;
+    for (const map of this.subscriptions.values()) {
+      count += map.size;
+    }
+    return count;
   }
 }

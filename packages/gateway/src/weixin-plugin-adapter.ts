@@ -733,15 +733,15 @@ export class WeixinPluginAdapter {
       const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
 
       if (!fs.existsSync(indexPath)) {
-        console.log("[Weixin] No accounts index found");
+        process.stdout.write("[Weixin] No accounts index found");
         return [];
       }
 
       const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-      console.log(`[Weixin] Found ${index.length} accounts in index`);
+      process.stdout.write(`[Weixin] Found ${index.length} accounts in index`);
       return index;
     } catch (err) {
-      console.error("[Weixin] Failed to find configured accounts:", err);
+      process.stderr.write("[Weixin] Failed to find configured accounts:" + " " + err);
       return [];
     }
   }
@@ -751,7 +751,7 @@ export class WeixinPluginAdapter {
    */
   loadAccount(accountId: string): WeixinAccount | null {
     if (accountId.includes("..") || accountId.includes("/") || accountId.includes("\\")) {
-      console.error(`[Weixin] Invalid accountId (path traversal detected): ${accountId}`);
+      process.stderr.write(`[Weixin] Invalid accountId (path traversal detected): ${accountId}`);
       return null;
     }
     try {
@@ -760,15 +760,15 @@ export class WeixinPluginAdapter {
       const accountFile = path.join(accountsDir, `${accountId}.json`);
 
       if (!fs.existsSync(accountFile)) {
-        console.log(`[Weixin] Account file not found: ${accountFile}`);
+        process.stdout.write(`[Weixin] Account file not found: ${accountFile}`);
         return null;
       }
 
       const account = JSON.parse(fs.readFileSync(accountFile, "utf-8"));
-      console.log(`[Weixin] Loaded account: ${accountId}`);
+      process.stdout.write(`[Weixin] Loaded account: ${accountId}`);
       return account;
     } catch (err) {
-      console.error(`[Weixin] Failed to load account ${accountId}:`, err);
+      process.stderr.write(`[Weixin] Failed to load account ${accountId}:` + " " + err);
       return null;
     }
   }
@@ -794,7 +794,7 @@ export class WeixinPluginAdapter {
       });
 
       if (!response.ok) {
-        console.error(`[Weixin] getupdates failed: ${response.status}`);
+        process.stderr.write(`[Weixin] getupdates failed: ${response.status}`);
         return null;
       }
 
@@ -802,30 +802,30 @@ export class WeixinPluginAdapter {
 
       // 首次请求时打印完整响应结构
       if (!lastSeq) {
-        console.log(`[Weixin] First getupdates response keys: ${Object.keys(data).join(", ")}`);
-        console.log(`[Weixin] Full first response (truncated): ${JSON.stringify(data).substring(0, 500)}`);
+        process.stdout.write(`[Weixin] First getupdates response keys: ${Object.keys(data).join(", ")}`);
+        process.stdout.write(`[Weixin] Full first response (truncated): ${JSON.stringify(data).substring(0, 500)}`);
       }
 
       // 只在有消息、错误或首次时打印日志
       if (data.ret !== 0 && data.ret !== undefined || data.errcode !== undefined || (data.msgs && data.msgs.length > 0) || !lastSeq) {
-        console.log(`[Weixin] getupdates response: ret=${data.ret}, errcode=${data.errcode}, msgs=${data.msgs?.length ?? 0}, buf_len=${data.get_updates_buf?.length ?? 0}`);
+        process.stdout.write(`[Weixin] getupdates response: ret=${data.ret}, errcode=${data.errcode}, msgs=${data.msgs?.length ?? 0}, buf_len=${data.get_updates_buf?.length ?? 0}`);
       }
 
       // 检查 session 过期
       if (data.errcode === -14) {
-        console.warn("[Weixin] Session expired (errcode=-14), need to re-scan QR code");
+        process.stderr.write("[Weixin] Session expired (errcode=-14), need to re-scan QR code");
         return { expired: true as const };
       }
 
       if (data.ret !== undefined && data.ret !== 0 && data.errcode !== 0) {
-        console.error(`[Weixin] getupdates error: ret=${data.ret}, errcode=${data.errcode}, errmsg=${data.errmsg}`);
+        process.stderr.write(`[Weixin] getupdates error: ret=${data.ret}, errcode=${data.errcode}, errmsg=${data.errmsg}`);
         return null;
       }
 
       return data;
     } catch (err: any) {
       if (err?.name === "AbortError") return null;
-      console.error("[Weixin] getupdates error:", err);
+      process.stderr.write("[Weixin] getupdates error:" + " " + err);
       return null;
     }
   }
@@ -864,7 +864,7 @@ export class WeixinPluginAdapter {
         },
       };
 
-      console.log(`[Weixin] Sending message to ${toUserId}, context_token=${contextToken ? contextToken.substring(0, 20) + "..." : "NONE"}`);
+      process.stdout.write(`[Weixin] Sending message to ${toUserId}, context_token=${contextToken ? contextToken.substring(0, 20) + "..." : "NONE"}`);
 
       const response = await fetch(url, {
         method: "POST",
@@ -873,16 +873,16 @@ export class WeixinPluginAdapter {
       });
 
       const respText = await response.text();
-      console.log(`[Weixin] sendmessage response: status=${response.status}, body=${respText.substring(0, 200)}`);
+      process.stdout.write(`[Weixin] sendmessage response: status=${response.status}, body=${respText.substring(0, 200)}`);
 
       if (!response.ok) {
-        console.error(`[Weixin] sendmessage failed: ${response.status} ${respText}`);
+        process.stderr.write(`[Weixin] sendmessage failed: ${response.status} ${respText}`);
         return false;
       }
 
       return true;
     } catch (err) {
-      console.error("[Weixin] sendmessage error:", err);
+      process.stderr.write("[Weixin] sendmessage error:" + " " + err);
       return false;
     }
   }
@@ -893,7 +893,7 @@ export class WeixinPluginAdapter {
   private async processMessage(account: WeixinAccount, message: WeixinMessage): Promise<void> {
     const fromUserId = message.from_user_id;
     if (!fromUserId) {
-      console.log("[Weixin] Message missing from_user_id");
+      process.stdout.write("[Weixin] Message missing from_user_id");
       return;
     }
 
@@ -951,16 +951,16 @@ export class WeixinPluginAdapter {
         }
 
         if (isApproval) {
-          console.log(`[Weixin] Permission approved by user ${fromUserId}: "${trimmed}" → fast-track executing tool`);
+          process.stdout.write(`[Weixin] Permission approved by user ${fromUserId}: "${trimmed}" → fast-track executing tool`);
           try {
             const result = await this.agentExecutor.approveAndExecute(pending.requestId);
             await this.sendMessage(account, fromUserId, result.reply, message.context_token);
           } catch (err) {
-            console.error("[Weixin] approveAndExecute failed:", err);
+            process.stderr.write("[Weixin] approveAndExecute failed:" + " " + err);
             await this.sendMessage(account, fromUserId, "⚠️ 执行已批准的操作时出错，请重试。", message.context_token);
           }
         } else {
-          console.log(`[Weixin] Permission rejected by user ${fromUserId}: "${trimmed}"`);
+          process.stdout.write(`[Weixin] Permission rejected by user ${fromUserId}: "${trimmed}"`);
           const result = this.agentExecutor.rejectPermission(pending.requestId);
           await this.sendMessage(account, fromUserId, result.reply, message.context_token);
         }
@@ -982,10 +982,10 @@ export class WeixinPluginAdapter {
                 size: imageData.length,
                 data: `data:image/jpeg;base64,${imageData.toString("base64")}`,
               };
-              console.log(`[Weixin] Downloaded image (${imageData.length} bytes) for vision`);
+              process.stdout.write(`[Weixin] Downloaded image (${imageData.length} bytes) for vision`);
             }
           } catch (err) {
-            console.error("[Weixin] Failed to download image:", err);
+            process.stderr.write("[Weixin] Failed to download image:" + " " + err);
           }
           break;
         }
@@ -1006,10 +1006,10 @@ export class WeixinPluginAdapter {
                 size: thumbData.length,
                 data: `data:image/jpeg;base64,${thumbData.toString("base64")}`,
               };
-              console.log(`[Weixin] Downloaded video thumbnail (${thumbData.length} bytes, play_length=${playLength}s) for vision`);
+              process.stdout.write(`[Weixin] Downloaded video thumbnail (${thumbData.length} bytes, play_length=${playLength}s) for vision`);
             }
           } catch (err) {
-            console.error("[Weixin] Failed to download video thumbnail:", err);
+            process.stderr.write("[Weixin] Failed to download video thumbnail:" + " " + err);
           }
           break;
         }
@@ -1028,7 +1028,7 @@ export class WeixinPluginAdapter {
     if (!text) {
       // 语音消息但没有转文字结果，提示用户
       if (message.item_list?.some(item => item.type === 3)) {
-        console.log("[Weixin] Voice message without text transcription, asking user to type");
+        process.stdout.write("[Weixin] Voice message without text transcription, asking user to type");
         await this.sendMessage(
           account,
           fromUserId,
@@ -1036,28 +1036,28 @@ export class WeixinPluginAdapter {
           message.context_token
         );
       } else {
-        console.log("[Weixin] No text content in message");
+        process.stdout.write("[Weixin] No text content in message");
       }
       return;
     }
 
     if (isVoice) {
-      console.log(`[Weixin] Voice message from ${fromUserId} (transcribed): ${text}`);
+      process.stdout.write(`[Weixin] Voice message from ${fromUserId} (transcribed): ${text}`);
     } else if (hasVideo) {
-      console.log(`[Weixin] Video message from ${fromUserId}: ${text}`);
+      process.stdout.write(`[Weixin] Video message from ${fromUserId}: ${text}`);
     } else if (hasImage) {
-      console.log(`[Weixin] Image message from ${fromUserId}: ${text}`);
+      process.stdout.write(`[Weixin] Image message from ${fromUserId}: ${text}`);
     } else {
-      console.log(`[Weixin] Received from ${fromUserId}: ${text}`);
+      process.stdout.write(`[Weixin] Received from ${fromUserId}: ${text}`);
     }
-    console.log(`[Weixin] Message details: type=${message.message_type}, state=${message.message_state}, context_token=${message.context_token ? message.context_token.substring(0, 30) + "..." : "NONE"}`);
+    process.stdout.write(`[Weixin] Message details: type=${message.message_type}, state=${message.message_state}, context_token=${message.context_token ? message.context_token.substring(0, 30) + "..." : "NONE"}`);
 
     // ── 快速通道：识别简单问候/寒暄，直接快速回复，不调用 LLM ──
     // 目的：消除用户发送"你还有反应吗"等简单寒暄时仍走完整 LLM 调用造成的长时间等待
     if (!hasImage && !hasVideo && !imageAttachment) {
       const greetingReply = matchSimpleGreeting(text);
       if (greetingReply) {
-        console.log(`[Weixin] Simple greeting fast-path triggered for: "${text}"`);
+        process.stdout.write(`[Weixin] Simple greeting fast-path triggered for: "${text}"`);
         this.sendTyping(account, fromUserId, message.context_token).catch(() => {});
         await this.sendMessage(account, fromUserId, greetingReply, message.context_token);
         this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
@@ -1087,7 +1087,7 @@ export class WeixinPluginAdapter {
       chatContext.complexity = complexity.level;
       chatContext.shouldAutoSplit = complexity.shouldAutoSplit;
       chatContext.maxSubtasks = complexity.maxSubtasks;
-      console.log(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
+      process.stdout.write(`[Weixin] Calling agentExecutor.chat() for session weixin-${fromUserId}, message: "${text.slice(0, 80)}"`);
 
     // ── 仅对复杂/长消息先发"收到"反馈，避免对简单问候产生重复回复 ──
     // 简单短消息（如"你还有反应吗"）直接等待最终回复即可，不需要中间"📋收到"消息
@@ -1229,7 +1229,7 @@ export class WeixinPluginAdapter {
 
       // 检查是否有权限请求
       if (result.permissionRequests && result.permissionRequests.length > 0) {
-        console.log(`[Weixin] Received ${result.permissionRequests.length} permission requests for user ${fromUserId}`);
+        process.stdout.write(`[Weixin] Received ${result.permissionRequests.length} permission requests for user ${fromUserId}`);
         const userPending = [];
         for (const req of result.permissionRequests) {
           userPending.push({
@@ -1257,7 +1257,7 @@ export class WeixinPluginAdapter {
         const replyText = typeof result.reply === "string" ? result.reply : String(result.reply);
         const isFallback = replyText.includes("所有已启用的模型提供商均未能响应");
         if (isFallback) {
-          console.error(`[Weixin] LLM fallback response for ${fromUserId}. tokensUsed=${result.tokensUsed}, duration=${result.duration}ms. Retrying with fresh session...`);
+          process.stderr.write(`[Weixin] LLM fallback response for ${fromUserId}. tokensUsed=${result.tokensUsed}, duration=${result.duration}ms. Retrying with fresh session...`);
           const retrySessionId = `weixin-${fromUserId}-retry-${Date.now()}`;
           const retryContext: Record<string, unknown> = {
             sessionId: retrySessionId,
@@ -1269,17 +1269,17 @@ export class WeixinPluginAdapter {
             const retryReply = typeof retryResult.reply === "string" ? retryResult.reply : String(retryResult.reply);
             const retryIsFallback = retryReply.includes("所有已启用的模型提供商均未能响应");
             if (!retryIsFallback) {
-              console.log(`[Weixin] Retry succeeded for ${fromUserId} with fresh session`);
+              process.stdout.write(`[Weixin] Retry succeeded for ${fromUserId} with fresh session`);
               await this.sendMessage(account, fromUserId, retryReply, message.context_token);
               return;
             }
-            console.error(`[Weixin] Retry also failed for ${fromUserId}. LLM providers may be down.`);
+            process.stderr.write(`[Weixin] Retry also failed for ${fromUserId}. LLM providers may be down.`);
           } catch (retryErr) {
-            console.error(`[Weixin] Retry error for ${fromUserId}:`, retryErr);
+            process.stderr.write(`[Weixin] Retry error for ${fromUserId}:` + " " + retryErr);
           }
           await this.sendMessage(account, fromUserId, replyText, message.context_token);
         } else {
-          console.log(`[Weixin] Sending reply to ${fromUserId}: ${replyText.substring(0, 80)}...`);
+          process.stdout.write(`[Weixin] Sending reply to ${fromUserId}: ${replyText.substring(0, 80)}...`);
           await this.sendMessage(account, fromUserId, replyText, message.context_token);
         }
       }
@@ -1288,7 +1288,7 @@ export class WeixinPluginAdapter {
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg === "WEIXIN_CHAT_TIMEOUT") {
-        console.error(`[Weixin] Chat timeout for ${fromUserId} after 300s`);
+        process.stderr.write(`[Weixin] Chat timeout for ${fromUserId} after 300s`);
         await this.sendMessage(
           account,
           fromUserId,
@@ -1296,7 +1296,7 @@ export class WeixinPluginAdapter {
           message.context_token
         );
       } else {
-        console.error("[Weixin] Failed to process message:", err);
+        process.stderr.write("[Weixin] Failed to process message:" + " " + err);
         await this.sendMessage(
           account,
           fromUserId,
@@ -1324,7 +1324,7 @@ export class WeixinPluginAdapter {
       // 构建下载 URL
       const fullUrl = media.full_url;
       if (!fullUrl && !media.encrypt_query_param) {
-        console.log("[Weixin] Image has no download URL");
+        process.stdout.write("[Weixin] Image has no download URL");
         return null;
       }
 
@@ -1349,7 +1349,7 @@ export class WeixinPluginAdapter {
 
       const response = await fetch(downloadUrl);
       if (!response.ok) {
-        console.error(`[Weixin] Image download failed: ${response.status}`);
+        process.stderr.write(`[Weixin] Image download failed: ${response.status}`);
         return null;
       }
 
@@ -1364,7 +1364,7 @@ export class WeixinPluginAdapter {
       // 无密钥则直接返回原始数据（可能是明文）
       return encrypted;
     } catch (err) {
-      console.error("[Weixin] downloadImage error:", err);
+      process.stderr.write("[Weixin] downloadImage error:" + " " + err);
       return null;
     }
   }
@@ -1379,13 +1379,13 @@ export class WeixinPluginAdapter {
     try {
       const thumbMedia = videoItem.thumb_media;
       if (!thumbMedia) {
-        console.log("[Weixin] Video has no thumbnail media");
+        process.stdout.write("[Weixin] Video has no thumbnail media");
         return null;
       }
 
       const fullUrl = thumbMedia.full_url;
       if (!fullUrl && !thumbMedia.encrypt_query_param) {
-        console.log("[Weixin] Video thumbnail has no download URL");
+        process.stdout.write("[Weixin] Video thumbnail has no download URL");
         return null;
       }
 
@@ -1413,7 +1413,7 @@ export class WeixinPluginAdapter {
 
       const response = await fetch(downloadUrl);
       if (!response.ok) {
-        console.error(`[Weixin] Video thumbnail download failed: ${response.status}`);
+        process.stderr.write(`[Weixin] Video thumbnail download failed: ${response.status}`);
         return null;
       }
 
@@ -1427,7 +1427,7 @@ export class WeixinPluginAdapter {
 
       return encrypted;
     } catch (err) {
-      console.error("[Weixin] downloadVideoThumb error:", err);
+      process.stderr.write("[Weixin] downloadVideoThumb error:" + " " + err);
       return null;
     }
   }
@@ -1465,7 +1465,7 @@ export class WeixinPluginAdapter {
             ticket: data.typing_ticket,
             expiresAt: Date.now() + 24 * 60 * 60 * 1000,
           });
-          console.log(`[Weixin] Got typing_ticket for ${userId}`);
+          process.stdout.write(`[Weixin] Got typing_ticket for ${userId}`);
           return data.typing_ticket;
         }
       }
@@ -1540,9 +1540,9 @@ export class WeixinPluginAdapter {
         }),
       });
       const text = await response.text();
-      console.log(`[Weixin] notifyStart response: ${response.status} ${text.substring(0, 100)}`);
+      process.stdout.write(`[Weixin] notifyStart response: ${response.status} ${text.substring(0, 100)}`);
     } catch (err) {
-      console.warn(`[Weixin] notifyStart error: ${err}`);
+      process.stderr.write(`[Weixin] notifyStart error: ${err}`);
     }
   }
 
@@ -1564,9 +1564,9 @@ export class WeixinPluginAdapter {
         }),
       });
       const text = await response.text();
-      console.log(`[Weixin] notifyStop response: ${response.status} ${text.substring(0, 100)}`);
+      process.stdout.write(`[Weixin] notifyStop response: ${response.status} ${text.substring(0, 100)}`);
     } catch (err) {
-      console.warn(`[Weixin] notifyStop error: ${err}`);
+      process.stderr.write(`[Weixin] notifyStop error: ${err}`);
     }
   }
 
@@ -1575,22 +1575,22 @@ export class WeixinPluginAdapter {
    */
   startMonitor(accountId: string): void {
     if (this.runningMonitors.has(accountId)) {
-      console.log(`[Weixin] Monitor already running for ${accountId}`);
+      process.stdout.write(`[Weixin] Monitor already running for ${accountId}`);
       return;
     }
 
     const account = this.loadAccount(accountId);
     if (!account) {
-      console.error(`[Weixin] Cannot start monitor: account ${accountId} not found`);
+      process.stderr.write(`[Weixin] Cannot start monitor: account ${accountId} not found`);
       return;
     }
 
-    console.log(`[Weixin] Starting monitor for ${accountId}...`);
+    process.stdout.write(`[Weixin] Starting monitor for ${accountId}...`);
     const abortController = new AbortController();
 
     // 通知微信服务端 bot 已上线
     this.notifyStart(account).catch(err => {
-      console.warn(`[Weixin] notifyStart failed (ignored): ${err}`);
+      process.stderr.write(`[Weixin] notifyStart failed (ignored): ${err}`);
     });
 
     // 加载上次的同步位置
@@ -1603,7 +1603,7 @@ export class WeixinPluginAdapter {
     let consecutiveErrors = 0;
 
     const pollLoop = async () => {
-      console.log(`[Weixin] Poll loop started for ${accountId}`);
+      process.stdout.write(`[Weixin] Poll loop started for ${accountId}`);
       while (!abortController.signal.aborted) {
         try {
           const updates = await this.getUpdates(account, getUpdatesBuf, abortController.signal);
@@ -1611,7 +1611,7 @@ export class WeixinPluginAdapter {
 
           // Session 过期，停止监听
           if (updates && "expired" in updates) {
-            console.warn(`[Weixin] Session expired for ${accountId}, stopping monitor. Please re-scan QR code.`);
+            process.stderr.write(`[Weixin] Session expired for ${accountId}, stopping monitor. Please re-scan QR code.`);
             this.stopMonitor(accountId);
             // 删除过期的账户文件
             this.removeAccount(accountId);
@@ -1625,7 +1625,7 @@ export class WeixinPluginAdapter {
             }
 
             if (updates.msgs && Array.isArray(updates.msgs) && updates.msgs.length > 0) {
-              console.log(`[Weixin] Received ${updates.msgs.length} messages`);
+              process.stdout.write(`[Weixin] Received ${updates.msgs.length} messages`);
               for (const msg of updates.msgs) {
                 await this.processMessage(account, msg);
               }
@@ -1633,11 +1633,11 @@ export class WeixinPluginAdapter {
           }
         } catch (err) {
           consecutiveErrors++;
-          console.error(`[Weixin] Poll error (${consecutiveErrors}):`, err);
+          process.stderr.write(`[Weixin] Poll error (${consecutiveErrors}):` + " " + err);
 
           if (consecutiveErrors >= 3) {
             // 连续3次错误，退避30秒
-            console.warn("[Weixin] 3 consecutive errors, backing off 30s...");
+            process.stderr.write("[Weixin] 3 consecutive errors, backing off 30s...");
             await new Promise(resolve => setTimeout(resolve, 30000));
           } else {
             // 普通错误，2秒后重试
@@ -1649,14 +1649,14 @@ export class WeixinPluginAdapter {
 
     // 启动轮询
     pollLoop().catch(err => {
-      console.error("[Weixin] Monitor loop error:", err);
+      process.stderr.write("[Weixin] Monitor loop error:" + " " + err);
     });
 
     this.runningMonitors.set(accountId, {
       controller: abortController,
     });
 
-    console.log(`[Weixin] Monitor started for ${accountId}`);
+    process.stdout.write(`[Weixin] Monitor started for ${accountId}`);
   }
 
   /**
@@ -1683,7 +1683,7 @@ export class WeixinPluginAdapter {
       if (account) {
         this.notifyStop(account).catch(() => {});
       }
-      console.log(`[Weixin] Monitor stopped for ${accountId}`);
+      process.stdout.write(`[Weixin] Monitor stopped for ${accountId}`);
     }
   }
 
@@ -1692,13 +1692,13 @@ export class WeixinPluginAdapter {
    */
   startAllConfiguredMonitors(): void {
     const accounts = this.findConfiguredAccounts();
-    console.log(`[Weixin] Starting monitors for ${accounts.length} accounts...`);
+    process.stdout.write(`[Weixin] Starting monitors for ${accounts.length} accounts...`);
 
     for (const accountId of accounts) {
       try {
         this.startMonitor(accountId);
       } catch (err) {
-        console.error(`[Weixin] Failed to start monitor for ${accountId}:`, err);
+        process.stderr.write(`[Weixin] Failed to start monitor for ${accountId}:` + " " + err);
       }
     }
   }
@@ -1707,7 +1707,7 @@ export class WeixinPluginAdapter {
    * 停止所有监听
    */
   stopAllMonitors(): void {
-    console.log("[Weixin] Stopping all monitors...");
+    process.stdout.write("[Weixin] Stopping all monitors...");
     for (const [accountId, monitor] of this.runningMonitors) {
       monitor.controller.abort();
     }
@@ -1744,9 +1744,9 @@ export class WeixinPluginAdapter {
       if (fs.existsSync(syncPath)) {
         fs.unlinkSync(syncPath);
       }
-      console.log(`[Weixin] Removed expired account: ${accountId}`);
+      process.stdout.write(`[Weixin] Removed expired account: ${accountId}`);
     } catch (err) {
-      console.error(`[Weixin] Failed to remove account ${accountId}:`, err);
+      process.stderr.write(`[Weixin] Failed to remove account ${accountId}:` + " " + err);
     }
   }
 }

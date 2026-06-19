@@ -102,9 +102,8 @@ export class LLMReflector {
           return llmResult;
         }
       } catch (err) {
-        console.warn(
-          `[LLMReflector] LLM reflection failed, falling back to rule-based:`,
-          err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `[LLMReflector] LLM reflection failed, falling back to rule-based:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }
@@ -186,7 +185,7 @@ export class LLMReflector {
       return this.parseReflectionResponse(llmOutput, trace);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        console.warn("[LLMReflector] LLM reflection timed out");
+        process.stderr.write("[LLMReflector] LLM reflection timed out");
       }
       return null;
     } finally {
@@ -300,7 +299,7 @@ export class LLMReflector {
       // 尝试提取 JSON 块
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        console.warn("[LLMReflector] No JSON found in LLM response");
+        process.stderr.write("[LLMReflector] No JSON found in LLM response");
         return null;
       }
 
@@ -332,9 +331,8 @@ export class LLMReflector {
         shouldEvolve: typeof parsed.shouldEvolve === "boolean" ? parsed.shouldEvolve : false,
       };
     } catch (err) {
-      console.warn(
-        "[LLMReflector] Failed to parse LLM response:",
-        err instanceof Error ? err.message : String(err)
+      process.stderr.write(
+        "[LLMReflector] Failed to parse LLM response:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
       return null;
     }

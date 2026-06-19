@@ -85,7 +85,7 @@ export class ActorSystem {
           const result = await actor.behavior(message, actor.state);
           actor.state = result.newState;
         } catch (err) {
-          console.error(`[ActorSystem] Error processing message for "${actorId}":`, err);
+          process.stderr.write(`[ActorSystem] Error processing message for "${actorId}":` + " " + err);
         }
       }
     } finally {

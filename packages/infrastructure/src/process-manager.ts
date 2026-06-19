@@ -54,11 +54,11 @@ export class ProcessManager {
     });
 
     childProcess.stdout?.on("data", (data: Buffer) => {
-      console.log(`[${name}] ${data.toString().trim()}`);
+      process.stdout.write(`[${name}] ${data.toString().trim()}\n`);
     });
 
     childProcess.stderr?.on("data", (data: Buffer) => {
-      console.error(`[${name}] ${data.toString().trim()}`);
+      process.stderr.write(`[${name}] ${data.toString().trim()}\n`);
     });
 
     this.processes.set(id, processInfo);

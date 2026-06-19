@@ -1,43 +1,37 @@
-# EvoClaw Docker Compose
-# Usage: docker-compose up -d
-
-version: "3.9"
+version: '3.8'
 
 services:
   evoclaw:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: evoclaw-gateway
+    container_name: evoclaw
     ports:
-      - "${EvoClaw_PORT:-17788}:17788"
+      - "${EvoClaw_PORT:-27788}:27788"
+    volumes:
+      - evoclaw-data:/app/data
+      - evoclaw-logs:/app/logs
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-    volumes:
-      - evoclaw-data:/app/data
-      - evoclaw-logs:/app/logs
-      # Mount skills for development
-      - ./data/workspace/skills:/app/data/workspace/skills:ro
-      # Mount bootstrap files
-      - ./data/workspace:/app/data/workspace:rw
+      - EvoClaw_HOST=0.0.0.0
+      - EvoClaw_PORT=27788
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "const http=require('http');http.get('http://localhost:'+(process.env.EvoClaw_PORT||17788)+'/health',r=>{process.exit(r.statusCode===200?0:1)})"]
+      test: ["CMD", "node", "-e", "const http=require('http');http.get('http://localhost:27788/health',r=>{process.exit(r.statusCode===200?0:1)})"]
       interval: 30s
       timeout: 5s
+      start_period: 10s
       retries: 3
-      start_period: 15s
-    networks:
-      - evoclaw-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   evoclaw-data:
     driver: local
   evoclaw-logs:
     driver: local
-
-networks:
-  evoclaw-net:
-    driver: bridge

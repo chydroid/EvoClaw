@@ -58,9 +58,8 @@ export async function execute(
         toolCalls.push({ name: tool.definition.name, result: toolResult });
         output = toolResult;
       } catch (err) {
-        console.warn(
-          `[DAGExecution] Tool "${tool.definition.name}" failed:`,
-          err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `[DAGExecution] Tool "${tool.definition.name}" failed:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }

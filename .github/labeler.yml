@@ -1,0 +1,56 @@
+# Labeler configuration
+# https://github.com/actions/labeler
+
+packages/core:
+  - changed-files:
+    - any-glob-to-any-file: packages/core/**
+
+packages/agent:
+  - changed-files:
+    - any-glob-to-any-file: packages/agent/**
+
+packages/gateway:
+  - changed-files:
+    - any-glob-to-any-file: packages/gateway/**
+
+packages/skills:
+  - changed-files:
+    - any-glob-to-any-file: packages/skills/**
+
+packages/memory:
+  - changed-files:
+    - any-glob-to-any-file: packages/memory/**
+
+packages/security:
+  - changed-files:
+    - any-glob-to-any-file: packages/security/**
+
+packages/evolution:
+  - changed-files:
+    - any-glob-to-any-file: packages/evolution/**
+
+packages/infrastructure:
+  - changed-files:
+    - any-glob-to-any-file: packages/infrastructure/**
+
+packages/web-ui:
+  - changed-files:
+    - any-glob-to-any-file: packages/web-ui/**
+
+apps/server:
+  - changed-files:
+    - any-glob-to-any-file: apps/server/**
+
+apps/cli:
+  - changed-files:
+    - any-glob-to-any-file: apps/cli/**
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: .github/**
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '*.md'
+      - docs/**

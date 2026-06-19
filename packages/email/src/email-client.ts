@@ -473,7 +473,7 @@ export class EmailClient {
         }
       }
     } catch (err) {
-      console.error("[EmailClient] Failed to load accounts:", err);
+      process.stderr.write("[EmailClient] Failed to load accounts:" + " " + err);
     }
   }
 
@@ -483,7 +483,7 @@ export class EmailClient {
       const data = [...this.accounts.values()];
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
-      console.error("[EmailClient] Failed to save accounts:", err);
+      process.stderr.write("[EmailClient] Failed to save accounts:" + " " + err);
     }
   }
 
@@ -556,7 +556,7 @@ export class EmailClient {
 
       await client.logout();
     } catch (err) {
-      console.error(`[EmailClient] Failed to list emails: ${err}`);
+      process.stderr.write(`[EmailClient] Failed to list emails: ${err}`);
       throw new Error(`无法连接邮箱: ${err instanceof Error ? err.message : String(err)}`);
     }
 
@@ -678,7 +678,7 @@ export class EmailClient {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[EmailClient] Failed to get full inbox summary for ${account.email}: ${errMsg}`);
+      process.stderr.write(`[EmailClient] Failed to get full inbox summary for ${account.email}: ${errMsg}`);
       // 出错时尝试获取邮件作为备用方案
       try {
         recent = await this.listEmails({ accountId, limit: 20 });
@@ -686,7 +686,7 @@ export class EmailClient {
         unread = recent.filter(e => !e.flags.includes("\\Seen")).length;
       } catch (err2) {
         const err2Msg = err2 instanceof Error ? err2.message : String(err2);
-        console.error(`[EmailClient] Fallback listEmails also failed: ${err2Msg}`);
+        process.stderr.write(`[EmailClient] Fallback listEmails also failed: ${err2Msg}`);
         total = 0;
         unread = 0;
         recent = [];

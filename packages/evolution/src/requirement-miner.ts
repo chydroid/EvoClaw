@@ -122,9 +122,8 @@ export class RequirementMiner {
           }
         }
       } catch (err) {
-        console.warn(
-          "[RequirementMiner] LLM analysis failed, using regex-only results:",
-          err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          "[RequirementMiner] LLM analysis failed, using regex-only results:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
       }
     }
@@ -206,7 +205,7 @@ export class RequirementMiner {
     this.observedPatterns.set(userIntent, count + 1);
 
     if (count + 1 >= 5) {
-      console.log(`[RequirementMiner] Pattern detected: "${userIntent}" has ${count + 1} occurrences`);
+      process.stdout.write(`[RequirementMiner] Pattern detected: "${userIntent}" has ${count + 1} occurrences`);
     }
   }
 

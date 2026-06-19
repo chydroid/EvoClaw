@@ -23,7 +23,7 @@ export async function resolveDependency(name: string): Promise<Record<string, un
     const mod = await import(name);
     return { loaded: true, module: mod };
   } catch (err) {
-    console.warn(\`Dependency "\${name}" not available, using fallback\`);
+    process.stderr.write(\`Dependency "\${name}" not available, using fallback\`);
     return { loaded: false, fallback: true };
   }
 }`,
@@ -99,7 +99,7 @@ export async function safeExecute(
     const result = await process(params);
     return { success: true, result };
   } catch (err) {
-    console.error("Execution failed:", err);
+    process.stderr.write("Execution failed:" + " " + err);
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),
@@ -258,7 +258,7 @@ export class EvolutionProposer {
       if (!content) return null;
       return this.parseLLMResponse(content, req);
     } catch (err) {
-      console.warn(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
@@ -362,7 +362,7 @@ export class EvolutionProposer {
     return `// New skill scaffold
 // ${req.description}
 export async function execute(params: Record<string, unknown>): Promise<unknown> {
-  console.log("New skill executing:", ${JSON.stringify(req.description)});
+  process.stdout.write("New skill executing:" + " " + ${JSON.stringify(req.description)});
   return { success: true, message: "Skill scaffold created" };
 }`;
   }

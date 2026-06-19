@@ -162,9 +162,8 @@ export class ExperienceDistiller {
       // 3. 清理低效策略
       this.pruneStrategies();
     } catch (err) {
-      console.warn(
-        "[ExperienceDistiller] Distillation failed:",
-        err instanceof Error ? err.message : String(err),
+      process.stderr.write(
+        "[ExperienceDistiller] Distillation failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
     }
 

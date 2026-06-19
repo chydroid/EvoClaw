@@ -73,13 +73,13 @@ export class SkillCurator {
   /** Enable automatic skill extraction from task solutions. Use with caution. */
   enableAutoExtraction(): void {
     this.autoExtractionEnabled = true;
-    console.log("[SkillCurator] Auto-extraction ENABLED — skills may be created from task solutions.");
+    process.stdout.write("[SkillCurator] Auto-extraction ENABLED — skills may be created from task solutions.");
   }
 
   /** Disable automatic skill extraction. This is the default. */
   disableAutoExtraction(): void {
     this.autoExtractionEnabled = false;
-    console.log("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.");
+    process.stdout.write("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.");
   }
 
   isAutoExtractionEnabled(): boolean {
@@ -98,20 +98,20 @@ export class SkillCurator {
     taskDescription: string
   ): void {
     if (!this.autoExtractionEnabled) {
-      console.log(
+      process.stdout.write(
         `[SkillCurator] Extraction considered but skipped: auto-extraction disabled (session=${sessionId}, toolCallCount=${toolCallCount})`
       );
       return;
     }
 
     if (toolCallCount % 15 !== 0) {
-      console.log(
+      process.stdout.write(
         `[SkillCurator] Extraction considered but not triggered: toolCallCount=${toolCallCount} is not a multiple of 15 (session=${sessionId})`
       );
       return;
     }
 
-    console.log(
+    process.stdout.write(
       `[SkillCurator] Auto-extraction triggered at toolCallCount=${toolCallCount} for session=${sessionId}`
     );
 
@@ -124,7 +124,7 @@ export class SkillCurator {
       toolCallCount,
       trigger: "gepa_periodic",
     }).catch((err) => {
-      console.warn(
+      process.stderr.write(
         `[SkillCurator] Periodic auto-extraction failed: ${err instanceof Error ? err.message : String(err)}`
       );
     });
@@ -146,15 +146,15 @@ export class SkillCurator {
 
     // ── Quality gate: reject garbage/placeholder skills ──
     if (!this.isValidSkillName(skillName)) {
-      console.warn(`[SkillCurator] Rejected auto-extracted skill: invalid name "${skillName}"`);
+      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: invalid name "${skillName}"`);
       return null;
     }
     if (!this.isValidDescription(skillDescription)) {
-      console.warn(`[SkillCurator] Rejected auto-extracted skill: placeholder description for "${skillName}"`);
+      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: placeholder description for "${skillName}"`);
       return null;
     }
     if (!this.isValidInstructions(instructions)) {
-      console.warn(`[SkillCurator] Rejected auto-extracted skill: insufficient instructions for "${skillName}"`);
+      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: insufficient instructions for "${skillName}"`);
       return null;
     }
 
@@ -214,7 +214,7 @@ export class SkillCurator {
       try {
         installedSkill = await skillManager.installSkill(skillMdPath);
       } catch (err) {
-        console.warn("[SkillCurator] Failed to auto-install extracted skill:", err instanceof Error ? err.message : String(err));
+        process.stderr.write("[SkillCurator] Failed to auto-install extracted skill:" + " " + (err instanceof Error ? err.message : String(err)));
       }
     }
 
@@ -922,9 +922,8 @@ export class SkillCurator {
         fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf-8");
       }
     } catch (err) {
-      console.warn(
-        "[SkillCurator] Failed to persist skill update:",
-        err instanceof Error ? err.message : String(err)
+      process.stderr.write(
+        "[SkillCurator] Failed to persist skill update:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
     }
   }

@@ -194,9 +194,9 @@ export class CanvasManager {
         this.writeIndex([]);
       }
 
-      console.log(`[CanvasManager] Canvas storage at ${this.config.storagePath}`);
+      process.stdout.write(`[CanvasManager] Canvas storage at ${this.config.storagePath}`);
     } catch (err) {
-      console.warn(`[CanvasManager] Failed to initialize: ${err}`);
+      process.stderr.write(`[CanvasManager] Failed to initialize: ${err}`);
     }
   }
 
@@ -315,7 +315,7 @@ export class CanvasManager {
     }
     this.writeIndex(canvases);
 
-    console.log(`[CanvasManager] ${existing >= 0 ? "Updated" : "Created"} canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] ${existing >= 0 ? "Updated" : "Created"} canvas "${id}"`);
 
     return {
       canvas,
@@ -377,7 +377,7 @@ export class CanvasManager {
     canvases[index] = canvas;
     this.writeIndex(canvases);
 
-    console.log(`[CanvasManager] Updated canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] Updated canvas "${id}"`);
     return canvas;
   }
 
@@ -397,7 +397,7 @@ export class CanvasManager {
       // File might not exist
     }
 
-    console.log(`[CanvasManager] Deleted canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] Deleted canvas "${id}"`);
     return true;
   }
 
@@ -468,7 +468,7 @@ export class CanvasManager {
     try {
       fs.writeFileSync(this.indexPath, JSON.stringify(canvases, null, 2), "utf-8");
     } catch (err) {
-      console.error(`[CanvasManager] Failed to write index: ${err}`);
+      process.stderr.write(`[CanvasManager] Failed to write index: ${err}`);
     }
   }
 

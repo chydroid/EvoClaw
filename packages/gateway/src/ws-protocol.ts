@@ -233,13 +233,13 @@ export class ProtocolHandler {
   /** Handle a new WebSocket connection */
   handleConnection(client: WSClient): void {
     this.clients.set(client.id, client);
-    console.log(`[ProtocolHandler] Client connected: ${client.id} (${client.remoteAddress()})`);
+    process.stdout.write(`[ProtocolHandler] Client connected: ${client.id} (${client.remoteAddress()})`);
   }
 
   /** Handle client disconnect */
   handleDisconnect(clientId: string): void {
     this.clients.delete(clientId);
-    console.log(`[ProtocolHandler] Client disconnected: ${clientId}`);
+    process.stdout.write(`[ProtocolHandler] Client disconnected: ${clientId}`);
   }
 
   /** Process an incoming frame from a client */
@@ -338,7 +338,7 @@ export class ProtocolHandler {
       },
     });
 
-    console.log(`[ProtocolHandler] Handshake complete for ${client.id} (role=${clientRole})`);
+    process.stdout.write(`[ProtocolHandler] Handshake complete for ${client.id} (role=${clientRole})`);
   }
 
   // ─── Request Handling ─────────────────────────────────────────────────────

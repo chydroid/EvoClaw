@@ -47,8 +47,8 @@ export class SSHSandbox {
       this.available = result.success && result.stdout.trim() === "ok";
     } catch {
       this.available = false;
-      console.warn(
-        `[SSHSandbox] SSH connection to ${this.user}@${this.host}:${this.port} is not available`
+      process.stderr.write(
+        `[SSHSandbox] SSH connection to ${this.user}@${this.host}:${this.port} is not available\n`
       );
     }
 

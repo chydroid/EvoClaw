@@ -43,7 +43,7 @@ export class PermissionManager {
   addDirectoryWhitelist(dirPath: string, operations: string[]): void {
     const normalized = dirPath.replace(/\\/g, "/").replace(/\/$/, "") + "/";
     this.whitelistedDirs.push({ dirPath: normalized, operations });
-    console.log(`[PermissionManager] Directory whitelisted: ${normalized} → ${operations.join(", ")}`);
+    process.stdout.write(`[PermissionManager] Directory whitelisted: ${normalized} → ${operations.join(", ")}\n`);
   }
 
   /**

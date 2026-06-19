@@ -294,7 +294,7 @@ export class FileSystemManager {
       entries.push(entry);
       fsSync.writeFileSync(logFile, JSON.stringify(entries, null, 2), "utf-8");
     } catch (err) {
-      console.error(`[FileSystemManager] Audit log write failed:`, err);
+      process.stderr.write(`[FileSystemManager] Audit log write failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

@@ -410,7 +410,7 @@ export class ScheduleManager {
         }
       }
     } catch (err) {
-      console.error("[ScheduleManager] Failed to load tasks:", err);
+      process.stderr.write("[ScheduleManager] Failed to load tasks:" + " " + err);
     }
   }
 
@@ -420,7 +420,7 @@ export class ScheduleManager {
       const data = [...this.tasks.values()];
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
-      console.error("[ScheduleManager] Failed to save tasks:", err);
+      process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err);
     }
   }
 }

@@ -102,7 +102,6 @@ export default function LLMConfig() {
   const [statusIsSuccess, setStatusIsSuccess] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
-  const [localModelStatus, setLocalModelStatus] = useState<{ available: boolean; modelName: string | null; error: string | null } | null>(null);
   const dragging = useRef(false);
   const { t } = useTranslation();
 
@@ -141,10 +140,6 @@ export default function LLMConfig() {
           // Highlight the first (highest priority) provider from server data
           const sorted = [...loaded].sort((a, b) => a.order - b.order);
           setActiveProvider(sorted[0].id);
-        }
-        // Load local model status
-        if (data.localModel) {
-          setLocalModelStatus(data.localModel);
         }
       }
     } catch {
@@ -307,48 +302,6 @@ export default function LLMConfig() {
           {saving ? t("llm.saving") : t("llm.save_all")}
         </button>
       </div>
-
-      {/* ── Local Model Status Banner ── */}
-      {localModelStatus && localModelStatus.available ? (
-        <div style={{
-          margin: "0 20px 8px", padding: "8px 14px", borderRadius: "8px",
-          background: "rgba(76,175,80,0.1)", border: "1px solid rgba(76,175,80,0.3)",
-          fontSize: "12px", color: "var(--success)", display: "flex", alignItems: "center", gap: "8px",
-        }}>
-          <span style={{ fontSize: "16px" }}>&#9889;</span>
-          <span>{t("llm.local_model_active", "本地模型已激活")}: {localModelStatus.modelName} — {t("llm.local_model_saving", "简单任务将使用本地模型，大幅节省Token")}</span>
-        </div>
-      ) : (
-        <div style={{
-          margin: "0 20px 8px", padding: "8px 14px", borderRadius: "8px",
-          background: "rgba(255,152,0,0.08)", border: "1px solid rgba(255,152,0,0.25)",
-          fontSize: "12px", color: "var(--text-muted)",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-            <span style={{ fontSize: "14px" }}>&#128161;</span>
-            <strong style={{ color: "var(--text-primary)" }}>{t("llm.local_model_tip_title", "省Token小贴士：下载本地轻量模型")}</strong>
-          </div>
-          <div style={{ lineHeight: "1.6" }}>
-            {t("llm.local_model_tip_desc", "下载 Qwen3-0.6B (~1.2GB) 到本地后，简单对话、翻译、格式化等任务将自动使用本地模型，无需调用远程API，大幅节省Token费用。")}
-          </div>
-          <div style={{ marginTop: "6px", padding: "6px 10px", background: "var(--bg-primary)", borderRadius: "4px", fontSize: "11px", fontFamily: "monospace", whiteSpace: "pre-wrap", color: "var(--text-muted)" }}>
-{`推荐模型：Qwen3-0.6B（标准架构，兼容性好）
-  Qwen3-0.6B (~1.2GB) — 标准Attention，完全兼容
-  Qwen3.5-0.8B (~700MB) — 混合架构，需onnxruntime-node
-
-下载命令（在EvoClaw项目目录执行）：
-  git lfs install
-
-  # 推荐：Qwen3-0.6B
-  git clone https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX local-model
-
-国内镜像（huggingface.co无法访问时）：
-  git clone https://hf-mirror.com/onnx-community/Qwen3-0.6B-ONNX local-model
-
-下载完成后重启EvoClaw服务`}
-          </div>
-        </div>
-      )}
 
       <div style={s.body}>
         <div style={{ ...s.sidebar, width: sidebarWidth }}>

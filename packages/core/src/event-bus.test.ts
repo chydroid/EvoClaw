@@ -70,4 +70,35 @@ describe("EventBus", () => {
     expect(SystemEvents.TASK_CREATED).toBe("task.created");
     expect(SystemEvents.SYSTEM_READY).toBe("system.ready");
   });
+
+  it("should stop accepting events after shutdown", async () => {
+    const bus = new EventBus();
+    let received = false;
+
+    bus.subscribe("test.shutdown", async () => { received = true; });
+
+    bus.shutdown();
+
+    await bus.publish("test.shutdown", {}, "test");
+
+    expect(received).toBe(false);
+  });
+
+  it("should report subscription count", () => {
+    const bus = new EventBus();
+
+    expect(bus.subscriptionCount()).toBe(0);
+
+    const sub1 = bus.subscribe("a", async () => {});
+    const sub2 = bus.subscribe("a", async () => {});
+    bus.subscribe("b", async () => {});
+
+    expect(bus.subscriptionCount()).toBe(3);
+
+    bus.unsubscribe(sub1.id);
+    expect(bus.subscriptionCount()).toBe(2);
+
+    bus.unsubscribe(sub2.id);
+    expect(bus.subscriptionCount()).toBe(1);
+  });
 });

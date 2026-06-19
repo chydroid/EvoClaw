@@ -2,7 +2,7 @@
 # Multi-stage build: builder → production
 # Usage:
 #   docker build -t evoclaw .
-#   docker run -p 17788:17788 --env-file .env -v evoclaw-data:/app/data evoclaw
+#   docker run -p 27788:27788 --env-file .env -v evoclaw-data:/app/data evoclaw
 
 # ─── Stage 1: Builder ─────────────────────────────────────
 FROM node:24-alpine AS builder
@@ -53,12 +53,12 @@ RUN mkdir -p /app/data/workspace /app/data/sessions /app/logs
 # Environment
 ENV NODE_ENV=production
 ENV EvoClaw_HOST=0.0.0.0
-ENV EvoClaw_PORT=17788
+ENV EvoClaw_PORT=27788
 
-EXPOSE 17788
+EXPOSE 27788
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "const http=require('http');http.get('http://localhost:'+(process.env.EvoClaw_PORT||17788)+'/health',r=>{process.exit(r.statusCode===200?0:1)})"
+  CMD node -e "const http=require('http');http.get('http://localhost:'+(process.env.EvoClaw_PORT||27788)+'/health',r=>{process.exit(r.statusCode===200?0:1)})"
 
 CMD ["node", "--env-file=.env", "apps/server/dist/index.js"]

@@ -168,7 +168,7 @@ class EnvSecretManager {
 
       fs.writeFileSync(ENV_FILE, existingLines.join("\n") + "\n", "utf-8");
     } catch (err) {
-      console.warn("[EnvSecretManager] Failed to persist .env:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[EnvSecretManager] Failed to persist .env:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 }
@@ -192,7 +192,7 @@ const COMPLEXITY_TIMEOUT_MAP: Record<TaskComplexity, number> = {
   very_complex: 1_800_000,
 };
 
-const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexity }> = [
+const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexity; excludePatterns?: RegExp[] }> = [
   {
     patterns: [
       /实现.*完整.*系统/i, /implement.*complete.*system/i,
@@ -221,7 +221,7 @@ const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexit
       // Download/resource fetching tasks — need more time for web search + fetch + file creation
       // NOTE: "想听/播放/来首" are PLAYBACK intents, NOT download — excluded below via negative lookahead
       /^(?!.*(?:想听|播放|来首|听歌|听一下|放一首)).*下载.*(?:小说|音乐|视频|论文|电子书|书籍|电影|歌曲)/i,
-      /^(?!.*(?:want to (?:listen|hear|play)|play some)).*download.*(?:novel|music|video|paper|ebook|book|movie|song|mp3)/i,
+      /^(?!.*(?:want to (?:listen|hear|play)|play some)).*download.*(?:novel|music|video|paper|ebook|book|movie|song)/i,
       /爬取.*(?:小说|文章|内容|数据)/i,
       /scrape.*(?:novel|article|content|data)/i,
       /(?:小说|音乐|视频|论文).*下载/i,
@@ -230,6 +230,12 @@ const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexit
       /^(?!.*(?:want to (?:listen|hear|play)|play some)).*find.*download.*(?:novel|music|video|paper|book|song)/i,
     ],
     complexity: "complex",
+    // Exclude simple document creation from complex classification
+    excludePatterns: [
+      /创建.*(?:Word|Excel|PPT|文档|表格|演示|文稿)/i,
+      /create.*(?:Word|Excel|PPT|document|spreadsheet|presentation)/i,
+      /写.*(?:文档|表格|报告|方案)/i,
+    ],
   },
   {
     patterns: [
@@ -248,7 +254,11 @@ export function estimateTaskComplexity(message: string): ComplexityEstimate {
   const lower = message.toLowerCase();
   let maxComplexity: TaskComplexity = "simple";
 
-  for (const { patterns, complexity } of COMPLEXITY_PATTERNS) {
+  for (const { patterns, complexity, excludePatterns } of COMPLEXITY_PATTERNS) {
+    // Check if excluded patterns match
+    if (excludePatterns && excludePatterns.some(p => p.test(lower) || p.test(message))) {
+      continue;
+    }
     if (patterns.some(p => p.test(lower) || p.test(message))) {
       const order: TaskComplexity[] = ["simple", "medium", "complex", "very_complex"];
       if (order.indexOf(complexity) > order.indexOf(maxComplexity)) {
@@ -354,18 +364,6 @@ export class ProtocolAdapter {
   private canvasHost: CanvasHost;
   private envSecrets: EnvSecretManager;
 
-  private getLocalModelStatus(): { available: boolean; modelName: string | null; error: string | null } {
-    try {
-      const localLLM = this.registry.resolveService<{
-        getStatus(): { available: boolean; modelName: string | null; error: string | null };
-      }>("localLLMService");
-      if (localLLM) {
-        return localLLM.getStatus();
-      }
-    } catch { /* not available */ }
-    return { available: false, modelName: null, error: "Service not initialized" };
-  }
-
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
@@ -395,7 +393,7 @@ export class ProtocolAdapter {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     } catch (err) {
-      console.warn(`[ProtocolAdapter] Failed to create config dir: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[ProtocolAdapter] Failed to create config dir: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -416,18 +414,18 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistLLMProviders(data.providers);
-            console.log("[ProtocolAdapter] Migrated LLM API keys to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated LLM API keys to .env references");
           }
 
           this.savedLLMProviders = data.providers;
           // Resolve references before applying
           const resolved = this.resolveLLMProviders(data.providers);
           this.applyLLMProviders(resolved);
-          console.log(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk`);
         }
       }
     } catch (err) {
-      console.warn("[ProtocolAdapter] Failed to load LLM config:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[ProtocolAdapter] Failed to load LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
 
     try {
@@ -450,18 +448,18 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistChannels(data.channels);
-            console.log("[ProtocolAdapter] Migrated channel secrets to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated channel secrets to .env references");
           }
 
           this.savedChannels = data.channels;
           // Resolve references before applying
           const resolved = this.resolveChannelConfigs(data.channels);
           this.applyChannels(resolved);
-          console.log(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
         }
       }
     } catch (err) {
-      console.warn("[ProtocolAdapter] Failed to load channels config:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[ProtocolAdapter] Failed to load channels config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
 
     // Sync env secrets to secretsStore so they appear in the Secrets Manager UI
@@ -558,7 +556,7 @@ export class ProtocolAdapter {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2), "utf-8");
     } catch (err) {
-      console.warn("[ProtocolAdapter] Failed to persist LLM config:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[ProtocolAdapter] Failed to persist LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 
@@ -567,7 +565,7 @@ export class ProtocolAdapter {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(CHANNELS_CONFIG_FILE, JSON.stringify({ channels }, null, 2), "utf-8");
     } catch (err) {
-      console.warn("[ProtocolAdapter] Failed to persist channels config:", err instanceof Error ? err.message : String(err));
+      process.stderr.write("[ProtocolAdapter] Failed to persist channels config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 
@@ -689,11 +687,11 @@ export class ProtocolAdapter {
 
         if (adapter) {
           channelManager.attachAdapter(adapter).catch((err: unknown) => {
-            console.error(`[ProtocolAdapter] Failed to attach ${type} adapter:`, err);
+            process.stderr.write(`[ProtocolAdapter] Failed to attach ${type} adapter:` + " " + err);
           });
-          console.log(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})`);
+          process.stdout.write(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})`);
         } else if (type === "feishu" || type === "matrix") {
-          console.warn(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings`);
+          process.stderr.write(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings`);
         }
       }
     }
@@ -837,7 +835,7 @@ export class ProtocolAdapter {
   private handleError(err: unknown, res: Response, defaultMsg: string): void {
     const isProduction = process.env.NODE_ENV === "production";
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[ProtocolAdapter] ${defaultMsg}:`, message);
+    process.stderr.write(`[ProtocolAdapter] ${defaultMsg}:` + " " + message);
     res.status(500).json({
       error: defaultMsg,
       ...(isProduction ? {} : { message }),
@@ -894,7 +892,7 @@ export class ProtocolAdapter {
             if (val) this.configRpcStore.set(section, val);
           }
         } catch (err) {
-          console.warn(`[ProtocolAdapter] Config RPC store update failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.stderr.write(`[ProtocolAdapter] Config RPC store update failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -1735,7 +1733,7 @@ export class ProtocolAdapter {
             rm.record(req.body.replyTo || req.body.parentId || req.body.inReplyTo, req.body.id || req.body.sessionId || "web-ui", {
               channel: req.body.channel || "webchat",
             });
-          } catch (err) { console.warn("[ProtocolAdapter] Failed to record reply reference:", err); }
+          } catch (err) { process.stderr.write("[ProtocolAdapter] Failed to record reply reference:" + " " + err); }
         }
 
         const agentExecutor = this.registry.resolveService<{
@@ -1803,7 +1801,7 @@ export class ProtocolAdapter {
 
           const complexity = estimateTaskComplexity(message);
           const CHAT_TIMEOUT = complexity.timeoutMs;
-          console.log(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
+          process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
           let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
           try {
             const result = await Promise.race([
@@ -1815,30 +1813,33 @@ export class ProtocolAdapter {
 
             let contextLimit = 128000;
             let sessionTokensUsed = 0;
-            try {
-              const providers = (agentExecutor as Record<string, unknown>).getProviders as (() => Array<{ enabled: boolean; model: string }>) | undefined;
-              if (providers) {
-                const activeProvider = providers().find((p) => p.enabled);
-                if (activeProvider?.model) {
-                  const MODEL_CONTEXT: Record<string, number> = {
-                    "gpt-4o": 128000, "gpt-4o-mini": 128000, "gpt-4-turbo": 128000, "gpt-4": 8192, "gpt-3.5-turbo": 16385,
-                    "claude-3-5-sonnet": 200000, "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
-                    "claude-sonnet-4-20250514": 200000, "deepseek-chat": 128000, "deepseek-reasoner": 128000,
-                    "qwen-max": 32768, "qwen-plus": 131072, "qwen-turbo": 131072,
-                    "glm-4": 128000, "glm-4-flash": 128000,
-                  };
-                  for (const [pattern, limit] of Object.entries(MODEL_CONTEXT)) {
-                    if (activeProvider.model.includes(pattern.replace("-4-turbo", "").replace("-4o", ""))) {
-                      contextLimit = limit;
-                      break;
-                    }
+        try {
+          const getProvidersFn2 = (agentExecutor as Record<string, unknown>).getProviders;
+          if (typeof getProvidersFn2 === "function") {
+            const providersList2 = (getProvidersFn2 as () => Array<{ enabled: boolean; model: string }>)();
+            if (providersList2 && providersList2.length > 0) {
+              const activeProvider2 = providersList2.find((p) => p.enabled);
+              if (activeProvider2?.model) {
+                const MODEL_CONTEXT: Record<string, number> = {
+                  "gpt-4o": 128000, "gpt-4o-mini": 128000, "gpt-4-turbo": 128000, "gpt-4": 8192, "gpt-3.5-turbo": 16385,
+                  "claude-3-5-sonnet": 200000, "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
+                  "claude-sonnet-4-20250514": 200000, "deepseek-chat": 128000, "deepseek-reasoner": 128000,
+                  "qwen-max": 32768, "qwen-plus": 131072, "qwen-turbo": 131072,
+                  "glm-4": 128000, "glm-4-flash": 128000,
+                };
+                for (const [pattern, limit] of Object.entries(MODEL_CONTEXT)) {
+                  if (activeProvider2.model.includes(pattern.replace("-4-turbo", "").replace("-4o", ""))) {
+                    contextLimit = limit;
+                    break;
                   }
-                  if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
-                  if (activeProvider.model.includes("claude")) contextLimit = 200000;
-                  if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
                 }
+                if (activeProvider2.model.includes("gpt-4o") || activeProvider2.model.includes("gpt-4-turbo")) contextLimit = 128000;
+                if (activeProvider2.model.includes("claude")) contextLimit = 200000;
+                if (activeProvider2.model.includes("deepseek")) contextLimit = 128000;
               }
-            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
+            }
+          }
+        } catch (err) { /* ignore provider lookup errors */ }
             try {
               const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
               if (contextEngine) {
@@ -1880,7 +1881,7 @@ export class ProtocolAdapter {
         // ── Non-streaming Mode (original behavior) ──
         const complexity = estimateTaskComplexity(message);
         const CHAT_TIMEOUT = complexity.timeoutMs;
-        console.log(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s`);
+        process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s`);
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
@@ -1899,7 +1900,7 @@ export class ProtocolAdapter {
           ]);
         } catch (raceErr) {
           if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
-            console.warn(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
+            process.stderr.write(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
             res.json({
               reply: "⏱️ 处理超时，请稍后重试。替代方案：\n① 简化您的请求后重试\n② 将任务拆分为更小的步骤\n③ 检查网络连接和模型配置是否正常\n\n需要我帮您将任务拆分后逐步完成吗？",
               tokensUsed: 0,
@@ -1918,17 +1919,20 @@ export class ProtocolAdapter {
         let contextLimit = 128000;
         let sessionTokensUsed = 0;
         try {
-          const providers = (agentExecutor as Record<string, unknown>).getProviders as (() => Array<{ enabled: boolean; model: string }>) | undefined;
-          if (providers) {
-            const activeProvider = providers().find((p) => p.enabled);
-            if (activeProvider?.model) {
-              if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
-              else if (activeProvider.model.includes("claude")) contextLimit = 200000;
-              else if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
-              else if (activeProvider.model.includes("qwen")) contextLimit = 131072;
+          const getProvidersFn = (agentExecutor as Record<string, unknown>).getProviders;
+          if (typeof getProvidersFn === "function") {
+            const providersList = (getProvidersFn as () => Array<{ enabled: boolean; model: string }>)();
+            if (providersList && providersList.length > 0) {
+              const activeProvider = providersList.find((p) => p.enabled);
+              if (activeProvider?.model) {
+                if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
+                else if (activeProvider.model.includes("claude")) contextLimit = 200000;
+                else if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
+                else if (activeProvider.model.includes("qwen")) contextLimit = 131072;
+              }
             }
           }
-        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
+        } catch (err) { /* ignore provider lookup errors */ }
         try {
           const contextEngine = this.registry.resolveService("contextEngine") as {
             getConfig(): Record<string, unknown>;
@@ -1975,7 +1979,7 @@ export class ProtocolAdapter {
       } catch (err) {
         if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[ProtocolAdapter] Chat endpoint error: ${errMsg}`);
+        process.stderr.write(`[ProtocolAdapter] Chat endpoint error: ${errMsg}`);
         res.json({
           reply: `❌ 处理您的请求时遇到了问题：${errMsg}\n\n替代方案：\n① 请稍后重试，可能是临时性故障\n② 尝试简化您的请求\n③ 如果问题持续，请前往 Ops 页面检查系统状态\n\n需要我帮您用其他方式完成吗？`,
           tokensUsed: 0,
@@ -2209,7 +2213,6 @@ export class ProtocolAdapter {
         res.json({
           executorTools: executor?.getRegisteredTools() || [],
           providers,
-          localModel: this.getLocalModelStatus(),
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -2942,7 +2945,7 @@ export class ProtocolAdapter {
           },
           hooks: [],
           async init() {
-            console.log(`[PluginManager] Community plugin "${name}" initialized (stub)`);
+            process.stdout.write(`[PluginManager] Community plugin "${name}" initialized (stub)`);
           },
           async shutdown() {},
           async healthCheck() {
@@ -3667,7 +3670,7 @@ export class ProtocolAdapter {
             // Emit event to start Weixin monitor
             this.eventBus?.publish("weixin:start-monitor", {}, "protocol-adapter");
           } catch (saveErr) {
-            console.error("[WeChat] Failed to save credentials:", saveErr);
+            process.stderr.write("[WeChat] Failed to save credentials:" + " " + saveErr);
           }
         }
 
@@ -5561,7 +5564,7 @@ export class ProtocolAdapter {
           const config = this.registry.resolveService<any>("config");
           if (config?.set) {
             for (const [key, value] of Object.entries(snapshot.config)) {
-              try { config.set(key, value); } catch (err) { console.warn(`[ProtocolAdapter] Config rollback failed for key "${key}":`, err); failedKeys.push(key); }
+              try { config.set(key, value); } catch (err) { process.stderr.write(`[ProtocolAdapter] Config rollback failed for key "${key}":` + " " + err); failedKeys.push(key); }
             }
           }
         }

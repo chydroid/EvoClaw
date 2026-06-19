@@ -160,7 +160,7 @@ export class SkillMarketplace {
 
       return this.catalog.length;
     } catch (err) {
-      console.warn(`[Marketplace] Failed to refresh catalog: ${err}`);
+      process.stderr.write(`[Marketplace] Failed to refresh catalog: ${err}`);
       return this.catalog.length; // return stale count
     }
   }
@@ -267,7 +267,7 @@ export class SkillMarketplace {
       }
       return data;
     } catch (err) {
-      console.warn(`[Marketplace] Failed to fetch package details for "${name}": ${err}`);
+      process.stderr.write(`[Marketplace] Failed to fetch package details for "${name}": ${err}`);
       // Fall back to local catalog
       return this.getPackage(name) ?? null;
     }
@@ -361,7 +361,7 @@ export class SkillMarketplace {
         const zip = new AdmZip.default(zipPath);
         zip.extractAllTo(extractDir, true);
       } catch (extractErr) {
-        console.warn(`[SkillMarketplace] ZIP extraction failed for ${name}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`);
+        process.stderr.write(`[SkillMarketplace] ZIP extraction failed for ${name}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}`);
       }
 
       // Find SKILL.md in extracted directory
@@ -386,7 +386,7 @@ export class SkillMarketplace {
         try {
           await this.skillManager.installSkill(skillMdPath);
         } catch (regErr) {
-          console.warn(`[SkillMarketplace] SkillManager registration failed for ${name}: ${regErr instanceof Error ? regErr.message : String(regErr)}`);
+          process.stderr.write(`[SkillMarketplace] SkillManager registration failed for ${name}: ${regErr instanceof Error ? regErr.message : String(regErr)}`);
         }
       }
 
@@ -493,7 +493,7 @@ export class SkillMarketplace {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      console.warn(`[Marketplace] Review submission failed: ${err}`);
+      process.stderr.write(`[Marketplace] Review submission failed: ${err}`);
     }
 
     // Update local cache

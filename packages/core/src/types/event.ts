@@ -19,10 +19,69 @@ export interface EventSubscription {
 }
 
 export interface IEventBus {
-  publish<T>(eventType: string, data: T, source: string): Promise<void>;
+  publish<K extends keyof EventMap>(eventType: K, data: EventMap[K], source: string): Promise<void>;
+  publish(eventType: string, data: unknown, source: string): Promise<void>;
+  subscribe<K extends keyof EventMap>(eventType: K, handler: EventHandler<EventMap[K]>): EventSubscription;
   subscribe<T>(eventType: string, handler: EventHandler<T>): EventSubscription;
   unsubscribe(subscriptionId: string): void;
+  once<K extends keyof EventMap>(eventType: K, handler: EventHandler<EventMap[K]>): EventSubscription;
   once<T>(eventType: string, handler: EventHandler<T>): EventSubscription;
+}
+
+/**
+ * Typed event map — maps event type strings to their payload types.
+ * Add new event types here to get compile-time safety on publish/subscribe.
+ */
+export interface EventMap {
+  "skill.installed": { skillId: string; name: string; version: string };
+  "skill.updated": { skillId: string; name: string; fromVersion: string; toVersion: string };
+  "skill.uninstalled": { skillId: string; name: string };
+  "skill.executed": { skillId: string; name: string; duration: number; success: boolean };
+  "skill.failed": { skillId: string; name: string; error: string };
+
+  "task.created": { id: string; type: string; priority: string };
+  "task.started": { id: string; type: string };
+  "task.completed": { id: string; type: string; duration: number };
+  "task.failed": { id: string; type: string; error: string };
+  "task.cancelled": { id: string; type: string };
+  "task.retrying": { id: string; type: string; attempt: number };
+
+  "agent.registered": { agentId: string; role: string };
+  "agent.terminated": { agentId: string; reason: string };
+  "agent.error": { agentId: string; error: string };
+
+  "evolution.started": { cycleId: string };
+  "evolution.candidate_generated": { candidateId: string; cycleId: string };
+  "evolution.published": { candidateId: string; version: string };
+  "evolution.rollback": { candidateId: string; reason: string };
+
+  "security.alert": { severity: string; message: string; source: string };
+  "security.breach": { severity: string; message: string; source: string };
+  "security.rate_limit_exceeded": { source: string; limit: number };
+
+  "memory.stored": { key: string; type: string };
+  "memory.retrieved": { key: string; type: string };
+  "memory.expired": { key: string };
+
+  "system.starting": { version: string };
+  "system.ready": { port: number; host: string };
+  "system.shutting_down": { reason: string };
+  "system.error": { error: string };
+
+  "learning.entry_created": { entryId: string; category: string };
+  "learning.entry_resolved": { entryId: string; resolution: string };
+  "learning.session_started": { sessionId: string };
+  "learning.session_completed": { sessionId: string; entriesCount: number };
+  "learning.journal_updated": { totalEntries: number };
+
+  "progress.reported": { taskId: string; progress: number; message: string };
+  "progress.phase_changed": { taskId: string; phase: string };
+  "progress.completed": { taskId: string; result: unknown };
+
+  "user.correction_received": { sessionId: string; correction: string };
+  "capability.gap_detected": { capability: string; description: string };
+  "external.failure_detected": { service: string; error: string };
+  "knowledge.improvement_found": { topic: string; improvement: string };
 }
 
 export const SystemEvents = {

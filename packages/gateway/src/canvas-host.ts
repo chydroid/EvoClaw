@@ -33,7 +33,7 @@ export class CanvasHost extends EventEmitter {
     try {
       fs.mkdirSync(this.rootDir, { recursive: true });
     } catch (err) {
-      console.warn("[CanvasHost] Failed to create root dir:", err);
+      process.stderr.write("[CanvasHost] Failed to create root dir:" + " " + err);
     }
   }
 
@@ -47,7 +47,7 @@ export class CanvasHost extends EventEmitter {
         }
       }
     } catch (err) {
-      console.warn("[CanvasHost] Failed to load projects:", err);
+      process.stderr.write("[CanvasHost] Failed to load projects:" + " " + err);
     }
   }
 
@@ -66,7 +66,7 @@ export class CanvasHost extends EventEmitter {
         }
       }
     } catch (err) {
-      console.warn(`[CanvasHost] Failed to load project ${id}:`, err);
+      process.stderr.write(`[CanvasHost] Failed to load project ${id}:` + " " + err);
     }
     this.projects.set(id, {
       id,
@@ -110,7 +110,7 @@ export class CanvasHost extends EventEmitter {
       this.emit("file-changed", { projectId, filename });
       return true;
     } catch (err) {
-      console.warn(`[CanvasHost] Failed to write file ${filename}:`, err);
+      process.stderr.write(`[CanvasHost] Failed to write file ${filename}:` + " " + err);
       return false;
     }
   }

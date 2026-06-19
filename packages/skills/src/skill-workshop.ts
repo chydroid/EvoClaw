@@ -233,7 +233,7 @@ export class SkillWorkshop {
     for (const file of proposal.files) {
       const currentHash = this.computeHash(file.content);
       if (currentHash !== file.hash) {
-        console.error(
+        process.stderr.write(
           `[SkillWorkshop] Hash mismatch for file "${file.path}" in proposal "${proposalId}". ` +
           `Expected: ${file.hash}, Got: ${currentHash}`
         );

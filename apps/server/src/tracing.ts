@@ -87,7 +87,7 @@ export function initTracing(serviceName: string, serviceVersion: string, otlpEnd
   });
 
   sdk.start();
-  console.log(`[Tracing] OpenTelemetry SDK initialized (service=${serviceName}, otlp=${otlpEndpoint || "none"}, collectorBuffer=2000)`);
+  process.stdout.write(`[Tracing] OpenTelemetry SDK initialized (service=${serviceName}, otlp=${otlpEndpoint || "none"}, collectorBuffer=2000)`);
   return sdk;
 }
 

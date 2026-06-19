@@ -460,11 +460,11 @@ export class PluginManager {
       } catch (err) {
         loaded.status = "error";
         loaded.error = String(err);
-        console.error(`[PluginManager] Plugin "${name}" init failed:`, err);
+        process.stderr.write(`[PluginManager] Plugin "${name}" init failed:` + " " + err);
       }
     }
 
-    console.log(`[PluginManager] Plugin "${name}" v${plugin.manifest.version} registered`);
+    process.stdout.write(`[PluginManager] Plugin "${name}" v${plugin.manifest.version} registered`);
   }
 
   /** Unregister a plugin */
@@ -476,7 +476,7 @@ export class PluginManager {
       try {
         await loaded.plugin.shutdown();
       } catch (err) {
-        console.error(`[PluginManager] Plugin "${name}" shutdown error:`, err);
+        process.stderr.write(`[PluginManager] Plugin "${name}" shutdown error:` + " " + err);
       }
     }
 
@@ -489,7 +489,7 @@ export class PluginManager {
     }
 
     this.plugins.delete(name);
-    console.log(`[PluginManager] Plugin "${name}" unregistered`);
+    process.stdout.write(`[PluginManager] Plugin "${name}" unregistered`);
   }
 
   /** Enable/disable a plugin without unregistering */
@@ -543,7 +543,7 @@ export class PluginManager {
           // - cancel: false is a no-op
         }
       } catch (err) {
-        console.error(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed:`, err);
+        process.stderr.write(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed:` + " " + err);
       }
     }
 
@@ -584,7 +584,7 @@ export class PluginManager {
           }
         }
       } catch (err) {
-        console.error(`[PluginManager] Hook "${hookType}" handler in plugin "${plugin}" failed:`, err);
+        process.stderr.write(`[PluginManager] Hook "${hookType}" handler in plugin "${plugin}" failed:` + " " + err);
       }
     }
 
@@ -641,7 +641,7 @@ export class PluginManager {
     try {
       entries = await readdir(dirPath, { withFileTypes: true });
     } catch (err) {
-      console.error(`[PluginManager] Failed to read plugin directory "${dirPath}":`, err);
+      process.stderr.write(`[PluginManager] Failed to read plugin directory "${dirPath}":` + " " + err);
       return;
     }
 
@@ -666,7 +666,7 @@ export class PluginManager {
           }
         }
       } catch (err) {
-        console.error(`[PluginManager] Failed to load plugin from "${fullPath}":`, err);
+        process.stderr.write(`[PluginManager] Failed to load plugin from "${fullPath}":` + " " + err);
       }
     }
   }

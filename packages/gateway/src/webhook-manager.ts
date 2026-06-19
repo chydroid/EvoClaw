@@ -104,7 +104,7 @@ export class IncomingWebhookManager {
     };
 
     this.endpoints.set(data.id, endpoint);
-    console.log(`[IncomingWebhookManager] Registered endpoint "${data.id}" at ${data.path} (${data.method})`);
+    process.stdout.write(`[IncomingWebhookManager] Registered endpoint "${data.id}" at ${data.path} (${data.method})`);
     return endpoint;
   }
 
@@ -315,7 +315,7 @@ export class WebhookManager {
 
   register(config: WebhookConfig): boolean {
     if (this.webhooks.has(config.id)) {
-      console.warn(`[WebhookManager] Webhook "${config.id}" already registered`);
+      process.stderr.write(`[WebhookManager] Webhook "${config.id}" already registered`);
       return false;
     }
 
@@ -330,7 +330,7 @@ export class WebhookManager {
     });
 
     this.deliveries.set(config.id, []);
-    console.log(`[WebhookManager] Registered webhook "${config.id}" → ${config.url}`);
+    process.stdout.write(`[WebhookManager] Registered webhook "${config.id}" → ${config.url}`);
     return true;
   }
 
@@ -543,7 +543,7 @@ export class WebhookManager {
         durationMs,
       };
       this.recordDelivery(webhookId, delivery);
-      console.warn(
+      process.stderr.write(
         `[WebhookManager] Delivery failed for "${webhookId}" after ${attempt} attempts: ${errorMessage}`
       );
       return delivery;

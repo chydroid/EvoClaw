@@ -306,7 +306,7 @@ export class MemoryDreaming {
       session.status = "completed";
     } catch (err) {
       session.status = "failed";
-      console.error(`[MemoryDreaming] Dream session ${session.id} failed:`, err);
+      process.stderr.write(`[MemoryDreaming] Dream session ${session.id} failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
     session.completedAt = Date.now();
@@ -555,7 +555,7 @@ export class MemoryDreaming {
         });
         written++;
       } catch (err) {
-        console.warn(`[MemoryDreaming] Failed to write fact to memory:`, err);
+        process.stderr.write(`[MemoryDreaming] Failed to write fact to memory: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
 
@@ -675,8 +675,8 @@ export class MemoryDreaming {
     // Clear pending facts after successful consolidation
     this.pendingFacts = [];
 
-    console.log(
-      `[MemoryDreaming] REM session ${session.id}: consolidated ${allFacts.length} facts → ${consolidated.length} → wrote ${written}`
+    process.stdout.write(
+      `[MemoryDreaming] REM session ${session.id}: consolidated ${allFacts.length} facts → ${consolidated.length} → wrote ${written}\n`
     );
   }
 

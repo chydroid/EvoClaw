@@ -350,7 +350,7 @@ export class DMPairingManager {
       }
       fs.writeFileSync(this.pairingStorePath, JSON.stringify(data, null, 2), "utf-8");
     } catch (err) {
-      console.error("[DMPairingManager] Failed to persist approved peers:", err);
+      process.stderr.write(`[DMPairingManager] Failed to persist approved peers: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
