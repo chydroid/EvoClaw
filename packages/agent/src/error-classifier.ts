@@ -1,3 +1,6 @@
+import { applyJitter } from "./retry-utils";
+import { resolveFailoverReason, isTransientReason, type FailoverReason } from "./failover-policy";
+
 export enum LLMErrorType {
   CONTEXT_OVERFLOW = "context_overflow",
   RATE_LIMIT = "rate_limit",
@@ -16,6 +19,12 @@ export interface ClassifiedError {
   shouldRotateAuth: boolean;
   backoffMs: number;
   message: string;
+  /** 失败原因分类（借鉴 openclaw failover-policy） */
+  reason?: FailoverReason;
+  /** 是否为瞬时错误（可重试） */
+  isTransient?: boolean;
+  /** 是否有 Retry-After 契约（影响 jitter 模式） */
+  hasRetryAfterContract?: boolean;
 }
 
 const CONTEXT_OVERFLOW_PATTERNS = [
@@ -79,6 +88,22 @@ const TIMEOUT_PATTERNS = [
   /socket.hang.up/i,
 ];
 
+// ── Jitter 配置 ───────────────────────────────────────────
+// 借鉴 openclaw 的双 jitter 模式：symmetric 用于普通退避，
+// positive 用于 Retry-After 场景（保证不低于下限）。
+const JITTER_FACTOR = 0.3;
+const MAX_BACKOFF_MS = 30_000;
+
+/**
+ * 对 backoffMs 应用 jitter。
+ * - 有 Retry-After 契约时用 positive 模式（保证不低于下限）
+ * - 无契约时用 symmetric 模式（允许分散）
+ */
+function applyBackoffJitter(backoffMs: number, hasRetryAfter = false): number {
+  const jittered = applyJitter(backoffMs, JITTER_FACTOR, hasRetryAfter ? "positive" : "symmetric");
+  return Math.min(Math.max(0, jittered), MAX_BACKOFF_MS);
+}
+
 export function classifyLLMError(
   statusCode?: number,
   errorText?: string,
@@ -87,14 +112,28 @@ export function classifyLLMError(
   const combinedText = [errorText, errorMessage].filter(Boolean).join(" ");
   const lower = combinedText.toLowerCase();
 
+  // 解析 FailoverReason（借鉴 openclaw failover-policy）
+  const reason = resolveFailoverReason(statusCode, combinedText);
+  const isTransient = isTransientReason(reason);
+
   if (statusCode === 429) {
+    // 解析 Retry-After
+    const retryAfterMatch = lower.match(/retry.after.?\s*(\d+)/i);
+    const retryAfterSeconds = retryAfterMatch ? parseInt(retryAfterMatch[1], 10) : 0;
+    const hasRetryAfter = retryAfterSeconds > 0;
+    const baseBackoff = hasRetryAfter
+      ? Math.min(retryAfterSeconds * 1000, MAX_BACKOFF_MS)
+      : 5000;
     return {
       type: LLMErrorType.RATE_LIMIT,
       retryable: true,
       shouldCompact: false,
       shouldRotateAuth: true,
-      backoffMs: 5000,
+      backoffMs: applyBackoffJitter(baseBackoff, hasRetryAfter),
       message: "Rate limit exceeded. Rotating to next provider.",
+      reason,
+      isTransient,
+      hasRetryAfterContract: hasRetryAfter,
     };
   }
 
@@ -106,6 +145,8 @@ export function classifyLLMError(
       shouldRotateAuth: true,
       backoffMs: 0,
       message: "Authentication failed. Rotating to next provider.",
+      reason,
+      isTransient,
     };
   }
 
@@ -117,6 +158,8 @@ export function classifyLLMError(
       shouldRotateAuth: true,
       backoffMs: 0,
       message: "Billing issue. Rotating to next provider.",
+      reason,
+      isTransient,
     };
   }
 
@@ -127,8 +170,10 @@ export function classifyLLMError(
         retryable: true,
         shouldCompact: true,
         shouldRotateAuth: false,
-        backoffMs: 1000,
+        backoffMs: applyBackoffJitter(1000),
         message: "Context overflow detected. Compacting conversation before retry.",
+        reason,
+        isTransient,
       };
     }
   }
@@ -136,14 +181,18 @@ export function classifyLLMError(
   for (const pattern of RATE_LIMIT_PATTERNS) {
     if (pattern.test(lower)) {
       const backoffMatch = lower.match(/retry.after.(\d+)/i);
+      const hasRetryAfter = !!backoffMatch;
       const backoff = backoffMatch ? parseInt(backoffMatch[1], 10) * 1000 : 5000;
       return {
         type: LLMErrorType.RATE_LIMIT,
         retryable: true,
         shouldCompact: false,
         shouldRotateAuth: true,
-        backoffMs: Math.min(backoff, 30000),
+        backoffMs: applyBackoffJitter(Math.min(backoff, MAX_BACKOFF_MS), hasRetryAfter),
         message: "Rate limit detected. Retrying after backoff.",
+        reason,
+        isTransient,
+        hasRetryAfterContract: hasRetryAfter,
       };
     }
   }
@@ -157,6 +206,8 @@ export function classifyLLMError(
         shouldRotateAuth: true,
         backoffMs: 0,
         message: "Authentication error. Skipping this provider.",
+        reason,
+        isTransient,
       };
     }
   }
@@ -170,6 +221,8 @@ export function classifyLLMError(
         shouldRotateAuth: true,
         backoffMs: 0,
         message: "Billing/quota issue. Skipping this provider.",
+        reason,
+        isTransient,
       };
     }
   }
@@ -181,8 +234,10 @@ export function classifyLLMError(
         retryable: true,
         shouldCompact: false,
         shouldRotateAuth: false,
-        backoffMs: 2000,
+        backoffMs: applyBackoffJitter(2000),
         message: "Request timed out. Retrying.",
+        reason,
+        isTransient,
       };
     }
   }
@@ -194,6 +249,8 @@ export function classifyLLMError(
     shouldRotateAuth: false,
     backoffMs: 0,
     message: `Unknown error: ${combinedText.slice(0, 200)}`,
+    reason,
+    isTransient,
   };
 }
 

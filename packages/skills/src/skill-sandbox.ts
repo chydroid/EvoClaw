@@ -163,13 +163,13 @@ export class SkillSandbox {
         for (const candidate of candidates) {
           try {
             execSync(`"${candidate}" --version`, { stdio: "pipe", timeout: 5000 });
-            console.log(`[SkillSandbox] Python auto-discovered at: ${candidate}`);
+            process.stdout.write(`[SkillSandbox] Python auto-discovered at: ${candidate}`);
             return candidate;
           } catch {
             // Not executable, skip
           }
         }
-        console.warn("[SkillSandbox] Neither python3 nor python found in PATH, and auto-discovery found nothing");
+        process.stderr.write("[SkillSandbox] Neither python3 nor python found in PATH, and auto-discovery found nothing");
         return "python3"; // Default to python3, will fail with clear error
       }
     }
@@ -238,8 +238,6 @@ export class SkillSandbox {
     }
 
     const skillDir = this.resolveSkillDir(skill);
-    const queryParams = typeof params.query === "string" ? params.query : JSON.stringify(params);
-    const jsonArgs = JSON.stringify({ query: queryParams });
 
     let scriptFile: string | null = null;
     let args: string[];
@@ -248,7 +246,8 @@ export class SkillSandbox {
     const scriptPath = this.extractScriptPath(code, skillDir, "py");
     if (scriptPath && fs.existsSync(scriptPath)) {
       scriptFile = scriptPath;
-      args = [scriptFile, jsonArgs];
+      // 将用户参数映射为 Python 脚本的命令行参数
+      args = [scriptFile, ...this.buildCliArgs(params)];
     } else {
       const tmpDir = path.join(process.cwd(), "data", "tmp");
       if (!fs.existsSync(tmpDir)) {
@@ -259,6 +258,8 @@ export class SkillSandbox {
       const cleanCode = code.replace(/^python3?\s+\S+\s*/m, "").trim();
       fs.writeFileSync(tmpFile, cleanCode || code, "utf-8");
       scriptFile = tmpFile;
+      // 对于内联脚本，传递完整参数作为 JSON
+      const jsonArgs = JSON.stringify(params);
       args = [tmpFile, jsonArgs];
     }
 
@@ -273,7 +274,7 @@ export class SkillSandbox {
     // Prefer python3, fall back to python
     const pythonBin = this.resolvePythonBin();
 
-    console.log(`[SkillSandbox] Executing Python: ${scriptFile}`);
+    process.stdout.write(`[SkillSandbox] Executing Python: ${scriptFile}`);
 
     try {
       return await new Promise((resolve, reject) => {
@@ -426,7 +427,7 @@ export class SkillSandbox {
       }
     }
 
-    console.log(`[SkillSandbox] Executing: ${cmd.slice(0, 200)}`);
+    process.stdout.write(`[SkillSandbox] Executing: ${cmd.slice(0, 200)}`);
 
     return new Promise((resolve, reject) => {
       const isWindows = process.platform === "win32";
@@ -781,12 +782,12 @@ export class SkillSandbox {
         };
       }
 
-      // Execute the first command template
-      const cmd = commandLines[0];
+      // 选择最佳命令模板：根据用户参数中的 action/command 匹配
+      const selectedCmd = this.selectBestCommand(commandLines, params);
       const skillDir = skill.installPath
         ? require("path").dirname(skill.installPath)
         : "";
-      const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
+      const resolvedCmd = selectedCmd.replace(/\{baseDir\}/g, skillDir);
 
       try {
         const { execFile } = require("child_process");
@@ -794,9 +795,12 @@ export class SkillSandbox {
         // Replace python3 with the resolved python path
         const finalCmd = resolvedCmd.replace(/^python3\b/, pythonBin).replace(/^python\b/, pythonBin);
 
+        // 将用户参数注入到命令行中
+        const cmdWithParams = this.injectParamsToCommand(finalCmd, params);
+
         // Use async execFile to avoid blocking the event loop
         // Split command into program and args to avoid shell injection with shell:true
-        const cmdParts = finalCmd.split(/\s+/);
+        const cmdParts = cmdWithParams.split(/\s+/);
         const program = cmdParts[0];
         const cmdArgs = cmdParts.slice(1);
         const result = await new Promise<string>((resolve, reject) => {
@@ -867,5 +871,110 @@ export class SkillSandbox {
       }
     }
     return commands;
+  }
+
+  /** 将 params 对象构建为 CLI 参数数组（如 --code 600519 --market 1） */
+  private buildCliArgs(params: Record<string, unknown>): string[] {
+    const args: string[] = [];
+    // 如果有 action/command 子命令，放在最前面
+    const action = params.action || params.command || params.subcommand;
+    if (typeof action === "string") {
+      args.push(action);
+    }
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "action" || key === "command" || key === "subcommand" || key === "query") continue;
+      if (value === undefined || value === null) continue;
+      const strValue = String(value);
+      args.push(`--${key}`, strValue);
+    }
+    return args;
+  }
+
+  /** 根据用户参数选择最佳命令模板 */
+  private selectBestCommand(commandLines: string[], params: Record<string, unknown>): string {
+    if (commandLines.length === 0) return "";
+    if (commandLines.length === 1) return commandLines[0];
+
+    const action = String(params.action || params.command || params.subcommand || "").toLowerCase();
+    const query = String(params.query || "").toLowerCase();
+
+    // 尝试根据 action 匹配命令模板
+    if (action) {
+      for (const cmd of commandLines) {
+        const cmdLower = cmd.toLowerCase();
+        // 匹配子命令：如 "info" 匹配 "market_query.py info"
+        if (cmdLower.includes(` ${action} `) || cmdLower.includes(` ${action}--`) || cmdLower.endsWith(` ${action}`)) {
+          return cmd;
+        }
+      }
+    }
+
+    // 尝试根据 query 意图匹配
+    const intentKeywords: Record<string, string[]> = {
+      info: ["详情", "行情", "信息", "detail", "info", "quote", "价格", "股价"],
+      fund: ["资金", "流向", "fund", "flow", "流入", "流出"],
+      ranking: ["排行", "涨幅", "跌幅", "排名", "ranking", "top", "榜"],
+      history: ["历史", "走势", "history", "k线", "日线"],
+      related: ["板块", "关联", "related", "所属", "概念"],
+      indicators: ["指标", "财务", "indicators", "fundamental"],
+      income: ["利润", "营收", "income", "利润表"],
+      cashflow: ["现金流", "cashflow", "现金"],
+      balance: ["资产负债", "balance", "资产表"],
+      hot_rank: ["热榜", "热门", "hot", "rank"],
+      topic: ["专题", "资讯", "topic", "新闻"],
+    };
+
+    for (const [intent, keywords] of Object.entries(intentKeywords)) {
+      if (keywords.some(kw => query.includes(kw))) {
+        for (const cmd of commandLines) {
+          const cmdLower = cmd.toLowerCase();
+          if (cmdLower.includes(` ${intent} `) || cmdLower.includes(` ${intent}--`) || cmdLower.endsWith(` ${intent}`)) {
+            return cmd;
+          }
+        }
+      }
+    }
+
+    // 回退到第一个命令模板
+    return commandLines[0];
+  }
+
+  /** 将用户参数注入到命令模板中（替换已有参数值或追加新参数） */
+  private injectParamsToCommand(cmd: string, params: Record<string, unknown>): string {
+    let result = cmd;
+    const action = params.action || params.command || params.subcommand;
+
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "action" || key === "command" || key === "subcommand" || key === "query") continue;
+      if (value === undefined || value === null) continue;
+      const strValue = String(value);
+
+      // 检查命令中是否已有该参数
+      const paramRegex = new RegExp(`--${key}(?:\\s+|=)(\\S*)`);
+      if (paramRegex.test(result)) {
+        // 替换已有参数值
+        result = result.replace(paramRegex, `--${key} ${strValue}`);
+      } else {
+        // 追加新参数（在 action 子命令之后）
+        if (action && typeof action === "string") {
+          const actionIdx = result.indexOf(` ${action} `);
+          if (actionIdx !== -1) {
+            const afterAction = actionIdx + action.length + 1;
+            // 找到 action 后第一个 -- 参数的位置
+            const nextParamIdx = result.indexOf(" --", afterAction);
+            if (nextParamIdx !== -1) {
+              result = result.slice(0, nextParamIdx) + ` --${key} ${strValue}` + result.slice(nextParamIdx);
+            } else {
+              result += ` --${key} ${strValue}`;
+            }
+          } else {
+            result += ` --${key} ${strValue}`;
+          }
+        } else {
+          result += ` --${key} ${strValue}`;
+        }
+      }
+    }
+    return result;
   }
 }

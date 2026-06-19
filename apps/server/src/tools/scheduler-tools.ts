@@ -199,7 +199,7 @@ export function registerSchedulerTools(
       description: "Get execution history for tasks",
       parameters: {
         taskId: { type: "string", description: "Task ID (optional, omit for all)" },
-        limit: { type: "string", description: "Max results (default 20)" },
+        limit: { type: "number", description: "Max results (default 20)" },
       },
     },
     async (params: Record<string, unknown>) => {

@@ -65,7 +65,6 @@ export interface TrustRule {
 
 const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   // Critical risk - always requires approval
-  shell_exec: "critical",
   file_delete: "critical",
   // High risk - requires approval by default
   file_modify: "high",
@@ -77,6 +76,10 @@ const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   video_download: "medium",
   music_download: "medium",
   // Low risk - auto-approved
+  // shell_exec 设为 low：技能中的 Python 脚本无须批准即可执行
+  shell_exec: "low",
+  // skill_execute 设为 low：技能执行无须批准
+  skill_execute: "low",
   web_search: "low",
   web_fetch: "low",
   file_read: "low",

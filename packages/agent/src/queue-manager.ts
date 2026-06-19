@@ -6,6 +6,12 @@
  * - followup: A follow-up question or continuation
  * - collect: Collect results/feedback without interrupting
  * - interrupt: High-priority interruption to current task
+ *
+ * 改进（借鉴 openclaw command-queue.ts）：
+ * 1. 命名车道（Named Lanes）：不同类型任务独立并发上限，避免相互阻塞
+ * 2. generation 字段：处理 in-process restart 后的僵尸任务
+ * 3. 队列等待诊断：queuedAheadAtEnqueue、warnAfterMs、onWait 回调
+ * 4. 精细错误类型：区分车道清空、任务超时、网关排空
  */
 
 import type { EventBus } from "@evoclaw/core";
@@ -13,6 +19,21 @@ import * as fs from "fs";
 import * as path from "path";
 
 export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
+
+/**
+ * 命名车道（借鉴 openclaw CommandLane）。
+ * 不同类型任务使用不同车道，避免相互阻塞。
+ */
+export type QueueLane = "main" | "cron" | "subagent" | "nested" | "background";
+
+/** 车道默认并发上限 */
+const LANE_MAX_CONCURRENT: Record<QueueLane, number> = {
+  main: 3,
+  cron: 2,
+  subagent: 2,
+  nested: 1,
+  background: 1,
+};
 
 export interface QueueItem {
   id: string;
@@ -27,6 +48,18 @@ export interface QueueItem {
   status: "pending" | "processing" | "done" | "failed";
   result?: string;
   error?: string;
+  /** 命名车道（借鉴 openclaw） */
+  lane?: QueueLane;
+  /** generation 标记（用于 in-process restart 后区分新旧任务） */
+  generation?: number;
+  /** 入队时前方排队任务数（诊断用） */
+  queuedAheadAtEnqueue?: number;
+  /** 入队时前方活跃任务数（诊断用） */
+  activeAheadAtEnqueue?: number;
+  /** 队列等待超时警告阈值（ms） */
+  warnAfterMs?: number;
+  /** 队列等待超时回调 */
+  onWait?: (waitMs: number, queuedAhead: number) => void;
 }
 
 export interface QueueConfig {
@@ -50,11 +83,54 @@ const DEFAULT_CONFIG: QueueConfig = {
   dataDir: path.join(process.cwd(), "data", "queues"),
 };
 
+// ── 精细错误类型（借鉴 openclaw）───────────────────────────
+
+/** 车道被清空时抛出 */
+export class QueueLaneClearedError extends Error {
+  constructor(public lane: QueueLane) {
+    super(`Queue lane "${lane}" was cleared`);
+    this.name = "QueueLaneClearedError";
+  }
+}
+
+/** 任务超时时抛出 */
+export class QueueTaskTimeoutError extends Error {
+  constructor(public taskId: string, public timeoutMs: number) {
+    super(`Queue task "${taskId}" timed out after ${timeoutMs}ms`);
+    this.name = "QueueTaskTimeoutError";
+  }
+}
+
+/** 网关排空中时抛出 */
+export class QueueDrainingError extends Error {
+  constructor() {
+    super("Queue is draining, no new tasks accepted");
+    this.name = "QueueDrainingError";
+  }
+}
+
+// ── 车道状态 ───────────────────────────────────────────────
+
+interface LaneState {
+  lane: QueueLane;
+  activeTaskIds: Set<string>;
+  maxConcurrent: number;
+  draining: boolean;
+  /** generation 标记，restart 后递增 */
+  generation: number;
+}
+
 export class QueueManager {
   private config: QueueConfig;
   private queues = new Map<string, QueueItem[]>();
   private processing = new Map<string, QueueItem>();
   private counter = 0;
+  /** 车道状态映射 */
+  private laneStates = new Map<QueueLane, LaneState>();
+  /** 全局 generation（用于 in-process restart） */
+  private globalGeneration = 0;
+  /** 是否排空中 */
+  private draining = false;
 
   constructor(
     private eventBus: EventBus,
@@ -62,24 +138,52 @@ export class QueueManager {
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.ensureDataDir();
+    this.initLanes();
+  }
+
+  /** 初始化车道状态 */
+  private initLanes(): void {
+    for (const lane of ["main", "cron", "subagent", "nested", "background"] as QueueLane[]) {
+      this.laneStates.set(lane, {
+        lane,
+        activeTaskIds: new Set(),
+        maxConcurrent: LANE_MAX_CONCURRENT[lane],
+        draining: false,
+        generation: 0,
+      });
+    }
   }
 
   private ensureDataDir(): void {
     try {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
-    } catch (err) { console.warn(`[QueueManager] Failed to create data directory "${this.config.dataDir}":`, err); }
+    } catch (err) { process.stderr.write(`[QueueManager] Failed to create data directory "${this.config.dataDir}":` + " " + err); }
   }
 
   // ====== Enqueue ======
 
-  /** Add a message to the queue */
+  /**
+   * Add a message to the queue.
+   *
+   * 改进：
+   * 1. 支持命名车道（lane 参数），不同车道独立并发上限
+   * 2. 设置 generation 字段，用于 in-process restart 后区分新旧任务
+   * 3. 记录 queuedAheadAtEnqueue 和 activeAheadAtEnqueue 诊断信息
+   * 4. draining 状态时拒绝入队
+   */
   enqueue(
     sessionId: string,
     message: string,
     mode: QueueMode = "steer",
     context?: Record<string, unknown>,
     priority?: number,
+    lane: QueueLane = "main",
   ): QueueItem {
+    // 检查排空状态
+    if (this.draining) {
+      throw new QueueDrainingError();
+    }
+
     const queue = this.getOrCreateQueue(sessionId);
 
     // Enforce max queue size
@@ -88,11 +192,16 @@ export class QueueManager {
       queue.sort((a, b) => a.priority - b.priority);
       const removed = queue.shift();
       if (removed) {
-        console.warn(
+        process.stderr.write(
           `[QueueManager] Queue full for session "${sessionId}", dropped item: ${removed.id}`,
         );
       }
     }
+
+    // 记录入队时的诊断信息
+    const pendingCount = queue.filter(q => q.status === "pending").length;
+    const laneState = this.laneStates.get(lane);
+    const activeCount = laneState?.activeTaskIds.size ?? 0;
 
     const item: QueueItem = {
       id: `q-${Date.now()}-${++this.counter}`,
@@ -105,6 +214,10 @@ export class QueueManager {
       retryCount: 0,
       maxRetries: this.config.defaultMaxRetries,
       status: "pending",
+      lane,
+      generation: this.globalGeneration,
+      queuedAheadAtEnqueue: pendingCount,
+      activeAheadAtEnqueue: activeCount,
     };
 
     queue.push(item);
@@ -117,12 +230,12 @@ export class QueueManager {
 
     this.eventBus.publish(
       "queue.item_added",
-      { item, queueSize: queue.length },
+      { item, queueSize: queue.length, lane },
       "queue-manager",
     );
 
-    console.log(
-      `[QueueManager] Enqueued [${mode}] for session "${sessionId}": "${message.slice(0, 80)}" (queue size: ${queue.length})`,
+    process.stdout.write(
+      `[QueueManager] Enqueued [${mode}] lane=${lane} for session "${sessionId}": "${message.slice(0, 80)}" (queue size: ${queue.length})`,
     );
 
     return item;
@@ -166,7 +279,12 @@ export class QueueManager {
 
   // ====== Dequeue ======
 
-  /** Get the next item to process (highest priority pending) */
+  /**
+   * Get the next item to process (highest priority pending).
+   *
+   * 改进：车道并发控制。
+   * 每个车道有独立的并发上限，避免某类任务占满所有资源。
+   */
   dequeue(sessionId: string): QueueItem | undefined {
     const queue = this.queues.get(sessionId);
     if (!queue || queue.length === 0) return undefined;
@@ -174,18 +292,34 @@ export class QueueManager {
     const pending = queue.filter((q) => q.status === "pending");
     if (pending.length === 0) return undefined;
 
-    // Get highest priority item
-    const item = pending[0];
-    item.status = "processing";
-    this.processing.set(item.id, item);
+    // 找到第一个车道未满的 pending 任务
+    for (const item of pending) {
+      const lane = item.lane ?? "main";
+      const laneState = this.laneStates.get(lane);
+      if (laneState && laneState.activeTaskIds.size >= laneState.maxConcurrent) {
+        // 该车道并发已满，跳过
+        continue;
+      }
 
-    this.eventBus.publish(
-      "queue.item_dequeued",
-      { item, remainingCount: pending.length - 1 },
-      "queue-manager",
-    );
+      item.status = "processing";
+      this.processing.set(item.id, item);
 
-    return item;
+      // 更新车道活跃任务
+      if (laneState) {
+        laneState.activeTaskIds.add(item.id);
+      }
+
+      this.eventBus.publish(
+        "queue.item_dequeued",
+        { item, remainingCount: pending.length - 1, lane },
+        "queue-manager",
+      );
+
+      return item;
+    }
+
+    // 所有车道都满了
+    return undefined;
   }
 
   /** Mark item as done */
@@ -196,6 +330,11 @@ export class QueueManager {
     item.status = "done";
     item.result = result;
     this.processing.delete(itemId);
+
+    // 更新车道活跃任务
+    const lane = item.lane ?? "main";
+    const laneState = this.laneStates.get(lane);
+    laneState?.activeTaskIds.delete(itemId);
 
     // Remove from queue (keep for history if needed)
     const queue = this.queues.get(item.sessionId);
@@ -215,6 +354,11 @@ export class QueueManager {
     const item = this.findItem(itemId);
     if (!item) return false;
 
+    // 更新车道活跃任务
+    const lane = item.lane ?? "main";
+    const laneState = this.laneStates.get(lane);
+    laneState?.activeTaskIds.delete(itemId);
+
     item.retryCount++;
 
     if (item.retryCount >= item.maxRetries) {
@@ -228,7 +372,7 @@ export class QueueManager {
         "queue-manager",
       );
 
-      console.warn(
+      process.stderr.write(
         `[QueueManager] Item "${itemId}" failed after ${item.maxRetries} retries: ${error}`,
       );
       return false;
@@ -245,7 +389,7 @@ export class QueueManager {
       "queue-manager",
     );
 
-    console.log(
+    process.stdout.write(
       `[QueueManager] Item "${itemId}" will retry (attempt ${item.retryCount}/${item.maxRetries})`,
     );
     return true;
@@ -316,6 +460,159 @@ export class QueueManager {
   clearAll(): void {
     this.queues.clear();
     this.processing.clear();
+    // 重置车道状态
+    for (const laneState of this.laneStates.values()) {
+      laneState.activeTaskIds.clear();
+    }
+  }
+
+  // ====== Lane Management（借鉴 openclaw）──────────────────
+
+  /**
+   * 获取车道统计信息。
+   */
+  getLaneStats(lane: QueueLane): {
+    lane: QueueLane;
+    active: number;
+    maxConcurrent: number;
+    pending: number;
+    draining: boolean;
+    generation: number;
+  } {
+    const laneState = this.laneStates.get(lane);
+    if (!laneState) {
+      return {
+        lane,
+        active: 0,
+        maxConcurrent: LANE_MAX_CONCURRENT[lane],
+        pending: 0,
+        draining: false,
+        generation: 0,
+      };
+    }
+
+    // 统计该车道的 pending 任务
+    let pending = 0;
+    for (const queue of this.queues.values()) {
+      pending += queue.filter(q => q.lane === lane && q.status === "pending").length;
+    }
+
+    return {
+      lane,
+      active: laneState.activeTaskIds.size,
+      maxConcurrent: laneState.maxConcurrent,
+      pending,
+      draining: laneState.draining,
+      generation: laneState.generation,
+    };
+  }
+
+  /**
+   * 清空指定车道的所有任务。
+   * 借鉴 openclaw 的 CommandLaneClearedError 设计。
+   */
+  clearLane(lane: QueueLane): number {
+    let cleared = 0;
+    for (const [sessionId, queue] of this.queues) {
+      const before = queue.length;
+      const filtered = queue.filter(q => q.lane !== lane);
+      const removed = before - filtered.length;
+      if (removed > 0) {
+        this.queues.set(sessionId, filtered);
+        cleared += removed;
+      }
+    }
+
+    // 清除车道活跃任务
+    const laneState = this.laneStates.get(lane);
+    laneState?.activeTaskIds.clear();
+
+    this.eventBus.publish(
+      "queue.lane_cleared",
+      { lane, cleared },
+      "queue-manager",
+    );
+
+    return cleared;
+  }
+
+  /**
+   * 递增 generation（用于 in-process restart）。
+   *
+   * 借鉴 openclaw 的 generation 字段设计。
+   * restart 后旧 generation 的任务可被识别并清理，避免僵尸任务残留。
+   */
+  bumpGeneration(): number {
+    this.globalGeneration++;
+    // 同步更新所有车道的 generation
+    for (const laneState of this.laneStates.values()) {
+      laneState.generation = this.globalGeneration;
+    }
+
+    this.eventBus.publish(
+      "queue.generation_bumped",
+      { generation: this.globalGeneration },
+      "queue-manager",
+    );
+
+    return this.globalGeneration;
+  }
+
+  /**
+   * 获取旧 generation 的僵尸任务。
+   * 在 in-process restart 后调用，清理残留的旧任务。
+   */
+  getStaleTasks(): QueueItem[] {
+    const stale: QueueItem[] = [];
+    for (const queue of this.queues.values()) {
+      for (const item of queue) {
+        if (item.generation !== undefined && item.generation < this.globalGeneration) {
+          stale.push(item);
+        }
+      }
+    }
+    return stale;
+  }
+
+  /**
+   * 开始排空模式。
+   * 排空期间拒绝新任务入队，等待现有任务完成。
+   * 借鉴 openclaw 的 GatewayDrainingError 设计。
+   */
+  startDraining(): void {
+    this.draining = true;
+    for (const laneState of this.laneStates.values()) {
+      laneState.draining = true;
+    }
+
+    this.eventBus.publish(
+      "queue.draining_started",
+      {},
+      "queue-manager",
+    );
+  }
+
+  /**
+   * 停止排空模式，恢复正常接受任务。
+   */
+  stopDraining(): void {
+    this.draining = false;
+    for (const laneState of this.laneStates.values()) {
+      laneState.draining = false;
+    }
+
+    this.eventBus.publish(
+      "queue.draining_stopped",
+      {},
+      "queue-manager",
+    );
+  }
+
+  /**
+   * 检查是否正在排空。
+   */
+  isDraining(): boolean {
+    return this.draining;
   }
 
   /** Update a queue item's message content */
@@ -438,18 +735,18 @@ export class QueueManager {
           );
           if (Array.isArray(data) && data.length > 0) {
             this.queues.set(sessionId, data);
-            console.log(
+            process.stdout.write(
               `[QueueManager] Loaded queue for session "${sessionId}": ${data.length} items`,
             );
           }
         } catch (err) {
-          console.warn(
+          process.stderr.write(
             `[QueueManager] Failed to load queue for "${sessionId}": ${err}`,
           );
         }
       }
     } catch (err) {
-      console.warn(`[QueueManager] Failed to load persisted queues: ${err}`);
+      process.stderr.write(`[QueueManager] Failed to load persisted queues: ${err}`);
     }
   }
 
@@ -481,7 +778,7 @@ export class QueueManager {
       const filePath = path.join(this.config.dataDir, `${sessionId}.json`);
       fs.writeFileSync(filePath, JSON.stringify(queue, null, 2), "utf-8");
     } catch (err) {
-      console.warn(`[QueueManager] Failed to persist queue: ${err}`);
+      process.stderr.write(`[QueueManager] Failed to persist queue: ${err}`);
     }
   }
 }

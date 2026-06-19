@@ -414,7 +414,7 @@ export function registerWebTools(
       description: "Search the web. Tries Tavily/Baidu skills first (higher quality), then falls back to Bing (cn.bing.com for Chinese queries), Google, DuckDuckGo. Returns titles, URLs, and snippets. Supports freshness parameter for time-filtered results.",
       parameters: {
         query: { type: "string", description: "Search query string" },
-        limit: { type: "string", description: "Max results (default 10)" },
+        limit: { type: "number", description: "Max results (default 10)" },
         freshness: { type: "string", description: "Time filter: pd (24h), pw (7d), pm (31d), py (365d), or YYYY-MM-DDtoYYYY-MM-DD" },
       },
     },
