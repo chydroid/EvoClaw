@@ -23,8 +23,8 @@
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/security": "workspace:*",
     "@evoclaw/skills": "workspace:*",
-    "@types/uuid": "^10.0.0",
-    "uuid": "^10.0.0"
+    "@types/uuid": "^9.0.0",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
