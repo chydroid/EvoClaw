@@ -8,7 +8,105 @@ import {
   type SkillDependency,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
 import { SkillValidator } from "./skill-validator";
+
+/**
+ * 原子写入文件（temp + fsync + rename）。
+ * 防止崩溃时产生截断的 SKILL.md / _meta.json。
+ */
+function atomicWriteFileLocal(targetPath: string, content: string): void {
+  const dir = path.dirname(targetPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    if (fs.existsSync(targetPath)) {
+      const st = fs.statSync(targetPath);
+      fs.chmodSync(tmpPath, st.mode);
+    }
+  } catch {
+    // 权限复制失败不阻断
+  }
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EXDEV" || code === "EBUSY") {
+      const c = fs.readFileSync(tmpPath, "utf-8");
+      const fd2 = fs.openSync(targetPath, "w");
+      try {
+        fs.writeFileSync(fd2, c, "utf-8");
+        fs.fsyncSync(fd2);
+      } finally {
+        fs.closeSync(fd2);
+      }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    } else {
+      throw err;
+    }
+  }
+}
+
+/**
+ * 简单跨进程文件锁（flag:wx + PID + stale 检测）。
+ * 用于保护演化记录持久化的读-改-写。
+ */
+class LocalFileLock {
+  constructor(private readonly lockPath: string) {
+    const dir = path.dirname(this.lockPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  acquire(timeoutMs = 30_000): void {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        fs.writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx" });
+        return;
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== "EEXIST") throw err;
+        try {
+          const raw = fs.readFileSync(this.lockPath, "utf-8");
+          const data = JSON.parse(raw) as { pid: number };
+          if (!this.isProcessAlive(data.pid)) {
+            fs.unlinkSync(this.lockPath);
+            continue;
+          }
+        } catch {
+          try { fs.unlinkSync(this.lockPath); } catch { /* ignore */ }
+          continue;
+        }
+        const sleepMs = 100;
+        const start = Date.now();
+        while (Date.now() - start < sleepMs) { /* busy wait */ }
+      }
+    }
+    throw new Error(`Lock timed out: ${this.lockPath}`);
+  }
+
+  release(): void {
+    try {
+      const raw = fs.readFileSync(this.lockPath, "utf-8");
+      const data = JSON.parse(raw) as { pid: number };
+      if (data.pid === process.pid) fs.unlinkSync(this.lockPath);
+    } catch { /* ignore */ }
+  }
+}
 
 export interface SkillVersion {
   version: string;
@@ -61,6 +159,12 @@ export class SkillCurator {
   private validator: SkillValidator;
   /** Auto-extraction is OFF by default — must be explicitly enabled via API or config. */
   private autoExtractionEnabled = false;
+  /** 归档目录：被归档的技能移到此目录，可恢复。 */
+  private archiveDir: string;
+  /** 演化记录持久化目录。 */
+  private storeDir: string;
+  /** 持久化定时器。 */
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -68,6 +172,9 @@ export class SkillCurator {
   ) {
     registry.registerService("skillCurator", this);
     this.validator = new SkillValidator();
+    this.storeDir = path.resolve(process.cwd(), "data", "skill-curator");
+    this.archiveDir = path.resolve(process.cwd(), "data", "skills-archive");
+    this.loadFromDisk();
   }
 
   /** Enable automatic skill extraction from task solutions. Use with caution. */
@@ -450,6 +557,144 @@ export class SkillCurator {
     );
 
     return true;
+  }
+
+  /**
+   * 归档技能：将技能目录移动到归档目录，可恢复。
+   * 灵感来自 hermes-agent curator.py 的"永不删除，仅归档"不变量。
+   * @param skillId 技能 ID
+   * @param reason 归档原因
+   * @returns 归档路径，失败返回 null
+   */
+  async archiveSkill(skillId: string, reason: string): Promise<string | null> {
+    const entry = this.evolutions.get(skillId);
+    const skillManager = this.registry.resolveService<{
+      getSkill(id: string): Promise<Skill | undefined>;
+    }>("skillManager");
+
+    if (!skillManager) return null;
+    const skill = await skillManager.getSkill(skillId);
+    if (!skill || !skill.installPath) return null;
+
+    try {
+      const skillDir = path.dirname(skill.installPath);
+      if (!fs.existsSync(skillDir)) return null;
+
+      // 创建归档目录：data/skills-archive/<skillName>-<timestamp>/
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const archiveSubDir = path.join(this.archiveDir, `${entry?.skillName || skill.name}-${timestamp}`);
+      fs.mkdirSync(archiveSubDir, { recursive: true });
+
+      // 移动所有文件到归档目录
+      const entries = fs.readdirSync(skillDir);
+      for (const entryName of entries) {
+        const src = path.join(skillDir, entryName);
+        const dst = path.join(archiveSubDir, entryName);
+        fs.renameSync(src, dst);
+      }
+      // 删除空的原目录
+      try { fs.rmdirSync(skillDir); } catch { /* ignore */ }
+
+      // 写入归档元信息
+      const archiveMeta = {
+        skillId,
+        skillName: entry?.skillName || skill.name,
+        archivedAt: new Date().toISOString(),
+        reason,
+        originalPath: skillDir,
+      };
+      atomicWriteFileLocal(path.join(archiveSubDir, "_archive.json"), JSON.stringify(archiveMeta, null, 2));
+
+      // 更新演化记录
+      if (entry) {
+        entry.deprecation = {
+          reason: `归档: ${reason}`,
+          deprecatedAt: new Date(),
+          deprecatedBy: "curator-archive",
+        };
+        entry.lastUpdatedAt = new Date();
+        this.schedulePersist();
+      }
+
+      await this.eventBus.publish(
+        "skill.curator.archived",
+        { skillId, skillName: entry?.skillName || skill.name, reason, archivePath: archiveSubDir },
+        "skill-curator"
+      );
+
+      return archiveSubDir;
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] Failed to archive skill ${skillId}: ${err instanceof Error ? err.message : String(err)}\n`);
+      return null;
+    }
+  }
+
+  /**
+   * 恢复归档的技能。
+   * @param archivePath 归档路径
+   * @returns 恢复的技能目录路径，失败返回 null
+   */
+  async restoreSkill(archivePath: string): Promise<string | null> {
+    try {
+      if (!fs.existsSync(archivePath)) return null;
+      const metaPath = path.join(archivePath, "_archive.json");
+      if (!fs.existsSync(metaPath)) return null;
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as {
+        skillId: string;
+        skillName: string;
+        originalPath: string;
+      };
+
+      // 恢复到原路径
+      fs.mkdirSync(meta.originalPath, { recursive: true });
+      const entries = fs.readdirSync(archivePath);
+      for (const entryName of entries) {
+        if (entryName === "_archive.json") continue;
+        const src = path.join(archivePath, entryName);
+        const dst = path.join(meta.originalPath, entryName);
+        fs.renameSync(src, dst);
+      }
+      // 删除归档目录
+      try { fs.rmdirSync(archivePath); } catch { /* ignore */ }
+
+      await this.eventBus.publish(
+        "skill.curator.restored",
+        { skillId: meta.skillId, skillName: meta.skillName, restoredPath: meta.originalPath },
+        "skill-curator"
+      );
+
+      return meta.originalPath;
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] Failed to restore skill: ${err instanceof Error ? err.message : String(err)}\n`);
+      return null;
+    }
+  }
+
+  /** 列出所有归档的技能。 */
+  listArchivedSkills(): Array<{ skillName: string; archivedAt: string; reason: string; archivePath: string }> {
+    try {
+      if (!fs.existsSync(this.archiveDir)) return [];
+      const result: Array<{ skillName: string; archivedAt: string; reason: string; archivePath: string }> = [];
+      const entries = fs.readdirSync(this.archiveDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const archivePath = path.join(this.archiveDir, entry.name);
+        const metaPath = path.join(archivePath, "_archive.json");
+        if (!fs.existsSync(metaPath)) continue;
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+          result.push({
+            skillName: meta.skillName,
+            archivedAt: meta.archivedAt,
+            reason: meta.reason,
+            archivePath,
+          });
+        } catch { /* skip invalid */ }
+      }
+      return result.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+    } catch {
+      return [];
+    }
   }
 
   getSkillEvolution(skillId: string): SkillEvolutionEntry | null {
@@ -899,32 +1144,92 @@ export class SkillCurator {
     entry: SkillEvolutionEntry
   ): Promise<void> {
     try {
-      const fs = await import("fs");
-      const path = await import("path");
-
       const skillDir = path.dirname(skill.installPath);
       if (!fs.existsSync(skillDir)) return;
 
       const skillMdPath = skill.installPath;
       if (fs.existsSync(skillMdPath)) {
         const content = fs.readFileSync(skillMdPath, "utf-8");
+        // 仅替换 frontmatter 中的 version 字段，避免误替换 body 内容
         const updatedContent = content.replace(
-          /version:\s*.+/,
-          `version: ${skill.version}`
+          /^(---[\s\S]*?version:\s*).+/m,
+          `$1${skill.version}`
         );
-        fs.writeFileSync(skillMdPath, updatedContent, "utf-8");
+        atomicWriteFileLocal(skillMdPath, updatedContent);
       }
 
       const metaPath = path.join(skillDir, "_meta.json");
       if (fs.existsSync(metaPath)) {
         const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
         meta.version = skill.version;
-        fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf-8");
+        atomicWriteFileLocal(metaPath, JSON.stringify(meta, null, 2));
       }
+
+      this.schedulePersist();
     } catch (err) {
       process.stderr.write(
         "[SkillCurator] Failed to persist skill update:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
+    }
+  }
+
+  /** 调度延迟持久化演化记录到磁盘。 */
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+  }
+
+  /** 将演化记录持久化到磁盘。 */
+  private persistToDisk(): void {
+    try {
+      if (!fs.existsSync(this.storeDir)) {
+        fs.mkdirSync(this.storeDir, { recursive: true });
+      }
+      const filePath = path.join(this.storeDir, "evolutions.json");
+      const data = {
+        evolutions: Array.from(this.evolutions.values()).slice(-500),
+        savedAt: new Date().toISOString(),
+      };
+      const lock = new LocalFileLock(path.join(this.storeDir, "evolutions.lock"));
+      lock.acquire();
+      try {
+        atomicWriteFileLocal(filePath, JSON.stringify(data, null, 2));
+      } finally {
+        lock.release();
+      }
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] Failed to persist evolutions: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  /** 从磁盘加载演化记录。 */
+  private loadFromDisk(): void {
+    try {
+      const filePath = path.join(this.storeDir, "evolutions.json");
+      if (!fs.existsSync(filePath)) return;
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw) as { evolutions: SkillEvolutionEntry[] };
+      if (Array.isArray(data.evolutions)) {
+        for (const entry of data.evolutions) {
+          if (entry && entry.skillId) {
+            // 恢复 Date 对象
+            if (entry.createdAt) entry.createdAt = new Date(entry.createdAt);
+            if (entry.lastUpdatedAt) entry.lastUpdatedAt = new Date(entry.lastUpdatedAt);
+            if (entry.versions) {
+              entry.versions = entry.versions.map(v => ({ ...v, timestamp: new Date(v.timestamp) }));
+            }
+            if (entry.improvementHistory) {
+              entry.improvementHistory = entry.improvementHistory.map(h => ({ ...h, timestamp: new Date(h.timestamp) }));
+            }
+            if (entry.deprecation?.deprecatedAt) {
+              entry.deprecation.deprecatedAt = new Date(entry.deprecation.deprecatedAt);
+            }
+            this.evolutions.set(entry.skillId, entry);
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] Failed to load evolutions from disk: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

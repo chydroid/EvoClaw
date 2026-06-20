@@ -1,0 +1,10 @@
+{
+  "name": "summarize",
+  "version": "1.0.0",
+  "author": "openclaw-port",
+  "description": "Summarize or transcribe URLs, YouTube/videos, podcasts, articles, transcripts, PDFs, and local files.",
+  "category": "analysis",
+  "createdAt": "2026-06-20T00:00:00.000Z",
+  "lastUpdated": "2026-06-20T00:00:00.000Z",
+  "source": "openclaw-port"
+}

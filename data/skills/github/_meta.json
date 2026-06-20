@@ -1,0 +1,10 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "author": "openclaw-port",
+  "description": "GitHub CLI for issues, PRs, CI/check logs, comments, reviews, releases, repos, and gh api queries.",
+  "category": "integration",
+  "createdAt": "2026-06-20T00:00:00.000Z",
+  "lastUpdated": "2026-06-20T00:00:00.000Z",
+  "source": "openclaw-port"
+}

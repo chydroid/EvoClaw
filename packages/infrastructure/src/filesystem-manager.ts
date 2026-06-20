@@ -19,6 +19,173 @@ interface AuditLogEntry {
   error?: string;
 }
 
+/**
+ * 原子写入工具：temp + fsync + rename，保证崩溃时不会产生截断文件。
+ * 符号链接目标会被解析后原地替换，保留符号链接。
+ * 跨设备（EXDEV/EBUSY）时回退到 copy + fsync + unlink。
+ * 保留原文件权限位（修复 Docker/NAS 卷挂载权限问题）。
+ *
+ * 灵感来自 hermes-agent 的 utils.py atomic_json_write/atomic_replace。
+ */
+export async function atomicWriteFile(targetPath: string, content: string): Promise<void> {
+  const dir = path.dirname(targetPath);
+  if (!fsSync.existsSync(dir)) {
+    fsSync.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  // 写入临时文件
+  const fd = fsSync.openSync(tmpPath, "w");
+  try {
+    fsSync.writeFileSync(fd, content, "utf-8");
+    fsSync.fsyncSync(fd);
+  } finally {
+    fsSync.closeSync(fd);
+  }
+  // 保留原文件权限位
+  try {
+    if (fsSync.existsSync(targetPath)) {
+      const st = fsSync.statSync(targetPath);
+      fsSync.chmodSync(tmpPath, st.mode);
+    }
+  } catch {
+    // 权限复制失败不阻断写入
+  }
+  // 原子替换：处理符号链接和跨设备
+  await atomicReplace(tmpPath, targetPath);
+}
+
+/**
+ * 原子替换：将 src 替换为 dst。
+ * 如果 dst 是符号链接，解析 realpath 后原地替换，保留符号链接。
+ * 跨设备时回退到 copy + fsync + unlink。
+ */
+export async function atomicReplace(src: string, dst: string): Promise<void> {
+  let realDst = dst;
+  try {
+    const st = fsSync.lstatSync(dst);
+    if (st.isSymbolicLink()) {
+      realDst = fsSync.realpathSync(dst);
+    }
+  } catch {
+    // dst 不存在，直接使用 dst
+  }
+  try {
+    fsSync.renameSync(src, realDst);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EXDEV" || code === "EBUSY") {
+      // 跨设备：copy + fsync + unlink
+      const content = fsSync.readFileSync(src, "utf-8");
+      const fd = fsSync.openSync(realDst, "w");
+      try {
+        fsSync.writeFileSync(fd, content, "utf-8");
+        fsSync.fsyncSync(fd);
+      } finally {
+        fsSync.closeSync(fd);
+      }
+      try {
+        fsSync.unlinkSync(src);
+      } catch {
+        // 清理临时文件失败不阻断
+      }
+    } else {
+      throw err;
+    }
+  }
+}
+
+/**
+ * 跨进程文件锁。
+ * 使用 flag:"wx" 原子创建锁文件 + PID 写入 + stale lock 检测。
+ * 支持可重入（同进程多次 acquire）和超时。
+ *
+ * 灵感来自 hermes-agent 的 cron/jobs.py _jobs_lock() 和 SessionManager 的实现。
+ */
+export class CrossProcessLock {
+  private static readonly LOCK_SUFFIX = ".lock";
+  private static readonly DEFAULT_TIMEOUT_MS = 60_000;
+  private static readonly POLL_INTERVAL_MS = 100;
+
+  constructor(
+    private readonly lockDir: string,
+    private readonly lockName: string
+  ) {
+    if (!fsSync.existsSync(lockDir)) {
+      fsSync.mkdirSync(lockDir, { recursive: true });
+    }
+  }
+
+  private get lockPath(): string {
+    return path.join(this.lockDir, `${this.lockName}${CrossProcessLock.LOCK_SUFFIX}`);
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async acquire(timeoutMs: number = CrossProcessLock.DEFAULT_TIMEOUT_MS): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const pid = process.pid;
+    while (Date.now() < deadline) {
+      try {
+        fsSync.writeFileSync(this.lockPath, JSON.stringify({ pid, acquiredAt: Date.now() }), {
+          flag: "wx",
+        });
+        return;
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== "EEXIST") throw err;
+        // 锁文件已存在，检查是否为 stale lock
+        try {
+          const raw = fsSync.readFileSync(this.lockPath, "utf-8");
+          const data = JSON.parse(raw) as { pid: number; acquiredAt: number };
+          if (!this.isProcessAlive(data.pid)) {
+            // 死进程的锁，清理后重试
+            fsSync.unlinkSync(this.lockPath);
+            continue;
+          }
+        } catch {
+          // 锁文件损坏或无法解析，清理后重试
+          try {
+            fsSync.unlinkSync(this.lockPath);
+          } catch {
+            // 忽略
+          }
+          continue;
+        }
+        await new Promise((resolve) => setTimeout(resolve, CrossProcessLock.POLL_INTERVAL_MS));
+      }
+    }
+    throw new Error(`Lock acquisition timed out after ${timeoutMs}ms: ${this.lockPath}`);
+  }
+
+  release(): void {
+    try {
+      const raw = fsSync.readFileSync(this.lockPath, "utf-8");
+      const data = JSON.parse(raw) as { pid: number };
+      if (data.pid === process.pid) {
+        fsSync.unlinkSync(this.lockPath);
+      }
+    } catch {
+      // 锁文件不存在或损坏，忽略
+    }
+  }
+
+  async withLock<T>(fn: () => Promise<T>, timeoutMs?: number): Promise<T> {
+    await this.acquire(timeoutMs);
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
+
 export class FileSystemManager {
   private basePath = ".";
   private auditLogPath = "";
@@ -251,7 +418,7 @@ export class FileSystemManager {
 
   private async writeContent(fullPath: string, content: string): Promise<void> {
     try {
-      await writeFile(fullPath, content, "utf-8");
+      await atomicWriteFile(fullPath, content);
     } catch {
       throw new Error(`Unable to write file: ${fullPath}`);
     }
@@ -281,18 +448,21 @@ export class FileSystemManager {
         ...(error ? { error } : {}),
       };
 
-      let entries: AuditLogEntry[] = [];
-      if (fsSync.existsSync(logFile)) {
-        try {
-          const existing = fsSync.readFileSync(logFile, "utf-8");
-          entries = JSON.parse(existing);
-        } catch {
-          entries = [];
+      // 使用跨进程锁保护审计日志的读-改-写
+      const lock = new CrossProcessLock(this.auditLogPath, `audit-${dateStr}`);
+      await lock.withLock(async () => {
+        let entries: AuditLogEntry[] = [];
+        if (fsSync.existsSync(logFile)) {
+          try {
+            const existing = fsSync.readFileSync(logFile, "utf-8");
+            entries = JSON.parse(existing);
+          } catch {
+            entries = [];
+          }
         }
-      }
-
-      entries.push(entry);
-      fsSync.writeFileSync(logFile, JSON.stringify(entries, null, 2), "utf-8");
+        entries.push(entry);
+        await atomicWriteFile(logFile, JSON.stringify(entries, null, 2));
+      });
     } catch (err) {
       process.stderr.write(`[FileSystemManager] Audit log write failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }

@@ -3,6 +3,23 @@
 Telegraph style. Root rules only. Read scoped `AGENTS.md` before subtree work.
 Skills own workflows; root owns hard policy and routing.
 
+## Design philosophy
+
+### Prompt cache is sacred
+Long conversations reuse cached prefixes per turn. Modifying history, switching toolsets, or rebuilding system prompts mid-session invalidates the cache and multiplies cost. The only exception is context compaction. Slash commands that alter prompt state default to deferred invalidation (next session), with `--now` opt-in.
+
+### Narrow waist; capability at the edges
+Core tools ship with every API call. Adding core tools is high-friction. Most new capability should land as: (1) extend existing code → (2) CLI command + skill → (3) service-gated tool (`check_fn`) → (4) plugin → (5) MCP server → (6) new core tool (last resort).
+
+### Atomic writes, cross-process locks
+Config/state writes use `atomicWriteFile` (temp + fsync + rename). Cron/session/curator use `CrossProcessLock` (flag:wx + PID + stale detection). Never use raw `fs.writeFileSync` for persistent state.
+
+### Never delete; archive
+SkillCurator archives (never deletes) skills to `data/skills-archive/`, restorable via `restoreSkill()`. Evolution records persist to `data/skill-curator/evolutions.json`.
+
+### Historical prefix tracking
+CompactionManager tracks `HISTORICAL_SUMMARY_PREFIXES`. When the summary prefix changes, old prefixes are stripped on re-compaction to prevent stale instructions from hijacking replies.
+
 ## Project overview
 
 EvoClaw is a self-evolving AI assistant platform. TypeScript pnpm monorepo, 14 internal packages + 2 apps.

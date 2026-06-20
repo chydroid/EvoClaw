@@ -1,0 +1,10 @@
+{
+  "name": "gog",
+  "version": "1.0.0",
+  "author": "openclaw-port",
+  "description": "Google Workspace CLI for Gmail, Calendar, Drive, Contacts, Sheets, and Docs.",
+  "category": "integration",
+  "createdAt": "2026-06-20T00:00:00.000Z",
+  "lastUpdated": "2026-06-20T00:00:00.000Z",
+  "source": "openclaw-port"
+}

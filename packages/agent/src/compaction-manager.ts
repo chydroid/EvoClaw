@@ -4,6 +4,10 @@
  * When a session grows too large, we create a "successor transcript" that summarizes
  * the old conversation and starts a new continuation session, chaining them together
  * so the full history can be reconstructed on demand.
+ *
+ * 历史前缀追踪（灵感来自 hermes-agent context_compressor.py）：
+ * 当摘要前缀变更时，旧版本前缀在重新压缩时被剥离，防止过时指令（如"resume exactly"）
+ * 嵌入正文持续劫持回复。
  */
 
 import * as fs from "fs";
@@ -51,6 +55,77 @@ const DEFAULT_CONFIG: CompactionConfig = {
   dataDir: path.join(process.cwd(), "data", "compactions"),
 };
 
+/**
+ * 当前摘要前缀。变更此值时，旧前缀会被加入 HISTORICAL_SUMMARY_PREFIXES，
+ * 在重新压缩时被剥离，防止过时指令劫持回复。
+ */
+const SUMMARY_PREFIX = "[Compacted";
+const SUCCESSOR_PREFIX = "[This is a continuation of session";
+/** 历史前缀列表：这些前缀在重新压缩时会被剥离。 */
+const HISTORICAL_SUMMARY_PREFIXES: string[] = [
+  "[Compacted",           // 当前
+  "[Conversation compacted", // 旧版
+  "[Session compacted",   // 更旧版
+];
+const HISTORICAL_SUCCESSOR_PREFIXES: string[] = [
+  "[This is a continuation of session", // 当前
+  "[Continuing from session",           // 旧版
+  "[Resuming session",                  // 更旧版
+];
+
+/**
+ * 原子写入文件（temp + fsync + rename）。
+ * 防止崩溃时产生截断的 compaction 记录。
+ */
+function atomicWriteFileLocal(targetPath: string, content: string): void {
+  const dir = path.dirname(targetPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EXDEV" || code === "EBUSY") {
+      const c = fs.readFileSync(tmpPath, "utf-8");
+      const fd2 = fs.openSync(targetPath, "w");
+      try {
+        fs.writeFileSync(fd2, c, "utf-8");
+        fs.fsyncSync(fd2);
+      } finally {
+        fs.closeSync(fd2);
+      }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    } else {
+      throw err;
+    }
+  }
+}
+
+/** 从文本中剥离所有历史前缀标记，防止过时指令存活。 */
+function stripHistoricalPrefixes(text: string, prefixes: string[]): string {
+  let result = text;
+  for (const prefix of prefixes) {
+    // 剥离形如 "[Prefix ...]" 的标记（到下一个 ] 为止）
+    let idx = result.indexOf(prefix);
+    while (idx >= 0) {
+      const end = result.indexOf("]", idx);
+      if (end < 0) break;
+      result = result.slice(0, idx) + result.slice(end + 1).replace(/^\s+/, "");
+      idx = result.indexOf(prefix);
+    }
+  }
+  return result.trim();
+}
+
 export class CompactionManager {
   private config: CompactionConfig;
   private compactions = new Map<string, CompactionSummary[]>();
@@ -95,7 +170,7 @@ export class CompactionManager {
         .map((m) => this.extractTopic(m))
         .filter(Boolean);
       summaryParts.push(
-        `[Compacted ${olderTurns.length} turns from session "${sessionId}".]`,
+        `${SUMMARY_PREFIX} ${olderTurns.length} turns from session "${sessionId}".]`,
       );
       if (topics.length > 0) {
         summaryParts.push(`Topics discussed: ${topics.join("; ")}.`);
@@ -121,8 +196,18 @@ export class CompactionManager {
     }
 
     let summary = summaryParts.join(" ");
+    // CJK 安全截断：不在 UTF-16 代理对中间截断
     if (summary.length > this.config.maxSummaryLength) {
-      summary = summary.slice(0, this.config.maxSummaryLength - 3) + "...";
+      const maxLen = this.config.maxSummaryLength - 3;
+      let cut = maxLen;
+      // 如果截断位置在高代理项后，向前退一位
+      if (cut > 0 && cut < summary.length) {
+        const code = summary.charCodeAt(cut - 1);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          cut -= 1;
+        }
+      }
+      summary = summary.slice(0, cut) + "...";
     }
 
     const compaction: CompactionSummary = {
@@ -150,10 +235,12 @@ export class CompactionManager {
 
   /** Build system prompt injection for successor session */
   buildSuccessorPrompt(compaction: CompactionSummary): string {
+    // 剥离历史前缀，防止过时指令（如"resume exactly"）存活
+    const cleanSummary = stripHistoricalPrefixes(compaction.summary, HISTORICAL_SUMMARY_PREFIXES);
     const parts: string[] = [
-      `[This is a continuation of session "${compaction.parentSessionId}". Previous context has been compacted.]`,
+      `${SUCCESSOR_PREFIX} "${compaction.parentSessionId}". Previous context has been compacted.]`,
       ``,
-      `Previous summary: ${compaction.summary}`,
+      `Previous summary: ${cleanSummary}`,
     ];
 
     if (compaction.keyFacts.length > 0) {
@@ -375,7 +462,8 @@ export class CompactionManager {
       }
 
       existing.push(compaction);
-      fs.writeFileSync(filePath, JSON.stringify(existing, null, 2), "utf-8");
+      // 使用原子写入，防止崩溃时产生截断 JSON
+      atomicWriteFileLocal(filePath, JSON.stringify(existing, null, 2));
     } catch (err) {
       process.stderr.write(
         `[CompactionManager] Failed to persist compaction: ${err}`,

@@ -3,6 +3,49 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.47.0 (2026-06-20)
+
+### 借鉴 hermes-agent 提升工程硬化 + 移植 openclaw 内置 skill
+
+对照分析 hermes-agent（Python 自进化 AI 代理）和 openclaw（内置 skills 目录），将可借鉴的工程硬化机制移植到 EvoClaw，并移植 4 个高价值跨平台 skill。
+
+#### 借鉴 hermes-agent 的工程硬化
+
+- **`packages/infrastructure/src/filesystem-manager.ts`**：
+  - 新增 `atomicWriteFile()`：temp + fsync + rename 原子写入，符号链接保留，跨设备回退
+  - 新增 `atomicReplace()`：符号链接解析后原地替换，EXDEV/EBUSY 回退 copy
+  - 新增 `CrossProcessLock` 类：flag:wx + PID + stale lock 检测，支持超时和 withLock
+  - `writeContent()` 改用原子写入；审计日志读-改-写加跨进程锁保护
+- **`packages/skills/src/skill-curator.ts`**：
+  - 新增 `archiveSkill()`：将技能目录移动到 `data/skills-archive/`，可恢复（永不删除）
+  - 新增 `restoreSkill()`：从归档恢复技能
+  - 新增 `listArchivedSkills()`：列出归档技能
+  - 新增演化记录磁盘持久化（`data/skill-curator/evolutions.json`），重启后保留
+  - `persistSkillUpdate()` 改用原子写入，version 正则仅匹配 frontmatter
+- **`packages/agent/src/compaction-manager.ts`**：
+  - 新增历史前缀追踪（`HISTORICAL_SUMMARY_PREFIXES`），重新压缩时剥离旧前缀
+  - `buildSuccessorPrompt()` 剥离历史前缀，防止过时指令劫持回复
+  - CJK 安全截断：不在 UTF-16 代理对中间截断
+  - `persistCompaction()` 改用原子写入
+- **`AGENTS.md`**：新增「设计哲学」章节（提示缓存神圣、窄腰设计、原子写入、永不删除、历史前缀追踪）
+
+#### 移植 openclaw 内置 skill
+
+移植 4 个 A 级（纯文档型 + 依赖通用 CLI）skill 到 `data/skills/`：
+
+- **`gog`**：Google Workspace CLI（Gmail/Calendar/Drive/Contacts/Sheets/Docs）
+- **`sag`**：ElevenLabs 文本转语音
+- **`github`**：GitHub CLI（issues/PRs/CI/releases）
+- **`summarize`**：URL/YouTube/PDF/文件摘要与转录
+
+每个 skill 补充了 EvoClaw 必需字段（version、author、triggers、category、keywords），保留 openclaw `metadata.openclaw` 兼容字段。
+
+#### 验证
+
+- `pnpm build` 通过
+- `pnpm typecheck`（infrastructure/skills/agent）通过
+- `pnpm test` 2840 个测试通过（2 个失败为 Windows vitest-pool spawn UNKNOWN 环境问题）
+
 ## v0.46.3 (2026-06-20)
 
 ### 完善 WebUI 双语翻译与真实数据展示
