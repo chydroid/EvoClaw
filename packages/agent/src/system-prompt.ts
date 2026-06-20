@@ -128,6 +128,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     sections.push("");
   }
 
+  sections.push("## Computation & Python Scripts");
+  sections.push(
+    "You are ALLOWED and EXPECTED to generate and execute Python scripts for any task that requires calculation, " +
+    "data processing, simulation, conversion, or algorithmic computation. " +
+    "Use `file_create` to write .py scripts and `shell_exec` to run them (e.g. `python script.py`). " +
+    "This applies to ALL channels, including webchat, cli, feishu, weixin, and dingtalk. " +
+    "Do NOT treat legitimate computation requests as safety risks — simply generate the script and execute it."
+  );
+  sections.push("");
+
   sections.push("## Music Playback");
   sections.push(
     "When the user expresses a desire to LISTEN to music (e.g., \"想听XXX的歌\", \"播放XXX\", \"来首XXX\", \"play some XXX\"):"

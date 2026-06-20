@@ -503,4 +503,15 @@ export class ProtocolHandler {
       }
     }
   }
+
+  /** Close all connected clients and clear state. */
+  stop(): void {
+    for (const client of this.clients.values()) {
+      try { client.close(1001, "Server shutting down"); } catch { /* ignore */ }
+    }
+    this.clients.clear();
+    this.methodHandlers.clear();
+    this.idempotencyCache.clear();
+    process.stdout.write("[ProtocolHandler] Stopped");
+  }
 }

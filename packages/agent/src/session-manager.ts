@@ -34,6 +34,7 @@ export interface SessionLock {
   acquiredAt: number;
   processId: number;
   reentrant: boolean;
+  reentrantCount: number;
 }
 
 export interface SessionInfo {
@@ -48,6 +49,24 @@ export interface SessionInfo {
   compactionCount: number;
   tokenEstimate: number;
   preview?: string;
+}
+
+export interface SessionInsights {
+  sessionId: string;
+  agentId: string;
+  transcriptSizeBytes: number;
+  turnCount: number;
+  tokenEstimate: number;
+  averageTokensPerTurn: number;
+  compressionRatio: number;
+}
+
+export interface GlobalSessionInsights {
+  totalSessions: number;
+  totalTurns: number;
+  totalTokens: number;
+  totalTranscriptBytes: number;
+  averageCompressionRatio: number;
 }
 
 export interface SessionTurn {
@@ -173,11 +192,13 @@ export class SessionManager {
     }
   }
 
-  /** Update session metadata */
+  /** Update session metadata under a write lock. */
   updateSessionMeta(session: SessionInfo): void {
-    session.updatedAt = new Date().toISOString();
-    this.writeSessionMeta(session);
-    this.sessionCache.set(session.sessionId, session);
+    this.withLock(session.agentId, session.sessionId, () => {
+      session.updatedAt = new Date().toISOString();
+      this.writeSessionMeta(session);
+      this.sessionCache.set(session.sessionId, session);
+    });
   }
 
   /** Archive a session */
@@ -257,49 +278,55 @@ export class SessionManager {
     return turns;
   }
 
-  /** Append a turn to the transcript */
+  /** Append a turn to the transcript with automatic write-lock protection. */
   appendTurn(agentId: string, sessionId: string, turn: SessionTurn): void {
-    const transcriptPath = this.getTranscriptPath(agentId, sessionId);
-    const line = JSON.stringify(turn) + "\n";
-    fs.appendFileSync(transcriptPath, line, "utf-8");
+    this.withLock(agentId, sessionId, () => {
+      const transcriptPath = this.getTranscriptPath(agentId, sessionId);
+      const line = JSON.stringify(turn) + "\n";
+      fs.appendFileSync(transcriptPath, line, "utf-8");
 
-    // Update session metadata
-    const session = this.loadSessionMeta(agentId, sessionId);
-    if (session) {
-      session.turnCount++;
-      session.tokenEstimate += this.estimateTurnTokens(turn);
-      this.updateSessionMeta(session);
-    }
+      // Update session metadata
+      const session = this.loadSessionMeta(agentId, sessionId);
+      if (session) {
+        session.turnCount++;
+        session.tokenEstimate += this.estimateTurnTokens(turn);
+        this.updateSessionMeta(session);
+      }
+    });
   }
 
   /** Load full session (metadata + turns) */
   loadSession(agentId: string, sessionId: string): SessionLoadResult | null {
-    const session = this.loadSessionMeta(agentId, sessionId);
-    if (!session) return null;
+    return this.withLock(agentId, sessionId, () => {
+      const session = this.loadSessionMeta(agentId, sessionId);
+      if (!session) return null;
 
-    const turns = this.loadTranscript(agentId, sessionId);
+      const turns = this.loadTranscript(agentId, sessionId);
 
-    return {
-      session,
-      turns,
-      predecessorId: session.predecessorSessionId,
-      successorId: session.successorSessionId,
-    };
+      return {
+        session,
+        turns,
+        predecessorId: session.predecessorSessionId,
+        successorId: session.successorSessionId,
+      };
+    }) ?? null;
   }
 
-  /** Rewrite the entire transcript (used by compaction) */
+  /** Rewrite the entire transcript (used by compaction) with write-lock protection. */
   rewriteTranscript(agentId: string, sessionId: string, turns: SessionTurn[]): void {
-    const transcriptPath = this.getTranscriptPath(agentId, sessionId);
-    const lines = turns.map((t) => JSON.stringify(t) + "\n").join("");
-    fs.writeFileSync(transcriptPath, lines, "utf-8");
+    this.withLock(agentId, sessionId, () => {
+      const transcriptPath = this.getTranscriptPath(agentId, sessionId);
+      const lines = turns.map((t) => JSON.stringify(t) + "\n").join("");
+      fs.writeFileSync(transcriptPath, lines, "utf-8");
 
-    // Update metadata
-    const session = this.loadSessionMeta(agentId, sessionId);
-    if (session) {
-      session.turnCount = turns.length;
-      session.tokenEstimate = turns.reduce((sum, t) => sum + this.estimateTurnTokens(t), 0);
-      this.updateSessionMeta(session);
-    }
+      // Update metadata
+      const session = this.loadSessionMeta(agentId, sessionId);
+      if (session) {
+        session.turnCount = turns.length;
+        session.tokenEstimate = turns.reduce((sum, t) => sum + this.estimateTurnTokens(t), 0);
+        this.updateSessionMeta(session);
+      }
+    });
   }
 
   // ─── Write Locks ──────────────────────────────────────────────────────────
@@ -320,6 +347,7 @@ export class SessionManager {
     if (existing) {
       if (allowReentrant) {
         existing.reentrant = true;
+        existing.reentrantCount++;
         return existing;
       }
       return null; // Non-reentrant by default
@@ -345,6 +373,7 @@ export class SessionManager {
             acquiredAt: Date.now(),
             processId: pid,
             reentrant: false,
+            reentrantCount: 1,
           };
           this.activeLocks.set(sessionId, lock);
           return lock;
@@ -382,8 +411,14 @@ export class SessionManager {
     return null;
   }
 
-  /** Release a write lock */
+  /** Release a write lock. Reentrant locks must be released as many times as they were acquired. */
   releaseLock(lock: SessionLock): void {
+    lock.reentrantCount--;
+    if (lock.reentrantCount > 0) {
+      this.activeLocks.set(lock.sessionId, lock);
+      return;
+    }
+
     this.activeLocks.delete(lock.sessionId);
     try {
       if (fs.existsSync(lock.lockPath)) {
@@ -391,6 +426,20 @@ export class SessionManager {
       }
     } catch (err) {
       process.stderr.write(`[SessionManager] Failed to release lock for ${lock.sessionId}:` + " " + err);
+    }
+  }
+
+  /** Execute a function while holding the session write lock. Reentrant-safe. */
+  withLock<T>(agentId: string, sessionId: string, fn: () => T): T | null {
+    const lock = this.acquireLock(agentId, sessionId, { allowReentrant: true });
+    if (!lock) {
+      process.stderr.write(`[SessionManager] Could not acquire lock for ${sessionId}\n`);
+      return null;
+    }
+    try {
+      return fn();
+    } finally {
+      this.releaseLock(lock);
     }
   }
 
@@ -559,6 +608,72 @@ export class SessionManager {
 
     const entries = fs.readdirSync(this.config.sessionsDir, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  }
+
+  // ─── Insights ─────────────────────────────────────────────────────────────
+
+  /** Get storage and compression insights for a single session. */
+  getSessionInsights(agentId: string, sessionId: string): SessionInsights | null {
+    const session = this.loadSessionMeta(agentId, sessionId);
+    if (!session) return null;
+
+    const transcriptPath = this.getTranscriptPath(agentId, sessionId);
+    let transcriptSizeBytes = 0;
+    if (fs.existsSync(transcriptPath)) {
+      transcriptSizeBytes = fs.statSync(transcriptPath).size;
+    }
+
+    const turnCount = session.turnCount;
+    const tokenEstimate = session.tokenEstimate;
+    const averageTokensPerTurn = turnCount > 0 ? tokenEstimate / turnCount : 0;
+    // Approximate bytes per token for a JSONL file; ratio > 1 means we store less
+    // bytes than raw token count (compressed/efficient), ratio < 1 means verbose.
+    const compressionRatio = tokenEstimate > 0 && transcriptSizeBytes > 0
+      ? tokenEstimate / (transcriptSizeBytes / 4)
+      : 0;
+
+    return {
+      sessionId,
+      agentId,
+      transcriptSizeBytes,
+      turnCount,
+      tokenEstimate,
+      averageTokensPerTurn,
+      compressionRatio,
+    };
+  }
+
+  /** Aggregate insights across all agents and sessions. */
+  getGlobalInsights(): GlobalSessionInsights {
+    const agents = this.listAgents();
+    let totalSessions = 0;
+    let totalTurns = 0;
+    let totalTokens = 0;
+    let totalTranscriptBytes = 0;
+
+    for (const agentId of agents) {
+      for (const session of this.listSessions(agentId)) {
+        totalSessions++;
+        totalTurns += session.turnCount;
+        totalTokens += session.tokenEstimate;
+        const insights = this.getSessionInsights(agentId, session.sessionId);
+        if (insights) {
+          totalTranscriptBytes += insights.transcriptSizeBytes;
+        }
+      }
+    }
+
+    const averageCompressionRatio = totalTokens > 0 && totalTranscriptBytes > 0
+      ? totalTokens / (totalTranscriptBytes / 4)
+      : 0;
+
+    return {
+      totalSessions,
+      totalTurns,
+      totalTokens,
+      totalTranscriptBytes,
+      averageCompressionRatio,
+    };
   }
 
   // ─── Internal Helpers ─────────────────────────────────────────────────────

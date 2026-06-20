@@ -47,19 +47,46 @@ export interface NativeFetchResponse {
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
+export interface NativeFetchOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+  /** Request timeout in milliseconds. Defaults to 0 (no timeout). */
+  timeout?: number;
+}
+
 export async function nativeFetch(
   url: string,
-  options: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: string;
-    signal?: AbortSignal;
-  } = {}
+  options: NativeFetchOptions = {}
 ): Promise<NativeFetchResponse> {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const isHttps = parsedUrl.protocol === "https:";
     const lib = isHttps ? https : http;
+
+    // Build an internal abort controller when a timeout is requested so that
+    // connection-establishment and response-body delays are both bounded.
+    const timeoutMs = options.timeout ?? 0;
+    const internalController = timeoutMs > 0 ? new AbortController() : null;
+    const timeoutId = internalController
+      ? setTimeout(() => internalController.abort(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs)
+      : null;
+
+    const externalSignal = options.signal ?? null;
+    let timedOut = false;
+    let externallyAborted = false;
+    const onAbort = (reason?: unknown) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (typeof reason === "string" && reason.startsWith("Request timeout")) {
+        timedOut = true;
+      } else if (reason instanceof Error && reason.message?.startsWith("Request timeout")) {
+        timedOut = true;
+      } else {
+        externallyAborted = true;
+      }
+      req.destroy();
+    };
 
     const req = lib.request(
       {
@@ -71,6 +98,8 @@ export async function nativeFetch(
         agent: isHttps ? httpsAgent : httpAgent,
       },
       (res) => {
+        if (timeoutId) clearTimeout(timeoutId);
+
         const status = res.statusCode || 0;
         const ok = status >= 200 && status < 300;
         const chunks: Buffer[] = [];
@@ -95,7 +124,10 @@ export async function nativeFetch(
           };
           resolve(response);
         });
-        res.on("error", reject);
+        res.on("error", (err) => {
+          if (timeoutId) clearTimeout(timeoutId);
+          reject(err);
+        });
       }
     );
 
@@ -103,27 +135,166 @@ export async function nativeFetch(
       req.write(options.body);
     }
 
-    if (options.signal) {
-      if (options.signal.aborted) {
+    if (internalController) {
+      internalController.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    if (externalSignal) {
+      if (externalSignal.aborted) {
         req.destroy();
+        if (timeoutId) clearTimeout(timeoutId);
         reject(new Error("Request aborted"));
         return;
       }
-      options.signal.addEventListener(
-        "abort",
-        () => {
-          req.destroy();
-        },
-        { once: true }
-      );
+      externalSignal.addEventListener("abort", onAbort, { once: true });
     }
 
     req.on("error", (err) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (timedOut) {
+        reject(new Error(`Request timeout after ${timeoutMs}ms`));
+        return;
+      }
+      if (externallyAborted) {
+        reject(new Error("Request aborted"));
+        return;
+      }
       reject(err);
     });
 
     req.end();
   });
+}
+
+// ── Provider health tracker ──
+// Enriched circuit breaker that tracks consecutive failures, total success /
+// failure counts, average response time, and last activity timestamps. Used
+// by the provider failover loop to skip unhealthy providers and to expose
+// observability metrics.
+
+export interface ProviderHealthSnapshot {
+  consecutiveFailures: number;
+  totalFailures: number;
+  totalSuccesses: number;
+  lastFailureAt: number | null;
+  lastSuccessAt: number | null;
+  averageResponseMs: number;
+  tripped: boolean;
+}
+
+export class ProviderHealthTracker {
+  private providers = new Map<
+    string,
+    {
+      consecutiveFailures: number;
+      totalFailures: number;
+      totalSuccesses: number;
+      lastFailureAt: number | null;
+      lastSuccessAt: number | null;
+      responseTimesMs: number[];
+      trippedAt: number | null;
+    }
+  >();
+
+  constructor(
+    private maxConsecutiveFailures = 2,
+    private cooldownMs = 120_000,
+    private responseTimeWindowSize = 10
+  ) {}
+
+  private getEntry(providerId: string) {
+    let entry = this.providers.get(providerId);
+    if (!entry) {
+      entry = {
+        consecutiveFailures: 0,
+        totalFailures: 0,
+        totalSuccesses: 0,
+        lastFailureAt: null,
+        lastSuccessAt: null,
+        responseTimesMs: [],
+        trippedAt: null,
+      };
+      this.providers.set(providerId, entry);
+    }
+    return entry;
+  }
+
+  recordSuccess(providerId: string, responseMs?: number): void {
+    const entry = this.getEntry(providerId);
+    entry.consecutiveFailures = 0;
+    entry.totalSuccesses += 1;
+    entry.lastSuccessAt = Date.now();
+    entry.trippedAt = null;
+    if (responseMs !== undefined && responseMs >= 0) {
+      entry.responseTimesMs.push(responseMs);
+      if (entry.responseTimesMs.length > this.responseTimeWindowSize) {
+        entry.responseTimesMs.shift();
+      }
+    }
+  }
+
+  recordFailure(providerId: string): void {
+    const entry = this.getEntry(providerId);
+    entry.consecutiveFailures += 1;
+    entry.totalFailures += 1;
+    entry.lastFailureAt = Date.now();
+    if (entry.consecutiveFailures >= this.maxConsecutiveFailures && !entry.trippedAt) {
+      entry.trippedAt = Date.now();
+      process.stderr.write(
+        `[LLMCaller] Provider "${providerId}" circuit breaker tripped after ${entry.consecutiveFailures} consecutive failures — cooldown ${this.cooldownMs / 1000}s`
+      );
+    }
+  }
+
+  isTripped(providerId: string): boolean {
+    const entry = this.providers.get(providerId);
+    if (!entry || !entry.trippedAt) return false;
+    if (Date.now() - entry.trippedAt > this.cooldownMs) {
+      entry.trippedAt = null;
+      entry.consecutiveFailures = 0;
+      return false;
+    }
+    return true;
+  }
+
+  getSnapshot(providerId: string): ProviderHealthSnapshot {
+    const entry = this.getEntry(providerId);
+    const avgMs =
+      entry.responseTimesMs.length > 0
+        ? entry.responseTimesMs.reduce((a, b) => a + b, 0) / entry.responseTimesMs.length
+        : 0;
+    return {
+      consecutiveFailures: entry.consecutiveFailures,
+      totalFailures: entry.totalFailures,
+      totalSuccesses: entry.totalSuccesses,
+      lastFailureAt: entry.lastFailureAt,
+      lastSuccessAt: entry.lastSuccessAt,
+      averageResponseMs: Math.round(avgMs),
+      tripped: this.isTripped(providerId),
+    };
+  }
+
+  reset(providerId: string): void {
+    this.providers.delete(providerId);
+  }
+
+  resetAll(): void {
+    this.providers.clear();
+  }
+}
+
+// Module-level tracker shared by the provider failover loop.
+const providerHealthTracker = new ProviderHealthTracker();
+
+function isProviderTripped(providerName: string): boolean {
+  return providerHealthTracker.isTripped(providerName);
+}
+
+function recordProviderFailure(providerName: string): void {
+  providerHealthTracker.recordFailure(providerName);
+}
+
+function recordProviderSuccess(providerName: string, responseMs?: number): void {
+  providerHealthTracker.recordSuccess(providerName, responseMs);
 }
 
 // ── Circuit breaker for tool execution ──
@@ -136,39 +307,26 @@ const COOLDOWN_MS = 60_000; // 1 minute cooldown after tripping
 
 const toolFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
 
-// ── Provider circuit breaker ──
-// Inspired by OpenClaw's tool policy pipeline. Tracks consecutive LLM
-// provider failures. After MAX_PROVIDER_FAILURES, the provider is
-// "tripped" for PROVIDER_COOLDOWN_MS, allowing failover to the next
-// provider instead of wasting time on a broken one.
+// ── Provider safety-filter rejection detection ──
+// Some remote LLM providers (e.g. Mimo) return a plain-text refusal such as
+// "The request was rejected because it was considered high risk" instead of
+// using HTTP 4xx. Treat those as provider failures so we can fail over.
 
-const MAX_PROVIDER_FAILURES = 2;
-const PROVIDER_COOLDOWN_MS = 120_000; // 2 minute cooldown
+const PROVIDER_SAFETY_REJECTION_PATTERNS = [
+  "The request was rejected because it was considered high risk",
+  "request was rejected because it was considered high risk",
+  "was rejected because it was considered high risk",
+  "considered high risk",
+  "rejected due to safety",
+  "content filter triggered",
+  "input was blocked",
+  "request was blocked",
+];
 
-const providerFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
-
-function isProviderTripped(providerName: string): boolean {
-  const entry = providerFailureTracker.get(providerName);
-  if (!entry || !entry.trippedAt) return false;
-  if (Date.now() - entry.trippedAt > PROVIDER_COOLDOWN_MS) {
-    providerFailureTracker.delete(providerName);
-    return false;
-  }
-  return true;
-}
-
-function recordProviderFailure(providerName: string): void {
-  const entry = providerFailureTracker.get(providerName) || { count: 0, trippedAt: null };
-  entry.count++;
-  if (entry.count >= MAX_PROVIDER_FAILURES) {
-    entry.trippedAt = Date.now();
-    process.stderr.write(`[LLMCaller] Provider "${providerName}" circuit breaker tripped after ${entry.count} failures — cooldown ${PROVIDER_COOLDOWN_MS / 1000}s`);
-  }
-  providerFailureTracker.set(providerName, entry);
-}
-
-function recordProviderSuccess(providerName: string): void {
-  providerFailureTracker.delete(providerName);
+export function isProviderSafetyRejection(content: string | null | undefined): boolean {
+  if (!content) return false;
+  const lower = content.trim().toLowerCase();
+  return PROVIDER_SAFETY_REJECTION_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
 }
 
 // ── Format command output into readable text ──
@@ -470,12 +628,16 @@ export interface CallLLMOnceResult {
   tokensUsed: number;
   promptTokens: number;
   classifiedError?: ClassifiedError;
+  /** Response time in milliseconds for observability and provider ranking. */
+  responseMs?: number;
 }
 
 export interface ParseStreamingResponseResult {
   message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> };
   tokensUsed: number;
   promptTokens: number;
+  /** Response time in milliseconds for observability and provider ranking. */
+  responseMs?: number;
 }
 
 // ── Tool cache types ──
@@ -933,6 +1095,7 @@ export async function parseStreamingResponse(
     } catch { /* observability is best-effort */ }
   }
 
+  const streamResponseMs = Date.now() - startTime;
   deps.recordProviderSuccess(provider.id);
 
   const toolCalls = toolCallsMap.size > 0
@@ -951,6 +1114,7 @@ export async function parseStreamingResponse(
     },
     tokensUsed: totalTokens || Math.ceil(content.length / 4),
     promptTokens: promptTokens || 0,
+    responseMs: streamResponseMs,
   };
   }; // end doParse
 
@@ -994,6 +1158,7 @@ export async function callLLMOnce(
   }
 
   const startTime = Date.now();
+  let callStart = startTime;
 
   try {
     const headers: Record<string, string> = {
@@ -1040,14 +1205,19 @@ export async function callLLMOnce(
     }
 
     process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})`);
+    callStart = Date.now();
     const response = await nativeFetch(apiURL, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+      // Enforce a connection-level timeout as well so nativeFetch aborts even
+      // when the TCP handshake or TLS negotiation hangs.
+      timeout: Math.max(timeout + 5000, timeout),
     });
 
     clearTimeout(timeoutId);
+    const responseMs = Date.now() - callStart;
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
@@ -1066,6 +1236,7 @@ export async function callLLMOnce(
         tokensUsed: 0,
         promptTokens: 0,
         classifiedError: classified,
+        responseMs,
       };
     }
 
@@ -1114,6 +1285,7 @@ export async function callLLMOnce(
       },
       tokensUsed: (data.usage as Record<string, unknown>)?.total_tokens as number || 0,
       promptTokens: (data.usage as Record<string, unknown>)?.prompt_tokens as number || 0,
+      responseMs,
     };
   } catch (err: unknown) {
     clearTimeout(timeoutId);
@@ -1149,6 +1321,7 @@ export async function callLLMOnce(
       tokensUsed: 0,
       promptTokens: 0,
       classifiedError: classified,
+      responseMs: Date.now() - callStart,
     };
   }
   }; // end doCall
@@ -1543,7 +1716,7 @@ Have a specific URL?
         }
 
         consecutiveErrors = 0;
-        recordProviderSuccess(provider.name);
+        recordProviderSuccess(provider.name, result.responseMs);
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
 
@@ -1633,6 +1806,17 @@ Have a specific URL?
           finalReply = finalReply.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "").trim();
           finalReply = finalReply.replace(/<invoke\s+name="[^"]*">[\s\S]*?<\/invoke>/g, "").trim();
           finalReply = finalReply.replace(/<parameter\s+name="[^"]*">[\s\S]*?<\/parameter>/g, "").trim();
+        }
+
+        // ── Provider safety-filter rejection fallback ──
+        // If the provider refused the prompt (common with Mimo's content
+        // filter), treat it as a provider failure and try the next provider.
+        if (finalReply && !assistantMsg.tool_calls && isProviderSafetyRejection(finalReply)) {
+          process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" returned safety-filter rejection for session "${sessionId}": ${finalReply.slice(0, 200)}`);
+          recordProviderFailure(provider.name);
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+          continue;
         }
 
         const toolCalls = assistantMsg.tool_calls;

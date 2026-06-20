@@ -20,6 +20,8 @@ import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocum
 import { ToastContainer } from "./shared";
 import { ICON_MAP, IconNewChat, IconChevronDown, IconChevronRight, IconChevronLeft, IconMenu, IconSearch, IconTranslate, IconPlus } from "./icons";
 import { useTranslation, type Lang } from "./i18n";
+import { useAppState } from "./AppStateContext.tsx";
+import type { TabId, ConnectionStatus } from "./app-state.ts";
 
 // New pages
 import SecretsManagerPage from "./SecretsManagerPage";
@@ -46,19 +48,6 @@ import InstallPolicyPage from "./InstallPolicyPage";
 import TranscriptRedactorPage from "./TranscriptRedactorPage";
 import ApprovalCenterPage from "./ApprovalCenterPage";
 import MCPScannerPage from "./MCPScannerPage";
-
-type TabId =
-  | "chat" | "status" | "dashboard"
-  | "events" | "skills" | "bootstrap" | "canvas" | "monitoring"
-  | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
-  | "ops" | "cli"
-  | "secrets" | "dlq" | "config-rpc" | "session-mgmt"
-  | "feature-flags" | "config-migration" | "config-doctor"
-  | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
-  | "channel-messages"
-  | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
-  | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner"
-  | "session-retention";
 
 interface NavGroup {
   id: string;
@@ -249,10 +238,13 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
 // ─── App Component ────────────────────────────────────────────
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>("chat");
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    try { return localStorage.getItem("evoclaw_active_session"); } catch { return null; }
-  });
+  const { state, dispatch } = useAppState();
+
+  // Global state wrappers (keeps the rest of the component code unchanged)
+  const activeTab = state.activeTab;
+  const setActiveTab = (tab: TabId) => dispatch({ type: "setActiveTab", tab });
+  const activeSessionId = state.activeSessionId;
+  const setActiveSessionId = (id: string | null) => dispatch({ type: "setActiveSession", sessionId: id });
   const setActiveSession = (id: string | null) => {
     setActiveSessionId(id);
     try {
@@ -264,8 +256,10 @@ export default function App() {
     } catch { /* ignore */ }
   };
   const [newChatCounter, setNewChatCounter] = useState(0);
-  const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting");
-  const [authenticated, setAuthenticated] = useState(false);
+  const status = state.connectionStatus;
+  const setStatus = (s: ConnectionStatus) => dispatch({ type: "setConnectionStatus", status: s });
+  const authenticated = state.authenticated;
+  const setAuthenticated = (v: boolean) => dispatch({ type: "setAuthenticated", authenticated: v });
   const [tokenInput, setTokenInput] = useState("");
 
   // Global 401 interceptor: redirect to login when any API call returns 401
@@ -283,7 +277,8 @@ export default function App() {
     };
     return () => { window.fetch = originalFetch; };
   }, []);
-  const [authChecked, setAuthChecked] = useState(false);
+  const authChecked = state.authChecked;
+  const setAuthChecked = (v: boolean) => dispatch({ type: "setAuthChecked", checked: v });
   const [avatars, setAvatars] = useState<AvatarInfo>(DEFAULT_AVATARS);
   const [showAvatarEditor, setShowAvatarEditor] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -393,17 +388,9 @@ export default function App() {
       if (res.ok) {
         setSessions(prev => {
           const remaining = prev.filter(s => s.sessionId !== sessionId);
-          // Use functional update for activeSessionId to avoid stale closure
-          setActiveSessionId(prevActive => {
-            if (prevActive === sessionId) {
-              if (remaining.length > 0) {
-                return remaining[0].sessionId;
-              } else {
-                return null;
-              }
-            }
-            return prevActive;
-          });
+          if (activeSessionId === sessionId) {
+            setActiveSession(remaining.length > 0 ? remaining[0].sessionId : null);
+          }
           if (remaining.length === 0) {
             setNewChatCounter(prev => prev + 1);
           }
@@ -1008,6 +995,7 @@ export default function App() {
 
         {/* Main Content */}
         <main style={css.mainContent}>
+          <GlobalBanner status={status} error={state.globalError} onClearError={() => dispatch({ type: "clearGlobalError" })} t={t} />
           {renderPage()}
         </main>
       </div>
@@ -1016,6 +1004,37 @@ export default function App() {
 }
 
 // ─── Shared Components ────────────────────────────────────
+
+function GlobalBanner({ status, error, onClearError, t }: {
+  status: ConnectionStatus;
+  error: string | null;
+  onClearError: () => void;
+  t: (key: string, fallback?: string) => string;
+}) {
+  if (error) {
+    return (
+      <div style={{ background: "var(--error-bg)", color: "var(--error)", padding: "10px 16px", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>{error}</span>
+        <button onClick={onClearError} style={{ background: "transparent", border: "none", color: "var(--error)", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+    );
+  }
+  if (status === "offline") {
+    return (
+      <div style={{ background: "var(--error-bg)", color: "var(--error)", padding: "10px 16px", fontSize: 13 }}>
+        {t("app.offline_banner", "与服务器的连接已断开，部分功能可能不可用。")}
+      </div>
+    );
+  }
+  if (status === "connecting") {
+    return (
+      <div style={{ background: "var(--warning-bg)", color: "var(--warning)", padding: "10px 16px", fontSize: 13 }}>
+        {t("app.connecting_banner", "正在连接服务器...")}
+      </div>
+    );
+  }
+  return null;
+}
 
 function SpinnerPulse() {
   return (

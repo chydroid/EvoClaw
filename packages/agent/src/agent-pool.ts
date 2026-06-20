@@ -15,6 +15,8 @@ export class AgentPoolManager implements AgentPool {
     minAgents: 2,
     maxAgents: 10,
     scaleThreshold: 0.7,
+    heartbeatTimeoutMs: 300_000, // 5 minutes
+    maxErrorCount: 3,
   };
 
   constructor(
@@ -22,6 +24,27 @@ export class AgentPoolManager implements AgentPool {
     private eventBus: EventBus
   ) {
     this.initializePool();
+  }
+
+  /**
+   * Report that an agent encountered an error during execution.
+   * Increments the error counter and moves the agent to the error state
+   * when the threshold is crossed.
+   */
+  async reportError(agentId: string, errorMessage?: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+
+    agent.state.errorCount += 1;
+    agent.state.lastHeartbeat = new Date();
+
+    if (agent.state.errorCount >= this.poolConfig.maxErrorCount) {
+      agent.state.status = "error";
+      process.stderr.write(
+        `[AgentPool] Agent "${agentId}" moved to error state after ${agent.state.errorCount} errors${errorMessage ? `: ${errorMessage}` : ""}`
+      );
+      await this.eventBus.publish("agent.error", agent, "agent-pool");
+    }
   }
 
   private initializePool(): void {
@@ -72,6 +95,10 @@ export class AgentPoolManager implements AgentPool {
     const agents = Array.from(this.agents.values());
 
     for (const agent of agents) {
+      // Skip agents that are no longer usable: error, terminated, or awaiting_input.
+      if (agent.state.status === "error" || agent.state.status === "terminated" || agent.state.status === "awaiting_input") {
+        continue;
+      }
       if (agent.state.status === "idle") {
         if (!role || agent.role === role) {
           agent.state.status = "busy";
@@ -95,11 +122,18 @@ export class AgentPoolManager implements AgentPool {
 
   async release(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
-    if (agent) {
-      agent.state.status = "idle";
-      agent.state.activeTaskId = null;
-      agent.state.lastHeartbeat = new Date();
+    if (!agent) return;
+
+    if (agent.state.status !== "busy") {
+      process.stderr.write(
+        `[AgentPool] Ignoring release for agent "${agentId}" which is not busy (status=${agent.state.status})`
+      );
+      return;
     }
+
+    agent.state.status = "idle";
+    agent.state.activeTaskId = null;
+    agent.state.lastHeartbeat = new Date();
   }
 
   async scale(delta: number): Promise<void> {
@@ -125,6 +159,38 @@ export class AgentPoolManager implements AgentPool {
     }
   }
 
+  /**
+   * Clean up stale or unhealthy agents.
+   * - Removes idle agents whose heartbeat expired (unless it would drop below minAgents).
+   * - Removes agents in error/terminated state.
+   * Returns the number of agents removed.
+   */
+  async cleanup(now = Date.now()): Promise<number> {
+    let removed = 0;
+    const agents = Array.from(this.agents.values());
+
+    for (const agent of agents) {
+      const isUnusable = agent.state.status === "error" || agent.state.status === "terminated";
+      const isStaleIdle =
+        agent.state.status === "idle" &&
+        now - agent.state.lastHeartbeat.getTime() > this.poolConfig.heartbeatTimeoutMs;
+
+      if (isUnusable || isStaleIdle) {
+        if (this.agents.size <= this.poolConfig.minAgents + 2) {
+          // Keep orchestrator + observer + min executors; just mark unusable agents.
+          if (isUnusable) continue;
+          // For stale idle agents within the minimum footprint, refresh heartbeat.
+          agent.state.lastHeartbeat = new Date(now);
+          continue;
+        }
+        this.agents.delete(agent.id);
+        removed++;
+      }
+    }
+
+    return removed;
+  }
+
   async getMetrics(): Promise<PoolMetrics> {
     const agents = Array.from(this.agents.values());
     const active = agents.filter((a) => a.state.status === "busy").length;
@@ -140,10 +206,21 @@ export class AgentPoolManager implements AgentPool {
   }
 
   async healthCheck(): Promise<HealthStatus[]> {
-    return Array.from(this.agents.values()).map((agent) => ({
-      agentId: agent.id,
-      healthy: agent.state.status !== "error" && agent.state.status !== "terminated",
-      issues: agent.state.status === "error" ? ["Agent in error state"] : [],
-    }));
+    const now = Date.now();
+    return Array.from(this.agents.values()).map((agent) => {
+      const issues: string[] = [];
+      if (agent.state.status === "error") issues.push("Agent in error state");
+      if (agent.state.status === "terminated") issues.push("Agent terminated");
+      if (agent.state.errorCount > 0) issues.push(`Agent has ${agent.state.errorCount} recorded errors`);
+      const staleMs = now - agent.state.lastHeartbeat.getTime();
+      if (staleMs > this.poolConfig.heartbeatTimeoutMs) {
+        issues.push(`Heartbeat stale (${Math.round(staleMs / 1000)}s)`);
+      }
+      return {
+        agentId: agent.id,
+        healthy: issues.length === 0,
+        issues,
+      };
+    });
   }
 }

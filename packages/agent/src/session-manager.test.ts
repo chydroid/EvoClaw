@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SessionManager } from "./session-manager";
-import type { SessionConfig, SessionInfo, SessionTurn } from "./session-manager";
+import type { SessionConfig, SessionInfo, SessionTurn, SessionInsights, GlobalSessionInsights } from "./session-manager";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -284,6 +284,64 @@ describe("SessionManager", () => {
     it("should return empty list for unknown agent", () => {
       const sessions = sm.listSessions("nonexistent");
       expect(sessions).toHaveLength(0);
+    });
+  });
+
+  describe("Concurrency Safety", () => {
+    it("should keep turn count consistent when appending many turns", () => {
+      const session = sm.createSession("agent-1");
+      for (let i = 0; i < 50; i++) {
+        sm.appendTurn("agent-1", session.sessionId, {
+          turnIndex: i,
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: `turn ${i}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const meta = sm.loadSessionMeta("agent-1", session.sessionId);
+      const turns = sm.loadTranscript("agent-1", session.sessionId);
+      expect(meta!.turnCount).toBe(50);
+      expect(turns).toHaveLength(50);
+    });
+
+    it("should not deadlock when updateSessionMeta is called inside withLock", () => {
+      const session = sm.createSession("agent-1");
+      const result = sm.withLock("agent-1", session.sessionId, () => {
+        sm.updateSessionMeta(session);
+        return "ok";
+      });
+      expect(result).toBe("ok");
+      expect(sm.isLocked(session.sessionId)).toBe(false);
+    });
+  });
+
+  describe("Insights", () => {
+    it("should report per-session insights", () => {
+      const session = sm.createSession("agent-1");
+      sm.appendTurn("agent-1", session.sessionId, {
+        turnIndex: 0, role: "user", content: "Hello world", timestamp: new Date().toISOString(),
+      });
+
+      const insights = sm.getSessionInsights("agent-1", session.sessionId);
+      expect(insights).toBeDefined();
+      expect(insights!.turnCount).toBe(1);
+      expect(insights!.tokenEstimate).toBeGreaterThan(0);
+      expect(insights!.transcriptSizeBytes).toBeGreaterThan(0);
+      expect(insights!.compressionRatio).toBeGreaterThan(0);
+    });
+
+    it("should aggregate global insights", () => {
+      const s1 = sm.createSession("agent-1", { sessionId: "sess-insight-1" });
+      const s2 = sm.createSession("agent-2", { sessionId: "sess-insight-2" });
+      sm.appendTurn("agent-1", s1.sessionId, { turnIndex: 0, role: "user", content: "Hi", timestamp: new Date().toISOString() });
+      sm.appendTurn("agent-2", s2.sessionId, { turnIndex: 0, role: "user", content: "Hello", timestamp: new Date().toISOString() });
+
+      const global = sm.getGlobalInsights();
+      expect(global.totalSessions).toBe(2);
+      expect(global.totalTurns).toBe(2);
+      expect(global.totalTokens).toBeGreaterThan(0);
+      expect(global.totalTranscriptBytes).toBeGreaterThan(0);
     });
   });
 });

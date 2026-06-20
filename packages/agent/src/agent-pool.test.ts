@@ -132,4 +132,76 @@ describe("AgentPoolManager", () => {
     expect(metrics.activeAgents).toBe(0);
     expect(metrics.averageUtilization).toBe(0);
   });
+
+  it("should ignore release for non-busy agents", async () => {
+    const metricsBefore = await pool.getMetrics();
+    const idleAgent = Array.from((pool as any).agents.values()).find((a: any) => a.state.status === "idle");
+    expect(idleAgent).toBeDefined();
+
+    await pool.release((idleAgent as any).id);
+    const metricsAfter = await pool.getMetrics();
+    expect(metricsAfter.totalAgents).toBe(metricsBefore.totalAgents);
+  });
+
+  it("should skip error-state agents during acquire", async () => {
+    const agent = await pool.acquire();
+    await pool.reportError(agent!.id);
+    await pool.reportError(agent!.id);
+    await pool.reportError(agent!.id);
+
+    const acquired = await pool.acquire();
+    expect(acquired).not.toBeNull();
+    expect(acquired!.id).not.toBe(agent!.id);
+  });
+
+  it("should clean up stale idle agents", async () => {
+    // Scale up so we have spare executors beyond the minimum footprint.
+    await pool.scale(4);
+    const before = await pool.getMetrics();
+    expect(before.totalAgents).toBeGreaterThan(4);
+
+    // Manually backdate all idle heartbeats.
+    const staleTime = Date.now() - 400_000;
+    for (const agent of (pool as any).agents.values()) {
+      if (agent.state.status === "idle") {
+        agent.state.lastHeartbeat = new Date(staleTime);
+      }
+    }
+
+    const removed = await pool.cleanup();
+    expect(removed).toBeGreaterThan(0);
+
+    const after = await pool.getMetrics();
+    expect(after.totalAgents).toBeLessThan(before.totalAgents);
+  });
+
+  it("should keep minimum footprint during cleanup", async () => {
+    const before = await pool.getMetrics();
+    const staleTime = Date.now() - 400_000;
+    for (const agent of (pool as any).agents.values()) {
+      agent.state.lastHeartbeat = new Date(staleTime);
+    }
+
+    const removed = await pool.cleanup();
+    expect(removed).toBe(0);
+
+    const after = await pool.getMetrics();
+    expect(after.totalAgents).toBe(before.totalAgents);
+  });
+
+  it("should report stale heartbeat and errors in health check", async () => {
+    const agent = await pool.acquire();
+    await pool.reportError(agent!.id);
+    await pool.release(agent!.id);
+
+    const staleTime = Date.now() - 400_000;
+    agent!.state.lastHeartbeat = new Date(staleTime);
+
+    const health = await pool.healthCheck();
+    const agentHealth = health.find((h) => h.agentId === agent!.id);
+    expect(agentHealth).toBeDefined();
+    expect(agentHealth!.healthy).toBe(false);
+    expect(agentHealth!.issues.some((i) => i.includes("Heartbeat stale"))).toBe(true);
+    expect(agentHealth!.issues.some((i) => i.includes("recorded errors"))).toBe(true);
+  });
 });

@@ -361,7 +361,17 @@ export class ConfigWatcher {
   }
 
   forceReload(filePath: string): ConfigValidationResult {
-    return this.loadAndValidate(filePath);
+    const oldConfig = this.currentConfigs.get(filePath) ?? {};
+    const result = this.loadAndValidate(filePath);
+
+    if (result.valid && this.changeHandlers.length > 0) {
+      const changes = this.diffConfigs(oldConfig, result.data);
+      if (changes.length > 0) {
+        this.notifyHandlers(result.data, oldConfig, changes);
+      }
+    }
+
+    return result;
   }
 
   /** Stop watching a specific file */

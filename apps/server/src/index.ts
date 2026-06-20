@@ -204,10 +204,13 @@ export class EvoClawServer {
     this.registry.registerService("config", this.configManager);
 
     this.configWatcher = new ConfigWatcher();
+    const configFilePath = path.resolve(process.cwd(), "config.json");
+    this.configManager.startWatching(configFilePath, this.configWatcher);
+    this.configManager.onChange((change) => {
+      this.eventBus.publish("config.changed", change, "config-manager").catch(() => {});
+    });
     this.configWatcher.onChange((filePath) => {
       this.logger.info("config", `Config file changed: ${filePath}, reloading...`);
-      // Re-load configuration from env (hot-reload support)
-      this.configManager.loadFromEnv();
     });
     this.registry.registerService("configWatcher", this.configWatcher);
 

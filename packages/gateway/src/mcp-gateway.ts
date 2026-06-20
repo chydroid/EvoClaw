@@ -34,4 +34,11 @@ export class MCPGateway {
   async discoverTools(): Promise<Record<string, MCPCapabilities>> {
     return Object.fromEntries(this.capabilities);
   }
+
+  /** Release all registered transports and capabilities. */
+  dispose(): void {
+    this.transports.clear();
+    this.capabilities.clear();
+    process.stdout.write("[MCP Gateway] Disposed");
+  }
 }

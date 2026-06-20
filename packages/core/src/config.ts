@@ -1,3 +1,8 @@
+import { EventEmitter } from "events";
+import * as fs from "fs";
+import * as path from "path";
+import { ConfigWatcher, type SchemaConfigChange } from "./config-schema.js";
+
 export interface PersonaConfig {
   name: string;
   title: string;
@@ -18,6 +23,9 @@ export interface AppConfig {
     refreshExpiry: string;
   };
   gateway: {
+    port: number;
+    host: string;
+    jwtSecret: string;
     enableMCP: boolean;
     enableREST: boolean;
     rateLimitWindow: number;
@@ -78,6 +86,9 @@ export const defaultConfig: AppConfig = {
     refreshExpiry: "7d",
   },
   gateway: {
+    port: 27788,
+    host: "0.0.0.0",
+    jwtSecret: "evoclaw-dev-secret-change-in-production",
     enableMCP: true,
     enableREST: true,
     rateLimitWindow: 60000,
@@ -164,8 +175,40 @@ export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends Record<string, unknown> ? DeepPartial<T[P]> : T[P];
 };
 
+export interface ConfigChange {
+  /** Top-level section affected */
+  section: string;
+  /** Dot-path inside the section (empty if the whole section changed) */
+  path: string;
+  /** Previous value */
+  oldValue: unknown;
+  /** New value */
+  newValue: unknown;
+  /** Change source */
+  source: string;
+  /** Change timestamp */
+  timestamp: number;
+}
+
+export type ConfigChangeHandler = (change: ConfigChange) => void | Promise<void>;
+
+export interface ConfigManagerStats {
+  filePath: string | null;
+  watching: boolean;
+  totalChanges: number;
+  lastChangeAt: Date | null;
+}
+
 export class ConfigManager {
   private config: AppConfig;
+  private emitter = new EventEmitter();
+  private filePath: string | null = null;
+  private watcher: ConfigWatcher | null = null;
+  private pending: Promise<void> = Promise.resolve();
+  private changeCount = 0;
+  private lastChangeAt: Date | null = null;
+  private history: ConfigChange[] = [];
+  private maxHistory = 100;
 
   constructor(initial?: DeepPartial<AppConfig>) {
     this.config = this.deepMerge(
@@ -182,8 +225,74 @@ export class ConfigManager {
     return this.config;
   }
 
-  update(partial: DeepPartial<AppConfig>): void {
-    this.config = this.deepMerge(this.config as unknown as Record<string, unknown>, partial as Record<string, unknown>) as unknown as AppConfig;
+  /**
+   * Update a whole section. Broadcasts granular change events for every leaf
+   * that actually changed so subscribers can react precisely.
+   */
+  async updateSection<K extends keyof AppConfig>(
+    section: K,
+    partial: DeepPartial<AppConfig[K]>,
+    options: { source?: string } = {}
+  ): Promise<void> {
+    const source = options.source ?? "api";
+    await this.withLock(async () => {
+      const oldSection = this.deepClone(this.config[section] as unknown as Record<string, unknown>);
+      const newSection = this.deepMerge(
+        this.config[section] as unknown as Record<string, unknown>,
+        partial as unknown as Record<string, unknown>
+      );
+      (this.config as unknown as Record<string, unknown>)[section as string] = newSection;
+
+      const changes = this.diffLeaves(oldSection, newSection, String(section), source);
+      for (const change of changes) {
+        this.recordAndEmit(change);
+      }
+      if (changes.length > 0) {
+        this.emitter.emit(`change:${String(section)}`, changes);
+      }
+    });
+  }
+
+  /**
+   * Set a single value by dot-path (e.g. "server.port").
+   * Supports both top-level sections and nested fields.
+   */
+  async set(path: string, value: unknown, options: { source?: string } = {}): Promise<void> {
+    const source = options.source ?? "api";
+    await this.withLock(async () => {
+      const oldValue = this.getPath(path);
+      if (JSON.stringify(oldValue) === JSON.stringify(value)) return;
+
+      this.setPath(path, value);
+      const section = path.split(".")[0];
+      const change: ConfigChange = {
+        section,
+        path,
+        oldValue,
+        newValue: value,
+        source,
+        timestamp: Date.now(),
+      };
+      this.recordAndEmit(change);
+      this.emitter.emit(`change:${section}`, [change]);
+    });
+  }
+
+  update(partial: DeepPartial<AppConfig>, options: { source?: string } = {}): void {
+    const source = options.source ?? "api";
+    const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
+    this.config = this.deepMerge(
+      this.config as unknown as Record<string, unknown>,
+      partial as unknown as Record<string, unknown>
+    ) as unknown as AppConfig;
+
+    const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "", source);
+    for (const change of changes) {
+      this.recordAndEmit(change);
+    }
+    for (const section of new Set(changes.map((c) => c.section))) {
+      this.emitter.emit(`change:${section}`, changes.filter((c) => c.section === section));
+    }
   }
 
   loadFromEnv(): void {
@@ -210,20 +319,225 @@ export class ConfigManager {
     this.config.gateway.enableREST = process.env.EvoClaw_REST_ENABLED !== "false";
   }
 
+  /**
+   * Persist current configuration to a JSON file atomically.
+   * Sensitive keys are written as-is; callers are responsible for file permissions.
+   */
+  async saveToFile(filePath?: string): Promise<string> {
+    const target = filePath ?? this.filePath;
+    if (!target) {
+      throw new Error("[Config] No file path configured for persistence");
+    }
+    const dir = path.dirname(target);
+    await this.withLock(async () => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const temp = `${target}.tmp`;
+      fs.writeFileSync(temp, JSON.stringify(this.config, null, 2), "utf-8");
+      fs.renameSync(temp, target);
+    });
+    return target;
+  }
+
+  /**
+   * Load configuration from a JSON file and merge it on top of defaults.
+   * The file path is remembered for subsequent saveToFile() calls.
+   */
+  async loadFromFile(filePath: string): Promise<void> {
+    await this.withLock(async () => {
+      if (!fs.existsSync(filePath)) {
+        this.filePath = filePath;
+        return;
+      }
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
+      this.config = this.deepMerge(
+        defaultConfig as unknown as Record<string, unknown>,
+        parsed
+      ) as unknown as AppConfig;
+      this.filePath = filePath;
+
+      const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "");
+      for (const change of changes) {
+        this.recordAndEmit({ ...change, source: "file" });
+      }
+    });
+  }
+
+  /**
+   * Watch the backing config file for changes and apply them automatically.
+   * Uses the provided ConfigWatcher; creates one if omitted.
+   */
+  startWatching(filePath: string, watcher?: ConfigWatcher): void {
+    this.stopWatching();
+    this.filePath = filePath;
+    this.watcher = watcher ?? new ConfigWatcher();
+
+    if (!fs.existsSync(filePath)) {
+      process.stderr.write(`[Config] Hot-reload target does not exist: ${filePath}\n`);
+      return;
+    }
+
+    this.watcher.onConfigChange(async (newConfig) => {
+      await this.applyReloadedConfig(newConfig, filePath);
+    });
+    this.watcher.watch(filePath);
+    this.watcher.forceReload(filePath);
+  }
+
+  stopWatching(): void {
+    if (this.watcher) {
+      this.watcher.stopAll();
+      this.watcher = null;
+    }
+  }
+
+  onChange(handler: ConfigChangeHandler): void {
+    this.emitter.on("change", handler);
+  }
+
+  offChange(handler: ConfigChangeHandler): void {
+    this.emitter.off("change", handler);
+  }
+
+  onSectionChange<K extends keyof AppConfig>(section: K, handler: ConfigChangeHandler): void {
+    this.emitter.on(`change:${String(section)}`, (changes: ConfigChange[]) => {
+      for (const change of changes) {
+        Promise.resolve(handler(change)).catch((err) => {
+          process.stderr.write(`[Config] Section change handler error: ${err instanceof Error ? err.message : String(err)}\n`);
+        });
+      }
+    });
+  }
+
+  getStats(): ConfigManagerStats {
+    return {
+      filePath: this.filePath,
+      watching: this.watcher !== null,
+      totalChanges: this.changeCount,
+      lastChangeAt: this.lastChangeAt,
+    };
+  }
+
+  getHistory(): ConfigChange[] {
+    return [...this.history];
+  }
+
+  clearHistory(): void {
+    this.history = [];
+  }
+
+  private async applyReloadedConfig(newConfig: Record<string, unknown>, filePath: string): Promise<void> {
+    await this.withLock(async () => {
+      const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
+      this.config = this.deepMerge(
+        defaultConfig as unknown as Record<string, unknown>,
+        newConfig
+      ) as unknown as AppConfig;
+      this.filePath = filePath;
+
+      const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "");
+      for (const change of changes) {
+        this.recordAndEmit({ ...change, source: "hot-reload" });
+      }
+    });
+  }
+
+  private recordAndEmit(change: ConfigChange): void {
+    this.changeCount++;
+    this.lastChangeAt = new Date(change.timestamp);
+    this.history.push(change);
+    if (this.history.length > this.maxHistory) {
+      this.history.shift();
+    }
+
+    const listeners = this.emitter.listeners("change") as ConfigChangeHandler[];
+    for (const listener of listeners) {
+      Promise.resolve(listener(change)).catch((err) => {
+        process.stderr.write(`[Config] Change handler error: ${err instanceof Error ? err.message : String(err)}\n`);
+      });
+    }
+  }
+
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const execute = this.pending.then(fn).catch((err) => {
+      throw err;
+    });
+    this.pending = execute.then(
+      () => {},
+      () => {}
+    );
+    return execute;
+  }
+
   private deepMerge(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = { ...base };
     for (const key of Object.keys(override)) {
       const ov = override[key];
       const bv = base[key];
       if (ov && typeof ov === "object" && !Array.isArray(ov) && bv && typeof bv === "object" && !Array.isArray(bv)) {
-        result[key] = this.deepMerge(
-          bv as Record<string, unknown>,
-          ov as Record<string, unknown>
-        );
+        result[key] = this.deepMerge(bv as Record<string, unknown>, ov as Record<string, unknown>);
       } else if (ov !== undefined) {
         result[key] = ov;
       }
     }
     return result;
+  }
+
+  private deepClone<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  private diffLeaves(oldObj: Record<string, unknown>, newObj: Record<string, unknown>, prefix: string, source = "api"): ConfigChange[] {
+    const changes: ConfigChange[] = [];
+    const allKeys = new Set([...Object.keys(oldObj), ...Object.keys(newObj)]);
+
+    for (const key of allKeys) {
+      const fullPath = prefix ? `${prefix}.${key}` : key;
+      const section = fullPath.split(".")[0];
+      const oldVal = oldObj[key];
+      const newVal = newObj[key];
+
+      if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        if (
+          oldVal && typeof oldVal === "object" && !Array.isArray(oldVal) &&
+          newVal && typeof newVal === "object" && !Array.isArray(newVal)
+        ) {
+          changes.push(...this.diffLeaves(oldVal as Record<string, unknown>, newVal as Record<string, unknown>, fullPath, source));
+        } else {
+          changes.push({ section, path: fullPath, oldValue: oldVal, newValue: newVal, source, timestamp: Date.now() });
+        }
+      }
+    }
+
+    return changes;
+  }
+
+  private getPath(path: string): unknown {
+    const parts = path.split(".");
+    let current: unknown = this.config as unknown as Record<string, unknown>;
+    for (const part of parts) {
+      if (current && typeof current === "object" && !Array.isArray(current)) {
+        current = (current as Record<string, unknown>)[part];
+      } else {
+        return undefined;
+      }
+    }
+    return current;
+  }
+
+  private setPath(path: string, value: unknown): void {
+    const parts = path.split(".");
+    let current = this.config as unknown as Record<string, unknown>;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+        current[part] = {};
+      }
+      current = current[part] as Record<string, unknown>;
+    }
+    current[parts[parts.length - 1]] = value;
   }
 }

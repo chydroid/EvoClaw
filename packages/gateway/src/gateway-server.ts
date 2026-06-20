@@ -36,6 +36,8 @@ export interface GatewayConfig {
   enableWS: boolean;
   rateLimitWindow: number;
   rateLimitMax: number;
+  /** Maximum time in ms to wait for each shutdown phase. Defaults to 10s. */
+  shutdownTimeoutMs?: number;
 }
 
 const DEFAULT_CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173").split(",").map((s) => s.trim());
@@ -78,7 +80,8 @@ export class GatewayServer {
     };
 
     if (!this.config.jwtSecret || this.config.jwtSecret.length === 0) {
-      process.stderr.write("[Gateway] WARNING: JWT secret is not set. Authentication will not work properly. Please set JWT_SECRET environment variable.\n");
+      this.config.jwtSecret = crypto.randomBytes(32).toString("hex");
+      process.stderr.write("[Gateway] WARNING: JWT secret is not set. A temporary random secret has been generated for this session. Set JWT_SECRET environment variable for persistent authentication.\n");
     }
 
     this.authProvider = new AuthProvider(this.config.jwtSecret, registry);
@@ -120,54 +123,159 @@ export class GatewayServer {
     }
 
     const { port, host } = this.config;
-    this.server = this.app.listen(port, host, () => {
-      process.stdout.write(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}\n`);
+    await new Promise<void>((resolve, reject) => {
+      this.server = this.app.listen(port, host, () => {
+        process.stdout.write(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}\n`);
 
-      if (this.server) {
-        this.server.requestTimeout = 1_800_000;
-        this.server.headersTimeout = 120_000;
-        this.server.keepAliveTimeout = 30_000;
-        process.stdout.write(`[Gateway] Server timeouts: request=${this.server.requestTimeout}ms, headers=${this.server.headersTimeout}ms\n`);
-      }
+        if (this.server) {
+          this.server.requestTimeout = 1_800_000;
+          this.server.headersTimeout = 120_000;
+          this.server.keepAliveTimeout = 30_000;
+          process.stdout.write(`[Gateway] Server timeouts: request=${this.server.requestTimeout}ms, headers=${this.server.headersTimeout}ms\n`);
+        }
 
-      if (this.config.enableWS && this.server) {
-        this.wsTransport = new WSServerTransport(this.protocolHandler, this.eventBus);
-        this.wsTransport.attach(this.server);
-        process.stdout.write(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws\n`);
-      }
+        if (this.config.enableWS && this.server) {
+          this.wsTransport = new WSServerTransport(this.protocolHandler, this.eventBus);
+          this.wsTransport.attach(this.server);
+          process.stdout.write(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws\n`);
+        }
 
-      this.eventBus.publish("system.ready", { port, host }, "gateway").catch(() => {});
+        this.eventBus.publish("system.ready", { port, host }, "gateway").catch(() => {});
+        resolve();
+      });
+
+      this.server?.on("error", (err) => {
+        reject(err);
+      });
     });
   }
 
   async stop(): Promise<void> {
     process.stdout.write("[Gateway] Shutting down...\n");
+    const shutdownTimeoutMs = this.config.shutdownTimeoutMs ?? 10_000;
 
+    // 1. Stop channel adapters first so they stop accepting new messages.
+    try {
+      const channelManager = this.registry.resolveService<{ stop?: () => Promise<void> | void }>("channelManager");
+      if (channelManager && typeof channelManager.stop === "function") {
+        await Promise.race([
+          channelManager.stop(),
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error("channelManager stop timed out")), shutdownTimeoutMs)
+          ),
+        ]);
+      }
+    } catch (err) {
+      process.stderr.write(`[Gateway] Error stopping channel manager: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+
+    // 2. Tear down MCP gateway.
+    try {
+      this.mcpGateway?.dispose?.();
+    } catch (err) {
+      process.stderr.write(`[Gateway] Error disposing MCP gateway: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+
+    // 3. Detach WebSocket transport and stop protocol handler.
     if (this.wsTransport) {
       this.wsTransport.detach();
       this.wsTransport = null;
     }
+    try {
+      this.protocolHandler?.stop?.();
+    } catch (err) {
+      process.stderr.write(`[Gateway] Error stopping protocol handler: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
 
+    // 4. Close HTTP server.
     if (this.server) {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          process.stdout.write("[Gateway] Force closing after timeout\n");
+      await new Promise<void>((resolve) => {
+        const server = this.server!;
+        const timer = setTimeout(() => {
+          process.stdout.write("[Gateway] Force closing server after timeout\n");
+          server.closeAllConnections?.();
           resolve();
-        }, 10000);
+        }, shutdownTimeoutMs);
 
-        this.server!.close((err) => {
-          clearTimeout(timeout);
+        server.close((err) => {
+          clearTimeout(timer);
           if (err) {
             process.stderr.write(`[Gateway] Error during close: ${err.message}\n`);
-            reject(err);
           } else {
             process.stdout.write("[Gateway] All connections closed gracefully\n");
-            resolve();
           }
+          resolve();
         });
       });
       this.server = null;
     }
+
+    // 5. Clear runtime state.
+    this.requestCounts.clear();
+  }
+
+  /**
+   * Aggregated health across gateway subsystems.
+   * Returns a structured report suitable for load balancers and monitoring.
+   */
+  getAggregatedHealth(): {
+    status: "healthy" | "degraded" | "unhealthy";
+    subsystems: Record<string, { status: "healthy" | "degraded" | "unhealthy"; details?: unknown }>;
+  } {
+    const subsystems: Record<string, { status: "healthy" | "degraded" | "unhealthy"; details?: unknown }> = {};
+
+    // HTTP server
+    subsystems.http = {
+      status: this.server && this.server.listening ? "healthy" : "unhealthy",
+    };
+
+    // WebSocket transport
+    subsystems.websocket = {
+      status: this.wsTransport ? "healthy" : "degraded",
+      details: { connectedCount: this.wsTransport?.getConnectedCount() ?? 0 },
+    };
+
+    // Protocol handler
+    subsystems.protocol = {
+      status: this.protocolHandler ? "healthy" : "unhealthy",
+      details: { connectionCount: this.protocolHandler?.getConnectionCount() ?? 0 },
+    };
+
+    // Channel manager
+    try {
+      const channelManager = this.registry.resolveService<{
+        getAllStatuses: () => Array<{ type: string; enabled: boolean; connected: boolean }>;
+      }>("channelManager");
+      const statuses = channelManager?.getAllStatuses?.() ?? [];
+      const connected = statuses.filter((s) => s.connected).length;
+      const enabled = statuses.filter((s) => s.enabled).length;
+      subsystems.channels = {
+        status: enabled > 0 && connected === enabled ? "healthy" : enabled > 0 && connected > 0 ? "degraded" : enabled > 0 ? "unhealthy" : "healthy",
+        details: { enabled, connected, channels: statuses },
+      };
+    } catch {
+      subsystems.channels = { status: "degraded", details: "channelManager not registered" };
+    }
+
+    // MCP gateway
+    subsystems.mcp = {
+      status: this.config.enableMCP ? (this.mcpGateway ? "healthy" : "degraded") : "healthy",
+    };
+
+    // Auth provider
+    subsystems.auth = {
+      status: this.config.jwtSecret ? "healthy" : "degraded",
+      details: { configured: !!this.config.jwtSecret },
+    };
+
+    const values = Object.values(subsystems);
+    if (values.some((v) => v.status === "unhealthy")) {
+      return { status: "unhealthy", subsystems };
+    }
+    if (values.some((v) => v.status === "degraded")) {
+      return { status: "degraded", subsystems };
+    }
+    return { status: "healthy", subsystems };
   }
 
   private setupMiddleware(): void {
@@ -370,15 +478,16 @@ export class GatewayServer {
       }
     });
 
-    // Detailed health with version + metrics
+    // Detailed health with version + metrics + subsystem aggregation
     this.app.get("/health", (_req: Request, res: Response) => {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       const unhealthy = serviceInfos.filter((info: { status: string }) => info.status === "error");
       const memUsage = process.memoryUsage();
       const observability = this.registry.resolveService<Observability>("observability");
       const healthReport = observability?.getHealthReport();
-      res.json({
-        status: unhealthy.length > 0 ? "degraded" : "ok",
+      const aggregated = this.getAggregatedHealth();
+      res.status(aggregated.status === "unhealthy" ? 503 : 200).json({
+        status: unhealthy.length > 0 ? "degraded" : aggregated.status,
         version: process.env.npm_package_version || "0.0.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
@@ -394,6 +503,7 @@ export class GatewayServer {
           healthy: serviceInfos.length - unhealthy.length,
           unhealthy: unhealthy.map((s: { name: string }) => s.name),
         },
+        subsystems: aggregated.subsystems,
         metrics: healthReport?.metrics,
       });
     });

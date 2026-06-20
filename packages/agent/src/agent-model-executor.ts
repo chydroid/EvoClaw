@@ -25,7 +25,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import { TaskCheckpoint, taskCheckpointManager } from "./task-checkpoint-manager";
 import { ExecutionCheckpointStore } from "./execution-checkpoint";
 import { collapseNewlines as collapseNewlinesImpl, stripWebNoise as stripWebNoiseImpl, summarizeToolResult as summarizeToolResultFn, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
-import { tryQuickReply as tryQuickReplyFn, tryQuickReplyExtended as tryQuickReplyExtendedFn, tryUtilityReply as tryUtilityReplyFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
+import { tryQuickReply as tryQuickReplyFn, tryQuickReplyExtended as tryQuickReplyExtendedFn, tryUtilityReply as tryUtilityReplyFn, tryAstronomyReply as tryAstronomyReplyFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
 import { handleSlashCommand as handleSlashCommandFn, type SlashCommandDeps, type SlashCommandResult } from "./slash-commands";
 import { HeartbeatManager, type HeartbeatHandlerDeps } from "./heartbeat";
 import { sessionFilePath as sessionFilePathFn, persistSessionTurn as persistSessionTurnFn, persistEarlyReturn as persistEarlyReturnFn, loadSessionHistory as loadSessionHistoryFn, needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, type SessionPersistenceDeps } from "./session-persistence";
@@ -1372,6 +1372,20 @@ export class AgentModelExecutor {
           return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
         }
       }
+    }
+
+    // ── Astronomy quick reply (sunrise/sunset — local calculation via Open-Meteo) ──
+    // Bypasses LLM content filters and avoids unreliable web search for
+    // time-sensitive astronomical calculations.
+    const astronomyReply = await tryAstronomyReplyFn(effectiveMessage);
+    if (astronomyReply) {
+      const timestamp = new Date().toLocaleString("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit",
+      });
+      const finalReply = `📅 ${timestamp}\n\n${astronomyReply}`;
+      this.persistEarlyReturn(sessionId, message, finalReply);
+      return { reply: finalReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
     }
 
     // ── Utility quick reply (date/calculator — no LLM needed) ──

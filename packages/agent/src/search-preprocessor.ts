@@ -173,7 +173,15 @@ export async function preprocessSearch(
     const isEntityInfoQuery = /(?:情况|信息|动态|新闻|进展|发布|新品|产品|公告|财报|动向|近况|现状|趋势|发展)/i.test(userMessage);
     const isModelOrProductQuery = /(?:模型|大模型|LLM|GPT|Claude|Gemini|Qwen|DeepSeek|Llama|Mistral|MiMo|GLM|文心|通义|千问|豆包|Kimi|MiniMax|百川|Yi|零一|商汤|讯飞|智谱|小米|华为|百度|阿里|腾讯|字节|OpenAI|Anthropic|Google|Meta|Microsoft|NVIDIA|苹果|三星|比亚迪|蔚来|理想|小鹏|大疆|OPPO|vivo|荣耀|中兴)/i.test(userMessage);
     shouldSearch = isNewsQuery || isSearchIntent || (isEvaluationQuery && isModelOrProductQuery) || (isEntityInfoQuery && isModelOrProductQuery);
-    searchReason = shouldSearch ? (isSearchIntent ? "搜索意图检测触发" : isEvaluationQuery && isModelOrProductQuery ? "实体评价查询触发" : isEntityInfoQuery && isModelOrProductQuery ? "实体信息查询触发" : "关键词匹配触发") : "";
+    searchReason = shouldSearch
+      ? (isSearchIntent
+            ? "搜索意图检测触发"
+            : isEvaluationQuery && isModelOrProductQuery
+              ? "实体评价查询触发"
+              : isEntityInfoQuery && isModelOrProductQuery
+                ? "实体信息查询触发"
+                : "关键词匹配触发")
+      : "";
   }
 
   if (shouldSearch && registeredTools.has("web_search")) {

@@ -3,6 +3,115 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.45.0 (2026-06-20)
+
+### 6 轮迭代式系统健壮性提升（对比 hermes-agent 深度分析）
+
+基于对 hermes-agent 的系统性对比分析，识别出 EvoClaw 在 LLM 调用、Agent 资源治理、网关运维、配置管理、会话持久化、前端体验 6 个维度的短板，并独立完成 6 轮迭代改进。所有改进保持 EvoClaw 核心特色与技术风格，未照搬 hermes 代码，每轮均通过 `pnpm build && pnpm typecheck && pnpm test` 验收。
+
+#### 关键改进
+
+| 轮次 | 目标 | 主要变更 |
+|------|------|----------|
+| Round 1 | LLM Caller 超时、重试与熔断健壮性 | `llm-caller.ts` 引入 `ProviderHealthTracker`，统一超时、失败率、连续错误熔断；新增超时/熔断/安全拒绝降级测试 |
+| Round 2 | Agent Pool 生命周期与资源治理 | `agent-pool.ts` 增加状态校验、错误报告、`cleanup()` 与池级指标；防止重复释放与资源泄露 |
+| Round 3 | Gateway Server 健康检查与优雅关闭 | `gateway-server.ts` 新增聚合 `/health`、按依赖反序的 `stop()`；`MCPGateway`/`ProtocolHandler` 补充 `dispose()`/`stop()` |
+| Round 4 | 配置热加载与变更广播 | `ConfigManager` 支持 `onChange()` 细粒度事件、`startWatching()` 热加载、`saveToFile()` 原子写；补齐 `gateway` 字段 |
+| Round 5 | 会话持久化并发安全与洞察 | `session-manager.ts` 可重入锁、`getSessionInsights()` / `getGlobalSessionInsights()` 用量与压缩率洞察 |
+| Round 6 | Web UI 全局状态与错误边界 | 新增 `app-state.ts`、`AppStateContext.tsx`、`AppErrorBoundary.tsx`；`App.tsx` 接入全局状态与统一横幅提示 |
+
+#### 缺陷修复
+
+- 修复 `AppConfig.gateway` 缺少 `port`/`host`/`jwtSecret` 导致的类型错误
+- 修复 `gateway-server.ts` 优雅关闭依赖 `MCPGateway.dispose()` 与 `ProtocolHandler.stop()` 但方法缺失的问题
+- 修复 `enhanced-browser.plugin.test.ts` 因 `httpbin.org` 波动导致的偶发失败，增强对 503/超时的容错
+
+#### 变更文件
+
+- `packages/agent/src/llm-caller.ts` / `llm-caller.test.ts`
+- `packages/agent/src/agent-pool.ts` / `agent-pool.test.ts`
+- `packages/gateway/src/gateway-server.ts` / `gateway-server.test.ts`
+- `packages/gateway/src/mcp-gateway.ts`
+- `packages/gateway/src/ws-protocol.ts`
+- `packages/core/src/config.ts` / `config.test.ts`
+- `packages/agent/src/session-manager.ts` / `session-manager.test.ts`
+- `packages/web-ui/src/app-state.ts` / `AppStateContext.tsx` / `AppErrorBoundary.tsx` / `app-state.test.ts`
+- `packages/web-ui/src/App.tsx` / `main.tsx`
+- `packages/agent/src/plugins/enhanced-browser.plugin.test.ts`
+- `docs/improvement-plan.md`
+
+#### 测试
+
+```bash
+pnpm build && pnpm typecheck && pnpm test
+```
+
+结果：108 个测试文件 / 2927 通过 / 1 跳过。
+
+---
+
+## v0.44.3 (2026-06-20)
+
+### 本地天文时刻计算 + 全通道 Python 计算策略强化
+
+将日出/日落等天文时刻查询从依赖 LLM/搜索改为本地 Open-Meteo API 直接计算，彻底解决 Mimo 等提供商将地点+时间类查询误判为高风险的问题；同时在系统提示词中明确所有通道都允许生成并执行 Python 脚本，确保 WebUI、微信、飞书等通道在计算类任务上行为一致。
+
+#### 关键 Bug 修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 微信通道日出日落查询仍可能失败或依赖不稳定搜索 | 仅做安全拒绝 failover 与搜索预处理，仍可能受 LLM 过滤/搜索结果质量影响 | 在 `quick-reply.ts` 新增 `tryAstronomyReply()`，直接调用 Open-Meteo 地理编码与天文预报 API，完全绕过 LLM |
+| `search-preprocessor.ts` 残留 `isAstronomyQuery` 引用导致编译错误 | 天文逻辑迁出后未清理旧分支 | 移除搜索预处理中的天文分支，避免与本地快速通道冲突 |
+| 中文"日出时间/日落时间"地点提取错误 | 替换顺序导致"时间和"等冗余词残留 | 调整 `extractAstronomyLocation()`，先移除完整短语，再清理连接词与冗余词 |
+
+#### 新增功能
+
+- **本地天文时刻快速通道** (`quick-reply.ts`): 自动识别日出/日落查询，调用 Open-Meteo 返回精确时刻，零 LLM token 消耗
+- **全通道 Python 计算策略** (`system-prompt.ts`): 系统提示词新增 `Computation & Python Scripts` 章节，明确告知模型所有通道都允许用 `file_create` + `shell_exec` 生成并执行 Python 脚本
+
+#### 变更文件
+
+- `packages/agent/src/quick-reply.ts`
+- `packages/agent/src/agent-model-executor.ts`
+- `packages/agent/src/search-preprocessor.ts`
+- `packages/agent/src/system-prompt.ts`
+- `packages/agent/src/quick-reply.test.ts`
+- `packages/agent/src/search-preprocessor.test.ts`
+
+#### 测试
+
+- 新增 5 条 `tryAstronomyReply` 单元测试，覆盖中文/英文查询、非天文查询、地理编码无结果、API 异常降级
+- 更新 3 条搜索预处理测试，验证天文查询不再触发搜索
+
+## v0.44.2 (2026-06-20)
+
+### 微信通道日出日落查询安全过滤误拦截修复 + 天文时刻搜索预处理
+
+修复了 Mimo 等远程 LLM 提供商将地点/时间类查询（如“信阳市平桥区明天的日出时间和日落时间”）误判为高风险并返回拒绝文案的问题；同时为天文时刻类查询增加搜索预处理，自动通过网页搜索获取结果上下文，提升任务完成率与响应速度。
+
+#### 关键Bug修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 微信通道日出日落查询被返回 "The request was rejected because it was considered high risk" | Mimo API 的内容安全过滤将地点+时间查询误判为高风险，且以纯文本形式返回拒绝而非 HTTP 错误码 | 在 `llm-caller.ts` 增加 `isProviderSafetyRejection()` 检测，将该类响应识别为提供商失败并触发熔断/切换下一个提供商 |
+
+#### 新增功能
+
+- **提供商安全过滤拒绝检测** (`llm-caller.ts`): 识别 Mimo 等返回的 "considered high risk" / "content filter triggered" / "request was blocked" 等纯文本拒绝，自动 failover
+- **天文时刻搜索预处理** (`search-preprocessor.ts`): 检测 日出/日落/月出/月相/sunrise/sunset 等天文时刻查询，自动触发 `web_search` 获取当地时刻信息并注入上下文
+
+#### 变更文件
+
+- `packages/agent/src/llm-caller.ts`
+- `packages/agent/src/search-preprocessor.ts`
+- `packages/agent/src/llm-caller.test.ts`
+- `packages/agent/src/search-preprocessor.test.ts`
+
+#### 测试
+
+- 新增 5 条 `isProviderSafetyRejection` 单元测试，覆盖精确匹配、大小写、部分匹配、正常回复不误伤、空值处理
+- 新增 3 条搜索预处理单元测试，覆盖中文日出日落查询触发、英文 sunrise/sunset 查询触发、普通问候不触发
+
 ## v0.44.1 (2026-06-20)
 
 ### nativeFetch 稳定性修复 + 快速回复能力增强 + 技能创建质量门控

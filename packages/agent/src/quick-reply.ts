@@ -9,6 +9,7 @@
 
 import type { PersonaConfig } from "@evoclaw/core";
 import type { ModelConfig, ProviderConfig, ToolDefinition } from "./types";
+import * as https from "https";
 
 /** Conversation history entry type */
 export interface ConversationHistoryEntry {
@@ -803,6 +804,116 @@ export function tryUtilityReply(message: string): string | null {
   }
 
   return null;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 天文时刻本地计算（日出/日落）
+// 使用 Open-Meteo 免费 API 直接获取目标地点的日出日落时间，
+// 绕过 LLM 提供商的内容过滤，避免依赖搜索结果的不稳定性。
+// ═══════════════════════════════════════════════════════════
+
+function isAstronomyQuery(message: string): boolean {
+  return /(?:日出|日落|日出时间|日落时间|sunrise|sunset)/i.test(message);
+}
+
+function extractAstronomyLocation(message: string): string | null {
+  let normalized = message.replace(/[？?！!。.,;；:：]/g, " ").trim();
+  const isChinese = /[\u4e00-\u9fff]/.test(normalized);
+  if (isChinese) {
+    normalized = normalized
+      .replace(/日出时间|日落时间|日出|日落/g, " ")
+      .replace(/告诉我|请问|查一下|帮我|给我|一下|看看|知道|的|时间|几点|是|多少|什么|吗|呢|请问|请|想|要|和|与|及/g, " ")
+      .replace(/今天|明天|后天|昨天|今|明|后|昨/g, " ")
+      .replace(/上午|下午|晚上|早上|中午/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } else {
+    normalized = normalized
+      .replace(/\b(what|is|the|in|at|for|time|sunrise|sunset|tomorrow|today|yesterday|tell|me|please|can|you|and|of)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return normalized.length > 0 ? normalized : null;
+}
+
+function extractAstronomyDate(message: string): Date {
+  const now = new Date();
+  if (/后天/.test(message)) return new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+  if (/明天/.test(message)) return new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  if (/今天/.test(message)) return now;
+  if (/昨天/.test(message)) return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const lower = message.toLowerCase();
+  if (/day\s*after\s*tomorrow/.test(lower)) return new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+  if (/tomorrow/.test(lower)) return new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  if (/today/.test(lower)) return now;
+  if (/yesterday/.test(lower)) return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const dateMatch = message.match(/(\d{4})[年\/-](\d{1,2})[月\/-](\d{1,2})/);
+  if (dateMatch) {
+    return new Date(parseInt(dateMatch[1], 10), parseInt(dateMatch[2], 10) - 1, parseInt(dateMatch[3], 10));
+  }
+  return now;
+}
+
+function formatAstronomyDate(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatAstronomyTime(iso: string): string {
+  const m = iso.match(/T(\d{2}):(\d{2})/);
+  return m ? `${m[1]}:${m[2]}` : iso;
+}
+
+function astronomyHttpsGetJson(url: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e instanceof Error ? e : new Error(String(e)));
+          }
+        });
+      })
+      .on("error", reject);
+  });
+}
+
+export async function tryAstronomyReply(message: string): Promise<string | null> {
+  if (!isAstronomyQuery(message)) return null;
+  const location = extractAstronomyLocation(message);
+  if (!location) return null;
+  const targetDate = extractAstronomyDate(message);
+  const dateStr = formatAstronomyDate(targetDate);
+
+  try {
+    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=zh&format=json`;
+    const geo = (await astronomyHttpsGetJson(geoUrl)) as {
+      results?: Array<{ name: string; latitude: number; longitude: number; admin1?: string; country?: string }>;
+    };
+    if (!geo.results || geo.results.length === 0) return null;
+
+    const { name, latitude, longitude, admin1, country } = geo.results[0];
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=sunrise,sunset&timezone=auto&start_date=${dateStr}&end_date=${dateStr}`;
+    const forecast = (await astronomyHttpsGetJson(forecastUrl)) as {
+      daily?: { time: string[]; sunrise: string[]; sunset: string[] };
+    };
+    const daily = forecast.daily;
+    if (!daily || !daily.sunrise || !daily.sunset || daily.sunrise.length === 0) return null;
+
+    const sunrise = formatAstronomyTime(daily.sunrise[0]);
+    const sunset = formatAstronomyTime(daily.sunset[0]);
+    const place = [name, admin1, country].filter(Boolean).join(", ");
+    return `🌅 ${place}（${dateStr}）\n日出：${sunrise}\n日落：${sunset}`;
+  } catch (err) {
+    process.stderr.write(`[tryAstronomyReply] Failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 /**
