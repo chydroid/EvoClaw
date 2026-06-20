@@ -11,6 +11,9 @@ coverage/
 data/
 !data/workspace/
 
+# Runtime skills directory (user-installed / auto-generated)
+data/skills/
+
 IMPROVEMENT_PLAN.md
 
 *.pem
@@ -42,7 +45,6 @@ test-*.json
 *-report.txt
 _i18n.json
 logs/
-data/workspace/skills/
 
 # Build artifacts
 *.tsbuildinfo

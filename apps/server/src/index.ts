@@ -512,7 +512,7 @@ export class EvoClawServer {
     this.messageQueue = new MessageQueue(this.registry, this.eventBus);
     this.processManager = new ProcessManager(this.registry, this.eventBus);
     this.fileSystemManager = new FileSystemManager(this.registry, this.eventBus);
-    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "data", "workspace", "skills"));
+    this.autoSkillManager = new AutoSkillManager(this.registry, this.eventBus, path.resolve(__dirname, "..", "..", "..", "data", "skills"));
     this.skillDispatcher = new SkillDispatcher(this.registry, this.eventBus);
     this.skillDispatcher.initialize();
     this.taskPlanner = new TaskPlanner(this.registry, this.eventBus);
@@ -641,11 +641,15 @@ export class EvoClawServer {
     if (!fs.existsSync(workspaceDir)) {
       fs.mkdirSync(workspaceDir, { recursive: true });
     }
-    const skillsDir = path.join(workspaceDir, "skills");
+    const skillsDir = path.resolve(__dirname, "..", "..", "..", "data", "skills");
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
     this.skillManager.startAutoScan(skillsDir, 30000);
+    const bundledSkillsDir = path.resolve(__dirname, "..", "..", "..", "packages", "skills", "bundled");
+    if (fs.existsSync(bundledSkillsDir)) {
+      this.skillManager.startAutoScan(bundledSkillsDir, 60000);
+    }
 
     this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {
       try {

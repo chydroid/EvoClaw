@@ -1169,7 +1169,7 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        const skillsDir = path.resolve(process.cwd(), "..", "..", "data", "workspace", "skills");
+        const skillsDir = path.resolve(process.cwd(), "..", "..", "data", "skills");
         const result = await skillManager.scanAndInstall(skillsDir);
         res.json({
           installed: result.installed.length,

@@ -106,15 +106,15 @@ export function registerShellMediaTools(
         effectiveCommand = effectiveCommand.replace(/\bpython3\b/g, "python");
       }
 
-      // Fix relative paths: LLM often generates "data/workspace/skills/..." but cwd
+      // Fix relative paths: LLM often generates "data/skills/..." but cwd
       // may already be inside data/workspace, causing path duplication.
       // Only replace if it's a relative path (not preceded by : or / or \)
       const projectRoot = path.resolve(__dirname, "..", "..", "..", "..");
-      const skillsDir = path.join(projectRoot, "data", "workspace", "skills");
+      const skillsDir = path.join(projectRoot, "data", "skills");
       const skillsDirForward = skillsDir.replace(/\\/g, "/");
-      // Match "data/workspace/skills/" only when NOT preceded by a path separator or drive letter
+      // Match "data/skills/" only when NOT preceded by a path separator or drive letter
       effectiveCommand = effectiveCommand.replace(
-        /(?<![:\\\/])data[\\\/]workspace[\\\/]skills[\\\/]/g,
+        /(?<![:\\/])data[\\/]skills[\\/]/g,
         skillsDirForward + "/"
       );
 

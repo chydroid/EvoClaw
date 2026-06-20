@@ -5,7 +5,7 @@
  *   - YAML frontmatter (name, version, description, tools)
  *   - Markdown body (with steps)
  *
- * 生成路径: data/workspace/skills/auto-generated/
+ * 生成路径: data/skills/auto-generated/
  */
 
 import { mkdir, writeFile } from "fs/promises";
@@ -32,7 +32,7 @@ export class SkillAutoGenerator {
   private readonly outputDir: string;
 
   constructor(baseDir?: string) {
-    this.outputDir = baseDir ?? join(process.cwd(), "data", "workspace", "skills", "auto-generated");
+    this.outputDir = baseDir ?? join(process.cwd(), "data", "skills", "auto-generated");
   }
 
   /**

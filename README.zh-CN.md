@@ -410,7 +410,7 @@ pnpm cli --help     # CLI 帮助
 
 ### 添加新技能
 
-在 `data/workspace/skills/` 下创建一个包含 `SKILL.md` 的文件夹：
+在 `data/skills/` 下创建一个包含 `SKILL.md` 的文件夹（自带技能可放入 `packages/skills/bundled/`）：
 
 ```markdown
 ---

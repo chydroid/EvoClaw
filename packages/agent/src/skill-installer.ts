@@ -662,9 +662,9 @@ export async function handleBatchSkillInstall(
  * and return the path to the SKILL.md file with detailed error info.
  */
 export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: string): Promise<DownloadAndExtractResult> {
-  // Determine skills directory
+  // Determine skills directory (workspacePath is typically data/workspace, skills live under data/skills)
   const workspaceDir = deps.workspacePath;
-  const skillsDir = path.join(workspaceDir, "skills");
+  const skillsDir = path.resolve(workspaceDir, "..", "skills");
   if (!fs.existsSync(skillsDir)) {
     fs.mkdirSync(skillsDir, { recursive: true });
   }

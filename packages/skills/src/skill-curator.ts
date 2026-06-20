@@ -891,7 +891,7 @@ export class SkillCurator {
 
   private resolveSkillDir(skillName: string): string {
     const path = require("path") as typeof import("path");
-    return path.resolve(process.cwd(), "data", "workspace", "skills", skillName);
+    return path.resolve(process.cwd(), "data", "skills", skillName);
   }
 
   private async persistSkillUpdate(
