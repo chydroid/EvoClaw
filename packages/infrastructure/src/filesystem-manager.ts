@@ -22,8 +22,10 @@ interface AuditLogEntry {
 /**
  * 原子写入工具：temp + fsync + rename，保证崩溃时不会产生截断文件。
  * 符号链接目标会被解析后原地替换，保留符号链接。
- * 跨设备（EXDEV/EBUSY）时回退到 copy + fsync + unlink。
+ * 跨设备（EXDEV/EBUSY）时回退到 目标侧 temp + fsync + rename（保持原子性）。
  * 保留原文件权限位（修复 Docker/NAS 卷挂载权限问题）。
+ *
+ * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
  *
  * 灵感来自 hermes-agent 的 utils.py atomic_json_write/atomic_replace。
  */
@@ -32,15 +34,19 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
   if (!fsSync.existsSync(dir)) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${targetPath}.${process.pid}.tmp`;
-  // 写入临时文件
+  // 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突
+  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  // 写入临时文件；异常时清理临时文件，避免泄漏
   const fd = fsSync.openSync(tmpPath, "w");
   try {
     fsSync.writeFileSync(fd, content, "utf-8");
     fsSync.fsyncSync(fd);
-  } finally {
-    fsSync.closeSync(fd);
+  } catch (err) {
+    try { fsSync.closeSync(fd); } catch { /* ignore */ }
+    try { fsSync.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
   }
+  fsSync.closeSync(fd);
   // 保留原文件权限位
   try {
     if (fsSync.existsSync(targetPath)) {
@@ -57,7 +63,7 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
 /**
  * 原子替换：将 src 替换为 dst。
  * 如果 dst 是符号链接，解析 realpath 后原地替换，保留符号链接。
- * 跨设备时回退到 copy + fsync + unlink。
+ * 跨设备时回退到 目标侧 temp + fsync + rename（保持原子性）。
  */
 export async function atomicReplace(src: string, dst: string): Promise<void> {
   let realDst = dst;
@@ -74,20 +80,36 @@ export async function atomicReplace(src: string, dst: string): Promise<void> {
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备：copy + fsync + unlink
+      // 跨设备：在目标侧写临时文件后 rename，保持原子性
+      const dstDir = path.dirname(realDst);
+      const dstTmp = path.join(dstDir, `.${path.basename(realDst)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
       const content = fsSync.readFileSync(src, "utf-8");
-      const fd = fsSync.openSync(realDst, "w");
+      const fd = fsSync.openSync(dstTmp, "w");
       try {
         fsSync.writeFileSync(fd, content, "utf-8");
         fsSync.fsyncSync(fd);
-      } finally {
-        fsSync.closeSync(fd);
+      } catch (werr) {
+        try { fsSync.closeSync(fd); } catch { /* ignore */ }
+        try { fsSync.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fsSync.unlinkSync(src); } catch { /* ignore */ }
+        throw werr;
       }
+      fsSync.closeSync(fd);
       try {
-        fsSync.unlinkSync(src);
-      } catch {
-        // 清理临时文件失败不阻断
+        // 保留原文件权限位
+        if (fsSync.existsSync(realDst)) {
+          const st = fsSync.statSync(realDst);
+          fsSync.chmodSync(dstTmp, st.mode);
+        }
+      } catch { /* ignore */ }
+      try {
+        fsSync.renameSync(dstTmp, realDst);
+      } catch (rerr) {
+        try { fsSync.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fsSync.unlinkSync(src); } catch { /* ignore */ }
+        throw rerr;
       }
+      try { fsSync.unlinkSync(src); } catch { /* ignore */ }
     } else {
       throw err;
     }
@@ -123,7 +145,11 @@ export class CrossProcessLock {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
+    } catch (err: unknown) {
+      // ESRCH: 进程不存在；EPERM: 进程存在但无权限（Windows 上常见）。
+      // 仅当 ESRCH 才认为进程已死，EPERM 视为进程存活，避免误删他人持有的锁。
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EPERM") return true;
       return false;
     }
   }

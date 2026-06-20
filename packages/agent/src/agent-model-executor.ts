@@ -68,6 +68,8 @@ export class AgentModelExecutor {
   private registeredTools = new Map<string, {
     definition: ToolDefinition;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
+    checkFn?: () => boolean;
+    dynamicSchemaOverrides?: () => Partial<ToolDefinition>;
   }>();
   private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
   private maxHistoryLength = 20;
@@ -147,6 +149,15 @@ export class AgentModelExecutor {
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
   private static TOOL_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
   private static TOOL_CACHE_MAX = 100;
+
+  /**
+   * Service-gated tools: check_fn TTL 缓存。
+   * 灵感来自 hermes-agent registry._check_fn_cached（30s TTL，fail-safe）。
+   * check_fn 探测外部状态（API key、服务在线等），在长生命周期进程内
+   * 重复探测是浪费；缓存 30s 让环境变量变更在一个 turn 内自然传播。
+   */
+  private static CHECK_FN_TTL_MS = 30_000;
+  private checkFnCache = new Map<() => boolean, { timestamp: number; result: boolean }>();
 
   /** 生成工具缓存 key，包含工具名和排序后的参数 */
   private getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
@@ -775,6 +786,7 @@ export class AgentModelExecutor {
       getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
       semanticIntentClassifier: this.semanticQuickReply,
       tokenUsageTracker: this.tokenUsageTracker ?? undefined,
+      checkFnEvaluator: (fn: () => boolean) => this.evaluateCheckFn(fn),
     };
   }
 
@@ -897,13 +909,48 @@ export class AgentModelExecutor {
   registerTool(
     name: string,
     definition: ToolDefinition,
-    handler: (params: Record<string, unknown>) => Promise<unknown>
+    handler: (params: Record<string, unknown>) => Promise<unknown>,
+    checkFn?: () => boolean,
+    dynamicSchemaOverrides?: () => Partial<ToolDefinition>,
   ): void {
-    this.registeredTools.set(name, { definition, handler });
+    this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides });
   }
 
   unregisterTool(name: string): void {
+    const entry = this.registeredTools.get(name);
+    if (entry?.checkFn) {
+      // 清理 checkFn 缓存，避免内存泄漏（旧 fn 引用残留）
+      this.checkFnCache.delete(entry.checkFn);
+    }
     this.registeredTools.delete(name);
+  }
+
+  /**
+   * 评估工具的 check_fn，带 TTL 缓存。
+   * 异常视为"不可用"（fail-safe），与 hermes-agent 行为一致。
+   */
+  private evaluateCheckFn(fn: () => boolean): boolean {
+    const now = Date.now();
+    const cached = this.checkFnCache.get(fn);
+    if (cached && now - cached.timestamp < AgentModelExecutor.CHECK_FN_TTL_MS) {
+      return cached.result;
+    }
+    let result: boolean;
+    try {
+      result = !!fn();
+    } catch {
+      result = false;
+    }
+    this.checkFnCache.set(fn, { timestamp: now, result });
+    return result;
+  }
+
+  /**
+   * 清空 check_fn 缓存。在配置变更（如环境变量更新）后调用，
+   * 让下一次工具列表构建时重新探测服务可用性。
+   */
+  invalidateCheckFnCache(): void {
+    this.checkFnCache.clear();
   }
 
   configurePersona(persona: Partial<PersonaConfig>): void {
@@ -2052,6 +2099,8 @@ export class AgentModelExecutor {
       // Mark session as idle so heartbeat can resume
       this.markSessionIdle(sessionId);
       this._currentTraceId = undefined;
+      // 清除会话级上下文引擎结果，避免跨会话泄漏
+      this._currentContextEngineResult = null;
     }
   }
 
@@ -2566,7 +2615,7 @@ export class AgentModelExecutor {
   }
 
   private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {
-    return buildOpenAIToolsFn(this.registeredTools);
+    return buildOpenAIToolsFn(this.registeredTools, undefined, (fn: () => boolean) => this.evaluateCheckFn(fn));
   }
 
   private async callLLMOnce(

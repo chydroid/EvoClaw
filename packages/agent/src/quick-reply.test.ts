@@ -6,7 +6,10 @@ import { tryAstronomyReply } from "./quick-reply";
 // 覆盖：日出日落查询通过 Open-Meteo API 本地计算，不依赖 LLM/搜索
 // ═══════════════════════════════════════════════════════════
 
-const mockResponses: Record<string, unknown> = {};
+// 使用 vi.hoisted 确保 mockResponses 在 vi.mock 工厂执行时已初始化
+const { mockResponses } = vi.hoisted(() => ({
+  mockResponses: {} as Record<string, unknown>,
+}));
 
 vi.mock("https", () => ({
   get: vi.fn((url: string, callback: (res: unknown) => void) => {
@@ -36,6 +39,18 @@ function buildForecastUrl(lat: number, lon: number, date: string) {
   return `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=sunrise,sunset&timezone=auto&start_date=${date}&end_date=${date}`;
 }
 
+/**
+ * 格式化日期为 YYYY-MM-DD（使用本地时区，与 quick-reply.ts 的 formatAstronomyDate 一致）。
+ * 之前使用 toISOString().slice(0,10) 会导致 UTC 与本地时区日期不一致，
+ * 在跨时区运行测试时 forecast URL 不匹配。
+ */
+function formatLocalDate(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 beforeEach(() => {
   Object.keys(mockResponses).forEach((k) => delete mockResponses[k]);
 });
@@ -51,7 +66,7 @@ describe("quick-reply > tryAstronomyReply", () => {
 
     const date = new Date();
     date.setDate(date.getDate() + 1);
-    const dateStr = date.toISOString().slice(0, 10);
+    const dateStr = formatLocalDate(date);
     const forecastUrl = buildForecastUrl(32.43, 114.12, dateStr);
     mockResponses[forecastUrl] = {
       daily: {
@@ -78,7 +93,7 @@ describe("quick-reply > tryAstronomyReply", () => {
 
     const date = new Date();
     date.setDate(date.getDate() + 1);
-    const dateStr = date.toISOString().slice(0, 10);
+    const dateStr = formatLocalDate(date);
     const forecastUrl = buildForecastUrl(32.43, 114.12, dateStr);
     mockResponses[forecastUrl] = {
       daily: {

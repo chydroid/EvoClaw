@@ -665,7 +665,7 @@ export interface LLMCallerDeps {
   config: ModelConfig;
   providers: ProviderConfig[];
   persona: PersonaConfig;
-  registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown> }>;
+  registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown>; checkFn?: () => boolean; dynamicSchemaOverrides?: () => Partial<ToolDefinition> }>;
   conversationHistory: Map<string, Array<SessionHistoryEntry>>;
   maxHistoryLength: number;
   providerStats: Map<string, { successCount: number; failureCount: number; lastError?: string; lastErrorType?: string }>;
@@ -723,6 +723,9 @@ export interface LLMCallerDeps {
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
   // Token usage tracker (optional — enables real-time token/cost tracking)
   tokenUsageTracker?: import("./token-usage-tracker").TokenUsageTracker;
+  // Service-gated tools: TTL-cached check_fn evaluator (optional — filters unavailable tools before sending to LLM)
+  // Inspired by hermes-agent's registry._check_fn_cached (30s TTL, fail-safe).
+  checkFnEvaluator?: (checkFn: () => boolean) => boolean;
 }
 
 // ── Helper: tool cache ──
@@ -868,8 +871,20 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
 // "core" group always, plus groups that match the current task intent.
 // This reduces the number of tool definitions sent to the LLM (best
 // practice: ≤15 tools per request) and improves tool selection accuracy.
+//
+// Composable toolsets: a group may declare `includes` referencing other
+// groups by name. When a group is activated, all transitively included
+// groups are also activated. Cycle detection uses a visited set (hermes
+// toolsets.py resolve_toolset pattern).
 
-const TOOL_GROUPS: Record<string, { tools: string[]; keywords: string[] }> = {
+interface ToolGroupDef {
+  tools: string[];
+  keywords: string[];
+  /** 其他工具集名称，激活时一并包含（递归解析，带循环检测）。 */
+  includes?: string[];
+}
+
+const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   core: {
     tools: [
       "web_search", "web_fetch", "file_read", "file_create", "file_modify",
@@ -915,18 +930,37 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: string[] }> = {
 // ── buildOpenAITools ──
 
 export function buildOpenAITools(
-  registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown> }>,
+  registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown>; checkFn?: () => boolean; dynamicSchemaOverrides?: () => Partial<ToolDefinition> }>,
   message?: string,
+  checkFnEvaluator?: (checkFn: () => boolean) => boolean,
 ): OpenAIToolEntry[] {
   // Determine which tool groups to include based on the user message.
   // Core group is always included. Other groups are included if the
   // message contains relevant keywords.
+  //
+  // Composable toolsets: when a group is activated, recursively activate
+  // all groups listed in its `includes` field. Cycle detection via visited
+  // set — silently skip already-visited nodes (hermes toolsets.py pattern).
   const activeTools = new Set(TOOL_GROUPS.core.tools);
+
+  const activateGroup = (groupName: string, visited: Set<string>): void => {
+    if (visited.has(groupName)) return; // cycle or diamond — skip
+    visited.add(groupName);
+    const group = TOOL_GROUPS[groupName];
+    if (!group) return;
+    for (const t of group.tools) activeTools.add(t);
+    if (group.includes) {
+      for (const inc of group.includes) {
+        activateGroup(inc, visited);
+      }
+    }
+  };
+
   if (message) {
     const lowerMsg = message.toLowerCase();
-    for (const [, group] of Object.entries(TOOL_GROUPS)) {
+    for (const [name, group] of Object.entries(TOOL_GROUPS)) {
       if (group.keywords.length > 0 && group.keywords.some(kw => lowerMsg.includes(kw.toLowerCase()))) {
-        for (const t of group.tools) activeTools.add(t);
+        activateGroup(name, new Set());
       }
     }
     // If the message doesn't match any specific group, include core + skill
@@ -948,13 +982,54 @@ export function buildOpenAITools(
       // Include tool if it's in the active set OR if it's not in any TOOL_GROUP
       // (i.e., dynamically registered tools not covered by groups are always included)
       const isInAnyGroup = Object.values(TOOL_GROUPS).some(g => g.tools.includes(t.definition.name));
-      return activeTools.has(t.definition.name) || !isInAnyGroup;
+      if (!activeTools.has(t.definition.name) && isInAnyGroup) return false;
+
+      // Service-gated tools: skip tools whose check_fn returns false.
+      // Inspired by hermes-agent registry.get_definitions() — unavailable
+      // tools are silently dropped so the LLM never sees them.
+      if (t.checkFn) {
+        if (checkFnEvaluator) {
+          // 包装 checkFnEvaluator，防止其内部异常冒泡导致整个 buildOpenAITools 失败
+          try {
+            if (!checkFnEvaluator(t.checkFn)) return false;
+          } catch {
+            return false; // fail-safe: exceptions treated as unavailable
+          }
+        } else {
+          // Fallback: evaluate directly without caching
+          try {
+            if (!t.checkFn()) return false;
+          } catch {
+            return false; // fail-safe: exceptions treated as unavailable
+          }
+        }
+      }
+      return true;
     })
     .map((t) => {
+      // Dynamic schema overrides: allow tools to inject runtime-dependent
+      // description/parameters at schema build time (hermes pattern).
+      let effectiveDef = t.definition;
+      if (t.dynamicSchemaOverrides) {
+        try {
+          const overrides = t.dynamicSchemaOverrides();
+          if (overrides && typeof overrides === "object") {
+            // 过滤掉 undefined 值，避免覆盖现有字段（如 overrides 仅返回 description 时不应清空 parameters）
+            const filtered: Partial<ToolDefinition> = {};
+            for (const [k, v] of Object.entries(overrides)) {
+              if (v !== undefined) (filtered as Record<string, unknown>)[k] = v;
+            }
+            effectiveDef = { ...t.definition, ...filtered };
+          }
+        } catch {
+          // fail-safe: use static schema on exception
+        }
+      }
+
       const props: Record<string, unknown> = {};
       const required: string[] = [];
 
-      for (const [key, paramDef] of Object.entries(t.definition.parameters)) {
+      for (const [key, paramDef] of Object.entries(effectiveDef.parameters)) {
         const p = paramDef as Record<string, unknown>;
         props[key] = {
           type: p.type || "string",
@@ -968,8 +1043,8 @@ export function buildOpenAITools(
       return {
         type: "function",
         function: {
-          name: t.definition.name,
-          description: t.definition.description,
+          name: effectiveDef.name,
+          description: effectiveDef.description,
           parameters: {
             type: "object",
             properties: props,
@@ -978,6 +1053,161 @@ export function buildOpenAITools(
         },
       };
     });
+}
+
+// ── StreamingTagScrubber ──
+// 灵感来自 hermes-agent StreamingThinkScrubber：有状态的流式标签清洗器，
+// 处理跨 chunk 分裂的 <think>/<reasoning> 等推理标签，防止内部推理
+// 内容泄漏到用户输出。状态机跟踪是否在标签内，部分标签跨 chunk 持留。
+
+const SCRUBBER_OPEN_TAGS = ["<think>", "<thinking>", "<reasoning>", "<thought>"];
+const SCRUBBER_CLOSE_TAGS = ["</think>", "</thinking>", "</reasoning>", "</thought>"];
+const SCRUBBER_MAX_TAG_LEN = Math.max(...SCRUBBER_OPEN_TAGS.concat(SCRUBBER_CLOSE_TAGS).map(t => t.length));
+
+/**
+ * 有状态的流式标签清洗器。
+ * feed() 接收 delta 文本，返回清洗后的可见文本。
+ * flush() 在流结束时调用，返回持留的缓冲区。
+ * reset() 在每个新 turn 开始时调用。
+ */
+export class StreamingTagScrubber {
+  private inSpan = false;
+  private buf = "";
+
+  /** 处理一个 delta，返回可见文本。 */
+  feed(text: string): string {
+    if (!text) return "";
+    let output = "";
+    this.buf += text;
+
+    while (this.buf.length > 0) {
+      if (this.inSpan) {
+        // 在 span 内：寻找闭合标签
+        const closeIdx = this.findCloseTag(this.buf);
+        if (closeIdx >= 0) {
+          // 找到闭合标签，跳过 span 内容
+          const closeTag = this.matchCloseTag(this.buf, closeIdx);
+          this.buf = this.buf.slice(closeIdx + closeTag.length);
+          this.inSpan = false;
+        } else {
+          // 未找到闭合标签，持留可能是部分闭合标签的尾部
+          const partialSuffix = this.maxPartialCloseSuffix(this.buf);
+          if (partialSuffix.length > 0) {
+            // 持留部分标签，丢弃其余
+            this.buf = this.buf.slice(this.buf.length - partialSuffix.length);
+          } else {
+            // 无部分标签，全部丢弃（在 span 内的内容不输出）
+            this.buf = "";
+          }
+          break; // 等待更多 delta
+        }
+      } else {
+        // 在 span 外：寻找开标签
+        const openIdx = this.findOpenTag(this.buf);
+        if (openIdx >= 0) {
+          // 找到开标签，输出标签前的文本
+          output += this.buf.slice(0, openIdx);
+          const openTag = this.matchOpenTag(this.buf, openIdx);
+          this.buf = this.buf.slice(openIdx + openTag.length);
+          this.inSpan = true;
+        } else {
+          // 未找到开标签，输出除可能的部分标签尾部外的所有内容
+          const partialSuffix = this.maxPartialOpenSuffix(this.buf);
+          if (partialSuffix.length > 0) {
+            output += this.buf.slice(0, this.buf.length - partialSuffix.length);
+            this.buf = partialSuffix;
+          } else {
+            output += this.buf;
+            this.buf = "";
+          }
+          break; // 等待更多 delta
+        }
+      }
+    }
+
+    return output;
+  }
+
+  /** 流结束时调用，返回持留的缓冲区。 */
+  flush(): string {
+    if (this.inSpan) {
+      // 仍在未闭合 span 内：丢弃所有持留内容
+      this.buf = "";
+      this.inSpan = false;
+      return "";
+    }
+    const tail = this.buf;
+    this.buf = "";
+    return tail;
+  }
+
+  /** 每个新 turn 开始时调用。 */
+  reset(): void {
+    this.inSpan = false;
+    this.buf = "";
+  }
+
+  private findCloseTag(text: string): number {
+    let minIdx = -1;
+    for (const tag of SCRUBBER_CLOSE_TAGS) {
+      const idx = text.toLowerCase().indexOf(tag);
+      if (idx >= 0 && (minIdx < 0 || idx < minIdx)) {
+        minIdx = idx;
+      }
+    }
+    return minIdx;
+  }
+
+  private matchCloseTag(text: string, idx: number): string {
+    const lower = text.toLowerCase();
+    for (const tag of SCRUBBER_CLOSE_TAGS) {
+      if (lower.startsWith(tag, idx)) return tag;
+    }
+    return SCRUBBER_CLOSE_TAGS[0]; // fallback
+  }
+
+  private findOpenTag(text: string): number {
+    let minIdx = -1;
+    for (const tag of SCRUBBER_OPEN_TAGS) {
+      const idx = text.toLowerCase().indexOf(tag);
+      if (idx >= 0 && (minIdx < 0 || idx < minIdx)) {
+        minIdx = idx;
+      }
+    }
+    return minIdx;
+  }
+
+  private matchOpenTag(text: string, idx: number): string {
+    const lower = text.toLowerCase();
+    for (const tag of SCRUBBER_OPEN_TAGS) {
+      if (lower.startsWith(tag, idx)) return tag;
+    }
+    return SCRUBBER_OPEN_TAGS[0]; // fallback
+  }
+
+  /** 返回 buf 的最长后缀，该后缀是某个闭合标签的前缀。 */
+  private maxPartialCloseSuffix(buf: string): string {
+    const lower = buf.toLowerCase();
+    for (let len = Math.min(buf.length, SCRUBBER_MAX_TAG_LEN - 1); len > 0; len--) {
+      const suffix = lower.slice(lower.length - len);
+      for (const tag of SCRUBBER_CLOSE_TAGS) {
+        if (tag.startsWith(suffix)) return buf.slice(buf.length - len);
+      }
+    }
+    return "";
+  }
+
+  /** 返回 buf 的最长后缀，该后缀是某个开标签的前缀。 */
+  private maxPartialOpenSuffix(buf: string): string {
+    const lower = buf.toLowerCase();
+    for (let len = Math.min(buf.length, SCRUBBER_MAX_TAG_LEN - 1); len > 0; len--) {
+      const suffix = lower.slice(lower.length - len);
+      for (const tag of SCRUBBER_OPEN_TAGS) {
+        if (tag.startsWith(suffix)) return buf.slice(buf.length - len);
+      }
+    }
+    return "";
+  }
 }
 
 // ── parseStreamingResponse ──
@@ -1002,11 +1232,15 @@ export async function parseStreamingResponse(
   let buffer = "";
 
   let content = "";
+  // 流式标签清洗器：清洗 <think>/<reasoning> 等推理标签，防止泄漏到用户输出。
+  // 灵感来自 hermes-agent StreamingThinkScrubber（有状态跨 chunk 处理）。
+  const tagScrubber = new StreamingTagScrubber();
   const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
   let totalTokens = 0;
   let promptTokens = 0;
   let lastChunkTime = Date.now();
 
+  let streamReadError: unknown = null;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -1044,7 +1278,9 @@ export async function parseStreamingResponse(
           if (!choice?.delta) continue;
 
           if (choice.delta.content) {
-            content += choice.delta.content;
+            // 通过清洗器处理 delta，清洗 <think>/<reasoning> 等推理标签
+            const cleaned = tagScrubber.feed(choice.delta.content);
+            content += cleaned;
             const now = Date.now();
             if (now - lastChunkTime > 50) {
               onProgress({
@@ -1085,7 +1321,22 @@ export async function parseStreamingResponse(
       }
     }
   } catch (readErr) {
+    streamReadError = readErr;
     process.stderr.write(`[AgentModelExecutor] Stream read error for ${provider.name}:` + " " + readErr);
+  }
+
+  // 流读取错误时，记录失败指标并返回 null（避免误记为成功）
+  if (streamReadError) {
+    const obs = deps.registry?.resolveService<any>("observability");
+    if (obs) {
+      const latency = Date.now() - startTime;
+      try {
+        obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "error" }], 1);
+        obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "error" }]);
+      } catch { /* observability is best-effort */ }
+    }
+    deps.recordProviderFailure?.(provider.id, `Stream read error: ${streamReadError instanceof Error ? streamReadError.message : String(streamReadError)}`, "stream_read_error");
+    return null;
   }
 
   const obs = deps.registry?.resolveService<any>("observability");
@@ -1107,6 +1358,12 @@ export async function parseStreamingResponse(
         function: { name: tc.name, arguments: tc.arguments },
       }))
     : undefined;
+
+  // 流结束时 flush 清洗器，处理持留的缓冲区
+  const flushedTail = tagScrubber.flush();
+  if (flushedTail) {
+    content += flushedTail;
+  }
 
   return {
     message: {
@@ -1607,7 +1864,7 @@ Have a specific URL?
         messages.push({ role: "user", content: effectiveMessage });
       }
 
-      let tools = buildOpenAITools(deps.registeredTools, message);
+      let tools = buildOpenAITools(deps.registeredTools, message, deps.checkFnEvaluator);
 
       const SEARCH_ONLY_TOOLS = new Set(["web_search", "browser_search", "browser_navigate"]);
       if (searchPreDone) {
@@ -2091,7 +2348,7 @@ Have a specific URL?
           }
 
           // ── Idempotency cache for write operations ──
-          const IDEMPOTENT_TOOLS = new Set(["file_create", "file_modify", "email_send", "scheduler_create"]);
+          // 使用模块级 IDEMPOTENT_TOOLS 定义，避免重复定义导致集合不一致
           if (IDEMPOTENT_TOOLS.has(toolName)) {
             const cacheKey = `${toolName}:${JSON.stringify(args)}`;
             const cached = idempotencyCache.get(cacheKey);

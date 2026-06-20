@@ -3,6 +3,43 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.48.0 (2026-06-21)
+
+### 全面代码审查：发现并修复潜在 BUG
+
+对 agent、skills、infrastructure 三大核心包进行全面代码审查，按 P0/P1 严重度分级修复 30+ 潜在 BUG。
+
+#### P0 基础设施修复 (`packages/infrastructure/src/filesystem-manager.ts`)
+
+- **`isProcessAlive` Windows EPERM 误判**：Windows 上 `process.kill(pid, 0)` 对其他用户进程抛 EPERM（而非 ESRCH），旧代码将所有异常视为"进程已死"导致误删他人持有的锁。修复：仅 ESRCH 视为已死，EPERM 视为存活
+- **临时文件泄漏**：`atomicWriteFile` 写入/fsync 异常时临时文件残留。修复：catch 块清理临时文件后 rethrow
+- **同进程并发写冲突**：临时文件名仅含 pid，同进程并发写同一目标会冲突。修复：加入随机后缀
+- **EXDEV 回退非原子**：跨设备 copy+fsync+unlink 中断会留下截断文件。修复：目标侧 temp+fsync+rename 保持原子性
+
+#### P0 Skills 修复 (`packages/skills/src/skill-curator.ts`)
+
+- **`trimEvolutions` 删除 pinned 技能**：裁剪时未排除 pinned 技能，违反 hermes-agent "pinned 永不丢失"不变量。修复：filter 排除 pinned
+- **`persistToDisk` slice 丢弃 pinned**：`slice(-500)` 可能丢弃 pinned 技能。修复：pinned 全部保留 + 非 pinned 按 lastUpdatedAt 降序取前 500
+- **无 `dispose()` 方法**：persistTimer 泄漏 + 进程退出时数据丢失。修复：新增 `dispose()` 清除定时器并立即持久化
+- **`extractSkillFromSolution` raw `fs.writeFileSync`**：崩溃时产生截断文件。修复：改用 `atomicWriteFileLocal`
+- **`loadFromDisk` pinned 一致性**：pinned=true 但 pinnedAt 缺失时补齐
+- **`LocalFileLock.isProcessAlive` Windows EPERM**：同 infrastructure 修复
+- **`atomicWriteFileLocal` 临时文件冲突 + EXDEV 非原子**：同 infrastructure 修复
+
+#### P0 Agent 修复 (`packages/agent/src/llm-caller.ts`, `packages/agent/src/agent-model-executor.ts`)
+
+- **流读取错误误记成功**：`parseStreamingResponse` 的 `catch(readErr)` 后继续记录 success 指标并返回响应。修复：记录 error 指标 + `recordProviderFailure` + 返回 null
+- **`_currentContextEngineResult` 跨会话泄漏**：实例变量在 `runAgent` 设置，`finally` 块未清除。修复：finally 中置 null
+- **`IDEMPOTENT_TOOLS` 重复定义**：模块级和函数内各定义一份且集合不一致。修复：移除函数内定义，统一使用模块级
+- **`unregisterTool` 不清理 checkFnCache**：旧 fn 引用残留导致内存泄漏。修复：delete 对应缓存条目
+- **`checkFnEvaluator` 缺 try/catch**：异常冒泡导致整个 `buildOpenAITools` 失败。修复：包装 try/catch，异常视为不可用
+- **`dynamicSchemaOverrides` undefined 覆盖**：overrides 中 undefined 值会清空现有字段。修复：过滤 undefined 值
+
+#### 测试修复 (`packages/agent/src/quick-reply.test.ts`)
+
+- **时区日期不匹配**：测试用 `toISOString()`（UTC）构造 mock URL，实现用本地时区 `formatAstronomyDate`，跨时区运行时 URL 不匹配导致 2 个测试失败。修复：新增 `formatLocalDate()` 与实现保持一致
+- **`vi.mock` 变量提升**：`mockResponses` 在 mock 工厂中不可访问。修复：使用 `vi.hoisted()`
+
 ## v0.47.0 (2026-06-20)
 
 ### 借鉴 hermes-agent 提升工程硬化 + 移植 openclaw 内置 skill

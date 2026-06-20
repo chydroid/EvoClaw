@@ -15,20 +15,24 @@ import { SkillValidator } from "./skill-validator";
 /**
  * 原子写入文件（temp + fsync + rename）。
  * 防止崩溃时产生截断的 SKILL.md / _meta.json。
+ * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
  */
 function atomicWriteFileLocal(targetPath: string, content: string): void {
   const dir = path.dirname(targetPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
   const fd = fs.openSync(tmpPath, "w");
   try {
     fs.writeFileSync(fd, content, "utf-8");
     fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
   }
+  fs.closeSync(fd);
   try {
     if (fs.existsSync(targetPath)) {
       const st = fs.statSync(targetPath);
@@ -42,16 +46,37 @@ function atomicWriteFileLocal(targetPath: string, content: string): void {
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "EXDEV" || code === "EBUSY") {
+      // 跨设备：在目标侧写临时文件后 rename，保持原子性
+      const dstDir = path.dirname(targetPath);
+      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
       const c = fs.readFileSync(tmpPath, "utf-8");
-      const fd2 = fs.openSync(targetPath, "w");
+      const fd2 = fs.openSync(dstTmp, "w");
       try {
         fs.writeFileSync(fd2, c, "utf-8");
         fs.fsyncSync(fd2);
-      } finally {
-        fs.closeSync(fd2);
+      } catch (werr) {
+        try { fs.closeSync(fd2); } catch { /* ignore */ }
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd2);
+      try {
+        if (fs.existsSync(targetPath)) {
+          const st = fs.statSync(targetPath);
+          fs.chmodSync(dstTmp, st.mode);
+        }
+      } catch { /* ignore */ }
+      try {
+        fs.renameSync(dstTmp, targetPath);
+      } catch (rerr) {
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw rerr;
       }
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     } else {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       throw err;
     }
   }
@@ -68,7 +93,12 @@ class LocalFileLock {
   }
 
   private isProcessAlive(pid: number): boolean {
-    try { process.kill(pid, 0); return true; } catch { return false; }
+    try { process.kill(pid, 0); return true; } catch (err: unknown) {
+      // ESRCH: 进程不存在；EPERM: 进程存在但无权限（Windows 上常见）。
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EPERM") return true;
+      return false;
+    }
   }
 
   acquire(timeoutMs = 30_000): void {
@@ -139,6 +169,15 @@ export interface SkillEvolutionEntry {
   } | null;
   createdAt: Date;
   lastUpdatedAt: Date;
+  /**
+   * Pinned 技能豁免自动归档。
+   * 灵感来自 hermes-agent curator.py 的 pinned 不变量：
+   * "Pinned skills bypass all auto-transitions"。
+   * Pinning 是用户决策，不是模型决策。
+   */
+  pinned?: boolean;
+  pinnedAt?: Date;
+  pinnedReason?: string;
 }
 
 export interface ExtractionInput {
@@ -291,15 +330,14 @@ export class SkillCurator {
     });
 
     const skillDir = this.resolveSkillDir(skillName);
-    const fs = await import("fs");
-    const path = await import("path");
 
     if (!fs.existsSync(skillDir)) {
       fs.mkdirSync(skillDir, { recursive: true });
     }
 
     const skillMdPath = path.join(skillDir, "SKILL.md");
-    fs.writeFileSync(skillMdPath, skillMd, "utf-8");
+    // 使用原子写入，防止崩溃时产生截断的 SKILL.md
+    atomicWriteFileLocal(skillMdPath, skillMd);
 
     const meta = {
       name: skillName,
@@ -310,10 +348,10 @@ export class SkillCurator {
       author: "evoclaw-curator",
       license: "MIT",
     };
-    fs.writeFileSync(
+    // 使用原子写入，防止崩溃时产生截断的 _meta.json
+    atomicWriteFileLocal(
       path.join(skillDir, "_meta.json"),
-      JSON.stringify(meta, null, 2),
-      "utf-8"
+      JSON.stringify(meta, null, 2)
     );
 
     let installedSkill: Skill | null = null;
@@ -562,12 +600,22 @@ export class SkillCurator {
   /**
    * 归档技能：将技能目录移动到归档目录，可恢复。
    * 灵感来自 hermes-agent curator.py 的"永不删除，仅归档"不变量。
+   * Pinned 技能豁免归档（hermes-agent: "Pinned skills bypass all auto-transitions"）。
    * @param skillId 技能 ID
    * @param reason 归档原因
    * @returns 归档路径，失败返回 null
    */
   async archiveSkill(skillId: string, reason: string): Promise<string | null> {
     const entry = this.evolutions.get(skillId);
+
+    // Pinned 豁免：pinned 技能永不归档
+    if (entry?.pinned) {
+      process.stdout.write(
+        `[SkillCurator] Skill ${entry.skillName} is pinned — archive skipped (reason: ${reason})`
+      );
+      return null;
+    }
+
     const skillManager = this.registry.resolveService<{
       getSkill(id: string): Promise<Skill | undefined>;
     }>("skillManager");
@@ -699,6 +747,61 @@ export class SkillCurator {
 
   getSkillEvolution(skillId: string): SkillEvolutionEntry | null {
     return this.evolutions.get(skillId) || null;
+  }
+
+  /**
+   * 设置技能的 pinned 状态。
+   * Pinned 技能豁免自动归档（hermes-agent 不变量）。
+   * Pinning 是用户决策，不是模型决策。
+   * @param skillId 技能 ID
+   * @param pinned 是否固定
+   * @param reason 固定原因（可选）
+   * @returns 是否成功
+   */
+  setPinned(skillId: string, pinned: boolean, reason?: string): boolean {
+    const entry = this.evolutions.get(skillId);
+    if (!entry) return false;
+
+    entry.pinned = pinned;
+    if (pinned) {
+      entry.pinnedAt = new Date();
+      entry.pinnedReason = reason || "用户手动固定";
+    } else {
+      entry.pinnedAt = undefined;
+      entry.pinnedReason = undefined;
+    }
+    entry.lastUpdatedAt = new Date();
+    this.schedulePersist();
+
+    this.eventBus.publish(
+      "skill.curator.pinned",
+      { skillId, skillName: entry.skillName, pinned, reason: entry.pinnedReason },
+      "skill-curator"
+    ).catch(() => { /* best-effort */ });
+
+    return true;
+  }
+
+  /** 查询技能是否被 pinned。 */
+  isPinned(skillId: string): boolean {
+    const entry = this.evolutions.get(skillId);
+    return !!entry?.pinned;
+  }
+
+  /** 列出所有 pinned 技能。 */
+  listPinnedSkills(): Array<{ skillId: string; skillName: string; pinnedAt: Date; reason: string }> {
+    const result: Array<{ skillId: string; skillName: string; pinnedAt: Date; reason: string }> = [];
+    for (const entry of this.evolutions.values()) {
+      if (entry.pinned && entry.pinnedAt) {
+        result.push({
+          skillId: entry.skillId,
+          skillName: entry.skillName,
+          pinnedAt: entry.pinnedAt,
+          reason: entry.pinnedReason || "",
+        });
+      }
+    }
+    return result.sort((a, b) => b.pinnedAt.getTime() - a.pinnedAt.getTime());
   }
 
   getAllEvolutions(): SkillEvolutionEntry[] {
@@ -1186,8 +1289,19 @@ export class SkillCurator {
         fs.mkdirSync(this.storeDir, { recursive: true });
       }
       const filePath = path.join(this.storeDir, "evolutions.json");
+      const all = Array.from(this.evolutions.values());
+      // Pinned 技能必须保留（hermes-agent 不变量）；
+      // 非 pinned 按 lastUpdatedAt 降序保留最近 500 条。
+      const pinned = all.filter(e => e.pinned);
+      const nonPinned = all
+        .filter(e => !e.pinned)
+        .sort((a, b) => b.lastUpdatedAt.getTime() - a.lastUpdatedAt.getTime())
+        .slice(0, 500);
+      const kept = new Map<string, SkillEvolutionEntry>();
+      for (const e of pinned) kept.set(e.skillId, e);
+      for (const e of nonPinned) kept.set(e.skillId, e);
       const data = {
-        evolutions: Array.from(this.evolutions.values()).slice(-500),
+        evolutions: Array.from(kept.values()),
         savedAt: new Date().toISOString(),
       };
       const lock = new LocalFileLock(path.join(this.storeDir, "evolutions.lock"));
@@ -1224,6 +1338,14 @@ export class SkillCurator {
             if (entry.deprecation?.deprecatedAt) {
               entry.deprecation.deprecatedAt = new Date(entry.deprecation.deprecatedAt);
             }
+            if (entry.pinnedAt) {
+              entry.pinnedAt = new Date(entry.pinnedAt);
+            }
+            // 一致性修复：pinned 为 true 但 pinnedAt 缺失时补齐
+            if (entry.pinned && !entry.pinnedAt) {
+              entry.pinnedAt = entry.lastUpdatedAt || entry.createdAt || new Date();
+              if (!entry.pinnedReason) entry.pinnedReason = "用户手动固定（从磁盘恢复时补齐）";
+            }
             this.evolutions.set(entry.skillId, entry);
           }
         }
@@ -1236,14 +1358,13 @@ export class SkillCurator {
   private trimEvolutions(): void {
     if (this.evolutions.size <= this.maxEvolutionEntries) return;
 
-    const entries = Array.from(this.evolutions.entries()).sort(
-      (a, b) => a[1].lastUpdatedAt.getTime() - b[1].lastUpdatedAt.getTime()
-    );
+    // Pinned 技能豁免裁剪（hermes-agent 不变量：pinned 永不丢失）
+    const candidates = Array.from(this.evolutions.entries())
+      .filter(([, entry]) => !entry.pinned)
+      .sort((a, b) => a[1].lastUpdatedAt.getTime() - b[1].lastUpdatedAt.getTime());
 
-    const toRemove = entries.slice(
-      0,
-      this.evolutions.size - this.maxEvolutionEntries
-    );
+    const toRemoveCount = this.evolutions.size - this.maxEvolutionEntries;
+    const toRemove = candidates.slice(0, toRemoveCount);
     for (const [key] of toRemove) {
       this.evolutions.delete(key);
     }
@@ -1392,6 +1513,22 @@ export class SkillCurator {
         userRating: 0,
       },
     };
+  }
+
+  /**
+   * 释放资源：清除定时器并立即持久化最后一次状态。
+   * 防止定时器泄漏和进程退出时数据丢失。
+   */
+  dispose(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    try {
+      this.persistToDisk();
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] dispose persist failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   async healthCheck(): Promise<boolean> {
