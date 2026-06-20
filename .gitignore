@@ -8,11 +8,16 @@ dist/
 coverage/
 .nyc_output/
 .turbo/
+
+# Runtime data directory (generated at runtime; never commit)
 data/
-!data/workspace/
 
 # Runtime skills directory (user-installed / auto-generated)
 data/skills/
+
+# Live runtime config at repo root (use config.example.json for templates)
+/config.json
+/_config.json
 
 IMPROVEMENT_PLAN.md
 

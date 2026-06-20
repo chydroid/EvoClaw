@@ -3,6 +3,56 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.46.0 (2026-06-20)
+
+### 项目清理、技能目录整理与敏感信息安全加固
+
+全面清理 `data/` 目录中的运行时/临时文件，将 `data/workspace/` 下曾被 Git 跟踪的临时 identity 文件移出仓库；统一运行时技能与自带技能的存放位置，并建立完整的安全策略，确保 API Key、Token、私钥等敏感信息不会被误提交到 GitHub。
+
+#### 关键变更
+
+- **目录清理**：将 `data/workspace/AGENTS.md`、`IDENTITY.md`、`SOUL.md`、`TOOLS.md` 移动到 `nouse/data/workspace/`；这些文件为测试/运行时身份定义，不应纳入版本控制。
+- **技能目录定位**：
+  - 运行时/用户安装技能统一放在 `data/skills/`（Git 忽略）。
+  - 自带（bundled）技能统一放在 `packages/skills/bundled/`（Git 跟踪）。
+- **敏感信息保护**：
+  - 更新根目录 `.gitignore`：完整忽略 `data/`、根目录 `config.json`，移除对 `data/workspace/` 的不当例外。
+  - 自带技能目录新增 `.gitignore`：禁止提交 `.env`、`*secret*`、`*apikey*`、`*api-key*`、`*api_key*`、`config.json`、证书/密钥等敏感文件。
+  - 更新 `.env.example`：将 `WEB_UI_TOKEN` 默认值设为空，避免示例文件携带具体令牌。
+  - 完善 `packages/skills/bundled/README.md` 安全策略章节，明确自带技能提交前必须排除敏感文件。
+- **启动体验优化**：在 `apps/server/src/index.ts` 中增加 `config.json` 存在性检查，缺失时不再打印热重载告警，服务正常启动。
+
+#### 安全扫描结论
+
+对全仓库已跟踪文件进行密钥扫描，未发现真实的 API Key、Token、私钥或数据库密码。所有命中项均为：
+
+- 单元测试中的占位符密钥（如 `sk-test`、`test-secret-123456`）。
+- Web UI 示例数据中的假密钥（如 `sk-abc123...`）。
+- 安全组件脱敏测试用例（如 `AKIAIOSFODNN7EXAMPLE`）。
+
+运行时 `data/config/secrets.json`、`data/config/llm-providers.json`、`data/config/channels.json` 均位于已忽略的 `data/` 目录下，不会进入 GitHub；其中 LLM 与通道配置使用 `${...}` 环境变量占位符，密钥值由 `.env` 或运行时注入。
+
+#### 变更文件
+
+- `.gitignore`
+- `.env.example`
+- `apps/server/src/index.ts`
+- `packages/skills/bundled/.gitignore`
+- `packages/skills/bundled/README.md`
+- `History.md`
+- `package.json`
+
+#### 测试
+
+```bash
+pnpm build && pnpm typecheck && pnpm test
+pnpm --filter @evoclaw/web-ui build
+```
+
+结果：`pnpm test` 中 107 个测试文件 / 2894 通过 / 1 跳过；`packages/gateway/src/retry-policy.test.ts` 单独运行 33 个测试全部通过。整体曾因 Vitest fork worker 资源限制偶发 `spawn UNKNOWN`，非代码错误。
+
+---
+
 ## v0.45.0 (2026-06-20)
 
 ### 6 轮迭代式系统健壮性提升（对比 hermes-agent 深度分析）

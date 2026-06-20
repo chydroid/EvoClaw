@@ -205,7 +205,11 @@ export class EvoClawServer {
 
     this.configWatcher = new ConfigWatcher();
     const configFilePath = path.resolve(process.cwd(), "config.json");
-    this.configManager.startWatching(configFilePath, this.configWatcher);
+    if (fs.existsSync(configFilePath)) {
+      this.configManager.startWatching(configFilePath, this.configWatcher);
+    } else {
+      this.logger.info("config", `Optional config file not found, skipping hot-reload: ${configFilePath}`);
+    }
     this.configManager.onChange((change) => {
       this.eventBus.publish("config.changed", change, "config-manager").catch(() => {});
     });
