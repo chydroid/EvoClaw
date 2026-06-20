@@ -67,3 +67,6 @@ local-models/
 
 # Archived useless files moved out of the repo but kept locally
 nouse/
+
+# Runtime data maintained by evolution engine (auto-recreated)
+LEARNINGS.md
