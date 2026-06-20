@@ -3,6 +3,45 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.46.1 (2026-06-20)
+
+### 修复 EventLedger 启动崩溃
+
+修复因 `data/ledger/` 下历史 ledger 文件过多、过大，导致 `EventLedger` 在启动时一次性加载全部条目到内存，进而触发 V8 中止（Windows 退出码 `-1073740791` / `0xC0000409`）的问题。
+
+#### 关键变更
+
+- **`packages/agent/src/event-ledger.ts`**：
+  - 新增 `maxLoadedEntries` 配置项（默认 `50_000`），限制启动时加载到内存的 ledger 条目数。
+  - `load()` 改为按文件名倒序（最新文件优先）读取，并在达到 `maxLoadedEntries` 时停止加载旧文件，避免无界内存增长。
+- 保留磁盘上的完整 ledger 历史；仅限制内存中的热数据量，新事件仍可正常追加持久化。
+
+#### 调试过程
+
+- 通过 TRAE-debugger 插桩定位崩溃点位于 `EventLedger` 初始化阶段。
+- 复现实验：单独加载任一 ledger 文件成功；同时加载全部 68 个 ledger 文件（累计约 680k+ 条目）必现崩溃。
+- 修复后：在完整 ledger 文件存在的情况下，服务器可正常启动。
+
+#### 验证
+
+```bash
+pnpm build && pnpm typecheck && pnpm test
+pnpm start
+```
+
+结果：
+- 测试：108 个测试文件 / 2927 通过 / 1 跳过
+- 服务：正常启动，`/health` 返回版本 `0.46.1`
+
+#### 变更文件
+
+- `packages/agent/src/event-ledger.ts`
+- `apps/server/src/index.ts`（仅移除调试插桩，无业务逻辑变更）
+- `package.json`
+- `History.md`
+
+---
+
 ## v0.46.0 (2026-06-20)
 
 ### 项目清理、技能目录整理与敏感信息安全加固

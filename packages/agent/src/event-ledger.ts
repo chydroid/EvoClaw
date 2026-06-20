@@ -70,6 +70,8 @@ export interface EventLedgerConfig {
   storeDir?: string;
   maxEntriesPerFile?: number;
   autoFlushMs?: number;
+  /** Maximum entries to keep in memory at load time; older entries are skipped. */
+  maxLoadedEntries?: number;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ export class EventLedger {
   private nextSeq = 1;
   private storeDir: string;
   private maxEntriesPerFile: number;
+  private maxLoadedEntries: number;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -89,6 +92,7 @@ export class EventLedger {
       config.storeDir ||
       path.resolve(process.cwd(), "data", "ledger");
     this.maxEntriesPerFile = config.maxEntriesPerFile ?? 10_000;
+    this.maxLoadedEntries = config.maxLoadedEntries ?? 50_000;
     this.load();
   }
 
@@ -267,21 +271,30 @@ export class EventLedger {
         fs.mkdirSync(this.storeDir, { recursive: true });
         return;
       }
+      // Sort newest-first so recent events are loaded first; stop once the
+      // in-memory limit is reached to avoid OOM/stack abort on huge history.
       const files = fs
         .readdirSync(this.storeDir)
         .filter((f) => f.endsWith(".jsonl"))
-        .sort();
+        .sort()
+        .reverse();
 
+      let loadedCount = 0;
       for (const file of files) {
+        if (loadedCount >= this.maxLoadedEntries) break;
         const content = fs.readFileSync(path.join(this.storeDir, file), "utf-8");
-        for (const line of content.split("\n")) {
-          if (!line.trim()) continue;
+        // Files are append-only and chronologically sorted; read newest lines last.
+        const lines = content.split("\n").filter((l) => l.trim());
+        const remaining = this.maxLoadedEntries - loadedCount;
+        const slice = remaining < lines.length ? lines.slice(-remaining) : lines;
+        for (const line of slice) {
           try {
             const entry = JSON.parse(line) as LedgerEntry;
             this.entries.push(entry);
             if (entry.seq >= this.nextSeq) {
               this.nextSeq = entry.seq + 1;
             }
+            loadedCount++;
           } catch {
             // Skip corrupted lines
           }

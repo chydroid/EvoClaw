@@ -403,6 +403,7 @@ export class EvoClawServer {
     });
     this.agentModelExecutor.setSessionManager(this.sessionManager);
     this.registry.registerService("sessionManager", this.sessionManager);
+
     this.contextEngine = new ContextEngine({
       workspacePath: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
       maxContextTokens: 128000,
