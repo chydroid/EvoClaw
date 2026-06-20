@@ -3,6 +3,42 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.44.1 (2026-06-20)
+
+### nativeFetch 稳定性修复 + 快速回复能力增强 + 技能创建质量门控
+
+修复了 nativeFetch 在高频 LLM 调用下可能导致 STATUS_STACK_BUFFER_OVERRUN 崩溃的问题，增强了日期/计算器的本地快速回复，并完善了技能创建与生命周期管理。
+
+#### 关键Bug修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 测试套件的日期查询未命中本地快速回复 | `tryUtilityReply()` 未去除全角标点 `？`，导致正则 `$` 锚点匹配失败 | 规范化时去除 `？?！!。.` 等尾部标点 |
+| 高频请求时服务器崩溃（STATUS_STACK_BUFFER_OVERRUN） | `Readable.toWeb(res)` 在高并发下不稳定；缺少连接复用 | 改为内存缓冲响应体；添加 keep-alive agent |
+| 日期/计算器查询误入 SemanticQuickReply 后调用 LLM | 顺序正确但规范化失败，后续被误判为 action_task | 通过规范化修复使 utility quick reply 优先命中 |
+
+#### 新增功能
+
+- **tryUtilityReply** (quick-reply.ts): 本地处理"今天星期几"/"几号"/"哪年"/"几月"/"计算 X+Y" 等查询，无需 LLM
+- **skill_uninstall** 工具 (skill-tools.ts): 支持按名称或 ID 卸载技能，完善生命周期管理
+- **技能创建质量门控增强**: 反模式检测、模糊匹配、名称段数限制、描述/指令长度限制、尖括号检查
+
+#### 变更文件
+
+- `packages/agent/src/quick-reply.ts`
+- `packages/agent/src/agent-model-executor.ts`
+- `packages/agent/src/llm-caller.ts`
+- `packages/agent/src/brief-understanding.ts`
+- `packages/agent/src/planning-engine.ts`
+- `apps/server/src/tools/skill-tools.ts`
+- `test-suite.mjs` (80条综合测试用例)
+
+#### 测试
+
+80 条综合测试用例设计完成，覆盖基础功能、多步骤任务、插件调用、技能组合、边界条件、异常输入六大类别。
+
+---
+
 ## v0.44.0 (2026-06-19)
 
 ### 技能Python脚本参数传递修复 + 系统可靠性全面增强

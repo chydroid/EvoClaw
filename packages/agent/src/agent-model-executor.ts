@@ -4,7 +4,7 @@ import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptPara
 import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
-import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, type LLMCallerDeps } from "./llm-caller";
+import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type NativeFetchResponse } from "./llm-caller";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -25,7 +25,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import { TaskCheckpoint, taskCheckpointManager } from "./task-checkpoint-manager";
 import { ExecutionCheckpointStore } from "./execution-checkpoint";
 import { collapseNewlines as collapseNewlinesImpl, stripWebNoise as stripWebNoiseImpl, summarizeToolResult as summarizeToolResultFn, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
-import { tryQuickReply as tryQuickReplyFn, tryQuickReplyExtended as tryQuickReplyExtendedFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
+import { tryQuickReply as tryQuickReplyFn, tryQuickReplyExtended as tryQuickReplyExtendedFn, tryUtilityReply as tryUtilityReplyFn, generateChatResponse as generateChatResponseFn, hasActionIntent as hasActionIntentFn, type QuickReplyDeps, type SkillManagerLike } from "./quick-reply";
 import { handleSlashCommand as handleSlashCommandFn, type SlashCommandDeps, type SlashCommandResult } from "./slash-commands";
 import { HeartbeatManager, type HeartbeatHandlerDeps } from "./heartbeat";
 import { sessionFilePath as sessionFilePathFn, persistSessionTurn as persistSessionTurnFn, persistEarlyReturn as persistEarlyReturnFn, loadSessionHistory as loadSessionHistoryFn, needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, type SessionPersistenceDeps } from "./session-persistence";
@@ -449,7 +449,7 @@ export class AgentModelExecutor {
           const enabled = this.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);
           if (enabled.length === 0) return '{"shouldContinue":true,"shouldReplan":false,"shouldRetry":false,"analysis":"No LLM available for reflection","confidence":0.3}';
           try {
-            const resp = await fetch(`${enabled[0].baseURL}/chat/completions`, {
+            const resp = await nativeFetch(`${enabled[0].baseURL}/chat/completions`, {
               method: "POST",
               headers: { "Content-Type": "application/json", "Authorization": `Bearer ${enabled[0].apiKey}` },
               body: JSON.stringify({ model: enabled[0].model, messages: [{ role: "user", content: prompt }], max_tokens: 500, temperature: 0.3 }),
@@ -1372,6 +1372,18 @@ export class AgentModelExecutor {
           return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
         }
       }
+    }
+
+    // ── Utility quick reply (date/calculator — no LLM needed) ──
+    const utilityReply = tryUtilityReplyFn(effectiveMessage);
+    if (utilityReply) {
+      const timestamp = new Date().toLocaleString("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit",
+      });
+      const finalReply = `📅 ${timestamp}\n\n${utilityReply}`;
+      this.persistEarlyReturn(sessionId, message, finalReply);
+      return { reply: finalReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
     }
 
     // ── Quick reply for simple greetings and queries (no LLM needed) ──
@@ -2517,7 +2529,7 @@ export class AgentModelExecutor {
   }
 
   private async parseStreamingResponse(
-    response: Response,
+    response: NativeFetchResponse,
     provider: ProviderConfig,
     startTime: number,
     onProgress: AgentProgressCallback

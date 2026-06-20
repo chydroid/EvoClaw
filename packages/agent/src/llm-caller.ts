@@ -19,6 +19,112 @@ import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import * as https from "https";
+import * as http from "http";
+
+// ── Native HTTPS fetch ──
+// Uses Node.js native https/http modules instead of undici fetch() to avoid
+// triggering Windows Jump List temp file creation (CustomDestinations/*.temp)
+// which gets killed by TRAE Sandbox.
+//
+// Implementation notes:
+// - Avoids Readable.toWeb() which has caused crashes under heavy load; instead
+//   buffers the response body in-memory (safe for LLM JSON/SSE payloads).
+// - Reuses a single keep-alive agent to reduce connection overhead.
+// - Defensive abort handling and error propagation.
+
+export interface NativeFetchResponse {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  body: ReadableStream<Uint8Array> | null;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+}
+
+// Share keep-alive agents to avoid exhausting ephemeral ports and reduce TLS
+// handshake overhead during burst LLM calls.
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
+
+export async function nativeFetch(
+  url: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  } = {}
+): Promise<NativeFetchResponse> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const isHttps = parsedUrl.protocol === "https:";
+    const lib = isHttps ? https : http;
+
+    const req = lib.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: options.method || "GET",
+        headers: options.headers || {},
+        agent: isHttps ? httpsAgent : httpAgent,
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        const ok = status >= 200 && status < 300;
+        const chunks: Buffer[] = [];
+
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const buffer = Buffer.concat(chunks);
+          const bodyStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(buffer));
+              controller.close();
+            },
+          });
+
+          const response: NativeFetchResponse = {
+            ok,
+            status,
+            statusText: res.statusMessage || "",
+            body: bodyStream,
+            text: async () => buffer.toString("utf-8"),
+            json: async () => JSON.parse(buffer.toString("utf-8")),
+          };
+          resolve(response);
+        });
+        res.on("error", reject);
+      }
+    );
+
+    if (options.body) {
+      req.write(options.body);
+    }
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        req.destroy();
+        reject(new Error("Request aborted"));
+        return;
+      }
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          req.destroy();
+        },
+        { once: true }
+      );
+    }
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    req.end();
+  });
+}
 
 // ── Circuit breaker for tool execution ──
 // Tracks consecutive failures per tool. After MAX_CONSECUTIVE_FAILURES,
@@ -713,7 +819,7 @@ export function buildOpenAITools(
 // ── parseStreamingResponse ──
 
 export async function parseStreamingResponse(
-  response: Response,
+  response: NativeFetchResponse,
   provider: ProviderConfig,
   startTime: number,
   onProgress: AgentProgressCallback,
@@ -934,7 +1040,7 @@ export async function callLLMOnce(
     }
 
     process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})`);
-    const response = await fetch(apiURL, {
+    const response = await nativeFetch(apiURL, {
       method: "POST",
       headers,
       body: JSON.stringify(body),

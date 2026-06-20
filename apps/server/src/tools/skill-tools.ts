@@ -96,11 +96,25 @@ export function registerAutoSkillTools(
       const desc = String(params.description || "").trim();
       const instructions = String(params.instructions || "").trim();
 
-      // --- Quality Gates ---
+      // --- Quality Gates (aligned with skill-creator/quick_validate.py) ---
 
       const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
       const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-skill", "temp-"];
       const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
+
+      // Anti-pattern: names that look like auto-generated task-extraction skills
+      const AUTOGEN_PATTERNS = [
+        /-for-(?:data-)?analysis$/,
+        /-test-(?:case|for)-/,
+        /-verification$/,
+        /-for-tracking-(?:changes|history)$/,
+        /-pipeline-for-/,
+        /-for-large-records$/,
+        /-from-(?:user-)?input/,
+        /-from-task-solution/,
+        /^(?:stats|task)-task-/,
+        /^version-(?:history|management|tracking)-/,
+      ];
 
       const PLACEHOLDER_DESC_PATTERNS: RegExp[] = [
         /^执行操作(?:。)?$/,
@@ -110,6 +124,7 @@ export function registerAutoSkillTools(
         /^auto-generated/i,
         /^placeholder/i,
         /^te?mp$/i,
+        /^从任务解决方案中提取的技能/i,
       ];
       const PLACEHOLDER_INSTR_PATTERNS: RegExp[] = [
         /^执行操作(?:。)?$/,
@@ -120,7 +135,7 @@ export function registerAutoSkillTools(
 
       const errors: string[] = [];
 
-      // 1. Name validation
+      // 1. Name validation (aligned with skill-creator quick_validate.py)
       if (!name) {
         errors.push("Skill name is required");
       } else if (!NAME_REGEX.test(name)) {
@@ -129,19 +144,35 @@ export function registerAutoSkillTools(
         errors.push("Skill name must be at least 3 characters");
       } else if (name.length > 64) {
         errors.push("Skill name must not exceed 64 characters");
+      } else if (name.includes("--")) {
+        errors.push("Skill name cannot contain consecutive hyphens");
+      } else if (name.endsWith("-")) {
+        errors.push("Skill name cannot end with a hyphen");
       } else {
         for (const prefix of RESERVED_PREFIXES) {
           if (name.startsWith(prefix)) {
-            errors.push(`Skill name cannot start with "${prefix}"`);
+            errors.push(`Skill name cannot start with reserved prefix "${prefix}"`);
             break;
           }
         }
         if (GENERIC_NAMES.includes(name)) {
           errors.push(`"${name}" is too generic as a skill name. Use a more specific name describing the actual workflow.`);
         }
+        // Check auto-generated patterns
+        for (const pattern of AUTOGEN_PATTERNS) {
+          if (pattern.test(name)) {
+            errors.push(`Skill name "${name}" matches an auto-generated task-extraction pattern. Use a concise, reusable name instead (e.g. 'csv-to-json' not 'data-conversion-tool-for-csv-to-json-format').`);
+            break;
+          }
+        }
+        // Reject names with too many hyphen-separated segments (>6 = likely auto-generated)
+        const segments = name.split("-").filter(s => s.length > 0);
+        if (segments.length > 6) {
+          errors.push(`Skill name has too many segments (${segments.length}). Use a concise name with at most 6 hyphen-separated parts.`);
+        }
       }
 
-      // 2. Description quality
+      // 2. Description quality (aligned with skill-creator: max 1024 chars, no angle brackets)
       const isPlaceholder = (text: string, patterns: RegExp[]): boolean => {
         for (const p of patterns) {
           if (p.test(text)) return true;
@@ -151,8 +182,12 @@ export function registerAutoSkillTools(
 
       if (!desc) {
         errors.push("Skill description is required");
-      } else if (desc.length < 20) {
-        errors.push(`Skill description is too short (${desc.length} chars). Provide a meaningful description of what problem this solves and when to use it.`);
+      } else if (desc.length < 30) {
+        errors.push(`Skill description is too short (${desc.length} chars, minimum 30). Provide a meaningful description of what problem this solves and when to use it.`);
+      } else if (desc.length > 1024) {
+        errors.push(`Skill description is too long (${desc.length} chars, maximum 1024). Keep it concise — put details in instructions.`);
+      } else if (/[<>]/.test(desc)) {
+        errors.push("Skill description cannot contain angle brackets (< or >)");
       } else if (isPlaceholder(desc, PLACEHOLDER_DESC_PATTERNS)) {
         errors.push(`Skill description "${desc}" appears to be a placeholder. Please provide a meaningful description.`);
       } else if (desc === name || desc.replace(/[-_\s]/g, "") === name.replace(/[-_\s]/g, "")) {
@@ -162,18 +197,15 @@ export function registerAutoSkillTools(
       // 3. Instructions quality
       if (!instructions) {
         errors.push("Skill instructions are required");
-      } else if (instructions.length < 50) {
-        errors.push(`Skill instructions are too short (${instructions.length} chars). Provide detailed step-by-step instructions.`);
+      } else if (instructions.length < 200) {
+        errors.push(`Skill instructions are too short (${instructions.length} chars, minimum 200). Instructions must contain substantive content, not just a template shell.`);
+      } else if (instructions.length > 20000) {
+        errors.push(`Skill instructions are too long (${instructions.length} chars, maximum 20000). Move detailed references to a references/ directory.`);
       } else if (isPlaceholder(instructions, PLACEHOLDER_INSTR_PATTERNS)) {
         errors.push("Skill instructions appear to be a placeholder. Provide concrete, actionable steps.");
       }
 
-      // 3.1 指令长度门控：instructions 必须 >= 200 字符
-      if (instructions && instructions.length < 200) {
-        errors.push(`Skill instructions are too short (${instructions.length} chars, minimum 200). Instructions must contain substantive content, not just a template shell.`);
-      }
-
-      // 3.2 指令步骤验证：必须包含至少 2 个具体步骤或操作
+      // 3.1 指令步骤验证：必须包含至少 2 个具体步骤或操作
       if (instructions) {
         const numberedSteps = instructions.match(/\b\d+\.\s/g) || [];
         const listItems = instructions.match(/^[\s]*[-*]\s/gm) || [];
@@ -183,7 +215,7 @@ export function registerAutoSkillTools(
         }
       }
 
-      // 3.3 禁止模板步骤检测：拒绝完全相同的7步模板
+      // 3.2 禁止模板步骤检测：拒绝完全相同的7步模板
       if (instructions) {
         const TEMPLATE_STEPS = ["Initialize", "Parse", "Execute", "Handle edge cases", "Format", "Log", "Cleanup"];
         const allTemplateStepsPresent = TEMPLATE_STEPS.every(step => instructions.includes(step));
@@ -192,7 +224,7 @@ export function registerAutoSkillTools(
         }
       }
 
-      // 3.4 功能性验证：instructions 必须提及至少一个具体的工具、API、脚本或命令
+      // 3.3 功能性验证：instructions 必须提及至少一个具体的工具、API、脚本或命令
       if (instructions) {
         const FUNCTIONAL_KEYWORDS = /\b(API|script|fetch|curl|python|node|http|endpoint|command|npm|pip|docker|git|ssh|sql|redis|mongo|postgres|axios|request|shell|bash|powershell|cli|sdk|library|module|import|require|exec|spawn|run)\b/i;
         if (!FUNCTIONAL_KEYWORDS.test(instructions)) {
@@ -200,12 +232,7 @@ export function registerAutoSkillTools(
         }
       }
 
-      // 3.5 描述长度门控：description 必须 >= 30 字符
-      if (desc && desc.length < 30) {
-        errors.push(`Skill description is too short (${desc.length} chars, minimum 30). Provide a more detailed description of what problem this skill solves.`);
-      }
-
-      // 3.6 名称与描述相关性：name 中的关键词必须出现在 description 中
+      // 3.4 名称与描述相关性：name 中的关键词必须出现在 description 中
       if (name && desc) {
         const nameWords = name.split(/[-_]/).filter(w => w.length > 2);
         const descLower = desc.toLowerCase();
@@ -215,16 +242,42 @@ export function registerAutoSkillTools(
         }
       }
 
-      // 4. Check for duplicate skills
+      // 4. Check for duplicate and similar skills (enhanced with fuzzy matching)
       if (errors.length === 0) {
         try {
           const existing = await skillManager.listSkills();
-          const similar = existing.filter((s: { name: string }) =>
+          // Exact and normalized match
+          const exact = existing.filter((s: { name: string }) =>
             s.name.toLowerCase() === name.toLowerCase() ||
             s.name.toLowerCase().replace(/[-_\s]/g, "") === name.toLowerCase().replace(/[-_\s]/g, "")
           );
-          if (similar.length > 0) {
-            errors.push(`A skill with a similar name "${similar[0].name}" already exists. Use skill_improve to update it instead.`);
+          if (exact.length > 0) {
+            errors.push(`A skill with the same name "${exact[0].name}" already exists. Use skill_improve to update it instead.`);
+          } else {
+            // Fuzzy match: check if name is too similar to existing skills
+            const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
+            const normalizedName = normalize(name);
+            for (const s of existing as Array<{ name: string; description?: string }>) {
+              const existingNorm = normalize(s.name);
+              // Levenshtein-like check: if one name is a substring of the other or they share most characters
+              if (existingNorm.includes(normalizedName) || normalizedName.includes(existingNorm)) {
+                errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}". Use skill_improve to update it instead.`);
+                break;
+              }
+              // Jaccard similarity on character bigrams
+              const bigramsA = new Set<string>();
+              for (let i = 0; i < normalizedName.length - 1; i++) bigramsA.add(normalizedName.slice(i, i + 2));
+              const bigramsB = new Set<string>();
+              for (let i = 0; i < existingNorm.length - 1; i++) bigramsB.add(existingNorm.slice(i, i + 2));
+              let intersection = 0;
+              for (const b of bigramsA) if (bigramsB.has(b)) intersection++;
+              const union = bigramsA.size + bigramsB.size - intersection;
+              const similarity = union > 0 ? intersection / union : 0;
+              if (similarity > 0.7) {
+                errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}" (similarity ${(similarity * 100).toFixed(0)}%). Use skill_improve to update it instead.`);
+                break;
+              }
+            }
           }
         } catch {
           // listSkills may fail — non-fatal
@@ -259,6 +312,37 @@ export function registerAutoSkillTools(
         }
         const installed = await skillManager.installSkill(skillDir);
         return { success: true, skillId: installed.id, skillName: installed.name, message: `Skill "${name}" has been created, installed, and is ready to use!` };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "skill_uninstall",
+    {
+      name: "skill_uninstall",
+      description: "Uninstall a skill by name or ID. Removes it from the system and deletes its files. Use when a skill is no longer needed or is being replaced.",
+      parameters: {
+        skill: { type: "string", description: "Skill name or ID to uninstall", required: true },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      const skillName = String(params.skill || "").trim();
+      if (!skillName) {
+        return { success: false, error: "Skill name or ID is required" };
+      }
+      try {
+        // Find the skill by name or ID
+        const skills = await skillManager.listSkills();
+        const target = skills.find((s: { id: string; name: string }) =>
+          s.id === skillName || s.name === skillName || s.name.replace(/[-_]/g, "") === skillName.replace(/[-_]/g, "")
+        );
+        if (!target) {
+          return { success: false, error: `Skill "${skillName}" not found` };
+        }
+        await skillManager.uninstallSkill(target.id);
+        return { success: true, message: `Skill "${target.name}" has been uninstalled` };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }

@@ -701,6 +701,111 @@ export function tryQuickReplyExtended(deps: QuickReplyDeps, message: string): st
 export const __test = { SIMPLE_GREETING_ENTRIES, pickByHash, normalize, applyPersona };
 
 /**
+ * Try utility quick reply — handles date/time/calculator queries locally
+ * without LLM calls. Returns null if the message doesn't match.
+ */
+export function tryUtilityReply(message: string): string | null {
+  // Strip whitespace, lowercase, AND remove trailing/fullwidth punctuation
+  // so patterns with $ anchor can match "今天星期几？" / "几号？" etc.
+  const normalized = message
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[？?！!。.，,、；;：:~～]+$/g, "");
+
+  // ── 日期/星期查询 ──
+  const datePatterns: Array<{ pattern: RegExp; fn: () => string }> = [
+    {
+      pattern: /^(今天|今儿|今天)?(星期|周|礼拜)(几|几了|是几|是几了)?$/,
+      fn: () => {
+        const days = ["日", "一", "二", "三", "四", "五", "六"];
+        return `📅 今天是星期${days[new Date().getDay()]}`;
+      },
+    },
+    {
+      pattern: /^(今天|今儿|今天)?(几号|几日|多少号|是几号|是几日|日期|什么日期|哪天|哪一天)$/,
+      fn: () => {
+        const d = new Date();
+        return `📅 今天是 ${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+      },
+    },
+    {
+      pattern: /^(今天|今儿)?(什么|啥)(月份|月)$/,
+      fn: () => {
+        return `📅 今天是${new Date().getMonth() + 1}月`;
+      },
+    },
+    {
+      pattern: /^(今年|今年是|现在|当前)?(哪年|什么年份|是哪年|多少年)$/,
+      fn: () => {
+        return `📅 今年是 ${new Date().getFullYear()} 年`;
+      },
+    },
+  ];
+
+  for (const { pattern, fn } of datePatterns) {
+    if (pattern.test(normalized)) {
+      try { return fn(); } catch { /* ignore */ }
+      return null;
+    }
+  }
+
+  // ── 简单计算器 ──
+  // 匹配 "计算X+Y" / "X加Y" / "X乘Y" / "X+Y=?" 等
+  const calcMatch = normalized.match(
+    /^(?:计算|算一下|算算|算)([\d.]+)\s*([+\-*/×÷加减乘除])\s*([\d.]+)$/
+  );
+  if (calcMatch) {
+    const a = parseFloat(calcMatch[1]);
+    const b = parseFloat(calcMatch[3]);
+    let op = calcMatch[2];
+    if (op === "加") op = "+";
+    else if (op === "减") op = "-";
+    else if (op === "乘" || op === "×") op = "*";
+    else if (op === "除" || op === "÷") op = "/";
+
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      let result: number;
+      switch (op) {
+        case "+": result = a + b; break;
+        case "-": result = a - b; break;
+        case "*": result = a * b; break;
+        case "/":
+          if (b === 0) return "❌ 除数不能为零";
+          result = a / b; break;
+        default: return null;
+      }
+      const opSymbol = op === "*" ? "×" : op === "/" ? "÷" : op;
+      return `🧮 ${a} ${opSymbol} ${b} = ${result}`;
+    }
+  }
+
+  // 匹配 "X+Y=?" / "X+Y等于多少" 等（无"计算"前缀）
+  const directCalc = normalized.match(/^([\d.]+)\s*([+\-*/×÷])\s*([\d.]+)\s*(?:=|等于|=?$|等于多少)$/);
+  if (directCalc) {
+    const a = parseFloat(directCalc[1]);
+    const b = parseFloat(directCalc[3]);
+    const op = directCalc[2];
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      let result: number;
+      switch (op) {
+        case "+": result = a + b; break;
+        case "-": result = a - b; break;
+        case "*": case "×": result = a * b; break;
+        case "/": case "÷":
+          if (b === 0) return "❌ 除数不能为零";
+          result = a / b; break;
+        default: return null;
+      }
+      const opSymbol = op === "*" || op === "×" ? "×" : op === "/" || op === "÷" ? "÷" : op;
+      return `🧮 ${a} ${opSymbol} ${b} = ${result}`;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Check if a message contains action-oriented intent.
  * Uses semantic classification when available, falls back to keyword matching.
  */

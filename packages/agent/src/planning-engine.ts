@@ -8,6 +8,7 @@
 
 import type { PersonaConfig } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
+import { nativeFetch } from "./llm-caller";
 
 // ── Types ──
 
@@ -207,7 +208,7 @@ async function callLLMForPlan(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    const response = await fetch(apiURL, {
+    const response = await nativeFetch(apiURL, {
       method: "POST",
       headers,
       body: JSON.stringify({
