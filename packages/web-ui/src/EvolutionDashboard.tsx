@@ -263,9 +263,9 @@ export default function EvolutionDashboard() {
   }
 
   const formatDuration = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`;
-    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-    return `${(ms / 60000).toFixed(1)}m`;
+    if (ms < 1000) return `${ms}${t("evo.ms", "ms")}`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}${t("evo.seconds", "s")}`;
+    return `${(ms / 60000).toFixed(1)}${t("evo.minutes", "m")}`;
   };
 
   const getStatusColor = (status: string) => {
@@ -279,6 +279,10 @@ export default function EvolutionDashboard() {
       case "active": return "#3b82f6";
       default: return "var(--text-muted)";
     }
+  };
+
+  const getStatusLabel = (status: string) => {
+    return t(`evo.status.${status}`, status);
   };
 
   const getSeverityColor = (severity: string) => {
@@ -525,13 +529,13 @@ export default function EvolutionDashboard() {
                 </div>
                 <div style={{ ...s.overviewMetricRow, marginTop: "8px" }}>
                   <span style={s.overviewMetricLabel}>{t("evo.resolution_rate")}</span>
-                  <span style={s.overviewMetricValue}>{learning ? `${Math.round(learning.resolutionRate * 100)}%` : "N/A"}</span>
+                  <span style={s.overviewMetricValue}>{learning ? `${Math.round(learning.resolutionRate * 100)}%` : t("common.na", "N/A")}</span>
                 </div>
                 <div style={s.overviewMetricRow}>
                   <span style={s.overviewMetricLabel}>{t("evo.resolved_unresolved")}</span>
                   <span style={s.overviewMetricValue}>
                     <span style={{ color: "var(--success)" }}>{learning?.resolvedEntries ?? 0}</span>
-                    {" / "}
+                    {t("common.slash", " / ")}
                     <span style={{ color: "var(--warning)" }}>{learning?.unresolvedEntries ?? 0}</span>
                   </span>
                 </div>
@@ -593,7 +597,7 @@ export default function EvolutionDashboard() {
                       <div style={s.timelineHeader}>
                         <span style={s.timelineSource}>{cycle.source}</span>
                         <span style={{ ...s.timelineStatus, color: getStatusColor(cycle.status) }}>
-                          {cycle.status}
+                          {getStatusLabel(cycle.status)}
                         </span>
                       </div>
                       <div style={s.timelineMeta}>
@@ -655,7 +659,7 @@ export default function EvolutionDashboard() {
                   <td>{cycle.source}</td>
                   <td>
                     <span style={{ ...s.statusBadge, background: getStatusColor(cycle.status) + "22", color: getStatusColor(cycle.status) }}>
-                      {cycle.status}
+                      {getStatusLabel(cycle.status)}
                     </span>
                   </td>
                   <td>{t("evo.candidates_passed").replace("{0}", String(cycle.candidatesGenerated)).replace("{1}", String(cycle.candidatesPassed))}</td>
@@ -864,7 +868,7 @@ export default function EvolutionDashboard() {
                     background: getStatusColor(session.status) + "22",
                     color: getStatusColor(session.status),
                   }}>
-                    {session.status}
+                    {getStatusLabel(session.status)}
                   </span>
                 </div>
                 {session.summary && <div style={s.sessionSummary}>{session.summary}</div>}
@@ -913,7 +917,7 @@ export default function EvolutionDashboard() {
             <div key={report.id} style={s.progressCard}>
               <div style={s.progressHeader}>
                 <span style={{ color: "var(--section-title-color)", fontWeight: 600, fontSize: "14px" }}>
-                  {report.phase}
+                  {t(`evo.phase.${report.phase}`, report.phase)}
                 </span>
                 <span style={{
                   padding: "2px 8px",
@@ -922,7 +926,7 @@ export default function EvolutionDashboard() {
                   background: getStatusColor(report.status) + "22",
                   color: getStatusColor(report.status),
                 }}>
-                  {report.status}
+                  {getStatusLabel(report.status)}
                 </span>
               </div>
               <div style={{ margin: "8px 0" }}>

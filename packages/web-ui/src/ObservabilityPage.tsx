@@ -56,10 +56,10 @@ function calcDuration(start: string, end?: string): number | null {
   return ms >= 0 ? ms : null;
 }
 
-function formatDuration(ms: number | null): string {
+function formatDuration(ms: number | null, t: (k: string, fb?: string) => string): string {
   if (ms === null) return "—";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
+  if (ms < 1000) return `${Math.round(ms)}${t("observability.ms", "ms")}`;
+  return `${(ms / 1000).toFixed(2)}${t("observability.seconds", "s")}`;
 }
 
 function statusBadgeVariant(status: string): "success" | "error" | "warning" | "info" | "default" {
@@ -87,7 +87,7 @@ const TAB_KEYS: TabKey[] = ["overview", "traces", "executions"];
 // Overview Tab
 // ═══════════════════════════════════════════════
 
-function OverviewTab({ traces, t }: { traces: Trace[]; t: (k: string, fb?: string) => string }) {
+function OverviewTab({ traces, t, locale }: { traces: Trace[]; t: (k: string, fb?: string) => string; locale: string }) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
   const activeTraces = traces.filter(tr => tr.status === "active" || !tr.endTime).length;
@@ -125,7 +125,7 @@ function OverviewTab({ traces, t }: { traces: Trace[]; t: (k: string, fb?: strin
         { label: t("observability.stats.active_traces"), value: activeTraces, color: "var(--accent)" },
         { label: t("observability.stats.total_spans"), value: totalSpans, color: "var(--success)" },
         { label: t("observability.stats.error_rate"), value: `${errorRate}%`, color: errorTraces > 0 ? "var(--error)" : "var(--success)" },
-        { label: t("observability.stats.avg_duration"), value: formatDuration(avgDurationMs), color: "var(--text-primary)" },
+        { label: t("observability.stats.avg_duration"), value: formatDuration(avgDurationMs, t), color: "var(--text-primary)" },
       ]} />
 
       <Section title={t("observability.recent_traces")}>
@@ -157,7 +157,7 @@ function OverviewTab({ traces, t }: { traces: Trace[]; t: (k: string, fb?: strin
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {filteredTraces.slice(0, 20).map(trace => (
-              <TraceRow key={trace.traceId} trace={trace} t={t} />
+              <TraceRow key={trace.traceId} trace={trace} t={t} locale={locale} />
             ))}
           </div>
         )}
@@ -170,7 +170,7 @@ function OverviewTab({ traces, t }: { traces: Trace[]; t: (k: string, fb?: strin
 // Trace Row (shared between Overview & Traces)
 // ═══════════════════════════════════════════════
 
-function TraceRow({ trace, t, expandable = false }: { trace: Trace; t: (k: string, fb?: string) => string; expandable?: boolean }) {
+function TraceRow({ trace, t, expandable = false, locale }: { trace: Trace; t: (k: string, fb?: string) => string; expandable?: boolean; locale: string }) {
   const [expanded, setExpanded] = useState(false);
   const duration = calcDuration(trace.startTime, trace.endTime);
 
@@ -179,17 +179,17 @@ function TraceRow({ trace, t, expandable = false }: { trace: Trace; t: (k: strin
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", minWidth: 0 }}>
           <span style={{ fontFamily: "monospace", fontSize: "12px", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {trace.traceId.length > 16 ? `${trace.traceId.slice(0, 8)}…${trace.traceId.slice(-4)}` : trace.traceId}
+            {trace.traceId ? (trace.traceId.length > 16 ? `${trace.traceId.slice(0, 8)}…${trace.traceId.slice(-4)}` : trace.traceId) : "—"}
           </span>
           <Badge variant={statusBadgeVariant(trace.status)}>
-            {trace.status || "active"}
+            {t(`observability.status.${trace.status || "active"}`)}
           </Badge>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "12px", color: "var(--text-muted)", flexShrink: 0 }}>
           <span>{t("observability.span_count")}: {trace.spans?.length || 0}</span>
-          <span>{formatDuration(duration)}</span>
+          <span>{formatDuration(duration, t)}</span>
           {trace.startTime && (
-            <span>{new Date(trace.startTime).toLocaleTimeString()}</span>
+            <span>{new Date(trace.startTime).toLocaleTimeString(locale)}</span>
           )}
         </div>
       </div>
@@ -239,7 +239,7 @@ function SpanRow({ span, t, traceStart }: { span: Span; t: (k: string, fb?: stri
       background: "var(--bg-hover)", fontSize: "12px",
     }}>
       <Badge variant={kindBadgeVariant(span.kind)} style={{ fontSize: "10px", padding: "2px 7px" }}>
-        {span.kind}
+        {t(`observability.kind.${span.kind}`)}
       </Badge>
       <span style={{ color: "var(--text-primary)", fontWeight: 500, minWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {span.name}
@@ -253,11 +253,11 @@ function SpanRow({ span, t, traceStart }: { span: Span; t: (k: string, fb?: stri
         }} />
       </div>
       <span style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px", flexShrink: 0 }}>
-        {formatDuration(duration)}
+        {formatDuration(duration, t)}
       </span>
       {span.status && span.status !== "ok" && (
         <Badge variant={statusBadgeVariant(span.status)} style={{ fontSize: "9px", padding: "1px 5px" }}>
-          {span.status}
+          {t(`observability.status.${span.status}`, span.status)}
         </Badge>
       )}
     </div>
@@ -268,7 +268,7 @@ function SpanRow({ span, t, traceStart }: { span: Span; t: (k: string, fb?: stri
 // Traces Tab
 // ═══════════════════════════════════════════════
 
-function TracesTab({ traces, loading, onRefresh, t }: { traces: Trace[]; loading: boolean; onRefresh: () => void; t: (k: string, fb?: string) => string }) {
+function TracesTab({ traces, loading, onRefresh, t, locale }: { traces: Trace[]; loading: boolean; onRefresh: () => void; t: (k: string, fb?: string) => string; locale: string }) {
   const [searchSessionId, setSearchSessionId] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
@@ -329,7 +329,7 @@ function TracesTab({ traces, loading, onRefresh, t }: { traces: Trace[]; loading
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {filteredTraces.map(trace => (
-            <TraceRow key={trace.traceId} trace={trace} t={t} expandable />
+            <TraceRow key={trace.traceId} trace={trace} t={t} expandable locale={locale} />
           ))}
         </div>
       )}
@@ -341,15 +341,16 @@ function TracesTab({ traces, loading, onRefresh, t }: { traces: Trace[]; loading
 // Executions Tab
 // ═══════════════════════════════════════════════
 
-function ExecutionsTab({ executions, loading, t }: { executions: Execution[]; loading: boolean; t: (k: string, fb?: string) => string }) {
+function ExecutionsTab({ executions, loading, t, locale }: { executions: Execution[]; loading: boolean; t: (k: string, fb?: string) => string; locale: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = executions.find(e => e.id === selectedId);
+  const safeExecutions = executions || [];
+  const selected = safeExecutions.find(e => e.id === selectedId);
 
   return (
     <div>
       {loading ? (
         <Loading text={t("observability.loading")} />
-      ) : executions.length === 0 ? (
+      ) : safeExecutions.length === 0 ? (
         <EmptyState
           icon="📋"
           title={t("observability.no_executions")}
@@ -358,9 +359,9 @@ function ExecutionsTab({ executions, loading, t }: { executions: Execution[]; lo
       ) : (
         <div style={{ display: "flex", gap: "16px" }}>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
-            {executions.map(exec => (
+            {safeExecutions.map((exec, i) => (
               <Card
-                key={exec.id}
+                key={exec.id || `exec-${i}`}
                 style={{
                   padding: "12px 16px",
                   cursor: "pointer",
@@ -374,18 +375,18 @@ function ExecutionsTab({ executions, loading, t }: { executions: Execution[]; lo
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     <span style={{ fontFamily: "monospace", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      {exec.id.length > 16 ? `${exec.id.slice(0, 8)}…${exec.id.slice(-4)}` : exec.id}
+                      {exec.id ? (exec.id.length > 16 ? `${exec.id.slice(0, 8)}…${exec.id.slice(-4)}` : exec.id) : "—"}
                     </span>
                     <Badge variant={statusBadgeVariant(exec.status)}>
-                      {exec.status}
+                      {t(`observability.status.${exec.status || "unknown"}`, exec.status || "—")}
                     </Badge>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "12px", color: "var(--text-muted)" }}>
                     {exec.duration != null && (
-                      <span>{formatDuration(exec.duration)}</span>
+                      <span>{formatDuration(exec.duration, t)}</span>
                     )}
                     {exec.timestamp && (
-                      <span>{new Date(exec.timestamp).toLocaleString()}</span>
+                      <span>{new Date(exec.timestamp).toLocaleString(locale)}</span>
                     )}
                   </div>
                 </div>
@@ -399,13 +400,13 @@ function ExecutionsTab({ executions, loading, t }: { executions: Execution[]; lo
               style={{ width: "320px", flexShrink: 0, alignSelf: "flex-start" }}
             >
               <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
-                <DetailRow label={t("observability.execution_id")} value={selected.id} mono />
-                <DetailRow label={t("observability.status")} value={selected.status} />
+                <DetailRow label={t("observability.execution_id")} value={selected.id || "—"} mono />
+                <DetailRow label={t("observability.status")} value={t(`observability.status.${selected.status || "unknown"}`, selected.status || "unknown")} />
                 {selected.duration != null && (
-                  <DetailRow label={t("observability.duration")} value={formatDuration(selected.duration)} />
+                  <DetailRow label={t("observability.duration")} value={formatDuration(selected.duration, t)} />
                 )}
                 {selected.timestamp && (
-                  <DetailRow label={t("observability.timestamp")} value={new Date(selected.timestamp).toLocaleString()} />
+                  <DetailRow label={t("observability.timestamp")} value={new Date(selected.timestamp).toLocaleString(locale)} />
                 )}
                 {Object.entries(selected).map(([key, val]) => {
                   if (["id", "status", "duration", "timestamp"].includes(key)) return null;
@@ -452,7 +453,8 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 // ═══════════════════════════════════════════════
 
 export default function ObservabilityPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [traces, setTraces] = useState<Trace[]>([]);
   const [executions, setExecutions] = useState<Execution[]>([]);
@@ -567,12 +569,12 @@ export default function ObservabilityPage() {
         <Loading text={t("observability.loading")} />
       ) : (
         <>
-          {activeTab === "overview" && <OverviewTab traces={traces} t={t} />}
+          {activeTab === "overview" && <OverviewTab traces={traces} t={t} locale={locale} />}
           {activeTab === "traces" && (
-            <TracesTab traces={traces} loading={false} onRefresh={loadAll} t={t} />
+            <TracesTab traces={traces} loading={false} onRefresh={loadAll} t={t} locale={locale} />
           )}
           {activeTab === "executions" && (
-            <ExecutionsTab executions={executions} loading={false} t={t} />
+            <ExecutionsTab executions={executions} loading={false} t={t} locale={locale} />
           )}
         </>
       )}

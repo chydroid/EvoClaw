@@ -230,7 +230,7 @@ export function PermissionsPage() {
                   <td style={s.td}><code style={{ fontSize: "11px" }}>{req.toolName}</code></td>
                   <td style={s.td}>{req.agentId}</td>
                   <td style={s.td}>{req.sessionId?.slice(-8) || "-"}</td>
-                  <td style={s.td}>{req.category}</td>
+                  <td style={s.td}>{t(`permissions.category.${req.category}`)}</td>
                   <td style={s.td}>{formatTime(req.createdAt)}</td>
                   <td style={s.td}>
                     <code style={{ fontSize: "10px", maxWidth: "150px", display: "inline-block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -273,7 +273,7 @@ export function PermissionsPage() {
                 <tr key={req.id}>
                   <td style={s.td}><code style={{ fontSize: "11px" }}>{req.toolName}</code></td>
                   <td style={s.td}>{req.target ? <code style={{ fontSize: "10px" }}>{req.target.length > 40 ? req.target.slice(0, 40) + "..." : req.target}</code> : "-"}</td>
-                  <td style={s.td}><span style={statusBadgeStyle(req.status)}>{req.status}</span></td>
+                  <td style={s.td}><span style={statusBadgeStyle(req.status)}>{t(`permissions.status.${req.status}`)}</span></td>
                   <td style={s.td}>{req.decidedBy || "-"}</td>
                   <td style={s.td}>{req.agentId}</td>
                   <td style={s.td}>{formatTime(req.decidedAt || req.createdAt)}</td>

@@ -71,7 +71,8 @@ function formatCost(n: number): string {
 }
 
 export default function TokenUsagePage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabId>("overview");
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -193,7 +194,7 @@ export default function TokenUsagePage() {
             { label: t("tokenUsage.stats.totalTokens"), value: formatTokens(overview.totalTokens), color: "var(--accent)" },
             { label: t("tokenUsage.stats.totalCost"), value: formatCost(overview.totalCost), color: "var(--warning)" },
             { label: t("tokenUsage.stats.avgPerSession"), value: formatTokens(overview.avgTokensPerSession), color: "var(--success)" },
-            { label: t("tokenUsage.stats.totalCalls"), value: overview.totalCalls.toLocaleString(), color: "var(--text-primary)" },
+            { label: t("tokenUsage.stats.totalCalls"), value: overview.totalCalls.toLocaleString(locale), color: "var(--text-primary)" },
           ]} />
 
           <Section title={t("tokenUsage.recentUsage")} style={{ marginTop: 24 }}>
@@ -215,7 +216,7 @@ export default function TokenUsagePage() {
                     )},
                     { key: "timestamp", label: t("tokenUsage.col.timestamp"), render: (r: any) => (
                       <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                        {r.timestamp ? new Date(r.timestamp).toLocaleString() : "—"}
+                        {r.timestamp ? new Date(r.timestamp).toLocaleString(locale) : "—"}
                       </span>
                     )},
                   ]}
@@ -253,7 +254,7 @@ export default function TokenUsagePage() {
                   { key: "cost", label: t("tokenUsage.col.cost"), render: (m) => (
                     <span style={{ color: "var(--warning)" }}>{formatCost(m.cost)}</span>
                   )},
-                  { key: "calls", label: t("tokenUsage.col.calls"), render: (m) => m.calls.toLocaleString() },
+                  { key: "calls", label: t("tokenUsage.col.calls"), render: (m) => m.calls.toLocaleString(locale) },
                 ]}
                 data={modelUsage}
                 keyFn={(m) => m.model}
@@ -309,7 +310,7 @@ export default function TokenUsagePage() {
                   )},
                   { key: "lastActive", label: t("tokenUsage.col.lastActive"), render: (s) => (
                     <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                      {new Date(s.lastActive).toLocaleString()}
+                      {new Date(s.lastActive).toLocaleString(locale)}
                     </span>
                   )},
                 ]}
@@ -394,7 +395,7 @@ export default function TokenUsagePage() {
                     </div>
                     <div style={{ width: 180, fontSize: 11, color: "var(--text-muted)", textAlign: "right" }}>
                       <div>{formatTokens(p.inputTokens)} / {formatTokens(p.outputTokens)}</div>
-                      <div>{p.calls.toLocaleString()} calls</div>
+                      <div>{p.calls.toLocaleString(locale)} {t("tokenUsage.calls")}</div>
                     </div>
                   </div>
                 ))
@@ -413,7 +414,7 @@ export default function TokenUsagePage() {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <Badge variant={costAlertTriggered ? "error" : "success"}>
-                    {costAlertTriggered ? t("tokenUsage.cost.alert").split("：")[0] : t("tokenUsage.cost.withinBudget")}
+                    {costAlertTriggered ? t("tokenUsage.cost.alertStatus") : t("tokenUsage.cost.withinBudget")}
                   </Badge>
                   <PrimaryButton small onClick={() => { setThresholdInput(String(costThreshold)); setThresholdModalOpen(true); }}>
                     {t("tokenUsage.cost.threshold")}
@@ -423,7 +424,7 @@ export default function TokenUsagePage() {
 
               <div style={{ marginTop: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Budget Usage</span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("tokenUsage.cost.budgetUsage")}</span>
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
                     {(overview.totalCost / Math.max(costThreshold, 1) * 100).toFixed(1)}%
                   </span>
@@ -449,8 +450,8 @@ export default function TokenUsagePage() {
           onClose={() => setThresholdModalOpen(false)}
           footer={
             <>
-              <SecondaryButton onClick={() => setThresholdModalOpen(false)}>{t("common.cancel")}</SecondaryButton>
-              <PrimaryButton onClick={handleSaveThreshold}>{t("common.save")}</PrimaryButton>
+              <SecondaryButton onClick={() => setThresholdModalOpen(false)}>{t("app.cancel")}</SecondaryButton>
+              <PrimaryButton onClick={handleSaveThreshold}>{t("tokenUsage.cost.save")}</PrimaryButton>
             </>
           }
         >
@@ -475,7 +476,7 @@ export default function TokenUsagePage() {
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Quick Select</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>{t("tokenUsage.cost.quickSelect")}</div>
             <div style={{ display: "flex", gap: 8 }}>
               {[10, 25, 50, 100, 250].map(v => (
                 <GhostButton key={v} small onClick={() => setThresholdInput(String(v))}>

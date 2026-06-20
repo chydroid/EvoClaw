@@ -96,7 +96,8 @@ function detectThreats(text: string): { riskLevel: RiskLevel; threats: ScanThrea
 }
 
 export default function MCPScannerPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [tab, setTab] = useState<TabId>("overview");
   const [loading, setLoading] = useState(true);
 
@@ -307,9 +308,9 @@ export default function MCPScannerPage() {
               />
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <PrimaryButton onClick={handleScan} disabled={scanLoading || !scanInput.trim()}>
-                  {scanLoading ? "..." : t("mcpScanner.scan.button")}
+                  {scanLoading ? t("mcpScanner.scanning") : t("mcpScanner.scan.button")}
                 </PrimaryButton>
-                <SecondaryButton onClick={() => { setScanInput(""); setScanResult(null); }}>×</SecondaryButton>
+                <SecondaryButton onClick={() => { setScanInput(""); setScanResult(null); }}>{t("mcpScanner.clear")}</SecondaryButton>
               </div>
             </Card>
 
@@ -317,7 +318,7 @@ export default function MCPScannerPage() {
               <Card style={{ marginTop: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{t("mcpScanner.scan.result")}</div>
-                  <Badge variant={RISK_VARIANT[scanResult.riskLevel] || "default"}>{scanResult.riskLevel}</Badge>
+                  <Badge variant={RISK_VARIANT[scanResult.riskLevel] || "default"}>{t(`mcpScanner.risk.${scanResult.riskLevel}`)}</Badge>
                 </div>
                 {scanResult.threats.length === 0 ? (
                   <div style={{ color: "var(--success)", fontSize: 13 }}>✓ {t("mcpScanner.scan.noThreat")}</div>
@@ -329,7 +330,7 @@ export default function MCPScannerPage() {
                     {scanResult.threats.map((th, i) => (
                       <div key={i} style={{ padding: "8px 0", borderBottom: "1px solid var(--border-light)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <Badge variant={RISK_VARIANT[th.severity] || "default"}>{th.severity}</Badge>
+                          <Badge variant={RISK_VARIANT[th.severity] || "default"}>{t(`mcpScanner.risk.${th.severity}`)}</Badge>
                           <code style={{ fontSize: 12, color: "var(--accent)" }}>{th.type}</code>
                         </div>
                         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>{th.description}</div>
@@ -348,7 +349,7 @@ export default function MCPScannerPage() {
         <div>
           <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
             <PrimaryButton small onClick={handleScanAll} disabled={scanningAll}>
-              {scanningAll ? "..." : t("mcpScanner.scanAll")}
+              {scanningAll ? t("mcpScanner.scanning") : t("mcpScanner.scanAll")}
             </PrimaryButton>
           </div>
           <Card>
@@ -357,32 +358,32 @@ export default function MCPScannerPage() {
           ) : (
             <DataTable<MCPTool>
               columns={[
-                { key: "name", label: t("mcpScanner.col.toolName"), render: t => (
-                  <button onClick={() => setViewTool(t)}
+                { key: "name", label: t("mcpScanner.col.toolName"), render: tool => (
+                  <button onClick={() => setViewTool(tool)}
                     style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 13, fontWeight: 500, padding: 0, textAlign: "left" }}>
-                    {t.name}
+                    {tool.name}
                   </button>
                 )},
-                { key: "server", label: t("mcpScanner.col.server"), render: t => (
-                  <code style={{ fontSize: 11, color: "var(--text-muted)" }}>{t.server}</code>
+                { key: "server", label: t("mcpScanner.col.server"), render: tool => (
+                  <code style={{ fontSize: 11, color: "var(--text-muted)" }}>{tool.server}</code>
                 )},
-                { key: "riskLevel", label: t("mcpScanner.col.risk"), width: "90px", render: t => (
-                  <Badge variant={RISK_VARIANT[t.riskLevel] || "default"}>{t.riskLevel}</Badge>
+                { key: "riskLevel", label: t("mcpScanner.col.risk"), width: "90px", render: tool => (
+                  <Badge variant={RISK_VARIANT[tool.riskLevel] || "default"}>{t(`mcpScanner.risk.${tool.riskLevel}`)}</Badge>
                 )},
-                { key: "descriptionHash", label: t("mcpScanner.col.hash"), render: t => (
-                  <code style={{ fontSize: 10, color: "var(--text-muted)" }}>{t.descriptionHash?.slice(0, 12)}…</code>
+                { key: "descriptionHash", label: t("mcpScanner.col.hash"), render: tool => (
+                  <code style={{ fontSize: 10, color: "var(--text-muted)" }}>{tool.descriptionHash?.slice(0, 12)}…</code>
                 )},
-                { key: "lastScanned", label: t("mcpScanner.col.scanned"), width: "150px", render: t => (
+                { key: "lastScanned", label: t("mcpScanner.col.scanned"), width: "150px", render: tool => (
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                    {t.lastScanned ? new Date(t.lastScanned).toLocaleString() : "—"}
+                    {tool.lastScanned ? new Date(tool.lastScanned).toLocaleString(locale) : "—"}
                   </span>
                 )},
-                { key: "status", label: t("mcpScanner.col.status"), width: "100px", render: t => (
-                  <Badge variant={STATUS_VARIANT[t.status] || "default"}>{t.status}</Badge>
+                { key: "status", label: t("mcpScanner.col.status"), width: "100px", render: tool => (
+                  <Badge variant={STATUS_VARIANT[tool.status] || "default"}>{t(`mcpScanner.status.${tool.status}`)}</Badge>
                 )},
               ]}
               data={tools}
-              keyFn={t => t.id || t.name}
+              keyFn={tool => tool.id || tool.name}
             />
           )}
         </Card>
@@ -409,7 +410,7 @@ export default function MCPScannerPage() {
                   )},
                   { key: "addedAt", label: t("mcpScanner.col.addedAt"), width: "170px", render: b => (
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                      {b.addedAt ? new Date(b.addedAt).toLocaleString() : "—"}
+                      {b.addedAt ? new Date(b.addedAt).toLocaleString(locale) : "—"}
                     </span>
                   )},
                   { key: "actions", label: "", width: "60px", render: b => (
@@ -433,9 +434,9 @@ export default function MCPScannerPage() {
           ) : (
             <DataTable<AuditEntry>
               columns={[
-                { key: "timestamp", label: "Time", width: "170px", render: a => (
+                { key: "timestamp", label: t("mcpScanner.col.timestamp"), width: "170px", render: a => (
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    {a.timestamp ? new Date(a.timestamp).toLocaleString() : ""}
+                    {a.timestamp ? new Date(a.timestamp).toLocaleString(locale) : ""}
                   </span>
                 )},
                 { key: "toolName", label: t("mcpScanner.col.toolName"), render: a => (
@@ -445,7 +446,7 @@ export default function MCPScannerPage() {
                   <code style={{ fontSize: 11, color: "var(--text-muted)" }}>{a.server}</code>
                 )},
                 { key: "riskLevel", label: t("mcpScanner.col.risk"), width: "90px", render: a => (
-                  <Badge variant={RISK_VARIANT[a.riskLevel] || "default"}>{a.riskLevel}</Badge>
+                  <Badge variant={RISK_VARIANT[a.riskLevel] || "default"}>{t(`mcpScanner.risk.${a.riskLevel}`)}</Badge>
                 )},
                 { key: "detectedPatterns", label: t("mcpScanner.col.detected"), render: a => (
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -454,7 +455,7 @@ export default function MCPScannerPage() {
                     ))}
                   </div>
                 )},
-                { key: "action", label: t("mcpScanner.col.action"), render: a => a.action },
+                { key: "action", label: t("mcpScanner.col.action"), render: a => t(`mcpScanner.action.${a.action}`, a.action) },
               ]}
               data={audit}
               keyFn={a => a.id}
@@ -471,7 +472,7 @@ export default function MCPScannerPage() {
           footer={
             <>
               <SecondaryButton onClick={() => setShowAddBlacklist(false)}>{t("mcpScanner.cancel")}</SecondaryButton>
-              <PrimaryButton onClick={handleAddBlacklist}>+</PrimaryButton>
+              <PrimaryButton onClick={handleAddBlacklist}>{t("mcpScanner.add")}</PrimaryButton>
             </>
           }
         >
@@ -479,7 +480,7 @@ export default function MCPScannerPage() {
             <div>
               <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>{t("mcpScanner.col.pattern")}</label>
               <input value={newPattern} onChange={e => setNewPattern(e.target.value)}
-                placeholder="e.g. ignore previous instructions"
+                placeholder={t("mcpScanner.scan.patternPlaceholder")}
                 style={{ width: "100%", padding: "8px 12px", borderRadius: 6, background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
             </div>
             <div>
@@ -497,13 +498,13 @@ export default function MCPScannerPage() {
           title={viewTool.name}
           onClose={() => setViewTool(null)}
           footer={
-            <SecondaryButton onClick={() => setViewTool(null)}>×</SecondaryButton>
+            <SecondaryButton onClick={() => setViewTool(null)}>{t("mcpScanner.close")}</SecondaryButton>
           }
         >
           <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
             <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.server")}:</strong> <code>{viewTool.server}</code></div>
-            <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.risk")}:</strong> <Badge variant={RISK_VARIANT[viewTool.riskLevel] || "default"}>{viewTool.riskLevel}</Badge></div>
-            <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.status")}:</strong> <Badge variant={STATUS_VARIANT[viewTool.status] || "default"}>{viewTool.status}</Badge></div>
+            <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.risk")}:</strong> <Badge variant={RISK_VARIANT[viewTool.riskLevel] || "default"}>{t(`mcpScanner.risk.${viewTool.riskLevel}`)}</Badge></div>
+            <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.status")}:</strong> <Badge variant={STATUS_VARIANT[viewTool.status] || "default"}>{t(`mcpScanner.status.${viewTool.status}`)}</Badge></div>
             <div style={{ marginBottom: 8 }}><strong>{t("mcpScanner.col.hash")}:</strong> <code>{viewTool.descriptionHash}</code></div>
             {viewTool.detectedPatterns && viewTool.detectedPatterns.length > 0 && (
               <div style={{ marginBottom: 8 }}>
@@ -520,7 +521,7 @@ export default function MCPScannerPage() {
                   {viewTool.threats.map((th, i) => (
                     <div key={i} style={{ padding: "8px 10px", marginBottom: 6, background: "var(--bg-input)", borderRadius: 6, borderLeft: `3px solid ${th.severity === "critical" || th.severity === "high" ? "var(--error)" : "var(--warning)"}` }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                        <Badge variant={RISK_VARIANT[th.severity] || "default"}>{th.severity}</Badge>
+                        <Badge variant={RISK_VARIANT[th.severity] || "default"}>{t(`mcpScanner.severity.${th.severity}`)}</Badge>
                         <code style={{ fontSize: 11, color: "var(--accent)" }}>{th.type}</code>
                       </div>
                       {th.evidence && (
@@ -532,7 +533,7 @@ export default function MCPScannerPage() {
               </div>
             )}
             <div>
-              <strong>Description:</strong>
+              <strong>{t("mcpScanner.description")}:</strong>
               <pre style={{ marginTop: 6, padding: 12, background: "var(--bg-input)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                 {viewTool.description}
               </pre>
@@ -549,7 +550,7 @@ export default function MCPScannerPage() {
           footer={
             <>
               <SecondaryButton onClick={() => setRemoveTarget(null)}>{t("mcpScanner.cancel")}</SecondaryButton>
-              <PrimaryButton onClick={() => handleRemoveBlacklist(removeTarget)}>✓</PrimaryButton>
+              <PrimaryButton onClick={() => handleRemoveBlacklist(removeTarget)}>{t("mcpScanner.confirm")}</PrimaryButton>
             </>
           }
         >

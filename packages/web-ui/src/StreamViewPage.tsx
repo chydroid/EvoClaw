@@ -310,7 +310,7 @@ export function StreamViewPage() {
                   background: TYPE_COLORS[type] ?? "#8b949e",
                   display: "inline-block",
                 }} />
-                {type}: {count}
+                {t(`stream.type.${type}`)}: {count}
               </span>
             ))}
           </div>
@@ -335,7 +335,7 @@ export function StreamViewPage() {
               style={filterChipStyle(filter.types.has(type), TYPE_COLORS[type])}
               onClick={() => toggleFilter(type)}
             >
-              {type}
+              {t(`stream.type.${type}`)}
             </div>
           ))}
           <input
@@ -387,7 +387,7 @@ export function StreamViewPage() {
                 fractionalSecondDigits: 3,
               })}
             </span>
-            <span style={eventTypeBadgeStyle(event.type)}>{event.type}</span>
+            <span style={eventTypeBadgeStyle(event.type)}>{t(`stream.type.${event.type}`)}</span>
             {event.sessionId && (
               <span style={{ color: "var(--text-secondary, #8b949e)", fontSize: "10px" }}>
                 {event.sessionId}

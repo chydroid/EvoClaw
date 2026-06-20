@@ -3,6 +3,23 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.46.2 (2026-06-20)
+
+### 修复 WebUI 可观测性「执行」Tab 渲染崩溃
+
+修复 ObservabilityPage 中 ExecutionsTab 因 `exec.id` 为 `undefined` 导致 `Cannot read properties of undefined (reading 'length')` 的渲染错误。
+
+#### 关键变更
+
+- **`packages/web-ui/src/ObservabilityPage.tsx`**：
+  - ExecutionsTab：添加 `safeExecutions` 防护，对 `exec.id` 为空的情况增加回退显示
+  - TraceRow：对 `trace.traceId` 为空的情况增加回退显示
+  - 为 `exec.status` 和 `selected.status` 添加空值回退
+- **`packages/web-ui/src/EvolutionDashboard.tsx`**：
+  - "N/A" 和 " / " 改为 i18n 翻译键 `common.na` / `common.slash`
+- **`packages/web-ui/src/i18n.ts`**：
+  - 新增 `common.na` 和 `common.slash` 翻译键（中英双语）
+
 ## v0.46.1 (2026-06-20)
 
 ### 修复 EventLedger 启动崩溃

@@ -88,7 +88,8 @@ async function deleteTaskAPI(id: string): Promise<void> {
 // ─── Main Component ──────────────────────────────────────────
 
 export default function WorkboardPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const [boardData, setBoardData] = useState<{ tasks: Record<string, Task[]>; stats: { totalTasks: number; activeRuns: number } | null }>({
     tasks: {},
     stats: null,
@@ -245,7 +246,7 @@ export default function WorkboardPage() {
             />
             {lastRefresh && (
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {refreshing ? t("workboard.refreshing") : `${t("workboard.last_refresh")}: ${lastRefresh.toLocaleTimeString()}`}
+                {refreshing ? t("workboard.refreshing") : `${t("workboard.last_refresh")}: ${lastRefresh.toLocaleTimeString(locale)}`}
               </span>
             )}
             <PrimaryButton onClick={() => setShowCreateModal(true)}>
@@ -321,10 +322,10 @@ export default function WorkboardPage() {
           footer={
             <>
               <SecondaryButton onClick={() => setShowCreateModal(false)}>
-                Cancel
+                {t("workboard.cancel")}
               </SecondaryButton>
               <PrimaryButton onClick={handleCreateTask} disabled={!newTitle.trim() || creating}>
-                {creating ? "..." : t("workboard.new_task")}
+                {creating ? t("workboard.creating", "...") : t("workboard.new_task")}
               </PrimaryButton>
             </>
           }
@@ -397,7 +398,7 @@ export default function WorkboardPage() {
           width={560}
           footer={
             <>
-              <SecondaryButton onClick={() => setSelectedTask(null)}>Close</SecondaryButton>
+              <SecondaryButton onClick={() => setSelectedTask(null)}>{t("workboard.close")}</SecondaryButton>
               <PrimaryButton danger onClick={() => setDeleteTarget(selectedTask)}>
                 {t("workboard.delete_task")}
               </PrimaryButton>
@@ -456,7 +457,7 @@ export default function WorkboardPage() {
                   {t("workboard.task_created")}
                 </div>
                 <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                  {new Date(selectedTask.createdAt).toLocaleString()}
+                  {new Date(selectedTask.createdAt).toLocaleString(locale)}
                 </span>
               </div>
             )}

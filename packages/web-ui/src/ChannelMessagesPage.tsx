@@ -169,11 +169,11 @@ function messageRoleStyle(isUser: boolean): React.CSSProperties {
 
 // ─── Helpers ──────────────────────────────────────────────────
 
-function formatTime(ts: number | string | undefined): string {
+function formatTime(ts: number | string | undefined, locale: string): string {
   if (!ts) return "";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "";
-  return d.toLocaleString();
+  return d.toLocaleString(locale);
 }
 
 function isChannelSession(sessionId: string, channelType?: string): boolean {
@@ -198,7 +198,8 @@ function getDisplaySessionId(sessionId: string): string {
 // ─── Component ────────────────────────────────────────────────
 
 export default function ChannelMessagesPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
 
   // State
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
@@ -403,7 +404,7 @@ export default function ChannelMessagesPage() {
                     <span>{sess.messageCount} {t("sessions.messages", "messages")}</span>
                   )}
                   {sess.updatedAt && (
-                    <span>{formatTime(sess.updatedAt)}</span>
+                    <span>{formatTime(sess.updatedAt, locale)}</span>
                   )}
                 </div>
               </div>
@@ -481,7 +482,7 @@ export default function ChannelMessagesPage() {
                   </span>
                   <div style={s.messageContent}>{msg.content}</div>
                   {msg.timestamp && (
-                    <div style={s.messageTime}>{formatTime(msg.timestamp)}</div>
+                    <div style={s.messageTime}>{formatTime(msg.timestamp, locale)}</div>
                   )}
                 </div>
               );

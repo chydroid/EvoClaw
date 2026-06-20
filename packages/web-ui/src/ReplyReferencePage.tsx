@@ -233,7 +233,7 @@ export default function ReplyReferencePage() {
         ) : (
           <DataTable
             columns={[
-              { key: "id", label: "ID", width: "90px", render: (r: ReplyRef) => (
+              { key: "id", label: t("reply_refs.id"), width: "90px", render: (r: ReplyRef) => (
                 <span style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--text-muted)" }}>
                   {r.id.slice(0, 8)}...
                 </span>
