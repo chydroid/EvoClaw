@@ -721,6 +721,8 @@ export interface LLMCallerDeps {
   contextEngineResult?: import("./context-engine").LayeredContextResult;
   // ContextPruning manager (optional — enables soft trim and hard clear of tool results)
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
+  // Token usage tracker (optional — enables real-time token/cost tracking)
+  tokenUsageTracker?: import("./token-usage-tracker").TokenUsageTracker;
 }
 
 // ── Helper: tool cache ──
@@ -1639,6 +1641,21 @@ Have a specific URL?
               if (graceResult && graceResult.message?.content) {
                 finalReply = graceResult.message.content;
                 totalTokensUsed += graceResult.tokensUsed;
+                // Record token usage for grace call
+                if (deps.tokenUsageTracker) {
+                  try {
+                    const outputTokens = Math.max(0, graceResult.tokensUsed - graceResult.promptTokens);
+                    deps.tokenUsageTracker.record({
+                      sessionId,
+                      provider: provider.provider || provider.name,
+                      model: provider.model || "unknown",
+                      inputTokens: graceResult.promptTokens,
+                      outputTokens,
+                      durationMs: graceResult.responseMs,
+                      channel: channel || "unknown",
+                    });
+                  } catch { /* best-effort */ }
+                }
               }
               break; // Exit loop after Grace Call
             }
@@ -1719,6 +1736,22 @@ Have a specific URL?
         recordProviderSuccess(provider.name, result.responseMs);
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
+
+        // Record token usage for real-time tracking
+        if (deps.tokenUsageTracker) {
+          try {
+            const outputTokens = Math.max(0, result.tokensUsed - result.promptTokens);
+            deps.tokenUsageTracker.record({
+              sessionId,
+              provider: provider.provider || provider.name,
+              model: provider.model || "unknown",
+              inputTokens: result.promptTokens,
+              outputTokens,
+              durationMs: result.responseMs,
+              channel: channel || "unknown",
+            });
+          } catch { /* best-effort */ }
+        }
 
         const TOKEN_BUDGET = 900000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
@@ -2373,6 +2406,21 @@ Have a specific URL?
             if (summaryResult && summaryResult.message?.content) {
               finalReply = summaryResult.message.content;
               totalTokensUsed += summaryResult.tokensUsed;
+              // Record token usage for summary call
+              if (deps.tokenUsageTracker) {
+                try {
+                  const outputTokens = Math.max(0, summaryResult.tokensUsed - summaryResult.promptTokens);
+                  deps.tokenUsageTracker.record({
+                    sessionId,
+                    provider: provider.provider || provider.name,
+                    model: provider.model || "unknown",
+                    inputTokens: summaryResult.promptTokens,
+                    outputTokens,
+                    durationMs: summaryResult.responseMs,
+                    channel: channel || "unknown",
+                  });
+                } catch { /* best-effort */ }
+              }
             } else {
               finalReply = "工具已执行完毕，但未能生成总结回复。替代方案：① 请重新提问，我会尝试不同的方式回答；② 提供更多上下文信息帮助我理解您的需求。";
             }

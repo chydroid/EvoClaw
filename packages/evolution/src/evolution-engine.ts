@@ -10,6 +10,8 @@ import {
   type LearningCategory,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
 import { RequirementMiner } from "./requirement-miner";
 import { EvolutionProposer } from "./evolution-proposer";
 import { EvolutionEvaluator } from "./evolution-evaluator";
@@ -51,18 +53,24 @@ export class EvolutionEngine {
   private cycles = new Map<string, EvolutionCycle>();
   private feedbackStore: ReinforcementFeedback[] = [];
   private maxFeedbackStoreEntries = 500;
+  private storeDir: string;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private registry: ServiceRegistry,
-    private eventBus: EventBus
+    private eventBus: EventBus,
+    private runtimeOptions: { storeDir?: string } = {}
   ) {
+    this.storeDir = this.runtimeOptions.storeDir || path.resolve(process.cwd(), "data", "evolution");
     this.requirementMiner = new RequirementMiner(registry, eventBus);
     this.proposer = new EvolutionProposer(registry, eventBus);
     this.evaluator = new EvolutionEvaluator(registry, eventBus);
     this.hotReload = new HotReloadManager(registry, eventBus);
     this.experienceAnalyzer = new ExperienceAnalyzer(registry, eventBus);
     this.reinforcement = new ReinforcementFeedbackSystem(registry, eventBus);
-    this.learningJournal = new LearningJournal(registry, eventBus);
+    this.learningJournal = new LearningJournal(registry, eventBus, {
+      journalPath: path.join(this.storeDir, "LEARNINGS.md"),
+    });
     this.progressReporter = new ProgressReporter(registry, eventBus);
     this.constraintGate = new ConstraintGate();
     this.externalReflector = new ExternalReflector(registry, eventBus);
@@ -82,8 +90,57 @@ export class EvolutionEngine {
     } catch {}
 
     registry.registerService("evolutionEngine", this);
-
+    this.loadFromDisk();
     this.subscribeToEvents();
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+  }
+
+  private persistToDisk(): void {
+    try {
+      if (!fs.existsSync(this.storeDir)) {
+        fs.mkdirSync(this.storeDir, { recursive: true });
+      }
+      const state = {
+        cycles: Array.from(this.cycles.values()).slice(-500),
+        feedback: this.feedbackStore.slice(-500),
+        savedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.join(this.storeDir, "state.json"), JSON.stringify(state), "utf-8");
+    } catch (err) {
+      process.stderr.write(`[EvolutionEngine] Failed to persist: ${err}\n`);
+    }
+  }
+
+  private loadFromDisk(): void {
+    try {
+      const filePath = path.join(this.storeDir, "state.json");
+      if (!fs.existsSync(filePath)) return;
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.cycles)) {
+        for (const c of data.cycles) {
+          if (c && c.id) this.cycles.set(c.id, c);
+        }
+      }
+      if (Array.isArray(data.feedback)) {
+        this.feedbackStore = data.feedback;
+      }
+    } catch (err) {
+      process.stderr.write(`[EvolutionEngine] Failed to load from disk: ${err}\n`);
+    }
+  }
+
+  stop(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.persistToDisk();
+    this.learningJournal.stop();
   }
 
   private subscribeToEvents(): void {
@@ -374,6 +431,7 @@ export class EvolutionEngine {
     };
 
     this.cycles.set(cycle.id, cycle);
+    this.schedulePersist();
     await this.eventBus.publish(SystemEvents.EVOLUTION_STARTED, cycle, "evolution-engine");
 
     await this.runEvolutionPipeline(cycle);
@@ -645,6 +703,7 @@ export class EvolutionEngine {
     }
 
     cycle.completedAt = new Date();
+    this.schedulePersist();
   }
 
   async recordFeedback(feedback: Omit<ReinforcementFeedback, "collectedAt">): Promise<void> {
@@ -653,6 +712,7 @@ export class EvolutionEngine {
       collectedAt: new Date(),
     };
     this.feedbackStore.push(fullFeedback);
+    this.schedulePersist();
 
     if (this.feedbackStore.length > this.maxFeedbackStoreEntries) {
       this.feedbackStore = this.feedbackStore.slice(-this.maxFeedbackStoreEntries);

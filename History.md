@@ -3,6 +3,39 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.46.3 (2026-06-20)
+
+### 完善 WebUI 双语翻译与真实数据展示
+
+在 v0.46.2 基础上进一步补齐 WebUI 主菜单的中英文双语翻译，并修复 Token 用量等页面数据展示问题，确保所有页面显示真实数据而非空占位。
+
+#### 关键变更
+
+- **`packages/web-ui/src/i18n.ts`**：
+  - 新增 `stream.type.session_start` / `stream.type.session_end` 中英双语键
+  - `perms.title` 中文由「权限中继 (Permission Relay)」简化为「权限中继」
+  - `sessions.tokens` 中文由 `tokens` 改为「词元」
+- **`packages/web-ui/src/ObservabilityPage.tsx`**：
+  - ExecutionsTab 增加 `safeExecutions` 防护与 `locale` 日期格式化
+- **`packages/web-ui/src/TokenUsagePage.tsx`**：
+  - 修复 API 响应解析逻辑，正确处理 overview/by-model/by-session/cost 端点
+- **`packages/agent/src/token-usage-tracker.ts`**：
+  - 新增磁盘持久化，重启后保留 token 用量记录
+- **`packages/agent/src/agent-observability.ts`**：
+  - 新增 `getRecentTraces()` 返回含已完成 trace；新增磁盘持久化
+- **`packages/evolution/src/evolution-engine.ts`**：
+  - 新增磁盘持久化，重启后保留进化周期与反馈数据
+- **`packages/gateway/src/gateway-server.ts`**：
+  - `/api/token-usage/overview` 等端点返回前端期望格式
+  - `/api/observability/traces` 使用 `getRecentTraces()`
+  - `setupWebUI` 设置 `web_ui_token` cookie，确保 SPA 可访问受保护 API
+
+#### 验证
+
+- `pnpm build` / `pnpm typecheck` 通过
+- `pnpm test` 2291 个测试通过
+- Playwright 自动化验证：11 个主菜单页面（中英双语）全部正常加载，observability-executions Tab 不再报错
+
 ## v0.46.2 (2026-06-20)
 
 ### 修复 WebUI 可观测性「执行」Tab 渲染崩溃

@@ -5,7 +5,7 @@ import http from "http";
 import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { Observability } from "@evoclaw/infrastructure";
-import type { TokenUsageTracker, UsageSummary } from "@evoclaw/agent";
+import type { TokenUsageTracker } from "@evoclaw/agent";
 import type {
   InstallPolicyManager,
   InstallPolicy,
@@ -759,6 +759,11 @@ export class GatewayServer {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
         if (!executor) { res.json([]); return; }
+        const observability = executor.getAgentObservability?.();
+        if (observability && typeof observability.getRecentTraces === "function") {
+          res.json(observability.getRecentTraces(100));
+          return;
+        }
         const traces = executor.getObservabilityTraces?.();
         res.json(traces || []);
       } catch { res.json([]); }
@@ -1266,6 +1271,16 @@ export class GatewayServer {
     this.app.use(express.static(webUiPath));
     this.app.use("/assets/images", express.static(userAssetsPath));
     this.app.get(/^(?!\/api\/|\/health|\/live|\/ready).*/, (_req: Request, res: Response) => {
+      // Set web_ui_token cookie so the SPA can make authenticated API calls.
+      // The cookie is httpOnly so XSS can't steal it, and sameSite strict prevents CSRF.
+      const webUiToken = process.env.WEB_UI_TOKEN || "";
+      if (webUiToken && webUiToken.length > 0) {
+        res.cookie("web_ui_token", webUiToken, {
+          httpOnly: true,
+          sameSite: "strict",
+          maxAge: 24 * 60 * 60 * 1000,
+        });
+      }
       res.sendFile(path.join(webUiPath, "index.html"));
     });
   }
@@ -1517,73 +1532,122 @@ export class GatewayServer {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
         res.json({
-          totalInputTokens: 0,
-          totalOutputTokens: 0,
-          totalCacheHitTokens: 0,
-          totalCost: 0,
-          totalCalls: 0,
-          totalReasoningTokens: 0,
-          byProvider: {},
-          byModel: {},
-          byChannel: {},
-          byUser: {},
-          hourlyTrend: [],
-        } satisfies UsageSummary);
+          totalTokens: 0, totalCost: 0, totalCalls: 0, avgTokensPerSession: 0,
+          recentUsage: [],
+        });
         return;
       }
       const summary = tracker.getSummary();
-      res.json(summary);
+      const recent = tracker.getRecent(20);
+      const recentUsage = recent.map(r => ({
+        id: r.id,
+        model: r.model,
+        tokens: r.inputTokens + r.outputTokens,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        cost: r.totalCost,
+        timestamp: new Date(r.calledAt).toISOString(),
+      }));
+      // Count unique sessions
+      const uniqueSessions = new Set(recent.map(r => r.sessionId)).size;
+      res.json({
+        totalTokens: summary.totalInputTokens + summary.totalOutputTokens,
+        totalCost: summary.totalCost,
+        totalCalls: summary.totalCalls,
+        avgTokensPerSession: uniqueSessions > 0 ? Math.round((summary.totalInputTokens + summary.totalOutputTokens) / uniqueSessions) : 0,
+        recentUsage,
+      });
     });
 
     // GET /api/token-usage/by-model — usage grouped by model
     this.app.get("/api/token-usage/by-model", (_req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ byModel: {}, totalCalls: 0 });
+        res.json({ models: [] });
         return;
       }
-      const summary = tracker.getSummary();
-      res.json({ byModel: summary.byModel, totalCalls: summary.totalCalls });
+      const recent = tracker.getRecent(1000);
+      const byModel: Record<string, { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; calls: number }> = {};
+      for (const r of recent) {
+        const key = `${r.provider}/${r.model}`;
+        if (!byModel[key]) {
+          byModel[key] = { provider: r.provider, model: r.model, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, calls: 0 };
+        }
+        byModel[key].inputTokens += r.inputTokens;
+        byModel[key].outputTokens += r.outputTokens;
+        byModel[key].totalTokens += r.inputTokens + r.outputTokens;
+        byModel[key].cost += r.totalCost;
+        byModel[key].calls++;
+      }
+      res.json({ models: Object.values(byModel) });
     });
 
     // GET /api/token-usage/by-session — usage grouped by session
     this.app.get("/api/token-usage/by-session", (req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ sessions: [], totalCalls: 0 });
+        res.json({ sessions: [] });
         return;
       }
       const sessionId = req.query.sessionId as string | undefined;
       const limit = Math.min(parseInt(String(req.query.limit ?? "50"), 10) || 50, 500);
       if (sessionId) {
         const sessionCost = tracker.getSessionCost(sessionId);
-        res.json({ sessionId, ...sessionCost });
-      } else {
-        const recent = tracker.getRecent(limit);
-        // Group by session
-        const bySession: Record<string, { inputTokens: number; outputTokens: number; totalCost: number; calls: number }> = {};
-        for (const r of recent) {
-          if (!bySession[r.sessionId]) {
-            bySession[r.sessionId] = { inputTokens: 0, outputTokens: 0, totalCost: 0, calls: 0 };
-          }
-          bySession[r.sessionId].inputTokens += r.inputTokens;
-          bySession[r.sessionId].outputTokens += r.outputTokens;
-          bySession[r.sessionId].totalCost += r.totalCost;
-          bySession[r.sessionId].calls++;
-        }
-        res.json({ sessions: bySession, totalCalls: recent.length });
+        res.json({
+          sessions: [{
+            sessionId,
+            user: "",
+            inputTokens: sessionCost.inputTokens,
+            outputTokens: sessionCost.outputTokens,
+            cost: sessionCost.totalCost,
+            lastActive: new Date().toISOString(),
+          }],
+        });
+        return;
       }
+      const recent = tracker.getRecent(limit);
+      const bySession: Record<string, { inputTokens: number; outputTokens: number; cost: number; calls: number; lastActive: number }> = {};
+      for (const r of recent) {
+        if (!bySession[r.sessionId]) {
+          bySession[r.sessionId] = { inputTokens: 0, outputTokens: 0, cost: 0, calls: 0, lastActive: 0 };
+        }
+        bySession[r.sessionId].inputTokens += r.inputTokens;
+        bySession[r.sessionId].outputTokens += r.outputTokens;
+        bySession[r.sessionId].cost += r.totalCost;
+        bySession[r.sessionId].calls++;
+        if (r.calledAt > bySession[r.sessionId].lastActive) {
+          bySession[r.sessionId].lastActive = r.calledAt;
+        }
+      }
+      const sessions = Object.entries(bySession).map(([sessionId, data]) => ({
+        sessionId,
+        user: "",
+        inputTokens: data.inputTokens,
+        outputTokens: data.outputTokens,
+        cost: data.cost,
+        lastActive: new Date(data.lastActive).toISOString(),
+      }));
+      res.json({ sessions });
     });
 
     // GET /api/token-usage/cost — cost breakdown by provider
     this.app.get("/api/token-usage/cost", (_req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ byProvider: {}, totalCost: 0 });
+        res.json({ providers: [] });
         return;
       }
       const summary = tracker.getSummary();
-      res.json({ byProvider: summary.byProvider, totalCost: summary.totalCost });
+      const totalCost = summary.totalCost;
+      const providers = Object.entries(summary.byProvider).map(([provider, data]) => ({
+        provider,
+        totalCost: data.cost,
+        inputTokens: 0,
+        outputTokens: 0,
+        calls: data.calls,
+        percentage: totalCost > 0 ? (data.cost / totalCost) * 100 : 0,
+      }));
+      res.json({ providers, totalCost });
     });
   }
 

@@ -7,6 +7,9 @@
  * No external dependencies. Production-ready.
  */
 
+import * as fs from "fs";
+import * as path from "path";
+
 // ──────────────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────────────
@@ -80,6 +83,8 @@ export interface ObservabilityConfig {
   exportIntervalMs: number;
   /** 0–1 fraction of traces to record (1.0 = record all) */
   samplingRate: number;
+  /** 持久化目录 */
+  storeDir?: string;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -109,9 +114,13 @@ export class AgentObservability {
   private metrics: Metric[] = [];
   private traceOrder: string[] = []; // insertion order for eviction
   private exportTimer: ReturnType<typeof setInterval> | null = null;
+  private storeDir: string;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: Partial<ObservabilityConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.storeDir = this.config.storeDir || path.resolve(process.cwd(), "data", "observability");
+    this.loadFromDisk();
     if (this.config.enabled && this.config.exportIntervalMs > 0) {
       this.exportTimer = setInterval(
         () => this.flushExport(),
@@ -269,6 +278,13 @@ export class AgentObservability {
       }
     }
     return active;
+  }
+
+  /** 获取最近的 traces（含已完成），按开始时间倒序 */
+  getRecentTraces(limit = 100): Trace[] {
+    const all = Array.from(this.traces.values());
+    all.sort((a, b) => b.startTime - a.startTime);
+    return all.slice(0, limit);
   }
 
   // ── Metrics ──────────────────────────────────────────────
@@ -483,6 +499,11 @@ export class AgentObservability {
       clearInterval(this.exportTimer);
       this.exportTimer = null;
     }
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.persistToDisk();
     this.flushExport();
   }
 
@@ -539,6 +560,49 @@ export class AgentObservability {
 
     this.traces.set(trace.traceId, trace);
     this.traceOrder.push(trace.traceId);
+    this.schedulePersist();
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+  }
+
+  /** 保存 traces 到磁盘（JSON 格式） */
+  private persistToDisk(): void {
+    try {
+      if (!fs.existsSync(this.storeDir)) {
+        fs.mkdirSync(this.storeDir, { recursive: true });
+      }
+      const filePath = path.join(this.storeDir, "traces.json");
+      const data = {
+        traces: Array.from(this.traces.values()).slice(-1000),
+        savedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
+    } catch (err) {
+      process.stderr.write(`[AgentObservability] Failed to persist: ${err}\n`);
+    }
+  }
+
+  /** 从磁盘加载 traces */
+  private loadFromDisk(): void {
+    try {
+      const filePath = path.join(this.storeDir, "traces.json");
+      if (!fs.existsSync(filePath)) return;
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.traces)) {
+        for (const t of data.traces) {
+          if (t && t.traceId) {
+            this.traces.set(t.traceId, t);
+            this.traceOrder.push(t.traceId);
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[AgentObservability] Failed to load from disk: ${err}\n`);
+    }
   }
 
   private recordSpanMetrics(span: Span): void {

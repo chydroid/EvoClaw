@@ -27,7 +27,7 @@ const SERVER_VERSION = getServerVersion();
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue } from "@evoclaw/gateway";
-import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager } from "@evoclaw/agent";
+import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
@@ -360,7 +360,23 @@ export class EvoClawServer {
     this.registry.registerService("agentPool", this.agentPool);
     this.actorSystem = new ActorSystem();
     this.registry.registerService("actorSystem", this.actorSystem);
-    this.agentModelExecutor = new AgentModelExecutor(this.registry, this.eventBus, undefined, this.configManager.get("persona"));
+    const dataDir = path.resolve(__dirname, "..", "..", "..", "data");
+    this.agentModelExecutor = new AgentModelExecutor(
+      this.registry,
+      this.eventBus,
+      undefined,
+      this.configManager.get("persona"),
+      { storeDir: dataDir }
+    );
+    // Register TokenUsageTracker for real-time token/cost tracking
+    const tokenUsageTracker = new TokenUsageTracker({
+      retainCount: 10000,
+      cache: this.agentModelExecutor.getModelCostProvider?.() as any,
+      storeDir: path.join(dataDir, "token-usage"),
+    });
+    this.registry.registerService("tokenUsageTracker", tokenUsageTracker);
+    // Wire token usage recording into the LLM call flow
+    this.agentModelExecutor.setTokenUsageTracker(tokenUsageTracker);
     // Register agent-layer observability for /metrics endpoint
     const agentObs = this.agentModelExecutor.getAgentObservability();
     if (agentObs) {
@@ -370,7 +386,7 @@ export class EvoClawServer {
     const executionCheckpointStore = this.agentModelExecutor.getExecutionCheckpointStore();
     this.registry.registerService("executionCheckpointStore", executionCheckpointStore);
     this.skillManager = new SkillManager(this.registry, this.eventBus);
-    this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus);
+    this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus, { storeDir: dataDir });
     // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);

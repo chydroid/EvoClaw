@@ -2,6 +2,9 @@
 // Hermes Desktop 0.16 引入: 实时token/cost显示
 // 追踪每次LLM调用的输入/输出tokens和估算成本
 
+import * as fs from "fs";
+import * as path from "path";
+
 /** Model cost info - 镜像GatewayMetadataCache的ModelCostInfo以避免跨包循环依赖 */
 export interface ModelCostInfo {
   provider: string;
@@ -73,6 +76,8 @@ export interface TokenUsageTrackerConfig {
   onRecord?: (record: UsageRecord) => void;
   /** 预算限制配置 */
   budget?: BudgetConfig;
+  /** 持久化目录路径 */
+  storeDir?: string;
 }
 
 /** 简化的Model cost provider接口 - 兼容GatewayMetadataCache */
@@ -118,8 +123,11 @@ export class TokenUsageTracker {
   private cache?: ModelCostProvider;
   private counter = 0;
   private budgetLimiter?: BudgetLimiter;
+  private storeDir: string;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: Partial<TokenUsageTrackerConfig> = {}) {
+    this.storeDir = config.storeDir || path.resolve(process.cwd(), "data", "token-usage");
     this.config = {
       cache: config.cache as ModelCostProvider,
       retainCount: config.retainCount ?? 10000,
@@ -128,11 +136,13 @@ export class TokenUsageTracker {
       defaultReasoningCostPer1k: config.defaultReasoningCostPer1k ?? 0.006,
       onRecord: config.onRecord ?? (() => {}),
       budget: config.budget,
+      storeDir: this.storeDir,
     };
     this.cache = this.config.cache;
     if (this.config.budget) {
       this.budgetLimiter = new BudgetLimiter(this, this.config.budget);
     }
+    this.loadFromDisk();
   }
 
   /**
@@ -178,6 +188,7 @@ export class TokenUsageTracker {
       this.records.shift();
     }
     this.config.onRecord(record);
+    this.schedulePersist();
     return record;
   }
 
@@ -300,6 +311,7 @@ export class TokenUsageTracker {
   /** 清空 */
   clear(): void {
     this.records = [];
+    this.persistToDisk();
   }
 
   /** 设置缓存 */
@@ -310,6 +322,48 @@ export class TokenUsageTracker {
   /** 获取预算限制器 */
   getBudgetLimiter(): BudgetLimiter | undefined {
     return this.budgetLimiter;
+  }
+
+  /** 安排延迟持久化（合并多次写入） */
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+  }
+
+  /** 持久化到磁盘 */
+  private persistToDisk(): void {
+    try {
+      if (!fs.existsSync(this.storeDir)) {
+        fs.mkdirSync(this.storeDir, { recursive: true });
+      }
+      const filePath = path.join(this.storeDir, "records.json");
+      const data = {
+        counter: this.counter,
+        records: this.records.slice(-5000), // 最多保留5000条
+        savedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
+    } catch (err) {
+      process.stderr.write(`[TokenUsageTracker] Failed to persist: ${err}\n`);
+    }
+  }
+
+  /** 从磁盘加载 */
+  private loadFromDisk(): void {
+    try {
+      const filePath = path.join(this.storeDir, "records.json");
+      if (!fs.existsSync(filePath)) return;
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw);
+      if (data.counter && typeof data.counter === "number") {
+        this.counter = data.counter;
+      }
+      if (Array.isArray(data.records)) {
+        this.records = data.records;
+      }
+    } catch (err) {
+      process.stderr.write(`[TokenUsageTracker] Failed to load from disk: ${err}\n`);
+    }
   }
 }
 

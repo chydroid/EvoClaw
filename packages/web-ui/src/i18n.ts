@@ -439,7 +439,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "sessions.loading": "加载中...",
     "sessions.search": "搜索会话...",
     "sessions.messages": "条消息",
-    "sessions.tokens": "tokens",
+    "sessions.tokens": "词元",
     "sessions.rename_placeholder": "输入新名称...",
     "sessions.clear_all": "清空全部",
     "sessions.confirm_clear": "确认清空所有会话？",
@@ -919,7 +919,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "permissions.status.expired": "已过期",
 
     // ─── Permissions Relay (perms.*) ──────────────────────
-    "perms.title": "权限中继 (Permission Relay)",
+    "perms.title": "权限中继",
     "perms.subtitle": "集中式权限控制 — 所有工具调用权限请求经此流转",
     "perms.refresh": "刷新",
     "perms.session": "会话",
@@ -1987,6 +1987,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     "stream.type.permission": "权限",
     "stream.type.heartbeat": "心跳",
     "stream.type.system": "系统",
+    "stream.type.session_start": "会话开始",
+    "stream.type.session_end": "会话结束",
 
     // ─── Observability Page ───────────────────────────────────
     "observability.title": "可观测性",
@@ -4005,6 +4007,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     "stream.type.permission": "Permission",
     "stream.type.heartbeat": "Heartbeat",
     "stream.type.system": "System",
+    "stream.type.session_start": "Session Start",
+    "stream.type.session_end": "Session End",
 
     // ─── Observability ──────────────────────────────────
     "observability.title": "Observability",

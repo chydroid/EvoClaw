@@ -93,10 +93,22 @@ export default function TokenUsagePage() {
     setLoading(true);
     try {
       const [overviewRes, modelRes, sessionRes, costRes] = await Promise.all([
-        fetch(`${API}/api/token-usage/overview`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/token-usage/by-model`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/token-usage/by-session`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/token-usage/cost`).then(r => r.json()).catch(() => null),
+        fetch(`${API}/api/token-usage/overview`).then(async r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }).catch(() => null),
+        fetch(`${API}/api/token-usage/by-model`).then(async r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }).catch(() => null),
+        fetch(`${API}/api/token-usage/by-session`).then(async r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }).catch(() => null),
+        fetch(`${API}/api/token-usage/cost`).then(async r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }).catch(() => null),
       ]);
       if (overviewRes && typeof overviewRes === "object") {
         setOverview({

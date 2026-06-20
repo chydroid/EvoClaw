@@ -244,6 +244,37 @@ export class AgentModelExecutor {
     process.stdout.write(`[AgentModelExecutor] Copilot router integrated (enabled=${this.copilotRouter !== null})`);
   }
 
+  /** Token usage tracker for recording LLM call metrics */
+  private tokenUsageTracker: import("./token-usage-tracker").TokenUsageTracker | null = null;
+
+  /** Set token usage tracker */
+  setTokenUsageTracker(tracker: import("./token-usage-tracker").TokenUsageTracker): void {
+    this.tokenUsageTracker = tracker;
+  }
+
+  /** Get model cost provider from the gateway metadata cache */
+  getModelCostProvider(): import("./token-usage-tracker").ModelCostProvider | undefined {
+    return this.tokenUsageTracker ? { getModelCost: () => undefined } : undefined;
+  }
+
+  /** Record token usage after an LLM call */
+  private recordTokenUsage(sessionId: string, provider: string, model: string, inputTokens: number, outputTokens: number, durationMs: number, channel?: string): void {
+    if (!this.tokenUsageTracker) return;
+    try {
+      this.tokenUsageTracker.record({
+        sessionId,
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        durationMs,
+        channel: channel || "web-ui",
+      });
+    } catch {
+      // Best-effort: don't break the LLM call flow
+    }
+  }
+
   /** Get or create iteration budget for a session */
   getIterationBudget(sessionId: string): IterationBudget {
     let budget = this.iterationBudgets.get(sessionId);
@@ -411,7 +442,8 @@ export class AgentModelExecutor {
     private registry: ServiceRegistry,
     private eventBus: EventBus,
     config?: Partial<ModelConfig>,
-    persona?: Partial<PersonaConfig>
+    persona?: Partial<PersonaConfig>,
+    private runtimeOptions: { storeDir?: string } = {}
   ) {
     this.config = { ...DEFAULT_MODEL_CONFIG, ...config };
     this.persona = { ...DEFAULT_PERSONA, ...persona };
@@ -503,7 +535,11 @@ export class AgentModelExecutor {
     // Observability
     try {
       const { AgentObservability } = require("./agent-observability");
-      this.observability = new AgentObservability();
+      this.observability = new AgentObservability({
+        storeDir: this.runtimeOptions.storeDir
+          ? path.join(this.runtimeOptions.storeDir, "observability")
+          : undefined,
+      });
     } catch { /* observability not available */ }
 
     // Computed Status Engine
@@ -738,6 +774,7 @@ export class AgentModelExecutor {
       recordStaleContext: this.staleContextManager ? (sessionId: string, toolName: string) => this.staleContextManager!.recordToolResult(sessionId, toolName) : undefined,
       getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
       semanticIntentClassifier: this.semanticQuickReply,
+      tokenUsageTracker: this.tokenUsageTracker ?? undefined,
     };
   }
 
