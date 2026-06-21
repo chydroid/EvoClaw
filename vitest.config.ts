@@ -2,10 +2,21 @@ import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
 export default defineConfig({
+  // 在 CI 中禁用 Vite 文件系统缓存，避免多 fork 进程并发访问 /tmp 下 SSR deps
+  // 临时缓存目录导致的 ENOENT 竞争错误
+  cacheDir: process.env.CI ? false : "node_modules/.vitest",
+
   test: {
     // Environment
     environment: "node",
-    
+
+    // Pool: 显式使用 forks，避免 threads 与 native 模块的兼容性问题
+    pool: "forks",
+    forks: {
+      // CI 中串行运行每个测试文件，避免并发争夺 SSR 转换缓存
+      singleFork: process.env.CI ? true : false,
+    },
+
     // Pattern matching
     include: [
       "packages/*/src/**/*.test.ts",
