@@ -594,6 +594,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [voiceToast, setVoiceToast] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const statusAbortControllerRef = useRef<AbortController | null>(null);
+  const voiceAbortControllerRef = useRef<AbortController | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
   const userAbortedRef = useRef(false);
@@ -805,7 +807,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   });
 
   const refreshVoiceConfig = useCallback(() => {
-    voiceApi.get().then((data) => {
+    voiceAbortControllerRef.current?.abort();
+    voiceAbortControllerRef.current = new AbortController();
+    voiceApi.get(voiceAbortControllerRef.current.signal).then((data) => {
       setVoiceConfig(data.config);
       setVoiceEnabledBackend(data.config.enabled && data.status.available);
     }).catch(() => {
@@ -821,6 +825,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     return () => {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
+      voiceAbortControllerRef.current?.abort();
+      voiceAbortControllerRef.current = null;
     };
   }, [refreshVoiceConfig]);
 
@@ -834,6 +840,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       intervalsRef.current = [];
       timersRef.current.forEach(id => clearTimeout(id));
       timersRef.current = [];
+      statusAbortControllerRef.current?.abort();
+      statusAbortControllerRef.current = null;
+      voiceAbortControllerRef.current?.abort();
+      voiceAbortControllerRef.current = null;
       voice.stopListening();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -844,6 +854,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     handleSendRef.current = handleSend;
   });
   const handleSend = async (queuedText?: string) => {
+    voice.stopListening();
     userAbortedRef.current = false;
     const text = (queuedText || input).trim();
     const readyFiles = queuedText ? [] : attachedFiles.filter(f => f.status === "done");
@@ -920,7 +931,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
     const statusInterval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/chat/status?sessionId=${sessionId}`);
+        statusAbortControllerRef.current?.abort();
+        statusAbortControllerRef.current = new AbortController();
+        const res = await fetch(`/api/chat/status?sessionId=${sessionId}`, { signal: statusAbortControllerRef.current.signal });
         if (res.ok) {
           const status = await res.json();
           if (status && status.phase && status.phase !== "idle") {
@@ -933,6 +946,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
               splitting: t("chat.phase.splitting"),
               subtask_executing: t("chat.phase.subtask_executing"),
               resuming: t("chat.phase.resuming"),
+              working: t("chat.phase.working"),
             };
             const label = phaseLabels[status.phase] || status.phase;
             const subtaskInfo = status.subtaskIndex !== undefined && status.subtaskTotal !== undefined
@@ -943,7 +957,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           }
         }
       } catch { /* ignore polling errors */ }
-    }, 1500);
+    }, 3000);
     intervalsRef.current.push(statusInterval);
 
     try {
@@ -1281,6 +1295,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       clearInterval(progressInterval);
       clearInterval(statusInterval);
       intervalsRef.current = intervalsRef.current.filter(id => id !== progressInterval && id !== statusInterval);
+      statusAbortControllerRef.current?.abort();
+      statusAbortControllerRef.current = null;
       setStatusMessage(null);
       setIsStreaming(false);
     isStreamingRef.current = false;

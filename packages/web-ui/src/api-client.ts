@@ -11,8 +11,8 @@
 
 const BASE = "";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { signal });
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
   return res.json() as Promise<T>;
 }
@@ -43,8 +43,8 @@ async function del<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function getSafe<T>(path: string, fallback: T): Promise<T> {
-  try { return await get<T>(path); } catch { return fallback; }
+async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal): Promise<T> {
+  try { return await get<T>(path, signal); } catch { return fallback; }
 }
 
 export class ApiError extends Error {
@@ -159,7 +159,7 @@ export interface VoiceVerificationResult {
 }
 
 export const voiceApi = {
-  get: () => getSafe<VoiceApiResponse>("/api/voice", { config: {} as any, status: {} as any }),
+  get: (signal?: AbortSignal) => getSafe<VoiceApiResponse>("/api/voice", { config: {} as any, status: {} as any }, signal),
   update: (body: Partial<VoiceConfigData>) => put<{ status: VoiceStatusData }>("/api/voice", body),
   verify: () => post<VoiceVerificationResult>("/api/voice/verify"),
   toggle: (enabled: boolean) => post<{ status: VoiceStatusData }>("/api/voice/toggle", { enabled }),
