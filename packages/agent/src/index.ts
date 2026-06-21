@@ -95,7 +95,7 @@ export { CopilotRouter } from "./copilot-router";
 export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision, UserLLMProvider } from "./copilot-router";
 
 export { CredentialPool } from "./credential-pool";
-export type { CredentialEntry, CredentialPoolConfig } from "./credential-pool";
+export type { CredentialEntry, CredentialPoolOptions, CredentialPoolLegacyConfig, CredentialState, RotationStrategy } from "./credential-pool";
 
 // Text processing utilities
 export { stripWebNoise, collapseNewlines, summarizeToolResult, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
@@ -149,8 +149,12 @@ export { StaleContextManager } from "./stale-context";
 export type { StaleContextConfig, ToolResultMeta } from "./stale-context";
 
 // Iteration Budget system
-export { IterationBudget } from "./iteration-budget";
+export { IterationBudget, DEFAULT_PARENT_BUDGET, DEFAULT_CHILD_BUDGET } from "./iteration-budget";
 export type { IterationBudgetConfig, IterationBudgetStatus } from "./iteration-budget";
+
+// Rate Limit Tracker system
+export { RateLimitTracker } from "./rate-limit-tracker";
+export type { RateLimitBucket, RateLimitState } from "./rate-limit-tracker";
 
 // Input Pipeline system
 export { PipelineRunner } from "./input-pipeline";

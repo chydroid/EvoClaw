@@ -25,6 +25,16 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.52.0 亮点
+- **多凭证池管理**：CredentialPool 支持 4 种轮换策略（fill_first/round_robin/random/least_used）、三态管理（OK/EXHAUSTED/DEAD）、冷却 TTL、终端认证错误永久标记
+- **速率限制追踪**：RateLimitTracker 解析 12 个 x-ratelimit-* 响应头，四维计数（requests/tokens × min/hour），提供 isNearLimit() 和 waitForResetMs() 决策
+- **迭代预算**：IterationBudget 线程安全计数器，父 agent 90 次/子 agent 50 次，Grace Call 机制防止预算耗尽时无响应
+- **工具护栏**：幂等/变异工具分类 + 重复调用检测 + allow/warn/block/halt 决策
+- **路径安全**：集中式路径遍历防护（validateWithinDir/safeJoin/sanitizePath）
+- **安全输出**：SafeWriter 防 broken pipe 崩溃，30+ API key 脱敏正则
+- **AgentPool 排队**：池满时排队等待 + 基于利用率的自动扩容
+- **IPv4 DNS 优先**：避免 IPv6 DNS 解析延迟
+
 ### v0.51.0 亮点
 - **Office 文档生成**：内置 Word/Excel/PPT 创建工具（`docx_create` / `xlsx_create` / `pptx_create`），支持图形、表格与复杂排版
 - **长任务状态可见**：复杂文档生成等长任务通过 SSE 持续推送 `正在进行生成，请耐心等待...` 状态，避免用户看到中间失败提示

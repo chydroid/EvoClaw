@@ -68,3 +68,10 @@ export type {
   PoisoningType,
   PoisoningScannerConfig,
 } from "./mcp-poisoning-scanner";
+
+// Tool Guardrails — 幂等/变异工具分类与护栏
+export { ToolGuardrails, IDEMPOTENT_TOOL_NAMES, MUTATING_TOOL_NAMES, isIdempotent, isMutating, computeArgsHash, evaluateToolCall, DEFAULT_GUARDRAIL_CONFIG } from "./tool-guardrails";
+export type { ToolGuardrailAction, ToolCallSignature, ToolGuardrailConfig, ToolGuardrailDecision } from "./tool-guardrails";
+
+// Path Security — 路径遍历防护
+export { validateWithinDir, safeJoin, hasTraversalComponent, hasNullByte, sanitizePath, isSymlinkSync } from "./path-security";

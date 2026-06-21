@@ -3,6 +3,37 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.52.0 (2026-06-21)
+
+### 对标 hermes-agent 全面工程化提升
+
+#### 新增模块
+
+- **CredentialPool 多凭证池管理**（`packages/agent/src/credential-pool.ts`）：借鉴 hermes-agent credential_pool.py，支持 4 种轮换策略（fill_first/round_robin/random/least_used）、三态管理（OK/EXHAUSTED/DEAD）、冷却 TTL（401=5min, 429=1h）、终端认证错误永久标记、向后兼容 getNextKey/reportRateLimit API
+- **RateLimitTracker 速率限制追踪**（`packages/agent/src/rate-limit-tracker.ts`）：解析 12 个 x-ratelimit-* 响应头，维护 requests_min/requests_hour/tokens_min/tokens_hour 四维计数，提供 isNearLimit() 和 waitForResetMs() 辅助决策
+- **IterationBudget 迭代预算**（`packages/agent/src/iteration-budget.ts`）：线程安全的 consume/refund 计数器，父 agent 默认 90 次、子 agent 默认 50 次，支持 Grace Call（预算耗尽后一次无工具最终调用），向后兼容旧 API
+- **ToolGuardrails 工具护栏**（`packages/security/src/tool-guardrails.ts`）：幂等/变异工具分类（IDEMPOTENT_TOOL_NAMES/MUTATING_TOOL_NAMES），工具调用签名（argsHash），护栏决策（allow/warn/block/halt），重复调用检测
+- **PathSecurity 路径安全**（`packages/security/src/path-security.ts`）：validateWithinDir 防 .. 穿越、safeJoin 安全拼接、hasNullByte 防 null 字节注入、sanitizePath 综合检查
+- **SafeWriter 安全输出**（`packages/infrastructure/src/safe-writer.ts`）：包装 stdout/stderr 捕获 EPIPE/ERR_STREAM_DESTROYED，防 systemd/Docker broken pipe 崩溃，installSafeIOHandlers 全局安装
+
+#### 增强改进
+
+- **Logger 脱敏扩展**（`packages/infrastructure/src/logger.ts`）：从 4 个 API key 正则扩展到 30+（GitHub/Slack/Perplexity/Fal.ai/AWS/Stripe/SendGrid/HuggingFace/Replicate/npm/PyPI/Doppler/xAI/Ntropy 等），新增 SENSITIVE_KEYS（refreshToken/clientSecret/connectionString/webhookSecret 等），新增 PEM 私钥脱敏
+- **AgentPool 排队与自动扩容**（`packages/agent/src/agent-pool.ts`）：acquire() 支持超时排队等待（默认 30s），基于利用率的自动扩容（scaleThreshold=0.7），release() 唤醒等待队列，queuedTasks 指标正确反映排队数
+- **IPv4 DNS 优先**（`apps/server/src/index.ts`）：dns.setDefaultResultOrder("ipv4first") 避免 IPv6 DNS 解析延迟
+- **Vitest 配置加固**（`vitest.config.ts`）：始终禁用 Vite 文件系统缓存 + 始终 singleFork 串行运行，彻底消除 CI 和本地的 ENOENT SSR 临时文件竞争错误
+
+#### 测试覆盖
+
+- 新增 `credential-pool.test.ts`（10 个测试）：轮换策略、三态管理、冷却恢复、终端认证错误
+- 新增 `rate-limit-tracker.test.ts`（12 个测试）：header 解析、大小写不敏感、isNearLimit、waitForResetMs
+- 新增 `iteration-budget.test.ts`（12 个测试）：consume/refund、Grace Call、并发原子性
+- 新增 `tool-guardrails.test.ts`（15 个测试）：工具分类、argsHash、护栏决策、重复调用检测
+- 新增 `path-security.test.ts`（10 个测试）：遍历检测、validateWithinDir、safeJoin、sanitizePath
+- 新增 `safe-writer.test.ts`（7 个测试）：SafeWriter 创建、EPIPE 抑制、单例
+- 更新 `agent-pool.test.ts`：适配新的排队 API
+- 全部 119 个测试文件、2989 个测试通过
+
 ## v0.51.0 (2026-06-21)
 
 ### 技能扩展、错误体验优化与 WebUI 主题调整

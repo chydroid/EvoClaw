@@ -17,7 +17,14 @@ export class AgentPoolManager implements AgentPool {
     scaleThreshold: 0.7,
     heartbeatTimeoutMs: 300_000, // 5 minutes
     maxErrorCount: 3,
+    autoScale: true,
   };
+  // 等待队列：当池满时，请求排队等待
+  private waitQueue: Array<{
+    role?: AgentRole;
+    resolve: (agent: Agent | null) => void;
+    timer: ReturnType<typeof setTimeout> | null;
+  }> = [];
 
   constructor(
     private registry: ServiceRegistry,
@@ -91,11 +98,38 @@ export class AgentPoolManager implements AgentPool {
     return agent;
   }
 
-  async acquire(role?: AgentRole): Promise<Agent | null> {
+  async acquire(role?: AgentRole, timeoutMs = 30_000): Promise<Agent | null> {
+    const agent = this.tryAcquire(role);
+    if (agent) return agent;
+
+    // timeoutMs=0 表示不排队，立即返回 null
+    if (timeoutMs <= 0) return null;
+
+    // 池满时排队等待
+    return new Promise<Agent | null>((resolve) => {
+      const timer = setTimeout(() => {
+        // 超时：从队列移除并返回 null
+        const idx = this.waitQueue.findIndex((w) => w.resolve === resolve);
+        if (idx >= 0) this.waitQueue.splice(idx, 1);
+        resolve(null);
+      }, timeoutMs);
+
+      this.waitQueue.push({ role, resolve, timer });
+
+      // 尝试自动扩容
+      if (this.poolConfig.autoScale) {
+        this.tryAutoScale();
+      }
+    });
+  }
+
+  /**
+   * 尝试立即获取一个空闲 agent。内部方法，不排队。
+   */
+  private tryAcquire(role?: AgentRole): Agent | null {
     const agents = Array.from(this.agents.values());
 
     for (const agent of agents) {
-      // Skip agents that are no longer usable: error, terminated, or awaiting_input.
       if (agent.state.status === "error" || agent.state.status === "terminated" || agent.state.status === "awaiting_input") {
         continue;
       }
@@ -109,8 +143,6 @@ export class AgentPoolManager implements AgentPool {
     }
 
     if (agents.length < this.poolConfig.maxAgents) {
-      // When creating a new agent, mark it as busy before returning so callers
-      // can rely on the "busy" invariant for all acquired agents.
       const newAgent = this.createAgent(role || "executor");
       newAgent.state.status = "busy";
       newAgent.state.lastHeartbeat = new Date();
@@ -118,6 +150,39 @@ export class AgentPoolManager implements AgentPool {
     }
 
     return null;
+  }
+
+  /**
+   * 基于利用率自动扩容。当利用率超过 scaleThreshold 且未达 maxAgents 时扩容。
+   */
+  private tryAutoScale(): void {
+    const agents = Array.from(this.agents.values());
+    const active = agents.filter((a) => a.state.status === "busy").length;
+    const utilization = agents.length > 0 ? active / agents.length : 0;
+
+    if (utilization >= this.poolConfig.scaleThreshold && agents.length < this.poolConfig.maxAgents) {
+      this.createAgent("executor");
+      process.stderr.write(
+        `[AgentPool] Auto-scaled: ${agents.length} → ${agents.length + 1} agents (utilization=${(utilization * 100).toFixed(0)}%)`
+      );
+    }
+  }
+
+  /**
+   * 唤醒等待队列中的下一个请求。
+   */
+  private drainWaitQueue(): void {
+    while (this.waitQueue.length > 0) {
+      const waiter = this.waitQueue[0];
+      const agent = this.tryAcquire(waiter.role);
+      if (agent) {
+        this.waitQueue.shift();
+        if (waiter.timer) clearTimeout(waiter.timer);
+        waiter.resolve(agent);
+      } else {
+        break; // 无可用 agent，停止尝试
+      }
+    }
   }
 
   async release(agentId: string): Promise<void> {
@@ -134,6 +199,9 @@ export class AgentPoolManager implements AgentPool {
     agent.state.status = "idle";
     agent.state.activeTaskId = null;
     agent.state.lastHeartbeat = new Date();
+
+    // 唤醒等待队列中的下一个请求
+    this.drainWaitQueue();
   }
 
   async scale(delta: number): Promise<void> {
@@ -200,7 +268,7 @@ export class AgentPoolManager implements AgentPool {
       totalAgents: agents.length,
       activeAgents: active,
       idleAgents: idle,
-      queuedTasks: 0,
+      queuedTasks: this.waitQueue.length,
       averageUtilization: agents.length > 0 ? active / agents.length : 0,
     };
   }

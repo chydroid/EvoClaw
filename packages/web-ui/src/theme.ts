@@ -199,7 +199,7 @@ export const THEME_CRIMSON_DARK: ThemeColors = {
   warningBg: "#2a1a0a",
   headerBg: "#111111",
   tabBg: "#1a1a1a",
-  userBubbleBg: "rgba(79, 15, 21, 0.7)",
+  userBubbleBg: "rgba(89, 25, 21, 0.7)",
   botBubbleBg: "rgba(25, 21, 21, 0.7)",
   userBubbleBorder: "rgba(10, 5, 5, 0.3)",
   botBubbleBorder: "rgba(196, 30, 58, 0.3)",

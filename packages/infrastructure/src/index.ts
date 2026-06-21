@@ -39,3 +39,6 @@ export { ResourcePool } from "./resource-pool";
 export type { PooledResource, ResourcePoolConfig, PoolStats } from "./resource-pool";
 export { isScraplingAvailable, generateAdaptiveScraperScript, generateSimpleFetchScript, getScraplingInfo } from "./scrapling-bridge";
 export { isYtDlpAvailable, isFfmpegAvailable, getMediaDownloaderInfo, detectPlatform, generateVideoDownloadScript, generateMusicDownloadScript } from "./media-downloader";
+
+// SafeWriter — 安全输出写入器（防 broken pipe 崩溃）
+export { SafeWriter, getSafeStdout, getSafeStderr, installSafeIOHandlers } from "./safe-writer";

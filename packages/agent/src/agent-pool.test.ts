@@ -39,13 +39,10 @@ describe("AgentPoolManager", () => {
   it("should return null when pool is full and all busy", async () => {
     // The pool creates agents when full is not reached, so we need
     // to acquire many times until maxAgents (10) is hit and all are busy.
-    // Each acquire either picks up an idle agent (sets to busy) or creates
-    // a new idle agent. The odd acquires create new agents returned idle,
-    // the even ones pick up those idle agents. We need enough due to the
-    // createAgent not marking new agents as busy inside acquire.
+    // Use timeoutMs=0 so acquire returns null immediately when pool is full.
     let overflow: any = null;
     for (let i = 0; i < 20; i++) {
-      overflow = await pool.acquire();
+      overflow = await pool.acquire(undefined, 0);
     }
     expect(overflow).toBeNull();
   });

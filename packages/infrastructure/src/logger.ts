@@ -35,6 +35,7 @@ export interface LoggerConfig {
 const SENSITIVE_KEYS = new Set([
   "apiKey", "api_key", "apikey",
   "token", "accessToken", "access_token",
+  "refreshToken", "refresh_token",
   "secret", "jwtSecret", "jwt_secret",
   "password", "passwd", "pass",
   "credential", "credentials",
@@ -42,13 +43,48 @@ const SENSITIVE_KEYS = new Set([
   "authorization",
   "cookie",
   "web_ui_token", "webUiToken",
+  "clientId", "client_id",
+  "clientSecret", "client_secret",
+  "connectionString", "connection_string",
+  "stripeKey", "stripe_key",
+  "webhookSecret", "webhook_secret",
+  "signingKey", "signing_key",
 ]);
 
+// 借鉴 hermes-agent redact.py 的 30+ API key 前缀正则
 const SENSITIVE_VALUE_PATTERNS = [
-  /sk-[a-zA-Z0-9]{20,}/g,          // OpenAI keys
-  /sk-ant-[a-zA-Z0-9]{20,}/g,      // Anthropic keys
-  /AIza[0-9A-Za-z\-_]{35}/g,       // Google API keys
+  /sk-[a-zA-Z0-9]{20,}/g,            // OpenAI keys
+  /sk-ant-[a-zA-Z0-9]{20,}/g,        // Anthropic keys
+  /AIza[0-9A-Za-z\-_]{35}/g,         // Google API keys
   /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, // Bearer tokens
+  /ghp_[a-zA-Z0-9]{36}/g,            // GitHub personal access tokens
+  /gho_[a-zA-Z0-9]{36}/g,            // GitHub OAuth tokens
+  /ghs_[a-zA-Z0-9]{36}/g,            // GitHub server-to-server tokens
+  /ghr_[a-zA-Z0-9]{76}/g,            // GitHub refresh tokens
+  /xox[baprs]-[a-zA-Z0-9-]+/g,       // Slack tokens
+  /pplx-[a-zA-Z0-9]{20,}/g,          // Perplexity keys
+  /fal_[a-zA-Z0-9]{20,}/g,           // Fal.ai keys
+  /fc-[a-zA-Z0-9]{20,}/g,            // Forecast keys
+  /bb_live_[a-zA-Z0-9]{20,}/g,       // Browserbase keys
+  /AKIA[0-9A-Z]{16}/g,               // AWS access key IDs
+  /sk_live_[a-zA-Z0-9]{20,}/g,       // Stripe secret keys
+  /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, // SendGrid keys
+  /hf_[a-zA-Z0-9]{20,}/g,            // HuggingFace tokens
+  /r8_[a-zA-Z0-9]{20,}/g,            // Replicate keys
+  /npm_[a-zA-Z0-9]{36}/g,            // npm tokens
+  /pypi-[a-zA-Z0-9]{60,}/g,          // PyPI tokens
+  /dop_v1_[a-zA-Z0-9]{20,}/g,        // Doppler tokens
+  /am_[a-zA-Z0-9]{20,}/g,            // Amplitude keys
+  /tvly-[a-zA-Z0-9]{20,}/g,          // Tavily keys
+  /exa-[a-zA-Z0-9]{20,}/g,           // Exa keys
+  /gsk_[a-zA-Z0-9]{20,}/g,           // Groq keys
+  /syt_[a-zA-Z0-9]{20,}/g,           // Synthesize keys
+  /hsk-[a-zA-Z0-9]{20,}/g,           // Hermes keys
+  /mem0_[a-zA-Z0-9]{20,}/g,          // Mem0 keys
+  /brv_[a-zA-Z0-9]{20,}/g,           // Bravity keys
+  /xai-[a-zA-Z0-9]{20,}/g,           // xAI keys
+  /ntn_[a-zA-Z0-9]{20,}/g,           // Ntropy keys
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM private keys
 ];
 
 // ─── Level ordering ────────────────────────────────────────────────────────────

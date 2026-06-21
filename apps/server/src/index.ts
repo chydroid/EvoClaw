@@ -1,7 +1,11 @@
 import dotenv from "dotenv";
 import * as path from "path";
 import * as fs from "fs";
+import * as dns from "dns";
 import { initTracing, shutdownTracing, spanCollector } from "./tracing";
+
+// IPv4 优先：避免 IPv6 DNS 解析延迟（借鉴 hermes-agent apply_ipv4_preference）
+dns.setDefaultResultOrder("ipv4first");
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
 
