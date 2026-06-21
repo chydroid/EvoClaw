@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rimraf dist"
   },
   "dependencies": {
     "@evoclaw/agent": "workspace:*",
@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
+    "rimraf": "^6.0.0",
     "typescript": "^5.8.0"
   }
 }

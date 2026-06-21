@@ -25,6 +25,7 @@ import { MCPGateway } from "./mcp-gateway";
 import { ProtocolHandler } from "./ws-protocol";
 import { WSServerTransport } from "./ws-server-transport";
 import type { ChannelManager } from "./channel-manager";
+import { VoiceService } from "./voice/voice-service";
 
 export interface GatewayConfig {
   port: number;
@@ -809,6 +810,65 @@ export class GatewayServer {
         res.json({ version, name: pkg?.name || "evoclaw" });
       } catch {
         res.json({ version: "unknown", name: "evoclaw" });
+      }
+    });
+
+    // Voice (local speech recognition) configuration & status
+    this.app.get("/api/voice", async (_req: any, res: any) => {
+      try {
+        const voice = this.registry.resolveService<VoiceService>("voiceService");
+        if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
+        res.json({ config: voice.getConfig(), status: voice.getStatus() });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    this.app.put("/api/voice", async (req: any, res: any) => {
+      try {
+        const voice = this.registry.resolveService<VoiceService>("voiceService");
+        if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
+        const result = await voice.updateConfig(req.body || {});
+        res.json({ status: result });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    this.app.post("/api/voice/verify", async (_req: any, res: any) => {
+      try {
+        const voice = this.registry.resolveService<VoiceService>("voiceService");
+        if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
+        const result = await voice.verify();
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    this.app.post("/api/voice/toggle", async (req: any, res: any) => {
+      try {
+        const voice = this.registry.resolveService<VoiceService>("voiceService");
+        if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
+        const { enabled } = req.body || {};
+        if (typeof enabled !== "boolean") {
+          res.status(400).json({ error: "enabled boolean is required" }); return;
+        }
+        const result = await voice.toggle(enabled);
+        res.json({ status: result });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    this.app.post("/api/voice/reset", async (_req: any, res: any) => {
+      try {
+        const voice = this.registry.resolveService<VoiceService>("voiceService");
+        if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
+        const result = await voice.reset();
+        res.json({ status: result });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
 

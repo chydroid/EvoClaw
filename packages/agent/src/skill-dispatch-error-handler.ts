@@ -18,7 +18,7 @@ export interface ClassifiedSkillError {
   retryable: boolean;
 }
 
-const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: string; retryable: boolean }> = {
+const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: string; retryable: boolean; fallbackToLLM: boolean }> = {
   auth: {
     patterns: [
       "must be set in environment",
@@ -33,6 +33,7 @@ const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: st
     ],
     userMessage: "技能执行失败：API 密钥未配置或无效。请在技能管理页面配置相应的 API Key。",
     retryable: false,
+    fallbackToLLM: false,
   },
   rateLimit: {
     patterns: [
@@ -43,8 +44,9 @@ const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: st
       "rate_limit",
       "throttled",
     ],
-    userMessage: "技能执行失败：API 调用频率超限。请稍后重试。",
+    userMessage: "正在通过其他方式继续处理，请稍候...",
     retryable: true,
+    fallbackToLLM: true,
   },
   network: {
     patterns: [
@@ -57,8 +59,9 @@ const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: st
       "DNS resolution failed",
       "socket hang up",
     ],
-    userMessage: "技能执行失败：网络连接错误。请检查网络设置。",
+    userMessage: "正在通过其他方式继续处理，请稍候...",
     retryable: true,
+    fallbackToLLM: true,
   },
   config: {
     patterns: [
@@ -70,6 +73,7 @@ const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: st
     ],
     userMessage: "技能执行失败：配置缺失。请在技能管理页面完善配置。",
     retryable: false,
+    fallbackToLLM: false,
   },
   timeout: {
     patterns: [
@@ -78,8 +82,9 @@ const SKILL_ERROR_PATTERNS: Record<string, { patterns: string[]; userMessage: st
       "operation timed out",
       "deadline exceeded",
     ],
-    userMessage: "技能执行失败：操作超时。请稍后重试或检查技能配置。",
+    userMessage: "正在通过其他方式继续处理，请稍候...",
     retryable: true,
+    fallbackToLLM: true,
   },
 };
 
@@ -96,7 +101,7 @@ export function classifySkillError(result: SkillDispatchResult, outputStr: strin
       return {
         category: category as ClassifiedSkillError["category"],
         userMessage: config.userMessage,
-        shouldFallbackToLLM: !config.retryable, // Non-retryable errors should fallback
+        shouldFallbackToLLM: config.fallbackToLLM,
         retryable: config.retryable,
       };
     }
@@ -105,7 +110,7 @@ export function classifySkillError(result: SkillDispatchResult, outputStr: strin
   // Unknown error — fallback to LLM
   return {
     category: "unknown",
-    userMessage: result.error || "技能执行失败，正在尝试其他方式处理您的请求...",
+    userMessage: result.error || "正在通过其他方式继续处理，请稍候...",
     shouldFallbackToLLM: true,
     retryable: false,
   };

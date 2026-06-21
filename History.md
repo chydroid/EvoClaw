@@ -3,6 +3,43 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.51.0 (2026-06-21)
+
+### 技能扩展、错误体验优化与 WebUI 主题调整
+
+#### 新增 Office 文档生成技能
+
+- 新增 `xlsx_create` 工具与 `excel-xlsx` 内置技能，支持创建含多工作表、图表、样式的 Excel 文件
+- 新增 `pptx_create` 工具与 `powerpoint-pptx` 内置技能，支持创建含幻灯片、图形、表格的 PPT 文件
+- 完善 `docx_create` 工具，与 Excel、PPT 工具统一输出到 `data/workspace/`
+
+#### 内置技能生态治理
+
+- 清理 22+ 确认无用/重复/测试性的自动生成的技能目录
+- 在 `skill-manager.ts` 增加技能质量门控，防止低质量/空壳技能被自动安装
+- 增强 `skill-creator` 的 `quick_validate.py`，增加必填字段、执行脚本、内容质量检查
+
+#### 长任务状态与错误体验优化
+
+- `protocol-adapter.ts` 为复杂文档生成任务增加动态复杂度估算与 1200s 超长超时
+- 流式响应中新增 `working` SSE 事件，每 20s 发送 keepalive：`正在进行生成，请耐心等待...` / `仍在处理中，请继续等待...`
+- `WebChatPage.tsx` 接收并展示 `working` 状态，`i18n.ts` 增加中英文状态文案
+- `skill-dispatch-error-handler.ts` 引入错误分类与 `fallbackToLLM` 标志，网络/超时/限流等错误回退 LLM 时不再向用户暴露失败
+- `agent-model-executor.ts` 在回退 LLM 路径中抑制中间错误回复
+- `system-prompt.ts` 明确：工具失败仍有替代方案时，应显示 `正在工作中，请耐心等待...` 并继续工作；仅当确实无法完成时才报告失败并给出替代建议
+
+#### WebUI 主题
+
+- 默认主题设为 `cyan-dark`（青蓝暗夜）
+- `crimson-dark`（深红暗夜）用户聊天气泡背景改为 `rgba(42, 15, 21, 0.9)`，与当前会话列表项 `--accent-bg` 颜色保持一致，降低刺眼感
+
+#### 测试与构建
+
+- `pnpm build` + `pnpm typecheck` 通过
+- 服务重启后 SSE 实测长文档生成任务状态提示正常，无中间失败消息
+
+---
+
 ## v0.50.0 (2026-06-21)
 
 ### 综合发布：3轮迭代成果整合 + 100项 WebUI 端到端测试

@@ -122,6 +122,51 @@ export const skillsApi = {
 };
 
 // ═══════════════════════════════════════════════
+// Voice (local speech recognition)
+// ═══════════════════════════════════════════════
+
+export interface VoiceConfigData {
+  enabled: boolean;
+  engine: "browser" | "vosk" | "none";
+  language: string;
+  continuous: boolean;
+  interimResults: boolean;
+  voskModelPath?: string;
+  autoSubmit: boolean;
+  timeoutMs: number;
+}
+
+export interface VoiceStatusData {
+  enabled: boolean;
+  engine: "browser" | "vosk" | "none";
+  available: boolean;
+  supported: boolean;
+  lastError?: string;
+  lastVerifiedAt?: string;
+}
+
+export interface VoiceApiResponse {
+  config: VoiceConfigData;
+  status: VoiceStatusData;
+}
+
+export interface VoiceVerificationResult {
+  success: boolean;
+  available: boolean;
+  supported: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export const voiceApi = {
+  get: () => getSafe<VoiceApiResponse>("/api/voice", { config: {} as any, status: {} as any }),
+  update: (body: Partial<VoiceConfigData>) => put<{ status: VoiceStatusData }>("/api/voice", body),
+  verify: () => post<VoiceVerificationResult>("/api/voice/verify"),
+  toggle: (enabled: boolean) => post<{ status: VoiceStatusData }>("/api/voice/toggle", { enabled }),
+  reset: () => post<{ status: VoiceStatusData }>("/api/voice/reset"),
+};
+
+// ═══════════════════════════════════════════════
 // Chat & Sessions
 // ═══════════════════════════════════════════════
 

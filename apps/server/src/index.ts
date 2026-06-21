@@ -28,7 +28,7 @@ const SERVER_VERSION = getServerVersion();
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
-import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue } from "@evoclaw/gateway";
+import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
@@ -52,6 +52,9 @@ import {
   registerSchedulerTools,
   registerShellMediaTools,
   registerSkillIndexTools,
+  registerDocxTools,
+  registerXlsxTools,
+  registerPptxTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -357,6 +360,12 @@ export class EvoClawServer {
     this.registry.registerService("registry", this.registry);
     this.registry.registerService("eventBus", this.eventBus);
 
+    const dataDir = path.resolve(__dirname, "..", "..", "..", "data");
+
+    // ── Voice Service (local speech recognition) ──
+    const voiceService = new VoiceService(path.join(dataDir, "voice"));
+    this.registry.registerService("voiceService", voiceService);
+
     this.gateway = new GatewayServer(this.registry, this.eventBus);
     this.taskOrchestrator = new TaskOrchestrator(this.registry, this.eventBus);
     this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
@@ -364,7 +373,6 @@ export class EvoClawServer {
     this.registry.registerService("agentPool", this.agentPool);
     this.actorSystem = new ActorSystem();
     this.registry.registerService("actorSystem", this.actorSystem);
-    const dataDir = path.resolve(__dirname, "..", "..", "..", "data");
     this.agentModelExecutor = new AgentModelExecutor(
       this.registry,
       this.eventBus,
@@ -733,6 +741,9 @@ export class EvoClawServer {
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools(fsBase);
+    this.registerDocxTools(fsBase);
+    this.registerXlsxTools(fsBase);
+    this.registerPptxTools(fsBase);
     this.registerAutoSkillTool();
     this.registerSkillIndexTools();
     this.registerTaskPlannerTool();
@@ -895,6 +906,18 @@ export class EvoClawServer {
       this.fileSystemManager,
       fsBase
     );
+  }
+
+  private registerDocxTools(fsBase: string): void {
+    registerDocxTools(this.agentModelExecutor, fsBase);
+  }
+
+  private registerXlsxTools(fsBase: string): void {
+    registerXlsxTools(this.agentModelExecutor, fsBase);
+  }
+
+  private registerPptxTools(fsBase: string): void {
+    registerPptxTools(this.agentModelExecutor, fsBase);
   }
 
   private registerAutoSkillTool(): void {

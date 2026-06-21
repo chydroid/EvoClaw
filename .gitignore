@@ -71,6 +71,7 @@ _music_dl_*.py
 # This directory is NOT tracked by git.
 tests-tmp/
 local-models/
+screenshots/
 
 # Archived useless files moved out of the repo but kept locally
 nouse/

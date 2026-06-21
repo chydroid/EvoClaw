@@ -72,5 +72,8 @@ export { WeixinPluginAdapter } from "./weixin-plugin-adapter.js";
 export { MCPProtocolHandler } from "./mcp-protocol-handler";
 export type { ToolDefinition, ToolRegistry, ResourceDefinition, PromptDefinition } from "./mcp-protocol-handler";
 
+export { VoiceService } from "./voice/voice-service";
+export type { VoiceConfig, VoiceStatus, VoiceVerificationResult, VoiceEngine } from "./voice/voice-service";
+
 export { ChannelAdapterBase, WebhookChannelAdapter, TelegramChannelAdapter } from "./channel-adapter-framework";
 export type { ChannelAdapterConfig, ChannelAdapterStatus, WebhookChannelConfig, TelegramChannelConfig } from "./channel-adapter-framework";

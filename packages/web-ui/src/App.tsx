@@ -48,6 +48,7 @@ import InstallPolicyPage from "./InstallPolicyPage";
 import TranscriptRedactorPage from "./TranscriptRedactorPage";
 import ApprovalCenterPage from "./ApprovalCenterPage";
 import MCPScannerPage from "./MCPScannerPage";
+import { VoiceConfigPage } from "./VoiceConfigPage";
 
 interface NavGroup {
   id: string;
@@ -117,6 +118,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "transcript-redactor" as TabId, i18nKey: "nav.transcript_redactor", iconId: "secrets" },
       { id: "approval-center" as TabId, i18nKey: "nav.approval_center", iconId: "permissions" },
       { id: "mcp-scanner" as TabId, i18nKey: "nav.mcp_scanner", iconId: "plugins" },
+      { id: "voice-settings" as TabId, i18nKey: "nav.voice_settings", iconId: "voice" },
     ],
   },
   {
@@ -631,6 +633,7 @@ export default function App() {
       case "transcript-redactor": return <ErrorBoundary><TranscriptRedactorPage /></ErrorBoundary>;
       case "approval-center": return <ErrorBoundary><ApprovalCenterPage /></ErrorBoundary>;
       case "mcp-scanner": return <ErrorBoundary><MCPScannerPage /></ErrorBoundary>;
+      case "voice-settings": return <ErrorBoundary><VoiceConfigPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }

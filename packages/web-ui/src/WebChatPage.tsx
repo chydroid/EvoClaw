@@ -13,6 +13,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { renderMarkdown } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
+import { useVoice, isSpeechRecognitionSupported, type VoiceState } from "./useVoice";
+import { voiceApi, type VoiceApiResponse } from "./api-client";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -129,6 +131,7 @@ const chatContainerStyle: CSSProperties = {
   borderRadius: "8px",
   border: "1px solid var(--border, #30363d)",
   overflow: "hidden",
+  position: "relative",
 };
 
 const sessionSidebarStyle: CSSProperties = {
@@ -584,6 +587,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [inputHistoryMax, setInputHistoryMax] = useState(256);
   const [historyPositionHint, setHistoryPositionHint] = useState<string | null>(null);
 
+  // Voice input state
+  const [voiceEnabledBackend, setVoiceEnabledBackend] = useState(false);
+  const [voiceConfig, setVoiceConfig] = useState<VoiceApiResponse["config"] | null>(null);
+  const [voiceInterim, setVoiceInterim] = useState("");
+  const [voiceToast, setVoiceToast] = useState<string | null>(null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
@@ -752,6 +761,69 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     }
   }, [messages]);
 
+  // Voice setup
+  const onVoiceResult = useCallback((text: string, isFinal: boolean) => {
+    if (!isFinal) {
+      setVoiceInterim(text);
+      return;
+    }
+    setVoiceInterim("");
+    setInput((prev) => {
+      const combined = (prev.trim() + " " + text).trim();
+      return combined;
+    });
+    if (voiceConfig?.autoSubmit && text.trim()) {
+      setTimeout(() => handleSendRef.current(text.trim()), 100);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceConfig?.autoSubmit]);
+
+  const onVoiceError = useCallback((error: string) => {
+    setVoiceToast(`${t("chat.voice_not_supported")}: ${error}`);
+    setTimeout(() => setVoiceToast(null), 4000);
+  }, [t]);
+
+  const onVoiceStateChange = useCallback((state: VoiceState) => {
+    if (state === "listening") {
+      setVoiceToast(t("chat.voice_listening"));
+    } else if (state === "error") {
+      setVoiceToast(t("chat.voice_not_supported"));
+      setTimeout(() => setVoiceToast(null), 4000);
+    } else {
+      setVoiceToast(null);
+    }
+  }, [t]);
+
+  const voice = useVoice({
+    language: voiceConfig?.language || "zh-CN",
+    continuous: voiceConfig?.continuous ?? true,
+    interimResults: voiceConfig?.interimResults ?? true,
+    autoSubmit: false,
+    onResult: onVoiceResult,
+    onError: onVoiceError,
+    onStateChange: onVoiceStateChange,
+  });
+
+  const refreshVoiceConfig = useCallback(() => {
+    voiceApi.get().then((data) => {
+      setVoiceConfig(data.config);
+      setVoiceEnabledBackend(data.config.enabled && data.status.available);
+    }).catch(() => {
+      setVoiceEnabledBackend(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    refreshVoiceConfig();
+    const interval = setInterval(refreshVoiceConfig, 5000);
+    const onVisible = () => { if (!document.hidden) refreshVoiceConfig(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshVoiceConfig]);
+
   // Cleanup: revoke blob URLs and clear intervals/timers on unmount
   useEffect(() => {
     return () => {
@@ -762,10 +834,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       intervalsRef.current = [];
       timersRef.current.forEach(id => clearTimeout(id));
       timersRef.current = [];
+      voice.stopListening();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const handleSendRef = useRef<(queuedText?: string) => void>(() => {});
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  });
   const handleSend = async (queuedText?: string) => {
     userAbortedRef.current = false;
     const text = (queuedText || input).trim();
@@ -972,6 +1049,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     };
                     setProgressSteps((prev) => [...prev, step]);
                     setStatusMessage(`📋 ${eventData.text || t("chat.processing")}`);
+                  } else if (currentEvent === "working") {
+                    setStatusMessage(`${t("chat.phase.working_emoji")} ${eventData.detail || t("chat.working")}`);
                   } else if (currentEvent === "progress_summary") {
                     const summaryType = eventData.type as string;
                     const summaryCount = eventData.count as number;
@@ -1053,6 +1132,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         splitting: t("chat.phase.splitting_emoji"),
                         subtask_executing: t("chat.phase.subtask_executing_emoji"),
                         resuming: t("chat.phase.resuming_emoji"),
+                        working: t("chat.phase.working_emoji"),
                       };
                       const label = phaseLabels[eventData.phase] || eventData.phase;
                       const subtaskInfo = eventData.subtaskIndex !== undefined && eventData.subtaskTotal !== undefined
@@ -1730,6 +1810,27 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
   return (
     <div style={chatContainerStyle}>
+      {voiceToast && (
+        <div style={{
+          position: "absolute" as const,
+          top: 12,
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 100,
+          background: "var(--bg-sidebar, #161b22)",
+          border: "1px solid var(--border, #30363d)",
+          borderRadius: "20px",
+          padding: "8px 16px",
+          fontSize: "13px",
+          color: voice.isListening ? "#ef4444" : "var(--text-primary, #c9d1d9)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+        }}>
+          {voice.isListening ? "🎙" : "🎤"} {voiceToast}
+        </div>
+      )}
       {/* Chat Area */}
       <div style={chatAreaStyle}>
         <div style={messagesContainerStyle}>
@@ -2375,12 +2476,33 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
               </button>
-              <button
-                style={{ ...inputBtnStyle, display: "none" }}
-                title={t("chat.voice_input")}
-              >
-                🎤
-              </button>
+              {voiceEnabledBackend && (
+                <button
+                  style={{
+                    ...inputBtnStyle,
+                    color: voice.isListening ? "#ef4444" : "var(--text-secondary, #8b949e)",
+                    animation: voice.isListening ? "pulse 1s infinite" : undefined,
+                  }}
+                  title={voice.isListening ? t("chat.voice_listening") : t("chat.voice_input")}
+                  onClick={() => {
+                    if (!isSpeechRecognitionSupported()) {
+                      setVoiceToast(t("chat.voice_not_supported"));
+                      setTimeout(() => setVoiceToast(null), 4000);
+                      return;
+                    }
+                    voice.toggleListening();
+                  }}
+                  onMouseEnter={(e) => { if (!voice.isListening) { e.currentTarget.style.background = "var(--bg-tertiary, #21262d)"; e.currentTarget.style.color = "var(--text-primary, #c9d1d9)"; } }}
+                  onMouseLeave={(e) => { if (!voice.isListening) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary, #8b949e)"; } }}
+                >
+                  {voice.isListening ? "🎙" : "🎤"}
+                </button>
+              )}
+              {voiceInterim && (
+                <span style={{ fontSize: "11px", color: "var(--accent, #58a6ff)", marginLeft: "4px" }}>
+                  {voiceInterim}
+                </span>
+              )}
               <button
                 style={{ ...inputBtnStyle, display: "none" }}
                 title={t("chat.open_settings")}

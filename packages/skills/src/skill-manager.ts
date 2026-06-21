@@ -98,7 +98,7 @@ export class SkillManager {
     svcRegistry.registerService("skillManager", this);
   }
 
-  async installSkill(skillPath: string): Promise<Skill> {
+  async installSkill(skillPath: string, force = false): Promise<Skill> {
     const existing = Array.from(this.skills.values()).find(
       (s) => s.installPath === skillPath
     );
@@ -179,10 +179,26 @@ export class SkillManager {
     if (this.skillEcosystem) {
       try {
         const quality = await this.skillEcosystem.validateSkillQuality(skillPath);
-        if (quality.score < 0.3) {
-          process.stderr.write(`[SkillManager] Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`);
+        const MIN_QUALITY_SCORE = 0.4;
+        if (quality.score < MIN_QUALITY_SCORE) {
+          const message = `Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`;
+          if (force) {
+            process.stderr.write(`[SkillManager] Forcing install despite ${message}`);
+          } else {
+            throw new Error(message);
+          }
         }
-      } catch { /* quality validation is non-critical */ }
+      } catch (err) {
+        if (force) {
+          process.stderr.write(`[SkillManager] Forcing install despite quality validation error: ${err instanceof Error ? err.message : String(err)}`);
+        } else {
+          // Quality validation is non-critical only when it fails internally;
+          // an explicit low-score result is already thrown above.
+          if (err instanceof Error && err.message.includes("Skill quality too low")) {
+            throw err;
+          }
+        }
+      }
     }
 
     const warnings: string[] = [];

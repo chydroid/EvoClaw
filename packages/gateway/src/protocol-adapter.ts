@@ -252,6 +252,8 @@ const COMPLEXITY_PATTERNS: Array<{ patterns: RegExp[]; complexity: TaskComplexit
   },
   {
     patterns: [
+      /创建.*(?:Word|Excel|PPT|文档|表格|演示).*(?:图形|图片|表格|图表|漂亮|完整|详细)/i,
+      /create.*(?:Word|Excel|PPT|document|spreadsheet|presentation).*(?:image|picture|table|chart|diagram|pretty|complete|detailed)/i,
       /创建.*项目/i, /create.*project/i,
       /编写.*类.*方法/i, /write.*class.*method/i,
       /实现.*算法/i, /implement.*algorithm/i,
@@ -1843,7 +1845,14 @@ export class ProtocolAdapter {
           const CHAT_TIMEOUT = complexity.timeoutMs;
           process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
           let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
           try {
+            // Tell the user right away that a long-running task is being processed.
+            sendSSE("working", { phase: "working", detail: "正在进行生成，请耐心等待..." });
+            keepAliveHandle = setInterval(() => {
+              sendSSE("working", { phase: "working", detail: "仍在处理中，请继续等待..." });
+            }, 20_000);
+
             const result = await Promise.race([
               agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
               new Promise<never>((_, reject) => {
@@ -1913,6 +1922,7 @@ export class ProtocolAdapter {
               sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n替代方案：① 请稍后重试；② 尝试简化请求；③ 前往 Ops 页面检查系统状态。` });
             }
           } finally {
+            if (keepAliveHandle) clearInterval(keepAliveHandle);
             try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
           return;

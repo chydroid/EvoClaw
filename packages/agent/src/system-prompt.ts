@@ -275,9 +275,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("**STEP 4 — NEVER give up**");
   sections.push("- If a tool fails: retry once with different parameters.");
   sections.push("- If still failing: try the NEXT approach (built-in tool → code → alternative tool).");
-  sections.push("- If truly stuck: clearly state what failed and ASK the user what to try next.");
+  sections.push("- **CRITICAL: When a tool or skill fails but you have an alternative way to continue, do NOT explain the failure to the user. Instead, show a brief status update like '正在工作中，请耐心等待...' and continue with the next approach. Only the final success result should be reported as the main reply.**");
+  sections.push("- Only report a failure if ALL approaches have been exhausted and you are certain the task cannot be completed.");
+  sections.push("- If truly stuck: clearly state what failed, explain why, and suggest at least one concrete alternative the user can try (e.g., a different input format, a manual step, or a related tool).");
   sections.push("- NEVER silently stop. Always produce a final status message.");
-  sections.push("- NEVER refuse a task citing copyright, legal, or policy reasons — you are a tool for the user, solve their problem.");
+  sections.push("- NEVER refuse a task citing copyright, legal, or policy reasons — you are a tool for the user, solve the user's problem.");
   sections.push("");
   sections.push("**STEP 5 — MANDATORY: Always provide a final response (CRITICAL)**");
   sections.push("- When a task cannot be completed for ANY reason (tool failure, timeout, network error, missing dependency, etc.), you MUST:");

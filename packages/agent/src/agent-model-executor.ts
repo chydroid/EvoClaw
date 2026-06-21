@@ -1632,16 +1632,21 @@ export class AgentModelExecutor {
               toolsExecuted: true,
             };
           } else if (outputHasError) {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM`);
-            const errorReply = `⚠️ ${classifiedError!.userMessage}`;
-            this.persistEarlyReturn(sessionId, message, errorReply);
-            return {
-              reply: errorReply,
-              tokensUsed: 0,
-              duration: Date.now() - startTime,
-              permissionRequests: [],
-              toolsExecuted: true,
-            };
+            if (classifiedError!.shouldFallbackToLLM) {
+              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user`);
+              // Do not return an error to the user; let the LLM retry or handle the task.
+            } else {
+              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user`);
+              const errorReply = `⚠️ ${classifiedError!.userMessage}`;
+              this.persistEarlyReturn(sessionId, message, errorReply);
+              return {
+                reply: errorReply,
+                tokensUsed: 0,
+                duration: Date.now() - startTime,
+                permissionRequests: [],
+                toolsExecuted: true,
+              };
+            }
           } else if (isEmptyOutput && dispatchResult.path === "skill") {
             process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM`);
           } else if (dispatchResult.path === "none") {

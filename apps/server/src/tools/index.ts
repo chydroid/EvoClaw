@@ -6,3 +6,6 @@ export { registerEmailTools } from "./email-tools";
 export { registerSchedulerTools } from "./scheduler-tools";
 export { registerShellMediaTools } from "./shell-media-tools";
 export { registerSkillIndexTools } from "./skill-index-tools";
+export { registerDocxTools } from "./docx-tools";
+export { registerXlsxTools } from "./xlsx-tools";
+export { registerPptxTools } from "./pptx-tools";
