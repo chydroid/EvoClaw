@@ -240,10 +240,10 @@ const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => (
   padding: "10px 16px",
   borderRadius: role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
   background: role === "user"
-    ? "var(--userBubbleBg, var(--accent, #58a6ff))"
-    : "var(--botBubbleBg, var(--bg-tertiary, #21262d))",
+    ? "var(--user-bubble-bg, var(--accent, #58a6ff))"
+    : "var(--bot-bubble-bg, var(--bg-tertiary, #21262d))",
   color: role === "user" ? "#fff" : "var(--text-primary, #c9d1d9)",
-  border: role === "user" ? "none" : "1px solid var(--botBubbleBorder, var(--border, #30363d))",
+  border: role === "user" ? "none" : "1px solid var(--bot-bubble-border, var(--border, #30363d))",
   fontSize: "14px",
   lineHeight: "1.6",
   wordBreak: "break-word",
