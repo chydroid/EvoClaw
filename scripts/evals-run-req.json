@@ -1,1 +1,0 @@
-{"config":{"name":"webui-test-dry-run","timeoutPerCase":10000,"passThreshold":0.5,"useLLMJudge":false},"categoryFilter":"conversation"}
