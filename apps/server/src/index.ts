@@ -59,6 +59,7 @@ import {
   registerDocxTools,
   registerXlsxTools,
   registerPptxTools,
+  registerVideoTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -1587,6 +1588,9 @@ export class EvoClawServer {
       this.skillIndex
     );
     registerShellMediaTools(
+      this.agentModelExecutor
+    );
+    registerVideoTools(
       this.agentModelExecutor
     );
   }

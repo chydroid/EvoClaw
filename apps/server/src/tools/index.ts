@@ -9,3 +9,4 @@ export { registerSkillIndexTools } from "./skill-index-tools";
 export { registerDocxTools } from "./docx-tools";
 export { registerXlsxTools } from "./xlsx-tools";
 export { registerPptxTools } from "./pptx-tools";
+export { registerVideoTools } from "./video-tools";

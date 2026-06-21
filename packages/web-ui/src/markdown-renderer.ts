@@ -139,6 +139,27 @@ export function renderMarkdown(text: string): string {
     const linkPlaceholders: string[] = [];
     const colorSpanPlaceholders: string[] = [];
 
+    // Preserve <img ...> tags before escaping（支持 AI 直接输出 HTML img 标签）
+    formatted = formatted.replace(/<img\s+[^>]*\/?>/gi, (match) => {
+      const srcMatch = match.match(/src=["']([^"']+)["']/i);
+      const altMatch = match.match(/alt=["']([^"']*)["']/i);
+      const widthMatch = match.match(/width=["']?(\d+%?)["']?/i);
+      const heightMatch = match.match(/height=["']?(\d+%?)["']?/i);
+      if (!srcMatch) return match;
+      let src = srcMatch[1];
+      // 相对路径自动补全 /api/files/download/ 前缀
+      if (!src.startsWith("http") && !src.startsWith("/") && !src.startsWith("data:")) {
+        src = "/api/files/download/" + src;
+      }
+      let style = "max-width:100%;border-radius:8px;margin:4px 0;";
+      if (widthMatch) style += `width:${widthMatch[1]};`;
+      if (heightMatch) style += `height:${heightMatch[1]};`;
+      const html = `<img src="${htmlEscape(src)}" alt="${htmlEscape(altMatch?.[1] ?? "")}" style="${style}" />`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
+    });
+
     // Preserve <span style="color:...">...</span> tags before escaping
     formatted = formatted.replace(/<span\s+style="color:[^"]*"[^>]*>[\s\S]*?<\/span>/gi, (match) => {
       const styleMatch = match.match(/style="([^"]*)"/i);
@@ -150,6 +171,34 @@ export function renderMarkdown(text: string): string {
       const idx = colorSpanPlaceholders.length;
       colorSpanPlaceholders.push(html);
       return `\x00COLORSPAN${idx}\x00`;
+    });
+
+    // 图片语法 ![alt](url) — 必须在链接规则之前处理
+    formatted = formatted.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, (_match, alt, src) => {
+      const escapedSrc = htmlEscape(src);
+      const escapedAlt = htmlEscape(alt);
+      const html = `<img src="${escapedSrc}" alt="${escapedAlt}" style="max-width:100%;border-radius:8px;margin:4px 0;" />`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
+    });
+    formatted = formatted.replace(/!\[([^\]]*)\]\((\/[^\s)]+)\)/g, (_match, alt, src) => {
+      const escapedSrc = htmlEscape(src);
+      const escapedAlt = htmlEscape(alt);
+      const html = `<img src="${escapedSrc}" alt="${escapedAlt}" style="max-width:100%;border-radius:8px;margin:4px 0;" />`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
+    });
+    // 相对路径图片 ![alt](filename.png) — 自动补全 /api/files/download/ 前缀
+    formatted = formatted.replace(/!\[([^\]]*)\]\(([^\s)\/][^\s)]*\.[a-zA-Z]{2,5})\)/g, (_match, alt, src) => {
+      const fullSrc = "/api/files/download/" + src;
+      const escapedSrc = htmlEscape(fullSrc);
+      const escapedAlt = htmlEscape(alt);
+      const html = `<img src="${escapedSrc}" alt="${escapedAlt}" style="max-width:100%;border-radius:8px;margin:4px 0;" />`;
+      const idx = linkPlaceholders.length;
+      linkPlaceholders.push(html);
+      return `\x00LINK${idx}\x00`;
     });
 
     formatted = formatted.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, text, link) => {

@@ -924,8 +924,8 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     keywords: ["programming", "编程", "代码", "code", "开发", "程序", "写代码", "实现功能"],
   },
   media: {
-    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert"],
-    keywords: ["video", "视频", "download", "下载", "music", "音乐", "歌曲", "youtube", "b站", "抖音"],
+    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert", "video_generate", "video_info"],
+    keywords: ["video", "视频", "download", "下载", "music", "音乐", "歌曲", "youtube", "b站", "抖音", "generate video", "生成视频", "制作视频", "create video"],
   },
   scheduler: {
     tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history"],

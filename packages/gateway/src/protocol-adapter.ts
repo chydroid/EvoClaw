@@ -4504,8 +4504,27 @@ export class ProtocolAdapter {
         }
 
         const filename = path.basename(fullPath);
-        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
-        res.setHeader("Content-Type", "application/octet-stream");
+        const ext = path.extname(fullPath).toLowerCase();
+
+        // 图片文件内联显示，其他文件以附件方式下载
+        const imageMimeTypes: Record<string, string> = {
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+          ".svg": "image/svg+xml",
+          ".bmp": "image/bmp",
+          ".ico": "image/x-icon",
+        };
+
+        if (imageMimeTypes[ext]) {
+          res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(filename)}"`);
+          res.setHeader("Content-Type", imageMimeTypes[ext]);
+        } else {
+          res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+          res.setHeader("Content-Type", "application/octet-stream");
+        }
         res.setHeader("Content-Length", stat.size);
         fs.createReadStream(fullPath).pipe(res);
       } catch (err) {

@@ -3,6 +3,45 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.53.0 (2026-06-22)
+
+### 视频生成能力
+
+#### 新增模块
+
+- **Video Generation Tools**（`apps/server/src/tools/video-tools.ts`）：新增 `video_generate` 和 `video_info` 两个内置工具，支持文本生成短视频
+  - **多提供商支持**：
+    - **Fal.ai API**：支持 Wan 2.2、Kling、LTX 等开源模型（通过 `FAL_KEY` 环境变量配置）
+    - **Replicate API**：支持 LTX-Video、CogVideoX、MiniMax 等模型（通过 `REPLICATE_API_TOKEN` 配置）
+    - **本地 FFmpeg**：无需 API key，生成文本幻灯片视频（需安装 FFmpeg）
+  - **文本生成视频**（text-to-video）：根据用户文字描述生成短视频
+  - **图片生成视频**（image-to-video）：基于参考图片动画化生成视频
+  - **自动回退**：API 生成失败时自动回退到本地 FFmpeg 模式
+  - **服务门控**：`checkFn` 检测是否有可用的生成方式（API key 或 FFmpeg）
+  - **异步轮询**：Replicate API 支持异步生成 + 轮询（最多 10 分钟）
+  - **自动保存**：生成的视频保存到 `data/workspace/videos/`，返回下载 URL
+
+#### 工具注册
+
+- 在 `apps/server/src/tools/index.ts` 导出 `registerVideoTools`
+- 在 `apps/server/src/index.ts` 服务器启动时注册
+- 在 `packages/agent/src/llm-caller.ts` 的 `media` 工具组中添加 `video_generate` 和 `video_info`
+- 关键词触发：`生成视频`、`制作视频`、`create video`、`generate video` 等
+
+#### 环境变量
+
+| 变量名 | 用途 | 默认值 |
+|--------|------|--------|
+| `FAL_KEY` | Fal.ai API 密钥 | 无 |
+| `REPLICATE_API_TOKEN` | Replicate API 密钥 | 无 |
+| `VIDEO_DEFAULT_PROVIDER` | 默认提供商 | 自动选择 |
+| `VIDEO_DEFAULT_MODEL` | 默认模型 ID | 各提供商默认 |
+
+#### Web UI 图片渲染修复
+
+- **Markdown 渲染器**（`packages/web-ui/src/markdown-renderer.ts`）：新增 `![alt](url)` 图片语法渲染，支持 HTTP URL、`/api/` 路径、相对路径（自动补全 `/api/files/download/` 前缀）、HTML `<img>` 标签
+- **下载 API**（`packages/gateway/src/protocol-adapter.ts`）：图片文件改为 `Content-Disposition: inline` + 正确 MIME type，支持浏览器内联显示
+
 ## v0.52.0 (2026-06-21)
 
 ### 对标 hermes-agent 全面工程化提升
