@@ -967,6 +967,16 @@ const DICT: Record<Lang, Record<string, string>> = {
     "llm.top_p": "Top P",
     "llm.timeout_ms": "超时 (ms)",
 
+    // ─── LLM Config Tabs ─────────────────────────────────
+    "llm.tab_llm": "对话模型",
+    "llm.tab_image": "图片生成",
+    "llm.tab_video": "视频生成",
+    "llm.image_title": "图片生成配置",
+    "llm.video_title": "视频生成配置",
+    "llm.model_field": "默认模型",
+    "llm.image_model_placeholder": "输入模型名称 (如 flux, dall-e-3)",
+    "llm.video_model_placeholder": "输入模型名称 (如 wan-2.2, sora)",
+
     // ─── Evolution Dashboard ──────────────────────────────
     "evolution.title": "进化仪表盘",
     "evolution.error": "加载失败",
@@ -3109,6 +3119,16 @@ const DICT: Record<Lang, Record<string, string>> = {
     "llm.top_p": "Top P",
     "llm.timeout_ms": "Timeout (ms)",
     "llm.enter_model_name": "Enter model name:",
+
+    // ─── LLM Config Tabs ─────────────────────────────────
+    "llm.tab_llm": "Chat Models",
+    "llm.tab_image": "Image Generation",
+    "llm.tab_video": "Video Generation",
+    "llm.image_title": "Image Generation Configuration",
+    "llm.video_title": "Video Generation Configuration",
+    "llm.model_field": "Default Model",
+    "llm.image_model_placeholder": "Enter model name (e.g. flux, dall-e-3)",
+    "llm.video_model_placeholder": "Enter model name (e.g. wan-2.2, sora)",
 
     // ─── Evolution Dashboard ──────────────────────────────
     "evolution.title": "Evolution Dashboard",

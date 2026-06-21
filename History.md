@@ -3,6 +3,61 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.54.0 (2026-06-22)
+
+### 图片和视频生成配置管理
+
+#### 大模型配置页面 TAB 化
+
+- **LLMConfig.tsx** 改为 TAB 切换结构，三个 TAB 页：
+  - **对话模型**：保持现有 LLM 提供商配置不变
+  - **图片生成**：新增图片生成提供商配置（侧边栏+表单布局）
+  - **视频生成**：新增视频生成提供商配置（侧边栏+表单布局）
+- 表单字段：提供商名称、优先级排序、启用开关、API Key、Base URL、默认模型
+- API Key 安全处理：`${VAR}` 引用 + .env 存储（与 LLM 配置一致）
+
+#### 后端配置 API
+
+- **GET/PUT `/api/config/image-gen`**：图片生成提供商配置
+- **GET/PUT `/api/config/video-gen`**：视频生成提供商配置
+- 持久化到 `data/config/image-gen-providers.json` 和 `data/config/video-gen-providers.json`
+- 首次启动自动初始化默认提供商
+
+#### 默认免费提供商
+
+**图片生成**：
+| 提供商 | API Key | 默认模型 | 说明 |
+|--------|---------|---------|------|
+| Pollinations.ai | 不需要 | flux | 完全免费，无限量，支持 FLUX 模型 |
+| Fal.ai | 需要 | fal-ai/flux/schnell | 高质量，注册送 $10 免费额度 |
+
+**视频生成**：
+| 提供商 | API Key | 默认模型 | 说明 |
+|--------|---------|---------|------|
+| Fal.ai | 需要 | fal-ai/wan/v2.2-5b/text-to-video/fast-wan | Wan 2.2 5B，720p 24fps |
+| Replicate | 需要 | lightricks/ltx-video | LTX-Video |
+| Local FFmpeg | 不需要 | ffmpeg-slideshow | 本地幻灯片视频，无需 API |
+
+#### 图片生成工具
+
+- **新增 `image_generate` 工具**（`apps/server/src/tools/image-tools.ts`）：
+  - 支持 Pollinations.ai（免费）、Fal.ai、Replicate 三种提供商
+  - 从配置文件读取提供商，按优先级选择
+  - 图片保存到 `data/workspace/images/`，返回下载 URL
+  - API 失败时自动回退到 Pollinations
+- **新增 `image_info` 工具**：查询可用提供商和模型
+
+#### 视频生成工具更新
+
+- `video-tools.ts` 更新：从 `data/config/video-gen-providers.json` 读取配置
+- 环境变量作为向后兼容回退
+- `video_info` 返回配置文件中的提供商详情
+
+#### 工具注册
+
+- `image_generate` 和 `image_info` 添加到 `media` 工具组
+- 关键词触发：`生成图片`、`画图`、`画一张`、`generate image`、`create image`、`draw`、`图片生成`
+
 ## v0.53.0 (2026-06-22)
 
 ### 视频生成能力

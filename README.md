@@ -25,6 +25,11 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.54.0 亮点
+- **图片生成能力**：新增 `image_generate` 工具，默认集成 Pollinations.ai（完全免费、无需 API Key、无限量），支持 Fal.ai/Replicate
+- **配置管理 TAB 化**：大模型配置页面增加"图片生成"和"视频生成"TAB 页，可视化配置提供商
+- **默认免费提供商**：图片生成预置 Pollinations.ai（免费），视频生成预置本地 FFmpeg（免费）
+
 ### v0.53.0 亮点
 - **视频生成能力**：新增 `video_generate` 工具，支持文本生成短视频。多提供商支持（Fal.ai/Replicate/本地 FFmpeg），自动回退，异步轮询
 - **Web UI 图片渲染**：Markdown 图片语法 `![alt](url)` 完整支持，相对路径自动补全，HTML `<img>` 标签保留

@@ -60,6 +60,7 @@ import {
   registerXlsxTools,
   registerPptxTools,
   registerVideoTools,
+  registerImageTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -1591,6 +1592,9 @@ export class EvoClawServer {
       this.agentModelExecutor
     );
     registerVideoTools(
+      this.agentModelExecutor
+    );
+    registerImageTools(
       this.agentModelExecutor
     );
   }

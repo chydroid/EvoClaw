@@ -10,3 +10,4 @@ export { registerDocxTools } from "./docx-tools";
 export { registerXlsxTools } from "./xlsx-tools";
 export { registerPptxTools } from "./pptx-tools";
 export { registerVideoTools } from "./video-tools";
+export { registerImageTools } from "./image-tools";

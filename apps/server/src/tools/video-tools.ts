@@ -6,17 +6,69 @@
  * 2. Replicate API（支持多种视频生成模型）
  * 3. FFmpeg 本地生成（文本幻灯片视频，无需 API key）
  *
- * 环境变量配置：
- * - FAL_KEY: Fal.ai API 密钥
- * - REPLICATE_API_TOKEN: Replicate API 密钥
- * - VIDEO_DEFAULT_PROVIDER: 默认提供商（fal / replicate / local）
- * - VIDEO_DEFAULT_MODEL: 默认模型 ID
+ * 配置来源（优先级）：
+ * 1. data/config/video-gen-providers.json — 后端配置文件（推荐）
+ * 2. 环境变量回退（向后兼容）：
+ *    - FAL_KEY: Fal.ai API 密钥
+ *    - REPLICATE_API_TOKEN: Replicate API 密钥
+ *    - VIDEO_DEFAULT_PROVIDER: 默认提供商（fal / replicate / local）
+ *    - VIDEO_DEFAULT_MODEL: 默认模型 ID
  */
 
 import * as path from "path";
 import * as fs from "fs";
 import { execSync, spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+
+/** 视频生成提供商配置（与 protocol-adapter.ts 中结构一致） */
+interface VideoGenProvider {
+  id: string;
+  name: string;
+  apiKey: string; // 可能是 ${VAR} 引用或明文
+  baseURL: string;
+  model: string;
+  enabled: boolean;
+  order: number;
+}
+
+/** 解析 ${VAR} 引用，返回真实环境变量值 */
+function resolveEnvVar(value: string): string {
+  const match = value.match(/^\$\{(.+)\}$/);
+  if (match) {
+    return process.env[match[1]] || "";
+  }
+  return value;
+}
+
+/** 从 data/config/video-gen-providers.json 读取提供商配置 */
+function getVideoGenProviders(): VideoGenProvider[] {
+  const configPath = path.resolve(process.cwd(), "data", "config", "video-gen-providers.json");
+  try {
+    if (fs.existsSync(configPath)) {
+      const data = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      if (data.providers && Array.isArray(data.providers)) {
+        return data.providers as VideoGenProvider[];
+      }
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+/** 按优先级选择第一个 enabled 且有可用凭证的提供商 */
+function getEnabledVideoProvider(): { provider: VideoGenProvider; apiKey: string } | null {
+  const providers = getVideoGenProviders()
+    .filter(p => p.enabled)
+    .sort((a, b) => a.order - b.order);
+
+  for (const p of providers) {
+    const apiKey = resolveEnvVar(p.apiKey || "");
+    // local 提供商不需要 API Key
+    if (p.id === "local" || apiKey) {
+      return { provider: p, apiKey };
+    }
+  }
+  return null;
+}
 
 /** 检查 FFmpeg 是否可用 */
 function isFfmpegAvailable(): boolean {
@@ -28,8 +80,9 @@ function isFfmpegAvailable(): boolean {
   }
 }
 
-/** 检查是否有可用的视频生成 API */
+/** 检查是否有可用的视频生成 API（配置文件或环境变量） */
 function hasVideoApiConfigured(): boolean {
+  if (getEnabledVideoProvider()) return true;
   return !!(process.env.FAL_KEY || process.env.REPLICATE_API_TOKEN);
 }
 
@@ -63,9 +116,9 @@ function generateFilename(prefix: string, ext: string): string {
  */
 async function generateViaFal(
   prompt: string,
-  options: VideoGenOptions
+  options: VideoGenOptions,
+  apiKey: string
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.FAL_KEY!;
   const model = options.model || "fal-ai/wan/v2.2/text-to-video";
 
   const body: Record<string, unknown> = {
@@ -111,9 +164,9 @@ async function generateViaFal(
  */
 async function generateViaReplicate(
   prompt: string,
-  options: VideoGenOptions
+  options: VideoGenOptions,
+  apiKey: string
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.REPLICATE_API_TOKEN!;
   const model = options.model || "lightricks/ltx-video:13b9a58e6e6f6a5c92f5d6e7e1c5e5e5e5e5e5e5";
 
   // 创建预测
@@ -361,15 +414,46 @@ export function registerVideoTools(executor: AgentModelExecutor): void {
         imageUrl: params.image_url ? String(params.image_url) : undefined,
       };
 
-      // 确定提供商
-      let provider = options.provider || process.env.VIDEO_DEFAULT_PROVIDER || "";
+      // 确定提供商：优先使用参数指定的，其次配置文件，最后环境变量回退
+      let provider = options.provider || "";
+      let apiKey = "";
+
       if (!provider) {
-        if (process.env.FAL_KEY) {
-          provider = "fal";
-        } else if (process.env.REPLICATE_API_TOKEN) {
-          provider = "replicate";
+        // 1. 尝试从配置文件读取
+        const enabled = getEnabledVideoProvider();
+        if (enabled) {
+          provider = enabled.provider.id;
+          apiKey = enabled.apiKey;
+          // 如果配置中有默认 model 且用户未指定，使用配置中的 model
+          if (!options.model && enabled.provider.model && enabled.provider.id !== "local") {
+            options.model = enabled.provider.model;
+          }
         } else {
-          provider = "local";
+          // 2. 环境变量回退（向后兼容）
+          if (process.env.VIDEO_DEFAULT_PROVIDER) {
+            provider = process.env.VIDEO_DEFAULT_PROVIDER;
+          } else if (process.env.FAL_KEY) {
+            provider = "fal";
+          } else if (process.env.REPLICATE_API_TOKEN) {
+            provider = "replicate";
+          } else {
+            provider = "local";
+          }
+        }
+      } else {
+        // 用户指定了 provider，查找对应的 API Key
+        const providers = getVideoGenProviders();
+        const matched = providers.find(p => p.id === provider);
+        if (matched) {
+          apiKey = resolveEnvVar(matched.apiKey || "");
+          if (!options.model && matched.model && matched.id !== "local") {
+            options.model = matched.model;
+          }
+        }
+        // 环境变量回退
+        if (!apiKey) {
+          if (provider === "fal") apiKey = process.env.FAL_KEY || "";
+          else if (provider === "replicate") apiKey = process.env.REPLICATE_API_TOKEN || "";
         }
       }
 
@@ -378,23 +462,23 @@ export function registerVideoTools(executor: AgentModelExecutor): void {
 
         switch (provider) {
           case "fal":
-            if (!process.env.FAL_KEY) {
+            if (!apiKey) {
               return {
                 success: false,
-                error: "Fal.ai provider selected but FAL_KEY is not set. Please configure FAL_KEY environment variable or use 'local' provider.",
+                error: "Fal.ai provider selected but no API key is configured. Please configure Fal.ai API key in video-gen settings or set FAL_KEY environment variable, or use 'local' provider.",
               };
             }
-            result = await generateViaFal(prompt, options);
+            result = await generateViaFal(prompt, options, apiKey);
             break;
 
           case "replicate":
-            if (!process.env.REPLICATE_API_TOKEN) {
+            if (!apiKey) {
               return {
                 success: false,
-                error: "Replicate provider selected but REPLICATE_API_TOKEN is not set. Please configure REPLICATE_API_TOKEN environment variable or use 'local' provider.",
+                error: "Replicate provider selected but no API key is configured. Please configure Replicate API key in video-gen settings or set REPLICATE_API_TOKEN environment variable, or use 'local' provider.",
               };
             }
-            result = await generateViaReplicate(prompt, options);
+            result = await generateViaReplicate(prompt, options, apiKey);
             break;
 
           case "local":
@@ -447,40 +531,86 @@ export function registerVideoTools(executor: AgentModelExecutor): void {
     async () => {
       const providers: string[] = [];
       const models: Record<string, string[]> = {};
+      const providerDetails: Array<{ id: string; name: string; enabled: boolean; hasApiKey: boolean; model: string }> = [];
 
-      if (process.env.FAL_KEY) {
+      // 从配置文件读取
+      const configProviders = getVideoGenProviders();
+      for (const p of configProviders) {
+        const apiKey = resolveEnvVar(p.apiKey || "");
+        const hasApiKey = !!(apiKey || p.id === "local");
+        providerDetails.push({
+          id: p.id,
+          name: p.name,
+          enabled: p.enabled,
+          hasApiKey,
+          model: p.model,
+        });
+        if (p.enabled && (hasApiKey || p.id === "local")) {
+          if (!providers.includes(p.id)) providers.push(p.id);
+        }
+      }
+
+      // 环境变量回退（向后兼容）
+      if (process.env.FAL_KEY && !providers.includes("fal")) {
         providers.push("fal");
-        models.fal = [
-          "fal-ai/wan/v2.2/text-to-video",
-          "fal-ai/wan/v2.2/image-to-video",
-          "fal-ai/kling/v1.6/standard/text-to-video",
-          "fal-ai/kling/v1.6/standard/image-to-video",
-          "fal-ai/ltx-video",
-        ];
+        providerDetails.push({
+          id: "fal",
+          name: "Fal.ai (env)",
+          enabled: true,
+          hasApiKey: true,
+          model: "fal-ai/wan/v2.2/text-to-video",
+        });
       }
 
-      if (process.env.REPLICATE_API_TOKEN) {
+      if (process.env.REPLICATE_API_TOKEN && !providers.includes("replicate")) {
         providers.push("replicate");
-        models.replicate = [
-          "lightricks/ltx-video",
-          "cuuupid/cogvideox-5b",
-          "minimax/video-01",
-        ];
+        providerDetails.push({
+          id: "replicate",
+          name: "Replicate (env)",
+          enabled: true,
+          hasApiKey: true,
+          model: "lightricks/ltx-video",
+        });
       }
 
-      if (isFfmpegAvailable()) {
+      if (isFfmpegAvailable() && !providers.includes("local")) {
         providers.push("local");
-        models.local = ["ffmpeg-slideshow (text overlay on solid background)"];
+        providerDetails.push({
+          id: "local",
+          name: "Local FFmpeg",
+          enabled: true,
+          hasApiKey: true,
+          model: "ffmpeg-slideshow",
+        });
       }
+
+      // 模型列表
+      models.fal = [
+        "fal-ai/wan/v2.2/text-to-video",
+        "fal-ai/wan/v2.2/image-to-video",
+        "fal-ai/kling/v1.6/standard/text-to-video",
+        "fal-ai/kling/v1.6/standard/image-to-video",
+        "fal-ai/ltx-video",
+      ];
+      models.replicate = [
+        "lightricks/ltx-video",
+        "cuuupid/cogvideox-5b",
+        "minimax/video-01",
+      ];
+      models.local = ["ffmpeg-slideshow (text overlay on solid background)"];
+
+      const enabled = getEnabledVideoProvider();
 
       return {
         available: providers.length > 0,
         providers,
         models,
-        defaultProvider: process.env.VIDEO_DEFAULT_PROVIDER || providers[0] || "none",
+        providerDetails,
+        defaultProvider: enabled?.provider.id || process.env.VIDEO_DEFAULT_PROVIDER || providers[0] || "none",
         ffmpegAvailable: isFfmpegAvailable(),
-        hasFalKey: !!process.env.FAL_KEY,
-        hasReplicateToken: !!process.env.REPLICATE_API_TOKEN,
+        hasFalKey: !!(process.env.FAL_KEY || configProviders.find(p => p.id === "fal" && resolveEnvVar(p.apiKey))),
+        hasReplicateToken: !!(process.env.REPLICATE_API_TOKEN || configProviders.find(p => p.id === "replicate" && resolveEnvVar(p.apiKey))),
+        configSource: configProviders.length > 0 ? "data/config/video-gen-providers.json" : "environment variables",
       };
     },
     () => true

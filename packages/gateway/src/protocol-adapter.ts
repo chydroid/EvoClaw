@@ -43,8 +43,63 @@ const MAX_OUTPUT_BYTES = 1024 * 512;
 
 const DATA_DIR = path.resolve(process.cwd(), "data", "config");
 const LLM_CONFIG_FILE = path.join(DATA_DIR, "llm-providers.json");
+const IMAGE_GEN_CONFIG_FILE = path.join(DATA_DIR, "image-gen-providers.json");
+const VIDEO_GEN_CONFIG_FILE = path.join(DATA_DIR, "video-gen-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
 const ENV_FILE = path.resolve(process.cwd(), ".env");
+
+// ── 默认图片生成提供商 ──────────────────────────────────────────────────────
+const DEFAULT_IMAGE_GEN_PROVIDERS: Record<string, unknown>[] = [
+  {
+    id: "pollinations",
+    name: "Pollinations.ai (Free)",
+    apiKey: "",
+    baseURL: "https://image.pollinations.ai/prompt",
+    model: "flux",
+    enabled: true,
+    order: 1,
+  },
+  {
+    id: "fal",
+    name: "Fal.ai",
+    apiKey: "",
+    baseURL: "https://fal.run",
+    model: "fal-ai/flux/schnell",
+    enabled: false,
+    order: 2,
+  },
+];
+
+// ── 默认视频生成提供商 ──────────────────────────────────────────────────────
+const DEFAULT_VIDEO_GEN_PROVIDERS: Record<string, unknown>[] = [
+  {
+    id: "fal",
+    name: "Fal.ai (Wan 2.2)",
+    apiKey: "",
+    baseURL: "https://fal.run",
+    model: "fal-ai/wan/v2.2-5b/text-to-video/fast-wan",
+    enabled: false,
+    order: 1,
+  },
+  {
+    id: "replicate",
+    name: "Replicate",
+    apiKey: "",
+    baseURL: "https://api.replicate.com/v1",
+    model: "lightricks/ltx-video",
+    enabled: false,
+    order: 2,
+  },
+  {
+    id: "local",
+    name: "Local FFmpeg",
+    apiKey: "",
+    baseURL: "",
+    model: "ffmpeg-slideshow",
+    enabled: true,
+    order: 3,
+  },
+];
 
 // ── EnvSecretManager: manages sensitive credentials in .env ──────────────────
 // JSON configs store "${VAR_NAME}" references; real values live in .env
@@ -128,6 +183,16 @@ class EnvSecretManager {
     const safe = channelId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
     const safeField = field.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
     return `CHANNEL_${safe}_${safeField}`;
+  }
+
+  static makeImageGenKeyVar(providerId: string): string {
+    const safe = providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+    return `IMAGE_GEN_${safe}_API_KEY`;
+  }
+
+  static makeVideoGenKeyVar(providerId: string): string {
+    const safe = providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+    return `VIDEO_GEN_${safe}_API_KEY`;
   }
 
   /** Persist all cached values to .env file, preserving comments and structure */
@@ -405,6 +470,8 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
 
 export class ProtocolAdapter {
   private savedLLMProviders: Record<string, unknown>[] | null = null;
+  private savedImageGenProviders: Record<string, unknown>[] | null = null;
+  private savedVideoGenProviders: Record<string, unknown>[] | null = null;
   private savedChannels: Record<string, unknown>[] | null = null;
   private incomingWebhookManager: IncomingWebhookManager;
   private canvasHost: CanvasHost;
@@ -472,6 +539,74 @@ export class ProtocolAdapter {
       }
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to load LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+
+    try {
+      if (fs.existsSync(IMAGE_GEN_CONFIG_FILE)) {
+        const raw = fs.readFileSync(IMAGE_GEN_CONFIG_FILE, "utf-8");
+        const data = JSON.parse(raw);
+        if (data.providers && Array.isArray(data.providers)) {
+          // Migrate: convert plaintext apiKeys to ${VAR} references + store in .env
+          let needsRewrite = false;
+          for (const p of data.providers) {
+            const apiKey = p.apiKey as string | undefined;
+            if (apiKey && !this.envSecrets.isRef(apiKey) && apiKey !== "" && !apiKey.includes("****")) {
+              const varName = EnvSecretManager.makeImageGenKeyVar(p.id as string);
+              this.envSecrets.set(varName, apiKey);
+              p.apiKey = `\${${varName}}`;
+              needsRewrite = true;
+            }
+          }
+          if (needsRewrite) {
+            this.persistImageGenProviders(data.providers);
+            process.stdout.write("[ProtocolAdapter] Migrated image-gen API keys to .env references");
+          }
+
+          this.savedImageGenProviders = data.providers;
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} image-gen providers from disk`);
+        }
+      } else {
+        // Initialize with defaults and persist
+        this.savedImageGenProviders = DEFAULT_IMAGE_GEN_PROVIDERS;
+        this.persistImageGenProviders(DEFAULT_IMAGE_GEN_PROVIDERS);
+        process.stdout.write("[ProtocolAdapter] Initialized default image-gen providers");
+      }
+    } catch (err) {
+      process.stderr.write("[ProtocolAdapter] Failed to load image-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+
+    try {
+      if (fs.existsSync(VIDEO_GEN_CONFIG_FILE)) {
+        const raw = fs.readFileSync(VIDEO_GEN_CONFIG_FILE, "utf-8");
+        const data = JSON.parse(raw);
+        if (data.providers && Array.isArray(data.providers)) {
+          // Migrate: convert plaintext apiKeys to ${VAR} references + store in .env
+          let needsRewrite = false;
+          for (const p of data.providers) {
+            const apiKey = p.apiKey as string | undefined;
+            if (apiKey && !this.envSecrets.isRef(apiKey) && apiKey !== "" && !apiKey.includes("****")) {
+              const varName = EnvSecretManager.makeVideoGenKeyVar(p.id as string);
+              this.envSecrets.set(varName, apiKey);
+              p.apiKey = `\${${varName}}`;
+              needsRewrite = true;
+            }
+          }
+          if (needsRewrite) {
+            this.persistVideoGenProviders(data.providers);
+            process.stdout.write("[ProtocolAdapter] Migrated video-gen API keys to .env references");
+          }
+
+          this.savedVideoGenProviders = data.providers;
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} video-gen providers from disk`);
+        }
+      } else {
+        // Initialize with defaults and persist
+        this.savedVideoGenProviders = DEFAULT_VIDEO_GEN_PROVIDERS;
+        this.persistVideoGenProviders(DEFAULT_VIDEO_GEN_PROVIDERS);
+        process.stdout.write("[ProtocolAdapter] Initialized default video-gen providers");
+      }
+    } catch (err) {
+      process.stderr.write("[ProtocolAdapter] Failed to load video-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
 
     try {
@@ -602,6 +737,38 @@ export class ProtocolAdapter {
       atomicWriteFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2));
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to persist LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+  }
+
+  /** Resolve ${VAR} references in image-gen providers for runtime use */
+  private resolveImageGenProviders(providers: Record<string, unknown>[]): Record<string, unknown>[] {
+    return providers.map((p) => ({
+      ...p,
+      apiKey: this.envSecrets.resolve(p.apiKey),
+    }));
+  }
+
+  /** Resolve ${VAR} references in video-gen providers for runtime use */
+  private resolveVideoGenProviders(providers: Record<string, unknown>[]): Record<string, unknown>[] {
+    return providers.map((p) => ({
+      ...p,
+      apiKey: this.envSecrets.resolve(p.apiKey),
+    }));
+  }
+
+  private persistImageGenProviders(providers: Record<string, unknown>[]): void {
+    try {
+      atomicWriteFileSync(IMAGE_GEN_CONFIG_FILE, JSON.stringify({ providers }, null, 2));
+    } catch (err) {
+      process.stderr.write("[ProtocolAdapter] Failed to persist image-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+  }
+
+  private persistVideoGenProviders(providers: Record<string, unknown>[]): void {
+    try {
+      atomicWriteFileSync(VIDEO_GEN_CONFIG_FILE, JSON.stringify({ providers }, null, 2));
+    } catch (err) {
+      process.stderr.write("[ProtocolAdapter] Failed to persist video-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 
@@ -2300,6 +2467,120 @@ export class ProtocolAdapter {
           // Resolve references before applying
           const resolved = this.resolveLLMProviders(processedProviders);
           this.applyLLMProviders(resolved);
+        }
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/config/image-gen", (_req: Request, res: Response) => {
+      try {
+        // API keys are ${VAR} references in JSON — safe to return directly
+        // Add hasApiKey flag so frontend knows if a key is configured
+        const providers = (this.savedImageGenProviders || []).map((p: Record<string, unknown>) => {
+          const apiKey = p.apiKey as string | undefined;
+          let hasApiKey = false;
+          if (apiKey && !apiKey.includes("****")) {
+            if (this.envSecrets.isRef(apiKey)) {
+              const resolved = this.envSecrets.resolve(apiKey);
+              hasApiKey = !!(resolved && typeof resolved === "string" && !resolved.includes("****"));
+            } else {
+              hasApiKey = true;
+            }
+          }
+          return { ...p, hasApiKey };
+        });
+        res.json({ providers });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.put("/api/config/image-gen", (req: Request, res: Response) => {
+      try {
+        const { providers } = req.body || {};
+        if (Array.isArray(providers)) {
+          const existingProviders = this.savedImageGenProviders || [];
+          const processedProviders = providers.map((p: Record<string, unknown>) => {
+            const existing = existingProviders.find((e: Record<string, unknown>) => e.id === p.id);
+            const result = { ...p };
+
+            if (typeof result.apiKey === "string") {
+              const apiKey = result.apiKey;
+              if (apiKey.includes("****")) {
+                // Frontend sent a masked key — keep the existing reference
+                result.apiKey = existing?.apiKey ?? "";
+              } else if (apiKey && !this.envSecrets.isRef(apiKey)) {
+                // Frontend sent a new plaintext key — store in .env, save reference
+                const varName = EnvSecretManager.makeImageGenKeyVar(result.id as string);
+                this.envSecrets.set(varName, apiKey);
+                result.apiKey = `\${${varName}}`;
+              }
+              // If it's already a ${VAR} reference, keep as-is
+            }
+
+            return result;
+          });
+          this.savedImageGenProviders = processedProviders;
+          this.persistImageGenProviders(processedProviders);
+        }
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/config/video-gen", (_req: Request, res: Response) => {
+      try {
+        // API keys are ${VAR} references in JSON — safe to return directly
+        // Add hasApiKey flag so frontend knows if a key is configured
+        const providers = (this.savedVideoGenProviders || []).map((p: Record<string, unknown>) => {
+          const apiKey = p.apiKey as string | undefined;
+          let hasApiKey = false;
+          if (apiKey && !apiKey.includes("****")) {
+            if (this.envSecrets.isRef(apiKey)) {
+              const resolved = this.envSecrets.resolve(apiKey);
+              hasApiKey = !!(resolved && typeof resolved === "string" && !resolved.includes("****"));
+            } else {
+              hasApiKey = true;
+            }
+          }
+          return { ...p, hasApiKey };
+        });
+        res.json({ providers });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.put("/api/config/video-gen", (req: Request, res: Response) => {
+      try {
+        const { providers } = req.body || {};
+        if (Array.isArray(providers)) {
+          const existingProviders = this.savedVideoGenProviders || [];
+          const processedProviders = providers.map((p: Record<string, unknown>) => {
+            const existing = existingProviders.find((e: Record<string, unknown>) => e.id === p.id);
+            const result = { ...p };
+
+            if (typeof result.apiKey === "string") {
+              const apiKey = result.apiKey;
+              if (apiKey.includes("****")) {
+                // Frontend sent a masked key — keep the existing reference
+                result.apiKey = existing?.apiKey ?? "";
+              } else if (apiKey && !this.envSecrets.isRef(apiKey)) {
+                // Frontend sent a new plaintext key — store in .env, save reference
+                const varName = EnvSecretManager.makeVideoGenKeyVar(result.id as string);
+                this.envSecrets.set(varName, apiKey);
+                result.apiKey = `\${${varName}}`;
+              }
+              // If it's already a ${VAR} reference, keep as-is
+            }
+
+            return result;
+          });
+          this.savedVideoGenProviders = processedProviders;
+          this.persistVideoGenProviders(processedProviders);
         }
         res.json({ success: true });
       } catch (err) {
