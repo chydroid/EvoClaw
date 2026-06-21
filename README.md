@@ -25,6 +25,13 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.50.0 工程硬化亮点
+- **Anthropic prompt cache**：自动在 system + 最后 3 条消息注入 `cache_control`，约 75% 输入 token 成本降低
+- **工具执行并发控制**：全局信号量(5) + 浏览器互斥(1) + 网络限流(3)，防止并行 tool_call 资源耗尽
+- **原子写入统一**：所有配置/状态文件使用 temp + fsync + rename 原子写入，崩溃时不截断
+- **安全加固**：Webhook 签名 fail-closed + `crypto.timingSafeEqual` 常量时间比较，防止时序攻击
+- **30+ P1 BUG 修复**：RegExp lastIndex、子域名 endsWith 攻击、路径遍历、循环依赖栈溢出等
+
 ## 快速开始
 ### 环境要求
 - Node.js 20+ 

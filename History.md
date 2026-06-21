@@ -3,6 +3,54 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.50.0 (2026-06-21)
+
+### 综合发布：3轮迭代成果整合 + 100项 WebUI 端到端测试
+
+本版本整合了 v0.47.0 → v0.49.0 三轮迭代的全部工程硬化成果，并完成 100 项 WebUI 端到端测试验证。
+
+#### 三轮迭代成果汇总
+
+**第1轮（v0.47.0）— hermes 工程硬化 + openclaw skills 移植**
+- Anthropic cache_control 注入（system + last 3 messages），约 75% 输入 token 成本降低
+- prompt-cache `cachePrefix`/`findMatchingPrefix` 键一致性修复
+- `djb2Hash` 增加长度后缀降低碰撞概率
+- 移植 openclaw skills：himalaya（邮件）、python-debugpy（调试）、video-frames（视频帧提取）
+
+**第2轮（v0.48.0）— 30+ P1 BUG 修复**
+- `model-failover.ts` canUse()/consumeProbe() 副作用分离
+- `guardrails.ts`/`content-guard.ts` RegExp g flag lastIndex 重置
+- `rate-limiter.ts` 负 points 验证 + cleanupTimer.unref()
+- `tool-policy-manager.ts` 子域名 endsWith 攻击修复
+- `install-policy.ts` glob 转 RegExp 特殊字符转义
+- `permission-manager.ts` 路径遍历 prefix 比较修复
+- `self-healing.ts` previousFailures 读取顺序修复
+- `token-usage-tracker.ts`/`schedule-manager.ts`/`dm-pairing-manager.ts` 原子写入
+- `cron-scheduler.ts` dayOfWeek=7 归一化 + 重复执行防护
+- `context-pruning.ts` tailSize 负值保护
+
+**第3轮（v0.49.0）— 工具并发控制 + 安全加固 + 原子写入统一**
+- llm-caller.ts 工具执行并发控制（全局5/浏览器1/网络3信号量）
+- ws-protocol.ts/wechat.ts 常量时间比较
+- 新增 `atomic-write.ts` 共享原子写入工具
+- config-rpc.ts undo() 验证、feature-flags.ts 循环依赖检测
+- config-schema.ts JSON5 注释字符级解析
+- health-aggregator.ts startTime 作用域、rag-pipeline.ts _sourceText 修复
+- telegram/qq/discord 定时器 unref
+
+#### WebUI 端到端测试
+
+- 生成 100 项测试用例覆盖：健康检查、配置管理、LLM 调用、技能管理、渠道管理、安全治理、调度器、记忆系统、文件工具、浏览器工具等
+- 通过 HTTP API 端到端执行，全部核心功能验证通过
+
+#### 测试
+
+- 单元测试：2927 passed | 1 skipped
+- WebUI 端到端：100 项通过
+- build + typecheck 通过
+
+---
+
 ## v0.49.0 (2026-06-21)
 
 ### 第3轮迭代：hermes 工具并发控制 + 安全加固 + 原子写入统一
