@@ -898,16 +898,17 @@ export default function App() {
                             </div>
                           );
                         })}
-                        {sessionsVisible < sessions.length ? (
+                        {sessionsVisible < sessions.length && (
                           <button style={css.loadMoreBtn} onClick={handleLoadMoreSessions}>
                             <IconPlus size={12} />
                             {t("sessions.load_more")} ({sessions.length - sessionsVisible} {t("sessions.remaining")})
                           </button>
-                        ) : sessionsVisible > SESSIONS_DEFAULT_SHOW ? (
+                        )}
+                        {sessionsVisible > SESSIONS_DEFAULT_SHOW && (
                           <button style={css.loadMoreBtn} onClick={() => setSessionsVisible(SESSIONS_DEFAULT_SHOW)}>
                             &#9650; {t("sessions.collapse_show_3")}
                           </button>
-                        ) : null}
+                        )}
                       </>
                     )}
                   </div>

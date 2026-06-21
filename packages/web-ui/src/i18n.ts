@@ -453,7 +453,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "sessions.days_ago": "{0}天前",
     "sessions.delete_session": "删除会话",
     "sessions.remaining": "条剩余",
-    "sessions.collapse_show_3": "折叠 (显示3条)",
+    "sessions.collapse_show_3": "收起对话列表",
 
     // Theme
     "theme.change": "切换主题",
@@ -2596,7 +2596,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "sessions.days_ago": "{0}d ago",
     "sessions.delete_session": "Delete session",
     "sessions.remaining": "left",
-    "sessions.collapse_show_3": "Collapse (show 3)",
+    "sessions.collapse_show_3": "Collapse Session List",
 
     // Theme
     "theme.change": "Change theme",
