@@ -386,7 +386,6 @@ pnpm --filter @evoclaw/web-ui build
 - `packages/web-ui/src/app-state.ts` / `AppStateContext.tsx` / `AppErrorBoundary.tsx` / `app-state.test.ts`
 - `packages/web-ui/src/App.tsx` / `main.tsx`
 - `packages/agent/src/plugins/enhanced-browser.plugin.test.ts`
-- `docs/improvement-plan.md`
 
 #### 测试
 
