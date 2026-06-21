@@ -228,6 +228,17 @@ export class ConfigRPC extends EventEmitter {
     let undone = 0;
     for (let i = 0; i < count && this.history.length > 0; i++) {
       const change = this.history.pop()!;
+      // 验证 oldValue 仍然符合当前 schema（schema 可能在 set 和 undo 之间被更新）
+      const schema = this.schema.get(change.path);
+      if (schema?.validate) {
+        const error = schema.validate(change.oldValue);
+        if (error) {
+          // 验证失败：将变更放回历史栈，中止 undo，避免写入非法值
+          this.history.push(change);
+          process.stderr.write(`[ConfigRpc] undo() rejected for "${change.path}": ${error}\n`);
+          break;
+        }
+      }
       this.values.set(change.path, change.oldValue);
       this.emit("change", { ...change, oldValue: change.newValue, newValue: change.oldValue, timestamp: Date.now(), source: "undo" });
       undone++;

@@ -62,10 +62,12 @@ export class ContextPruningManager {
             stats.charsSaved += originalLength - this.config.softTrimThreshold;
             
             // Keep head and tail
+            // BUG 2.1 fix: tailSize 可能为负数（当 softTrimThreshold 较小时），
+            // 导致 slice(-tailSize) 行为异常。用 Math.max(0, ...) 保护。
             const headSize = Math.floor(this.config.softTrimThreshold * 0.7);
-            const tailSize = this.config.softTrimThreshold - headSize - 50;
+            const tailSize = Math.max(0, this.config.softTrimThreshold - headSize - 50);
             const head = msg.content.slice(0, headSize);
-            const tail = msg.content.slice(-tailSize);
+            const tail = tailSize > 0 ? msg.content.slice(-tailSize) : "";
             
             return {
               ...msg,

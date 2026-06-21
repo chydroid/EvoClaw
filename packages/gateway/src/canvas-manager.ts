@@ -14,6 +14,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "./atomic-write";
 
 export interface CanvasConfig {
   /** Directory to store canvas files (default: "data/canvas") */
@@ -466,7 +467,7 @@ export class CanvasManager {
 
   private writeIndex(canvases: CanvasFile[]): void {
     try {
-      fs.writeFileSync(this.indexPath, JSON.stringify(canvases, null, 2), "utf-8");
+      atomicWriteFileSync(this.indexPath, JSON.stringify(canvases, null, 2));
     } catch (err) {
       process.stderr.write(`[CanvasManager] Failed to write index: ${err}`);
     }

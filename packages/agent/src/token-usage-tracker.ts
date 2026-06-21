@@ -339,10 +339,35 @@ export class TokenUsageTracker {
       const filePath = path.join(this.storeDir, "records.json");
       const data = {
         counter: this.counter,
-        records: this.records.slice(-5000), // 最多保留5000条
+        // BUG 7.2 fix: 原代码硬编码 slice(-5000)，与 retainCount 配置不一致。
+        // 改用 this.config.retainCount 保持一致。
+        records: this.records.slice(-this.config.retainCount),
         savedAt: new Date().toISOString(),
       };
-      fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
+      // BUG 7.1 fix: 使用原子写入（temp + fsync + rename）替代 writeFileSync，
+      // 防止进程崩溃或并发写入导致 JSON 文件损坏。
+      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (renameErr) {
+        // EXDEV/EBUSY 跨设备回退：在目标目录侧创建临时文件再 rename
+        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, filePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[TokenUsageTracker] Failed to persist: ${err}\n`);
     }

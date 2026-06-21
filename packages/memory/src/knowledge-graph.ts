@@ -83,7 +83,49 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
         nodes: Array.from(this.nodes.values()),
         edges: this.edges,
       };
-      fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), "utf-8");
+      // 原子写入：temp + fsync + rename，防止崩溃时产生截断的图数据文件
+      const tmpPath = `${this.filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } catch (werr) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd);
+      try {
+        if (fs.existsSync(this.filePath)) {
+          const st = fs.statSync(this.filePath);
+          fs.chmodSync(tmpPath, st.mode);
+        }
+      } catch { /* ignore */ }
+      try {
+        fs.renameSync(tmpPath, this.filePath);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EXDEV" || code === "EBUSY") {
+          const content = fs.readFileSync(tmpPath, "utf-8");
+          const dstTmp = `${this.filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+          const fd2 = fs.openSync(dstTmp, "w");
+          try {
+            fs.writeFileSync(fd2, content, "utf-8");
+            fs.fsyncSync(fd2);
+          } catch (w2err) {
+            try { fs.closeSync(fd2); } catch { /* ignore */ }
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw w2err;
+          }
+          fs.closeSync(fd2);
+          try { fs.renameSync(dstTmp, this.filePath); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } else {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw err;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[KnowledgeGraph] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
     }

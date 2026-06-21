@@ -3,6 +3,50 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.49.0 (2026-06-21)
+
+### 第3轮迭代：hermes 工具并发控制 + 安全加固 + 原子写入统一
+
+在第2轮基础上继续借鉴 hermes-agent 工程实践，完成第3轮三大任务。
+
+#### Hermes 提升：工具执行并发控制 (`packages/agent/src/llm-caller.ts`)
+
+- **全局工具并发信号量**：LLM 返回大量并行 tool_call 时可能耗尽资源。新增 `globalToolSemaphore(5)` 限制全局并发
+- **浏览器工具互斥**：`browser_*` 工具串行执行（`browserToolMutex(1)`），避免多标签页竞争
+- **网络工具限流**：`web_search`/`web_fetch`/`scrapling_fetch`/`fetch_node_page` 限制并发 3（`networkToolSemaphore(3)`）
+- **按工具名获取信号量**：`getToolSemaphore()` 辅助函数，从 `PARALLEL_SAFE_TOOLS` 移除浏览器工具
+
+#### 安全加固：Webhook 签名常量时间比较 + Fail-closed
+
+- **`ws-protocol.ts`**：authToken/authPassword 比较改用 `crypto.timingSafeEqual`，防止时序攻击
+- **`wechat.ts`**：`verifySignature` 改用 `timingSafeEqual`，防止时序攻击
+- （第2轮已修复 `feishu.ts`、`dingtalk.ts` 签名 bypass）
+
+#### 原子写入统一 (`packages/gateway/src/atomic-write.ts` 新增)
+
+- **新增共享 `atomicWriteFileSync`**：temp + fsync + rename + EXDEV/EBUSY 跨设备回退
+- **`protocol-adapter.ts`**：secrets.json / llm-providers.json / channels.json / migrations.json / version / workspace 文件 / weixin 账号文件全部改用原子写入
+- **`gateway-metadata-cache.ts`**、**`dispatch-dedupe-store.ts`**、**`canvas-manager.ts`**、**`weixin-plugin-adapter.ts`**：持久化改用原子写入
+
+#### BUG 修复
+
+- **`config-rpc.ts` undo() 绕过验证**：undo 恢复 oldValue 时未走 schema.validate，可能写入非法值。修复：undo 时验证 oldValue，失败则中止并放回历史栈
+- **`feature-flags.ts` 循环依赖栈溢出**：`evaluate()` 递归 `dependsOn` 无环检测。修复：拆分 `evaluateInternal()` + `visited: Set<string>` 环检测
+- **`config-schema.ts` JSON5 注释破坏 URL**：`/\/\/.*$/gm` 会破坏 JSON 字符串内的 URL（如 `"https://example.com//path"`）。修复：新增 `stripJson5Comments()` 字符级解析器，跟踪字符串上下文
+- **`health-aggregator.ts` createHealthCheck startTime 作用域**：`startTime` 在函数创建时捕获而非调用时，导致 `responseTimeMs` 永远是"自创建以来"。修复：移入闭包内部
+- **`rag-pipeline.ts` _sourceText 缺失**：`indexDocument` 未在 metadata 中设置 `_sourceText`，导致 `retrieve()` 返回空文本。修复：metadata 增加 `_sourceText: chunk.text`
+
+#### 定时器 unref
+
+- `telegram.ts`、`qq.ts`、`discord.ts` 的 `setInterval` 添加 `.unref()`，避免阻止进程退出
+
+#### 测试
+
+- `canvas-manager.test.ts`：fs mock 补充 `openSync`/`fsyncSync`/`closeSync`/`renameSync`/`chmodSync` 以支持原子写入
+- 全部 2927 测试通过（1 skipped），build + typecheck 通过
+
+---
+
 ## v0.48.0 (2026-06-21)
 
 ### 全面代码审查：发现并修复潜在 BUG

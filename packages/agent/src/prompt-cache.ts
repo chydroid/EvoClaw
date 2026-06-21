@@ -55,14 +55,84 @@ const DEFAULT_CONFIG: PromptCacheConfig = {
   maxPrefixLength: 10000,
 };
 
-// ─── Hash function (djb2) ─────────────────────────────────────────────
+// ─── Hash function (djb2 + length disambiguation) ─────────────────────
+// 使用 djb2 + 长度后缀降低碰撞概率（原 31 位 djb2 在 ~46k 条目后有 50% 碰撞）。
+// 注意：仍非加密安全，但作为内存缓存 key 足够（碰撞时仅返回错误 tokenCount）。
 
 function djb2Hash(str: string): string {
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
     hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0x7fffffff;
   }
-  return hash.toString(36);
+  return `${hash.toString(36)}:${str.length.toString(36)}`;
+}
+
+// ─── Anthropic cache_control 注入 ─────────────────────────────────────
+// 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + 最后 3 条
+// 非系统消息上注入 cache_control: {type: "ephemeral"} 标记，启用 Anthropic
+// 服务端 prompt 缓存，可减少约 75% 的输入 token 成本（命中缓存时按 10% 计费）。
+//
+// Anthropic OpenAI-compatible endpoint 在 message 对象上接受 cache_control
+// 字段。本函数返回新的 messages 数组，不修改原数组。
+
+export interface AnthropicCacheableMessage {
+  role: string;
+  content: unknown;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  name?: string;
+  cache_control?: { type: "ephemeral" };
+}
+
+/**
+ * 在 messages 数组上应用 Anthropic cache_control 断点。
+ *
+ * 策略 system_and_3：
+ * 1. 所有 system 消息标记 cache_control（通常只有 1 条）
+ * 2. 最后 3 条非 system 消息标记 cache_control
+ *
+ * Anthropic 限制最多 4 个 cache_control 断点（system 算 1 个 + 3 个尾部）。
+ *
+ * @param messages 输入消息数组
+ * @returns 新的消息数组，带 cache_control 标记
+ */
+export function applyAnthropicCacheControl(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
+
+  const result = messages.map((m) => ({ ...m }));
+
+  // 1. 标记所有 system 消息（通常只有 1 条，但保守处理多条）
+  //    仅在最后一条 system 消息上设置断点（Anthropic 建议系统提示作为单个缓存块）
+  let lastSystemIdx = -1;
+  for (let i = 0; i < result.length; i++) {
+    if (result[i].role === "system") {
+      lastSystemIdx = i;
+    }
+  }
+  if (lastSystemIdx >= 0) {
+    result[lastSystemIdx].cache_control = { type: "ephemeral" };
+  }
+
+  // 2. 标记最后 3 条非 system 消息
+  //    从数组末尾向前扫描，跳过 system 消息，收集最多 3 个索引
+  const tailIndices: number[] = [];
+  for (let i = result.length - 1; i >= 0 && tailIndices.length < 3; i--) {
+    if (result[i].role !== "system") {
+      tailIndices.push(i);
+    }
+  }
+  for (const idx of tailIndices) {
+    // 避免重复标记（若 system 消息恰好在尾部 3 条内）
+    if (!result[idx].cache_control) {
+      result[idx].cache_control = { type: "ephemeral" };
+    }
+  }
+
+  return result;
 }
 
 // ─── PromptCache class ────────────────────────────────────────────────
@@ -174,12 +244,26 @@ export class PromptCache {
       };
     }
 
-    // Build the prefix text from system + conversation messages
-    const parts: string[] = [];
+    // Build the prefix text using the SAME logic as findMatchingPrefix:
+    // separate system messages from conversation messages, then join as
+    // systemText + "\n" + conversationParts[i] for each conversation msg.
+    // (BUG 1.2 fix: previously cachePrefix joined all messages with "\n"
+    //  without separating system/conversation, causing key mismatch with
+    //  findMatchingPrefix and 100% cache miss.)
+    const systemParts: string[] = [];
+    const conversationParts: string[] = [];
     for (const msg of messages) {
-      parts.push(msg.content);
+      if (msg.role === "system") {
+        systemParts.push(msg.content);
+      } else {
+        conversationParts.push(msg.content);
+      }
     }
-    const promptPrefix = parts.join("\n");
+    const systemText = systemParts.join("\n");
+    let promptPrefix = systemText;
+    for (const part of conversationParts) {
+      promptPrefix = promptPrefix + "\n" + part;
+    }
 
     // Enforce length constraints
     if (

@@ -99,6 +99,7 @@ export class DeadLetterQueue {
 
   /**
    * Enqueue a failed message into the dead letter queue.
+   * 每条消息独立文件 + 原子写入，防止崩溃时 appendFileSync 写入损坏行。
    */
   enqueue(entry: Omit<DeadLetter, "id" | "deadLetteredAt" | "replayed">): DeadLetter {
     const dl: DeadLetter = {
@@ -108,9 +109,23 @@ export class DeadLetterQueue {
       replayed: false,
     };
 
-    const filePath = this.channelFile(dl.channel);
-    const line = JSON.stringify(dl) + "\n";
-    fs.appendFileSync(filePath, line, "utf-8");
+    // 每条消息独立文件，原子写入，防止崩溃时 JSONL 损坏
+    const msgFile = path.join(this.config.storageDir, `${dl.id}.json`);
+    const tmpPath = `${msgFile}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, JSON.stringify(dl), "utf-8");
+      fs.fsyncSync(fd);
+    } catch (werr) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw werr;
+    }
+    fs.closeSync(fd);
+    try { fs.renameSync(tmpPath, msgFile); } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
 
     return dl;
   }
@@ -155,25 +170,40 @@ export class DeadLetterQueue {
 
   /**
    * Mark a dead letter as replayed.
+   * 原子更新单条消息文件，避免读-改-写竞态。
    */
   markReplayed(id: string, success: boolean): boolean {
     const dl = this.get(id);
     if (!dl) return false;
 
-    const entries = this.readAll(dl.channel);
-    const idx = entries.findIndex((e) => e.id === id);
-    if (idx < 0) return false;
-
     if (success) {
-      entries[idx].replayed = true;
-      entries[idx].replayedAt = new Date().toISOString();
+      dl.replayed = true;
+      dl.replayedAt = new Date().toISOString();
     } else {
       // Increment retry count and update error timestamp
-      entries[idx].retryCount++;
-      entries[idx].deadLetteredAt = new Date().toISOString();
+      dl.retryCount++;
+      dl.deadLetteredAt = new Date().toISOString();
     }
 
-    this.writeAll(dl.channel, entries);
+    // 原子写入更新后的消息
+    const msgFile = this.messageFile(id);
+    const tmpPath = `${msgFile}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    try {
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(dl), "utf-8");
+        fs.fsyncSync(fd);
+      } catch (werr) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd);
+      fs.renameSync(tmpPath, msgFile);
+    } catch (err) {
+      process.stderr.write(`[DeadLetterQueue] Failed to mark ${id} as replayed:` + " " + err);
+      return false;
+    }
     return true;
   }
 
@@ -181,9 +211,18 @@ export class DeadLetterQueue {
    * Delete a specific dead letter.
    */
   delete(id: string): boolean {
+    const msgFile = this.messageFile(id);
+    try {
+      if (fs.existsSync(msgFile)) {
+        fs.unlinkSync(msgFile);
+        return true;
+      }
+    } catch (err) {
+      process.stderr.write(`[DeadLetterQueue] Failed to delete ${id}:` + " " + err);
+    }
+    // 旧版 JSONL 兼容：通过 readAll + writeAll 删除
     const dl = this.get(id);
     if (!dl) return false;
-
     const entries = this.readAll(dl.channel);
     const filtered = entries.filter((e) => e.id !== id);
     this.writeAll(dl.channel, filtered);
@@ -276,11 +315,16 @@ export class DeadLetterQueue {
    * Purge all dead letters for a specific channel.
    */
   purgeChannel(channel: string): number {
-    const p = this.channelFile(channel);
-    if (!fs.existsSync(p)) return 0;
-
     const entries = this.readAll(channel);
-    fs.unlinkSync(p);
+    // 删除新版每条消息文件
+    for (const dl of entries) {
+      try { fs.unlinkSync(this.messageFile(dl.id)); } catch { /* ignore */ }
+    }
+    // 删除旧版 JSONL 文件
+    const p = this.channelFile(channel);
+    if (fs.existsSync(p)) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
     return entries.length;
   }
 
@@ -303,51 +347,87 @@ export class DeadLetterQueue {
     }
   }
 
+  /** 单条消息文件路径（每条消息独立文件，原子写入） */
+  private messageFile(id: string): string {
+    return path.join(this.config.storageDir, `${id}.json`);
+  }
+
+  /** 旧版 JSONL 文件路径（向后兼容读取） */
   private channelFile(channel: string): string {
     const safe = channel.replace(/[^a-zA-Z0-9_-]/g, "_");
     return path.join(this.config.storageDir, `${safe}.jsonl`);
   }
 
   private readAll(channel?: string): DeadLetter[] {
+    const entries: DeadLetter[] = [];
+
+    // 读取新版格式：每条消息独立 .json 文件
+    try {
+      const files = fs
+        .readdirSync(this.config.storageDir)
+        .filter((f) => f.startsWith("dl_") && f.endsWith(".json"));
+      for (const f of files) {
+        try {
+          const content = fs.readFileSync(path.join(this.config.storageDir, f), "utf-8");
+          const dl = JSON.parse(content) as DeadLetter;
+          if (!channel || dl.channel === channel) {
+            entries.push(dl);
+          }
+        } catch {
+          // 跳过损坏的单条消息文件
+        }
+      }
+    } catch {
+      // 目录不存在或读取失败
+    }
+
+    // 向后兼容：读取旧版 JSONL 文件
     if (channel) {
       const p = this.channelFile(channel);
-      if (!fs.existsSync(p)) return [];
-      try {
-        const content = fs.readFileSync(p, "utf-8");
-        const entries: DeadLetter[] = [];
-        for (const line of content.split("\n")) {
-          if (!line.trim()) continue;
-          try {
-            entries.push(JSON.parse(line) as DeadLetter);
-          } catch {
-            // Skip corrupted line instead of losing all entries
+      if (fs.existsSync(p)) {
+        try {
+          const content = fs.readFileSync(p, "utf-8");
+          for (const line of content.split("\n")) {
+            if (!line.trim()) continue;
+            try {
+              entries.push(JSON.parse(line) as DeadLetter);
+            } catch {
+              // 跳过损坏行
+            }
           }
+        } catch {
+          // 读取失败
         }
-        return entries;
-      } catch (err) {
-        process.stderr.write(`[DeadLetterQueue] Failed to read channel file for "${channel}":` + " " + err);
-        return [];
+      }
+    } else {
+      // 读取所有旧版 JSONL 文件
+      for (const ch of this.listChannelsLegacy()) {
+        entries.push(...this.readAll(ch));
       }
     }
 
-    const all: DeadLetter[] = [];
-    for (const ch of this.listChannels()) {
-      all.push(...this.readAll(ch));
-    }
-    return all;
+    return entries;
   }
 
   private writeAll(channel: string, entries: DeadLetter[]): void {
+    // 新版格式：每条消息独立文件，writeAll 仅用于 purge 后清理
+    // 删除该 channel 下所有旧文件，然后保留 entries 中的文件
+    const existing = this.readAll(channel);
+    const keepIds = new Set(entries.map((e) => e.id));
+    for (const dl of existing) {
+      if (!keepIds.has(dl.id)) {
+        try { fs.unlinkSync(this.messageFile(dl.id)); } catch { /* ignore */ }
+      }
+    }
+    // 旧版 JSONL 文件也清理
     const p = this.channelFile(channel);
     if (entries.length === 0) {
       try { fs.unlinkSync(p); } catch { /* ignore */ }
-      return;
     }
-    const content = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-    fs.writeFileSync(p, content, "utf-8");
   }
 
-  listChannels(): string[] {
+  /** 旧版 JSONL 文件列表（向后兼容） */
+  private listChannelsLegacy(): string[] {
     try {
       return fs
         .readdirSync(this.config.storageDir)
@@ -356,5 +436,31 @@ export class DeadLetterQueue {
     } catch {
       return [];
     }
+  }
+
+  listChannels(): string[] {
+    const channels = new Set<string>();
+    // 从新版 .json 文件中提取 channel
+    try {
+      const files = fs
+        .readdirSync(this.config.storageDir)
+        .filter((f) => f.startsWith("dl_") && f.endsWith(".json"));
+      for (const f of files) {
+        try {
+          const content = fs.readFileSync(path.join(this.config.storageDir, f), "utf-8");
+          const dl = JSON.parse(content) as DeadLetter;
+          channels.add(dl.channel);
+        } catch {
+          // 跳过损坏文件
+        }
+      }
+    } catch {
+      // 目录不存在
+    }
+    // 合并旧版 JSONL channel
+    for (const ch of this.listChannelsLegacy()) {
+      channels.add(ch);
+    }
+    return Array.from(channels);
   }
 }

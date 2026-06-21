@@ -457,7 +457,11 @@ export class InstallPolicyManager {
 
   private matchPattern(text: string, pattern: string): boolean {
     // 简单glob: * 匹配任意字符
-    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$", "i");
+    // BUG 23.1 fix: 原代码仅替换 * 为 .*，未转义其他正则特殊字符。
+    // 例如 pattern "foo.js" 会变成正则 ^foo.js$，"." 匹配任意字符，
+    // 导致 "fooXjs" 也通过匹配。先转义所有特殊字符，再替换 \* 为 .*。
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    const regex = new RegExp("^" + escaped + "$", "i");
     return regex.test(text);
   }
 }

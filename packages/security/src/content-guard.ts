@@ -323,12 +323,16 @@ export class ContentGuard {
   quickCheck(content: string): boolean {
     const criticalPII = PII_PATTERNS.filter((p) => p.severity === "critical");
     for (const pattern of criticalPII) {
+      // BUG 18.1 fix: 带 g flag 的 RegExp test() 累积 lastIndex，重置防止漏检
+      pattern.pattern.lastIndex = 0;
       if (pattern.pattern.test(content)) return false;
     }
 
     for (const harmful of HARMFUL_PATTERNS) {
       if (harmful.severity === "critical" && typeof harmful.pattern === "object") {
-        if ((harmful.pattern as RegExp).test(content)) return false;
+        const re = harmful.pattern as RegExp;
+        re.lastIndex = 0;
+        if (re.test(content)) return false;
       }
     }
 
@@ -401,6 +405,8 @@ export class ContentGuard {
           matches.push({ type: rule.type, description: rule.description });
         }
       } else {
+        // BUG 18.1 fix: 重置 lastIndex 防止 g flag 累积
+        rule.pattern.lastIndex = 0;
         if (rule.pattern.test(content)) {
           matches.push({ type: rule.type, description: rule.description });
         }

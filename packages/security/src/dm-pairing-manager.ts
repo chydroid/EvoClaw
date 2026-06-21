@@ -348,7 +348,29 @@ export class DMPairingManager {
       for (const [channel, peers] of this.approvedPeers) {
         data[channel] = [...peers];
       }
-      fs.writeFileSync(this.pairingStorePath, JSON.stringify(data, null, 2), "utf-8");
+      // BUG 20.3 fix: 使用原子写入（temp + fsync + rename）替代 writeFileSync，
+      // 防止进程崩溃或并发写入导致 pairing store 损坏。
+      const tmpPath = `${this.pairingStorePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, this.pairingStorePath);
+      } catch {
+        const dstTmp = `${this.pairingStorePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, this.pairingStorePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[DMPairingManager] Failed to persist approved peers: ${err instanceof Error ? err.message : String(err)}\n`);
     }

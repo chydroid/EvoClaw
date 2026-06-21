@@ -93,6 +93,7 @@ export class RAGPipeline {
         _chunkIndex: i,
         _startOffset: chunk.startOffset,
         _endOffset: chunk.endOffset,
+        _sourceText: chunk.text,
         ...(document.metadata ?? {}),
         ...(chunk.metadata ?? {}),
       };

@@ -4,6 +4,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "./atomic-write";
 
 /** Gateway 元数据 */
 export interface GatewayMetadata {

@@ -500,4 +500,114 @@ export class CompactionManager {
       }
     } catch {}
   }
+
+  // ─── 工具调用/结果配对完整性清洗 ─────────────────────────────────────────
+  // 灵感来自 hermes-agent context_compressor.py 的 _sanitize_tool_pairs()。
+  // 压缩后可能出现孤儿 tool_calls（assistant 有 tool_calls 但结果被压缩掉）
+  // 或孤儿 tool 结果（tool 结果引用的 call_id 已被压缩掉），
+  // 两者都会导致 API 400 错误。此方法确保输出的消息列表始终是 well-formed 的。
+
+  /**
+   * 清洗工具调用/结果配对完整性。
+   * @param messages 压缩后的消息列表（可能含孤儿 tool_calls 或孤儿 tool 结果）
+   * @returns 修复后的消息列表（well-formed OpenAI 格式）
+   */
+  sanitizeToolPairs(
+    messages: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> {
+    // 收集所有存活的 tool_call_id（assistant 消息中的 tool_calls）
+    const survivingCallIds = new Set<string>();
+    for (const msg of messages) {
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls as Array<Record<string, unknown>>) {
+          if (typeof tc.id === "string") survivingCallIds.add(tc.id);
+        }
+      }
+    }
+
+    // 收集所有 tool 结果的 tool_call_id
+    const resultCallIds = new Set<string>();
+    for (const msg of messages) {
+      if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
+        resultCallIds.add(msg.tool_call_id);
+      }
+    }
+
+    const result: Array<Record<string, unknown>> = [];
+
+    for (const msg of messages) {
+      if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
+        // 删除孤儿结果：tool 结果引用的 call_id 已被压缩掉
+        if (!survivingCallIds.has(msg.tool_call_id)) {
+          continue; // 跳过该 tool 消息
+        }
+        result.push(msg);
+      } else if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        // 为孤儿调用插入桩结果：assistant 有 tool_calls 但结果被压缩掉
+        result.push(msg);
+        const calls = msg.tool_calls as Array<Record<string, unknown>>;
+        for (const tc of calls) {
+          if (typeof tc.id === "string" && !resultCallIds.has(tc.id)) {
+            // 插入桩结果，防止 API 400 "No tool call found for function call output"
+            result.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: "[Result from earlier conversation — see context summary above]",
+            });
+            // 标记已插入，避免重复
+            resultCallIds.add(tc.id);
+          }
+        }
+      } else {
+        result.push(msg);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 确保最后一条 user 消息在保护尾部（不被压缩）。
+   * 灵感来自 hermes-agent _ensure_last_user_message_in_tail()。
+   * 防止活跃任务丢失导致 agent 停滞。
+   */
+  ensureLastUserMessageInTail(
+    messages: Array<Record<string, unknown>>,
+    tailStartIdx: number,
+  ): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        if (i < tailStartIdx) {
+          // 最后一条 user 消息在压缩区，移到尾部
+          const userMsg = messages.splice(i, 1)[0];
+          messages.push(userMsg);
+          return tailStartIdx; // 尾部起始位置不变
+        }
+        break;
+      }
+    }
+    return tailStartIdx;
+  }
+
+  /**
+   * 确保最后一条 assistant 消息在保护尾部。
+   * 灵感来自 hermes-agent _ensure_last_assistant_message_in_tail()。
+   * 防止用户看不到之前的回复。
+   */
+  ensureLastAssistantMessageInTail(
+    messages: Array<Record<string, unknown>>,
+    tailStartIdx: number,
+  ): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        if (i < tailStartIdx) {
+          const assistantMsg = messages.splice(i, 1)[0];
+          messages.push(assistantMsg);
+          return tailStartIdx;
+        }
+        break;
+      }
+    }
+    return tailStartIdx;
+  }
 }

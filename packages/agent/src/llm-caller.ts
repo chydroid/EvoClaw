@@ -7,6 +7,7 @@
  */
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
+import { Semaphore } from "@evoclaw/core";
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -19,6 +20,7 @@ import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import { applyAnthropicCacheControl } from "./prompt-cache";
 import * as https from "https";
 import * as http from "http";
 
@@ -306,6 +308,14 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const COOLDOWN_MS = 60_000; // 1 minute cooldown after tripping
 
 const toolFailureTracker = new Map<string, { count: number; trippedAt: number | null }>();
+
+// ── 工具执行并发控制信号量 ──
+// 灵感来自 hermes-agent 的 semaphore 限制：防止 LLM 返回大量并行工具调用时
+// 耗尽 socket/文件句柄/浏览器实例。全局上限防止资源耗尽，浏览器串行化防止
+// Playwright 冲突，网络工具上限防止触发对端限流。
+const globalToolSemaphore = new Semaphore(5);
+const browserToolMutex = new Semaphore(1);
+const networkToolSemaphore = new Semaphore(3);
 
 // ── Provider safety-filter rejection detection ──
 // Some remote LLM providers (e.g. Mimo) return a plain-text refusal such as
@@ -1435,14 +1445,29 @@ export async function callLLMOnce(
 
     const useStreaming = !!onProgress;
 
+    // ── Anthropic prompt cache: apply cache_control breakpoints ──
+    // 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + 最后 3 条
+    // 非系统消息上注入 cache_control: {type: "ephemeral"}，启用 Anthropic
+    // 服务端 prompt 缓存。命中缓存时输入 token 按 10% 计费，可节省约 75% 成本。
+    // 仅对 Anthropic provider 生效（其他 provider 会忽略此字段或报错）。
+    let messagesToSend = messages;
+    if (provider.provider === "anthropic") {
+      messagesToSend = applyAnthropicCacheControl(
+        messages as unknown as Array<Record<string, unknown>>,
+      ) as unknown as Array<LLMMessage>;
+    }
+
     const body: Record<string, unknown> = {
       model: provider.model,
-      messages: messages.map((m) => {
+      messages: messagesToSend.map((m) => {
         const msg: Record<string, unknown> = { role: m.role };
         if (m.content !== undefined) msg.content = m.content;
         if (m.tool_calls) msg.tool_calls = m.tool_calls;
         if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
         if (m.name) msg.name = m.name;
+        // 透传 cache_control（仅 Anthropic provider 设置了此字段）
+        const cacheCtrl = (m as LLMMessage & { cache_control?: unknown }).cache_control;
+        if (cacheCtrl) msg.cache_control = cacheCtrl;
         return msg;
       }),
       max_tokens: provider.maxTokens || 4096,
@@ -2173,15 +2198,27 @@ Have a specific URL?
         // ── Parallel tool execution (inspired by OpenClaw's executeToolCallsParallel) ──
         // Tools that are read-only and independent can be executed in parallel.
         // Tools with side-effects or dependencies must be executed sequentially.
+        // 注意：browser_* 工具已从并行安全集合中移除，因为 Playwright 不支持
+        // 并发操作同一浏览器实例。浏览器工具通过 browserToolMutex 串行化。
         const PARALLEL_SAFE_TOOLS = new Set([
           "web_search", "web_fetch", "file_read", "file_list",
           "skill_execute", "skill_search", "skill_view", "skill_index_list",
-          "browser_navigate", "browser_search", "browser_screenshot",
-          "browser_get_text", "browser_get_html", "browser_find_elements",
-          "browser_fetch_json", "memory_retrieve", "memory_search",
+          "memory_retrieve", "memory_search",
           "sequential_thinking", "assess_coding_capability",
           "scrapling_fetch", "fetch_node_page", "markitdown_convert",
         ]);
+
+        // ── 工具执行并发控制（灵感来自 hermes-agent 的 semaphore 限制） ──
+        // 防止 LLM 返回大量并行工具调用时耗尽 socket/文件句柄/浏览器实例。
+        // 全局上限防止资源耗尽，浏览器串行化防止 Playwright 冲突，
+        // 网络工具上限防止触发对端限流。
+        const getToolSemaphore = (toolName: string): Semaphore => {
+          if (toolName.startsWith("browser_")) return browserToolMutex;
+          if (["web_search", "web_fetch", "scrapling_fetch", "fetch_node_page"].includes(toolName)) {
+            return networkToolSemaphore;
+          }
+          return globalToolSemaphore;
+        };
 
         // Separate tool calls into parallel-safe and sequential groups
         const parallelCalls: typeof toolCalls = [];
@@ -2379,10 +2416,14 @@ Have a specific URL?
               for (let retry = 0; retry <= MAX_RETRIES; retry++) {
                 try {
                   const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
-                  rawResult = await Promise.race([
-                    toolEntry.handler(args),
-                    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout)),
-                  ]);
+                  // 使用信号量限制并发：浏览器工具串行，网络工具限3并发，其他限5并发
+                  const toolSem = getToolSemaphore(toolName);
+                  rawResult = await toolSem.withPermit(async () => {
+                    return await Promise.race([
+                      toolEntry.handler(args),
+                      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout)),
+                    ]);
+                  });
                   break; // success
                 } catch (retryErr) {
                   if (retry < MAX_RETRIES && isNetworkTool) {

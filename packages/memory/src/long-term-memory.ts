@@ -120,7 +120,50 @@ export class LongTermMemoryStore implements LongTermMemory {
         createdAt: e.createdAt.toISOString(),
         accessedAt: e.accessedAt.toISOString(),
       }));
-      fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2), "utf-8");
+      // 原子写入：temp + fsync + rename，防止崩溃时产生截断的记忆文件
+      const tmpPath = `${MEMORY_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } catch (werr) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd);
+      try {
+        if (fs.existsSync(MEMORY_FILE)) {
+          const st = fs.statSync(MEMORY_FILE);
+          fs.chmodSync(tmpPath, st.mode);
+        }
+      } catch { /* ignore */ }
+      try {
+        fs.renameSync(tmpPath, MEMORY_FILE);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EXDEV" || code === "EBUSY") {
+          // 跨设备回退：目标侧 temp + rename
+          const content = fs.readFileSync(tmpPath, "utf-8");
+          const dstTmp = `${MEMORY_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+          const fd2 = fs.openSync(dstTmp, "w");
+          try {
+            fs.writeFileSync(fd2, content, "utf-8");
+            fs.fsyncSync(fd2);
+          } catch (w2err) {
+            try { fs.closeSync(fd2); } catch { /* ignore */ }
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw w2err;
+          }
+          fs.closeSync(fd2);
+          try { fs.renameSync(dstTmp, MEMORY_FILE); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } else {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw err;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[LongTermMemory] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
     }

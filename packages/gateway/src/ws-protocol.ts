@@ -9,7 +9,23 @@
  * - Heartbeat / health check
  */
 
+import crypto from "crypto";
 import type { EventBus } from "@evoclaw/core";
+
+/**
+ * 常量时间字符串比较，防止时序攻击。
+ * 长度不同时先返回 false（但仍消耗一定时间以减少长度泄露）。
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  if (aBuf.length !== bBuf.length) {
+    // 即使长度不同也要做一次比较，避免完全基于长度差异的时序泄露
+    crypto.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
 
 // ─── Protocol Types ───────────────────────────────────────────────────────────
 
@@ -292,19 +308,26 @@ export class ProtocolHandler {
       const token = auth?.token;
       const password = auth?.password;
 
-      if (this.options.authToken && token !== this.options.authToken) {
+      // Fail-closed 认证：当 authToken 配置为空字符串/undefined 时，
+      // 不能短路绕过认证（P0 安全修复）。
+      // 仅当 authToken 是非空字符串时才进行 token 校验；
+      // 若 authToken 为空但 authPassword 也为空且非 loopback，则拒绝连接。
+      const hasAuthToken = typeof this.options.authToken === "string" && this.options.authToken.length > 0;
+      const hasAuthPassword = typeof this.options.authPassword === "string" && this.options.authPassword.length > 0;
+
+      if (hasAuthToken && (typeof token !== "string" || !constantTimeEqual(token, this.options.authToken!))) {
         client.send({ type: "hello-error", reason: "Authentication failed", code: "auth_failed" });
         client.close(4004, "Auth failed");
         return;
       }
 
-      if (this.options.authPassword && password !== this.options.authPassword) {
+      if (hasAuthPassword && (typeof password !== "string" || !constantTimeEqual(password, this.options.authPassword!))) {
         client.send({ type: "hello-error", reason: "Authentication failed", code: "auth_failed" });
         client.close(4004, "Auth failed");
         return;
       }
 
-      if (!this.options.authToken && !this.options.authPassword && !isLoopback) {
+      if (!hasAuthToken && !hasAuthPassword && !isLoopback) {
         client.send({
           type: "hello-error",
           reason: "Remote connections require authentication",

@@ -345,6 +345,8 @@ export class DiscordAdapter implements ChannelAdapter {
     this.heartbeatInterval = setInterval(() => {
       this.sendGatewayPayload({ op: 1, d: this.sequence });
     }, intervalMs);
+    // 不阻止进程退出
+    this.heartbeatInterval.unref?.();
   }
 
   // ── Message Processing ────────────────────────────────────────────────────

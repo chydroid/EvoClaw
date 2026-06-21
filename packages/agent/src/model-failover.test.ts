@@ -183,8 +183,12 @@ describe("ModelFailoverManager", () => {
     fm2.registerProvider(makeProvider());
     const health = fm2.getHealth("provider-1")!;
     health.circuitState = "half-open";
+    // BUG 5.1 fix: canUse() 是纯查询方法，不再有副作用。
+    // 需要调用 consumeProbe() 消费 probe 槽位。
     expect(fm2.canUse("provider-1")).toBe(true);
-    expect(fm2.canUse("provider-1")).toBe(false);
+    expect(fm2.consumeProbe("provider-1")).toBe(true); // 消费唯一的 probe 槽位
+    expect(fm2.canUse("provider-1")).toBe(false); // 现在 probe 限额耗尽
+    expect(fm2.consumeProbe("provider-1")).toBe(false);
     fm2.dispose();
   });
 

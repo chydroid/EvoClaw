@@ -240,7 +240,17 @@ export class ToolPolicyManager {
           if (rule.condition.allowedDomains && params?.url) {
             const url = String(params.url);
             const domain = this.extractDomain(url);
-            if (domain && !rule.condition.allowedDomains.some((d) => domain.endsWith(d))) {
+            // BUG 22.1 fix: domain.endsWith(d) 会被子域名攻击绕过。
+            // 例如 d="evil.com" 会匹配 "notevil.com"。改为精确匹配或
+            // 确保前导点（subdomain 匹配）。
+            if (
+              domain &&
+              !rule.condition.allowedDomains.some((d) => {
+                const dl = d.toLowerCase();
+                const dom = domain.toLowerCase();
+                return dom === dl || dom.endsWith("." + dl);
+              })
+            ) {
               return { allowed: false, reason: `Domain "${domain}" not in allowlist` };
             }
           }

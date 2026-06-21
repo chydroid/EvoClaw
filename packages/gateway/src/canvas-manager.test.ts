@@ -4,23 +4,49 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 const mockStore = new Map<string, string>();
 const mockExists = new Set<string>();
 
-vi.mock("fs", () => ({
-  existsSync: vi.fn((p: string) => mockExists.has(p)),
-  mkdirSync: vi.fn(),
-  writeFileSync: vi.fn((p: string, data: string) => {
-    mockStore.set(p, data);
-    mockExists.add(p);
-  }),
-  readFileSync: vi.fn((p: string) => mockStore.get(p) ?? "[]"),
-  unlinkSync: vi.fn((p: string) => {
-    mockStore.delete(p);
-    mockExists.delete(p);
-  }),
-  statSync: vi.fn((p: string) => ({
-    size: (mockStore.get(p) ?? "").length,
-    mtimeMs: Date.now(),
-  })),
-}));
+vi.mock("fs", () => {
+  // fd → path 映射，支持 atomicWriteFileSync 通过 fd 写入
+  const fdToPath = new Map<number, string>();
+  let nextFd = 42;
+  return {
+    existsSync: vi.fn((p: string) => mockExists.has(p)),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn((p: string | number, data: string) => {
+      const key = typeof p === "number" ? fdToPath.get(p) ?? String(p) : p;
+      mockStore.set(key, data);
+      mockExists.add(key);
+    }),
+    readFileSync: vi.fn((p: string) => mockStore.get(p) ?? "[]"),
+    unlinkSync: vi.fn((p: string) => {
+      mockStore.delete(p);
+      mockExists.delete(p);
+    }),
+    statSync: vi.fn((p: string) => ({
+      size: (mockStore.get(p) ?? "").length,
+      mtimeMs: Date.now(),
+      mode: 0o644,
+    })),
+    // 支持 atomicWriteFileSync 所需的额外 fs 方法
+    openSync: vi.fn((p: string) => {
+      mockExists.add(p);
+      const fd = nextFd++;
+      fdToPath.set(fd, p);
+      return fd;
+    }),
+    fsyncSync: vi.fn(),
+    closeSync: vi.fn(),
+    renameSync: vi.fn((src: string, dst: string) => {
+      const data = mockStore.get(src);
+      if (data !== undefined) {
+        mockStore.set(dst, data);
+        mockExists.add(dst);
+        mockStore.delete(src);
+        mockExists.delete(src);
+      }
+    }),
+    chmodSync: vi.fn(),
+  };
+});
 
 import * as fs from "fs";
 import * as path from "path";

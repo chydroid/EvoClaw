@@ -51,13 +51,19 @@ export class PermissionManager {
    * for the given operation.
    */
   isPathAutoApproved(resolvedPath: string, operation: string): boolean {
-    const normalized = resolvedPath.replace(/\\/g, "/");
-    // Remove path traversal components
-    const safePath = normalized.replace(/\/\.\.\//g, "/").replace(/\/\.\//g, "/");
+    // BUG 13.1 fix: 原代码用字符串 replace 处理路径遍历，无法处理
+    // Windows 反斜杠、`....//`、URL 编码等绕过。改用 path.resolve
+    // 规范化后比较前缀，确保路径在白名单目录内。
+    const path = require("path") as typeof import("path");
+    const normalized = path.resolve(resolvedPath).replace(/\\/g, "/");
     for (const entry of this.whitelistedDirs) {
       if (!entry.operations.includes(operation) && !entry.operations.includes("*")) continue;
-      const safeDir = entry.dirPath.replace(/\/\.\.\//g, "/").replace(/\/\.\//g, "/");
-      if (safePath.startsWith(safeDir)) return true;
+      const safeDir = path.resolve(entry.dirPath).replace(/\\/g, "/");
+      // 精确匹配目录前缀：必须是 safeDir 本身或 safeDir/... 子路径
+      // 防止 "/foo/bar-evil" 误匹配 "/foo/bar"
+      if (normalized === safeDir || normalized.startsWith(safeDir + "/")) {
+        return true;
+      }
     }
     return false;
   }

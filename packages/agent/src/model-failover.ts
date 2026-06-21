@@ -320,7 +320,7 @@ export class ModelFailoverManager {
     this.recalculateHealthScore(providerId);
   }
 
-  /** Check if provider can be used */
+  /** Check if provider can be used (pure query, no side effects) */
   canUse(providerId: string): boolean {
     const h = this.health.get(providerId);
     if (!h || !h.active) return false;
@@ -330,13 +330,29 @@ export class ModelFailoverManager {
     }
 
     if (h.circuitState === "half-open") {
-      if (h.halfOpenProbeCount < this.config.halfOpenProbeLimit) {
-        h.halfOpenProbeCount++;
-        return true;
-      }
-      return false;
+      // BUG 5.1 fix: canUse() 是查询方法，不应有副作用。
+      // 原代码在此处 h.halfOpenProbeCount++ 会导致多次调用耗尽 probe 限额。
+      // 副作用移到 consumeProbe() 方法，调用方在发起请求前调用。
+      return h.halfOpenProbeCount < this.config.halfOpenProbeLimit;
     }
 
+    return true;
+  }
+
+  /**
+   * 消费一个 half-open probe 槽位。在发起真实请求前调用。
+   * 仅在 half-open 状态下递增计数器，其他状态无操作。
+   * @returns true 表示可以发起请求，false 表示 probe 限额已耗尽
+   */
+  consumeProbe(providerId: string): boolean {
+    const h = this.health.get(providerId);
+    if (!h || h.circuitState !== "half-open") {
+      return true; // 非 half-open 状态不限制
+    }
+    if (h.halfOpenProbeCount >= this.config.halfOpenProbeLimit) {
+      return false;
+    }
+    h.halfOpenProbeCount++;
     return true;
   }
 

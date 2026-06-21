@@ -15,6 +15,7 @@ import { CanvasHost } from "./canvas-host";
 import { FeishuAdapter } from "./channels/feishu";
 import { MatrixAdapter } from "./channels/matrix";
 import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
+import { atomicWriteFileSync } from "./atomic-write";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -166,7 +167,50 @@ class EnvSecretManager {
         }
       }
 
-      fs.writeFileSync(ENV_FILE, existingLines.join("\n") + "\n", "utf-8");
+      // 原子写入 .env：temp + fsync + rename，防止崩溃时 .env 损坏导致所有环境变量丢失
+      const tmpPath = `${ENV_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, existingLines.join("\n") + "\n", "utf-8");
+        fs.fsyncSync(fd);
+      } catch (werr) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd);
+      try {
+        if (fs.existsSync(ENV_FILE)) {
+          const st = fs.statSync(ENV_FILE);
+          fs.chmodSync(tmpPath, st.mode);
+        }
+      } catch { /* ignore */ }
+      try {
+        fs.renameSync(tmpPath, ENV_FILE);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EXDEV" || code === "EBUSY") {
+          // 跨设备回退
+          const content = fs.readFileSync(tmpPath, "utf-8");
+          const dstTmp = `${ENV_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+          const fd2 = fs.openSync(dstTmp, "w");
+          try {
+            fs.writeFileSync(fd2, content, "utf-8");
+            fs.fsyncSync(fd2);
+          } catch (w2err) {
+            try { fs.closeSync(fd2); } catch { /* ignore */ }
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw w2err;
+          }
+          fs.closeSync(fd2);
+          try { fs.renameSync(dstTmp, ENV_FILE); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } else {
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw err;
+        }
+      }
     } catch (err) {
       process.stderr.write("[EnvSecretManager] Failed to persist .env:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
@@ -517,7 +561,7 @@ export class ProtocolAdapter {
         secrets: Array.from(this.secretsStore.values()),
         auditLog: this.secretsAuditLog,
       };
-      fs.writeFileSync(secretsFile, JSON.stringify(data, null, 2), "utf-8");
+      atomicWriteFileSync(secretsFile, JSON.stringify(data, null, 2));
     } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
   }
 
@@ -553,8 +597,7 @@ export class ProtocolAdapter {
 
   private persistLLMProviders(providers: Record<string, unknown>[]): void {
     try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2), "utf-8");
+      atomicWriteFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2));
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to persist LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
@@ -562,8 +605,7 @@ export class ProtocolAdapter {
 
   private persistChannels(channels: Record<string, unknown>[]): void {
     try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(CHANNELS_CONFIG_FILE, JSON.stringify({ channels }, null, 2), "utf-8");
+      atomicWriteFileSync(CHANNELS_CONFIG_FILE, JSON.stringify({ channels }, null, 2));
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to persist channels config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
@@ -786,21 +828,19 @@ export class ProtocolAdapter {
         this.persistMigrations();
       }
       // Save current version
-      fs.writeFileSync(versionFile, currentVersion, "utf-8");
+      atomicWriteFileSync(versionFile, currentVersion);
     } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
   }
 
   private persistMigrations(): void {
     try {
-      const fs = require("fs");
-      const path = require("path");
       if (!this.migrationDataDir) return;
       const migrationFile = path.join(this.migrationDataDir, "migrations.json");
       const data = {
         version: this.migrationVersion,
         migrations: Array.from(this.migrationsStore.values()),
       };
-      fs.writeFileSync(migrationFile, JSON.stringify(data, null, 2), "utf-8");
+      atomicWriteFileSync(migrationFile, JSON.stringify(data, null, 2));
     } catch { /* non-critical */ }
   }
 
@@ -2181,7 +2221,7 @@ export class ProtocolAdapter {
         if (!fs.existsSync(path.dirname(filePath))) {
           fs.mkdirSync(path.dirname(filePath), { recursive: true });
         }
-        fs.writeFileSync(filePath, content, "utf8");
+        atomicWriteFileSync(filePath, content);
         res.json({ success: true, path: filename, bytes: Buffer.byteLength(content, "utf8") });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3653,19 +3693,19 @@ export class ProtocolAdapter {
             const accountsDir = path.join(stateDir, "evoclaw-weixin", "accounts");
             fs.mkdirSync(accountsDir, { recursive: true });
             const accountFile = path.join(accountsDir, `${normalizedId}.json`);
-            fs.writeFileSync(accountFile, JSON.stringify({
+            atomicWriteFileSync(accountFile, JSON.stringify({
               token: data.bot_token,
               baseUrl: data.baseurl || WEIXIN_API_BASE,
               savedAt: new Date().toISOString(),
               ...(data.ilink_user_id ? { userId: data.ilink_user_id } : {}),
-            }, null, 2), "utf-8");
+            }, null, 2));
             // Update accounts index
             const indexPath = path.join(stateDir, "evoclaw-weixin", "accounts.json");
             let index: string[] = [];
             try { if (fs.existsSync(indexPath)) index = JSON.parse(fs.readFileSync(indexPath, "utf-8")); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             if (!index.includes(normalizedId)) {
               index.push(normalizedId);
-              fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
+              atomicWriteFileSync(indexPath, JSON.stringify(index, null, 2));
             }
             // Emit event to start Weixin monitor
             this.eventBus?.publish("weixin:start-monitor", {}, "protocol-adapter");

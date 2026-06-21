@@ -213,32 +213,48 @@ export class SessionManager {
 
   /** Delete a session completely */
   deleteSession(agentId: string, sessionId: string): boolean {
-    try {
-      const sessionDir = path.join(this.getAgentDir(agentId), sessionId);
-      if (!fs.existsSync(sessionDir)) {
-        process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion`);
+    // 使用 withLock 确保删除操作与其他并发操作互斥，
+    // 防止删除正在写入的会话文件导致状态不一致。
+    const result = this.withLock(agentId, sessionId, () => {
+      try {
+        const sessionDir = path.join(this.getAgentDir(agentId), sessionId);
+        if (!fs.existsSync(sessionDir)) {
+          process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion`);
+          return false;
+        }
+
+        // Remove session directory recursively
+        this.rmdirRecursive(sessionDir);
+
+        // Remove from cache
+        this.sessionCache.delete(sessionId);
+
+        process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"`);
+        return true;
+      } catch (err) {
+        process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err);
         return false;
       }
+    });
 
-      // Remove lock if exists
-      const lockPath = path.join(this.getLockDir(), `${sessionId}.lock`);
+    // withLock 返回 null 表示获取锁失败，此时不应继续删除
+    if (result === null) {
+      process.stderr.write(`[SessionManager] Could not acquire lock to delete session ${sessionId}`);
+      return false;
+    }
+
+    // 锁释放后清理锁文件（withLock 已释放锁，但锁文件可能残留）
+    const lockPath = path.join(this.getLockDir(), `${sessionId}.lock`);
+    try {
       if (fs.existsSync(lockPath)) {
         fs.unlinkSync(lockPath);
       }
-
-      // Remove session directory recursively
-      this.rmdirRecursive(sessionDir);
-
-      // Remove from cache
-      this.sessionCache.delete(sessionId);
-      this.activeLocks.delete(sessionId);
-
-      process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"`);
-      return true;
-    } catch (err) {
-      process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err);
-      return false;
+    } catch {
+      // 锁文件清理失败不阻断删除
     }
+    this.activeLocks.delete(sessionId);
+
+    return result;
   }
 
   private rmdirRecursive(dir: string): void {
@@ -386,8 +402,21 @@ export class SessionManager {
         try {
           const lockPid = parseInt(fs.readFileSync(lockPath, "utf-8"), 10);
           if (!this.isProcessAlive(lockPid)) {
-            // Stale lock — remove and retry
-            fs.unlinkSync(lockPath);
+            // Stale lock — 原子地 rename 到唯一临时名后删除，避免 TOCTOU 竞态。
+            // 两个进程可能同时判断 lock 为 stale，rename 是原子的，
+            // 只有一个会成功，另一个会因 ENOENT 失败（被 catch 后 continue）。
+            const staleTmp = `${lockPath}.${process.pid}.${Date.now()}.stale`;
+            try {
+              fs.renameSync(lockPath, staleTmp);
+              try { fs.unlinkSync(staleTmp); } catch { /* ignore */ }
+            } catch (renameErr: unknown) {
+              const code = (renameErr as NodeJS.ErrnoException)?.code;
+              if (code === "ENOENT") {
+                // 另一个进程已经处理了 stale lock，直接重试创建
+              } else {
+                throw renameErr;
+              }
+            }
             continue;
           }
         } catch {
@@ -724,7 +753,11 @@ export class SessionManager {
       // On Windows, process.kill with 0 just checks existence
       process.kill(pid, 0);
       return true;
-    } catch {
+    } catch (err: unknown) {
+      // ESRCH: 进程不存在；EPERM: 进程存在但无权限（Windows 上对提权进程常见）。
+      // 仅 ESRCH 才认为进程已死，EPERM 视为存活，避免误删活跃会话锁。
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EPERM") return true;
       return false;
     }
   }

@@ -379,8 +379,8 @@ export function createHealthCheck(
   fn: () => Promise<boolean>,
   name?: string,
 ): () => Promise<{ ok: boolean; error?: string; responseTimeMs?: number }> {
-  const startTime = Date.now();
   return async () => {
+    const startTime = Date.now();
     try {
       const ok = await fn();
       return { ok, error: ok ? undefined : `${name ?? "check"} failed`, responseTimeMs: Date.now() - startTime };

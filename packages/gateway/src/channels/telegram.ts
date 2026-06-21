@@ -346,6 +346,8 @@ export class TelegramAdapter implements ChannelAdapter {
         }
       }
     }, 2000);
+    // 不阻止进程退出
+    this.pollingInterval.unref?.();
   }
 
   // ── Update Processing ─────────────────────────────────────────────────────

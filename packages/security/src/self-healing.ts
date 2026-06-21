@@ -510,6 +510,9 @@ export class SelfHealingManager {
    */
   private async healRestartService(action: HealingAction): Promise<void> {
     const health = this.serviceHealth.get(action.target);
+    // BUG 17.1 fix: 原代码先重置 consecutiveFailures=0，再读取作为 previousFailures，
+    // 导致 previousFailures 恒为 0。先保存旧值再重置。
+    const previousFailures = health?.consecutiveFailures || 0;
     if (health) {
       health.consecutiveFailures = 0;
       health.healthy = true;
@@ -526,7 +529,7 @@ export class SelfHealingManager {
     action.result = {
       success: true,
       message: `Service "${action.target}" health metrics reset (safe — no process restart)`,
-      metrics: { previousFailures: health?.consecutiveFailures || 0 },
+      metrics: { previousFailures },
       sideEffects: ["Health status reset"],
     };
   }

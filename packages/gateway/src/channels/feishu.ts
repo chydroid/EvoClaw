@@ -542,11 +542,25 @@ export class FeishuAdapter implements ChannelAdapter {
   // ── Internal ────────────────────────────────────────────
 
   private verifySignature(body: string, signature: string | undefined): boolean {
-    if (!this.config.verificationToken || !signature) {
-      return true; // Skip if not configured
+    // P1-07 fix: 原代码在未配置 verificationToken 时 return true 跳过验证，
+    // 等于后门。改为 fail-closed：未配置时拒绝所有请求。
+    if (!this.config.verificationToken) {
+      process.stderr.write("[Feishu] verificationToken not configured — rejecting webhook (fail-closed)");
+      return false;
+    }
+    if (!signature) {
+      return false;
     }
     const expected = crypto.createHmac("sha256", this.config.verificationToken).update(body).digest("base64");
-    return expected === signature;
+    // 使用恒定时间比较防止时序攻击
+    try {
+      const expectedBuf = Buffer.from(expected);
+      const sigBuf = Buffer.from(signature);
+      if (expectedBuf.length !== sigBuf.length) return false;
+      return crypto.timingSafeEqual(expectedBuf, sigBuf);
+    } catch {
+      return false;
+    }
   }
 
   private async refreshToken(): Promise<void> {

@@ -41,10 +41,10 @@ describe("DeadLetterQueue", () => {
       expect(dl.replayed).toBe(false);
     });
 
-    it("persists dead letter to JSONL file", () => {
+    it("persists dead letter to individual JSON file", () => {
       dlq.enqueue(makeEntry());
       const files = fs.readdirSync(tmpDir);
-      expect(files.some((f) => f.endsWith(".jsonl"))).toBe(true);
+      expect(files.some((f) => f.startsWith("dl_") && f.endsWith(".json"))).toBe(true);
     });
 
     it("stores all fields correctly", () => {
@@ -257,9 +257,9 @@ describe("DeadLetterQueue", () => {
       // Wait for entry to age out
       const dl = agedDlq.enqueue(makeEntry());
       // Override deadLetteredAt to simulate old entry
-      const file = path.join(agedDlq["config"].storageDir, "telegram.jsonl");
+      const file = path.join(agedDlq["config"].storageDir, `${dl.id}.json`);
       const oldEntry = { ...dl, deadLetteredAt: new Date(Date.now() - 5000).toISOString() };
-      fs.writeFileSync(file, JSON.stringify(oldEntry) + "\n", "utf-8");
+      fs.writeFileSync(file, JSON.stringify(oldEntry), "utf-8");
 
       const purged = agedDlq.purge();
       expect(purged).toBeGreaterThanOrEqual(0); // At minimum it should work

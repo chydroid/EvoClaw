@@ -335,6 +335,8 @@ export class QQAdapter implements ChannelAdapter {
   private startHeartbeat(intervalMs: number): void {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), intervalMs);
+    // 不阻止进程退出
+    this.heartbeatTimer.unref?.();
   }
 
   private clearHeartbeat(): void {

@@ -379,13 +379,19 @@ export class ScheduleManager {
   }
 
   private calculateNextRun(cronExpression: string): Date | undefined {
+    // BUG 10.2 fix: 原代码若 nextDate() 抛错，interval.stop() 不会执行，
+    // 导致 cron interval 定时器泄漏。改用 try/finally 确保释放。
+    let interval: { nextDate(): { toJSDate(): Date }; stop(): void } | null = null;
     try {
-      const interval: { nextDate(): { toJSDate(): Date }; stop(): void } = cron.schedule(cronExpression, () => {}, { scheduled: false }) as unknown as { nextDate(): { toJSDate(): Date }; stop(): void };
+      interval = cron.schedule(cronExpression, () => {}, { scheduled: false }) as unknown as { nextDate(): { toJSDate(): Date }; stop(): void };
       const next = interval.nextDate();
-      interval.stop();
       return next.toJSDate();
     } catch {
       return undefined;
+    } finally {
+      if (interval) {
+        try { interval.stop(); } catch { /* ignore stop errors */ }
+      }
     }
   }
 
@@ -418,7 +424,30 @@ export class ScheduleManager {
     try {
       const filePath = path.join(this.dataDir, "tasks.json");
       const data = [...this.tasks.values()];
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+      // BUG 10.1 fix: 使用原子写入（temp + fsync + rename）替代 writeFileSync，
+      // 防止进程崩溃或并发写入导致 tasks.json 损坏（任务丢失或重复）。
+      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch {
+        // EXDEV/EBUSY 跨设备回退
+        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, filePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
     } catch (err) {
       process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err);
     }

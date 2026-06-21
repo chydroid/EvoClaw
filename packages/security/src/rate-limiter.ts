@@ -32,6 +32,14 @@ export class RateLimiterService implements RateLimiter {
   }
 
   async consume(key: string, points = 1): Promise<RateLimitResult> {
+    // BUG 12.1 fix: 防止负数 points 绕过速率限制。
+    // 原代码 entry.remaining - points < 0 对负数 points 永远为 false，
+    // 且 entry.remaining -= points 会增加配额。
+    if (!Number.isFinite(points) || points < 0) {
+      throw new Error(`Invalid points value: ${points}. Must be a non-negative finite number.`);
+    }
+    // points=0 是合法的"查询"操作，但仍走正常流程
+    const safePoints = points === 0 ? 0 : Math.floor(points);
     const now = Date.now();
     let entry = this.entries.get(key);
 
@@ -44,7 +52,7 @@ export class RateLimiterService implements RateLimiter {
       this.entries.set(key, entry);
     }
 
-    if (entry.remaining - points < 0) {
+    if (entry.remaining - safePoints < 0) {
       await this.eventBus.publish(
         SystemEvents.RATE_LIMIT_EXCEEDED,
         { key, remaining: entry.remaining },
@@ -58,7 +66,7 @@ export class RateLimiterService implements RateLimiter {
       };
     }
 
-    entry.remaining -= points;
+    entry.remaining -= safePoints;
 
     return {
       allowed: true,
@@ -106,5 +114,7 @@ export class RateLimiterService implements RateLimiter {
         }
       }
     }, 60_000);
+    // BUG 12.2 fix: unref 防止定时器阻止进程优雅退出
+    this.cleanupTimer.unref();
   }
 }

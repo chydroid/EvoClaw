@@ -131,7 +131,13 @@ class CronExpression {
           );
         }
         for (let v = loNum; v <= hiNum; v++) {
-          values.add(v);
+          // BUG 9.1 fix: cron 标准中 dayOfWeek=7 等价于 0（周日）。
+          // Date.getDay() 返回 0-6，7 永不匹配。归一化为 0。
+          if (fieldName === "dayOfWeek" && v === 7) {
+            values.add(0);
+          } else {
+            values.add(v);
+          }
         }
       } else {
         const num = parseInt(seg, 10);
@@ -140,7 +146,12 @@ class CronExpression {
             `Value "${seg}" out of bounds [${min},${max}] in field "${fieldName}"`,
           );
         }
-        values.add(num);
+        // BUG 9.1 fix: 同上，dayOfWeek=7 归一化为 0
+        if (fieldName === "dayOfWeek" && num === 7) {
+          values.add(0);
+        } else {
+          values.add(num);
+        }
       }
     }
 
@@ -402,6 +413,15 @@ export class CronScheduler extends EventEmitter {
   private async executeJob(jobId: string): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) return;
+
+    // BUG 9.2 fix: 原代码仅检查 this.running.size >= maxConcurrent，
+    // 未检查 this.running.has(jobId)，可能导致同一 job 并发执行
+    //（如长任务运行中，下一次 cron tick 触发同一 job）。
+    if (this.running.has(jobId)) {
+      // 同一 job 已在运行，跳过本次触发，等待下次调度
+      this.scheduleNext(job);
+      return;
+    }
 
     // Enforce concurrency limit
     if (this.running.size >= this.maxConcurrent) {

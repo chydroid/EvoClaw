@@ -201,6 +201,66 @@ export interface ConfigValidationResult {
   data: Record<string, unknown>;
 }
 
+// ── JSON5 comment stripping (string-aware) ──────────────────────────────────
+// P1-13 fix: 原代码用 /\/\/.*$/gm 剥离注释，会破坏字符串内的 URL（如
+// "http://example.com" 变成 "http:）。此函数是字符串感知的注释剥离器，
+// 跳过单引号和双引号内的内容，正确处理转义字符。
+
+function stripJson5Comments(source: string): string {
+  let result = "";
+  let i = 0;
+  const len = source.length;
+  let inString: '"' | "'" | null = null;
+
+  while (i < len) {
+    const ch = source[i];
+    const next = source[i + 1];
+
+    // 在字符串内：直到闭合引号（处理转义）
+    if (inString) {
+      result += ch;
+      if (ch === "\\" && i + 1 < len) {
+        result += next;
+        i += 2;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      i++;
+      continue;
+    }
+
+    // 不在字符串内
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      result += ch;
+      i++;
+      continue;
+    }
+
+    // 单行注释 //...
+    if (ch === "/" && next === "/") {
+      // 跳到行尾
+      while (i < len && source[i] !== "\n") i++;
+      continue;
+    }
+
+    // 块注释 /* ... */
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < len && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      i += 2; // 跳过 */
+      continue;
+    }
+
+    result += ch;
+    i++;
+  }
+
+  return result;
+}
+
 export class ConfigValidator {
   private schema: SchemaDefinition;
 
@@ -263,9 +323,9 @@ export class ConfigValidator {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
       // Support JSON5-style: strip comments, trailing commas
-      const cleaned = raw
-        .replace(/\/\/.*$/gm, "")           // single-line comments
-        .replace(/\/\*[\s\S]*?\*\//g, "")    // block comments
+      // P1-13 fix: 原代码 /\/\/.*$/gm 会破坏字符串内的 URL（如 "http://example.com"）。
+      // 改为字符串感知的注释剥离：跳过单引号和双引号内的内容。
+      const cleaned = stripJson5Comments(raw)
         .replace(/,\s*([}\]])/g, "$1");      // trailing commas
 
       const config = JSON.parse(cleaned);

@@ -189,6 +189,22 @@ export class FeatureFlagStore {
     key: string,
     options?: { userId?: string; channel?: string; context?: Record<string, unknown> },
   ): boolean {
+    return this.evaluateInternal(key, options, new Set());
+  }
+
+  private evaluateInternal(
+    key: string,
+    options: { userId?: string; channel?: string; context?: Record<string, unknown> } | undefined,
+    visited: Set<string>,
+  ): boolean {
+    // P1-19 fix: 检测循环依赖防止栈溢出
+    if (visited.has(key)) {
+      process.stderr.write(`[FeatureFlags] Circular dependency detected for flag "${key}" — visited chain: ${[...visited, key].join(" → ")}\n`);
+      this.recordEval(key, false, `Circular dependency detected`, options?.context);
+      return false;
+    }
+    visited.add(key);
+
     const flag = this.flags.get(key);
 
     if (!flag) {
@@ -213,7 +229,7 @@ export class FeatureFlagStore {
     // Check dependencies
     if (flag.dependsOn && flag.dependsOn.length > 0) {
       for (const dep of flag.dependsOn) {
-        if (!this.evaluate(dep, options)) {
+        if (!this.evaluateInternal(dep, options, new Set(visited))) {
           this.recordEval(key, false, `Dependency "${dep}" not met`, options?.context);
           return false;
         }

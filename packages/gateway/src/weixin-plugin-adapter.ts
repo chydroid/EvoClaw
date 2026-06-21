@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { EventBus } from "@evoclaw/core";
 import { AgentModelExecutor } from "@evoclaw/agent";
 import { estimateTaskComplexity } from "./protocol-adapter";
+import { atomicWriteFileSync } from "./atomic-write";
 
 const WEIXIN_API_BASE = "https://ilinkai.weixin.qq.com/";
 const PLUGIN_VERSION = "2.4.4";
@@ -1737,7 +1738,7 @@ export class WeixinPluginAdapter {
       if (fs.existsSync(indexPath)) {
         const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
         const newIndex = index.filter((id: string) => id !== accountId);
-        fs.writeFileSync(indexPath, JSON.stringify(newIndex, null, 2), "utf-8");
+        atomicWriteFileSync(indexPath, JSON.stringify(newIndex, null, 2));
       }
       // 删除 sync 文件
       const syncPath = this.getSyncPath(accountId);

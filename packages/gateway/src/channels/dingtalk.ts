@@ -487,8 +487,11 @@ export class DingtalkAdapter implements ChannelAdapter {
    * Signature = HmacSHA256(timestamp + "\n" + verificationToken, aesKey)
    */
   private verifySignature(timestamp: string, sign: string): boolean {
+    // P1-08 fix: 原代码在未配置 aesKey/verificationToken 时 return true 跳过验证，
+    // 等于后门。改为 fail-closed。
     if (!this.config.aesKey || !this.config.verificationToken) {
-      return true; // Skip verification if not configured
+      process.stderr.write("[DingTalk] aesKey/verificationToken not configured — rejecting webhook (fail-closed)");
+      return false;
     }
 
     const stringToSign = `${timestamp}\n${this.config.verificationToken}`;
@@ -497,7 +500,15 @@ export class DingtalkAdapter implements ChannelAdapter {
     hmac.update(stringToSign);
     const expectedSign = hmac.digest("base64");
 
-    return sign === expectedSign;
+    // 使用恒定时间比较防止时序攻击
+    try {
+      const expectedBuf = Buffer.from(expectedSign);
+      const signBuf = Buffer.from(sign);
+      if (expectedBuf.length !== signBuf.length) return false;
+      return crypto.timingSafeEqual(expectedBuf, signBuf);
+    } catch {
+      return false;
+    }
   }
 }
 

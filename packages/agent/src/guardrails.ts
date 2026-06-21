@@ -432,6 +432,10 @@ export class InputGuardrail {
 
     for (const rule of this.rules) {
       try {
+        // BUG 8.1 fix: 带 g flag 的 RegExp test() 会累积 lastIndex，
+        // 导致同一输入第二次 test 返回 false（安全规则时灵时不灵）。
+        // 每次测试前重置 lastIndex。
+        rule.pattern.lastIndex = 0;
         if (!rule.pattern.test(input)) {
           continue;
         }
@@ -522,6 +526,8 @@ export class OutputGuardrail {
 
     for (const rule of this.rules) {
       try {
+        // BUG 8.1 fix: 同 checkInput，重置 lastIndex 防止 g flag 累积
+        rule.pattern.lastIndex = 0;
         if (!rule.pattern.test(output)) {
           continue;
         }

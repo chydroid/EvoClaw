@@ -4,6 +4,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "./atomic-write";
 
 /** Dispatch dedupe key (由channel + external_id + timestamp_window 组成) */
 export interface DispatchDedupeKey {
