@@ -24,6 +24,8 @@ function getServerVersion(): string {
   return "0.37.0";
 }
 const SERVER_VERSION = getServerVersion();
+// 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
+(globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue } from "@evoclaw/gateway";
@@ -131,6 +133,8 @@ export class EvoClawServer {
     // Expose the in-memory OTel span collector as a registry service so the
     // gateway can surface live traces via the /api/tracing/* endpoints.
     this.registry.registerService("spanCollector", spanCollector);
+    // 注册 packageJson 供 /api/version 等端点读取版本号
+    this.registry.registerService("packageJson", { version: SERVER_VERSION, name: "evoclaw" });
     this.configManager = new ConfigManager();
     this.configManager.loadFromEnv();
 
