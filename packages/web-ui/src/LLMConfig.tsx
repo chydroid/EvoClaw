@@ -19,7 +19,7 @@ interface LLMProvider {
   };
 }
 
-const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "qwen", "zhipu", "moonshot", "wenxin", "minimax", "local"]);
+const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "qwen", "zhipu", "moonshot", "wenxin", "minimax", "doubao", "spark", "sensenova", "yi", "stepfun", "baichuan", "local"]);
 
 const DEFAULT_PROVIDERS: LLMProvider[] = [
   {
@@ -111,6 +111,72 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
   {
+    id: "doubao",
+    name: "豆包 (Doubao)",
+    apiKey: "",
+    baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+    models: ["doubao-pro-1-5-128k", "doubao-pro-1-5-32k", "doubao-pro-1-5-256k", "doubao-lite-1-5-128k", "doubao-vision-pro-32k"],
+    selectedModel: "doubao-pro-1-5-128k",
+    enabled: false,
+    order: 9,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "spark",
+    name: "讯飞星火 (Spark)",
+    apiKey: "",
+    baseURL: "https://spark-api-open.xf-yun.com/v1",
+    models: ["4.0Ultra", "pro-128k", "max-32k", "lite"],
+    selectedModel: "4.0Ultra",
+    enabled: false,
+    order: 10,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "sensenova",
+    name: "商汤日日新 (SenseNova)",
+    apiKey: "",
+    baseURL: "https://api.sensenova.cn/v1",
+    models: ["SenseChat-5", "SenseChat-Turbo", "SenseChat-5-Vision", "SenseChat-Reasoning"],
+    selectedModel: "SenseChat-5",
+    enabled: false,
+    order: 11,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "yi",
+    name: "零一万物 (Yi)",
+    apiKey: "",
+    baseURL: "https://api.lingyiwanwu.com/v1",
+    models: ["yi-large", "yi-medium", "yi-vision", "yi-spark"],
+    selectedModel: "yi-large",
+    enabled: false,
+    order: 12,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "stepfun",
+    name: "阶跃星辰 (StepFun)",
+    apiKey: "",
+    baseURL: "https://api.stepfun.com/v1",
+    models: ["step-2-16k", "step-1.5v-mini", "step-1-8k", "step-1-32k", "step-1-128k"],
+    selectedModel: "step-2-16k",
+    enabled: false,
+    order: 13,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "baichuan",
+    name: "百川智能 (Baichuan)",
+    apiKey: "",
+    baseURL: "https://api.baichuan-ai.com/v1",
+    models: ["Baichuan4", "Baichuan3-Turbo", "Baichuan3-Turbo-128k", "Baichuan2-Turbo"],
+    selectedModel: "Baichuan4",
+    enabled: false,
+    order: 14,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
     id: "local",
     name: "Local Model (Ollama/vLLM)",
     apiKey: "",
@@ -118,7 +184,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["llama3", "mistral", "qwen2.5", "deepseek-r1", "custom"],
     selectedModel: "llama3",
     enabled: false,
-    order: 9,
+    order: 15,
     config: { temperature: 0.5, maxTokens: 40960, timeout: 120000, topP: 0.9 },
   },
   {
@@ -129,7 +195,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: [],
     selectedModel: "",
     enabled: false,
-    order: 10,
+    order: 16,
     config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
 ];
