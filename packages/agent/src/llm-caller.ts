@@ -90,6 +90,15 @@ export async function nativeFetch(
       req.destroy();
     };
 
+    const cleanupAbortListeners = () => {
+      if (internalController) {
+        internalController.signal.removeEventListener("abort", onAbort);
+      }
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onAbort);
+      }
+    };
+
     const req = lib.request(
       {
         hostname: parsedUrl.hostname,
@@ -108,6 +117,7 @@ export async function nativeFetch(
 
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("end", () => {
+          cleanupAbortListeners();
           const buffer = Buffer.concat(chunks);
           const bodyStream = new ReadableStream<Uint8Array>({
             start(controller) {
@@ -128,6 +138,7 @@ export async function nativeFetch(
         });
         res.on("error", (err) => {
           if (timeoutId) clearTimeout(timeoutId);
+          cleanupAbortListeners();
           reject(err);
         });
       }
@@ -152,6 +163,7 @@ export async function nativeFetch(
 
     req.on("error", (err) => {
       if (timeoutId) clearTimeout(timeoutId);
+      cleanupAbortListeners();
       if (timedOut) {
         reject(new Error(`Request timeout after ${timeoutMs}ms`));
         return;
@@ -2494,6 +2506,7 @@ Have a specific URL?
               }
               process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
               successfulToolCalls++;
+              anyToolExecuted = true;
               recordToolSuccess(toolName);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
             } catch (err: unknown) {

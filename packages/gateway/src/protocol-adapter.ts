@@ -612,39 +612,66 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
       if (!resolved) {
         timedOut = true;
         childProcess.kill("SIGKILL");
+        // 兜底：若进程未在宽限期内退出，强制清理并返回
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            cleanup();
+            resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: 1, timedOut: true });
+          }
+        }, 2000);
       }
     }, CLI_TIMEOUT_MS);
 
-    childProcess.stdout?.on("data", (data: Buffer) => {
+    const onStdoutData = (data: Buffer) => {
       stdout += data.toString("utf8");
       if (stdout.length > MAX_OUTPUT_BYTES) {
         stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n... (output truncated)";
         childProcess.kill("SIGTERM");
       }
-    });
+    };
 
-    childProcess.stderr?.on("data", (data: Buffer) => {
+    const onStderrData = (data: Buffer) => {
       stderr += data.toString("utf8");
       if (stderr.length > MAX_OUTPUT_BYTES) {
         stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n... (output truncated)";
       }
-    });
+    };
 
-    childProcess.on("close", (code) => {
-      clearTimeout(timeoutId);
+    const onClose = (code: number | null) => {
       if (!resolved) {
         resolved = true;
+        cleanup();
         resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), exitCode: code ?? 1, timedOut });
       }
-    });
+    };
 
-    childProcess.on("error", (err) => {
-      clearTimeout(timeoutId);
+    const onError = (err: Error) => {
       if (!resolved) {
         resolved = true;
+        cleanup();
         resolve({ stdout: "", stderr: err.message, exitCode: 1, timedOut: false });
       }
-    });
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      childProcess.stdout?.off("data", onStdoutData);
+      childProcess.stderr?.off("data", onStderrData);
+      childProcess.off("close", onClose);
+      childProcess.off("error", onError);
+      // 确保子进程不会继续挂起
+      try {
+        if (!childProcess.killed) {
+          childProcess.kill("SIGKILL");
+        }
+      } catch { /* ignore */ }
+    };
+
+    childProcess.stdout?.on("data", onStdoutData);
+    childProcess.stderr?.on("data", onStderrData);
+    childProcess.on("close", onClose);
+    childProcess.on("error", onError);
   });
 }
 

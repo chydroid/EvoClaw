@@ -254,8 +254,8 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
             });
           }
 
-          // Infer transitive relation across two hops
-          if (edge.to === edge2.from && TRANSITIVE_RELATIONS.has(edge.type) && edge.type === edge2.type) {
+          // Infer transitive relation across two hops (entityId --edge--> nextHopSource --edge2--> edge2.to)
+          if (edge2.from === nextHopSource && TRANSITIVE_RELATIONS.has(edge.type) && edge.type === edge2.type) {
             const inferredKey = `${edge.from}|${edge.type}|${edge2.to}`;
             if (!visitedFacts.has(inferredKey)) {
               visitedFacts.add(inferredKey);
@@ -294,6 +294,8 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
     maxHops: number = 3
   ): Promise<Array<Array<{ relation: string; target: string }>>> {
     if (fromEntity === toEntity) return [];
+    if (maxHops <= 0) return [];
+    if (!this.nodes.has(fromEntity) || !this.nodes.has(toEntity)) return [];
 
     // Build adjacency list (undirected: edges go both ways)
     const adjacency = new Map<string, Array<{ relation: string; target: string }>>();
@@ -344,7 +346,7 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
    */
   async getRelatedEntities(entityId: string, depth: number = 2): Promise<Set<string>> {
     const result = new Set<string>();
-    if (!this.nodes.has(entityId)) return result;
+    if (!this.nodes.has(entityId) || depth <= 0) return result;
 
     // Build adjacency list (undirected)
     const adjacency = new Map<string, string[]>();

@@ -288,17 +288,31 @@ export class SkillSandbox {
 
         let stdout = "";
         let stderr = "";
+        let settled = false;
 
-        child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
-        child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+        const onStdoutData = (data: Buffer) => { stdout += data.toString(); };
+        const onStderrData = (data: Buffer) => { stderr += data.toString(); };
+
+        const cleanup = () => {
+          clearTimeout(timeoutId);
+          child.stdout?.off("data", onStdoutData);
+          child.stderr?.off("data", onStderrData);
+          child.off("close", onClose);
+          child.off("error", onError);
+        };
 
         const timeoutId = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
           child.kill();
           reject(new Error(`Python execution timed out after ${timeout}ms`));
         }, timeout);
 
-        child.on("close", (code) => {
-          clearTimeout(timeoutId);
+        const onClose = (code: number | null) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
           if (code === 0) {
             try {
               resolve(JSON.parse(stdout));
@@ -308,12 +322,19 @@ export class SkillSandbox {
           } else {
             reject(new Error(`Python execution failed (exit ${code}): ${stderr || "no output"}`));
           }
-        });
+        };
 
-        child.on("error", (err) => {
-          clearTimeout(timeoutId);
+        const onError = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
           reject(new Error(`Python execution error: ${err.message}`));
-        });
+        };
+
+        child.stdout?.on("data", onStdoutData);
+        child.stderr?.on("data", onStderrData);
+        child.on("close", onClose);
+        child.on("error", onError);
       });
     } finally {
       if (tmpFile) {
@@ -444,22 +465,31 @@ export class SkillSandbox {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
 
-      child.stdout?.on("data", (data: Buffer) => {
-        stdout += data.toString();
-      });
+      const onStdoutData = (data: Buffer) => { stdout += data.toString(); };
+      const onStderrData = (data: Buffer) => { stderr += data.toString(); };
 
-      child.stderr?.on("data", (data: Buffer) => {
-        stderr += data.toString();
-      });
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        child.stdout?.off("data", onStdoutData);
+        child.stderr?.off("data", onStderrData);
+        child.off("close", onClose);
+        child.off("error", onError);
+      };
 
       const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         child.kill();
         reject(new Error(`Skill subprocess timed out after ${timeout}ms`));
       }, timeout);
 
-      child.on("close", (code) => {
-        clearTimeout(timeoutId);
+      const onClose = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         if (code === 0) {
           try {
             resolve(JSON.parse(stdout));
@@ -469,12 +499,19 @@ export class SkillSandbox {
         } else {
           reject(new Error(`Subprocess failed (exit ${code}): ${stderr || "no output"}`));
         }
-      });
+      };
 
-      child.on("error", (err) => {
-        clearTimeout(timeoutId);
+      const onError = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         reject(new Error(`Subprocess error: ${err.message}`));
-      });
+      };
+
+      child.stdout?.on("data", onStdoutData);
+      child.stderr?.on("data", onStderrData);
+      child.on("close", onClose);
+      child.on("error", onError);
     });
   }
 
@@ -493,12 +530,23 @@ export class SkillSandbox {
     const wrappedCode = this.wrapCode(code, policy);
 
     let timeoutId: NodeJS.Timeout | undefined;
+    let timeoutCleared = false;
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(() => {
-        reject(new Error(`Skill execution timed out after ${policy.maxExecutionTime}ms`));
+        if (!timeoutCleared) {
+          reject(new Error(`Skill execution timed out after ${policy.maxExecutionTime}ms`));
+        }
       }, policy.maxExecutionTime);
     });
+
+    const clearVmTimeout = () => {
+      timeoutCleared = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
+    };
 
     try {
       const script = new Script(wrappedCode, {
@@ -513,11 +561,7 @@ export class SkillSandbox {
       executionPromise.catch(() => {}); // Prevent unhandled rejection if timeout wins the race
 
       const result = await Promise.race([executionPromise, timeoutPromise]);
-
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = undefined;
-      }
+      clearVmTimeout();
 
       if (typeof context._result !== "undefined") {
         return context._result;
@@ -534,8 +578,11 @@ export class SkillSandbox {
           config: skill.config,
         },
       };
+    } catch (err) {
+      clearVmTimeout();
+      throw err;
     } finally {
-      if (timeoutId) clearTimeout(timeoutId);
+      clearVmTimeout();
     }
   }
 

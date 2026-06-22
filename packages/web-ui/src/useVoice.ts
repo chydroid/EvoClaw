@@ -117,7 +117,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (event.results && event.results.length > 0) {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
-          const alt = result[0];
+          const alt = result.length > 0 ? result[0] : null;
+          if (!alt) continue;
           if (result.isFinal) {
             final += alt.transcript;
           } else {

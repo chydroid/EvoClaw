@@ -10,6 +10,12 @@ vi.mock("fs", () => ({
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   readFileSync: vi.fn().mockReturnValue("{}"),
+  openSync: vi.fn().mockReturnValue(1),
+  closeSync: vi.fn(),
+  fsyncSync: vi.fn(),
+  copyFileSync: vi.fn(),
+  renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
 }));
 
 describe("DMPairingManager", () => {

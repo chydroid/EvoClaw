@@ -57,7 +57,12 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
     // 权限复制失败不阻断写入
   }
   // 原子替换：处理符号链接和跨设备
-  await atomicReplace(tmpPath, targetPath);
+  try {
+    await atomicReplace(tmpPath, targetPath);
+  } catch (err) {
+    try { fsSync.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 /**

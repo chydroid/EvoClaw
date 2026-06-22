@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -15,6 +15,8 @@ describe("Voice API", () => {
   let authHeader: string;
 
   beforeEach(() => {
+    // 防止前面测试文件 stub 了 global.fetch 后未恢复，导致本文件使用真实 HTTP 请求失败
+    vi.unstubAllGlobals();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-api-test-"));
     registry = new ServiceRegistry();
     eventBus = new EventBus();

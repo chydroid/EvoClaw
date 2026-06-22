@@ -3,6 +3,53 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.55.2 (2026-06-22)
+
+### 全面代码审查与潜在 BUG 修复
+
+本次针对全仓库进行静态审查，修复了一批资源泄漏、空指针、并发控制、前端状态与测试隔离问题，所有改动均已在本地通过 `pnpm build -> pnpm typecheck -> pnpm test`。
+
+#### 资源与并发安全
+
+- `packages/agent/src/llm-caller.ts`：`nativeFetch` 在请求完成/报错/超时/外部 abort 时统一清理 `abort` 事件监听器，避免监听器泄漏；保持既有的 keep-alive agent 与超时控制。
+- `packages/gateway/src/protocol-adapter.ts`：规范子进程 `spawn` 的事件绑定与清理，修复协议适配中的异步处理与资源释放问题。
+- `packages/skills/src/skill-sandbox.ts`：强化沙箱执行入口的输入校验与命令注入防护，提升高危险操作的安全性。
+- `packages/infrastructure/src/filesystem-manager.ts`：完善文件句柄、临时文件与原子写入路径的资源清理。
+
+#### 前端健壮性
+
+- `packages/web-ui/src/WebChatPage.tsx`：修复权限审批弹窗关闭时状态被提前清空导致重试使用过期消息 ID 的问题；审批/拒绝前先捕获待处理权限与目标消息 ID，重试时从消息列表反向查找最近一条用户消息。
+- `packages/web-ui/src/api-client.ts`：为所有 API 请求增加 `fetchWithTimeout` 封装（默认 30 秒），使用 `AbortController` 防止请求永久挂起，并正确清理超时计时器。
+- `packages/web-ui/src/useVoice.ts`：语音识别结果增加 `result.length > 0` 空值检查，避免无备选结果时访问 `result[0]` 崩溃。
+
+#### 核心逻辑修复
+
+- `packages/memory/src/knowledge-graph.ts`：修复知识图遍历与关系推断中的边界条件，防止空节点或异常路径导致运行时错误。
+
+#### 测试隔离与稳定性
+
+- `packages/security/src/dm-pairing-manager.test.ts`：补充 `fs` mock 的 `openSync`、`closeSync`、`fsyncSync`、`copyFileSync`、`renameSync`、`unlinkSync` 方法，修复因 `atomicWriteFile` 调用真实文件系统导致的测试失败。
+- `packages/gateway/src/gateway-server.test.ts`、`packages/gateway/src/voice/voice-api.test.ts`、`packages/gateway/src/webhook-manager.test.ts`、`packages/infrastructure/src/api-toolkit.test.ts`、`packages/skills/src/marketplace.test.ts`：修复测试用例中的时序、mock 与断言问题，降低本地与 CI 的 flaky 率。
+
+#### 相关文件
+
+- `packages/agent/src/llm-caller.ts`
+- `packages/gateway/src/protocol-adapter.ts`
+- `packages/gateway/src/gateway-server.test.ts`
+- `packages/gateway/src/voice/voice-api.test.ts`
+- `packages/gateway/src/webhook-manager.test.ts`
+- `packages/infrastructure/src/api-toolkit.test.ts`
+- `packages/infrastructure/src/filesystem-manager.ts`
+- `packages/memory/src/knowledge-graph.ts`
+- `packages/security/src/dm-pairing-manager.test.ts`
+- `packages/skills/src/marketplace.test.ts`
+- `packages/skills/src/skill-sandbox.ts`
+- `packages/web-ui/src/WebChatPage.tsx`
+- `packages/web-ui/src/api-client.ts`
+- `packages/web-ui/src/useVoice.ts`
+- `package.json`
+- `History.md`
+
 ## v0.55.1 (2026-06-22)
 
 ### 测试稳定性修复

@@ -1336,14 +1336,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   };
 
   const handlePermissionAction = async (action: "approve" | "approveAndWhitelist" | "deny") => {
+    // Capture pending permissions and target message id before clearing modal state
+    const reqs = pendingPermissions;
+    const targetMessageId = reqs[0]?.messageId;
+
     // Immediately close modal for better UX
     setShowPermissionModal(false);
     setPendingPermissions([]);
-    
+
     try {
       if (action === "approve" || action === "approveAndWhitelist") {
         // Approve all pending permissions
-        for (const perm of pendingPermissions) {
+        for (const perm of reqs) {
           await fetch("/api/permission/approve", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1354,11 +1358,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             addToWhitelist(perm.operation);
           }
         }
-        // Retry the original message after approval
-        const lastUserMsg = messages.find((m) => m.role === "user");
+        // Retry the most recent user message after approval
+        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
         if (lastUserMsg && effectiveSessionIdRef.current) {
           setIsStreaming(true);
-    isStreamingRef.current = true;
+          isStreamingRef.current = true;
           const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1368,7 +1372,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             const data = await res.json();
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === pendingPermissions[0]?.messageId
+                m.id === targetMessageId
                   ? { ...m, content: data.reply || "No response" }
                   : m,
               ),
@@ -1377,7 +1381,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         }
       } else {
         // Deny all pending permissions
-        for (const perm of pendingPermissions) {
+        for (const perm of reqs) {
           await fetch("/api/permission/deny", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1387,7 +1391,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         // Update message to show denial
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === pendingPermissions[0]?.messageId
+            m.id === targetMessageId
               ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + t("chat.permission_denied") : "⚠️ " + t("chat.permission_denied") }
               : m,
           ),

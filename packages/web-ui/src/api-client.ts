@@ -10,41 +10,59 @@
 // ═══════════════════════════════════════════════
 
 const BASE = "";
+const DEFAULT_TIMEOUT_MS = 30_000;
 
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { signal });
+function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const originalSignal = init?.signal;
+
+  if (originalSignal) {
+    originalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  return fetch(input, { ...init, signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId));
+}
+
+async function get<T>(path: string, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${BASE}${path}`, { signal }, timeoutMs);
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+async function post<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }, timeoutMs);
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
   return res.json() as Promise<T>;
 }
 
-async function put<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+async function put<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }, timeoutMs);
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
   return res.json() as Promise<T>;
 }
 
-async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+async function del<T>(path: string, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${BASE}${path}`, { method: "DELETE" }, timeoutMs);
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
   return res.json() as Promise<T>;
 }
 
-async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal): Promise<T> {
-  try { return await get<T>(path, signal); } catch { return fallback; }
+async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+  try { return await get<T>(path, signal, timeoutMs); } catch { return fallback; }
 }
 
 export class ApiError extends Error {

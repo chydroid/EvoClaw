@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach, afterAll } from "vitest";
 import { SkillMarketplace } from "../src/marketplace";
 import type { SkillPackage } from "../src/marketplace";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 // Minimal EventBus mock
 function createMockEventBus() {

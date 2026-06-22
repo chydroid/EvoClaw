@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { GatewayServer } from "./gateway-server";
 
@@ -8,6 +8,8 @@ describe("GatewayServer", () => {
   let gateway: GatewayServer;
 
   beforeEach(() => {
+    // 防止前面测试文件 stub 了 global.fetch 后未恢复，导致本文件使用真实 HTTP 请求失败
+    vi.unstubAllGlobals();
     registry = new ServiceRegistry();
     eventBus = new EventBus();
     gateway = new GatewayServer(registry, eventBus);

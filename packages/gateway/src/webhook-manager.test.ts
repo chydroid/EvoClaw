@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterAll } from "vitest";
 import { WebhookManager, IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookConfig, WebhookEvent, WebhookEndpoint } from "./webhook-manager";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 function makeConfig(overrides: Partial<WebhookConfig> = {}): WebhookConfig {
   return {

@@ -1,9 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { ApiClient, QueryBuilder, WebhookSender, GraphQLClient, PageScraper } from "../src/api-toolkit";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ApiClient", () => {
   let client: ApiClient;
