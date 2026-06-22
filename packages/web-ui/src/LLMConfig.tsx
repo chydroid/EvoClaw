@@ -19,7 +19,7 @@ interface LLMProvider {
   };
 }
 
-const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "local"]);
+const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "qwen", "zhipu", "moonshot", "wenxin", "minimax", "local"]);
 
 const DEFAULT_PROVIDERS: LLMProvider[] = [
   {
@@ -56,6 +56,61 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     config: { temperature: 0.3, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
   {
+    id: "qwen",
+    name: "通义千问 (Qwen)",
+    apiKey: "",
+    baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    models: ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long", "qwen2.5-72b-instruct", "qwen2.5-coder-32b-instruct"],
+    selectedModel: "qwen-plus",
+    enabled: false,
+    order: 4,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "zhipu",
+    name: "智谱AI (GLM)",
+    apiKey: "",
+    baseURL: "https://open.bigmodel.cn/api/paas/v4",
+    models: ["glm-4-plus", "glm-4-air", "glm-4-airx", "glm-4-long", "glm-4-flash", "glm-4-flashx"],
+    selectedModel: "glm-4-plus",
+    enabled: false,
+    order: 5,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "moonshot",
+    name: "月之暗面 (Kimi)",
+    apiKey: "",
+    baseURL: "https://api.moonshot.cn/v1",
+    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-latest"],
+    selectedModel: "moonshot-v1-32k",
+    enabled: false,
+    order: 6,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "wenxin",
+    name: "百度文心 (ERNIE)",
+    apiKey: "",
+    baseURL: "https://qianfan.baidubce.com/v2",
+    models: ["ernie-4.0-8k-latest", "ernie-4.0-turbo-8k", "ernie-speed-128k", "ernie-lite-8k"],
+    selectedModel: "ernie-4.0-8k-latest",
+    enabled: false,
+    order: 7,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
+    id: "minimax",
+    name: "MiniMax",
+    apiKey: "",
+    baseURL: "https://api.minimax.chat/v1",
+    models: ["MiniMax-Text-01", "abab6.5s-chat", "abab6.5g-chat", "abab6.5t-chat"],
+    selectedModel: "MiniMax-Text-01",
+    enabled: false,
+    order: 8,
+    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+  },
+  {
     id: "local",
     name: "Local Model (Ollama/vLLM)",
     apiKey: "",
@@ -63,7 +118,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: ["llama3", "mistral", "qwen2.5", "deepseek-r1", "custom"],
     selectedModel: "llama3",
     enabled: false,
-    order: 4,
+    order: 9,
     config: { temperature: 0.5, maxTokens: 40960, timeout: 120000, topP: 0.9 },
   },
   {
@@ -74,7 +129,7 @@ const DEFAULT_PROVIDERS: LLMProvider[] = [
     models: [],
     selectedModel: "",
     enabled: false,
-    order: 5,
+    order: 10,
     config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
   },
 ];
@@ -116,7 +171,7 @@ interface VideoGenProvider {
   order: number;
 }
 
-const IMAGE_GEN_BUILT_IN_IDS = new Set(["pollinations", "fal", "openai", "stability", "local"]);
+const IMAGE_GEN_BUILT_IN_IDS = new Set(["pollinations", "fal", "openai", "stability", "local", "qwen-wanx", "zhipu-cogview", "baidu-ernie", "minimax-image"]);
 
 const DEFAULT_IMAGE_GEN_PROVIDERS: ImageGenProvider[] = [
   {
@@ -147,17 +202,53 @@ const DEFAULT_IMAGE_GEN_PROVIDERS: ImageGenProvider[] = [
     order: 3,
   },
   {
+    id: "qwen-wanx",
+    name: "通义万相 (Wanx)",
+    apiKey: "",
+    baseURL: "https://dashscope.aliyuncs.com/api/v1",
+    model: "wanx-v1",
+    enabled: false,
+    order: 4,
+  },
+  {
+    id: "zhipu-cogview",
+    name: "智谱CogView",
+    apiKey: "",
+    baseURL: "https://open.bigmodel.cn/api/paas/v4",
+    model: "cogview-3-plus",
+    enabled: false,
+    order: 5,
+  },
+  {
+    id: "baidu-ernie",
+    name: "百度文心一格",
+    apiKey: "",
+    baseURL: "https://aip.baidubce.com/rpc/2.0/ai_custom/v1",
+    model: "ernie-vilg-v2",
+    enabled: false,
+    order: 6,
+  },
+  {
+    id: "minimax-image",
+    name: "MiniMax 图片生成",
+    apiKey: "",
+    baseURL: "https://api.minimax.chat/v1",
+    model: "image-01",
+    enabled: false,
+    order: 7,
+  },
+  {
     id: "custom",
     name: "Custom Provider",
     apiKey: "",
     baseURL: "",
     model: "",
     enabled: false,
-    order: 4,
+    order: 8,
   },
 ];
 
-const VIDEO_GEN_BUILT_IN_IDS = new Set(["fal", "replicate", "openai", "local"]);
+const VIDEO_GEN_BUILT_IN_IDS = new Set(["fal", "replicate", "openai", "local", "kling", "qwen-wan-video", "minimax-video"]);
 
 const DEFAULT_VIDEO_GEN_PROVIDERS: VideoGenProvider[] = [
   {
@@ -170,13 +261,40 @@ const DEFAULT_VIDEO_GEN_PROVIDERS: VideoGenProvider[] = [
     order: 1,
   },
   {
+    id: "kling",
+    name: "可灵 (Kling)",
+    apiKey: "",
+    baseURL: "https://fal.run",
+    model: "fal-ai/kling/v1.6/standard/text-to-video",
+    enabled: false,
+    order: 2,
+  },
+  {
+    id: "qwen-wan-video",
+    name: "通义万相视频 (Wan Video)",
+    apiKey: "",
+    baseURL: "https://fal.run",
+    model: "fal-ai/wan/v2.2-a14b/text-to-video",
+    enabled: false,
+    order: 3,
+  },
+  {
+    id: "minimax-video",
+    name: "MiniMax 视频生成",
+    apiKey: "",
+    baseURL: "https://api.minimax.chat/v1",
+    model: "video-01",
+    enabled: false,
+    order: 4,
+  },
+  {
     id: "replicate",
     name: "Replicate",
     apiKey: "",
     baseURL: "https://api.replicate.com/v1",
     model: "lightricks/ltx-video",
     enabled: false,
-    order: 2,
+    order: 5,
   },
   {
     id: "local",
@@ -185,7 +303,7 @@ const DEFAULT_VIDEO_GEN_PROVIDERS: VideoGenProvider[] = [
     baseURL: "",
     model: "ffmpeg-slideshow",
     enabled: true,
-    order: 3,
+    order: 6,
   },
   {
     id: "custom",
@@ -194,7 +312,7 @@ const DEFAULT_VIDEO_GEN_PROVIDERS: VideoGenProvider[] = [
     baseURL: "",
     model: "",
     enabled: false,
-    order: 4,
+    order: 7,
   },
 ];
 
