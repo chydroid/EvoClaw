@@ -227,7 +227,8 @@ export class LocalizationService {
     }>("agentModelExecutor");
 
     if (!executor) {
-      throw new Error("AgentModelExecutor not available for translation");
+      // 没有可用的翻译执行器时直接返回原文，避免在测试等未注册 LLM 的场景中反复输出错误日志
+      return text;
     }
 
     const providers = executor.getProviders().filter(p => p.enabled);

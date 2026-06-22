@@ -2,9 +2,8 @@ import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
 export default defineConfig({
-  // 禁用 Vite 文件系统缓存，避免多 fork 进程并发访问 SSR deps
-  // 临时缓存目录导致的 ENOENT 竞争错误（CI 和本地均需禁用）
-  cacheDir: false,
+  // 使用项目内固定缓存目录，避免 CI 中 /tmp 被系统清理导致 SSR 临时文件 ENOENT
+  cacheDir: ".vitest/cache",
 
   test: {
     // Environment
@@ -12,9 +11,23 @@ export default defineConfig({
 
     // Pool: 显式使用 forks，避免 threads 与 native 模块的兼容性问题
     pool: "forks",
-    forks: {
-      // 串行运行每个测试文件，避免并发争夺 SSR 转换缓存
-      singleFork: true,
+    poolOptions: {
+      forks: {
+        // 每个 fork 进程只运行一个测试文件，进一步降低 SSR 临时文件竞争
+        singleFork: true,
+      },
+    },
+
+    // 串行运行测试文件，避免并发争夺 SSR 转换缓存；但保持 isolate: true
+    // 这样每个文件仍有独立进程/module graph，coverage 不会互相踩临时文件
+    fileParallelism: false,
+    isolate: true,
+
+    // 禁用 SSR 依赖优化器，避免生成临时转换文件（CI 上易发生 ENOENT 竞争）
+    deps: {
+      optimizer: {
+        ssr: { enabled: false },
+      },
     },
 
     // Pattern matching
@@ -39,7 +52,7 @@ export default defineConfig({
     
     // Coverage
     coverage: {
-      provider: "v8",
+      provider: "istanbul",
       reporter: ["text", "json", "html", "lcov"],
       reportsDirectory: "./coverage",
       include: [
@@ -68,6 +81,13 @@ export default defineConfig({
       : ["default"],
   },
   
+  // 禁用 Vite 文件系统缓存检查，避免 CI 上因缓存状态不一致导致模块加载异常
+  server: {
+    fs: {
+      cachedChecks: false,
+    },
+  },
+
   resolve: {
     alias: {
       "@evoclaw/core": resolve(__dirname, "packages/core/src"),

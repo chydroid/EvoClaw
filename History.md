@@ -3,6 +3,32 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.55.1 (2026-06-22)
+
+### 测试稳定性修复
+
+#### 修复 Vitest SSR 临时文件 ENOENT（CI 反复失败）
+
+- `scripts/vitest-runner.mjs`：测试运行前将 `TMPDIR` / `TMP` / `TEMP` 固定到项目内 `.vitest/tmp/run-<pid>-<timestamp>`，运行结束后清理；彻底避免 Linux CI 上 `/tmp` 被系统清理或并发竞争导致 SSR 转换临时文件 ENOENT
+- `vitest.config.ts`：
+  - 新增 `poolOptions.forks.singleFork: true`，每个 fork 只运行一个测试文件，进一步降低临时文件竞争
+  - 新增 `server.fs.cachedChecks: false`，禁用 Vite 文件系统缓存检查
+  - 保留 `fileParallelism: false`、`isolate: true`、`deps.optimizer.ssr.enabled: false`、Istanbul coverage provider
+- `packages/skills/src/integration.test.ts`：技能测试文件不再直接写入 `os.tmpdir()` 根目录，而是写入独立子目录（`evoclaw-skill-test-math`、`evoclaw-skill-registry2`、`evoclaw-skill-security`），避免 `SkillManager.uninstallSkill()` 删除整个系统临时目录
+
+#### 降低测试噪音
+
+- `packages/skills/src/localization-service.ts`：当 `agentModelExecutor` 未注册时直接返回原文，不再向 stderr 输出 `[LocalizationService] Translation failed: AgentModelExecutor not available for translation`
+
+### 相关文件
+
+- `scripts/vitest-runner.mjs`
+- `vitest.config.ts`
+- `packages/skills/src/integration.test.ts`
+- `packages/skills/src/localization-service.ts`
+- `package.json`
+- `History.md`
+
 ## v0.55.0 (2026-06-22)
 
 ### 对话大模型目录全面升级

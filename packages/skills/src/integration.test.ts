@@ -73,13 +73,15 @@ describe("SkillManager Integration", () => {
 
     skillManager = new SkillManager(registry, eventBus);
 
-    testSkillPath = path.join(os.tmpdir(), "test-test-math.SKILL.md");
+    const skillDir = path.join(os.tmpdir(), "evoclaw-skill-test-math");
+    await fs.mkdir(skillDir, { recursive: true });
+    testSkillPath = path.join(skillDir, "test-math.SKILL.md");
     await fs.writeFile(testSkillPath, TEST_SKILL_CONTENT, "utf-8");
   });
 
   afterAll(async () => {
     try {
-      await fs.unlink(testSkillPath);
+      await fs.rm(path.dirname(testSkillPath), { recursive: true, force: true });
     } catch {
     }
   });
@@ -223,10 +225,19 @@ describe("SkillRegistry Integration", () => {
     registry.registerService("eventBus", eventBus);
     skillManager = new SkillManager(registry, eventBus);
 
-    const testPath = path.join(os.tmpdir(), "test-registry2.SKILL.md");
+    const skillDir = path.join(os.tmpdir(), "evoclaw-skill-registry2");
+    await fs.mkdir(skillDir, { recursive: true });
+    const testPath = path.join(skillDir, "test-registry2.SKILL.md");
     await fs.writeFile(testPath, TEST_SKILL_CONTENT, "utf-8");
     await skillManager.installSkill(testPath);
     await fs.unlink(testPath).catch(() => {});
+  });
+
+  afterAll(async () => {
+    try {
+      await fs.rm(path.join(os.tmpdir(), "evoclaw-skill-registry2"), { recursive: true, force: true });
+    } catch {
+    }
   });
 
   describe("Skill Registration", () => {
@@ -278,7 +289,9 @@ _result = {
 \`\`\`
 `;
 
-    const testPath = path.join(os.tmpdir(), "test-security-check.SKILL.md");
+    const skillDir = path.join(os.tmpdir(), "evoclaw-skill-security");
+    await fs.mkdir(skillDir, { recursive: true });
+    const testPath = path.join(skillDir, "test-security-check.SKILL.md");
     await fs.writeFile(testPath, safeSkillContent, "utf-8");
 
     const skill = await skillManager.installSkill(testPath);
@@ -295,6 +308,6 @@ _result = {
       expect(output.hasEval).toBe(false);
     }
 
-    await fs.unlink(testPath).catch(() => {});
+    await fs.rm(skillDir, { recursive: true, force: true }).catch(() => {});
   });
 });

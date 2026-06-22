@@ -8,6 +8,7 @@ dist/
 coverage/
 .nyc_output/
 .turbo/
+.vitest/
 
 # Runtime data directory (generated at runtime; never commit)
 data/
