@@ -479,6 +479,23 @@ export const CHAT_PROVIDER_CATALOG: ProviderCatalog[] = [
     ],
   },
   {
+    id: "xiaomi-mimo",
+    name: "小米 MiMo",
+    baseURL: "https://api.xiaomimimo.com/v1",
+    protocol: "openai",
+    homepage: "https://mimo.mi.com",
+    docs: "https://platform.xiaomimimo.com/docs/zh-CN",
+    pricingUrl: "https://mimo.mi.com/#/docs/pricing",
+    defaultModel: "mimo-v2.5-pro",
+    order: 28,
+    models: [
+      { id: "mimo-v2.5-pro", name: "MiMo-V2.5 Pro", contextTokens: 1000000, inputPrice: 3.0, outputPrice: 6.0, currency: "CNY", description: "旗舰推理（1M 上下文）" },
+      { id: "mimo-v2.5", name: "MiMo-V2.5", contextTokens: 1000000, inputPrice: 1.0, outputPrice: 2.0, currency: "CNY", description: "全模态全能（1M 上下文）" },
+      { id: "mimo-v2-omni", name: "MiMo-V2 Omni", contextTokens: 256000, inputPrice: 1.0, outputPrice: 2.0, currency: "CNY", description: "全模态理解" },
+      { id: "mimo-v2-flash", name: "MiMo-V2 Flash", contextTokens: 256000, inputPrice: 0.7, outputPrice: 2.1, currency: "CNY", description: "轻量高速" },
+    ],
+  },
+  {
     id: "custom",
     name: "Custom Provider",
     baseURL: "",
@@ -487,7 +504,7 @@ export const CHAT_PROVIDER_CATALOG: ProviderCatalog[] = [
     docs: "",
     pricingUrl: "",
     defaultModel: "",
-    order: 27,
+    order: 29,
     models: [],
   },
 ];
