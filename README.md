@@ -25,6 +25,11 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.55.0 亮点
+- **对话大模型目录全面升级**：内置 27 家提供商、100+ 最新模型，含 OpenAI/Anthropic/Google/DeepSeek/通义千问/智谱/豆包/讯飞星火/商汤/零一万物/阶跃星辰/百川/腾讯混元/华为盘古等
+- **官方价格直观显示**：新增 `model-catalog.ts` 集中管理 baseURL、模型 ID、上下文、官方价格、文档链接，UI 直接显示每 1M tokens 价格（USD/CNY）
+- **免费/低价聚合平台**：集成 SiliconFlow、OpenRouter、Novita AI、Groq，提供大量免费或低价模型可选
+
 ### v0.54.0 亮点
 - **图片生成能力**：新增 `image_generate` 工具，默认集成 Pollinations.ai（完全免费、无需 API Key、无限量），支持 Fal.ai/Replicate
 - **配置管理 TAB 化**：大模型配置页面增加"图片生成"和"视频生成"TAB 页，可视化配置提供商

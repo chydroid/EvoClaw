@@ -3,6 +3,66 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.55.0 (2026-06-22)
+
+### 对话大模型目录全面升级
+
+#### 新增 model-catalog.ts 集中管理
+
+- 新增 `packages/web-ui/src/model-catalog.ts`，统一管理对话大模型的 **baseURL、模型 ID、上下文长度、官方价格、货币单位、主页/文档/定价链接**
+- 价格字段：inputPrice / outputPrice（每 1M tokens），支持 `USD` / `CNY`
+- 免费模型标记 `isFree`，UI 中显示为「免费」
+- UI 加载配置时自动把 catalog 重新挂载到 provider，确保价格/上下文始终可见
+
+#### 新增大量国际/国内/聚合/免费模型
+
+本次新增 27 个内置对话模型提供商，共计 100+ 模型：
+
+**国际主流**：
+- OpenAI：GPT-5.5 / 5.5 Pro / 5.4 系列、GPT-4.1 系列、o4-mini / o3 / o3-pro
+- Anthropic：Claude Opus 4.8 / 4.6、Sonnet 4.6 / 4.5、Haiku 4.5
+- Google：Gemini 3.1 Pro / Flash、Gemini 2.5 Pro / Flash / Flash-Lite
+- xAI：Grok 4 / 4 mini / 3
+- Cohere：Command A / R+ / R
+- Mistral：Large 2、Codestral、Saba、Ministral
+- Perplexity：Sonar Pro / Reasoning Pro / Sonar
+
+**国产大模型**：
+- DeepSeek：V4-Pro / V4-Flash / V3.2 / R1
+- 通义千问：Qwen3.5 Max / Plus / Flash、Qwen-Max / Plus / Turbo / Long
+- 智谱：GLM-5.1、GLM-4 Plus / Air / Flash（免费）
+- 月之暗面：Kimi K2.6 / K2.5
+- 百度文心：ERNIE 4.5 / 4.0 / Speed（免费）/ Lite（免费）
+- MiniMax：MiniMax-M3、Text-01
+- 豆包：Doubao Pro 1.6 / 1.5、Lite、Vision Pro
+- 讯飞星火：Spark 4.5 / 4.0 Ultra / Pro / Max / Lite（免费）
+- 商汤日日新：SenseChat 6 / 5.5 / 5 / Turbo
+- 零一万物：Yi-Large / Medium / Vision / Spark
+- 阶跃星辰：Step-3 / 2 / 1.5V / 1
+- 百川智能：Baichuan4 / 3-Turbo / 2-Turbo
+- 腾讯混元：Turbo / Pro / Standard / Lite（免费）
+- 华为盘古：Pangu Ultra / Pro / Lite
+
+**低价/免费聚合平台**：
+- SiliconFlow：DeepSeek-V4、Qwen3.5 72B（免费）、GLM-4-Flash-9B（免费）、Llama 4 Scout（免费）
+- OpenRouter：GPT-5.5 / Claude Opus 4.8 / DeepSeek / Gemini 聚合路由
+- Novita AI：低价 DeepSeek / Llama / Qwen
+- Groq：Llama 4 Maverick / Scout、Mixtral 等高速模型
+- Local：Ollama / vLLM 本地模型
+
+#### UI 改进
+
+- 大模型配置页面「对话模型」TAB 现在显示每个模型的 **官方价格 + 上下文长度**
+- 价格格式：`$输入价/$输出价 /1M tokens` 或 `¥输入价/¥输出价 /1M tokens`
+- 鼠标悬停 model input 即可看到价格和上下文，便于成本对比
+
+### 相关文件
+
+- `packages/web-ui/src/model-catalog.ts`（新增）
+- `packages/web-ui/src/LLMConfig.tsx`
+- `package.json`
+- `History.md`
+
 ## v0.54.0 (2026-06-22)
 
 ### 图片和视频生成配置管理

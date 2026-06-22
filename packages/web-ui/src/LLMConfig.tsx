@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "./i18n";
+import {
+  CHAT_PROVIDER_CATALOG,
+  buildDefaultProviders,
+  formatPrice,
+  type ProviderCatalog,
+  type ModelInfo,
+} from "./model-catalog";
 
 interface LLMProvider {
   id: string;
@@ -17,188 +24,12 @@ interface LLMProvider {
     timeout: number;
     topP: number;
   };
+  catalog?: ProviderCatalog;
 }
 
-const BUILT_IN_IDS = new Set(["openai", "anthropic", "deepseek", "qwen", "zhipu", "moonshot", "wenxin", "minimax", "doubao", "spark", "sensenova", "yi", "stepfun", "baichuan", "local"]);
+const BUILT_IN_IDS = new Set(CHAT_PROVIDER_CATALOG.map((p) => p.id));
 
-const DEFAULT_PROVIDERS: LLMProvider[] = [
-  {
-    id: "openai",
-    name: "OpenAI",
-    apiKey: "",
-    baseURL: "https://api.openai.com/v1",
-    models: ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "o3", "o4-mini"],
-    selectedModel: "gpt-4.1",
-    enabled: false,
-    order: 1,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    apiKey: "",
-    baseURL: "https://api.anthropic.com/v1",
-    models: ["claude-sonnet-4-6-20250217", "claude-opus-4-7-20260416", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20250301"],
-    selectedModel: "claude-sonnet-4-6-20250217",
-    enabled: false,
-    order: 2,
-    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    apiKey: "",
-    baseURL: "https://api.deepseek.com",
-    models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
-    selectedModel: "deepseek-v4-flash",
-    enabled: false,
-    order: 3,
-    config: { temperature: 0.3, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "qwen",
-    name: "通义千问 (Qwen)",
-    apiKey: "",
-    baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    models: ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long", "qwen2.5-72b-instruct", "qwen2.5-coder-32b-instruct"],
-    selectedModel: "qwen-plus",
-    enabled: false,
-    order: 4,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "zhipu",
-    name: "智谱AI (GLM)",
-    apiKey: "",
-    baseURL: "https://open.bigmodel.cn/api/paas/v4",
-    models: ["glm-4-plus", "glm-4-air", "glm-4-airx", "glm-4-long", "glm-4-flash", "glm-4-flashx"],
-    selectedModel: "glm-4-plus",
-    enabled: false,
-    order: 5,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "moonshot",
-    name: "月之暗面 (Kimi)",
-    apiKey: "",
-    baseURL: "https://api.moonshot.cn/v1",
-    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-latest"],
-    selectedModel: "moonshot-v1-32k",
-    enabled: false,
-    order: 6,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "wenxin",
-    name: "百度文心 (ERNIE)",
-    apiKey: "",
-    baseURL: "https://qianfan.baidubce.com/v2",
-    models: ["ernie-4.0-8k-latest", "ernie-4.0-turbo-8k", "ernie-speed-128k", "ernie-lite-8k"],
-    selectedModel: "ernie-4.0-8k-latest",
-    enabled: false,
-    order: 7,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "minimax",
-    name: "MiniMax",
-    apiKey: "",
-    baseURL: "https://api.minimax.chat/v1",
-    models: ["MiniMax-Text-01", "abab6.5s-chat", "abab6.5g-chat", "abab6.5t-chat"],
-    selectedModel: "MiniMax-Text-01",
-    enabled: false,
-    order: 8,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "doubao",
-    name: "豆包 (Doubao)",
-    apiKey: "",
-    baseURL: "https://ark.cn-beijing.volces.com/api/v3",
-    models: ["doubao-pro-1-5-128k", "doubao-pro-1-5-32k", "doubao-pro-1-5-256k", "doubao-lite-1-5-128k", "doubao-vision-pro-32k"],
-    selectedModel: "doubao-pro-1-5-128k",
-    enabled: false,
-    order: 9,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "spark",
-    name: "讯飞星火 (Spark)",
-    apiKey: "",
-    baseURL: "https://spark-api-open.xf-yun.com/v1",
-    models: ["4.0Ultra", "pro-128k", "max-32k", "lite"],
-    selectedModel: "4.0Ultra",
-    enabled: false,
-    order: 10,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "sensenova",
-    name: "商汤日日新 (SenseNova)",
-    apiKey: "",
-    baseURL: "https://api.sensenova.cn/v1",
-    models: ["SenseChat-5", "SenseChat-Turbo", "SenseChat-5-Vision", "SenseChat-Reasoning"],
-    selectedModel: "SenseChat-5",
-    enabled: false,
-    order: 11,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "yi",
-    name: "零一万物 (Yi)",
-    apiKey: "",
-    baseURL: "https://api.lingyiwanwu.com/v1",
-    models: ["yi-large", "yi-medium", "yi-vision", "yi-spark"],
-    selectedModel: "yi-large",
-    enabled: false,
-    order: 12,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "stepfun",
-    name: "阶跃星辰 (StepFun)",
-    apiKey: "",
-    baseURL: "https://api.stepfun.com/v1",
-    models: ["step-2-16k", "step-1.5v-mini", "step-1-8k", "step-1-32k", "step-1-128k"],
-    selectedModel: "step-2-16k",
-    enabled: false,
-    order: 13,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "baichuan",
-    name: "百川智能 (Baichuan)",
-    apiKey: "",
-    baseURL: "https://api.baichuan-ai.com/v1",
-    models: ["Baichuan4", "Baichuan3-Turbo", "Baichuan3-Turbo-128k", "Baichuan2-Turbo"],
-    selectedModel: "Baichuan4",
-    enabled: false,
-    order: 14,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-  {
-    id: "local",
-    name: "Local Model (Ollama/vLLM)",
-    apiKey: "",
-    baseURL: "http://localhost:11434/v1",
-    models: ["llama3", "mistral", "qwen2.5", "deepseek-r1", "custom"],
-    selectedModel: "llama3",
-    enabled: false,
-    order: 15,
-    config: { temperature: 0.5, maxTokens: 40960, timeout: 120000, topP: 0.9 },
-  },
-  {
-    id: "custom",
-    name: "Custom Provider",
-    apiKey: "",
-    baseURL: "",
-    models: [],
-    selectedModel: "",
-    enabled: false,
-    order: 16,
-    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
-  },
-];
+const DEFAULT_PROVIDERS: LLMProvider[] = buildDefaultProviders();
 
 function newCustomProvider(index: number): LLMProvider {
   const id = `custom-${Date.now()}-${index}`;
@@ -587,7 +418,10 @@ function LLMConfigPanel() {
       if (res.ok) {
         const data = await res.json();
         if (data.providers && Array.isArray(data.providers) && data.providers.length > 0) {
-          const loaded = data.providers as LLMProvider[];
+          const loaded = (data.providers as LLMProvider[]).map((p) => {
+            const catalog = CHAT_PROVIDER_CATALOG.find((c) => c.id === p.id);
+            return catalog ? { ...p, catalog } : p;
+          });
           setProviders(loaded);
           // Highlight the first (highest priority) provider from server data
           const sorted = [...loaded].sort((a, b) => a.order - b.order);
@@ -928,6 +762,20 @@ function LLMConfigPanel() {
                           });
                         }}
                       />
+                      {currentProvider.catalog && (
+                        <span style={s.modelMeta}>
+                          {(() => {
+                            const m = currentProvider.catalog.models.find((x) => x.id === model);
+                            if (!m) return null;
+                            return (
+                              <>
+                                {formatPrice(m)}
+                                {m.contextTokens ? ` · ${(m.contextTokens / 1000).toFixed(0)}K ctx` : ""}
+                              </>
+                            );
+                          })()}
+                        </span>
+                      )}
                       <div style={s.modelActionBtns}>
                         <button
                           style={{ ...s.modelActionBtn, opacity: idx === 0 ? 0.3 : 1 }}
@@ -1518,6 +1366,14 @@ const s: Record<string, React.CSSProperties> = {
   },
   modelActionBtns: {
     display: "flex", flexDirection: "column", gap: "2px",
+  },
+  modelMeta: {
+    fontSize: "10px",
+    color: "var(--text-muted)",
+    whiteSpace: "nowrap" as const,
+    maxWidth: "140px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   modelActionBtn: {
     padding: "0px 6px", fontSize: "10px", cursor: "pointer",
