@@ -3,6 +3,102 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.0 (2026-06-23)
+
+### 任务完成能力深度对齐 hermes-agent（第二轮）
+
+本轮从"任务完成能力"维度再次对比 `D:\abc\hermes\hermes-agent` 项目，从工具执行可靠性、上下文管理、多后端兼容性三个维度补齐 6 大核心能力差距。所有改动均已在本地通过 `pnpm build -> pnpm typecheck -> pnpm test`（121 files, 3151 passed, 1 skipped, 1 pre-existing failure in evolution-engine）。
+
+#### 1. 工具结果持久化管理器（三层防御，最高优先级）
+
+- 新增 `packages/agent/src/tool-result-persistence.ts`
+- **借鉴**：hermes-agent `tools/tool_result_storage.py` + `budget_config.py`
+- **核心机制**：
+  - Layer 1：per-tool output cap（`defaultResultSizeChars: 100_000`）
+  - Layer 2：per-result persistence — 超过阈值时写入沙箱临时文件，返回 `<persisted-output>` 预览块 + 文件路径引用
+  - Layer 3：per-turn aggregate budget（`turnBudgetChars: 200_000`）— 单轮总输出超预算时将最大的结果溢出到磁盘
+- **PINNED_THRESHOLDS**：`read_file/readFile/cat/head/tail = Infinity`，防止 persist→read→persist 无限循环
+- **预览生成**：`generatePreview()` 智能截断（头部 + 尾部 + 省略号），保持可读性
+- **导出**：`ToolResultPersistenceManager`、`getToolResultPersistenceManager`、`generatePreview`、`DEFAULT_BUDGET_CONFIG`
+
+#### 2. JSON Schema 多后端清洗器
+
+- 新增 `packages/agent/src/schema-sanitizer.ts`
+- **借鉴**：hermes-agent `tools/schema_sanitizer.py`
+- **核心机制**：不同 LLM 后端对 JSON Schema 的支持差异巨大，本模块提供响应式清洗
+- **5 类后端兼容性清洗**：
+  - `stripNullableUnions` — Anthropic（不支持 nullable union）
+  - `stripTopLevelCombinators` — OpenAI Codex（不支持顶层 allOf/anyOf/oneOf）
+  - `stripRefSiblings` — Fireworks（$ref 旁不能有其他属性）
+  - `stripPatternAndFormat` — llama.cpp/Ollama（不支持 pattern/format）
+  - `stripSlashEnum` — xAI（enum 中不支持斜杠）
+- **响应式清洗**：`reactiveSanitize()` 根据错误文本推断后端类型并选择清洗策略
+- **导出**：`sanitizeToolSchemas`、`reactiveSanitize`
+
+#### 3. 工具参数类型强制转换器
+
+- 新增 `packages/agent/src/tool-argument-coercer.ts`
+- **借鉴**：hermes-agent `model_tools.py` `_coerce_value` / `_coerce_json`
+- **核心机制**：LLM 有时返回的参数类型与 schema 声明不匹配（例如 integer 字段返回 "42" 字符串），本模块在工具调用前进行类型校正
+- **支持的转换**：
+  - string → integer/number/boolean（`parseInt`/`parseFloat`/`toLowerCase` 比较）
+  - string → JSON object/array（`tryParseJson`）
+  - bare value → [value]（当 schema 声明 array）
+  - null 检查（`schemaAllowsNull` 检查 type/nullable/anyOf/oneOf）
+- **安全性**：转换失败时保留原值（不抛异常），只做安全转换（不丢失信息）
+- **默认值补充**：schema 中声明 `default` 的字段自动填充
+- **导出**：`coerceValue`、`coerceToolArguments`
+
+#### 4. 跨会话速率限制守卫
+
+- 新增 `packages/agent/src/cross-session-rate-guard.ts`
+- **借鉴**：hermes-agent `agent/nous_rate_guard.py`
+- **核心机制**：EvoClaw 的 CLI/gateway/cron/auxiliary 会话各自独立运行，缺乏跨会话速率限制共享，retry amplification（9 次 API 调用/429）可能快速耗尽配额
+- **文件共享状态**：`~/.evoclaw/rate-limits/<provider>.json`，原子写入（temp + rename）
+- **resetSeconds 解析优先级**：`x-ratelimit-reset-requests-1h` > `x-ratelimit-reset-requests` > `retry-after`
+- **isGenuineRateLimit**：`resetSeconds >= 60` 判定为真实配额耗尽（而非瞬时容量不足），避免无意义重试
+- **缓存 TTL**：5 秒内复用缓存状态，减少文件 I/O
+- **导出**：`CrossSessionRateGuard`、`getCrossSessionRateGuard`、`parseResetSeconds`、`DEFAULT_RATE_GUARD_CONFIG`
+
+#### 5. 流式响应中断恢复管理器
+
+- 新增 `packages/agent/src/streaming-recovery.ts`
+- **借鉴**：hermes-agent `agent/conversation_loop.py` lines 4080-4119
+- **核心机制**：EvoClaw 的 streaming-manager 仅处理传输层，缺少应用层中断恢复逻辑
+- **6 种恢复策略（按优先级）**：
+  1. `partial_stream_recovery` — 使用已交付的部分内容
+  2. `truncated_tool_call_retries` — 工具调用中途被截断时重试（max 3）
+  3. `length_continue_retries` — finish_reason=length 时请求续写（max 3）
+  4. `thinking_prefill_retries` — 仅 thinking 块的响应 prefill（max 2）
+  5. `post_tool_empty_retried` — 工具调用后空响应时 nudge（max 2）
+  6. `housekeeping_fallback` — memory/todo 类工具调用时使用先前内容
+- **HOUSEKEEPING_TOOLS**：memory/save_memory/remember/forget/todo/add_todo/update_todo/complete_todo/note/take_note/session_save/save_session/bookmark/tag
+- **辅助函数**：`hasContentAfterThinkBlock`、`stripThinkBlocks`
+- **导出**：`StreamingRecoveryManager`、`hasContentAfterThinkBlock`、`stripThinkBlocks`
+
+#### 6. 工具结果中间件
+
+- 新增 `packages/agent/src/tool-result-middleware.ts`
+- **借鉴**：hermes-agent `tools/middleware.py`
+- **核心机制**：EvoClaw 缺少工具结果后处理钩子，无法在结果传递给模型前进行转换、脱敏或验证
+- **3 类中间件**：
+  - `ToolRequestMiddleware` — 在工具调用前修改参数
+  - `ToolExecutionMiddleware` — 包装工具执行，单次 `next()` 调用契约
+  - `ToolResultTransform` — 后处理工具结果，首个有效返回值胜出
+- **内置 Transform**：
+  - `createRedactionTransform` — 正则脱敏（API key、token 等）
+  - `createSizeLimitTransform` — 大小限制截断
+  - `createJsonFormatTransform` — JSON 格式化美化
+- **错误处理**：`DownstreamExecutionError` 传递下游错误，`MiddlewareAlreadyConsumedError` 防止 `next()` 重复调用
+- **导出**：`ToolResultMiddleware`、`DownstreamExecutionError`、`MiddlewareAlreadyConsumedError`、`createRedactionTransform`、`createSizeLimitTransform`、`createJsonFormatTransform`
+
+### 验证
+
+- `pnpm build` ✅ 17 个包全部构建成功
+- `pnpm typecheck` ✅ 全部通过
+- `pnpm test` ✅ 121 files, 3151 passed, 1 skipped, 1 pre-existing failure（evolution-engine，与本次修改无关）
+- 88 个 WebUI 任务管道测试 ✅ 全部通过
+
 ## v0.56.0 (2026-06-23)
 
 ### 任务完成能力全面对齐 hermes-agent

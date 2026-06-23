@@ -25,6 +25,15 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.57.0 亮点
+- **任务完成能力深度对齐 hermes-agent（第二轮）**：从工具执行可靠性、上下文管理、多后端兼容性三个维度补齐 6 大核心能力
+- **工具结果持久化（三层防御）**：`ToolResultPersistenceManager` 实现 per-tool cap → per-result persistence（沙箱临时文件 + `<persisted-output>` 预览块）→ per-turn aggregate budget，PINNED_THRESHOLDS 防止 persist→read→persist 死循环
+- **JSON Schema 多后端清洗**：`sanitizeToolSchemas` 支持 Anthropic/OpenAI Codex/Fireworks/xAI/llama.cpp 五类后端的 schema 兼容性清洗，`reactiveSanitize` 根据错误文本响应式选择清洗策略
+- **工具参数类型强制转换**：`coerceToolArguments` 在工具调用前校正 LLM 返回的参数类型（string→int/number/boolean、JSON string→object/array、bare value→[value]），避免运行时类型错误
+- **跨会话速率限制守卫**：`CrossSessionRateGuard` 基于文件共享状态实现 CLI/gateway/cron/auxiliary 跨会话速率限制同步，防止 retry amplification（9 次 API 调用/429），`isGenuineRateLimit` 区分配额耗尽与瞬时容量不足
+- **流式响应中断恢复**：`StreamingRecoveryManager` 实现 6 种恢复策略（partial_stream_recovery / truncated_tool_call_retries / length_continue_retries / thinking_prefill_retries / post_tool_empty_retried / housekeeping_fallback），覆盖流式传输中断的各种场景
+- **工具结果中间件**：`ToolResultMiddleware` 提供 3 类中间件（ToolRequestMiddleware 修改参数 / ToolExecutionMiddleware 包装执行 / ToolResultTransform 后处理结果），内置 createRedactionTransform / createSizeLimitTransform / createJsonFormatTransform
+
 ### v0.56.0 亮点
 - **任务完成能力全面对齐 hermes-agent**：深度对比 hermes-agent 项目，补齐 6 大核心能力差距
 - **文件系统检查点管理器**：基于 Git 影子存储的文件快照与回滚（`FileSystemCheckpointManager`），支持 per-project 隔离、每轮去重、三层清理、pre-rollback 快照

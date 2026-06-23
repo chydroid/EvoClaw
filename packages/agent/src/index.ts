@@ -185,3 +185,39 @@ export type { RecoveryContext, RecoveryResult, RecoveryMessage } from "./error-r
 //   8 worker + 安全分类（never-parallel / path-scoped / safe-parallel）+ 心跳 + 中断
 export { ConcurrentToolExecutor, getConcurrentToolExecutor, resetConcurrentToolExecutor, classifyToolParallelism, DEFAULT_CONCURRENT_CONFIG } from "./concurrent-tool-executor";
 export type { ToolParallelismClass, ToolCall, ToolExecutionResult, ToolExecutorFn, ConcurrentExecutorConfig } from "./concurrent-tool-executor";
+
+// Tool Result Persistence Manager — 工具结果持久化管理器（三层防御）
+// 借鉴 hermes-agent tools/tool_result_storage.py + budget_config.py：
+//   Layer 1 per-tool cap → Layer 2 per-result persistence → Layer 3 per-turn budget
+export { ToolResultPersistenceManager, getToolResultPersistenceManager, resetToolResultPersistenceManager, generatePreview, DEFAULT_BUDGET_CONFIG } from "./tool-result-persistence";
+export type { BudgetConfig, PersistedOutputInfo, TurnBudgetResult, TurnMessage } from "./tool-result-persistence";
+
+// Schema Sanitizer — JSON Schema 清洗器（多后端兼容）
+// 借鉴 hermes-agent tools/schema_sanitizer.py：
+//   llama.cpp/OpenAI Codex/Fireworks/xAI/Anthropic 后端兼容性清洗
+export { sanitizeToolSchemas, reactiveSanitize } from "./schema-sanitizer";
+export type { ToolSchema, JsonSchema as SchemaJson, BackendType, SanitizeOptions } from "./schema-sanitizer";
+
+// Tool Argument Coercer — 工具参数类型强制转换器
+// 借鉴 hermes-agent model_tools.py _coerce_value/_coerce_json：
+//   运行时参数类型校正（string→int/number/boolean/array/object）
+export { coerceValue, coerceToolArguments } from "./tool-argument-coercer";
+export type { CoerceResult } from "./tool-argument-coercer";
+
+// Cross-Session Rate Guard — 跨会话速率限制守卫
+// 借鉴 hermes-agent agent/nous_rate_guard.py：
+//   文件共享状态 + retry amplification 防护 + genuine rate limit 区分
+export { CrossSessionRateGuard, getCrossSessionRateGuard, resetCrossSessionRateGuard, parseResetSeconds, DEFAULT_RATE_GUARD_CONFIG } from "./cross-session-rate-guard";
+export type { CrossSessionRateLimitState, RateGuardConfig } from "./cross-session-rate-guard";
+
+// Streaming Recovery Manager — 流式响应中断恢复管理器
+// 借鉴 hermes-agent agent/conversation_loop.py lines 4080-4119：
+//   partial_stream_recovery / truncated_tool_call_retries / length_continue / thinking_prefill / housekeeping_fallback
+export { StreamingRecoveryManager, getStreamingRecoveryManager, resetStreamingRecoveryManager, hasContentAfterThinkBlock, stripThinkBlocks, PARTIAL_STREAM_STUB_ID, DEFAULT_STREAMING_RECOVERY_CONFIG } from "./streaming-recovery";
+export type { StreamRecoveryContext, StreamRecoveryResult, StreamingRecoveryConfig } from "./streaming-recovery";
+
+// Tool Result Middleware — 工具结果后处理中间件
+// 借鉴 hermes-agent hermes_cli/middleware.py + model_tools.py transform_tool_result：
+//   请求中间件 + 执行中间件 + 结果转换 hook + 终端输出转换
+export { ToolResultMiddleware, getToolResultMiddleware, resetToolResultMiddleware, DownstreamExecutionError, MiddlewareAlreadyConsumedError, createRedactionTransform, createSizeLimitTransform, createJsonFormatTransform, DEFAULT_MIDDLEWARE_CONFIG } from "./tool-result-middleware";
+export type { ToolCallContext, ToolResultContext, ToolRequestMiddleware, ToolExecutionMiddleware, ToolResultTransform, TerminalOutputTransform, MiddlewareConfig } from "./tool-result-middleware";
