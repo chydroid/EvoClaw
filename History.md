@@ -3,6 +3,78 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.2 (2026-06-23)
+
+### 全面代码审查与 BUG 修复（3 轮）
+
+对全项目 17 个包进行 3 轮全面代码审查，共发现并修复 **56 个真实 BUG**。
+
+#### 第 1 轮：核心包（agent, gateway, infrastructure）
+
+**安全/数据丢失修复（P0）**：
+- `database-manager.ts`：修复 `applyWhere` 空实现导致 SELECT 返回全表数据、DELETE 删全表、UPDATE 静默失败的问题；实现基本 WHERE 条件过滤和 SET 子句解析
+- `process-tree-killer.ts`：修复 PowerShell 命令注入漏洞（parentPid 未验证为数字）
+- `dispatch-dedupe-store.ts`：修复 generateKey 包含时间戳导致同一消息在不同时间检查生成不同 key、去重失效的问题
+- `auth-provider.ts`：修复非生产环境空 token 直接放行的安全后门，改为只有 `ALLOW_NO_AUTH=true` 时才放行
+
+**Agent 包修复（14 个）**：
+- 状态化 RegExp：`conversation-summarizer.plugin.ts`、`enhanced-browser.plugin.ts` 移除 `g` flag，防止 `lastIndex` 累积漏检
+- 定时器泄漏：`dag-executor.ts`、`llm-caller.ts`、`search-preprocessor.ts`、`brief-understanding.ts`、`planning-engine.ts` 使用 `try/finally` 清除定时器
+- `agent-pool.ts`：idle 计数改为只计算 `status === "idle"` 的 agent
+- `system-logger.plugin.ts`：`agent_end` hook 改取最后一条消息而非第一条
+- `auto-reply.ts`：过滤空关键词，防止 `includes("")` 总返回 true
+- `subagent-registry.ts`：并发检查改为只计算 running 状态
+- `reflection-engine.ts`：添加 NaN 检查，防止 `Math.min(1, Math.max(0, NaN))` 返回 NaN
+- `cost-tracker.plugin.ts`：`tokensUsed` 使用 `?? 0` 防止 undefined 导致 NaN
+- Provider 错误处理：`anthropic.ts`、`google.ts`、`openai.ts` 在 `response.json()` 前检查 `response.ok`
+
+**Gateway/Infrastructure 包修复（10 个）**：
+- `matrix.ts`：修复 `isDirect` 永远为 false 的逻辑错误
+- `protocol-adapter.ts`：修复 context limit 模式匹配错误、files/list 路径检查错误、secret value 未检查 undefined
+- `discord.ts`：onclose 重连时清理 heartbeatInterval
+- `health-aggregator.ts`：setInterval 添加 unref()
+- `event-ledger.ts`：getStats 使用 Math.min/max 遍历计算时间戳
+- `webhook-manager.ts`：unregister 清理所有以 `${id}:` 开头的重试定时器
+- `crestodian.ts`：checkTimer 添加 unref()
+
+#### 第 2 轮：CLI 命令与 WebUI
+
+**CLI 修复**：
+- `api.ts`：移除硬编码路径 `d:\abc\EvoClaw\.env`
+- `configure.ts`、`sessions.ts`、`transcripts.ts`、`tui.ts`、`sandbox.ts`：修复 API 响应类型不匹配（服务器返回数组但 CLI 期望对象），导致数据永远为空
+
+**WebUI 修复（9 个）**：
+- `i18n.ts`：useTranslation 添加 `EvoClaw_lang_change` 事件监听，修复同标签页语言切换不生效
+- `SessionManagementPage.tsx`：3 处删除操作添加 `res.ok` 检查
+- `ApprovalCenterPage.tsx`：3 处审批操作添加 `res.ok` 检查
+- `VoiceConfigPage.tsx`：分开 loading/error 检查，API 失败时不再永远卡 loading
+- `LLMConfig.tsx`：保存前检查 apiKey 是否为掩码 `****`，防止掩码被当作真实密钥保存
+- `BootstrapEditor.tsx`：删除直接修改 React state、使用 useEffect 监听 saveStatus 自动清除
+- `CLITerminal.tsx`：修复 Tab 补全 3+ 词时重复中间部分
+- `QueueManagerPage.tsx`：showMsg 使用 useRef 清除前一个 setTimeout
+
+#### 第 3 轮：核心包、安全、技能、内存、进化、调度器
+
+**严重修复（P0）**：
+- `experience-distiller.ts`：修复 `distill()` 在循环中 `return strategy` 导致只处理第一个聚类，改为 `strategies.push(strategy)` 返回所有策略
+- `task-classifier.ts`：删除正则末尾多余的 `|`，防止匹配空字符串导致 `report_generation` 过度匹配
+- `llm-reflector.ts`：修复 `err instanceof DOMException` 改为 `err instanceof Error`，正确匹配 Node.js AbortError
+- `skill-orchestrator.ts`：将 `executeSkill` 包裹在 `executeWithTimeout` 中，添加超时保护
+
+**资源泄漏修复（8 处定时器 unref）**：
+- `short-term-memory.ts`、`evolution-engine.ts`、`cron-scheduler.ts`、`hot-reload-manager.ts`、`learning-journal.ts`（2 处）、`graceful-shutdown.ts`
+- `cron-scheduler.ts`：runWithTimeout 超时后为 task promise 添加 `.catch(() => {})` 处理未处理拒绝
+- `graceful-shutdown.ts`：executeWithTimeout 同上修复
+
+**逻辑修复**：
+- `run-log.ts`：在 `record()` 中调用 `enforceRetention()`，防止日志文件无限增长
+
+#### 构建与测试
+
+- `pnpm build` ✅（17 packages）
+- `pnpm typecheck` ✅（17 packages，0 错误）
+- `pnpm test` ✅（全部通过）
+
 ## v0.57.1 (2026-06-23)
 
 ### WebUI 增强能力中心 + CLI 全面提升

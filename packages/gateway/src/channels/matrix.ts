@@ -324,8 +324,9 @@ export class MatrixAdapter implements ChannelAdapter {
 
     if (!text.trim()) return;
 
-    const isDirect = !roomId.startsWith("!");
-    const isGroup = roomId.startsWith("!") && !(event.sender ?? "").includes(this.userId);
+    const mentions = content["m.mentions"] as { users?: string[] } | undefined;
+    const isDirect = !mentions?.users?.includes(this.userId);
+    const isGroup = !!mentions?.users?.includes(this.userId);
 
     const msg: ChannelMessage = {
       messageId: event.event_id ?? `matrix_${Date.now()}`,

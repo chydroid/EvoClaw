@@ -113,6 +113,8 @@ export class CronRunLogger {
 
     fs.appendFileSync(filePath, line, "utf-8");
 
+    this.enforceRetention(full.jobId);
+
     return full;
   }
 

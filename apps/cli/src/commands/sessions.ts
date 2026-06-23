@@ -40,8 +40,8 @@ async function listSessions(opts: Record<string, unknown>): Promise<void> {
       return;
     }
 
-    const { data } = await apiRequest<SessionEntry[]>("GET", "/api/sessions");
-    let sessions = data || [];
+    const { data: rawData } = await apiRequest<SessionEntry[] | { sessions: SessionEntry[]; success?: boolean }>("GET", "/api/sessions");
+    let sessions: SessionEntry[] = Array.isArray(rawData) ? rawData : (rawData?.sessions || []);
 
     if (opts.agent) {
       sessions = sessions.filter(s => s.agentId === opts.agent);

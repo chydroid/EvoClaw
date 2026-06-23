@@ -196,6 +196,10 @@ export class GoogleProvider implements ProviderPlugin {
         }
       }
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const data = await response.json() as GeminiResponse;
       return this.parseResponse(data, request.model, startTime);
     }

@@ -250,7 +250,9 @@ export class GracefulShutdownManager extends EventEmitter {
         resolve(false);
       }, task.timeoutMs);
 
-      task.handler()
+      const taskPromise = task.handler();
+      taskPromise.catch(() => {});
+      taskPromise
         .then((result) => {
           clearTimeout(timer);
           resolve(result);

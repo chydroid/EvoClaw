@@ -100,7 +100,8 @@ export class SubagentRegistry {
    * Fails if the concurrent subagent limit has been reached.
    */
   spawn(config: SubagentConfig): SubagentInfo {
-    if (this.subagents.size >= this.maxConcurrent) {
+    const runningCount = Array.from(this.subagents.values()).filter((s) => s.status === "running").length;
+    if (runningCount >= this.maxConcurrent) {
       throw new Error(
         `Subagent limit reached (${this.maxConcurrent}). Kill or wait for existing subagents before spawning more.`,
       );

@@ -399,6 +399,7 @@ export class CronScheduler extends EventEmitter {
 
     const delay = Math.max(0, next.getTime() - Date.now());
     const timer = setTimeout(() => this.executeJob(job.id), delay);
+    timer.unref();
     this.timers.set(job.id, timer);
   }
 
@@ -496,8 +497,10 @@ export class CronScheduler extends EventEmitter {
       );
     });
 
+    const taskPromise = job.task();
+    taskPromise.catch(() => {});
     try {
-      return await Promise.race([job.task(), timeoutPromise]);
+      return await Promise.race([taskPromise, timeoutPromise]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

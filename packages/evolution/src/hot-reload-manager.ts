@@ -45,6 +45,7 @@ export class HotReloadManager {
         clearTimeout(this.scheduledTimeout);
       }
       this.scheduledTimeout = setTimeout(() => { this.scheduledTimeout = null; this.processQueue(); }, 5000);
+      this.scheduledTimeout.unref();
     }
   }
 

@@ -4255,7 +4255,11 @@ export function useTranslation() {
   useEffect(() => {
     const handler = () => setLangState(getStoredLang());
     window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
+    window.addEventListener("EvoClaw_lang_change", handler);
+    return () => {
+      window.removeEventListener("storage", handler);
+      window.removeEventListener("EvoClaw_lang_change", handler);
+    };
   }, []);
 
   const setLang = useCallback((l: Lang) => {

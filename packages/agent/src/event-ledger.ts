@@ -240,19 +240,27 @@ export class EventLedger {
   } {
     const byType: Record<string, number> = {};
     const byAgent: Record<string, number> = {};
+    let oldestTimestamp: string | null = null;
+    let newestTimestamp: string | null = null;
 
     for (const e of this.entries) {
       byType[e.type] = (byType[e.type] || 0) + 1;
       const aid = e.agentId || "unknown";
       byAgent[aid] = (byAgent[aid] || 0) + 1;
+      if (oldestTimestamp === null || e.timestamp < oldestTimestamp) {
+        oldestTimestamp = e.timestamp;
+      }
+      if (newestTimestamp === null || e.timestamp > newestTimestamp) {
+        newestTimestamp = e.timestamp;
+      }
     }
 
     return {
       total: this.entries.length,
       byType,
       byAgent,
-      oldestTimestamp: this.entries[0]?.timestamp ?? null,
-      newestTimestamp: this.entries[this.entries.length - 1]?.timestamp ?? null,
+      oldestTimestamp,
+      newestTimestamp,
     };
   }
 

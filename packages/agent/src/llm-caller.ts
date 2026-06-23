@@ -2431,10 +2431,17 @@ Have a specific URL?
                   // 使用信号量限制并发：浏览器工具串行，网络工具限3并发，其他限5并发
                   const toolSem = getToolSemaphore(toolName);
                   rawResult = await toolSem.withPermit(async () => {
-                    return await Promise.race([
-                      toolEntry.handler(args),
-                      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout)),
-                    ]);
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    try {
+                      return await Promise.race([
+                        toolEntry.handler(args),
+                        new Promise<never>((_, reject) => {
+                          timer = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout);
+                        }),
+                      ]);
+                    } finally {
+                      if (timer) clearTimeout(timer);
+                    }
                   });
                   break; // success
                 } catch (retryErr) {

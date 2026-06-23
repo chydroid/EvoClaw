@@ -233,6 +233,7 @@ export default function QueueManagerPage() {
   // Drag state
   const dragItemRef = useRef<number | null>(null);
   const dragSessionRef = useRef<string | null>(null);
+  const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchQueues = useCallback(async () => {
     try {
@@ -254,8 +255,9 @@ export default function QueueManagerPage() {
   }, [fetchQueues]);
 
   const showMsg = (type: "success" | "error", text: string) => {
+    if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     setMessage({ type, text });
-    setTimeout(() => setMessage(null), 3000);
+    msgTimerRef.current = setTimeout(() => setMessage(null), 3000);
   };
 
   const handleDelete = async (itemId: string) => {

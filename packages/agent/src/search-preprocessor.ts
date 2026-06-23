@@ -276,10 +276,15 @@ export async function preprocessSearch(
                 toolArgs: { url: r.url },
               });
 
+              let fetchTimer: ReturnType<typeof setTimeout> | undefined;
               const fetchResult = await Promise.race([
                 fetchTool.handler({ url: r.url, maxLength: 5000 }),
-                new Promise<null>((_, reject) => setTimeout(() => reject(new Error("fetch timeout")), 10000)),
-              ]);
+                new Promise<null>((_, reject) => {
+                  fetchTimer = setTimeout(() => reject(new Error("fetch timeout")), 10000);
+                }),
+              ]).finally(() => {
+                if (fetchTimer) clearTimeout(fetchTimer);
+              });
               const fetchObj = typeof fetchResult === "object" && fetchResult !== null ? (fetchResult as Record<string, unknown>) : null;
               const content = (fetchObj?.content || fetchObj?.text || fetchObj?.body || "") as string;
               const cleanedContent = stripNoise(content);

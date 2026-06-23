@@ -92,8 +92,8 @@ async function startTui(opts: Record<string, unknown>): Promise<void> {
 
     if (input === "/sessions") {
       try {
-        const { data } = await apiRequest<SessionEntry[]>("GET", "/api/sessions");
-        const sessions = data || [];
+        const { data: rawData } = await apiRequest<SessionEntry[] | { sessions: SessionEntry[]; success?: boolean }>("GET", "/api/sessions");
+        const sessions: SessionEntry[] = Array.isArray(rawData) ? rawData : (rawData?.sessions || []);
         if (sessions.length === 0) {
           console.log(c("gray", "  No sessions found."));
         } else {

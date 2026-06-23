@@ -167,7 +167,7 @@ export function VoiceConfigPage() {
     }
   };
 
-  if (loading || !config || !status) {
+  if (loading) {
     return (
       <div style={styles.container}>
         <div style={styles.header}>
@@ -175,6 +175,20 @@ export function VoiceConfigPage() {
           <div style={styles.subtitle}>{t("voice.subtitle")}</div>
         </div>
         <div style={{ color: "var(--text-muted)", fontSize: "13px" }}>{t("app.loading")}</div>
+      </div>
+    );
+  }
+
+  if (!config || !status) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <div style={styles.title}>{t("voice.title")}</div>
+          <div style={styles.subtitle}>{t("voice.subtitle")}</div>
+        </div>
+        {message && (
+          <div style={message.type === "success" ? styles.success : styles.error}>{message.text}</div>
+        )}
       </div>
     );
   }

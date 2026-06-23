@@ -117,6 +117,7 @@ export class Crestodian {
       this.checkTimer = setInterval(() => {
         this.runAllChecks();
       }, config.checkIntervalMs);
+      this.checkTimer.unref?.();
     }
   }
 

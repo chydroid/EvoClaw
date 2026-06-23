@@ -38,6 +38,7 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
     apiURL = `${apiURL}/chat/completions`;
   }
 
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -52,7 +53,7 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await nativeFetch(apiURL, {
       method: "POST",
@@ -69,8 +70,6 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
       }),
       signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       deps.recordProviderFailure(provider.id, `HTTP ${response.status}`, "http_error");
@@ -90,5 +89,7 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
     const errMsg = err instanceof Error ? err.message : String(err);
     deps.recordProviderFailure(provider.id, errMsg, "network_error");
     return "";
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }

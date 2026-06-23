@@ -114,6 +114,12 @@ export default function BootstrapEditor() {
     }
   }, [activeFile, files]);
 
+  useEffect(() => {
+    if (!saveStatus) return;
+    const timer = setTimeout(() => setSaveStatus(null), 5000);
+    return () => clearTimeout(timer);
+  }, [saveStatus]);
+
   async function handleSave() {
     const file = files[activeFile];
     if (!file || !file.editable) return;
@@ -128,7 +134,6 @@ export default function BootstrapEditor() {
         body: JSON.stringify({ content: editContent }),
       });
       if (res.ok) {
-        files[activeFile] = { ...file, content: editContent };
         setFiles({ ...files, [activeFile]: { ...file, content: editContent } });
         setDirty(false);
         setSaveStatus(t("bootstrap.save_success"));
@@ -143,10 +148,6 @@ export default function BootstrapEditor() {
       setSaveStatusType("error");
     }
     setSaving(false);
-
-    if (saveStatus) {
-      setTimeout(() => setSaveStatus(null), 5000);
-    }
   }
 
   function handleReset() {

@@ -252,6 +252,10 @@ export class OpenAIProvider implements ProviderPlugin {
         }
       }
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const data = await response.json() as OpenAIChatResponse;
       return this.parseResponse(data, request.model, startTime);
     }

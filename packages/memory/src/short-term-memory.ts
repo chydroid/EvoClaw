@@ -6,6 +6,7 @@ export class ShortTermMemoryStore implements ShortTermMemory {
 
   constructor() {
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
+    this.cleanupInterval.unref();
   }
 
   private cleanup(): void {

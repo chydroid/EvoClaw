@@ -184,7 +184,7 @@ export class LLMReflector {
 
       return this.parseReflectionResponse(llmOutput, trace);
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
+      if (err instanceof Error && err.name === "AbortError") {
         process.stderr.write("[LLMReflector] LLM reflection timed out");
       }
       return null;

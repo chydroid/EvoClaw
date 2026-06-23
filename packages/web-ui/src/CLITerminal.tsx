@@ -303,7 +303,7 @@ export const CLITerminal: React.FC = () => {
           const parts = input.trim().split(/\s+/);
           parts[parts.length - 1] = completion;
           const prefix = input.trimEnd().split(/\s+/).slice(0, -1).join(" ") + " ";
-          const newInput = parts.length > 1 ? prefix + parts.slice(1).join(" ") : "EvoClaw " + completion;
+          const newInput = parts.length > 1 ? prefix + completion : "EvoClaw " + completion;
           setInput(newInput);
           setShowCompletions(null);
         }

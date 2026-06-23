@@ -262,7 +262,7 @@ export class AgentPoolManager implements AgentPool {
   async getMetrics(): Promise<PoolMetrics> {
     const agents = Array.from(this.agents.values());
     const active = agents.filter((a) => a.state.status === "busy").length;
-    const idle = agents.length - active;
+    const idle = agents.filter((a) => a.state.status === "idle").length;
 
     return {
       totalAgents: agents.length,

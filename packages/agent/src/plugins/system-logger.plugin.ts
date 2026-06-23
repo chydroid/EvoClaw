@@ -64,7 +64,7 @@ export function createSystemLoggerPlugin(): Plugin {
       handler: async (hook) => {
         const h = hook as AgentEndHook;
         const meta = h.metadata || {};
-        const replyLen = (h.messages?.[0]?.content as string)?.length ?? 0;
+        const replyLen = (h.messages?.[h.messages.length - 1]?.content as string)?.length ?? 0;
 
         addLog({
           timestamp: new Date().toISOString(),

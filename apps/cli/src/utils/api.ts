@@ -27,7 +27,6 @@ export function detectPort(): number {
   const envPaths = [
     path.join(process.cwd(), ".env"),
     path.join(__dirname, "..", "..", "..", "..", ".env"),
-    path.join("d:", "abc", "EvoClaw", ".env"),
   ];
   for (const p of envPaths) {
     try {

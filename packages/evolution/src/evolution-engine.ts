@@ -97,6 +97,7 @@ export class EvolutionEngine {
   private schedulePersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+    this.persistTimer.unref();
   }
 
   private persistToDisk(): void {

@@ -51,8 +51,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .action(async (opts: Record<string, unknown>) => {
       if (!(await ensureServer())) return;
       try {
-        const r = await apiRequest<{ services: ServiceInfo[] }>("GET", "/api/system/services");
-        const allServices = r.data?.services || [];
+        const r = await apiRequest<ServiceInfo[] | { services: ServiceInfo[] }>("GET", "/api/system/services");
+        const allServices = Array.isArray(r.data) ? r.data : (r.data?.services || []);
         const services = opts.all
           ? allServices
           : allServices.filter((s) =>

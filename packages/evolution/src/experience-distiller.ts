@@ -95,7 +95,7 @@ export class ExperienceDistiller {
   async addTrajectory(
     trace: ExecutionTrace,
     reflection: ReflectionResult,
-  ): Promise<DistilledStrategy | null> {
+  ): Promise<DistilledStrategy[]> {
     this.trajectoryBuffer.push({
       trace,
       reflection,
@@ -112,16 +112,18 @@ export class ExperienceDistiller {
       return this.distill();
     }
 
-    return null;
+    return [];
   }
 
   /**
    * 执行蒸馏：从缓冲区中的轨迹提取可复用策略。
    */
-  async distill(): Promise<DistilledStrategy | null> {
+  async distill(): Promise<DistilledStrategy[]> {
     if (this.trajectoryBuffer.length < this.config.minTrajectoriesForDistillation) {
-      return null;
+      return [];
     }
+
+    const strategies: DistilledStrategy[] = [];
 
     try {
       // 1. 按失败模式聚类轨迹
@@ -155,7 +157,7 @@ export class ExperienceDistiller {
             "experience-distiller",
           ).catch(() => {});
 
-          return strategy;
+          strategies.push(strategy);
         }
       }
 
@@ -167,7 +169,7 @@ export class ExperienceDistiller {
       );
     }
 
-    return null;
+    return strategies;
   }
 
   /**

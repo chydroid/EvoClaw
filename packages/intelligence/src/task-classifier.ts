@@ -325,7 +325,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(生成|创建|制作|generate|create|produce|make|build).*(报告|报表|周报|月报|日报|摘要|report|summary|digest|weekly|monthly|daily)/i,
       /(报告|报表|report).*(模板|格式|template|format)/i,
       /(导出|保存|export|save).*(报告|报表|PDF|HTML|report)/i,
-      /(总结|汇总|归纳|summarize|aggregate|recap).*(工作|进度|成果|work|progress|result)|/i,
+      /(总结|汇总|归纳|summarize|aggregate|recap).*(工作|进度|成果|work|progress|result)/i,
     ],
     tools: ["report_generate", "report_templates", "report_email_digest", "report_weekly"],
     skills: ["report-builder", "document-generator"],

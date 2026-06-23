@@ -276,6 +276,10 @@ export class DiscordAdapter implements ChannelAdapter {
 
     this.ws.onclose = (event) => {
       console.log(`[Discord] Gateway closed (code: ${event.code})`);
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+        this.heartbeatInterval = null;
+      }
       if (this.running) {
         this.notifyStatus("reconnecting");
         // Reconnect after a delay

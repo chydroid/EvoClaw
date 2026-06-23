@@ -83,11 +83,9 @@ export class DispatchDedupeStore {
     if (typeof this.cleanupTimer.unref === "function") this.cleanupTimer.unref();
   }
 
-  /** 生成key */
+  /** 生成key — 不包含时间桶，依赖 expiresAt 做过期判断 */
   static generateKey(key: DispatchDedupeKey): string {
-    const window = key.windowMs ?? 60000; // 默认1分钟窗口
-    const windowBucket = Math.floor(Date.now() / window);
-    return `${key.channel}:${key.externalId}:${windowBucket}`;
+    return `${key.channel}:${key.externalId}`;
   }
 
   /** 检查是否已dispatch (是=跳过) */

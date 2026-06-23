@@ -221,7 +221,7 @@ function extractStructuredContent(content: string): string | null {
   const charsetMatch = content.match(/charset=["']?([\w-]+)/i);
   if (charsetMatch) parts.push(`**Encoding:** ${charsetMatch[1]}`);
 
-  const paginationPattern = /<a[^>]+href=["'][^"']*(?:page[=_\-\/]\d+|pn[=_\-\/]\d+|p[=_\-\/]\d+|index[=_\-\/]\d+)["'][^>]*>/gi;
+  const paginationPattern = /<a[^>]+href=["'][^"']*(?:page[=_\-\/]\d+|pn[=_\-\/]\d+|p[=_\-\/]\d+|index[=_\-\/]\d+)["'][^>]*>/i;
   if (paginationPattern.test(content)) parts.push("**Pagination detected** — multi-page structure");
 
   const totalLinks = (content.match(/<a\s/gi) || []).length;

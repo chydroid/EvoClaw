@@ -164,6 +164,11 @@ async function getPidsViaPs(parentPid: number): Promise<number[]> {
  */
 async function getChildPidsWindows(parentPid: number): Promise<number[]> {
   return new Promise((resolve) => {
+    // 验证 parentPid 为纯数字，防止命令注入
+    if (!/^\d+$/.test(String(parentPid))) {
+      resolve([]);
+      return;
+    }
     // 使用 PowerShell 获取子进程
     const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId`;
     const proc = spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", cmd], {

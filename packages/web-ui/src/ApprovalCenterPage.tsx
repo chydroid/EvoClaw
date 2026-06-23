@@ -151,7 +151,8 @@ export default function ApprovalCenterPage() {
 
   const handleApprove = async (req: PendingRequest) => {
     try {
-      await fetch(`${API}/api/approvals/${req.id}/approve`, { method: "POST" });
+      const res = await fetch(`${API}/api/approvals/${req.id}/approve`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showToast(t("approval.approveSuccess"), "success");
       setPending(prev => prev.filter(p => p.id !== req.id));
     } catch (e: any) {
@@ -162,11 +163,12 @@ export default function ApprovalCenterPage() {
 
   const handleDeny = async (req: PendingRequest) => {
     try {
-      await fetch(`${API}/api/approvals/${req.id}/reject`, {
+      const res = await fetch(`${API}/api/approvals/${req.id}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: t("approval.deny") }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showToast(t("approval.denySuccess"), "success");
       setPending(prev => prev.filter(p => p.id !== req.id));
     } catch (e: any) {
@@ -177,11 +179,12 @@ export default function ApprovalCenterPage() {
 
   const handleSaveConfig = async () => {
     try {
-      await fetch(`${API}/api/approval-timeout/config`, {
+      const res = await fetch(`${API}/api/approval-timeout/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showToast(t("approval.settings.saved"), "success");
     } catch (e: any) {
       showToast(e.message || t("approval.settings.save"), "error");

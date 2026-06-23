@@ -53,7 +53,7 @@ function generateSummary(messages: Array<{ role: string; content: string | null 
   }
 
   // Extract decisions (messages starting with action verbs)
-  const decisionPattern = /\b(decided|agreed|confirmed|resolved|fixed|created|updated|deleted|chose|selected)\b/gi;
+  const decisionPattern = /\b(decided|agreed|confirmed|resolved|fixed|created|updated|deleted|chose|selected)\b/i;
   const decisions: string[] = [];
   for (const msg of assistantMessages) {
     const text = msg.content || "";

@@ -5532,7 +5532,7 @@ export class ProtocolAdapter {
           timestamp: new Date().toISOString(),
           success: true,
         });
-        const maskedValue = entry.value.length > 8
+        const maskedValue = entry.value && entry.value.length > 8
           ? entry.value.slice(0, 4) + "****" + entry.value.slice(-4)
           : "****";
         res.json({ value: maskedValue, masked: true });

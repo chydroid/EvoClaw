@@ -37,8 +37,8 @@ async function configureModel(): Promise<void> {
   if (!alive) { serverRequired(); return; }
 
   try {
-    const { data: providersData } = await apiRequest<{ providers: ProviderInfo[] }>("GET", "/api/system/providers");
-    const providers = providersData.providers || [];
+    const { data: providersData } = await apiRequest<ProviderInfo[] | { providers: ProviderInfo[] }>("GET", "/api/system/providers");
+    const providers = Array.isArray(providersData) ? providersData : (providersData?.providers || []);
 
     if (providers.length === 0) {
       console.log(c("yellow", `${ICONS.warn()} No providers found. Configure API keys first.`));
@@ -150,8 +150,8 @@ async function configureAuth(): Promise<void> {
   if (!alive) { serverRequired(); return; }
 
   try {
-    const { data: providersData } = await apiRequest<{ providers: ProviderInfo[] }>("GET", "/api/system/providers");
-    const providers = providersData.providers || [];
+    const { data: providersData } = await apiRequest<ProviderInfo[] | { providers: ProviderInfo[] }>("GET", "/api/system/providers");
+    const providers = Array.isArray(providersData) ? providersData : (providersData?.providers || []);
 
     if (providers.length === 0) {
       console.log(c("yellow", `${ICONS.warn()} No providers found.`));

@@ -263,7 +263,7 @@ Rules:
         retrySuggestion: typeof parsed.retrySuggestion === "string" ? parsed.retrySuggestion : undefined,
         analysis: typeof parsed.analysis === "string" ? parsed.analysis : "No analysis provided",
         nextStepSuggestion: typeof parsed.nextStepSuggestion === "string" ? parsed.nextStepSuggestion : undefined,
-        confidence: typeof parsed.confidence === "number" ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5,
+        confidence: typeof parsed.confidence === "number" && !Number.isNaN(parsed.confidence) ? Math.min(1, Math.max(0, parsed.confidence)) : 0.5,
       };
     } catch {
       return conservative;

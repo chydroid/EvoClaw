@@ -340,6 +340,13 @@ export class WebhookManager {
       clearTimeout(timer);
       this.retryTimers.delete(id);
     }
+    for (const key of this.retryTimers.keys()) {
+      if (key.startsWith(`${id}:`)) {
+        const t = this.retryTimers.get(key);
+        if (t) clearTimeout(t);
+        this.retryTimers.delete(key);
+      }
+    }
     this.deliveries.delete(id);
     return this.webhooks.delete(id);
   }

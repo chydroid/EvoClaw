@@ -324,10 +324,11 @@ export default function SessionManagementPage() {
     setDeleting(true);
     try {
       await Promise.all(
-        Array.from(selectedIds).map(id => {
+        Array.from(selectedIds).map(async id => {
           const sess = sessions.find(s => s.sessionId === id);
           const agentId = sess?.agentId || "default";
-          return fetch(`/api/sessions/${encodeURIComponent(agentId)}/${id}`, { method: "DELETE" });
+          const res = await fetch(`/api/sessions/${encodeURIComponent(agentId)}/${id}`, { method: "DELETE" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
         })
       );
       showToast(t("session_mgmt.deleted_count").replace("{0}", String(selectedIds.size)), "success");
@@ -345,9 +346,10 @@ export default function SessionManagementPage() {
     setDeleting(true);
     try {
       await Promise.all(
-        sessions.map(s =>
-          fetch(`/api/sessions/${encodeURIComponent(s.agentId || "default")}/${s.sessionId}`, { method: "DELETE" })
-        )
+        sessions.map(async s => {
+          const res = await fetch(`/api/sessions/${encodeURIComponent(s.agentId || "default")}/${s.sessionId}`, { method: "DELETE" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        })
       );
       showToast(t("session_mgmt.all_cleared"), "success");
       setConfirmAction(null);
@@ -536,7 +538,8 @@ export default function SessionManagementPage() {
                           style={{ ...s.dangerBtn, padding: "3px 8px", fontSize: "11px" }}
                           onClick={async () => {
                             try {
-                              await fetch(`/api/sessions/${encodeURIComponent(sess.agentId || "default")}/${sess.sessionId}`, { method: "DELETE" });
+                              const res = await fetch(`/api/sessions/${encodeURIComponent(sess.agentId || "default")}/${sess.sessionId}`, { method: "DELETE" });
+                              if (!res.ok) throw new Error(`HTTP ${res.status}`);
                               showToast(t("session_mgmt.deleted_one"), "success");
                               await fetchData();
                             } catch { showToast(t("session_mgmt.delete_fail"), "error"); }

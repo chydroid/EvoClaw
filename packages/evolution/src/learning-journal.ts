@@ -46,6 +46,7 @@ export class LearningJournal {
       this.persistTimer = setInterval(() => {
         this.persistToDisk();
       }, this.config.persistIntervalMs);
+      this.persistTimer.unref();
     }
   }
 
@@ -727,7 +728,7 @@ export class LearningJournal {
     setTimeout(() => {
       this.persistToDisk();
       this.persistScheduled = false;
-    }, 1000);
+    }, 1000).unref();
   }
 
   stop(): void {

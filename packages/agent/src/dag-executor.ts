@@ -180,15 +180,18 @@ export class DAGExecutor {
     context: Task["context"],
     timeoutMs: number
   ): Promise<unknown> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         reject(new Error(`Node "${node.id}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       // Keep the timer from keeping the process alive
       if (timer.unref) timer.unref();
     });
 
-    return Promise.race([this.executeNode(node, context), timeoutPromise]);
+    return Promise.race([this.executeNode(node, context), timeoutPromise]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
   }
 
   /**

@@ -193,7 +193,10 @@ export class AutoReplyEngine {
       case "keyword": {
         if (!rule.keywords || rule.keywords.length === 0) return false;
         const lower = ctx.message.toLowerCase();
-        return rule.keywords.some((kw) => lower.includes(kw.toLowerCase()));
+        return rule.keywords.some((kw) => {
+          if (!kw) return false;
+          return lower.includes(kw.toLowerCase());
+        });
       }
 
       case "scheduled": {

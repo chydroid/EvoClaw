@@ -104,8 +104,8 @@ export function createCostTrackerPlugin(): Plugin {
           const entry: CostEntry = {
             timestamp: new Date(),
             sessionId: hook.context.sessionId,
-            tokensUsed: hook.metadata.tokensUsed || 0,
-            estimatedCost: estimateCost(hook.metadata.tokensUsed || 0),
+            tokensUsed: hook.metadata.tokensUsed ?? 0,
+            estimatedCost: estimateCost(hook.metadata.tokensUsed ?? 0),
           };
           recordCost(entry);
 

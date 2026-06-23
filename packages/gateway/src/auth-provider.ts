@@ -115,7 +115,7 @@ export class AuthProvider {
     }
 
     if (!this.webUiToken || this.webUiToken.length === 0) {
-      if (process.env.NODE_ENV === "production") {
+      if (process.env.ALLOW_NO_AUTH !== "true") {
         res.status(401).send("Unauthorized: WEB_UI_TOKEN not configured");
         return;
       }

@@ -231,7 +231,9 @@ export class SkillOrchestrator {
           const matchedSkill = skills.find((s) => s.name === skillToUse);
 
           if (matchedSkill) {
-            const execResult = await skillExecutor.executeSkill(matchedSkill.id, mergedParams);
+            const execResult = await this.executeWithTimeout(step.timeout, () =>
+              skillExecutor.executeSkill(matchedSkill.id, mergedParams)
+            );
 
             if (execResult.success) {
               return {

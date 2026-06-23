@@ -325,6 +325,7 @@ export class HealthAggregator extends EventEmitter {
   startPolling(): void {
     if (this.checkTimer) return;
     this.checkTimer = setInterval(() => this.checkAll(), this.config.checkIntervalMs);
+    this.checkTimer.unref?.();
   }
 
   /**
