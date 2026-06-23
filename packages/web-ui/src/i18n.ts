@@ -100,6 +100,18 @@ const DICT: Record<Lang, Record<string, string>> = {
     "nav.approval_center": "审批中心",
     "nav.mcp_scanner": "MCP 扫描",
     "nav.voice_settings": "语音设置",
+    "nav.enhancement_hub": "增强能力",
+
+    // ─── Enhancement Hub Page ─────────────────────────────────
+    "enhancement.title": "增强能力中心",
+    "enhancement.intro": "本页面集中展示 EvoClaw 近期从任务完成能力维度补齐的核心能力，覆盖可靠性、上下文管理、多后端兼容、并发执行与成本控制等方面。",
+    "enhancement.total_capabilities": "新增核心能力",
+    "enhancement.active_capabilities": "已激活能力",
+    "enhancement.release_rounds": "发布轮次",
+    "enhancement.status.active": "已激活",
+    "enhancement.status.inactive": "未就绪",
+    "enhancement.metrics_count": "{0} 项指标",
+    "enhancement.no_metrics": "无实时指标",
 
     // ─── Token Usage Page ─────────────────────────────────────
     "tokenUsage.title": "Token 用量追踪",
@@ -2253,6 +2265,18 @@ const DICT: Record<Lang, Record<string, string>> = {
     "nav.approval_center": "Approvals",
     "nav.mcp_scanner": "MCP Scanner",
     "nav.voice_settings": "Voice Settings",
+    "nav.enhancement_hub": "Enhancements",
+
+    // ─── Enhancement Hub Page ─────────────────────────────────
+    "enhancement.title": "Enhancement Hub",
+    "enhancement.intro": "This page showcases the core capabilities recently added to EvoClaw from the task-completion dimension, covering reliability, context management, multi-backend compatibility, concurrent execution, and cost control.",
+    "enhancement.total_capabilities": "New Core Capabilities",
+    "enhancement.active_capabilities": "Active Capabilities",
+    "enhancement.release_rounds": "Release Rounds",
+    "enhancement.status.active": "Active",
+    "enhancement.status.inactive": "Not Ready",
+    "enhancement.metrics_count": "{0} metrics",
+    "enhancement.no_metrics": "No live metrics",
 
     // ─── Token Usage Page ─────────────────────────────────────
     "tokenUsage.title": "Token Usage Tracking",

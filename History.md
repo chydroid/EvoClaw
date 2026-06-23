@@ -3,6 +3,64 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.1 (2026-06-23)
+
+### WebUI 增强能力中心 + CLI 全面提升
+
+#### WebUI：增强能力中心页面
+
+- 新增 `packages/web-ui/src/EnhancementHubPage.tsx` — 集中展示 v0.56/v0.57 从任务完成能力维度补齐的 12 大核心能力
+- 每个能力卡片展示：名称、中英文名、版本、模块、标签、描述、激活状态、实时指标数
+- 汇总面板：新增核心能力数、已激活能力数、发布轮次
+- 自动拉取 `/api/system/services` 服务状态与各能力 API 指标
+- 导航集成：`App.tsx` 新增"增强能力"导航项，`app-state.ts` 扩展 `TabId` 类型
+- 图标：新增 `IconEnhancement`（五角星图标）并注册到 `ICON_MAP`
+- i18n：中英文翻译键全覆盖（`nav.enhancement_hub`、`enhancement.*`）
+
+#### CLI：全面提升，使命令行可替代大多数 GUI 操作
+
+- **新增 `chat` 命令** — 交互式 REPL 模式 + 单次消息模式
+  - `EvoClaw chat` 进入交互式对话，支持 `/exit`、`/clear`、`/model <id>`、`/help` 斜杠命令
+  - `EvoClaw chat "message"` 单次发送消息
+  - 支持 `--model`、`--session-id`、`--json` 选项
+- **新增 `enhancements` 命令** — CLI 版增强能力中心，展示 12 大核心能力
+  - 支持 `--json`、`--version v0.56|v0.57` 过滤
+- **重写 `tasks` 命令** — 从仅显示计数升级为完整任务管理
+  - `tasks list` — 聚合显示 Agent 执行、Workboard 任务、Evolution 摘要
+  - `tasks show <id>` — 查看任务详情
+  - `tasks create <title>` — 创建 Workboard 任务
+  - `tasks status <id> <status>` — 更新任务状态
+  - `tasks delete <id>` — 删除任务
+  - `tasks evolution` — 查看 Evolution 引擎周期与统计
+  - `tasks trigger [--skill <id>]` — 触发 Evolution 周期
+- **重写 `skills` 命令** — 全部使用真实服务器 API
+  - `skills list [--category]` — 列出已安装技能（含状态、调用次数）
+  - `skills search [query]` — 搜索技能市场（`/api/marketplace/search`）
+  - `skills install <slug>` — 从市场安装技能（`/api/skills/install`）
+  - `skills uninstall <id>` — 卸载技能
+  - `skills info <id>` — 查看技能详情（含统计）
+  - `skills upgrade <id>` / `skills upgrade-all` — 升级技能
+  - `skills check-updates` — 检查可用更新
+  - `skills health <id>` — 健康检查
+  - `skills trending` — 热门技能
+- **重写 `config` 命令** — 使用真实服务器 API 读写配置
+  - `config get <key>` — 支持 llm/channels/image-gen/video-gen/avatars 配置段
+  - `config set <key> <value>` — 支持点号嵌套（如 `llm.defaultModel`），自动类型推断
+  - `config list` — 列出所有配置段及键数
+  - `config validate` — 通过 Config Doctor 验证配置
+  - `config fix [--all]` — 自动修复配置问题
+  - `config schema` — 配置架构参考
+- **增强 `status` 命令** — 全面系统状态
+  - 并行拉取 health、services、system status
+  - 显示内存使用（heap/rss）、活跃 Agent、服务状态
+  - 支持 `--all`、`--deep`、`--json`
+
+#### 构建与测试
+
+- `pnpm build` ✅（17 packages，含 web-ui vite build）
+- `pnpm typecheck` ✅（17 packages，0 错误）
+- `pnpm test` ✅（全部通过）
+
 ## v0.57.0 (2026-06-23)
 
 ### 任务完成能力深度对齐 hermes-agent（第二轮）

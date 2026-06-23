@@ -391,6 +391,12 @@ export const IconNewChat = Icon(
   </>
 );
 
+export const IconEnhancement = Icon(
+  <>
+    <path d="M12 3l1.9 5.8L20 10.7l-5.1 3.7 1.6 6.1L12 17.3 7.5 20.5l1.6-6.1L4 10.7l6.1-1.9z" />
+  </>
+);
+
 // Map of icon IDs to components
 export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   chat: IconChat,
@@ -432,4 +438,5 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   steer: IconSteer,
   guardrails: IconGuardrails,
   voice: IconVoice,
+  enhancement: IconEnhancement,
 };

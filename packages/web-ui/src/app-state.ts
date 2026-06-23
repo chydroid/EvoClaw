@@ -16,7 +16,7 @@ export type TabId =
   | "channel-messages"
   | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
   | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner"
-  | "session-retention" | "voice-settings";
+  | "session-retention" | "voice-settings" | "enhancement-hub";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 

@@ -25,6 +25,16 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.57.1 亮点
+- **WebUI 增强能力中心**：新增 `EnhancementHubPage` 页面，集中展示 v0.56/v0.57 补齐的 12 大核心能力，含能力卡片、汇总面板、实时指标
+- **CLI 全面提升**：命令行工具全面重写，可替代大多数 GUI 操作
+  - 新增 `chat` 命令（交互式 REPL + 单次模式，支持 `/model`、`/clear` 等斜杠命令）
+  - 新增 `enhancements` 命令（CLI 版增强能力中心）
+  - 重写 `tasks` 命令（list/show/create/status/delete/evolution/trigger）
+  - 重写 `skills` 命令（list/search/install/uninstall/info/upgrade/health/trending，全部使用真实 API）
+  - 重写 `config` 命令（get/set/list/validate/fix/schema，支持点号嵌套配置）
+  - 增强 `status` 命令（内存、Agent、服务全面状态）
+
 ### v0.57.0 亮点
 - **任务完成能力深度对齐 hermes-agent（第二轮）**：从工具执行可靠性、上下文管理、多后端兼容性三个维度补齐 6 大核心能力
 - **工具结果持久化（三层防御）**：`ToolResultPersistenceManager` 实现 per-tool cap → per-result persistence（沙箱临时文件 + `<persisted-output>` 预览块）→ per-turn aggregate budget，PINNED_THRESHOLDS 防止 persist→read→persist 死循环

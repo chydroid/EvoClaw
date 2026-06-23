@@ -79,7 +79,7 @@ sharedFlags(program);
 const commandModules = [
   "setup", "onboard", "config", "doctor", "dashboard", "completion",
   "health", "status", "sessions",
-  "agent", "agents", "message", "acp",
+  "chat", "agent", "agents", "message", "acp",
   "skills", "memory", "models",
   "gateway", "logs", "system",
   "channels", "security", "secrets", "approvals", "pairing",
@@ -88,6 +88,7 @@ const commandModules = [
   "directory", "docs",
   "configure", "infer", "tui", "transcripts", "dns", "qr",
   "update", "backup", "uninstall", "reset",
+  "enhancements",
 ];
 
 for (const mod of commandModules) {

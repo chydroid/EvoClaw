@@ -49,6 +49,7 @@ import TranscriptRedactorPage from "./TranscriptRedactorPage";
 import ApprovalCenterPage from "./ApprovalCenterPage";
 import MCPScannerPage from "./MCPScannerPage";
 import { VoiceConfigPage } from "./VoiceConfigPage";
+import EnhancementHubPage from "./EnhancementHubPage";
 
 interface NavGroup {
   id: string;
@@ -88,6 +89,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "token-usage" as TabId, i18nKey: "nav.token_usage", iconId: "monitoring" },
 
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
+      { id: "enhancement-hub" as TabId, i18nKey: "nav.enhancement_hub", iconId: "enhancement" },
     ],
   },
   {
@@ -634,6 +636,7 @@ export default function App() {
       case "approval-center": return <ErrorBoundary><ApprovalCenterPage /></ErrorBoundary>;
       case "mcp-scanner": return <ErrorBoundary><MCPScannerPage /></ErrorBoundary>;
       case "voice-settings": return <ErrorBoundary><VoiceConfigPage /></ErrorBoundary>;
+      case "enhancement-hub": return <ErrorBoundary><EnhancementHubPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }
