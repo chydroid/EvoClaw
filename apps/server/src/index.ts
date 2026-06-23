@@ -684,10 +684,13 @@ export class EvoClawServer {
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
-    this.skillManager.startAutoScan(skillsDir, 30000);
+    // Auto-skill scan interval: default 5 minutes (300000ms), configurable via env.
+    // Previous values: 30s (data/skills) / 60s (bundled) — caused excessive I/O on large skill dirs.
+    const skillScanIntervalMs = Number(process.env.EVOCLAW_SKILL_SCAN_INTERVAL_MS) || 300_000;
+    this.skillManager.startAutoScan(skillsDir, skillScanIntervalMs);
     const bundledSkillsDir = path.resolve(__dirname, "..", "..", "..", "packages", "skills", "bundled");
     if (fs.existsSync(bundledSkillsDir)) {
-      this.skillManager.startAutoScan(bundledSkillsDir, 60000);
+      this.skillManager.startAutoScan(bundledSkillsDir, skillScanIntervalMs);
     }
 
     this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {

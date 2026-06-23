@@ -93,3 +93,14 @@ export type { IdentityConfig, AuthConfig, GatewayConfig, LLMConfig, DataConfig, 
 
 export { ConfigMigrationManager } from "./config-migration";
 export type { MigrationStep, MigrationResult, ConfigMigrationConfig, SemVer } from "./config-migration";
+
+// Env Loader — .env 文件加载与净化（借鉴 hermes-agent env_loader.py）
+export {
+  parseEnvContent,
+  loadEnvFile,
+  loadAndApplyEnvFile,
+  isPlaceholderToken,
+  hasUsableSecret,
+  backupCorruptConfig,
+} from "./env-loader";
+export type { EnvLoadResult } from "./env-loader";

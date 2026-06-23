@@ -75,3 +75,39 @@ export type { ToolGuardrailAction, ToolCallSignature, ToolGuardrailConfig, ToolG
 
 // Path Security — 路径遍历防护
 export { validateWithinDir, safeJoin, hasTraversalComponent, hasNullByte, sanitizePath, isSymlinkSync } from "./path-security";
+
+// Command Guard — 命令安全护栏（Hardline 阻止 + 命令归一化 + 环境变量黑名单）
+export {
+  stripAnsi,
+  normalizeCommand,
+  checkHardline,
+  checkDangerous,
+  checkAllCommandGuards,
+  HARDLINE_PATTERNS,
+  DANGEROUS_PATTERNS,
+  ENV_VAR_NAME_DENYLIST,
+  isEnvVarDenied,
+  filterDeniedEnvVars,
+  INVISIBLE_CHARS,
+  detectInvisibleChars,
+} from "./command-guard";
+export type {
+  HardlinePattern,
+  HardlineCheckResult,
+  DangerousPattern,
+  DangerousCheckResult,
+  CommandGuardAction,
+  CommandGuardResult,
+} from "./command-guard";
+
+// File Safety — 文件写入/读取安全护栏（敏感文件保护）
+export {
+  checkWriteSafety,
+  checkReadSafety,
+  checkFileSafety,
+} from "./file-safety";
+export type { FileSafetyResult } from "./file-safety";
+
+// MCP Config Security — MCP 服务器配置安全检查
+export { validateMCPServerConfig } from "./mcp-config-security";
+export type { MCPServerSecurityResult, MCPSecurityThreat } from "./mcp-config-security";

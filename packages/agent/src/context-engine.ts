@@ -285,13 +285,42 @@ export class ContextEngine {
       );
     }
 
-    const cacheControlAnnotations = [
-      {
+    // Anthropic prompt caching: system_and_3 策略
+    // 借鉴 hermes-agent agent/prompt_caching.py apply_anthropic_cache_control：
+    //   Anthropic 最多支持 4 个 cache_control 断点。最佳策略是：
+    //   1 个 system prompt 断点 + 3 个最后的非 system 消息断点。
+    //   这样可以缓存 ~75% 的输入 token，大幅降低成本。
+    //   之前只用了 1/4 断点（仅 system），命中率远低于最优。
+    const cacheControlAnnotations: Array<{
+      role: string;
+      index: number;
+      cache_control: { type: string };
+    }> = [];
+
+    // 断点 1: system prompt（如果存在）
+    if (messages.length > 0 && messages[0].role === "system") {
+      cacheControlAnnotations.push({
         role: "system",
         index: 0,
         cache_control: { type: "ephemeral" },
-      },
-    ];
+      });
+    }
+
+    // 断点 2-4: 最后 3 条非 system 消息
+    const remainingBreakpoints = 4 - cacheControlAnnotations.length;
+    const nonSysIndices: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role !== "system") {
+        nonSysIndices.push(i);
+      }
+    }
+    for (const idx of nonSysIndices.slice(-remainingBreakpoints)) {
+      cacheControlAnnotations.push({
+        role: messages[idx].role,
+        index: idx,
+        cache_control: { type: "ephemeral" },
+      });
+    }
 
     return {
       messages,

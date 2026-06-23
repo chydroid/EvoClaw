@@ -82,6 +82,10 @@ export type { ThreadBinding, ThreadBindingsConfig, BindingEvent } from "./thread
 export { SessionRetentionManager } from "./session-retention";
 export type { SessionEntry, RetentionPolicy, RetentionConfig, RetentionResult } from "./session-retention";
 
+// Session Reset Policy — 会话重置策略（借鉴 hermes-agent SessionResetPolicy）
+export { shouldResetSession, shouldNotifyReset, DEFAULT_RESET_POLICY } from "./session-reset-policy";
+export type { SessionResetMode, SessionResetPolicy, SessionResetCheck, SessionResetInfo } from "./session-reset-policy";
+
 export { ContextFocusManager } from "./context-focus";
 export type { FocusTarget, FocusContext, ContextFocusConfig } from "./context-focus";
 
@@ -149,7 +153,7 @@ export { StaleContextManager } from "./stale-context";
 export type { StaleContextConfig, ToolResultMeta } from "./stale-context";
 
 // Iteration Budget system
-export { IterationBudget, DEFAULT_PARENT_BUDGET, DEFAULT_CHILD_BUDGET } from "./iteration-budget";
+export { IterationBudget, DEFAULT_PARENT_BUDGET, DEFAULT_CHILD_BUDGET, isExecuteCodeTool } from "./iteration-budget";
 export type { IterationBudgetConfig, IterationBudgetStatus } from "./iteration-budget";
 
 // Rate Limit Tracker system
@@ -164,3 +168,20 @@ export { createXssSanitizeStage, createLengthGuardStage, createAttachmentInjecti
 // Context Pruning system
 export { ContextPruningManager } from "./context-pruning";
 export type { ContextPruningConfig, PruningResult } from "./context-pruning";
+
+// Tool Output 3-pass Pruner — 工具输出 3-pass 裁剪器
+// 借鉴 hermes-agent agent/context_compressor.py _prune_old_tool_results：
+//   Pass 1 dedup → Pass 2 informative summary → Pass 3 args JSON truncation
+export { ToolOutputPruner, getToolOutputPruner, resetToolOutputPruner, DEFAULT_PRUNER_CONFIG } from "./tool-output-pruner";
+export type { ToolOutputPrunerConfig, PruningStats, ToolMessage } from "./tool-output-pruner";
+
+// Error Recovery Executor — 错误恢复执行分支
+// 借鉴 hermes-agent agent/conversation_loop.py：20+ FailoverReason 恢复动作 + TurnRetryState 一次性守卫
+export { ErrorRecoveryExecutor, TurnRetryState, getErrorRecoveryExecutor, resetErrorRecoveryExecutor } from "./error-recovery-executor";
+export type { RecoveryContext, RecoveryResult, RecoveryMessage } from "./error-recovery-executor";
+
+// Concurrent Tool Executor — 并发工具执行池
+// 借鉴 hermes-agent agent/tool_executor.py execute_tool_calls_concurrent：
+//   8 worker + 安全分类（never-parallel / path-scoped / safe-parallel）+ 心跳 + 中断
+export { ConcurrentToolExecutor, getConcurrentToolExecutor, resetConcurrentToolExecutor, classifyToolParallelism, DEFAULT_CONCURRENT_CONFIG } from "./concurrent-tool-executor";
+export type { ToolParallelismClass, ToolCall, ToolExecutionResult, ToolExecutorFn, ConcurrentExecutorConfig } from "./concurrent-tool-executor";

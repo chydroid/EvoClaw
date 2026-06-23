@@ -102,9 +102,13 @@ describe("failover-policy > resolveFailoverReason", () => {
     expect(resolveFailoverReason(402)).toBe("billing");
     expect(resolveFailoverReason(404)).toBe("model_not_found");
     expect(resolveFailoverReason(408)).toBe("timeout");
-    expect(resolveFailoverReason(413)).toBe("context_overflow");
-    expect(resolveFailoverReason(500)).toBe("overloaded");
+    // 413 现在分类为 payload_too_large（对齐 hermes-agent），不再笼统归为 context_overflow
+    expect(resolveFailoverReason(413)).toBe("payload_too_large");
+    // 500/502 现在分类为 server_error（对齐 hermes-agent），503/529 仍为 overloaded
+    expect(resolveFailoverReason(500)).toBe("server_error");
+    expect(resolveFailoverReason(502)).toBe("server_error");
     expect(resolveFailoverReason(503)).toBe("overloaded");
+    expect(resolveFailoverReason(529)).toBe("overloaded");
     expect(resolveFailoverReason(504)).toBe("timeout");
   });
 
@@ -122,6 +126,92 @@ describe("failover-policy > resolveFailoverReason", () => {
   it("TC-035: 无状态码和文本返回 unknown", () => {
     expect(resolveFailoverReason(undefined, undefined)).toBe("unknown");
     expect(resolveFailoverReason(undefined, "")).toBe("unknown");
+  });
+
+  // TC-035a: hermes-agent 对齐的新原因 — provider-specific patterns
+  it("TC-035a: thinking_signature 从 400 + thinking + signature 识别", () => {
+    expect(resolveFailoverReason(400, "thinking block signature invalid")).toBe("thinking_signature");
+    expect(resolveFailoverReason(400, "thinking blocks cannot be modified")).toBe("thinking_signature");
+    expect(resolveFailoverReason(400, "thinking must remain as they were")).toBe("thinking_signature");
+  });
+
+  it("TC-035b: long_context_tier 从 429 + extra usage + long context 识别", () => {
+    expect(resolveFailoverReason(429, "extra usage: long context tier required")).toBe("long_context_tier");
+  });
+
+  it("TC-035c: content_policy_blocked 从安全过滤消息识别", () => {
+    expect(resolveFailoverReason(400, "content_filter triggered")).toBe("content_policy_blocked");
+    expect(resolveFailoverReason(undefined, "prompt was flagged by our safety system")).toBe("content_policy_blocked");
+    expect(resolveFailoverReason(undefined, "violates our usage policies")).toBe("content_policy_blocked");
+  });
+
+  it("TC-035d: provider_policy_blocked 从 OpenRouter 消息识别", () => {
+    expect(resolveFailoverReason(404, "no endpoints available matching your data policy")).toBe("provider_policy_blocked");
+    expect(resolveFailoverReason(undefined, "no endpoints found matching your data policy")).toBe("provider_policy_blocked");
+  });
+
+  it("TC-035e: multimodal_tool_content_unsupported 从 400 消息识别", () => {
+    expect(resolveFailoverReason(400, "tool message content must be a string")).toBe("multimodal_tool_content_unsupported");
+    expect(resolveFailoverReason(400, "expected string, got list")).toBe("multimodal_tool_content_unsupported");
+  });
+
+  it("TC-035f: invalid_encrypted_content 从 replay blob 消息识别", () => {
+    expect(resolveFailoverReason(400, "invalid_encrypted_content")).toBe("invalid_encrypted_content");
+    expect(resolveFailoverReason(undefined, "encrypted content for item could not be verified")).toBe("invalid_encrypted_content");
+  });
+
+  it("TC-035g: image_too_large 从图片过大消息识别", () => {
+    expect(resolveFailoverReason(400, "image exceeds 5 MB maximum")).toBe("image_too_large");
+    expect(resolveFailoverReason(undefined, "image dimensions exceed max allowed size")).toBe("image_too_large");
+  });
+
+  it("TC-035h: payload_too_large 从 413 或消息识别", () => {
+    expect(resolveFailoverReason(413)).toBe("payload_too_large");
+    expect(resolveFailoverReason(undefined, "request entity too large")).toBe("payload_too_large");
+  });
+
+  it("TC-035i: server_error 从 500/502 识别", () => {
+    expect(resolveFailoverReason(500)).toBe("server_error");
+    expect(resolveFailoverReason(502)).toBe("server_error");
+  });
+});
+
+describe("failover-policy > 新增 hermes-agent 原因的 transient/non-transient 分类", () => {
+  it("新增 transient 原因正确分类", () => {
+    expect(isTransientReason("server_error")).toBe(true);
+    expect(isTransientReason("payload_too_large")).toBe(true);
+    expect(isTransientReason("image_too_large")).toBe(true);
+    expect(isTransientReason("invalid_encrypted_content")).toBe(true);
+    expect(isTransientReason("multimodal_tool_content_unsupported")).toBe(true);
+    expect(isTransientReason("thinking_signature")).toBe(true);
+    expect(isTransientReason("long_context_tier")).toBe(true);
+  });
+
+  it("新增 non-transient 原因正确分类", () => {
+    expect(isNonTransientReason("provider_policy_blocked")).toBe(true);
+    expect(isNonTransientReason("content_policy_blocked")).toBe(true);
+    expect(isNonTransientReason("format_error")).toBe(true);
+  });
+
+  it("新增 transient 原因允许 cooldown 探测", () => {
+    expect(shouldAllowCooldownProbeForReason("server_error")).toBe(true);
+    expect(shouldAllowCooldownProbeForReason("payload_too_large")).toBe(true);
+    expect(shouldAllowCooldownProbeForReason("thinking_signature")).toBe(true);
+  });
+
+  it("新增 non-transient 原因不允许 cooldown 探测", () => {
+    expect(shouldAllowCooldownProbeForReason("provider_policy_blocked")).toBe(false);
+    expect(shouldAllowCooldownProbeForReason("content_policy_blocked")).toBe(false);
+  });
+
+  it("新增 non-transient 原因保留 transient probe 预算", () => {
+    expect(shouldPreserveTransientCooldownProbeSlot("provider_policy_blocked")).toBe(true);
+    expect(shouldPreserveTransientCooldownProbeSlot("content_policy_blocked")).toBe(true);
+  });
+
+  it("新增 transient 原因消耗 probe 预算", () => {
+    expect(shouldUseTransientCooldownProbeSlot("server_error")).toBe(true);
+    expect(shouldUseTransientCooldownProbeSlot("thinking_signature")).toBe(true);
   });
 });
 

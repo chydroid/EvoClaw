@@ -25,6 +25,15 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.56.0 亮点
+- **任务完成能力全面对齐 hermes-agent**：深度对比 hermes-agent 项目，补齐 6 大核心能力差距
+- **文件系统检查点管理器**：基于 Git 影子存储的文件快照与回滚（`FileSystemCheckpointManager`），支持 per-project 隔离、每轮去重、三层清理、pre-rollback 快照
+- **工具输出 3-pass 裁剪**：MD5 去重 → 工具特定摘要 → args JSON 安全截断（`ToolOutputPruner`），保持 JSON 有效性
+- **错误恢复执行分支**：20+ FailoverReason 对应的实际恢复动作（`ErrorRecoveryExecutor`），含 TurnRetryState 一次性守卫防无限循环
+- **Iteration Budget 退款机制**：execute_code/runtime_error/compaction 三种退款，让预算真正反映"决策次数"
+- **跨平台进程树终止**：POSIX `/proc/children` + `ps --ppid` / Windows `taskkill /T /F`，受保护 PID + 两阶段终止
+- **并发工具执行池**：8 worker + 3 类安全分类（never-parallel/path-scoped/safe-parallel）+ 心跳监控 + 中断扇出
+
 ### v0.55.0 亮点
 - **对话大模型目录全面升级**：内置 27 家提供商、100+ 最新模型，含 OpenAI/Anthropic/Google/DeepSeek/通义千问/智谱/豆包/讯飞星火/商汤/零一万物/阶跃星辰/百川/腾讯混元/华为盘古等
 - **官方价格直观显示**：新增 `model-catalog.ts` 集中管理 baseURL、模型 ID、上下文、官方价格、文档链接，UI 直接显示每 1M tokens 价格（USD/CNY）

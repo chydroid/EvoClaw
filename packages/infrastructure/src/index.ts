@@ -42,3 +42,23 @@ export { isYtDlpAvailable, isFfmpegAvailable, getMediaDownloaderInfo, detectPlat
 
 // SafeWriter — 安全输出写入器（防 broken pipe 崩溃）
 export { SafeWriter, getSafeStdout, getSafeStderr, installSafeIOHandlers } from "./safe-writer";
+
+// FileSystemCheckpointManager — 基于 Git 影子存储的文件系统检查点管理器
+// 借鉴 hermes-agent tools/checkpoint_manager.py：支持回滚的文件快照
+export {
+  FileSystemCheckpointManager,
+  getCheckpointManager,
+  resetCheckpointManager,
+  computeProjectId,
+} from "./filesystem-checkpoint";
+export type { CheckpointConfig, CheckpointResult, RollbackResult, CheckpointEntry } from "./filesystem-checkpoint";
+
+// ProcessTreeKiller — 跨平台进程树终止
+// 借鉴 hermes-agent tools/process_registry.py：POSIX psutil 递归 / Windows taskkill /T /F
+export {
+  killProcessTree,
+  killChildProcessTree,
+  findPidsByName,
+  pidExists,
+} from "./process-tree-killer";
+export type { KillOptions, KillResult } from "./process-tree-killer";

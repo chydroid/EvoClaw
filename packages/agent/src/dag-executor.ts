@@ -253,6 +253,9 @@ export class DAGExecutor {
 
     for (const node of nodes) {
       for (const depId of node.dependencies) {
+        // Skip dependencies that don't exist in the node list — they will be
+        // handled as "waiting_dependency" during processNode execution.
+        if (!nodeMap.has(depId)) continue;
         inDegree.set(node.id, (inDegree.get(node.id) || 0) + 1);
         adjacency.get(depId)?.push(node.id);
       }

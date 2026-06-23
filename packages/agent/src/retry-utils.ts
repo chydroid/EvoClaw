@@ -135,6 +135,85 @@ export function computeBackoff(policy: BackoffPolicy, attempt: number): number {
   return Math.min(policy.maxMs, Math.round(base + jitter));
 }
 
+// ── Decorrelated Jittered Backoff ─────────────────────────
+
+/**
+ * 单调递增计数器，用于 jitter 种子去重。
+ *
+ * 借鉴 hermes-agent agent/retry_utils.py 的 _jitter_counter 设计：
+ * 当多个会话并发重试同一个 rate-limited provider 时，
+ * 仅依赖时间戳作为种子会导致种子碰撞（同一纳秒内多个调用），
+ * 使重试同步化（thundering herd）。
+ *
+ * 计数器保证每次调用获得唯一种子，实现 decorrelated jitter。
+ * 使用原子操作语义：Node.js 单线程模型下 ++ 是原子的；
+ * Worker 线程间不共享内存，无需跨进程锁。
+ */
+let _jitterCounter = 0;
+
+/**
+ * 计算去相关抖动退避延迟（Decorrelated Jittered Backoff）。
+ *
+ * 借鉴 hermes-agent agent/retry_utils.py jittered_backoff：
+ *   delay = min(base * 2^(attempt-1), max) + uniform(0, jitter_ratio * delay)
+ *
+ * 相比 computeBackoff 的改进：
+ *   1. 单调计数器种子：防止并发重试同步化（thundering herd）
+ *   2. 时间戳 + 计数器混合种子：即使时钟粗糙也能去相关
+ *   3. 黄金比例哈希：分散种子位模式
+ *
+ * @param attempt 1-based 重试次数
+ * @param baseDelayMs 第一次重试的基础延迟（ms）
+ * @param maxDelayMs 延迟上限（ms）
+ * @param jitterRatio jitter 比例 (0-1)，0.5 表示 jitter 在 [0, 0.5*delay] 均匀分布
+ * @returns 延迟（ms）
+ *
+ * @example
+ * ```ts
+ * // 多个并发会话重试同一 provider 时，各自获得不同的延迟
+ * const delay1 = jitteredBackoff(3, 5000, 120000, 0.5);
+ * const delay2 = jitteredBackoff(3, 5000, 120000, 0.5);
+ * // delay1 !== delay2（极大概率）
+ * ```
+ */
+export function jitteredBackoff(
+  attempt: number,
+  baseDelayMs: number = 5000,
+  maxDelayMs: number = 120_000,
+  jitterRatio: number = 0.5,
+): number {
+  // 原子递增计数器（Node.js 单线程下 ++ 即原子）
+  _jitterCounter = (_jitterCounter + 1) >>> 0;
+  const tick = _jitterCounter;
+
+  const exponent = Math.max(0, attempt - 1);
+  let delay: number;
+  if (exponent >= 63 || baseDelayMs <= 0) {
+    delay = maxDelayMs;
+  } else {
+    delay = Math.min(baseDelayMs * (2 ** exponent), maxDelayMs);
+  }
+
+  // 混合种子：时间戳 ^ (计数器 * 黄金比例)
+  // 黄金比例 0x9E3779B9 使计数器位模式分散，避免低位循环
+  const timeNs = Number(BigInt(Date.now()) * 1_000_000n & 0xFFFFFFFFn);
+  const seed = (timeNs ^ (tick * 0x9E3779B9)) >>> 0;
+
+  // 使用加密安全随机 + 种子混合，保证去相关
+  const fraction = generateSecureFraction();
+  // 用种子做额外扰动（即使 crypto 不可靠也能去相关）
+  const seedFraction = (seed / 0x100000000);
+  const combined = (fraction + seedFraction) % 1;
+
+  const jitter = combined * jitterRatio * delay;
+  return Math.round(delay + jitter);
+}
+
+/** 重置 jitter 计数器（仅用于测试）。 */
+export function _resetJitterCounterForTests(): void {
+  _jitterCounter = 0;
+}
+
 // ── Abortable Sleep ───────────────────────────────────────
 
 /**

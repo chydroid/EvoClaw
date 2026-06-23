@@ -15,11 +15,24 @@ export type CredentialState = "ok" | "exhausted" | "dead";
 /** 轮换策略 */
 export type RotationStrategy = "fill_first" | "round_robin" | "random" | "least_used";
 
-/** 终端认证错误原因（永久标记为 DEAD） */
+/**
+ * 终端认证错误原因（永久标记为 DEAD）。
+ *
+ * 借鉴 hermes-agent agent/credential_pool.py _TERMINAL_AUTH_REASONS（6 个）：
+ *   EvoClaw 原有 3 个，补充以下 3 个以对齐 hermes-agent：
+ *   - invalid_token       RFC 6750 OAuth 2.0 Bearer Token 错误
+ *   - unauthorized_client RFC 6749 客户端未授权使用此 grant_type
+ *   - refresh_token_reused 单次使用 refresh_token 被其他进程消费
+ *
+ * 缺少这些原因会导致永久失效的凭证被错误重试。
+ */
 const TERMINAL_AUTH_REASONS = new Set([
-  "token_invalidated",
-  "token_revoked",
-  "invalid_grant",
+  "token_invalidated",    // OpenAI Codex token 失效
+  "token_revoked",        // OAuth 2.0 RFC 7009 撤销
+  "invalid_grant",        // RFC 6749 grant 无效
+  "invalid_token",        // RFC 6750 Bearer Token 错误
+  "unauthorized_client",  // RFC 6749 客户端未授权
+  "refresh_token_reused", // 单次使用 refresh_token 被其他进程消费
 ]);
 
 /** 冷却时间配置（毫秒） */
@@ -70,6 +83,12 @@ export class CredentialPool {
   private rrIndex = 0;
   /** provider → 凭证索引（旧 API 兼容） */
   private providerMap = new Map<string, string[]>();
+
+  // ── 软租约机制（借鉴 hermes-agent credential_pool.py acquire_lease） ──
+  /** credentialId → 活跃租约数 */
+  private activeLeases = new Map<string, number>();
+  /** 单个凭证最大并发租约数 */
+  private maxConcurrentPerCredential = 3;
 
   constructor(opts?: CredentialPoolOptions | CredentialPoolLegacyConfig) {
     // 无参数时创建空池（后续通过 getNextKey 返回 null）
@@ -142,6 +161,71 @@ export class CredentialPool {
 
     chosen.useCount++;
     return chosen;
+  }
+
+  /**
+   * 获取凭证的软租约。
+   *
+   * 借鉴 hermes-agent agent/credential_pool.py acquire_lease：
+   *   优先选择租约最少的可用凭证，避免单凭证过载。
+   *   当所有凭证都达到并发上限时，回退到任意可用凭证。
+   *
+   * @param credentialId 指定凭证 ID（可选，不指定则自动选择）
+   * @returns 凭证条目，或 null 表示无可用凭证
+   */
+  acquireLease(credentialId?: string): CredentialEntry | null {
+    const now = Date.now();
+    this.cleanDead(now);
+
+    const available = this.entries.filter((e) => this.isUsable(e, now));
+    if (available.length === 0) return null;
+
+    let chosen: CredentialEntry;
+
+    if (credentialId) {
+      // 指定凭证
+      chosen = available.find((e) => e.id === credentialId) ?? available[0];
+    } else {
+      // 优先选择租约数低于上限的凭证
+      const belowCap = available.filter(
+        (e) => (this.activeLeases.get(e.id) ?? 0) < this.maxConcurrentPerCredential,
+      );
+      const candidates = belowCap.length > 0 ? belowCap : available;
+      // 在候选中选租约最少的（稳定 tie-breaker 用 useCount）
+      chosen = candidates.reduce((a, b) => {
+        const leaseA = this.activeLeases.get(a.id) ?? 0;
+        const leaseB = this.activeLeases.get(b.id) ?? 0;
+        if (leaseA !== leaseB) return leaseA < leaseB ? a : b;
+        return a.useCount <= b.useCount ? a : b;
+      });
+    }
+
+    // 增加租约计数
+    this.activeLeases.set(chosen.id, (this.activeLeases.get(chosen.id) ?? 0) + 1);
+    chosen.useCount++;
+    return chosen;
+  }
+
+  /**
+   * 释放先前获取的凭证租约。
+   *
+   * 借鉴 hermes-agent agent/credential_pool.py release_lease。
+   *
+   * @param credentialId 要释放的凭证 ID
+   */
+  releaseLease(credentialId: string): void {
+    const current = this.activeLeases.get(credentialId) ?? 0;
+    if (current > 0) {
+      this.activeLeases.set(credentialId, current - 1);
+      if (current - 1 === 0) {
+        this.activeLeases.delete(credentialId);
+      }
+    }
+  }
+
+  /** 获取指定凭证的当前活跃租约数 */
+  getActiveLeaseCount(credentialId: string): number {
+    return this.activeLeases.get(credentialId) ?? 0;
   }
 
   /**

@@ -61,6 +61,7 @@ const SENSITIVE_VALUE_PATTERNS = [
   /gho_[a-zA-Z0-9]{36}/g,            // GitHub OAuth tokens
   /ghs_[a-zA-Z0-9]{36}/g,            // GitHub server-to-server tokens
   /ghr_[a-zA-Z0-9]{76}/g,            // GitHub refresh tokens
+  /github_pat_[a-zA-Z0-9_]{20,}/g,   // GitHub fine-grained PATs
   /xox[baprs]-[a-zA-Z0-9-]+/g,       // Slack tokens
   /pplx-[a-zA-Z0-9]{20,}/g,          // Perplexity keys
   /fal_[a-zA-Z0-9]{20,}/g,           // Fal.ai keys
@@ -84,7 +85,21 @@ const SENSITIVE_VALUE_PATTERNS = [
   /brv_[a-zA-Z0-9]{20,}/g,           // Bravity keys
   /xai-[a-zA-Z0-9]{20,}/g,           // xAI keys
   /ntn_[a-zA-Z0-9]{20,}/g,           // Ntropy keys
+  /gAAAA[A-Za-z0-9_=-]{20,}/g,       // Codex encrypted tokens
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM private keys
+  // ── 以下为对齐 hermes-agent redact.py 新增的模式 ──
+  // ENV 赋值模式：KEY=VALUE（KEY 含 API_KEY/TOKEN/SECRET 等）
+  /([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)[A-Z0-9_]*)\s*=\s*(['"]?)(\S+)\2/g,
+  // JSON 字段模式："apiKey": "value"
+  /("(?:apiKey|api_key|apikey|token|accessToken|access_token|refreshToken|refresh_token|secret|password|credential|privateKey|private_key|clientSecret|client_secret)")\s*:\s*"([^"]+)"/gi,
+  // Authorization 头
+  /(Authorization:\s*Bearer\s+)(\S+)/gi,
+  // Telegram bot token
+  /(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})/g,
+  // 数据库连接字符串
+  /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:]+:)([^@]+)(@)/gi,
+  // JWT token（eyJ 开头）
+  /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
 
 // ─── Level ordering ────────────────────────────────────────────────────────────

@@ -3,6 +3,107 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.56.0 (2026-06-23)
+
+### 任务完成能力全面对齐 hermes-agent
+
+本轮针对"任务完成能力"维度，深度对比 `D:\abc\hermes\hermes-agent` 项目，识别并补齐 6 大核心能力差距。所有改动均已在本地通过 `pnpm build -> pnpm typecheck -> pnpm test`（121 files, 3152 passed, 1 skipped, 0 failed）。
+
+#### 1. 文件系统检查点管理器（最高优先级）
+
+- 新增 `packages/infrastructure/src/filesystem-checkpoint.ts`
+- **借鉴**：hermes-agent `tools/checkpoint_manager.py`（1668 行）
+- **核心机制**：
+  - 单一共享影子 git 存储位于 `~/.evoclaw/checkpoints/store/`
+  - 每项目通过 `sha256(absPath)[:16]` 哈希隔离
+  - 三 git 环境变量：`GIT_DIR` + `GIT_WORK_TREE` + `GIT_INDEX_FILE`
+  - `GIT_CONFIG_GLOBAL/SYSTEM = /dev/null` 防止用户全局配置污染
+  - 每轮去重：`Set<string>` 跟踪已快照文件
+  - 使用 `commit-tree`（而非 `commit`）适配 bare store
+  - 与 ref tip 比较避免空提交
+- **三层清理**：每项目提交数上限（50）+ 全局大小上限（500MB）+ 自动 gc
+- **安全**：commit hash 验证（`^[0-9a-fA-F]{4,64}$`，无前导 `-`）、文件路径验证（相对路径，禁 `..` 穿越）、ref 名称验证
+- **回滚**：pre-rollback 快照（undo the undo），使用 `cat-file blob` 逐文件恢复
+- **永不抛异常**：所有错误 debug 级记录，返回 false
+
+#### 2. 工具输出 3-pass 裁剪器
+
+- 新增 `packages/agent/src/tool-output-pruner.ts`
+- **借鉴**：hermes-agent `agent/context_compressor.py` `_prune_old_tool_results`
+- **Pass 1 去重**：MD5 哈希 + 反向遍历（从最新到最旧）+ 保留每个哈希最新一份
+- **Pass 2 信息摘要**：7 类工具特定摘要（shell/search/web/email/file/list/default），保留首尾行/结构化结果/关键段落
+- **Pass 3 args JSON 截断**：计数未闭合的 `{` 和 `[`，添加 `"_truncated":true` 标记 + 闭合括号，保持 JSON 有效性
+- 保留最近 N 条工具消息不裁剪（默认 3）
+
+#### 3. 错误恢复执行分支
+
+- 新增 `packages/agent/src/error-recovery-executor.ts`
+- **借鉴**：hermes-agent `agent/conversation_loop.py`（lines 2200-3400）的 20+ FailoverReason 恢复分支
+- **消息修改类**（实际修改消息内容）：
+  - `thinking_signature` → `stripThinkingBlocks`（剥离 Anthropic thinking 块）
+  - `invalid_encrypted_content` → `stripReplayBlob`（剥离 Responses API replay blob）
+  - `image_too_large` → `shrinkImages`（图片替换为占位符）
+  - `multimodal_tool_content_unsupported` → `downgradeMultimodalToolContent`（列表降级为字符串）
+- **上下文压缩类**：`context_overflow` / `long_context_tier` / `payload_too_large` → `triggerCompaction`
+- **简单重试类**（带退避）：`rate_limit`(60s) / `overloaded`(5s) / `server_error`(5s) / `timeout`(2s) / `network`(2s) / `empty_response`(1s)
+- **不可恢复类**（直接 failover）：`auth` / `billing` / `model_not_found` / `format` / `provider_policy_blocked` / `content_policy_blocked`
+- **TurnRetryState 一次性守卫**：同种恢复动作每 turn 只执行一次，防止无限循环
+
+#### 4. Iteration Budget execute_code 退款机制
+
+- 修改 `packages/agent/src/iteration-budget.ts`
+- **借鉴**：hermes-agent `agent/iteration_budget.py`
+- **3 种退款类型**：
+  - `refundForExecuteCode(toolNames)`：当一轮中只调用 execute_code 类工具时退还迭代
+  - `refundForRuntimeError(errorType)`：运行时上下文错误退款（排除 content_policy/auth/billing/model_not_found）
+  - `refundForCompaction()`：上下文压缩后重启 turn 退款
+- **单类退款上限 20**：防止滥用
+- 新增 `isExecuteCodeTool()` 判断函数（17 个工具名 + 模糊匹配）
+
+#### 5. 跨平台进程树终止
+
+- 新增 `packages/infrastructure/src/process-tree-killer.ts`
+- **借鉴**：hermes-agent `tools/process_registry.py`（1760 行）
+- **POSIX**：
+  - 优先读取 `/proc/<pid>/task/<pid>/children`（Linux 最快）
+  - 回退到 `ps -o pid --ppid <pid> --noheaders`
+  - 递归收集所有后代 PID
+- **Windows**：
+  - `taskkill /T /F /PID`（一次性终止整个树）
+  - PowerShell `Get-CimInstance Win32_Process` 递归获取子进程
+- **PID 存在性检查**：POSIX `process.kill(pid, 0)` / Windows `tasklist /FI`（处理 bpo-14484 陷阱）
+- **受保护 PID**：0、1、当前进程、父进程永不终止
+- **两阶段终止**：SIGTERM → grace period (5s) → SIGKILL
+- 新增 `findPidsByName()` 跨平台进程名查找
+
+#### 6. 并发工具执行池
+
+- 新增 `packages/agent/src/concurrent-tool-executor.ts`
+- **借鉴**：hermes-agent `agent/tool_executor.py` `execute_tool_calls_concurrent`
+- **8 worker 信号量**：控制最大并发数
+- **3 类安全分类**（`classifyToolParallelism`）：
+  - `never-parallel`：write_file/shell_exec/git/npm 等串行执行
+  - `path-scoped`：read_file/glob/grep 同路径串行，不同路径并行
+  - `safe-parallel`：web_search/web_fetch 全并行
+- **心跳监控**：30 秒心跳超时警告，5 秒轮询
+- **超时控制**：单工具 120 秒超时
+- **中断扇出**：`interrupt()` 设置标志，正在执行的工具在下一检查点退出
+- **路径键去重**：同路径的 path-scoped 工具自动串行
+
+#### 相关文件
+
+- `packages/infrastructure/src/filesystem-checkpoint.ts`（新增）
+- `packages/infrastructure/src/process-tree-killer.ts`（新增）
+- `packages/agent/src/tool-output-pruner.ts`（新增）
+- `packages/agent/src/error-recovery-executor.ts`（新增）
+- `packages/agent/src/concurrent-tool-executor.ts`（新增）
+- `packages/agent/src/iteration-budget.ts`（修改：新增 3 种退款机制）
+- `packages/infrastructure/src/index.ts`（修改：导出新模块）
+- `packages/agent/src/index.ts`（修改：导出新模块）
+- `package.json`（版本号 0.55.2 → 0.56.0）
+- `History.md`
+- `README.md`
+
 ## v0.55.2 (2026-06-22)
 
 ### 全面代码审查与潜在 BUG 修复

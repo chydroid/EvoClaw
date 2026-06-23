@@ -91,6 +91,12 @@ export class TaskOrchestrator implements ITaskExecutor {
         const result = await this.dagExecutor.executeDAG(task);
         task.output = result.output;
         task.executionPlan = result.steps;
+        // Check if any DAG nodes failed — treat as task failure
+        const failedNodes = result.steps.filter((s) => s.status === "failed");
+        if (failedNodes.length > 0) {
+          const failedIds = failedNodes.map((s) => s.nodeId).join(", ");
+          throw new Error(`DAG execution had ${failedNodes.length} failed node(s): ${failedIds}`);
+        }
       } else {
         task.output = { message: "Task processed successfully" };
         task.executionPlan = [

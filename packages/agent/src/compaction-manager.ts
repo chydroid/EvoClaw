@@ -58,14 +58,33 @@ const DEFAULT_CONFIG: CompactionConfig = {
 /**
  * 当前摘要前缀。变更此值时，旧前缀会被加入 HISTORICAL_SUMMARY_PREFIXES，
  * 在重新压缩时被剥离，防止过时指令劫持回复。
+ *
+ * 借鉴 hermes-agent agent/context_compressor.py SUMMARY_PREFIX：
+ *   包含明确的 "REFERENCE ONLY" 指令，防止摘要中的旧任务劫持回复。
+ *   旧版前缀 "[Compacted" 缺少此指令，弱模型可能将摘要中的
+ *   "## Active Task" 误读为新用户输入并重新执行已完成任务。
  */
-const SUMMARY_PREFIX = "[Compacted";
+const SUMMARY_PREFIX =
+  "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted " +
+  "into the summary below. This is background reference, NOT active instructions. " +
+  "Do NOT answer questions or fulfill requests mentioned in this summary; " +
+  "they were already addressed. " +
+  "Respond ONLY to the latest user message that appears AFTER this summary.";
 const SUCCESSOR_PREFIX = "[This is a continuation of session";
+
+/**
+ * 摘要结束标记。明确界定摘要边界，防止弱模型将摘要内容
+ * 误读为新的用户输入（hermes-agent #41607/#38364/#42812）。
+ */
+const SUMMARY_END_MARKER =
+  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
+
 /** 历史前缀列表：这些前缀在重新压缩时会被剥离。 */
 const HISTORICAL_SUMMARY_PREFIXES: string[] = [
-  "[Compacted",           // 当前
-  "[Conversation compacted", // 旧版
-  "[Session compacted",   // 更旧版
+  "[CONTEXT COMPACTION — REFERENCE ONLY]", // 当前
+  "[Compacted",                              // 旧版（无 REFERENCE ONLY 指令）
+  "[Conversation compacted",                 // 更旧版
+  "[Session compacted",                      // 最旧版
 ];
 const HISTORICAL_SUCCESSOR_PREFIXES: string[] = [
   "[This is a continuation of session", // 当前
@@ -131,6 +150,20 @@ export class CompactionManager {
   private compactions = new Map<string, CompactionSummary[]>();
   private compactionCounter = 0;
 
+  // ── 反抖动与失败冷却（借鉴 hermes-agent context_compressor.py） ──
+  /** 连续无效压缩次数（节省 < 10%）。>=2 时跳过后续压缩。 */
+  private ineffectiveCompressionCount = 0;
+  /** 摘要失败冷却到期时间戳（ms）。冷却期内跳过压缩。 */
+  private summaryFailureCooldownUntil = 0;
+  /** 瞬态错误冷却时长（ms） */
+  private static readonly TRANSIENT_COOLDOWN_MS = 30_000;
+  /** 无 provider 冷却时长（ms） */
+  private static readonly NO_PROVIDER_COOLDOWN_MS = 600_000;
+  /** 无效压缩阈值（节省比例低于此值视为无效） */
+  private static readonly INEFFECTIVE_RATIO = 0.10;
+  /** 连续无效压缩上限（达到后跳过压缩） */
+  private static readonly INEFFECTIVE_LIMIT = 2;
+
   constructor(config?: Partial<CompactionConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.ensureDataDir();
@@ -140,6 +173,104 @@ export class CompactionManager {
     try {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
     } catch {}
+  }
+
+  // ── 反抖动与失败冷却公共 API ──────────────────────────────
+
+  /**
+   * 检查是否应跳过压缩。
+   *
+   * 借鉴 hermes-agent context_compressor.py shouldCompress：
+   *   1. 连续 2 次压缩节省 < 10% → 跳过（反抖动）
+   *   2. 摘要失败冷却期内 → 跳过（避免反复失败浪费 LLM 调用）
+   *
+   * @returns true 表示应跳过压缩
+   */
+  shouldSkipCompaction(): boolean {
+    // 反抖动：连续无效压缩
+    if (this.ineffectiveCompressionCount >= CompactionManager.INEFFECTIVE_LIMIT) {
+      return true;
+    }
+    // 失败冷却
+    if (Date.now() < this.summaryFailureCooldownUntil) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 记录压缩效果，更新反抖动计数器。
+   *
+   * @param originalTokens 压缩前的 token 数
+   * @param compactedTokens 压缩后的 token 数
+   */
+  recordCompressionEffect(originalTokens: number, compactedTokens: number): void {
+    if (originalTokens <= 0) return;
+    const savedRatio = 1 - compactedTokens / originalTokens;
+    if (savedRatio < CompactionManager.INEFFECTIVE_RATIO) {
+      this.ineffectiveCompressionCount++;
+    } else {
+      // 有效压缩 → 重置计数器
+      this.ineffectiveCompressionCount = 0;
+    }
+  }
+
+  /**
+   * 记录摘要失败，启动冷却期。
+   *
+   * @param reason 失败原因。"transient" 为瞬态错误（30s 冷却），
+   *               "no_provider" 为无可用 provider（600s 冷却）。
+   */
+  recordSummaryFailure(reason: "transient" | "no_provider" = "transient"): void {
+    const cooldownMs = reason === "no_provider"
+      ? CompactionManager.NO_PROVIDER_COOLDOWN_MS
+      : CompactionManager.TRANSIENT_COOLDOWN_MS;
+    this.summaryFailureCooldownUntil = Date.now() + cooldownMs;
+  }
+
+  /** 重置反抖动和冷却状态（用于测试或手动恢复）。 */
+  resetCompactionState(): void {
+    this.ineffectiveCompressionCount = 0;
+    this.summaryFailureCooldownUntil = 0;
+  }
+
+  // ── 历史媒体剥离（借鉴 hermes-agent _strip_historical_media） ──
+
+  /**
+   * 剥离历史消息中的图片内容。
+   *
+   * 借鉴 hermes-agent context_compressor.py _strip_historical_media（kilocode#9434）：
+   *   图片占用大量 token，历史图片通常不再需要。
+   *   将旧消息中的图片内容替换为占位符，保留文本内容。
+   *
+   * @param messages 消息列表
+   * @param keepLastN 保留最后 N 条消息的图片不变
+   * @returns 处理后的消息列表（新数组，不修改输入）
+   */
+  stripHistoricalMedia(
+    messages: Array<{ role: string; content: string | null }>,
+    keepLastN: number = 3,
+  ): Array<{ role: string; content: string | null }> {
+    if (messages.length <= keepLastN) return [...messages];
+    const cutoff = messages.length - keepLastN;
+    return messages.map((msg, idx) => {
+      if (idx >= cutoff || !msg.content) return msg;
+      // 检测图片标记（data URI、markdown 图片、image_url 等）
+      const content = msg.content;
+      if (
+        content.includes("data:image/") ||
+        content.includes("![") ||
+        content.includes('"image_url"')
+      ) {
+        // 保留非图片文本，替换图片为占位符
+        const stripped = content
+          .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, "[image stripped]")
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, "[image stripped]")
+          .replace(/"image_url"\s*:\s*"[^"]*"/g, '"image_url":"[stripped]"');
+        return { ...msg, content: stripped };
+      }
+      return msg;
+    });
   }
 
   /** Build a compaction summary from conversation turns */
@@ -195,7 +326,10 @@ export class CompactionManager {
       );
     }
 
-    let summary = summaryParts.join(" ");
+    // 添加摘要结束标记，明确界定摘要边界
+    summaryParts.push(SUMMARY_END_MARKER);
+
+    let summary = summaryParts.join("\n");
     // CJK 安全截断：不在 UTF-16 代理对中间截断
     if (summary.length > this.config.maxSummaryLength) {
       const maxLen = this.config.maxSummaryLength - 3;
