@@ -77,9 +77,9 @@ export function convertToCorePlugin(sdkPlugin: Plugin): CorePlugin {
     hooks,
     async init(ctx): Promise<void> {
       const serviceLocator = {
-        get: ctx.resolveService,
+        get: <T>(id: string) => ctx.resolveService<T>(id),
         register: () => {},
-        has: () => false,
+        has: (id: string) => ctx.resolveService(id) !== undefined,
         list: () => [],
       };
       const logger: PluginLogger = {

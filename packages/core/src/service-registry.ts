@@ -94,6 +94,12 @@ export class ServiceRegistry implements IPluginRegistry {
     const service = this.lifecycles.get(name);
     if (!service) return;
 
+    // Idempotency: skip if already running or starting
+    const info = this.serviceInfos.get(name);
+    if (info && (info.status === "running" || info.status === "starting")) {
+      return;
+    }
+
     this.setServiceStatus(name, "starting");
 
     try {

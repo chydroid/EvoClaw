@@ -59,6 +59,8 @@ export class QQAdapter implements ChannelAdapter {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempt = 0;
   private maxReconnectAttempts = 10;
+  private reconnecting = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private messageHandler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
 
@@ -86,6 +88,10 @@ export class QQAdapter implements ChannelAdapter {
 
   async stop(): Promise<void> {
     this.reconnectAttempt = this.maxReconnectAttempts; // prevent reconnection
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.clearHeartbeat();
     if (this.ws) {
       this.ws.close(1000, "User stopped");
@@ -204,11 +210,15 @@ export class QQAdapter implements ChannelAdapter {
       this.ws.onclose = (event: Event) => {
         const closeEvt = event as { code?: number; reason?: string; wasClean?: boolean };
         this.clearHeartbeat();
+        if (this.reconnecting) {
+          this.reconnecting = false;
+          return;
+        }
         if (this.reconnectAttempt < this.maxReconnectAttempts) {
           this.statusHandler?.("reconnecting");
           const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
           this.reconnectAttempt++;
-          setTimeout(() => this.connect(), delay);
+          this.reconnectTimer = setTimeout(() => this.connect(), delay);
         } else {
           this.statusHandler?.("disconnected");
         }
@@ -347,6 +357,7 @@ export class QQAdapter implements ChannelAdapter {
   }
 
   private reconnect(): void {
+    this.reconnecting = true;
     if (this.ws) {
       this.ws.close(4000, "Reconnect requested");
     }

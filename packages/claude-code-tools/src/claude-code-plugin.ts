@@ -371,7 +371,7 @@ export class ClaudeCodePlugin {
             needsUpgrade: true,
           },
         };
-        process.stderr.write(`[ClaudeCodePlugin] Task ${taskId} failed:`, err);
+        process.stderr.write(`[ClaudeCodePlugin] Task ${taskId} failed: ${err instanceof Error ? err.message : String(err)}\n`);
       });
   }
 }

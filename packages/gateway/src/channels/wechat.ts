@@ -145,7 +145,10 @@ export class WeChatAdapter implements ChannelAdapter {
     const arr = [this.config.token, timestamp, nonce].sort();
     const str = arr.join("");
     const hash = createHash("sha1").update(str).digest("hex");
-    return hash === signature;
+    const hashBuf = Buffer.from(hash);
+    const sigBuf = Buffer.from(signature);
+    if (hashBuf.length !== sigBuf.length) return false;
+    return timingSafeEqual(hashBuf, sigBuf);
   }
 
   /**

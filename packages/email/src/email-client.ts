@@ -504,8 +504,9 @@ export class EmailClient {
     const password = this.decryptPassword(account);
     const emails: EmailListItem[] = [];
 
+    let client: ImapFlow | null = null;
     try {
-      const client = new ImapFlow({
+      client = new ImapFlow({
         host: account.imapHost,
         port: account.imapPort,
         secure: account.imapPort === 993,
@@ -520,10 +521,12 @@ export class EmailClient {
       await client.mailboxOpen(options.folder || "INBOX");
 
       const limit = options.limit || 50;
-      
-      // 使用简单查询方式，从第一封开始获取
+
+      const status = await client.status(options.folder || "INBOX", { messages: true });
+      const total = status.messages ?? 0;
+      const start = Math.max(1, total - limit + 1);
       let fetched = 0;
-      for await (const message of client.fetch('1:*', {
+      for await (const message of client.fetch(`${start}:*`, {
         envelope: true,
         flags: true,
         size: true,
@@ -549,15 +552,17 @@ export class EmailClient {
           hasAttachments,
           snippet: "(请查看完整邮件以获取预览)",
         });
-        
+
         fetched++;
         if (fetched >= limit) break;
       }
-
-      await client.logout();
     } catch (err) {
-      process.stderr.write(`[EmailClient] Failed to list emails: ${err}`);
+      process.stderr.write(`[EmailClient] Failed to list emails: ${err}\n`);
       throw new Error(`无法连接邮箱: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (client) {
+        try { await client.logout(); } catch { /* best-effort */ }
+      }
     }
 
     return emails;

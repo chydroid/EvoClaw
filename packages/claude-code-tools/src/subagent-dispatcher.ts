@@ -76,6 +76,7 @@ export class SubAgentDispatcher {
     const controller = new AbortController();
     this.activeTasks.set(task.id, controller);
 
+    const startTime = Date.now();
     const timeout = task.timeoutMs ?? 30000;
     const timer = setTimeout(() => controller.abort(), timeout);
 
@@ -89,7 +90,7 @@ export class SubAgentDispatcher {
         output: "",
         error: err instanceof Error ? err.message : String(err),
         tokensUsed: 0,
-        durationMs: timeout,
+        durationMs: Date.now() - startTime,
       };
     } finally {
       clearTimeout(timer);

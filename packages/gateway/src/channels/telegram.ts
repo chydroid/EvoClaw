@@ -336,8 +336,8 @@ export class TelegramAdapter implements ChannelAdapter {
         if (!updates.ok || !updates.result) return;
 
         for (const update of updates.result) {
-          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
           await this.processUpdate(update);
+          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
         }
       } catch (err) {
         if (this.running) {
@@ -439,23 +439,24 @@ export class TelegramAdapter implements ChannelAdapter {
 
     if (msg.photo && msg.photo.length > 0) {
       const largest = msg.photo[msg.photo.length - 1];
-      attachments.push({ type: "image", mimeType: "image/jpeg" });
+      attachments.push({ type: "image", url: largest.file_id, mimeType: "image/jpeg" });
     }
     if (msg.video) {
-      attachments.push({ type: "video", mimeType: msg.video.mime_type });
+      attachments.push({ type: "video", url: msg.video.file_id, mimeType: msg.video.mime_type });
     }
     if (msg.audio) {
-      attachments.push({ type: "audio", mimeType: msg.audio.mime_type });
+      attachments.push({ type: "audio", url: msg.audio.file_id, mimeType: msg.audio.mime_type });
     }
     if (msg.document) {
       attachments.push({
         type: "document",
+        url: msg.document.file_id,
         mimeType: msg.document.mime_type,
         filename: msg.document.file_name,
       });
     }
     if (msg.sticker) {
-      attachments.push({ type: "sticker" });
+      attachments.push({ type: "sticker", url: msg.sticker.file_id });
     }
     if (msg.location) {
       attachments.push({

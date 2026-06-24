@@ -73,6 +73,7 @@ export class MessageQueue {
               message.retryCount++;
               messages.push(message);
             }
+            break;
           }
         }
       }

@@ -11,6 +11,7 @@
  *   4. Get a test phone number from the WhatsApp sandbox
  */
 
+import crypto from "crypto";
 import type {
   ChannelAdapter,
   ChannelHealthResult,
@@ -226,10 +227,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
     token: string,
     challenge: string
   ): string | null {
-    if (mode === "subscribe" && token === this.verifyToken) {
-      return challenge;
-    }
-    return null;
+    if (mode !== "subscribe") return null;
+    const tokenBuf = Buffer.from(token);
+    const expectedBuf = Buffer.from(this.verifyToken);
+    if (tokenBuf.length !== expectedBuf.length) return null;
+    return crypto.timingSafeEqual(tokenBuf, expectedBuf) ? challenge : null;
   }
 
   /**
@@ -326,19 +328,19 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }> = [];
 
     if (msg.image) {
-      attachments.push({ type: "image", mimeType: msg.image.mime_type });
+      attachments.push({ type: "image", url: msg.image.id, mimeType: msg.image.mime_type });
     }
     if (msg.video) {
-      attachments.push({ type: "video", mimeType: msg.video.mime_type });
+      attachments.push({ type: "video", url: msg.video.id, mimeType: msg.video.mime_type });
     }
     if (msg.audio) {
-      attachments.push({ type: "audio", mimeType: msg.audio.mime_type });
+      attachments.push({ type: "audio", url: msg.audio.id, mimeType: msg.audio.mime_type });
     }
     if (msg.document) {
-      attachments.push({ type: "document", mimeType: msg.document.mime_type, filename: msg.document.filename });
+      attachments.push({ type: "document", url: msg.document.id, mimeType: msg.document.mime_type, filename: msg.document.filename });
     }
     if (msg.sticker) {
-      attachments.push({ type: "sticker", mimeType: msg.sticker.mime_type });
+      attachments.push({ type: "sticker", url: msg.sticker.id, mimeType: msg.sticker.mime_type });
     }
     if (msg.location) {
       attachments.push({ type: "document", mimeType: "application/json", filename: "location.json" });

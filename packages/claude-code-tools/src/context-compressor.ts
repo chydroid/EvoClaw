@@ -173,7 +173,7 @@ export class ContextCompressor {
     }
 
     // Keep last ~30% of messages intact
-    const keepCount = Math.floor(messages.length * 0.3);
+    const keepCount = Math.max(1, Math.floor(messages.length * 0.3));
     const earlyMessages = messages.slice(0, messages.length - keepCount);
     const recentMessages = messages.slice(messages.length - keepCount);
 

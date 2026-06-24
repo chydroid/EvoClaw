@@ -354,24 +354,24 @@ export class LLMDispatcher {
   ): Promise<SubTaskResult[]> {
     const results: SubTaskResult[] = [];
     const executing: Promise<void>[] = [];
+    const completed = new Set<Promise<void>>();
 
     for (const request of requests) {
       const promise = this.dispatch(request).then(result => {
         results.push(result);
       });
 
-      executing.push(promise);
+      const tracked: Promise<void> = promise.then(
+        () => { completed.add(tracked); },
+        () => { completed.add(tracked); },
+      );
+      executing.push(tracked);
 
       if (executing.length >= maxConcurrency) {
         await Promise.race(executing);
-        // Remove completed promises
+        // Remove settled promises
         for (let i = executing.length - 1; i >= 0; i--) {
-          // Check if promise is settled by racing with an already resolved promise
-          const settled = await Promise.race([
-            executing[i].then(() => true, () => true),
-            Promise.resolve(false),
-          ]);
-          if (settled) {
+          if (completed.has(executing[i])) {
             executing.splice(i, 1);
           }
         }
@@ -495,15 +495,28 @@ export class LLMDispatcher {
       }
     }
 
-    const body: Record<string, unknown> = {
-      model: provider.model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: maxTokens || provider.maxTokens || 4096,
-      temperature: temperature ?? provider.temperature ?? 0.3,
-    };
+    let body: Record<string, unknown>;
+    if (provider.provider === "anthropic") {
+      body = {
+        model: provider.model,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: maxTokens || provider.maxTokens || 4096,
+        temperature: temperature ?? provider.temperature ?? 0.3,
+      };
+    } else {
+      body = {
+        model: provider.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: maxTokens || provider.maxTokens || 4096,
+        temperature: temperature ?? provider.temperature ?? 0.3,
+      };
+    }
 
     const timeout = provider.timeout || 120000;
     const controller = new AbortController();
@@ -594,6 +607,7 @@ export class LLMDispatcher {
       suggestions,
       tokenUsage: response.tokenUsage,
       durationMs,
+      taskType: task.type,
     };
   }
 

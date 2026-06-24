@@ -229,6 +229,7 @@ export class ProtocolHandler {
   private idempotencyCache = new Map<string, { result: ResponseFrame; at: number }>();
   private options: Required<ProtocolHandlerOptions>;
   private eventBus: EventBus | null = null;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options?: ProtocolHandlerOptions) {
     this.options = {
@@ -238,6 +239,8 @@ export class ProtocolHandler {
       autoApproveLoopback: options?.autoApproveLoopback ?? true,
       idempotencyTTL: options?.idempotencyTTL ?? 300000, // 5 minutes
     };
+    this.cleanupTimer = setInterval(() => this.cleanupIdempotencyCache(), this.options.idempotencyTTL || 60000);
+    this.cleanupTimer.unref();
   }
 
   setEventBus(eb: EventBus): void {
@@ -529,6 +532,10 @@ export class ProtocolHandler {
 
   /** Close all connected clients and clear state. */
   stop(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
     for (const client of this.clients.values()) {
       try { client.close(1001, "Server shutting down"); } catch { /* ignore */ }
     }

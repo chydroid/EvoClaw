@@ -19,11 +19,17 @@ export class A2AClient {
 
   /** Discover an agent's capabilities by fetching its agent card */
   async discoverAgent(url: string): Promise<A2AAgentCard> {
-    const response = await fetch(`${url.replace(/\/+$/, "")}/a2a/card`);
-    if (!response.ok) throw new Error(`Failed to discover agent at ${url}: ${response.statusText}`);
-    const card = await response.json() as A2AAgentCard;
-    this.knownAgents.set(card.name, card);
-    return card;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(`${url.replace(/\/+$/, "")}/a2a/card`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Failed to discover agent at ${url}: ${response.statusText}`);
+      const card = await response.json() as A2AAgentCard;
+      this.knownAgents.set(card.name, card);
+      return card;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Send a task to a remote agent */

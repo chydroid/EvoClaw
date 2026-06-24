@@ -3,6 +3,64 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.4 (2026-06-24)
+
+### 全面代码审查与 BUG 修复（2 轮）
+
+对全项目进行 2 轮深度代码审查，共发现并修复 **49 个真实 BUG**。
+
+#### 第 1 轮：Gateway/Server/Plugin-SDK/Email/Reporting/Claude-Code-Tools 深度审查（37 个）
+
+**Gateway 渠道修复（12 个）**：
+- `telegram.ts`：修复 `lastUpdateId` 在 `processUpdate` 前推进导致消息丢失；修复 `extractAttachments` 丢失 `file_id`
+- `channel-adapter-framework.ts`：同上 lastUpdateId 问题
+- `qq.ts`：修复 `reconnect()` 与 `onclose` 竞态导致双重连接；修复重连 setTimeout 未清理
+- `slack.ts`：修复 `processSlackEvent` 未 await 导致未处理 Promise 拒绝；修复重连 setTimeout 未清理
+- `feishu.ts`：修复 `processedEvents.clear()` 全量清空破坏去重
+- `whatsapp.ts`：修复 `extractAttachments` 丢失 media id；修复 `verifyWebhook` 非常量时间比较（时序攻击）
+- `wechat.ts`：修复 `verifySignature` 非常量时间比较（时序攻击）
+- `ws-protocol.ts`：修复 `idempotencyCache` 从未清理导致内存泄漏
+- `channel-manager.ts`：修复 `pairingCodes` Map 从不清理过期码
+
+**Server 工具修复（4 个）**：
+- `browser-tools.ts`：修复 `browser_tabs` "new" 返回空 tabId；修复健康检查未关闭 Chromium 进程；修复 `browser_screenshot` 写入 base64 文本而非二进制 PNG
+- `scheduler-tools.ts`：修复 `scheduler_execute` 未捕获异常
+
+**Plugin-SDK/Email/Reporting 修复（9 个）**：
+- `plugin-host.ts`：修复 `emitHook` 定时器泄漏；修复 `process.stderr.write` 双参数；修复 serviceLocator `has`/`list` 与 `get` 不一致
+- `email-client.ts`：修复 IMAP 客户端错误时未 logout 导致连接泄漏；修复 `fetch('1:*')` 获取最旧邮件而非最新
+- `report-generator.ts`：修复 `format: "json"` 未实现；修复 `generateChartImage` 死代码；修复 `loadTemplates` 静默吞错；修复 `{{{content}}}` 三重花括号导致 XSS
+
+**Claude-Code-Tools/Agent 修复（12 个）**：
+- `llm-dispatcher.ts`：修复 `dispatchParallel` 并发控制失效（`Promise.resolve(false)` 导致已完成的 promise 永不移除）；修复 Anthropic API 格式错误（system 消息应在顶层）
+- `task-orchestrator.ts`：修复 finally 删除错误 key 导致内存泄漏；修复重试逻辑失效（finally 误删 pendingTasks 条目）
+- `task-decomposer.ts`：修复贪婪正则跨数组匹配
+- `capability-upgrade.ts`：修复成功率只降不升（成功循环为空）；修复 `getProfile` 浅拷贝导致共享引用
+- `subagent-dispatcher.ts`：修复错误路径 `durationMs` 返回超时值而非实际耗时
+- `claude-code-plugin.ts`：修复 `process.stderr.write` 双参数；修复 `activeTasks` Map 从不清理
+- `context-compressor.ts`：修复 `compactMedium` 在消息少时 `keepCount` 为 0 导致上下文全丢
+- `session-retention.ts`：修复 Pass 3 off-by-one（多减 1）
+- `a2a-client.ts`：修复 `discoverAgent` fetch 无超时无错误处理
+
+#### 第 2 轮：跨包集成 + 边界条件 + 回归检查（12 个）
+
+**跨包集成修复（6 个）**：
+- `message-queue.ts`：修复重试逻辑未 break 导致消息被后续 handler 重复处理和多次 push 回队列
+- `concurrent-tool-executor.ts`：修复 path-scoped 工具组剩余工具与第一个工具并发执行（违反同路径不并行语义）；修复 `AsyncSemaphore.release()` 无上限保护
+- `ws-protocol.ts`：修复 `setInterval` 未保存引用且 `stop()` 未清理
+- `config.ts`：修复 `onSectionChange` 注册匿名监听器无法移除（返回 unsubscribe 函数）
+- `reinforcement-feedback.ts`：修复权重归一化除零风险
+
+**Core/Skills 修复（5 个）**：
+- `service-registry.ts`：修复 `startAll()` 无幂等性检查导致重复启动
+- `plugin-system.ts`：修复 `runHooks` 不检查插件状态，禁用插件的钩子仍执行
+- `skill-manager.ts`：修复 `averageDuration` 使用 `invocationCount`（含失败）而非 `successCount`
+- `auto-skill-manager.ts`：修复 `resolveSkillPath` 缺少 `await`，将 Promise 当数组使用
+- `config.ts`：修复 `update()` 同步方法不使用 `withLock`，与异步 `set()` 存在竞态
+
+**安全阈值调整（1 个）**：
+- `mcp-poisoning-scanner.ts`：将 `blockThreshold` 从 70 降为 50，确保单个 critical 威胁即可触发 block（修复 v0.57.3 正则去重后的回归）
+
 ## v0.57.3 (2026-06-24)
 
 ### 全面代码审查与 BUG 修复（2 轮）

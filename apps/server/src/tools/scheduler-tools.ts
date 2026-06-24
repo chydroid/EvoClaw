@@ -187,8 +187,12 @@ export function registerSchedulerTools(
     },
     async (params: Record<string, unknown>) => {
       const taskId = String(params.taskId || "");
-      const result = await sched.executeTask(taskId);
-      return result;
+      try {
+        const result = await sched.executeTask(taskId);
+        return result;
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     }
   );
 

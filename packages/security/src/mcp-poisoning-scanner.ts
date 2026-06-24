@@ -51,7 +51,7 @@ export interface PoisoningScannerConfig {
     severity: "low" | "medium" | "high" | "critical";
   }>;
   /** 风险评分阈值 */
-  blockThreshold?: number; // 默认70
+  blockThreshold?: number; // 默认50（单个critical威胁即可触发block）
   warnThreshold?: number;  // 默认40
   /** 是否在sanitizedDescription中清除威胁 */
   autoSanitize?: boolean;
@@ -200,7 +200,7 @@ export class MCPToolPoisoningScanner {
     this.config = {
       enabled: config.enabled ?? true,
       customPatterns: config.customPatterns ?? [],
-      blockThreshold: config.blockThreshold ?? 70,
+      blockThreshold: config.blockThreshold ?? 50,
       warnThreshold: config.warnThreshold ?? 40,
       autoSanitize: config.autoSanitize ?? false,
     };

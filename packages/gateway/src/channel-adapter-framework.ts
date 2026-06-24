@@ -459,8 +459,8 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
         if (!updates.ok || !updates.result) return;
 
         for (const update of updates.result) {
-          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
           await this.processUpdate(update);
+          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
         }
       } catch (err) {
         if (this.status === "running") {

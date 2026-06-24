@@ -163,9 +163,11 @@ function extractPathKey(tool: ToolCall): string {
  */
 class AsyncSemaphore {
   private available: number;
+  private readonly max: number;
   private waiters: Array<() => void> = [];
 
   constructor(max: number) {
+    this.max = max;
     this.available = max;
   }
 
@@ -183,10 +185,11 @@ class AsyncSemaphore {
   }
 
   release(): void {
-    this.available++;
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter();
+    if (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      if (waiter) waiter();
+    } else {
+      this.available = Math.min(this.available + 1, this.max);
     }
   }
 

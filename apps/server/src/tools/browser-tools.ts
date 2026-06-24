@@ -212,22 +212,31 @@ export function registerBrowserTools(
     },
     async (params: Record<string, unknown>) => {
       const headless = String(params.headless || "true") !== "false";
-      await pwBrowser.shutdown();
-      const { PlaywrightBrowser: PlaywrightBrowserClass } = await import("@evoclaw/infrastructure");
-      const newBrowser = new PlaywrightBrowserClass(registry, eventBus, {
-        headless,
-        cookieStorageDir: path.resolve(__dirname, "..", "..", "..", "..", ".."),
-      });
-      await newBrowser.launch();
-      pwBrowser = newBrowser;
-      registry.replaceService("playwrightBrowser", pwBrowser);
-      // Track browser session for health management
-      browserSessions.set("default", {
-        launchedAt: Date.now(),
-        lastActivityAt: Date.now(),
-        tabCount: 1,
-      });
-      return { success: true, headless, message: "Playwright browser launched" };
+      const oldBrowser = pwBrowser;
+      try {
+        await oldBrowser.shutdown();
+      } catch { /* old browser may already be closed */ }
+      try {
+        const { PlaywrightBrowser: PlaywrightBrowserClass } = await import("@evoclaw/infrastructure");
+        const newBrowser = new PlaywrightBrowserClass(registry, eventBus, {
+          headless,
+          cookieStorageDir: path.resolve(__dirname, "..", "..", "..", ".."),
+        });
+        await newBrowser.launch();
+        pwBrowser = newBrowser;
+        registry.replaceService("playwrightBrowser", pwBrowser);
+        // Track browser session for health management
+        browserSessions.set("default", {
+          launchedAt: Date.now(),
+          lastActivityAt: Date.now(),
+          tabCount: 1,
+        });
+        return { success: true, headless, message: "Playwright browser launched" };
+      } catch (err) {
+        // Try to restore old browser
+        try { await oldBrowser.launch(); pwBrowser = oldBrowser; } catch { /* give up recovery */ }
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     }
   );
 
@@ -253,9 +262,12 @@ export function registerBrowserTools(
         type: "png",
       });
       if (filename) {
-        const base64 = buf.toString("base64");
-        await fileSystemManager.writeFile(filename, base64);
-        return { success: true, file: filename, size: buf.length, format: "base64-encoded", base64Preview: `data:image/png;base64,${base64.substring(0, 200)}...` };
+        const fs = await import("node:fs");
+        const pathMod = await import("node:path");
+        const resolved = pathMod.resolve(filename);
+        await fs.promises.mkdir(pathMod.dirname(resolved), { recursive: true });
+        await fs.promises.writeFile(resolved, buf);
+        return { success: true, file: filename, size: buf.length, format: "png" };
       }
       const base64 = buf.toString("base64");
       return {

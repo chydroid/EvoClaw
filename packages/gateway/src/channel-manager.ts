@@ -240,6 +240,13 @@ export class ChannelManager {
     if (msg.isDirect && !msg.isGroup) {
       const policy = this.getDMPolicy(msg.channel);
       if (policy === "pairing" && !this.isPeerApproved(msg.channel, msg.from)) {
+        // Clean up expired codes and old codes for this peer
+        const now = Date.now();
+        for (const [oldCode, entry] of this.pairingCodes) {
+          if (now - entry.createdAt > 10 * 60 * 1000 || (entry.peerId === msg.from && entry.channel === msg.channel)) {
+            this.pairingCodes.delete(oldCode);
+          }
+        }
         // Generate pairing code
         const pairingCode = this.generatePairingCode();
         this.pairingCodes.set(pairingCode, {

@@ -42,7 +42,7 @@ describe("ServiceRegistry", () => {
     };
 
     registry.registerService("lifecycleTest", service);
-    registry.setServiceStatus("lifecycleTest", "starting");
+    registry.setServiceStatus("lifecycleTest", "stopped");
     expect(started).toBe(false);
 
     await registry.startAll();

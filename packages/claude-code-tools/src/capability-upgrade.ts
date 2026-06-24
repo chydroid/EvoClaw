@@ -248,7 +248,11 @@ export class CapabilityUpgrader {
    * Get current capability profile.
    */
   getProfile(): CapabilityProfile {
-    return { ...this.profile };
+    return {
+      ...this.profile,
+      taskTypeSuccessRates: new Map(this.profile.taskTypeSuccessRates),
+      upgradeHistory: [...this.profile.upgradeHistory],
+    };
   }
 
   /**
@@ -298,8 +302,10 @@ export class CapabilityUpgrader {
 
     // Update task type success rates
     for (const completed of result.completedTasks) {
-      // Find the task in the plan to get its type
-      // We'll use a simplified approach
+      const type = completed.taskType;
+      if (!type) continue;
+      const current = this.profile.taskTypeSuccessRates.get(type) ?? 0.5;
+      this.profile.taskTypeSuccessRates.set(type, current * 0.8 + 1 * 0.2);
     }
     for (const failed of result.failedTasks) {
       const type = failed.task.type;

@@ -189,7 +189,7 @@ export class SessionRetentionManager {
     for (const session of sessions) {
       if (!session.isCronSession) continue;
       if (toDelete.has(session.sessionId)) continue;
-      if (sessions.length - toDelete.size - 1 <= this.config.keepMinimum) break;
+      if (sessions.length - toDelete.size <= this.config.keepMinimum) break;
 
       const policy = this.getEffectivePolicy(session.channel);
       const cronMaxAge = (policy.maxAgeMs ?? 0) / 2;

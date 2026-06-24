@@ -71,6 +71,7 @@ export class SlackAdapter implements ChannelAdapter {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private running = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private botUserId: string | null = null;
 
@@ -124,6 +125,11 @@ export class SlackAdapter implements ChannelAdapter {
 
   async stop(): Promise<void> {
     this.running = false;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     if (this.socketModeWS) {
       try {
@@ -272,7 +278,7 @@ export class SlackAdapter implements ChannelAdapter {
           }
 
           if (data.payload?.event) {
-            this.processSlackEvent(data.payload.event as SlackEvent);
+            this.processSlackEvent(data.payload.event as SlackEvent).catch(() => {});
           }
 
           // Acknowledge envelope

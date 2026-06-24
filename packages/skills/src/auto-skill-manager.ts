@@ -620,10 +620,10 @@ export class AutoSkillManager {
     // via SkillManager (installed skills have their path stored)
     try {
       const skillManager = this.registry.resolveService<{
-        listSkills(): Array<{ name: string; installPath: string }>;
+        listSkills(): Promise<Array<{ name: string; installPath: string }>>;
       }>("skillManager");
       if (skillManager) {
-        const skills = skillManager.listSkills();
+        const skills = await skillManager.listSkills();
         const found = skills.find(s => s.name.toLowerCase() === skillName.toLowerCase());
         if (found && found.installPath && fs.existsSync(found.installPath)) {
           return found.installPath;

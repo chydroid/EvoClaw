@@ -75,6 +75,7 @@ export interface SubTaskResult {
   suggestions: string[]; // Suggestions for next tasks
   tokenUsage?: { input: number; output: number };
   durationMs: number;
+  taskType?: TaskType;
 }
 
 export interface TaskPlan {
@@ -715,7 +716,7 @@ ${contextInfo}
   private parseLlmDecomposition(content: string, rootId: string, ctx?: DecompositionContext): SubTask[] | null {
     try {
       // Extract JSON from response
-      const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/) || content.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/) || content.match(/\[\s*\{[\s\S]*?\}\s*\]/);
       if (!jsonMatch) return null;
 
       const items = JSON.parse(jsonMatch[1] || jsonMatch[0]);

@@ -165,11 +165,11 @@ const DEFAULT_TEMPLATE = `<!DOCTYPE html>
       <h2>{{title}}</h2>
       <div class="section-content">
         {{#if (eq type "text")}}
-          <div>{{{content}}}</div>
+          <div>{{content}}</div>
         {{/if}}
 
         {{#if (eq type "html")}}
-          {{{content}}}
+          {{content}}
         {{/if}}
 
         {{#if (eq type "metrics")}}
@@ -329,16 +329,15 @@ export class ReportGenerator {
       "report-generator"
     );
 
+    if (options.format === "json") {
+      return JSON.stringify(data, null, 2);
+    }
     return html;
   }
 
   generateChartImage(chartConfig: ChartConfig): string {
-    const { type, labels, datasets } = chartConfig;
-
-    const jsonData = JSON.stringify({ type, labels, datasets });
-    const encoded = Buffer.from(jsonData).toString("base64");
-
-    return `data:image/svg+xml;base64,${this.renderChartSVG(chartConfig)}`;
+    const svg = this.renderChartSVG(chartConfig);
+    return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
   }
 
   private renderChartSVG(config: ChartConfig): string {

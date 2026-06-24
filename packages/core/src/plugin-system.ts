@@ -520,6 +520,12 @@ export class PluginManager {
     let cancelled = false;
 
     for (const { plugin, handler } of handlers) {
+      // Skip non-active plugins
+      const loaded = this.plugins.get(plugin);
+      if (!loaded || loaded.status !== "active") {
+        continue;
+      }
+
       try {
         const result = await Promise.resolve(handler(hook)) as R | undefined;
         if (result) {

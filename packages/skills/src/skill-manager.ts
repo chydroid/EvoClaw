@@ -533,7 +533,8 @@ export class SkillManager {
     }
 
     const startTime = Date.now();
-    const currentCount = skill.stats.invocationCount++;
+    skill.stats.invocationCount++;
+    const successCountBefore = skill.stats.successCount;
 
     try {
       await this.hookEngine.executeHook(skill, "onBeforeExecute", { params });
@@ -544,8 +545,8 @@ export class SkillManager {
       skill.stats.successCount++;
       skill.stats.lastInvocation = new Date();
       skill.stats.averageDuration =
-        (skill.stats.averageDuration * currentCount + duration) /
-        (currentCount + 1);
+        (skill.stats.averageDuration * successCountBefore + duration) /
+        (successCountBefore + 1);
 
       await this.eventBus.publish(SystemEvents.SKILL_EXECUTED, { skillId, params, result }, "skill-manager");
 

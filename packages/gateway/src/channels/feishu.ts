@@ -512,7 +512,8 @@ export class FeishuAdapter implements ChannelAdapter {
       if (this.processedEvents.has(messageId)) return;
       this.processedEvents.add(messageId);
       if (this.processedEvents.size > FeishuAdapter.MAX_PROCESSED_EVENTS) {
-        this.processedEvents.clear();
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
       }
     }
 
@@ -687,7 +688,8 @@ export class FeishuAdapter implements ChannelAdapter {
       if (this.processedEvents.has(eventId)) return;
       this.processedEvents.add(eventId);
       if (this.processedEvents.size > FeishuAdapter.MAX_PROCESSED_EVENTS) {
-        this.processedEvents.clear();
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
       }
     }
 

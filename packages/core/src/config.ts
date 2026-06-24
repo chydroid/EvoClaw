@@ -278,21 +278,23 @@ export class ConfigManager {
     });
   }
 
-  update(partial: DeepPartial<AppConfig>, options: { source?: string } = {}): void {
+  async update(partial: DeepPartial<AppConfig>, options: { source?: string } = {}): Promise<void> {
     const source = options.source ?? "api";
-    const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
-    this.config = this.deepMerge(
-      this.config as unknown as Record<string, unknown>,
-      partial as unknown as Record<string, unknown>
-    ) as unknown as AppConfig;
+    await this.withLock(async () => {
+      const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
+      this.config = this.deepMerge(
+        this.config as unknown as Record<string, unknown>,
+        partial as unknown as Record<string, unknown>
+      ) as unknown as AppConfig;
 
-    const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "", source);
-    for (const change of changes) {
-      this.recordAndEmit(change);
-    }
-    for (const section of new Set(changes.map((c) => c.section))) {
-      this.emitter.emit(`change:${section}`, changes.filter((c) => c.section === section));
-    }
+      const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "", source);
+      for (const change of changes) {
+        this.recordAndEmit(change);
+      }
+      for (const section of new Set(changes.map((c) => c.section))) {
+        this.emitter.emit(`change:${section}`, changes.filter((c) => c.section === section));
+      }
+    });
   }
 
   loadFromEnv(): void {
@@ -402,14 +404,16 @@ export class ConfigManager {
     this.emitter.off("change", handler);
   }
 
-  onSectionChange<K extends keyof AppConfig>(section: K, handler: ConfigChangeHandler): void {
-    this.emitter.on(`change:${String(section)}`, (changes: ConfigChange[]) => {
+  onSectionChange<K extends keyof AppConfig>(section: K, handler: ConfigChangeHandler): () => void {
+    const wrapper = (changes: ConfigChange[]) => {
       for (const change of changes) {
         Promise.resolve(handler(change)).catch((err) => {
           process.stderr.write(`[Config] Section change handler error: ${err instanceof Error ? err.message : String(err)}\n`);
         });
       }
-    });
+    };
+    this.emitter.on(`change:${String(section)}`, wrapper);
+    return () => this.emitter.off(`change:${String(section)}`, wrapper);
   }
 
   getStats(): ConfigManagerStats {

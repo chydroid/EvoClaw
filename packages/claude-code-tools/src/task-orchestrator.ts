@@ -116,6 +116,7 @@ export class TaskOrchestrator {
 
     // Register for cancellation
     const planIdPlaceholder = `exec_${Date.now()}`;
+    let currentKey = planIdPlaceholder;
     this.activeExecutions.set(planIdPlaceholder, {
       cancel: () => {
         cancelled = true;
@@ -140,6 +141,7 @@ export class TaskOrchestrator {
       // Update the active execution key
       this.activeExecutions.delete(planIdPlaceholder);
       this.activeExecutions.set(plan.id, { cancel: () => { cancelled = true; abortController.abort(); } });
+      currentKey = plan.id;
 
       this.emitProgress(options?.onProgress, {
         planId: plan.id,
@@ -212,6 +214,7 @@ export class TaskOrchestrator {
                 // Retry
                 task.status = "pending" as TaskStatus;
                 runningTasks.delete(task.id);
+                pendingTasks.set(task.id, task);
                 return;
               }
 
@@ -248,7 +251,9 @@ export class TaskOrchestrator {
             });
           } finally {
             runningTasks.delete(task.id);
-            pendingTasks.delete(task.id);
+            if (task.status !== "pending") {
+              pendingTasks.delete(task.id);
+            }
           }
 
           // Emit progress
@@ -358,7 +363,7 @@ export class TaskOrchestrator {
 
       return result;
     } finally {
-      this.activeExecutions.delete(planIdPlaceholder);
+      this.activeExecutions.delete(currentKey);
     }
   }
 

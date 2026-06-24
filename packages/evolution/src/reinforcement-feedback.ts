@@ -247,7 +247,7 @@ export class ReinforcementFeedbackSystem {
       this.weights.noveltyWeight +
       this.weights.consistencyWeight;
 
-    if (Math.abs(totalWeight - 1) > 0.001) {
+    if (totalWeight > 0 && Math.abs(totalWeight - 1) > 0.001) {
       const scale = 1 / totalWeight;
       this.weights.successWeight *= scale;
       this.weights.adoptionWeight *= scale;
