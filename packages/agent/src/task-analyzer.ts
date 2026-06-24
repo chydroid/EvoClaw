@@ -558,7 +558,7 @@ export async function executeSubtasksFromCheckpoint(
     }
   }
 
-  const finalProgress = failedCount === 0 ? 100 : Math.floor((checkpoint.totalSubtasks - failedCount) / checkpoint.totalSubtasks * 100);
+  const finalProgress = failedCount === 0 ? 100 : (checkpoint.totalSubtasks > 0 ? Math.floor((checkpoint.totalSubtasks - failedCount) / checkpoint.totalSubtasks * 100) : 0);
   taskStatusTracker.set(sessionId, "done", `所有子任务执行完成 (${checkpoint.totalSubtasks - failedCount}/${checkpoint.totalSubtasks} 成功)`, finalProgress);
 
   const summaryHeader = failedCount === 0

@@ -598,6 +598,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const voiceAbortControllerRef = useRef<AbortController | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
+  const dequeueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { return () => { if (dequeueTimerRef.current) clearTimeout(dequeueTimerRef.current); }; }, []);
   const userAbortedRef = useRef(false);
   const inputHistoryRef = useRef<string[]>([]);
   // Load persisted input history from localStorage
@@ -1309,7 +1311,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         if (prev.length > 0 && sessionId) {
           const nextMsg = prev[0];
           const remaining = prev.slice(1);
-          setTimeout(() => handleSend(nextMsg), 300);
+          dequeueTimerRef.current = setTimeout(() => handleSend(nextMsg), 300);
           return remaining;
         }
         return prev;

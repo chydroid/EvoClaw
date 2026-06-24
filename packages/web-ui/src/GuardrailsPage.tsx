@@ -39,7 +39,6 @@ const LAYER_NAMES: Record<string, string> = { input: "Input Guardrail", output: 
 
 // ── Audit log (in-memory) ──
 interface AuditEntry { timestamp: string; layer: string; action: string; ruleId: string; content: string; }
-const auditLog: AuditEntry[] = [];
 
 export default function GuardrailsPage() {
   const { t } = useTranslation();
@@ -51,7 +50,7 @@ export default function GuardrailsPage() {
   const [testLayer, setTestLayer] = useState<"input" | "output" | "tool">("input");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testLoading, setTestLoading] = useState(false);
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(auditLog);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [expandedLayer, setExpandedLayer] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
@@ -83,14 +82,14 @@ export default function GuardrailsPage() {
       setTestResult(data.result);
       // Add to audit log
       if (data.result && !data.result.passed) {
-        auditLog.unshift({
+        const newEntry: AuditEntry = {
           timestamp: new Date().toISOString(),
           layer: testLayer,
           action: data.result.passed ? "pass" : (data.result.severity === "high" ? "block" : "warn"),
           ruleId: data.result.triggeredRules?.join(", ") || "-",
           content: testContent.slice(0, 80),
-        });
-        setAuditEntries([...auditLog]);
+        };
+        setAuditEntries(prev => [{ ...newEntry }, ...prev].slice(0, 100));
       }
     } catch { showToast("Test failed", "error"); }
     setTestLoading(false);

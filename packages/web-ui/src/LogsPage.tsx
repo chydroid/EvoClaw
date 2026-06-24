@@ -117,23 +117,31 @@ export function LogsPage() {
   const [filter, setFilter] = useState<string>("all");
   const [autoScroll, setAutoScroll] = useState(true);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/queue");
+      const res = await fetch("/api/queue", { signal });
+      if (signal?.aborted) return;
       if (res.ok) {
         setQueue(await res.json());
       }
     } catch (err) {
+      if (signal?.aborted) return;
       console.error("Failed to load queue data:", err);
     }
-    setLogs(generateMockLogs());
+    if (!signal?.aborted) setLogs(generateMockLogs());
   }, []);
 
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 8000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    loadData(controller.signal);
+    const interval = setInterval(() => loadData(controller.signal), 8000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadData]);
 
   useEffect(() => {
@@ -201,7 +209,7 @@ export function LogsPage() {
                 {t("logs.total")}: {queue.stats.total} · {t("logs.pending")}: {queue.stats.pending} · {t("logs.processing")}: {queue.stats.processing} · {t("logs.done")}: {queue.stats.done} · {t("logs.failed")}: {queue.stats.failed}
               </span>
             )}
-            <button style={s.btn} onClick={loadData}>{t("logs.refresh")}</button>
+            <button style={s.btn} onClick={() => loadData()}>{t("logs.refresh")}</button>
             <button style={s.btn} onClick={clearQueue}>{t("logs.clear_queue")}</button>
           </div>
         </div>

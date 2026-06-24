@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { PageHeader, Card, Badge, StatsGrid, DataTable, Section, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
 
@@ -108,18 +108,20 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
       const [healthRes, sessionsRes, providersRes, skillsRes, bsRes] = await Promise.allSettled([
-        fetch("/api/health"),
-        fetch("/api/system/sessions").catch(() => null),
-        fetch("/api/system/providers").catch(() => null),
-        fetch("/api/skills"),
-        fetch("/api/system/bootstrap-files").catch(() => null),
+        fetch("/api/health", { signal }),
+        fetch("/api/system/sessions", { signal }).catch(() => null),
+        fetch("/api/system/providers", { signal }).catch(() => null),
+        fetch("/api/skills", { signal }),
+        fetch("/api/system/bootstrap-files", { signal }).catch(() => null),
       ]);
+      if (signal?.aborted) return;
 
       const health = healthRes.status === "fulfilled" && healthRes.value.ok
         ? await healthRes.value.json() as SystemHealth : null;
@@ -162,9 +164,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    fetchData(controller.signal);
+    const interval = setInterval(() => fetchData(controller.signal), 30000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [fetchData]);
 
   if (loading && !data) {
@@ -172,7 +179,7 @@ export default function Dashboard() {
   }
 
   if (error && !data) {
-    return <div style={s.container}><ErrorBanner message={error} onRetry={fetchData} /></div>;
+    return <div style={s.container}><ErrorBanner message={error} onRetry={() => fetchData()} /></div>;
   }
 
   if (!data) return null;
@@ -203,7 +210,7 @@ export default function Dashboard() {
         <PageHeader title={t("dashboard.title")} />
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{t("dashboard.auto_refresh")}</span>
-          <button style={s.refreshBtn} onClick={fetchData}>{t("dashboard.refresh")}</button>
+          <button style={s.refreshBtn} onClick={() => fetchData()}>{t("dashboard.refresh")}</button>
         </div>
       </div>
 

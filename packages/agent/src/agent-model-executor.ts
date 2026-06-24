@@ -747,6 +747,8 @@ export class AgentModelExecutor {
 
   /** Build the deps object for LLM caller module */
   private getLLMCallerDeps(): LLMCallerDeps {
+    // 每次构建 deps 时清理过期缓存，避免内存泄漏
+    this.cleanToolCache();
     return {
       config: this.config,
       providers: this.providers,

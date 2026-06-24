@@ -223,7 +223,7 @@ export class PermissionManager {
         requestedBy,
       };
       this.requests.set(approved.id, approved);
-      this.approvedOperations.set(operation, new Date());
+      this.approvedOperations.set(`${operation}:${target}`, new Date());
       return approved;
     }
 
@@ -240,7 +240,7 @@ export class PermissionManager {
         requestedBy,
       };
       this.requests.set(approved.id, approved);
-      this.approvedOperations.set(operation, new Date());
+      this.approvedOperations.set(`${operation}:${target}`, new Date());
       return approved;
     }
 
@@ -259,7 +259,7 @@ export class PermissionManager {
         requestedBy,
       };
       this.requests.set(approved.id, approved);
-      this.approvedOperations.set(operation, new Date());
+      this.approvedOperations.set(`${operation}:${target}`, new Date());
 
       this.eventBus.publish(
         "permission.auto_approved",
@@ -315,7 +315,7 @@ export class PermissionManager {
 
     request.status = "approved";
     request.respondedAt = new Date();
-    this.approvedOperations.set(request.operation, new Date());
+    this.approvedOperations.set(`${request.operation}:${request.target}`, new Date());
 
     if (addToWhitelist) {
       this.addToWhitelist(request.operation, request.target);
@@ -351,14 +351,14 @@ export class PermissionManager {
     return request;
   }
 
-  checkApproval(operation: string): boolean {
-    const approvedAt = this.approvedOperations.get(operation);
+  checkApproval(operation: string, target: string): boolean {
+    const approvedAt = this.approvedOperations.get(`${operation}:${target}`);
     if (!approvedAt) return false;
 
     const fiveMinutes = 5 * 60 * 1000;
     const elapsed = Date.now() - approvedAt.getTime();
     if (elapsed > fiveMinutes) {
-      this.approvedOperations.delete(operation);
+      this.approvedOperations.delete(`${operation}:${target}`);
       return false;
     }
 
@@ -367,7 +367,7 @@ export class PermissionManager {
 
   isApprovedForOperation(operation: string, target: string): boolean {
     if (this.isWhitelisted(operation, target)) return true;
-    if (this.checkApproval(operation)) return true;
+    if (this.checkApproval(operation, target)) return true;
 
     for (const [, req] of this.requests) {
       if (

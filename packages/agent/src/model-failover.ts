@@ -208,10 +208,12 @@ export class ModelFailoverManager {
         if (this.isRateLimitError(errMsg)) {
           const rotated = this.rotateApiKey(currentId);
           if (rotated) {
+            // 重试使用新的 startMs，避免记录 inflated latency 污染熔断器统计
+            const retryStartMs = Date.now();
             try {
               const apiKey = this.getCurrentApiKey(currentId);
               const result = await fn(currentId, apiKey);
-              this.recordSuccess(currentId, Date.now() - startMs);
+              this.recordSuccess(currentId, Date.now() - retryStartMs);
               return result;
             } catch (retryErr) {
               const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);

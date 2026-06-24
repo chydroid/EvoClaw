@@ -137,6 +137,7 @@ export class Semaphore {
 
     // Wake up waiters if we increased capacity
     while (this.available > 0 && this.waiters.length > 0) {
+      this.available--;
       const waiter = this.waiters.shift()!;
       waiter.resolve();
     }

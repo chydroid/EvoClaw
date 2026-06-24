@@ -75,8 +75,8 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       try {
         const q = query || "";
         const limit = parseInt(String(opts.limit || 20), 10);
-        const r = await apiRequest<MarketplaceResult[]>("GET", `/api/marketplace/search?q=${encodeURIComponent(q)}&limit=${limit}`);
-        const results = r.data || [];
+        const r = await apiRequest<any>("GET", `/api/marketplace/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+        const results = r.data?.results || [];
         if (opts.json) { console.log(JSON.stringify(results, null, 2)); return; }
         console.log(section(`Search: "${q}"`));
         if (results.length === 0) {
@@ -106,13 +106,14 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       try {
-        const body: Record<string, unknown> = { slug };
+        const body: Record<string, unknown> = { path: slug };
         if (opts.force) body.force = true;
-        const r = await apiRequest<Skill>("POST", "/api/skills/install", body);
-        if (opts.json) { console.log(JSON.stringify(r.data, null, 2)); return; }
+        const r = await apiRequest<any>("POST", "/api/skills/install", body);
+        const skill = r.data?.skill;
+        if (opts.json) { console.log(JSON.stringify(skill, null, 2)); return; }
         console.log(c("green", `${ICONS.ok()} Skill "${c("cyan", slug)}" installed successfully`));
-        if (r.data?.version) console.log(c("gray", `  Version: ${r.data.version}`));
-        if (r.data?.description) console.log(c("gray", `  ${r.data.description.slice(0, 80)}`));
+        if (skill?.version) console.log(c("gray", `  Version: ${skill.version}`));
+        if (skill?.description) console.log(c("gray", `  ${skill.description.slice(0, 80)}`));
       } catch (err) {
         console.log(c("red", `${ICONS.error()} Install failed: ${err instanceof Error ? err.message : String(err)}`));
         console.log(c("gray", `  Try: EvoClaw skills search ${slug}`));
@@ -186,8 +187,17 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       try {
-        const r = await apiRequest<{ upgraded: number; failed: number }>("POST", "/api/skills/batch-upgrade");
-        console.log(c("green", `${ICONS.ok()} Upgraded: ${r.data?.upgraded || 0}  Failed: ${r.data?.failed || 0}`));
+        const listRes = await apiRequest<Skill[] | { skills?: Skill[] }>("GET", "/api/skills");
+        const skillIds = (Array.isArray(listRes.data) ? listRes.data : (listRes.data?.skills || [])).map((s: any) => s.id);
+        if (skillIds.length === 0) {
+          console.log(c("gray", "  No skills installed."));
+          return;
+        }
+        const r = await apiRequest<any>("POST", "/api/skills/batch-upgrade", { skillIds });
+        const results = r.data?.results || [];
+        const upgraded = results.filter((x: any) => x.success).length;
+        const failed = results.filter((x: any) => !x.success).length;
+        console.log(c("green", `${ICONS.ok()} Upgraded: ${upgraded}  Failed: ${failed}`));
       } catch (err) {
         console.log(c("red", `${ICONS.error()} Batch upgrade failed: ${err instanceof Error ? err.message : String(err)}`));
       }
@@ -202,9 +212,9 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       try {
-        const r = await apiRequest<unknown[]>("GET", "/api/skills/check-updates");
+        const r = await apiRequest<any>("GET", "/api/skills/check-updates");
         if (opts.json) { console.log(JSON.stringify(r.data, null, 2)); return; }
-        const updates = r.data || [];
+        const updates = r.data?.updatesAvailable || [];
         console.log(section("Available Updates"));
         if (Array.isArray(updates) && updates.length > 0) {
           for (const u of updates) {
@@ -230,11 +240,12 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       if (!alive) { serverRequired(); return; }
       try {
         const r = await apiRequest<Record<string, unknown>>("POST", `/api/skills/${encodeURIComponent(id)}/health-check`);
-        const healthy = r.data?.healthy;
+        const health: any = r.data?.health || {};
+        const healthy = health.healthy;
         if (healthy) {
           console.log(c("green", `${ICONS.ok()} Skill "${c("cyan", id)}" is healthy`));
         } else {
-          console.log(c("yellow", `${ICONS.warn()} Skill "${c("cyan", id)}" has issues: ${r.data?.error || "unknown"}`));
+          console.log(c("yellow", `${ICONS.warn()} Skill "${c("cyan", id)}" has issues: ${health.error || "unknown"}`));
         }
       } catch (err) {
         console.log(c("red", `${ICONS.error()} Health check failed: ${err instanceof Error ? err.message : String(err)}`));
@@ -250,9 +261,9 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       try {
-        const r = await apiRequest<MarketplaceResult[]>("GET", "/api/marketplace/trending");
+        const r = await apiRequest<any>("GET", "/api/marketplace/trending");
         if (opts.json) { console.log(JSON.stringify(r.data, null, 2)); return; }
-        const results = r.data || [];
+        const results = r.data?.trending || [];
         console.log(section("Trending Skills"));
         if (results.length === 0) {
           console.log(c("gray", "  No trending skills available."));

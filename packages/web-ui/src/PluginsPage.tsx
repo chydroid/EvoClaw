@@ -5,7 +5,7 @@
  * install / uninstall / enable / disable operations.
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "./i18n";
 
@@ -200,6 +200,12 @@ export function PluginsPage() {
   const [installId, setInstallId] = useState("");
   const [showInstall, setShowInstall] = useState(false);
   const [message, setMessage] = useState("");
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleClearMessage = () => {
+    if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
+    messageTimerRef.current = setTimeout(() => { setMessage(""); }, 3000);
+  };
+  useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
 
   const loadPlugins = useCallback(async () => {
     try {
@@ -247,7 +253,7 @@ export function PluginsPage() {
       loadPlugins();
     } catch {
       setMessage(t("plugins.toggle_fail"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
     }
   };
 
@@ -259,7 +265,7 @@ export function PluginsPage() {
       loadPlugins();
     } catch {
       setMessage(t("plugins.remove_fail"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
     }
   };
 
@@ -283,7 +289,7 @@ export function PluginsPage() {
     setInstallId("");
     setShowInstall(false);
     loadPlugins();
-    setTimeout(() => setMessage(""), 3000);
+    scheduleClearMessage();
   };
 
   const installAvailablePlugin = async (id: string) => {
@@ -305,7 +311,7 @@ export function PluginsPage() {
       setMessage(t("plugins.install_fail"));
     }
     loadPlugins();
-    setTimeout(() => setMessage(""), 3000);
+    scheduleClearMessage();
   };
 
   const filteredPlugins = plugins.filter(

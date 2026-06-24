@@ -4,7 +4,7 @@
  * Features: Session selector, instruction form, priority selector,
  * result display, instruction history, quick templates, category reference.
  */
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Card, Badge, PageHeader, Loading, EmptyState,
   PrimaryButton, SecondaryButton, GhostButton, showToast, Section,
@@ -70,8 +70,6 @@ const CATEGORIES = [
   { key: "cancel", icon: "⛔" },
   { key: "info", icon: "ℹ️" },
 ] as const;
-
-let historyIdCounter = 0;
 
 // Map API session to local Session type
 function mapSession(raw: any): Session {
@@ -300,6 +298,7 @@ const styles = {
 
 export default function SteerPage() {
   const { t, lang } = useTranslation();
+  const historyIdCounterRef = useRef(0);
 
   // Form state
   const [sessionId, setSessionId] = useState("");
@@ -360,7 +359,7 @@ export default function SteerPage() {
 
       // Add to history
       const entry: HistoryEntry = {
-        id: ++historyIdCounter,
+        id: ++historyIdCounterRef.current,
         timestamp: new Date().toISOString(),
         sessionId,
         instruction: instruction.trim(),
@@ -383,7 +382,7 @@ export default function SteerPage() {
       setResult(failResult);
 
       const entry: HistoryEntry = {
-        id: ++historyIdCounter,
+        id: ++historyIdCounterRef.current,
         timestamp: new Date().toISOString(),
         sessionId,
         instruction: instruction.trim(),

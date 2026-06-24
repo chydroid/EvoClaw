@@ -554,8 +554,12 @@ export class ErrorRecoveryExecutor {
 let singleton: ErrorRecoveryExecutor | null = null;
 
 export function getErrorRecoveryExecutor(maxRetries?: number): ErrorRecoveryExecutor {
+  // 当显式传入 maxRetries 时，返回新实例以尊重参数；否则使用单例
+  if (maxRetries !== undefined) {
+    return new ErrorRecoveryExecutor(maxRetries);
+  }
   if (!singleton) {
-    singleton = new ErrorRecoveryExecutor(maxRetries);
+    singleton = new ErrorRecoveryExecutor();
   }
   return singleton;
 }

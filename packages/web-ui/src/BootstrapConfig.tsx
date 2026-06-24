@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
 
 interface BootstrapFile {
@@ -56,6 +56,8 @@ export function BootstrapConfig() {
   const [content, setContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [message, setMessage] = useState("");
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
   const [loading, setLoading] = useState(true);
 
   const loadFiles = useCallback(async () => {
@@ -102,7 +104,8 @@ export function BootstrapConfig() {
       if (json.success) {
         setOriginalContent(content);
         setMessage(t("bootstrap.saved_ok") + selectedFile);
-        setTimeout(() => setMessage(""), 3000);
+        if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
+        messageTimerRef.current = setTimeout(() => { setMessage(""); }, 3000);
         loadFiles();
       } else {
         setMessage(t("bootstrap.save_fail") + (json.error || t("bootstrap.unknown_error")));

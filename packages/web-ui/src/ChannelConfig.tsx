@@ -201,6 +201,7 @@ export default function ChannelConfigPage() {
   const qrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const qrTokenRef = useRef<string>("");
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopQrPolling = useCallback(() => {
     if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
@@ -296,6 +297,10 @@ export default function ChannelConfigPage() {
   }, [stopQrPolling]);
 
   useEffect(() => {
+    return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current); };
+  }, []);
+
+  useEffect(() => {
     loadConfig();
   }, []);
 
@@ -382,7 +387,8 @@ export default function ChannelConfigPage() {
       setStatusType("error");
     }
     setSaving(false);
-    setTimeout(() => { setStatusMsg(null); setStatusType(null); }, 3000);
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => { setStatusMsg(null); setStatusType(null); }, 3000);
   }
 
   const [testResult, setTestResult] = React.useState<{

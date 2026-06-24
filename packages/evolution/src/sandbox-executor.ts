@@ -404,7 +404,7 @@ export class SandboxExecutor {
       ${sourceCode}
 
       // 执行测试
-      (async () => {
+      (function() {
         const input = ${JSON.stringify(testCase.input)};
         // 尝试调用导出的函数
         if (typeof module !== 'undefined' && module.exports && typeof module.exports.handler === 'function') {

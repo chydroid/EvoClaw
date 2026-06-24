@@ -96,14 +96,14 @@ const DEFAULT_CONFIG: DreamingConfig = {
 
 /** Preference indicator patterns (bilingual EN/ZH). */
 const PREFERENCE_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> = [
-  { regex: /I (?:always|never|usually|typically)\s/i, confidence: 0.85 },
-  { regex: /I (?:like|love|enjoy|prefer|want|hate|dislike)\b/i, confidence: 0.9 },
-  { regex: /prefer\s+to\s/i, confidence: 0.85 },
-  { regex: /rather\s+than\s/i, confidence: 0.75 },
-  { regex: /instead\s+of\s/i, confidence: 0.7 },
-  { regex: /always use\s/i, confidence: 0.8 },
-  { regex: /never use\s/i, confidence: 0.8 },
-  { regex: /my (?:favorite|preferred|default)\b/i, confidence: 0.85 },
+  { regex: /I (?:always|never|usually|typically)\s/gi, confidence: 0.85 },
+  { regex: /I (?:like|love|enjoy|prefer|want|hate|dislike)\b/gi, confidence: 0.9 },
+  { regex: /prefer\s+to\s/gi, confidence: 0.85 },
+  { regex: /rather\s+than\s/gi, confidence: 0.75 },
+  { regex: /instead\s+of\s/gi, confidence: 0.7 },
+  { regex: /always use\s/gi, confidence: 0.8 },
+  { regex: /never use\s/gi, confidence: 0.8 },
+  { regex: /my (?:favorite|preferred|default)\b/gi, confidence: 0.85 },
   { regex: /我喜欢|我偏好|我习惯|我想要|我爱|我讨厌|我不喜欢/g, confidence: 0.9 },
   { regex: /总是|从不|通常|一般/g, confidence: 0.8 },
   { regex: /偏好|首选|默认/g, confidence: 0.85 },
@@ -112,41 +112,41 @@ const PREFERENCE_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> 
 /** Factual entity patterns. */
 const FACT_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> = [
   // Named entities — Capitalised words (2+ consecutive)
-  { regex: /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/, confidence: 0.6 },
+  { regex: /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g, confidence: 0.6 },
   // Dates
-  { regex: /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/, confidence: 0.75 },
-  { regex: /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s*\d{4}\b/i, confidence: 0.75 },
+  { regex: /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g, confidence: 0.75 },
+  { regex: /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s*\d{4}\b/gi, confidence: 0.75 },
   // Numbers with units
-  { regex: /\b\d+(?:\.\d+)?\s*(?:px|em|rem|%|ms|s|MB|GB|TB|KB|km|m|cm|mm|kg|g|lb|ft|in)\b/i, confidence: 0.7 },
+  { regex: /\b\d+(?:\.\d+)?\s*(?:px|em|rem|%|ms|s|MB|GB|TB|KB|km|m|cm|mm|kg|g|lb|ft|in)\b/gi, confidence: 0.7 },
   // Versions
-  { regex: /\bv?\d+\.\d+(?:\.\d+)?\b/, confidence: 0.65 },
+  { regex: /\bv?\d+\.\d+(?:\.\d+)?\b/g, confidence: 0.65 },
   // Paths
-  { regex: /(?:\/[\w.-]+){2,}/, confidence: 0.6 },
+  { regex: /(?:\/[\w.-]+){2,}/g, confidence: 0.6 },
   // Ports / IPs
-  { regex: /\bport\s+\d+\b/i, confidence: 0.7 },
-  { regex: /\b\d{1,3}(?:\.\d{1,3}){3}\b/, confidence: 0.65 },
+  { regex: /\bport\s+\d+\b/gi, confidence: 0.7 },
+  { regex: /\b\d{1,3}(?:\.\d{1,3}){3}\b/g, confidence: 0.65 },
   // Tech keywords
-  { regex: /\b(?:TypeScript|JavaScript|Python|Rust|Go|Java|React|Vue|Angular|Node|Docker|Kubernetes)\b/, confidence: 0.55 },
+  { regex: /\b(?:TypeScript|JavaScript|Python|Rust|Go|Java|React|Vue|Angular|Node|Docker|Kubernetes)\b/g, confidence: 0.55 },
 ];
 
 /** Repeated-action / pattern patterns. */
 const PATTERN_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> = [
-  { regex: /(?:every|each)\s+(?:time|day|week|month)\b/i, confidence: 0.75 },
-  { regex: /(?:when|whenever)\s+.+?,\s*(?:I|we|they)\b/i, confidence: 0.7 },
-  { regex: /(?:tends?|usually|often|frequently)\s+(?:to\s+)?/i, confidence: 0.65 },
+  { regex: /(?:every|each)\s+(?:time|day|week|month)\b/gi, confidence: 0.75 },
+  { regex: /(?:when|whenever)\s+.+?,\s*(?:I|we|they)\b/gi, confidence: 0.7 },
+  { regex: /(?:tends?|usually|often|frequently)\s+(?:to\s+)?/gi, confidence: 0.65 },
   { regex: /每次|经常|通常|往往|总是/g, confidence: 0.7 },
   { regex: /当.*时(?:,|，)/g, confidence: 0.65 },
 ];
 
 /** Procedure / step-by-step patterns. */
 const PROCEDURE_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> = [
-  { regex: /first\s*[,.]?\s*then\s*[,.]?\s*(?:finally|lastly)?/i, confidence: 0.85 },
-  { regex: /step\s+\d/i, confidence: 0.9 },
-  { regex: /(?:firstly|secondly|thirdly|finally)\b/i, confidence: 0.8 },
+  { regex: /first\s*[,.]?\s*then\s*[,.]?\s*(?:finally|lastly)?/gi, confidence: 0.85 },
+  { regex: /step\s+\d/gi, confidence: 0.9 },
+  { regex: /(?:firstly|secondly|thirdly|finally)\b/gi, confidence: 0.8 },
   { regex: /第[一二三四五六七八九十\d]+步/g, confidence: 0.9 },
   { regex: /首先.*然后.*(?:最后|最终)?/g, confidence: 0.85 },
-  { regex: /(?:1\.|2\.|3\.)\s+\w/i, confidence: 0.7 },
-  { regex: /(?:^|\n)\s*[-*]\s+/m, confidence: 0.5 },
+  { regex: /(?:1\.|2\.|3\.)\s+\w/gi, confidence: 0.7 },
+  { regex: /(?:^|\n)\s*[-*]\s+/gm, confidence: 0.5 },
 ];
 
 // ---------------------------------------------------------------------------

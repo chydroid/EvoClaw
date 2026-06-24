@@ -3,6 +3,57 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.3 (2026-06-24)
+
+### 全面代码审查与 BUG 修复（2 轮）
+
+对全项目进行 2 轮深度代码审查，共发现并修复 **41 个真实 BUG**。
+
+#### 第 1 轮：Agent 包深度审查（9 个）
+
+**资源泄漏与并发修复**：
+- `concurrent-tool-executor.ts`：修复 `setTimeout` 定时器泄漏（execPromise 先完成时未清除超时定时器）；修复 `updateConfig` 重建信号量时丢弃等待者导致永久挂起的问题（改为仅在无活跃执行时重建）
+- `agent-model-executor.ts`：修复 `toolResultCache` 从未清理导致内存泄漏（`cleanToolCache` 已定义但从未调用，改为每次构建 deps 时调用）
+
+**数据正确性修复**：
+- `enhanced-agent-executor.ts`：修复 `JSON.stringify(result.output)` 当 output 为 undefined 时返回 undefined（非字符串），破坏 LLM API 的 `content: string` 契约
+- `task-analyzer.ts`：修复 `totalSubtasks === 0` 时除零产生 NaN
+- `model-failover.ts`：修复重试使用原始 `startMs` 记录 inflated latency，污染熔断器统计
+- `human-approval.ts`：修复文档说默认 5 分钟但代码默认 15 秒的不一致
+
+**设计缺陷修复**：
+- `error-recovery-executor.ts`：修复单例 `getErrorRecoveryExecutor` 忽略 `maxRetries` 参数（改为显式传参时返回新实例）
+- `copilot-router.ts`：移除从未被调用的死代码 `getFirstEnabledProvider` 方法
+
+#### 第 2 轮：WebUI + CLI + 基础设施深度审查（32 个）
+
+**WebUI 内存泄漏与竞态条件（12 个）**：
+- `GuardrailsPage.tsx`：移除模块级可变数组 `auditLog`，改用组件内 state + 函数式更新，防止组件实例间数据泄漏
+- `SteerPage.tsx`：移除模块级可变计数器 `historyIdCounter`，改用 `useRef`
+- `EvolutionDashboard.tsx`：修复 `loadEvolutionData` 闭包捕获首次渲染的 `loading`，导致每次请求失败都弹出错误提示
+- `WebChatPage.tsx`：修复 `setTimeout` 在 setState 更新函数内调用且未清理，组件卸载后触发 setState
+- `CanvasPage.tsx`：修复 SSE effect 闭包过期（`handleA2UICommand` 未在依赖数组中）；修复 `refreshIframe` 的 setTimeout 未清理
+- `Dashboard.tsx`：添加 `AbortController`，防止组件卸载后 fetch 回调触发 setState
+- `StatusPage.tsx`、`LogsPage.tsx`：同上，添加 `AbortController`
+- `CronPage.tsx`、`PluginsPage.tsx`、`BootstrapConfig.tsx`、`ChannelConfig.tsx`：修复多处 `setTimeout(() => setMessage(""), 3000)` 未清理
+
+**CLI 命令 API 响应形状不匹配（13 个）**：
+- `skills.ts`：修复 6 个子命令的 API 响应形状不匹配（search/install/upgrade-all/check-updates/health/trending）
+- `logs.ts`：修复期望 `{ entries }` 但服务器返回 `{ stats, alerts }`
+- `models.ts`：修复 3 处期望 `{ providers: [] }` 但服务器直接返回数组
+- `approvals.ts`：修复 allowlist list/policy/remove 的响应和请求体形状不匹配
+- `pairing.ts`：修复期望 `contacts` 但服务器返回 `{ channel, dmPolicy }`
+- `mcp.ts`：修复 `mcp set` 发送 `parsed` 但服务器期望 `{ config: parsed }`
+
+**基础设施与安全（7 个）**：
+- `memory-dreaming.ts`：**严重** — 修复非全局正则在 `while (regex.exec())` 循环中 `lastIndex` 不前进导致无限循环（进程挂起）
+- `permission-manager.ts`：**严重** — 修复 `checkApproval` 忽略 `target` 参数导致授权绕过（对文件 A 的批准错误适用于所有文件）
+- `concurrency.ts`：修复 `setMaxConcurrency` 唤醒等待者时未递减 `available`，导致超过新并发限制
+- `sandbox-executor.ts`：修复 `buildTestScript` 生成 async IIFE 但 `vm.Script.runInContext` 是同步的，导致异步 handler 测试永远失败
+- `ssrf-protection.ts`：修复 DNS 超时定时器在 DNS 解析先完成时未清除，造成定时器泄漏
+- `message-queue.ts`：修复全局 `processing` 标志跨 topic 串扰，导致其他 topic 消息滞留
+- `mcp-poisoning-scanner.ts`：修复非全局正则产生 50 倍重复威胁检测
+
 ## v0.57.2 (2026-06-23)
 
 ### 全面代码审查与 BUG 修复（3 轮）

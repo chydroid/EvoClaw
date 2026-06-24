@@ -115,7 +115,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         return;
       }
       try {
-        const r = await apiRequest<Record<string, unknown>>("PUT", `/api/skills/${encodeURIComponent(name)}/config`, parsed);
+        const r = await apiRequest<Record<string, unknown>>("PUT", `/api/skills/${encodeURIComponent(name)}/config`, { config: parsed });
         if (r.status >= 200 && r.status < 300) {
           console.log(c("green", `${ICONS.ok()} MCP server "${name}" configured`));
         } else {

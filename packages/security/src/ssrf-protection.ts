@@ -230,14 +230,14 @@ export class SSRFProtection {
    */
   private async checkDNS(hostname: string): Promise<SSRFCheckResult> {
     const { promises: dns } = await import("node:dns");
-
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // Resolve both IPv4 and IPv6 addresses
       const [v4Result, v6Result] = await Promise.race([
         Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("DNS resolution timed out")), this.config.dnsTimeoutMs)
-        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("DNS resolution timed out")), this.config.dnsTimeoutMs);
+        }),
       ]);
 
       const addresses: string[] = [];
@@ -265,6 +265,8 @@ export class SSRFProtection {
       // DNS resolution failure — block by default
       const msg = err instanceof Error ? err.message : String(err);
       return { allowed: false, reason: `DNS resolution failed for ${hostname}: ${msg}` };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

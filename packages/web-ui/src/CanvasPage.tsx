@@ -555,6 +555,7 @@ export function CanvasPage() {
   const [evalLoading, setEvalLoading] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const sseRef = useRef<EventSource | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const projectRef = useRef<CanvasProject | null>(null);
 
   const selectedProject = projects.find((p) => p.id === selectedId) || null;
@@ -619,34 +620,7 @@ export function CanvasPage() {
     }
   }, []);
 
-  useEffect(() => {
-    if (a2uiMode) {
-      const es = new EventSource("/api/canvas/events");
-      es.onmessage = (e) => {
-        try {
-          const cmd = JSON.parse(e.data);
-          handleA2UICommand(cmd);
-        } catch {}
-      };
-      es.onerror = () => {
-        setStatusMsg(t("canvas.sse_disconnected", "SSE 连接断开，尝试重连..."));
-      };
-      sseRef.current = es;
-      setStatusMsg(t("canvas.a2ui_activated", "A2UI 模式已激活，SSE 已连接"));
-      return () => {
-        es.close();
-        sseRef.current = null;
-      };
-    } else {
-      if (sseRef.current) {
-        sseRef.current.close();
-        sseRef.current = null;
-      }
-      setStatusMsg("");
-    }
-  }, [a2uiMode]);
-
-  function handleA2UICommand(cmd: Record<string, any>) {
+  const handleA2UICommand = useCallback((cmd: Record<string, any>) => {
     switch (cmd.cmd) {
       case "setTitle":
         setA2uiTitle(cmd.value || "");
@@ -701,7 +675,34 @@ export function CanvasPage() {
         break;
     }
     setStatusMsg(`A2UI: ${cmd.cmd}`);
-  }
+  }, [t]);
+
+  useEffect(() => {
+    if (a2uiMode) {
+      const es = new EventSource("/api/canvas/events");
+      es.onmessage = (e) => {
+        try {
+          const cmd = JSON.parse(e.data);
+          handleA2UICommand(cmd);
+        } catch {}
+      };
+      es.onerror = () => {
+        setStatusMsg(t("canvas.sse_disconnected", "SSE 连接断开，尝试重连..."));
+      };
+      sseRef.current = es;
+      setStatusMsg(t("canvas.a2ui_activated", "A2UI 模式已激活，SSE 已连接"));
+      return () => {
+        es.close();
+        sseRef.current = null;
+      };
+    } else {
+      if (sseRef.current) {
+        sseRef.current.close();
+        sseRef.current = null;
+      }
+      setStatusMsg("");
+    }
+  }, [a2uiMode, handleA2UICommand]);
 
   async function createProject() {
     if (!newProjectName.trim()) return;
@@ -771,7 +772,8 @@ export function CanvasPage() {
     if (iframeRef.current) {
       const src = iframeRef.current.src;
       iframeRef.current.src = "";
-      setTimeout(() => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => {
         if (iframeRef.current) iframeRef.current.src = src;
       }, 50);
     }

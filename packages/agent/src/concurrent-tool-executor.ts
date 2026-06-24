@@ -387,8 +387,9 @@ export class ConcurrentToolExecutor {
     }, this.config.pollIntervalMs);
 
     // 超时控制
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<ToolExecutionResult>((resolve) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         resolve({
           id: tool.id,
           success: false,
@@ -422,6 +423,7 @@ export class ConcurrentToolExecutor {
       const result = await Promise.race([execPromise, timeoutPromise]);
       return result;
     } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       clearInterval(heartbeatTimer);
       this.activeExecutions.delete(tool.id);
       this.semaphore.release();
@@ -460,7 +462,8 @@ export class ConcurrentToolExecutor {
    */
   updateConfig(config: Partial<ConcurrentExecutorConfig>): void {
     this.config = { ...this.config, ...config };
-    if (config.maxConcurrency) {
+    // 仅在没有活跃执行时才重建信号量，避免丢弃等待者导致永久挂起
+    if (config.maxConcurrency && this.activeExecutions.size === 0) {
       this.semaphore = new AsyncSemaphore(config.maxConcurrency);
     }
   }

@@ -132,7 +132,7 @@ export class HumanApprovalManager {
     this.config = {
       riskLevels: { ...DEFAULT_RISK_LEVELS, ...config?.riskLevels },
       requireApproval: { ...DEFAULT_REQUIRE_APPROVAL, ...config?.requireApproval },
-      approvalTimeout: config?.approvalTimeout ?? 15_000,
+      approvalTimeout: config?.approvalTimeout ?? 5 * 60 * 1000,
       maxPendingPerSession: config?.maxPendingPerSession ?? 10,
     };
     this.startCleanupTimer();

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
 
 interface SystemStatus {
@@ -102,27 +102,35 @@ export function StatusPage() {
   const [services, setServices] = useState<ServiceInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
       const [statusRes, svcRes] = await Promise.all([
-        fetch("/api/status"),
-        fetch("/api/system/services"),
+        fetch("/api/status", { signal }),
+        fetch("/api/system/services", { signal }),
       ]);
+      if (signal?.aborted) return;
       if (statusRes.ok) setStatus(await statusRes.json());
       if (svcRes.ok) setServices(await svcRes.json());
       setError("");
     } catch (err) {
+      if (signal?.aborted) return;
       setError(t("status.connection_error"));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 5000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    loadData(controller.signal);
+    const interval = setInterval(() => loadData(controller.signal), 5000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadData]);
 
   if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>{t("app.loading")}</div></div>;

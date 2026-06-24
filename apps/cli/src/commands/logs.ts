@@ -11,7 +11,8 @@ interface AuditEntry {
 }
 
 interface AuditResponse {
-  entries: AuditEntry[];
+  stats?: any;
+  alerts?: any[];
 }
 
 function formatLevel(type: string): string {
@@ -48,7 +49,7 @@ async function fetchAndDisplay(opts: Record<string, unknown>): Promise<void> {
 
   try {
     const r = await apiRequest<AuditResponse>("GET", "/api/system/audit");
-    let entries = r.data?.entries || [];
+    let entries = r.data?.alerts || [];
     entries = filterEntries(entries, level, source);
     entries = entries.slice(-limit);
 
@@ -62,6 +63,9 @@ async function fetchAndDisplay(opts: Record<string, unknown>): Promise<void> {
 
     if (entries.length === 0) {
       console.log(c("gray", "  No log entries found."));
+      if (r.data?.stats) {
+        console.log(c("gray", `  Stats available: ${JSON.stringify(r.data.stats)}`));
+      }
       console.log();
       return;
     }
@@ -100,7 +104,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         const poll = async () => {
           try {
             const r = await apiRequest<AuditResponse>("GET", "/api/system/audit");
-            let entries = r.data?.entries || [];
+            let entries = r.data?.alerts || [];
             entries = filterEntries(entries, opts.level as string | undefined, opts.source as string | undefined);
             const cutoff = lastTs;
             if (cutoff != null) {

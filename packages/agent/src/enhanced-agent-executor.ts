@@ -165,8 +165,9 @@ export class EnhancedAgentExecutor {
         }
 
         // Add tool result to message history
+        // 注意：JSON.stringify(undefined) 返回 undefined（非字符串），会破坏 LLM API 的 content: string 契约
         const resultContent = result.success 
-          ? JSON.stringify(result.output) 
+          ? JSON.stringify(result.output ?? null) 
           : `Error: ${result.error}`;
         messages.push({
           role: 'tool',

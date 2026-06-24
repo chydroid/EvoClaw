@@ -67,104 +67,104 @@ const POISONING_PATTERNS: Array<{
   // 指令覆盖
   {
     type: "instruction_override",
-    pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|directives?|prompts?)/i,
+    pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|directives?|prompts?)/gi,
     severity: "critical",
     description: "尝试覆盖先前的指令",
   },
   {
     type: "instruction_override",
-    pattern: /disregard\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|rules?)/i,
+    pattern: /disregard\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|rules?)/gi,
     severity: "critical",
     description: "尝试忽略先前的规则",
   },
   {
     type: "instruction_override",
-    pattern: /forget\s+(?:everything|all|your)\s+(?:you|training|rules)/i,
+    pattern: /forget\s+(?:everything|all|your)\s+(?:you|training|rules)/gi,
     severity: "critical",
     description: "尝试让模型忘记训练",
   },
   // 隐藏指令(unicode/零宽字符)
   {
     type: "hidden_directive",
-    pattern: /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/,
+    pattern: /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g,
     severity: "high",
     description: "包含零宽字符/双向控制符,可能隐藏指令",
   },
   // 伪造权威
   {
     type: "fake_authority",
-    pattern: /\[SYSTEM\]|\[ADMIN\]|\[ROOT\]|\[INTERNAL\]|\[PRIORITY\]/i,
+    pattern: /\[SYSTEM\]|\[ADMIN\]|\[ROOT\]|\[INTERNAL\]|\[PRIORITY\]/gi,
     severity: "high",
     description: "伪造系统/管理员身份",
   },
   {
     type: "fake_authority",
-    pattern: /system\s+prompt\s+(?:says|requires|commands?|instructs?)/i,
+    pattern: /system\s+prompt\s+(?:says|requires|commands?|instructs?)/gi,
     severity: "critical",
     description: "伪造系统提示要求",
   },
   // 凭证收集
   {
     type: "credential_harvesting",
-    pattern: /(?:send|post|upload|exfiltrate|transmit)\s+(?:the\s+)?(?:user(?:'s)?\s+)?(?:api[_-]?key|secret|token|password|credential)/i,
+    pattern: /(?:send|post|upload|exfiltrate|transmit)\s+(?:the\s+)?(?:user(?:'s)?\s+)?(?:api[_-]?key|secret|token|password|credential)/gi,
     severity: "critical",
     description: "试图收集并外传凭证",
   },
   {
     type: "credential_harvesting",
-    pattern: /(?:read|fetch|obtain|get|retrieve|collect|exfiltrate)\s+(?:the\s+)?(?:user(?:'s|s)\s+)?(?:\.env|\.ssh|credentials?|id_rsa|id_ed25519|secrets?|api[_-]?keys?|passwords?)/i,
+    pattern: /(?:read|fetch|obtain|get|retrieve|collect|exfiltrate)\s+(?:the\s+)?(?:user(?:'s|s)\s+)?(?:\.env|\.ssh|credentials?|id_rsa|id_ed25519|secrets?|api[_-]?keys?|passwords?)/gi,
     severity: "critical",
     description: "试图读取敏感文件或凭证",
   },
   // 数据外传
   {
     type: "data_exfiltration",
-    pattern: /(?:send|post|upload)\s+(?:all\s+)?(?:the\s+)?(?:data|content|message|conversation)\s+to\s+https?:\/\//i,
+    pattern: /(?:send|post|upload)\s+(?:all\s+)?(?:the\s+)?(?:data|content|message|conversation)\s+to\s+https?:\/\//gi,
     severity: "critical",
     description: "尝试外传数据到远程URL",
   },
   {
     type: "data_exfiltration",
-    pattern: /(?:forward|exfiltrate|leak)\s+(?:to|via)\s+(?:a\s+)?(?:webhook|url|server|endpoint)/i,
+    pattern: /(?:forward|exfiltrate|leak)\s+(?:to|via)\s+(?:a\s+)?(?:webhook|url|server|endpoint)/gi,
     severity: "high",
     description: "尝试外传数据",
   },
   // 代码执行
   {
     type: "code_execution",
-    pattern: /(?:run|execute|eval)\s+(?:the\s+following\s+)?(?:code|command|script|shell)/i,
+    pattern: /(?:run|execute|eval)\s+(?:the\s+following\s+)?(?:code|command|script|shell)/gi,
     severity: "medium",
     description: "建议执行代码/命令",
   },
   {
     type: "code_execution",
-    pattern: /`(?:rm\s+-rf|sudo|chmod\s+777|curl\s+[^`]*\|\s*sh|wget\s+[^`]*\|\s*bash)/i,
+    pattern: /`(?:rm\s+-rf|sudo|chmod\s+777|curl\s+[^`]*\|\s*sh|wget\s+[^`]*\|\s*bash)/gi,
     severity: "critical",
     description: "包含危险命令示例",
   },
   // 钓鱼链接
   {
     type: "phishing_link",
-    pattern: /https?:\/\/(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?\//,
+    pattern: /https?:\/\/(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?\//g,
     severity: "medium",
     description: "包含IP地址直链",
   },
   {
     type: "phishing_link",
-    pattern: /https?:\/\/(?:[a-z0-9-]+\.)*(?:ngrok|localtunnel|serveo|requestbin|hookbin)\.(?:io|net|com)/i,
+    pattern: /https?:\/\/(?:[a-z0-9-]+\.)*(?:ngrok|localtunnel|serveo|requestbin|hookbin)\.(?:io|net|com)/gi,
     severity: "high",
     description: "包含内网穿透/请求捕获服务链接",
   },
   // 社会工程学
   {
     type: "social_engineering",
-    pattern: /you\s+must\s+(?:not\s+)?(?:tell|inform|warn|alert|mention)\s+(?:the\s+)?user/i,
+    pattern: /you\s+must\s+(?:not\s+)?(?:tell|inform|warn|alert|mention)\s+(?:the\s+)?user/gi,
     severity: "high",
     description: "试图让模型对用户隐瞒信息",
   },
   {
     type: "social_engineering",
-    pattern: /pretend\s+(?:to\s+be|you\s+are)\s+(?:a|an)\s+(?:helpful|harmless)/i,
+    pattern: /pretend\s+(?:to\s+be|you\s+are)\s+(?:a|an)\s+(?:helpful|harmless)/gi,
     severity: "medium",
     description: "试图让模型伪装无害",
   },

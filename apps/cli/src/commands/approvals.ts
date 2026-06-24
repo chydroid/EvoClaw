@@ -112,8 +112,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .action(async (opts: Record<string, unknown>) => {
       if (!(await ensureServer())) return;
       try {
-        const r = await apiRequest<{ entries: WhitelistEntry[] }>("GET", "/api/permission/whitelist");
-        const entries = r.data?.entries || [];
+        const r = await apiRequest<any>("GET", "/api/permission/whitelist");
+        const entries = (r.data?.whitelist || []).map((w: any) => ({ path: w.targetPattern, permissions: w.operation }));
         if (opts.json) {
           console.log(JSON.stringify({ entries }, null, 2));
           return;
@@ -151,6 +151,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         }
       } catch (err) {
         console.log(c("red", `❌ Failed to add allowlist entry: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(c("yellow", "  Note: whitelist add requires server-side POST /api/permission/whitelist route"));
       }
     });
 
@@ -161,7 +162,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       if (!(await ensureServer())) return;
       try {
         const r = await apiRequest<{ success: boolean }>("DELETE", "/api/permission/whitelist", {
-          path: entryPath,
+          operation: entryPath,
+          target: entryPath,
         });
         if (r.data?.success || r.status === 200) {
           console.log(c("green", `✅ Removed ${entryPath} from allowlist`));
@@ -194,6 +196,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           console.log(c("red", `❌ File not found: ${file}`));
         } else {
           console.log(c("red", `❌ Failed to load policy: ${err instanceof Error ? err.message : String(err)}`));
+          console.log(c("yellow", "  Note: whitelist add requires server-side POST /api/permission/whitelist route"));
         }
       }
     });
@@ -206,10 +209,10 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       if (!(await ensureServer())) return;
       try {
         const [whitelistRes, requestsRes] = await Promise.all([
-          apiRequest<{ entries: WhitelistEntry[] }>("GET", "/api/permission/whitelist"),
+          apiRequest<any>("GET", "/api/permission/whitelist"),
           apiRequest<{ requests: PermissionRequest[] }>("GET", "/api/permission/requests"),
         ]);
-        const entries = whitelistRes.data?.entries || [];
+        const entries = (whitelistRes.data?.whitelist || []).map((w: any) => ({ path: w.targetPattern, permissions: w.operation }));
         const pending = requestsRes.data?.requests || [];
 
         if (opts.json) {

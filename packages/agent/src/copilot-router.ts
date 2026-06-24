@@ -410,33 +410,4 @@ export class CopilotRouter {
     return this.providerHealth.get(providerId);
   }
 
-  /**
-   * 获取第一个已启用的用户Provider
-   * 不默认GPT-4o，严格按用户配置顺序
-   */
-  private getFirstEnabledProvider(currentModel: string, currentProvider: string): {
-    model: string;
-    provider: string;
-    shouldDowngrade: boolean;
-  } {
-    const providers = this.config.userProviders;
-    if (providers && providers.length > 0) {
-      const sorted = [...providers].sort((a, b) => a.order - b.order);
-      const first = sorted.find(p => p.enabled);
-      if (first) {
-        return {
-          model: first.selectedModel,
-          provider: first.id,
-          shouldDowngrade: first.id !== currentProvider,
-        };
-      }
-    }
-
-    // No user providers configured, keep current
-    return {
-      model: currentModel,
-      provider: currentProvider,
-      shouldDowngrade: false,
-    };
-  }
 }

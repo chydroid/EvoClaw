@@ -24,10 +24,11 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           return;
         }
         console.log(`\n${c("bold", `Approved Contacts${channel ? ` (${channel})` : ""}\n`)}`);
-        const contacts = (r.data.contacts || r.data.channels || r.data.items || []) as Array<Record<string, unknown>>;
+        const contacts = (r.data?.contacts || r.data?.channels || r.data?.items || r.data?.peers || r.data?.approved || []) as Array<Record<string, unknown>>;
         if (contacts.length === 0) {
           console.log(`  ${c("gray", "No approved contacts yet")}`);
           console.log(`  ${c("gray", "Requests appear when users send their first DM")}`);
+          console.log(`  ${c("gray", "(endpoint may return single-channel info, not a contact list)")}`);
         } else {
           for (const ct of contacts) {
             const ch = String(ct.channel || ct.id || ct.name || "unknown");

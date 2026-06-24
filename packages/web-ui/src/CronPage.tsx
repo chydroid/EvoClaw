@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
 
 interface ScheduledTask {
@@ -112,6 +112,12 @@ export function CronPage() {
     name: "", cronExpression: "", description: "", handlerType: "system", enabled: true,
   });
   const [message, setMessage] = useState("");
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleClearMessage = () => {
+    if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
+    messageTimerRef.current = setTimeout(() => { setMessage(""); }, 3000);
+  };
+  useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -164,7 +170,7 @@ export function CronPage() {
     } catch {
       setMessage(t("cron.network_error"));
     }
-    setTimeout(() => setMessage(""), 3000);
+    scheduleClearMessage();
   };
 
   const toggleTask = async (taskId: string, enabled: boolean) => {
@@ -178,7 +184,7 @@ export function CronPage() {
     } catch (err) {
       console.error("Failed to toggle task:", err);
       setMessage(t("cron.network_error"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
     }
   };
 
@@ -189,7 +195,7 @@ export function CronPage() {
     } catch (err) {
       console.error("Failed to delete task:", err);
       setMessage(t("cron.network_error"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
     }
   };
 
@@ -197,12 +203,12 @@ export function CronPage() {
     try {
       await fetch(`/api/scheduler/tasks/${taskId}/run`, { method: "POST" });
       setMessage(t("cron.triggered"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
       loadTasks();
     } catch (err) {
       console.error("Failed to run task:", err);
       setMessage(t("cron.network_error"));
-      setTimeout(() => setMessage(""), 3000);
+      scheduleClearMessage();
     }
   };
 

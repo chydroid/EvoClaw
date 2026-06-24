@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "./i18n";
 
 interface EvolutionData {
@@ -143,6 +143,8 @@ export default function EvolutionDashboard() {
   const [compactions, setCompactions] = useState<CompactionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const loadingRef = useRef(true);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
   const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress" | "help">("overview");
   const [triggering, setTriggering] = useState(false);
   const [triggerDesc, setTriggerDesc] = useState("");
@@ -179,7 +181,7 @@ export default function EvolutionDashboard() {
       }
     } catch {
       setData(DEFAULT_DATA);
-      if (loading) setError(t("evo.server_unavailable", "Server not available - showing empty dashboard"));
+      if (loadingRef.current) setError(t("evo.server_unavailable", "Server not available - showing empty dashboard"));
     } finally {
       setLoading(false);
     }

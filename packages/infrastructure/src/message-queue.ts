@@ -15,7 +15,7 @@ type MessageHandler = (message: QueueMessage) => Promise<void>;
 export class MessageQueue {
   private topics = new Map<string, QueueMessage[]>();
   private handlers = new Map<string, MessageHandler[]>();
-  private processing = false;
+  private processingTopics = new Set<string>();
 
   constructor(
     private registry: ServiceRegistry,
@@ -52,8 +52,8 @@ export class MessageQueue {
   }
 
   private async processTopic(topic: string): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
+    if (this.processingTopics.has(topic)) return;
+    this.processingTopics.add(topic);
 
     try {
       const messages = this.topics.get(topic);
@@ -77,7 +77,7 @@ export class MessageQueue {
         }
       }
     } finally {
-      this.processing = false;
+      this.processingTopics.delete(topic);
     }
   }
 

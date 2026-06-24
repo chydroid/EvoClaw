@@ -40,7 +40,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       if (!alive) { serverRequired(); return; }
       try {
         const { data } = await apiRequest<{ providers: ProviderInfo[] }>("GET", "/api/system/providers");
-        const providers = data.providers || [];
+        const providers = Array.isArray(data) ? data : (data?.providers || []);
         const filtered = provider ? providers.filter(p => p.id === provider) : providers;
         if (opts.json) { console.log(JSON.stringify(filtered, null, 2)); return; }
         console.log(section("Available Models"));
@@ -68,16 +68,17 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       try {
-        const { data: providers } = await apiRequest<{ providers: ProviderInfo[] }>("GET", "/api/system/providers");
+        const { data: providersData } = await apiRequest<ProviderInfo[] | { providers: ProviderInfo[] }>("GET", "/api/system/providers");
         const { data: config } = await apiRequest<LlmConfig>("GET", "/api/config/llm");
-        if (opts.json) { console.log(JSON.stringify({ providers: providers.providers, config }, null, 2)); return; }
+        const providers: any = Array.isArray(providersData) ? providersData : (providersData?.providers || []);
+        if (opts.json) { console.log(JSON.stringify({ providers, config }, null, 2)); return; }
         console.log(section("Model Status"));
         console.log(`  Default Model:   ${config.defaultModel ? c("green", config.defaultModel) : c("gray", "not set")}`);
         console.log(`  Default Provider: ${config.defaultProvider ? c("green", config.defaultProvider) : c("gray", "not set")}`);
         console.log(`  Fallbacks:       ${config.fallbacks && config.fallbacks.length > 0 ? config.fallbacks.join(" → ") : c("gray", "none")}`);
         console.log(`  Provider Order:  ${config.providerOrder && config.providerOrder.length > 0 ? config.providerOrder.join(", ") : c("gray", "default")}`);
         console.log();
-        const provList = providers.providers || [];
+        const provList = Array.isArray(providers) ? providers : (providers?.providers || []);
         for (const p of provList) {
           const keyIcon = p.apiKeySet ? c("green", "API key set") : c("red", "API key missing");
           const enabledIcon = p.enabled ? c("green", "enabled") : c("gray", "disabled");
@@ -122,7 +123,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       if (!alive) { serverRequired(); return; }
       try {
         const { data } = await apiRequest<{ providers: ProviderInfo[] }>("GET", "/api/system/providers");
-        const providers = data.providers || [];
+        const providers = Array.isArray(data) ? data : (data?.providers || []);
         console.log(section("Scanned Models"));
         if (providers.length === 0) {
           console.log(c("gray", "  No providers found. Configure API keys first."));
