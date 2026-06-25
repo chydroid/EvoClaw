@@ -126,6 +126,7 @@ export class ReplyReferenceManager {
 
     if (this.config.autoClean) {
       this.cleanTimer = setInterval(() => this.clean(), this.config.cleanIntervalMs);
+      this.cleanTimer.unref?.();
     }
   }
 

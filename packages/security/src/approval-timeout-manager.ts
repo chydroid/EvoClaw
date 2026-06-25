@@ -261,6 +261,7 @@ export class ApprovalTimeoutManager {
     if (this.onExpired) {
       try { await this.onExpired(request); } catch (err) { console.debug("[ApprovalTimeout]", err); }
     }
+    pending.resolve(decision);
   }
 
   /** 获取待处理列表 */

@@ -390,8 +390,11 @@ export class SkillEcosystem {
       // Array item
       if (trimmed.startsWith("- ") && currentKey) {
         const value = trimmed.slice(2).trim().replace(/^['"]|['"]$/g, "");
+        if (!Array.isArray(result[currentKey])) {
+          currentArray = [];
+          result[currentKey] = currentArray;
+        }
         currentArray.push(value);
-        result[currentKey] = currentArray;
         continue;
       }
 

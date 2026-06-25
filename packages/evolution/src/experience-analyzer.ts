@@ -62,6 +62,7 @@ export interface CrossDomainInsight {
 }
 
 export class ExperienceAnalyzer {
+  private static readonly MAX_PATTERNS = 500;
   private patterns = new Map<string, ExperiencePattern>();
   private patternEmbeddings = new Map<string, number[]>();
   private embedder: SemanticEmbedder;
@@ -95,6 +96,13 @@ export class ExperienceAnalyzer {
         pattern.embedding = this.generatePatternEmbedding(pattern);
         this.patterns.set(pattern.id, pattern);
         this.patternEmbeddings.set(pattern.id, pattern.embedding);
+        if (this.patterns.size > ExperienceAnalyzer.MAX_PATTERNS) {
+          const oldest = this.patterns.keys().next().value;
+          if (oldest !== undefined) {
+            this.patterns.delete(oldest);
+            this.patternEmbeddings.delete(oldest);
+          }
+        }
       }
     }
 

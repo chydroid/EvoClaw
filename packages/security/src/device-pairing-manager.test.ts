@@ -137,7 +137,7 @@ describe("DevicePairingManager", () => {
       expect(device2).toBeNull();
     });
 
-    it("should update existing device on re-pairing", () => {
+    it("should reject re-pairing of an already trusted device", () => {
       const { publicKey, privateKey } = generateKeyPair();
       const session = manager.initiatePairing("web", "Test Browser");
       const signature = signChallenge(session.challenge, privateKey);
@@ -160,9 +160,7 @@ describe("DevicePairingManager", () => {
         deviceName: "Updated Browser",
       });
 
-      expect(device2).not.toBeNull();
-      expect(device2!.deviceId).toBe(device1!.deviceId);
-      expect(device2!.deviceName).toBe("Updated Browser");
+      expect(device2).toBeNull();
     });
 
     it("should emit security event on pairing", () => {

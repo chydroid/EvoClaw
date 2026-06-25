@@ -460,8 +460,12 @@ export class ProtocolHandler {
         if (client.isConnected()) {
           client.send(frame);
         }
-      } catch {
-        // Client may have disconnected
+      } catch (err) {
+        // Client may have disconnected — 记录日志便于排查，避免静默删除
+        const reason = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[ProtocolHandler] broadcast send failed for client ${client.id}, removing: ${reason}`);
+        // 先关闭底层 socket 释放资源，再从 Map 中删除
+        try { client.close(); } catch { /* ignore */ }
         this.clients.delete(client.id);
       }
     }

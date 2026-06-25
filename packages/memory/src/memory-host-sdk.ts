@@ -384,6 +384,7 @@ export class MemoryHost {
     this.dirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 500);
+    this.saveTimer.unref();
   }
 
   flush(): void {
@@ -396,10 +397,21 @@ export class MemoryHost {
       const dir = path.dirname(this.storePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const arr = [...this.entries.values()];
-      fs.writeFileSync(this.storePath, JSON.stringify(arr, null, 2), "utf-8");
+      const tmp = `${this.storePath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), "utf-8");
+      // fsync the temp file so the data is durable before the atomic rename
+      const fd = fs.openSync(tmp, "r");
+      try {
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, this.storePath);
       this.dirty = false;
-    } catch {
-      // Best-effort
+    } catch (err) {
+      console.error(`[MemoryHost] Failed to flush store to ${this.storePath}: ${err instanceof Error ? err.message : String(err)}`);
+      // Keep dirty = true and reschedule so we retry on the next tick
+      this.scheduleSave();
     }
   }
 

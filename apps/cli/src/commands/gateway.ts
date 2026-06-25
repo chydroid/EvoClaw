@@ -24,8 +24,6 @@ function findProjectRoot(): string {
 const PROJECT_ROOT = findProjectRoot();
 const PID_FILE = path.join(PROJECT_ROOT, "data", "evoclaw-gateway.pid");
 
-let gatewayProcess: child_process.ChildProcess | null = null;
-
 function readPid(): { pid: number; port: number } | null {
   try {
     if (fs.existsSync(PID_FILE)) {
@@ -46,8 +44,10 @@ function writePid(pid: number, usedPort: number): void {
   try {
     const dir = path.dirname(PID_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Write PID and port so restart can use the same port
-    fs.writeFileSync(PID_FILE, JSON.stringify({ pid, port: usedPort }));
+    // Write PID and port so restart can use the same port (atomic: temp + rename)
+    const tmp = `${PID_FILE}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify({ pid, port: usedPort }));
+    fs.renameSync(tmp, PID_FILE);
   } catch { /* ignore */ }
 }
 
@@ -154,18 +154,6 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .option("--no-color", "Disable colored output")
     .action(async (opts: Record<string, unknown>) => {
       console.log(c("cyan", "Restarting Gateway..."));
-      // If server is already reachable, just reload (no need to kill & restart)
-      const serverAlive = await checkServer();
-      if (serverAlive) {
-        console.log(c("green", "✅ Gateway is already running, no restart needed"));
-        // Still write PID file so future stop/restart works
-        const info = readPid();
-        if (!info || !isProcessRunning(info.pid)) {
-          // Server is running but we don't have its PID — try to find it
-          console.log(c("gray", "  (Server was started outside CLI; PID not tracked)"));
-        }
-        return;
-      }
       stopGateway(opts);
       // Small delay to let the old process clean up
       setTimeout(() => startGateway(opts), 1000);

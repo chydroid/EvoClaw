@@ -64,15 +64,10 @@ async function weixinApiGet(endpoint: string, timeoutMs = 35000): Promise<string
       },
       signal: controller.signal,
     });
-    clearTimeout(timer);
     if (!res.ok) throw new Error(`WeChat API ${res.status}: ${await res.text()}`);
     return await res.text();
-  } catch (err) {
+  } finally {
     clearTimeout(timer);
-    if (err instanceof Error && err.name === "AbortError") {
-      return JSON.stringify({ status: "wait" });
-    }
-    throw err;
   }
 }
 
@@ -96,6 +91,13 @@ function saveWeixinCredentials(accountId: string, token: string, baseUrl: string
   const path = require("path") as typeof import("path");
   const os = require("os") as typeof import("os");
 
+  // Atomic write: write to temp file then rename (prevents partial/corrupt files)
+  const atomicWriteFileSync = (filePath: string, contents: string): void => {
+    const tmp = `${filePath}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, contents, "utf-8");
+    fs.renameSync(tmp, filePath);
+  };
+
   // Normalize accountId: replace @ with - for filesystem safety
   const normalizedId = accountId.replace(/@/g, "-");
 
@@ -111,7 +113,7 @@ function saveWeixinCredentials(accountId: string, token: string, baseUrl: string
     savedAt: new Date().toISOString(),
     ...(userId ? { userId } : {}),
   };
-  fs.writeFileSync(accountFile, JSON.stringify(data, null, 2), "utf-8");
+  atomicWriteFileSync(accountFile, JSON.stringify(data, null, 2));
 
   // Also update the accounts index
   const indexPath = path.join(stateDir, "openclaw-weixin", "accounts.json");
@@ -123,7 +125,7 @@ function saveWeixinCredentials(accountId: string, token: string, baseUrl: string
   } catch { /* ignore */ }
   if (!index.includes(normalizedId)) {
     index.push(normalizedId);
-    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
+    atomicWriteFileSync(indexPath, JSON.stringify(index, null, 2));
   }
 
   console.log(c("gray", `  Credentials saved to: ${accountFile}`));
@@ -249,17 +251,18 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
                     console.log(c("red", "\n❌ 登录失败：服务器未返回 ilink_bot_id"));
                     return;
                   }
-                  console.log(c("green", "\n✅ 已将此 OpenClaw 连接到微信！"));
-
-                  // Save credentials
-                  if (statusResp.bot_token) {
-                    saveWeixinCredentials(
-                      statusResp.ilink_bot_id,
-                      statusResp.bot_token,
-                      statusResp.baseurl || WEIXIN_API_BASE,
-                      statusResp.ilink_user_id,
-                    );
+                  if (!statusResp.bot_token) {
+                    console.log(c("red", "\n❌ 登录失败：服务器未返回 bot_token"));
+                    return;
                   }
+                  // Save credentials before declaring success
+                  saveWeixinCredentials(
+                    statusResp.ilink_bot_id,
+                    statusResp.bot_token,
+                    statusResp.baseurl || WEIXIN_API_BASE,
+                    statusResp.ilink_user_id,
+                  );
+                  console.log(c("green", "\n✅ 已将此 OpenClaw 连接到微信！"));
                   return;
                 }
 

@@ -386,11 +386,15 @@ function LLMConfigPanel() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
 
   useEffect(() => {
     loadConfig();
   }, []);
+
+  // 卸载时清理 statusMsg 定时器，避免设置已卸载组件的状态
+  useEffect(() => { return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current); }; }, []);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -460,7 +464,8 @@ function LLMConfigPanel() {
       setStatusIsSuccess(false);
     }
     setSaving(false);
-    setTimeout(() => setStatusMsg(null), 3000);
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setStatusMsg(null), 3000);
   }
 
   function updateProvider(id: string, updates: Partial<LLMProvider>) {
@@ -894,12 +899,16 @@ function MediaGenConfig({ kind }: MediaGenConfigProps) {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
 
   useEffect(() => {
     loadConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 卸载时清理 statusMsg 定时器，避免设置已卸载组件的状态
+  useEffect(() => { return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current); }; }, []);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -961,7 +970,8 @@ function MediaGenConfig({ kind }: MediaGenConfigProps) {
       setStatusIsSuccess(false);
     }
     setSaving(false);
-    setTimeout(() => setStatusMsg(null), 3000);
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setStatusMsg(null), 3000);
   }
 
   function updateProvider(id: string, updates: Partial<ImageGenProvider | VideoGenProvider>) {

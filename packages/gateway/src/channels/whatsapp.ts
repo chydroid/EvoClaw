@@ -27,6 +27,8 @@ export interface WhatsAppConfig {
   accessToken: string;
   /** Webhook verify token */
   verifyToken?: string;
+  /** Meta App Secret for X-Hub-Signature-256 webhook signature verification */
+  appSecret?: string;
   /** Allowed phone numbers (empty = all) */
   allowedNumbers?: string[];
   /** Business account ID */
@@ -84,6 +86,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private phoneNumberId: string;
   private accessToken: string;
   private verifyToken: string;
+  private appSecret?: string;
   private apiVersion: string;
   private allowedNumbers: Set<string>;
   private businessAccountId?: string;
@@ -100,6 +103,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     this.phoneNumberId = config.phoneNumberId;
     this.accessToken = config.accessToken;
     this.verifyToken = config.verifyToken ?? "evoclaw-whatsapp";
+    this.appSecret = config.appSecret;
     this.apiVersion = config.apiVersion ?? "v22.0";
     this.allowedNumbers = new Set(config.allowedNumbers ?? []);
     this.businessAccountId = config.businessAccountId;
@@ -236,9 +240,35 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   /**
    * Handle incoming webhook event from WhatsApp Cloud API.
+   * 若配置了 appSecret，则验证 X-Hub-Signature-256 签名（HMAC-SHA256 of rawBody）。
+   * 如果 appSecret 未配置则跳过验证（向后兼容）。
    */
-  async handleWebhook(body: unknown): Promise<void> {
+  async handleWebhook(body: unknown, headers?: Record<string, string>, rawBody?: string): Promise<void> {
     if (typeof body !== "object" || body === null) return;
+
+    // 验证 Meta 签名（如果配置了 appSecret）
+    if (this.appSecret && rawBody !== undefined) {
+      const sigHeader = headers?.["x-hub-signature-256"];
+      if (!sigHeader || !sigHeader.startsWith("sha256=")) {
+        console.warn("[WhatsApp] Webhook rejected: missing or invalid X-Hub-Signature-256 header");
+        return;
+      }
+      const expected = "sha256=" + crypto
+        .createHmac("sha256", this.appSecret)
+        .update(rawBody)
+        .digest("hex");
+      try {
+        const expectedBuf = Buffer.from(expected);
+        const sigBuf = Buffer.from(sigHeader);
+        if (expectedBuf.length !== sigBuf.length || !crypto.timingSafeEqual(expectedBuf, sigBuf)) {
+          console.warn("[WhatsApp] Webhook rejected: invalid X-Hub-Signature-256 signature");
+          return;
+        }
+      } catch {
+        console.warn("[WhatsApp] Webhook rejected: signature comparison failed");
+        return;
+      }
+    }
 
     const payload = body as {
       object?: string;

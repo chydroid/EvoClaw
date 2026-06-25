@@ -167,6 +167,18 @@ export class LinkPreviewer {
               res.headers.location,
               url,
             ).toString();
+            if (!this.isDomainAllowed(new URL(redirectUrl).hostname)) {
+              resolve({
+                url: redirectUrl,
+                title: "",
+                description: "",
+                contentType: "",
+                statusCode: res.statusCode || 0,
+                fetchDurationMs: Date.now() - start,
+                error: "Redirect to disallowed domain",
+              });
+              return;
+            }
             resolve(this.fetchWithRedirects(redirectUrl, depth + 1, start));
             return;
           }

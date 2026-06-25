@@ -374,6 +374,22 @@ export class SecretManager {
    */
   verify(name: string, candidate: string): boolean {
     const entry = this.secrets.get(name);
+
+    // Always perform a constant-time comparison against a fixed buffer so that
+    // missing/inactive/expired secrets take the same time as valid ones.
+    const dummy = Buffer.alloc(32);
+    const candidateBuf = Buffer.from(candidate, "utf-8");
+    const dummyMax = Math.max(dummy.length, candidateBuf.length);
+    const paddedDummy = Buffer.alloc(dummyMax);
+    const paddedCandidate = Buffer.alloc(dummyMax);
+    dummy.copy(paddedDummy, dummyMax - dummy.length);
+    candidateBuf.copy(paddedCandidate, dummyMax - candidateBuf.length);
+    try {
+      timingSafeEqual(paddedDummy, paddedCandidate);
+    } catch {
+      // ignore — dummy comparison only equalizes timing
+    }
+
     if (!entry || !entry.active) return false;
     if (entry.expiresAt > 0 && Date.now() > entry.expiresAt) return false;
 

@@ -2623,11 +2623,23 @@ Have a specific URL?
         if (parallelCalls.length > 1) {
           process.stdout.write(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}`);
           const parallelResults = await Promise.allSettled(parallelCalls.map(tc => executeSingleToolCall(tc)));
-          for (const result of parallelResults) {
+          for (let i = 0; i < parallelResults.length; i++) {
+            const result = parallelResults[i];
+            const toolCall = parallelCalls[i];
             if (result.status === "fulfilled") {
               conversationMessages.push(result.value);
             } else {
-              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed:` + " " + result.reason);
+              // 失败结果也以工具消息形式加入对话，避免 LLM 等待永远不会到来的工具结果导致卡死
+              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed: ${result.reason}`);
+              conversationMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                name: toolCall.function.name,
+                content: JSON.stringify({
+                  error: "Tool execution failed",
+                  reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
+                }),
+              });
             }
           }
         } else if (parallelCalls.length === 1) {

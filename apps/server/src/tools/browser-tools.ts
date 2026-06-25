@@ -3,6 +3,17 @@ import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { BrowserController, PlaywrightBrowser, FileSystemManager } from "@evoclaw/infrastructure";
 
+/** Validate that a resolved path stays within the allowed base directory.
+ *  Prevents path traversal attacks (e.g. `../../etc/passwd`). */
+function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
+  const normalizedBase = path.resolve(baseDir);
+  const normalizedTarget = path.resolve(resolvedPath);
+  if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
+    return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}". Use relative paths within the workspace only.`;
+  }
+  return null;
+}
+
 export function registerBrowserTools(
   executor: AgentModelExecutor,
   browserController: BrowserController,
@@ -263,9 +274,11 @@ export function registerBrowserTools(
       });
       if (filename) {
         const fs = await import("node:fs");
-        const pathMod = await import("node:path");
-        const resolved = pathMod.resolve(filename);
-        await fs.promises.mkdir(pathMod.dirname(resolved), { recursive: true });
+        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+        const resolved = path.resolve(workspaceDir, filename);
+        const pathError = validatePathWithinBase(resolved, workspaceDir);
+        if (pathError) return { success: false, error: pathError };
+        await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
         await fs.promises.writeFile(resolved, buf);
         return { success: true, file: filename, size: buf.length, format: "png" };
       }

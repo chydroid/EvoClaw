@@ -81,6 +81,7 @@ export class GracefulShutdownManager extends EventEmitter {
   private status: ShutdownStatus;
   private totalTimer: ReturnType<typeof setTimeout> | null = null;
   private forceTimer: ReturnType<typeof setTimeout> | null = null;
+  private exitTimer: NodeJS.Timeout | null = null;
   private signalCount = 0;
   private boundHandleSignal: ((signal: string) => void) | null = null;
 
@@ -216,6 +217,7 @@ export class GracefulShutdownManager extends EventEmitter {
     }
     if (this.totalTimer) clearTimeout(this.totalTimer);
     if (this.forceTimer) clearTimeout(this.forceTimer);
+    if (this.exitTimer) clearTimeout(this.exitTimer);
   }
 
   configure(updates: Partial<GracefulShutdownConfig>): void {
@@ -279,7 +281,7 @@ export class GracefulShutdownManager extends EventEmitter {
 
     // Exit process if this was a signal-initiated shutdown
     if (this.signalCount > 0) {
-      setTimeout(() => {
+      this.exitTimer = setTimeout(() => {
         process.exit(this.config.exitCode);
       }, 100);
     }

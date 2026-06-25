@@ -185,6 +185,7 @@ export default function ChannelConfigPage() {
   ], [t]);
 
   const [channels, setChannels] = useState<ChannelConfig[]>(DEFAULT_CHANNEL_CONFIGS);
+  const channelsRef = useRef(channels);
   const [activeChannel, setActiveChannel] = useState<string>("feishu");
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -202,6 +203,9 @@ export default function ChannelConfigPage() {
   const qrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const qrTokenRef = useRef<string>("");
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 跟踪最新 channels，避免 QR 轮询回调中使用 stale 闭包
+  useEffect(() => { channelsRef.current = channels; }, [channels]);
 
   const stopQrPolling = useCallback(() => {
     if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
@@ -262,12 +266,12 @@ export default function ChannelConfigPage() {
                 c.id === "personal_wechat" ? { ...c, enabled: true } : c
               )
             );
-            // 保存启用状态到服务端
+            // 保存启用状态到服务端 — 使用 channelsRef.current 避免 stale 闭包覆盖用户修改
             fetch("/api/config/channels", {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                channels: channels.map((c) =>
+                channels: channelsRef.current.map((c) =>
                   c.id === "personal_wechat" ? { ...c, enabled: true } : c
                 ),
               }),

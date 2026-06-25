@@ -162,17 +162,29 @@ export class RBACManager {
 
   validateApiKey(rawKey: string): ApiKeyInfo | null {
     const keyHash = this.hashKey(rawKey);
-    const apiKey = this.apiKeys.get(keyHash);
+    const candidate = Buffer.from(keyHash, "utf-8");
 
-    if (!apiKey) return null;
+    // Constant-time lookup: iterate all stored key hashes and compare with
+    // crypto.timingSafeEqual instead of a non-constant-time Map.get.
+    let matched: ApiKeyInfo | null = null;
+    let matchedHash: string | null = null;
+    for (const [storedHash, apiKey] of this.apiKeys) {
+      const stored = Buffer.from(storedHash, "utf-8");
+      if (stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate)) {
+        matched = apiKey;
+        matchedHash = storedHash;
+      }
+    }
 
-    if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
-      this.apiKeys.delete(keyHash);
+    if (!matched || !matchedHash) return null;
+
+    if (matched.expiresAt && matched.expiresAt < new Date()) {
+      this.apiKeys.delete(matchedHash);
       return null;
     }
 
-    apiKey.lastUsed = new Date();
-    return apiKey;
+    matched.lastUsed = new Date();
+    return matched;
   }
 
   revokeApiKey(userId: string, keyHash: string): boolean {

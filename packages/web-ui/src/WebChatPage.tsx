@@ -616,6 +616,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const hasLocalMessagesRef = useRef(false);
   const sessionMessagesCache = useRef<Map<string, WebChatMessage[]>>(new Map());
   const currentMessagesRef = useRef<WebChatMessage[]>([]);
+  const attachedFilesRef = useRef<AttachedFileInfo[]>([]);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -759,6 +760,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   }, [messages]);
 
   useEffect(() => {
+    attachedFilesRef.current = attachedFiles;
+  }, [attachedFiles]);
+
+  useEffect(() => {
     const sid = effectiveSessionIdRef.current;
     if (sid && messages.length > 0) {
       sessionMessagesCache.current.set(sid, [...messages]);
@@ -821,7 +826,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
   useEffect(() => {
     refreshVoiceConfig();
-    const interval = setInterval(refreshVoiceConfig, 5000);
+    const interval = setInterval(refreshVoiceConfig, 60000);
     const onVisible = () => { if (!document.hidden) refreshVoiceConfig(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -835,7 +840,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   // Cleanup: revoke blob URLs and clear intervals/timers on unmount
   useEffect(() => {
     return () => {
-      attachedFiles.forEach(f => {
+      // 使用 ref 获取最新的 attachedFiles，避免空依赖闭包捕获初始值导致 blob URL 泄漏
+      attachedFilesRef.current.forEach(f => {
         if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
       });
       intervalsRef.current.forEach(id => clearInterval(id));
@@ -1360,26 +1366,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             addToWhitelist(perm.operation);
           }
         }
-        // Retry the most recent user message after approval
+        // Retry the most recent user message after approval — 复用已有流式逻辑，由 handleSend 自行管理 isStreaming 状态
         const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
         if (lastUserMsg && effectiveSessionIdRef.current) {
-          setIsStreaming(true);
-          isStreamingRef.current = true;
-          const res = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: lastUserMsg.content, sessionId: effectiveSessionIdRef.current }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === targetMessageId
-                  ? { ...m, content: data.reply || "No response" }
-                  : m,
-              ),
-            );
-          }
+          handleSendRef.current(lastUserMsg.content);
+          return;
         }
       } else {
         // Deny all pending permissions
@@ -1734,7 +1725,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
         // Type check
         const isAllowedType = Object.entries(ALLOWED_TYPES).some(([mimePrefix, exts]) => {
-          if (file.type.startsWith("_")) return file.type === mimePrefix;
           if (mimePrefix.endsWith("/")) return file.type.startsWith(mimePrefix);
           return file.type === mimePrefix;
         });

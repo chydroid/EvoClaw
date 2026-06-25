@@ -131,11 +131,14 @@ describe("CronRunLogger", () => {
 
   describe("prune", () => {
     it("should prune by max entries per job", () => {
-      const small = new CronRunLogger({ runsDir: tmpDir, maxEntriesPerJob: 3 });
+      // Record with a high limit so enforceRetention() (called on every append) keeps all entries
+      const small = new CronRunLogger({ runsDir: tmpDir, maxEntriesPerJob: 100 });
       for (let i = 0; i < 10; i++) {
         small.record({ jobId: "overflow", jobName: "O", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), durationMs: 1, success: true });
       }
 
+      // Lower the limit so prune() has work to do
+      small.configure({ runsDir: tmpDir, maxEntriesPerJob: 3 });
       const pruned = small.prune();
       expect(pruned).toBeGreaterThan(0);
       expect(small.totalRuns).toBeLessThanOrEqual(3);

@@ -353,4 +353,28 @@ export class CommitmentManager {
   get count(): number {
     return Object.keys(this.commitments).length;
   }
+
+  /**
+   * 移除超过指定时间的已完成/已取消承诺，防止 commitments 无界增长。
+   * 仅清理终态（fulfilled / cancelled）承诺，活跃承诺不受影响。
+   * @param maxAgeMs 最大保留时长（毫秒），基于 updatedAt 判断
+   * @returns 被移除的承诺数量
+   */
+  pruneOlderThan(maxAgeMs: number): number {
+    const now = Date.now();
+    let removed = 0;
+    for (const [id, c] of Object.entries(this.commitments)) {
+      if (
+        (c.status === "fulfilled" || c.status === "cancelled") &&
+        now - c.updatedAt > maxAgeMs
+      ) {
+        delete this.commitments[id];
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.scheduleSave();
+    }
+    return removed;
+  }
 }

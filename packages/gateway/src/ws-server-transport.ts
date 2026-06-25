@@ -79,6 +79,7 @@ export class WSServerTransport {
           clearInterval(pingInterval);
         }
       }, 30000);
+      pingInterval.unref?.();
 
       ws.on("close", () => {
         clearInterval(pingInterval);

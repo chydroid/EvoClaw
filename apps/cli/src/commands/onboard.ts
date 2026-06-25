@@ -114,9 +114,6 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
             console.log(c("gray", "  Complete bootstrap via Web UI or: EvoClaw configure"));
           } else {
             console.log(`  ${ICONS.ok()} Bootstrap completed`);
-            try {
-              await apiRequest("POST", "/api/bootstrap/complete");
-            } catch { /* already completed */ }
           }
         } catch {
           console.log(`  ${ICONS.warn()} Could not check bootstrap status`);

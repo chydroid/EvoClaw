@@ -367,9 +367,46 @@ export class MemoryHub {
     for (const id of curation.decay) {
       await this.longTerm.delete(id);
     }
+    // Re-fetch surviving entries — the `entries` array above is stale after
+    // deletion and would reference ids that no longer exist.
+    const surviving = await this.longTerm.search({ query: "", limit: 1000 });
     // Compress old memories (age is in days, 30 days threshold)
-    const oldEntries = entries.filter(e => e.age > 30);
+    const oldEntries = surviving
+      .filter(m => {
+        const age = m.entry.createdAt
+          ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000)
+          : 0;
+        return age > 30;
+      })
+      .map(m => ({
+        id: m.entry.id,
+        content: m.entry.content,
+        type: (m.entry.type as string) || "conversation",
+        age: m.entry.createdAt
+          ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000)
+          : 0,
+      }));
     const compressed = this.memoryCuratorV2.compressOldMemories(oldEntries);
+    // Persist compressed memories back: add the summary as a new entry and
+    // remove the original. Otherwise the compression result is lost.
+    for (const c of compressed) {
+      await this.remember({
+        type: "knowledge",
+        content: c.summary,
+        embedding: null,
+        metadata: {
+          source: "memory-curator:compression",
+          sessionId: "",
+          userId: "",
+          tags: ["compressed"],
+          importance: 0.5,
+          associations: [],
+          entities: [],
+        },
+        ttl: 0,
+      });
+      await this.longTerm.delete(c.id);
+    }
     return {
       retained: curation.retain.length,
       decayed: curation.decay.length,

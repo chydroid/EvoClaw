@@ -170,16 +170,21 @@ describe("PermissionManager", () => {
   // ── Approved Operations ──────────────────────────
 
   it("should reuse approved operations within time window", () => {
-    pm.requestPermission("file_create", "/a.txt", {}, "agent"); // pending
-    const req = pm.requestPermission("file_create", "/a.txt", {}, "agent");
-
-    // First request approved status means subsequent same op+target autos
-    // Let's test differently:
     const r = pm.requestPermission("file_create", "/x.txt", {}, "agent");
     pm.approveRequest(r.id);
-    // Now operation should be approved for the operation level
-    const r2 = pm.requestPermission("file_create", "/y.txt", {}, "agent");
+
+    // Same operation + target within the time window should be auto-approved
+    const r2 = pm.requestPermission("file_create", "/x.txt", {}, "agent");
     expect(r2.status).toBe("approved");
+  });
+
+  it("should not auto-approve a different target within time window", () => {
+    const r = pm.requestPermission("file_create", "/x.txt", {}, "agent");
+    pm.approveRequest(r.id);
+
+    // A different target must NOT be auto-approved (no cross-target reuse)
+    const r2 = pm.requestPermission("file_create", "/y.txt", {}, "agent");
+    expect(r2.status).toBe("pending");
   });
 
   // ── Cleanup ──────────────────────────────────────

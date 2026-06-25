@@ -426,7 +426,9 @@ export class FeishuAdapter implements ChannelAdapter {
   async handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>, rawBody?: string): Promise<{ challenge?: string }> {
     // Verify event signature using raw body if available
     if (rawBody && headers?.["x-lark-signature"]) {
-      if (!this.verifySignature(rawBody, headers["x-lark-signature"])) {
+      const timestamp = headers["x-lark-request-timestamp"] ?? "";
+      const nonce = headers["x-lark-request-nonce"] ?? "";
+      if (!this.verifySignature(rawBody, headers["x-lark-signature"], timestamp, nonce)) {
         return {};
       }
     }
@@ -478,10 +480,9 @@ export class FeishuAdapter implements ChannelAdapter {
       console.log("[Feishu] WebSocket long connection established");
     } catch (err) {
       console.error(`[Feishu] WebSocket connection failed: ${err}`);
+      // WebSocket 连接失败后保持 "error" 状态，不要误报 "connected"。
+      // mode 仍是 websocket，既无 WS 连接也无 webhook 路由，误报 connected 会掩盖故障。
       this.statusHandler?.("error");
-      // Fallback: still allow webhook mode to work
-      console.log("[Feishu] Falling back to webhook mode");
-      this.statusHandler?.("connected");
     }
   }
 
@@ -501,12 +502,6 @@ export class FeishuAdapter implements ChannelAdapter {
     const createTime = message.create_time as string | undefined;
     const messageType = message.message_type as string | undefined;
 
-    // Skip non-text messages (images, files, etc. handled separately)
-    if (messageType && messageType !== "text" && messageType !== "post") {
-      console.log(`[Feishu] Skipping non-text message type: ${messageType}`);
-      return;
-    }
-
     // Event deduplication
     if (messageId) {
       if (this.processedEvents.has(messageId)) return;
@@ -518,7 +513,20 @@ export class FeishuAdapter implements ChannelAdapter {
     }
 
     const parsed = this.parseContent(content ?? "");
-    if (!parsed.text.trim()) return;
+
+    // 对非文本/富文本消息（图片/文件/音频/视频等），构造带 attachment 的 ChannelMessage
+    // 传递给 messageHandler，而非静默丢弃。
+    if (messageType && messageType !== "text" && messageType !== "post") {
+      if (!parsed.attachments || parsed.attachments.length === 0) {
+        // 无法识别的非文本消息，记录日志后跳过
+        console.log(`[Feishu] Skipping unsupported non-text message type: ${messageType}`);
+        return;
+      }
+      // 为非文本消息设置占位文本，便于上游展示
+      parsed.text = parsed.text || `[${messageType}]`;
+    } else if (!parsed.text.trim() && !parsed.attachments) {
+      return;
+    }
 
     const senderId = (sender?.sender_id as Record<string, string>)?.open_id ?? "unknown";
     const isGroup = chatType === "group";
@@ -542,17 +550,18 @@ export class FeishuAdapter implements ChannelAdapter {
 
   // ── Internal ────────────────────────────────────────────
 
-  private verifySignature(body: string, signature: string | undefined): boolean {
-    // P1-07 fix: 原代码在未配置 verificationToken 时 return true 跳过验证，
-    // 等于后门。改为 fail-closed：未配置时拒绝所有请求。
-    if (!this.config.verificationToken) {
-      process.stderr.write("[Feishu] verificationToken not configured — rejecting webhook (fail-closed)");
+  private verifySignature(body: string, signature: string | undefined, timestamp: string, nonce: string): boolean {
+    // 飞书签名算法：SHA256(timestamp + nonce + encrypt_key + body)
+    // P1-07 fix: 未配置 encryptKey 时 fail-closed 拒绝所有请求
+    if (!this.config.encryptKey) {
+      process.stderr.write("[Feishu] encryptKey not configured — rejecting webhook (fail-closed)");
       return false;
     }
     if (!signature) {
       return false;
     }
-    const expected = crypto.createHmac("sha256", this.config.verificationToken).update(body).digest("base64");
+    const basestring = `${timestamp}${nonce}${this.config.encryptKey}${body}`;
+    const expected = crypto.createHash("sha256").update(basestring).digest("hex");
     // 使用恒定时间比较防止时序攻击
     try {
       const expectedBuf = Buffer.from(expected);
@@ -738,6 +747,12 @@ export class FeishuAdapter implements ChannelAdapter {
         attachments.push({
           type: "audio",
           url: parsed.audio_key,
+        });
+      }
+      if (parsed.video_key) {
+        attachments.push({
+          type: "video",
+          url: parsed.video_key,
         });
       }
 

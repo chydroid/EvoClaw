@@ -295,8 +295,10 @@ export interface HardlineCheckResult {
  * ```
  */
 export function checkHardline(command: string): HardlineCheckResult {
-  const normalized = normalizeCommand(command).toLowerCase();
+  return checkHardlineNormalized(normalizeCommand(command).toLowerCase());
+}
 
+function checkHardlineNormalized(normalized: string): HardlineCheckResult {
   for (const { pattern, reason } of HARDLINE_PATTERNS) {
     // 重置 lastIndex（防止带 g 标志的正则状态泄漏）
     pattern.lastIndex = 0;
@@ -337,8 +339,10 @@ export interface DangerousCheckResult {
  * ```
  */
 export function checkDangerous(command: string): DangerousCheckResult {
-  const normalized = normalizeCommand(command).toLowerCase();
+  return checkDangerousNormalized(normalizeCommand(command).toLowerCase());
+}
 
+function checkDangerousNormalized(normalized: string): DangerousCheckResult {
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     pattern.lastIndex = 0;
     if (pattern.test(normalized)) {
@@ -384,9 +388,10 @@ export function checkAllCommandGuards(
   yoloMode: boolean = false,
 ): CommandGuardResult {
   const normalized = normalizeCommand(command);
+  const normalizedLower = normalized.toLowerCase();
 
   // 1. Hardline 检查（无条件阻止）
-  const hardline = checkHardline(command);
+  const hardline = checkHardlineNormalized(normalizedLower);
   if (hardline.blocked) {
     return {
       action: "block",
@@ -398,7 +403,7 @@ export function checkAllCommandGuards(
   }
 
   // 2. Dangerous 检查
-  const dangerous = checkDangerous(command);
+  const dangerous = checkDangerousNormalized(normalizedLower);
   if (dangerous.needsApproval) {
     // yolo 模式自动批准，否则需要人工批准
     return {

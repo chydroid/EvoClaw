@@ -642,15 +642,29 @@ export class TaskDecomposer {
       }
     }
 
-    const body: Record<string, unknown> = {
-      model: provider.model,
-      messages: [
-        { role: "system", content: "你是一个编程任务分解专家。请严格按照用户要求的JSON格式返回结果。" },
-        { role: "user", content: userPrompt },
-      ],
-      max_tokens: 4096,
-      temperature: 0.3,
-    };
+    const systemPrompt = "你是一个编程任务分解专家。请严格按照用户要求的JSON格式返回结果。";
+    let body: Record<string, unknown>;
+    if (provider.provider === "anthropic") {
+      body = {
+        model: provider.model,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 4096,
+        temperature: 0.3,
+      };
+    } else {
+      body = {
+        model: provider.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 4096,
+        temperature: 0.3,
+      };
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
@@ -670,7 +684,10 @@ export class TaskDecomposer {
       }
 
       const data = await response.json() as any;
-      return { content: data.choices?.[0]?.message?.content || "" };
+      const content = provider.provider === "anthropic"
+        ? (data.content?.[0]?.text || "")
+        : (data.choices?.[0]?.message?.content || "");
+      return { content };
     } finally {
       clearTimeout(timeoutId);
     }

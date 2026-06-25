@@ -207,9 +207,10 @@ export function PluginsPage() {
   };
   useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
 
-  const loadPlugins = useCallback(async () => {
+  const loadPlugins = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/plugins");
+      const res = await fetch("/api/plugins", { signal });
+      if (signal?.aborted) return;
       if (res.ok) {
         const data = await res.json();
         const apiPlugins = (data.plugins || []).map((p: any) => ({
@@ -235,9 +236,13 @@ export function PluginsPage() {
   }, []);
 
   useEffect(() => {
-    loadPlugins();
-    const interval = setInterval(loadPlugins, 15000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    loadPlugins(controller.signal);
+    const interval = setInterval(() => loadPlugins(controller.signal), 15000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadPlugins]);
 
   const togglePlugin = async (id: string) => {

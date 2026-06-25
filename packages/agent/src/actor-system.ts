@@ -96,6 +96,13 @@ export class ActorSystem {
       }
     } finally {
       this.processing.delete(actorId);
+      // 重新检查邮箱：在循环退出后、finally 执行前若有新消息到达，
+      // 新的 processMessages 调用会因 processing.has 为 true 而提前返回，
+      // 导致该消息永久滞留。此处重新触发处理以避免消息丢失。
+      const mailbox = this.mailboxes.get(actorId);
+      if (mailbox && mailbox.length > 0) {
+        void this.processMessages(actorId).catch(() => {});
+      }
     }
   }
 

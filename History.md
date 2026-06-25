@@ -3,6 +3,88 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.6 (2026-06-25)
+
+### 全面代码审查与 BUG 修复（5 轮）+ 超时静默失败修复
+
+从实用角度对全项目进行 5 轮深度代码审查，共发现并修复 **120+ 个真实 BUG**，并解决用户反馈的"消息无成功/失败提示"超时静默失败问题。
+
+#### 超时静默失败修复（P0）
+
+- `apps/server/src/index.ts`：渠道消息处理添加 5 分钟 `Promise.race` 超时包装，catch 块向用户发送超时/错误/空回执提示与解决建议
+- `packages/agent/src/llm-caller.ts`：并行工具失败结果注入 `conversationMessages` 作为 tool message，防止 LLM 永久等待不存在的工具结果
+- `packages/gateway/src/channel-manager.ts`：`handleIncomingMessage` catch 块向用户发送错误通知
+- `packages/gateway/src/ws-protocol.ts`：`broadcast` catch 块记录客户端 ID 与错误原因
+
+#### 第 1 轮：Agent 核心 + 超时（24 个）
+
+- `concurrent-tool-executor.ts`：**严重** 移除 AsyncSemaphore waiter 中多余的 `this.available--`（导致循环后死锁）
+- `actor-system.ts`：finally 块中重新检查 mailbox；`send()` 改为非阻塞 fire-and-forget
+- `swarm-orchestrator.ts`：`processPending` 设置 `delegationStartTimes` 和超时定时器
+- `model-failover.ts`：`executeWithFallback` 在 `fn()` 前调用 `consumeProbe(currentId)`
+- `queue-manager.ts`：`loadPersistedQueues` 重置 `"processing"` → `"pending"`；`clearQueue` 清理 processing Map 和 laneStates
+- `subagent-registry.ts`：`availableSlots` 只计 `running` 状态
+- `compaction-manager.ts`：移除 summary prefix 中多余的 `]`
+- `commitments.ts`：新增 `pruneOlderThan(maxAgeMs)` 方法
+- `task-checkpoint-manager.ts`、`agent-observability.ts`、`task-status-tracker.ts`、`bootstrap-manager.ts`、`task-analyzer.ts`、`token-usage-tracker.ts`：原子写入、unref、操作符优先级、重试逻辑修复
+- `shell-media-tools.ts`：**严重** 4 处 `execSync` 替换为 `runPythonScriptAsync`（spawn+Promise+超时+SIGTERM/SIGKILL）
+- `browser-tools.ts`、`a2a-server.ts`、`a2a/types.ts`：路径校验、动态版本号
+
+#### 第 2 轮：Gateway 渠道 + WebUI（~40 个）
+
+- 8 个渠道修复：wechat/telegram/qq/slack/feishu/discord/dingtalk/whatsapp（签名验证、RESUME 支持、重连控制、@mention 正则、端点修正）
+- 15 个 Gateway 核心修复：webhook-manager（移除硬编码 key+timingSafeEqual）、gateway-server（error listener+rate limiter cap）、message-lifecycle（markSent 自动转换）、dead-letter-queue（markReplayed 竞态）、streaming-manager（removeEventListener）、dispatch-dedupe-store（原子写入）、ws-server-transport/pingInterval unref 等
+- 11 个 WebUI 修复：CanvasPage sandbox、markdown-renderer XSS、LogsPage 移除 mock、5 处 AbortController 轮询、LLMConfig setTimeout 清理
+
+#### 第 3 轮：Infrastructure + Security（44 个）
+
+- **SQL 注入**：`api-toolkit.ts` QueryBuilder 标识符未校验，添加 `safeIdent` 白名单
+- **命令注入**：`daemon-manager.ts`（nssm）、`update-manager.ts`（tar/postUpdateCommand）、`ssh-sandbox.ts`（workdir 黑名单→白名单）全部改用 `spawnSync` + `shell: false`
+- **SSRF**：`link-understanding.ts` 重定向未校验域名，添加 `isDomainAllowed` 重新检查
+- **正则注入**：`browser-controller.ts` findElements 未转义用户输入
+- **allowlist 绕过**：`content-guard.ts` 任意允许词跳过全部屏蔽词，改为按出现位置覆盖检查
+- **设备配对**：`device-pairing-manager.ts` 拒绝覆盖已信任设备密钥；`dm-pairing-manager.ts` 6 位码→8 位 hex+5 次锁定
+- **审计日志泄密**：`transcript-redactor.ts` 审计条目存储原始文本→改为存储脱敏结果
+- **黑名单死代码**：`mcp-poisoning-scanner.ts` blacklist 模式从未被 scan 使用
+- **file-safety**：多段目录名（`.config/gcloud`）无法匹配
+- **timing leak**：`secret-manager.ts`/`rbac-manager.ts` 非常量时间比较
+- **原子写入**：event-ledger、filesystem-checkpoint、playwright-browser cookies、install-policy audit
+- **资源泄漏**：process-manager Map 无限增长、observability otelSpans 泄漏、resource-pool/update-manager 定时器未 unref、sandbox-manager 会话永久 error
+- **逻辑修复**：message-queue break 阻止其他 handler、crestodian 回调交叉污染、api-toolkit 重试逻辑/pagination
+- **测试修复**：permission-manager.test 跨目标断言错误、shell-media-tools 危险命令模式补全
+
+#### 第 4 轮：Memory + Evolution + Skills + Intelligence（25 个）
+
+- `memory-hub.ts`：curateMemories 使用过期数组构建压缩输入，压缩结果未持久化→重新获取+写回
+- `memory-curator-v2.ts`：dedup 无条件丢弃后继条目→按重要性比较；simpleHash→sha256
+- `memory-dreaming.ts`：失败 dream 仍重置计数器→仅在 completed 时重置
+- `memory-host-sdk.ts`：flush 非原子写入+静默吞错→原子写入+fsync+日志+重试
+- `marketplace.ts`：install 版本标记 `__depth_N` 污染真实版本；cached path 返回 name 而非路径
+- `skill-curator.ts`：archiveSkill renameSync EXDEV 崩溃→safeMoveSync 回退；persistTimer 未 unref
+- `skill-ecosystem.ts`：parseFrontmatter 共享 currentArray 导致跨键覆盖
+- `tfidf-matcher.ts`：tokenize Set 去重破坏 TF 频率→移除去重
+- `evolution-engine.ts`：**严重** loadFromDisk 不反序列化 Date 字段→.getTime() 崩溃；persistToDisk 非原子；沙箱失败仍发布候选；空 catch；EventBus 未取消订阅
+- `evolution-engine.test.ts`：**flaky test 修复** 无 storeDir 导致加载旧状态；history[0] 应为最后元素
+- `experience-analyzer.ts`、`learning-journal.ts`：patterns/entries Map 无界增长→添加上限
+- `skill-orchestrator.ts`：缺少技能静默返回 success→改为失败
+
+#### 第 5 轮：Core/Config/CLI/Server/测试/跨包集成（~50 个）
+
+- `lru-cache.ts`：maxSize=0 时无限循环
+- `report-generator.ts`：SVG 双重 base64 编码导致图表不渲染；HTML 在格式检查前写入
+- `email-client.ts`：saveAccounts 非原子写入；空邮件 dateRange 反转
+- `graceful-shutdown.ts`：exit 定时器未存储导致 dispose 无法清除
+- `feature-flags.ts`：Math.abs(-2147483648) 溢出→改用 `>>> 0`
+- `config.ts`：ENABLE_MCP/ENABLE_REST 环境变量未设置时覆盖配置文件值
+- `subagent-dispatcher.ts`：超时 AbortController 信号未传递给 executor
+- `llm-dispatcher.ts`/`task-decomposer.ts`：Anthropic 响应/请求格式未适配
+- `session-state-manager.ts`：load 返回存储引用而非克隆
+- `cost-tracker.ts`/`file-checkpointer.ts`/`task-orchestrator.ts`：无界 Map/数组+错误 failure count
+- `cron-scheduler.ts`：retry 定时器未 unref；超时后 late rejection 静默吞掉
+- `run-log.test.ts`：**flaky test 修复** record 已 enforceRetention 导致 prune 返回 0
+- CLI 修复：gateway restart 不重启、update 不构建、secrets set 不写入、QR 假二维码、backup 不复制文件、命令别名冲突（config/configure、tui/chat）、channels 凭据保存竞态+非原子、.env 非原子写入、硬编码端口
+- Server 修复：SIGINT/SIGTERM 强制退出超时（10s）+第二次信号立即退出、bootstrap 原子写入、skill 翻译定时器 unref
+
 ## v0.57.5 (2026-06-25)
 
 ### 全面代码审查与 BUG 修复（2 轮）

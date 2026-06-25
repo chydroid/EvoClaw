@@ -206,7 +206,7 @@ export class CostTracker {
       `Total tokens: ${tokens.input.toLocaleString()} input + ${tokens.output.toLocaleString()} output`,
     ];
 
-    if (budget.limit) {
+    if (budget.limit !== undefined && budget.limit !== null) {
       parts.push(`Budget: $${budget.used.toFixed(2)} / $${budget.limit.toFixed(2)} (${budget.percentUsed}%)`);
     }
 

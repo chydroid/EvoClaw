@@ -518,7 +518,6 @@ function renderA2UIChart(type: string, data: Record<string, any>, t: (key: strin
       const y2 = cy - r * Math.cos(endAngle);
       const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
       const d = `M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${largeArc},1 ${x2},${y2} Z`;
-      cumulative;
       return (
         <path key={i} d={d} fill={colors[i % colors.length]} opacity={0.85} />
       );

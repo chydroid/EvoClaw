@@ -481,7 +481,16 @@ export class EmailClient {
     try {
       const filePath = path.join(this.dataDir, "accounts.json");
       const data = [...this.accounts.values()];
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+      const tempPath = `${filePath}.tmp.${process.pid}`;
+      const content = JSON.stringify(data, null, 2);
+      const fd = fs.openSync(tempPath, "w");
+      try {
+        fs.writeFileSync(fd, content, "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tempPath, filePath);
     } catch (err) {
       process.stderr.write("[EmailClient] Failed to save accounts:" + " " + err);
     }

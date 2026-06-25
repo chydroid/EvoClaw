@@ -428,6 +428,7 @@ export class CronScheduler extends EventEmitter {
     if (this.running.size >= this.maxConcurrent) {
       // Re-schedule for 1 second later and try again
       const retryTimer = setTimeout(() => this.executeJob(jobId), 1000);
+      retryTimer.unref?.();
       this.timers.set(jobId, retryTimer);
       return;
     }

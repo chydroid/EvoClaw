@@ -441,6 +441,23 @@ export class QueueManager {
 
   /** Clear the queue for a session */
   clearQueue(sessionId: string): void {
+    // 清理 processing Map 中属于该 session 的条目
+    const itemIdsToClean = new Set<string>();
+    for (const [itemId, item] of this.processing) {
+      if (item.sessionId === sessionId) {
+        itemIdsToClean.add(itemId);
+        this.processing.delete(itemId);
+      }
+    }
+    // 清理车道状态中属于该 session 的 activeTaskIds
+    if (itemIdsToClean.size > 0) {
+      for (const laneState of this.laneStates.values()) {
+        for (const itemId of itemIdsToClean) {
+          laneState.activeTaskIds.delete(itemId);
+        }
+      }
+    }
+
     this.queues.delete(sessionId);
     try {
       const filePath = path.join(this.config.dataDir, `${sessionId}.json`);

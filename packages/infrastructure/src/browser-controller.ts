@@ -31,6 +31,8 @@ export interface FormData {
   fields: Record<string, string>;
 }
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 export class BrowserController {
   private cookies: Map<string, string> = new Map();
   private userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 EvoClaw/1.0";
@@ -148,7 +150,7 @@ export class BrowserController {
 
     if (selector.startsWith(".")) {
       const className = selector.slice(1);
-      const regex = new RegExp(`class=["'][^"']*\\b${className}\\b[^"']*["']`, "gi");
+      const regex = new RegExp(`class=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["']`, "gi");
       const matches = body.match(regex);
       if (matches) {
         elements.push({
@@ -160,7 +162,7 @@ export class BrowserController {
       }
     } else if (selector.startsWith("#")) {
       const id = selector.slice(1);
-      const regex = new RegExp(`id=["']${id}["']`, "gi");
+      const regex = new RegExp(`id=["']${escapeRegExp(id)}["']`, "gi");
       const matches = body.match(regex);
       if (matches) {
         elements.push({

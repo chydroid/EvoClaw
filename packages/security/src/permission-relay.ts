@@ -63,6 +63,7 @@ export class PermissionRelay {
   private defaultTimeoutMs: number;
   private maxPending: number;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private globCache = new Map<string, RegExp>();
 
   constructor(
     config: PermissionRelayConfig = {},
@@ -294,8 +295,8 @@ export class PermissionRelay {
     let count = 0;
     for (const [id, req] of this.pending) {
       if (req.status !== "pending") {
-        this.pending.delete(id);
         this.clearTimer(id);
+        this.pending.delete(id);
         count++;
       }
     }
@@ -315,12 +316,26 @@ export class PermissionRelay {
 
   private evaluateAuto(toolName: string): PermissionDecision | null {
     for (const pattern of this.autoDeny) {
-      if (globMatch(pattern, toolName)) return "denied";
+      if (this.globMatch(pattern, toolName)) return "denied";
     }
     for (const pattern of this.autoApprove) {
-      if (globMatch(pattern, toolName)) return "approved";
+      if (this.globMatch(pattern, toolName)) return "approved";
     }
     return null;
+  }
+
+  private globMatch(pattern: string, value: string): boolean {
+    let regex = this.globCache.get(pattern);
+    if (!regex) {
+      regex = new RegExp(
+        "^" +
+          pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") +
+          "$",
+        "i",
+      );
+      this.globCache.set(pattern, regex);
+    }
+    return regex.test(value);
   }
 
   private clearTimer(id: string): void {
@@ -346,12 +361,3 @@ function classifyCategory(toolName: string): PermissionRequest["category"] {
   return "other";
 }
 
-function globMatch(pattern: string, value: string): boolean {
-  const regex = new RegExp(
-    "^" +
-      pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") +
-      "$",
-    "i",
-  );
-  return regex.test(value);
-}

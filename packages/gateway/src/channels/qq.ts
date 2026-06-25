@@ -83,6 +83,10 @@ export class QQAdapter implements ChannelAdapter {
       return;
     }
 
+    // 重置重连计数器，确保 stop() 后可以重新启动
+    this.reconnectAttempt = 0;
+    this.reconnecting = false;
+
     await this.connect();
   }
 
@@ -181,6 +185,9 @@ export class QQAdapter implements ChannelAdapter {
   // ── WebSocket Connection ────────────────────────────────
 
   private async connect(): Promise<void> {
+    // 并发保护：若已有 WebSocket 正在连接中，直接返回避免重复连接
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) return;
+
     try {
       // First get the WebSocket gateway URL
       const gwRes = await fetch(`${this.baseURL}/gateway`, {
@@ -230,6 +237,15 @@ export class QQAdapter implements ChannelAdapter {
     } catch (err) {
       console.error(`[QQ] Connection failed: ${err}`);
       this.statusHandler?.("error");
+      // gateway URL 获取失败时调度重连，避免渠道永久死亡
+      if (this.reconnectAttempt < this.maxReconnectAttempts) {
+        this.statusHandler?.("reconnecting");
+        const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
+        this.reconnectAttempt++;
+        this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      } else {
+        this.statusHandler?.("disconnected");
+      }
     }
   }
 
@@ -289,8 +305,8 @@ export class QQAdapter implements ChannelAdapter {
 
     const isGroup = !!(eventType?.includes("GROUP") || eventType?.includes("group"));
     const content = data.content ?? "";
-    // Strip @bot mention if present
-    const cleanContent = content.replace(/<@!\d+>/, "").trim();
+    // Strip @bot mention if present (清除所有 @提及，而非仅第一个)
+    const cleanContent = content.replace(/<@!\d+>/g, "").trim();
 
     const msg: ChannelMessage = {
       messageId: data.id ?? `qq_${Date.now()}`,

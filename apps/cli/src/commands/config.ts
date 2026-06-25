@@ -7,7 +7,6 @@ import { apiRequest, checkServer, serverRequired } from "../utils/api";
 export function register(program: Command, _shared: (cmd: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
   const cfg = program
     .command("config")
-    .alias("configure")
     .description("Read and write EvoClaw configuration");
 
   // config get <key> — get config value from server

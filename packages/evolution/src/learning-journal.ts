@@ -90,6 +90,15 @@ export class LearningJournal {
 
     this.entries.set(entry.id, entry);
 
+    while (this.entries.size > this.config.maxEntries) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) {
+        this.entries.delete(oldest);
+      } else {
+        break;
+      }
+    }
+
     this.eventBus.publish(
       SystemEvents.LEARNING_ENTRY_CREATED,
       { entryId: entry.id, trigger: entry.trigger, category: entry.category },
@@ -299,7 +308,11 @@ export class LearningJournal {
       results = results.filter((e) => filter.tags!.some((t) => e.tags.includes(t)));
     }
 
-    results.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    results.sort((a, b) => {
+      const at = a.timestamp instanceof Date && !Number.isNaN(a.timestamp.getTime()) ? a.timestamp.getTime() : 0;
+      const bt = b.timestamp instanceof Date && !Number.isNaN(b.timestamp.getTime()) ? b.timestamp.getTime() : 0;
+      return bt - at;
+    });
 
     const offset = filter?.offset || 0;
     const limit = filter?.limit || 50;

@@ -660,6 +660,13 @@ export class SwarmOrchestrator {
         agent.status = "busy";
         agent.currentTask = delegation.task;
         this.activeDelegations.set(delegation.id, delegation);
+        // 设置超时定时器与起始时间，避免委托永久挂起（与 delegate 方法一致）
+        this.delegationStartTimes.set(delegation.id, Date.now());
+        const timeoutMs = delegation.timeoutMs || this.config.defaultTimeoutMs;
+        const timeoutTimer = setTimeout(() => {
+          this.failDelegation(delegation.id, new Error(`Delegation timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        this.delegationTimers.set(delegation.id, timeoutTimer);
         break;
       }
     }

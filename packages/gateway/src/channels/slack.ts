@@ -10,6 +10,7 @@
  *   3. Enable Socket Mode or use Events API for production
  */
 
+import { createHmac, timingSafeEqual } from "crypto";
 import type {
   ChannelAdapter,
   ChannelHealthResult,
@@ -216,8 +217,54 @@ export class SlackAdapter implements ChannelAdapter {
     this.statusHandlers.push(handler);
   }
 
-  /** Handle event from Events API webhook */
-  async handleEvent(body: SlackEventPayload): Promise<{ challenge?: string }> {
+  /**
+   * Handle event from Events API webhook.
+   * 若配置了 signingSecret，则按 Slack 算法验证 X-Slack-Signature 签名
+   * （HMAC-SHA256 of "v0:timestamp:body"），并检查时间戳防重放（超过5分钟拒绝）。
+   * 如果 signingSecret 未配置则跳过验证（向后兼容）。
+   */
+  async handleEvent(
+    body: SlackEventPayload,
+    headers?: Record<string, string>,
+    rawBody?: string,
+  ): Promise<{ challenge?: string }> {
+    // 签名验证
+    if (this.signingSecret && headers && rawBody !== undefined) {
+      const signature = headers["x-slack-signature"];
+      const timestamp = headers["x-slack-request-timestamp"];
+      if (!signature || !timestamp) {
+        console.warn("[Slack] Webhook rejected: missing signature/timestamp headers");
+        return {};
+      }
+
+      // 防重放：时间戳超过 5 分钟拒绝
+      const tsNum = Number(timestamp);
+      if (!Number.isFinite(tsNum)) {
+        console.warn("[Slack] Webhook rejected: invalid timestamp");
+        return {};
+      }
+      const ageSeconds = Math.abs(Date.now() / 1000 - tsNum);
+      if (ageSeconds > 300) {
+        console.warn(`[Slack] Webhook rejected: timestamp too old (${ageSeconds.toFixed(0)}s)`);
+        return {};
+      }
+
+      const basestring = `v0:${timestamp}:${rawBody}`;
+      const expected = "v0=" + createHmac("sha256", this.signingSecret).update(basestring).digest("hex");
+
+      try {
+        const expectedBuf = Buffer.from(expected);
+        const sigBuf = Buffer.from(signature);
+        if (expectedBuf.length !== sigBuf.length || !timingSafeEqual(expectedBuf, sigBuf)) {
+          console.warn("[Slack] Webhook rejected: invalid signature");
+          return {};
+        }
+      } catch {
+        console.warn("[Slack] Webhook rejected: signature comparison failed");
+        return {};
+      }
+    }
+
     // URL verification challenge
     if (body.type === "url_verification") {
       return { challenge: body.challenge };
@@ -324,7 +371,11 @@ export class SlackAdapter implements ChannelAdapter {
       `[Slack] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
     );
 
-    setTimeout(() => this.connectSocketMode(), delay);
+    // 存储定时器句柄，使 stop() 能够清除避免重连泄漏
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectSocketMode();
+    }, delay);
   }
 
   private closeSocket(): void {

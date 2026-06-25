@@ -55,6 +55,7 @@ export class EvolutionEngine {
   private maxFeedbackStoreEntries = 500;
   private storeDir: string;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
 
   constructor(
     private registry: ServiceRegistry,
@@ -83,11 +84,15 @@ export class EvolutionEngine {
     try {
       const { SkillAutoGenerator } = require("./skill-auto-generator");
       this.skillAutoGenerator = new SkillAutoGenerator();
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[EvolutionEngine] Failed to load SkillAutoGenerator: ${err}\n`);
+    }
     try {
       const { EvolutionABTest } = require("./evolution-ab-test");
       this.evolutionABTest = new EvolutionABTest();
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[EvolutionEngine] Failed to load EvolutionABTest: ${err}\n`);
+    }
 
     registry.registerService("evolutionEngine", this);
     this.loadFromDisk();
@@ -110,7 +115,13 @@ export class EvolutionEngine {
         feedback: this.feedbackStore.slice(-500),
         savedAt: new Date().toISOString(),
       };
-      fs.writeFileSync(path.join(this.storeDir, "state.json"), JSON.stringify(state), "utf-8");
+      const statePath = path.join(this.storeDir, "state.json");
+      const tmpPath = `${statePath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmpPath, JSON.stringify(state), "utf-8");
+      const fd = fs.openSync(tmpPath, "r");
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(tmpPath, statePath);
     } catch (err) {
       process.stderr.write(`[EvolutionEngine] Failed to persist: ${err}\n`);
     }
@@ -122,13 +133,18 @@ export class EvolutionEngine {
       if (!fs.existsSync(filePath)) return;
       const raw = fs.readFileSync(filePath, "utf-8");
       const data = JSON.parse(raw);
+      const toDate = (v: unknown) => (v instanceof Date ? v : (v ? new Date(v as string) : null));
       if (Array.isArray(data.cycles)) {
         for (const c of data.cycles) {
-          if (c && c.id) this.cycles.set(c.id, c);
+          if (c && c.id) {
+            c.startedAt = toDate(c.startedAt);
+            c.completedAt = toDate(c.completedAt);
+            this.cycles.set(c.id, c);
+          }
         }
       }
       if (Array.isArray(data.feedback)) {
-        this.feedbackStore = data.feedback;
+        this.feedbackStore = data.feedback.map((f: any) => ({ ...f, collectedAt: toDate(f.collectedAt) }));
       }
     } catch (err) {
       process.stderr.write(`[EvolutionEngine] Failed to load from disk: ${err}\n`);
@@ -136,6 +152,7 @@ export class EvolutionEngine {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
@@ -146,6 +163,7 @@ export class EvolutionEngine {
 
   private subscribeToEvents(): void {
     this.eventBus.subscribe(SystemEvents.TASK_FAILED, async (event) => {
+      if (this.stopped) return;
       const taskData = event.data as Record<string, unknown>;
       if (taskData?.error) {
         const skillId = taskData.skillId ? String(taskData.skillId) : null;
@@ -230,6 +248,7 @@ export class EvolutionEngine {
     });
 
     this.eventBus.subscribe(SystemEvents.USER_CORRECTION_RECEIVED, async (event) => {
+      if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(
@@ -264,6 +283,7 @@ export class EvolutionEngine {
     });
 
     this.eventBus.subscribe(SystemEvents.CAPABILITY_GAP_DETECTED, async (event) => {
+      if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
       const existingGaps = this.learningJournal.getEntries({
@@ -311,6 +331,7 @@ export class EvolutionEngine {
     });
 
     this.eventBus.subscribe(SystemEvents.EXTERNAL_FAILURE_DETECTED, async (event) => {
+      if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(
@@ -360,6 +381,7 @@ export class EvolutionEngine {
     });
 
     this.eventBus.subscribe(SystemEvents.KNOWLEDGE_IMPROVEMENT_FOUND, async (event) => {
+      if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(

@@ -178,7 +178,9 @@ class AsyncSemaphore {
     }
     return new Promise<void>((resolve) => {
       this.waiters.push(() => {
-        this.available--;
+        // 槽位已由 release() 转让给当前 waiter，此处不再递减 available。
+        // 原实现 this.available-- 会导致 available 被错误递减，
+        // 最终变为负数使所有 acquire 永久阻塞（死锁）。
         resolve();
       });
     });

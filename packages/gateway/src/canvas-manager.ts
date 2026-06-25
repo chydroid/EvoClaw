@@ -303,9 +303,9 @@ export class CanvasManager {
       public: options?.public ?? false,
     };
 
-    // Write HTML file
+    // Write HTML file（原子写入，符合 AGENTS.md 规则）
     const filePath = this.getFilePath(id);
-    fs.writeFileSync(filePath, html, "utf-8");
+    atomicWriteFileSync(filePath, html);
 
     // Update index
     const existing = canvases.findIndex((c) => c.id === id);
@@ -373,8 +373,8 @@ export class CanvasManager {
 
     canvas.updatedAt = new Date().toISOString();
 
-    // Write to disk
-    fs.writeFileSync(this.getFilePath(id), canvas.html, "utf-8");
+    // Write to disk（原子写入，符合 AGENTS.md 规则）
+    atomicWriteFileSync(this.getFilePath(id), canvas.html);
     canvases[index] = canvas;
     this.writeIndex(canvases);
 

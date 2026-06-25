@@ -11,7 +11,7 @@
  * operations. All operations are idempotent.
  */
 
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -431,28 +431,36 @@ ${envDict}
   private installWindowsNSSM(): { success: boolean; message: string; platform: string } {
     try {
       // Stop existing if running
-      execSync(`nssm stop ${this.config.serviceName}`, { stdio: "ignore" });
+      spawnSync("nssm", ["stop", this.config.serviceName], { stdio: "ignore", shell: false });
 
-      execSync(
-        `nssm install ${this.config.serviceName} "${this.config.executablePath}" ${this.config.args.join(" ")}`
+      spawnSync(
+        "nssm",
+        ["install", this.config.serviceName, this.config.executablePath, ...this.config.args],
+        { shell: false }
       );
 
-      execSync(
-        `nssm set ${this.config.serviceName} AppDirectory "${this.config.workingDirectory}"`
+      spawnSync(
+        "nssm",
+        ["set", this.config.serviceName, "AppDirectory", this.config.workingDirectory],
+        { shell: false }
       );
-      execSync(
-        `nssm set ${this.config.serviceName} DisplayName "${this.config.displayName}"`
+      spawnSync(
+        "nssm",
+        ["set", this.config.serviceName, "DisplayName", this.config.displayName],
+        { shell: false }
       );
-      execSync(
-        `nssm set ${this.config.serviceName} Description "${this.config.description}"`
+      spawnSync(
+        "nssm",
+        ["set", this.config.serviceName, "Description", this.config.description],
+        { shell: false }
       );
 
       if (this.config.autoStart) {
-        execSync(`nssm set ${this.config.serviceName} Start SERVICE_AUTO_START`);
+        spawnSync("nssm", ["set", this.config.serviceName, "Start", "SERVICE_AUTO_START"], { shell: false });
       }
 
       for (const [k, v] of Object.entries({ NODE_ENV: "production", ...this.config.env })) {
-        execSync(`nssm set ${this.config.serviceName} AppEnvironmentExtra ${k}=${v}`);
+        spawnSync("nssm", ["set", this.config.serviceName, "AppEnvironmentExtra", `${k}=${v}`], { shell: false });
       }
 
       process.stdout.write(`[DaemonManager] Windows Service installed via nssm`);
@@ -552,7 +560,7 @@ ${envEntries}
   private uninstallWindows(): { success: boolean; message: string } {
     try {
       // Try multiple approaches
-      try { execSync(`nssm remove ${this.config.serviceName} confirm`, { stdio: "ignore" }); } catch { /* not nssm */ }
+      try { spawnSync("nssm", ["remove", this.config.serviceName, "confirm"], { stdio: "ignore", shell: false }); } catch { /* not nssm */ }
       try { execSync(`sc delete ${this.config.serviceName}`, { stdio: "ignore" }); } catch { /* not sc */ }
 
       return { success: true, message: "Windows Service removed" };

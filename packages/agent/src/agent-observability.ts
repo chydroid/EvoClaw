@@ -566,6 +566,8 @@ export class AgentObservability {
   private schedulePersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+    // 允许进程在定时器运行时退出
+    this.persistTimer.unref();
   }
 
   /** 保存 traces 到磁盘（JSON 格式） */
@@ -579,7 +581,30 @@ export class AgentObservability {
         traces: Array.from(this.traces.values()).slice(-1000),
         savedAt: new Date().toISOString(),
       };
-      fs.writeFileSync(filePath, JSON.stringify(data), "utf-8");
+      const serialized = JSON.stringify(data);
+      // 原子写入：temp + fsync + rename，防止崩溃时 JSON 文件损坏
+      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, serialized, "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (renameErr) {
+        // EXDEV/EBUSY 跨设备回退：在目标目录侧创建临时文件再 rename
+        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, filePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[AgentObservability] Failed to persist: ${err}\n`);
     }
@@ -672,8 +697,6 @@ export class AgentObservability {
 
       if (completedTraces.length === 0) return;
 
-      const fs = require("fs");
-      const path = require("path");
       const dir = path.join(process.cwd(), "data", "observability");
 
       // Ensure directory exists

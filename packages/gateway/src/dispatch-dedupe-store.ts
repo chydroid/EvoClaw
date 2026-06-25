@@ -207,7 +207,8 @@ export class DispatchDedupeStore {
         entries: Array.from(this.entries.entries()),
         savedAt: Date.now(),
       };
-      fs.writeFileSync(this.config.persistPath, JSON.stringify(data), "utf-8");
+      // 使用原子写入，符合 AGENTS.md 规则
+      atomicWriteFileSync(this.config.persistPath, JSON.stringify(data));
       this.stats.persistWrites++;
     } catch { /* 静默失败 */ }
   }

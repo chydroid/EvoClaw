@@ -175,7 +175,7 @@ export class TfidfMatcher {
     terms.push(...segments);
 
     // Filter stopwords
-    return [...new Set(terms)].filter(t => !TfidfMatcher.STOP_WORDS.has(t) && t.length >= 2);
+    return terms.filter(t => !TfidfMatcher.STOP_WORDS.has(t) && t.length >= 2);
   }
 
   /**

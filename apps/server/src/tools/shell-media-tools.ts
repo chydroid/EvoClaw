@@ -1,6 +1,6 @@
 import * as path from "path";
 import * as fs from "fs";
-import { execSync, spawn } from "child_process";
+import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
@@ -63,6 +63,79 @@ function findPythonPaths(): string[] {
   }
 
   return paths;
+}
+
+/** 异步执行 Python 脚本，返回 stdout（替代 execSync 避免阻塞事件循环）。
+ *  错误对象携带 stderr/stdout/code 属性，兼容原 execSync 错误处理代码。 */
+function runPythonScriptAsync(
+  scriptName: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(`python ${scriptName}`, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      shell: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { child.kill("SIGTERM"); } catch { /* ignore */ }
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 5000);
+        const err = new Error(`Python script timed out after ${timeoutMs}ms`) as Error & { stderr: string };
+        err.stderr = stderr;
+        reject(err);
+      }
+    }, timeoutMs);
+
+    child.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+      if (stdout.length > 20 * 1024 * 1024) {
+        try { child.stdout?.destroy(); } catch { /* ignore */ }
+      }
+    });
+
+    child.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+      if (stderr.length > 20 * 1024 * 1024) {
+        try { child.stderr?.destroy(); } catch { /* ignore */ }
+      }
+    });
+
+    child.on("close", (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          const err = new Error(`Python script exited with code ${code}`) as Error & { stderr: string; stdout: string; code: number };
+          err.stderr = stderr;
+          err.stdout = stdout;
+          err.code = code as number;
+          reject(err);
+        }
+      }
+    });
+
+    child.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        (err as Error & { stderr: string }).stderr = stderr;
+        reject(err);
+      }
+    });
+  });
 }
 
 export function registerShellMediaTools(
@@ -330,13 +403,12 @@ except Exception as e:
         const scriptPath = path.join(workspaceDir, `_scrapling_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
         fs.writeFileSync(scriptPath, script, "utf-8");
         try {
-          const result = execSync(`python ${path.basename(scriptPath)}`, {
-            cwd: workspaceDir,
-            timeout: 60000,
-            maxBuffer: 5 * 1024 * 1024,
-            encoding: "utf-8",
-            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-          });
+          const result = await runPythonScriptAsync(
+            path.basename(scriptPath),
+            workspaceDir,
+            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+            60000,
+          );
           const parsed = JSON.parse(result.trim());
           return { success: true, ...parsed };
         } catch (err: any) {
@@ -389,13 +461,12 @@ except Exception as e:
       fs.writeFileSync(scriptPath, script, "utf-8");
 
       try {
-        const result = execSync(`python ${path.basename(scriptPath)}`, {
-          cwd: workspaceDir,
-          timeout: 600000, // 10 minutes for large videos
-          maxBuffer: 10 * 1024 * 1024,
-          encoding: "utf-8",
-          env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-        });
+        const result = await runPythonScriptAsync(
+          path.basename(scriptPath),
+          workspaceDir,
+          { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+          600000, // 10 minutes for large videos
+        );
 
         // Parse [RESULT]...[/RESULT] from output
         const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
@@ -488,13 +559,12 @@ except Exception as e:
         fs.writeFileSync(scriptPath, script, "utf-8");
 
         try {
-          const result = execSync(`python ${path.basename(scriptPath)}`, {
-            cwd: workspaceDir,
-            timeout: 300000,
-            maxBuffer: 10 * 1024 * 1024,
-            encoding: "utf-8",
-            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-          });
+          const result = await runPythonScriptAsync(
+            path.basename(scriptPath),
+            workspaceDir,
+            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+            300000,
+          );
           const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
           if (match) {
             const parsed = JSON.parse(match[1]);
@@ -520,13 +590,12 @@ except Exception as e:
         fs.writeFileSync(scriptPath, script, "utf-8");
 
         try {
-          const result = execSync(`python ${path.basename(scriptPath)}`, {
-            cwd: workspaceDir,
-            timeout: 300000,
-            maxBuffer: 10 * 1024 * 1024,
-            encoding: "utf-8",
-            env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-          });
+          const result = await runPythonScriptAsync(
+            path.basename(scriptPath),
+            workspaceDir,
+            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+            300000,
+          );
           const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
           if (match) {
             const parsed = JSON.parse(match[1]);

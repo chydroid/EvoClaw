@@ -117,6 +117,8 @@ export class LRUCache<V> {
    * Set a value. Optionally override TTL for this entry.
    */
   set(key: string, value: V, ttlMs?: number): void {
+    if (this.config.maxSize <= 0) return;
+
     const existing = this.map.get(key);
 
     if (existing) {

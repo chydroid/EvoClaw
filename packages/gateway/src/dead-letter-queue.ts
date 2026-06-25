@@ -91,6 +91,8 @@ const DEFAULT_CONFIG: DLQConfig = {
 export class DeadLetterQueue {
   private config: DLQConfig;
   private seq = 0;
+  /** markReplayed 进行中的 ID 集合，防止并发 read-modify-write 竞态 */
+  private markReplayedLocks = new Set<string>();
 
   constructor(config?: Partial<DLQConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -171,8 +173,22 @@ export class DeadLetterQueue {
   /**
    * Mark a dead letter as replayed.
    * 原子更新单条消息文件，避免读-改-写竞态。
+   * 使用 in-flight 锁防止并发调用丢失 retryCount 累加。
    */
   markReplayed(id: string, success: boolean): boolean {
+    // 如果已有 in-flight 操作，拒绝并发调用以避免丢失 retryCount 累加
+    if (this.markReplayedLocks.has(id)) {
+      return false;
+    }
+    this.markReplayedLocks.add(id);
+    try {
+      return this.doMarkReplayedSync(id, success);
+    } finally {
+      this.markReplayedLocks.delete(id);
+    }
+  }
+
+  private doMarkReplayedSync(id: string, success: boolean): boolean {
     const dl = this.get(id);
     if (!dl) return false;
 

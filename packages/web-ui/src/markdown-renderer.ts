@@ -60,7 +60,14 @@ export function renderMarkdown(text: string): string {
     const renderedSummary = inlineFormatSimple(summaryText);
 
     // Instead of using attrs directly, filter to only safe attributes (including unquoted values)
-    const filterOnAttrs = (s: string) => s.replace(/\s*on\w+\s*=\s*"[^"]*"/gi, '').replace(/\s*on\w+\s*=\s*'[^']*'/gi, '').replace(/\s*on\w+\s*=\s*[^\s>]+/gi, '');
+    const filterOnAttrs = (s: string) => s
+      .replace(/\s*on\w+\s*=\s*"[^"]*"/gi, '')
+      .replace(/\s*on\w+\s*=\s*'[^']*'/gi, '')
+      .replace(/\s*on\w+\s*=\s*[^\s>]+/gi, '')
+      // 过滤 javascript: 和 data:text/html 等 XSS URL 向量（覆盖 href/src/xlink:href 等所有属性）
+      .replace(/\s*\w+\s*=\s*"\s*(?:javascript|data:text\/html)[^"]*"/gi, '')
+      .replace(/\s*\w+\s*=\s*'\s*(?:javascript|data:text\/html)[^']*'/gi, '')
+      .replace(/\s*\w+\s*=\s*(?:javascript|data:text\/html)[^\s>]*/gi, '');
     const safeAttrs = filterOnAttrs(attrs);
 
     const idx = detailsBlocks.length;

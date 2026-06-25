@@ -256,7 +256,12 @@ export class SubagentRegistry {
 
   /** Check how many more subagents can be spawned */
   get availableSlots(): number {
-    return Math.max(0, this.maxConcurrent - this.subagents.size);
+    // 只计算 running 状态的子代理，与 spawn 检查逻辑一致。
+    // subagents.size 包含所有状态（含 done、error），会导致 availableSlots 偏小。
+    const runningCount = Array.from(this.subagents.values()).filter(
+      (s) => s.status === "running",
+    ).length;
+    return Math.max(0, this.maxConcurrent - runningCount);
   }
 
   // ─── Internal ──────────────────────────────────────────────────────────────

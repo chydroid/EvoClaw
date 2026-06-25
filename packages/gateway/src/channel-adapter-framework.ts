@@ -8,6 +8,7 @@
  *  - TelegramChannelAdapter — Telegram Bot API adapter (polling mode)
  */
 
+import * as crypto from "crypto";
 import type {
   ChannelAdapter as ChannelAdapterInterface,
   ChannelType,
@@ -295,22 +296,10 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
 
   private signPayload(body: string): string {
     if (!this.secret) return "";
-    const encoder = new TextEncoder();
-    const key = encoder.encode(this.secret);
-    const data = encoder.encode(body);
-
-    // Use SubtleCrypto for HMAC-SHA256
-    // Synchronous fallback for environments without SubtleCrypto
-    try {
-      // Simple HMAC implementation using crypto module
-      const crypto = require("crypto");
-      const hmac = crypto.createHmac("sha256", this.secret);
-      hmac.update(body);
-      return `sha256=${hmac.digest("hex")}`;
-    } catch {
-      // Fallback: no signature
-      return "";
-    }
+    // 使用顶部 import 的 crypto 模块，避免 ESM 中 require 未定义导致签名静默失效
+    const hmac = crypto.createHmac("sha256", this.secret);
+    hmac.update(body);
+    return `sha256=${hmac.digest("hex")}`;
   }
 }
 
@@ -470,6 +459,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
         }
       }
     }, this.pollingIntervalMs);
+    this.pollingTimer.unref?.();
   }
 
   private async processUpdate(update: TelegramUpdate): Promise<void> {

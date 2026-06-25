@@ -1,10 +1,31 @@
+import * as fs from "fs";
+import * as path from "path";
 import type { A2AAgentCard, A2ATask, A2ATaskResult, A2AServerConfig, A2ACapability } from "./types";
 import type { ToolDefinition } from "../types";
+
+/** 从根 package.json 动态读取版本号 */
+function readVersionFromPackageJson(): string {
+  try {
+    const candidates = [
+      path.resolve(__dirname, "../../../../package.json"),
+      path.resolve(__dirname, "../../../package.json"),
+      path.resolve(process.cwd(), "package.json"),
+    ];
+    for (const pkgPath of candidates) {
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        if (pkg.version && pkg.name === "evoclaw") return pkg.version;
+      }
+    }
+  } catch { /* version detection failed */ }
+  return "0.0.0-unknown";
+}
 
 export class A2AServer {
   private config: A2AServerConfig;
   private capabilities: A2ACapability[] = [];
   private taskHandler: ((task: A2ATask) => Promise<unknown>) | null = null;
+  private version: string;
 
   constructor(config?: Partial<A2AServerConfig>) {
     this.config = {
@@ -13,6 +34,7 @@ export class A2AServer {
       authType: config?.authType ?? "none",
       validApiKeys: config?.validApiKeys,
     };
+    this.version = config?.version ?? readVersionFromPackageJson();
   }
 
   /** Set a custom task handler for incoming A2A tasks */
@@ -36,7 +58,7 @@ export class A2AServer {
       name: "EvoClaw",
       description: "Self-evolving Agent OS with multi-layer memory, evolution engine, and 9 channel support",
       url: this.config.publicUrl,
-      version: "0.13.8",
+      version: this.version,
       capabilities: this.capabilities,
       authentication: { type: this.config.authType },
     };

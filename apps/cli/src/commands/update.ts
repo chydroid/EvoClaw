@@ -169,6 +169,18 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         console.log(c("yellow", `  ${ICONS.warn()} Submodule update had issues (non-critical)`));
       }
 
+      console.log(c("cyan", "  Installing dependencies..."));
+      const installResult = child_process.spawnSync("pnpm", ["install"], { cwd: rootDir, stdio: "inherit", shell: true });
+      if (installResult.status !== 0) {
+        console.log(c("yellow", `  ${ICONS.warn()} pnpm install failed (exit ${installResult.status})`));
+      } else {
+        console.log(c("cyan", "  Building..."));
+        const buildResult = child_process.spawnSync("pnpm", ["build"], { cwd: rootDir, stdio: "inherit", shell: true });
+        if (buildResult.status !== 0) {
+          console.log(c("yellow", `  ${ICONS.warn()} pnpm build failed (exit ${buildResult.status})`));
+        }
+      }
+
       const serverAlive = await checkServer();
       if (serverAlive) {
         console.log(c("cyan", "  Gateway is running — consider restarting: EvoClaw gateway restart"));

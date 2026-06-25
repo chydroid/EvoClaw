@@ -57,7 +57,7 @@ export interface SubAgentResult {
 }
 
 /** A callback that executes a sub-agent task */
-export type SubAgentExecutor = (task: SubAgentTask) => Promise<SubAgentResult>;
+export type SubAgentExecutor = (task: SubAgentTask, signal?: AbortSignal) => Promise<SubAgentResult>;
 
 // ── Dispatcher ──
 
@@ -81,7 +81,13 @@ export class SubAgentDispatcher {
     const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const result = await this.executor(task);
+      const result = await new Promise<SubAgentResult>((resolve, reject) => {
+        // Reject the pending promise when the signal aborts (timeout or cancel)
+        controller.signal.addEventListener("abort", () => {
+          reject(new Error(`Sub-agent task ${task.id} aborted`));
+        });
+        this.executor(task, controller.signal).then(resolve, reject);
+      });
       return result;
     } catch (err) {
       return {

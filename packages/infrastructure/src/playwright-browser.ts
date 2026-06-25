@@ -430,7 +430,9 @@ export class PlaywrightBrowser {
           };
         }
       }
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[PlaywrightBrowser] Failed to load cookies: ${err instanceof Error ? err.message : String(err)}` + "\n");
+    }
   }
 
   private async saveCookies(): Promise<void> {
@@ -441,7 +443,12 @@ export class PlaywrightBrowser {
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(this.cookieFile, JSON.stringify(cookies, null, 2), "utf-8");
+        const tmp = `${this.cookieFile}.tmp.${process.pid}`;
+        fs.writeFileSync(tmp, JSON.stringify(cookies, null, 2), "utf-8");
+        const fd = fs.openSync(tmp, "r");
+        fs.fsyncSync(fd);
+        fs.closeSync(fd);
+        fs.renameSync(tmp, this.cookieFile);
       }
     } catch (err) {
       process.stderr.write(`[PlaywrightBrowser] Failed to save cookies: ${err instanceof Error ? err.message : String(err)}\n`);

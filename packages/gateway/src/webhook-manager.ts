@@ -14,6 +14,21 @@
 
 import * as crypto from "crypto";
 
+/**
+ * 常量时间字符串比较，防止时序攻击。
+ * 长度不同时先返回 false（但仍消耗一定时间以减少长度泄露）。
+ */
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  if (aBuf.length !== bBuf.length) {
+    // 即使长度不同也做一次比较，避免完全基于长度差异的时序泄露
+    crypto.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 export interface WebhookConfig {
   /** Unique webhook ID */
   id: string;
@@ -168,7 +183,8 @@ export class IncomingWebhookManager {
       ? authHeader.slice(7)
       : authHeader;
 
-    return token === endpoint.authToken;
+    // 使用常量时间比较防止时序攻击
+    return safeEqual(token, endpoint.authToken);
   }
 
   async trigger(
@@ -308,7 +324,19 @@ export class WebhookManager {
   private maxHistoryPerWebhook = 100;
 
   constructor(signingKey?: string) {
-    this.signingKey = signingKey ?? process.env.WEBHOOK_SIGNING_KEY ?? "evoclaw-webhook-key";
+    // 移除硬编码默认密钥，避免安全风险
+    const envKey = process.env.WEBHOOK_SIGNING_KEY;
+    if (signingKey) {
+      this.signingKey = signingKey;
+    } else if (envKey && envKey.length > 0) {
+      this.signingKey = envKey;
+    } else {
+      // 未配置签名密钥时生成随机密钥并打印警告
+      this.signingKey = crypto.randomBytes(32).toString("hex");
+      process.stderr.write(
+        "[WebhookManager] WARNING: WEBHOOK_SIGNING_KEY is not set. A temporary random signing key has been generated for this session. Set WEBHOOK_SIGNING_KEY environment variable for persistent and shared signature verification.\n"
+      );
+    }
   }
 
   // ── Registration ─────────────────────────────────────────────────────

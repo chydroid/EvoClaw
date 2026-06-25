@@ -196,6 +196,13 @@ export class ModelFailoverManager {
     for (const currentId of chain) {
       const startMs = Date.now();
       try {
+        // half-open 探测限制：在发起真实请求前消费一个 probe 槽位，
+        // 防止多个并发请求同时使用 half-open provider（原 consumeProbe 从未被调用，
+        // 导致 halfOpenProbeCount 永远为 0，canUse 对 half-open 永远返回 true）。
+        if (!this.consumeProbe(currentId)) {
+          lastError = new Error(`Provider "${currentId}" half-open probe limit reached`);
+          continue;
+        }
         const apiKey = this.getCurrentApiKey(currentId);
         const result = await fn(currentId, apiKey);
         this.recordSuccess(currentId, Date.now() - startMs);

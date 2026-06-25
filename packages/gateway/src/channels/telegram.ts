@@ -10,6 +10,7 @@
  *   3. Optionally set webhook URL or use long polling
  */
 
+import { timingSafeEqual } from "crypto";
 import type {
   ChannelAdapter,
   ChannelHealthResult,
@@ -23,6 +24,8 @@ export interface TelegramConfig {
   botToken: string;
   /** Webhook URL (optional, uses long polling if not set) */
   webhookUrl?: string;
+  /** Webhook secret token (X-Telegram-Bot-Api-Secret-Token header) for verifying webhook requests */
+  secretToken?: string;
   /** Allowed user/chat IDs (empty = allow all) */
   allowedChats?: number[];
   /** Blocked user/chat IDs */
@@ -88,6 +91,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private botToken: string;
   private webhookUrl?: string;
+  private secretToken?: string;
   private allowedChats: Set<number>;
   private blockedChats: Set<number>;
   private rejectUnauthorizedDm: boolean;
@@ -101,13 +105,14 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private running = false;
   private connected = false;
-  private pollingInterval: ReturnType<typeof setInterval> | null = null;
+  private pollingTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUpdateId = 0;
   private apiBase: string;
 
   constructor(config: TelegramConfig) {
     this.botToken = config.botToken;
     this.webhookUrl = config.webhookUrl;
+    this.secretToken = config.secretToken;
     this.allowedChats = new Set(config.allowedChats ?? []);
     this.blockedChats = new Set(config.blockedChats ?? []);
     this.rejectUnauthorizedDm = config.rejectUnauthorizedDm ?? true;
@@ -160,9 +165,9 @@ export class TelegramAdapter implements ChannelAdapter {
     this.running = false;
     this.connected = false;
 
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
+    if (this.pollingTimer) {
+      clearTimeout(this.pollingTimer);
+      this.pollingTimer = null;
     }
 
     // Delete webhook if set (so we don't miss messages after stop)
@@ -311,9 +316,30 @@ export class TelegramAdapter implements ChannelAdapter {
 
   /**
    * Handle incoming webhook update from Telegram.
+   * 若配置了 secretToken，则验证 X-Telegram-Bot-Api-Secret-Token 头。
    */
-  async handleWebhook(body: unknown): Promise<void> {
+  async handleWebhook(body: unknown, headers?: Record<string, string>): Promise<void> {
     if (typeof body !== "object" || body === null) return;
+
+    // 验证 webhook secret token（如果配置了）
+    if (this.secretToken) {
+      const receivedToken = headers?.["x-telegram-bot-api-secret-token"];
+      if (!receivedToken) {
+        console.warn("[Telegram] Webhook rejected: missing X-Telegram-Bot-Api-Secret-Token header");
+        return;
+      }
+      try {
+        const expectedBuf = Buffer.from(this.secretToken);
+        const receivedBuf = Buffer.from(receivedToken);
+        if (expectedBuf.length !== receivedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
+          console.warn("[Telegram] Webhook rejected: invalid secret token");
+          return;
+        }
+      } catch {
+        console.warn("[Telegram] Webhook rejected: secret token comparison failed");
+        return;
+      }
+    }
 
     const update = body as TelegramUpdate;
     await this.processUpdate(update);
@@ -322,7 +348,11 @@ export class TelegramAdapter implements ChannelAdapter {
   // ── Long Polling ──────────────────────────────────────────────────────────
 
   private startLongPolling(): void {
-    this.pollingInterval = setInterval(async () => {
+    // 递归 setTimeout：等上一次 getUpdates 完成后再发起下一次，
+    // 避免服务端长轮询（timeout: 30）期间并发请求导致 409 Conflict。
+    const poll = async (): Promise<void> => {
+      if (!this.running) return;
+
       try {
         const updates = await this.telegramApi<{
           ok: boolean;
@@ -333,11 +363,11 @@ export class TelegramAdapter implements ChannelAdapter {
           allowed_updates: ["message", "edited_message", "callback_query"],
         });
 
-        if (!updates.ok || !updates.result) return;
-
-        for (const update of updates.result) {
-          await this.processUpdate(update);
-          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+        if (updates.ok && updates.result) {
+          for (const update of updates.result) {
+            await this.processUpdate(update);
+            this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+          }
         }
       } catch (err) {
         if (this.running) {
@@ -345,9 +375,13 @@ export class TelegramAdapter implements ChannelAdapter {
           console.error("[Telegram] Polling error:", err);
         }
       }
-    }, 2000);
-    // 不阻止进程退出
-    this.pollingInterval.unref?.();
+
+      if (this.running) {
+        this.pollingTimer = setTimeout(poll, 1000);
+      }
+    };
+
+    poll();
   }
 
   // ── Update Processing ─────────────────────────────────────────────────────
@@ -481,6 +515,7 @@ export class TelegramAdapter implements ChannelAdapter {
       url: this.webhookUrl,
       allowed_updates: ["message", "edited_message", "callback_query"],
       max_connections: 100,
+      ...(this.secretToken ? { secret_token: this.secretToken } : {}),
     });
 
     if (!result.ok) {

@@ -266,7 +266,7 @@ export class TranscriptRedactor {
     // Record audit entry
     if (redactions.length > 0) {
       this.auditLog.push({
-        text: text.slice(0, 200),
+        text: result.slice(0, 200),
         redactions,
         totalRedactions: total,
         timestamp: Date.now(),

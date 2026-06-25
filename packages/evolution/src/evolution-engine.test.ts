@@ -1,16 +1,33 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { EvolutionEngine } from "../src/evolution-engine";
 import { GeneticEvolutionEngine } from "../src/genetic-engine";
 import type { EvolutionCycle } from "@evoclaw/core";
+import * as os from "os";
+import * as path from "path";
+import * as fs from "fs";
 
 describe("EvolutionEngine Integration", () => {
+  const createdDirs: string[] = [];
+
   function createEngine() {
     const registry = new ServiceRegistry();
     const eventBus = new EventBus();
     registry.registerService("eventBus", eventBus);
-    return { engine: new EvolutionEngine(registry, eventBus), registry, eventBus };
+    const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "evo-test-"));
+    createdDirs.push(storeDir);
+    const engine = new EvolutionEngine(registry, eventBus, { storeDir });
+    return { engine, storeDir, registry, eventBus };
   }
+
+  afterEach(() => {
+    while (createdDirs.length) {
+      const dir = createdDirs.pop()!;
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {}
+    }
+  });
 
   it("should create EvolutionEngine with all sub-components initialized", () => {
     const { engine } = createEngine();
@@ -34,7 +51,7 @@ describe("EvolutionEngine Integration", () => {
     expect(cycle.candidates.length).toBeGreaterThanOrEqual(0);
     const history = await engine.getCycleHistory();
     expect(history.length).toBeGreaterThan(0);
-    expect(history[0].id).toBe(cycle.id);
+    expect(history[history.length - 1].id).toBe(cycle.id);
   });
 
   it("should record reinforcement feedback", async () => {
@@ -78,7 +95,7 @@ describe("EvolutionEngine Integration", () => {
 });
 
 describe("GeneticEvolutionEngine Integration", () => {
-  it("should initialize population from seed candidate", () => {
+  it("should start with empty population", () => {
     const registry = new ServiceRegistry();
     const eventBus = new EventBus();
     const engine = new GeneticEvolutionEngine(registry, eventBus);

@@ -79,7 +79,7 @@ function hashString(str: string): number {
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash; // Convert to 32-bit integer
   }
-  return Math.abs(hash);
+  return hash >>> 0;
 }
 
 function rollPercentage(flag: FeatureFlag, id: string): boolean {

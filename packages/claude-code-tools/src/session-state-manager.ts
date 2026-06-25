@@ -83,7 +83,8 @@ export class MemorySessionStore implements SessionStore {
   }
 
   async load(sessionId: string): Promise<SessionState | null> {
-    return this.sessions.get(sessionId) ?? null;
+    const s = this.sessions.get(sessionId);
+    return s ? structuredClone(s) : null;
   }
 
   async list(filter?: { intent?: string; since?: number }): Promise<SessionState[]> {
@@ -95,7 +96,7 @@ export class MemorySessionStore implements SessionStore {
     if (filter?.since !== undefined) {
       results = results.filter((s) => s.createdAt >= filter.since!);
     }
-    return results.sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt);
+    return results.map((s) => structuredClone(s)).sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt);
   }
 
   async delete(sessionId: string): Promise<void> {

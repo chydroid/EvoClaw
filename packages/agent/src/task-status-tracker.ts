@@ -18,6 +18,8 @@ export class TaskStatusTracker {
           this.cleanupTimer = null;
         }
       }, 60_000);
+      // 允许进程在定时器运行时退出
+      this.cleanupTimer.unref();
     }
   }
 

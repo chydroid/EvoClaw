@@ -1,5 +1,7 @@
 /** secrets — Manage secret keys */
 import { Command } from "commander";
+import * as fs from "fs";
+import * as path from "path";
 import { c } from "../utils/colors";
 
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
@@ -25,7 +27,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .command("set <key> <value>")
     .description("Set a secret value (appended to .env)")
     .action((key: string, value: string) => {
+      fs.appendFileSync(path.join(process.cwd(), ".env"), `\n${key}=${value}\n`);
       console.log(c("green", `✅ Set ${key} (value hidden)`));
-      console.log(c("gray", "  Write to .env or use Web UI for persistent storage"));
+      console.log(c("gray", "  Written to .env"));
     });
 }

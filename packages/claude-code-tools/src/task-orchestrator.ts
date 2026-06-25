@@ -82,6 +82,7 @@ export type ProgressCallback = (event: ProgressEvent) => void;
 // ── Task Orchestrator ──────────────────────────────────────
 
 export class TaskOrchestrator {
+  private static readonly MAX_HISTORY = 500;
   private decomposer: TaskDecomposer;
   private dispatcher: LLMDispatcher;
   private config: OrchestratorConfig;

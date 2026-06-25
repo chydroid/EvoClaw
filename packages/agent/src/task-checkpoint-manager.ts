@@ -74,7 +74,30 @@ class TaskCheckpointManager {
   private persistToDisk(sessionId: string, checkpoint: TaskCheckpoint): void {
     try {
       const filePath = path.join(this.checkpointDir, `${sessionId}.json`);
-      fs.writeFileSync(filePath, JSON.stringify(checkpoint, null, 2), "utf-8");
+      const data = JSON.stringify(checkpoint, null, 2);
+      // 原子写入：temp + fsync + rename，防止崩溃时 JSON 文件损坏
+      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, data, "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (renameErr) {
+        // EXDEV/EBUSY 跨设备回退：在目标目录侧创建临时文件再 rename
+        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, filePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:` + " " + err);
     }

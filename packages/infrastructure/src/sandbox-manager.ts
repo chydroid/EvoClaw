@@ -18,6 +18,7 @@ export interface SandboxSession {
   createdAt: Date;
   lastActivityAt: Date;
   executeCount: number;
+  lastError?: string;
 }
 
 export class SandboxManager {
@@ -132,7 +133,8 @@ export class SandboxManager {
 
       return result;
     } catch (err) {
-      session.status = "error";
+      session.status = "ready";
+      session.lastError = err instanceof Error ? err.message : String(err);
       return this.errorResult(err instanceof Error ? err.message : String(err));
     }
   }

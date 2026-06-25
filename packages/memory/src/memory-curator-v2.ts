@@ -10,6 +10,8 @@
 
 // ── Types ──────────────────────────────────────────────────
 
+import * as crypto from "crypto";
+
 export interface MemoryEntryInput {
   content: string;
   type: string;
@@ -128,7 +130,7 @@ export class MemoryCuratorV2 {
   curateMemories(entries: MemoryEntryWithId[]): CurationResult {
     const retain: string[] = [];
     const decay: string[] = [];
-    const seenContentHashes = new Map<string, string>(); // normalized content -> first entry id
+    const seenContentHashes = new Map<string, { id: string; importance: number }>(); // normalized content hash -> kept entry
 
     for (const entry of entries) {
       const importance = entry.importance ?? this.scoreImportance(entry);
@@ -143,14 +145,24 @@ export class MemoryCuratorV2 {
       const normalizedContent = this.normalizeForDuplicateCheck(entry.content);
       const contentHash = this.simpleHash(normalizedContent);
 
-      const existingId = seenContentHashes.get(contentHash);
-      if (existingId !== undefined) {
-        // Duplicate found — keep the one with higher importance or earlier entry
-        decay.push(entry.id);
+      const existing = seenContentHashes.get(contentHash);
+      if (existing !== undefined) {
+        // Duplicate found — keep the higher-importance entry, decay the other.
+        // Ties keep the earlier (already-seen) entry.
+        if (importance > existing.importance) {
+          // Current entry wins — decay the previously retained entry
+          decay.push(existing.id);
+          const idx = retain.indexOf(existing.id);
+          if (idx >= 0) retain.splice(idx, 1);
+          seenContentHashes.set(contentHash, { id: entry.id, importance });
+          retain.push(entry.id);
+        } else {
+          decay.push(entry.id);
+        }
         continue;
       }
 
-      seenContentHashes.set(contentHash, entry.id);
+      seenContentHashes.set(contentHash, { id: entry.id, importance });
       retain.push(entry.id);
     }
 
@@ -229,15 +241,12 @@ export class MemoryCuratorV2 {
   }
 
   /**
-   * Simple hash for content comparison (non-cryptographic).
+   * Cryptographic hash for content comparison (sha256).
+   * The previous 32-bit rolling hash could collide on distinct content;
+   * sha256 avoids false-positive duplicate detection.
    */
   private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash + char) | 0; // Convert to 32-bit int
-    }
-    return hash.toString(36);
+    return crypto.createHash("sha256").update(str).digest("hex");
   }
 
   // ── Private: Compression ─────────────────────────────────

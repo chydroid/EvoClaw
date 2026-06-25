@@ -69,4 +69,6 @@ export interface A2AServerConfig {
   authType: "none" | "api_key";
   /** Valid API keys (if authType is api_key) */
   validApiKeys?: string[];
+  /** Agent version (defaults to dynamically reading from root package.json) */
+  version?: string;
 }

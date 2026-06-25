@@ -55,6 +55,8 @@ export class GatewayServer {
   private protocolHandler: ProtocolHandler;
   private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
+  /** requestCounts Map 大小上限，防止无界增长导致内存泄漏 */
+  private readonly requestCountsMaxSize = 10_000;
   private mcpProtocolHandler: import("./mcp-protocol-handler").MCPProtocolHandler | null = null;
   private avatarConfig: { user: string; bot: string; userNickname: string; botNickname: string } = {
     user: "assets/images/user.png",
@@ -125,7 +127,15 @@ export class GatewayServer {
 
     const { port, host } = this.config;
     await new Promise<void>((resolve, reject) => {
-      this.server = this.app.listen(port, host, () => {
+      // 先创建 server 实例（不监听），注册 error 监听器后再 listen()，
+      // 避免 listen() 同步抛错（如 EADDRINUSE）时错误未被捕获。
+      this.server = http.createServer(this.app);
+
+      this.server.on("error", (err: NodeJS.ErrnoException) => {
+        reject(err);
+      });
+
+      this.server.listen(port, host, () => {
         process.stdout.write(`[Gateway] EvoClaw Gateway listening on http://${host}:${port}\n`);
 
         if (this.server) {
@@ -143,10 +153,6 @@ export class GatewayServer {
 
         this.eventBus.publish("system.ready", { port, host }, "gateway").catch(() => {});
         resolve();
-      });
-
-      this.server?.on("error", (err) => {
-        reject(err);
       });
     });
   }
@@ -329,6 +335,13 @@ export class GatewayServer {
     const entry = this.requestCounts.get(key);
 
     if (!entry || now > entry.resetAt) {
+      // Map 达到上限时淘汰最旧的 entry，防止无界增长
+      if (this.requestCounts.size >= this.requestCountsMaxSize) {
+        const oldestKey = this.requestCounts.keys().next().value;
+        if (oldestKey !== undefined) {
+          this.requestCounts.delete(oldestKey);
+        }
+      }
       this.requestCounts.set(key, { count: 1, resetAt: now + this.config.rateLimitWindow });
       next();
       return;

@@ -538,16 +538,28 @@ export class LLMDispatcher {
       }
 
       const data = await response.json() as any;
-      const content = data.choices?.[0]?.message?.content || "";
-      const inputTokens = data.usage?.prompt_tokens || 0;
-      const outputTokens = data.usage?.completion_tokens || 0;
+      let content: string;
+      let inputTokens: number;
+      let outputTokens: number;
+      let finishReason: string;
+      if (provider.provider === "anthropic") {
+        content = data.content?.[0]?.text || "";
+        inputTokens = data.usage?.input_tokens || 0;
+        outputTokens = data.usage?.output_tokens || 0;
+        finishReason = data.stop_reason || "stop";
+      } else {
+        content = data.choices?.[0]?.message?.content || "";
+        inputTokens = data.usage?.prompt_tokens || 0;
+        outputTokens = data.usage?.completion_tokens || 0;
+        finishReason = data.choices?.[0]?.finish_reason || "stop";
+      }
 
       return {
         content,
         model: provider.model,
         tokenUsage: { input: inputTokens, output: outputTokens },
         durationMs: Date.now() - startTime,
-        finishReason: data.choices?.[0]?.finish_reason || "stop",
+        finishReason,
       };
     } finally {
       clearTimeout(timeoutId);

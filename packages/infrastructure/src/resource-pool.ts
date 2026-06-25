@@ -129,6 +129,7 @@ export class ResourcePool<T> extends EventEmitter {
         () => this.scavenge(),
         this.config.scavengeIntervalMs,
       );
+      this.scavengeTimer.unref();
     }
   }
 

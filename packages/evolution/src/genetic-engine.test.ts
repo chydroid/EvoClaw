@@ -67,11 +67,17 @@ describe("GeneticEvolutionEngine", () => {
     const engine = new GeneticEvolutionEngine(null as never, null as never);
 
     const seed = createSeedCandidate();
+    const seedScore = await simpleEvaluator(seed);
+
     seed.risk.level = "low";
 
     const result = await engine.evolve(seed, simpleEvaluator);
 
     expect(result).toBeTruthy();
+    if (!result) return;
+
+    const resultScore = await simpleEvaluator(result);
+    expect(resultScore.overallFitness).toBeGreaterThan(seedScore.overallFitness);
   });
 
   it("should produce candidates with valid structure", async () => {

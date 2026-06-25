@@ -170,7 +170,6 @@ async function startTui(opts: Record<string, unknown>): Promise<void> {
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
   const tui = program
     .command("tui")
-    .alias("chat")
     .alias("terminal")
     .description("Interactive terminal chat interface");
 

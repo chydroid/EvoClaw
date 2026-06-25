@@ -135,9 +135,10 @@ export class ContextCompressor {
 
     // Offload all but the last N tool results
     const offloadCount = toolIndices.length - this.keepRecentToolResults;
+    const offloadSet = new Set(toolIndices.slice(0, offloadCount));
     const compacted = messages.map((m, i) => {
       if (m.role !== "tool") return m;
-      if (toolIndices.indexOf(i) >= offloadCount) return m;
+      if (!offloadSet.has(i)) return m;
 
       // Replace content with a compact reference (Claude Code uses file paths)
       return {

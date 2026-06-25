@@ -38,6 +38,8 @@ export interface WeChatConfig {
   corpSecret?: string;
   /** WeCom: Bot webhook key (for webhook mode, receives JSON) */
   botKey?: string;
+  /** WeCom: 应用 AgentId（API 模式发送应用消息时必需） */
+  agentId?: number;
   /** API base URL */
   baseURL?: string;
 }
@@ -95,7 +97,7 @@ export class WeChatAdapter implements ChannelAdapter {
       }
 
       if (this.config.mode === "wecom") {
-        return this.sendWeComAPI(text);
+        return this.sendWeComAPI(target, text);
       }
 
       // Official Account — customer service message
@@ -296,7 +298,7 @@ export class WeChatAdapter implements ChannelAdapter {
     };
   }
 
-  private async sendWeComAPI(text: string): Promise<ChannelSendResult> {
+  private async sendWeComAPI(target: string, text: string): Promise<ChannelSendResult> {
     await this.ensureToken();
 
     // WeCom uses /cgi-bin/message/send for app messages
@@ -304,9 +306,9 @@ export class WeChatAdapter implements ChannelAdapter {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        touser: "@all",
+        touser: target,
         msgtype: "text",
-        agentid: 0,
+        agentid: this.config.agentId ?? 0,
         text: { content: text },
       }),
     });

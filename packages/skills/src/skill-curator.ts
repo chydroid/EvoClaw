@@ -83,6 +83,30 @@ function atomicWriteFileLocal(targetPath: string, content: string): void {
 }
 
 /**
+ * 跨文件系统安全的同步移动（rename + EXDEV 回退到 copy+unlink）。
+ * fs.renameSync 在跨设备布局下会抛 EXDEV，此时回退到复制后删除。
+ */
+function safeMoveSync(src: string, dst: string): void {
+  try {
+    fs.renameSync(src, dst);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "EXDEV") throw err;
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      fs.mkdirSync(dst, { recursive: true });
+      for (const entry of fs.readdirSync(src)) {
+        safeMoveSync(path.join(src, entry), path.join(dst, entry));
+      }
+      fs.rmSync(src, { recursive: true, force: true });
+    } else {
+      fs.copyFileSync(src, dst);
+      fs.unlinkSync(src);
+    }
+  }
+}
+
+/**
  * 简单跨进程文件锁（flag:wx + PID + stale 检测）。
  * 用于保护演化记录持久化的读-改-写。
  */
@@ -638,7 +662,7 @@ export class SkillCurator {
       for (const entryName of entries) {
         const src = path.join(skillDir, entryName);
         const dst = path.join(archiveSubDir, entryName);
-        fs.renameSync(src, dst);
+        safeMoveSync(src, dst);
       }
       // 删除空的原目录
       try { fs.rmdirSync(skillDir); } catch { /* ignore */ }
@@ -700,7 +724,7 @@ export class SkillCurator {
         if (entryName === "_archive.json") continue;
         const src = path.join(archivePath, entryName);
         const dst = path.join(meta.originalPath, entryName);
-        fs.renameSync(src, dst);
+        safeMoveSync(src, dst);
       }
       // 删除归档目录
       try { fs.rmdirSync(archivePath); } catch { /* ignore */ }
@@ -1280,6 +1304,7 @@ export class SkillCurator {
   private schedulePersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+    this.persistTimer.unref();
   }
 
   /** 将演化记录持久化到磁盘。 */

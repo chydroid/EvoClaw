@@ -119,9 +119,10 @@ export function CronPage() {
   };
   useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
 
-  const loadTasks = useCallback(async () => {
+  const loadTasks = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/scheduler/tasks");
+      const res = await fetch("/api/scheduler/tasks", { signal });
+      if (signal?.aborted) return;
       if (res.ok) {
         const data = await res.json();
         setTasks(Array.isArray(data.tasks) ? data.tasks : []);
@@ -132,9 +133,13 @@ export function CronPage() {
   }, []);
 
   useEffect(() => {
-    loadTasks();
-    const interval = setInterval(loadTasks, 10000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    loadTasks(controller.signal);
+    const interval = setInterval(() => loadTasks(controller.signal), 10000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadTasks]);
 
   const applyTemplate = (tpl: typeof CRON_TEMPLATES[0]) => {

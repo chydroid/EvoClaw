@@ -73,42 +73,7 @@ const s: Record<string, React.CSSProperties> = {
   empty: { color: "var(--text-muted)", fontSize: "13px", padding: "24px", textAlign: "center" as const },
 };
 
-// Simulated log entries with real server data where available
-function generateMockLogs(): LogEntry[] {
-  const sources = ["gateway", "agent", "skills", "scheduler", "security", "memory"];
-  const levels: Array<"info" | "warn" | "error" | "debug"> = ["info", "info", "info", "info", "warn", "debug", "error"];
-  const messages = [
-    "Gateway server started on port 3000",
-    "Agent pool initialized with 4 workers",
-    "Skill manager loaded 12 skills from disk",
-    "Memory hub initialized with long-term store",
-    "Scheduler loaded 3 cron tasks",
-    "Bootstrap files initialized in workspace",
-    "WebSocket connection established for session web-ui",
-    "Tool call: web_search completed in 1.2s",
-    "Tool call: file_read completed in 45ms",
-    "Compaction triggered for session web-ui",
-    "Permission request approved for file_write",
-    "Warning: LLM provider timeout after 30s, retrying...",
-    "Connection to email server failed: timeout",
-    "Debug: 45 tool definitions registered",
-    "Security audit: 3 pending alerts",
-    "Queue processed 2 pending items",
-  ];
-  const logs: LogEntry[] = [];
-  const now = Date.now();
-  for (let i = 0; i < 50; i++) {
-    const offset = (50 - i) * 30000 + Math.floor(Math.random() * 15000);
-    logs.push({
-      id: `log-${i}`,
-      timestamp: new Date(now - offset).toISOString(),
-      level: levels[Math.floor(Math.random() * levels.length)],
-      source: sources[Math.floor(Math.random() * sources.length)],
-      message: messages[Math.floor(Math.random() * messages.length)],
-    });
-  }
-  return logs;
-}
+// 真实日志由后端 API 提供；无 API 时显示空状态，不再生成模拟日志误导用户
 
 export function LogsPage() {
   const { t } = useTranslation();
@@ -130,7 +95,6 @@ export function LogsPage() {
       if (signal?.aborted) return;
       console.error("Failed to load queue data:", err);
     }
-    if (!signal?.aborted) setLogs(generateMockLogs());
   }, []);
 
   useEffect(() => {

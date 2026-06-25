@@ -328,6 +328,8 @@ export class TokenUsageTracker {
   private schedulePersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => this.persistToDisk(), 5000);
+    // 允许进程在定时器运行时退出
+    this.persistTimer.unref();
   }
 
   /** 持久化到磁盘 */

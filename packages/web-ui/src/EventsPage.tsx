@@ -82,12 +82,13 @@ export function EventsPage() {
   const [filterType, setFilterType] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const loadEvents = useCallback(async () => {
+  const loadEvents = useCallback(async (signal?: AbortSignal) => {
     try {
       const [evtRes, snapRes] = await Promise.all([
-        fetch(`/api/events?limit=100${filterType ? `&type=${filterType}` : ""}`),
-        fetch("/api/events/snapshot"),
+        fetch(`/api/events?limit=100${filterType ? `&type=${filterType}` : ""}`, { signal }),
+        fetch("/api/events/snapshot", { signal }),
       ]);
+      if (signal?.aborted) return;
       if (evtRes.ok) {
         const data = await evtRes.json();
         setEvents(data.events || []);
@@ -98,14 +99,18 @@ export function EventsPage() {
     } catch {
       // silent
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [filterType]);
 
   useEffect(() => {
-    loadEvents();
-    const interval = setInterval(loadEvents, 10000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    loadEvents(controller.signal);
+    const interval = setInterval(() => loadEvents(controller.signal), 10000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadEvents]);
 
   const formatTime = (ts: number) => {
@@ -133,7 +138,7 @@ export function EventsPage() {
               <option key={et} value={et}>{et}</option>
             ))}
           </select>
-          <button style={s.refreshBtn} onClick={loadEvents}>{t("events.refresh_btn")}</button>
+          <button style={s.refreshBtn} onClick={() => loadEvents()}>{t("events.refresh_btn")}</button>
         </div>
       </div>
 

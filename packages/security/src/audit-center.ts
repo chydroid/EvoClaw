@@ -46,6 +46,7 @@ export interface AuditRule {
   condition: (events: AuditRecord[]) => boolean;
   severity: SecuritySeverity;
   cooldownMs: number;
+  windowMs?: number;
 }
 
 export class AuditCenter {
@@ -284,8 +285,9 @@ export class AuditCenter {
       const lastAlert = this.alertThrottles.get(rule.name);
       if (lastAlert && Date.now() - lastAlert < rule.cooldownMs) continue;
 
+      const windowMs = rule.windowMs ?? rule.cooldownMs ?? 60000;
       const relevantEvents = this.records.filter(
-        (r) => Date.now() - r.timestamp.getTime() < 60000
+        (r) => Date.now() - r.timestamp.getTime() < windowMs
       );
 
       if (rule.condition(relevantEvents)) {

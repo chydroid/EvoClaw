@@ -310,12 +310,16 @@ export class ReportGenerator {
 
     const html = template.compiled(enrichedData);
 
+    const output = options.format === "json"
+      ? JSON.stringify(data, null, 2)
+      : html;
+
     if (options.outputPath) {
       const dir = path.dirname(options.outputPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(options.outputPath, html, "utf-8");
+      fs.writeFileSync(options.outputPath, output, "utf-8");
     }
 
     this.eventBus.publish(
@@ -329,10 +333,7 @@ export class ReportGenerator {
       "report-generator"
     );
 
-    if (options.format === "json") {
-      return JSON.stringify(data, null, 2);
-    }
-    return html;
+    return output;
   }
 
   generateChartImage(chartConfig: ChartConfig): string {
@@ -343,7 +344,7 @@ export class ReportGenerator {
   private renderChartSVG(config: ChartConfig): string {
     const { type, labels, datasets, width = 600, height = 300, title } = config;
     const dataset = datasets[0];
-    if (!dataset) return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="50%" y="50%" text-anchor="middle" fill="#999">No data</text></svg>`).toString("base64");
+    if (!dataset) return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="50%" y="50%" text-anchor="middle" fill="#999">No data</text></svg>`;
 
     const colors = dataset.backgroundColor
       ? (Array.isArray(dataset.backgroundColor) ? dataset.backgroundColor : [dataset.backgroundColor])
@@ -436,7 +437,7 @@ export class ReportGenerator {
     }
 
     svgParts += "</svg>";
-    return Buffer.from(svgParts).toString("base64");
+    return svgParts;
   }
 
   private enrichData(data: ReportData, options: ReportOptions): Record<string, unknown> {
@@ -507,7 +508,9 @@ export class ReportGenerator {
           });
         }
       }
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[ReportGenerator] Failed to load templates: ${err}\n`);
+    }
   }
 
   async healthCheck(): Promise<boolean> {

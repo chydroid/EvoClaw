@@ -159,7 +159,8 @@ export class BootstrapManager {
     );
     const bootstrapPath = path.join(this.workspacePath, "BOOTSTRAP.md");
     if (!hasAnyBootstrap && !fs.existsSync(bootstrapPath)) {
-      this.writeFile(bootstrapPath, DEFAULT_TEMPLATES["BOOTSTRAP.md"]?.trim() + "\n" || "");
+      const bootstrapTemplate = DEFAULT_TEMPLATES["BOOTSTRAP.md"];
+      this.writeFile(bootstrapPath, bootstrapTemplate ? bootstrapTemplate.trim() + "\n" : "");
     }
 
     if (createdAny) {

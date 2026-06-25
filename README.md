@@ -25,6 +25,18 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.57.6 亮点
+- **全面代码审查与 BUG 修复（5 轮）**：从实用角度对全项目进行 5 轮深度审查，共修复 **120+ 个真实 BUG**
+  - **超时静默失败修复**：渠道消息处理添加 5 分钟超时包装，超时/错误/空回复均向用户发送提示与解决建议；并行工具失败结果注入对话防止 LLM 永久等待
+  - **严重安全修复**：SQL 注入（api-toolkit 标识符未校验）、命令注入（daemon-manager/update-manager/ssh-sandbox 的 execSync 拼接）、SSRF（link-understanding 重定向未校验域名）、allowlist 绕过（content-guard 任意允许词跳过全部屏蔽词）、设备配对密钥覆盖、配对码暴力破解（6 位→8 位 hex+锁定）、签名算法错误（飞书 SHA256 vs HMAC-SHA256）、多渠道 webhook 签名验证缺失
+  - **资源泄漏**：AsyncSemaphore 死锁、ActorSystem 消息丢失、process-manager Map 无限增长、observability otelSpans 泄漏、多包定时器未 unref、claude-code-tools 多处无界 Map/数组
+  - **数据正确性**：evolution-engine Date 字段反序列化（JSON.parse 后为字符串导致 .getTime() 崩溃）、memory-hub 压缩结果未持久化、tfidf-matcher tokenize 去重破坏 TF、report-generator SVG 双重 base64、video-tools 1:1 宽高比错误、marketplace 版本标记污染
+  - **原子写入**：全面贯彻 atomicWriteFile 规则——event-ledger、filesystem-checkpoint、playwright-browser cookies、email accounts、install-policy audit、bootstrap 文件、CLI accounts/PID/.env 等 15+ 处非原子写入修复
+  - **CLI 修复**：gateway restart 不重启、update 不构建、secrets set 不写入、QR 假二维码、backup 不复制文件、命令别名冲突（config/configure、tui/chat）、硬编码端口
+  - **服务端修复**：SIGINT/SIGTERM 强制退出超时（10s）、第二次信号立即退出、bootstrap 原子写入、skill 翻译定时器 unref
+  - **测试修复**：evolution-engine UUID 断言（预存在 flaky）、scheduler run-log prune 测试逻辑错误、permission-manager 跨目标断言错误、genetic-engine 弱断言增强
+  - **跨包集成**：claude-code-tools Anthropic 响应解析错误、并行结果顺序错乱、subagent 超时无效、session-state-manager 返回引用非克隆
+
 ### v0.57.5 亮点
 - **全面代码审查与 BUG 修复（2 轮）**：对全项目进行 2 轮深度审查，共修复 **44 个真实 BUG**
   - 严重修复：pre-commit secret 检测正则损坏导致安全防线失效、recordEvolution 清除所有 skill 失败计数、processQueue 任务饥饿、ActorSystem send 阻塞

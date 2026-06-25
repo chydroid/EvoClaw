@@ -414,6 +414,8 @@ export class EvoClawServer {
     this.registry.registerService("bootstrapManager", this.bootstrapManager);
     this.bootstrapManager.initialize().then((ctx) => {
       this.logger.info("server", `Bootstrap initialized: bootstrapPending=${ctx.bootstrapPending}, missingFiles=${ctx.missingFiles.join(",") || "none"}`);
+    }).catch((err) => {
+      this.logger.error("server", `Bootstrap initialization failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     this.compactionManager = new CompactionManager();
     this.agentModelExecutor.setCompactionManager(this.compactionManager);
@@ -643,14 +645,24 @@ export class EvoClawServer {
 
     // Connect channel message handler to agent
     this.channelManager.setMessageHandler(async (msg) => {
+      // 5 分钟默认超时，避免消息处理后既不成功也不报失败
+      const CHANNEL_TIMEOUT = 5 * 60 * 1000;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         this.logger.info("channel", `Message from ${msg.channel}: ${msg.from} -> ${msg.text?.slice(0, 50)}`);
         const sessionId = `${msg.channel}-${msg.from}`;
-        const result = await this.agentModelExecutor.chat(msg.text, {
-          sessionId,
-          channel: msg.channel,
-          peerId: msg.from,
-        });
+        const result = await Promise.race([
+          this.agentModelExecutor.chat(msg.text, {
+            sessionId,
+            channel: msg.channel,
+            peerId: msg.from,
+          }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error("CHANNEL_CHAT_TIMEOUT")), CHANNEL_TIMEOUT);
+          }),
+        ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+
         if (result?.reply && msg.isDirect) {
           let replyText = result.reply;
           // For IM channels, append file info if files were created
@@ -664,9 +676,31 @@ export class EvoClawServer {
             }
           }
           await this.channelManager.sendMessage(msg.channel, msg.from, replyText);
+        } else if (msg.isDirect && !result?.reply) {
+          // 空回复时通知用户，避免用户等待无响应
+          await this.channelManager.sendMessage(
+            msg.channel,
+            msg.from,
+            "🤔 AI 未生成有效回复，请尝试重新表述您的问题。",
+          );
         }
       } catch (err) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error("channel", `Failed to handle channel message: ${err}`);
+        if (msg.isDirect) {
+          let userMsg: string;
+          if (errMsg === "CHANNEL_CHAT_TIMEOUT") {
+            userMsg = "⏰ 处理超时，任务可能过于复杂。\n\n建议：\n1. 尝试将任务拆分为更小的步骤\n2. 简化问题描述\n3. 稍后重试";
+          } else {
+            userMsg = `⚠️ 处理您的消息时出现错误：${errMsg}\n\n请稍后重试，或联系管理员。`;
+          }
+          try {
+            await this.channelManager.sendMessage(msg.channel, msg.from, userMsg);
+          } catch (sendErr) {
+            this.logger.error("channel", `Failed to send error notification: ${sendErr}`);
+          }
+        }
       }
     });
 
@@ -721,17 +755,22 @@ export class EvoClawServer {
       } catch { /* non-critical */ }
     });
 
-    setTimeout(async () => {
+    const skillTranslateTimer = setTimeout(async () => {
       try {
         await this.skillManager.checkAndTranslateInstalledSkills();
       } catch { /* non-critical */ }
     }, 10000);
+    skillTranslateTimer.unref();
 
     const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
     for (const fileName of bootstrapFiles) {
       const fpath = path.join(workspaceDir, fileName);
       if (!fs.existsSync(fpath)) {
-        fs.writeFileSync(fpath, `# ${fileName.replace(".md", "")}\n\nSee ${workspaceDir}/${fileName} for documentation.\n`, "utf-8");
+        const content = `# ${fileName.replace(".md", "")}\n\nSee ${workspaceDir}/${fileName} for documentation.\n`;
+        // Atomic write: temp file + rename to avoid partial/corrupt files on crash
+        const tmpPath = `${fpath}.tmp.${process.pid}`;
+        fs.writeFileSync(tmpPath, content, "utf-8");
+        fs.renameSync(tmpPath, fpath);
       }
     }
     this.agentModelExecutor.setWorkspacePath(workspaceDir);
@@ -864,15 +903,43 @@ export class EvoClawServer {
       await this.shutdown();
     });
 
+    let sigintCount = 0;
     process.on("SIGINT", async () => {
-      this.logger.info("server", "Received SIGINT");
+      sigintCount++;
+      this.logger.info("server", `Received SIGINT (count: ${sigintCount})`);
+      // Second SIGINT force-exits immediately — useful when shutdown is hung
+      if (sigintCount >= 2) {
+        this.logger.warn("server", "Force-exiting immediately on second SIGINT");
+        process.exit(1);
+      }
+      // Hard timeout: force-exit after 10s if shutdown hangs
+      const force = setTimeout(() => {
+        this.logger.error("server", "Shutdown timed out after 10s, force-exiting");
+        process.exit(1);
+      }, 10000);
+      force.unref();
       try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
+      clearTimeout(force);
       process.exit(0);
     });
 
+    let sigtermCount = 0;
     process.on("SIGTERM", async () => {
-      this.logger.info("server", "Received SIGTERM");
+      sigtermCount++;
+      this.logger.info("server", `Received SIGTERM (count: ${sigtermCount})`);
+      // Second SIGTERM force-exits immediately
+      if (sigtermCount >= 2) {
+        this.logger.warn("server", "Force-exiting immediately on second SIGTERM");
+        process.exit(1);
+      }
+      // Hard timeout: force-exit after 10s if shutdown hangs
+      const force = setTimeout(() => {
+        this.logger.error("server", "Shutdown timed out after 10s, force-exiting");
+        process.exit(1);
+      }, 10000);
+      force.unref();
       try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
+      clearTimeout(force);
       process.exit(0);
     });
 

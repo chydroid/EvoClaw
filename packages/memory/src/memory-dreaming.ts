@@ -311,9 +311,11 @@ export class MemoryDreaming {
 
     session.completedAt = Date.now();
     this.diary.sessions.push(session);
-    this.diary.totalFactsExtracted += session.extractedFacts.length;
+    if (session.status === "completed") {
+      this.diary.totalFactsExtracted += session.extractedFacts.length;
+      this.newMemoriesSinceLastDream = 0;
+    }
     this.diary.lastDreamAt = Date.now();
-    this.newMemoriesSinceLastDream = 0;
 
     return session;
   }

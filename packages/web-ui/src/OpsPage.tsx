@@ -67,27 +67,35 @@ export function OpsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const loadData = useCallback(async (isManual = false) => {
+  const loadData = useCallback(async (isManual = false, signal?: AbortSignal) => {
     if (isManual) setRefreshing(true);
     try {
       const [healthRes, diagRes] = await Promise.all([
-        fetch("/api/crestodian/health"),
-        fetch("/api/crestodian/diagnostics"),
+        fetch("/api/crestodian/health", { signal }),
+        fetch("/api/crestodian/diagnostics", { signal }),
       ]);
+      if (signal?.aborted) return;
       if (healthRes.ok) setHealth(await healthRes.json());
       if (diagRes.ok) setDiagnostics(await diagRes.json());
     } catch (err) {
+      if (signal?.aborted) return;
       console.error("[OpsPage] Load data failed:", err);
     } finally {
-      setLoading(false);
-      if (isManual) setRefreshing(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+        if (isManual) setRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 10000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    loadData(false, controller.signal);
+    const interval = setInterval(() => loadData(false, controller.signal), 10000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [loadData]);
 
   const fmtMs = (ms: number) => {

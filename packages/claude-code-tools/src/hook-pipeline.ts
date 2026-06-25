@@ -104,6 +104,12 @@ export class HookPipeline {
     for (const handler of handlers) {
       const result = await handler(context);
 
+      // If a modify decision lacks modifiedArgs, warn and skip
+      if (result.decision === HookDecision.Modify && !result.modifiedArgs) {
+        console.warn(`Hook for ${event} returned Modify decision without modifiedArgs; skipping`);
+        continue;
+      }
+
       // If tool args were modified, update context for next handler
       if (result.decision === HookDecision.Modify && result.modifiedArgs) {
         context = { ...context, toolArgs: result.modifiedArgs };

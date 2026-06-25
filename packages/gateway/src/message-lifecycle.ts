@@ -220,6 +220,20 @@ export class MessageLifecycleManager extends EventEmitter {
     if (result.success) {
       const record = this.records.get(recordId);
       if (record && record.state !== "sent") {
+        // VALID_TRANSITIONS 只允许 sending → sent，但调用方可能在
+        // pending/queued 状态下直接调用 markSent。为避免无效状态转换被
+        // 静默拒绝，先自动推进到 sending 再到 sent。
+        if (record.state !== "sending") {
+          const validTargets = VALID_TRANSITIONS[record.state];
+          if (!validTargets.includes("sending")) {
+            // 当前状态无法推进到 sending（如已 delivered/failed），直接尝试 sent
+            return this.transition(recordId, "sent", {
+              messageId: result.messageId,
+              reason: result.messageId ? `Channel message ID: ${result.messageId}` : "Sent",
+            });
+          }
+          this.transition(recordId, "sending", { reason: "Auto-advance before markSent" });
+        }
         return this.transition(recordId, "sent", {
           messageId: result.messageId,
           reason: result.messageId ? `Channel message ID: ${result.messageId}` : "Sent",
@@ -339,6 +353,7 @@ export class MessageLifecycleManager extends EventEmitter {
   startCleanup(): void {
     if (this.cleanupTimer) return;
     this.cleanupTimer = setInterval(() => this.cleanup(), this.config.cleanupIntervalMs);
+    this.cleanupTimer.unref?.();
   }
 
   stopCleanup(): void {
@@ -352,6 +367,17 @@ export class MessageLifecycleManager extends EventEmitter {
   checkExpiry(): number {
     let expired = 0;
     for (const record of this.getExpired()) {
+      // VALID_TRANSITIONS 只允许 failed/retrying → permanent_failure。
+      // 对其他非终态状态，先推进到 failed 再到 permanent_failure。
+      if (record.state !== "failed" && record.state !== "retrying") {
+        const intermediate = this.transition(record.id, "failed", {
+          reason: `TTL expired, auto-fail before permanent_failure (${record.ttlMs}ms)`,
+        });
+        if (!intermediate) {
+          // 无法推进到 failed（如已 delivered），跳过
+          continue;
+        }
+      }
       this.transition(record.id, "permanent_failure", {
         reason: `TTL expired (${record.ttlMs}ms)`,
       });

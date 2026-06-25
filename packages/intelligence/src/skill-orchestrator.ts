@@ -44,6 +44,7 @@ export interface OrchestrationResult {
 }
 
 export class SkillOrchestrator {
+  private static readonly MAX_PLANS = 200;
   private plans: Map<string, OrchestrationPlan> = new Map();
   private results: Map<string, OrchestrationResult> = new Map();
 
@@ -94,6 +95,13 @@ export class SkillOrchestrator {
     };
 
     this.plans.set(id, plan);
+    if (this.plans.size > SkillOrchestrator.MAX_PLANS) {
+      const oldest = this.plans.keys().next().value;
+      if (oldest !== undefined) {
+        this.plans.delete(oldest);
+        this.results.delete(oldest);
+      }
+    }
 
     this.eventBus.publish(
       "intelligence.plan_created",
@@ -183,6 +191,12 @@ export class SkillOrchestrator {
     };
 
     this.results.set(planId, result);
+    if (this.results.size > SkillOrchestrator.MAX_PLANS) {
+      const oldest = this.results.keys().next().value;
+      if (oldest !== undefined) {
+        this.results.delete(oldest);
+      }
+    }
 
     this.eventBus.publish(
       `intelligence.plan_execution_${plan.status}`,
@@ -258,8 +272,22 @@ export class SkillOrchestrator {
               retries: attempt,
             };
           }
+
+          // skillExecutor registered but skill not found — fail the step
+          if (attempt < step.maxRetries) continue;
+
+          return {
+            stepId: step.id,
+            skillName: skillToUse,
+            success: false,
+            output: null,
+            error: `Skill "${skillToUse}" not found in skill registry`,
+            duration: Date.now() - stepStart,
+            retries: attempt,
+          };
         }
 
+        // No skillExecutor registered — use simulated execution
         const result = await this.executeWithTimeout(step.timeout, async () => {
           return { success: true, output: { skillName: step.skillName, params: mergedParams, status: "simulated" } };
         });

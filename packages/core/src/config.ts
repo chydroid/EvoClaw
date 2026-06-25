@@ -317,8 +317,12 @@ export class ConfigManager {
       process.stderr.write("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.");
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
-    this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";
-    this.config.gateway.enableREST = process.env.EvoClaw_REST_ENABLED !== "false";
+    if (process.env.EvoClaw_MCP_ENABLED !== undefined) {
+      this.config.gateway.enableMCP = process.env.EvoClaw_MCP_ENABLED !== "false";
+    }
+    if (process.env.EvoClaw_REST_ENABLED !== undefined) {
+      this.config.gateway.enableREST = process.env.EvoClaw_REST_ENABLED !== "false";
+    }
   }
 
   /**

@@ -111,6 +111,13 @@ export class ApiClient {
           redirect: options.followRedirects ? "follow" : "manual",
         });
 
+        // Retry on 5xx server errors
+        if (response.status >= 500 && attempt < this.config.maxRetries) {
+          const delay = Math.min(500 * 2 ** attempt + Math.random() * 200, 5000);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+
         let data: T;
         const responseType = options.responseType ?? "json";
         if (responseType === "json") {
@@ -133,10 +140,12 @@ export class ApiClient {
         };
       } catch (err) {
         lastError = err as Error;
-        if (attempt < this.config.maxRetries) {
-          const delay = Math.min(500 * 2 ** attempt + Math.random() * 200, 5000);
-          await new Promise((r) => setTimeout(r, delay));
+        // Only retry on network/timeout errors, not TypeError for bad URLs
+        if (attempt >= this.config.maxRetries) {
+          break;
         }
+        const delay = Math.min(500 * 2 ** attempt + Math.random() * 200, 5000);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
 
@@ -204,15 +213,15 @@ export class ApiClient {
 
       // Extract next cursor/page
       const next = response.data.next ?? response.data.next_cursor;
-      const hasMore = response.data.has_more ?? (Array.isArray(items) && items.length > 0);
 
-      if (!hasMore && !next) break;
-
-      if (options.type === "cursor" && next) {
+      if (options.type === "cursor") {
+        if (!next) break;
         cursor = next;
       } else if (options.type === "offset") {
+        if (items.length === 0) break;
         offset += items.length;
       } else {
+        if (items.length === 0) break;
         page++;
       }
 
@@ -270,6 +279,12 @@ export class ApiClient {
 
 // ── Database Query Builder ────────────────────────────────
 
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+function safeIdent(name: string): string {
+  if (!IDENT.test(name)) throw new Error("Invalid SQL identifier: " + name);
+  return name;
+}
+
 export class QueryBuilder {
   /**
    * Build a SQL query string from a structured query definition.
@@ -291,19 +306,19 @@ export class QueryBuilder {
   }
 
   private static buildSelect(query: DbQuery, params: unknown[]): { sql: string; params: unknown[] } {
-    const cols = query.columns?.join(", ") ?? "*";
-    let sql = `SELECT ${cols} FROM ${query.table}`;
+    const cols = query.columns?.map((c) => safeIdent(c)).join(", ") ?? "*";
+    let sql = `SELECT ${cols} FROM ${safeIdent(query.table)}`;
 
     if (query.where && Object.keys(query.where).length > 0) {
       const clauses = Object.entries(query.where).map(([k]) => {
         params.push(query.where![k]);
-        return `${k} = ?`;
+        return `${safeIdent(k)} = ?`;
       });
       sql += ` WHERE ${clauses.join(" AND ")}`;
     }
 
     if (query.orderBy) {
-      sql += ` ORDER BY ${query.orderBy.column} ${query.orderBy.direction}`;
+      sql += ` ORDER BY ${safeIdent(query.orderBy.column)} ${query.orderBy.direction}`;
     }
 
     if (query.limit) {
@@ -323,14 +338,14 @@ export class QueryBuilder {
     }
 
     const entries = Object.entries(query.values);
-    const cols = entries.map(([k]) => k).join(", ");
+    const cols = entries.map(([k]) => safeIdent(k)).join(", ");
     const placeholders = entries.map(() => "?").join(", ");
 
     for (const [, v] of entries) {
       params.push(v);
     }
 
-    const sql = `INSERT INTO ${query.table} (${cols}) VALUES (${placeholders})`;
+    const sql = `INSERT INTO ${safeIdent(query.table)} (${cols}) VALUES (${placeholders})`;
     return { sql, params };
   }
 
@@ -341,15 +356,15 @@ export class QueryBuilder {
 
     const setClauses = Object.entries(query.values).map(([k]) => {
       params.push(query.values![k]);
-      return `${k} = ?`;
+      return `${safeIdent(k)} = ?`;
     });
 
-    let sql = `UPDATE ${query.table} SET ${setClauses.join(", ")}`;
+    let sql = `UPDATE ${safeIdent(query.table)} SET ${setClauses.join(", ")}`;
 
     if (query.where && Object.keys(query.where).length > 0) {
       const whereClauses = Object.entries(query.where).map(([k]) => {
         params.push(query.where![k]);
-        return `${k} = ?`;
+        return `${safeIdent(k)} = ?`;
       });
       sql += ` WHERE ${whereClauses.join(" AND ")}`;
     }
@@ -358,12 +373,12 @@ export class QueryBuilder {
   }
 
   private static buildDelete(query: DbQuery, params: unknown[]): { sql: string; params: unknown[] } {
-    let sql = `DELETE FROM ${query.table}`;
+    let sql = `DELETE FROM ${safeIdent(query.table)}`;
 
     if (query.where && Object.keys(query.where).length > 0) {
       const clauses = Object.entries(query.where).map(([k]) => {
         params.push(query.where![k]);
-        return `${k} = ?`;
+        return `${safeIdent(k)} = ?`;
       });
       sql += ` WHERE ${clauses.join(" AND ")}`;
     }

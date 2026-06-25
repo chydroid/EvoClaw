@@ -268,8 +268,9 @@ export class DingtalkAdapter implements ChannelAdapter {
     };
 
     // Determine if target is a conversationId (starts with "cid") or userId
-    if (target.startsWith("cid")) {
-      // Group chat via robot
+    const isGroup = target.startsWith("cid");
+    if (isGroup) {
+      // 群聊 via robot — 使用 groupMessages/send 端点
       body.conversationId = target;
     } else {
       // Single chat via robot — need robotCode and userIds
@@ -281,8 +282,15 @@ export class DingtalkAdapter implements ChannelAdapter {
       body.quoteMessageId = options.replyTo;
     }
 
+    // 根据目标类型选择正确的 API 端点：
+    // - 群聊：/v1.0/robot/groupMessages/send
+    // - 单聊：/v1.0/robot/oToMessages/batchSend
+    const endpoint = isGroup
+      ? `${robotBaseURL}/v1.0/robot/groupMessages/send`
+      : `${robotBaseURL}/v1.0/robot/oToMessages/batchSend`;
+
     try {
-      const res = await fetch(`${robotBaseURL}/v1.0/robot/oToMessages/batchSend`, {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

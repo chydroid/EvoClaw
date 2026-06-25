@@ -1,7 +1,7 @@
 /** enhancements — Show recent capability enhancements (v0.56/v0.57) */
 import { Command } from "commander";
 import { c, ICONS, section, divider } from "../utils/colors";
-import { checkServer, serverRequired } from "../utils/api";
+import { checkServer, serverRequired, DEFAULT_PORT } from "../utils/api";
 
 interface CapabilityDef {
   id: string;
@@ -181,7 +181,7 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       }
 
       console.log(divider());
-      console.log(c("gray", `  Web UI: 打开 http://localhost:27788 → 增强能力 查看可视化面板`));
+      console.log(c("gray", `  Web UI: 打开 http://localhost:${DEFAULT_PORT} → 增强能力 查看可视化面板`));
       console.log();
     });
 }

@@ -285,6 +285,22 @@ export class ChannelManager {
         await this.messageHandler(msg);
       } catch (err) {
         process.stderr.write(`[ChannelManager] Message handler error:` + " " + err);
+        // 尝试通过适配器向用户发送错误通知，避免用户等待无响应
+        // 用 try/catch 包裹，防止通知失败再次抛错造成循环
+        if (msg.isDirect) {
+          try {
+            const adapter = this.adapters.get(msg.channel);
+            if (adapter) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              await adapter.sendMessage(
+                msg.from,
+                `⚠️ 处理您的消息时出现错误：${errMsg}\n\n请稍后重试，或联系管理员。`,
+              );
+            }
+          } catch (notifyErr) {
+            process.stderr.write(`[ChannelManager] Failed to send error notification to user:` + " " + notifyErr);
+          }
+        }
       }
     }
   }

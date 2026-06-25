@@ -47,6 +47,8 @@ interface DiscordGatewayMessage {
 
 interface DiscordReadyData {
   user: { id: string; username: string; discriminator: string };
+  session_id: string;
+  resume_gateway_url: string;
 }
 
 interface DiscordMessageCreate {
@@ -241,26 +243,46 @@ export class DiscordAdapter implements ChannelAdapter {
   // ── Discord Gateway Connection ────────────────────────────────────────────
 
   private async connectGateway(): Promise<void> {
-    // Get gateway URL
-    const gateway = await this.discordApi<{ url: string }>("/gateway/bot");
-    const wsUrl = `${gateway.url}/?v=10&encoding=json`;
+    // Get gateway URL — 若有 resumeGatewayUrl 则优先使用以支持 RESUME
+    let gatewayUrl: string;
+    if (this.resumeGatewayUrl) {
+      gatewayUrl = this.resumeGatewayUrl;
+    } else {
+      const gateway = await this.discordApi<{ url: string }>("/gateway/bot");
+      gatewayUrl = gateway.url;
+    }
+    const wsUrl = `${gatewayUrl}/?v=10&encoding=json`;
 
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
       console.log("[Discord] Gateway connected");
-      this.sendGatewayPayload({
-        op: 2, // Identify
-        d: {
-          token: this.botToken,
-          intents: this.intents,
-          properties: {
-            os: process.platform,
-            browser: "EvoClaw",
-            device: "EvoClaw",
+      // 若已有 sessionId && sequence，发送 RESUME(op:6) 以恢复断线期间错过的消息；
+      // 否则发送 IDENTIFY(op:2) 建立新会话。
+      if (this.sessionId && this.sequence !== null) {
+        console.log(`[Discord] Sending RESUME (session=${this.sessionId}, seq=${this.sequence})`);
+        this.sendGatewayPayload({
+          op: 6, // Resume
+          d: {
+            token: this.botToken,
+            session_id: this.sessionId,
+            seq: this.sequence,
           },
-        },
-      });
+        });
+      } else {
+        this.sendGatewayPayload({
+          op: 2, // Identify
+          d: {
+            token: this.botToken,
+            intents: this.intents,
+            properties: {
+              os: process.platform,
+              browser: "EvoClaw",
+              device: "EvoClaw",
+            },
+          },
+        });
+      }
     };
 
     this.ws.onmessage = (event) => {
@@ -322,6 +344,14 @@ export class DiscordAdapter implements ChannelAdapter {
         if (t === "READY") {
           const ready = d as DiscordReadyData;
           console.log(`[Discord] Ready as ${ready.user.username}#${ready.user.discriminator}`);
+          // 保存 session_id 和 resume_gateway_url 以便断线后 RESUME
+          this.sessionId = ready.session_id;
+          this.resumeGatewayUrl = ready.resume_gateway_url;
+          this.connected = true;
+          this.notifyStatus("connected");
+        }
+        if (t === "RESUMED") {
+          console.log("[Discord] Session resumed successfully");
           this.connected = true;
           this.notifyStatus("connected");
         }
@@ -338,6 +368,16 @@ export class DiscordAdapter implements ChannelAdapter {
           this.ws.close(4000, "Server requested reconnect");
         }
         break;
+      case 9: { // Invalid Session — 清除会话，重新 IDENTIFY
+        console.log("[Discord] Invalid session — will re-identify on reconnect");
+        this.sessionId = null;
+        this.sequence = null;
+        this.resumeGatewayUrl = null;
+        if (this.ws) {
+          this.ws.close(4000, "Invalid session");
+        }
+        break;
+      }
     }
   }
 

@@ -818,7 +818,7 @@ export class WeixinPluginAdapter {
         return { expired: true as const };
       }
 
-      if (data.ret !== undefined && data.ret !== 0 && data.errcode !== 0) {
+      if (data.ret !== undefined && data.ret !== 0 && data.errcode !== undefined && data.errcode !== 0) {
         process.stderr.write(`[Weixin] getupdates error: ret=${data.ret}, errcode=${data.errcode}, errmsg=${data.errmsg}`);
         return null;
       }
@@ -1072,6 +1072,7 @@ export class WeixinPluginAdapter {
     const typingKeepalive = setInterval(() => {
       this.sendTyping(account, fromUserId, message.context_token).catch(() => {});
     }, 5000);
+    typingKeepalive.unref?.();
 
     try {
       const chatContext: Record<string, unknown> = {
@@ -1308,8 +1309,10 @@ export class WeixinPluginAdapter {
     }
   }
 
-  // typing_ticket 缓存（按用户ID）
+  // typing_ticket 缓存（按用户ID），添加上限防止无界增长
   private typingTicketCache = new Map<string, { ticket: string; expiresAt: number }>();
+  /** typingTicketCache 大小上限 */
+  private static readonly TYPING_TICKET_CACHE_MAX = 1000;
 
   /**
    * 从微信 CDN 下载并解密图片
@@ -1462,6 +1465,15 @@ export class WeixinPluginAdapter {
         const data = await response.json() as { ret?: number; typing_ticket?: string };
         if (data.ret === 0 && data.typing_ticket) {
           // 缓存 24 小时
+          // 先清理过期项，再检查大小上限，防止无界增长
+          this.cleanTypingTicketCache();
+          if (this.typingTicketCache.size >= WeixinPluginAdapter.TYPING_TICKET_CACHE_MAX) {
+            // 淘汰最旧的一个 entry（Map 保持插入顺序）
+            const oldestKey = this.typingTicketCache.keys().next().value;
+            if (oldestKey !== undefined) {
+              this.typingTicketCache.delete(oldestKey);
+            }
+          }
           this.typingTicketCache.set(userId, {
             ticket: data.typing_ticket,
             expiresAt: Date.now() + 24 * 60 * 60 * 1000,
@@ -1473,6 +1485,16 @@ export class WeixinPluginAdapter {
     } catch { /* ignore */ }
 
     return "";
+  }
+
+  /** 清理过期的 typing_ticket 缓存项 */
+  private cleanTypingTicketCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.typingTicketCache) {
+      if (now >= entry.expiresAt) {
+        this.typingTicketCache.delete(key);
+      }
+    }
   }
 
   /**

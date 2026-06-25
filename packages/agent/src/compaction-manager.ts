@@ -309,7 +309,7 @@ export class CompactionManager {
         .map((m) => this.extractTopic(m))
         .filter(Boolean);
       summaryParts.push(
-        `${SUMMARY_PREFIX} ${olderTurns.length} turns from session "${sessionId}".]`,
+        `${SUMMARY_PREFIX} ${olderTurns.length} turns from session "${sessionId}".`,
       );
       if (topics.length > 0) {
         summaryParts.push(`Topics discussed: ${topics.join("; ")}.`);

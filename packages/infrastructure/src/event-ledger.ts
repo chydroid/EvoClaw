@@ -340,10 +340,16 @@ export class EventLedger {
       const jsonl = this.events
         .map((e) => JSON.stringify(e))
         .join("\n");
-      fs.writeFileSync(this.storePath, jsonl + "\n", "utf-8");
+      const tmp = `${this.storePath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, jsonl + "\n", "utf-8");
+      const fd = fs.openSync(tmp, "r");
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(tmp, this.storePath);
       this.dirty = false;
-    } catch {
-      // Best-effort
+    } catch (err) {
+      process.stderr.write(`[EventLedger] Failed to flush: ${err instanceof Error ? err.message : String(err)}` + "\n");
+      this.saveTimer = setTimeout(() => this.flush(), 5000);
     } finally {
       this.flushLock = false;
     }

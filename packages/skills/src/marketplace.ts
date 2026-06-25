@@ -13,6 +13,7 @@
  * and provides a remote API client for clawhub-style registries.
  */
 
+import * as path from "path";
 import type { EventBus } from "@evoclaw/core";
 
 // ── Types ─────────────────────────────────────────────────
@@ -282,12 +283,12 @@ export class SkillMarketplace {
       return { success: false, packageName: name, version: version ?? "latest", error: "Package not found in catalog" };
     }
 
-    const targetVersion = version ?? pkg.version;
+    const targetVersion = version && !version.startsWith("__depth_") ? version : pkg.version;
 
     // Check if already installed
     const installed = this.installed.get(name);
     if (installed && installed.version === targetVersion) {
-      return { success: true, packageName: name, version: targetVersion, installedPath: installed.name };
+      return { success: true, packageName: name, version: targetVersion, installedPath: path.join(this.config.cacheDir, "installed", name) };
     }
 
     try {

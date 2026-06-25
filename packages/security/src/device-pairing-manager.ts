@@ -106,12 +106,10 @@ export class DevicePairingManager {
 
     const existing = this.trustedDevices.get(deviceId);
     if (existing) {
-      existing.publicKey = params.publicKey;
-      existing.fingerprint = fingerprint;
-      existing.lastSeenAt = new Date();
-      existing.deviceName = params.deviceName ?? session.deviceName;
+      // Device already trusted — reject re-pairing to prevent overwriting the
+      // trusted publicKey/fingerprint/deviceName from untrusted input.
       this.pendingSessions.delete(params.pairingCode);
-      return existing;
+      return null;
     }
 
     if (this.trustedDevices.size >= this.config.maxTrustedDevices) {

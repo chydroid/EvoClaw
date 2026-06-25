@@ -43,6 +43,7 @@ export interface Checkpoint {
 // ── Checkpointer ──
 
 export class FileCheckpointer {
+  private static readonly MAX_CHECKPOINTS = 100;
   private checkpoints = new Map<string, Checkpoint>();
   private baseDir: string;
 
@@ -88,6 +89,20 @@ export class FileCheckpointer {
     };
 
     this.checkpoints.set(checkpoint.id, checkpoint);
+    if (this.checkpoints.size > FileCheckpointer.MAX_CHECKPOINTS) {
+      // Delete the oldest checkpoint (lowest createdAt)
+      let oldestId: string | undefined;
+      let oldestTime = Infinity;
+      for (const [id, cp] of this.checkpoints) {
+        if (cp.createdAt < oldestTime) {
+          oldestTime = cp.createdAt;
+          oldestId = id;
+        }
+      }
+      if (oldestId !== undefined) {
+        this.checkpoints.delete(oldestId);
+      }
+    }
     return checkpoint;
   }
 

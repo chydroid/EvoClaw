@@ -528,28 +528,39 @@ export async function executeSubtasksFromCheckpoint(
       onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 完成: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
     } else {
       let retryCount = 0;
+      let retrySucceeded = false;
       while (retryCount < 2) {
         retryCount++;
         process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
         try {
-          const retryResult = await deps.tryCallLLM(
+          const retryPromise = deps.tryCallLLM(
             subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
             startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
           );
-          if (retryResult) {
-            taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", retryResult.reply.slice(0, 2000));
-            subtaskResults.push(`✅ **${subtask.description}** (重试成功):\n${retryResult.reply}`);
-            totalTokensUsed += retryResult.tokensUsed;
-            if (retryResult.files) allFiles.push(...retryResult.files);
-            onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
-            break;
+          let retryTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          const retryTimeoutPromise = new Promise<null>((resolve) => {
+            retryTimeoutHandle = setTimeout(() => resolve(null), SUBTASK_TIMEOUT);
+          });
+          try {
+            const retryResult = await Promise.race([retryPromise, retryTimeoutPromise]);
+            if (retryResult) {
+              taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", retryResult.reply.slice(0, 2000));
+              subtaskResults.push(`✅ **${subtask.description}** (重试成功):\n${retryResult.reply}`);
+              totalTokensUsed += retryResult.tokensUsed;
+              if (retryResult.files) allFiles.push(...retryResult.files);
+              onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
+              retrySucceeded = true;
+              break;
+            }
+          } finally {
+            if (retryTimeoutHandle) clearTimeout(retryTimeoutHandle);
           }
         } catch (retryErr) {
           process.stderr.write(`[TaskAnalyzer] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
         }
       }
 
-      if (retryCount >= 2) {
+      if (!retrySucceeded) {
         taskCheckpointManager.updateSubtask(sessionId, subtask.id, "failed", undefined, "Subtask execution failed after retry");
         subtaskResults.push(`❌ **${subtask.description}**: 执行失败（已重试）`);
         failedCount++;
