@@ -17,7 +17,9 @@ import { EventsPage } from "./EventsPage";
 import { PermissionsPage } from "./PermissionsPage";
 import { OpsPage } from "./OpsPage";
 import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
-import { ToastContainer } from "./shared";
+import { ToastContainer, showToast } from "./shared";
+import { useApiCall } from "./useApiCall";
+import { sessionsApi } from "./api-client";
 import { ICON_MAP, IconNewChat, IconChevronDown, IconChevronRight, IconChevronLeft, IconMenu, IconSearch, IconTranslate, IconPlus } from "./icons";
 import { useTranslation, type Lang } from "./i18n";
 import { useAppState } from "./AppStateContext.tsx";
@@ -304,6 +306,7 @@ export default function App() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
+  const { call: callApi } = useApiCall();
 
   const { lang, setLang, t } = useTranslation();
 
@@ -327,81 +330,78 @@ export default function App() {
   }, [authenticated]);
 
   async function fetchSessions() {
-    try {
-      const res = await fetch("/api/sessions");
-      if (res.ok) {
-        const data = await res.json();
-        const raw: any[] = Array.isArray(data) ? data : data?.sessions || [];
-        const list: SessionSummary[] = raw.map((s: any) => ({
-          sessionId: s.sessionId || "",
-          agentId: s.agentId,
-          updatedAt: s.updatedAt,
-          createdAt: s.createdAt,
-          messageCount: s.turnCount || s.messageCount || 0,
-          status: s.status,
-          preview: s.preview || "",
-          customName: s.customName || "",
-          tokenEstimate: s.tokenEstimate || estimateTokens(s.preview || "", s.turnCount || s.messageCount || 0),
-        }));
-        list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
-        setSessions(list);
-        // If the restored activeSessionId doesn't exist in the session list, pick the first one
-        if (activeSessionId && !list.some(s => s.sessionId === activeSessionId)) {
-          if (list.length > 0) {
-            setActiveSession(list[0].sessionId);
-          } else {
-            setActiveSession(null);
-          }
-        } else if (!activeSessionId && list.length > 0) {
+    const result = await callApi(
+      () => sessionsApi.list(),
+      { errorMessage: t("sessions.load_failed", "加载会话列表失败"), silent: true },
+    );
+    if (result && result.success) {
+      const raw = result.sessions || [];
+      const list: SessionSummary[] = raw.map((s) => ({
+        sessionId: s.sessionId || "",
+        agentId: s.agentId,
+        updatedAt: s.updatedAt ? new Date(s.updatedAt).getTime() : undefined,
+        createdAt: s.createdAt,
+        messageCount: s.turnCount || 0,
+        status: s.status,
+        preview: s.preview || "",
+        customName: s.customName || "",
+        tokenEstimate: estimateTokens(s.preview || "", s.turnCount || 0),
+      }));
+      list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+      setSessions(list);
+      if (activeSessionId && !list.some(s => s.sessionId === activeSessionId)) {
+        if (list.length > 0) {
           setActiveSession(list[0].sessionId);
+        } else {
+          setActiveSession(null);
         }
+      } else if (!activeSessionId && list.length > 0) {
+        setActiveSession(list[0].sessionId);
       }
-    } catch { /* ignore */ }
+    }
     setSessionsLoaded(true);
   }
 
   async function createSession() {
-    try {
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId: "default" }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const s = data.session as any;
-        const entry: SessionSummary = {
-          sessionId: s?.sessionId || "",
-          preview: "",
-          messageCount: 0,
-          status: "active",
-          createdAt: new Date().toISOString(),
-        };
-        setSessions(prev => [entry, ...prev]);
-        setActiveSession(entry.sessionId);
-        setNewChatCounter(prev => prev + 1);
-        setActiveTab("chat");
-        setMobileMenuOpen(false);
-      }
-    } catch { /* ignore */ }
+    const result = await callApi(
+      () => sessionsApi.create("default"),
+      { errorMessage: t("sessions.create_failed", "创建会话失败") },
+    );
+    if (result && (result.success || result.sessionId)) {
+      const s = result.session;
+      const entry: SessionSummary = {
+        sessionId: s?.sessionId || result.sessionId || "",
+        preview: "",
+        messageCount: 0,
+        status: "active",
+        createdAt: new Date().toISOString(),
+      };
+      setSessions(prev => [entry, ...prev]);
+      setActiveSession(entry.sessionId);
+      setNewChatCounter(prev => prev + 1);
+      setActiveTab("chat");
+      setMobileMenuOpen(false);
+    }
   }
 
   async function deleteSession(sessionId: string) {
-    try {
-      const res = await fetch(`/api/sessions/default/${sessionId}`, { method: "DELETE" });
-      if (res.ok) {
-        setSessions(prev => {
-          const remaining = prev.filter(s => s.sessionId !== sessionId);
-          if (activeSessionId === sessionId) {
-            setActiveSession(remaining.length > 0 ? remaining[0].sessionId : null);
-          }
-          if (remaining.length === 0) {
-            setNewChatCounter(prev => prev + 1);
-          }
-          return remaining;
-        });
+    await callApi(
+      () => sessionsApi.delete("default", sessionId),
+      {
+        errorMessage: t("sessions.delete_failed", "删除会话失败"),
+        successMessage: t("sessions.deleted", "已删除"),
+      },
+    );
+    setSessions(prev => {
+      const remaining = prev.filter(s => s.sessionId !== sessionId);
+      if (activeSessionId === sessionId) {
+        setActiveSession(remaining.length > 0 ? remaining[0].sessionId : null);
       }
-    } catch { /* ignore */ }
+      if (remaining.length === 0) {
+        setNewChatCounter(prev => prev + 1);
+      }
+      return remaining;
+    });
     setDeleteConfirmId(null);
   }
 
@@ -416,16 +416,20 @@ export default function App() {
       setRenamingSessionId(null);
       return;
     }
-    setSessions(prev => prev.map(s =>
-      s.sessionId === renamingSessionId ? { ...s, customName: renameValue.trim() } : s
-    ));
-    try {
-      fetch(`/api/sessions/default/${renamingSessionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customName: renameValue.trim() }),
-      });
-    } catch { /* ignore */ }
+    const newName = renameValue.trim();
+    const sessionId = renamingSessionId;
+    callApi(
+      () => sessionsApi.rename("default", sessionId, newName),
+      {
+        errorMessage: t("sessions.rename_failed", "重命名失败"),
+        optimistic: () => setSessions(prev => prev.map(s =>
+          s.sessionId === sessionId ? { ...s, customName: newName } : s
+        )),
+        rollback: () => setSessions(prev => prev.map(s =>
+          s.sessionId === sessionId ? { ...s, customName: undefined } : s
+        )),
+      },
+    );
     setRenamingSessionId(null);
   }
 

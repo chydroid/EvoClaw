@@ -195,7 +195,7 @@ export default function ChannelConfigPage() {
   const dragging = useRef(false);
 
   // ─── WeChat QR state ──────────────────────────────────
-  const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "waiting" | "connected" | "expired">("idle");
+  const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "waiting" | "connected" | "expired" | "error">("idle");
   const [qrToken, setQrToken] = useState<string>("");
   const [qrDataUri, setQrDataUri] = useState<string>("");
   const [showWechatForm, setShowWechatForm] = useState(false);
@@ -241,7 +241,8 @@ export default function ChannelConfigPage() {
         if (url) setQrDataUri(url);
       })
       .catch(() => {
-        setQrStatus("expired");
+        // pair-request 失败可能是网络错误或服务端问题，设置为 error 而非 expired
+        setQrStatus("error");
       });
 
     // Auto-expire after 5 minutes
@@ -275,7 +276,7 @@ export default function ChannelConfigPage() {
                   c.id === "personal_wechat" ? { ...c, enabled: true } : c
                 ),
               }),
-            }).catch(() => { /* ignore */ });
+            }).catch(() => { console.warn("[ChannelConfig] Failed to save channel config after QR pairing"); });
           } else if (data.status === "expired") {
             setQrStatus("expired");
             stopQrPolling();
@@ -292,7 +293,10 @@ export default function ChannelConfigPage() {
             );
           }
         })
-        .catch(() => { /* ignore poll errors */ });
+        .catch(() => {
+          // 网络错误不计为过期，仅记录日志；连续失败会在 5 分钟超时后自然处理
+          console.warn("[ChannelConfig] QR pair-status poll failed (network error)");
+        });
     }, 2000);
   }, [stopQrPolling]);
 
@@ -587,6 +591,14 @@ export default function ChannelConfigPage() {
                         <span style={styles.redX}>✗</span>
                         <span style={{ ...styles.qrStatusText, color: "var(--error)" }}>
                           {t("channels.qr_expired")}
+                        </span>
+                      </>
+                    )}
+                    {qrStatus === "error" && (
+                      <>
+                        <span style={styles.redX}>⚠</span>
+                        <span style={{ ...styles.qrStatusText, color: "var(--error)" }}>
+                          {t("channels.qr_error", "配对请求失败，请检查网络后重试")}
                         </span>
                       </>
                     )}

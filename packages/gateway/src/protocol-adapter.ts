@@ -3766,6 +3766,38 @@ export class ProtocolAdapter {
       }
     });
 
+    // 重命名会话（更新 customName）
+    app.patch("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
+      try {
+        const agentId = String(req.params.agentId);
+        const sessionId = String(req.params.sessionId);
+        const sessionManager = this.registry.resolveService("sessionManager") as {
+          loadSessionMeta(agentId: string, sessionId: string): import("@evoclaw/agent").SessionInfo | null;
+          updateSessionMeta(session: import("@evoclaw/agent").SessionInfo): void;
+        } | undefined;
+
+        if (!sessionManager) {
+          res.status(500).json({ success: false, error: "Session manager not available" });
+          return;
+        }
+
+        const session = sessionManager.loadSessionMeta(agentId, sessionId);
+        if (!session) {
+          res.status(404).json({ success: false, error: "Session not found" });
+          return;
+        }
+
+        const body = req.body as { customName?: string };
+        if (body.customName !== undefined) {
+          session.customName = body.customName.trim() || undefined;
+        }
+        sessionManager.updateSessionMeta(session);
+        res.json({ success: true, session });
+      } catch (err) {
+        this.handleError(err, res, "Failed to rename session");
+      }
+    });
+
     app.delete("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
       try {
         const agentId = String(req.params.agentId);

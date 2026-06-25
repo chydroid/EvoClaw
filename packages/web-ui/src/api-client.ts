@@ -61,6 +61,16 @@ async function del<T>(path: string, timeoutMs?: number): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function patch<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  }, timeoutMs);
+  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
+  return res.json() as Promise<T>;
+}
+
 async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
   try { return await get<T>(path, signal, timeoutMs); } catch { return fallback; }
 }
@@ -122,6 +132,102 @@ export const api = {
   providers: () => getSafe<ProviderStatus[]>("/api/system/providers", []),
   sessions: () => getSafe<SessionInfo[]>("/api/system/sessions", []),
   bootstrapFiles: () => getSafe<BootstrapFile[]>("/api/system/bootstrap-files", []),
+};
+
+// ═══════════════════════════════════════════════
+// Session Management（会话管理）
+// ═══════════════════════════════════════════════
+
+/** /api/sessions 返回的会话列表项 */
+export interface ChatSessionListItem {
+  sessionId: string;
+  agentId: string;
+  status: string;
+  turnCount: number;
+  createdAt: string;
+  updatedAt: string;
+  customName?: string;
+  preview?: string;
+}
+
+/** /api/sessions 返回的完整响应 */
+export interface SessionListResponse {
+  success: boolean;
+  sessions: ChatSessionListItem[];
+}
+
+/** /api/sessions POST 创建会话返回 */
+export interface SessionCreateResponse {
+  success: boolean;
+  session?: ChatSessionListItem;
+  sessionId?: string;
+}
+
+export const sessionsApi = {
+  /** 列出所有会话 */
+  list: () => getSafe<SessionListResponse>("/api/sessions", { success: false, sessions: [] }),
+  /** 创建新会话 */
+  create: (agentId: string = "default", title?: string) =>
+    post<SessionCreateResponse>("/api/sessions", { agentId, ...(title ? { title } : {}) }),
+  /** 获取单个会话详情 */
+  get: (agentId: string, sessionId: string) =>
+    get<{ success: boolean; session: ChatSessionListItem }>(`/api/sessions/${agentId}/${sessionId}`),
+  /** 重命名会话（更新 customName） */
+  rename: (agentId: string, sessionId: string, customName: string) =>
+    patch<{ success: boolean; session: ChatSessionListItem }>(
+      `/api/sessions/${agentId}/${sessionId}`,
+      { customName },
+    ),
+  /** 删除会话 */
+  delete: (agentId: string, sessionId: string) =>
+    del<{ success: boolean; message: string }>(`/api/sessions/${agentId}/${sessionId}`),
+};
+
+// ═══════════════════════════════════════════════
+// Workboard（看板任务）
+// ═══════════════════════════════════════════════
+
+export type WorkboardStatus = "backlog" | "todo" | "in_progress" | "review" | "done";
+export type WorkboardPriority = "low" | "medium" | "high" | "critical";
+
+export interface WorkboardTask {
+  id: string;
+  title: string;
+  description?: string;
+  status: WorkboardStatus;
+  priority: WorkboardPriority;
+  tags: string[];
+  assignee?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkboardResponse {
+  tasks: Record<WorkboardStatus, WorkboardTask[]>;
+  stats: {
+    totalTasks: number;
+    byStatus: Partial<Record<WorkboardStatus, number>>;
+    byAssignee: Record<string, number>;
+    totalRuns: number;
+    activeRuns: number;
+  };
+}
+
+export const workboardApi = {
+  /** 获取看板（按状态分组） */
+  list: () => getSafe<WorkboardResponse>("/api/workboard", { tasks: {} as Record<WorkboardStatus, WorkboardTask[]>, stats: { totalTasks: 0, byStatus: {}, byAssignee: {}, totalRuns: 0, activeRuns: 0 } }),
+  /** 创建看板任务 */
+  create: (task: { title: string; description?: string; priority: WorkboardPriority; tags?: string[]; status?: WorkboardStatus; assignee?: string }) =>
+    post<{ success: boolean; id: string; task?: WorkboardTask }>("/api/workboard/tasks", task),
+  /** 更新任务状态 */
+  updateStatus: (taskId: string, status: WorkboardStatus) =>
+    post<{ success: boolean }>(`/api/workboard/tasks/${taskId}/status`, { status }),
+  /** 更新任务详情 */
+  update: (taskId: string, updates: Partial<WorkboardTask>) =>
+    put<{ success: boolean }>(`/api/workboard/tasks/${taskId}`, updates),
+  /** 删除任务 */
+  delete: (taskId: string) =>
+    del<{ success: boolean }>(`/api/workboard/tasks/${taskId}`),
 };
 
 // ═══════════════════════════════════════════════

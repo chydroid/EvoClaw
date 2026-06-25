@@ -3,6 +3,48 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.7 (2026-06-26)
+
+### WebUI 全面测试 + 架构优化
+
+通过 10 个不同复杂度级别的任务对 WebUI 进行全面测试（含 3 个复杂多步骤任务），发现并修复缺陷，实施 4 项架构优化。
+
+#### 缺陷修复（5 个）
+
+- **[严重] 会话重命名功能完全失效**：WebUI 发送 `PATCH /api/sessions/default/:id` 但服务器无此路由，错误被 `catch { /* ignore */ }` 静默吞掉。新增 PATCH 路由 + `SessionInfo.customName` 字段 + 乐观更新回滚机制
+- **[高] 二进制文件上传数据丢失**：PDF/docx/zip 等二进制文件 `data: null` 发送到服务端。改为 `readAsDataURL` 读取全部文件类型
+- **[高] WebUI 普遍静默错误吞掉**：4 处 `catch { /* ignore */ }` 替换为 `console.warn` 日志 + `showToast` 用户反馈
+- **[中] ChannelConfig QR 配对错误处理不当**：pair-request 网络错误被误判为 "expired"。新增 "error" 状态区分网络错误与真实过期
+
+#### 架构优化（4 项）
+
+1. **统一错误反馈 `useApiCall` Hook**（`useApiCall.ts`）：
+   - 自动处理 fetch 错误 + toast 反馈 + loading 状态
+   - 支持乐观更新（optimistic）+ 失败回滚（rollback）
+   - `usePolling` 子 Hook：安全轮询，组件卸载自动停止
+
+2. **API 契约共享类型**（`api-client.ts`）：
+   - 新增 `sessionsApi`（list/create/get/rename/delete）+ `ChatSessionListItem` 类型
+   - 新增 `workboardApi`（list/create/updateStatus/update/delete）+ `WorkboardTask` 类型
+   - 新增 `patch<T>` 基础方法
+   - 统一 WebUI 和服务器端点契约，避免端点不匹配
+
+3. **乐观更新+回滚模式推广**：
+   - `App.tsx` 会话重命名/删除/创建全部重构为 `useApiCall` + `sessionsApi`
+   - 替换 3 处 `catch { /* ignore */ }` 为有反馈的错误处理
+
+4. **文件上传改进**：
+   - 大图片（>500KB）自动压缩：缩放到 1920px + JPEG 质量 0.85
+   - 典型压缩比 5-10x，显著减少 JSON 负载
+   - 压缩失败自动回退到原始 base64
+
+#### 验证结果
+
+- ✅ `pnpm -r build` 通过
+- ✅ `pnpm typecheck` 全部通过
+- ✅ `pnpm test` 全部通过（3153 passed, 1 skipped, 0 failed）
+- ✅ 回归测试：会话 CRUD + 其他 API + WebUI 静态资源全部正常
+
 ## v0.57.6 (2026-06-25)
 
 ### 全面代码审查与 BUG 修复（5 轮）+ 超时静默失败修复

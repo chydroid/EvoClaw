@@ -49,6 +49,7 @@ export interface SessionInfo {
   compactionCount: number;
   tokenEstimate: number;
   preview?: string;
+  customName?: string;
 }
 
 export interface SessionInsights {

@@ -559,6 +559,42 @@ const permissionBtnStyle = (primary: boolean, destructive?: boolean): CSSPropert
   transition: "all 0.15s",
 });
 
+/**
+ * 压缩图片：将大图片缩放到指定尺寸并转为 JPEG base64。
+ * 减少 base64 内联上传时的 JSON 负载（典型压缩比 5-10x）。
+ */
+async function compressImage(file: File, maxDim: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round(height * (maxDim / width));
+            width = maxDim;
+          } else {
+            width = Math.round(width * (maxDim / height));
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { reject(new Error("Canvas context unavailable")); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Image load failed"));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCreated }: { sessionId?: string | null; avatars?: AvatarInfo; onSessionCreated?: (sessionId: string) => void }) {
   const { t, lang } = useTranslation();
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
@@ -1338,8 +1374,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           }),
         ),
       );
-    } catch {
-      // Silent
+    } catch (err) {
+      console.warn("[Chat] Auto-approve permissions failed:", err);
     }
   };
 
@@ -1390,8 +1426,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           ),
         );
       }
-    } catch {
-      // Silent
+    } catch (err) {
+      console.warn("[Chat] Permission action failed:", err);
     }
     
     setIsStreaming(false);
@@ -1784,11 +1820,25 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           };
 
           if (file.type.startsWith("image/")) {
-            reader.readAsDataURL(file);
+            // 大图片先压缩再 base64，减少 JSON 负载
+            if (file.size > 500 * 1024) {
+              compressImage(file, 1920, 0.85).then(compressed => {
+                setAttachedFiles(prev =>
+                  prev.map(f => f.id === info.id ? { ...f, data: compressed, size: Math.floor(compressed.length * 0.75) } : f)
+                );
+              }).catch(() => {
+                // 压缩失败时回退到原始 base64
+                reader.readAsDataURL(file);
+              });
+            } else {
+              reader.readAsDataURL(file);
+            }
           } else if (file.type.startsWith("text/") || file.type === "application/json") {
             reader.readAsText(file);
+          } else {
+            // 二进制文件（PDF, docx, zip 等）也以 base64 读取，确保内容发送到服务端
+            reader.readAsDataURL(file);
           }
-          // Other binary files (PDF, docx, zip): data not pre-read
         }
       }
     };
