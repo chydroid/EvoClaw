@@ -386,14 +386,14 @@ export class SwarmOrchestrator {
     this.eventBus.publish("swarm:vote-cast", { vote }, "swarm-orchestrator");
 
     // Check if consensus is reached
-    const onlineAgents = this.getActiveAgents().length;
+    const votesCast = filtered.length;
     // Count votes per option to find the most popular
     const optionCounts = new Map<string, number>();
     for (const v of filtered) {
       optionCounts.set(v.choice, (optionCounts.get(v.choice) || 0) + 1);
     }
-    const maxCount = filtered.length > 0 ? Math.max(...optionCounts.values()) : 0;
-    const agreementRatio = maxCount / Math.max(onlineAgents, 1);
+    const maxCount = votesCast > 0 ? Math.max(...optionCounts.values()) : 0;
+    const agreementRatio = maxCount / Math.max(votesCast, 1);
 
     if (agreementRatio >= proposal.requiredRatio) {
       return true;
@@ -408,7 +408,7 @@ export class SwarmOrchestrator {
     if (!proposal) return null;
 
     const allVotes = this.votes.get(proposalId) ?? [];
-    const onlineAgents = this.getActiveAgents().length;
+    const votesCast = allVotes.length;
 
     // Count votes per option
     const counts = new Map<string, { votes: number; totalConfidence: number }>();
@@ -423,9 +423,9 @@ export class SwarmOrchestrator {
       }
     }
 
-    // agreementRatio = most popular option votes / total online agents
-    const maxVoteCount = allVotes.length > 0 ? Math.max(...Array.from(counts.values()).map((c) => c.votes)) : 0;
-    const agreementRatio = maxVoteCount / Math.max(onlineAgents, 1);
+    // agreementRatio = most popular option votes / total votes cast
+    const maxVoteCount = votesCast > 0 ? Math.max(...Array.from(counts.values()).map((c) => c.votes)) : 0;
+    const agreementRatio = maxVoteCount / Math.max(votesCast, 1);
 
     // Find winner
     let winner: string | undefined;

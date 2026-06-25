@@ -269,9 +269,9 @@ describe("WebUI 任务管道 — 2. 边界条件测试", () => {
     expect(orchestrator.getTaskStatus("nonexistent-id")).toBeUndefined();
   });
 
-  it("2.5 getStatus 不存在的 taskId 返回 failed", async () => {
+  it("2.5 getStatus 不存在的 taskId 返回 undefined", async () => {
     const status = await orchestrator.getStatus("nonexistent-id");
-    expect(status).toBe("failed");
+    expect(status).toBeUndefined();
   });
 
   // ── 复杂边界 (10) ──
@@ -736,8 +736,9 @@ describe("WebUI 任务管道 — 5. 跨模块功能调用", () => {
     });
     await orchestrator.createTask({ type: "chat", input: { message: "test" } });
     // 给异步事件一点时间
-    await new Promise((r) => setTimeout(r, 50));
-    expect(receivedEvents.length).toBeGreaterThanOrEqual(1);
+    await vi.waitFor(() => {
+      expect(receivedEvents.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it("5.2 任务执行后发布 TASK_COMPLETED 事件", async () => {
@@ -1084,8 +1085,9 @@ describe("WebUI 任务管道 — 7. 并发任务处理", () => {
     }
     // 并发执行
     await Promise.all(tasks.map((t) => orchestrator.execute(t)));
-    await new Promise((r) => setTimeout(r, 100));
-    expect(completedCount.value).toBe(5);
+    await vi.waitFor(() => {
+      expect(completedCount.value).toBe(5);
+    });
   });
 
   it("7.6 并发 DAG 执行中 skill 调用无竞态", async () => {

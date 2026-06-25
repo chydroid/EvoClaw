@@ -245,6 +245,7 @@ export class CommitmentManager {
       return null; // Invalid transition
     }
 
+    const oldStatus = c.status;
     c.status = newStatus;
     c.updatedAt = Date.now();
     if (metadata) {
@@ -254,7 +255,7 @@ export class CommitmentManager {
     this.scheduleSave();
 
     this.eventBus?.publish("commitment.transition", {
-      commitmentId: id, from: c.status, to: newStatus,
+      commitmentId: id, from: oldStatus, to: newStatus,
     }, "commitment-manager");
 
     return c;

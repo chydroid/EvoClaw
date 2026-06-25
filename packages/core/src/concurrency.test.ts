@@ -124,15 +124,17 @@ describe("Semaphore", () => {
       const sem = new Semaphore({ maxConcurrency: 1, queueType: "lifo" });
       const order: number[] = [];
 
-      await sem.acquire();
+      const release = await sem.acquire(); // Exhaust the only permit
 
-      sem.acquire().then((r) => { order.push(1); r(); });
-      sem.acquire().then((r) => { order.push(2); r(); });
-      sem.acquire().then((r) => { order.push(3); r(); });
+      const p1 = sem.acquire().then((r) => { order.push(1); r(); });
+      const p2 = sem.acquire().then((r) => { order.push(2); r(); });
+      const p3 = sem.acquire().then((r) => { order.push(3); r(); });
 
-      // Release — should fulfill the last waiter first (LIFO)
-      // Actually we need to release all permits. Let me restructure.
-      // With only 1 max, releasing the first triggers the last registered waiter
+      // Release — should fulfill the last registered waiter first (LIFO).
+      release();
+
+      await Promise.all([p1, p2, p3]);
+      expect(order).toEqual([3, 2, 1]);
     });
   });
 });

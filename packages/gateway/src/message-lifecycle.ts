@@ -139,11 +139,12 @@ export class MessageLifecycleManager extends EventEmitter {
     options?: { ttlMs?: number; messageId?: string },
   ): LifecycleRecord {
     const now = Date.now();
+    const truncatedText = text.length > 200 ? text.substring(0, 197) + "..." : text;
     const record: LifecycleRecord = {
       id: randomUUID(),
       messageId: options?.messageId,
       channel,
-      text: text.length > 200 ? text.substring(0, 197) + "..." : text,
+      text: truncatedText,
       target,
       state: "pending",
       createdAt: now,
@@ -156,7 +157,7 @@ export class MessageLifecycleManager extends EventEmitter {
 
     // Replace existing record for same message
     for (const [key, existing] of this.records) {
-      if (existing.channel === channel && existing.target === target && existing.text === text) {
+      if (existing.channel === channel && existing.target === target && existing.text === truncatedText) {
         this.records.delete(key);
         break;
       }

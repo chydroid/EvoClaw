@@ -101,6 +101,6 @@ export interface ITaskExecutor {
   cancel(taskId: string): Promise<void>;
   pause(taskId: string): Promise<void>;
   resume(taskId: string): Promise<void>;
-  getStatus(taskId: string): Promise<TaskStatus>;
+  getStatus(taskId: string): Promise<TaskStatus | undefined>;
   getProgress(taskId: string): Promise<number>;
 }

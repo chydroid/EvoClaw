@@ -112,12 +112,20 @@ export class EvolutionThreshold {
 
   /**
    * 记录一次进化触发（重置计数、更新时间戳）
+   *
+   * 当传入 skillId 或 source 时，仅清除对应 key 的失败计数；
+   * 不传参数时保持向后兼容，清除所有失败计数。
    */
-  recordEvolution(): void {
+  recordEvolution(skillId?: string, source?: string): void {
     const now = Date.now();
     this.evolutionTimestamps.push(now);
     this.lastEvolutionTime = now;
-    this.failureCounts.clear();
+    const key = skillId || source;
+    if (key) {
+      this.failureCounts.delete(key);
+    } else {
+      this.failureCounts.clear();
+    }
   }
 
   /**

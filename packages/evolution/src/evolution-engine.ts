@@ -220,7 +220,7 @@ export class EvolutionEngine {
           return;
         }
 
-        this.evolutionThreshold.recordEvolution();
+        this.evolutionThreshold.recordEvolution(skillId ?? undefined, "task_failure");
         await this.startEvolutionCycle("task_failure", {
           taskData,
           reflection,
@@ -255,7 +255,7 @@ export class EvolutionEngine {
 
       if (data.triggerEvolution !== false) {
         // 用户反馈直接允许进化（用户主动触发）
-        this.evolutionThreshold.recordEvolution();
+        this.evolutionThreshold.recordEvolution(undefined, "user_feedback");
         await this.startEvolutionCycle("user_feedback", {
           correctionEvent: data,
           description: data.description || data.context,
@@ -301,7 +301,7 @@ export class EvolutionEngine {
             process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (capability gap): ${thresholdCheck.reason}`);
             return;
           }
-          this.evolutionThreshold.recordEvolution();
+          this.evolutionThreshold.recordEvolution(undefined, "usage_pattern");
           await this.startEvolutionCycle("usage_pattern", {
             capabilityGap: data,
             gapDescription: data.description || data.context,
@@ -351,7 +351,7 @@ export class EvolutionEngine {
           process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (external failure): ${thresholdCheck.reason}`);
           return;
         }
-        this.evolutionThreshold.recordEvolution();
+        this.evolutionThreshold.recordEvolution(undefined, "performance_degradation");
         await this.startEvolutionCycle("performance_degradation", {
           externalFailure: data,
           errorInfo: data.error,
@@ -398,7 +398,7 @@ export class EvolutionEngine {
           process.stdout.write(`[EvolutionEngine] Evolution threshold blocked (knowledge improvement): ${thresholdCheck.reason}`);
           return;
         }
-        this.evolutionThreshold.recordEvolution();
+        this.evolutionThreshold.recordEvolution(undefined, "manual");
         await this.startEvolutionCycle("manual", {
           improvement: data,
           description: data.description || data.context,

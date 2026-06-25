@@ -94,6 +94,7 @@ export class ExperienceAnalyzer {
       } else {
         pattern.embedding = this.generatePatternEmbedding(pattern);
         this.patterns.set(pattern.id, pattern);
+        this.patternEmbeddings.set(pattern.id, pattern.embedding);
       }
     }
 

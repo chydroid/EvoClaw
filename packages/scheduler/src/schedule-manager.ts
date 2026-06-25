@@ -251,7 +251,7 @@ export class ScheduleManager {
         await this.runTask(task);
       }, {
         scheduled: true,
-        timezone: "Asia/Shanghai",
+        timezone: process.env.EVOCLAW_TIMEZONE || "Asia/Shanghai",
       });
 
       this.cronJobs.set(task.id, job);

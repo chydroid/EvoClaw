@@ -1,13 +1,15 @@
 {
   "name": "evoclaw",
-  "version": "0.57.4",
+  "version": "0.57.5",
   "private": true,
   "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
     "build": "pnpm -r build",
     "start": "chcp 65001 > nul && node --max-old-space-size=4096 --env-file=.env apps/server/dist/index.js",
+    "start:unix": "node --max-old-space-size=4096 --env-file=.env apps/server/dist/index.js",
     "dev": "pnpm -r dev",
     "cli": "chcp 65001 > nul && node apps/cli/dist/index.js",
+    "cli:unix": "node apps/cli/dist/index.js",
     "test": "node scripts/vitest-runner.mjs",
     "test:watch": "node scripts/vitest-runner.mjs --watch",
     "lint": "pnpm -r lint",

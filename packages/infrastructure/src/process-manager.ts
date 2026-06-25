@@ -53,6 +53,15 @@ export class ProcessManager {
       );
     });
 
+    childProcess.on("error", (err) => {
+      processInfo.status = "crashed";
+      this.eventBus.publish(
+        "process.error",
+        { id, name, error: err.message },
+        "process-manager"
+      );
+    });
+
     childProcess.stdout?.on("data", (data: Buffer) => {
       process.stdout.write(`[${name}] ${data.toString().trim()}\n`);
     });

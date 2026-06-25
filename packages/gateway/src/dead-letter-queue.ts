@@ -421,9 +421,7 @@ export class DeadLetterQueue {
     }
     // 旧版 JSONL 文件也清理
     const p = this.channelFile(channel);
-    if (entries.length === 0) {
-      try { fs.unlinkSync(p); } catch { /* ignore */ }
-    }
+    try { fs.unlinkSync(p); } catch { /* ignore */ }
   }
 
   /** 旧版 JSONL 文件列表（向后兼容） */

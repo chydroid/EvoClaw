@@ -762,6 +762,19 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 异步睡眠，不阻塞事件循环。优先在 async 调用方使用。
+   * 注意：acquireLock/withLock 为同步签名，无法 await，仍需使用 sleepSync。
+   */
+  private sleepAsync(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 同步睡眠，会阻塞 Node.js 主线程。
+   * 警告：仅在无法改为 async 的同步调用路径（如 acquireLock）中使用，
+   * 高并发下长时间阻塞会冻结整个服务端。新增代码应优先使用 sleepAsync。
+   */
   private sleepSync(ms: number): void {
     // Use Atomics.wait for non-busy synchronous sleep (Node.js only)
     try {

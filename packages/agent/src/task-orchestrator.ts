@@ -27,7 +27,7 @@ export class TaskOrchestrator implements ITaskExecutor {
   ) {
     this.taskQueue = new InMemoryTaskQueue();
     this.dagExecutor = new DAGExecutor(registry, eventBus);
-    this.agentPool = new AgentPoolManager(registry, eventBus);
+    this.agentPool = registry.resolveService<AgentPoolManager>("agentPool") ?? new AgentPoolManager(registry, eventBus);
   }
 
   async createTask(input: {
@@ -163,8 +163,8 @@ export class TaskOrchestrator implements ITaskExecutor {
     }
   }
 
-  async getStatus(taskId: string): Promise<TaskStatus> {
-    return this.activeTasks.get(taskId)?.status || "failed";
+  async getStatus(taskId: string): Promise<TaskStatus | undefined> {
+    return this.activeTasks.get(taskId)?.status;
   }
 
   async getProgress(taskId: string): Promise<number> {
@@ -195,7 +195,9 @@ export class TaskOrchestrator implements ITaskExecutor {
       if (!agent) {
         await this.taskQueue.enqueue(task);
         await new Promise((resolve) => setTimeout(resolve, 100));
-        break;
+        // 继续尝试下一个任务，避免因单个任务无法获取 agent 而使后续任务饥饿。
+        // 若队列已空，下一次 dequeue 返回 null 会自然 break。
+        continue;
       }
 
       try {

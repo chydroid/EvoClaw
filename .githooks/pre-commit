@@ -5,7 +5,7 @@
 
 # Check for secrets in staged files
 echo "Checking for secrets..."
-if git diff --cached --name-only | xargs grep -l -E "(API_KEY|SECRET|PASSWORD|TOKEN)\s*[:=]\s*['\"][^'\"${" | head -1 | grep -q .; then
+if git diff --cached --name-only | xargs -r grep -lE '(API_KEY|SECRET|PASSWORD|TOKEN)[[:space:]]*[:=]' 2>/dev/null | head -1 | grep -q .; then
     echo "ERROR: Potential secrets found in staged files!"
     echo "Please remove secrets before committing."
     exit 1
@@ -13,7 +13,7 @@ fi
 
 # Check for console.log in production code
 echo "Checking for console.log..."
-if git diff --cached --name-only | grep -E "\.(ts|js)$" | xargs grep -l "console\.log" 2>/dev/null | head -1 | grep -q .; then
+if git diff --cached --name-only | grep -E "\.(ts|js)$" | xargs -r grep -l "console\.log" 2>/dev/null | head -1 | grep -q .; then
     echo "WARNING: console.log found in staged files."
     echo "Consider using Logger instead."
 fi

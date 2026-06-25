@@ -279,9 +279,8 @@ export class EvolutionEvaluator {
   }
 
   private countTests(testCode: string): number {
-    const describeMatches = testCode.match(/describe\s*\(/g);
     const testMatches = testCode.match(/it\s*\(|test\s*\(/g);
-    return (describeMatches?.length || 1) * (testMatches?.length || 1);
+    return testMatches?.length ?? 0;
   }
 
   private isValidCode(code: string): boolean {

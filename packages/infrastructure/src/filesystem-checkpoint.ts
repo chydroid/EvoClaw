@@ -696,11 +696,11 @@ export class FileSystemCheckpointManager {
 
       // 找到截断点：第 perProjectLimit 个祖先
       const keepResult = await runGit(gitDir, workTree, indexFile, [
-        "rev-list", "--reverse", "-n", String(this.perProjectLimit), refName,
+        "rev-list", "-n", String(this.perProjectLimit), refName,
       ]);
       if (keepResult.code !== 0) return false;
       const lines = keepResult.stdout.trim().split("\n");
-      const newTip = lines[0];
+      const newTip = lines[lines.length - 1];
       if (!validateCommitHash(newTip)) return false;
 
       // 更新 ref 指向新 tip

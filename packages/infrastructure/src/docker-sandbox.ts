@@ -176,7 +176,8 @@ export class DockerSandbox {
       const { stdout, stderr, exitCode, timedOut } = await this.dockerCommand(
         args,
         timeoutMs,
-        maxOutputBytes
+        maxOutputBytes,
+        containerName
       );
 
       return {
@@ -277,7 +278,8 @@ export class DockerSandbox {
   private dockerCommand(
     args: string[],
     timeoutMs: number,
-    maxOutputBytes?: number
+    maxOutputBytes?: number,
+    containerName?: string
   ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
     return new Promise((resolve, reject) => {
       const child = spawn("docker", args, {
@@ -293,13 +295,19 @@ export class DockerSandbox {
       const timeout = setTimeout(() => {
         if (!resolved) {
           timedOut = true;
-          // Try to kill the container gracefully, then force
-          const killProc = spawn("docker", ["kill", args[3]], {
-            windowsHide: true,
-          });
-          killProc.on("close", () => {
+          // Try to kill the container gracefully, then force.
+          // Only kill when we know the container name (e.g. `docker run`).
+          // For other commands (info/pull/isGPUSupported) args[3] is NOT a container name.
+          if (containerName) {
+            const killProc = spawn("docker", ["kill", containerName], {
+              windowsHide: true,
+            });
+            killProc.on("close", () => {
+              child.kill("SIGKILL");
+            });
+          } else {
             child.kill("SIGKILL");
-          });
+          }
           setTimeout(() => {
             if (!resolved) {
               child.kill("SIGKILL");

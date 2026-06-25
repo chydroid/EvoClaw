@@ -3,6 +3,64 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.5 (2026-06-25)
+
+### 全面代码审查与 BUG 修复（2 轮）
+
+对全项目进行 2 轮深度代码审查，共发现并修复 **44 个真实 BUG**。
+
+#### 第 1 轮：Agent/Memory/Gateway/Infrastructure/Evolution 深度审查（22 个）
+
+**Agent/Memory 修复（6 个）**：
+- `commitments.ts`：修复状态转换事件 `from` 字段使用新状态而非旧状态
+- `compaction-manager.ts`：修复 `stripHistoricalPrefixes` 对以 `]` 结尾的前缀处理错误
+- `memory-curator.ts`：修复哈希计算使用未截断内容，导致截断后内容与哈希不匹配
+- `memory-weaver.ts`：修复合并失败时跳过整个会话，改为过滤已合并片段
+- `swarm-orchestrator.ts`：修复投票通过率使用 `onlineAgents` 而非 `votesCast` 作为分母
+- `long-term-memory.ts`：修复 LIKE 查询未转义 `%`/`_`/`\` 通配符
+
+**Gateway 修复（4 个）**：
+- `dead-letter-queue.ts`：修复 `writeAll` 在 JSONL 文件存在时未删除导致残留
+- `message-lifecycle.ts`：修复去重比较使用未截断文本，长消息去重失效
+- `canvas-manager.ts`：修复 CSP 头替换正则缺少 `g` 标志和 `[^;]*` 匹配
+- `mcp-protocol-handler.ts`：修复 `sanitizeToolResult` 未检查 null 导致崩溃
+
+**Infrastructure/Evolution 修复（12 个）**：
+- `filesystem-checkpoint.ts`：修复 `--reverse` 参数错误，改用最后一行作为 newTip
+- `update-manager.ts`：修复备份恢复只查找固定前缀，改为搜索最新匹配备份
+- `experience-analyzer.ts`：修复 `patternEmbeddings` 未存储导致后续检索失败
+- `observability.ts`：修复 Prometheus 直方图标签格式错误
+- `evolution-evaluator.ts`：修复 `countTests` 误匹配非测试函数
+- `process-manager.ts`：修复子进程缺少 `error` 事件处理导致未捕获异常
+- `filesystem-manager.ts`：修复审计日志未按文件内倒序返回
+- `ssh-sandbox.ts`：修复解释器白名单验证缺失
+- `evolution-threshold.ts`：修复 `recordEvolution` 清除所有 skill 失败计数，改为按 skillId/source 清除
+- `evolution-engine.ts`：更新 5 处 `recordEvolution` 调用传入正确的 source 参数
+
+#### 第 2 轮：配置/部署/构建 + 测试代码 + 深层集成（22 个）
+
+**配置/部署/构建修复（9 个）**：
+- `start.bat`：修复品牌名 `EcoClaw` → `EvoClaw`
+- `.githooks/pre-commit`：修复 secret 检测正则字符类未闭合导致检测被完全绕过；添加 `xargs -r` 防止空输入挂起
+- `setup-hooks.bat`：修复 Windows 上使用 `chmod` 命令，改为 `git update-index --chmod=+x`
+- `package.json`：添加 `start:unix`/`cli:unix` 跨平台脚本
+- `apps/cli/tsconfig.json`：移除 CommonJS 覆盖，继承基配置 NodeNext
+- 删除废弃脚本 `scripts/make-req.js` 和 `make-req.ps1`（硬编码绝对路径含 `nouse` 目录）
+
+**深层集成修复（8 个）**：
+- `session-manager.ts`：新增 `sleepAsync` 异步睡眠方法，`sleepSync` 添加阻塞警告
+- `queue-manager.ts`：修复 `persistQueue` 使用非原子 `fs.writeFileSync`，改为临时文件+fsync+rename
+- `task-orchestrator.ts`：修复 `processQueue` 遇到无 agent 任务时 `break` 导致后续任务饥饿（改为 `continue`）；修复 `getStatus` 对不存在任务返回误导性 `"failed"`（改为 `undefined`）
+- `actor-system.ts`：修复 `send()` 阻塞等待整个邮箱处理完成（改为非阻塞 fire-and-forget）
+- `core/types/task.ts`：更新 `getStatus` 返回类型为 `TaskStatus | undefined`
+
+**测试代码修复（5 个）**：
+- `reply-dedup.test.ts`：修复 2 处零断言测试（配置更新和 caseFold 测试无 expect）
+- `concurrency.test.ts`：修复 LIFO 顺序测试零断言（未调用 release、无 expect）
+- `streaming-manager.test.ts`：修复 4 处固定 50ms 等待竞态条件，改为 `vi.waitFor` 轮询
+- `config.test.ts`：修复热加载异步等待竞态，改为 `vi.waitFor`
+- `webui-task-pipeline.test.ts`：修复 2 处 EventBus 异步事件等待竞态，改为 `vi.waitFor`
+
 ## v0.57.4 (2026-06-24)
 
 ### 全面代码审查与 BUG 修复（2 轮）

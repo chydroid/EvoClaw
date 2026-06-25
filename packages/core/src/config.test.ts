@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -196,7 +196,9 @@ describe("ConfigManager", () => {
     watcher.forceReload(filePath);
 
     // Wait for async handlers
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => {
+      expect(manager.get("gateway").port).toBe(20000);
+    });
 
     expect(manager.get("gateway").port).toBe(20000);
     expect(changes.some((c) => c.path === "gateway.port" && c.source === "hot-reload")).toBe(true);

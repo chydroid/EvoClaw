@@ -25,7 +25,7 @@ function getServerVersion(): string {
       }
     }
   } catch { /* version detection failed, using fallback */ }
-  return "0.37.0";
+  return "0.0.0-unknown";
 }
 const SERVER_VERSION = getServerVersion();
 // 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
@@ -354,7 +354,7 @@ export class EvoClawServer {
     );
     // Register all key services with Crestodian for Ops tab health monitoring
     this.crestodian.setServiceHealth("agentModelExecutor", "ok", { version: "1.0" });
-    this.crestodian.setServiceHealth("gatewayServer", "ok", { port: process.env.EvoClaw_PORT || "17788" });
+    this.crestodian.setServiceHealth("gatewayServer", "ok", { port: process.env.EvoClaw_PORT || "27788" });
     this.crestodian.setServiceHealth("autoSkillManager", "ok");
     this.crestodian.setServiceHealth("skillDispatcher", "ok");
     this.crestodian.setServiceHealth("eventLedger", "ok");
@@ -373,10 +373,10 @@ export class EvoClawServer {
     this.registry.registerService("voiceService", voiceService);
 
     this.gateway = new GatewayServer(this.registry, this.eventBus);
-    this.taskOrchestrator = new TaskOrchestrator(this.registry, this.eventBus);
-    this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
     this.agentPool = new AgentPoolManager(this.registry, this.eventBus);
     this.registry.registerService("agentPool", this.agentPool);
+    this.taskOrchestrator = new TaskOrchestrator(this.registry, this.eventBus);
+    this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
     this.actorSystem = new ActorSystem();
     this.registry.registerService("actorSystem", this.actorSystem);
     this.agentModelExecutor = new AgentModelExecutor(
@@ -522,7 +522,7 @@ export class EvoClawServer {
     this.registry.registerService("a2aClient", a2aClient);
 
     const a2aServer = new A2AServer({
-      publicUrl: process.env.EVOCLAW_A2A_URL || `http://localhost:${process.env.EvoClaw_PORT || "3000"}`,
+      publicUrl: process.env.EVOCLAW_A2A_URL || `http://localhost:${process.env.EvoClaw_PORT || "27788"}`,
       enabled: this.featureFlagStore.isEnabled("a2a"),
       authType: (process.env.EVOCLAW_A2A_AUTH as "none" | "api_key") || "api_key",
       validApiKeys: process.env.EVOCLAW_A2A_API_KEYS?.split(",").map(k => k.trim()).filter(Boolean),

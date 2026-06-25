@@ -205,15 +205,14 @@ export class MemoryCurator {
   freezeSnapshot(allMemories: MemoryEntry[]): MemorySnapshot {
     const memoryMd = this.buildMemoryMd(allMemories);
     const userProfileMd = this.buildUserProfileMd(allMemories);
-    const combined = memoryMd + "\n" + userProfileMd;
-    const hash = createHash("sha256").update(combined).digest("hex");
-
     const truncatedMemoryMd = memoryMd.length > this.maxSnapshotChars
       ? memoryMd.slice(0, this.maxSnapshotChars)
       : memoryMd;
     const truncatedUserProfileMd = userProfileMd.length > this.maxSnapshotChars
       ? userProfileMd.slice(0, this.maxSnapshotChars)
       : userProfileMd;
+    const combined = truncatedMemoryMd + "\n" + truncatedUserProfileMd;
+    const hash = createHash("sha256").update(combined).digest("hex");
 
     this.snapshot = {
       memoryMd: truncatedMemoryMd,

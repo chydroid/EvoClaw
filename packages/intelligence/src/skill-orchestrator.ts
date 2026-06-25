@@ -227,7 +227,7 @@ export class SkillOrchestrator {
         }
 
         if (skillExecutor) {
-          const skills = (skillExecutor as unknown as { listSkills(): Array<{ id: string; name: string }> }).listSkills();
+          const skills = await (skillExecutor as unknown as { listSkills(): Promise<Array<{ id: string; name: string }>> }).listSkills();
           const matchedSkill = skills.find((s) => s.name === skillToUse);
 
           if (matchedSkill) {

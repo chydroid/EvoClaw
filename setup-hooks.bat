@@ -9,7 +9,7 @@ git config core.hooksPath .githooks
 
 REM Make hooks executable (Git Bash on Windows)
 if exist ".githooks\pre-commit" (
-    chmod +x .githooks\pre-commit 2>nul
+    git update-index --chmod=+x .githooks/pre-commit 2>nul
 )
 
 echo Git hooks configured successfully!

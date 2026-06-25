@@ -91,7 +91,7 @@ const GITHUB_API = "https://api.github.com";
 export class UpdateManager {
   private config: Required<Omit<UpdateConfig, "platformSuffix">>;
   private checkTimer: ReturnType<typeof setInterval> | null = null;
-  private updateCache = new Map<string, ReleaseInfo>();
+  private updateCache = new Map<string, ReleaseInfo[]>();
 
   constructor(config: UpdateConfig) {
     this.config = {
@@ -319,7 +319,13 @@ export class UpdateManager {
 
       // Restore backed up paths
       for (const bp of this.config.backupPaths) {
-        const backupPath = path.join(backupDir, path.basename(bp));
+        const prefix = path.basename(bp) + ".";
+        const candidates = fs.readdirSync(backupDir)
+          .filter(n => n.startsWith(prefix))
+          .sort()
+          .reverse();
+        if (candidates.length === 0) continue;
+        const backupPath = path.join(backupDir, candidates[0]);
         if (fs.existsSync(backupPath)) {
           const targetPath = path.join(cwd, bp);
           if (fs.existsSync(targetPath)) {
@@ -371,7 +377,7 @@ export class UpdateManager {
   async fetchReleases(): Promise<ReleaseInfo[]> {
     // Check cache first (1 hour TTL)
     const cached = this.updateCache.get("releases");
-    if (cached) return [cached];
+    if (cached) return cached;
 
     const response = await fetch(this.config.releaseAPIURL, {
       headers: {
@@ -416,7 +422,7 @@ export class UpdateManager {
     }));
 
     // Cache for 1 hour
-    this.updateCache.set("releases", releases[0]);
+    this.updateCache.set("releases", releases);
     setTimeout(() => this.updateCache.delete("releases"), 3600_000);
 
     return releases;

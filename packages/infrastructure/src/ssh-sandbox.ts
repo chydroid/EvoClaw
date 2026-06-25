@@ -133,6 +133,9 @@ export class SSHSandbox {
     options?: { timeoutMs?: number; interpreter?: string }
   ): Promise<SSHSandboxResult> {
     const interpreter = options?.interpreter ?? "node";
+    if (!/^[a-zA-Z0-9_\-\/]+$/.test(interpreter)) {
+      throw new Error(`Invalid interpreter: ${interpreter}`);
+    }
     const command = `${interpreter} -e '${script.replace(/'/g, "'\\''")}'`;
     return this.execute(command, { timeoutMs: options?.timeoutMs });
   }

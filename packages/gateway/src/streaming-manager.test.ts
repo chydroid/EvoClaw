@@ -53,10 +53,11 @@ describe("StreamingManager", () => {
       });
 
       // Wait for async completion
-      await new Promise((r) => setTimeout(r, 50));
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "complete")).toBe(true);
+      });
 
       expect(events.some((e) => e.type === "start")).toBe(true);
-      expect(events.some((e) => e.type === "complete")).toBe(true);
       expect(chunks).toHaveLength(1);
       expect(chunks[0]).toBe("Hello world");
     });
@@ -71,11 +72,12 @@ describe("StreamingManager", () => {
         onChunk: (c) => { chunks.push(c.text); },
       });
 
-      await new Promise((r) => setTimeout(r, 100));
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "complete")).toBe(true);
+      });
 
       expect(chunks.length).toBeGreaterThan(1);
       expect(events.some((e) => e.type === "start")).toBe(true);
-      expect(events.some((e) => e.type === "complete")).toBe(true);
 
       // Verify chunks reassemble correctly
       const reassembled = chunks.join("").replace(/\s+/g, "");
@@ -109,8 +111,9 @@ describe("StreamingManager", () => {
       sm.stream("discord", "u1", "A".repeat(5000), { onEvent: () => {} });
       expect(sm.getActiveCount()).toBe(1);
 
-      await new Promise((r) => setTimeout(r, 100));
-      expect(sm.getActiveCount()).toBe(0);
+      await vi.waitFor(() => {
+        expect(sm.getActiveCount()).toBe(0);
+      });
     });
   });
 
@@ -182,8 +185,9 @@ describe("StreamingManager", () => {
         },
       });
 
-      await new Promise((r) => setTimeout(r, 100));
-      expect(events.some((e) => e.type === "cancelled")).toBe(true);
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "cancelled")).toBe(true);
+      });
       expect(chunkCount).toBeGreaterThanOrEqual(1);
     });
   });

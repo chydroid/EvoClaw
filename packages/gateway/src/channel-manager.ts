@@ -442,4 +442,9 @@ export class ChannelManager {
       }
     }
   }
+
+  /** Stop alias — delegates to stopAll() for shutdown compatibility */
+  async stop(): Promise<void> {
+    return this.stopAll();
+  }
 }

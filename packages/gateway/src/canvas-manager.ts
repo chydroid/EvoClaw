@@ -433,7 +433,7 @@ export class CanvasManager {
   getCSPHeader(): string {
     const cdnHosts = this.config.allowedCDNs.join(" ");
     return SANDBOX_POLICY.replace(
-      /cdn\.jsdelivr\.net unpkg\.com cdnjs\.cloudflare\.com.*?;/,
+      /cdn\.jsdelivr\.net unpkg\.com cdnjs\.cloudflare\.com[^;]*;/g,
       `${cdnHosts};`
     );
   }

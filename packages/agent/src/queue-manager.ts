@@ -776,7 +776,30 @@ export class QueueManager {
       if (!queue || queue.length === 0) return;
 
       const filePath = path.join(this.config.dataDir, `${sessionId}.json`);
-      fs.writeFileSync(filePath, JSON.stringify(queue, null, 2), "utf-8");
+      // 原子写入：写临时文件 + fsync + rename，避免部分写入导致文件损坏。
+      // 与 @evoclaw/infrastructure 的 atomicWriteFile 同源模式（此处为同步版本，
+      // 因为 persistQueue 的所有调用方均为同步签名）。
+      const tmpPath = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(queue, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } catch (err) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
+      fs.closeSync(fd);
+      // 保留原文件权限位
+      try {
+        if (fs.existsSync(filePath)) {
+          const st = fs.statSync(filePath);
+          fs.chmodSync(tmpPath, st.mode);
+        }
+      } catch {
+        // 权限复制失败不阻断写入
+      }
+      fs.renameSync(tmpPath, filePath);
     } catch (err) {
       process.stderr.write(`[QueueManager] Failed to persist queue: ${err}`);
     }

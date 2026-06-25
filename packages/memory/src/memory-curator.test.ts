@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { MemoryCurator } from "./memory-curator";
 import { FTS5SearchEngine } from "./fts5-search";
 import type { MemoryEntry } from "@evoclaw/core";
@@ -16,10 +16,6 @@ describe("MemoryCurator", () => {
   afterEach(() => {
     fts5.close();
   });
-
-  function afterEach(fn: () => void) {
-    fn;
-  }
 
   it("evaluateForPersistence with user preference returns shouldPersist=true", () => {
     const result = curator.evaluateForPersistence(

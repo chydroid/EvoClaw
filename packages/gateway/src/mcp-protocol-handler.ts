@@ -177,6 +177,9 @@ export class MCPProtocolHandler {
     // If result has content array (MCP tool result format)
     if (Array.isArray(obj.content)) {
       obj.content = obj.content.map((block: Record<string, unknown>) => {
+        if (!block || typeof block !== "object") {
+          return { type: "text", text: `[invalid] ${JSON.stringify(block)}` };
+        }
         if (block.type === "text" || block.type === "image") {
           return block; // Keep text and image blocks as-is
         }

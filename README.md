@@ -25,6 +25,14 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.57.5 亮点
+- **全面代码审查与 BUG 修复（2 轮）**：对全项目进行 2 轮深度审查，共修复 **44 个真实 BUG**
+  - 严重修复：pre-commit secret 检测正则损坏导致安全防线失效、recordEvolution 清除所有 skill 失败计数、processQueue 任务饥饿、ActorSystem send 阻塞
+  - 数据正确性：commitments 状态转换 from 字段错误、memory-curator 哈希不匹配、swarm 投票分母错误、LIKE 通配符未转义、getStatus 误导性 "failed"
+  - 资源安全：queue-manager 非原子写入违反项目规则、process-manager 缺 error 事件处理
+  - 测试质量：3 处零断言测试（误报）、7 处固定 50ms 等待竞态条件（flaky test）
+  - 构建/部署：start.bat 品牌名错误、跨平台脚本缺失、CLI tsconfig 与基配置不一致
+
 ### v0.57.4 亮点
 - **全面代码审查与 BUG 修复（2 轮）**：对全项目进行 2 轮深度审查，共修复 **49 个真实 BUG**
   - 严重修复：Telegram 消息丢失、QQ 双重连接、Feishu 去重失效、授权时序攻击、并发控制失效、重试逻辑失效

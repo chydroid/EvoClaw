@@ -133,6 +133,14 @@ function atomicWriteFileLocal(targetPath: string, content: string): void {
 function stripHistoricalPrefixes(text: string, prefixes: string[]): string {
   let result = text;
   for (const prefix of prefixes) {
+    if (prefix.endsWith("]")) {
+      // Prefix is self-contained (e.g. "[CONTEXT COMPACTION — REFERENCE ONLY]")
+      while (result.includes(prefix)) {
+        const idx = result.indexOf(prefix);
+        result = result.slice(0, idx) + result.slice(idx + prefix.length).replace(/^\s+/, "");
+      }
+      continue;
+    }
     // 剥离形如 "[Prefix ...]" 的标记（到下一个 ] 为止）
     let idx = result.indexOf(prefix);
     while (idx >= 0) {

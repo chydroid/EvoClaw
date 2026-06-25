@@ -32,7 +32,6 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app
 
 # Copy only production deps from builder
-COPY --from=builder /app/node_modules/.pnpm /app/node_modules/.pnpm
 COPY --from=builder /app/node_modules /app/node_modules
 
 # Copy built packages
@@ -41,9 +40,6 @@ COPY --from=builder /app/apps /app/apps
 
 # Copy workspace config
 COPY pnpm-workspace.yaml package.json ./
-
-# Copy start script
-COPY start.bat ./
 
 # Create data directory
 RUN mkdir -p /app/data/workspace /app/data/sessions /app/logs
@@ -60,5 +56,10 @@ EXPOSE 27788
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "const http=require('http');http.get('http://localhost:'+(process.env.EvoClaw_PORT||27788)+'/health',r=>{process.exit(r.statusCode===200?0:1)})"
+
+# Run as non-root user for security
+RUN addgroup -S evoclaw && adduser -S evoclaw -G evoclaw
+RUN chown -R evoclaw:evoclaw /app
+USER evoclaw
 
 CMD ["node", "--env-file=.env", "apps/server/dist/index.js"]

@@ -535,10 +535,17 @@ export class GatewayServer {
         res.status(403).json({ error: "Login disabled: admin credentials not configured. Set EVOCLAW_ADMIN_USER and EVOCLAW_ADMIN_PASSWORD environment variables." });
         return;
       }
-      const userMatch = username === expectedUser;
+      // Constant-time comparison for both username and password to avoid timing leaks
+      const userBuf = Buffer.from(String(username));
+      const expectedUserBuf = Buffer.from(String(expectedUser));
+      const maxUserLen = Math.max(userBuf.length, expectedUserBuf.length);
+      const paddedUser = Buffer.alloc(maxUserLen);
+      const paddedExpectedUser = Buffer.alloc(maxUserLen);
+      userBuf.copy(paddedUser, maxUserLen - userBuf.length);
+      expectedUserBuf.copy(paddedExpectedUser, maxUserLen - expectedUserBuf.length);
+      const userMatch = crypto.timingSafeEqual(paddedUser, paddedExpectedUser);
       const passBuf = Buffer.from(String(password));
       const expectedBuf = Buffer.from(String(expectedPass));
-      // Constant-time comparison regardless of length to avoid timing leaks
       const maxLen = Math.max(passBuf.length, expectedBuf.length);
       const paddedPass = Buffer.alloc(maxLen);
       const paddedExpected = Buffer.alloc(maxLen);

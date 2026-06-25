@@ -170,20 +170,25 @@ describe("ReplyDeduplicator", () => {
 
   describe("Configuration", () => {
     it("should update configuration", () => {
-      dedup.configure({ dedupWindowMs: 60000 });
-      // Just verifying it doesn't throw
+      const hashBefore = dedup.computeHash("Hello World");
+      dedup.configure({ caseFold: false, dedupWindowMs: 60000, maxCacheSize: 100 });
+      const hashAfter = dedup.computeHash("Hello World");
+      // caseFold changed from true (default) to false, so the normalized
+      // input differs and the hash must change.
+      expect(hashAfter).not.toBe(hashBefore);
+      // Instance still functions after reconfigure.
+      const result = dedup.check("test", "webchat", "s1");
+      expect(result.action).toBe("process");
     });
 
     it("should respect caseFold config", () => {
       const caseSensitive = new ReplyDeduplicator({ caseFold: false });
       caseSensitive.check("Hello", "webchat", "s1");
       const result = caseSensitive.check("hello", "webchat", "s1");
-      // With caseFold off, "Hello" and "hello" should be different
-      // (but emoji stripping might still make them different if not applicable)
-      // Actually, hash with caseFold=false will produce different hashes for "Hello" vs "hello"
-      // Wait, the hash computation uses caseFold config; if false, they'll be different
-      // Let me check... actually the test might be tricky because the hash for "Hello" 
-      // without case fold is different from "hello"
+      // With caseFold off, "Hello" and "hello" produce different hashes,
+      // so the second message is not a duplicate.
+      expect(result.isDuplicate).toBe(false);
+      expect(result.action).toBe("process");
     });
   });
 

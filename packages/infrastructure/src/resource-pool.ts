@@ -95,6 +95,7 @@ export class ResourcePool<T> extends EventEmitter {
   private waiters: AcquireRequest<T>[] = [];
   private scavengeTimer: ReturnType<typeof setInterval> | null = null;
   private nextId = 1;
+  private pendingCreates = 0;
 
   private stats: PoolStats = {
     totalCreated: 0,
@@ -145,8 +146,9 @@ export class ResourcePool<T> extends EventEmitter {
     if (immediate) return immediate;
 
     // Slow path: need to create or wait
-    if (this.borrowed.size < this.config.maxSize) {
+    if (this.borrowed.size + this.pendingCreates < this.config.maxSize) {
       // Can create a new one
+      this.pendingCreates++;
       try {
         const resource = await this.createResource();
         this.borrowResource(resource);
@@ -154,6 +156,8 @@ export class ResourcePool<T> extends EventEmitter {
       } catch (err) {
         // Creation failed — add to wait queue
         return this.enqueueWaiter();
+      } finally {
+        this.pendingCreates--;
       }
     }
 

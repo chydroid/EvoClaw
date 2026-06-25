@@ -36,11 +36,17 @@ export class ActorSystem {
 
   private createActorRef(id: string): ActorRef {
     return {
+      // send 为 fire-and-forget：仅入队邮箱并触发处理，不阻塞发送方。
+      // processMessages 内部已有 processing 守卫防止并发重入，并通过 while
+      // 循环迭代处理整个邮箱（非递归，无栈溢出风险）。
       send: async (message: ActorMessage) => {
         const mailbox = this.mailboxes.get(id);
         if (mailbox) {
           mailbox.push(message);
-          await this.processMessages(id);
+          // 非阻塞触发消息处理；错误在 processMessages 内部已捕获。
+          void this.processMessages(id).catch((err) => {
+            process.stderr.write(`[ActorSystem] Unexpected error processing messages for "${id}":` + " " + err);
+          });
         }
       },
 
@@ -90,11 +96,6 @@ export class ActorSystem {
       }
     } finally {
       this.processing.delete(actorId);
-
-      const mailbox = this.mailboxes.get(actorId);
-      if (mailbox && mailbox.length > 0) {
-        await this.processMessages(actorId);
-      }
     }
   }
 

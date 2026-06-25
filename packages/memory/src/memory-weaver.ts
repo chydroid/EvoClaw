@@ -242,30 +242,32 @@ export class MemoryWeaver {
         continue;
       }
 
-      // Already consolidated?
-      const alreadyDone = this.consolidated.filter((c) =>
-        c.sourceFragments.some((sf) => fragments.some((f) => f.id === sf))
-      );
-      if (alreadyDone.length > 0) continue;
+      // Filter out already-consolidated fragments
+      const consolidatedFragmentIds = new Set<string>();
+      for (const c of this.consolidated) {
+        for (const sf of c.sourceFragments) consolidatedFragmentIds.add(sf);
+      }
+      const remaining = fragments.filter((f) => !consolidatedFragmentIds.has(f.id));
+      if (remaining.length === 0) continue;
 
       // Build consolidated memory
-      const summary = this.summarizeSession(fragments);
-      const keyFacts = this.extractKeyFacts(fragments);
-      const decisions = this.extractDecisions(fragments);
-      const preferences = this.extractPreferences(fragments);
+      const summary = this.summarizeSession(remaining);
+      const keyFacts = this.extractKeyFacts(remaining);
+      const decisions = this.extractDecisions(remaining);
+      const preferences = this.extractPreferences(remaining);
 
       const consolidated: ConsolidatedMemory = {
         id: `cons_${sessionId}_${Date.now()}`,
-        sourceFragments: fragments.map((f) => f.id),
+        sourceFragments: remaining.map((f) => f.id),
         summary,
         keyFacts,
         decisions,
         preferences,
         timeRange: {
-          start: fragments.reduce((min, f) => Math.min(min, f.timestamp), Infinity),
-          end: fragments.reduce((max, f) => Math.max(max, f.timestamp), 0),
+          start: remaining.reduce((min, f) => Math.min(min, f.timestamp), Infinity),
+          end: remaining.reduce((max, f) => Math.max(max, f.timestamp), 0),
         },
-        importance: fragments.reduce((sum, f) => sum + f.importance, 0) / fragments.length,
+        importance: remaining.reduce((sum, f) => sum + f.importance, 0) / remaining.length,
         createdAt: Date.now(),
       };
 

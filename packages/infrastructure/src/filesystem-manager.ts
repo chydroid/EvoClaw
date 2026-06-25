@@ -409,7 +409,7 @@ export class FileSystemManager {
             "utf-8"
           );
           const parsed = JSON.parse(content) as AuditLogEntry[];
-          logs.push(...parsed);
+          logs.push(...[...parsed].reverse());
         } catch {
           continue;
         }

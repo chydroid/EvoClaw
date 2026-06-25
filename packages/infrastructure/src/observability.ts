@@ -481,13 +481,17 @@ export class Observability {
       const labelStr = this.labelString(labels);
       const sorted = [...values].sort((a, b) => a - b);
 
+      const leLabel = (le: string) => labelStr
+        ? `${labelStr.slice(0, -1)},le="${le}"}`
+        : `{le="${le}"}`;
+
       // Le buckets
       for (const le of this.config.latencyBuckets) {
         const count = sorted.filter((v) => v <= le).length;
-        lines.push(`${name}_bucket${labelStr}${labelStr ? "," : "{"}le="${le}"} ${count}`);
+        lines.push(`${name}_bucket${leLabel(String(le))} ${count}`);
       }
       // +Inf bucket
-      lines.push(`${name}_bucket${labelStr}${labelStr ? "," : "{"}le="+Inf"} ${values.length}`);
+      lines.push(`${name}_bucket${leLabel("+Inf")} ${values.length}`);
       // Sum and count
       const sum = values.reduce((a, b) => a + b, 0);
       lines.push(`${name}_sum${labelStr} ${sum}`);

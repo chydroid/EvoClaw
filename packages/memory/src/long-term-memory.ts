@@ -215,10 +215,11 @@ export class LongTermMemoryStore implements LongTermMemory {
     // Use SQLite for content matching when available
     if (this.sqliteDb && query.query) {
       try {
+        const escaped = query.query.replace(/[%_\\]/g, "\\$&");
         const stmt = this.sqliteDb.prepare(
-          "SELECT id FROM memories WHERE content LIKE ?"
+          "SELECT id FROM memories WHERE content LIKE ? ESCAPE '\\'"
         );
-        const rows = stmt.all(`%${query.query}%`) as Array<{ id: string }>;
+        const rows = stmt.all(`%${escaped}%`) as Array<{ id: string }>;
         const sqliteMatchIds = new Set(rows.map((r) => r.id));
 
         for (const entry of this.entries.values()) {
