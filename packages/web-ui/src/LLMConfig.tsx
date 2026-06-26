@@ -386,6 +386,12 @@ function LLMConfigPanel() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
+  const dragHandlersRef = useRef<{ move: ((ev: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null });
+  // 组件卸载时清理可能残留的拖拽监听器
+  useEffect(() => () => {
+    if (dragHandlersRef.current.move) document.removeEventListener("mousemove", dragHandlersRef.current.move);
+    if (dragHandlersRef.current.up) document.removeEventListener("mouseup", dragHandlersRef.current.up);
+  }, []);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
 
@@ -411,9 +417,11 @@ function LLMConfigPanel() {
       dragging.current = false;
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      dragHandlersRef.current = { move: null, up: null };
     };
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    dragHandlersRef.current = { move: onMouseMove, up: onMouseUp };
   }, [sidebarWidth]);
 
   async function loadConfig() {
@@ -900,6 +908,12 @@ function MediaGenConfig({ kind }: MediaGenConfigProps) {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
   const dragging = useRef(false);
+  const dragHandlersRef = useRef<{ move: ((ev: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null });
+  // 组件卸载时清理可能残留的拖拽监听器
+  useEffect(() => () => {
+    if (dragHandlersRef.current.move) document.removeEventListener("mousemove", dragHandlersRef.current.move);
+    if (dragHandlersRef.current.up) document.removeEventListener("mouseup", dragHandlersRef.current.up);
+  }, []);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
 
@@ -926,9 +940,11 @@ function MediaGenConfig({ kind }: MediaGenConfigProps) {
       dragging.current = false;
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      dragHandlersRef.current = { move: null, up: null };
     };
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    dragHandlersRef.current = { move: onMouseMove, up: onMouseUp };
   }, [sidebarWidth]);
 
   async function loadConfig() {

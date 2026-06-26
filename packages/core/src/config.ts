@@ -357,7 +357,12 @@ export class ConfigManager {
         return;
       }
       const raw = fs.readFileSync(filePath, "utf-8");
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>;
+      } catch (err) {
+        throw new Error(`Failed to parse config file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
       this.config = this.deepMerge(
         defaultConfig as unknown as Record<string, unknown>,
@@ -483,6 +488,8 @@ export class ConfigManager {
   private deepMerge(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = { ...base };
     for (const key of Object.keys(override)) {
+      // 防止原型污染：跳过危险键
+      if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
       const ov = override[key];
       const bv = base[key];
       if (ov && typeof ov === "object" && !Array.isArray(ov) && bv && typeof bv === "object" && !Array.isArray(bv)) {

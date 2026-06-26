@@ -318,15 +318,18 @@ export class QueryBuilder {
     }
 
     if (query.orderBy) {
-      sql += ` ORDER BY ${safeIdent(query.orderBy.column)} ${query.orderBy.direction}`;
+      const dir = String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC";
+      sql += ` ORDER BY ${safeIdent(query.orderBy.column)} ${dir}`;
     }
 
     if (query.limit) {
-      sql += ` LIMIT ${query.limit}`;
+      const limit = Math.trunc(Number(query.limit));
+      if (Number.isFinite(limit) && limit > 0) sql += ` LIMIT ${limit}`;
     }
 
     if (query.offset) {
-      sql += ` OFFSET ${query.offset}`;
+      const offset = Math.trunc(Number(query.offset));
+      if (Number.isFinite(offset) && offset >= 0) sql += ` OFFSET ${offset}`;
     }
 
     return { sql, params };

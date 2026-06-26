@@ -564,7 +564,9 @@ export function createEnhancedBrowserPlugin() {
 
         const session = getActiveSession();
         const entry: NetworkEntry = {
-          id: session.networkLogs.length + 1,
+          id: session.networkLogs.length > 0
+            ? session.networkLogs[session.networkLogs.length - 1].id + 1
+            : 1,
           url: session.activeUrl || h.toolName,
           method: "GET",
           status: 200,

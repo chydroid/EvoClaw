@@ -45,6 +45,8 @@ export interface FirstEventTrace {
   stage: TraceStage;
   /** 错误信息 */
   error?: string;
+  /** 是否已分类慢响应 (防止 firstEvent + complete 重复计数) */
+  slowClassified?: boolean;
 }
 
 /** 慢响应阈值配置 */
@@ -70,6 +72,7 @@ export class FirstEventTracer {
   private traceOrder: string[] = [];
   private stats = {
     total: 0,
+    completed: 0,
     slow: 0,
     verySlow: 0,
     errored: 0,
@@ -80,7 +83,9 @@ export class FirstEventTracer {
     maxTtfeMs: 0,
   };
   private ttftSum = 0;
+  private ttftCount = 0;
   private ttfeSum = 0;
+  private ttfeCount = 0;
   private totalSum = 0;
 
   constructor(config: Partial<FirstEventTracerConfig> = {}) {
@@ -130,7 +135,8 @@ export class FirstEventTracer {
     if (trace.dispatchedAt) {
       trace.ttftMs = now - trace.dispatchedAt;
       this.ttftSum += trace.ttftMs;
-      this.stats.avgTtftMs = this.ttftSum / (this.stats.slow + this.stats.verySlow + 1);
+      this.ttftCount++;
+      this.stats.avgTtftMs = this.ttftSum / this.ttftCount;
       if (trace.ttftMs > this.stats.maxTtftMs) this.stats.maxTtftMs = trace.ttftMs;
     }
     trace.stage = "model_first_token";
@@ -145,7 +151,8 @@ export class FirstEventTracer {
       trace.firstEventAt = now;
       trace.ttfeMs = now - trace.queuedAt;
       this.ttfeSum += trace.ttfeMs;
-      this.stats.avgTtfeMs = this.ttfeSum / (this.stats.slow + this.stats.verySlow + 1);
+      this.ttfeCount++;
+      this.stats.avgTtfeMs = this.ttfeSum / this.ttfeCount;
       if (trace.ttfeMs > this.stats.maxTtfeMs) this.stats.maxTtfeMs = trace.ttfeMs;
     }
     if (trace.firstTokenAt) {
@@ -171,7 +178,8 @@ export class FirstEventTracer {
       }
     }
     this.totalSum += trace.totalLatencyMs;
-    this.stats.avgTotalMs = this.totalSum / this.stats.total;
+    this.stats.completed++;
+    this.stats.avgTotalMs = this.totalSum / this.stats.completed;
     this.checkSlow(trace);
   }
 
@@ -223,12 +231,15 @@ export class FirstEventTracer {
   }
 
   private checkSlow(trace: FirstEventTrace): void {
+    if (trace.slowClassified) return;
     const ttfe = trace.ttfeMs ?? trace.totalLatencyMs ?? 0;
     if (ttfe >= this.config.verySlowThresholdMs) {
       this.stats.verySlow++;
+      trace.slowClassified = true;
       this.config.onSlow(trace, "very_slow");
     } else if (ttfe >= this.config.slowThresholdMs) {
       this.stats.slow++;
+      trace.slowClassified = true;
       this.config.onSlow(trace, "slow");
     }
   }

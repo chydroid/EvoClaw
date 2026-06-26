@@ -204,7 +204,18 @@ export function checkWriteSafety(filePath: string): FileSafetyResult {
   // 4. 检查写入拒绝目录
   const parts = relToHome.split(path.sep);
   for (const dirName of WRITE_DENIED_DIR_NAMES) {
-    if (parts.includes(dirName)) {
+    // 将条目按路径分隔符拆分为段, 检查是否作为连续子序列出现在 parts 中
+    // (支持多段条目如 .config/gcloud, 同时兼容单段条目)
+    const segs = dirName.split(/[/\\]/);
+    if (segs.length === 0) continue;
+    let matched = false;
+    for (let i = 0; i + segs.length <= parts.length; i++) {
+      if (segs.every((seg, j) => parts[i + j] === seg)) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
       return {
         blocked: true,
         reason: `Path "${filePath}" is inside sensitive directory "${dirName}/"`,

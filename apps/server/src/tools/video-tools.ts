@@ -283,31 +283,54 @@ async function generateLocalSlideshow(
       outputPath,
     ];
 
-    const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: "pipe" });
+    // stdout 设为 ignore 避免管道缓冲区填满导致背压死锁；仅采集 stderr
+    const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["ignore", "ignore", "pipe"] });
 
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => {
       stderr += data.toString();
     });
 
+    // 60s 超时：先 SIGTERM，2s 后仍未退出则 SIGKILL
+    let killed = false;
+    const killTimer = setTimeout(() => {
+      killed = true;
+      try { ffmpeg.kill("SIGTERM"); } catch { /* ignore */ }
+      const forceTimer = setTimeout(() => {
+        try { ffmpeg.kill("SIGKILL"); } catch { /* ignore */ }
+      }, 2000);
+      forceTimer.unref?.();
+    }, 60_000);
+    killTimer.unref?.();
+
     ffmpeg.on("close", (code) => {
+      clearTimeout(killTimer);
+      if (killed) {
+        reject(new Error("FFmpeg timed out after 60s"));
+        return;
+      }
       if (code === 0) {
-        const stat = fs.statSync(outputPath);
-        resolve({
-          success: true,
-          videoPath: outputPath,
-          downloadUrl: `/api/files/download/videos/${filename}`,
-          fileSize: stat.size,
-          duration,
-          provider: "local",
-          message: `视频已生成（本地 FFmpeg 幻灯片模式）。下载链接：/api/files/download/videos/${filename}`,
-        });
+        try {
+          const stat = fs.statSync(outputPath);
+          resolve({
+            success: true,
+            videoPath: outputPath,
+            downloadUrl: `/api/files/download/videos/${filename}`,
+            fileSize: stat.size,
+            duration,
+            provider: "local",
+            message: `视频已生成（本地 FFmpeg 幻灯片模式）。下载链接：/api/files/download/videos/${filename}`,
+          });
+        } catch (statErr) {
+          reject(new Error(`FFmpeg succeeded but output file missing: ${statErr instanceof Error ? statErr.message : String(statErr)}`));
+        }
       } else {
         reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-500)}`));
       }
     });
 
     ffmpeg.on("error", (err) => {
+      clearTimeout(killTimer);
       reject(new Error(`FFmpeg spawn error: ${err.message}`));
     });
   });
@@ -322,7 +345,7 @@ async function downloadVideoToWorkspace(url: string, prefix: string): Promise<Vi
   const filename = generateFilename(prefix, "mp4");
   const outputPath = path.join(videoDir, filename);
 
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) {
     throw new Error(`Failed to download video: ${response.status}`);
   }
@@ -407,7 +430,7 @@ export function registerVideoTools(executor: AgentModelExecutor): void {
       }
 
       const options: VideoGenOptions = {
-        duration: params.duration ? Number(params.duration) : undefined,
+        duration: params.duration ? (Number.isFinite(Number(params.duration)) ? Number(params.duration) : undefined) : undefined,
         aspectRatio: String(params.aspect_ratio || "16:9"),
         provider: String(params.provider || ""),
         model: params.model ? String(params.model) : undefined,

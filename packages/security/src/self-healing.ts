@@ -170,6 +170,7 @@ export class SelfHealingManager {
         process.stderr.write(`[SelfHealing] Health check failed: ${err instanceof Error ? err.message : String(err)}\n`);
       });
     }, this.checkIntervalMs);
+    this.healInterval.unref?.();
   }
 
   stop(): void {
@@ -485,7 +486,7 @@ export class SelfHealingManager {
             metrics: {},
             sideEffects: [],
           };
-          return;
+          break;
       }
 
       action.status = "completed";

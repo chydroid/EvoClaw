@@ -301,7 +301,7 @@ describe("QueryBuilder", () => {
         operation: "select",
         orderBy: { column: "created_at", direction: "desc" },
       });
-      expect(result.sql).toContain("ORDER BY created_at desc");
+      expect(result.sql).toContain("ORDER BY created_at DESC");
     });
 
     it("should build SELECT with LIMIT and OFFSET", () => {

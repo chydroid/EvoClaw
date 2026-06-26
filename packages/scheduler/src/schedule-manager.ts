@@ -44,6 +44,7 @@ export class ScheduleManager {
   private cronJobs: Map<string, cron.ScheduledTask> = new Map();
   private runHistory: TaskRunResult[] = [];
   private handlers: Map<string, (task: ScheduledTask) => Promise<void>> = new Map();
+  private runningTasks: Set<string> = new Set();
   private dataDir: string;
   private started = false;
 
@@ -135,7 +136,11 @@ export class ScheduleManager {
       }
     }
 
-    Object.assign(task, updates, { updatedAt: new Date() });
+    // 过滤危险键防止原型污染
+    const safeUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([k]) => k !== "__proto__" && k !== "constructor" && k !== "prototype")
+    );
+    Object.assign(task, safeUpdates, { updatedAt: new Date() });
 
     if (this.started) {
       this.stopTask(taskId);
@@ -196,6 +201,7 @@ export class ScheduleManager {
     if (taskId) {
       history = history.filter((r) => r.taskId === taskId);
     }
+    if (limit <= 0) return [];
     return history.slice(-limit);
   }
 
@@ -274,6 +280,21 @@ export class ScheduleManager {
   }
 
   private async runTask(task: ScheduledTask): Promise<TaskRunResult> {
+    // 防止同一任务并发执行（cron tick 可能在前一次运行未完成时再次触发）
+    if (this.runningTasks.has(task.id)) {
+      process.stderr.write(`[ScheduleManager] Task "${task.name}" (${task.id}) already running, skipping this tick\n`);
+      return { taskId: task.id, runAt: new Date(), success: false, duration: 0, error: "Already running" };
+    }
+    this.runningTasks.add(task.id);
+
+    try {
+      return await this.runTaskInner(task);
+    } finally {
+      this.runningTasks.delete(task.id);
+    }
+  }
+
+  private async runTaskInner(task: ScheduledTask): Promise<TaskRunResult> {
     const startTime = Date.now();
     const runAt = new Date();
 

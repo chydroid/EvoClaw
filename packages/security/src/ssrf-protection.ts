@@ -150,7 +150,8 @@ export class SSRFProtection {
         return this.checkIP(v4MappedMatch[1]); // Recursively check the embedded IPv4
       }
       // Block IPv6 private/link-local ranges
-      if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80")) {
+      // link-local 为 fe80::/10, 覆盖 fe80:: 至 febf:: (前缀 fe8/fe9/fea/feb)
+      if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe8") || ip.startsWith("fe9") || ip.startsWith("fea") || ip.startsWith("feb")) {
         return { allowed: false, reason: `IPv6 private/link-local address blocked: ${ip}` };
       }
       return { allowed: true };

@@ -239,6 +239,6 @@ export class DatabaseManager {
   }
 
   async healthCheck(): Promise<boolean> {
-    return this.store.size >= 0;
+    return this.store.size > 0;
   }
 }

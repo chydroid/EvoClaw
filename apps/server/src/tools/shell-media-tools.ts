@@ -74,12 +74,12 @@ function runPythonScriptAsync(
   timeoutMs: number,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(`python ${scriptName}`, {
+    const child = spawn("python", [scriptName], {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      shell: true,
+      shell: false,
     });
 
     let stdout = "";

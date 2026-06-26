@@ -231,14 +231,14 @@ export class MemoryWeaver {
    * Consolidate old memory fragments into summarized blocks.
    * Converts episodic memories into semantic knowledge.
    */
-  consolidate(): ConsolidatedMemory[] {
+  consolidate(force: boolean = false): ConsolidatedMemory[] {
     const newConsolidations: ConsolidatedMemory[] = [];
     const sessions = this.groupBySession();
 
     for (const [sessionId, fragments] of sessions) {
       // Don't consolidate active sessions (last fragment < 1 hour ago)
       const latest = fragments.reduce((max, f) => Math.max(max, f.timestamp), 0);
-      if (Date.now() - latest < 3600_000 && fragments.length < this.config.consolidationThreshold) {
+      if (!force && Date.now() - latest < 3600_000 && fragments.length < this.config.consolidationThreshold) {
         continue;
       }
 

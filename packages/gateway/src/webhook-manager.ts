@@ -555,13 +555,16 @@ export class WebhookManager {
         this.recordDelivery(webhookId, delivery);
 
         const timerKey = `${webhookId}:${deliveryId}`;
-        this.retryTimers.set(
-          timerKey,
-          setTimeout(async () => {
-            this.retryTimers.delete(timerKey);
-            await this.deliverToWebhook(webhookId, event, attempt + 1);
-          }, delay)
-        );
+        const retryTimer = setTimeout(() => {
+          this.retryTimers.delete(timerKey);
+          void this.deliverToWebhook(webhookId, event, attempt + 1).catch((err) => {
+            process.stderr.write(
+              "[WebhookManager] Retry delivery failed for" + " " + timerKey + ":" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
+            );
+          });
+        }, delay);
+        retryTimer.unref?.();
+        this.retryTimers.set(timerKey, retryTimer);
 
         return delivery;
       }

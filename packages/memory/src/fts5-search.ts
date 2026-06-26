@@ -111,11 +111,17 @@ export class FTS5SearchEngine {
       conditions.push("type = ?");
       params.push(options.type);
     }
+    if (options.timeRange) {
+      conditions.push("created_at >= ?");
+      conditions.push("created_at <= ?");
+      params.push(options.timeRange.from.toISOString());
+      params.push(options.timeRange.to.toISOString());
+    }
     const whereClause = conditions.join(" AND ");
     const sql = `SELECT rowid, id, content, session_id, type, created_at, bm25(memory_fts) as rank FROM memory_fts WHERE ${whereClause} ORDER BY rank LIMIT ? OFFSET ?`;
     params.push(limit, offset);
     const stmt = this.db.prepare(sql);
-    let rows = stmt.all(...params) as Array<{
+    const rows = stmt.all(...params) as Array<{
       rowid: number;
       id: string;
       content: string;
@@ -124,11 +130,6 @@ export class FTS5SearchEngine {
       created_at: string;
       rank: number;
     }>;
-    if (options.timeRange) {
-      const from = options.timeRange.from.toISOString();
-      const to = options.timeRange.to.toISOString();
-      rows = rows.filter((r) => r.created_at >= from && r.created_at <= to);
-    }
     return rows.map((row) => ({
       rowid: row.rowid,
       content: row.content,

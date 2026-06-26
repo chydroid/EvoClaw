@@ -67,6 +67,11 @@ export function registerEmailTools(
       const subject = String(params.subject || "");
       const body = String(params.body || "");
       const html = String(params.html || "");
+      // 必填字段校验
+      if (!accountId) return { success: false, error: "accountId is required" };
+      if (!to) return { success: false, error: "Recipient (to) is required" };
+      if (!subject) return { success: false, error: "Subject is required" };
+      if (!body && !html) return { success: false, error: "Body or html is required" };
       try {
         const result = await emailClient.sendEmail({
           accountId,
@@ -173,7 +178,7 @@ export function registerEmailTools(
     },
     async (params: Record<string, unknown>) => {
       const accountId = String(params.accountId || "");
-      const limit = Number(params.limit || 50);
+      const limit = Math.max(1, Math.min(Number(params.limit) || 50, 500));
       const unreadOnly = Boolean(params.unreadOnly || false);
 
       const accounts = emailClient.listAccounts();

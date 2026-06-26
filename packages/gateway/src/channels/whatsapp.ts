@@ -329,7 +329,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       from: msg.from,
       to: this.phoneNumberId,
       text,
-      timestamp: new Date(parseInt(msg.timestamp, 10) * 1000).toISOString(),
+      timestamp: new Date((parseInt(msg.timestamp, 10) || 0) * 1000 || Date.now()).toISOString(),
       isDirect: true,
       isGroup: false,
       replyTo: msg.context?.id,

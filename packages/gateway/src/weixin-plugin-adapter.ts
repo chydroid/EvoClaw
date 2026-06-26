@@ -938,7 +938,18 @@ export class WeixinPluginAdapter {
     }
 
     // ── 权限快速通道：如果用户有 pending 权限请求，检测批准/拒绝关键词 ──
-    const userPending = this.userPendingPermissions.get(fromUserId);
+    let userPending = this.userPendingPermissions.get(fromUserId);
+    // 过滤 30 分钟前的过期 pending 条目，防止无限堆积
+    if (userPending && userPending.length > 0) {
+      const PENDING_TTL = 30 * 60 * 1000;
+      const now = Date.now();
+      userPending = userPending.filter((p) => now - p.timestamp < PENDING_TTL);
+      if (userPending.length === 0) {
+        this.userPendingPermissions.delete(fromUserId);
+      } else {
+        this.userPendingPermissions.set(fromUserId, userPending);
+      }
+    }
     if (userPending && userPending.length > 0 && text) {
       const trimmed = text.trim();
       const isApproval = /^[好是对批准同意可以行]+$/.test(trimmed) ||

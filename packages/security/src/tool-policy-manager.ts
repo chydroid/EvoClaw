@@ -233,7 +233,7 @@ export class ToolPolicyManager {
         if (decision.allowed && rule.condition) {
           if (rule.condition.maxFileSize && params?.size) {
             const size = Number(params.size);
-            if (size > rule.condition.maxFileSize) {
+            if (!Number.isFinite(size) || size > rule.condition.maxFileSize) {
               return { allowed: false, reason: `File size ${size} exceeds limit ${rule.condition.maxFileSize}` };
             }
           }

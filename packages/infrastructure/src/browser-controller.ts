@@ -173,7 +173,7 @@ export class BrowserController {
         });
       }
     } else {
-      const tagRegex = new RegExp(`<${selector}[^>]*>.*?</${selector}>| <${selector}[^>]*/>`, "gis");
+      const tagRegex = new RegExp(`<${selector}[^>]*>.*?</${selector}>|<${selector}[^>]*/>`, "gis");
       const matches = body.match(tagRegex);
       if (matches) {
         for (const match of matches) {
@@ -378,24 +378,25 @@ export class BrowserController {
 
   private extractForms(html: string): Array<{ action: string; method: string; fields: string[] }> {
     const forms: Array<{ action: string; method: string; fields: string[] }> = [];
-    const formRegex = /<form[^>]*>/gi;
+    const formRegex = /<form[^>]*>([\s\S]*?)<\/form>/gi;
     let match;
 
     while ((match = formRegex.exec(html)) !== null) {
       const formTag = match[0];
+      const formBody = match[1];
       const actionMatch = formTag.match(/action=["']([^"']*)["']/i);
       const methodMatch = formTag.match(/method=["']([^"']*)["']/i);
 
       const fieldRegex = /<input[^>]+name=["']([^"']+)["'][^>]*>/gi;
       const fields: string[] = [];
       let fieldMatch;
-      while ((fieldMatch = fieldRegex.exec(html)) !== null) {
+      while ((fieldMatch = fieldRegex.exec(formBody)) !== null) {
         fields.push(fieldMatch[1]);
       }
 
       const textareaRegex = /<textarea[^>]+name=["']([^"']+)["'][^>]*>/gi;
       let taMatch;
-      while ((taMatch = textareaRegex.exec(html)) !== null) {
+      while ((taMatch = textareaRegex.exec(formBody)) !== null) {
         fields.push(taMatch[1]);
       }
 

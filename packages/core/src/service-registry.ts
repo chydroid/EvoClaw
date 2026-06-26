@@ -105,6 +105,9 @@ export class ServiceRegistry implements IPluginRegistry {
     try {
       await service.start();
       this.setServiceStatus(name, "running");
+      // 重启时去重，保留最近一次启动顺序
+      const idx = this.startOrder.indexOf(name);
+      if (idx !== -1) this.startOrder.splice(idx, 1);
       this.startOrder.push(name);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

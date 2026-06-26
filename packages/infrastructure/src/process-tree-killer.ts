@@ -458,6 +458,7 @@ export async function findPidsByName(name: string): Promise<number[]> {
         resolve(pids);
       });
     } else {
+      let settled = false;
       const proc = spawn("pgrep", ["-f", name], {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -465,6 +466,8 @@ export async function findPidsByName(name: string): Promise<number[]> {
       let stdout = "";
       proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
       proc.on("error", () => {
+        if (settled) return;
+        settled = true;
         // pgrep 不可用，回退到 ps
         const psProc = spawn("ps", ["-eo", "pid,comm"], {
           stdio: ["ignore", "pipe", "pipe"],
@@ -489,6 +492,8 @@ export async function findPidsByName(name: string): Promise<number[]> {
         });
       });
       proc.on("close", () => {
+        if (settled) return;
+        settled = true;
         const pids = stdout.trim().split("\n")
           .map((s) => parseInt(s.trim(), 10))
           .filter((n) => !isNaN(n) && isSafeToKill(n));

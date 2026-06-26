@@ -513,7 +513,7 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
     const paths: import("@evoclaw/core").GraphPath[] = [];
 
     function dfs(currentId: string, pathNodes: GraphNode[], pathEdges: GraphEdge[]) {
-      if (pathNodes.length > 2) return;
+      if (pathNodes.length > 3) return;
       visited.add(currentId);
 
       const neighbors = adjacency.get(currentId) || [];

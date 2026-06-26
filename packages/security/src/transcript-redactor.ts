@@ -243,7 +243,9 @@ export class TranscriptRedactor {
       p.pattern.lastIndex = 0;
       const matches = result.match(p.pattern);
       if (matches && matches.length > 0) {
-        const count = matches.length;
+        // 记录替换前的总数, 以计算本模式实际替换次数
+        // (maxRedactionsPerText 可能在 replace 回调中途触发, 实际替换数可能小于 matches.length)
+        const before = total;
         // 避免无限循环: 防止替换后还能再次匹配
         result = result.replace(p.pattern, (match, ...args) => {
           if (total >= this.config.maxRedactionsPerText) return match;
@@ -252,10 +254,13 @@ export class TranscriptRedactor {
           const groups = [match, ...args.slice(0, -2)];
           return this.applyReplacement(p, match, groups);
         });
-        redactionMap.set(p.name, { count, severity: p.severity });
-        this.stats.totalRedactions += count;
-        this.stats.byPattern.set(p.name, (this.stats.byPattern.get(p.name) ?? 0) + count);
-        this.stats.bySeverity.set(p.severity, (this.stats.bySeverity.get(p.severity) ?? 0) + count);
+        const actualCount = total - before;
+        if (actualCount > 0) {
+          redactionMap.set(p.name, { count: actualCount, severity: p.severity });
+          this.stats.totalRedactions += actualCount;
+          this.stats.byPattern.set(p.name, (this.stats.byPattern.get(p.name) ?? 0) + actualCount);
+          this.stats.bySeverity.set(p.severity, (this.stats.bySeverity.get(p.severity) ?? 0) + actualCount);
+        }
       }
     }
     const redactions = Array.from(redactionMap.entries()).map(([pattern, info]) => ({
@@ -344,6 +349,14 @@ export class TranscriptRedactor {
           replacement: rule.replacement,
         });
       } catch { /* ignore */ }
+    } else if (rule.literal) {
+      const escaped = rule.literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      this.patterns.push({
+        name: rule.name,
+        pattern: new RegExp(escaped, "g"),
+        severity: rule.severity ?? "medium",
+        replacement: rule.replacement,
+      });
     }
   }
 

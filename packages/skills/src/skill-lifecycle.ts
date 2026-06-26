@@ -473,8 +473,10 @@ export class SkillLifecycleManager {
 
       const decay = retries * this.config.retryDelay;
 
-      const retryTimeoutId = setTimeout(async () => {
-        await this.performHealthCheck(skill);
+      const retryTimeoutId = setTimeout(() => {
+        void this.performHealthCheck(skill).catch((err) => {
+          process.stderr.write(`[SkillLifecycle] Retry health check failed for "${skill.id}":` + " " + err + "\n");
+        });
       }, this.config.retryDelay + decay);
 
       this.healthMonitors.set(`retry:${skill.id}`, retryTimeoutId);

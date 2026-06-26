@@ -60,6 +60,7 @@ export const DEFAULT_COLUMNS: BoardColumn[] = [
 export class Workboard {
   private tasks: Map<string, BoardTask> = new Map();
   private runs: Map<string, BoardRun> = new Map();
+  private readonly maxRuns = 500;
   private columns: BoardColumn[];
 
   constructor(columns?: BoardColumn[]) {
@@ -232,6 +233,11 @@ export class Workboard {
       participatingAgents,
     };
     this.runs.set(id, run);
+    // 防止 runs Map 无限增长
+    if (this.runs.size > this.maxRuns) {
+      const oldest = this.runs.keys().next().value;
+      if (oldest !== undefined) this.runs.delete(oldest);
+    }
     return run;
   }
 

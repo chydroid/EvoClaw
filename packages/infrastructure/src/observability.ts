@@ -101,6 +101,7 @@ export class Observability {
   private tracingService: TracingService;
   private config: Required<ObservabilityConfig>;
   private startTime: number;
+  private maxLabelCardinality = 1000;
   private healthComponents = new Map<string, { status: HealthReport["components"][0]["status"]; message?: string; lastCheck: number }>();
 
   constructor(config: ObservabilityConfig = {}) {
@@ -130,11 +131,21 @@ export class Observability {
 
   // ── Counters ────────────────────────────────────────────
 
+  /** 限制每个 metric 的 label 组合数，防止高基数 label 导致 Map 无限增长 */
+  private trimLabelCardinality(map: Map<string, unknown>, metricName: string): void {
+    if (map.size > this.maxLabelCardinality) {
+      const keys = Array.from(map.keys()).slice(0, map.size - this.maxLabelCardinality);
+      for (const k of keys) map.delete(k);
+      process.stderr.write(`[Observability] Label cardinality exceeded cap for metric "${metricName}", evicted ${keys.length} entries\n`);
+    }
+  }
+
   counterIncrement(name: string, labels: MetricLabel[] = [], inc = 1): void {
     const key = this.labelKey(name, labels);
     const current = this.counters.get(name)?.get(key) ?? 0;
     if (!this.counters.has(name)) this.counters.set(name, new Map());
     this.counters.get(name)!.set(key, current + inc);
+    this.trimLabelCardinality(this.counters.get(name)!, name);
   }
 
   counterGet(name: string, labels: MetricLabel[] = []): number {
@@ -148,6 +159,7 @@ export class Observability {
     const key = this.labelKey(name, labels);
     if (!this.gauges.has(name)) this.gauges.set(name, new Map());
     this.gauges.get(name)!.set(key, value);
+    this.trimLabelCardinality(this.gauges.get(name)!, name);
   }
 
   gaugeGet(name: string, labels: MetricLabel[] = []): number {
@@ -160,6 +172,7 @@ export class Observability {
     const current = this.gauges.get(name)?.get(key) ?? 0;
     if (!this.gauges.has(name)) this.gauges.set(name, new Map());
     this.gauges.get(name)!.set(key, current + delta);
+    this.trimLabelCardinality(this.gauges.get(name)!, name);
   }
 
   // ── Histograms ──────────────────────────────────────────
@@ -526,7 +539,7 @@ export class Observability {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (labels.some((l) => l.key === "status" && l.value === "error")) {
+      if (labels.some((l) => l.key === "status" && Number(l.value) >= 400)) {
         totalErrors += this.counterGet(`${this.config.metricsPrefix}_request_errors_total`, labels);
       }
       totalRequests += this.counterGet(`${this.config.metricsPrefix}_requests_total`, labels);

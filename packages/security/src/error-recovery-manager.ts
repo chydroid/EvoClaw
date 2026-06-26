@@ -93,9 +93,7 @@ export class ErrorRecoveryManager {
     if (
       message.includes("enoent") ||
       message.includes("not found") ||
-      message.includes("no such file") ||
-      message.includes("eacces") ||
-      message.includes("eperm")
+      message.includes("no such file")
     ) {
       return "filesystem";
     }
@@ -105,7 +103,8 @@ export class ErrorRecoveryManager {
       message.includes("denied") ||
       message.includes("unauthorized") ||
       message.includes("forbidden") ||
-      message.includes("eacces")
+      message.includes("eacces") ||
+      message.includes("eperm")
     ) {
       return "permission";
     }

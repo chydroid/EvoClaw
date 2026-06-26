@@ -1387,7 +1387,10 @@ export class GatewayServer {
       else filter.limit = 50;
       if (nameContains) filter.nameContains = nameContains;
       if (traceId) filter.traceId = traceId;
-      if (sinceMs) filter.sinceMs = parseInt(sinceMs, 10);
+      if (sinceMs) {
+        const parsedSince = parseInt(sinceMs, 10);
+        if (Number.isFinite(parsedSince)) filter.sinceMs = parsedSince;
+      }
 
       const spans = collector.recent(filter);
       res.json({ spans, count: spans.length, total: collector.size() });
@@ -1572,7 +1575,7 @@ export class GatewayServer {
         res.json({ executions: [], count: 0, note: "ExecutionCheckpointStore not registered" });
         return;
       }
-      const limit = parseInt((_req.query.limit as string) || "50", 10);
+      const limit = parseInt((_req.query.limit as string) || "50", 10) || 50;
       const executions = store.getRecent({ limit: Math.min(limit, 200) });
       res.json({ executions, count: executions.length });
     });

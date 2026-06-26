@@ -59,18 +59,18 @@ export interface AudioTags {
 // Magic bytes for file type detection
 // ──────────────────────────────────────────────────────────────
 
-const MAGIC_BYTES: Array<{ bytes: number[]; mimeType: string; mediaType: MediaType }> = [
+const MAGIC_BYTES: Array<{ bytes: number[]; offset?: number; mimeType: string; mediaType: MediaType }> = [
   { bytes: [0xFF, 0xD8, 0xFF], mimeType: "image/jpeg", mediaType: "image" },
   { bytes: [0x89, 0x50, 0x4E, 0x47], mimeType: "image/png", mediaType: "image" },
   { bytes: [0x47, 0x49, 0x46, 0x38], mimeType: "image/gif", mediaType: "image" },
-  { bytes: [0x52, 0x49, 0x46, 0x46], mimeType: "image/webp", mediaType: "image" }, // RIFF
+  { bytes: [0x57, 0x45, 0x42, 0x50], offset: 8, mimeType: "image/webp", mediaType: "image" }, // RIFF...WEBP
   { bytes: [0x25, 0x50, 0x44, 0x46], mimeType: "application/pdf", mediaType: "document" },
   { bytes: [0x50, 0x4B, 0x03, 0x04], mimeType: "application/zip", mediaType: "archive" },
   { bytes: [0x1F, 0x8B, 0x08], mimeType: "application/gzip", mediaType: "archive" },
   { bytes: [0xFF, 0xFB], mimeType: "audio/mpeg", mediaType: "audio" },
   { bytes: [0x49, 0x44, 0x33], mimeType: "audio/mpeg", mediaType: "audio" }, // ID3
   { bytes: [0x4F, 0x67, 0x67, 0x53], mimeType: "audio/ogg", mediaType: "audio" },
-  { bytes: [0x52, 0x49, 0x46, 0x46], mimeType: "audio/wav", mediaType: "audio" }, // WAV (also RIFF)
+  { bytes: [0x57, 0x41, 0x56, 0x45], offset: 8, mimeType: "audio/wav", mediaType: "audio" }, // RIFF...WAVE
   { bytes: [0x00, 0x00, 0x00, 0x14, 0x66, 0x74], mimeType: "video/mp4", mediaType: "video" },
   { bytes: [0x1A, 0x45, 0xDF, 0xA3], mimeType: "video/webm", mediaType: "video" },
   { bytes: [0x00, 0x00, 0x01, 0xBA], mimeType: "video/mpeg", mediaType: "video" },
@@ -171,7 +171,7 @@ const MEDIA_TYPE_MAP: Record<string, MediaType> = {
  */
 export function detectFromBytes(buffer: Buffer): MediaInfo | null {
   for (const magic of MAGIC_BYTES) {
-    if (matchesMagic(buffer, magic.bytes)) {
+    if (matchesMagic(buffer, magic.bytes, magic.offset ?? 0)) {
       return {
         extension: "",
         mimeType: magic.mimeType,
@@ -408,10 +408,10 @@ export function formatAudioTags(tags: AudioTags): string {
 // Helpers
 // ──────────────────────────────────────────────────────────────
 
-function matchesMagic(buffer: Buffer, magic: number[]): boolean {
-  if (buffer.length < magic.length) return false;
+function matchesMagic(buffer: Buffer, magic: number[], offset = 0): boolean {
+  if (buffer.length < offset + magic.length) return false;
   for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) return false;
+    if (buffer[offset + i] !== magic[i]) return false;
   }
   return true;
 }

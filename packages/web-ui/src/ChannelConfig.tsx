@@ -193,6 +193,12 @@ export default function ChannelConfigPage() {
   const [testing, setTesting] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const dragging = useRef(false);
+  const dragHandlersRef = useRef<{ move: ((ev: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null });
+  // 组件卸载时清理可能残留的拖拽监听器
+  useEffect(() => () => {
+    if (dragHandlersRef.current.move) document.removeEventListener("mousemove", dragHandlersRef.current.move);
+    if (dragHandlersRef.current.up) document.removeEventListener("mouseup", dragHandlersRef.current.up);
+  }, []);
 
   // ─── WeChat QR state ──────────────────────────────────
   const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "waiting" | "connected" | "expired" | "error">("idle");
@@ -327,9 +333,11 @@ export default function ChannelConfigPage() {
       dragging.current = false;
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      dragHandlersRef.current = { move: null, up: null };
     };
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    dragHandlersRef.current = { move: onMouseMove, up: onMouseUp };
   }, [sidebarWidth]);
 
   async function loadConfig() {

@@ -42,6 +42,7 @@ export class HeartbeatManager {
   private intervalMs: number = 1_800_000; // 30 minutes default
   private enabled: boolean = true;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatRunning = false;
   private lastFireTime: Date | null = null;
   private nextFireTime: Date | null = null;
   private activeConversations = new Set<string>();
@@ -82,7 +83,15 @@ export class HeartbeatManager {
     }
 
     this.nextFireTime = new Date(Date.now() + this.intervalMs);
-    this.timer = setInterval(() => this.onHeartbeat(), this.intervalMs);
+    this.timer = setInterval(() => {
+      if (this.heartbeatRunning) return; // 防止上一次心跳未完成时重叠执行
+      this.heartbeatRunning = true;
+      this.onHeartbeat()
+        .catch((err) => {
+          process.stderr.write("[HeartbeatManager] onHeartbeat failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+        })
+        .finally(() => { this.heartbeatRunning = false; });
+    }, this.intervalMs);
     process.stdout.write(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})`);
   }
 

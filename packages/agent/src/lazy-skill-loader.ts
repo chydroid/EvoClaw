@@ -157,6 +157,13 @@ export class LazySkillLoader {
   async preload(name: string): Promise<boolean> {
     const entry = this.entries.get(name);
     if (!entry || entry.status === "loaded") return entry?.status === "loaded";
+    // 如果已在加载中，等待加载完成而非重复加载（防止 double-load 竞态）
+    if (entry.status === "loading") {
+      await this.waitForLoad(name);
+      // 重新从 Map 读取以绕过 TS 控制流分析对 entry.status 的窄化（waitForLoad 可能已变更状态）
+      const fresh = this.entries.get(name);
+      return fresh?.status === "loaded";
+    }
     try {
       await this.loadEntry(name, entry);
       return true;

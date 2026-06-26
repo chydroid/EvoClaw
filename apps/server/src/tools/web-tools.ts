@@ -45,13 +45,13 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
       signal: controller.signal,
       redirect: "follow",
     });
-    clearTimeout(timeout);
-
     if (!response.ok) {
+      clearTimeout(timeout);
       return { error: `Bing HTTP ${response.status}` };
     }
 
     const html = await response.text();
+    clearTimeout(timeout);
     const results: Array<{ title: string; url: string; snippet: string }> = [];
 
     const algoRegex = /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
@@ -107,13 +107,13 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
       signal: controller.signal,
       redirect: "follow",
     });
-    clearTimeout(timeout);
-
     if (!response.ok) {
+      clearTimeout(timeout);
       return { error: `Google HTTP ${response.status}` };
     }
 
     const html = await response.text();
+    clearTimeout(timeout);
     const results: Array<{ title: string; url: string; snippet: string }> = [];
 
     const resultRegex = /<div[^>]*class="[^"]*g[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi;
@@ -156,13 +156,14 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
       signal: controller.signal,
       redirect: "follow",
     });
-    clearTimeout(timeout);
 
     if (!response.ok) {
+      clearTimeout(timeout);
       return { error: `Baidu HTML HTTP ${response.status}` };
     }
 
     const html = await response.text();
+    clearTimeout(timeout);
     if (html.length < 5000) {
       return { error: "Baidu returned minimal content (possible anti-bot block)" };
     }
@@ -219,13 +220,14 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
       signal: controller.signal,
       redirect: "follow",
     });
-    clearTimeout(timeout);
 
     if (!response.ok) {
+      clearTimeout(timeout);
       return { error: `DuckDuckGo HTTP ${response.status}` };
     }
 
     const html = await response.text();
+    clearTimeout(timeout);
     const results: Array<{ title: string; url: string; snippet: string }> = [];
 
     // DuckDuckGo Lite results are in <tr class="result-snippet"> blocks
@@ -287,17 +289,19 @@ export function registerWebTools(
           signal: controller.signal,
           redirect: "follow",
         });
-        clearTimeout(timeout);
         if (!response.ok) {
+          clearTimeout(timeout);
           return { error: `HTTP ${response.status}`, url };
         }
 
         if (format === "json") {
           const data = await response.json();
+          clearTimeout(timeout);
           return { url, status: response.status, data };
         }
 
         const text = await response.text();
+        clearTimeout(timeout);
         if (format === "html") {
           return { url, status: response.status, html: text.slice(0, 8000), length: text.length };
         }
@@ -352,7 +356,7 @@ export function registerWebTools(
     },
     async (params: Record<string, unknown>) => {
       const url = String(params.url || "");
-      const maxLength = Number(params.maxLength || 5000);
+      const maxLength = Math.max(1, Number(params.maxLength) || 5000);
       if (!url || !url.startsWith("http")) {
         return { error: "Valid HTTP/HTTPS URL is required", url };
       }
@@ -367,11 +371,12 @@ export function registerWebTools(
           signal: controller.signal,
           redirect: "follow",
         });
-        clearTimeout(timeout);
         if (!response.ok) {
+          clearTimeout(timeout);
           return { error: `HTTP ${response.status}`, url };
         }
         const text = await response.text();
+        clearTimeout(timeout);
         // Full entity decode + strip tags
         const content = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
           .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")

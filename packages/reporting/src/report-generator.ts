@@ -471,7 +471,9 @@ export class ReportGenerator {
 
     Handlebars.registerHelper("formatNumber", function (this: unknown, num: unknown) {
       if (num === null || num === undefined) return "0";
-      return Number(num).toLocaleString("zh-CN");
+      const n = Number(num);
+      if (Number.isNaN(n)) return "0";
+      return n.toLocaleString("zh-CN");
     });
 
     Handlebars.registerHelper("truncate", function (this: unknown, str: unknown, len: unknown) {

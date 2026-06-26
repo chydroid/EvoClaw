@@ -68,18 +68,13 @@ export function sanitizePath(basePath: string, inputPath: string): string | null
   // null 字节检测
   if (hasNullByte(inputPath)) return null;
 
-  // 遍历组件检测
-  if (hasTraversalComponent(inputPath)) {
-    // 尝试 resolve，看是否在基础目录内
-    try {
-      return validateWithinDir(basePath, inputPath);
-    } catch {
-      return null;
-    }
+  // 始终验证路径在基础目录内
+  // (包括绝对路径, 如 /etc/passwd 不含 .. 但会逃逸 basePath, 必须验证)
+  try {
+    return validateWithinDir(basePath, inputPath);
+  } catch {
+    return null;
   }
-
-  // 正常路径
-  return path.resolve(basePath, inputPath);
 }
 
 /**

@@ -358,10 +358,10 @@ export class Crestodian {
 
   private computeOverallStatus(): SystemHealth["status"] {
     if (this.services.size === 0) return "ok";
-    const hasError = [...this.services.values()].some(
-      (s) => s.status === "error",
-    );
-    if (hasError) return "degraded";
+    const services = [...this.services.values()];
+    // 最严重状态优先短路：error -> down
+    if (services.some((s) => s.status === "error")) return "down";
+    if (services.some((s) => s.status === "degraded" || s.status === "unknown")) return "degraded";
     return "ok";
   }
 
@@ -375,7 +375,10 @@ export class Crestodian {
       for (const cb of this.checkCallbacks) {
         try {
           const diag = cb(name);
-          this.services.set(name, diag);
+          // 不用 "unknown" 覆盖真实状态
+          if (diag.status !== "unknown") {
+            this.services.set(name, diag);
+          }
         } catch {
           this.services.set(name, {
             name,

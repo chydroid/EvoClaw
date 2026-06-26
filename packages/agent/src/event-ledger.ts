@@ -316,6 +316,7 @@ export class EventLedger {
   private scheduleFlush(): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => this.flush(), 500);
+    this.flushTimer.unref?.();
   }
 
   flush(): void {

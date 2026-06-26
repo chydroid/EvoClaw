@@ -571,9 +571,12 @@ export class ModelFailoverManager {
   startHealthChecks(): void {
     if (this.healthCheckTimer) return;
 
-    this.healthCheckTimer = setInterval(async () => {
-      await this.runHealthChecks();
+    this.healthCheckTimer = setInterval(() => {
+      void this.runHealthChecks().catch((err) => {
+        process.stderr.write("[ModelFailover] Health check failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+      });
     }, this.config.healthCheckIntervalMs);
+    this.healthCheckTimer.unref?.();
   }
 
   /** Stop periodic health checks */

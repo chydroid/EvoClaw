@@ -294,7 +294,8 @@ export class SkillMarketplace {
     try {
       // Install dependencies first (with depth limit to prevent infinite recursion)
       const depResults: InstallResult[] = [];
-      const maxDepth = (version?.startsWith("__depth_") ? parseInt(version.split("_").pop() || "0") : 0);
+      const depthRaw = version?.startsWith("__depth_") ? parseInt(version.split("_").pop() || "0", 10) : 0;
+      const maxDepth = Number.isNaN(depthRaw) ? 0 : depthRaw;
 
       for (const [depName, depVersion] of Object.entries(pkg.dependencies)) {
         if (!this.installed.has(depName)) {

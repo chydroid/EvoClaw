@@ -84,7 +84,8 @@ export class SecurityGovernor {
   }
 
   evaluatePolicy(context: Record<string, unknown>): "allow" | "deny" {
-    for (const policy of this.policies.sort((a, b) => b.priority - a.priority)) {
+    const sorted = this.policies.sort((a, b) => b.priority - a.priority);
+    for (const policy of sorted) {
       for (const rule of policy.rules) {
         const fieldValue = context[rule.condition.field];
         if (this.matchCondition(rule.condition, fieldValue)) {
@@ -93,7 +94,8 @@ export class SecurityGovernor {
       }
       // If no rule matched in this policy, continue to the next policy
     }
-    return "deny";
+    // 没有规则匹配时, 使用最高优先级策略的 defaultAction (而非硬编码 deny)
+    return sorted.length > 0 ? sorted[0].defaultAction : "deny";
   }
 
   private matchCondition(

@@ -571,10 +571,12 @@ export class FileSystemCheckpointManager {
         if (!line.trim()) continue;
         const [hash, ts, msg] = line.split("|", 3);
         if (!validateCommitHash(hash)) continue;
+        const tsNum = parseInt(ts, 10);
+        if (!Number.isFinite(tsNum)) continue;
         entries.push({
           commitHash: hash,
           projectRef: refName,
-          timestamp: parseInt(ts, 10) * 1000,
+          timestamp: tsNum * 1000,
           message: msg || "",
           filesCount: 0,
         });

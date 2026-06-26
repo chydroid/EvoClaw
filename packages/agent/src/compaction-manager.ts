@@ -745,7 +745,7 @@ export class CompactionManager {
         if (i < tailStartIdx) {
           const assistantMsg = messages.splice(i, 1)[0];
           messages.push(assistantMsg);
-          return tailStartIdx;
+          return tailStartIdx - 1; // splice 移除了尾部前的一个元素，尾部左移一位
         }
         break;
       }

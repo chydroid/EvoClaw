@@ -86,7 +86,11 @@ export class EventBus implements IEventBus {
     if (eventType) {
       filtered = filtered.filter((e) => e.type === eventType);
     }
-    return filtered.slice(-(limit ?? 100));
+    if (limit === undefined || limit === null) {
+      limit = 100;
+    }
+    if (limit <= 0) return [];
+    return filtered.slice(-limit);
   }
 
   clearHistory(): void {

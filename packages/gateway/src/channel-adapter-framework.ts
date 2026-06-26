@@ -343,7 +343,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
   private readonly blockedChats: Set<number>;
   private readonly apiBase: string;
 
-  private pollingTimer: ReturnType<typeof setInterval> | null = null;
+  private pollingTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUpdateId = 0;
   private botUsername: string | null = null;
 
@@ -437,7 +437,9 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
   // ── Polling ─────────────────────────────────────────────────────────────
 
   private startPolling(): void {
-    this.pollingTimer = setInterval(async () => {
+    // 使用递归 setTimeout 而非 setInterval，避免长轮询未返回时下一次 tick 重叠触发
+    const poll = async (): Promise<void> => {
+      if (this.status !== "running") return;
       try {
         const updates = await this.telegramApi<TelegramUpdate[]>("getUpdates", {
           offset: this.lastUpdateId + 1,
@@ -445,11 +447,11 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
           allowed_updates: ["message"],
         });
 
-        if (!updates.ok || !updates.result) return;
-
-        for (const update of updates.result) {
-          await this.processUpdate(update);
-          this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+        if (updates.ok && updates.result) {
+          for (const update of updates.result) {
+            await this.processUpdate(update);
+            this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+          }
         }
       } catch (err) {
         if (this.status === "running") {
@@ -457,8 +459,14 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
             `[TelegramChannel:${this.config.channelId}] Polling error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
           );
         }
+      } finally {
+        if (this.status === "running") {
+          this.pollingTimer = setTimeout(() => { void poll(); }, this.pollingIntervalMs);
+          this.pollingTimer.unref?.();
+        }
       }
-    }, this.pollingIntervalMs);
+    };
+    this.pollingTimer = setTimeout(() => { void poll(); }, this.pollingIntervalMs);
     this.pollingTimer.unref?.();
   }
 

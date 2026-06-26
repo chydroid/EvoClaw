@@ -99,6 +99,7 @@ export class DiscordAdapter implements ChannelAdapter {
   private connected = false;
   private ws: WebSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionId: string | null = null;
   private sequence: number | null = null;
   private resumeGatewayUrl: string | null = null;

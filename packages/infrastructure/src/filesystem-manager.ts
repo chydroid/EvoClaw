@@ -316,7 +316,7 @@ export class FileSystemManager {
     // Verify the resolved path is still within basePath to prevent traversal
     const resolved = path.resolve(fullDir);
     const baseResolved = path.resolve(this.basePath);
-    if (!resolved.startsWith(baseResolved) && resolved !== baseResolved) {
+    if (resolved !== baseResolved && !resolved.startsWith(baseResolved + path.sep)) {
       throw new Error(`Directory outside base path: ${fullDir}`);
     }
 

@@ -267,7 +267,7 @@ export class MCPToolPoisoningScanner {
 
     let sanitizedDescription: string | undefined;
     if (this.config.autoSanitize && threats.length > 0) {
-      sanitizedDescription = this.sanitizeDescription(tool.description, threats);
+      sanitizedDescription = this.sanitizeDescription(tool.description);
     }
 
     // Record audit entry
@@ -323,12 +323,26 @@ export class MCPToolPoisoningScanner {
   }
 
   /** 清理描述, 移除威胁evidence */
-  private sanitizeDescription(text: string, threats: PoisoningThreat[]): string {
+  private sanitizeDescription(text: string): string {
     let sanitized = text;
-    for (const t of threats) {
-      if (t.position) {
-        sanitized = sanitized.slice(0, t.position.start) + "***REDACTED***" + sanitized.slice(t.position.end);
+    // 在 description 单独文本上重新扫描, 以获得正确位置
+    // (避免使用 name+description+inputSchema 合并文本的偏移位置)
+    const positions: Array<{ start: number; end: number }> = [];
+    for (const p of this.patterns) {
+      p.pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      let matchCount = 0;
+      while ((match = p.pattern.exec(sanitized)) !== null && matchCount < 50) {
+        positions.push({ start: match.index, end: match.index + match[0].length });
+        matchCount++;
+        // 避免零宽字符pattern的无限循环
+        if (match.index === p.pattern.lastIndex) p.pattern.lastIndex++;
       }
+    }
+    // 按 start 降序, 从后向前替换以避免位置偏移
+    positions.sort((a, b) => b.start - a.start);
+    for (const pos of positions) {
+      sanitized = sanitized.slice(0, pos.start) + "***REDACTED***" + sanitized.slice(pos.end);
     }
     // 移除零宽字符
     sanitized = sanitized.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "");

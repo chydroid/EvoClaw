@@ -562,7 +562,9 @@ export class EvolutionEngine {
             this.experienceDistiller.addTrajectory(
               sandboxResult.executionTrace,
               sandboxReflection
-            ).catch(() => {});
+            ).catch((err: unknown) => {
+              process.stderr.write("[EvolutionEngine] addTrajectory failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+            });
 
             return;
           }
@@ -578,7 +580,9 @@ export class EvolutionEngine {
               confidenceScore: 1.0,
               shouldEvolve: false,
             }
-          ).catch(() => {});
+          ).catch((err: unknown) => {
+            process.stderr.write("[EvolutionEngine] addTrajectory (success) failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+          });
 
           // 仅当沙箱验证通过时才发布
           await this.hotReload.publish(candidate);
@@ -654,7 +658,9 @@ export class EvolutionEngine {
                   this.experienceDistiller.addTrajectory(
                     sandboxResult.executionTrace,
                     sandboxReflection
-                  ).catch(() => {});
+                  ).catch((err: unknown) => {
+              process.stderr.write("[EvolutionEngine] addTrajectory failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+            });
 
                   return;
                 }
@@ -668,7 +674,9 @@ export class EvolutionEngine {
                     confidenceScore: 1.0,
                     shouldEvolve: false,
                   }
-                ).catch(() => {});
+                ).catch((err: unknown) => {
+              process.stderr.write("[EvolutionEngine] addTrajectory failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+            });
 
                 // 仅当沙箱验证通过时才发布
                 await this.hotReload.publish(geneticResult.bestCandidate);

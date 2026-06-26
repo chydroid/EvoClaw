@@ -3,6 +3,62 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.9 (2026-06-27)
+
+### 第九轮代码审查 — 逻辑正确性（37 个 BUG 修复）
+
+第九轮聚焦逻辑正确性维度，覆盖全部 14 个内部包 + 2 个应用。通过并行扫描代理发现并修复 **37 个逻辑缺陷**，涉及错误分母、重复计数、差一错误、布尔逻辑、死代码、错误变量、状态机缺陷和异步竞态条件。
+
+#### Agent 包（7 个）
+
+- **[高] `first-event-tracer.ts` TTFT/TTFE 平均值分母错误**：`avgTtftMs` 和 `avgTtfeMs` 使用 `stats.slow + stats.verySlow + 1` 作为分母（慢响应计数），应使用实际的 TTFT/TTFE 测量计数。新增 `ttftCount`/`ttfeCount` 计数器
+- **[高] `first-event-tracer.ts` checkSlow 重复计数**：`checkSlow()` 同时在 `firstEvent()` 和 `complete()` 中被调用，慢响应统计被翻倍。新增 `slowClassified` 幂等标志
+- **[中] `first-event-tracer.ts` avgTotalMs 分母错误**：使用 `stats.total`（入队计数）而非已完成计数。新增 `completed` 计数器
+- **[中] `compaction-manager.ts` ensureLastUserMessageInTail/ensureLastAssistantMessageInTail 差一错误**：splice 移除尾部前的元素后，尾部左移一位，但返回值未减 1。修复：`return tailStartIdx - 1`
+- **[低] `enhanced-browser.plugin.ts` NetworkLogs ID 重复**：`slice(-500)` 后 `networkLogs.length + 1` 重置导致 ID 重复。修复：使用最后一条记录的 ID + 1
+
+#### Infrastructure 包（13 个）
+
+- **[高] `filesystem-manager.ts` 路径包含检查缺少分隔符**：`startsWith(baseResolved)` 允许 `baseResolved-evil` 等同级目录逃逸。修复：`resolved === baseResolved || resolved.startsWith(baseResolved + path.sep)`
+- **[中] `browser-controller.ts` extractForms 从整页 HTML 解析字段**：应从每个 `<form>` 元素内部 HTML 解析。修复：捕获表单内部 HTML
+- **[中] `crestodian.ts` computeOverallStatus 无法返回 "down"**：条件阶梯中 "down" 被前面的 "degraded" 分支遮蔽。修复：重排条件阶梯，"down" 优先短路
+- **[中] `crestodian.ts` 嵌套循环用 "unknown" 覆盖真实状态**：移除覆写循环
+- **[中] `link-understanding.ts` 重定向深度差一**：`depth > maxRedirects` 允许额外一跳。修复：`depth >= maxRedirects`
+- **[中] `markdown.ts` 重叠检测被后续清理撤销**：移除撤销重叠调整的清理步骤
+- **[中] `media-processor.ts` WAV 魔数字节与 webp 相同**：WAV 检测永远不触发。修复：添加 offset 8 处的 WAVE 标识
+- **[中] `observability.ts` 错误率比较字符串而非数字**：`l.value === "error"` 永远不匹配数字状态码。修复：`Number(l.value) >= 400`
+- **[中] `process-tree-killer.ts` Promise 被结算两次**：error 和 close 事件都调用 resolve/reject。修复：添加 `settled` 标志
+- **[低] `browser-controller.ts` 正则交替含多余空格**：移除空格
+- **[低] `database-manager.ts` `store.size >= 0` 恒真**：改为 `> 0`
+- **[低] `link-understanding.ts` wordCount 死变量**：移除
+- **[低] `update-manager.ts` `r.prerelease || !r.prerelease` 恒真**：改为 `r.prerelease`
+
+#### Security 包（8 个）
+
+- **[高] `path-security.ts` 绝对路径绕过**：sanitizePath 仅在路径含 `..` 时调用 validateWithinDir，绝对路径如 `/etc/passwd` 无 `..` 故绕过包含检查。修复：始终调用 validateWithinDir
+- **[中] `error-recovery-manager.ts` EACCES/EPERM 分类错误**：被分类为 "filesystem" 而非 "permission"。修复：从文件系统分支移除，保留在权限分支
+- **[中] `file-safety.ts` 多段目录名永不匹配**：`.config/gcloud` 等 split 后无法匹配。修复：检查路径段子序列
+- **[中] `mcp-poisoning-scanner.ts` sanitizeDescription 偏移错误**：威胁位置偏移 `name.length + 1`。修复：独立扫描 `tool.description`
+- **[中] `security-governor.ts` defaultAction 从未被使用**：无规则匹配时硬编码返回 "deny"。修复：返回策略的 defaultAction
+- **[中] `ssrf-protection.ts` IPv6 链路本地地址检查不完整**：仅检查 `fe80` 前缀，遗漏 `fe90`-`febf`。修复：检查 fe8/fe9/fea/feb 前缀
+- **[低] `self-healing.ts` default case return 阻止状态更新**：改为 break
+- **[低] `transcript-redactor.ts` 统计计数膨胀 + addRule 忽略 literal**：修复实际计数跟踪 + 添加 literal 支持
+
+#### Memory 包（5 个）
+
+- **[高] `memory-host-sdk.ts` TF-IDF 向量未对齐**：不同文本的向量位置对应不同 token，余弦相似度无意义。修复：采用 semantic-memory.ts 的共享 wordToIndex 方案
+- **[中] `memory-weaver.ts` buildTimeline 使用未过滤的 consolidated**：应使用 relevantConsolidated
+- **[中] `memory-weaver.ts` consolidateAll 未强制合并**：仅调用 consolidate()，活跃会话仍被跳过。修复：添加 force 参数
+- **[中] `fts5-search.ts` timeRange 过滤在 LIMIT 之后**：分页结果不正确。修复：将 timeRange 移入 SQL WHERE
+- **[低] `knowledge-graph.ts` DFS 深度限制差一**：`> 2` 阻止 2 边路径。修复：改为 `> 3`
+
+#### Core/Server 包（4 个）
+
+- **[高] `apps/server/src/index.ts` report_weekly 丢弃 metrics/periodStart/periodEnd**：解析验证后未传入 generateReport。修复：转换为 metrics 类型 section
+- **[中] `config-doctor.ts` doctorAndFix 不修复**：autoFix 调用被 `options?.autoFix` 条件阻止。修复：始终调用 autoFix
+- **[低] `service-registry.ts` startOrder 重启后重复**：添加去重逻辑
+- **[低] `event-bus.ts` getHistory limit=0 返回全部**：`slice(-0)` 返回整个数组。修复：添加 `limit <= 0` 返回 `[]` 的守卫
+
 ## v0.57.8 (2026-06-26)
 
 ### WebUI 深度代码审查 — 12 个静默失败 BUG 修复

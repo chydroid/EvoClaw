@@ -224,6 +224,7 @@ export class SwarmOrchestrator {
           timeSpentMs: 0,
         };
         this.delegationResults.set(delegation.id, result);
+        this.trimMaps();
         return result;
       }
       delegation.toAgentId = best.id;
@@ -322,6 +323,7 @@ export class SwarmOrchestrator {
 
     this.activeDelegations.delete(requestId);
     this.delegationResults.set(requestId, delResult);
+    this.trimMaps();
 
     this.eventBus.publish("swarm:delegation-completed", { result: delResult }, "swarm-orchestrator");
 
@@ -365,6 +367,7 @@ export class SwarmOrchestrator {
     };
 
     this.proposals.set(full.id, full);
+    this.trimMaps();
     this.votes.set(full.id, []);
 
     this.eventBus.publish("swarm:consensus-proposed", { proposal: full }, "swarm-orchestrator");
@@ -594,12 +597,26 @@ export class SwarmOrchestrator {
       clearTimeout(timer);
     }
     this.delegationTimers.clear();
+    this.trimMaps();
     this.agents.clear();
     this.pendingDelegations.clear();
     this.activeDelegations.clear();
     this.delegationResults.clear();
     this.proposals.clear();
     this.votes.clear();
+  }
+
+  /** 修剪历史 Maps，防止无限增长 */
+  private trimMaps(): void {
+    const MAX = 500;
+    if (this.delegationResults.size > MAX) {
+      const keys = Array.from(this.delegationResults.keys()).slice(0, this.delegationResults.size - MAX);
+      for (const k of keys) this.delegationResults.delete(k);
+    }
+    if (this.proposals.size > MAX) {
+      const keys = Array.from(this.proposals.keys()).slice(0, this.proposals.size - MAX);
+      for (const k of keys) { this.proposals.delete(k); this.votes.delete(k); }
+    }
   }
 
   // ── Internal ────────────────────────────────────────────

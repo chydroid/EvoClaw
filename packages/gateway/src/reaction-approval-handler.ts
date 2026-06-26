@@ -113,8 +113,11 @@ export class ReactionApprovalHandler {
     this.stats.created++;
     // 设置超时
     const timer = setTimeout(() => {
-      this.expire(id);
+      void this.expire(id).catch((err) => {
+        process.stderr.write("[ReactionApprovalHandler] expire failed for" + " " + id + ":" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+      });
     }, timeout);
+    timer.unref?.();
     this.timers.set(id, timer);
     return request;
   }
@@ -204,5 +207,15 @@ export class ReactionApprovalHandler {
       ...this.stats,
       pendingCount: this.pending.size,
     };
+  }
+
+  /** 清理所有待处理的定时器和状态，在服务关闭时调用 */
+  dispose(): void {
+    for (const timer of this.timers.values()) {
+      clearTimeout(timer);
+    }
+    this.timers.clear();
+    this.pending.clear();
+    this.messageIndex.clear();
   }
 }

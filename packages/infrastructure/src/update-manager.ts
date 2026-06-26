@@ -19,7 +19,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { execSync, spawn } from "child_process";
+import { execSync, spawn, execFileSync } from "child_process";
 
 export interface UpdateConfig {
   /** GitHub owner/repo (e.g., "evoclaw/evoclaw") */
@@ -135,7 +135,7 @@ export class UpdateManager {
         if (this.config.channel === "stable" && r.prerelease) return false;
         if (this.config.channel === "alpha") return true; // All releases
         if (this.config.channel === "beta") {
-          return r.prerelease || !r.prerelease;
+          return r.prerelease;
         }
         return true;
       });
@@ -178,9 +178,13 @@ export class UpdateManager {
     if (this.checkTimer) return;
 
     this.checkTimer = setInterval(async () => {
-      const result = await this.checkForUpdates();
-      if (result.updateAvailable && this.config.autoInstall) {
-        await this.downloadAndInstall(result.release!);
+      try {
+        const result = await this.checkForUpdates();
+        if (result.updateAvailable && this.config.autoInstall) {
+          await this.downloadAndInstall(result.release!);
+        }
+      } catch (err) {
+        process.stderr.write("[UpdateManager] Periodic check failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
       }
     }, this.config.checkIntervalMs);
 
@@ -384,6 +388,7 @@ export class UpdateManager {
         Accept: "application/vnd.github.v3+json",
         "User-Agent": "EvoClaw-Update/1.0",
       },
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -423,7 +428,8 @@ export class UpdateManager {
 
     // Cache for 1 hour
     this.updateCache.set("releases", releases);
-    setTimeout(() => this.updateCache.delete("releases"), 3600_000);
+    const cacheEvictTimer = setTimeout(() => this.updateCache.delete("releases"), 3600_000);
+    cacheEvictTimer.unref?.();
 
     return releases;
   }
@@ -475,6 +481,7 @@ export class UpdateManager {
         Accept: "application/octet-stream",
         "User-Agent": "EvoClaw-Update/1.0",
       },
+      signal: AbortSignal.timeout(300_000),
     });
 
     if (!response.ok) {
@@ -494,13 +501,19 @@ export class UpdateManager {
       throw new Error("Response body is not readable");
     }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      chunks.push(Buffer.from(value));
-      downloaded += value.length;
-      onProgress?.(downloaded, contentLength || downloaded);
+        chunks.push(Buffer.from(value));
+        downloaded += value.length;
+        onProgress?.(downloaded, contentLength || downloaded);
+      }
+    } finally {
+      // 确保释放 reader 锁，避免在出错时泄漏底层流
+      try { await reader.cancel(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
     }
 
     return Buffer.concat(chunks);
@@ -548,7 +561,7 @@ export class UpdateManager {
         const zip = new AdmZip(downloadPath);
         zip.extractAllTo(extractDir, true);
       } else {
-        execSync(`tar -xzf "${downloadPath}" -C "${extractDir}"`, {
+        execFileSync("tar", ["-xzf", downloadPath, "-C", extractDir], {
           stdio: "inherit",
         });
       }

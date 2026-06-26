@@ -83,45 +83,53 @@ function tokenize(text: string): string[] {
 
 function buildTfIdfVector(
   text: string,
-  globalIdf: Map<string, number>,
+  idfByIndex: Map<number, number>,
   totalDocs: number,
-): number[] {
+  wordToIndex: Map<string, number>,
+): Map<number, number> {
   const tokens = tokenize(text);
-  const tf: Map<string, number> = new Map();
+  const tf = new Map<number, number>();
   for (const t of tokens) {
-    tf.set(t, (tf.get(t) || 0) + 1);
+    let idx = wordToIndex.get(t);
+    if (idx === undefined) {
+      idx = wordToIndex.size;
+      wordToIndex.set(t, idx);
+    }
+    tf.set(idx, (tf.get(idx) || 0) + 1);
   }
 
-  const vector: number[] = [];
-  for (const [term, freq] of tf) {
-    const idf = globalIdf.get(term) || Math.log(totalDocs + 1);
-    vector.push(freq * idf);
+  const vector = new Map<number, number>();
+  for (const [idx, freq] of tf) {
+    const idf = idfByIndex.get(idx) ?? Math.log(totalDocs + 1);
+    vector.set(idx, freq * idf);
   }
 
   // Normalize
-  const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+  const magnitude = Math.sqrt([...vector.values()].reduce((sum, v) => sum + v * v, 0));
   if (magnitude > 0) {
-    for (let i = 0; i < vector.length; i++) {
-      vector[i] /= magnitude;
+    for (const [idx, val] of vector) {
+      vector.set(idx, val / magnitude);
     }
   }
 
   return vector;
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length === 0 || b.length === 0) return 0;
-  const minLen = Math.max(a.length, b.length);
+function cosineSimilarity(a: Map<number, number>, b: Map<number, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  // 遍历较小的向量，按共享索引匹配同维度词项，避免位置错位
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
   let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < minLen; i++) {
-    const va = a[i] || 0;
-    const vb = b[i] || 0;
-    dotProduct += va * vb;
-    normA += va * va;
-    normB += vb * vb;
+  for (const [idx, val] of small) {
+    const other = large.get(idx);
+    if (other !== undefined) {
+      dotProduct += val * other;
+    }
   }
+  let normA = 0;
+  for (const v of a.values()) normA += v * v;
+  let normB = 0;
+  for (const v of b.values()) normB += v * v;
   if (normA === 0 || normB === 0) return 0;
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
@@ -265,17 +273,21 @@ export class MemoryHost {
         }
       }
 
-      const globalIdf = new Map<string, number>();
+      // 共享 wordToIndex 索引，保证不同文本向量按相同维度对齐
+      const wordToIndex = new Map<string, number>();
+      const idfByIndex = new Map<number, number>();
       for (const [term, count] of df) {
-        globalIdf.set(term, Math.log(totalDocs / (count + 1)));
+        const idx = wordToIndex.size;
+        wordToIndex.set(term, idx);
+        idfByIndex.set(idx, Math.log(totalDocs / (count + 1)));
       }
 
-      const queryVec = buildTfIdfVector(query.text, globalIdf, totalDocs);
+      const queryVec = buildTfIdfVector(query.text, idfByIndex, totalDocs, wordToIndex);
       const scored = results.map((entry) => ({
         entry,
         score: cosineSimilarity(
           queryVec,
-          buildTfIdfVector(entry.content, globalIdf, totalDocs),
+          buildTfIdfVector(entry.content, idfByIndex, totalDocs, wordToIndex),
         ),
       }));
 

@@ -90,6 +90,7 @@ export class GatewayMetadataCache {
     persistWrites: 0,
     persistReads: 0,
   };
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: Partial<GatewayMetadataCacheConfig> = {}) {
     this.config = {
@@ -101,6 +102,32 @@ export class GatewayMetadataCache {
     };
     if (this.config.persistEnabled && this.config.persistPath) {
       this.loadFromDisk();
+    }
+
+    // 定期清理过期缓存条目（每5分钟），防止写入但不读取的条目无限堆积
+    this.cleanupTimer = setInterval(() => this.cleanupExpired(), 5 * 60 * 1000);
+    this.cleanupTimer.unref?.();
+  }
+
+  /** 清理所有缓存中的过期条目 */
+  private cleanupExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.metadataCache.entries()) {
+      if (now > entry.expiresAt) this.metadataCache.delete(key);
+    }
+    for (const [key, entry] of this.modelCostIndex.entries()) {
+      if (now > entry.expiresAt) this.modelCostIndex.delete(key);
+    }
+    for (const [key, entry] of this.channelResolutionCache.entries()) {
+      if (now > entry.expiresAt) this.channelResolutionCache.delete(key);
+    }
+  }
+
+  /** 停止定时清理，释放资源 */
+  dispose(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
     }
   }
 

@@ -54,6 +54,7 @@ export class AuditCenter {
   private alerts: AuditAlert[] = [];
   private rules: AuditRule[] = [];
   private maxRecords = 10000;
+  private maxAlerts = 1000;
   private alertThrottles = new Map<string, number>();
 
   constructor(
@@ -302,6 +303,9 @@ export class AuditCenter {
         };
 
         this.alerts.push(alert);
+        if (this.alerts.length > this.maxAlerts) {
+          this.alerts = this.alerts.slice(-this.maxAlerts);
+        }
         this.alertThrottles.set(rule.name, Date.now());
 
         this.eventBus?.publish(

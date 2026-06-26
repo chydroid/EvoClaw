@@ -140,8 +140,9 @@ export class CronRunLogger {
       (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
     );
 
-    const offset = q.offset ?? 0;
-    const limit = q.limit ?? results.length;
+    const MAX_PAGE = 1000;
+    const offset = Math.max(0, q.offset ?? 0);
+    const limit = Math.min(Math.max(0, q.limit ?? results.length), MAX_PAGE);
     return results.slice(offset, offset + limit);
   }
 

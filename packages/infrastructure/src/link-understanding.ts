@@ -133,7 +133,7 @@ export class LinkPreviewer {
     depth: number,
     start: number,
   ): Promise<LinkPreview> {
-    if (depth > this.config.maxRedirects) {
+    if (depth >= this.config.maxRedirects) {
       return {
         url,
         title: "",
@@ -224,7 +224,6 @@ export class LinkPreviewer {
 
             // Estimate read time (avg 238 wpm)
             if (preview.description) {
-              const wordCount = preview.description.split(/\s+/).length;
               const totalText = extractText(html);
               const totalWords = totalText.split(/\s+/).length;
               preview.estimatedReadTime = Math.ceil(totalWords / 238);

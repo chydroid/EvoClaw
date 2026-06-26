@@ -22,7 +22,14 @@ function fetchWithTimeout(
   const originalSignal = init?.signal;
 
   if (originalSignal) {
-    originalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    // 转发外部 signal 的 abort；在 fetch 完成后移除监听器，避免累积
+    const onAbort = () => controller.abort();
+    originalSignal.addEventListener("abort", onAbort, { once: true });
+    return fetch(input, { ...init, signal: controller.signal })
+      .finally(() => {
+        clearTimeout(timeoutId);
+        originalSignal.removeEventListener("abort", onAbort);
+      });
   }
 
   return fetch(input, { ...init, signal: controller.signal })

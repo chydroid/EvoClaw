@@ -1106,11 +1106,20 @@ export class AgentModelExecutor {
       this.sequentialThinkingHistory.delete(sessionId);
       this.executionTraces.delete(sessionId);
       this.activePlans.delete(sessionId);
+      this.iterationBudgets.delete(sessionId);
+      this.pendingApprovalCommands.delete(sessionId);
+      // pendingOperations 按 requestId 索引，需遍历清理该会话的条目
+      for (const [key, val] of this.pendingOperations) {
+        if (val.sessionId === sessionId) this.pendingOperations.delete(key);
+      }
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
       this.executionTraces.clear();
       this.activePlans.clear();
+      this.iterationBudgets.clear();
+      this.pendingApprovalCommands.clear();
+      this.pendingOperations.clear();
     }
   }
 

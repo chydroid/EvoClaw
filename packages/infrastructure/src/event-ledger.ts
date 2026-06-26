@@ -325,6 +325,7 @@ export class EventLedger {
     this.dirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 1000);
+    this.saveTimer.unref?.();
   }
 
   flush(): void {
@@ -334,23 +335,33 @@ export class EventLedger {
     }
     if (!this.dirty || this.flushLock) return;
     this.flushLock = true;
+    const tmp = `${this.storePath}.tmp.${process.pid}`;
+    let fd: number | null = null;
     try {
       const dir = path.dirname(this.storePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const jsonl = this.events
         .map((e) => JSON.stringify(e))
         .join("\n");
-      const tmp = `${this.storePath}.tmp.${process.pid}`;
       fs.writeFileSync(tmp, jsonl + "\n", "utf-8");
-      const fd = fs.openSync(tmp, "r");
+      fd = fs.openSync(tmp, "r");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
+      fd = null;
       fs.renameSync(tmp, this.storePath);
       this.dirty = false;
     } catch (err) {
       process.stderr.write(`[EventLedger] Failed to flush: ${err instanceof Error ? err.message : String(err)}` + "\n");
+      // 限制重试频率避免无限快速重试
       this.saveTimer = setTimeout(() => this.flush(), 5000);
+      this.saveTimer.unref?.();
     } finally {
+      // 确保 fd 被关闭（fsyncSync 抛出时 fd 泄漏）
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch { /* already closed or error */ }
+      }
+      // 清理残留的 tmp 文件
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
       this.flushLock = false;
     }
   }

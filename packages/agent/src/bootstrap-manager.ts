@@ -210,7 +210,9 @@ export class BootstrapManager {
 
   /** Read a bootstrap file */
   readBootstrapFile(filename: string): string | null {
-    const filePath = path.join(this.workspacePath, filename);
+    // 防止路径穿越：仅取 basename
+    const safeName = path.basename(filename);
+    const filePath = path.join(this.workspacePath, safeName);
     if (fs.existsSync(filePath)) {
       return this.readFile(filePath);
     }

@@ -722,35 +722,47 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
 export function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
+    let settled = false;
+    const cleanup = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      try { file.destroy(); } catch { /* ignore */ }
+      try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+      if (err) reject(err);
+    };
     let redirectCount = 0;
     const request = (urlStr: string) => {
       if (redirectCount > 5) {
-        reject(new Error(`重定向次数过多 (>${redirectCount})`));
+        cleanup(new Error(`重定向次数过多 (>${redirectCount})`));
         return;
       }
       const mod = urlStr.startsWith("https") ? https : require("http");
-      mod.get(urlStr, { timeout: 30000 }, (res: any) => {
+      const req = mod.get(urlStr, { timeout: 30000 }, (res: any) => {
         // Handle redirects
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           redirectCount++;
+          res.destroy();
           request(res.headers.location);
           return;
         }
         if (res.statusCode !== 200) {
-          reject(new Error(`服务器返回 HTTP ${res.statusCode}（期望 200）`));
+          res.destroy();
+          cleanup(new Error(`服务器返回 HTTP ${res.statusCode}（期望 200）`));
           return;
         }
+        res.on("error", (err: Error) => cleanup(new Error(`响应流错误: ${err.message}`)));
         res.pipe(file);
         file.on("finish", () => {
           file.close();
+          settled = true;
           resolve();
         });
+        file.on("error", (err: Error) => cleanup(new Error(`文件写入错误: ${err.message}`)));
       }).on("error", (err: Error) => {
-        try { fs.unlinkSync(destPath); } catch { /* ignore */ }
-        reject(new Error(`网络错误: ${err.message}`));
+        cleanup(new Error(`网络错误: ${err.message}`));
       }).on("timeout", () => {
-        try { fs.unlinkSync(destPath); } catch { /* ignore */ }
-        reject(new Error("连接超时（30秒）"));
+        req.destroy();
+        cleanup(new Error("连接超时（30秒）"));
       });
     };
     request(url);

@@ -415,7 +415,7 @@ export class PlaywrightBrowser {
       if (fs.existsSync(this.cookieFile)) {
         const raw = fs.readFileSync(this.cookieFile, "utf-8");
         const cookies = JSON.parse(raw) as CookieData[];
-        if (cookies.length > 0) {
+        if (Array.isArray(cookies) && cookies.length > 0) {
           (contextOptions as Record<string, unknown>).storageState = {
             cookies: cookies.map((c) => ({
               name: c.name,
@@ -445,10 +445,17 @@ export class PlaywrightBrowser {
         }
         const tmp = `${this.cookieFile}.tmp.${process.pid}`;
         fs.writeFileSync(tmp, JSON.stringify(cookies, null, 2), "utf-8");
-        const fd = fs.openSync(tmp, "r");
-        fs.fsyncSync(fd);
-        fs.closeSync(fd);
-        fs.renameSync(tmp, this.cookieFile);
+        let fd: number | null = null;
+        try {
+          fd = fs.openSync(tmp, "r");
+          fs.fsyncSync(fd);
+          fs.closeSync(fd);
+          fd = null;
+          fs.renameSync(tmp, this.cookieFile);
+        } finally {
+          if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+        }
       }
     } catch (err) {
       process.stderr.write(`[PlaywrightBrowser] Failed to save cookies: ${err instanceof Error ? err.message : String(err)}\n`);

@@ -398,7 +398,11 @@ export class CronScheduler extends EventEmitter {
     job.updatedAt = new Date();
 
     const delay = Math.max(0, next.getTime() - Date.now());
-    const timer = setTimeout(() => this.executeJob(job.id), delay);
+    const timer = setTimeout(() => {
+      void this.executeJob(job.id).catch((err) => {
+        process.stderr.write(`[CronScheduler] executeJob failed for "${job.id}":` + " " + err + "\n");
+      });
+    }, delay);
     timer.unref();
     this.timers.set(job.id, timer);
   }
@@ -427,7 +431,11 @@ export class CronScheduler extends EventEmitter {
     // Enforce concurrency limit
     if (this.running.size >= this.maxConcurrent) {
       // Re-schedule for 1 second later and try again
-      const retryTimer = setTimeout(() => this.executeJob(jobId), 1000);
+      const retryTimer = setTimeout(() => {
+        void this.executeJob(jobId).catch((err) => {
+          process.stderr.write(`[CronScheduler] retry executeJob failed for "${jobId}":` + " " + err + "\n");
+        });
+      }, 1000);
       retryTimer.unref?.();
       this.timers.set(jobId, retryTimer);
       return;
@@ -499,9 +507,16 @@ export class CronScheduler extends EventEmitter {
     });
 
     const taskPromise = job.task();
-    taskPromise.catch(() => {});
+    let taskError: unknown = null;
+    taskPromise.catch((err) => { taskError = err; });
     try {
       return await Promise.race([taskPromise, timeoutPromise]);
+    } catch (raceErr) {
+      // 如果是超时，且任务本身也失败了，附加原始错误信息
+      if (taskError) {
+        throw new Error(`${raceErr instanceof Error ? raceErr.message : String(raceErr)} (task error: ${taskError instanceof Error ? taskError.message : String(taskError)})`);
+      }
+      throw raceErr;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

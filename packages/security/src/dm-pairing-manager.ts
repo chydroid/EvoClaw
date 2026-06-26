@@ -97,6 +97,7 @@ export class DMPairingManager {
 
     // Periodic cleanup of expired pairing requests
     this.cleanupTimer = setInterval(() => this.cleanupExpired(), 60_000);
+    this.cleanupTimer.unref?.();
   }
 
   stop(): void {

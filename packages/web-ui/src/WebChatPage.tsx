@@ -469,7 +469,11 @@ const addToWhitelist = (operation: string): void => {
   const list = getWhitelist();
   if (!list.includes(operation)) {
     list.push(operation);
-    localStorage.setItem("evoclaw_permission_whitelist", JSON.stringify(list));
+    try {
+      localStorage.setItem("evoclaw_permission_whitelist", JSON.stringify(list));
+    } catch {
+      // 私密浏览模式或配额超限时忽略
+    }
   }
 };
 

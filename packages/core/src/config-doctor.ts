@@ -471,8 +471,7 @@ export function doctorAndFix(
 ): DoctorReport {
   const doctor = new ConfigDoctor({ ...options, autoFix: true });
   const report = doctor.diagnose(config);
-  if (options?.autoFix) {
-    doctor.autoFix(report.diagnostics);
-  }
+  // doctorAndFix 始终执行自动修复，无需再次检查调用方传入的 autoFix
+  doctor.autoFix(report.diagnostics);
   return report;
 }

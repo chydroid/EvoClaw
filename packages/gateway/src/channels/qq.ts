@@ -225,7 +225,13 @@ export class QQAdapter implements ChannelAdapter {
           this.statusHandler?.("reconnecting");
           const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
           this.reconnectAttempt++;
-          this.reconnectTimer = setTimeout(() => this.connect(), delay);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.connect().catch((err) => {
+              process.stderr.write("[QQ] Reconnect failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+            });
+          }, delay);
+          this.reconnectTimer.unref?.();
         } else {
           this.statusHandler?.("disconnected");
         }
@@ -242,7 +248,13 @@ export class QQAdapter implements ChannelAdapter {
         this.statusHandler?.("reconnecting");
         const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
         this.reconnectAttempt++;
-        this.reconnectTimer = setTimeout(() => this.connect(), delay);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          void this.connect().catch((err) => {
+            process.stderr.write("[QQ] Reconnect (after error) failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+          });
+        }, delay);
+        this.reconnectTimer.unref?.();
       } else {
         this.statusHandler?.("disconnected");
       }
@@ -377,7 +389,9 @@ export class QQAdapter implements ChannelAdapter {
     if (this.ws) {
       this.ws.close(4000, "Reconnect requested");
     }
-    this.connect();
+    void this.connect().catch((err) => {
+      process.stderr.write("[QQ] Reconnect (RECONNECT op) failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    });
   }
 }
 

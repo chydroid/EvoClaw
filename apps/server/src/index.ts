@@ -900,7 +900,11 @@ export class EvoClawServer {
     this.logger.info("server", `Registered services: ${this.registry.getRegisteredServices().join(", ")}`);
 
     this.eventBus.subscribe("system.shutdown", async () => {
-      await this.shutdown();
+      try {
+        await this.shutdown();
+      } catch (err) {
+        this.logger.error("server", "Shutdown via eventBus failed", err instanceof Error ? err : new Error(String(err)));
+      }
     });
 
     let sigintCount = 0;
@@ -1345,7 +1349,17 @@ export class EvoClawServer {
             {
               title: title,
               generatedAt: new Date().toLocaleString("zh-CN"),
-              sections,
+              sections: [
+                ...(metrics.length > 0
+                  ? [{
+                      id: "key-metrics",
+                      title: "关键指标",
+                      type: "metrics" as const,
+                      data: { metrics, periodStart, periodEnd },
+                    }]
+                  : []),
+                ...sections,
+              ],
             },
             { templateName: "weekly-report", outputPath: outputPath || undefined }
           );
@@ -1444,25 +1458,30 @@ export class EvoClawServer {
           try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 15000);
-            const response = await fetch(source, {
-              headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
-              signal: controller.signal,
-              redirect: "follow",
-            });
-            clearTimeout(timeout);
-            if (!response.ok) {
-              return { error: `HTTP ${response.status} fetching URL`, source };
+            try {
+              const response = await fetch(source, {
+                headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
+                signal: controller.signal,
+                redirect: "follow",
+              });
+              if (!response.ok) {
+                return { error: `HTTP ${response.status} fetching URL`, source };
+              }
+              // 在 body 读取完成前保持超时保护（原代码在 fetch 返回后立即 clear，body 下载无保护）
+              const buffer = await response.arrayBuffer();
+              clearTimeout(timeout);
+              fs.writeFileSync(tmpFile, Buffer.from(buffer));
+              const markdown = await doConvert(tmpFile);
+              if (!markdown) {
+                return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
+              }
+              const result = outputFormat === "text"
+                ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
+                : markdown;
+              return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
+            } finally {
+              clearTimeout(timeout);
             }
-            const buffer = await response.arrayBuffer();
-            fs.writeFileSync(tmpFile, Buffer.from(buffer));
-            const markdown = await doConvert(tmpFile);
-            if (!markdown) {
-              return { error: "markitdown conversion failed. Ensure markitdown is installed: pip install 'markitdown[all]'", source };
-            }
-            const result = outputFormat === "text"
-              ? markdown.replace(/[#*_\[\](){}|`~>-]/g, "").replace(/\n{3,}/g, "\n\n")
-              : markdown;
-            return { source, format: "markdown", length: result.length, content: result.slice(0, 30000), truncated: result.length > 30000 };
           } catch (err: any) {
             return { error: err.message || String(err), source };
           } finally {

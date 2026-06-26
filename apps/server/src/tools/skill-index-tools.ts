@@ -19,7 +19,8 @@ export function registerSkillIndexTools(
     },
     async (params: Record<string, unknown>) => {
       const skillName = String(params.skill || "");
-      const level = Number(params.level ?? 1) as 0 | 1 | 2;
+      const parsedLevel = Number(params.level ?? 1);
+      const level = (Number.isFinite(parsedLevel) ? parsedLevel : 1) as 0 | 1 | 2;
       const allEntries = index.getAll();
       const entry = allEntries.find(e => e.name === skillName || e.id === skillName);
       if (!entry) return { error: `Skill "${skillName}" not found in index` };

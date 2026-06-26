@@ -134,42 +134,21 @@ export class ApprovalTimeoutManager {
     this.stats.total++;
 
     return new Promise<ApprovalDecision>((resolve) => {
-      const timer = setTimeout(async () => {
-        // 根据 askFallback 决定超时行为
+      const timer = setTimeout(() => {
+        // 根据 askFallback 决定超时行为 — expireApproval 内部计算正确决策并 resolve
         const fallback = fullRequest.fallbackOverride ?? this.askFallback;
-        await this.expireApproval(id, fullRequest, fallback);
-
-        let decision: ApprovalDecision;
-        if (fallback === "allow") {
-          decision = {
-            id: `decision-${id}-timeout-allow`,
-            requestId: id,
-            status: "approved",
-            decidedAt: Date.now(),
-            reason: `Approval timed out after ${timeoutMs}ms - fallback policy: allow`,
-            autoDecisionReason: "timeout-allow",
-          };
-        } else if (fallback === "deny") {
-          decision = {
-            id: `decision-${id}-timeout-deny`,
-            requestId: id,
-            status: "denied",
-            decidedAt: Date.now(),
-            reason: `Approval timed out after ${timeoutMs}ms - fallback policy: deny`,
-            autoDecisionReason: "timeout-deny",
-          };
-        } else {
-          // fail-closed: 拒绝并记录审计日志
-          decision = {
-            id: `decision-${id}-expired`,
+        void this.expireApproval(id, fullRequest, fallback).catch((err) => {
+          process.stderr.write("[ApprovalTimeout] expireApproval failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+          // 即使 expireApproval 失败也需 resolve，避免调用方永久等待
+          resolve({
+            id: `decision-${id}-error`,
             requestId: id,
             status: "expired",
             decidedAt: Date.now(),
-            reason: `Approval timed out after ${timeoutMs}ms - fail-closed policy: denied`,
-            autoDecisionReason: "timeout",
-          };
-        }
-        resolve(decision);
+            reason: `Approval expired but handler failed: ${err instanceof Error ? err.message : String(err)}`,
+            autoDecisionReason: "timeout-error",
+          });
+        });
       }, timeoutMs);
       this.pending.set(id, { request: fullRequest, resolve, timer });
     });
@@ -229,7 +208,7 @@ export class ApprovalTimeoutManager {
     return true;
   }
 
-  /** 触发过期 */
+  /** 触发过期 — 根据 fallback 策略计算正确的决策并 resolve */
   private async expireApproval(id: string, request: ApprovalRequest, fallback: "deny" | "allow" | "fail-closed"): Promise<void> {
     const pending = this.pending.get(id);
     if (!pending) return;
@@ -249,14 +228,39 @@ export class ApprovalTimeoutManager {
       metadata: request.metadata,
     });
 
-    const decision: ApprovalDecision = {
-      id: `decision-${id}-expired`,
-      requestId: id,
-      status: "expired",
-      decidedAt: Date.now(),
-      reason: `Approval timed out after ${request.timeoutMs}ms - fail-closed policy`,
-      autoDecisionReason: "timeout",
-    };
+    // 根据 fallback 策略计算正确的决策（而非硬编码 "expired"）
+    let decision: ApprovalDecision;
+    if (fallback === "allow") {
+      decision = {
+        id: `decision-${id}-timeout-allow`,
+        requestId: id,
+        status: "approved",
+        decidedAt: Date.now(),
+        reason: `Approval timed out after ${request.timeoutMs}ms - fallback policy: allow`,
+        autoDecisionReason: "timeout-allow",
+      };
+      this.stats.approved++;
+    } else if (fallback === "deny") {
+      decision = {
+        id: `decision-${id}-timeout-deny`,
+        requestId: id,
+        status: "denied",
+        decidedAt: Date.now(),
+        reason: `Approval timed out after ${request.timeoutMs}ms - fallback policy: deny`,
+        autoDecisionReason: "timeout-deny",
+      };
+      this.stats.denied++;
+    } else {
+      // fail-closed: 拒绝并记录审计日志
+      decision = {
+        id: `decision-${id}-expired`,
+        requestId: id,
+        status: "expired",
+        decidedAt: Date.now(),
+        reason: `Approval timed out after ${request.timeoutMs}ms - fail-closed policy: denied`,
+        autoDecisionReason: "timeout",
+      };
+    }
     this.history.push(decision);
     if (this.onExpired) {
       try { await this.onExpired(request); } catch (err) { console.debug("[ApprovalTimeout]", err); }

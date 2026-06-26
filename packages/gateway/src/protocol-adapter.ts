@@ -1976,13 +1976,19 @@ export class ProtocolAdapter {
 
     app.get("/api/bootstrap/:filename", (req: Request, res: Response) => {
       try {
+        const filename = String(req.params.filename);
+        // 白名单校验：与 PUT/DELETE 一致，防止路径穿越
+        if (!["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"].includes(filename)) {
+          res.status(400).json({ error: "Invalid filename" });
+          return;
+        }
         const bm = this.registry.resolveService<{
           readBootstrapFile(filename: string): string | null;
         }>("bootstrapManager");
         if (!bm) return res.status(404).json({ error: "Bootstrap manager not found" });
-        const content = bm.readBootstrapFile(String(req.params.filename));
+        const content = bm.readBootstrapFile(filename);
         if (content === null) return res.status(404).json({ error: "File not found" });
-        res.json({ filename: req.params.filename, content });
+        res.json({ filename, content });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -2297,6 +2303,7 @@ export class ProtocolAdapter {
             }
           } finally {
             if (keepAliveHandle) clearInterval(keepAliveHandle);
+            if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
             try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
           return;
@@ -2982,8 +2989,8 @@ export class ProtocolAdapter {
         if (req.query.severity) filter.severity = String(req.query.severity);
         if (req.query.source) filter.source = String(req.query.source);
         if (req.query.tags) filter.tags = String(req.query.tags).split(",");
-        if (req.query.limit) filter.limit = parseInt(String(req.query.limit), 10);
-        if (req.query.offset) filter.offset = parseInt(String(req.query.offset), 10);
+        if (req.query.limit) filter.limit = parseInt(String(req.query.limit), 10) || 50;
+        if (req.query.offset) filter.offset = parseInt(String(req.query.offset), 10) || 0;
         res.json(evolutionEngine.getLearningEntries(filter));
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3022,7 +3029,7 @@ export class ProtocolAdapter {
           source: source || "api", tags, triggerEvolution,
           taskId: `correction-${Date.now()}`,
           description: title || context,
-        }, "protocol-adapter");
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
         res.status(202).json({ status: "recorded", message: "Correction learning entry created" });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3052,7 +3059,7 @@ export class ProtocolAdapter {
           source: source || "api", severity, tags, triggerEvolution,
           taskId: `failure-${Date.now()}`,
           description: context || `外部依赖失败: ${service || endpoint || ""}`,
-        }, "protocol-adapter");
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
         res.status(202).json({ status: "recorded", message: "External failure recorded" });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3066,7 +3073,7 @@ export class ProtocolAdapter {
           title, description, context, isOutdated, newApproach, recommendedAction, improvedCode,
           source: source || "api", tags, triggerEvolution,
           taskId: `improvement-${Date.now()}`,
-        }, "protocol-adapter");
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
         res.status(202).json({ status: "recorded", message: "Knowledge improvement recorded" });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3813,6 +3820,9 @@ export class ProtocolAdapter {
 
         const success = sessionManager.deleteSession(agentId, sessionId);
         if (success) {
+          // 清理 executor 中的会话级缓存（conversationHistory/iterationBudgets 等），防止 Map 无限增长
+          const executor = this.registry.resolveService<{ clearChatHistory(sessionId?: string): void }>("agentModelExecutor");
+          try { executor?.clearChatHistory(sessionId); } catch { /* ignore */ }
           res.json({ success: true, message: "Session deleted successfully" });
         } else {
           res.status(404).json({ success: false, error: "Session not found" });
@@ -4343,7 +4353,7 @@ export class ProtocolAdapter {
         if (req.query.type) query.type = String(req.query.type);
         if (req.query.fromTime) query.fromTime = parseInt(String(req.query.fromTime), 10);
         if (req.query.toTime) query.toTime = parseInt(String(req.query.toTime), 10);
-        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10);
+        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10) || 50;
 
         const events = eventLedger.query(query as any);
         res.json({ events, total: events.length });
@@ -4400,7 +4410,7 @@ export class ProtocolAdapter {
           return;
         }
 
-        const limit = parseInt(String(req.query.limit || "50"), 10);
+        const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
         res.json({ history: permissionRelay.getHistory(limit) });
       } catch (err) {
         this.handleError(err, res, "Failed to get permission history");
@@ -5046,7 +5056,17 @@ export class ProtocolAdapter {
           res.setHeader("Content-Type", "application/octet-stream");
         }
         res.setHeader("Content-Length", stat.size);
-        fs.createReadStream(fullPath).pipe(res);
+        const stream = fs.createReadStream(fullPath);
+        stream.on("error", (err) => {
+          if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to read file" });
+          } else {
+            // Headers already sent — destroy the response to abort download
+            res.destroy(err);
+          }
+          process.stderr.write("[ProtocolAdapter] createReadStream error for" + " " + fullPath + ":" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+        });
+        stream.pipe(res);
       } catch (err) {
         this.handleError(err, res, "Failed to download file");
       }
@@ -5104,7 +5124,7 @@ export class ProtocolAdapter {
         // Frontend sends: "pending" (unreplayed), "dead" (replayed), "retrying" (replayed with retries)
         const statusParam = String(req.query.status || "").toLowerCase();
         if (statusParam === "pending") query.unreplayed = true;
-        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10);
+        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10) || 50;
         const messages = dlq.query(query as any);
         const stats = dlq.getStats();
         // Map backend DeadLetter to frontend-compatible format
@@ -5759,10 +5779,33 @@ export class ProtocolAdapter {
         if (!this.configRpcWatchers.has(dotPath)) {
           this.configRpcWatchers.set(dotPath, []);
         }
-        this.configRpcWatchers.get(dotPath)!.push({ subscriptionId });
+        const list = this.configRpcWatchers.get(dotPath)!;
+        // 防止 Map 无限增长：每路径最多保留 100 个订阅，超出时淘汰最旧的
+        const MAX_WATCHERS_PER_PATH = 100;
+        if (list.length >= MAX_WATCHERS_PER_PATH) {
+          list.splice(0, list.length - MAX_WATCHERS_PER_PATH + 1);
+        }
+        list.push({ subscriptionId });
         res.json({ subscriptionId });
       } catch (err) {
         this.handleError(err, res, "Failed to watch config path");
+      }
+    });
+
+    // 取消订阅，清理 watcher
+    app.delete("/api/config-rpc/:path/watch/:subscriptionId", (req: Request, res: Response) => {
+      try {
+        const dotPath = String(req.params.path);
+        const subscriptionId = String(req.params.subscriptionId);
+        const list = this.configRpcWatchers.get(dotPath);
+        if (list) {
+          const idx = list.findIndex((w) => w.subscriptionId === subscriptionId);
+          if (idx >= 0) list.splice(idx, 1);
+          if (list.length === 0) this.configRpcWatchers.delete(dotPath);
+        }
+        res.json({ success: true });
+      } catch (err) {
+        this.handleError(err, res, "Failed to unwatch config path");
       }
     });
 
@@ -5901,7 +5944,12 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "policy is required" });
           return;
         }
-        Object.assign(this.retentionPolicy, policy);
+        // 过滤危险键防止原型污染
+        const safePolicy = { ...policy };
+        delete (safePolicy as any).__proto__;
+        delete (safePolicy as any).constructor;
+        delete (safePolicy as any).prototype;
+        Object.assign(this.retentionPolicy, safePolicy);
         res.json({ policy: this.retentionPolicy });
       } catch (err) {
         this.handleError(err, res, "Failed to update retention policy");
@@ -5960,14 +6008,20 @@ export class ProtocolAdapter {
           const now = Date.now();
           const maxAgeMs = (this.retentionPolicy.maxAgeDays || 30) * 86400000;
           const maxInactiveMs = (this.retentionPolicy.maxInactiveDays || 7) * 86400000;
+          const executor = this.registry.resolveService<{ clearChatHistory(sessionId?: string): void }>("agentModelExecutor");
           for (const s of allSessions) {
             const lastActive = s.lastActivityAt || s.updatedAt || s.createdAt || 0;
             const created = s.createdAt || 0;
             if ((now - lastActive > maxInactiveMs) || (now - created > maxAgeMs)) {
               const sid = s.id || s.sessionId;
-              if (sid && sessionManager.deleteSession?.(sid)) { cleaned++; }
-              else if (sid && sessionManager.removeSession?.(sid)) { cleaned++; }
-              else if (sid && sessionManager.destroySession?.(sid)) { cleaned++; }
+              let deleted = false;
+              if (sid && sessionManager.deleteSession?.(sid)) deleted = true;
+              else if (sid && sessionManager.removeSession?.(sid)) deleted = true;
+              else if (sid && sessionManager.destroySession?.(sid)) deleted = true;
+              if (deleted) {
+                try { executor?.clearChatHistory(sid); } catch { /* ignore */ }
+                cleaned++;
+              }
             }
           }
         }

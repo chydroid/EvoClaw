@@ -234,6 +234,7 @@ function executeLocalDelegation(
 export class ACPProtocolHandler {
   private readonly agents = new Map<string, ACPAgent>();
   private readonly history: ACPDelegationResult[] = [];
+  private readonly maxHistory = 1000;
   private readonly pending = new Map<string, PendingDelegation>();
   private idCounter = 0;
 
@@ -334,6 +335,8 @@ export class ACPProtocolHandler {
           delegateAgent: request.toAgent,
         };
         this.history.push(result);
+
+        if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
         return result;
       }
       targetAgent = this.agents.get(delegate.id);
@@ -349,6 +352,8 @@ export class ACPProtocolHandler {
         delegateAgent: targetAgent!.id,
       };
       this.history.push(result);
+
+      if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
       return result;
     }
 
@@ -421,6 +426,8 @@ export class ACPProtocolHandler {
           delegateAgent: agent.id,
         };
         this.history.push(result);
+
+        if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
         resolve(result);
       }, timeoutMs);
 
@@ -432,6 +439,8 @@ export class ACPProtocolHandler {
           clearTimeout(timer);
           this.pending.delete(request.id);
           this.history.push(result);
+
+          if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
           resolve(result);
         })
         .catch((err: unknown) => {
@@ -445,6 +454,8 @@ export class ACPProtocolHandler {
             delegateAgent: agent.id,
           };
           this.history.push(result);
+
+          if (this.history.length > this.maxHistory) this.history.splice(0, this.history.length - this.maxHistory);
           resolve(result);
         });
     });

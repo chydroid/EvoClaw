@@ -374,8 +374,14 @@ export class SlackAdapter implements ChannelAdapter {
     // 存储定时器句柄，使 stop() 能够清除避免重连泄漏
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connectSocketMode();
+      void this.connectSocketMode().catch((err) => {
+        console.error("[Slack] Reconnect failed:", err);
+        if (this.running) {
+          this.reconnectWithBackoff();
+        }
+      });
     }, delay);
+    this.reconnectTimer.unref?.();
   }
 
   private closeSocket(): void {
@@ -408,7 +414,7 @@ export class SlackAdapter implements ChannelAdapter {
       from: event.user,
       to: event.channel,
       text: event.text,
-      timestamp: new Date(parseFloat(event.ts ?? "0") * 1000).toISOString(),
+      timestamp: new Date((parseFloat(event.ts ?? "") || 0) * 1000 || Date.now()).toISOString(),
       isDirect,
       isGroup: !isDirect,
       groupId: !isDirect ? event.channel : undefined,

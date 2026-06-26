@@ -191,7 +191,7 @@ export function createHookRunner(
       try {
         const promise = Promise.resolve(hook.handler(event, context));
         const timeoutMs = hook.timeoutMs ?? voidHookTimeoutMs;
-        
+
         await withTimeout(promise, timeoutMs);
       } catch (err) {
         handleHookError({
@@ -202,8 +202,15 @@ export function createHookRunner(
         });
       }
     });
-    
-    await Promise.all(promises);
+
+    // 使用 allSettled 确保所有 hook 都执行完毕，即使某个 hook fail-closed 抛错
+    // 也不会导致其他正在执行的 hook 结果被静默丢弃
+    const results = await Promise.allSettled(promises);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        throw result.reason;
+      }
+    }
   }
   
   /**

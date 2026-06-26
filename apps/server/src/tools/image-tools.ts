@@ -359,8 +359,8 @@ export function registerImageTools(executor: AgentModelExecutor): void {
       }
 
       const options: ImageGenOptions = {
-        width: params.width ? Number(params.width) : undefined,
-        height: params.height ? Number(params.height) : undefined,
+        width: params.width ? (Number.isFinite(Number(params.width)) ? Number(params.width) : undefined) : undefined,
+        height: params.height ? (Number.isFinite(Number(params.height)) ? Number(params.height) : undefined) : undefined,
         provider: String(params.provider || ""),
         model: params.model ? String(params.model) : undefined,
       };

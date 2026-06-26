@@ -505,7 +505,8 @@ export async function handleSlashCommand(
         break;
       }
       const cpSessionId = args[0];
-      const cpIndex = args[1] ? parseInt(args[1], 10) : undefined;
+      const cpIndexRaw = args[1] ? parseInt(args[1], 10) : undefined;
+      const cpIndex = cpIndexRaw !== undefined && Number.isFinite(cpIndexRaw) ? cpIndexRaw : undefined;
       if (!cpSessionId) {
         reply = "用法: `/checkpoint <sessionId> [index]`\n使用 `/checkpoints` 查看所有执行";
         break;

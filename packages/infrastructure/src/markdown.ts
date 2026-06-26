@@ -207,11 +207,6 @@ export function chunkMarkdown(
         chunks.push(current.trimEnd());
         // Overlap: keep last N chars of previous chunk
         current = current.slice(-overlapChars) + para + "\n\n";
-        // Clean leading partial prefix
-        if (!current.startsWith(para)) {
-          const idx = current.indexOf(para);
-          if (idx > 0) current = current.slice(idx);
-        }
       }
     } else {
       current += para + "\n\n";

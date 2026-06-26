@@ -44,7 +44,12 @@ export class HotReloadManager {
       if (this.scheduledTimeout) {
         clearTimeout(this.scheduledTimeout);
       }
-      this.scheduledTimeout = setTimeout(() => { this.scheduledTimeout = null; this.processQueue(); }, 5000);
+      this.scheduledTimeout = setTimeout(() => {
+        this.scheduledTimeout = null;
+        void this.processQueue().catch((err) => {
+          process.stderr.write("[HotReloadManager] processQueue failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+        });
+      }, 5000);
       this.scheduledTimeout.unref();
     }
   }
