@@ -237,7 +237,9 @@ export default function ChannelMessagesPage() {
           setSelectedChannelId(list[0].id);
         }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.warn("[ChannelMessages] Failed to fetch channels:", err);
+    }
     setLoadingChannels(false);
   }, []);
 
@@ -264,7 +266,9 @@ export default function ChannelMessagesPage() {
         filtered.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
         setSessions(filtered);
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.warn("[ChannelMessages] Failed to fetch sessions:", err);
+    }
     setLoadingSessions(false);
   }, [channels, selectedChannelId]);
 
@@ -288,7 +292,9 @@ export default function ChannelMessagesPage() {
           : [];
         setSessionDetail({ sessionId, transcript, updatedAt: data?.updatedAt });
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.warn("[ChannelMessages] Failed to fetch session detail:", err);
+    }
     setLoadingMessages(false);
   }, [sessions]);
 

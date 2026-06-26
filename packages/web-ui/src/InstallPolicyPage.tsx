@@ -164,12 +164,17 @@ export default function InstallPolicyPage() {
       reason: newReason.trim() || "",
     };
     try {
-      await fetch(`${API}/api/install-policy/rules`, {
+      const res = await fetch(`${API}/api/install-policy/rules`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rule),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[InstallPolicy] Failed to add rule:", err);
+      showToast(t("installPolicy.addFail", "添加规则失败"), "error");
+      return;
+    }
     setSourceRules(prev => [...prev, rule]);
     setShowAddSource(false);
     setNewPattern("");
@@ -182,8 +187,14 @@ export default function InstallPolicyPage() {
 
   const handleDeleteSourceRule = async (rule: SourceRule) => {
     try {
-      await fetch(`${API}/api/install-policy/rules/${rule.id}`, { method: "DELETE" });
-    } catch { /* ignore */ }
+      const res = await fetch(`${API}/api/install-policy/rules/${rule.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[InstallPolicy] Failed to delete rule:", err);
+      showToast(t("installPolicy.removeFail", "删除规则失败"), "error");
+      setDeleteTarget(null);
+      return;
+    }
     setSourceRules(prev => prev.filter(r => r.id !== rule.id));
     setDeleteTarget(null);
     showToast(t("installPolicy.removeSuccess"), "success");
@@ -192,12 +203,17 @@ export default function InstallPolicyPage() {
   const handleTogglePermission = async (rule: PermissionRule) => {
     const updated = { ...rule, enabled: !rule.enabled };
     try {
-      await fetch(`${API}/api/install-policy/rules`, {
+      const res = await fetch(`${API}/api/install-policy/rules`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...updated, type: "permission" }),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[InstallPolicy] Failed to toggle permission:", err);
+      showToast(t("installPolicy.toggleFail", "切换权限失败"), "error");
+      return;
+    }
     setPermissionRules(prev => prev.map(r => r.id === rule.id ? updated : r));
     showToast(t("installPolicy.toggleSuccess"), "success");
   };

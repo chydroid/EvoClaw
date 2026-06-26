@@ -3,6 +3,47 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.57.8 (2026-06-26)
+
+### WebUI 深度代码审查 — 12 个静默失败 BUG 修复
+
+继 v0.57.7 架构优化后，对 WebUI 全部页面进行第二轮深度代码审查，发现并修复 **12 个系统性的"静默失败 + 虚假成功 toast"缺陷**。这是 v0.57.7 已识别但未完全根除的模式：API 调用失败后被 `catch { /* ignore */ }` 吞掉，用户却看到"操作成功"提示。
+
+#### 缺陷修复（12 个）
+
+**A. 虚假成功 toast — 操作失败仍显示"成功"（8 处，最高优先级）**
+
+- **[严重] InstallPolicyPage `handleAddSourceRule`**：POST 失败仍显示"添加成功"toast，用户误以为规则已生效。修复：检查 `res.ok`，失败时显示错误 toast 并 `return` 不更新本地状态
+- **[严重] InstallPolicyPage `handleDeleteSourceRule`**：同上模式，DELETE 失败仍显示"删除成功"
+- **[严重] InstallPolicyPage `handleTogglePermission`**：同上模式，PATCH 失败仍显示"已启用/已禁用"
+- **[严重] MCPScannerPage `handleAddBlacklist`**：POST 失败仍显示"已加入黑名单"
+- **[严重] MCPScannerPage `handleRemoveBlacklist`**：DELETE 失败仍显示"已移出黑名单"
+- **[高] TranscriptRedactorPage `handleEnableAll`**：批量启用部分失败被静默吞掉，显示"全部启用"。修复：追踪 `failCount`，部分失败显示"X 条失败"toast，并 `loadData()` 回滚到真实状态
+- **[高] TranscriptRedactorPage `handleDisableAll`**：同上模式
+- **[高] TranscriptRedactorPage `handleToggleRule`**：单条切换失败不回滚，UI 显示与服务器不一致。修复：检查 `res.ok`，失败时显示错误 toast 并调用 `loadData()` 回滚本地状态
+
+**B. 静默 catch 吞掉错误（3 处）**
+
+- **[中] ChannelMessagesPage**：`fetchChannels` / `fetchSessions` / `fetchSessionDetail` 三处 `catch { /* ignore */ }` 替换为 `catch (err) { console.warn(...) }`，便于诊断网络/API 故障
+- **[中] GuardrailsPage `loadData` + SecretsManagerPage `loadAudit` + WebChatPage 权限处理器**：5 处 `catch { /* ignore */ }` / `catch { /* silent */ }` 替换为 `console.warn` 日志
+- **[中] WebChatPage 会话创建失败**：`createSession` 失败无任何用户反馈。修复：catch 块调用 `showToast` 显示错误
+
+**C. 数据泄露 + 连接稳定性（2 处）**
+
+- **[高] LLMConfig `saveConfig` 数据泄露**：发送配置时将前端专用的 `catalog` 属性（目录元数据）一并 POST 到服务器，污染服务器配置。修复：`const { catalog, ...rest } = p` 剥离 `catalog` 后再发送
+- **[高] CanvasPage SSE 无自动重连**：SSE 连接断开后 `onerror` 不重连，画布更新永久停止。修复：`onerror` 触发 5 秒后自动重连，组件卸载时清除重连定时器；SSE 消息解析 `catch {}` 替换为 `console.warn`
+
+#### 修复模式总结
+
+所有 12 个 BUG 共享同一根因：**"乐观 UI 更新 + 静默错误处理"** — 操作先更新本地状态显示成功，API 失败后被 `catch { /* ignore */ }` 吞掉，既不回滚本地状态也不通知用户。修复统一采用：检查 `res.ok` → 失败显示错误 toast → 不更新/回滚本地状态 → `console.warn` 记录日志。
+
+#### 验证结果
+
+- ✅ `pnpm -r build` 通过
+- ✅ `pnpm typecheck` 全部通过
+- ✅ `pnpm test` 全部通过（3153 passed, 1 skipped, 0 failed）
+- ✅ 回归测试：受影响的 9 个页面 API 调用 + 错误反馈路径正常
+
 ## v0.57.7 (2026-06-26)
 
 ### WebUI 全面测试 + 架构优化

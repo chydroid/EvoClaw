@@ -678,21 +678,44 @@ export function CanvasPage() {
 
   useEffect(() => {
     if (a2uiMode) {
-      const es = new EventSource("/api/canvas/events");
-      es.onmessage = (e) => {
-        try {
-          const cmd = JSON.parse(e.data);
-          handleA2UICommand(cmd);
-        } catch {}
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let closed = false;
+
+      const connect = () => {
+        if (closed) return;
+        const es = new EventSource("/api/canvas/events");
+        es.onopen = () => {
+          setStatusMsg(t("canvas.a2ui_activated", "A2UI 模式已激活，SSE 已连接"));
+        };
+        es.onmessage = (e) => {
+          try {
+            const cmd = JSON.parse(e.data);
+            handleA2UICommand(cmd);
+          } catch (err) {
+            console.warn("[Canvas] Failed to parse SSE command:", err);
+          }
+        };
+        es.onerror = () => {
+          es.close();
+          sseRef.current = null;
+          if (!closed) {
+            setStatusMsg(t("canvas.sse_disconnected", "SSE 连接断开，5 秒后重连..."));
+            // 自动重连：5 秒后重新建立 SSE 连接
+            reconnectTimer = setTimeout(connect, 5000);
+          }
+        };
+        sseRef.current = es;
       };
-      es.onerror = () => {
-        setStatusMsg(t("canvas.sse_disconnected", "SSE 连接断开，尝试重连..."));
-      };
-      sseRef.current = es;
-      setStatusMsg(t("canvas.a2ui_activated", "A2UI 模式已激活，SSE 已连接"));
+
+      connect();
+
       return () => {
-        es.close();
-        sseRef.current = null;
+        closed = true;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (sseRef.current) {
+          sseRef.current.close();
+          sseRef.current = null;
+        }
       };
     } else {
       if (sseRef.current) {

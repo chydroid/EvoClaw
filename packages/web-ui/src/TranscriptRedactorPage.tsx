@@ -151,42 +151,66 @@ export default function TranscriptRedactorPage() {
 
   const handleEnableAll = async () => {
     const updates = rules.map(r => ({ name: r.name, enabled: true }));
-    setRules(prev => prev.map(r => ({ ...r, enabled: true })));
+    let failCount = 0;
     try {
       for (const u of updates) {
-        await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
+        const res = await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enabled: true }),
         });
+        if (!res.ok) failCount++;
       }
-    } catch { /* ignore */ }
-    showToast(t("redactor.enableAllSuccess"), "success");
+    } catch (err) {
+      console.warn("[TranscriptRedactor] Enable all failed:", err);
+    }
+    if (failCount > 0) {
+      showToast(t("redactor.enableAllPartial", "部分规则启用失败（{0}/{1}）").replace("{0}", String(failCount)).replace("{1}", String(updates.length)), "error");
+      loadData(); // 重新加载以获取实际状态
+    } else {
+      setRules(prev => prev.map(r => ({ ...r, enabled: true })));
+      showToast(t("redactor.enableAllSuccess"), "success");
+    }
   };
 
   const handleDisableAll = async () => {
     const updates = rules.map(r => ({ name: r.name, enabled: false }));
-    setRules(prev => prev.map(r => ({ ...r, enabled: false })));
+    let failCount = 0;
     try {
       for (const u of updates) {
-        await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
+        const res = await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(u.name)}/toggle`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enabled: false }),
         });
+        if (!res.ok) failCount++;
       }
-    } catch { /* ignore */ }
-    showToast(t("redactor.disableAllSuccess"), "info");
+    } catch (err) {
+      console.warn("[TranscriptRedactor] Disable all failed:", err);
+    }
+    if (failCount > 0) {
+      showToast(t("redactor.disableAllPartial", "部分规则禁用失败（{0}/{1}）").replace("{0}", String(failCount)).replace("{1}", String(updates.length)), "error");
+      loadData();
+    } else {
+      setRules(prev => prev.map(r => ({ ...r, enabled: false })));
+      showToast(t("redactor.disableAllSuccess"), "info");
+    }
   };
 
   const handleToggleRule = async (ruleName: string, enabled: boolean) => {
     try {
-      await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(ruleName)}/toggle`, {
+      const res = await fetch(`${API}/api/transcript-redactor/rules/${encodeURIComponent(ruleName)}/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[TranscriptRedactor] Toggle rule failed:", err);
+      showToast(t("redactor.toggleFail", "切换规则失败"), "error");
+      loadData(); // 回滚到服务器实际状态
+      return;
+    }
     setRules(prev => prev.map(r => r.name === ruleName ? { ...r, enabled } : r));
     showToast(t("redactor.toggleSuccess"), "success");
   };

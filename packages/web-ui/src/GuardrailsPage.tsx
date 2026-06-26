@@ -62,7 +62,9 @@ export default function GuardrailsPage() {
       ]);
       if (statsRes.stats) setStats(statsRes.stats);
       if (configRes.rules) setConfig(configRes as GuardrailConfig);
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.warn("[Guardrails] Failed to load data:", err);
+    }
     setLoading(false);
   }, []);
 

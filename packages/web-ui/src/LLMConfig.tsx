@@ -444,9 +444,10 @@ function LLMConfigPanel() {
     setSaving(true);
     setStatusMsg(null);
     try {
-      const payload = providers.map(p =>
-        p.apiKey === "****" ? { ...p, apiKey: undefined } : p
-      );
+      const payload = providers.map(p => {
+        const { catalog, ...rest } = p;
+        return p.apiKey === "****" ? { ...rest, apiKey: undefined } : rest;
+      });
       const res = await fetch("/api/config/llm", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

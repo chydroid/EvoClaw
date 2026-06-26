@@ -49,7 +49,9 @@ export default function SecretsManagerPage() {
     try {
       const res = await secretsApi.auditLogs();
       setAuditLogs(res.logs);
-    } catch { /* silent */ }
+    } catch (err) {
+      console.warn("[Secrets] Failed to load audit logs:", err);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);

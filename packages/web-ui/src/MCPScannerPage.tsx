@@ -151,12 +151,17 @@ export default function MCPScannerPage() {
   const handleAddBlacklist = async () => {
     if (!newPattern.trim()) return;
     try {
-      await fetch(`${API}/api/mcp-scanner/blacklist`, {
+      const res = await fetch(`${API}/api/mcp-scanner/blacklist`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pattern: newPattern.trim(), reason: newReason.trim() }),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[MCPScanner] Failed to add blacklist:", err);
+      showToast(t("mcpScanner.addFail", "添加黑名单失败"), "error");
+      return;
+    }
     setBlacklist(prev => [...prev, {
       id: `bl-${Date.now()}`, pattern: newPattern.trim(),
       reason: newReason.trim(), addedAt: new Date().toISOString(),
@@ -169,8 +174,13 @@ export default function MCPScannerPage() {
 
   const handleRemoveBlacklist = async (entry: BlacklistEntry) => {
     try {
-      await fetch(`${API}/api/mcp-scanner/blacklist/${entry.id}`, { method: "DELETE" });
-    } catch { /* ignore */ }
+      const res = await fetch(`${API}/api/mcp-scanner/blacklist/${entry.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[MCPScanner] Failed to remove blacklist:", err);
+      showToast(t("mcpScanner.removeFail", "删除黑名单失败"), "error");
+      return;
+    }
     setBlacklist(prev => prev.filter(b => b.id !== entry.id));
     setRemoveTarget(null);
     showToast(t("mcpScanner.removeSuccess"), "success");

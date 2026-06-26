@@ -15,6 +15,7 @@ import { renderMarkdown } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
 import { useVoice, isSpeechRecognitionSupported, type VoiceState } from "./useVoice";
 import { voiceApi, type VoiceApiResponse } from "./api-client";
+import { showToast } from "./shared";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -921,8 +922,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             onSessionCreated?.(sessionId);
           }
         }
-      } catch { /* ignore */ }
-      if (!sessionId) return;
+        if (!sessionId) {
+          showToast(t("chat.session_create_failed", "创建会话失败，请重试"), "error");
+          return;
+        }
+      } catch (err) {
+        console.warn("[Chat] Session creation failed:", err);
+        showToast(t("chat.session_create_failed", "创建会话失败，请重试"), "error");
+        return;
+      }
     }
 
     const attachmentsForMsg = readyFiles.length > 0 ? readyFiles.map(f => ({...f})) : undefined;
