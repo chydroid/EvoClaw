@@ -118,7 +118,12 @@ function saveImageToWorkspace(buffer: Buffer, prefix: string, ext: string): { fi
 
   const filename = generateFilename(prefix, ext);
   const outputPath = path.join(imageDir, filename);
-  fs.writeFileSync(outputPath, buffer);
+  try {
+    fs.writeFileSync(outputPath, buffer);
+  } catch (err) {
+    process.stderr.write('[image-tools] Failed to write file ' + outputPath + ': ' + err + '\n');
+    throw new Error('Failed to write output file');
+  }
 
   const stat = fs.statSync(outputPath);
   return { filename, path: outputPath, size: stat.size };
@@ -139,7 +144,7 @@ async function generateViaPollinations(
   const encodedPrompt = encodeURIComponent(prompt);
   const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${model}&nologo=true`;
 
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) {
     throw new Error(`Pollinations API error: ${response.status}`);
   }
@@ -170,6 +175,10 @@ async function generateViaFal(
   apiKey: string
 ): Promise<ImageGenResult> {
   const model = options.model || "fal-ai/flux/schnell";
+  // 校验 model 名防止 URL 注入：仅允许字母数字/连字符/下划线/斜线
+  if (!/^[A-Za-z0-9_\-\/]+$/.test(model)) {
+    return { success: false, provider: "fal", message: `Invalid model name: ${model}` };
+  }
   const width = options.width || 1024;
   const height = options.height || 1024;
 
@@ -185,11 +194,14 @@ async function generateViaFal(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Fal.ai API error ${response.status}: ${errText}`);
+    const status = response.status;
+    const body = await response.text();
+    process.stderr.write('[image-tools] API error (status ' + status + '): ' + body + '\n');
+    throw new Error('API request failed (status ' + status + ')');
   }
 
   const data = await response.json() as { images?: Array<{ url?: string }>; error?: string };
@@ -203,7 +215,7 @@ async function generateViaFal(
   }
 
   // 下载图片到本地
-  const imgResponse = await fetch(imageUrl);
+  const imgResponse = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000) });
   if (!imgResponse.ok) {
     throw new Error(`Failed to download image: ${imgResponse.status}`);
   }
@@ -252,11 +264,14 @@ async function generateViaReplicate(
         height,
       },
     }),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!createResponse.ok) {
-    const errText = await createResponse.text();
-    throw new Error(`Replicate API error ${createResponse.status}: ${errText}`);
+    const status = createResponse.status;
+    const body = await createResponse.text();
+    process.stderr.write('[image-tools] API error (status ' + status + '): ' + body + '\n');
+    throw new Error('API request failed (status ' + status + ')');
   }
 
   const prediction = await createResponse.json() as {
@@ -273,6 +288,7 @@ async function generateViaReplicate(
 
     const statusResponse = await fetch(prediction.urls.get, {
       headers: { "Authorization": `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!statusResponse.ok) continue;
@@ -287,7 +303,7 @@ async function generateViaReplicate(
       const outputUrl = Array.isArray(status.output) ? status.output[0] : status.output;
       if (!outputUrl) throw new Error("Replicate returned no output");
       // 下载图片到本地
-      const imgResponse = await fetch(outputUrl);
+      const imgResponse = await fetch(outputUrl, { signal: AbortSignal.timeout(60_000) });
       if (!imgResponse.ok) {
         throw new Error(`Failed to download image: ${imgResponse.status}`);
       }

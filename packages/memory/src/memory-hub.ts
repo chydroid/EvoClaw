@@ -58,12 +58,16 @@ export class MemoryHub {
     try {
       const { MemoryCuratorV2 } = require("./memory-curator-v2");
       this.memoryCuratorV2 = new MemoryCuratorV2();
-    } catch {}
+    } catch (err) {
+      process.stderr.write('[memory-hub] operation failed: ' + err + '\n');
+    }
 
     try {
       const { MemoryDreaming } = require("./memory-dreaming");
       this.memoryDreaming = new MemoryDreaming(this);
-    } catch { /* memory dreaming not available */ }
+    } catch (err) {
+      process.stderr.write('[memory-hub] operation failed: ' + err + '\n');
+    }
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
     // (all-MiniLM-L6-v2, 384-dim) when the model can be loaded. The status
@@ -354,12 +358,20 @@ export class MemoryHub {
     if (!this.memoryCuratorV2) return { retained: 0, decayed: 0, compressed: 0 };
     // Get all memories from long-term store
     const memories = await this.longTerm.search({ query: "", limit: 1000 });
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // 统一的年龄计算：非法 createdAt 视为 age=0（新条目），避免 NaN 导致后续 age>30 永远为 false
+    // 而旧记忆永不压缩（违反 Map 无限增长约束）。
+    const computeAge = (createdAt: unknown): number => {
+      if (!createdAt) return 0;
+      const t = new Date(createdAt as string).getTime();
+      return Number.isNaN(t) ? 0 : (Date.now() - t) / DAY_MS;
+    };
     const entries = memories.map(m => ({
       id: m.entry.id,
       content: m.entry.content,
       type: m.entry.type as string || "conversation",
       accessCount: 0,
-      age: m.entry.createdAt ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000) : 0,
+      age: computeAge(m.entry.createdAt),
       importance: m.entry.metadata?.importance as number | undefined,
     }));
     const curation = this.memoryCuratorV2.curateMemories(entries);
@@ -373,18 +385,14 @@ export class MemoryHub {
     // Compress old memories (age is in days, 30 days threshold)
     const oldEntries = surviving
       .filter(m => {
-        const age = m.entry.createdAt
-          ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000)
-          : 0;
+        const age = computeAge(m.entry.createdAt);
         return age > 30;
       })
       .map(m => ({
         id: m.entry.id,
         content: m.entry.content,
         type: (m.entry.type as string) || "conversation",
-        age: m.entry.createdAt
-          ? (Date.now() - new Date(m.entry.createdAt).getTime()) / (24 * 60 * 60 * 1000)
-          : 0,
+        age: computeAge(m.entry.createdAt),
       }));
     const compressed = this.memoryCuratorV2.compressOldMemories(oldEntries);
     // Persist compressed memories back: add the summary as a new entry and
@@ -419,7 +427,8 @@ export class MemoryHub {
     if (!kg || typeof (kg as any).reason !== "function") return null;
     try {
       return await (kg as any).reason(query);
-    } catch {
+    } catch (err) {
+      process.stderr.write('[memory-hub] operation failed: ' + err + '\n');
       return null;
     }
   }
@@ -437,5 +446,17 @@ export class MemoryHub {
   shouldDream(): boolean {
     if (!this.memoryDreaming) return false;
     return this.memoryDreaming.shouldDream();
+  }
+
+  /** 释放底层 SQLite 句柄与定时器，防止文件描述符泄漏 */
+  close(): void {
+    try { this.fts5.close(); } catch { /* ignore */ }
+    try {
+      const lt = this.longTerm as unknown as { close?: () => void | Promise<void> };
+      if (typeof lt?.close === "function") {
+        const r = lt.close();
+        if (r instanceof Promise) r.catch(() => { /* ignore */ });
+      }
+    } catch { /* ignore */ }
   }
 }

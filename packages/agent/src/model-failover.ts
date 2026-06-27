@@ -559,10 +559,12 @@ export class ModelFailoverManager {
    * Calculate retry delay with exponential backoff + jitter.
    */
   getRetryDelay(attempt: number): number {
-    const baseDelay = this.config.retryBaseDelayMs * Math.pow(2, attempt);
+    const safeAttempt = Math.max(0, Math.min(attempt, 30));
+    const baseDelay = this.config.retryBaseDelayMs * Math.pow(2, safeAttempt);
     const capped = Math.min(baseDelay, this.config.retryMaxDelayMs);
-    const jitter = capped * this.config.jitterFactor * Math.random();
-    return Math.floor(capped + jitter);
+    const safeJitterFactor = Math.max(0, Math.min(this.config.jitterFactor, 1));
+    const jitter = capped * safeJitterFactor * Math.random();
+    return Math.floor(Math.min(capped + jitter, this.config.retryMaxDelayMs));
   }
 
   // ── Health Checks ────────────────────────────────────────────────────

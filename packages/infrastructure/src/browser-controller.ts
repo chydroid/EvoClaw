@@ -173,7 +173,7 @@ export class BrowserController {
         });
       }
     } else {
-      const tagRegex = new RegExp(`<${selector}[^>]*>.*?</${selector}>|<${selector}[^>]*/>`, "gis");
+      const tagRegex = new RegExp(`<${escapeRegExp(selector)}[^>]*>.*?</${escapeRegExp(selector)}>|<${escapeRegExp(selector)}[^>]*/>`, "gis");
       const matches = body.match(tagRegex);
       if (matches) {
         for (const match of matches) {

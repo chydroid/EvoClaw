@@ -120,6 +120,10 @@ async function generateViaFal(
   apiKey: string
 ): Promise<VideoGenResult> {
   const model = options.model || "fal-ai/wan/v2.2/text-to-video";
+  // 校验 model 名防止 URL 注入：仅允许字母数字/连字符/下划线/斜线
+  if (!/^[A-Za-z0-9_\-\/]+$/.test(model)) {
+    return { success: false, provider: "fal", videoPath: "", downloadUrl: "", fileSize: 0, message: `Invalid model name: ${model}` };
+  }
 
   const body: Record<string, unknown> = {
     prompt,

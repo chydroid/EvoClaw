@@ -183,13 +183,26 @@ function matchesMimePattern(mimeType: string, patterns: string[]): boolean {
   return patterns.some((pattern) => {
     // Check if the pattern itself is a wildcard (e.g. "image/*")
     if (pattern.includes("*")) {
-      const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
-      return regex.test(mimeType);
+      // 先转义正则特殊字符，再将 * 转为 .*，避免恶意输入构造非法正则
+      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      try {
+        const regex = new RegExp("^" + escaped + "$");
+        return regex.test(mimeType);
+      } catch (err) {
+        process.stderr.write('[MediaRuntime] invalid mime pattern: ' + err + '\n');
+        return false;
+      }
     }
     // Check if the mimeType is a wildcard matching the pattern (e.g. mimeType="image/*" against pattern="image/jpeg")
     if (mimeType.includes("*")) {
-      const regex = new RegExp("^" + mimeType.replace(/\*/g, ".*") + "$");
-      return regex.test(pattern);
+      const escaped = mimeType.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      try {
+        const regex = new RegExp("^" + escaped + "$");
+        return regex.test(pattern);
+      } catch (err) {
+        process.stderr.write('[MediaRuntime] invalid mime pattern: ' + err + '\n');
+        return false;
+      }
     }
     return pattern === mimeType;
   });

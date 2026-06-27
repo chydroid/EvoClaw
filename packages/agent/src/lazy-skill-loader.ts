@@ -234,6 +234,8 @@ export class LazySkillLoader {
           resolve(undefined);
         }
       }, 50);
+      // 避免定时器阻止进程退出
+      interval.unref?.();
     });
   }
 

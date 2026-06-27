@@ -159,20 +159,44 @@ export class SkillOrchestrator {
         break;
       }
 
-      const results = await Promise.all(
+      // 使用 allSettled 而非 all：executeStep 内部已用 try/catch 返回失败 result，
+      // 但若 executeStep 自身抛出未捕获异常（如 mergeOutput/超时机制异常），
+      // Promise.all 会短路丢失已成功 step 的结果，导致 completed/failed/aggregatedOutput 不一致。
+      const settled = await Promise.allSettled(
         ready.map((step) => this.executeStep(step, aggregatedOutput, context))
       );
 
-      for (const result of results) {
-        stepResults.push(result);
-        remaining.delete(result.stepId);
+      for (const entry of settled) {
+        if (entry.status === "fulfilled") {
+          const result = entry.value;
+          stepResults.push(result);
+          remaining.delete(result.stepId);
 
-        if (result.success) {
-          completed.add(result.stepId);
-          const step = plan.steps.find((s) => s.id === result.stepId)!;
-          this.mergeOutput(aggregatedOutput, result.output, step.mergeStrategy);
+          if (result.success) {
+            completed.add(result.stepId);
+            const step = plan.steps.find((s) => s.id === result.stepId)!;
+            this.mergeOutput(aggregatedOutput, result.output, step.mergeStrategy);
+          } else {
+            failed.add(result.stepId);
+          }
         } else {
-          failed.add(result.stepId);
+          // executeStep 直接 reject 的兜底：构造失败 result 防止死锁检测误判
+          const reason = entry.reason;
+          const failedStep = ready.find((s) => !stepResults.some((r) => r.stepId === s.id));
+          if (failedStep) {
+            const result: StepResult = {
+              stepId: failedStep.id,
+              skillName: failedStep.skillName,
+              success: false,
+              output: null,
+              error: reason instanceof Error ? reason.message : String(reason),
+              duration: 0,
+              retries: 0,
+            };
+            stepResults.push(result);
+            remaining.delete(failedStep.id);
+            failed.add(failedStep.id);
+          }
         }
       }
     }

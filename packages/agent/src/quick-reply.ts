@@ -868,19 +868,33 @@ function formatAstronomyTime(iso: string): string {
 
 function astronomyHttpsGetJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    https
-      .get(url, (res) => {
-        let data = "";
-        res.on("data", (chunk) => { data += chunk; });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (e) {
-            reject(e instanceof Error ? e : new Error(String(e)));
-          }
-        });
-      })
-      .on("error", reject);
+    const ASTRONOMY_HTTP_TIMEOUT_MS = 15_000;
+    let settled = false;
+    // 使用 (url, callback) 签名以兼容测试 mock；超时通过 req.setTimeout 实现。
+    const req = https.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        if (settled) return;
+        settled = true;
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+    });
+    // 连接/响应超时：服务器建立 TCP 后不发数据（半开连接）会导致永久挂起，必须显式销毁
+    req.setTimeout(ASTRONOMY_HTTP_TIMEOUT_MS, () => {
+      if (settled) return;
+      settled = true;
+      req.destroy(new Error(`Astronomy request timed out after ${ASTRONOMY_HTTP_TIMEOUT_MS}ms`));
+    });
+    req.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 

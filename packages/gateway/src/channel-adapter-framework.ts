@@ -96,7 +96,9 @@ export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
 
   /** Dispatch an incoming message to all registered handlers */
   protected async dispatchMessage(msg: ChannelMessage): Promise<void> {
-    for (const handler of this.messageHandlers) {
+    // 快照 handlers：await 期间 addHandler/removeHandler 可能修改数组，
+    // 直接迭代原数组会触发迭代器并发修改错误或跳过/重复调用 handler。
+    for (const handler of [...this.messageHandlers]) {
       try {
         await handler(msg);
       } catch (err) {
@@ -109,7 +111,7 @@ export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
 
   /** Notify status change handlers */
   protected notifyStatusChange(status: "connected" | "disconnected" | "reconnecting" | "error"): void {
-    for (const handler of this.statusChangeHandlers) {
+    for (const handler of [...this.statusChangeHandlers]) {
       try {
         handler(status);
       } catch (err) {

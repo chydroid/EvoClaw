@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import type { ServiceRegistry } from "@evoclaw/core";
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
 function findFileRecursive(root: string, filename: string, maxDepth = 4): string | null {
@@ -86,11 +87,13 @@ function runPythonScriptAsync(
     let stderr = "";
     let settled = false;
 
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 5000);
+        sigkillTimer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 5000);
+        sigkillTimer.unref();
         const err = new Error(`Python script timed out after ${timeoutMs}ms`) as Error & { stderr: string };
         err.stderr = stderr;
         reject(err);
@@ -115,6 +118,7 @@ function runPythonScriptAsync(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
         if (code === 0) {
           resolve(stdout);
         } else {
@@ -131,6 +135,7 @@ function runPythonScriptAsync(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
         (err as Error & { stderr: string }).stderr = stderr;
         reject(err);
       }
@@ -139,8 +144,22 @@ function runPythonScriptAsync(
 }
 
 export function registerShellMediaTools(
-  executor: AgentModelExecutor
+  executor: AgentModelExecutor,
+  registry?: ServiceRegistry,
 ): void {
+  // ── SSRF 防护：解析服务注册表中的 ssrfProtection，对工具传入的 URL 做内网/元数据端点过滤 ──
+  const ssrfProtection = registry?.resolveService<{ checkURL(url: string): Promise<{ allowed: boolean; reason?: string }> }>("ssrfProtection");
+  const checkSsrf = async (url: string): Promise<string | null> => {
+    if (!ssrfProtection) return null;
+    try {
+      const result = await ssrfProtection.checkURL(url);
+      if (!result.allowed) return result.reason ?? "blocked by SSRF policy";
+    } catch {
+      return null; // SSRF 检查失败时不阻塞（best-effort）
+    }
+    return null;
+  };
+
   // ── shell_exec: 在安全前提下在沙箱外执行 shell 命令（支持 Python/Node.js） ──
   // 支持：1200s 超时、30s 进度反馈、超时续接
   executor.registerTool(
@@ -293,13 +312,15 @@ export function registerShellMediaTools(
 
         // 超时计时器
         let resolved = false;
+        let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
         const timer = setTimeout(() => {
           if (!resolved) {
             resolved = true;
             child.kill("SIGTERM");
-            setTimeout(() => {
+            sigkillTimer = setTimeout(() => {
               try { child.kill("SIGKILL"); } catch {}
             }, 5000);
+            sigkillTimer.unref();
             const partial = stdout.slice(-2000);
             const progressSeconds = Math.floor((Date.now() - startTime) / 1000);
             console.log(`[shell_exec] TIMEOUT after ${timeoutSec}s, partial output: ${stdout.length} chars`);
@@ -320,6 +341,7 @@ export function registerShellMediaTools(
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
+            if (sigkillTimer) clearTimeout(sigkillTimer);
             const output = stdout.trim();
             const errorOutput = stderr.trim();
             console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars`);
@@ -373,6 +395,12 @@ export function registerShellMediaTools(
       const selector = params.selector ? String(params.selector) : "";
       const extractLinks = String(params.extractLinks || "") === "true";
       const headless = String(params.headless || "") !== "false";
+
+      // SSRF 防护：阻止访问内网/元数据端点
+      const ssrfReason = await checkSsrf(url);
+      if (ssrfReason) {
+        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+      }
 
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
       const pythonPaths = findPythonPaths();
@@ -441,6 +469,12 @@ except Exception as e:
       if (!url) return { error: "URL is required" };
       const format = String(params.format || "best");
       const noWatermark = String(params.noWatermark || "true") === "true";
+
+      // SSRF 防护：阻止访问内网/元数据端点
+      const ssrfReason = await checkSsrf(url);
+      if (ssrfReason) {
+        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+      }
 
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
       const outputDir = path.join(workspaceDir, "downloads");
@@ -545,6 +579,14 @@ except Exception as e:
 
       // Check if query is a URL — if so, use video_download with extractAudio
       const isUrl = /^https?:\/\//i.test(query);
+
+      // SSRF 防护：当 query 是 URL 时阻止访问内网/元数据端点
+      if (isUrl) {
+        const ssrfReason = await checkSsrf(query);
+        if (ssrfReason) {
+          return { error: `URL blocked by security policy: ${ssrfReason}`, url: query };
+        }
+      }
 
       if (isUrl) {
         // Use video download script with extractAudio=true

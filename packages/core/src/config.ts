@@ -309,12 +309,23 @@ export class ConfigManager {
     const jwtSecret = process.env.JWT_SECRET;
     if (jwtSecret && jwtSecret.length >= 16) {
       this.config.auth.jwtSecret = jwtSecret;
+      // 同步覆盖 gateway.jwtSecret，否则 auth 与 gateway 会使用不同密钥，
+      // 导致 token 签发与校验不一致（认证失败难排查）。
+      this.config.gateway.jwtSecret = jwtSecret;
+    } else if (jwtSecret) {
+      // 用户显式设置了 JWT_SECRET 但长度不足 16，这里会静默保留默认弱密钥，
+      // 用户误以为已配置强密钥。生产环境拒绝启动，非生产环境显著告警。
+      const msg = `[Config] WARNING: JWT_SECRET is set but too short (${jwtSecret.length} < 16 chars). Falling back to default secret. Use a strong random secret >= 16 chars.`;
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(`[Config] FATAL: ${msg}`);
+      }
+      process.stderr.write(msg + "\n");
     }
     if (/dev|secret|change/i.test(this.config.auth.jwtSecret)) {
       if (process.env.NODE_ENV === "production") {
         throw new Error("[Config] FATAL: JWT secret uses default/weak value. Set JWT_SECRET env var with a strong random secret (>= 16 chars) before running in production.");
       }
-      process.stderr.write("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.");
+      process.stderr.write("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.\n");
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
     if (process.env.EvoClaw_MCP_ENABLED !== undefined) {

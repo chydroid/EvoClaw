@@ -3,6 +3,64 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.58.0 (2026-06-27)
+
+### 第十至十五轮代码审查 — 6 轮全量 Bug 扫描与修复
+
+本版本延续前 9 轮代码审查，连续进行 6 轮全量扫描，覆盖 14 个内部包 + 2 个应用。通过并行搜索代理发现并修复 **60+ 个隐藏 Bug**，涉及 SSRF、命令注入、认证旁路、数值精度、内存泄漏、错误处理完整性、防御性编码缺失等多个维度。
+
+#### 第 3 轮收尾 — 输入验证/注入向量/认证旁路
+
+- **[高] `shell-media-tools.ts` SSRF 防护补全**：`registerShellMediaTools` 签名添加 `registry?: ServiceRegistry` 参数；`scrapling_fetch` / `video_download` / `music_download`(URL 模式) 全部接入 `checkSsrf`，与 `web-tools.ts` 保持一致；`apps/server/src/index.ts` 调用方传入 `this.registry`
+
+#### 第 4 轮 — 数值精度 / off-by-one / 边界条件（20+ 个修复）
+
+- **[高] `dingtalk.ts:368` Number(createAt) 未校验 NaN，非数字字符串导致 `new Date(NaN).toISOString()` 抛 RangeError 崩溃整条消息处理** — 改用 `Number.isFinite` 守卫
+- **[高] `context-engine.ts:284` 除零 + 无上界**：`maxContextTokens=0` 配置错误时产生 `Infinity%` 警告 — 添加 `maxTokens > 0` 守卫 + `Math.min(999, ...)` 上界
+- **[高] `task-scheduler.ts:294` 利用率除零**：`maxTimePerBatchMs=0` 时 `Infinity` — 添加守卫返回 0
+- **[高] `constraint-gate.ts:61,68` 进化门禁除零失效**：`maxSkillSizeBytes=0` 让超大技能静默通过门禁 — 添加 `maxSize <= 0` 早返回
+- **[高] `media-processor.ts:353` ID3v2 帧解析越界读**：循环条件 `i < buffer.length` 不足以保证 `readUInt32BE(i+4)` 安全，当 `i` 落在缓冲区最后 7 字节时抛 `RangeError` — 改为 `i + headerSize <= scanLimit` + `i + 10 + frameSize > buffer.length` 守卫
+- **[高] 时间戳运算符优先级 Bug（7 处）**：`new Date(Number(x) * 1000 || Date.now())` 实际解析为 `new Date((Number(x) * 1000) || Date.now())`，当时间戳为 0 或被 `Number()` 转为 0 时错误回退到 `Date.now()`。涉及 `feishu.ts:540,677,713`、`wechat.ts:173,219`、`slack.ts:418`、`whatsapp.ts:332` — 全部改用 `Number.isFinite` 显式校验
+- **[中] `cost-tracker.ts:190` budgetLimit=0 返回 NaN** — 添加 `budgetLimit > 0` 守卫
+- **[中] `commitments.ts:99-101` 数据损坏时 NaN 时间戳导致过期承诺永不过期** — 添加 `Number.isFinite` 守卫，损坏时降级到 `Date.now()` 或 0
+- **[中] `task-analyzer.ts:489` totalSubtasks=0 时进度 NaN** — 添加守卫返回基础进度
+- **[中] `compaction-manager.ts:599` JSON.parse 后未 `Array.isArray` 校验直接 `.push()` 抛 TypeError** — 添加类型校验
+- **[中] `guardrails.ts:823,831` severityRank/actionRank switch 无 default 返回 undefined**：比较失效让本应阻止的操作通过 — 添加 `default: return 0`
+- **[中] `model-failover.ts:561` 重试退避无上界**：`jitterFactor` 异常导致 `Infinity` 重试风暴 — 添加 `attempt` 上界 30 + `jitterFactor` 钳制 [0,1] + 最终 `Math.min(..., retryMaxDelayMs)`
+- **[中] `security-governor.ts:111,113` Number() fail-open**：NaN 比较恒为 false 让安全条件静默判定不匹配 — 添加 `Number.isFinite` 双重校验
+- **[中] `self-healing.ts:342` parseFloat 链式 `||` 静默吞掉无效输入**：`"service.error_rate > foo"` 被解析为 `> 0` 误触发自愈 — 改用 `Number.isFinite` 显式校验
+- **[中] `dag-execution.ts:244-251` 类型断言 `as number` 掩盖运行时类型不匹配** — 改用 `typeof` 运行时校验
+- **[中] `long-term-memory.ts:62` JSON.parse 后未校验是否为对象** — 添加 `typeof item !== "object" || item === null || !item.id` 守卫
+- **[中] `memory-host-sdk.ts:382-384` Number() 时间戳无 NaN 保护** — 添加 `Number.isFinite` 守卫
+- **[低] `protocol-adapter.ts:1464` parseInt 无 radix + `limit=0` 被吞** — 改用 `parseInt(String(...), 10) || 20`
+
+#### 第 5 轮 — 内存泄漏 / 闭包 / stale 引用（7 个修复）
+
+- **[高] `llm-dispatcher.ts` callHistory 无上限无界增长** — 添加 `MAX_CALL_HISTORY = 1000` 上限，超量 `slice(-N)` 保留最新
+- **[高] `task-orchestrator.ts` executionHistory 无上限无界增长** — 添加 `MAX_EXECUTION_HISTORY = 1000` 上限
+- **[高] `skill-registry.ts` cache Map 永久累积过期项**：远程技能搜索的每次唯一查询组合都留下永久条目 — 添加 `CACHE_MAX_SIZE = 500` + `evictExpiredCacheEntries()` 淘汰策略
+- **[高] `protocol-adapter.ts:5066` createReadStream 缺 `res.on("close")` 兜底**：客户端中途断开时文件描述符挂起 — 添加 `res.on("close", () => stream.destroy())`
+- **[高] `memory-hub.ts` 无 close()/shutdown() 方法**：MemoryHub 实例销毁时 SQLite 句柄与 WAL 锁泄漏 — 新增 `close()` 方法调用 `fts5.close()` + `longTerm.close()`；`apps/server/src/index.ts` shutdown 序列接入调用
+- **[中] `learning-journal.ts:738` schedulePersist 排队的 setTimeout 未在 stop() 中清理**：1 秒后仍执行 `persistToDisk()` 与关闭流程竞争 — 新增 `pendingPersistTimer` 字段并在 `stop()` 中 `clearTimeout`
+- **[低] 多处 Map 迭代中删除当前 key（dispatch-dedupe-store、agent-model-executor、cross-session-rate-guard、channel-manager）**：按 ES 规范安全但属反模式 — 记录待后续优化
+
+#### 第 6 轮 — 错误处理完整性 / 防御性编码（10+ 个修复）
+
+- **[P0] `apps/server/src/index.ts:973-978` 关闭序列 5 个 await 无 try/catch**：任一抛错中断后续清理导致资源泄漏（socket、文件句柄、子进程残留） — 每个 await 单独 try/catch + 错误日志
+- **[P0] `feishu.ts:657` 消息循环 await 未隔离**：处理第 1 条消息抛错时后续消息全部被丢弃 — 每条 item 处理外层包 try/catch + 记录后 continue
+- **[P1] `email-client.ts:491` / `agent-observability.ts:592` finally 中 closeSync 可能抛错覆盖原始异常**：磁盘满时原始 write 错误被 close 错误覆盖 — `try { closeSync(fd) } catch { /* ignore */ }`
+- **[P1] `gateway-server.ts:647` /api/config/avatars 原型污染**：`{ ...this.avatarConfig, ...avatars }` 未过滤 `__proto__`/`constructor`/`prototype` — 显式过滤危险键
+- **[P1] `gateway-server.ts:1361` / `auth-provider.ts:132` Cookie 缺少 `secure: true`**：HTTP 连接上认证 token 可被中间人窃取 — 添加 `secure: process.env.NODE_ENV === "production"`
+- **[P1] `image-tools.ts:177` / `video-tools.ts:122` model 名直接拼接到 fetch URL**：`model` 含 `../`/`?`/`#` 可重定向到非预期端点 — 添加 `/^[A-Za-z0-9_\-\/]+$/` 白名单校验
+- **[P2] `weixin-plugin-adapter.ts:807` JSON.stringify 可能抛循环引用 TypeError 中断轮询** — 包裹 try/catch
+- **[P2] `progress-drafts.ts:329` / `task-status-tracker.ts:11` / `short-term-memory.ts:8` setInterval 回调无 try/catch**：异常让定时器静默停止导致 Map 无限增长 — 回调内层 try/catch + stderr 日志
+
+#### 验证
+
+- `pnpm -r build` 退出码 0
+- `pnpm typecheck` 退出码 0
+- 所有修改通过 TypeScript strict mode 编译
+
 ## v0.57.9 (2026-06-27)
 
 ### 第九轮代码审查 — 逻辑正确性（37 个 BUG 修复）

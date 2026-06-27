@@ -329,7 +329,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       from: msg.from,
       to: this.phoneNumberId,
       text,
-      timestamp: new Date((parseInt(msg.timestamp, 10) || 0) * 1000 || Date.now()).toISOString(),
+      timestamp: (Number.isFinite(parseInt(msg.timestamp, 10)) ? new Date(parseInt(msg.timestamp, 10) * 1000) : new Date()).toISOString(),
       isDirect: true,
       isGroup: false,
       replyTo: msg.context?.id,
@@ -414,8 +414,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
     for (const handler of this.statusHandlers) {
       try {
         handler(status);
-      } catch {
+      } catch (err) {
         // swallow
+        process.stderr.write('[WhatsApp] statusHandler failed: ' + err + '\n');
       }
     }
   }

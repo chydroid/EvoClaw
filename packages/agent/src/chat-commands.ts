@@ -240,6 +240,15 @@ export function dispatchCommand(
         }
         break;
       }
+      case "restart": {
+        // 重启 agent runtime：创建新会话并清空对话历史，
+        // 与 reset_session 行为一致，但语义上是完整重启。
+        const restartId = `sess_${Date.now()}`;
+        sessionManager.createSession("default", { sessionId: restartId });
+        (executor as any).currentSessionId = restartId;
+        (executor as any).conversationHistory = [];
+        break;
+      }
     }
   }
 

@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import * as path from "path";
 import * as fs from "fs";
 import * as dns from "dns";
+import { randomBytes } from "node:crypto";
 import { initTracing, shutdownTracing, spanCollector } from "./tracing";
 
 // IPv4 优先：避免 IPv6 DNS 解析延迟（借鉴 hermes-agent apply_ipv4_preference）
@@ -969,11 +970,12 @@ export class EvoClawServer {
     // Stop Weixin plugin adapter
     this.weixinPluginAdapter.stopAllMonitors();
     this.logger.info("server", "Stopping subsystems...");
-    await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server");
-    await this.processManager.killAll();
-    await this.gateway.stop();
-    await this.registry.stopAll();
-    await shutdownTracing();
+    try { await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server"); } catch (e) { this.logger.error("server", `Shutdown publish failed: ${e}`); }
+    try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }
+    try { await this.gateway.stop(); } catch (e) { this.logger.error("server", `gateway stop failed: ${e}`); }
+    try { await this.registry.stopAll(); } catch (e) { this.logger.error("server", `registry stopAll failed: ${e}`); }
+    try { this.memoryHub.close(); } catch { /* ignore */ }
+    try { await shutdownTracing(); } catch (e) { this.logger.error("server", `shutdownTracing failed: ${e}`); }
     this.logger.info("server", "Goodbye!");
   }
 
@@ -1151,7 +1153,8 @@ export class EvoClawServer {
     );
     registerWebTools(
       this.agentModelExecutor,
-      this.skillManager
+      this.skillManager,
+      this.registry
     );
     registerEmailTools(
       this.agentModelExecutor,
@@ -1454,7 +1457,8 @@ export class EvoClawServer {
           }
 
           const tmpDir = os.tmpdir();
-          const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}${ext || ".html"}`);
+          // 临时文件名使用 CSPRNG 生成不可预测后缀，防止攻击者预先创建同名符号链接劫持写入
+          const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}-${randomBytes(8).toString("hex")}${ext || ".html"}`);
           try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 15000);
@@ -1678,7 +1682,8 @@ export class EvoClawServer {
       this.skillIndex
     );
     registerShellMediaTools(
-      this.agentModelExecutor
+      this.agentModelExecutor,
+      this.registry
     );
     registerVideoTools(
       this.agentModelExecutor

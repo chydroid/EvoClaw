@@ -312,7 +312,7 @@ export class AuditCenter {
           "security.alert_triggered",
           { alert },
           "audit-center"
-        ).catch((err) => { console.debug("[AuditCenter] Alert event error:", err); });
+        ).catch((err) => process.stderr.write('[AuditCenter] event publish failed: ' + err + '\n'));
       }
     }
   }

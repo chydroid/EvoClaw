@@ -60,6 +60,7 @@ export class LongTermMemoryStore implements LongTermMemory {
           for (const row of rows) {
             try {
               const item = JSON.parse(row.data);
+              if (typeof item !== "object" || item === null || !item.id) continue;
               const entry: MemoryEntry = {
                 ...item,
                 createdAt: new Date(item.createdAt),
@@ -105,6 +106,8 @@ export class LongTermMemoryStore implements LongTermMemory {
     this.dirty = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => this.saveToDisk(), SAVE_DEBOUNCE_MS);
+    // unref 防止防抖定时器阻止进程优雅退出
+    this.saveTimer.unref();
   }
 
   private saveToDisk(): void {
@@ -385,6 +388,28 @@ export class LongTermMemoryStore implements LongTermMemory {
   /** Force immediate save */
   async flush(): Promise<void> {
     this.saveToDisk();
+  }
+
+  /**
+   * 释放资源：落盘 dirty 数据，清理 saveTimer，关闭 SQLite 连接。
+   * 长期运行服务在销毁实例时应调用，否则 SQLite 文件句柄与 WAL 锁会泄漏。
+   */
+  async close(): Promise<void> {
+    if (this.dirty) {
+      this.saveToDisk();
+    }
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.sqliteDb) {
+      try {
+        this.sqliteDb.close();
+      } catch {
+        // best effort
+      }
+      this.sqliteDb = null;
+    }
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

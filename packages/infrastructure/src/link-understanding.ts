@@ -163,10 +163,25 @@ export class LinkPreviewer {
             res.statusCode < 400 &&
             res.headers.location
           ) {
-            const redirectUrl = new URL(
-              res.headers.location,
-              url,
-            ).toString();
+            // 重定向目标可能是畸形 URL，new URL 会抛出；必须捕获并 resolve 以避免 Promise 永不结束
+            let redirectUrl: string;
+            try {
+              redirectUrl = new URL(
+                res.headers.location,
+                url,
+              ).toString();
+            } catch (err) {
+              resolve({
+                url,
+                title: "",
+                description: "",
+                contentType: "",
+                statusCode: res.statusCode || 0,
+                fetchDurationMs: Date.now() - start,
+                error: "Invalid redirect URL: " + (err instanceof Error ? err.message : String(err)),
+              });
+              return;
+            }
             if (!this.isDomainAllowed(new URL(redirectUrl).hostname)) {
               resolve({
                 url: redirectUrl,

@@ -460,7 +460,8 @@ export class CanvasManager {
       if (!fs.existsSync(this.indexPath)) return [];
       const raw = fs.readFileSync(this.indexPath, "utf-8");
       return JSON.parse(raw) as CanvasFile[];
-    } catch {
+    } catch (err) {
+      process.stderr.write('[CanvasManager] readIndex corrupt, starting fresh: ' + err + '\n');
       return [];
     }
   }

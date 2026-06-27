@@ -804,7 +804,9 @@ export class WeixinPluginAdapter {
       // 首次请求时打印完整响应结构
       if (!lastSeq) {
         process.stdout.write(`[Weixin] First getupdates response keys: ${Object.keys(data).join(", ")}`);
-        process.stdout.write(`[Weixin] Full first response (truncated): ${JSON.stringify(data).substring(0, 500)}`);
+        try {
+          process.stdout.write(`[Weixin] Full first response (truncated): ${JSON.stringify(data).substring(0, 500)}`);
+        } catch { /* circular ref or serialization error — skip */ }
       }
 
       // 只在有消息、错误或首次时打印日志
@@ -1085,6 +1087,10 @@ export class WeixinPluginAdapter {
     }, 5000);
     typingKeepalive.unref?.();
 
+    // 提升到 try 块外，便于 catch 块在超时日志中引用实际超时值
+    const weixinComplexity = estimateTaskComplexity(text);
+    const weixinChatTimeoutMs = weixinComplexity.timeoutMs;
+
     try {
       const chatContext: Record<string, unknown> = {
         sessionId: `weixin-${fromUserId}`,
@@ -1096,7 +1102,8 @@ export class WeixinPluginAdapter {
       }
 
       // ── 复杂度评估：与 WebUI 对齐，支持自适应超时和自动拆分 ──
-      const complexity = estimateTaskComplexity(text);
+      // 复用 try 块外已计算的 weixinComplexity，避免重复调用 estimateTaskComplexity
+      const complexity = weixinComplexity;
       chatContext.complexity = complexity.level;
       chatContext.shouldAutoSplit = complexity.shouldAutoSplit;
       chatContext.maxSubtasks = complexity.maxSubtasks;
@@ -1112,7 +1119,8 @@ export class WeixinPluginAdapter {
         if (llmUnderstanding) {
           firstFeedback = `📋 ${llmUnderstanding}`;
         }
-      } catch {
+      } catch (err) {
+        process.stderr.write('[Weixin] generateBriefUnderstanding failed: ' + err + '\n');
       }
       await this.sendMessage(account, fromUserId, firstFeedback, undefined);
     }
@@ -1207,12 +1215,12 @@ export class WeixinPluginAdapter {
             lastSentMsg = msg;
             recentSentMsgs.set(msg, now);
             anyProgressSent = true;
-            this.sendMessage(account, fromUserId, msg, undefined).catch(() => {});
+            this.sendMessage(account, fromUserId, msg, undefined).catch((err) => { process.stderr.write('[Weixin] sendMessage failed: ' + err + '\n'); });
           }
         }
       };
 
-      const WEIXIN_CHAT_TIMEOUT = complexity.timeoutMs;
+      const WEIXIN_CHAT_TIMEOUT = weixinChatTimeoutMs;
       let weixinTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       let result: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
       try {
@@ -1233,10 +1241,10 @@ export class WeixinPluginAdapter {
       // 避免 onProgress 已发送 "✅ 已完成N轮网络搜索" 后又发送 "✅ 网络搜索全部完成，共N轮" 造成重复
       if (!anyProgressSent) {
         if (searchCount > lastSearchReportRound) {
-          await this.sendMessage(account, fromUserId, `✅ 网络搜索全部完成，共${searchCount}轮`, undefined).catch(() => {});
+          await this.sendMessage(account, fromUserId, `✅ 网络搜索全部完成，共${searchCount}轮`, undefined).catch((err) => { process.stderr.write('[Weixin] sendMessage failed: ' + err + '\n'); });
         }
         if (fetchCount > lastFetchReportCount) {
-          await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, undefined).catch(() => {});
+          await this.sendMessage(account, fromUserId, `✅ 网页抓取全部完成，共${fetchCount}个`, undefined).catch((err) => { process.stderr.write('[Weixin] sendMessage failed: ' + err + '\n'); });
         }
       }
 
@@ -1278,7 +1286,20 @@ export class WeixinPluginAdapter {
             peerId: fromUserId,
           };
           try {
-            const retryResult = await this.agentExecutor.chat(text, retryContext);
+            // 重试路径同样需要 5 分钟超时包装，与主路径 WEIXIN_CHAT_TIMEOUT 保持一致，
+            // 否则 LLM 提供商卡死时用户在微信端会无限等待（违反 channel 消息处理硬约束）。
+            let retryTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+            let retryResult: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
+            try {
+              retryResult = await Promise.race([
+                this.agentExecutor.chat(text, retryContext),
+                new Promise<never>((_, reject) => {
+                  retryTimeoutHandle = setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT);
+                }),
+              ]);
+            } finally {
+              if (retryTimeoutHandle) clearTimeout(retryTimeoutHandle);
+            }
             const retryReply = typeof retryResult.reply === "string" ? retryResult.reply : String(retryResult.reply);
             const retryIsFallback = retryReply.includes("所有已启用的模型提供商均未能响应");
             if (!retryIsFallback) {
@@ -1301,7 +1322,7 @@ export class WeixinPluginAdapter {
       this.sendTypingCancel(account, fromUserId, message.context_token).catch(() => {});
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg === "WEIXIN_CHAT_TIMEOUT") {
-        process.stderr.write(`[Weixin] Chat timeout for ${fromUserId} after 300s`);
+        process.stderr.write(`[Weixin] Chat timeout for ${fromUserId} after ${Math.floor(weixinChatTimeoutMs / 1000)}s`);
         await this.sendMessage(
           account,
           fromUserId,
@@ -1672,10 +1693,10 @@ export class WeixinPluginAdapter {
           if (consecutiveErrors >= 3) {
             // 连续3次错误，退避30秒
             process.stderr.write("[Weixin] 3 consecutive errors, backing off 30s...");
-            await new Promise(resolve => setTimeout(resolve, 30000));
+            await this.backoffSleep(abortController.signal, 30000);
           } else {
             // 普通错误，2秒后重试
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await this.backoffSleep(abortController.signal, 2000);
           }
         }
       }
@@ -1691,6 +1712,23 @@ export class WeixinPluginAdapter {
     });
 
     process.stdout.write(`[Weixin] Monitor started for ${accountId}`);
+  }
+
+  /**
+   * 退避等待：unref 定时器避免阻止进程退出；监听 abort signal 以便
+   * stopMonitor 能立即取消退避，无需等待定时器自然到期（最坏 30s）。
+   */
+  private backoffSleep(signal: AbortSignal, ms: number): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref();
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /**

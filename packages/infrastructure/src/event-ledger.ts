@@ -129,7 +129,7 @@ export class EventLedger {
       appended.push(event);
 
       // Emit for real-time subscribers
-      this.eventBus?.publish("event-ledger", event, "event-ledger");
+      this.eventBus?.publish("event-ledger", event, "event-ledger")?.catch((err) => process.stderr.write('[EventLedger] event publish failed: ' + err + '\n'));
     }
 
     this.scheduleSave();

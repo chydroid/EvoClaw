@@ -366,9 +366,40 @@ export class InstallPolicyManager {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       // 只保留最近1000条
       const toWrite = this.auditLog.slice(-1000);
-      fs.writeFileSync(this.auditPath, JSON.stringify(toWrite, null, 2), "utf-8");
+      // 原子写入：temp + fsync + rename，防止崩溃时文件被截断
+      this.atomicWriteFileSync(this.auditPath, JSON.stringify(toWrite, null, 2));
     } catch (err) {
       // 静默失败,不阻塞主流程
+    }
+  }
+
+  /**
+   * 同步原子写入：temp + fsync + rename。
+   * 灵感来自 @evoclaw/infrastructure 的 atomicWriteFile 与 gateway 的 atomicWriteFileSync。
+   */
+  private atomicWriteFileSync(targetPath: string, content: string): void {
+    const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, content, "utf-8");
+      fs.fsyncSync(fd);
+    } catch (err) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
+    fs.closeSync(fd);
+    try {
+      if (fs.existsSync(targetPath)) {
+        const st = fs.statSync(targetPath);
+        fs.chmodSync(tmpPath, st.mode);
+      }
+    } catch { /* ignore */ }
+    try {
+      fs.renameSync(tmpPath, targetPath);
+    } catch (err: unknown) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
     }
   }
 

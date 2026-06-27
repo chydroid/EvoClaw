@@ -5,7 +5,11 @@ export class ShortTermMemoryStore implements ShortTermMemory {
   private cleanupInterval: NodeJS.Timeout;
 
   constructor() {
-    this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
+    this.cleanupInterval = setInterval(() => {
+      try { this.cleanup(); } catch (err) {
+        process.stderr.write(`[ShortTermMemory] cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }, 60_000);
     this.cleanupInterval.unref();
   }
 

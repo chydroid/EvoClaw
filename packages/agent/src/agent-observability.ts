@@ -589,7 +589,7 @@ export class AgentObservability {
         fs.writeFileSync(fd, serialized, "utf-8");
         fs.fsyncSync(fd);
       } finally {
-        fs.closeSync(fd);
+        try { fs.closeSync(fd); } catch { /* ignore close errors to not mask original */ }
       }
       try {
         fs.renameSync(tmpPath, filePath);
@@ -700,7 +700,10 @@ export class AgentObservability {
       const dir = path.join(process.cwd(), "data", "observability");
 
       // Ensure directory exists
-      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (err) {
+        // 创建目录失败时记录到 stderr
+        process.stderr.write("[AgentObservability] mkdir failed: " + err + "\n");
+      }
 
       // Append traces as JSONL
       const traceFile = path.join(dir, `traces-${new Date().toISOString().slice(0, 10)}.jsonl`);
@@ -724,8 +727,9 @@ export class AgentObservability {
           this.traces.set(sorted[i][0], sorted[i][1]);
         }
       }
-    } catch {
-      // Export failure should not crash the agent
+    } catch (err) {
+      // Export failure should not crash the agent，但记录到 stderr 以便排查
+      process.stderr.write("[AgentObservability] export failed: " + err + "\n");
     }
   }
 }

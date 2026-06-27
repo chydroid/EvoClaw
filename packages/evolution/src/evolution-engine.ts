@@ -497,18 +497,36 @@ export class EvolutionEngine {
 
       for (const candidate of candidates) {
         cycle.candidates.push(candidate);
-        await this.eventBus.publish(
-          SystemEvents.EVOLUTION_CANDIDATE_GENERATED,
-          { cycleId: cycle.id, candidate },
-          "evolution-engine"
-        );
+        try {
+          await this.eventBus.publish(
+            SystemEvents.EVOLUTION_CANDIDATE_GENERATED,
+            { cycleId: cycle.id, candidate },
+            "evolution-engine"
+          );
+        } catch (err) {
+          // 单个事件发布失败不应中断候选生成，否则 cycle.candidates 与后续评估列表不一致
+          process.stderr.write(`[EvolutionEngine] Failed to publish candidate event for ${candidate.id}: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
       }
 
       cycle.status = "evaluating";
       for (const candidate of candidates) {
-        const evaluation = await this.evaluator.evaluate(candidate);
+        let evaluation;
+        try {
+          evaluation = await this.evaluator.evaluate(candidate);
+        } catch (err) {
+          // 评估器崩溃不应中断整个循环，跳过该候选继续下一个
+          process.stderr.write(`[EvolutionEngine] Evaluator crashed for candidate ${candidate.id}: ${err instanceof Error ? err.message : String(err)}\n`);
+          continue;
+        }
         if (evaluation.passed) {
-          const gateResult = await this.constraintGate.validate(candidate);
+          let gateResult;
+          try {
+            gateResult = await this.constraintGate.validate(candidate);
+          } catch (err) {
+            process.stderr.write(`[EvolutionEngine] Constraint gate crashed for candidate ${candidate.id}: ${err instanceof Error ? err.message : String(err)}\n`);
+            continue;
+          }
           if (!gateResult.passed) {
             const failedGates = gateResult.results
               .filter((r) => !r.passed)

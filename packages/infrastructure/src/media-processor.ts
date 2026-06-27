@@ -350,12 +350,14 @@ export function parseAudioTags(buffer: Buffer): AudioTags {
   if (buffer.length > 10 && buffer.slice(0, 3).toString() === "ID3") {
     // ID3v2 is complex — this is a minimal extraction
     const headerSize = 10;
-    for (let i = headerSize; i < Math.min(buffer.length, headerSize + 512);) {
+    const scanLimit = Math.min(buffer.length, headerSize + 512);
+    for (let i = headerSize; i + headerSize <= scanLimit;) {
       const frameId = buffer.slice(i, i + 4).toString();
       if (frameId === "\0\0\0\0" || frameId[0] === "\0") break;
 
       const frameSize = buffer.readUInt32BE(i + 4);
       if (frameSize <= 0 || frameSize > 1024) break;
+      if (i + 10 + frameSize > buffer.length) break;
 
       const frameData = buffer.slice(i + 10, i + 10 + frameSize).toString("utf-8").replace(/\0/g, "");
 

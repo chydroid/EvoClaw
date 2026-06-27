@@ -55,7 +55,7 @@ export class ProcessManager {
         "process.exited",
         { id, name, exitCode: code },
         "process-manager"
-      ).catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
+      ).catch((err) => process.stderr.write('[ProcessManager] event publish failed: ' + err + '\n'));
       this.trimExited();
     });
 
@@ -67,7 +67,7 @@ export class ProcessManager {
         "process.error",
         { id, name, error: err.message },
         "process-manager"
-      ).catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
+      ).catch((err) => process.stderr.write('[ProcessManager] event publish failed: ' + err + '\n'));
       this.trimExited();
     });
 
@@ -102,7 +102,22 @@ export class ProcessManager {
   async kill(processId: string): Promise<void> {
     const proc = this.processes.get(processId);
     if (proc && proc.childProcess) {
-      proc.childProcess.kill();
+      const child = proc.childProcess;
+      // 先 SIGTERM，等待最多 5s，若未退出则 SIGKILL 强制终止。
+      // 仅发 SIGTERM 不等待 exit 会导致调用方误认为进程已终止，
+      // 而忽略 SIGTERM 的子进程会继续占用端口/文件。
+      try { child.kill("SIGTERM"); } catch { /* already dead */ }
+      await new Promise<void>((resolve) => {
+        const sigkillTimer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* already dead */ }
+          resolve();
+        }, 5000);
+        sigkillTimer.unref();
+        child.once("exit", () => {
+          clearTimeout(sigkillTimer);
+          resolve();
+        });
+      });
       proc.status = "stopped";
     }
   }

@@ -379,16 +379,21 @@ export class MemoryHost {
         if (Array.isArray(parsed)) {
           for (const entry of parsed) {
             if (entry.id) {
-              entry.createdAt = Number(entry.createdAt);
-              entry.updatedAt = Number(entry.updatedAt);
-              if (entry.expiresAt) entry.expiresAt = Number(entry.expiresAt);
+              const ct = Number(entry.createdAt);
+              entry.createdAt = Number.isFinite(ct) ? ct : Date.now();
+              const ut = Number(entry.updatedAt);
+              entry.updatedAt = Number.isFinite(ut) ? ut : Date.now();
+              if (entry.expiresAt) {
+                const et = Number(entry.expiresAt);
+                entry.expiresAt = Number.isFinite(et) ? et : 0;
+              }
               this.entries.set(entry.id, entry);
             }
           }
         }
       }
-    } catch {
-      // Start fresh
+    } catch (err) {
+      process.stderr.write('[memory-host-sdk] operation failed: ' + err + '\n');
     }
   }
 
@@ -397,6 +402,18 @@ export class MemoryHost {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 500);
     this.saveTimer.unref();
+  }
+
+  /**
+   * 释放资源：落盘 dirty 数据并清理 saveTimer。
+   */
+  dispose(): void {
+    if (this.dirty) {
+      this.flush();
+    } else if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
   }
 
   flush(): void {

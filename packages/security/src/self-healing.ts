@@ -339,7 +339,9 @@ export class SelfHealingManager {
 
       const variable = parts[0];
       const operator = parts[1];
-      const threshold = parseFloat(parts[2]) || (parts[2] === "false" ? 0 : parseFloat(parts[2]) || 0);
+      const rawThreshold = parts[2];
+      const parsedThreshold = parseFloat(rawThreshold);
+      const threshold = Number.isFinite(parsedThreshold) ? parsedThreshold : (rawThreshold === "false" ? 0 : 0);
 
       let value: number;
 

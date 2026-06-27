@@ -95,6 +95,7 @@ class TaskCheckpointManager {
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
         } catch (fallbackErr) {
           try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           throw fallbackErr;
         }
       }

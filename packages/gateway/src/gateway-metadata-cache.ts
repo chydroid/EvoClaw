@@ -334,7 +334,7 @@ export class GatewayMetadataCache {
         }
       }
       this.stats.persistReads++;
-    } catch { /* 静默失败 */ }
+    } catch (err) { process.stderr.write('[GatewayMetadataCache] loadFromDisk failed: ' + err + '\n'); }
   }
 
   // ─── 统计 ───

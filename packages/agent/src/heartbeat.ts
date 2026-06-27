@@ -92,6 +92,8 @@ export class HeartbeatManager {
         })
         .finally(() => { this.heartbeatRunning = false; });
     }, this.intervalMs);
+    // unref 防止心跳定时器阻止进程优雅退出（依赖 stop() 才能清理时，SIGTERM 期间会卡住）
+    this.timer.unref();
     process.stdout.write(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})`);
   }
 

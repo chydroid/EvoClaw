@@ -132,7 +132,16 @@ export async function nativeFetch(
             statusText: res.statusMessage || "",
             body: bodyStream,
             text: async () => buffer.toString("utf-8"),
-            json: async () => JSON.parse(buffer.toString("utf-8")),
+            json: async () => {
+              const text = buffer.toString("utf-8");
+              try {
+                return JSON.parse(text);
+              } catch (err) {
+                throw new Error(
+                  `Response body is not valid JSON: ${err instanceof Error ? err.message : String(err)} (body preview: ${text.slice(0, 200)})`,
+                );
+              }
+            },
           };
           resolve(response);
         });

@@ -141,6 +141,7 @@ export class QQAdapter implements ChannelAdapter {
           Authorization: `Bot ${this.config.appId}.${this.config.token}`,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const data = await res.json() as { id?: string; code?: number; message?: string };
@@ -164,6 +165,7 @@ export class QQAdapter implements ChannelAdapter {
     try {
       const res = await fetch(`${this.baseURL}/gateway`, {
         headers: { Authorization: `Bot ${this.config.appId}.${this.config.token}` },
+        signal: AbortSignal.timeout(10_000),
       });
       if (res.ok) {
         return { healthy: true, message: "QQ Bot gateway is reachable" };
@@ -192,6 +194,8 @@ export class QQAdapter implements ChannelAdapter {
       // First get the WebSocket gateway URL
       const gwRes = await fetch(`${this.baseURL}/gateway`, {
         headers: { Authorization: `Bot ${this.config.appId}.${this.config.token}` },
+        // connect() 在 start() 路径上，无超时会导致适配器启动永久挂起
+        signal: AbortSignal.timeout(10_000),
       });
       const gwData = await gwRes.json() as { url?: string };
 
@@ -209,8 +213,9 @@ export class QQAdapter implements ChannelAdapter {
         try {
           const payload = JSON.parse(event.data as string) as QQGatewayPayload;
           this.handlePayload(payload);
-        } catch {
+        } catch (err) {
           // Ignore parse errors
+          process.stderr.write('[QQ] parse error: ' + err + '\n');
         }
       };
 

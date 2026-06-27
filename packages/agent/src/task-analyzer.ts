@@ -486,7 +486,7 @@ export async function executeSubtasksFromCheckpoint(
       continue;
     }
 
-    const baseProgress = 20 + Math.floor((i / checkpoint.totalSubtasks) * 70);
+    const baseProgress = checkpoint.totalSubtasks > 0 ? 20 + Math.floor((i / checkpoint.totalSubtasks) * 70) : 20;
     taskStatusTracker.set(sessionId, "subtask_executing", `执行子任务 ${i + 1}/${checkpoint.totalSubtasks}: ${subtask.description}`, baseProgress, i, checkpoint.totalSubtasks, subtask.description);
     onProgress?.({ type: "subtask_start", phase: "subtask_executing", detail: `开始子任务 ${i + 1}/${checkpoint.totalSubtasks}: ${subtask.description}`, progress: baseProgress, subtaskIndex: i, subtaskTotal: checkpoint.totalSubtasks });
 

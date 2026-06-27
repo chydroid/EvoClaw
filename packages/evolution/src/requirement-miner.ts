@@ -188,7 +188,8 @@ export class RequirementMiner {
           llmAnalysis: parsed.analysis,
         },
       ];
-    } catch {
+    } catch (err) {
+      process.stderr.write('[requirement-miner] operation failed: ' + err + '\n');
       return [];
     }
   }
@@ -257,7 +258,8 @@ export class RequirementMiner {
       const executor = this.registry.resolveService<LLMExecutor>("agentModelExecutor");
       if (!executor || typeof executor.execute !== "function") return null;
       return executor;
-    } catch {
+    } catch (err) {
+      process.stderr.write('[requirement-miner] operation failed: ' + err + '\n');
       return null;
     }
   }

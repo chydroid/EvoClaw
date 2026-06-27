@@ -101,7 +101,16 @@ export class ActorSystem {
       // 导致该消息永久滞留。此处重新触发处理以避免消息丢失。
       const mailbox = this.mailboxes.get(actorId);
       if (mailbox && mailbox.length > 0) {
-        void this.processMessages(actorId).catch(() => {});
+        // 避免吞掉错误，记录到 stderr 以便排查
+        void this.processMessages(actorId).catch((err) => {
+          process.stderr.write(
+            "[ActorSystem] processMessages failed for " +
+              actorId +
+              ": " +
+              (err instanceof Error ? err.message : String(err)) +
+              "\n",
+          );
+        });
       }
     }
   }

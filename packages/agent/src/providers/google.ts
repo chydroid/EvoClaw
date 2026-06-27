@@ -561,7 +561,9 @@ export class GoogleProvider implements ProviderPlugin {
       case "MAX_TOKENS": return "length";
       case "SAFETY": return "content_filter";
       case "RECITATION": return "content_filter";
-      default: return "stop";
+      // Google API 可能返回 OTHER / FINISH_REASON_UNSPECIFIED 等未知原因，
+      // 误映射为 "stop" 会掩盖真实终止原因并误导下游逻辑（如判断是否成功完成）。
+      default: return "error";
     }
   }
 

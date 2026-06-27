@@ -1,6 +1,7 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus, FeatureFlagStore } from "@evoclaw/core";
 import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager } from "@evoclaw/agent";
+import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
 import { spawn } from "child_process";
@@ -1117,8 +1118,8 @@ export class ProtocolAdapter {
 
   private authProvider: {
     generateToken(userId: string, roles?: string[]): string;
-    generateRefreshToken(userId: string): string;
-    verifyToken(token: string): { userId: string; roles: string[] };
+    generateRefreshToken(userId: string, roles?: string[]): string;
+    verifyToken(token: string): { userId: string; roles: string[]; type?: "refresh" };
   } | null = null;
 
   private getAuthProvider(): typeof this.authProvider {
@@ -1174,7 +1175,7 @@ export class ProtocolAdapter {
         }
         this.migrationVersion = saved.version || 0;
       }
-    } catch { /* start fresh */ }
+    } catch (err) { /* start fresh */ process.stderr.write('[ProtocolAdapter] migration store corrupt: ' + err + '\n'); }
 
     // Detect version change and create migration record
     try {
@@ -1434,7 +1435,11 @@ export class ProtocolAdapter {
         return acc;
       }, {});
       const tokenFromCookie = cookies["web_ui_token"];
-      if (tokenFromCookie && tokenFromCookie === webUiToken) {
+      // 使用常量时间比较防止计时攻击逐字节枚举 token
+      const tokensMatch = tokenFromCookie && webUiToken && tokenFromCookie.length === webUiToken.length
+        ? crypto.timingSafeEqual(Buffer.from(tokenFromCookie), Buffer.from(webUiToken))
+        : false;
+      if (tokensMatch) {
         res.json({ authenticated: true });
       } else {
         res.status(401).json({ authenticated: false, error: "Invalid or missing token" });
@@ -1456,7 +1461,7 @@ export class ProtocolAdapter {
         // If keyword parameter is provided, perform search
         const keyword = req.query.keyword as string;
         if (keyword) {
-          const query = { keyword, limit: parseInt(req.query.limit as string) || 20 };
+          const query = { keyword, limit: parseInt(String(req.query.limit), 10) || 20 };
           const localResults = await skillManager.searchLocalSkills(query);
           const remoteResults = await skillManager.searchRemoteSkills(query);
           res.json({ 
@@ -1872,7 +1877,7 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Query parameter 'q' is required" });
           return;
         }
-        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        await skillManager.getMarketplace().refreshCatalog().catch((err) => { process.stderr.write('[ProtocolAdapter] refreshCatalog failed: ' + err + '\n'); });
         const results = skillManager.searchMarketplace(q, category);
         res.json({ success: true, results });
       } catch (err) {
@@ -1910,7 +1915,7 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        await skillManager.getMarketplace().refreshCatalog().catch((err) => { process.stderr.write('[ProtocolAdapter] refreshCatalog failed: ' + err + '\n'); });
         const limit = parseInt(req.query.limit as string, 10) || 10;
         const trending = skillManager.getMarketplace().getTrending(limit);
         res.json({ success: true, trending });
@@ -1928,7 +1933,7 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        await skillManager.getMarketplace().refreshCatalog().catch(() => {});
+        await skillManager.getMarketplace().refreshCatalog().catch((err) => { process.stderr.write('[ProtocolAdapter] refreshCatalog failed: ' + err + '\n'); });
         const categories = skillManager.getMarketplace().getCategories();
         res.json({ success: true, categories });
       } catch (err) {
@@ -2232,6 +2237,8 @@ export class ProtocolAdapter {
             keepAliveHandle = setInterval(() => {
               sendSSE("working", { phase: "working", detail: "仍在处理中，请继续等待..." });
             }, 20_000);
+            // unref 防止 keepAlive 定时器阻止进程优雅退出（请求挂起期间会一直 tick）
+            keepAliveHandle.unref();
 
             const result = await Promise.race([
               agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
@@ -5066,6 +5073,8 @@ export class ProtocolAdapter {
           }
           process.stderr.write("[ProtocolAdapter] createReadStream error for" + " " + fullPath + ":" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
         });
+        // 客户端中途断开时销毁读取流，防止文件描述符泄漏
+        res.on("close", () => { if (!stream.destroyed) stream.destroy(); });
         stream.pipe(res);
       } catch (err) {
         this.handleError(err, res, "Failed to download file");
@@ -6424,17 +6433,19 @@ export class ProtocolAdapter {
       });
       res.write("data: {\"type\":\"connected\"}\n\n");
 
+      // 与 chat SSE 一致，每条 write 包 try/catch：客户端断连后 res.write
+      // 会抛 ERR_STREAM_WRITE_AFTER_END，若不捕获会变成未处理异常。
       const onFileChanged = (evt: { projectId: string; filename: string }) => {
-        res.write(`data: ${JSON.stringify({ type: "file-changed", ...evt })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ type: "file-changed", ...evt })}\n\n`); } catch { /* client gone */ }
       };
       const onProjectCreated = (project: any) => {
-        res.write(`data: ${JSON.stringify({ type: "project-created", projectId: project.id })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ type: "project-created", projectId: project.id })}\n\n`); } catch { /* client gone */ }
       };
       const onProjectDeleted = (id: string) => {
-        res.write(`data: ${JSON.stringify({ type: "project-deleted", projectId: id })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ type: "project-deleted", projectId: id })}\n\n`); } catch { /* client gone */ }
       };
       const onA2uiPush = (evt: { projectId: string; data: any; timestamp: number }) => {
-        res.write(`data: ${JSON.stringify({ type: "a2ui-push", ...evt })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ type: "a2ui-push", ...evt })}\n\n`); } catch { /* client gone */ }
       };
 
       this.canvasHost.on("file-changed", onFileChanged);

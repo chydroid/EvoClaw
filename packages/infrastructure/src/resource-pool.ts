@@ -126,7 +126,13 @@ export class ResourcePool<T> extends EventEmitter {
 
     if (this.config.idleTimeoutMs > 0 && this.config.scavengeIntervalMs > 0) {
       this.scavengeTimer = setInterval(
-        () => this.scavenge(),
+        () => {
+          // scavenge 是 async，丢弃的 Promise 若 reject 会变成 unhandledRejection，
+          // 可能导致进程崩溃。这里捕获并记录错误。
+          this.scavenge().catch((err) => {
+            process.stderr.write(`[ResourcePool] scavenge failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          });
+        },
         this.config.scavengeIntervalMs,
       );
       this.scavengeTimer.unref();

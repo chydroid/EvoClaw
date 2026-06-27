@@ -248,6 +248,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
 // ── LLM Dispatcher ─────────────────────────────────────────
 
 export class LLMDispatcher {
+  private static readonly MAX_CALL_HISTORY = 1000;
   private config: LLMDispatchConfig;
   private callHistory: Array<{
     taskId: string;
@@ -300,6 +301,9 @@ export class LLMDispatcher {
           durationMs,
           success: true,
         });
+        if (this.callHistory.length > LLMDispatcher.MAX_CALL_HISTORY) {
+          this.callHistory = this.callHistory.slice(-LLMDispatcher.MAX_CALL_HISTORY);
+        }
 
         // Parse the response into a SubTaskResult
         const result = this.parseResponse(response, task, durationMs);
@@ -324,6 +328,9 @@ export class LLMDispatcher {
           durationMs: Date.now() - startTime,
           success: false,
         });
+        if (this.callHistory.length > LLMDispatcher.MAX_CALL_HISTORY) {
+          this.callHistory = this.callHistory.slice(-LLMDispatcher.MAX_CALL_HISTORY);
+        }
 
         if (attempt <= this.config.maxRetries) {
           const delay = this.config.retryBaseDelayMs * Math.pow(2, attempt - 1);
@@ -357,9 +364,21 @@ export class LLMDispatcher {
     const completed = new Set<Promise<void>>();
 
     for (const request of requests) {
-      const promise = this.dispatch(request).then(result => {
-        results.push(result);
-      });
+      const promise = this.dispatch(request).then(
+        (result) => { results.push(result); },
+        (err) => {
+          // dispatch 失败时必须填充对应的失败结果，否则 results 长度与
+          // requests 不一致，调用方无法定位哪个任务失败，错误被静默丢弃。
+          results.push({
+            success: false,
+            output: null,
+            artifacts: [],
+            issues: [err instanceof Error ? err.message : String(err)],
+            suggestions: [],
+            durationMs: 0,
+          });
+        },
+      );
 
       const tracked: Promise<void> = promise.then(
         () => { completed.add(tracked); },

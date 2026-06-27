@@ -537,7 +537,7 @@ export class FeishuAdapter implements ChannelAdapter {
       from: senderId,
       to: chatId ?? "direct",
       text: parsed.text,
-      timestamp: createTime ? new Date(Number(createTime) * 1000 || Date.now()).toISOString() : new Date().toISOString(),
+      timestamp: createTime ? (Number.isFinite(Number(createTime)) ? new Date(Number(createTime) * 1000).toISOString() : new Date().toISOString()) : new Date().toISOString(),
       isDirect: !isGroup,
       isGroup,
       groupId: isGroup ? chatId : undefined,
@@ -654,7 +654,11 @@ export class FeishuAdapter implements ChannelAdapter {
 
     if (data.code === 0 && data.data?.items) {
       for (const item of data.data.items) {
-        await this.processMessageRecord(item);
+        try {
+          await this.processMessageRecord(item);
+        } catch (err) {
+          process.stderr.write(`[FeishuChannel] Failed to process message record: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
       }
     }
   }
@@ -674,7 +678,7 @@ export class FeishuAdapter implements ChannelAdapter {
       from: record.sender?.id ?? "unknown",
       to: isGroup ? (record.chat_id ?? "group") : "direct",
       text: content.text,
-      timestamp: new Date(Number(record.create_time) * 1000 || Date.now()).toISOString(),
+      timestamp: (Number.isFinite(Number(record.create_time)) ? new Date(Number(record.create_time) * 1000) : new Date()).toISOString(),
       isDirect: !isGroup,
       isGroup,
       groupId: isGroup ? record.chat_id : undefined,
@@ -710,7 +714,7 @@ export class FeishuAdapter implements ChannelAdapter {
       from: event.sender?.sender_id?.open_id ?? "unknown",
       to: msgBody.chat_id ?? "direct",
       text: content.text,
-      timestamp: new Date(Number(msgBody.create_time) * 1000 || Date.now()).toISOString(),
+      timestamp: (Number.isFinite(Number(msgBody.create_time)) ? new Date(Number(msgBody.create_time) * 1000) : new Date()).toISOString(),
       isDirect: msgBody.chat_type !== "group",
       isGroup: msgBody.chat_type === "group",
       groupId: msgBody.chat_type === "group" ? msgBody.chat_id : undefined,

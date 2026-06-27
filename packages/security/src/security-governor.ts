@@ -107,10 +107,16 @@ export class SecurityGovernor {
         return actual === condition.value;
       case "contains":
         return typeof actual === "string" && actual.includes(String(condition.value));
-      case "gt":
-        return Number(actual) > Number(condition.value);
-      case "lt":
-        return Number(actual) < Number(condition.value);
+      case "gt": {
+        const a = Number(actual);
+        const b = Number(condition.value);
+        return Number.isFinite(a) && Number.isFinite(b) && a > b;
+      }
+      case "lt": {
+        const a = Number(actual);
+        const b = Number(condition.value);
+        return Number.isFinite(a) && Number.isFinite(b) && a < b;
+      }
       case "in":
         return Array.isArray(condition.value) && condition.value.includes(actual);
       case "exists":

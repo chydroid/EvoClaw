@@ -581,6 +581,8 @@ export class SwarmOrchestrator {
 
   start(): void {
     this.heartbeatTimer = setInterval(() => this.checkHeartbeats(), 5000);
+    // 避免定时器阻止进程退出
+    this.heartbeatTimer.unref?.();
   }
 
   stop(): void {

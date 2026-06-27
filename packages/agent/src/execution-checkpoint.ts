@@ -248,9 +248,15 @@ export class ExecutionCheckpointStore {
           } else {
             fs.unlinkSync(path.join(this.storeDir, file));
           }
-        } catch { /* skip corrupt files */ }
+        } catch (err) {
+          /* skip corrupt files */
+          process.stderr.write("[ExecutionCheckpoint] load failed: " + err + "\n");
+        }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      /* ignore */
+      process.stderr.write("[ExecutionCheckpoint] load failed: " + err + "\n");
+    }
     process.stdout.write(`[ExecutionCheckpointStore] Loaded ${this.activeExecutions.size} execution states from disk`);
   }
 }

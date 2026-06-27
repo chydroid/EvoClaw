@@ -599,7 +599,8 @@ export class CompactionManager {
       let existing: CompactionSummary[] = [];
       if (fs.existsSync(filePath)) {
         try {
-          existing = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          if (Array.isArray(parsed)) existing = parsed;
         } catch (err) { process.stderr.write(`[CompactionManager] Failed to parse existing compaction file "${filePath}":` + " " + err); }
       }
 

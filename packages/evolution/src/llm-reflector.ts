@@ -199,7 +199,8 @@ export class LLMReflector {
       if (!executor) return null;
       if (typeof executor.getProviders !== "function") return null;
       return executor;
-    } catch {
+    } catch (err) {
+      process.stderr.write('[llm-reflector] operation failed: ' + err + '\n');
       return null;
     }
   }

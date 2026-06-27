@@ -105,8 +105,14 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
       params,
     };
 
-    for (const client of this.sseClients) {
-      client.write(`data: ${JSON.stringify(message)}\n\n`);
+    // 迭代快照：避免 write 抛错时修改 sseClients 导致迭代器失效；
+    // 每条 write 包 try/catch 防止单个客户端断连中断整个广播。
+    for (const client of [...this.sseClients]) {
+      try {
+        client.write(`data: ${JSON.stringify(message)}\n\n`);
+      } catch {
+        this.sseClients.delete(client);
+      }
     }
   }
 
@@ -130,8 +136,12 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
 
       this.pendingRequests.set(id, { resolve, reject, timer });
 
-      for (const client of this.sseClients) {
-        client.write(`data: ${JSON.stringify(message)}\n\n`);
+      for (const client of [...this.sseClients]) {
+        try {
+          client.write(`data: ${JSON.stringify(message)}\n\n`);
+        } catch {
+          this.sseClients.delete(client);
+        }
       }
     });
   }

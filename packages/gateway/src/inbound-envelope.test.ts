@@ -178,6 +178,8 @@ describe("Inbound Envelope", () => {
       const env = createInboundEnvelope(makeMsg());
       const json = serializeEnvelope(env);
       const restored = deserializeEnvelope(json);
+      expect(restored).not.toBeNull();
+      if (!restored) throw new Error("expected non-null envelope");
       expect(restored.envelopeId).toBe(env.envelopeId);
       expect(restored.intent).toBe(env.intent);
       expect(restored.message.text).toBe(env.message.text);

@@ -295,6 +295,8 @@ export class OutboundRouter {
       case "active": score += 15; break;
       case "degraded": score -= 25; break;
       case "down": score = -999; break;
+      // 未知状态不加分，避免状态不明的渠道被误判为高优先级而承接流量
+      default: break;
     }
 
     return Math.max(0, Math.min(100, Math.round(score)));

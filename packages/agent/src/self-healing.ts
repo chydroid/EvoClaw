@@ -312,8 +312,9 @@ export class SelfHealingEngine extends EventEmitter {
             try {
               const fbResult = await options.recoveryHints.fallback();
               return { result: fbResult, recovered: true, strategy: "fallback", attempts: attempt + 1, error: lastError };
-            } catch {
+            } catch (err) {
               // Fallback also failed
+              process.stderr.write("[SelfHealing] recovery strategy fallback failed: " + err + "\n");
             }
           }
 
@@ -321,8 +322,9 @@ export class SelfHealingEngine extends EventEmitter {
             try {
               const cacheResult = await options.recoveryHints.cache_serve();
               return { result: cacheResult, recovered: true, strategy: "cache_serve", attempts: attempt + 1, error: lastError };
-            } catch {
+            } catch (err) {
               // Cache also failed
+              process.stderr.write("[SelfHealing] recovery strategy cache_serve failed: " + err + "\n");
             }
           }
 
@@ -333,8 +335,9 @@ export class SelfHealingEngine extends EventEmitter {
               try {
                 const result = await hintFn();
                 return { result, recovered: true, strategy: key as RecoveryStrategy, attempts: attempt + 1, error: lastError };
-              } catch {
+              } catch (err) {
                 // Hint also failed
+                process.stderr.write("[SelfHealing] recovery strategy " + key + " failed: " + err + "\n");
               }
             }
           }
@@ -653,9 +656,19 @@ export class SelfHealingEngine extends EventEmitter {
     if (this.healthCheckTimer) return;
 
     this.healthCheckTimer = setInterval(() => {
-      const components = assessFn();
-      this.assessHealth(components);
+      // 外部 assessFn / assessHealth 可能抛错；定时器回调中的异常会成为未捕获异常，
+      // 可能导致进程崩溃或定时器进入未定义状态。包一层 try/catch 并落日志。
+      try {
+        const components = assessFn();
+        this.assessHealth(components);
+      } catch (err) {
+        process.stderr.write(
+          `[SelfHealing] Health check tick failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
     }, this.config.healthCheckIntervalMs);
+    // unref 防止健康检查定时器阻止进程优雅退出
+    this.healthCheckTimer.unref();
   }
 
   /** Stop periodic health checks */

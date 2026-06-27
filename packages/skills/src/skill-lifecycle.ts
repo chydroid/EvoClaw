@@ -386,6 +386,7 @@ export class SkillLifecycleManager {
     const intervalId = setInterval(async () => {
       await this.performHealthCheck(skill).catch((err) => { process.stderr.write(`[SkillLifecycle] Health check failed for "${skill.id}":` + " " + err); });
     }, this.config.checkInterval);
+    intervalId.unref();
 
     this.healthMonitors.set(skill.id, intervalId);
   }
@@ -396,6 +397,26 @@ export class SkillLifecycleManager {
       clearInterval(existing);
       this.healthMonitors.delete(skillId);
     }
+    // 同时清理待触发的重试定时器，否则技能停用后重试仍会触发并打到已停用的技能。
+    const retryKey = `retry:${skillId}`;
+    const retryTimer = this.healthMonitors.get(retryKey);
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      this.healthMonitors.delete(retryKey);
+    }
+  }
+
+  /**
+   * 关闭所有健康监控和重试定时器。服务器关闭时调用，防止定时器泄漏。
+   */
+  shutdown(): void {
+    for (const [, timer] of this.healthMonitors) {
+      // setInterval 和 setTimeout 句柄都可以被 clearTimeout/clearInterval 清理
+      clearTimeout(timer);
+      clearInterval(timer);
+    }
+    this.healthMonitors.clear();
+    this.retryCounts.clear();
   }
 
   getHealthReport(skill: Skill): SkillHealthReport {
@@ -474,10 +495,13 @@ export class SkillLifecycleManager {
       const decay = retries * this.config.retryDelay;
 
       const retryTimeoutId = setTimeout(() => {
+        // 定时器触发后从 Map 移除条目，避免条目无限累积导致内存增长。
+        this.healthMonitors.delete(`retry:${skill.id}`);
         void this.performHealthCheck(skill).catch((err) => {
           process.stderr.write(`[SkillLifecycle] Retry health check failed for "${skill.id}":` + " " + err + "\n");
         });
       }, this.config.retryDelay + decay);
+      retryTimeoutId.unref();
 
       this.healthMonitors.set(`retry:${skill.id}`, retryTimeoutId);
     } else {

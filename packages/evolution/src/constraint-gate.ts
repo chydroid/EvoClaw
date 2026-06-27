@@ -57,15 +57,19 @@ export class ConstraintGate {
       0
     );
 
-    if (totalSize <= this.config.maxSkillSizeBytes) {
-      return { passed: true, gateName: "size", score: totalSize / this.config.maxSkillSizeBytes };
+    const maxSize = this.config.maxSkillSizeBytes;
+    if (maxSize <= 0) {
+      return { passed: true, gateName: "size", score: 0 };
+    }
+    if (totalSize <= maxSize) {
+      return { passed: true, gateName: "size", score: totalSize / maxSize };
     }
 
     return {
       passed: false,
       gateName: "size",
-      reason: `Skill size ${totalSize} bytes exceeds maximum ${this.config.maxSkillSizeBytes} bytes`,
-      score: totalSize / this.config.maxSkillSizeBytes,
+      reason: `Skill size ${totalSize} bytes exceeds maximum ${maxSize} bytes`,
+      score: totalSize / maxSize,
     };
   }
 

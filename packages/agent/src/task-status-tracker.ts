@@ -9,13 +9,17 @@ export class TaskStatusTracker {
     // Auto-cleanup stale entries every 5 minutes
     if (!this.cleanupTimer) {
       this.cleanupTimer = setInterval(() => {
-        const now = Date.now();
-        for (const [key, val] of this.statuses) {
-          if (now - val.updatedAt > 300_000) this.statuses.delete(key);
-        }
-        if (this.statuses.size === 0 && this.cleanupTimer) {
-          clearInterval(this.cleanupTimer);
-          this.cleanupTimer = null;
+        try {
+          const now = Date.now();
+          for (const [key, val] of this.statuses) {
+            if (now - val.updatedAt > 300_000) this.statuses.delete(key);
+          }
+          if (this.statuses.size === 0 && this.cleanupTimer) {
+            clearInterval(this.cleanupTimer);
+            this.cleanupTimer = null;
+          }
+        } catch (err) {
+          process.stderr.write(`[TaskStatusTracker] cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
         }
       }, 60_000);
       // 允许进程在定时器运行时退出

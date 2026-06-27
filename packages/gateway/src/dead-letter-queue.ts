@@ -389,12 +389,14 @@ export class DeadLetterQueue {
           if (!channel || dl.channel === channel) {
             entries.push(dl);
           }
-        } catch {
+        } catch (err) {
           // 跳过损坏的单条消息文件
+          process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
         }
       }
-    } catch {
+    } catch (err) {
       // 目录不存在或读取失败
+      process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
     }
 
     // 向后兼容：读取旧版 JSONL 文件
@@ -407,12 +409,14 @@ export class DeadLetterQueue {
             if (!line.trim()) continue;
             try {
               entries.push(JSON.parse(line) as DeadLetter);
-            } catch {
+            } catch (err) {
               // 跳过损坏行
+              process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
             }
           }
-        } catch {
+        } catch (err) {
           // 读取失败
+          process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
         }
       }
     } else {
@@ -464,12 +468,14 @@ export class DeadLetterQueue {
           const content = fs.readFileSync(path.join(this.config.storageDir, f), "utf-8");
           const dl = JSON.parse(content) as DeadLetter;
           channels.add(dl.channel);
-        } catch {
+        } catch (err) {
           // 跳过损坏文件
+          process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
         }
       }
-    } catch {
+    } catch (err) {
       // 目录不存在
+      process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
     }
     // 合并旧版 JSONL channel
     for (const ch of this.listChannelsLegacy()) {

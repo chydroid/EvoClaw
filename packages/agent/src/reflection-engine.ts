@@ -143,7 +143,12 @@ Rules:
           `Params: ${JSON.stringify(entry.params)}`,
           `Success: ${entry.success}`,
           `Duration: ${entry.duration}ms`,
-          `Timestamp: ${new Date(entry.timestamp).toISOString()}`,
+          // entry.timestamp 可能来自损坏的 JSON，new Date(...) 会得到 Invalid Date，
+          // 此时 toISOString() 会抛 RangeError: Invalid time value，导致整个反射流程中断。
+          `Timestamp: ${(() => {
+            const d = new Date(entry.timestamp);
+            return Number.isNaN(d.getTime()) ? String(entry.timestamp) : d.toISOString();
+          })()}`,
         ];
         if (entry.error) {
           lines.push(`Error: ${entry.error}`);

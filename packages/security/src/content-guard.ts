@@ -348,12 +348,27 @@ export class ContentGuard {
   detectPII(content: string): { matches: PIIMatch[]; types: string[] } {
     const matches: PIIMatch[] = [];
     const types = new Set<string>();
+    // 单规则匹配上限：防止超长输入或灾难性正则耗尽 CPU（参考 mcp-poisoning-scanner 的 50 上限）
+    const MAX_MATCHES_PER_RULE = 500;
 
     for (const rule of PII_PATTERNS) {
       let match: RegExpExecArray | null;
       const regex = new RegExp(rule.pattern.source, rule.pattern.flags);
+      let count = 0;
 
       while ((match = regex.exec(content)) !== null) {
+        // 零宽匹配保护：若 lastIndex 未推进，手动 +1 避免无限循环
+        if (match.index === regex.lastIndex) {
+          regex.lastIndex++;
+          continue;
+        }
+        if (++count > MAX_MATCHES_PER_RULE) {
+          process.stderr.write(
+            `[ContentGuard] detectPII hit match cap (${MAX_MATCHES_PER_RULE}) for rule type "${rule.type}", truncating\n`,
+          );
+          break;
+        }
+
         const value = match[0];
         // Filter false positives for IP addresses
         if (rule.type === "ip_address") {

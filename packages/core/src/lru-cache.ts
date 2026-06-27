@@ -60,6 +60,8 @@ export class LRUCache<V> {
   private map = new Map<string, DoublyLinkedNode<V>>();
   private head: DoublyLinkedNode<V> | null = null;
   private tail: DoublyLinkedNode<V> | null = null;
+  // getOrSet 的 in-flight Promise 去重表，防止并发同 key 重复执行 factory
+  private inflight = new Map<string, Promise<V>>();
 
   private stats: CacheStats = {
     size: 0,
@@ -163,6 +165,9 @@ export class LRUCache<V> {
   /**
    * Get or set — if key exists and not expired, return its value.
    * Otherwise compute and store the value.
+   *
+   * 并发同 key 调用会复用同一个 in-flight Promise，避免重复执行 factory
+   * （factory 可能有副作用或远端配额消耗）。
    */
   async getOrSet(
     key: string,
@@ -172,9 +177,21 @@ export class LRUCache<V> {
     const existing = this.get(key);
     if (existing !== undefined) return existing;
 
-    const value = await factory();
-    this.set(key, value, ttlMs);
-    return value;
+    // in-flight 去重：多个并发调用同一 key 时共享同一个 Promise
+    const inflight = this.inflight.get(key);
+    if (inflight) return inflight as Promise<V>;
+
+    const p = (async () => {
+      try {
+        const value = await factory();
+        this.set(key, value, ttlMs);
+        return value;
+      } finally {
+        this.inflight.delete(key);
+      }
+    })();
+    this.inflight.set(key, p);
+    return p;
   }
 
   /**

@@ -235,7 +235,7 @@ export class ErrorRecoveryManager {
       "error.max_retries_exceeded",
       { operation, target, errorId: errorRecord.id, maxRetries: cfg.maxRetries },
       "error-recovery-manager"
-    );
+    ).catch((err) => process.stderr.write('[ErrorRecoveryManager] event publish failed: ' + err + '\n'));
 
     throw new Error(
       `${operation} failed after ${cfg.maxRetries + 1} attempts: ${errorRecord.error}`
@@ -271,7 +271,7 @@ export class ErrorRecoveryManager {
       "error.recovery_failed",
       { operation, target, errorType },
       "error-recovery-manager"
-    );
+    ).catch((err) => process.stderr.write('[ErrorRecoveryManager] event publish failed: ' + err + '\n'));
 
     return false;
   }

@@ -1,5 +1,6 @@
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { SkillManager } from "@evoclaw/skills";
+import type { ServiceRegistry } from "@evoclaw/core";
 
 // ── HTML entity decoder ──
 function decodeHtmlEntities(text: string): string {
@@ -31,6 +32,7 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
     const bingHost = isChinese ? "https://cn.bing.com" : "https://www.bing.com";
     let url = `${bingHost}/search?q=${encodeURIComponent(q)}&count=${limit}`;
     if (isChinese) {
@@ -88,6 +90,7 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
 
     if (results.length > 0) return { results, source: isChinese ? "Bing CN" : "Bing" };
     return { error: "No results found in Bing" };
+    } finally { clearTimeout(timeout); }
   } catch (err: any) {
     return { error: err.name === "AbortError" ? "Bing search timed out" : `Bing error: ${err.message || String(err)}` };
   }
@@ -97,6 +100,7 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
     let url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${limit}&hl=zh-CN`;
     if (freshness) {
       const tbs = freshness === "pd" ? "qdr:d" : freshness === "pw" ? "qdr:w" : freshness === "pm" ? "qdr:m" : freshness === "py" ? "qdr:y" : "";
@@ -136,6 +140,7 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
 
     if (results.length > 0) return { results };
     return { error: "No results found in Google" };
+    } finally { clearTimeout(timeout); }
   } catch (err: any) {
     return { error: err.name === "AbortError" ? "Google search timed out" : `Google error: ${err.message || String(err)}` };
   }
@@ -145,6 +150,7 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
     let baiduUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(q)}&rn=${limit}`;
     if (freshness) {
       const baiduFreshness: Record<string, string> = { pd: "1", pw: "2", pm: "3", py: "4" };
@@ -205,6 +211,7 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
 
     if (results.length > 0) return { results };
     return { error: "No results found in Baidu HTML" };
+    } finally { clearTimeout(timeout); }
   } catch (err: any) {
     return { error: err.name === "AbortError" ? "Baidu HTML search timed out" : `Baidu HTML error: ${err.message || String(err)}` };
   }
@@ -214,6 +221,7 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
     // Use DuckDuckGo Lite for simpler HTML structure
     const response = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, {
       headers: { "User-Agent": ua, "Accept": "text/html", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
@@ -250,6 +258,7 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
 
     if (results.length > 0) return { results };
     return { error: "No results found in DuckDuckGo" };
+    } finally { clearTimeout(timeout); }
   } catch (err: any) {
     return { error: err.name === "AbortError" ? "DuckDuckGo search timed out" : `DuckDuckGo error: ${err.message || String(err)}` };
   }
@@ -257,8 +266,21 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
 
 export function registerWebTools(
   executor: AgentModelExecutor,
-  skillManager: SkillManager
+  skillManager: SkillManager,
+  registry?: ServiceRegistry
 ): void {
+  // SSRF 防护：在 fetch 前校验 URL 是否为内网地址，防止 agent 被诱导访问元数据端点等
+  const ssrfProtection = registry?.resolveService<{ checkURL(url: string): Promise<{ allowed: boolean; reason?: string }> }>("ssrfProtection");
+  const checkSsrf = async (url: string): Promise<string | null> => {
+    if (!ssrfProtection) return null;
+    try {
+      const result = await ssrfProtection.checkURL(url);
+      if (!result.allowed) return result.reason ?? "blocked by SSRF policy";
+    } catch {
+      return null; // SSRF 检查失败时不阻塞（best-effort）
+    }
+    return null;
+  };
   // ============ Web Search & Fetch Tools ============
   // Standalone web tools not requiring browser controller
 
@@ -278,9 +300,15 @@ export function registerWebTools(
       if (!url || !url.startsWith("http")) {
         return { error: "Valid HTTP/HTTPS URL is required" };
       }
+      // SSRF 防护：校验 URL 不指向内网/元数据端点
+      const ssrfReason = await checkSsrf(url);
+      if (ssrfReason) {
+        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+      }
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
         const response = await fetch(url, {
           headers: {
             "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
@@ -339,7 +367,8 @@ export function registerWebTools(
         };
       } catch (err: any) {
         return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
-      }
+      } finally { clearTimeout(timeout); }
+    } catch (err: any) { return { error: err.message || String(err), url }; }
     }
   );
 
@@ -359,6 +388,11 @@ export function registerWebTools(
       const maxLength = Math.max(1, Number(params.maxLength) || 5000);
       if (!url || !url.startsWith("http")) {
         return { error: "Valid HTTP/HTTPS URL is required", url };
+      }
+      // SSRF 防护
+      const ssrfReason = await checkSsrf(url);
+      if (ssrfReason) {
+        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
       try {
         const controller = new AbortController();

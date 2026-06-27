@@ -247,8 +247,13 @@ export function serializeEnvelope(envelope: InboundEnvelope): string {
   return JSON.stringify(envelope);
 }
 
-export function deserializeEnvelope(json: string): InboundEnvelope {
-  return JSON.parse(json) as InboundEnvelope;
+export function deserializeEnvelope(json: string): InboundEnvelope | null {
+  try {
+    return JSON.parse(json) as InboundEnvelope;
+  } catch (err) {
+    process.stderr.write('[InboundEnvelope] deserializeEnvelope failed: ' + err + '\n');
+    return null;
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────

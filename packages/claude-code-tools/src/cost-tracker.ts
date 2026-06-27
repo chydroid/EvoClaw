@@ -187,7 +187,7 @@ export class CostTracker {
       limit: this.budgetLimit,
       used: Math.round(this.budgetUsed * 10000) / 10000,
       remaining: this.budgetLimit !== null ? Math.round((this.budgetLimit - this.budgetUsed) * 10000) / 10000 : null,
-      percentUsed: this.budgetLimit !== null ? Math.round((this.budgetUsed / this.budgetLimit) * 100) : null,
+      percentUsed: this.budgetLimit !== null && this.budgetLimit > 0 ? Math.round((this.budgetUsed / this.budgetLimit) * 100) : null,
     };
   }
 

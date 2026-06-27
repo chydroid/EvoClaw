@@ -370,8 +370,9 @@ export class EventLedger {
       }
 
       this.dirty = false;
-    } catch {
-      // Best-effort
+    } catch (err) {
+      // Best-effort，但记录错误以便排查
+      process.stderr.write("[EventLedger] flush failed: " + err + "\n");
     }
   }
 

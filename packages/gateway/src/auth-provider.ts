@@ -6,6 +6,7 @@ import { ServiceRegistry } from "@evoclaw/core";
 interface UserPayload {
   userId: string;
   roles: string[];
+  type?: "refresh";
 }
 
 export class AuthProvider {
@@ -60,7 +61,9 @@ export class AuthProvider {
       "/api/config/avatars",  // Avatar config needed for UI
       "/api/config/channels", // Channel config needed for UI
       "/api/events",          // SSE event stream (has its own auth via query param)
-      "/api/skills",          // Skills sub-paths (install, list, etc.)
+      // 注意：/api/skills 已从此处移除。保留 publicExactPaths 中的 /api/skills
+      // 仅允许 GET 列表免认证；所有子路径（install/delete/config/curate 等
+      // 状态变更操作）必须认证，否则未认证攻击者可安装恶意技能实现 RCE。
     ];
 
     if (publicPrefixes.some(p => req.path === p || req.path.startsWith(p + "/"))) {
@@ -95,7 +98,7 @@ export class AuthProvider {
     const token = authHeader.slice(7);
 
     try {
-      const decoded = jwt.verify(token, this.jwtSecret) as UserPayload;
+      const decoded = jwt.verify(token, this.jwtSecret, { algorithms: ["HS256"] }) as UserPayload;
       (req as Request & { user: UserPayload }).user = decoded;
       next();
     } catch {
@@ -129,6 +132,7 @@ export class AuthProvider {
       res.cookie("web_ui_token", tokenFromUrl, {
         httpOnly: true,
         sameSite: "strict",
+        secure: process.env.NODE_ENV === "production",
         maxAge: 24 * 60 * 60 * 1000,
       });
     }
@@ -163,12 +167,15 @@ export class AuthProvider {
     return jwt.sign({ userId, roles }, this.jwtSecret, { expiresIn: "24h" });
   }
 
-  generateRefreshToken(userId: string): string {
-    return jwt.sign({ userId, type: "refresh" }, this.jwtSecret, { expiresIn: "7d" });
+  generateRefreshToken(userId: string, roles: string[] = ["user"]): string {
+    // 必须将 roles 写入 refresh token，否则刷新时无法恢复用户角色，
+    // 导致管理员刷新后权限被降级为 ["user"]。
+    return jwt.sign({ userId, roles, type: "refresh" }, this.jwtSecret, { expiresIn: "7d" });
   }
 
   verifyToken(token: string): UserPayload {
-    return jwt.verify(token, this.jwtSecret) as UserPayload;
+    // 显式指定算法，纵深防御防止 alg:none 攻击
+    return jwt.verify(token, this.jwtSecret, { algorithms: ["HS256"] }) as UserPayload;
   }
 
   updateSecret(newSecret: string): void {

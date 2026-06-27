@@ -69,6 +69,21 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
     this.dirty = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => this.save(), SAVE_DEBOUNCE_MS);
+    // unref 防止防抖定时器阻止进程优雅退出
+    this.saveTimer.unref();
+  }
+
+  /**
+   * 释放资源：落盘 dirty 数据并清理 saveTimer，避免废弃对象上定时器回调访问已释放状态。
+   */
+  dispose(): void {
+    if (this.dirty) {
+      this.save();
+    }
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
   }
 
   private save(): void {

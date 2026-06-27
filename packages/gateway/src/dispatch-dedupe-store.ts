@@ -210,7 +210,7 @@ export class DispatchDedupeStore {
       // 使用原子写入，符合 AGENTS.md 规则
       atomicWriteFileSync(this.config.persistPath, JSON.stringify(data));
       this.stats.persistWrites++;
-    } catch { /* 静默失败 */ }
+    } catch (err) { process.stderr.write('[DispatchDedupeStore] persistToDisk failed: ' + err + '\n'); }
   }
 
   /** 从磁盘加载 */

@@ -17,6 +17,9 @@ declare function setTimeout(
 ): NodeJS.Timeout;
 declare function clearTimeout(timeoutId: NodeJS.Timeout): void;
 
+/** 转义正则元字符，防止外部参数名导致 RegExp 构造抛错或非预期匹配 */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Detect script language from code content or language tag */
 type ScriptLang = "javascript" | "python" | "bash" | "shell" | "unknown";
 
@@ -995,31 +998,37 @@ export class SkillSandbox {
       if (key === "action" || key === "command" || key === "subcommand" || key === "query") continue;
       if (value === undefined || value === null) continue;
       const strValue = String(value);
+      const escapedKey = escapeRegExp(key);
 
-      // 检查命令中是否已有该参数
-      const paramRegex = new RegExp(`--${key}(?:\\s+|=)(\\S*)`);
-      if (paramRegex.test(result)) {
-        // 替换已有参数值
-        result = result.replace(paramRegex, `--${key} ${strValue}`);
-      } else {
-        // 追加新参数（在 action 子命令之后）
-        if (action && typeof action === "string") {
-          const actionIdx = result.indexOf(` ${action} `);
-          if (actionIdx !== -1) {
-            const afterAction = actionIdx + action.length + 1;
-            // 找到 action 后第一个 -- 参数的位置
-            const nextParamIdx = result.indexOf(" --", afterAction);
-            if (nextParamIdx !== -1) {
-              result = result.slice(0, nextParamIdx) + ` --${key} ${strValue}` + result.slice(nextParamIdx);
+      // 检查命令中是否已有该参数（转义 key 防止正则元字符导致 SyntaxError）
+      try {
+        const paramRegex = new RegExp(`--${escapedKey}(?:\\s+|=)(\\S*)`);
+        if (paramRegex.test(result)) {
+          // 替换已有参数值
+          result = result.replace(paramRegex, `--${key} ${strValue}`);
+        } else {
+          // 追加新参数（在 action 子命令之后）
+          if (action && typeof action === "string") {
+            const actionIdx = result.indexOf(` ${action} `);
+            if (actionIdx !== -1) {
+              const afterAction = actionIdx + action.length + 1;
+              // 找到 action 后第一个 -- 参数的位置
+              const nextParamIdx = result.indexOf(" --", afterAction);
+              if (nextParamIdx !== -1) {
+                result = result.slice(0, nextParamIdx) + ` --${key} ${strValue}` + result.slice(nextParamIdx);
+              } else {
+                result += ` --${key} ${strValue}`;
+              }
             } else {
               result += ` --${key} ${strValue}`;
             }
           } else {
             result += ` --${key} ${strValue}`;
           }
-        } else {
-          result += ` --${key} ${strValue}`;
         }
+      } catch (err) {
+        // RegExp 构造失败或匹配异常时跳过该参数，不中断整个注入流程
+        process.stderr.write(`[SkillSandbox] injectParams failed for key "${key}": ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
     return result;

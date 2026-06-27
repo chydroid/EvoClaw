@@ -146,8 +146,9 @@ function atomicWriteFile(filePath: string, content: string): void {
     // rename 失败，尝试直接写入
     try {
       writeFileSync(filePath, content, "utf8");
-    } catch {
-      // 最终失败，忽略
+    } catch (err) {
+      // 最终失败，记录到 stderr 避免静默吞错
+      process.stderr.write("[CrossSessionRateGuard] atomicWriteFile failed: " + err + "\n");
     }
   }
 }
@@ -319,12 +320,14 @@ export class CrossSessionRateGuard {
           if (state && state.provider) {
             this.cache.set(state.provider, state);
           }
-        } catch {
-          // 跳过损坏的文件
+        } catch (err) {
+          // 跳过损坏的文件，但记录到 stderr
+          process.stderr.write("[CrossSessionRateGuard] load failed: " + err + "\n");
         }
       }
-    } catch {
-      // 目录不存在或无法访问
+    } catch (err) {
+      // 目录不存在或无法访问，记录到 stderr
+      process.stderr.write("[CrossSessionRateGuard] load failed: " + err + "\n");
     }
   }
 

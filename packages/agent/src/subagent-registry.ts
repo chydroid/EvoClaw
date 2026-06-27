@@ -79,18 +79,35 @@ export interface SubagentRegistryEvent {
 
 const DEFAULT_MAX_CONCURRENT = 10;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+// 运行/空闲态子代理若超过此阈值仍未推进，视为父代理崩溃后遗留，允许清理
+const STALE_RUNNING_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // ─── SubagentRegistry ─────────────────────────────────────────────────────────
 
 export class SubagentRegistry {
   private subagents = new Map<string, SubagentInfo>();
   private maxConcurrent: number;
+  private cleanupTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private eventBus: EventBus,
     maxConcurrent?: number,
   ) {
     this.maxConcurrent = maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+    // 周期性清理：避免父代理崩溃或忘记 markDone 时 subagents Map 无限增长
+    this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
+  }
+
+  /**
+   * 释放资源：停止周期性清理定时器。
+   */
+  dispose(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
   }
 
   // ─── Spawn ─────────────────────────────────────────────────────────────────
@@ -215,6 +232,8 @@ export class SubagentRegistry {
 
   /**
    * Remove subagents that are done, errored, or idle beyond `maxAgeMs`.
+   * 运行/空闲态子代理若超过 STALE_RUNNING_MAX_AGE_MS 仍未推进 lastActive，
+   * 视为父代理崩溃后遗留，也一并清理，避免 Map 无限增长。
    * @param maxAgeMs Maximum age in ms before a dead/idle subagent is eligible for removal (default 30 min)
    * @returns Count of removed subagents
    */
@@ -224,14 +243,24 @@ export class SubagentRegistry {
     let removed = 0;
 
     for (const [id, info] of this.subagents) {
-      // Only auto-remove terminal states
-      if (info.status !== "done" && info.status !== "error") continue;
-
       const age = now - new Date(info.lastActive).getTime();
-      if (age >= threshold) {
-        this.subagents.delete(id);
-        this.emit("cleanup", info);
-        removed++;
+
+      if (info.status === "done" || info.status === "error") {
+        if (age >= threshold) {
+          this.subagents.delete(id);
+          this.emit("cleanup", info);
+          removed++;
+        }
+      } else if (info.status === "running" || info.status === "idle") {
+        // 长时间未推进的 running/idle 视为孤儿条目，清理以防 Map 泄漏
+        if (age >= STALE_RUNNING_MAX_AGE_MS) {
+          process.stderr.write(
+            `[SubagentRegistry] Removing stale ${info.status} subagent "${id}" (age=${Math.floor(age / 1000)}s, parent=${info.parentAgentId})\n`,
+          );
+          this.subagents.delete(id);
+          this.emit("cleanup", info);
+          removed++;
+        }
       }
     }
 

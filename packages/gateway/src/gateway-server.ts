@@ -151,7 +151,7 @@ export class GatewayServer {
           process.stdout.write(`[Gateway] WebSocket server listening at ws://${host}:${port}/ws\n`);
         }
 
-        this.eventBus.publish("system.ready", { port, host }, "gateway").catch(() => {});
+        this.eventBus.publish("system.ready", { port, host }, "gateway").catch((err) => { process.stderr.write('[GatewayServer] system.ready publish failed: ' + err + '\n'); });
         resolve();
       });
     });
@@ -580,18 +580,21 @@ export class GatewayServer {
     });
 
     this.app.post("/api/auth/refresh", (req: Request, res: Response) => {
-      const { token } = (req.body ?? {}) as { token?: string };
+      const body = (req.body ?? {}) as { token?: unknown };
+      const token = typeof body.token === "string" ? body.token : undefined;
       if (!token) {
         res.status(400).json({ error: "token is required" });
         return;
       }
       try {
-        const decoded = this.authProvider.verifyToken(token) as any;
+        const decoded = this.authProvider.verifyToken(token);
         if (decoded.type !== "refresh") {
           res.status(401).json({ error: "Not a refresh token" });
           return;
         }
-        const fresh = this.authProvider.generateToken(decoded.userId, decoded.roles);
+        // 兼容旧的 refresh token（不带 roles）：缺失时回退为 ["user"]。
+        const roles = Array.isArray(decoded.roles) && decoded.roles.length > 0 ? decoded.roles : ["user"];
+        const fresh = this.authProvider.generateToken(decoded.userId, roles);
         res.json({ token: fresh });
       } catch {
         res.status(401).json({ error: "Invalid or expired token" });
@@ -643,8 +646,13 @@ export class GatewayServer {
 
     this.app.put("/api/config/avatars", (req: Request, res: Response) => {
       const { avatars } = req.body as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
-      if (avatars) {
-        this.avatarConfig = { ...this.avatarConfig, ...avatars };
+      if (avatars && typeof avatars === "object") {
+        // 过滤原型污染危险键
+        const safe: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(avatars)) {
+          if (k !== "__proto__" && k !== "constructor" && k !== "prototype") safe[k] = v;
+        }
+        this.avatarConfig = { ...this.avatarConfig, ...safe };
       }
       res.json({ avatars: this.avatarConfig });
     });
@@ -1358,6 +1366,7 @@ export class GatewayServer {
         res.cookie("web_ui_token", webUiToken, {
           httpOnly: true,
           sameSite: "strict",
+          secure: process.env.NODE_ENV === "production",
           maxAge: 24 * 60 * 60 * 1000,
         });
       }

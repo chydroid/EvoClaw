@@ -96,9 +96,18 @@ export class CommitmentManager {
           // Ensure numbers are parsed correctly
           for (const [k, v] of Object.entries(parsed)) {
             const c = v as Commitment;
-            if (c.createdAt) c.createdAt = Number(c.createdAt);
-            if (c.updatedAt) c.updatedAt = Number(c.updatedAt);
-            if (c.deadline) c.deadline = Number(c.deadline);
+            if (c.createdAt) {
+              const n = Number(c.createdAt);
+              c.createdAt = Number.isFinite(n) ? n : Date.now();
+            }
+            if (c.updatedAt) {
+              const n = Number(c.updatedAt);
+              c.updatedAt = Number.isFinite(n) ? n : Date.now();
+            }
+            if (c.deadline) {
+              const n = Number(c.deadline);
+              c.deadline = Number.isFinite(n) ? n : 0;
+            }
           }
           this.commitments = parsed as CommitmentStore;
         }
@@ -114,6 +123,8 @@ export class CommitmentManager {
     this.saveTimer = setTimeout(() => {
       this.flush();
     }, 500);
+    // unref 防止定时器阻止进程优雅退出
+    this.saveTimer.unref();
   }
 
   flush(): void {
@@ -127,14 +138,46 @@ export class CommitmentManager {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(
-        this.storePath,
-        JSON.stringify(this.commitments, null, 2),
-        "utf-8",
-      );
+      // 原子写入：temp + fsync + rename，防止崩溃导致 commitments.json 截断损坏
+      const tmpPath = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(this.commitments, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, this.storePath);
+      } catch {
+        // EXDEV/EBUSY 跨设备回退：复制到目标侧临时文件后再 rename，并清理两侧临时文件
+        const dstTmp = `${this.storePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, this.storePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
       this.dirty = false;
-    } catch {
-      // Best-effort persistence
+    } catch (err) {
+      // Best-effort persistence，但记录错误以便排查
+      process.stderr.write("[CommitmentStore] flush failed: " + err + "\n");
+    }
+  }
+
+  /**
+   * 释放资源：清理挂起的 saveTimer。dirty 数据会先尝试落盘。
+   */
+  dispose(): void {
+    if (this.dirty) {
+      this.flush();
+    } else if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
     }
   }
 

@@ -325,7 +325,7 @@ export class SlackAdapter implements ChannelAdapter {
           }
 
           if (data.payload?.event) {
-            this.processSlackEvent(data.payload.event as SlackEvent).catch(() => {});
+            this.processSlackEvent(data.payload.event as SlackEvent).catch((err) => { process.stderr.write('[Slack] event processing failed: ' + err + '\n'); });
           }
 
           // Acknowledge envelope
@@ -334,8 +334,9 @@ export class SlackAdapter implements ChannelAdapter {
               JSON.stringify({ envelope_id: data.envelope_id })
             );
           }
-        } catch {
+        } catch (err) {
           // ignore
+          process.stderr.write('[Slack] ws.onmessage error: ' + err + '\n');
         }
       };
 
@@ -414,7 +415,7 @@ export class SlackAdapter implements ChannelAdapter {
       from: event.user,
       to: event.channel,
       text: event.text,
-      timestamp: new Date((parseFloat(event.ts ?? "") || 0) * 1000 || Date.now()).toISOString(),
+      timestamp: (Number.isFinite(parseFloat(event.ts ?? "")) ? new Date(parseFloat(event.ts ?? "") * 1000) : new Date()).toISOString(),
       isDirect,
       isGroup: !isDirect,
       groupId: !isDirect ? event.channel : undefined,
@@ -471,8 +472,9 @@ export class SlackAdapter implements ChannelAdapter {
     for (const handler of this.statusHandlers) {
       try {
         handler(status);
-      } catch {
+      } catch (err) {
         // swallow
+        process.stderr.write('[Slack] statusHandler failed: ' + err + '\n');
       }
     }
   }

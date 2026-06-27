@@ -326,7 +326,13 @@ export class ProgressDraftsManager extends EventEmitter {
   /** Start periodic garbage collection */
   startGC(): void {
     if (this.gcTimer) return;
-    this.gcTimer = setInterval(() => this.collectGarbage(), this.config.gcIntervalMs);
+    this.gcTimer = setInterval(() => {
+      try { this.collectGarbage(); } catch (err) {
+        process.stderr.write(`[ProgressDrafts] GC failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }, this.config.gcIntervalMs);
+    // 避免定时器阻止进程退出
+    this.gcTimer.unref?.();
   }
 
   /** Stop periodic garbage collection */

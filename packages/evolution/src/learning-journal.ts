@@ -735,13 +735,17 @@ export class LearningJournal {
   }
 
   private persistScheduled = false;
+  private pendingPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
   private schedulePersist(): void {
     if (this.persistScheduled) return;
     this.persistScheduled = true;
-    setTimeout(() => {
+    this.pendingPersistTimer = setTimeout(() => {
+      this.pendingPersistTimer = null;
       this.persistToDisk();
       this.persistScheduled = false;
-    }, 1000).unref();
+    }, 1000);
+    this.pendingPersistTimer.unref();
   }
 
   stop(): void {
@@ -749,6 +753,11 @@ export class LearningJournal {
       clearInterval(this.persistTimer);
       this.persistTimer = null;
     }
+    if (this.pendingPersistTimer) {
+      clearTimeout(this.pendingPersistTimer);
+      this.pendingPersistTimer = null;
+    }
+    this.persistScheduled = false;
   }
 
   async healthCheck(): Promise<boolean> {

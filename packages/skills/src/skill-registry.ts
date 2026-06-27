@@ -62,6 +62,7 @@ export class SkillRegistry {
   private localSkills = new Map<string, Skill>();
 
   private static readonly CACHE_TTL = 300000;
+  private static readonly CACHE_MAX_SIZE = 500;
 
   readonly name = "EvoClaw Skill Registry";
 
@@ -266,7 +267,24 @@ export class SkillRegistry {
     };
 
     this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
+    this.evictExpiredCacheEntries();
     return result;
+  }
+
+  /** 清理过期与超量的缓存条目，防止无界增长 */
+  private evictExpiredCacheEntries(): void {
+    if (this.cache.size < SkillRegistry.CACHE_MAX_SIZE) return;
+    const now = Date.now();
+    for (const [key, entry] of this.cache) {
+      if (now - entry.timestamp >= SkillRegistry.CACHE_TTL) {
+        this.cache.delete(key);
+      }
+    }
+    if (this.cache.size >= SkillRegistry.CACHE_MAX_SIZE) {
+      const sorted = Array.from(this.cache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp);
+      const toRemove = sorted.slice(0, sorted.length - Math.floor(SkillRegistry.CACHE_MAX_SIZE / 2));
+      for (const [key] of toRemove) this.cache.delete(key);
+    }
   }
 
   async searchBoth(query: RegistrySearchQuery): Promise<RegistrySearchResult> {
@@ -385,6 +403,7 @@ export class SkillRegistry {
         // Cache the result
         const cacheKey = JSON.stringify({ ...query, source: "web-fallback" });
         this.cache.set(cacheKey, { data: webResults, timestamp: Date.now() });
+        this.evictExpiredCacheEntries();
         return webResults;
       }
     }

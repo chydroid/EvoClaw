@@ -242,12 +242,12 @@ export function extractToolParams(
     const type = paramInfo.type as string;
 
     if (type === "string") {
-      const defaultValue = paramInfo.default as string | undefined;
-      params[key] = defaultValue || "";
+      params[key] = typeof paramInfo.default === "string" ? paramInfo.default : "";
     } else if (type === "number") {
-      params[key] = paramInfo.default as number || 0;
+      const n = Number(paramInfo.default);
+      params[key] = Number.isFinite(n) ? n : 0;
     } else if (type === "boolean") {
-      params[key] = paramInfo.default || false;
+      params[key] = typeof paramInfo.default === "boolean" ? paramInfo.default : false;
     }
   }
 

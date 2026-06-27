@@ -488,7 +488,7 @@ export class EmailClient {
         fs.writeFileSync(fd, content, "utf-8");
         fs.fsyncSync(fd);
       } finally {
-        fs.closeSync(fd);
+        try { fs.closeSync(fd); } catch { /* ignore close errors to not mask original */ }
       }
       fs.renameSync(tempPath, filePath);
     } catch (err) {
@@ -657,11 +657,12 @@ export class EmailClient {
     let total = 0;
     let unread = 0;
     let recent: EmailListItem[] = [];
+    let client: ImapFlow | null = null;
 
     try {
       if (account.imapHost && account.imapPort) {
         const password = this.decryptPassword(account);
-        const client = new ImapFlow({
+        client = new ImapFlow({
           host: account.imapHost,
           port: account.imapPort,
           secure: account.imapPort === 993,
@@ -679,6 +680,7 @@ export class EmailClient {
         total = mailbox && 'exists' in mailbox ? mailbox.exists : 0;
 
         await client.logout();
+        client = null;
 
         // Fetch recent emails
         recent = await this.listEmails({ accountId, limit: 20 });
@@ -704,6 +706,15 @@ export class EmailClient {
         total = 0;
         unread = 0;
         recent = [];
+      }
+    } finally {
+      // 确保 IMAP 连接在任何错误路径下都被关闭，防止 TCP socket 与登录会话泄漏
+      if (client) {
+        try {
+          await client.logout();
+        } catch {
+          try { await client.close(); } catch { /* ignore */ }
+        }
       }
     }
 

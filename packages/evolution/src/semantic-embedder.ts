@@ -114,21 +114,29 @@ export class SemanticEmbedder {
     }
 
     // 第二遍：并发请求 API
+    // 每个 Promise 内部捕获所有错误并降级到 hashEmbedding，确保不会 reject。
+    // 否则 Promise.all 会 fail-fast，但其他已启动的 Promise 仍会继续修改共享的
+    // results 和 cache，导致缓存/结果状态不一致。
     const apiPromises = pendingApi.map(async ({ index, text }) => {
       let embedding: number[] | null;
 
-      if (
-        this.config.apiEnabled &&
-        text.length >= this.config.minTextLengthForApi
-      ) {
-        embedding = await this.tryApiEmbedding(text);
-        if (embedding) {
-          this.apiCallCount++;
-          const cacheKey = this.computeCacheKey(text);
-          this.addToCache(cacheKey, embedding);
-          results[index] = embedding;
-          return;
+      try {
+        if (
+          this.config.apiEnabled &&
+          text.length >= this.config.minTextLengthForApi
+        ) {
+          embedding = await this.tryApiEmbedding(text);
+          if (embedding) {
+            this.apiCallCount++;
+            const cacheKey = this.computeCacheKey(text);
+            this.addToCache(cacheKey, embedding);
+            results[index] = embedding;
+            return;
+          }
         }
+      } catch (err) {
+        // API 调用抛错时降级到哈希嵌入，不让 Promise reject
+        process.stderr.write(`[SemanticEmbedder] API embedding failed, falling back to hash: ${err instanceof Error ? err.message : String(err)}\n`);
       }
 
       // 降级
@@ -239,8 +247,8 @@ export class SemanticEmbedder {
       } finally {
         clearTimeout(timeout);
       }
-    } catch {
-      // API 不可用，静默降级
+    } catch (err) {
+      process.stderr.write('[semantic-embedder] operation failed: ' + err + '\n');
     }
 
     return null;
@@ -296,7 +304,8 @@ export class SemanticEmbedder {
       const executor = this.registry.resolveService<LLMExecutor>("agentModelExecutor");
       if (!executor || typeof executor.getProviders !== "function") return null;
       return executor;
-    } catch {
+    } catch (err) {
+      process.stderr.write('[semantic-embedder] operation failed: ' + err + '\n');
       return null;
     }
   }

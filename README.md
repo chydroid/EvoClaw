@@ -25,6 +25,14 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.58.0 亮点
+- **6 轮全量 Bug 扫描与修复（60+ 个修复）**：延续前 9 轮审查，连续进行 6 轮全量扫描，覆盖 14 个内部包 + 2 个应用
+  - **第 3 轮收尾（SSRF/注入/认证旁路）**：`shell-media-tools.ts` 的 `scrapling_fetch`/`video_download`/`music_download` 全部接入 SSRF 防护，与 `web-tools.ts` 保持一致
+  - **第 4 轮（数值精度/off-by-one/边界条件，20+ 个）**：`dingtalk.ts` NaN 时间戳崩溃、`context-engine/task-scheduler/constraint-gate` 除零、`media-processor.ts` ID3v2 帧解析越界读、7 处时间戳运算符优先级 Bug（`Number(x) * 1000 || Date.now()`）、`cost-tracker/commitments/task-analyzer` NaN 进度、`model-failover` 重试风暴、`security-governor` Number fail-open、`guardrails` switch 无 default、`compaction-manager` JSON.parse 缺类型校验
+  - **第 5 轮（内存泄漏/闭包/stale 引用，7 个）**：`llm-dispatcher.callHistory` 与 `task-orchestrator.executionHistory` 无上限无界增长、`skill-registry.cache` 永久累积过期项、`protocol-adapter` createReadStream 缺 `res.on("close")` 兜底、`memory-hub` 新增 `close()` 方法释放 SQLite 句柄、`learning-journal` schedulePersist 定时器未清理
+  - **第 6 轮（错误处理完整性/防御性编码，10+ 个）**：关闭序列 5 个 await 无 try/catch、`feishu` 消息循环 await 未隔离丢消息、`finally` 中 closeSync 覆盖原始异常、`/api/config/avatars` 原型污染、Cookie 缺少 `secure: true`、`image-tools/video-tools` model 名 URL 注入、多处 setInterval 回调无 try/catch 导致 Map 无限增长
+  - **验证**：`pnpm -r build` + `pnpm typecheck` 全部退出码 0
+
 ### v0.57.6 亮点
 - **全面代码审查与 BUG 修复（5 轮）**：从实用角度对全项目进行 5 轮深度审查，共修复 **120+ 个真实 BUG**
   - **超时静默失败修复**：渠道消息处理添加 5 分钟超时包装，超时/错误/空回复均向用户发送提示与解决建议；并行工具失败结果注入对话防止 LLM 永久等待

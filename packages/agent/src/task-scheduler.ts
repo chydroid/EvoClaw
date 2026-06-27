@@ -291,7 +291,7 @@ export class TaskScheduler {
       metrics: {
         byPriority,
         deadlineRisk,
-        utilization: Math.round((totalTime / this.config.maxTimePerBatchMs) * 100),
+        utilization: this.config.maxTimePerBatchMs > 0 ? Math.round((totalTime / this.config.maxTimePerBatchMs) * 100) : 0,
         balanceScore,
       },
     };

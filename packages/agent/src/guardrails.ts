@@ -825,6 +825,7 @@ function severityRank(s: Severity): number {
     case "low":    return 0;
     case "medium": return 1;
     case "high":   return 2;
+    default:       return 0;
   }
 }
 
@@ -834,5 +835,6 @@ function actionRank(a: GuardrailAction): number {
     case "warn":     return 1;
     case "sanitize": return 2;
     case "block":    return 3;
+    default:         return 0;
   }
 }

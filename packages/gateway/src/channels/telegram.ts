@@ -550,6 +550,14 @@ export class TelegramAdapter implements ChannelAdapter {
       method: method === "getMe" || method === "getUpdates" ? "GET" : "POST",
       headers: { "Content-Type": "application/json" },
       body,
+      // 必须设置客户端超时：getUpdates 使用服务端长轮询（默认 30s），若不设客户端
+      // 超时，网络中断时 fetch 会永久挂起，Telegram 静默停止投递消息且无错误。
+      // 其他 API 调用也需超时防止上游挂起阻塞渠道。
+      signal: AbortSignal.timeout(
+        method === "getUpdates"
+          ? ((Number(params?.timeout ?? 30) + 10) * 1000)  // 服务端超时 + 10s 宽限
+          : 15_000
+      ),
     });
 
     if (!response.ok) {

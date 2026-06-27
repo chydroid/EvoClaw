@@ -497,6 +497,17 @@ export class FormalVerifier {
           case "behavior":
             // Behavior patterns are handled externally
             break;
+
+          case "api_call":
+            // API 调用模式通过工具调用签名在外部行为分析中检测，文本扫描阶段不处理
+            break;
+
+          default:
+            // 未知 pattern.type 不静默跳过，落日志便于排查配置/类型扩展遗漏
+            process.stderr.write(
+              `[FormalVerification] Unknown detection pattern type: ${pattern.type}\n`,
+            );
+            break;
         }
 
         if (matched) {

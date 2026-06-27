@@ -102,7 +102,15 @@ export class HookPipeline {
     const feedbacks: string[] = [];
 
     for (const handler of handlers) {
-      const result = await handler(context);
+      let result;
+      try {
+        result = await handler(context);
+      } catch (err) {
+        // 单个 handler 抛错不应中断整条 pipeline，否则已累积的 feedbacks 和
+        // context 修改全部丢失，调用方拿到异常而非 Allow/Block/Modify 决策。
+        process.stderr.write(`[HookPipeline] Handler for "${event}" threw: ${err instanceof Error ? err.message : String(err)}\n`);
+        continue;
+      }
 
       // If a modify decision lacks modifiedArgs, warn and skip
       if (result.decision === HookDecision.Modify && !result.modifiedArgs) {

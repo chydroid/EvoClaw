@@ -271,11 +271,18 @@ export class CopilotRouter {
 
   private matchRule(taskDescription: string): CopilotRouteRule | null {
     for (const rule of this.config.rules) {
-      const regex = typeof rule.pattern === "string"
-        ? new RegExp(rule.pattern, "i")
-        : rule.pattern;
-      if (regex.test(taskDescription)) {
-        return rule;
+      try {
+        const regex = typeof rule.pattern === "string"
+          ? new RegExp(rule.pattern, "i")
+          : rule.pattern;
+        if (regex.test(taskDescription)) {
+          return rule;
+        }
+      } catch (err) {
+        // 非法正则模式，记录到 stderr 并跳过该规则（视为不匹配）
+        process.stderr.write(
+          "[CopilotRouter] invalid rule pattern '" + String(rule.pattern) + "': " + err + "\n",
+        );
       }
     }
     return null;

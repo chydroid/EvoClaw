@@ -365,7 +365,7 @@ export class DingtalkAdapter implements ChannelAdapter {
       from: senderId,
       to: isGroup ? (msgBody.conversationId ?? "group") : "direct",
       text: content.text,
-      timestamp: msgBody.createAt ? new Date(Number(msgBody.createAt)).toISOString() : new Date().toISOString(),
+      timestamp: msgBody.createAt ? (Number.isFinite(Number(msgBody.createAt)) ? new Date(Number(msgBody.createAt)).toISOString() : new Date().toISOString()) : new Date().toISOString(),
       isDirect: !isGroup,
       isGroup,
       groupId: isGroup ? msgBody.conversationId : undefined,

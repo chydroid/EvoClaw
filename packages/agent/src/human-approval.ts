@@ -377,6 +377,8 @@ export class HumanApprovalManager {
         }
       }
     }, 30_000);
+    // 避免定时器阻止进程退出
+    this.cleanupTimer.unref?.();
   }
 
   /** Stop the cleanup timer and reject all pending approvals */

@@ -188,7 +188,9 @@ export class SessionManager {
       const data = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
       this.sessionCache.set(sessionId, data);
       return data as SessionInfo;
-    } catch {
+    } catch (err) {
+      // 元数据损坏时记录到 stderr，避免静默吞错
+      process.stderr.write("[SessionManager] loadSessionMeta corrupt: " + err + "\n");
       return null;
     }
   }
@@ -402,7 +404,8 @@ export class SessionManager {
         // Check for stale lock (process no longer exists)
         try {
           const lockPid = parseInt(fs.readFileSync(lockPath, "utf-8"), 10);
-          if (!this.isProcessAlive(lockPid)) {
+          // parseInt 返回 NaN 时（lock 文件损坏/篡改），视为 stale 让重试流程接管
+          if (!Number.isFinite(lockPid) || !this.isProcessAlive(lockPid)) {
             // Stale lock — 原子地 rename 到唯一临时名后删除，避免 TOCTOU 竞态。
             // 两个进程可能同时判断 lock 为 stale，rename 是原子的，
             // 只有一个会成功，另一个会因 ENOENT 失败（被 catch 后 continue）。
@@ -487,7 +490,9 @@ export class SessionManager {
     if (!fs.existsSync(lockPath)) return null;
 
     try {
-      return parseInt(fs.readFileSync(lockPath, "utf-8"), 10);
+      const pid = parseInt(fs.readFileSync(lockPath, "utf-8"), 10);
+      // parseInt 对损坏/篡改的 lock 文件返回 NaN，应视为无 holder（与文件不存在等价）
+      return Number.isFinite(pid) ? pid : null;
     } catch {
       return null;
     }

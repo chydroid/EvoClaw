@@ -150,6 +150,11 @@ export class DiscordAdapter implements ChannelAdapter {
       this.heartbeatInterval = null;
     }
 
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.ws) {
       this.ws.close(1000, "Bot shutting down");
       this.ws = null;
@@ -305,14 +310,15 @@ export class DiscordAdapter implements ChannelAdapter {
       }
       if (this.running) {
         this.notifyStatus("reconnecting");
-        // Reconnect after a delay
-        setTimeout(() => {
+        // Reconnect after a delay — 存储句柄以便 stop() 能清理，并 unref 避免阻止进程退出
+        this.reconnectTimer = setTimeout(() => {
           if (this.running) {
             this.connectGateway().catch((err) =>
               console.error("[Discord] Reconnect failed:", err)
             );
           }
         }, 5000);
+        this.reconnectTimer.unref();
       }
     };
 
@@ -486,6 +492,8 @@ export class DiscordAdapter implements ChannelAdapter {
         "Content-Type": "application/json",
       },
       body: options?.body ? JSON.stringify(options.body) : undefined,
+      // discordApi 在 start() 中用于验证 bot token，无超时会导致启动永久挂起
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {
@@ -531,8 +539,9 @@ export class DiscordAdapter implements ChannelAdapter {
     for (const handler of this.statusHandlers) {
       try {
         handler(status);
-      } catch {
+      } catch (err) {
         // swallow
+        process.stderr.write('[Discord] statusHandler failed: ' + err + '\n');
       }
     }
   }

@@ -83,6 +83,7 @@ export type ProgressCallback = (event: ProgressEvent) => void;
 
 export class TaskOrchestrator {
   private static readonly MAX_HISTORY = 500;
+  private static readonly MAX_EXECUTION_HISTORY = 1000;
   private decomposer: TaskDecomposer;
   private dispatcher: LLMDispatcher;
   private config: OrchestratorConfig;
@@ -257,19 +258,24 @@ export class TaskOrchestrator {
             }
           }
 
-          // Emit progress
-          const completed = completedResults.length;
-          const total = plan.subTasks.length;
-          this.emitProgress(options?.onProgress, {
-            planId: plan.id,
-            phase: "dispatching",
-            currentTask: task.name,
-            completedTasks: completed,
-            totalTasks: total,
-            percentComplete: Math.round((completed / total) * 100),
-            message: `完成: ${task.name} (${completed}/${total})`,
-            timestamp: new Date(),
-          });
+          // Emit progress — 进度回调抛错不应导致整个 dispatch 失败，
+          // 否则 Promise.all 会 fail-fast，留下孤立的 runningTasks/pendingTasks 状态。
+          try {
+            const completed = completedResults.length;
+            const total = plan.subTasks.length;
+            this.emitProgress(options?.onProgress, {
+              planId: plan.id,
+              phase: "dispatching",
+              currentTask: task.name,
+              completedTasks: completed,
+              totalTasks: total,
+              percentComplete: Math.round((completed / total) * 100),
+              message: `完成: ${task.name} (${completed}/${total})`,
+              timestamp: new Date(),
+            });
+          } catch (progressErr) {
+            process.stderr.write(`[TaskOrchestrator] progress emission failed: ${progressErr instanceof Error ? progressErr.message : String(progressErr)}\n`);
+          }
         });
 
         await Promise.all(dispatchPromises);
@@ -335,6 +341,9 @@ export class TaskOrchestrator {
       };
 
       this.executionHistory.push(result);
+      if (this.executionHistory.length > TaskOrchestrator.MAX_EXECUTION_HISTORY) {
+        this.executionHistory = this.executionHistory.slice(-TaskOrchestrator.MAX_EXECUTION_HISTORY);
+      }
 
       this.emitProgress(options?.onProgress, {
         planId: plan.id,

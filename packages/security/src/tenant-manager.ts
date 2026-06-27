@@ -176,7 +176,7 @@ export class TenantManager {
     }
 
     this.eventBus.publish("tenant.deleted", { tenantId }, "tenant-manager")
-      .catch((err) => { console.debug("[TenantManager] Delete event error:", err); });
+      .catch((err) => process.stderr.write('[TenantManager] event publish failed: ' + err + '\n'));
   }
 
   getDefaultTenant(): Tenant | undefined {

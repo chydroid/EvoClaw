@@ -1754,27 +1754,45 @@ export class SkillManager {
     };
 
     try {
-      const { execSync } = require("child_process") as typeof import("child_process");
-      let command = "";
+      const { execFileSync } = require("child_process") as typeof import("child_process");
+      // 包名/模块名/公式名必须通过白名单校验，防止 shell 元字符注入。
+      // 使用 execFileSync（shell:false）+ 参数数组，彻底避免命令注入。
+      const identRe = /^[A-Za-z0-9_.@\/-]+$/;
+      const validateIdent = (name: string | undefined, label: string): string => {
+        const v = (name ?? "").trim();
+        if (!v || !identRe.test(v)) {
+          throw new Error(`Invalid ${label}: "${v}" (must match ${identRe})`);
+        }
+        return v;
+      };
+
+      let program: string;
+      let args: string[];
 
       switch (spec.kind) {
         case "brew":
-          command = `brew install ${spec.formula || spec.package || ""}`;
+          args = ["install", validateIdent(spec.formula || spec.package, "formula")];
+          program = "brew";
           break;
         case "node":
-          command = `npm install -g ${spec.package || ""}`;
+          args = ["install", "-g", validateIdent(spec.package, "package")];
+          program = "npm";
           break;
         case "go":
-          command = `go install ${spec.module || ""}`;
+          args = ["install", validateIdent(spec.module, "module")];
+          program = "go";
           break;
         case "uv":
-          command = `uv pip install ${spec.package || ""}`;
+          args = ["pip", "install", validateIdent(spec.package, "package")];
+          program = "uv";
           break;
         case "apt":
-          command = `apt-get install -y ${spec.package || ""}`;
+          args = ["install", "-y", validateIdent(spec.package, "package")];
+          program = "apt-get";
           break;
         case "pip":
-          command = `pip install ${spec.package || ""}`;
+          args = ["install", validateIdent(spec.package, "package")];
+          program = "pip";
           break;
         case "download":
           step.warnings.push(`Download install requires manual setup: ${spec.url || "no URL provided"}`);
@@ -1786,11 +1804,9 @@ export class SkillManager {
           return step;
       }
 
-      if (command) {
-        process.stdout.write(`[SkillManager] Executing structured install: ${command}`);
-        execSync(command, { cwd: skillDir, timeout: 120_000, stdio: "pipe" });
-        step.message = `Successfully installed via ${spec.kind}`;
-      }
+      process.stdout.write(`[SkillManager] Executing structured install: ${program} ${args.join(" ")}`);
+      execFileSync(program, args, { cwd: skillDir, timeout: 120_000, stdio: "pipe", shell: false });
+      step.message = `Successfully installed via ${spec.kind}`;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       step.errors.push(`Install failed (${spec.kind}): ${errMsg}`);

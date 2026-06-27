@@ -279,9 +279,11 @@ export class ContextEngine {
       messages.map((m) => m.content ?? "").join(""),
     );
 
-    if (tokenEstimate > this.config.maxContextTokens * 0.8) {
+    const maxTokens = this.config.maxContextTokens;
+    if (maxTokens > 0 && tokenEstimate > maxTokens * 0.8) {
+      const pct = Math.min(999, Math.round((tokenEstimate / maxTokens) * 100));
       warnings.push(
-        `Context at ${Math.round((tokenEstimate / this.config.maxContextTokens) * 100)}% of limit — consider compacting`,
+        `Context at ${pct}% of limit — consider compacting`,
       );
     }
 

@@ -342,7 +342,18 @@ export class ThreadBindingsManager extends EventEmitter {
 
   startCleanup(): void {
     if (this.cleanupTimer) return;
-    this.cleanupTimer = setInterval(() => this.cleanup(), this.config.cleanupIntervalMs);
+    this.cleanupTimer = setInterval(() => {
+      // cleanup() 是同步函数，抛错会成为未捕获异常；包一层 try/catch 防止定时器进入未定义状态
+      try {
+        this.cleanup();
+      } catch (err) {
+        process.stderr.write(
+          `[ThreadBindings] cleanup tick failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }, this.config.cleanupIntervalMs);
+    // unref 防止清理定时器阻止进程优雅退出
+    this.cleanupTimer.unref();
   }
 
   stopCleanup(): void {

@@ -180,7 +180,9 @@ export class MatrixAdapter implements ChannelAdapter {
 
   async healthCheck(): Promise<ChannelHealthResult> {
     try {
-      const res = await fetch(`${this.config.homeserver.replace(/\/+$/, "")}/_matrix/client/versions`);
+      const res = await fetch(`${this.config.homeserver.replace(/\/+$/, "")}/_matrix/client/versions`, {
+        signal: AbortSignal.timeout(10_000),
+      });
       const data = await res.json() as { versions?: string[] };
       if (Array.isArray(data.versions)) {
         return { healthy: true, message: "Matrix server is reachable", details: { versions: data.versions.join(", ") } };
@@ -225,6 +227,8 @@ export class MatrixAdapter implements ChannelAdapter {
           identifier: { type: "m.id.user", user: this.userId },
           password: this.config.password,
         }),
+        // login() 在 start() 路径上，无超时会导致适配器启动永久挂起
+        signal: AbortSignal.timeout(10_000),
       }
     );
 

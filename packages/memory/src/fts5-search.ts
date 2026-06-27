@@ -204,7 +204,11 @@ export class FTS5SearchEngine {
       if (options.type && entry.type !== options.type) continue;
       if (options.timeRange) {
         const d = new Date(entry.createdAt);
-        if (d < options.timeRange.from || d > options.timeRange.to) continue;
+        // Invalid Date 时 getTime() 返回 NaN，所有比较都为 false，会错误地保留本应被过滤的条目。
+        // 对非法日期条目跳过时间范围过滤外的处理，避免污染结果集。
+        const t = d.getTime();
+        if (Number.isNaN(t)) continue;
+        if (t < options.timeRange.from.getTime() || t > options.timeRange.to.getTime()) continue;
       }
       const lowerContent = entry.content.toLowerCase();
       let match = false;

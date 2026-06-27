@@ -157,7 +157,7 @@ export class PlaywrightBrowser {
       "playwright.navigated",
       { url: page.url(), title, status },
       "playwright-browser"
-    );
+    ).catch((err) => process.stderr.write('[PlaywrightBrowser] event publish failed: ' + err + '\n'));
 
     return { url: page.url(), title, status, content };
   }
@@ -368,7 +368,7 @@ export class PlaywrightBrowser {
         "playwright.login_error",
         { error: errorMsg },
         "playwright-browser"
-      );
+      ).catch((err2) => process.stderr.write('[PlaywrightBrowser] event publish failed: ' + err2 + '\n'));
       return {
         success: false,
         currentUrl: page.url(),

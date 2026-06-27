@@ -165,6 +165,9 @@ export class AgentPoolManager implements AgentPool {
       process.stderr.write(
         `[AgentPool] Auto-scaled: ${agents.length} → ${agents.length + 1} agents (utilization=${(utilization * 100).toFixed(0)}%)`
       );
+      // 扩容后必须尝试唤醒等待队列，否则新建的空闲 agent 会一直闲置，
+      // 而等待者要等到其他 release() 才能被分配，造成饥饿。
+      this.drainWaitQueue();
     }
   }
 

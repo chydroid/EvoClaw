@@ -130,8 +130,16 @@ export function filterToolsByPattern(
   tools: readonly ToolProtocolDescriptor[],
   pattern: string | RegExp
 ): readonly ToolProtocolDescriptor[] {
-  const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-  return tools.filter((tool) => regex.test(tool.name));
+  try {
+    const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    return tools.filter((tool) => regex.test(tool.name));
+  } catch (err) {
+    // 非法正则模式，记录到 stderr 并返回空数组（无匹配）
+    process.stderr.write(
+      "[ToolProtocol] invalid tool filter pattern '" + String(pattern) + "': " + err + "\n",
+    );
+    return [];
+  }
 }
 
 /**

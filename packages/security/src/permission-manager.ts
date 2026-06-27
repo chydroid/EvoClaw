@@ -171,7 +171,7 @@ export class PermissionManager {
       "permission.whitelist_added",
       { operation, target },
       "permission-manager"
-    );
+    ).catch((err) => process.stderr.write('[PermissionManager] event publish failed: ' + err + '\n'));
 
     return entry;
   }
@@ -265,7 +265,7 @@ export class PermissionManager {
         "permission.auto_approved",
         { requestId: approved.id, operation, target },
         "permission-manager"
-      );
+      ).catch((err) => process.stderr.write('[PermissionManager] event publish failed: ' + err + '\n'));
 
       return approved;
     }
@@ -288,7 +288,7 @@ export class PermissionManager {
         "permission.requested",
         { requestId: request.id, operation, target, details },
         "permission-manager"
-      );
+      ).catch((err) => process.stderr.write('[PermissionManager] event publish failed: ' + err + '\n'));
 
       return request;
     }
@@ -346,7 +346,7 @@ export class PermissionManager {
       "permission.denied",
       { requestId, operation: request.operation, target: request.target },
       "permission-manager"
-    );
+    ).catch((err) => process.stderr.write('[PermissionManager] event publish failed: ' + err + '\n'));
 
     return request;
   }
