@@ -233,12 +233,21 @@ export class SkillValidator {
         this.scanScriptForExfiltration(scriptContent, scriptName, findings);
         this.scanScriptForPrivilegeEscalation(scriptContent, scriptName, findings);
         this.scanScriptForSuspiciousPatterns(scriptContent, scriptName, findings);
+        this.scanScriptForObfuscation(scriptContent, scriptName, findings);
+        this.scanScriptForConcatenatedExec(scriptContent, scriptName, findings);
+        this.scanScriptForSandboxEscape(scriptContent, scriptName, findings);
       }
     }
 
     // Scan instructions for suspicious patterns
     if (skill.body?.instructions) {
       this.scanInstructionsForExfiltration(skill.body.instructions, findings);
+      this.scanInstructionsForPromptInjection(skill.body.instructions, findings);
+    }
+
+    // Scan frontmatter description for prompt injection (rare but possible)
+    if (skill.description) {
+      this.scanInstructionsForPromptInjection(skill.description, findings, "description");
     }
 
     // Scan hooks for security issues
@@ -247,6 +256,9 @@ export class SkillValidator {
         if (hookScript) {
           this.scanScriptForInjection(hookScript, `hook:${hookName}`, findings);
           this.scanScriptForSuspiciousPatterns(hookScript, `hook:${hookName}`, findings);
+          this.scanScriptForObfuscation(hookScript, `hook:${hookName}`, findings);
+          this.scanScriptForConcatenatedExec(hookScript, `hook:${hookName}`, findings);
+          this.scanScriptForSandboxEscape(hookScript, `hook:${hookName}`, findings);
         }
       }
     }
@@ -259,6 +271,169 @@ export class SkillValidator {
     const safe = riskLevel !== "critical";
 
     return { safe, riskLevel, findings };
+  }
+
+  /**
+   * 检测 Base64 / 十六进制 / Unicode 编码混淆。
+   * 攻击者常以编码隐藏 payload，绕过静态规则。
+   */
+  private scanScriptForObfuscation(content: string, location: string, findings: SecurityFinding[]): void {
+    const lines = content.split("\n");
+
+    // 长 base64 字符串（>=80 字符）通常是混淆 payload
+    const longB64Pattern = /["'`]([A-Za-z0-9+/]{80,}={0,2})["'`]/g;
+    // atob / btoa 使用（沙箱通常不提供，但仍应警示）
+    const atobPattern = /\batob\s*\(/g;
+    // Buffer.from(..., "base64") 解码后再 eval/Function 的组合
+    const b64ThenEvalPattern = /Buffer\.from\s*\([^)]*,\s*['"]base64['"]\s*\)[\s\S]{0,80}?(?:eval|new\s+Function|setTimeout|setInterval)\s*\(/g;
+    // \x41 \u0041 形式的十六进制/Unicode 转义拼接
+    const hexEscapePattern = /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/g;
+    const unicodeEscapePattern = /\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}/g;
+    // String.fromCharCode 构造字符串
+    const fromCharCodePattern = /String\.fromCharCode\s*\(/g;
+
+    const checks = [
+      { pattern: longB64Pattern, desc: "Long Base64 string detected — may hide obfuscated payload", severity: "medium" as const, rec: "Avoid embedding long Base64 strings. Decode payloads at build time or fetch from trusted sources." },
+      { pattern: atobPattern, desc: "Use of atob() — decoding Base64 at runtime", severity: "low" as const, rec: "Avoid runtime Base64 decoding unless absolutely necessary; document the reason." },
+      { pattern: b64ThenEvalPattern, desc: "Base64 decode followed by eval/Function — classic obfuscated payload execution", severity: "critical" as const, rec: "Never decode and execute Base64 payloads. This is a hallmark of malicious skills." },
+      { pattern: hexEscapePattern, desc: "Hex escape sequence concatenation — may hide strings from static analysis", severity: "medium" as const, rec: "Avoid chaining hex escapes to obscure strings." },
+      { pattern: unicodeEscapePattern, desc: "Unicode escape sequence concatenation — may hide strings from static analysis", severity: "medium" as const, rec: "Avoid chaining unicode escapes to obscure strings." },
+      { pattern: fromCharCodePattern, desc: "String.fromCharCode used — may dynamically construct hidden strings", severity: "low" as const, rec: "Avoid building strings dynamically via char codes; use plain literals." },
+    ];
+
+    for (const { pattern, desc, severity, rec } of checks) {
+      // 多行模式（b64ThenEvalPattern 跨行）：直接对全文扫描
+      if (pattern === b64ThenEvalPattern) {
+        let m: RegExpExecArray | null;
+        pattern.lastIndex = 0;
+        while ((m = pattern.exec(content)) !== null) {
+          // 估算行号
+          const lineNum = content.slice(0, m.index).split("\n").length;
+          findings.push({
+            type: "obfuscation",
+            severity,
+            description: desc,
+            location: `${location}:${lineNum}`,
+            recommendation: rec,
+          });
+          if (pattern.lastIndex === m.index) pattern.lastIndex++;
+        }
+        continue;
+      }
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) {
+          findings.push({
+            type: "obfuscation",
+            severity,
+            description: desc,
+            location: `${location}:${i + 1}`,
+            recommendation: rec,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * 检测字符串拼接构造可执行代码 / 命令。
+   * 例如 eval("ev" + "al") 或 exec("ls " + userInput)
+   */
+  private scanScriptForConcatenatedExec(content: string, location: string, findings: SecurityFinding[]): void {
+    const lines = content.split("\n");
+
+    const concatPatterns = [
+      { pattern: /eval\s*\(\s*[^)]*\+/g, desc: "eval() with string concatenation — may hide actual code from static analysis", severity: "critical" as const },
+      { pattern: /new\s+Function\s*\(\s*[^)]*\+/g, desc: "new Function() with string concatenation — may hide actual code", severity: "critical" as const },
+      { pattern: /(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*[^)]*\+/g, desc: "Shell execution with string concatenation — command injection risk", severity: "high" as const },
+      { pattern: /(?:setTimeout|setInterval)\s*\(\s*[^,)]*\+/g, desc: "setTimeout/setInterval with concatenated string — may execute hidden code", severity: "high" as const },
+      { pattern: /Function\s*\(\s*[^)]*\+/g, desc: "Function() with string concatenation — arbitrary code execution risk", severity: "critical" as const },
+    ];
+
+    for (const { pattern, desc, severity } of concatPatterns) {
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) {
+          findings.push({
+            type: "injection",
+            severity,
+            description: desc,
+            location: `${location}:${i + 1}`,
+            recommendation: "Avoid string concatenation when constructing executable code. Use static strings or safe AST-based construction.",
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * 检测沙箱逃逸模式：constructor.constructor、__proto__、globalThis 等。
+   */
+  private scanScriptForSandboxEscape(content: string, location: string, findings: SecurityFinding[]): void {
+    const lines = content.split("\n");
+
+    const escapePatterns = [
+      { pattern: /constructor\s*\.\s*constructor\s*\.\s*(?:constructor\s*\.\s*)?prototype/g, desc: "constructor.constructor.prototype chain — classic sandbox escape to Function", severity: "critical" as const },
+      { pattern: /this\s*\.\s*constructor\s*\.\s*constructor/g, desc: "this.constructor.constructor — sandbox escape attempt", severity: "critical" as const },
+      { pattern: /__proto__\s*[=:[\]]/g, desc: "__proto__ access — prototype pollution risk", severity: "high" as const },
+      { pattern: /\[\s*['"]__proto__['"]\s*\]/g, desc: "Bracket access to __proto__ — prototype pollution risk", severity: "high" as const },
+      { pattern: /Object\.defineProperty\s*\(\s*[^,]+,\s*['"]__proto__['"]/g, desc: "Object.defineProperty on __proto__ — prototype pollution", severity: "high" as const },
+      { pattern: /globalThis\s*\.\s*(?:process|require|mainModule|globalThis)/g, desc: "globalThis access to privileged objects — sandbox escape", severity: "critical" as const },
+      { pattern: /process\s*\.\s*(?:mainModule|binding|dlopen)\b/g, desc: "process.mainModule/binding/dlopen access — sandbox escape", severity: "critical" as const },
+      { pattern: /require\s*\.\s*cache\b/g, desc: "Access to require.cache — may modify loaded modules", severity: "medium" as const },
+      { pattern: /module\s*\.\s*(?:constructor|exports|children|parent)\b/g, desc: "Module internals access — may escape sandbox", severity: "medium" as const },
+    ];
+
+    for (const { pattern, desc, severity } of escapePatterns) {
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) {
+          findings.push({
+            type: "sandbox_escape",
+            severity,
+            description: desc,
+            location: `${location}:${i + 1}`,
+            recommendation: "Skills must not attempt to escape the sandbox or access privileged runtime objects.",
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * 检测指令文本中的 prompt injection 模式。
+   * 这些模式试图劫持 LLM 行为，绕过技能原本的意图。
+   */
+  private scanInstructionsForPromptInjection(instructions: string, findings: SecurityFinding[], locationPrefix = "instructions"): void {
+    const lines = instructions.split("\n");
+
+    const injectionPatterns = [
+      { pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|commands|rules|directives)/gi, desc: "Prompt injection: attempts to override prior instructions", severity: "critical" as const },
+      { pattern: /disregard\s+(?:the\s+)?(?:above|previous|prior|all)\s+(?:instructions|rules|directives|context)/gi, desc: "Prompt injection: attempts to make AI disregard context", severity: "critical" as const },
+      { pattern: /forget\s+(?:everything|all|your\s+(?:previous|prior))\s+(?:instructions|rules|directives)/gi, desc: "Prompt injection: attempts to erase prior context", severity: "critical" as const },
+      { pattern: /you\s+are\s+(?:now|actually)\s+(?:a|an)\s+/gi, desc: "Prompt injection: attempts to redefine the AI's role", severity: "high" as const },
+      { pattern: /(?:from\s+now\s+on|henceforth|starting\s+now),?\s+you\s+(?:are|will|must|should)/gi, desc: "Prompt injection: attempts to redefine ongoing behavior", severity: "high" as const },
+      { pattern: /(?:do\s+not|don't|never)\s+(?:follow|obey|adhere\s+to)\s+(?:your|the|any)\s+(?:rules|instructions|guidelines|policies)/gi, desc: "Prompt injection: attempts to disable safety rules", severity: "critical" as const },
+      { pattern: /(?:reveal|show|print|output|leak|expose)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions|rules|directives|guidelines)/gi, desc: "Prompt injection: attempts to extract system prompt", severity: "high" as const },
+      { pattern: /(?:jailbreak|DAN|developer\s+mode|god\s+mode|maintenance\s+mode|debug\s+mode)/gi, desc: "Prompt injection: known jailbreak trigger phrases", severity: "critical" as const },
+      { pattern: /(?:pretend|act\s+as\s+if|imagine)\s+(?:you\s+(?:are|have|can)|there\s+(?:is|are)\s+no)/gi, desc: "Prompt injection: attempts to bypass restrictions via role-play framing", severity: "medium" as const },
+      { pattern: /(?:this\s+is\s+(?:a|an)\s+)?(?:test|drill|exercise|simulation)[\s,]+(?:so\s+)?(?:it'?s\s+)?(?:ok|okay|fine|safe)\s+to\s+/gi, desc: "Prompt injection: false safety assurance via test/simulation framing", severity: "high" as const },
+      { pattern: /(?:I\s+am|this\s+is)\s+(?:the|your)\s+(?:creator|developer|admin|administrator|owner|system\s+admin)/gi, desc: "Prompt injection: false authority claim to bypass restrictions", severity: "critical" as const },
+      { pattern: /(?:repeat|echo|copy)\s+(?:the\s+)?(?:above|previous|system)\s+(?:text|prompt|message)/gi, desc: "Prompt injection: attempts to leak prior context via repetition", severity: "medium" as const },
+      { pattern: /\[\s*(?:system|admin|developer|assistant|user)\s*\]/gi, desc: "Prompt injection: fake role-tag injection", severity: "medium" as const },
+      { pattern: /<\/?(?:system|assistant|developer|user|instructions|rules)>/gi, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
+    ];
+
+    for (const { pattern, desc, severity } of injectionPatterns) {
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) {
+          findings.push({
+            type: "prompt_injection",
+            severity,
+            description: desc,
+            location: `${locationPrefix}:${i + 1}`,
+            recommendation: "Remove prompt injection phrases from skill instructions. Skills should describe what to do, not attempt to override AI behavior.",
+          });
+        }
+      }
+    }
   }
 
   private scanScriptForInjection(content: string, location: string, findings: SecurityFinding[]): void {

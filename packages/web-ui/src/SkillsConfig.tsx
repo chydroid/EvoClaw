@@ -603,8 +603,56 @@ export default function SkillsConfig() {
   const [marketplaceSearching, setMarketplaceSearching] = useState(false);
   const [marketplaceInstalling, setMarketplaceInstalling] = useState<string | null>(null);
   const [trendingSkills, setTrendingSkills] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
+  // Round 8: 安全扫描结果缓存（skillId → scan result）
+  const [securityScans, setSecurityScans] = useState<Record<string, {
+    safe: boolean;
+    riskLevel: "low" | "medium" | "high" | "critical";
+    findings: Array<{
+      type: string;
+      severity: "low" | "medium" | "high" | "critical";
+      description: string;
+      location: string;
+      recommendation: string;
+    }>;
+  }>>({});
+  // 安全详情弹窗：当前展示的 skillId
+  const [securityDialogSkillId, setSecurityDialogSkillId] = useState<string | null>(null);
+  const [securityScanLoading, setSecurityScanLoading] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
+  // Round 9: stale-aware 请求防护 — 取消过期请求，避免旧结果覆盖新结果
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const marketplaceAbortRef = useRef<AbortController | null>(null);
+  const securityAbortRef = useRef<AbortController | null>(null);
+
+  // Round 8: 拉取技能安全扫描结果
+  const fetchSecurityScan = useCallback(async (skillId: string, force = false) => {
+    if (!force && securityScans[skillId]) return; // 已缓存则跳过
+    // Round 9: 取消上一个安全扫描请求
+    if (securityAbortRef.current) {
+      securityAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    securityAbortRef.current = controller;
+    setSecurityScanLoading(skillId);
+    try {
+      const res = await fetch(`/api/skills/${skillId}/security-scan`, { signal: controller.signal });
+      if (res.ok) {
+        const data = await res.json();
+        if (controller.signal.aborted) return;
+        if (data.success && data.scan) {
+          setSecurityScans((prev) => ({ ...prev, [skillId]: data.scan }));
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      // 安全扫描 API 不可用，静默失败
+    } finally {
+      if (!controller.signal.aborted) {
+        setSecurityScanLoading(null);
+      }
+    }
+  }, [securityScans]);
 
   const loadSkills = useCallback(async () => {
     try {
@@ -619,10 +667,18 @@ export default function SkillsConfig() {
   }, []);
 
   const loadSkillDetail = useCallback(async (id: string) => {
+    // Round 9: 取消上一个 in-flight 请求，防止旧结果覆盖新选中技能
+    if (detailAbortRef.current) {
+      detailAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
     try {
-      const res = await fetch(`/api/skills/${id}`);
+      const res = await fetch(`/api/skills/${id}`, { signal: controller.signal });
       if (res.ok) {
         const skill = await res.json();
+        // 双重校验：如果已被后续请求取消，则丢弃结果
+        if (controller.signal.aborted) return;
         setSelectedSkill(skill);
         const cfg: Record<string, string> = {};
         if (skill.config && typeof skill.config === "object") {
@@ -649,7 +705,9 @@ export default function SkillsConfig() {
         }
         setConfigModes(modes);
       }
-    } catch {
+    } catch (err) {
+      // AbortError 是正常的过期请求取消，不应报错
+      if (err instanceof DOMException && err.name === "AbortError") return;
       console.debug("[SkillsConfig] Skill detail not available");
     }
   }, []);
@@ -661,10 +719,12 @@ export default function SkillsConfig() {
   useEffect(() => {
     if (selectedId) {
       loadSkillDetail(selectedId);
+      // Round 8: 选中技能时拉取安全扫描结果
+      fetchSecurityScan(selectedId);
     } else {
       setSelectedSkill(null);
     }
-  }, [selectedId, loadSkillDetail]);
+  }, [selectedId, loadSkillDetail, fetchSecurityScan]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -716,15 +776,28 @@ export default function SkillsConfig() {
   // ── Marketplace search ──
   const handleMarketplaceSearch = useCallback(async (query: string) => {
     if (!query.trim()) { setMarketplaceResults([]); return; }
+    // Round 9: 取消上一个搜索请求，防止快速输入时旧结果覆盖新结果
+    if (marketplaceAbortRef.current) {
+      marketplaceAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    marketplaceAbortRef.current = controller;
     setMarketplaceSearching(true);
     try {
-      const res = await fetch(`/api/marketplace/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/marketplace/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
       if (res.ok) {
         const data = await res.json();
+        if (controller.signal.aborted) return;
         setMarketplaceResults(Array.isArray(data.results) ? data.results : []);
       }
-    } catch { /* marketplace not available */ }
-    setMarketplaceSearching(false);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      /* marketplace not available */
+    } finally {
+      if (!controller.signal.aborted) {
+        setMarketplaceSearching(false);
+      }
+    }
   }, []);
 
   const handleMarketplaceInstall = useCallback(async (skillName: string) => {
@@ -1323,6 +1396,136 @@ export default function SkillsConfig() {
             </div>
           )}
 
+          {/* Round 8: 安全详情弹窗 */}
+          {securityDialogSkillId && selectedSkill && securityDialogSkillId === selectedSkill.id && securityScans[selectedSkill.id] && (
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center",
+              zIndex: 1000,
+            }} onClick={() => setSecurityDialogSkillId(null)}>
+              <div
+                style={{
+                  background: "var(--bg-secondary)", border: "1px solid var(--border-light)", borderRadius: "8px",
+                  padding: "20px 24px", maxWidth: "640px", width: "90%", maxHeight: "80vh",
+                  overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {(() => {
+                  const scan = securityScans[selectedSkill.id];
+                  const riskColor = scan.riskLevel === "critical" ? "#dc3545"
+                    : scan.riskLevel === "high" ? "#fd7e14"
+                    : scan.riskLevel === "medium" ? "#ffc107"
+                    : "#28a745";
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                        <div style={{ fontSize: "15px", fontWeight: "bold", color: "var(--text-primary)" }}>
+                          🛡️ {t("skills.security_scan_title", "安全扫描详情")} — {selectedSkill.name}
+                        </div>
+                        <button
+                          onClick={() => setSecurityDialogSkillId(null)}
+                          style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "16px" }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div style={{
+                        display: "inline-flex", alignItems: "center", gap: "6px",
+                        padding: "4px 10px", borderRadius: "4px", fontSize: "12px",
+                        fontWeight: "bold", color: riskColor,
+                        background: scan.riskLevel === "critical" ? "rgba(220,53,69,0.15)"
+                          : scan.riskLevel === "high" ? "rgba(253,126,20,0.15)"
+                          : scan.riskLevel === "medium" ? "rgba(255,193,7,0.15)"
+                          : "rgba(40,167,69,0.15)",
+                        border: `1px solid ${riskColor}33`, marginBottom: "12px",
+                      }}>
+                        {scan.safe ? "✓ " : "✕ "}
+                        {t("skills.risk_level", "风险等级")}: {
+                          scan.riskLevel === "critical" ? t("skills.risk_critical", "危险")
+                          : scan.riskLevel === "high" ? t("skills.risk_high", "高风险")
+                          : scan.riskLevel === "medium" ? t("skills.risk_medium", "中风险")
+                          : t("skills.risk_low", "低风险")
+                        }
+                        {" · "}
+                        {scan.findings.length} {t("skills.findings", "项发现")}
+                      </div>
+                      {scan.findings.length === 0 ? (
+                        <div style={{ color: "var(--text-secondary)", fontSize: "13px", padding: "16px 0", textAlign: "center" }}>
+                          {t("skills.no_findings", "未发现安全问题 ✓")}
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {scan.findings.map((f, idx) => {
+                            const sevColor = f.severity === "critical" ? "#dc3545"
+                              : f.severity === "high" ? "#fd7e14"
+                              : f.severity === "medium" ? "#ffc107"
+                              : "#6c757d";
+                            return (
+                              <div key={idx} style={{
+                                border: "1px solid var(--border-light)", borderRadius: "4px",
+                                padding: "8px 10px", background: "var(--bg-primary)",
+                              }}>
+                                <div style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" }}>
+                                  <span style={{
+                                    padding: "1px 5px", borderRadius: "2px", fontSize: "9px",
+                                    fontWeight: "bold", color: "#fff", background: sevColor,
+                                    textTransform: "uppercase",
+                                  }}>
+                                    {f.severity}
+                                  </span>
+                                  <span style={{
+                                    padding: "1px 5px", borderRadius: "2px", fontSize: "9px",
+                                    color: "var(--text-muted)", background: "var(--bg-hover)",
+                                  }}>
+                                    {f.type}
+                                  </span>
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "monospace" }}>
+                                    {f.location}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: "12px", color: "var(--text-primary)", marginBottom: "4px" }}>
+                                  {f.description}
+                                </div>
+                                <div style={{ fontSize: "11px", color: "var(--text-secondary)", fontStyle: "italic" }}>
+                                  💡 {f.recommendation}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
+                        <button
+                          onClick={() => {
+                            fetchSecurityScan(selectedSkill.id, true);
+                            setSecurityDialogSkillId(null);
+                          }}
+                          style={{
+                            background: "var(--bg-hover)", color: "var(--text-secondary)",
+                            border: "1px solid var(--border-light)", padding: "6px 16px",
+                            borderRadius: "4px", cursor: "pointer", fontSize: "12px", marginRight: "8px",
+                          }}
+                        >
+                          {t("skills.rescan", "重新扫描")}
+                        </button>
+                        <button
+                          onClick={() => setSecurityDialogSkillId(null)}
+                          style={{
+                            background: "var(--accent)", color: "#fff", border: "none",
+                            padding: "6px 16px", borderRadius: "4px", cursor: "pointer", fontSize: "12px",
+                          }}
+                        >
+                          {t("skills.close", "关闭")}
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+
           <div style={styles.detailHeader}>
             <div>
               <span style={styles.detailName}>{selectedSkill.emoji ? `${selectedSkill.emoji} ` : ""}{selectedSkill.name}</span>
@@ -1391,6 +1594,61 @@ export default function SkillsConfig() {
                   }}>
                     <span style={{ ...styles.statusDot, background: configStatusColor(cStatus) }} />
                     {configStatusText(cStatus, t)}
+                  </span>
+                );
+              })()}
+              {(() => {
+                // Round 8: 安全 verdict chip
+                const scan = securityScans[selectedSkill.id];
+                if (securityScanLoading === selectedSkill.id && !scan) {
+                  return (
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", gap: "4px",
+                      padding: "2px 6px", borderRadius: "3px", fontSize: "10px",
+                      color: "var(--text-muted)", background: "var(--bg-hover)", cursor: "wait",
+                    }}>
+                      扫描中...
+                    </span>
+                  );
+                }
+                if (!scan) {
+                  return (
+                    <span
+                      onClick={() => fetchSecurityScan(selectedSkill.id, true)}
+                      style={{
+                        display: "inline-flex", alignItems: "center", gap: "4px",
+                        padding: "2px 6px", borderRadius: "3px", fontSize: "10px",
+                        color: "var(--text-muted)", background: "var(--bg-hover)", cursor: "pointer",
+                      }}
+                      title="点击重新扫描"
+                    >
+                      ⚠ 未扫描
+                    </span>
+                  );
+                }
+                const riskColor = scan.riskLevel === "critical" ? "#dc3545"
+                  : scan.riskLevel === "high" ? "#fd7e14"
+                  : scan.riskLevel === "medium" ? "#ffc107"
+                  : "#28a745";
+                const riskBg = scan.riskLevel === "critical" ? "rgba(220,53,69,0.15)"
+                  : scan.riskLevel === "high" ? "rgba(253,126,20,0.15)"
+                  : scan.riskLevel === "medium" ? "rgba(255,193,7,0.15)"
+                  : "rgba(40,167,69,0.15)";
+                const riskLabel = scan.safe
+                  ? (scan.findings.length === 0 ? "✓ 安全" : `✓ ${scan.findings.length} 提示`)
+                  : `✕ ${scan.riskLevel === "critical" ? "危险" : scan.riskLevel === "high" ? "高风险" : scan.riskLevel === "medium" ? "中风险" : "低风险"} (${scan.findings.length})`;
+                return (
+                  <span
+                    onClick={() => setSecurityDialogSkillId(selectedSkill.id)}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "4px",
+                      padding: "2px 6px", borderRadius: "3px", fontSize: "10px",
+                      fontWeight: "bold", color: riskColor, background: riskBg,
+                      cursor: "pointer", border: `1px solid ${riskColor}33`,
+                    }}
+                    title="点击查看安全详情"
+                  >
+                    {riskLabel}
                   </span>
                 );
               })()}

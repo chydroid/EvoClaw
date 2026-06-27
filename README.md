@@ -25,6 +25,21 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.59.0 亮点
+- **对照 openclaw-main 的 10 轮技能系统提升**：以 openclaw-main 为参照系，对技能子系统进行 10 轮短板补齐，全面对齐行业最佳实践
+  - **第 1 轮（SKILL.md 规范对齐）**：扩展 `SkillMetadata` 与 `SkillManifest`，新增 `metadata.openclaw` 扩展字段（emoji/requires.env/bins/anyBins/primaryEnv/os/homepage），`SkillLoader` 与 `SkillValidator` 完整识别 openclaw 风格的 SKILL.md frontmatter，运行时与 UI 双向兼容
+  - **第 2 轮（技能安装流水线加固）**：`SkillInstaller` 新增 6 阶段流水线（策略 → 解析 → 验证 → 质量 → 沙箱策略 → 安全扫描），与 openclaw `skill install --dry-run` 行为对齐；`InstallPolicy` 引擎支持 allowlist/blocklist/路径白名单/依赖校验
+  - **第 3 轮（技能沙箱执行环境）**：新增 `SkillSandbox` 类（Node.js `vm` 模块），禁用 `process/require/eval/Function/child_process`，提供受限 `console`/`setTimeout`/`setInterval`（带 unref），防止技能脚本逃逸
+  - **第 4 轮（安全表达式求值）**：新增递归下降 `SafeExpressionEvaluator`，替代 `new Function`/`eval`，支持算术/逻辑/三元/比较/字符串/数组/对象字面量，从根上杜绝代码注入
+  - **第 5 轮（SkillWorkshop API 暴露）**：在 `protocol-adapter.ts` 暴露 9 个工作台端点（stats/today/proposals CRUD/submit/review/revise/install/rollback），提案创建与修订内建路径穿越防护、文件数量（≤20）与单文件大小（≤512KB）限制
+  - **第 6 轮（安全扫描增强）**：`SkillValidator` 新增 5 个扫描方法（obfuscation/concatenatedExec/sandboxEscape/promptInjection/description injection），识别 13 种 prompt injection 模式、长 base64 混淆、`String.fromCharCode` 拼接、`constructor.constructor` 链逃逸、`__proto__` 污染、`process.mainModule` 访问
+  - **第 7 轮（技能签名与信任链）**：新增 `skill-integrity.ts` 模块（约 420 行），`origin.json` 记录每个技能文件级 sha256，`evoclaw-skill-lock.json` 汇总所有技能指纹，`SkillManager` 在安装/卸载时自动写入/校验，5 个 integrity API 端点（verify/refresh-lock/verify-lock）暴露给 UI
+  - **第 8 轮（UI 安全 verdict chip + 详情弹窗）**：`SkillsConfig.tsx` 在技能详情头部展示 4 色风险等级 chip（绿/黄/橙/红），点击打开 findings 详情弹窗，包含 severity/type/location/description/recommendation 五元组与重新扫描按钮
+  - **第 9 轮（UI stale-aware 请求防护）**：详情/市场搜索/安全扫描三类请求引入 `AbortController`，切换技能时取消上一个请求，避免竞态导致旧数据覆盖新数据；AbortError 静默处理
+  - **第 10 轮（端到端验证 + 高可用性）**：`/api/skills/install` 与 `/api/marketplace/install` 新增 2 次重试（仅对瞬时错误 ECONN/ETIMEDOUT/lock 等，安全扫描失败不重试）；新增 `/api/skills/system/health` 健康检查端点；`SkillRegistry` 远程注册表健康指数退避（5min × 2^failures，上限 2^5）
+  - **新增 5 个 bundled 技能**：`scrapling-fetch`（反爬虫抓取）、`link-understanding`（链接理解）、`task-decomposer`（任务分解）、`meeting-summarizer`（会议纪要）、`code-explainer`（代码解释）
+  - **验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test` 全部退出码 0
+
 ### v0.58.0 亮点
 - **6 轮全量 Bug 扫描与修复（60+ 个修复）**：延续前 9 轮审查，连续进行 6 轮全量扫描，覆盖 14 个内部包 + 2 个应用
   - **第 3 轮收尾（SSRF/注入/认证旁路）**：`shell-media-tools.ts` 的 `scrapling_fetch`/`video_download`/`music_download` 全部接入 SSRF 防护，与 `web-tools.ts` 保持一致

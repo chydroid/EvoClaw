@@ -1,0 +1,14 @@
+{
+  "name": "unit-converter",
+  "displayName": "单位转换器",
+  "description": "支持长度、重量、温度、面积、体积、速度、时间、数据存储等多种单位换算。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["unit", "converter", "conversion", "单位", "换算", "转换"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "📏",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

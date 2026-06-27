@@ -24,6 +24,14 @@ import { SkillRegistry, type RegistrySearchQuery, type RegistrySearchResult, typ
 import { SkillResolver } from "./skill-resolver";
 import { LocalizationService } from "./localization-service";
 import { SkillMarketplace, type SearchQuery, type SearchResult } from "./marketplace";
+import {
+  writeOriginJson,
+  verifySkillOrigin,
+  writeLockJson,
+  verifyLockIntegrity,
+  type IntegrityVerificationResult,
+  type SkillOrigin,
+} from "./skill-integrity";
 
 // ── Skill Installation Pipeline Types ──
 
@@ -503,7 +511,124 @@ export class SkillManager {
 
     await this.eventBus.publish(SystemEvents.SKILL_INSTALLED, skill, "skill-manager");
 
+    // ── Round 7: 写入 origin.json 建立信任链 ──
+    // 自动推断来源：bundled 目录视为官方内置，其余视为本地安装
+    try {
+      const isBundled = skillDir.includes(path.sep + "bundled" + path.sep) || skillDir.includes("\\bundled\\");
+      writeOriginJson(skillDir, {
+        skillId: skill.id,
+        name: skill.name,
+        version: skill.version || "0.0.0",
+        source: isBundled ? "bundled" : "local",
+        sourceUrl: skill.installPath,
+        installedAt: new Date().toISOString(),
+        installedBy: "system",
+      });
+    } catch (e) {
+      process.stderr.write(`[SkillManager] Failed to write origin.json for ${skill.name}: ${e}\n`);
+      // 非致命错误：信任链缺失但技能仍可用
+    }
+
     return skill;
+  }
+
+  /**
+   * 覆盖技能的 origin 元数据（marketplace/workshop 安装时调用）。
+   * 在 installSkill 之后调用以更新来源信息。
+   */
+  recordSkillOrigin(skillId: string, source: SkillOrigin["source"], sourceUrl?: string): boolean {
+    const skill = this.skills.get(skillId);
+    if (!skill || !skill.installPath) return false;
+    const skillDir = path.dirname(skill.installPath);
+    try {
+      writeOriginJson(skillDir, {
+        skillId: skill.id,
+        name: skill.name,
+        version: skill.version || "0.0.0",
+        source,
+        sourceUrl,
+        installedAt: new Date().toISOString(),
+        installedBy: "system",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 校验单个技能的完整性（origin.json + 文件哈希）。
+   */
+  verifySkillIntegrity(skillId: string): IntegrityVerificationResult | null {
+    const skill = this.skills.get(skillId);
+    if (!skill || !skill.installPath) return null;
+    const skillDir = path.dirname(skill.installPath);
+    return verifySkillOrigin(skillDir);
+  }
+
+  /**
+   * 校验所有已安装技能的完整性。
+   * 返回每个技能的校验结果，跳过未受信任链保护的技能（missingOrigin）。
+   */
+  verifyAllSkillsIntegrity(): Array<{ skillId: string; skillName: string; result: IntegrityVerificationResult }> {
+    const results: Array<{ skillId: string; skillName: string; result: IntegrityVerificationResult }> = [];
+    for (const skill of this.skills.values()) {
+      if (!skill.installPath) continue;
+      const skillDir = path.dirname(skill.installPath);
+      const result = verifySkillOrigin(skillDir);
+      results.push({ skillId: skill.id, skillName: skill.name, result });
+    }
+    return results;
+  }
+
+  /**
+   * 刷新 lock.json：汇总所有已安装技能的哈希到 skills 根目录。
+   * skillsRoot 通常为 scanDirs 的根目录。
+   */
+  refreshLockfile(skillsRoot: string): boolean {
+    try {
+      const entries: Array<{
+        skillId: string;
+        name: string;
+        version: string;
+        dir: string;
+        source: SkillOrigin["source"];
+      }> = [];
+      for (const skill of this.skills.values()) {
+        if (!skill.installPath) continue;
+        const skillDir = path.dirname(skill.installPath);
+        entries.push({
+          skillId: skill.id,
+          name: skill.name,
+          version: skill.version || "0.0.0",
+          dir: skillDir,
+          source: skillDir.includes(path.sep + "bundled" + path.sep) || skillDir.includes("\\bundled\\")
+            ? "bundled" : "local",
+        });
+      }
+      writeLockJson(skillsRoot, entries);
+      return true;
+    } catch (e) {
+      process.stderr.write(`[SkillManager] Failed to refresh lockfile: ${e}\n`);
+      return false;
+    }
+  }
+
+  /**
+   * 校验 skills 根目录的 lock.json 完整性。
+   */
+  verifyLockfile(skillsRoot: string): IntegrityVerificationResult {
+    return verifyLockIntegrity(skillsRoot);
+  }
+
+  /**
+   * 获取技能的安全扫描结果（按需重新扫描）。
+   * Round 8: 为 UI 安全 verdict chip 提供数据。
+   */
+  getSecurityScan(skillId: string): SecurityScanResult | null {
+    const skill = this.skills.get(skillId);
+    if (!skill) return null;
+    return this.validator.securityScan(skill);
   }
 
   async executeSkill(
@@ -763,7 +888,10 @@ export class SkillManager {
       throw new Error(`SKILL.md not found at ${skillMdPath} after marketplace install`);
     }
 
-    return await this.installSkill(skillMdPath);
+    const installedSkill = await this.installSkill(skillMdPath);
+    // 标记来源为 marketplace（覆盖 installSkill 默认的 local）
+    this.recordSkillOrigin(installedSkill.id, "marketplace", pkg.name);
+    return installedSkill;
   }
 
   /** Upgrade a skill from the ClawHub marketplace */

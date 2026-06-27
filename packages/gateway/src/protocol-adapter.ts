@@ -1563,7 +1563,7 @@ export class ProtocolAdapter {
     app.post("/api/skills/install", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
-          installSkill(path: string): Promise<unknown>;
+          installSkill(path: string, force?: boolean): Promise<unknown>;
         }>("skillManager");
         if (!skillManager) {
           res.status(503).json({ error: "Skill manager not available" });
@@ -1574,8 +1574,25 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Skill path is required (body.path)" });
           return;
         }
-        const installed = await skillManager.installSkill(skillPath);
-        res.json({ success: true, skill: installed });
+        // Round 10: 安装重试逻辑 — 对瞬时失败重试一次
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const installed = await skillManager.installSkill(skillPath);
+            res.json({ success: true, skill: installed, retries: attempt });
+            return;
+          } catch (err) {
+            lastErr = err;
+            const msg = String(err);
+            // 仅对瞬时性错误重试（网络/IO/锁竞争），安全扫描失败不重试
+            const isTransient = /ECONN|ETIMEDOUT|ENOTFOUND|ECONNRESET|EAI_AGAIN|lock|busy|temp/i.test(msg)
+              && !/security|injection|exfiltration|critical/i.test(msg);
+            if (!isTransient || attempt === 1) break;
+            // 短暂等待后重试
+            await new Promise((r) => setTimeout(r, 300));
+          }
+        }
+        res.status(500).json({ error: String(lastErr) });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1899,8 +1916,26 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Skill name is required (body.name)" });
           return;
         }
-        const skill = await skillManager.installFromMarketplace(name);
-        res.json({ success: true, skill });
+        // Round 10: marketplace 安装重试逻辑 — 网络下载易失败，重试一次
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const skill = await skillManager.installFromMarketplace(name);
+            res.json({ success: true, skill, retries: attempt });
+            return;
+          } catch (err) {
+            lastErr = err;
+            const msg = String(err);
+            // 安全扫描失败不重试
+            if (/security|injection|exfiltration|critical/i.test(msg)) break;
+            // 非瞬时错误不重试
+            const isTransient = /ECONN|ETIMEDOUT|ENOTFOUND|ECONNRESET|EAI_AGAIN|fetch|network|timeout/i.test(msg)
+              || attempt === 0;
+            if (!isTransient || attempt === 1) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        res.status(500).json({ error: String(lastErr) });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1957,6 +1992,440 @@ export class ProtocolAdapter {
           return;
         }
         res.json({ success: true, skill: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Skill Integrity Routes (Round 7: 信任链) ============
+    // GET /api/skills/integrity/verify — 校验所有已安装技能的完整性
+    app.get("/api/skills/integrity/verify", (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          verifyAllSkillsIntegrity(): Array<{
+            skillId: string;
+            skillName: string;
+            result: { ok: boolean; missingOrigin: boolean; missingFiles: string[]; mismatchedFiles: unknown[]; lockMismatches: string[]; errors: string[] };
+          }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const results = skillManager.verifyAllSkillsIntegrity();
+        const summary = {
+          total: results.length,
+          ok: results.filter((r) => r.result.ok).length,
+          missingOrigin: results.filter((r) => r.result.missingOrigin).length,
+          failed: results.filter((r) => !r.result.ok && !r.result.missingOrigin).length,
+        };
+        res.json({ success: true, summary, results });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/integrity/verify/:id — 校验单个技能的完整性
+    app.get("/api/skills/integrity/verify/:id", (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          verifySkillIntegrity(skillId: string): { ok: boolean; missingOrigin: boolean; missingFiles: string[]; mismatchedFiles: unknown[]; lockMismatches: string[]; errors: string[] } | null;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = skillManager.verifySkillIntegrity(String(req.params.id));
+        if (!result) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        res.json({ success: true, result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/integrity/refresh-lock — 刷新 lock.json
+    app.post("/api/skills/integrity/refresh-lock", (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          refreshLockfile(skillsRoot: string): boolean;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillsRoot = (req.body && typeof req.body.skillsRoot === "string")
+          ? req.body.skillsRoot
+          : path.resolve(process.cwd(), "data", "skills");
+        const ok = skillManager.refreshLockfile(skillsRoot);
+        res.json({ success: ok, skillsRoot });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/integrity/verify-lock — 校验 lock.json
+    app.get("/api/skills/integrity/verify-lock", (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          verifyLockfile(skillsRoot: string): { ok: boolean; missingOrigin: boolean; missingFiles: string[]; mismatchedFiles: unknown[]; lockMismatches: string[]; errors: string[] };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillsRoot = (typeof req.query.skillsRoot === "string")
+          ? req.query.skillsRoot
+          : path.resolve(process.cwd(), "data", "skills");
+        const result = skillManager.verifyLockfile(skillsRoot);
+        res.json({ success: true, result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/:id/security-scan — 获取技能安全扫描结果（Round 8: UI verdict chip）
+    app.get("/api/skills/:id/security-scan", (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getSecurityScan(skillId: string): {
+            safe: boolean;
+            riskLevel: "low" | "medium" | "high" | "critical";
+            findings: Array<{
+              type: string;
+              severity: "low" | "medium" | "high" | "critical";
+              description: string;
+              location: string;
+              recommendation: string;
+            }>;
+          } | null;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = skillManager.getSecurityScan(String(req.params.id));
+        if (!result) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        res.json({ success: true, scan: result });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/system/health — 技能系统健康检查（Round 10: 高可用性）
+    app.get("/api/skills/system/health", (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          listSkills(): Promise<unknown[]>;
+          getMarketplace?(): unknown;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ status: "unhealthy", error: "Skill manager not available" });
+          return;
+        }
+        // 异步收集健康指标
+        (async () => {
+          try {
+            const skills = await skillManager.listSkills();
+            const skillCount = Array.isArray(skills) ? skills.length : 0;
+            // 检查是否有 marketplace 可用
+            let marketplaceAvailable = false;
+            try {
+              marketplaceAvailable = typeof skillManager.getMarketplace === "function";
+            } catch { /* ignore */ }
+            res.json({
+              status: "healthy",
+              skillCount,
+              marketplaceAvailable,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err) {
+            res.status(503).json({
+              status: "degraded",
+              error: String(err),
+              timestamp: new Date().toISOString(),
+            });
+          }
+        })().catch(() => {
+          res.status(503).json({ status: "unhealthy", error: "Health check failed" });
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ============ Skill Workshop Routes ============
+    // 暴露 SkillWorkshop 能力：提案创建/提交/审核/修订/安装/回滚
+    // 对齐 openclaw-main skills/workshop API 形态
+    type WorkshopShape = {
+      getStats(): { total: number; byStatus: Record<string, number>; avgReviewTime: number };
+      getTodayActions(): {
+        pendingReview: unknown[];
+        recentlyApproved: unknown[];
+        recentlyRejected: unknown[];
+      };
+      listProposals(status?: string): unknown[];
+      getProposal(id: string): unknown;
+      createProposal(
+        name: string,
+        description: string,
+        author: string,
+        files: Array<{ path: string; content: string; type: "skill" | "config" | "asset" | "script" }>
+      ): unknown;
+      submitProposal(id: string): unknown;
+      reviewProposal(id: string, reviewer: string, decision: "approve" | "reject", comment?: string): unknown;
+      reviseProposal(
+        id: string,
+        files: Array<{ path: string; content: string; type: "skill" | "config" | "asset" | "script" }>,
+        comment?: string
+      ): unknown;
+      installApproved(id: string): Promise<boolean>;
+      rollback(id: string): boolean;
+    };
+    const resolveWorkshop = (res: Response): WorkshopShape | null => {
+      const skillManager = this.registry.resolveService<{
+        getSkillWorkshop(): WorkshopShape | null;
+      }>("skillManager");
+      if (!skillManager) {
+        res.status(503).json({ error: "Skill manager not available" });
+        return null;
+      }
+      const workshop = skillManager.getSkillWorkshop();
+      if (!workshop) {
+        res.status(503).json({ error: "Skill workshop is disabled" });
+        return null;
+      }
+      return workshop;
+    };
+
+    // GET /api/skills/workshop/stats — 工作台总览
+    app.get("/api/skills/workshop/stats", (_req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        res.json({ success: true, stats: workshop.getStats() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/workshop/today — 今日待办
+    app.get("/api/skills/workshop/today", (_req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        res.json({ success: true, ...workshop.getTodayActions() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/workshop/proposals — 列出提案（可选 status 过滤）
+    app.get("/api/skills/workshop/proposals", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const status = req.query.status as string | undefined;
+        const validStatuses = ["draft", "submitted", "under_review", "approved", "rejected", "quarantined"];
+        if (status && !validStatuses.includes(status)) {
+          res.status(400).json({ error: `Invalid status. Allowed: ${validStatuses.join(", ")}` });
+          return;
+        }
+        res.json({ success: true, proposals: workshop.listProposals(status) });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals — 创建提案
+    app.post("/api/skills/workshop/proposals", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const { name, description, author, files } = req.body || {};
+        if (!name || typeof name !== "string" || !name.trim()) {
+          res.status(400).json({ error: "name is required" });
+          return;
+        }
+        if (!description || typeof description !== "string") {
+          res.status(400).json({ error: "description is required" });
+          return;
+        }
+        if (!author || typeof author !== "string" || !author.trim()) {
+          res.status(400).json({ error: "author is required" });
+          return;
+        }
+        if (!Array.isArray(files) || files.length === 0) {
+          res.status(400).json({ error: "files (non-empty array) is required" });
+          return;
+        }
+        // 输入校验：限制单文件大小和文件数量，防止资源耗尽
+        if (files.length > 20) {
+          res.status(400).json({ error: "Too many files (max 20)" });
+          return;
+        }
+        const allowedTypes = ["skill", "config", "asset", "script"];
+        const sanitized = files.map((f: any, idx: number) => {
+          if (!f || typeof f !== "object") {
+            throw new Error(`File at index ${idx} is invalid`);
+          }
+          if (typeof f.path !== "string" || !f.path.trim()) {
+            throw new Error(`File at index ${idx} has invalid path`);
+          }
+          // 禁止路径穿越
+          if (f.path.includes("..") || /^[A-Za-z]:/.test(f.path) || f.path.startsWith("/")) {
+            throw new Error(`File at index ${idx} has forbidden path: ${f.path}`);
+          }
+          if (typeof f.content !== "string" || f.content.length > 512 * 1024) {
+            throw new Error(`File at index ${idx} content too large (>512KB) or invalid`);
+          }
+          const type = typeof f.type === "string" && allowedTypes.includes(f.type) ? f.type : "asset";
+          return { path: f.path, content: f.content, type: type as "skill" | "config" | "asset" | "script" };
+        });
+        const proposal = workshop.createProposal(name.trim(), description, author.trim(), sanitized);
+        res.status(201).json({ success: true, proposal });
+      } catch (err) {
+        res.status(400).json({ error: String(err) });
+      }
+    });
+
+    // GET /api/skills/workshop/proposals/:id — 获取提案详情
+    app.get("/api/skills/workshop/proposals/:id", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const proposal = workshop.getProposal(String(req.params.id));
+        if (!proposal) {
+          res.status(404).json({ error: "Proposal not found" });
+          return;
+        }
+        res.json({ success: true, proposal });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals/:id/submit — 提交审核
+    app.post("/api/skills/workshop/proposals/:id/submit", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const proposal = workshop.submitProposal(String(req.params.id));
+        if (!proposal) {
+          res.status(409).json({ error: "Proposal not found or not in draft status" });
+          return;
+        }
+        res.json({ success: true, proposal });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals/:id/review — 审核提案
+    app.post("/api/skills/workshop/proposals/:id/review", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const { reviewer, decision, comment } = req.body || {};
+        if (!reviewer || typeof reviewer !== "string") {
+          res.status(400).json({ error: "reviewer is required" });
+          return;
+        }
+        if (decision !== "approve" && decision !== "reject") {
+          res.status(400).json({ error: "decision must be 'approve' or 'reject'" });
+          return;
+        }
+        const proposal = workshop.reviewProposal(
+          String(req.params.id),
+          reviewer,
+          decision,
+          typeof comment === "string" ? comment : undefined
+        );
+        if (!proposal) {
+          res.status(409).json({ error: "Proposal not found or not in reviewable status" });
+          return;
+        }
+        res.json({ success: true, proposal });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals/:id/revise — 修订提案
+    app.post("/api/skills/workshop/proposals/:id/revise", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const { files, comment } = req.body || {};
+        if (!Array.isArray(files) || files.length === 0) {
+          res.status(400).json({ error: "files (non-empty array) is required" });
+          return;
+        }
+        if (files.length > 20) {
+          res.status(400).json({ error: "Too many files (max 20)" });
+          return;
+        }
+        const allowedTypes = ["skill", "config", "asset", "script"];
+        const sanitized = files.map((f: any, idx: number) => {
+          if (!f || typeof f !== "object") {
+            throw new Error(`File at index ${idx} is invalid`);
+          }
+          if (typeof f.path !== "string" || !f.path.trim() || f.path.includes("..") || /^[A-Za-z]:/.test(f.path) || f.path.startsWith("/")) {
+            throw new Error(`File at index ${idx} has invalid or forbidden path`);
+          }
+          if (typeof f.content !== "string" || f.content.length > 512 * 1024) {
+            throw new Error(`File at index ${idx} content too large or invalid`);
+          }
+          const type = typeof f.type === "string" && allowedTypes.includes(f.type) ? f.type : "asset";
+          return { path: f.path, content: f.content, type: type as "skill" | "config" | "asset" | "script" };
+        });
+        const proposal = workshop.reviseProposal(
+          String(req.params.id),
+          sanitized,
+          typeof comment === "string" ? comment : undefined
+        );
+        if (!proposal) {
+          res.status(409).json({ error: "Proposal not found or not in revisable status" });
+          return;
+        }
+        res.json({ success: true, proposal });
+      } catch (err) {
+        res.status(400).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals/:id/install — 安装已批准的提案
+    app.post("/api/skills/workshop/proposals/:id/install", async (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const ok = await workshop.installApproved(String(req.params.id));
+        if (!ok) {
+          res.status(409).json({ error: "Proposal not found, not approved, or hash verification failed" });
+          return;
+        }
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // POST /api/skills/workshop/proposals/:id/rollback — 回滚已安装的提案
+    app.post("/api/skills/workshop/proposals/:id/rollback", (req: Request, res: Response) => {
+      try {
+        const workshop = resolveWorkshop(res);
+        if (!workshop) return;
+        const ok = workshop.rollback(String(req.params.id));
+        if (!ok) {
+          res.status(409).json({ error: "Proposal not installed or not found" });
+          return;
+        }
+        res.json({ success: true });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

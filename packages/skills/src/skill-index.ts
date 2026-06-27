@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as path from "path";
+
 export interface SkillIndexEntry {
   id: string;
   name: string;
@@ -19,9 +22,25 @@ export interface SkillSearchResult {
   matchedLevel: 0 | 1 | 2;
 }
 
+/** 持久化文件格式版本，用于兼容性检查 */
+const SKILL_INDEX_FILE_VERSION = 1;
+/** 持久化文件最大尺寸（4MB），超出则视为损坏并丢弃 */
+const SKILL_INDEX_MAX_FILE_SIZE = 4 * 1024 * 1024;
+
+interface SkillIndexFileData {
+  version: number;
+  savedAt: number;
+  entries: SkillIndexEntry[];
+}
+
 export class SkillIndex {
   private entries = new Map<string, SkillIndexEntry>();
   private dirty = false;
+  /** 当前已加载的持久化文件路径（用于自动 flushIfNeeded） */
+  private currentFilePath: string | null = null;
+  /** 自动持久化的最小间隔（ms），避免高频写入 */
+  private static readonly AUTO_FLUSH_MIN_INTERVAL_MS = 5000;
+  private lastFlushAt = 0;
 
   indexSkill(skill: {
     id: string;
@@ -195,6 +214,144 @@ export class SkillIndex {
 
   getSize(): number {
     return this.entries.size;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  //  持久化：将索引写入磁盘，重启后可加载以加速冷启动
+  //  规则遵循项目 atomicWriteFile 约定：temp + fsync + rename
+  // ──────────────────────────────────────────────────────────
+
+  /**
+   * 将索引持久化到指定文件。
+   * 使用 temp + fsync + rename 原子写入，崩溃时不截断。
+   * 持久化成功后清除 dirty 标志。
+   */
+  async persistTo(filePath: string): Promise<void> {
+    const data: SkillIndexFileData = {
+      version: SKILL_INDEX_FILE_VERSION,
+      savedAt: Date.now(),
+      entries: Array.from(this.entries.values()),
+    };
+    const json = JSON.stringify(data);
+    const dir = path.dirname(filePath);
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    } catch {
+      // 目录可能已被并发创建，忽略
+    }
+    const tmpPath = filePath + ".tmp." + process.pid;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, json, { encoding: "utf-8" });
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.renameSync(tmpPath, filePath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
+    this.dirty = false;
+    this.lastFlushAt = Date.now();
+    this.currentFilePath = filePath;
+  }
+
+  /**
+   * 从指定文件加载索引。
+   * 文件不存在、损坏或版本不兼容时静默丢弃，返回 false。
+   * 加载成功后清除 dirty 标志（避免立刻又触发写入）。
+   */
+  async loadFrom(filePath: string): Promise<boolean> {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      // 文件不存在视为正常情况
+      return false;
+    }
+    if (!stat.isFile() || stat.size === 0 || stat.size > SKILL_INDEX_MAX_FILE_SIZE) {
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      return false;
+    }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, "utf-8");
+    } catch {
+      return false;
+    }
+    let parsed: SkillIndexFileData;
+    try {
+      parsed = JSON.parse(raw) as SkillIndexFileData;
+    } catch {
+      // JSON 损坏：删除文件以避免下次再读
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      return false;
+    }
+    if (!parsed || typeof parsed !== "object") return false;
+    if (parsed.version !== SKILL_INDEX_FILE_VERSION) {
+      // 版本不兼容：丢弃旧索引，由 indexSkill 重新构建
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      return false;
+    }
+    if (!Array.isArray(parsed.entries)) return false;
+    this.entries.clear();
+    let loaded = 0;
+    for (const e of parsed.entries) {
+      if (!e || typeof e.id !== "string") continue;
+      // 浅校验关键字段，避免运行时崩溃
+      const entry: SkillIndexEntry = {
+        id: e.id,
+        name: String(e.name ?? ""),
+        level0: String(e.level0 ?? ""),
+        level1: String(e.level1 ?? ""),
+        level2: String(e.level2 ?? ""),
+        category: String(e.category ?? "custom"),
+        keywords: Array.isArray(e.keywords) ? e.keywords.map(String) : [],
+        lastUsedAt: typeof e.lastUsedAt === "number" ? e.lastUsedAt : null,
+        useCount: Number.isFinite(e.useCount) ? Number(e.useCount) : 0,
+        successRate: Number.isFinite(e.successRate) ? Number(e.successRate) : 0,
+        lastValidatedAt: typeof e.lastValidatedAt === "number" ? e.lastValidatedAt : null,
+        apiVersion: typeof e.apiVersion === "string" ? e.apiVersion : null,
+      };
+      this.entries.set(entry.id, entry);
+      loaded++;
+    }
+    this.dirty = false;
+    this.currentFilePath = filePath;
+    this.lastFlushAt = Date.now();
+    if (loaded > 0) {
+      process.stdout.write(
+        `[SkillIndex] Loaded ${loaded} entries from ${path.basename(filePath)} (savedAt=${new Date(parsed.savedAt).toISOString()})\n`
+      );
+    }
+    return loaded > 0;
+  }
+
+  /**
+   * 当 dirty 且距离上次写入超过 AUTO_FLUSH_MIN_INTERVAL_MS 时，自动持久化。
+   * 适用于在 SkillManager 的操作钩子中调用，避免每次小变更都触发磁盘 IO。
+   */
+  async flushIfNeeded(force = false): Promise<void> {
+    if (!this.dirty) return;
+    if (!this.currentFilePath) return;
+    if (!force && Date.now() - this.lastFlushAt < SkillIndex.AUTO_FLUSH_MIN_INTERVAL_MS) {
+      return;
+    }
+    try {
+      await this.persistTo(this.currentFilePath);
+    } catch (err) {
+      process.stderr.write(
+        `[SkillIndex] Auto-flush failed: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
+  }
+
+  isDirty(): boolean {
+    return this.dirty;
   }
 }
 

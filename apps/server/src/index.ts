@@ -719,6 +719,13 @@ export class EvoClawServer {
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
     }
+    // 加载持久化的技能索引（如存在），加速冷启动期间的技能搜索
+    const skillIndexPath = path.resolve(__dirname, "..", "..", "..", "data", "skill-index.json");
+    try {
+      await this.skillIndex.loadFrom(skillIndexPath);
+    } catch (e) {
+      this.logger.error("server", `SkillIndex load failed: ${e}`);
+    }
     // Auto-skill scan interval: default 5 minutes (300000ms), configurable via env.
     // Previous values: 30s (data/skills) / 60s (bundled) — caused excessive I/O on large skill dirs.
     const skillScanIntervalMs = Number(process.env.EVOCLAW_SKILL_SCAN_INTERVAL_MS) || 300_000;
@@ -969,6 +976,13 @@ export class EvoClawServer {
     this.configWatcher.stopAll();
     // Stop Weixin plugin adapter
     this.weixinPluginAdapter.stopAllMonitors();
+    // 停止技能自动扫描，避免与持久化产生竞态
+    try { this.skillManager.stopAutoScan(); } catch { /* ignore */ }
+    // 持久化技能索引到磁盘，加速下次冷启动
+    try {
+      const skillIndexPath = path.resolve(__dirname, "..", "..", "..", "data", "skill-index.json");
+      await this.skillIndex.persistTo(skillIndexPath);
+    } catch (e) { this.logger.error("server", `SkillIndex persist failed: ${e}`); }
     this.logger.info("server", "Stopping subsystems...");
     try { await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server"); } catch (e) { this.logger.error("server", `Shutdown publish failed: ${e}`); }
     try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }

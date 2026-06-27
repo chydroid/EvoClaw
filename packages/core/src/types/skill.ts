@@ -226,7 +226,15 @@ export interface SecurityScanResult {
 }
 
 export interface SecurityFinding {
-  type: "injection" | "exfiltration" | "privilege_escalation" | "supply_chain" | "suspicious_pattern";
+  type:
+    | "injection"
+    | "exfiltration"
+    | "privilege_escalation"
+    | "supply_chain"
+    | "suspicious_pattern"
+    | "obfuscation"
+    | "sandbox_escape"
+    | "prompt_injection";
   severity: "low" | "medium" | "high" | "critical";
   description: string;
   location: string;

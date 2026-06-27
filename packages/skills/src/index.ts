@@ -31,3 +31,23 @@ export { SkillWorkshop } from "./skill-workshop";
 export type { SkillProposal, SkillProposalFile, SkillWorkshopConfig } from "./skill-workshop";
 export { InstallPolicyManager } from "./install-policy";
 export type { InstallPolicy, InstallRule, InstallContext, InstallDecision } from "./install-policy";
+export {
+  writeOriginJson,
+  readOriginJson,
+  verifySkillOrigin,
+  writeLockJson,
+  readLockJson,
+  verifyLockIntegrity,
+  removeOriginJson,
+  removeLockJson,
+  hashFile,
+  sha256,
+  hashOriginJson,
+  ORIGIN_FILENAME,
+  LOCK_FILENAME,
+} from "./skill-integrity";
+export type {
+  SkillOrigin,
+  SkillLockfile,
+  IntegrityVerificationResult,
+} from "./skill-integrity";

@@ -1,0 +1,14 @@
+{
+  "name": "datetime-helper",
+  "displayName": "日期时间助手",
+  "description": "提供当前时间、时区转换、日期格式化、时间差计算等能力。无外部依赖，纯本地计算。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["datetime", "time", "timezone", "date", "日期", "时间"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🕐",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

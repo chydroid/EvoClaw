@@ -1,0 +1,14 @@
+{
+  "name": "color-tools",
+  "displayName": "颜色工具",
+  "description": "支持 HEX/RGB/HSL 互转、颜色混合、明暗调整、对比度计算、配色生成。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["color", "hex", "rgb", "hsl", "颜色", "配色"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🎨",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

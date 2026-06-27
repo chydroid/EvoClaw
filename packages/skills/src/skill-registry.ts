@@ -60,9 +60,15 @@ export class SkillRegistry {
   private remoteRegistries: RemoteRegistryConfig[] = [];
   private cache = new Map<string, { data: RegistrySearchResult; timestamp: number }>();
   private localSkills = new Map<string, Skill>();
+  /** 远程注册表健康状态缓存：避免对失败的注册表短时间内反复重试 */
+  private remoteHealth = new Map<string, { healthy: boolean; lastCheck: number; consecutiveFailures: number }>();
 
   private static readonly CACHE_TTL = 300000;
   private static readonly CACHE_MAX_SIZE = 500;
+  /** 注册表失败后标记为不健康的时间窗口（5 分钟） */
+  private static readonly UNHEALTHY_TTL_MS = 5 * 60 * 1000;
+  /** 连续失败次数达到阈值后延长冷却（指数退避上限） */
+  private static readonly MAX_BACKOFF_FAILURES = 5;
 
   readonly name = "EvoClaw Skill Registry";
 
@@ -225,7 +231,10 @@ export class SkillRegistry {
     let allEntries: SkillRegistryEntry[] = [];
     let total = 0;
 
-    const enabledRemotes = this.remoteRegistries.filter((r) => r.enabled);
+    // 跳过近期标记为不健康的注册表，避免对失败端点反复重试
+    const enabledRemotes = this.remoteRegistries.filter(
+      (r) => r.enabled && this.isRegistryHealthy(r.url)
+    );
     const remoteResults = await Promise.allSettled(
       enabledRemotes.map((remote) => this.queryRemoteRegistry(remote, query))
     );
@@ -235,9 +244,12 @@ export class SkillRegistry {
       if (result.status === "fulfilled") {
         allEntries = allEntries.concat(result.value.entries);
         total += result.value.total;
+        // 成功一次即清除失败计数
+        this.markRegistryHealthy(enabledRemotes[i].url);
       } else {
-        process.stderr.write(
-          `[SkillRegistry] Failed to query remote registry "${enabledRemotes[i].url}":` + " " + (result.reason instanceof Error ? result.reason.message : String(result.reason)) + "\n"
+        this.markRegistryUnhealthy(
+          enabledRemotes[i].url,
+          result.reason instanceof Error ? result.reason.message : String(result.reason)
         );
       }
     }
@@ -269,6 +281,65 @@ export class SkillRegistry {
     this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
     this.evictExpiredCacheEntries();
     return result;
+  }
+
+  /**
+   * 判断远程注册表近期是否健康。
+   * 失败后会按指数退避延长冷却窗口，避免对不可达端点反复重试。
+   */
+  private isRegistryHealthy(url: string): boolean {
+    const health = this.remoteHealth.get(url);
+    if (!health) return true;
+    if (health.healthy) return true;
+    // 不健康时计算冷却窗口：5 分钟 × 2^min(failures, MAX)，最长 2^5 * 5min ≈ 160min
+    const backoffExp = Math.min(health.consecutiveFailures, SkillRegistry.MAX_BACKOFF_FAILURES);
+    const cooldownMs = SkillRegistry.UNHEALTHY_TTL_MS * Math.pow(2, backoffExp);
+    const elapsed = Date.now() - health.lastCheck;
+    if (elapsed >= cooldownMs) {
+      // 冷却期已过，允许重试（但仍保留失败计数，若再次失败则继续延长）
+      return true;
+    }
+    return false;
+  }
+
+  /** 标记注册表为健康，清除失败计数 */
+  private markRegistryHealthy(url: string): void {
+    this.remoteHealth.set(url, { healthy: true, lastCheck: Date.now(), consecutiveFailures: 0 });
+  }
+
+  /** 标记注册表为不健康，记录连续失败次数用于指数退避 */
+  private markRegistryUnhealthy(url: string, reason: string): void {
+    const prev = this.remoteHealth.get(url);
+    const consecutiveFailures = (prev?.consecutiveFailures ?? 0) + 1;
+    this.remoteHealth.set(url, {
+      healthy: false,
+      lastCheck: Date.now(),
+      consecutiveFailures,
+    });
+    // 仅在失败次数为 1 时打印（避免日志被刷屏）
+    if (consecutiveFailures === 1) {
+      process.stderr.write(
+        `[SkillRegistry] Remote "${url}" marked unhealthy: ${reason}\n`
+      );
+    }
+  }
+
+  /** 获取所有远程注册表的健康状态快照（用于诊断与展示） */
+  getRemoteRegistryHealth(): Array<{ url: string; healthy: boolean; lastCheck: number; consecutiveFailures: number }> {
+    return this.remoteRegistries.map((r) => {
+      const h = this.remoteHealth.get(r.url);
+      return {
+        url: r.url,
+        healthy: h ? h.healthy : true,
+        lastCheck: h ? h.lastCheck : 0,
+        consecutiveFailures: h ? h.consecutiveFailures : 0,
+      };
+    });
+  }
+
+  /** 重置所有远程注册表健康状态（用于强制重试） */
+  resetRemoteHealth(): void {
+    this.remoteHealth.clear();
   }
 
   /** 清理过期与超量的缓存条目，防止无界增长 */
@@ -382,8 +453,8 @@ export class SkillRegistry {
   }
 
   /**
-   * Enhanced search that falls back to web search when registry API is unavailable.
-   * This provides real skill discovery even without a dedicated clawhub API.
+   * Enhanced search that tries (1) remote registries, (2) curated fallback.
+   * 远程注册表失败时立即降级到 curated 列表，不再尝试用搜索引擎抓 HTML（不稳定）。
    */
   async enhancedSearch(query: RegistrySearchQuery): Promise<RegistrySearchResult> {
     // Try registry API first
@@ -393,18 +464,24 @@ export class SkillRegistry {
         return result;
       }
     } catch {
-      // API unavailable — fall through to web search
+      // API unavailable — fall through to curated fallback
     }
 
-    // Fallback: use web search to discover skills from clawhub
+    // Fallback: use curated well-known skills (no network dependency)
     if (query.keyword) {
-      const webResults = await this.searchSkillsViaWeb(query.keyword, query.limit || 10);
-      if (webResults.entries.length > 0) {
+      const curated = this.getCuratedSkills(query.keyword, query.limit || 10);
+      if (curated.length > 0) {
+        const fallback: RegistrySearchResult = {
+          entries: curated,
+          total: curated.length,
+          page: 1,
+          pageSize: query.limit || 20,
+        };
         // Cache the result
-        const cacheKey = JSON.stringify({ ...query, source: "web-fallback" });
-        this.cache.set(cacheKey, { data: webResults, timestamp: Date.now() });
+        const cacheKey = JSON.stringify({ ...query, source: "curated-fallback" });
+        this.cache.set(cacheKey, { data: fallback, timestamp: Date.now() });
         this.evictExpiredCacheEntries();
-        return webResults;
+        return fallback;
       }
     }
 
@@ -412,124 +489,35 @@ export class SkillRegistry {
   }
 
   /**
-   * Search for skills via web search (clawhub, GitHub, npm, etc.)
-   * This is the real web search fallback when clawhub API is not available.
-   */
-  private async searchSkillsViaWeb(
-    keyword: string,
-    limit: number
-  ): Promise<RegistrySearchResult> {
-    const entries: SkillRegistryEntry[] = [];
-
-    // Try multiple search sources in parallel
-    const searchQueries = [
-      `site:clawhub.ai ${keyword} skill`,
-      `site:github.com "SKILL.md" ${keyword}`,
-      `clawhub skill ${keyword}`,
-    ];
-
-    for (const searchQuery of searchQueries.slice(0, 2)) {
-      try {
-        const response = await fetch(
-          `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-          {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            },
-            signal: AbortSignal.timeout(8000),
-          }
-        );
-
-        if (response.ok) {
-          const html = await response.text();
-          const parsed = this.parseGoogleResults(html, keyword);
-          entries.push(...parsed.slice(0, limit));
-        }
-      } catch {
-        // Individual search source failure — not critical
-      }
-    }
-
-    // If web search yields nothing, use curated well-known skills
-    if (entries.length === 0) {
-      const curated = this.getCuratedSkills(keyword, limit);
-      entries.push(...curated);
-    }
-
-    return {
-      entries: entries.slice(0, limit),
-      total: entries.length,
-      page: 1,
-      pageSize: limit,
-    };
-  }
-
-  /**
-   * Parse Google search results HTML to extract skill references.
-   */
-  private parseGoogleResults(html: string, _keyword: string): SkillRegistryEntry[] {
-    const entries: SkillRegistryEntry[] = [];
-    
-    // Match search result titles and snippets
-    const resultRegex = /<h3[^>]*>([\s\S]*?)<\/h3>[\s\S]*?<div[^>]*?(?:data-sncf|class="[^"]*?VwiC3b[^"]*?")[^>]*?>([\s\S]*?)<\/div>/gi;
-    let match: RegExpExecArray | null;
-
-    while ((match = resultRegex.exec(html)) !== null) {
-      const title = match[1].replace(/<[^>]+>/g, "").trim();
-      const snippet = match[2].replace(/<[^>]+>/g, "").trim();
-
-      // Extract skill name from title (look for patterns like "name skill" or "name - Clawhub")
-      const nameMatch = title.match(/^([\w-]+)(?:\s+(?:skill|技能|—|-))/i) || title.match(/([\w-]+)\s*[-—]\s*(?:Clawhub|Skill)/i);
-      const skillName = nameMatch ? nameMatch[1] : title.split(" ")[0].toLowerCase();
-
-      if (skillName.length < 2) continue;
-
-      entries.push({
-        skillId: `web:${skillName}@0.1.0`,
-        name: skillName,
-        version: "0.1.0",
-        description: snippet.slice(0, 200) || title,
-        author: "community",
-        license: "MIT",
-        keywords: [skillName],
-        category: "custom",
-        triggers: [],
-        requires: [],
-        provides: [],
-        rating: 3.0,
-        downloads: 100,
-        installCount: 0,
-        publishedAt: new Date(),
-        updatedAt: new Date(),
-        verified: false,
-      });
-    }
-
-    return entries;
-  }
-
-  /**
    * Curated well-known skills for common tasks.
-   * Used when web search and API are both unavailable.
+   * Used when both remote registry and local search yield no results.
+   * 包含 bundled 技能入口，便于用户在没有可访问远程注册表时也能安装。
    */
   static readonly CURATED_SKILLS: Array<{
     name: string;
     description: string;
     keywords: string[];
     category: string;
+    /** 当本地已安装 bundled 技能时，用于匹配本地 skill name */
+    bundledAs?: string;
   }> = [
+    // ── 与 bundled/ 目录对应的官方自带技能 ──
+    { name: "datetime-helper", description: "查询当前时间、时区转换、日期格式化、时间差计算。无外部依赖。", keywords: ["time", "date", "timezone", "时间", "日期"], category: "utility", bundledAs: "datetime-helper" },
+    { name: "calculator", description: "数学计算器 — 四则运算、幂运算、三角函数、对数、统计。", keywords: ["calc", "math", "计算", "数学"], category: "utility", bundledAs: "calculator" },
+    { name: "text-utils", description: "文本工具 — 统计、大小写转换、Base64、URL 编码、JSON 美化。", keywords: ["text", "string", "base64", "文本", "字符串"], category: "utility", bundledAs: "text-utils" },
+    { name: "unit-converter", description: "单位转换 — 长度、重量、温度、面积、体积、速度、时间、数据存储。", keywords: ["unit", "convert", "单位", "换算"], category: "utility", bundledAs: "unit-converter" },
+    { name: "color-tools", description: "颜色工具 — HEX/RGB/HSL 互转、混合、明暗调整、对比度、配色。", keywords: ["color", "hex", "rgb", "颜色", "配色"], category: "utility", bundledAs: "color-tools" },
+    // ── 常见社区技能（仅作为建议返回，需远程或用户安装）──
     { name: "web-search", description: "Search the web for live information and news", keywords: ["search", "web", "news", "查询", "搜索", "新闻"], category: "utility" },
     { name: "weather", description: "Query weather forecasts and conditions", keywords: ["weather", "天气", "forecast", "预报"], category: "utility" },
     { name: "translator", description: "Translate text between languages", keywords: ["translate", "翻译", "language"], category: "utility" },
     { name: "code-runner", description: "Execute code snippets in various languages", keywords: ["code", "run", "execute", "代码", "运行"], category: "automation" },
-    { name: "calculator", description: "Perform mathematical calculations", keywords: ["calc", "math", "计算", "数学"], category: "utility" },
     { name: "file-manager", description: "Manage files and directories", keywords: ["file", "文件", "directory", "folder"], category: "automation" },
     { name: "reminder", description: "Set reminders and alarms", keywords: ["remind", "alarm", "提醒", "闹钟"], category: "utility" },
     { name: "email", description: "Send and manage emails", keywords: ["email", "mail", "邮件", "邮箱"], category: "integration" },
     { name: "image-generator", description: "Generate images from text descriptions", keywords: ["image", "generate", "图片", "生成"], category: "generation" },
     { name: "pdf-tools", description: "Create, merge, and manipulate PDF files", keywords: ["pdf", "document", "文档"], category: "utility" },
     { name: "database-query", description: "Query and manage databases", keywords: ["database", "sql", "数据库", "查询"], category: "automation" },
-    { name: "crypto-tracker", description: "Track cryptocurrency prices", keywords: ["crypto", "bitcoin", "btc", "加密", "货币"], category: "analysis" },
     { name: "rss-reader", description: "Read RSS feeds and news", keywords: ["rss", "feed", "订阅", "阅读"], category: "utility" },
     { name: "markdown-editor", description: "Edit and preview Markdown documents", keywords: ["markdown", "md", "编辑", "文档"], category: "automation" },
     { name: "http-client", description: "Make HTTP requests and test APIs", keywords: ["http", "api", "rest", "request"], category: "automation" },
@@ -539,7 +527,7 @@ export class SkillRegistry {
    * Look up a curated skill by name (case-insensitive).
    * Returns the skill definition or null if not found.
    */
-  getCuratedSkillByName(name: string): { name: string; description: string; keywords: string[]; category: string } | null {
+  getCuratedSkillByName(name: string): { name: string; description: string; keywords: string[]; category: string; bundledAs?: string } | null {
     const lower = name.toLowerCase();
     return SkillRegistry.CURATED_SKILLS.find(s => s.name.toLowerCase() === lower) || null;
   }
@@ -569,6 +557,9 @@ export class SkillRegistry {
         if (desc.includes(word)) score += 2;
       }
 
+      // bundledAs 标记的官方技能给加权
+      if (s.bundledAs) score += 2;
+
       return { ...s, score };
     });
 
@@ -578,23 +569,24 @@ export class SkillRegistry {
       .filter(s => s.score > 0)
       .slice(0, limit)
       .map((s) => ({
-        skillId: `curated:${s.name}@0.1.0`,
+        skillId: s.bundledAs ? `bundled:${s.name}@1.0.0` : `curated:${s.name}@0.1.0`,
         name: s.name,
-        version: "0.1.0",
+        version: s.bundledAs ? "1.0.0" : "0.1.0",
         description: s.description,
-        author: "evoclaw-curated",
+        author: s.bundledAs ? "evoclaw-official" : "evoclaw-curated",
         license: "MIT",
         keywords: s.keywords,
         category: s.category as SkillRegistryEntry["category"],
         triggers: [],
         requires: [],
         provides: [],
-        rating: 0,
-        downloads: 0,
+        rating: s.bundledAs ? 5.0 : 0,
+        downloads: s.bundledAs ? 1000 : 0,
         installCount: 0,
         publishedAt: new Date(),
         updatedAt: new Date(),
-        verified: true,
+        verified: Boolean(s.bundledAs),
+        homepage: s.bundledAs ? "https://github.com/chydroid/EvoClaw" : undefined,
       }));
   }
 

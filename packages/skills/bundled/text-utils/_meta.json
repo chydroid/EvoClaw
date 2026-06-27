@@ -1,0 +1,14 @@
+{
+  "name": "text-utils",
+  "displayName": "文本工具集",
+  "description": "提供文本统计、大小写转换、编码解码、JSON 美化、字符串哈希等实用文本处理能力。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["text", "string", "encoding", "base64", "文本", "字符串"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "📝",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

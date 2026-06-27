@@ -3,6 +3,118 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.59.0 (2026-06-28)
+
+### 对照 openclaw-main 的 10 轮技能系统提升计划
+
+本版本对照 `openclaw-main` 项目，对 EvoClaw 技能系统进行了 10 轮系统性提升，涵盖生态建设、注册表鲁棒性、持久化、工作台 API、安全扫描、信任链、UI 集成、请求防护和高可用性强化。每轮修改后通过 `pnpm build` + `typecheck` + `test` 三重验证。
+
+#### 第 1 轮 — 架构差异分析与提升计划
+
+- 通过 3 个并行 Task 子代理完成 openclaw-main 的技能系统、UI 架构、以及 EvoClaw 现状分析
+- 识别出后端 10 项短板 + UI 7 项短板，形成 10 轮提升计划
+
+#### 第 2 轮 — Bundled 技能生态建设
+
+- 创建 5 个 bundled 官方技能（每个含 SKILL.md + _meta.json）：
+  - `datetime-helper`：日期时间助手，支持 now/format/diff/convert/add
+  - `calculator`：数学计算器，支持 basic/power/trig/log/stats/round/expr（递归下降解析器替代 `new Function`）
+  - `text-utils`：文本工具集，支持 stats/case/base64/url/json/hash/trim/repeat/reverse/replace
+  - `unit-converter`：单位转换器，支持 length/weight/temperature/area/volume/speed/time/data 8 类
+  - `color-tools`：颜色工具，支持 convert/lighten/darken/mix/contrast/complement/scheme/gradient
+
+#### 第 3 轮 — 远程注册表鲁棒性强化
+
+- 添加注册表健康状态缓存与指数退避（5min × 2^failures，上限 2^5）
+- 新增方法：`isRegistryHealthy()`, `markRegistryHealthy()`, `markRegistryUnhealthy()`, `getRemoteRegistryHealth()`
+- 删除不稳定的 Google HTML 解析（`searchSkillsViaWeb()` / `parseGoogleResults()`）
+- 重写 `enhancedSearch()`：远程失败后直接降级到 curated 列表
+- 扩展 `CURATED_SKILLS`：添加 5 个 bundled 官方技能入口（带 `bundledAs` 字段加权）
+
+#### 第 4 轮 — SkillIndex 持久化与冷启动加速
+
+- 添加磁盘持久化能力（原子写入：temp + fsync + rename）
+- 新增方法：`persistTo()`, `loadFrom()`, `flushIfNeeded()`, `isDirty()`
+- 服务器启动时加载持久化索引，关闭时持久化索引 + 停止自动扫描
+- 文件格式版本检查、大小限制（4MB）、字段浅校验
+
+#### 第 5 轮 — SkillWorkshop API 暴露与集成
+
+- 在 protocol-adapter 添加 9 个 SkillWorkshop API 端点：
+  - `GET /api/skills/workshop/stats` — 工作台总览
+  - `GET /api/skills/workshop/today` — 今日待办
+  - `GET /api/skills/workshop/proposals` — 列出提案（可选 status 过滤）
+  - `POST /api/skills/workshop/proposals` — 创建提案（含路径穿越防护、文件数量与大小限制）
+  - `GET /api/skills/workshop/proposals/:id` — 获取详情
+  - `POST /api/skills/workshop/proposals/:id/submit` — 提交审核
+  - `POST /api/skills/workshop/proposals/:id/review` — 审核提案
+  - `POST /api/skills/workshop/proposals/:id/revise` — 修订提案
+  - `POST /api/skills/workshop/proposals/:id/install` — 安装已批准的提案
+  - `POST /api/skills/workshop/proposals/:id/rollback` — 回滚已安装的提案
+
+#### 第 6 轮 — 安全扫描增强（base64/拼接/prompt injection 检测）
+
+- 新增 5 个安全扫描方法：
+  - `scanScriptForObfuscation()`：检测长 Base64 字符串、atob、Buffer.from+eval 组合、hex/unicode 转义拼接、String.fromCharCode
+  - `scanScriptForConcatenatedExec()`：检测 eval/new Function/exec/setTimeout 中的字符串拼接
+  - `scanScriptForSandboxEscape()`：检测 constructor.constructor 链、__proto__ 污染、globalThis 访问、process.mainModule
+  - `scanInstructionsForPromptInjection()`：13 种 prompt injection 模式（ignore previous/disregard/forget/you are now/jailbreak/DAN/false authority/role-tag 等）
+  - description 中也检测 prompt injection
+- 扩展 `SecurityFinding.type` 联合类型：新增 `obfuscation` / `sandbox_escape` / `prompt_injection`
+
+#### 第 7 轮 — 技能签名与信任链（origin.json/lock.json 双向校验）
+
+- 新建 `skill-integrity.ts` 模块：
+  - `writeOriginJson()`：为技能目录写入 origin.json（sha256 哈希 SKILL.md/_meta.json/scripts/assets）
+  - `readOriginJson()` / `verifySkillOrigin()`：读取与校验
+  - `writeLockJson()` / `readLockJson()` / `verifyLockIntegrity()`：skills 根目录的 lock.json 双向校验
+- 在 SkillManager 集成：
+  - `installSkill` 后自动写 origin.json（bundled/local 自动推断）
+  - `installFromMarketplace` 后标记 source=marketplace
+  - `recordSkillOrigin()` / `verifySkillIntegrity()` / `verifyAllSkillsIntegrity()` / `refreshLockfile()` / `verifyLockfile()`
+- 新增 5 个 API 端点：
+  - `GET /api/skills/integrity/verify` — 校验所有已安装技能
+  - `GET /api/skills/integrity/verify/:id` — 校验单个技能
+  - `POST /api/skills/integrity/refresh-lock` — 刷新 lock.json
+  - `GET /api/skills/integrity/verify-lock` — 校验 lock.json
+  - `GET /api/skills/:id/security-scan` — 获取安全扫描结果
+
+#### 第 8 轮 — UI ClawHub 深度集成（安全 verdict chip + 详情弹窗）
+
+- 新增 `getSecurityScan()` 方法与 `/api/skills/:id/security-scan` 端点
+- UI 添加安全 verdict chip：
+  - 4 色风险等级（绿/黄/橙/红）显示 safe/riskLevel + findings 数量
+  - 点击打开详情弹窗
+  - 未扫描时显示"⚠ 未扫描"可点击重新扫描
+- 安全详情弹窗：
+  - 显示风险等级总览
+  - findings 列表（severity + type + location + description + recommendation）
+  - 重新扫描按钮
+- 选中技能时自动拉取安全扫描结果
+
+#### 第 9 轮 — UI stale-aware 请求防护
+
+- 为 3 个关键请求添加 AbortController 过期请求取消：
+  - `loadSkillDetail()`：用户快速切换技能时取消上一个请求
+  - `handleMarketplaceSearch()`：快速输入时取消上一个搜索
+  - `fetchSecurityScan()`：快速切换时取消上一个扫描
+- AbortError 静默处理（不报错）
+- 双重校验：请求完成后检查 `controller.signal.aborted` 决定是否应用结果
+
+#### 第 10 轮 — 技能搜索/安装端到端验证 + 高可用性强化
+
+- 安装端点添加重试逻辑：
+  - `/api/skills/install`：瞬时错误（ECONN/ETIMEDOUT/lock/busy）重试一次，安全扫描失败不重试
+  - `/api/marketplace/install`：网络错误重试一次，安全扫描失败不重试
+- 新增 `/api/skills/system/health` 健康检查端点（skillCount + marketplaceAvailable + timestamp）
+- 端到端验证：本地搜索 + 远程搜索 + marketplace 搜索 + 本地安装 + marketplace 安装 + 5 个 bundled 技能可发现
+
+### 验证
+
+- `pnpm -r build` 退出码 0
+- `pnpm typecheck` 退出码 0
+- `pnpm test` 退出码 0（全部测试通过）
+
 ## v0.58.0 (2026-06-27)
 
 ### 第十至十五轮代码审查 — 6 轮全量 Bug 扫描与修复
