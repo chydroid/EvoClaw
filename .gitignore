@@ -16,6 +16,10 @@ data/
 # Runtime skills directory (user-installed / auto-generated)
 data/skills/
 
+# bundled 技能运行时生成的 origin.json（每次启动会按当前 skillId/installedAt 重写，
+# 导致 git status 噪音；代码运行时若不存在会自动重建，无需版本控制）
+packages/skills/bundled/*/origin.json
+
 # Live runtime config at repo root (use config.example.json for templates)
 /config.json
 /_config.json
