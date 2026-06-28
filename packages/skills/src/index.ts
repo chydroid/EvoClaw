@@ -51,3 +51,28 @@ export type {
   SkillLockfile,
   IntegrityVerificationResult,
 } from "./skill-integrity";
+export {
+  getHookSourcePolicy,
+  canOverrideHook,
+  resolveHookEnableState,
+  resolveHookEntries,
+  filterEnabledHooks,
+  listHookSourcePolicies,
+} from "./hook-policy";
+export type {
+  HookSource,
+  HookEntry,
+  HookEnableState,
+  HookEnableStateReason,
+  HookSourcePolicy,
+  HookResolutionCollision,
+} from "./hook-policy";
+export {
+  collectWorkspaceSkillSymlinkEscapeFindings,
+  detectSymlinkEscapeInSkill,
+  isPathInside,
+} from "./workspace-audit";
+export type {
+  WorkspaceAuditFinding,
+  WorkspaceSkillScanLimits,
+} from "./workspace-audit";

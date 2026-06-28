@@ -3,6 +3,185 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+## v0.60.0 (2026-06-28)
+
+### 对照 openclaw-main 的 10 轮基础设施与安全提升计划
+
+本版本延续 v0.59.0 的技能系统提升，对照 `openclaw-main` 项目，对网关 / 安全 / 基础设施 / 配置 / 技能子系统进行 10 轮短板补齐。每轮修改后通过 `pnpm --filter <pkg> build` + `typecheck` + `vitest run` 三重验证。
+
+#### 第 1 轮 — 技能安装 download 种类完整实现
+
+- `packages/skills/src/skill-manager.ts` 修改：
+  - `executeStructuredInstall` 改为 `async`，返回 `Promise<SkillInstallStep>`
+  - 新增 anyBins 预检查（where/which）
+  - 新增 bins 后置校验
+  - 新增 `executeDownloadInstall` 私有异步方法：
+    - HTTPS-only URL 校验
+    - SSRF 防护（localhost/127.0.0.1/::1/10.x/192.168.x/172.16-31.x/169.254.x）
+    - targetDir 路径穿越防护
+    - 100MB 下载上限 + 流式写入
+    - zip/tar.gz/tar.bz2 解压（Windows 用 PowerShell Expand-Archive，Unix 用 unzip/tar）
+    - stripComponents（仅 tar 系列）
+  - 调用方更新：`const installStep = await this.executeStructuredInstall(spec, skillDir);`
+
+#### 第 2 轮 — Hooks 4 源策略系统
+
+- 新建 `packages/skills/src/hook-policy.ts`（约 220 行）：
+  - `HookSource` 类型：`"bundled" | "plugin" | "managed" | "workspace"`
+  - `HookEntry` 接口：name/source/enabled/description/sourceFile
+  - `HookSourcePolicy` 接口：precedence/trustedLocalCode/defaultEnableMode/canOverride/canBeOverriddenBy
+  - `HOOK_SOURCE_POLICIES` 矩阵：
+    - bundled: precedence=10, default-on, canOverride=["bundled"], canBeOverriddenBy=["managed", "plugin"]
+    - plugin: precedence=20, default-on, canOverride=["bundled", "plugin"], canBeOverriddenBy=["managed"]
+    - managed: precedence=30, default-on, canOverride=["bundled", "managed", "plugin"], canBeOverriddenBy=["managed"]
+    - workspace: precedence=40, trustedLocalCode=false, explicit-opt-in, canOverride=["workspace"], canBeOverriddenBy=["workspace"]
+  - `canOverrideHook(candidate, existing)`：双向校验
+  - `resolveHookEnableState(entry)`：显式禁用 > workspace 默认不启用 > 显式启用 > 默认启用
+  - `resolveHookEntries(entries, opts)`：按优先级排序 + 碰撞合并 + onCollisionIgnored 回调
+  - `filterEnabledHooks(entries)`：批量过滤
+  - `listHookSourcePolicies()`：UI 展示
+- `packages/skills/src/index.ts`：添加 hook-policy 导出
+
+#### 第 3 轮 — 插件 hardlink 策略与起源索引
+
+- 新建 `packages/core/src/plugin-hardlink-policy.ts`（约 325 行）：
+  - `PluginOrigin` 类型：`"bundled" | "managed" | "workspace" | "marketplace"`
+  - `FileInodeInfo` 接口：path/inode/dev/nlink/size
+  - `ProvenanceEntry` 接口：relativePath/absolutePath/origin/pluginName/inode/recordedAt/sha256
+  - `isNixStorePluginRoot(rootDir)`：检测 /nix/store
+  - `resolveIsNixMode(env)`：OPENCLAW_NIX_MODE 环境变量
+  - `shouldRejectHardlinkedPluginFiles({origin, rootDir, env})`：bundled 允许，Nix store + Nix 模式允许，其他拒绝
+  - `getFileInodeInfo(filePath)`：fs.statSync
+  - `isHardlinkedFile(filePath)`：nlink > 1
+  - `scanPluginForHardlinks({rootDir, origin, env})`：递归扫描，跳过 node_modules/.git
+  - `PluginProvenanceIndex` 类：
+    - `recordPlugin({pluginName, pluginRoot, origin, computeHash})`：记录所有文件 inode + sha256
+    - `verifyPlugin({pluginName, pluginRoot})`：检测文件缺失/inode 变化/hash 不匹配
+    - `removePlugin(pluginName)` / `getPluginEntries(pluginName)` / `size()` / `clear()`
+- `packages/core/src/index.ts`：添加 plugin-hardlink-policy 导出
+
+#### 第 4 轮 — 工作台审计（符号链接逃逸检测）
+
+- 新建 `packages/skills/src/workspace-audit.ts`（约 340 行）：
+  - `WorkspaceAuditFinding` 接口：checkId/severity/title/detail/remediation
+  - `WorkspaceSkillScanLimits` 接口：maxFiles/maxDirVisits
+  - `isPathInside(root, candidate)`：路径边界检查
+  - `realpathWithTimeout(p, timeoutMs)`：Promise.race + unref 计时器
+  - `listWorkspaceSkillMarkdownFiles(workspaceDir, limits)`：BFS 遍历 skills/ 目录
+  - `collectWorkspaceSkillSymlinkEscapeFindings({workspaceDirs, skillScanLimits})`：
+    - 列出所有 SKILL.md（含 symlink）
+    - 对每个调用 realpath
+    - 若 realpath 不在工作台根内 → 记录为逃逸
+    - 若 realpath 超时 → 记录为可疑
+  - `detectSymlinkEscapeInSkill({skillRoot, limits})`：通用扫描（不限于 SKILL.md）
+- `packages/skills/src/index.ts`：添加 workspace-audit 导出
+
+#### 第 5 轮 — 结构化日志与脱敏轮转
+
+- 新建 `packages/infrastructure/src/rotating-file-appender.ts`（约 275 行）：
+  - `RotatingFileAppenderConfig` 接口：filePath/maxFileSize/maxFiles/sync
+  - `RotatingFileAppender` 类：
+    - `append(line)`：检查大小 → 滚动 → 写入
+    - `rotate()`：关闭流 → 删除最旧 → 依次重命名 → 重新打开
+    - `close()` / `getStatus()`
+  - `pruneOldRollingLogs({basePath, maxFiles})`：启动时清理孤儿文件 + .tmp 残留
+- `packages/infrastructure/src/index.ts`：添加导出
+
+#### 第 6 轮 — W3C 跟踪上下文传播
+
+- 新建 `packages/infrastructure/src/trace-context.ts`（约 295 行）：
+  - `TraceContext` 接口：version/traceId/spanId/traceFlags
+  - `TraceSpanContext` 接口：extends TraceContext + parentSpanId
+  - `DiagnosticEvent` 接口：name/category/level/timestamp/trace/data
+  - `generateTraceId()` / `generateSpanId()`：crypto.randomBytes
+  - `createRootTraceContext(sampled)` / `createChildTraceContext(parent, sampled)`
+  - `formatTraceparent(ctx)`：`00-<traceId>-<spanId>-<flags>`
+  - `parseTraceparent(header)`：严格正则校验 + 全零检测
+  - `extractTraceContextFromHeaders(headers)` / `injectTraceContextIntoHeaders(headers, ctx)`
+  - `withTraceContext(ctx, fn)`：AsyncLocalStorage.run
+  - `getCurrentTrace()`：AsyncLocalStorage.getStore
+  - `emitDiagnosticEvent({name, category, level, data, trace, sink})`
+  - `startSpan({name, category, parent, sink})` → Span（含 end(error?)）
+- `packages/infrastructure/src/index.ts`：添加导出
+
+#### 第 7 轮 — net-policy 包
+
+- 新建 `packages/security/src/net-policy.ts`（约 348 行）：
+  - `NetPolicyConfig` 接口：allowedProtocols/allowlistHosts/denylistHosts/allowlistIPs/denylistIPs/dnsPinTtlMs/enableDnsPinning/dnsTimeoutMs
+  - `NetPolicy` 类：
+    - `checkUrl(url)`：异步，协议 → 主机名单 → DNS 钉制 → IP 名单
+    - `checkUrlSync(url)`：同步，仅协议 + 主机名单
+    - `matchHostList(host, list)`：支持 `*.example.com` 通配符
+    - `resolveAndPinIp(host)`：DNS 解析 + 缓存 + 重绑定检测
+    - `checkIpPolicy(ip)`：allowlist 优先 > denylist
+    - `matchCidr(ip, cidr)`：IPv4 CIDR 匹配
+    - `pruneDnsCache()` / `getDnsCacheSize()` / `clearDnsCache()`
+- `packages/security/src/index.ts`：添加导出
+
+#### 第 8 轮 — 配置 schema 合并管线
+
+- 新建 `packages/core/src/config-schema-merge.ts`（约 298 行）：
+  - `JsonSchemaFragment` 接口：name/schema/source/sensitive/derived
+  - `SchemaMergeConflict` / `SchemaMergeResult` / `SchemaMergeConfig`
+  - `ConfigSchemaMerger` 类：
+    - `addFragment(fragment)`：大小 + 深度检查
+    - `merge()`：同名冲突保留 base + 记录冲突 + 截断 + SHA256 cacheKey
+    - `measureDepth(schema)`：递归测量 properties/items
+  - `ConfigPropertyHint` 接口：path/label/description/sensitive/derived/wildcard/enum/reloadRequired
+  - `generateUiHints(fragments, additionalHints)`
+  - `matchWildcard(pattern, path)`：`channels.*.token` 匹配
+- `packages/core/src/index.ts`：添加导出
+
+#### 第 9 轮 — MCP channel-bridge 与 cancel 支持
+
+- `packages/gateway/src/mcp-gateway.ts` 完整重写（约 358 行）：
+  - 新增接口：`MCPToolCallRequest` / `MCPToolCallResult` / `PendingCall`
+  - `MCPGateway` 类扩展：
+    - `pendingCalls`: Map<callId, PendingCall>
+    - `callerIndex`: Map<callerId, Set<callId>>
+    - `callTool(request)`：AbortController + 超时 + 外部信号联动 + 并发上限(100)
+    - `cancelToolCall(callId)` / `cancelCallsByCaller(callerId)`
+    - `getPendingCallCount()` / `listPendingCalls()`
+    - `bridgeChannelMessage({channelType, sessionId, text})`：解析 `/mcp call <tool> [arg=value]` 指令
+    - `dispose()`：取消所有 pending + 清理
+
+#### 第 10 轮 — 消息持久接收与 stall-watchdog
+
+- 新建 `packages/gateway/src/durable-receive-journal.ts`（约 300 行）：
+  - `DurableInboundReceivePendingRecord` / `DurableInboundReceiveCompletedRecord` 接口
+  - `DurableInboundReceiveAcceptResult` 联合类型：accepted / pending / completed
+  - `DurableInboundReceiveJournal` 门面接口
+  - `InMemoryDurableReceiveJournal` 类（基于内存 Map）：
+    - `accept(id, payload)`：检查墓碑 → 检查 pending 重复（含 TTL 僵尸事件覆盖）→ 插入新 pending（race 处理）
+    - `pending()`：返回按 receivedAt 排序的待处理记录，自动清理已完成但未删除的 pending
+    - `complete(id)`：写入墓碑 + 删除 pending
+    - `release(id, {lastError})`：增加 attempts + 记录 lastError + 更新 updatedAt
+    - `deletePending(id)`：硬删除 pending
+    - `pruneExpired()`：清理过期墓碑
+    - TTL 配置：pendingTtlMs（僵尸事件）/ completedTtlMs（墓碑保留时长）
+  - `createInMemoryDurableReceiveJournal` 工厂函数
+- 新建 `packages/gateway/src/stall-watchdog.ts`（约 190 行）：
+  - `StallWatchdogTimeoutMeta` 接口：idleMs/timeoutMs
+  - `ArmableStallWatchdog` 接口：arm/touch/disarm/stop/isArmed
+  - `createArmableStallWatchdog(params)` 工厂函数：
+    - 默认检查间隔：min(5000, max(250, timeoutMs/6))
+    - arm：刷新 lastActivityAt + armed=true
+    - touch：仅刷新 lastActivityAt
+    - disarm：仅 armed=false（不清理计时器，便于再次 arm）
+    - stop：永久停止 + 清理计时器 + 移除 abort 监听
+    - check：周期检查 idleMs >= timeoutMs，触发前先 disarm 防二次触发
+    - AbortSignal 已 aborted 则直接 stop；运行中 abort 触发 stop
+    - 计时器 unref() 不阻止进程退出
+- 新建 `packages/gateway/src/durable-receive-stall-watchdog.test.ts`（20 个测试，全部通过）：
+  - InMemoryDurableReceiveJournal：11 个测试（accepted/pending/completed/release/pending 排序/空 id/deletePending/completedTtl/pendingTtl/工厂函数）
+  - createArmableStallWatchdog：9 个测试（arm 前不触发/arm 后超时触发/touch 刷新/disarm/stop 不可用/单次触发/AbortSignal 已 aborted/AbortSignal 运行中 abort/无效 timeoutMs）
+- `packages/gateway/src/index.ts`：添加 durable-receive-journal + stall-watchdog 导出
+
+### 验证
+
+- `pnpm --filter @evoclaw/gateway build` 退出码 0
+- `npx vitest run packages/gateway/src/durable-receive-stall-watchdog.test.ts`：20/20 测试通过
+
 ## v0.59.0 (2026-06-28)
 
 ### 对照 openclaw-main 的 10 轮技能系统提升计划

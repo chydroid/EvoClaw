@@ -3,6 +3,28 @@ export { ProcessManager } from "./process-manager";
 export { FileSystemManager, atomicWriteFile, atomicReplace, CrossProcessLock } from "./filesystem-manager";
 export { Logger } from "./logger";
 export type { LogLevel } from "./logger";
+export { RotatingFileAppender, pruneOldRollingLogs } from "./rotating-file-appender";
+export type { RotatingFileAppenderConfig } from "./rotating-file-appender";
+export {
+  generateTraceId,
+  generateSpanId,
+  createRootTraceContext,
+  createChildTraceContext,
+  formatTraceparent,
+  parseTraceparent,
+  extractTraceContextFromHeaders,
+  injectTraceContextIntoHeaders,
+  withTraceContext,
+  getCurrentTrace,
+  emitDiagnosticEvent,
+  startSpan,
+} from "./trace-context";
+export type {
+  TraceContext,
+  TraceSpanContext,
+  DiagnosticEvent,
+  Span,
+} from "./trace-context";
 export { DatabaseManager } from "./database-manager";
 export { BrowserController } from "./browser-controller";
 export type { NavigationResult, BrowserElement, BrowserPage, FormData } from "./browser-controller";

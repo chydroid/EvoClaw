@@ -106,12 +106,15 @@ describe("AuthProvider", () => {
     }
   });
 
-  it("should allow skills sub-paths without auth", async () => {
+  it("should require auth for skills sub-paths (RCE protection)", async () => {
+    // 安全修复：/api/skills/install 等状态变更操作必须认证，
+    // 否则未认证攻击者可安装恶意技能实现 RCE。
     const auth = new AuthProvider(jwtSecret, registry);
     const req = mockRequest({ path: "/api/skills/install" });
     const res = mockResponse();
     await auth.authenticate(req, res, mockNext);
-    expect(mockNext).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(mockNext).not.toHaveBeenCalled();
   });
 
   it("should allow config sub-paths without auth", async () => {

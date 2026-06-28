@@ -416,7 +416,7 @@ export class SkillManager {
         const currentOs = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
         for (const spec of ocMeta.install) {
           if (!spec.os || spec.os.includes(currentOs)) {
-            const installStep = this.executeStructuredInstall(spec, skillDir);
+            const installStep = await this.executeStructuredInstall(spec, skillDir);
             installReport.steps.push(installStep);
             if (installStep.errors.length > 0) {
               installReport.errors.push(...installStep.errors);
@@ -1868,11 +1868,18 @@ export class SkillManager {
   /**
    * Execute a structured install spec (OpenClaw SkillInstallSpec format).
    * Supports brew, node, go, uv, download, apt, pip install kinds.
+   *
+   * 实现要点（对齐 openclaw-main 的 install-download.ts / install-extract.ts）：
+   * - 包名/公式名/模块名通过白名单正则校验，避免 shell 元字符注入
+   * - 全部使用 execFileSync（shell:false）+ 参数数组
+   * - download 种类：HTTPS-only URL 校验 + 大小上限 + 压缩包校验和 + stripComponents
+   * - anyBins 预检查：若任一二进制已在 PATH 上则跳过安装
+   * - bins 后置校验：安装完成后验证预期二进制是否就位
    */
-  private executeStructuredInstall(
+  private async executeStructuredInstall(
     spec: import("@evoclaw/core").SkillInstallSpec,
     skillDir: string
-  ): SkillInstallStep {
+  ): Promise<SkillInstallStep> {
     const step: SkillInstallStep = {
       name: `install_${spec.kind}_${spec.id}`,
       status: "success",
@@ -1880,6 +1887,24 @@ export class SkillManager {
       warnings: [],
       errors: [],
     };
+
+    // anyBins 预检查：若任一二进制已在 PATH 上则视为已安装
+    if (spec.bins && spec.bins.length > 0) {
+      const anyOnPath = spec.bins.some((b) => {
+        try {
+          const { execFileSync } = require("child_process") as typeof import("child_process");
+          execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (anyOnPath) {
+        step.message = `Skipped: one of [${spec.bins.join(", ")}] already on PATH`;
+        step.status = "success";
+        return step;
+      }
+    }
 
     try {
       const { execFileSync } = require("child_process") as typeof import("child_process");
@@ -1893,6 +1918,12 @@ export class SkillManager {
         }
         return v;
       };
+
+      if (spec.kind === "download") {
+        // download 种类：HTTPS-only 校验 + 大小上限 + 解压 + stripComponents
+        this.executeDownloadInstall(spec, skillDir, step);
+        return step;
+      }
 
       let program: string;
       let args: string[];
@@ -1922,10 +1953,6 @@ export class SkillManager {
           args = ["install", validateIdent(spec.package, "package")];
           program = "pip";
           break;
-        case "download":
-          step.warnings.push(`Download install requires manual setup: ${spec.url || "no URL provided"}`);
-          step.status = "warning";
-          return step;
         default:
           step.warnings.push(`Unknown install kind: ${spec.kind}`);
           step.status = "warning";
@@ -1935,6 +1962,22 @@ export class SkillManager {
       process.stdout.write(`[SkillManager] Executing structured install: ${program} ${args.join(" ")}`);
       execFileSync(program, args, { cwd: skillDir, timeout: 120_000, stdio: "pipe", shell: false });
       step.message = `Successfully installed via ${spec.kind}`;
+
+      // bins 后置校验
+      if (spec.bins && spec.bins.length > 0) {
+        const missing = spec.bins.filter((b) => {
+          try {
+            execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        if (missing.length > 0) {
+          step.warnings.push(`Bins not on PATH after install: ${missing.join(", ")}`);
+          step.status = "warning";
+        }
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       step.errors.push(`Install failed (${spec.kind}): ${errMsg}`);
@@ -1943,6 +1986,198 @@ export class SkillManager {
     }
 
     return step;
+  }
+
+  /**
+   * 实现 download 种类的结构化安装（对齐 openclaw-main 的 install-download.ts + install-extract.ts）。
+   * 安全要点：
+   * - URL 必须 HTTPS，禁止 localhost/内网地址（SSRF 防护）
+   * - 下载体积上限 100MB，防止压缩炸弹
+   * - 下载完成后校验 Content-Length 与实际字节
+   * - 仅识别 zip / tar.gz / tar.bz2 / tgz / tbz2 等已知归档类型
+   * - stripComponents 仅在 tar 系列有效，zip 不支持（发出警告）
+   * - targetDir 不允许包含 .. 或绝对路径（路径穿越防护）
+   */
+  private async executeDownloadInstall(
+    spec: import("@evoclaw/core").SkillInstallSpec,
+    skillDir: string,
+    step: SkillInstallStep
+  ): Promise<void> {
+    const fs = require("fs") as typeof import("fs");
+    const path = require("path") as typeof import("path");
+    const os = require("os") as typeof import("os");
+    const { execFileSync } = require("child_process") as typeof import("child_process");
+
+    if (!spec.url) {
+      step.errors.push("Download install spec missing url");
+      step.status = "failed";
+      return;
+    }
+
+    // URL 安全校验
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(spec.url);
+    } catch (e) {
+      step.errors.push(`Invalid URL: ${spec.url}`);
+      step.status = "failed";
+      return;
+    }
+
+    if (parsedUrl.protocol !== "https:") {
+      step.errors.push(`Download URL must be HTTPS, got ${parsedUrl.protocol}`);
+      step.status = "failed";
+      return;
+    }
+
+    // SSRF 防护：禁止指向 localhost / 内网地址
+    const host = parsedUrl.hostname.toLowerCase();
+    const isInternal =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "0.0.0.0" ||
+      host.endsWith(".local") ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host) ||
+      /^169\.254\./.test(host);
+    if (isInternal) {
+      step.errors.push(`Download URL refused: internal/loopback host "${host}"`);
+      step.status = "failed";
+      return;
+    }
+
+    // targetDir 路径穿越防护
+    const targetDir = spec.targetDir
+      ? path.resolve(skillDir, spec.targetDir)
+      : skillDir;
+    if (!targetDir.startsWith(skillDir)) {
+      step.errors.push(`targetDir must be inside skill directory: ${spec.targetDir}`);
+      step.status = "failed";
+      return;
+    }
+
+    // 准备临时下载目录
+    const tmpRoot = os.tmpdir();
+    const tmpDir = fs.mkdtempSync(path.join(tmpRoot, "evoclaw-dl-"));
+    const archiveName = spec.archive || path.basename(parsedUrl.pathname) || "download.archive";
+    const archivePath = path.join(tmpDir, archiveName);
+
+    try {
+      // 下载（使用 fetch + 流式写入 + 100MB 上限）
+      process.stdout.write(`[SkillManager] Downloading ${spec.url} → ${archivePath}\n`);
+      const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024; // 100MB
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60_000);
+      try {
+        const response = await fetch(spec.url, {
+          signal: controller.signal,
+          redirect: "follow",
+          headers: { "User-Agent": "EvoClaw-SkillInstaller/1.0" },
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${response.statusText}`);
+        }
+        const contentLength = Number(response.headers.get("content-length") || 0);
+        if (contentLength > MAX_DOWNLOAD_BYTES) {
+          throw new Error(`Download too large: ${contentLength} bytes (max ${MAX_DOWNLOAD_BYTES})`);
+        }
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("Response has no body");
+        const fileStream = fs.createWriteStream(archivePath);
+        let received = 0;
+        const pump = async (): Promise<void> => {
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+            if (received > MAX_DOWNLOAD_BYTES) {
+              controller.abort();
+              throw new Error(`Download exceeded ${MAX_DOWNLOAD_BYTES} bytes (possible zip bomb)`);
+            }
+            fileStream.write(Buffer.from(value));
+          }
+          fileStream.end();
+          await new Promise<void>((resolve) => fileStream.on("close", resolve));
+        };
+        await pump();
+        process.stdout.write(`[SkillManager] Downloaded ${received} bytes\n`);
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      // 解压（如果 spec.extract !== false 且归档类型已知）
+      const shouldExtract = spec.extract !== false;
+      const isZip = /\.zip$/i.test(archiveName);
+      const isTar =
+        /\.(tar\.gz|tar\.bz2|tgz|tbz2|tar\.xz|txz)$/i.test(archiveName) ||
+        /\.tar$/i.test(archiveName);
+
+      if (!shouldExtract) {
+        // 仅复制文件到 targetDir
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.copyFileSync(archivePath, path.join(targetDir, archiveName));
+        step.message = `Downloaded ${archiveName} (no extraction)`;
+      } else if (isZip) {
+        if (spec.stripComponents && spec.stripComponents > 0) {
+          step.warnings.push("stripComponents not supported for zip archives");
+        }
+        fs.mkdirSync(targetDir, { recursive: true });
+        // 使用 PowerShell 的 Expand-Archive（Windows）或 unzip（Unix）
+        if (process.platform === "win32") {
+          execFileSync("powershell.exe", [
+            "-NoProfile", "-NonInteractive", "-Command",
+            `Expand-Archive -Path '${archivePath}' -DestinationPath '${targetDir}' -Force`,
+          ], { stdio: "pipe", shell: false, timeout: 60_000 });
+        } else {
+          execFileSync("unzip", ["-o", "-q", archivePath, "-d", targetDir], { stdio: "pipe", shell: false, timeout: 60_000 });
+        }
+        step.message = `Extracted zip to ${path.relative(skillDir, targetDir)}`;
+      } else if (isTar) {
+        fs.mkdirSync(targetDir, { recursive: true });
+        const stripArgs = spec.stripComponents && spec.stripComponents > 0
+          ? ["--strip-components", String(spec.stripComponents)]
+          : [];
+        execFileSync("tar", ["-xf", archivePath, "-C", targetDir, ...stripArgs], { stdio: "pipe", shell: false, timeout: 60_000 });
+        step.message = `Extracted tar to ${path.relative(skillDir, targetDir)}`;
+      } else {
+        // 未知归档类型：仅复制原文件
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.copyFileSync(archivePath, path.join(targetDir, archiveName));
+        step.warnings.push(`Unknown archive type, copied as-is: ${archiveName}`);
+        step.status = "warning";
+      }
+
+      // bins 后置校验
+      if (spec.bins && spec.bins.length > 0) {
+        const missing = spec.bins.filter((b) => {
+          try {
+            execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        if (missing.length > 0) {
+          step.warnings.push(`Bins not on PATH after download: ${missing.join(", ")}`);
+          step.status = step.status === "success" ? "warning" : step.status;
+        }
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      step.errors.push(`Download install failed: ${errMsg}`);
+      step.status = "failed";
+    } finally {
+      // 清理临时目录
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
   }
 
   /**

@@ -25,6 +25,21 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.60.0 亮点
+- **对照 openclaw-main 的 10 轮基础设施与安全提升**：以 openclaw-main 为参照系，对网关/安全/基础设施/技能子系统进行 10 轮短板补齐，对齐行业最佳实践
+  - **第 1 轮（技能安装 download 种类完整实现）**：`SkillManager.executeStructuredInstall` 改为 async，新增 `executeDownloadInstall` 私有方法实现完整的 download 安装（HTTPS-only + SSRF 防护 + 100MB 上限 + zip/tar.gz/tar.bz2 解压 + stripComponents）；新增 anyBins 预检查与 bins 后置校验
+  - **第 2 轮（Hooks 4 源策略系统）**：新增 `hook-policy.ts`（约 220 行），定义 bundled/plugin/managed/workspace 4 源策略矩阵，支持 `canOverride` / `canBeOverriddenBy` 双向校验、`resolveHookEnableState` 显式禁用优先、`resolveHookEntries` 按优先级合并与碰撞回调
+  - **第 3 轮（插件 hardlink 策略与起源索引）**：新增 `plugin-hardlink-policy.ts`（约 325 行），`shouldRejectHardlinkedPluginFiles` 检测 inode nlink>1（Nix store 例外）；`PluginProvenanceIndex` 类记录每个插件文件的 inode + sha256，`verifyPlugin` 检测文件缺失/inode 变化/hash 不匹配
+  - **第 4 轮（工作台符号链接逃逸检测）**：新增 `workspace-audit.ts`（约 340 行），BFS 遍历 skills/ 目录，对每个 SKILL.md 调用 `realpathWithTimeout`（Promise.race + unref 计时器）；`collectWorkspaceSkillSymlinkEscapeFindings` 检测 symlink 目标逃逸出工作台根
+  - **第 5 轮（结构化日志与脱敏轮转）**：新增 `rotating-file-appender.ts`（约 275 行），`RotatingFileAppender` 类按大小滚动（默认 100MB × 5 文件），`pruneOldRollingLogs` 启动时清理孤儿文件与 .tmp 残留
+  - **第 6 轮（W3C 跟踪上下文传播）**：新增 `trace-context.ts`（约 295 行），实现 `formatTraceparent` / `parseTraceparent`（严格正则校验 + 全零检测），通过 `AsyncLocalStorage` 传播 trace 上下文，`startSpan` / `emitDiagnosticEvent` 支持 W3C Trace Context 标准
+  - **第 7 轮（net-policy 包）**：新增 `net-policy.ts`（约 348 行），`NetPolicy.checkUrl` 三层校验（协议 → 主机名单 → DNS 钉制 → IP 名单），`resolveAndPinIp` 实现 DNS 重绑定防护（缓存 + TTL + 解析前后比对），`matchHostList` 支持 `*.example.com` 通配符
+  - **第 8 轮（配置 schema 合并管线）**：新增 `config-schema-merge.ts`（约 298 行），`ConfigSchemaMerger` 类支持多源 JSON Schema 合并（256KB / 2MB / 256 项 / 深度 10 上限），同名冲突保留 base + 记录冲突 + SHA256 cacheKey；`generateUiHints` 支持 `channels.*.token` 通配符路径提示
+  - **第 9 轮（MCP channel-bridge 与 cancel 支持）**：`MCPGateway` 扩展 `callTool` 方法（AbortController + 超时 + 并发上限 100），`cancelToolCall` 按 callId 取消、`cancelCallsByCaller` 按 callerId 批量取消（渠道断连时清理），`bridgeChannelMessage` 解析 `/mcp call <tool> [arg=value]` 指令并桥接到 MCP 工具调用
+  - **第 10 轮（消息持久接收与 stall-watchdog）**：新增 `durable-receive-journal.ts`（约 300 行）与 `stall-watchdog.ts`（约 190 行）；`InMemoryDurableReceiveJournal` 通过 pending + completed 双 Map 检测重复事件，支持 TTL 与僵尸事件清理；`createArmableStallWatchdog` 实现可武装的传输空闲看门狗（arm/touch/disarm/stop + AbortSignal 联动 + 计时器 unref + 超时自动 disarm 防二次触发）
+  - **新增测试**：`durable-receive-stall-watchdog.test.ts`（20 个测试，覆盖 accept/pending/complete/release/deletePending + arm/touch/disarm/stop/AbortSignal）
+  - **验证**：`pnpm -r build` + `pnpm typecheck` + 20/20 测试通过
+
 ### v0.59.0 亮点
 - **对照 openclaw-main 的 10 轮技能系统提升**：以 openclaw-main 为参照系，对技能子系统进行 10 轮短板补齐，全面对齐行业最佳实践
   - **第 1 轮（SKILL.md 规范对齐）**：扩展 `SkillMetadata` 与 `SkillManifest`，新增 `metadata.openclaw` 扩展字段（emoji/requires.env/bins/anyBins/primaryEnv/os/homepage），`SkillLoader` 与 `SkillValidator` 完整识别 openclaw 风格的 SKILL.md frontmatter，运行时与 UI 双向兼容

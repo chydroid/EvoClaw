@@ -62,6 +62,29 @@ export type {
   BeforeInstallHook, BeforeInstallResult,
 } from "./plugin-system";
 export {
+  shouldRejectHardlinkedPluginFiles,
+  isNixStorePluginRoot,
+  resolveIsNixMode,
+  getFileInodeInfo,
+  isHardlinkedFile,
+  scanPluginForHardlinks,
+  PluginProvenanceIndex,
+} from "./plugin-hardlink-policy";
+export type {
+  PluginOrigin,
+  FileInodeInfo,
+  HardlinkCheckResult,
+  ProvenanceEntry,
+} from "./plugin-hardlink-policy";
+export { ConfigSchemaMerger, generateUiHints, matchWildcard } from "./config-schema-merge";
+export type {
+  JsonSchemaFragment,
+  SchemaMergeConflict,
+  SchemaMergeResult,
+  SchemaMergeConfig,
+  ConfigPropertyHint,
+} from "./config-schema-merge";
+export {
   ENV_ALIASES, CONFIG_ALIASES, TOOL_ALIASES,
   getEnvWithCompat, translateLegacyKey, resolveToolName,
   detectLegacyEnv, printMigrationHints,

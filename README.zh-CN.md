@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.59.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.60.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
   <img src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square" alt="License" />
-  <img src="https://img.shields.io/badge/tests-2740%20passed-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-3173%20passed-brightgreen?style=flat-square" alt="Tests" />
 </p>
 
 <p align="center">
@@ -101,6 +101,27 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.60.0 更新亮点
+
+对照 `openclaw-main` 项目，对网关 / 安全 / 基础设施 / 技能子系统进行 **10 轮短板补齐**，全面对齐行业最佳实践。每轮修改后通过 `pnpm build` + `typecheck` + `test` 三重验证。
+
+| 轮次 | 模块 | 对标 openclaw-main | 收益 |
+|---|---|---|---|
+| **第 1 轮** | 技能安装 download 种类 | skill install 完整实现 | HTTPS-only + SSRF 防护 + 100MB 上限 + zip/tar.gz/tar.bz2 解压 + anyBins/bins 校验 |
+| **第 2 轮** | Hooks 4 源策略系统 | hooks/policy.ts | bundled/plugin/managed/workspace 策略矩阵 + canOverride 双向校验 + 碰撞合并 |
+| **第 3 轮** | 插件 hardlink 策略与起源索引 | plugins/hardlink-policy.ts | inode nlink>1 检测（Nix 例外）+ PluginProvenanceIndex（inode + sha256 双重校验） |
+| **第 4 轮** | 工作台符号链接逃逸检测 | skills/security/workspace-audit | BFS + realpathWithTimeout + 路径边界检查 |
+| **第 5 轮** | 结构化日志与脱敏轮转 | logging/rotating-file-appender | 100MB × 5 文件滚动 + pruneOldRollingLogs 清理孤儿 |
+| **第 6 轮** | W3C 跟踪上下文传播 | infra/trace-context | traceparent 严格校验 + AsyncLocalStorage 传播 + startSpan/endSpan |
+| **第 7 轮** | net-policy 包 | infra/net-policy | 协议 + 主机名单 + DNS 钉制防重绑定 + IP CIDR 匹配 |
+| **第 8 轮** | 配置 schema 合并管线 | config/schema-merge | 256KB/2MB/256 项/深度 10 上限 + SHA256 cacheKey + UI hints 通配符 |
+| **第 9 轮** | MCP channel-bridge 与 cancel | mcp/channel-bridge + plugin-tools cancel | callTool + AbortSignal + 超时 + 并发上限 + callerId 批量取消 |
+| **第 10 轮** | 消息持久接收与 stall-watchdog | durable-receive + stall-watchdog | pending+completed 双 Map 重复检测 + arm/touch/disarm/stop + AbortSignal 联动 |
+
+**新增文件**：`hook-policy.ts`、`plugin-hardlink-policy.ts`、`workspace-audit.ts`、`rotating-file-appender.ts`、`trace-context.ts`、`net-policy.ts`、`config-schema-merge.ts`、`durable-receive-journal.ts`、`stall-watchdog.ts`、`durable-receive-stall-watchdog.test.ts`
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + 20/20 测试通过
 
 ### 🆕 v0.35.0 更新亮点
 

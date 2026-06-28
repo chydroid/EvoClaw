@@ -71,6 +71,28 @@ export type { ReplyRef, ReplyChainContext, ReplyNode, ReplyTree, ReplyReferenceC
 
 export { WeixinPluginAdapter } from "./weixin-plugin-adapter.js";
 
+// v0.60: 持久化接收与 stall watchdog（对齐 openclaw-main 的 durable-receive + stall-watchdog）
+export {
+  InMemoryDurableReceiveJournal,
+  createInMemoryDurableReceiveJournal,
+} from "./durable-receive-journal";
+export type {
+  DurableInboundReceivePendingRecord,
+  DurableInboundReceiveCompletedRecord,
+  DurableInboundReceiveAcceptResult,
+  DurableInboundReceiveAcceptOptions,
+  DurableInboundReceiveCompleteOptions,
+  DurableInboundReceiveReleaseOptions,
+  DurableInboundReceiveJournal,
+  DurableInboundReceiveJournalOptions,
+} from "./durable-receive-journal";
+export { createArmableStallWatchdog } from "./stall-watchdog";
+export type {
+  StallWatchdogTimeoutMeta,
+  ArmableStallWatchdog,
+  ArmableStallWatchdogParams,
+} from "./stall-watchdog";
+
 export { MCPProtocolHandler } from "./mcp-protocol-handler";
 export type { ToolDefinition, ToolRegistry, ResourceDefinition, PromptDefinition } from "./mcp-protocol-handler";
 
