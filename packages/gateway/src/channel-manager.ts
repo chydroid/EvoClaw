@@ -164,7 +164,7 @@ export class ChannelManager {
     this.approvedPeers.set(config.type, new Set(config.allowFrom));
     this.blocklistedPeers.set(config.type, new Set(config.blockFrom));
 
-    process.stdout.write(`[ChannelManager] Registered channel: ${config.type} (${config.label})`);
+    process.stdout.write(`[ChannelManager] Registered channel: ${config.type} (${config.label})\n`);
   }
 
   /** Attach a channel adapter */
@@ -196,9 +196,9 @@ export class ChannelManager {
         await adapter.start();
         const channelStatus = this.statuses.get(adapter.type);
         if (channelStatus) channelStatus.connected = true;
-        process.stdout.write(`[ChannelManager] Started adapter: ${adapter.type}`);
+        process.stdout.write(`[ChannelManager] Started adapter: ${adapter.type}\n`);
       } catch (err) {
-        process.stderr.write(`[ChannelManager] Failed to start adapter ${adapter.type}:` + " " + err);
+        process.stderr.write(`[ChannelManager] Failed to start adapter ${adapter.type}:` + " " + err + "\n");
       }
     }
   }
@@ -268,14 +268,14 @@ export class ChannelManager {
       }
 
       if (policy === "closed" && !this.isPeerApproved(msg.channel, msg.from)) {
-        process.stdout.write(`[ChannelManager] Blocked DM from unapproved peer on ${msg.channel}: ${msg.from}`);
+        process.stdout.write(`[ChannelManager] Blocked DM from unapproved peer on ${msg.channel}: ${msg.from}\n`);
         return;
       }
     }
 
     // Check blocklist
     if (this.isPeerBlocklisted(msg.channel, msg.from)) {
-      process.stdout.write(`[ChannelManager] Blocked message from blocklisted peer on ${msg.channel}: ${msg.from}`);
+      process.stdout.write(`[ChannelManager] Blocked message from blocklisted peer on ${msg.channel}: ${msg.from}\n`);
       return;
     }
 
@@ -284,7 +284,7 @@ export class ChannelManager {
       try {
         await this.messageHandler(msg);
       } catch (err) {
-        process.stderr.write(`[ChannelManager] Message handler error:` + " " + err);
+        process.stderr.write(`[ChannelManager] Message handler error:` + " " + err + "\n");
         // 尝试通过适配器向用户发送错误通知，避免用户等待无响应
         // 用 try/catch 包裹，防止通知失败再次抛错造成循环
         if (msg.isDirect) {
@@ -298,7 +298,7 @@ export class ChannelManager {
               );
             }
           } catch (notifyErr) {
-            process.stderr.write(`[ChannelManager] Failed to send error notification to user:` + " " + notifyErr);
+            process.stderr.write(`[ChannelManager] Failed to send error notification to user:` + " " + notifyErr + "\n");
           }
         }
       }
@@ -356,7 +356,7 @@ export class ChannelManager {
     // Pairing codes expire after 5 minutes
     if (Date.now() - entry.createdAt > 5 * 60 * 1000) {
       this.pairingCodes.delete(code);
-      process.stderr.write(`[ChannelManager] Pairing code expired for peer ${entry.peerId} on ${entry.channel}`);
+      process.stderr.write(`[ChannelManager] Pairing code expired for peer ${entry.peerId} on ${entry.channel}\n`);
       return false;
     }
 
@@ -366,7 +366,7 @@ export class ChannelManager {
     }
 
     this.pairingCodes.delete(code);
-    process.stdout.write(`[ChannelManager] Approved peer ${entry.peerId} on ${entry.channel}`);
+    process.stdout.write(`[ChannelManager] Approved peer ${entry.peerId} on ${entry.channel}\n`);
     return true;
   }
 
@@ -437,9 +437,9 @@ export class ChannelManager {
           await adapter.start();
           const status = this.statuses.get(type);
           if (status) status.connected = true;
-          process.stdout.write(`[ChannelManager] Started ${type}`);
+          process.stdout.write(`[ChannelManager] Started ${type}\n`);
         } catch (err) {
-          process.stderr.write(`[ChannelManager] Failed to start ${type}:` + " " + err);
+          process.stderr.write(`[ChannelManager] Failed to start ${type}:` + " " + err + "\n");
         }
       }
     }
@@ -452,9 +452,9 @@ export class ChannelManager {
         await adapter.stop();
         const status = this.statuses.get(type);
         if (status) status.connected = false;
-        process.stdout.write(`[ChannelManager] Stopped ${type}`);
+        process.stdout.write(`[ChannelManager] Stopped ${type}\n`);
       } catch (err) {
-        process.stderr.write(`[ChannelManager] Failed to stop ${type}:` + " " + err);
+        process.stderr.write(`[ChannelManager] Failed to stop ${type}:` + " " + err + "\n");
       }
     }
   }

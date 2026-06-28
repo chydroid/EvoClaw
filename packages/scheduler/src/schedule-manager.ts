@@ -437,7 +437,7 @@ export class ScheduleManager {
         }
       }
     } catch (err) {
-      process.stderr.write("[ScheduleManager] Failed to load tasks:" + " " + err);
+      process.stderr.write("[ScheduleManager] Failed to load tasks:" + " " + err + "\n");
     }
   }
 
@@ -471,7 +471,7 @@ export class ScheduleManager {
         }
       }
     } catch (err) {
-      process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err);
+      process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err + "\n");
     }
   }
 }

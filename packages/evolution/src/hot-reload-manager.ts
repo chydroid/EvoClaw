@@ -95,7 +95,7 @@ export class HotReloadManager {
 
   private async processEvent(event: HotReloadEvent): Promise<void> {
     process.stdout.write(
-      `[HotReload] ${event.action} skill "${event.skillId}" (${event.strategy})`
+      `[HotReload] ${event.action} skill "${event.skillId}" (${event.strategy})\n`
     );
 
     switch (event.action) {

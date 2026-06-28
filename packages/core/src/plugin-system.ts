@@ -460,11 +460,11 @@ export class PluginManager {
       } catch (err) {
         loaded.status = "error";
         loaded.error = String(err);
-        process.stderr.write(`[PluginManager] Plugin "${name}" init failed:` + " " + err);
+        process.stderr.write(`[PluginManager] Plugin "${name}" init failed:` + " " + err + "\n");
       }
     }
 
-    process.stdout.write(`[PluginManager] Plugin "${name}" v${plugin.manifest.version} registered`);
+    process.stdout.write(`[PluginManager] Plugin "${name}" v${plugin.manifest.version} registered\n`);
   }
 
   /** Unregister a plugin */
@@ -476,7 +476,7 @@ export class PluginManager {
       try {
         await loaded.plugin.shutdown();
       } catch (err) {
-        process.stderr.write(`[PluginManager] Plugin "${name}" shutdown error:` + " " + err);
+        process.stderr.write(`[PluginManager] Plugin "${name}" shutdown error:` + " " + err + "\n");
       }
     }
 
@@ -489,7 +489,7 @@ export class PluginManager {
     }
 
     this.plugins.delete(name);
-    process.stdout.write(`[PluginManager] Plugin "${name}" unregistered`);
+    process.stdout.write(`[PluginManager] Plugin "${name}" unregistered\n`);
   }
 
   /** Enable/disable a plugin without unregistering */
@@ -549,7 +549,7 @@ export class PluginManager {
           // - cancel: false is a no-op
         }
       } catch (err) {
-        process.stderr.write(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed:` + " " + err);
+        process.stderr.write(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed:` + " " + err + "\n");
       }
     }
 
@@ -590,7 +590,7 @@ export class PluginManager {
           }
         }
       } catch (err) {
-        process.stderr.write(`[PluginManager] Hook "${hookType}" handler in plugin "${plugin}" failed:` + " " + err);
+        process.stderr.write(`[PluginManager] Hook "${hookType}" handler in plugin "${plugin}" failed:` + " " + err + "\n");
       }
     }
 
@@ -647,7 +647,7 @@ export class PluginManager {
     try {
       entries = await readdir(dirPath, { withFileTypes: true });
     } catch (err) {
-      process.stderr.write(`[PluginManager] Failed to read plugin directory "${dirPath}":` + " " + err);
+      process.stderr.write(`[PluginManager] Failed to read plugin directory "${dirPath}":` + " " + err + "\n");
       return;
     }
 
@@ -672,7 +672,7 @@ export class PluginManager {
           }
         }
       } catch (err) {
-        process.stderr.write(`[PluginManager] Failed to load plugin from "${fullPath}":` + " " + err);
+        process.stderr.write(`[PluginManager] Failed to load plugin from "${fullPath}":` + " " + err + "\n");
       }
     }
   }

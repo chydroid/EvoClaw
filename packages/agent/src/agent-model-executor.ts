@@ -190,7 +190,7 @@ export class AgentModelExecutor {
     getEmbeddingProvider?(): { embed(text: string): Promise<number[]>; embedBatch?(texts: string[]): Promise<number[][]>; dimensions?: number } | null;
   }): void {
     this.memoryHub = hub;
-    process.stdout.write(`[AgentModelExecutor] Memory hub integrated`);
+    process.stdout.write(`[AgentModelExecutor] Memory hub integrated\n`);
     // Wire up the semantic quick-reply classifier with the embedding provider
     // so it can classify user intent locally without calling the LLM.
     try {
@@ -201,7 +201,7 @@ export class AgentModelExecutor {
         // calling embed() loses the `this` pointer and getPipeline() fails.
         const boundEmbed = provider.embed.bind(provider);
         this.semanticQuickReply.setProvider({ embed: boundEmbed, dimensions: provider.dimensions });
-        process.stdout.write(`[AgentModelExecutor] Semantic quick-reply enabled (embedding dims=${provider.dimensions ?? "?"})`);
+        process.stdout.write(`[AgentModelExecutor] Semantic quick-reply enabled (embedding dims=${provider.dimensions ?? "?"})\n`);
       }
     } catch {
       // Non-fatal: semantic quick reply is best-effort
@@ -211,7 +211,7 @@ export class AgentModelExecutor {
   /** Set bootstrap manager */
   setBootstrapManager(bm: import("./bootstrap-manager").BootstrapManager): void {
     this.bootstrapManager = bm;
-    process.stdout.write(`[AgentModelExecutor] Bootstrap manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Bootstrap manager integrated\n`);
   }
 
   /** Get bootstrap manager for tool registration */
@@ -222,37 +222,37 @@ export class AgentModelExecutor {
   /** Set compaction manager */
   setCompactionManager(cm: import("./compaction-manager").CompactionManager): void {
     this.compactionManager = cm;
-    process.stdout.write(`[AgentModelExecutor] Compaction manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Compaction manager integrated\n`);
   }
 
   /** Set lifecycle manager */
   setLifecycleManager(lm: import("./agent-lifecycle").AgentLifecycleManager): void {
     this.lifecycleManager = lm;
-    process.stdout.write(`[AgentModelExecutor] Lifecycle manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Lifecycle manager integrated\n`);
   }
 
   /** Set queue manager */
   setQueueManager(qm: import("./queue-manager").QueueManager): void {
     this.queueManager = qm;
-    process.stdout.write(`[AgentModelExecutor] Queue manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Queue manager integrated\n`);
   }
 
   /** Set session manager */
   setSessionManager(sm: import("./session-manager").SessionManager): void {
     this.sessionManager = sm;
-    process.stdout.write(`[AgentModelExecutor] Session manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Session manager integrated\n`);
   }
 
   /** Set context engine */
   setContextEngine(ce: import("./context-engine").ContextEngine): void {
     this.contextEngine = ce;
-    process.stdout.write(`[AgentModelExecutor] Context engine integrated`);
+    process.stdout.write(`[AgentModelExecutor] Context engine integrated\n`);
   }
 
   /** Set copilot router */
   setCopilotRouter(config?: Partial<CopilotRouterConfig>): void {
     this.copilotRouter = new CopilotRouter(config);
-    process.stdout.write(`[AgentModelExecutor] Copilot router integrated (enabled=${this.copilotRouter !== null})`);
+    process.stdout.write(`[AgentModelExecutor] Copilot router integrated (enabled=${this.copilotRouter !== null})\n`);
   }
 
   /** Token usage tracker for recording LLM call metrics */
@@ -307,7 +307,7 @@ export class AgentModelExecutor {
   /** Set plugin manager */
   setPluginManager(pm: import("@evoclaw/core").PluginManager): void {
     this.pluginManager = pm;
-    process.stdout.write(`[AgentModelExecutor] Plugin manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Plugin manager integrated\n`);
   }
 
   /** Get guardrails manager */
@@ -318,31 +318,31 @@ export class AgentModelExecutor {
   /** Set channel manager */
   setChannelManager(cm: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> }): void {
     this.channelManager = cm;
-    process.stdout.write(`[AgentModelExecutor] Channel manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Channel manager integrated\n`);
   }
 
   /** Set context pruning manager */
   setContextPruningManager(pm: import("./context-pruning").ContextPruningManager): void {
     (this as any).contextPruningManager = pm;
-    process.stdout.write(`[AgentModelExecutor] Context pruning manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Context pruning manager integrated\n`);
   }
 
   /** Set input pipeline */
   setInputPipeline(pipeline: import("./input-pipeline").PipelineRunner): void {
     (this as any).inputPipeline = pipeline;
-    process.stdout.write(`[AgentModelExecutor] Input pipeline integrated`);
+    process.stdout.write(`[AgentModelExecutor] Input pipeline integrated\n`);
   }
 
   /** Set human approval manager */
   setHumanApprovalManager(manager: HumanApprovalManager): void {
     this.humanApprovalManager = manager;
-    process.stdout.write(`[AgentModelExecutor] Human approval manager integrated`);
+    process.stdout.write(`[AgentModelExecutor] Human approval manager integrated\n`);
   }
 
   /** Set eval runner */
   setEvalRunner(runner: import("./evals").EvalRunner): void {
     this.evalRunner = runner;
-    process.stdout.write(`[AgentModelExecutor] Eval runner integrated`);
+    process.stdout.write(`[AgentModelExecutor] Eval runner integrated\n`);
   }
 
   /** Get the eval runner */
@@ -402,7 +402,7 @@ export class AgentModelExecutor {
     const startTime = Date.now();
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
 
-    process.stdout.write(`[AgentModelExecutor] Resuming execution for session "${sessionId}" from snapshot ${fromSnapshotIndex ?? "latest"}, ${messages.length} messages`);
+    process.stdout.write(`[AgentModelExecutor] Resuming execution for session "${sessionId}" from snapshot ${fromSnapshotIndex ?? "latest"}, ${messages.length} messages\n`);
 
     // Delete the old execution state so a fresh one is created by tryCallLLM
     this.executionCheckpointStore.deleteExecution(sessionId);
@@ -694,9 +694,9 @@ export class AgentModelExecutor {
 
         totalChars += content.length;
         this.bootstrapFiles.push({ path: fileName, content });
-        process.stdout.write(`[AgentModelExecutor] Loaded bootstrap file: ${fileName} (${content.length} chars)`);
+        process.stdout.write(`[AgentModelExecutor] Loaded bootstrap file: ${fileName} (${content.length} chars)\n`);
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to read bootstrap file ${fileName}: ${err instanceof Error ? err.message : String(err)}`);
+        process.stderr.write(`[AgentModelExecutor] Failed to read bootstrap file ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
   }
@@ -997,7 +997,7 @@ export class AgentModelExecutor {
           bootstrapPrefix += "\n\n---\n\n";
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to load bootstrap context: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Failed to load bootstrap context: ${err}\n`);
       }
     }
 
@@ -1241,7 +1241,7 @@ export class AgentModelExecutor {
       
       // Handle pipeline warnings
       if (result.warnings.length > 0) {
-        process.stdout.write(`[AgentModelExecutor] Input pipeline warnings: ${result.warnings.join("; ")}`);
+        process.stdout.write(`[AgentModelExecutor] Input pipeline warnings: ${result.warnings.join("; ")}\n`);
       }
       
       // Handle short-circuit (echo detection, guardrails block, etc.)
@@ -1395,7 +1395,7 @@ export class AgentModelExecutor {
           turnIndex: 0, role: "user", content: message, timestamp: new Date().toISOString(),
         });
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to persist user message early: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Failed to persist user message early: ${err}\n`);
       }
     }
     this.persistSessionTurn(sessionId, "user", message);
@@ -1428,10 +1428,10 @@ export class AgentModelExecutor {
     if (isApprovalIntent && pendingCmd) {
       const PENDING_CMD_TTL = 30 * 60 * 1000;
       if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
-        process.stdout.write(`[AgentModelExecutor] Pending command expired, discarding: ${pendingCmd.command}`);
+        process.stdout.write(`[AgentModelExecutor] Pending command expired, discarding: ${pendingCmd.command}\n`);
         this.pendingApprovalCommands.delete(sessionId);
       } else {
-        process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}`);
+        process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
         this.pendingApprovalCommands.delete(sessionId);
         // Add temporary trust rule
         if (this.humanApprovalManager) {
@@ -1461,7 +1461,7 @@ export class AgentModelExecutor {
             return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: true, files: [] };
           }
         } catch (err) {
-          process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}`);
+          process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}\n`);
           const reply = `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`;
           this.persistEarlyReturn(sessionId, message, reply);
           return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
@@ -1548,7 +1548,7 @@ export class AgentModelExecutor {
     const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
     const findAndInstallSkill = /(?:找|查找|搜索|看看|查一下).*(?:技能|skill).*?(?:安装|下载|添加|装)/i;
     if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
-      process.stdout.write(`[AgentModelExecutor] Skill install request detected: "${message}"`);
+      process.stdout.write(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
       const skillInstallerDeps: SkillInstallerDeps = { registry: this.registry, workspacePath: this.workspacePath };
       const installResult = await handleSkillInstallFn(skillInstallerDeps, message, skillManager, startTime, sessionId);
       if (installResult) {
@@ -1587,7 +1587,7 @@ export class AgentModelExecutor {
     const isExplicitToolCall = claudeCodeToolNames.some(name => message.includes(name));
     const userProvidedUrl = /https?:\/\/[^\s<>"']+/i.test(message);
     if (userProvidedUrl) {
-      process.stdout.write(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM`);
+      process.stdout.write(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM\n`);
     }
     if (this.hasActionIntent(message) && !isExplicitToolCall && !userProvidedUrl) {
       const skillDispatchFn = async () => {
@@ -1605,7 +1605,7 @@ export class AgentModelExecutor {
         }>("skillDispatcher");
         
         if (skillDispatcher) {
-          process.stdout.write(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"`);
+          process.stdout.write(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"\n`);
           taskStatusTracker.set(sessionId, "thinking", "技能调度中，正在匹配最合适的技能...", 20);
           const dispatchResult = await skillDispatcher.dispatch({
             task: message,
@@ -1621,7 +1621,7 @@ export class AgentModelExecutor {
           const isEmptyOutput = isEmptySkillOutput(dispatchResult.output);
 
           if (dispatchResult.path === "skill" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}`);
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}\n`);
             const skillReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, skillReply);
             return {
@@ -1632,7 +1632,7 @@ export class AgentModelExecutor {
               toolsExecuted: true,
             };
           } else if (dispatchResult.path === "web_search" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher used web_search fallback`);
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher used web_search fallback\n`);
             const searchReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, searchReply);
             return {
@@ -1644,10 +1644,10 @@ export class AgentModelExecutor {
             };
           } else if (outputHasError) {
             if (classifiedError!.shouldFallbackToLLM) {
-              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user`);
+              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user\n`);
               // Do not return an error to the user; let the LLM retry or handle the task.
             } else {
-              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user`);
+              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user\n`);
               const errorReply = `⚠️ ${classifiedError!.userMessage}`;
               this.persistEarlyReturn(sessionId, message, errorReply);
               return {
@@ -1659,16 +1659,16 @@ export class AgentModelExecutor {
               };
             }
           } else if (isEmptyOutput && dispatchResult.path === "skill") {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM`);
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM\n`);
           } else if (dispatchResult.path === "none") {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM`);
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM\n`);
           } else {
             // Skill matched but execution failed — fall through to LLM
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM`);
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM\n`);
           }
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] SkillDispatcher dispatch failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] SkillDispatcher dispatch failed: ${err}\n`);
         // Fall through to LLM
       }
       };
@@ -1700,11 +1700,11 @@ export class AgentModelExecutor {
     };
 
     if (autoSplitConfig.shouldAutoSplit && autoSplitConfig.complexity !== "simple") {
-      process.stdout.write(`[AgentModelExecutor] Auto-split enabled for complexity "${autoSplitConfig.complexity}", maxSubtasks: ${autoSplitConfig.maxSubtasks}`);
+      process.stdout.write(`[AgentModelExecutor] Auto-split enabled for complexity "${autoSplitConfig.complexity}", maxSubtasks: ${autoSplitConfig.maxSubtasks}\n`);
 
       const existingCheckpoint = taskCheckpointManager.get(sessionId);
       if (existingCheckpoint && existingCheckpoint.completedCount < existingCheckpoint.totalSubtasks) {
-        process.stdout.write(`[AgentModelExecutor] Resuming task from checkpoint: ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} completed`);
+        process.stdout.write(`[AgentModelExecutor] Resuming task from checkpoint: ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} completed\n`);
         taskStatusTracker.set(sessionId, "resuming", `从检查点恢复任务 (${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks})`, 50);
         onProgress?.({ type: "task_resumed", phase: "resuming", detail: `从检查点恢复任务，已完成 ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} 个子任务`, progress: 50 });
 
@@ -1718,7 +1718,7 @@ export class AgentModelExecutor {
 
       const subtaskDescriptions = await this.decomposeTaskWithLLM(effectiveMessage, autoSplitConfig.maxSubtasks);
       if (subtaskDescriptions.length > 1) {
-        process.stdout.write(`[AgentModelExecutor] Task decomposed into ${subtaskDescriptions.length} subtasks:` + " " + subtaskDescriptions.map(s => s.description.slice(0, 40)));
+        process.stdout.write(`[AgentModelExecutor] Task decomposed into ${subtaskDescriptions.length} subtasks:` + " " + subtaskDescriptions.map(s => s.description.slice(0, 40)) + "\n");
 
         taskStatusTracker.set(sessionId, "splitting", `任务已拆分为 ${subtaskDescriptions.length} 个子任务`, 15);
         onProgress?.({ type: "status", phase: "splitting", detail: `任务已拆分为 ${subtaskDescriptions.length} 个子任务，开始逐个执行...`, progress: 15 });
@@ -1801,12 +1801,12 @@ export class AgentModelExecutor {
           currentTask: effectiveMessage,
         });
         if (contextEngineResult.warnings.length > 0) {
-          process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}`);
+          process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
         }
         if (contextEngineResult.truncated) {
-          process.stdout.write(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"`);
+          process.stdout.write(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"\n`);
         }
-        process.stdout.write(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...`);
+        process.stdout.write(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...\n`);
         // Store for use by tryCallLLM
         this._currentContextEngineResult = contextEngineResult;
       } catch (err) {
@@ -1831,7 +1831,7 @@ export class AgentModelExecutor {
       cacheMessages = [{ role: "system", content: systemPrompt }, ...historyEntries];
       cacheEntry = this.promptCache.findMatchingPrefix(cacheMessages);
       if (cacheEntry) {
-        process.stdout.write(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens`);
+        process.stdout.write(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens\n`);
       }
     }
 
@@ -1851,7 +1851,7 @@ export class AgentModelExecutor {
       const matchedChain = this.toolChainRegistry.findRelevantChain(effectiveMessage);
       if (matchedChain) {
         chainContext = `[工具链匹配] 检测到任务可使用预定义工具链 "${matchedChain.name}" (${matchedChain.description})，包含 ${matchedChain.steps.length} 个步骤。建议按此链执行。`;
-        process.stdout.write(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"`);
+        process.stdout.write(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"\n`);
         onProgress?.({ type: "status", phase: "planning", detail: `匹配到工具链: ${matchedChain.name}`, progress: 20 });
       }
     }
@@ -1866,7 +1866,7 @@ export class AgentModelExecutor {
           plan.status = "validated";
           this.activePlans.set(sessionId, plan);
           planContext = this.planningEngine.formatPlanForContext(plan);
-          process.stdout.write(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}`);
+          process.stdout.write(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}\n`);
           taskStatusTracker.set(sessionId, "planning", `已生成执行计划：${plan.steps.length} 个步骤`, 25);
           onProgress?.({ type: "status", phase: "planning", detail: `已生成执行计划：${plan.steps.length} 个步骤`, progress: 25 });
 
@@ -1910,15 +1910,15 @@ export class AgentModelExecutor {
                   }
                 }
               } catch (err) {
-                process.stderr.write(`[AgentModelExecutor] ACP delegation failed: ${err}`);
+                process.stderr.write(`[AgentModelExecutor] ACP delegation failed: ${err}\n`);
               }
             }
           }
         } else {
-          process.stderr.write(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}`);
+          process.stderr.write(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}\n`);
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Planning failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Planning failed: ${err}\n`);
       }
     }
 
@@ -1959,11 +1959,11 @@ export class AgentModelExecutor {
     const finalEnhancedMessage = buildEnhancedMessageFn(message, newsContext, searchReason, shouldSearch);
 
     if (newsContext) {
-      process.stdout.write(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"`);
+      process.stdout.write(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"\n`);
     }
 
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
-    process.stdout.write(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}`);
+    process.stdout.write(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}\n`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // Inspired by Hermes's stable/ephemeral prompt separation and OpenClaw's
@@ -1980,7 +1980,7 @@ export class AgentModelExecutor {
         primaryProvider.provider || "openai",
       );
       if (routingDecision.shouldDowngrade) {
-        process.stdout.write(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})`);
+        process.stdout.write(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})\n`);
         // Create a modified provider list with the routed model
         routedProviders = enabledProviders.map((p, i) => {
           if (i === 0) {
@@ -1995,7 +1995,7 @@ export class AgentModelExecutor {
           return p;
         });
       } else {
-        process.stdout.write(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})`);
+        process.stdout.write(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})\n`);
       }
     }
 
@@ -2065,7 +2065,7 @@ export class AgentModelExecutor {
     taskStatusTracker.set(sessionId, "error", "模型服务暂不可用，切换到本地规则响应", 60);
     const msg = message.toLowerCase();
     if (this.hasActionIntent(message)) {
-      process.stdout.write(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"`);
+      process.stdout.write(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"\n`);
     }
     let reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
@@ -2138,13 +2138,13 @@ export class AgentModelExecutor {
         toolCalls: 0,
         success: true,
       },
-    }).catch(err => process.stderr.write(`[AgentModelExecutor] agent_end hook failed: ${err}`));
+    }).catch(err => process.stderr.write(`[AgentModelExecutor] agent_end hook failed: ${err}\n`));
   }
 
   /** Asynchronously save an interaction to long-term memory */
   private rememberInteraction(userMsg: string, agentReply: string, sessionId: string): void {
     if (!this.memoryHub) {
-      process.stderr.write(`[AgentModelExecutor] rememberInteraction: memoryHub is null`);
+      process.stderr.write(`[AgentModelExecutor] rememberInteraction: memoryHub is null\n`);
       return;
     }
     try {
@@ -2165,7 +2165,7 @@ export class AgentModelExecutor {
         embedding: null,
       };
       const useRemember = !!this.memoryHub.remember;
-      process.stdout.write(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember}`);
+      process.stdout.write(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember}\n`);
       // Prefer memory hub's remember() so the entry is mirrored into the
       // vector store (Transformers embeddings). Fallback to longTerm.store
       // when remember() is not provided by the injected hub.
@@ -2178,12 +2178,12 @@ export class AgentModelExecutor {
             accessedAt: new Date(),
           } as import("@evoclaw/core").MemoryEntry);
       persist.then((stored) => {
-        process.stdout.write(`[AgentModelExecutor] Memory saved: id=${stored.id} session=${sessionId}`);
+        process.stdout.write(`[AgentModelExecutor] Memory saved: id=${stored.id} session=${sessionId}\n`);
       }, (err) => {
-        process.stderr.write(`[AgentModelExecutor] Memory save failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Memory save failed: ${err}\n`);
       });
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] rememberInteraction threw: ${err}`);
+      process.stderr.write(`[AgentModelExecutor] rememberInteraction threw: ${err}\n`);
     }
   }
 
@@ -2884,10 +2884,10 @@ export class AgentModelExecutor {
 
       if (delegationResult.success) {
         delegationHints.push(`[Swarm] 任务已委派给 ${bestAgent.name} (${bestAgent.role})，专长: ${bestAgent.capabilities.join(", ")}`);
-        process.stdout.write(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned for session "${sessionId}"`);
+        process.stdout.write(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned for session "${sessionId}"\n`);
       }
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] Swarm delegation failed: ${err}`);
+      process.stderr.write(`[AgentModelExecutor] Swarm delegation failed: ${err}\n`);
     }
 
     return delegationHints.length > 0 ? delegationHints.join("\n") : null;
@@ -2948,13 +2948,13 @@ export class AgentModelExecutor {
       // Try quick reflection first (no LLM cost)
       const quickResult = this.reflectionEngine.quickReflect(traces);
       if (quickResult.shouldReplan || quickResult.shouldRetry) {
-        process.stdout.write(`[AgentModelExecutor] Quick reflection triggered: ${quickResult.analysis}`);
+        process.stdout.write(`[AgentModelExecutor] Quick reflection triggered: ${quickResult.analysis}\n`);
         return quickResult;
       }
 
       // Use LLM-based reflection for deeper analysis
       const result = await this.reflectionEngine.reflect(traces, planContext);
-      process.stdout.write(`[AgentModelExecutor] Reflection result: continue=${result.shouldContinue}, replan=${result.shouldReplan}, retry=${result.shouldRetry}, confidence=${result.confidence}`);
+      process.stdout.write(`[AgentModelExecutor] Reflection result: continue=${result.shouldContinue}, replan=${result.shouldReplan}, retry=${result.shouldRetry}, confidence=${result.confidence}\n`);
 
       // Handle replan
       if (result.shouldReplan && plan && this.planningEngine) {
@@ -2963,13 +2963,13 @@ export class AgentModelExecutor {
           const toolNames = Array.from(this.registeredTools.keys());
           const newPlan = await this.planningEngine.replan(plan, plan.goal, toolNames);
           this.activePlans.set(sessionId, newPlan);
-          process.stdout.write(`[AgentModelExecutor] Replanned: ${newPlan.steps.length} steps (replan #${newPlan.replanCount})`);
+          process.stdout.write(`[AgentModelExecutor] Replanned: ${newPlan.steps.length} steps (replan #${newPlan.replanCount})\n`);
         }
       }
 
       return result;
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] Reflection failed: ${err}`);
+      process.stderr.write(`[AgentModelExecutor] Reflection failed: ${err}\n`);
       return null;
     }
   }

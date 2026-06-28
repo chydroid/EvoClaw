@@ -25,6 +25,12 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.62.2 亮点
+- **全仓库日志行堆叠根治**：扫描 80 个文件，补齐 558 处 `process.stdout/stderr.write` 缺少的末尾 `\n`，启动日志每条消息独占一行
+- **better-sqlite3 错误消息改进**：检测到 "Could not locate the bindings file" 模式时输出简洁摘要 "native bindings not compiled for this Node.js/ABI version"
+- **"Install requires review" 去重**：50 个技能各打印一次改为只打印 1 次 + 末尾汇总 `Install policy summary: 50 skills required review`
+- **跨平台安装跳过**：brew/apt 在 Windows 上不再执行而是跳过并返回 "Skipped: incompatible platform"，避免 ENOENT 噪音
+
 ### v0.62.1 亮点
 - **启动日志可读性修复**：修复 `skill-manager.ts` 中约 30 处 `process.stderr/stdout.write` 缺少末尾 `\n` 导致的日志行堆叠问题（44 行 "Install requires review" 等被拼成超长单行）
 - **better-sqlite3 错误消息修复**：拆分 `long-term-memory.ts` / `fts5-search.ts` 中的 try-catch，区分"模块不存在"与"初始化失败"，日志由误导性的 "not available" 改为 "init failed, falling back to JSON (Could not locate the bindings file...)"

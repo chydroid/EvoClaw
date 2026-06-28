@@ -217,7 +217,7 @@ export class DeadLetterQueue {
       fs.closeSync(fd);
       fs.renameSync(tmpPath, msgFile);
     } catch (err) {
-      process.stderr.write(`[DeadLetterQueue] Failed to mark ${id} as replayed:` + " " + err);
+      process.stderr.write(`[DeadLetterQueue] Failed to mark ${id} as replayed:` + " " + err + "\n");
       return false;
     }
     return true;
@@ -234,7 +234,7 @@ export class DeadLetterQueue {
         return true;
       }
     } catch (err) {
-      process.stderr.write(`[DeadLetterQueue] Failed to delete ${id}:` + " " + err);
+      process.stderr.write(`[DeadLetterQueue] Failed to delete ${id}:` + " " + err + "\n");
     }
     // 旧版 JSONL 兼容：通过 readAll + writeAll 删除
     const dl = this.get(id);

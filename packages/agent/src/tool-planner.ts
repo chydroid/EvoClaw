@@ -124,8 +124,8 @@ function assertUniqueNames(descriptors: readonly ToolDescriptor[]): void {
  *   }
  * });
  * 
- * process.stdout.write(`Visible tools: ${plan.visible.length}`);
- * process.stdout.write(`Hidden tools: ${plan.hidden.length}`);
+ * process.stdout.write(`Visible tools: ${plan.visible.length}\n`);
+ * process.stdout.write(`Hidden tools: ${plan.hidden.length}\n`);
  * ```
  */
 export function buildToolPlan(options: BuildToolPlanOptions): ToolPlan {

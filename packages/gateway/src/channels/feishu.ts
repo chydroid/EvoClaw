@@ -554,7 +554,7 @@ export class FeishuAdapter implements ChannelAdapter {
     // 飞书签名算法：SHA256(timestamp + nonce + encrypt_key + body)
     // P1-07 fix: 未配置 encryptKey 时 fail-closed 拒绝所有请求
     if (!this.config.encryptKey) {
-      process.stderr.write("[Feishu] encryptKey not configured — rejecting webhook (fail-closed)");
+      process.stderr.write("[Feishu] encryptKey not configured — rejecting webhook (fail-closed)\n");
       return false;
     }
     if (!signature) {

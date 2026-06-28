@@ -173,7 +173,7 @@ export class SemanticQuickReply {
 
   private async _initialize(): Promise<void> {
     if (!this.provider) {
-      process.stdout.write(`[SemanticQuickReply] No provider, skipping init`);
+      process.stdout.write(`[SemanticQuickReply] No provider, skipping init\n`);
       this.initialized = true;
       return;
     }
@@ -190,7 +190,7 @@ export class SemanticQuickReply {
             vectors.push(vec);
           } catch (err) {
             // Skip failed embeddings — still compute centroid from remaining
-            process.stderr.write(`[SemanticQuickReply] Failed to embed template "${tmpl}": ${err instanceof Error ? err.message : String(err)}`);
+            process.stderr.write(`[SemanticQuickReply] Failed to embed template "${tmpl}": ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
 
@@ -212,10 +212,10 @@ export class SemanticQuickReply {
       }
 
       this.centroids = newCentroids;
-      process.stdout.write(`[SemanticQuickReply] Initialized: ${this.centroids.length} category centroids`);
+      process.stdout.write(`[SemanticQuickReply] Initialized: ${this.centroids.length} category centroids\n`);
     } catch (err) {
       // Non-fatal: semantic quick reply is best-effort
-      process.stderr.write(`[SemanticQuickReply] Init failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[SemanticQuickReply] Init failed: ${err instanceof Error ? err.message : String(err)}\n`);
       this.centroids = [];
     }
 
@@ -238,7 +238,7 @@ export class SemanticQuickReply {
     // Ensure centroids are computed
     await this.initialize();
     if (this.centroids.length === 0) {
-      process.stdout.write(`[SemanticQuickReply] No centroids available, skipping classify`);
+      process.stdout.write(`[SemanticQuickReply] No centroids available, skipping classify\n`);
       return null;
     }
 
@@ -265,11 +265,11 @@ export class SemanticQuickReply {
     // Log top-3 scores for debugging
     scores.sort((a, b) => b.score - a.score);
     const top3 = scores.slice(0, 3).map((s) => `${s.category}=${s.score.toFixed(4)}`).join(", ");
-    process.stdout.write(`[SemanticQuickReply] "${trimmed.slice(0, 30)}" → top3: ${top3}`);
+    process.stdout.write(`[SemanticQuickReply] "${trimmed.slice(0, 30)}" → top3: ${top3}\n`);
 
     if (!bestCategory || bestScore < this.threshold) return null;
 
-    process.stdout.write(`[SemanticQuickReply] Matched category="${bestCategory}" score=${bestScore.toFixed(4)} for "${trimmed.slice(0, 30)}"`);
+    process.stdout.write(`[SemanticQuickReply] Matched category="${bestCategory}" score=${bestScore.toFixed(4)} for "${trimmed.slice(0, 30)}"\n`);
 
     // Find the reply pool for this category from the regex-based table
     const entry = __test.SIMPLE_GREETING_ENTRIES.find((e: { category: string }) => e.category === bestCategory);

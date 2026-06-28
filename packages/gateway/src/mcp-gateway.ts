@@ -73,13 +73,13 @@ export class MCPGateway {
   ) {}
 
   initialize(): void {
-    process.stdout.write("[MCP Gateway] Initializing MCP protocol support");
+    process.stdout.write("[MCP Gateway] Initializing MCP protocol support\n");
     this.registry.registerService("mcpGateway", this);
   }
 
   registerTransport(name: string, transport: MCPTransport): void {
     this.transports.set(name, transport);
-    process.stdout.write(`[MCP Gateway] Registered transport "${name}" (${transport.type})`);
+    process.stdout.write(`[MCP Gateway] Registered transport "${name}" (${transport.type})\n`);
   }
 
   unregisterTransport(name: string): void {
@@ -352,6 +352,6 @@ export class MCPGateway {
     this.callerIndex.clear();
     this.transports.clear();
     this.capabilities.clear();
-    process.stdout.write("[MCP Gateway] Disposed");
+    process.stdout.write("[MCP Gateway] Disposed\n");
   }
 }

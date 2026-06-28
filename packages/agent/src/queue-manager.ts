@@ -157,7 +157,7 @@ export class QueueManager {
   private ensureDataDir(): void {
     try {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
-    } catch (err) { process.stderr.write(`[QueueManager] Failed to create data directory "${this.config.dataDir}":` + " " + err); }
+    } catch (err) { process.stderr.write(`[QueueManager] Failed to create data directory "${this.config.dataDir}":` + " " + err + "\n"); }
   }
 
   // ====== Enqueue ======
@@ -193,7 +193,7 @@ export class QueueManager {
       const removed = queue.shift();
       if (removed) {
         process.stderr.write(
-          `[QueueManager] Queue full for session "${sessionId}", dropped item: ${removed.id}`,
+          `[QueueManager] Queue full for session "${sessionId}", dropped item: ${removed.id}\n`
         );
       }
     }
@@ -235,7 +235,7 @@ export class QueueManager {
     );
 
     process.stdout.write(
-      `[QueueManager] Enqueued [${mode}] lane=${lane} for session "${sessionId}": "${message.slice(0, 80)}" (queue size: ${queue.length})`,
+      `[QueueManager] Enqueued [${mode}] lane=${lane} for session "${sessionId}": "${message.slice(0, 80)}" (queue size: ${queue.length})\n`
     );
 
     return item;
@@ -373,7 +373,7 @@ export class QueueManager {
       );
 
       process.stderr.write(
-        `[QueueManager] Item "${itemId}" failed after ${item.maxRetries} retries: ${error}`,
+        `[QueueManager] Item "${itemId}" failed after ${item.maxRetries} retries: ${error}\n`
       );
       return false;
     }
@@ -390,7 +390,7 @@ export class QueueManager {
     );
 
     process.stdout.write(
-      `[QueueManager] Item "${itemId}" will retry (attempt ${item.retryCount}/${item.maxRetries})`,
+      `[QueueManager] Item "${itemId}" will retry (attempt ${item.retryCount}/${item.maxRetries})\n`
     );
     return true;
   }
@@ -753,17 +753,17 @@ export class QueueManager {
           if (Array.isArray(data) && data.length > 0) {
             this.queues.set(sessionId, data);
             process.stdout.write(
-              `[QueueManager] Loaded queue for session "${sessionId}": ${data.length} items`,
+              `[QueueManager] Loaded queue for session "${sessionId}": ${data.length} items\n`
             );
           }
         } catch (err) {
           process.stderr.write(
-            `[QueueManager] Failed to load queue for "${sessionId}": ${err}`,
+            `[QueueManager] Failed to load queue for "${sessionId}": ${err}\n`
           );
         }
       }
     } catch (err) {
-      process.stderr.write(`[QueueManager] Failed to load persisted queues: ${err}`);
+      process.stderr.write(`[QueueManager] Failed to load persisted queues: ${err}\n`);
     }
   }
 
@@ -818,7 +818,7 @@ export class QueueManager {
       }
       fs.renameSync(tmpPath, filePath);
     } catch (err) {
-      process.stderr.write(`[QueueManager] Failed to persist queue: ${err}`);
+      process.stderr.write(`[QueueManager] Failed to persist queue: ${err}\n`);
     }
   }
 }

@@ -164,7 +164,7 @@ export class BootstrapManager {
     }
 
     if (createdAny) {
-      process.stdout.write(`[BootstrapManager] Created default bootstrap files in ${this.workspacePath}`);
+      process.stdout.write(`[BootstrapManager] Created default bootstrap files in ${this.workspacePath}\n`);
     }
 
     return this.getContext();
@@ -232,7 +232,7 @@ export class BootstrapManager {
       try {
         fs.unlinkSync(filePath);
       } catch (e) {
-        process.stderr.write(`[BootstrapManager] Failed to delete ${filePath}: ${e}`);
+        process.stderr.write(`[BootstrapManager] Failed to delete ${filePath}: ${e}\n`);
       }
     }
   }
@@ -242,7 +242,7 @@ export class BootstrapManager {
     const bootstrapPath = path.join(this.workspacePath, "BOOTSTRAP.md");
     if (fs.existsSync(bootstrapPath)) {
       this.deleteBootstrapFile("BOOTSTRAP.md");
-      process.stdout.write("[BootstrapManager] Bootstrap ritual completed — BOOTSTRAP.md deleted");
+      process.stdout.write("[BootstrapManager] Bootstrap ritual completed — BOOTSTRAP.md deleted\n");
     }
   }
 
@@ -305,7 +305,7 @@ export class BootstrapManager {
       try {
         fs.mkdirSync(dir, { recursive: true });
       } catch (e) {
-        process.stderr.write(`[BootstrapManager] Failed to create dir ${dir}: ${e}`);
+        process.stderr.write(`[BootstrapManager] Failed to create dir ${dir}: ${e}\n`);
       }
     }
   }
@@ -314,7 +314,7 @@ export class BootstrapManager {
     try {
       return fs.readFileSync(filePath, "utf-8");
     } catch (err) {
-      process.stderr.write(`[BootstrapManager] Failed to read ${filePath}: ${err}`);
+      process.stderr.write(`[BootstrapManager] Failed to read ${filePath}: ${err}\n`);
       return "";
     }
   }
@@ -323,7 +323,7 @@ export class BootstrapManager {
     try {
       fs.writeFileSync(filePath, content, "utf-8");
     } catch (e) {
-      process.stderr.write(`[BootstrapManager] Failed to write ${filePath}: ${e}`);
+      process.stderr.write(`[BootstrapManager] Failed to write ${filePath}: ${e}\n`);
     }
   }
 }

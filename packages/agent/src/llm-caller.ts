@@ -263,7 +263,7 @@ export class ProviderHealthTracker {
     if (entry.consecutiveFailures >= this.maxConsecutiveFailures && !entry.trippedAt) {
       entry.trippedAt = Date.now();
       process.stderr.write(
-        `[LLMCaller] Provider "${providerId}" circuit breaker tripped after ${entry.consecutiveFailures} consecutive failures — cooldown ${this.cooldownMs / 1000}s`
+        `[LLMCaller] Provider "${providerId}" circuit breaker tripped after ${entry.consecutiveFailures} consecutive failures — cooldown ${this.cooldownMs / 1000}s\n`
       );
     }
   }
@@ -545,7 +545,7 @@ function recordToolFailure(toolName: string): void {
   tracker.count++;
   if (tracker.count >= MAX_CONSECUTIVE_FAILURES) {
     tracker.trippedAt = Date.now();
-    process.stderr.write(`[CircuitBreaker] Tool "${toolName}" tripped after ${tracker.count} consecutive failures. Cooldown: ${COOLDOWN_MS / 1000}s`);
+    process.stderr.write(`[CircuitBreaker] Tool "${toolName}" tripped after ${tracker.count} consecutive failures. Cooldown: ${COOLDOWN_MS / 1000}s\n`);
   }
   toolFailureTracker.set(toolName, tracker);
 }
@@ -1255,7 +1255,7 @@ export async function parseStreamingResponse(
 
   const doParse = async (): Promise<ParseStreamingResponseResult | null> => {
   if (!response.body) {
-    process.stderr.write(`[LLMCaller] Stream response has no body`);
+    process.stderr.write(`[LLMCaller] Stream response has no body\n`);
     return null;
   }
   const reader = response.body.getReader();
@@ -1353,7 +1353,7 @@ export async function parseStreamingResponse(
     }
   } catch (readErr) {
     streamReadError = readErr;
-    process.stderr.write(`[AgentModelExecutor] Stream read error for ${provider.name}:` + " " + readErr);
+    process.stderr.write(`[AgentModelExecutor] Stream read error for ${provider.name}:` + " " + readErr + "\n");
   }
 
   // 流读取错误时，记录失败指标并返回 null（避免误记为成功）
@@ -1509,7 +1509,7 @@ export async function callLLMOnce(
       }
     }
 
-    process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})`);
+    process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
     callStart = Date.now();
     const response = await nativeFetch(apiURL, {
       method: "POST",
@@ -1531,7 +1531,7 @@ export async function callLLMOnce(
         `[AgentModelExecutor] ❌ LLM API FAILED for "${provider.name}": HTTP ${response.status} [${classified.type}]\n` +
         `  URL: ${apiURL}\n` +
         `  Model: ${provider.model}\n` +
-        `  Error: ${errorText.slice(0, 500)}`
+        `  Error: ${errorText.slice(0, 500)}\n`
       );
 
       deps.recordProviderFailure(provider.id, `HTTP ${response.status}: ${errorText}`, classified.type);
@@ -1607,14 +1607,14 @@ export async function callLLMOnce(
     let errorType = "UNKNOWN";
     if (err instanceof DOMException && err.name === "AbortError") {
       const msg = `LLM provider "${provider.name}" timed out after ${timeout}ms`;
-      process.stderr.write(`[AgentModelExecutor] ${msg}`);
+      process.stderr.write(`[AgentModelExecutor] ${msg}\n`);
       classified = classifyLLMError(undefined, undefined, msg);
       errorMessage = msg;
       errorType = "TIMEOUT";
     } else if (err instanceof Error) {
       errorMessage = err.message;
-      process.stderr.write(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${errorMessage}`);
-      process.stderr.write(`  URL: ${apiURL}, Model: ${provider.model}, Timeout: ${timeout}ms`);
+      process.stderr.write(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${errorMessage}\n`);
+      process.stderr.write(`  URL: ${apiURL}, Model: ${provider.model}, Timeout: ${timeout}ms\n`);
       classified = classifyLLMError(undefined, undefined, errorMessage);
       errorType = classified?.type || "UNKNOWN";
     }
@@ -1679,7 +1679,7 @@ export async function tryCallLLM(
   const MAX_CONSECUTIVE_ERRORS = 3;
 
   const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
-  process.stdout.write(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})`);
+  process.stdout.write(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
 
   let totalTokensUsed = 0;
   let anyToolExecuted = false;
@@ -1706,7 +1706,7 @@ export async function tryCallLLM(
       }
     }
   }
-  process.stdout.write(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"`);
+  process.stdout.write(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"\n`);
 
   const skillsPrompt = await deps.buildSkillsPromptForRun();
 
@@ -1721,10 +1721,10 @@ export async function tryCallLLM(
     // TTL check: expire after 30 minutes
     const PENDING_CMD_TTL = 30 * 60 * 1000;
     if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
-      process.stdout.write(`[AgentModelExecutor] Pending command expired (>${PENDING_CMD_TTL / 60000}min), discarding: ${pendingCmd.command}`);
+      process.stdout.write(`[AgentModelExecutor] Pending command expired (>${PENDING_CMD_TTL / 60000}min), discarding: ${pendingCmd.command}\n`);
       deps.pendingApprovalCommands.delete(sessionId);
     } else {
-      process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}`);
+      process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
       deps.pendingApprovalCommands.delete(sessionId);
       // Reset HITL reject count so the command can go through
       hitlRejectCount = 0;
@@ -1766,7 +1766,7 @@ export async function tryCallLLM(
           }
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}\n`);
         return {
           reply: `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`,
           tokensUsed: 0,
@@ -1782,7 +1782,7 @@ export async function tryCallLLM(
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
-      process.stdout.write(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active`);
+      process.stdout.write(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active\n`);
       continue;
     }
 
@@ -1822,7 +1822,7 @@ Have a specific URL?
 
       const sessionPDeps = getSessionPersistenceDeps(deps);
       if (needsCompactionFn(sessionPDeps, sessionId, fullSystemPrompt, deps.config.maxTokens)) {
-        process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"`);
+        process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
         compactConversationHistoryFn(sessionPDeps, sessionId);
       }
 
@@ -1845,7 +1845,7 @@ Have a specific URL?
             sysMsg.content += searchPreDoneNotice;
           }
         }
-        process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens`);
+        process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
         // Fallback: manual message assembly (original behavior)
         messages = [
@@ -1866,7 +1866,7 @@ Have a specific URL?
         }));
         const pruningResult = deps.contextPruningManager.prune(pruningInput);
         if (pruningResult.stats.softTrimmed > 0 || pruningResult.stats.hardCleared > 0) {
-          process.stdout.write(`[AgentModelExecutor] ContextPruning applied: ${pruningResult.stats.softTrimmed} soft trimmed, ${pruningResult.stats.hardCleared} hard cleared, saved ~${pruningResult.stats.charsSaved} chars`);
+          process.stdout.write(`[AgentModelExecutor] ContextPruning applied: ${pruningResult.stats.softTrimmed} soft trimmed, ${pruningResult.stats.hardCleared} hard cleared, saved ~${pruningResult.stats.charsSaved} chars\n`);
           // Apply pruned content back to original messages
           messages = messages.map((orig, idx) => {
             const pruned = pruningResult.prunedMessages[idx];
@@ -1889,7 +1889,7 @@ Have a specific URL?
 
       if (effectiveMessage.length >= MAX_USER_MESSAGE_LEN) {
         effectiveMessage = effectiveMessage.slice(0, MAX_USER_MESSAGE_LEN) + `\n\n[系统提示：原始消息过长，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;
-        process.stdout.write(`[AgentModelExecutor] User message truncated for session "${sessionId}"`);
+        process.stdout.write(`[AgentModelExecutor] User message truncated for session "${sessionId}"\n`);
       }
 
       // Build user message — use multimodal format when images are attached
@@ -1915,7 +1915,7 @@ Have a specific URL?
       const SEARCH_ONLY_TOOLS = new Set(["web_search", "browser_search", "browser_navigate"]);
       if (searchPreDone) {
         tools = tools.filter(t => !SEARCH_ONLY_TOOLS.has(t.function.name as string));
-        process.stdout.write(`[AgentModelExecutor] Search pre-done: removed search tools, ${tools.length} tools remaining`);
+        process.stdout.write(`[AgentModelExecutor] Search pre-done: removed search tools, ${tools.length} tools remaining\n`);
       }
 
       const isAction = hasActionIntentFn(message);
@@ -1937,7 +1937,7 @@ Have a specific URL?
           if (budget.isExhausted) {
             // Budget exhausted — try Grace Call (one final call without tools)
             if (budget.graceCallAvailable) {
-              process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)`);
+              process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)\n`);
               budget.useGraceCall();
               // Make one final LLM call without tools to produce a text answer
               const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps);
@@ -1963,7 +1963,7 @@ Have a specific URL?
               break; // Exit loop after Grace Call
             }
             // No Grace Call available — force exit
-            process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary`);
+            process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary\n`);
             break;
           }
           budget.consume(1);
@@ -1981,7 +1981,7 @@ Have a specific URL?
 
         const tc: "auto" | "none" = "auto";
         if (successfulToolCalls >= 4) {
-          process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1})`);
+          process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1})\n`);
           conversationMessages.push({
             role: "user",
             content: "You have gathered enough information. Now provide your final answer directly in chat. Only create a file if the user explicitly asked for a detailed report or the content is very long (>3000 chars). Do NOT search again."
@@ -2001,10 +2001,10 @@ Have a specific URL?
         if (classified && classified.type !== LLMErrorType.UNKNOWN) {
           consecutiveErrors++;
           recordProviderFailure(provider.name);
-          process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}`);
+          process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}\n`);
 
           if (classified.type === LLMErrorType.CONTEXT_OVERFLOW && classified.shouldCompact) {
-            process.stdout.write(`[AgentModelExecutor] Compacting due to context overflow...`);
+            process.stdout.write(`[AgentModelExecutor] Compacting due to context overflow...\n`);
             compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             conversationMessages = [
               { role: "system", content: fullSystemPrompt },
@@ -2027,7 +2027,7 @@ Have a specific URL?
           }
 
           if (classified.type === LLMErrorType.AUTH || classified.type === LLMErrorType.BILLING) {
-            process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type}`);
+            process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type}\n`);
             break;
           }
 
@@ -2058,15 +2058,15 @@ Have a specific URL?
 
         const TOKEN_BUDGET = 900000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
-          process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"`);
+          process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
           conversationMessages.push({ role: "user", content: "⚠ Token budget is 50% used. STOP searching. Provide your answer now based on what you've found. Only write files if the user explicitly requested a detailed report. Do NOT search again." });
         }
         if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
-          process.stderr.write(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"`);
+          process.stderr.write(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"\n`);
           conversationMessages.push({ role: "user", content: "⚠ Token budget 80% used. You MUST produce a final answer NOW. If you have any results, format them for the user. If you have a script, run it with shell_exec immediately." });
         }
         if (totalTokensUsed > TOKEN_BUDGET) {
-          process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.`);
+          process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.\n`);
           break;
         }
 
@@ -2133,7 +2133,7 @@ Have a specific URL?
 
           if (parsedCalls.length > 0) {
             assistantMsg.tool_calls = parsedCalls;
-            process.stdout.write(`[AgentModelExecutor] Parsed ${parsedCalls.length} XML tool call(s) from content: ${parsedCalls.map(c => c.function.name).join(", ")}`);
+            process.stdout.write(`[AgentModelExecutor] Parsed ${parsedCalls.length} XML tool call(s) from content: ${parsedCalls.map(c => c.function.name).join(", ")}\n`);
           }
         }
 
@@ -2148,7 +2148,7 @@ Have a specific URL?
         // If the provider refused the prompt (common with Mimo's content
         // filter), treat it as a provider failure and try the next provider.
         if (finalReply && !assistantMsg.tool_calls && isProviderSafetyRejection(finalReply)) {
-          process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" returned safety-filter rejection for session "${sessionId}": ${finalReply.slice(0, 200)}`);
+          process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" returned safety-filter rejection for session "${sessionId}": ${finalReply.slice(0, 200)}\n`);
           recordProviderFailure(provider.name);
           consecutiveErrors++;
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
@@ -2171,7 +2171,7 @@ Have a specific URL?
         });
         const searchWasDone = usedWebSearch || searchPreDone;
         if (searchWasDone && !usedCiccSkill) {
-          process.stdout.write(`[AgentModelExecutor] Search was done (preDone=${searchPreDone}, webSearch=${usedWebSearch}) but no CICC skill — will check for skill fallback`);
+          process.stdout.write(`[AgentModelExecutor] Search was done (preDone=${searchPreDone}, webSearch=${usedWebSearch}) but no CICC skill — will check for skill fallback\n`);
         }
 
         if (!toolCalls || toolCalls.length === 0) {
@@ -2186,10 +2186,10 @@ Have a specific URL?
             try {
               const intent = await classifier.classifyIntent(message);
               if (intent && (intent.category === "skill_install" || intent.category === "action_task")) {
-                process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)}, auto-triggering skill_search`);
+                process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)}, auto-triggering skill_search\n`);
                 shouldTriggerSkillSearch = true;
               }
-            } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err); /* best-effort */ }
+            } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
           }
           // Fallback to keyword matching if semantic classifier is unavailable
           if (!shouldTriggerSkillSearch && !classifier) {
@@ -2205,9 +2205,9 @@ Have a specific URL?
               // Log the search result but do NOT append to user-facing reply.
               // The skill search is informational only; if a matching skill
               // was found, the SkillDispatcher would have handled it earlier.
-              process.stdout.write(`[AgentModelExecutor] Auto skill_search result: ${searchStr.slice(0, 200)}`);
+              process.stdout.write(`[AgentModelExecutor] Auto skill_search result: ${searchStr.slice(0, 200)}\n`);
             } catch (err) {
-              process.stderr.write(`[AgentModelExecutor] Auto skill_search failed:` + " " + err);
+              process.stderr.write(`[AgentModelExecutor] Auto skill_search failed:` + " " + err + "\n");
             }
           }
           conversationMessages.push(assistantMsg);
@@ -2274,7 +2274,7 @@ Have a specific URL?
           taskStatusTracker.set(sessionId, "tool_calling", `正在执行: ${toolName}...`, 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20));
           let args: Record<string, unknown> = {};
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch (parseErr) {
-            process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+            process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n`);
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
           }
           onProgress?.({ type: "tool_call", phase: "tool_calling", detail: `正在执行工具: ${toolName}`, progress: 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolArgs: args, round: round + 1 });
@@ -2341,7 +2341,7 @@ Have a specific URL?
             const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName);
 
             if (hitlRejectCount >= 1) {
-              process.stdout.write(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)`);
+              process.stdout.write(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)\n`);
               return {
                 role: "tool",
                 tool_call_id: tc.id,
@@ -2411,7 +2411,7 @@ Have a specific URL?
             const cacheKey = `${toolName}:${JSON.stringify(args)}`;
             const cached = idempotencyCache.get(cacheKey);
             if (cached && Date.now() - cached.timestamp < 60_000) {
-              process.stdout.write(`[AgentModelExecutor] Idempotent cache hit for ${toolName}`);
+              process.stdout.write(`[AgentModelExecutor] Idempotent cache hit for ${toolName}\n`);
               return { role: "tool", tool_call_id: tc.id, name: toolName, content: cached.result };
             }
           }
@@ -2420,7 +2420,7 @@ Have a specific URL?
           const resultCacheKey = `${toolName}:${JSON.stringify(args)}`;
           const cachedResult = deps.toolResultCache?.get(resultCacheKey);
           if (cachedResult && Date.now() - cachedResult.timestamp < 300_000) {
-            process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}`);
+            process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult.result };
           }
 
@@ -2456,7 +2456,7 @@ Have a specific URL?
                 } catch (retryErr) {
                   if (retry < MAX_RETRIES && isNetworkTool) {
                     const delay = Math.min(1000 * Math.pow(2, retry), 5000);
-                    process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" retry ${retry + 1}/${MAX_RETRIES} after ${delay}ms: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+                    process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" retry ${retry + 1}/${MAX_RETRIES} after ${delay}ms: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}\n`);
                     await new Promise(r => setTimeout(r, delay));
                   } else {
                     throw retryErr;
@@ -2520,7 +2520,7 @@ Have a specific URL?
                   deps.pendingOperations.set(requestId, { sessionId, message, requestId, toolName, toolArgs: args });
                 }
               }
-              process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully`);
+              process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
               successfulToolCalls++;
               anyToolExecuted = true;
               recordToolSuccess(toolName);
@@ -2543,7 +2543,7 @@ Have a specific URL?
               toolErrored = true;
               toolError = errMsg;
               recordToolFailure(toolName);
-              process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" failed:` + " " + errMsg);
+              process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" failed:` + " " + errMsg + "\n");
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1 });
             }
           }
@@ -2565,7 +2565,7 @@ Have a specific URL?
                 toolResult = typeof mergedATC.result === "string" ? mergedATC.result : JSON.stringify(mergedATC.result);
               }
             } catch (hookErr) {
-              process.stderr.write(`[LLMCaller] after_tool_call hook failed for ${toolName}:` + " " + hookErr);
+              process.stderr.write(`[LLMCaller] after_tool_call hook failed for ${toolName}:` + " " + hookErr + "\n");
             }
           }
 
@@ -2625,7 +2625,7 @@ Have a specific URL?
 
         // ── Execute parallel-safe tools concurrently ──
         if (parallelCalls.length > 1) {
-          process.stdout.write(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}`);
+          process.stdout.write(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}\n`);
           const parallelResults = await Promise.allSettled(parallelCalls.map(tc => executeSingleToolCall(tc)));
           for (let i = 0; i < parallelResults.length; i++) {
             const result = parallelResults[i];
@@ -2634,7 +2634,7 @@ Have a specific URL?
               conversationMessages.push(result.value);
             } else {
               // 失败结果也以工具消息形式加入对话，避免 LLM 等待永远不会到来的工具结果导致卡死
-              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed: ${result.reason}`);
+              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed: ${result.reason}\n`);
               conversationMessages.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
@@ -2671,7 +2671,7 @@ Have a specific URL?
                 }
               }
             } catch (reflectErr) {
-              process.stderr.write(`[LLMCaller] Reflection check failed: ${reflectErr}`);
+              process.stderr.write(`[LLMCaller] Reflection check failed: ${reflectErr}\n`);
             }
           }
 
@@ -2689,17 +2689,17 @@ Have a specific URL?
             let shouldAutoExecute = false;
             if (classifier) {
               const intent = await classifier.classifyIntent(message);
-              process.stdout.write(`[AgentModelExecutor] Skill fallback intent: category=${intent?.category} score=${intent?.score}`);
+              process.stdout.write(`[AgentModelExecutor] Skill fallback intent: category=${intent?.category} score=${intent?.score}\n`);
               if (intent && intent.category === "action_task" && intent.score > 0.6) {
                 shouldAutoExecute = true;
               }
             } else {
-              process.stdout.write(`[AgentModelExecutor] Skill fallback: no semantic classifier available`);
+              process.stdout.write(`[AgentModelExecutor] Skill fallback: no semantic classifier available\n`);
             }
             if (shouldAutoExecute) {
               const searchTool = deps.registeredTools.get("skill_search")!;
               const searchResult = await searchTool.handler({ task: message });
-              process.stdout.write(`[AgentModelExecutor] Skill fallback search result:` + " " + JSON.stringify(searchResult).slice(0, 500));
+              process.stdout.write(`[AgentModelExecutor] Skill fallback search result:` + " " + JSON.stringify(searchResult).slice(0, 500) + "\n");
               const searchObj = typeof searchResult === "object" ? searchResult as Record<string, unknown> : null;
               if (searchObj?.installed && searchObj.commands && Array.isArray(searchObj.commands)) {
                 const commands = searchObj.commands as string[];
@@ -2710,7 +2710,7 @@ Have a specific URL?
                 const cmd = commands[0];
                 if (cmd && skillDir) {
                   const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
-                  process.stdout.write(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}`);
+                  process.stdout.write(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}\n`);
                   const shellExecTool = deps.registeredTools.get("shell_exec");
                   if (shellExecTool) {
                     try {
@@ -2721,13 +2721,13 @@ Have a specific URL?
                         skillFallbackResult = `\n\n---\n📊 **来自${searchObj.skillName || '技能'}的实时数据：**\n\`\`\`\n${execStr.slice(0, 3000)}\n\`\`\``;
                       }
                     } catch (err) {
-                      process.stderr.write(`[AgentModelExecutor] Auto skill execution failed: ${err}`);
+                      process.stderr.write(`[AgentModelExecutor] Auto skill execution failed: ${err}\n`);
                     }
                   }
                 }
               }
             }
-          } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err); /* best-effort */ }
+          } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
         }
 
         if (!finalReply && round === maxToolRounds - 1) {
@@ -2788,7 +2788,7 @@ Have a specific URL?
               toolCalls: anyToolExecuted ? [{ id: "tool-call", name: "llm_tools", arguments: {} }] : undefined,
             });
           } catch (err) {
-            process.stderr.write(`[AgentModelExecutor] SessionManager persist failed: ${err}`);
+            process.stderr.write(`[AgentModelExecutor] SessionManager persist failed: ${err}\n`);
           }
         }
         persistSessionTurnFn(getSessionPersistenceDeps(deps), sessionId, "assistant", finalReply, { tokensUsed: totalTokensUsed });
@@ -2824,25 +2824,25 @@ Have a specific URL?
         };
       }
 
-      process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response (model: ${provider.model})`);
+      process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response (model: ${provider.model})\n`);
     } catch (err: unknown) {
       // ── Execution checkpoint: mark failed ──
       if (checkpointStore) {
         checkpointStore.failExecution(sessionId, err instanceof Error ? err.message : String(err));
       }
       if (err instanceof DOMException && err.name === "AbortError") {
-        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) timed out after ${provider.timeout || 60000}ms`);
+        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) timed out after ${provider.timeout || 60000}ms\n`);
       } else if (err instanceof Error) {
-        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) error: ${err.message}`);
-        process.stderr.write(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}`);
+        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) error: ${err.message}\n`);
+        process.stderr.write(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}\n`);
       } else {
-        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) unknown error: ${String(err)}`);
+        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) unknown error: ${String(err)}\n`);
       }
     }
   }
 
   const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n替代方案：\n① 前往 Ops 页面查看详细诊断信息并修复配置\n② 尝试切换到其他模型提供商（如 DeepSeek、Qwen 等）\n③ 检查网络代理设置是否正确\n\n需要我帮您排查具体哪个模型出了问题吗？";
-  process.stderr.write(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.`);
+  process.stderr.write(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.\n`);
   return {
     reply: fallbackReply,
     tokensUsed: 0,

@@ -71,7 +71,7 @@ export class SkillDispatcher {
       console.debug("[SkillDispatcher] Initial remote skill fetch failed:", err instanceof Error ? err.message : String(err));
     });
 
-    process.stdout.write(`[SkillDispatcher] Initialized — ${this.autoSkillManager ? "AutoSkillManager" : "no AutoSkillManager"}, ${this.skillRegistry ? "SkillRegistry" : "no SkillRegistry"}`);
+    process.stdout.write(`[SkillDispatcher] Initialized — ${this.autoSkillManager ? "AutoSkillManager" : "no AutoSkillManager"}, ${this.skillRegistry ? "SkillRegistry" : "no SkillRegistry"}\n`);
   }
 
   /**
@@ -762,7 +762,7 @@ export class SkillDispatcher {
             keywords: e.keywords,
           }))
         );
-        process.stdout.write(`[SkillDispatcher] Fetched ${result.entries.length} remote skills`);
+        process.stdout.write(`[SkillDispatcher] Fetched ${result.entries.length} remote skills\n`);
       }
     } catch (err) {
       console.debug("[SkillDispatcher] Remote skill fetch unavailable:", err instanceof Error ? err.message : String(err));

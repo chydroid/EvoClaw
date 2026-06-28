@@ -5,6 +5,33 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.2 (2026-06-28)
+
+### 启动日志全面清理：行堆叠根治 + 跨平台安装 + review 去重
+
+在 v0.62.1 修复 skill-manager.ts 的基础上，进一步扫描全 packages/ 与 apps/ 目录，发现 80 个文件中仍有大量 `process.stdout.write` / `process.stderr.write` 调用缺少末尾 `\n`，导致启动日志行堆叠（多条日志被拼成一行）。同时修复了 3 个额外的启动日志问题。
+
+#### 修复内容
+
+1. **全仓库 \n 补齐**（80 个文件，558 处）：批量扫描 `packages/` 与 `apps/` 下所有 `.ts` 文件，为每个缺少末尾 `\n` 的 `process.stdout.write` / `process.stderr.write` 调用补齐换行符。涉及 agent / gateway / skills / memory / evolution / intelligence / claude-code-tools / email / plugin-sdk / scheduler / core / infrastructure / reporting / security 等所有内部包。
+2. **better-sqlite3 错误消息改进**（`packages/memory/src/long-term-memory.ts`、`packages/memory/src/fts5-search.ts`）：原 `split("\n")[0]` 会保留 "Could not locate the bindings file. Tried:" 的空 "Tried:" 后缀。改为检测到此错误模式时输出 "native bindings not compiled for this Node.js/ABI version" 摘要，消息更清晰。
+3. **"Install requires review" 去重**（`packages/skills/src/skill-manager.ts`）：原每次启动 50 个技能各打印一次 "Install requires review: No matching rule found; using default action"，共 50 行冗余日志。改为只在第一次打印（带 "subsequent occurrences suppressed" 标记），并在 Localization check 后打印汇总：`Install policy summary: 50 skills required review`。
+4. **跨平台安装命令跳过**（`packages/skills/src/skill-manager.ts`）：原在 Windows 上仍执行 `brew install` / `apt-get install` 等不存在的命令，产生 ENOENT 噪音。改为在 switch 之前检测平台兼容性：
+   - 如果 `spec.os` 指定了支持平台且当前平台不在列表中，跳过
+   - `brew` 类型在 Windows 上跳过
+   - `apt` 类型在 Windows 上跳过
+   - 跳过时设置 warning 状态并返回 "Skipped: incompatible platform"，不再执行 `execFileSync`
+
+#### 验证
+
+`pnpm -r build` exit 0 / `pnpm typecheck` exit 0 / `pnpm test` 全部通过（exit 0，所有 testsuite failures=0 errors=0）/ 服务器重启后 `All systems ready!`，50 skills checked, 46 translated。启动日志中：
+- 每条消息独占一行，无堆叠
+- SQLite 错误为简洁单行：`native bindings not compiled for this Node.js/ABI version`
+- "Install requires review" 只出现 1 次 + 末尾汇总
+- brew/apt 在 Windows 上跳过：`Install spec "brew" skipped on platform "win32"`
+
+---
+
 ## v0.62.1 (2026-06-28)
 
 ### 启动日志可读性与误报修复

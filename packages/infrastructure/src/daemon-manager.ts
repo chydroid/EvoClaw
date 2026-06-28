@@ -365,7 +365,7 @@ ${envDict}
         execSync(`launchctl load ${plistPath}`);
       }
 
-      process.stdout.write(`[DaemonManager] launchd agent installed at ${plistPath}`);
+      process.stdout.write(`[DaemonManager] launchd agent installed at ${plistPath}\n`);
       return {
         success: true,
         message: `launchd agent "${this.config.serviceName}" installed`,
@@ -463,7 +463,7 @@ ${envDict}
         spawnSync("nssm", ["set", this.config.serviceName, "AppEnvironmentExtra", `${k}=${v}`], { shell: false });
       }
 
-      process.stdout.write(`[DaemonManager] Windows Service installed via nssm`);
+      process.stdout.write(`[DaemonManager] Windows Service installed via nssm\n`);
       return {
         success: true,
         message: `Windows Service "${this.config.serviceName}" installed (nssm)`,
@@ -542,7 +542,7 @@ ${envEntries}
         );
       }
 
-      process.stdout.write(`[DaemonManager] Windows Service installed via sc`);
+      process.stdout.write(`[DaemonManager] Windows Service installed via sc\n`);
       return {
         success: true,
         message: `Windows Service "${this.config.serviceName}" installed (sc)`,

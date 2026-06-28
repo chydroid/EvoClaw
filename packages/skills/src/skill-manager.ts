@@ -68,6 +68,9 @@ export class SkillManager {
   private skillEcosystem: import("./skill-ecosystem").SkillEcosystem | null = null;
   private skillWorkshop: import("./skill-workshop").SkillWorkshop | null = null;
   private installPolicyManager: import("./install-policy").InstallPolicyManager | null = null;
+  /** 跟踪 "Install requires review" 是否已打印，避免每次启动重复 40+ 行 */
+  private reviewLogged = false;
+  private reviewCount = 0;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -121,7 +124,12 @@ export class SkillManager {
         throw new Error(`Install blocked by policy: ${decision.reason}`);
       }
       if (decision.action === "review") {
-        process.stderr.write(`[SkillManager] Install requires review: ${decision.reason}\n`);
+        // 去重：只在第一次打印详细原因，后续只计数，避免每次启动重复 40+ 行
+        this.reviewCount++;
+        if (!this.reviewLogged) {
+          process.stderr.write(`[SkillManager] Install requires review: ${decision.reason} (subsequent occurrences suppressed)\n`);
+          this.reviewLogged = true;
+        }
         // Continue but log the review requirement
       }
     }
@@ -1591,6 +1599,10 @@ export class SkillManager {
     if (translated > 0) {
       process.stdout.write(`[SkillManager] Localization check: ${checked} skills checked, ${translated} translated\n`);
     }
+    // 汇总打印 review 计数（去重后的总数）
+    if (this.reviewCount > 0) {
+      process.stdout.write(`[SkillManager] Install policy summary: ${this.reviewCount} skills required review (no matching rule; used default action)\n`);
+    }
     return { checked, translated };
   }
 
@@ -1799,7 +1811,7 @@ export class SkillManager {
             `Consider adding it to your system PATH, or skill scripts using "python3" may fail. ` +
             `You can add it by: setx PATH "%PATH%;${path.dirname(pythonPath)}"`
           );
-          process.stdout.write(`[SkillManager] Python auto-discovered at: ${pythonPath}`);
+          process.stdout.write(`[SkillManager] Python auto-discovered at: ${pythonPath}\n`);
         }
       } else if (name === "node" || name === "nodejs") {
         if (!this.checkBinaryExists("node")) {
@@ -1924,6 +1936,22 @@ export class SkillManager {
       if (spec.kind === "download") {
         // download 种类：HTTPS-only 校验 + 大小上限 + 解压 + stripComponents
         this.executeDownloadInstall(spec, skillDir, step);
+        return step;
+      }
+
+      // 平台兼容性检查：
+      // 1. 如果 spec.os 指定了支持平台且当前平台不在列表中，跳过安装
+      // 2. brew / apt 在 Windows 上不存在，跳过避免 ENOENT 噪音
+      const currentPlatform = process.platform;
+      const platformIncompatible =
+        (spec.os && spec.os.length > 0 && !spec.os.includes(currentPlatform)) ||
+        (spec.kind === "brew" && currentPlatform === "win32") ||
+        (spec.kind === "apt" && currentPlatform === "win32");
+      if (platformIncompatible) {
+        const supported = spec.os && spec.os.length > 0 ? spec.os.join(", ") : `not ${currentPlatform}`;
+        step.warnings.push(`Install spec "${spec.kind}" skipped on platform "${currentPlatform}" (supported: ${supported})`);
+        step.status = "warning";
+        step.message = `Skipped: incompatible platform`;
         return step;
       }
 

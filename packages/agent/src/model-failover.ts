@@ -258,7 +258,7 @@ export class ModelFailoverManager {
 
     h.currentKeyIndex = (h.currentKeyIndex + 1) % provider.apiKeys.length;
     process.stdout.write(
-      `[ModelFailover] Rotated API key for "${providerId}" to index ${h.currentKeyIndex}`
+      `[ModelFailover] Rotated API key for "${providerId}" to index ${h.currentKeyIndex}\n`
     );
     return true;
   }
@@ -372,7 +372,7 @@ export class ModelFailoverManager {
     h.circuitState = "open";
     h.halfOpenProbeCount = 0;
     process.stderr.write(
-      `[ModelFailover] Circuit OPEN for "${providerId}" after ${h.failureCount} failures`
+      `[ModelFailover] Circuit OPEN for "${providerId}" after ${h.failureCount} failures\n`
     );
 
     this.circuitTimers.set(
@@ -383,7 +383,7 @@ export class ModelFailoverManager {
           health.circuitState = "half-open";
           health.halfOpenProbeCount = 0;
           process.stdout.write(
-            `[ModelFailover] Circuit HALF-OPEN for "${providerId}"`
+            `[ModelFailover] Circuit HALF-OPEN for "${providerId}"\n`
           );
         }
       }, this.config.resetTimeoutMs)
@@ -405,7 +405,7 @@ export class ModelFailoverManager {
     h.failureCount = 0;
     h.halfOpenProbeCount = 0;
     process.stdout.write(
-      `[ModelFailover] Circuit RESET to CLOSED for "${providerId}"`
+      `[ModelFailover] Circuit RESET to CLOSED for "${providerId}"\n`
     );
 
     this.recalculateHealthScore(providerId);
@@ -604,7 +604,7 @@ export class ModelFailoverManager {
             h.failureCount = 0;
             h.halfOpenProbeCount = 0;
             process.stdout.write(
-              `[ModelFailover] Provider "${id}" recovered — circuit CLOSED`
+              `[ModelFailover] Provider "${id}" recovered — circuit CLOSED\n`
             );
           }
           h.active = true;

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.62.1-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.62.2-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -101,6 +101,21 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.62.2 更新亮点
+
+在 v0.62.1 基础上进一步扫描全仓库，发现 80 个文件中仍有大量 `process.stdout.write` / `process.stderr.write` 缺少末尾 `\n`，同时修复 3 个额外启动日志问题。属 patch bugfix。
+
+| 类别 | 文件 | 问题 | 修复 |
+|---|---|---|---|
+| **全仓库 \n 补齐** | 80 个文件（558 处） | `process.stdout/stderr.write` 缺少 `\n` 导致日志行堆叠 | 批量补齐换行符 |
+| **SQLite 错误消息** | `long-term-memory.ts`、`fts5-search.ts` | `split("\n")[0]` 保留空 "Tried:" 后缀 | 检测到错误模式时输出 "native bindings not compiled for this Node.js/ABI version" 摘要 |
+| **review 去重** | `skill-manager.ts` | 50 个技能各打印 "Install requires review" 共 50 行冗余 | 只打印 1 次 + 末尾汇总 `Install policy summary: 50 skills required review` |
+| **跨平台安装** | `skill-manager.ts` | Windows 上执行 brew/apt 产生 ENOENT | switch 之前检测平台兼容性，brew/apt 在 win32 上跳过并返回 "Skipped: incompatible platform" |
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test` 全部 exit 0 / 88/88 服务健康 / 启动日志每条消息独占一行 / SQLite 错误简洁单行 / review 只 1 次 + 汇总 / brew/apt 在 Windows 上跳过
+
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.62.1 → 0.62.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。v0.62.2 属 patch bugfix，递增最后一位 patch 号。
 
 ### 🆕 v0.62.1 更新亮点
 

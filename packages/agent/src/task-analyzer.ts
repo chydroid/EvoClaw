@@ -146,14 +146,14 @@ JSON response:`;
           // Validate: each task should be a non-empty string
           const validTasks = parsed.tasks.filter((t: unknown) => typeof t === "string" && t.trim().length > 0);
           if (validTasks.length > 0) {
-            process.stdout.write(`[TaskAnalyzer] LLM task analysis: ${validTasks.length} task(s) detected`);
+            process.stdout.write(`[TaskAnalyzer] LLM task analysis: ${validTasks.length} task(s) detected\n`);
             return validTasks;
           }
         }
       }
     }
   } catch (err) {
-    process.stderr.write(`[TaskAnalyzer] LLM task analysis failed, treating as single task: ${err}`);
+    process.stderr.write(`[TaskAnalyzer] LLM task analysis failed, treating as single task: ${err}\n`);
   }
 
   // Fallback: treat as single task
@@ -223,7 +223,7 @@ JSON response:`;
       }
     }
   } catch (err) {
-    process.stderr.write(`[TaskAnalyzer] LLM task decomposition failed, using fallback: ${err}`);
+    process.stderr.write(`[TaskAnalyzer] LLM task decomposition failed, using fallback: ${err}\n`);
   }
 
   // Fallback
@@ -518,7 +518,7 @@ export async function executeSubtasksFromCheckpoint(
         if (subtaskTimeoutHandle) clearTimeout(subtaskTimeoutHandle);
       }
     } catch (err) {
-      process.stderr.write(`[TaskAnalyzer] Subtask "${subtask.description}" failed:` + " " + err);
+      process.stderr.write(`[TaskAnalyzer] Subtask "${subtask.description}" failed:` + " " + err + "\n");
     }
 
     if (subtaskResult) {
@@ -531,7 +531,7 @@ export async function executeSubtasksFromCheckpoint(
       let retrySucceeded = false;
       while (retryCount < 2) {
         retryCount++;
-        process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})`);
+        process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})\n`);
         try {
           const retryPromise = deps.tryCallLLM(
             subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
@@ -556,7 +556,7 @@ export async function executeSubtasksFromCheckpoint(
             if (retryTimeoutHandle) clearTimeout(retryTimeoutHandle);
           }
         } catch (retryErr) {
-          process.stderr.write(`[TaskAnalyzer] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+          process.stderr.write(`[TaskAnalyzer] Subtask retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}\n`);
         }
       }
 

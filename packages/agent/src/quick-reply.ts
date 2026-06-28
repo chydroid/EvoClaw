@@ -925,7 +925,7 @@ export async function tryAstronomyReply(message: string): Promise<string | null>
     const place = [name, admin1, country].filter(Boolean).join(", ");
     return `🌅 ${place}（${dateStr}）\n日出：${sunrise}\n日落：${sunset}`;
   } catch (err) {
-    process.stderr.write(`[tryAstronomyReply] Failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.stderr.write(`[tryAstronomyReply] Failed: ${err instanceof Error ? err.message : String(err)}\n`);
     return null;
   }
 }

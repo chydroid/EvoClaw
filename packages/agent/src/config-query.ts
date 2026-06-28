@@ -43,7 +43,7 @@ export function handleSystemConfigQuery(
   const matches = configKeywords.some(re => re.test(message.trim()));
   if (!matches) return null;
 
-  process.stdout.write(`[ConfigQuery] System config query detected: "${message}" — responding directly`);
+  process.stdout.write(`[ConfigQuery] System config query detected: "${message}" — responding directly\n`);
   taskStatusTracker.set(sessionId, "done", "配置查询完成", 100);
 
   const enabledProviders = deps.providers.filter(p => p.enabled).sort((a, b) => a.order - b.order);

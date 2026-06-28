@@ -206,7 +206,7 @@ export class RequirementMiner {
     this.observedPatterns.set(userIntent, count + 1);
 
     if (count + 1 >= 5) {
-      process.stdout.write(`[RequirementMiner] Pattern detected: "${userIntent}" has ${count + 1} occurrences`);
+      process.stdout.write(`[RequirementMiner] Pattern detected: "${userIntent}" has ${count + 1} occurrences\n`);
     }
   }
 

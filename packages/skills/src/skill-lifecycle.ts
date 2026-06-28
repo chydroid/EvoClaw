@@ -233,7 +233,7 @@ export class SkillLifecycleManager {
 
       // Log the transition
       process.stdout.write(
-        `[SkillLifecycle] Transition: ${transition.skillId} ${transition.from} → ${transition.to} (${transition.reason})`
+        `[SkillLifecycle] Transition: ${transition.skillId} ${transition.from} → ${transition.to} (${transition.reason})\n`
       );
 
       // Publish event via EventBus
@@ -248,7 +248,7 @@ export class SkillLifecycleManager {
         },
         "skill-lifecycle"
       ).catch((err) => {
-        process.stderr.write(`[SkillLifecycle] Failed to publish transition event for ${transition.skillId}:` + " " + err);
+        process.stderr.write(`[SkillLifecycle] Failed to publish transition event for ${transition.skillId}:` + " " + err + "\n");
       });
     }
   }
@@ -384,7 +384,7 @@ export class SkillLifecycleManager {
     this.stopHealthMonitoring(skill.id);
 
     const intervalId = setInterval(async () => {
-      await this.performHealthCheck(skill).catch((err) => { process.stderr.write(`[SkillLifecycle] Health check failed for "${skill.id}":` + " " + err); });
+      await this.performHealthCheck(skill).catch((err) => { process.stderr.write(`[SkillLifecycle] Health check failed for "${skill.id}":` + " " + err + "\n"); });
     }, this.config.checkInterval);
     intervalId.unref();
 

@@ -185,7 +185,7 @@ export class LLMReflector {
       return this.parseReflectionResponse(llmOutput, trace);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        process.stderr.write("[LLMReflector] LLM reflection timed out");
+        process.stderr.write("[LLMReflector] LLM reflection timed out\n");
       }
       return null;
     } finally {
@@ -300,7 +300,7 @@ export class LLMReflector {
       // 尝试提取 JSON 块
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        process.stderr.write("[LLMReflector] No JSON found in LLM response");
+        process.stderr.write("[LLMReflector] No JSON found in LLM response\n");
         return null;
       }
 

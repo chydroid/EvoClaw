@@ -498,7 +498,7 @@ export class DingtalkAdapter implements ChannelAdapter {
     // P1-08 fix: 原代码在未配置 aesKey/verificationToken 时 return true 跳过验证，
     // 等于后门。改为 fail-closed。
     if (!this.config.aesKey || !this.config.verificationToken) {
-      process.stderr.write("[DingTalk] aesKey/verificationToken not configured — rejecting webhook (fail-closed)");
+      process.stderr.write("[DingTalk] aesKey/verificationToken not configured — rejecting webhook (fail-closed)\n");
       return false;
     }
 

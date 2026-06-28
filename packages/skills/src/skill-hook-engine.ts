@@ -51,12 +51,12 @@ export class SkillHookEngine {
 
       if (!result.success) {
         process.stderr.write(
-          `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${result.errors?.join("; ") || "unknown error"}`
+          `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${result.errors?.join("; ") || "unknown error"}\n`
         );
       }
     } catch (err) {
       process.stderr.write(
-        `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${err instanceof Error ? err.message : String(err)}`
+        `[SkillHookEngine] Hook "${hookName}" execution failed for skill "${skill.name}": ${err instanceof Error ? err.message : String(err)}\n`
       );
     } finally {
       if (timeoutId) clearTimeout(timeoutId);

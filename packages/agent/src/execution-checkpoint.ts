@@ -224,7 +224,7 @@ export class ExecutionCheckpointStore {
       }
       fs.writeFileSync(filePath, JSON.stringify(state), "utf-8");
     } catch (err) {
-      process.stderr.write(`[ExecutionCheckpointStore] Failed to persist execution ${sessionId}:` + " " + err);
+      process.stderr.write(`[ExecutionCheckpointStore] Failed to persist execution ${sessionId}:` + " " + err + "\n");
     }
   }
 
@@ -257,6 +257,6 @@ export class ExecutionCheckpointStore {
       /* ignore */
       process.stderr.write("[ExecutionCheckpoint] load failed: " + err + "\n");
     }
-    process.stdout.write(`[ExecutionCheckpointStore] Loaded ${this.activeExecutions.size} execution states from disk`);
+    process.stdout.write(`[ExecutionCheckpointStore] Loaded ${this.activeExecutions.size} execution states from disk\n`);
   }
 }

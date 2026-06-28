@@ -255,7 +255,7 @@ export class GeneticEvolutionEngine {
     fitnessStats: { average: number; max: number; min: number };
   } | null> {
     if (candidates.length < 1) {
-      process.stderr.write("[GeneticEngine] Need at least 1 candidate for genetic optimization");
+      process.stderr.write("[GeneticEngine] Need at least 1 candidate for genetic optimization\n");
       return null;
     }
 

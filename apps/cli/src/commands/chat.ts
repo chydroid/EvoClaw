@@ -98,18 +98,18 @@ async function chatREPL(opts: Record<string, unknown>): Promise<void> {
     const body: Record<string, unknown> = { message: line, sessionId };
     if (model) body.model = model;
 
-    process.stdout.write(c("gray", "  thinking...\r"));
+    process.stdout.write(c("gray", "  thinking...\r") + "\n");
     try {
       const r = await apiRequest<ChatResponse>("POST", "/api/chat", body);
       const reply = r.data.reply || r.data.output || r.data.text || r.data.message || JSON.stringify(r.data);
       turnCount++;
-      process.stdout.write(" ".repeat(40) + "\r");
+      process.stdout.write(" ".repeat(40) + "\r\n");
       console.log(`${c("green", "agent>")} ${reply}`);
       if (r.data.tokensUsed) {
         console.log(c("gray", `       tokens: ${r.data.tokensUsed}${r.data.model ? `  model: ${r.data.model}` : ""}`));
       }
     } catch (err) {
-      process.stdout.write(" ".repeat(40) + "\r");
+      process.stdout.write(" ".repeat(40) + "\r\n");
       console.log(c("red", `  ${ICONS.error()} ${err instanceof Error ? err.message : String(err)}`));
     }
     console.log();

@@ -73,8 +73,13 @@ export class FTS5SearchEngine {
     } catch (err) {
       this.db = null;
       this.useFallback = true;
-      const reason = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[FTS5Search] SQLite init failed, falling back to in-memory mode (${reason})\n`);
+      // better-sqlite3 的 "Could not locate the bindings file" 错误包含 13 行路径列表，
+      // 提取关键摘要以避免污染启动日志
+      const fullReason = err instanceof Error ? err.message : String(err);
+      const reason = fullReason.startsWith("Could not locate the bindings file")
+        ? "native bindings not compiled for this Node.js/ABI version"
+        : fullReason.split("\n")[0];
+      process.stderr.write(`[FTS5Search] SQLite init failed, falling back to in-memory mode (${reason}; run "pnpm rebuild better-sqlite3" to compile native bindings)\n`);
     }
   }
 

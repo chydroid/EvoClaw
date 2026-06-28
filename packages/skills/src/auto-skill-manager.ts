@@ -81,7 +81,7 @@ export class AutoSkillManager {
 
     this.tfidfMatcher.initialize(documents);
     this.corpusBuilt = true;
-    process.stdout.write(`[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills`);
+    process.stdout.write(`[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills\n`);
   }
 
   /**
@@ -243,7 +243,7 @@ export class AutoSkillManager {
       // Rebuild corpus after installation
       this.buildCorpus();
 
-      process.stdout.write(`[AutoSkillManager] Auto-installed "${skill.name}" for task: "${taskDescription.slice(0, 80)}"`);
+      process.stdout.write(`[AutoSkillManager] Auto-installed "${skill.name}" for task: "${taskDescription.slice(0, 80)}"\n`);
       return {
         installed: true,
         skillName: skill.name,
@@ -675,10 +675,10 @@ export class AutoSkillManager {
       };
       fs.writeFileSync(path.join(skillDir, "_meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
-      process.stdout.write(`[AutoSkillManager] Generated SKILL.md from curated: ${skillName}`);
+      process.stdout.write(`[AutoSkillManager] Generated SKILL.md from curated: ${skillName}\n`);
       return skillMdPath;
     } catch (err) {
-      process.stderr.write(`[AutoSkillManager] Failed to generate curated skill "${skillName}": ${err}`);
+      process.stderr.write(`[AutoSkillManager] Failed to generate curated skill "${skillName}": ${err}\n`);
       return null;
     }
   }

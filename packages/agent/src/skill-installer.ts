@@ -73,7 +73,7 @@ export async function handleSkillInstall(
     // Regex-based parsing is fragile for natural language; the LLM can understand
     // complex intent and use skill_search/skill_install tools to handle it properly.
     if (/https?:\/\//i.test(message)) {
-      process.stdout.write(`[AgentModelExecutor] Skill install request contains URLs but extraction failed, falling through to LLM`);
+      process.stdout.write(`[AgentModelExecutor] Skill install request contains URLs but extraction failed, falling through to LLM\n`);
       return null;
     }
 
@@ -100,7 +100,7 @@ export async function handleSkillInstall(
         localSkills = summary.local.filter(s => !installedFromSummary.has(s.name));
         remoteSkills = summary.remote.filter(s => !installedFromSummary.has(s.name) && !localSkills.some(l => l.name === s.name));
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] SkillDispatcher summary failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] SkillDispatcher summary failed: ${err}\n`);
       }
     }
 
@@ -125,7 +125,7 @@ export async function handleSkillInstall(
           }
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Remote skill search failed: ${err}`);
+        process.stderr.write(`[AgentModelExecutor] Remote skill search failed: ${err}\n`);
       }
     }
 
@@ -675,7 +675,7 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
   const zipPath = path.join(skillsDir, `${zipBasename}.zip`);
 
   // ── Step 1: Download ──
-  process.stdout.write(`[AgentModelExecutor] Downloading skill from: ${url}`);
+  process.stdout.write(`[AgentModelExecutor] Downloading skill from: ${url}\n`);
   try {
     await downloadFile(url, zipPath);
   } catch (err) {
@@ -688,10 +688,10 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
     return { skillPath: null, error: `下载失败: 文件为空或未保存到 ${zipPath}` };
   }
   const fileSize = fs.statSync(zipPath).size;
-  process.stdout.write(`[AgentModelExecutor] Downloaded ${fileSize} bytes to ${zipPath}`);
+  process.stdout.write(`[AgentModelExecutor] Downloaded ${fileSize} bytes to ${zipPath}\n`);
 
   // ── Step 2: Extract ──
-  process.stdout.write(`[AgentModelExecutor] Extracting skill to: ${skillsDir}`);
+  process.stdout.write(`[AgentModelExecutor] Extracting skill to: ${skillsDir}\n`);
   try {
     await extractZip(zipPath, skillsDir);
   } catch (err) {
@@ -710,7 +710,7 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
     return { skillPath: null, error: `安装包中未找到 SKILL.md 文件。ZIP已解压到 ${skillsDir}，但目录结构不符合技能规范` };
   }
 
-  process.stdout.write(`[AgentModelExecutor] Found SKILL.md at: ${skillMdPath}`);
+  process.stdout.write(`[AgentModelExecutor] Found SKILL.md at: ${skillMdPath}\n`);
   return { skillPath: skillMdPath };
 }
 
@@ -786,7 +786,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
     await execCommand("tar", ["-xf", zipPath, "-C", targetDir], 30000);
     return;
   } catch (err) {
-    process.stderr.write(`[AgentModelExecutor] tar extraction failed: ${(err as Error).message}`);
+    process.stderr.write(`[AgentModelExecutor] tar extraction failed: ${(err as Error).message}\n`);
   }
 
   // Method 2: PowerShell Expand-Archive (Windows only)
@@ -795,7 +795,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
       await execCommand("powershell", ["-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force`], 30000);
       return;
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] PowerShell Expand-Archive failed: ${(err as Error).message}`);
+      process.stderr.write(`[AgentModelExecutor] PowerShell Expand-Archive failed: ${(err as Error).message}\n`);
     }
   }
 
@@ -805,7 +805,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
       await execCommand("unzip", ["-o", zipPath, "-d", targetDir], 30000);
       return;
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] unzip failed: ${(err as Error).message}`);
+      process.stderr.write(`[AgentModelExecutor] unzip failed: ${(err as Error).message}\n`);
     }
   }
 
@@ -816,7 +816,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
     zip.extractAllTo(targetDir, true);
     return;
   } catch {
-    process.stderr.write(`[AgentModelExecutor] adm-zip not available`);
+    process.stderr.write(`[AgentModelExecutor] adm-zip not available\n`);
   }
 
   throw new Error("无法解压 ZIP 文件：tar、Expand-Archive、unzip 和 adm-zip 均不可用。");

@@ -601,7 +601,7 @@ export class CompactionManager {
         try {
           const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
           if (Array.isArray(parsed)) existing = parsed;
-        } catch (err) { process.stderr.write(`[CompactionManager] Failed to parse existing compaction file "${filePath}":` + " " + err); }
+        } catch (err) { process.stderr.write(`[CompactionManager] Failed to parse existing compaction file "${filePath}":` + " " + err + "\n"); }
       }
 
       existing.push(compaction);
@@ -609,7 +609,7 @@ export class CompactionManager {
       atomicWriteFileLocal(filePath, JSON.stringify(existing, null, 2));
     } catch (err) {
       process.stderr.write(
-        `[CompactionManager] Failed to persist compaction: ${err}`,
+        `[CompactionManager] Failed to persist compaction: ${err}\n`
       );
     }
   }
@@ -627,7 +627,7 @@ export class CompactionManager {
       }
     } catch (err) {
       process.stderr.write(
-        `[CompactionManager] Failed to load compaction chain: ${err}`,
+        `[CompactionManager] Failed to load compaction chain: ${err}\n`
       );
     }
     return [];

@@ -140,7 +140,7 @@ async function startTui(opts: Record<string, unknown>): Promise<void> {
       const body: any = { message: input };
       if (sessionId) body.sessionId = sessionId;
 
-      process.stdout.write(c("green", "agent> "));
+      process.stdout.write(c("green", "agent> ") + "\n");
       const { data, status } = await apiRequest<ChatResponse>("POST", "/api/chat", body);
 
       if (status >= 400) {

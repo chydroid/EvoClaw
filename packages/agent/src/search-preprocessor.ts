@@ -132,7 +132,7 @@ export async function preprocessSearch(
   const userProvidedUrl = /https?:\/\/[^\s<>"']+/i.test(userMessage);
 
   if (userProvidedUrl) {
-    process.stdout.write(`[SearchPreprocessor] User provided URL in message — skipping search pre-processing`);
+    process.stdout.write(`[SearchPreprocessor] User provided URL in message — skipping search pre-processing\n`);
     return { newsContext, searchReason, shouldSearch };
   }
 
@@ -148,10 +148,10 @@ export async function preprocessSearch(
       shouldSearch = searchCheck.needed && searchCheck.confidence > 0.35;
       if (shouldSearch) {
         searchReason = searchCheck.reason;
-        process.stdout.write(`[SearchPreprocessor] Semantic intent detection: ${searchCheck.reason} (confidence: ${(searchCheck.confidence * 100).toFixed(0)}%)`);
+        process.stdout.write(`[SearchPreprocessor] Semantic intent detection: ${searchCheck.reason} (confidence: ${(searchCheck.confidence * 100).toFixed(0)}%)\n`);
       }
     } catch (err) {
-      process.stderr.write(`[SearchPreprocessor] TaskClassifier failed: ${err}`);
+      process.stderr.write(`[SearchPreprocessor] TaskClassifier failed: ${err}\n`);
     }
   }
 
@@ -201,7 +201,7 @@ export async function preprocessSearch(
       else if (/\d{4}年/.test(searchQuery) || /最新|current|latest|recent/i.test(lowerQuery)) freshness = "py";
 
       const subQueries = generateSubQueries(searchQuery);
-      process.stdout.write(`[SearchPreprocessor] Multi-round search: ${subQueries.length} sub-queries for "${searchQuery}"`);
+      process.stdout.write(`[SearchPreprocessor] Multi-round search: ${subQueries.length} sub-queries for "${searchQuery}"\n`);
 
       const entry = registeredTools.get("web_search")!;
       let allSearchResults: Array<{ title: string; url: string; snippet: string }> = [];
@@ -244,7 +244,7 @@ export async function preprocessSearch(
             toolResult: `Found ${results.length} results for "${subQ}"`,
           });
         } catch (err) {
-          process.stderr.write(`[SearchPreprocessor] Sub-query "${subQ}" failed: ${err}`);
+          process.stderr.write(`[SearchPreprocessor] Sub-query "${subQ}" failed: ${err}\n`);
         }
       }
 
@@ -294,15 +294,15 @@ export async function preprocessSearch(
                 allNewsContent += `## 网页正文 ${fetchedCount}: ${r.title}\n${cleanedContent.slice(0, 5000)}\n\n`;
               }
             } catch (fetchErr) {
-              process.stderr.write(`[SearchPreprocessor] Failed to fetch URL ${r.url}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
+              process.stderr.write(`[SearchPreprocessor] Failed to fetch URL ${r.url}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}\n`);
             }
           }
         }
         newsContext = allNewsContent;
-        process.stdout.write(`[SearchPreprocessor] Multi-round search complete: ${subQueries.length} queries, ${allSearchResults.length} results, ${allFetchedContent.length} pages fetched, ${newsContext.length} chars`);
+        process.stdout.write(`[SearchPreprocessor] Multi-round search complete: ${subQueries.length} queries, ${allSearchResults.length} results, ${allFetchedContent.length} pages fetched, ${newsContext.length} chars\n`);
       }
     } catch (err) {
-      process.stderr.write(`[SearchPreprocessor] Multi-round search failed: ${err}`);
+      process.stderr.write(`[SearchPreprocessor] Multi-round search failed: ${err}\n`);
     }
   }
 
@@ -383,10 +383,10 @@ export function buildEnhancedMessage(
     : newsEnhancedMessage;
 
   if (newsContext) {
-    process.stdout.write(`[SearchPreprocessor] News context added: ${newsContext.length} chars`);
+    process.stdout.write(`[SearchPreprocessor] News context added: ${newsContext.length} chars\n`);
   }
   if (urlPriorityHint) {
-    process.stdout.write(`[SearchPreprocessor] URL priority hint injected`);
+    process.stdout.write(`[SearchPreprocessor] URL priority hint injected\n`);
   }
 
   return finalEnhancedMessage;

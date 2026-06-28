@@ -252,13 +252,13 @@ export class ProtocolHandler {
   /** Handle a new WebSocket connection */
   handleConnection(client: WSClient): void {
     this.clients.set(client.id, client);
-    process.stdout.write(`[ProtocolHandler] Client connected: ${client.id} (${client.remoteAddress()})`);
+    process.stdout.write(`[ProtocolHandler] Client connected: ${client.id} (${client.remoteAddress()})\n`);
   }
 
   /** Handle client disconnect */
   handleDisconnect(clientId: string): void {
     this.clients.delete(clientId);
-    process.stdout.write(`[ProtocolHandler] Client disconnected: ${clientId}`);
+    process.stdout.write(`[ProtocolHandler] Client disconnected: ${clientId}\n`);
   }
 
   /** Process an incoming frame from a client */
@@ -364,7 +364,7 @@ export class ProtocolHandler {
       },
     });
 
-    process.stdout.write(`[ProtocolHandler] Handshake complete for ${client.id} (role=${clientRole})`);
+    process.stdout.write(`[ProtocolHandler] Handshake complete for ${client.id} (role=${clientRole})\n`);
   }
 
   // ─── Request Handling ─────────────────────────────────────────────────────
@@ -463,7 +463,7 @@ export class ProtocolHandler {
       } catch (err) {
         // Client may have disconnected — 记录日志便于排查，避免静默删除
         const reason = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[ProtocolHandler] broadcast send failed for client ${client.id}, removing: ${reason}`);
+        process.stderr.write(`[ProtocolHandler] broadcast send failed for client ${client.id}, removing: ${reason}\n`);
         // 先关闭底层 socket 释放资源，再从 Map 中删除
         try { client.close(); } catch { /* ignore */ }
         this.clients.delete(client.id);
@@ -546,6 +546,6 @@ export class ProtocolHandler {
     this.clients.clear();
     this.methodHandlers.clear();
     this.idempotencyCache.clear();
-    process.stdout.write("[ProtocolHandler] Stopped");
+    process.stdout.write("[ProtocolHandler] Stopped\n");
   }
 }

@@ -235,7 +235,7 @@ export class SkillWorkshop {
       if (currentHash !== file.hash) {
         process.stderr.write(
           `[SkillWorkshop] Hash mismatch for file "${file.path}" in proposal "${proposalId}". ` +
-          `Expected: ${file.hash}, Got: ${currentHash}`
+          `Expected: ${file.hash}, Got: ${currentHash}\n`
         );
         return false;
       }

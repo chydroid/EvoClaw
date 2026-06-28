@@ -258,7 +258,7 @@ export class EvolutionProposer {
       if (!content) return null;
       return this.parseLLMResponse(content, req);
     } catch (err) {
-      process.stderr.write(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[EvolutionProposer] LLM generation failed, falling back to template: ${err instanceof Error ? err.message : String(err)}\n`);
       return null;
     }
   }

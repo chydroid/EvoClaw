@@ -397,7 +397,7 @@ export class TaskClassifier {
     }
 
     this.isInitialized = true;
-    process.stdout.write(`[TaskClassifier] TF-IDF 向量库初始化完成: ${INTENT_VECTORS.length} 个意图, ${numDocs} 个示例`);
+    process.stdout.write(`[TaskClassifier] TF-IDF 向量库初始化完成: ${INTENT_VECTORS.length} 个意图, ${numDocs} 个示例\n`);
   }
 
   /**
@@ -612,8 +612,8 @@ export class TaskClassifier {
       intentSimilarity,
     };
 
-    process.stdout.write(`[TaskClassifier] 分类结果: ${primaryCategory} (置信度: ${(confidence * 100).toFixed(0)}%)`);
-    process.stdout.write(`[TaskClassifier] 意图相似度:` + " " + intentSimilarity);
+    process.stdout.write(`[TaskClassifier] 分类结果: ${primaryCategory} (置信度: ${(confidence * 100).toFixed(0)}%)\n`);
+    process.stdout.write(`[TaskClassifier] 意图相似度:` + " " + intentSimilarity + "\n");
 
     return result;
   }

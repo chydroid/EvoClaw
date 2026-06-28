@@ -90,7 +90,7 @@ export function readOptionalFile(filePath: string): string | null {
 export async function confirmPrompt(message: string, defaultYes = false): Promise<boolean> {
   if (!process.stdin.isTTY) return defaultYes;
   return new Promise((resolve) => {
-    process.stdout.write(`${message} ${defaultYes ? "[Y/n]" : "[y/N]"} `);
+    process.stdout.write(`${message} ${defaultYes ? "[Y/n]" : "[y/N]"} \n`);
     process.stdin.resume();
     process.stdin.setEncoding("utf-8");
     process.stdin.once("data", (answer) => {

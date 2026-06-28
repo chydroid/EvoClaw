@@ -101,7 +101,7 @@ export async function detectAndConfigureEmailAccount(
     return "163"; // Default to 163 for Chinese email
   };
 
-  process.stdout.write(`[EmailHandler] Detected email account configuration: ${email.replace(/(.{2}).*(@.*)/, "$1****$2")}, password length: ${password.length}`);
+  process.stdout.write(`[EmailHandler] Detected email account configuration: ${email.replace(/(.{2}).*(@.*)/, "$1****$2")}, password length: ${password.length}\n`);
 
   const provider = detectProvider(message);
   const displayName = email.split("@")[0];
@@ -127,9 +127,9 @@ export async function detectAndConfigureEmailAccount(
       const result = taskClassifier.classify(message);
       // If the primary category is not email_handling, we might have false positive
       // But since we detected email credentials, we should still proceed
-      process.stdout.write(`[EmailHandler] Email config intent classification: ${result.primaryCategory} (confidence: ${result.confidence})`);
+      process.stdout.write(`[EmailHandler] Email config intent classification: ${result.primaryCategory} (confidence: ${result.confidence})\n`);
     } catch (classifyErr) {
-      process.stderr.write(`[EmailHandler] Email intent classification failed: ${classifyErr instanceof Error ? classifyErr.message : String(classifyErr)}`);
+      process.stderr.write(`[EmailHandler] Email intent classification failed: ${classifyErr instanceof Error ? classifyErr.message : String(classifyErr)}\n`);
     }
   }
 
@@ -450,7 +450,7 @@ export async function handleEmailOperation(
         emails = inboxData.emails;
       }
     } catch (inboxErr) {
-      process.stderr.write(`[EmailHandler] Failed to get email inbox: ${inboxErr instanceof Error ? inboxErr.message : String(inboxErr)}`);
+      process.stderr.write(`[EmailHandler] Failed to get email inbox: ${inboxErr instanceof Error ? inboxErr.message : String(inboxErr)}\n`);
     }
   }
 

@@ -66,7 +66,7 @@ export function persistSessionTurn(
     });
     fs.appendFileSync(filePath, entry + "\n", "utf-8");
   } catch (err) {
-    process.stderr.write(`[SessionPersistence] Failed to persist session turn: ${err instanceof Error ? err.message : String(err)}`);
+    process.stderr.write(`[SessionPersistence] Failed to persist session turn: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
 
@@ -88,7 +88,7 @@ export function persistEarlyReturn(
         turnIndex: 0, role: "assistant", content: assistantReply, timestamp: new Date().toISOString(),
       });
     } catch (err) {
-      process.stderr.write(`[SessionPersistence] persistEarlyReturn SessionManager failed: ${err}`);
+      process.stderr.write(`[SessionPersistence] persistEarlyReturn SessionManager failed: ${err}\n`);
     }
   }
   // Also persist via legacy file-based method (assistant only — user was persisted early)
@@ -120,7 +120,7 @@ export function loadSessionHistory(
       }
     }).filter((entry): entry is { role: string; content: string | null } => entry !== null);
   } catch (err) {
-    process.stderr.write(`[SessionPersistence] Failed to load session history: ${err instanceof Error ? err.message : String(err)}`);
+    process.stderr.write(`[SessionPersistence] Failed to load session history: ${err instanceof Error ? err.message : String(err)}\n`);
     return [];
   }
 }
@@ -184,7 +184,7 @@ export function compactConversationHistory(
         id: "",
         createdAt: new Date(),
         accessedAt: new Date(),
-      }).catch((err: unknown) => process.stderr.write(`[SessionPersistence] Memory flush failed: ${err}`));
+      }).catch((err: unknown) => process.stderr.write(`[SessionPersistence] Memory flush failed: ${err}\n`));
     }
 
     // Emit lifecycle event
@@ -217,7 +217,7 @@ export function compactConversationHistory(
   ];
 
   deps.conversationHistory.set(sessionId, compacted);
-  process.stdout.write(`[SessionPersistence] Compacted session "${sessionId}" -> "${successorId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.`);
+  process.stdout.write(`[SessionPersistence] Compacted session "${sessionId}" -> "${successorId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.\n`);
 
   // Fallback: Store compacted summary in long-term memory (only when CompactionManager not available, as it already handles this)
   if (!deps.compactionManager && deps.memoryHub && summary) {
@@ -239,6 +239,6 @@ export function compactConversationHistory(
       id: "",
       createdAt: new Date(),
       accessedAt: new Date(),
-    }).catch((err: unknown) => process.stderr.write(`[SessionPersistence] Failed to store compaction summary: ${err}`));
+    }).catch((err: unknown) => process.stderr.write(`[SessionPersistence] Failed to store compaction summary: ${err}\n`));
   }
 }

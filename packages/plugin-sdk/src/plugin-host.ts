@@ -155,7 +155,7 @@ export class PluginHost {
     if (this.pluginManager) {
       const corePlugin = convertToCorePlugin(plugin);
       this.pluginManager.registerPlugin(corePlugin).catch((err) => {
-        process.stderr.write(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}":`, err);
+        process.stderr.write(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}": ${err instanceof Error ? err.message : String(err)}\n`);
       });
 
       // Still track locally for state queries
@@ -196,7 +196,7 @@ export class PluginHost {
 
     if (this.config.autoActivate) {
       this.activate(manifest.id).catch((err) => {
-        process.stderr.write(`[PluginHost] Auto-activation failed for "${manifest.id}":`, err);
+        process.stderr.write(`[PluginHost] Auto-activation failed for "${manifest.id}": ${err instanceof Error ? err.message : String(err)}\n`);
       });
     }
   }

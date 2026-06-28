@@ -45,7 +45,7 @@ export class ActorSystem {
           mailbox.push(message);
           // 非阻塞触发消息处理；错误在 processMessages 内部已捕获。
           void this.processMessages(id).catch((err) => {
-            process.stderr.write(`[ActorSystem] Unexpected error processing messages for "${id}":` + " " + err);
+            process.stderr.write(`[ActorSystem] Unexpected error processing messages for "${id}":` + " " + err + "\n");
           });
         }
       },
@@ -91,7 +91,7 @@ export class ActorSystem {
           const result = await actor.behavior(message, actor.state);
           actor.state = result.newState;
         } catch (err) {
-          process.stderr.write(`[ActorSystem] Error processing message for "${actorId}":` + " " + err);
+          process.stderr.write(`[ActorSystem] Error processing message for "${actorId}":` + " " + err + "\n");
         }
       }
     } finally {

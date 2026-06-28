@@ -100,7 +100,7 @@ class TaskCheckpointManager {
         }
       }
     } catch (err) {
-      process.stderr.write(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:` + " " + err);
+      process.stderr.write(`[TaskCheckpointManager] Failed to persist checkpoint for ${sessionId}:` + " " + err + "\n");
     }
   }
 
@@ -122,7 +122,7 @@ class TaskCheckpointManager {
         } catch { /* skip corrupt files */ }
       }
     } catch { /* ignore */ }
-    process.stdout.write(`[TaskCheckpointManager] Loaded ${this.checkpoints.size} checkpoints from disk`);
+    process.stdout.write(`[TaskCheckpointManager] Loaded ${this.checkpoints.size} checkpoints from disk\n`);
   }
 }
 

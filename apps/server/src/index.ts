@@ -459,7 +459,7 @@ export class EvoClawServer {
     });
     this.agentModelExecutor.setContextPruningManager(contextPruningManager);
     this.registry.registerService("contextPruningManager", contextPruningManager);
-    process.stdout.write(`[Server] ContextPruning initialized`);
+    process.stdout.write(`[Server] ContextPruning initialized\n`);
 
     // ── InputPipeline: sequential stage-based input processing ──
     const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("@evoclaw/agent");
@@ -474,7 +474,7 @@ export class EvoClawServer {
     ]);
     this.agentModelExecutor.setInputPipeline(inputPipeline);
     this.registry.registerService("inputPipeline", inputPipeline);
-    process.stdout.write(`[Server] InputPipeline initialized with 7 stages`);
+    process.stdout.write(`[Server] InputPipeline initialized with 7 stages\n`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // v0.42.0: No longer defaults to gpt-4o-mini. Uses user's LLM config order.
@@ -484,7 +484,7 @@ export class EvoClawServer {
       defaultModel: "",  // Will use first enabled user provider
       defaultProvider: "",  // Will use first enabled user provider
     });
-    process.stdout.write(`[Server] CopilotRouter initialized (respects user LLM config order)`);
+    process.stdout.write(`[Server] CopilotRouter initialized (respects user LLM config order)\n`);
 
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
@@ -1425,7 +1425,7 @@ export class EvoClawServer {
             mdAvailable = "python3 -m markitdown";
           } catch {
             mdAvailable = "";
-            process.stdout.write("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'");
+            process.stdout.write("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'\n");
           }
         }
       }

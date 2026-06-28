@@ -195,9 +195,9 @@ export class CanvasManager {
         this.writeIndex([]);
       }
 
-      process.stdout.write(`[CanvasManager] Canvas storage at ${this.config.storagePath}`);
+      process.stdout.write(`[CanvasManager] Canvas storage at ${this.config.storagePath}\n`);
     } catch (err) {
-      process.stderr.write(`[CanvasManager] Failed to initialize: ${err}`);
+      process.stderr.write(`[CanvasManager] Failed to initialize: ${err}\n`);
     }
   }
 
@@ -316,7 +316,7 @@ export class CanvasManager {
     }
     this.writeIndex(canvases);
 
-    process.stdout.write(`[CanvasManager] ${existing >= 0 ? "Updated" : "Created"} canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] ${existing >= 0 ? "Updated" : "Created"} canvas "${id}"\n`);
 
     return {
       canvas,
@@ -378,7 +378,7 @@ export class CanvasManager {
     canvases[index] = canvas;
     this.writeIndex(canvases);
 
-    process.stdout.write(`[CanvasManager] Updated canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] Updated canvas "${id}"\n`);
     return canvas;
   }
 
@@ -398,7 +398,7 @@ export class CanvasManager {
       // File might not exist
     }
 
-    process.stdout.write(`[CanvasManager] Deleted canvas "${id}"`);
+    process.stdout.write(`[CanvasManager] Deleted canvas "${id}"\n`);
     return true;
   }
 
@@ -470,7 +470,7 @@ export class CanvasManager {
     try {
       atomicWriteFileSync(this.indexPath, JSON.stringify(canvases, null, 2));
     } catch (err) {
-      process.stderr.write(`[CanvasManager] Failed to write index: ${err}`);
+      process.stderr.write(`[CanvasManager] Failed to write index: ${err}\n`);
     }
   }
 

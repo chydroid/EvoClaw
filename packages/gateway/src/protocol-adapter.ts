@@ -714,7 +714,7 @@ export class ProtocolAdapter {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     } catch (err) {
-      process.stderr.write(`[ProtocolAdapter] Failed to create config dir: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[ProtocolAdapter] Failed to create config dir: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
     try {
@@ -735,14 +735,14 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistLLMProviders(data.providers);
-            process.stdout.write("[ProtocolAdapter] Migrated LLM API keys to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated LLM API keys to .env references\n");
           }
 
           this.savedLLMProviders = data.providers;
           // Resolve references before applying
           const resolved = this.resolveLLMProviders(data.providers);
           this.applyLLMProviders(resolved);
-          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} LLM providers from disk\n`);
         }
       }
     } catch (err) {
@@ -767,17 +767,17 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistImageGenProviders(data.providers);
-            process.stdout.write("[ProtocolAdapter] Migrated image-gen API keys to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated image-gen API keys to .env references\n");
           }
 
           this.savedImageGenProviders = data.providers;
-          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} image-gen providers from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} image-gen providers from disk\n`);
         }
       } else {
         // Initialize with defaults and persist
         this.savedImageGenProviders = DEFAULT_IMAGE_GEN_PROVIDERS;
         this.persistImageGenProviders(DEFAULT_IMAGE_GEN_PROVIDERS);
-        process.stdout.write("[ProtocolAdapter] Initialized default image-gen providers");
+        process.stdout.write("[ProtocolAdapter] Initialized default image-gen providers\n");
       }
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to load image-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
@@ -801,17 +801,17 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistVideoGenProviders(data.providers);
-            process.stdout.write("[ProtocolAdapter] Migrated video-gen API keys to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated video-gen API keys to .env references\n");
           }
 
           this.savedVideoGenProviders = data.providers;
-          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} video-gen providers from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.providers.length} video-gen providers from disk\n`);
         }
       } else {
         // Initialize with defaults and persist
         this.savedVideoGenProviders = DEFAULT_VIDEO_GEN_PROVIDERS;
         this.persistVideoGenProviders(DEFAULT_VIDEO_GEN_PROVIDERS);
-        process.stdout.write("[ProtocolAdapter] Initialized default video-gen providers");
+        process.stdout.write("[ProtocolAdapter] Initialized default video-gen providers\n");
       }
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to load video-gen config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
@@ -837,14 +837,14 @@ export class ProtocolAdapter {
           }
           if (needsRewrite) {
             this.persistChannels(data.channels);
-            process.stdout.write("[ProtocolAdapter] Migrated channel secrets to .env references");
+            process.stdout.write("[ProtocolAdapter] Migrated channel secrets to .env references\n");
           }
 
           this.savedChannels = data.channels;
           // Resolve references before applying
           const resolved = this.resolveChannelConfigs(data.channels);
           this.applyChannels(resolved);
-          process.stdout.write(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk`);
+          process.stdout.write(`[ProtocolAdapter] Loaded ${data.channels.length} channels from disk\n`);
         }
       }
     } catch (err) {
@@ -1106,11 +1106,11 @@ export class ProtocolAdapter {
 
         if (adapter) {
           channelManager.attachAdapter(adapter).catch((err: unknown) => {
-            process.stderr.write(`[ProtocolAdapter] Failed to attach ${type} adapter:` + " " + err);
+            process.stderr.write(`[ProtocolAdapter] Failed to attach ${type} adapter:` + " " + err + "\n");
           });
-          process.stdout.write(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})`);
+          process.stdout.write(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})\n`);
         } else if (type === "feishu" || type === "matrix") {
-          process.stderr.write(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings`);
+          process.stderr.write(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings\n`);
         }
       }
     }
@@ -1252,7 +1252,7 @@ export class ProtocolAdapter {
   private handleError(err: unknown, res: Response, defaultMsg: string): void {
     const isProduction = process.env.NODE_ENV === "production";
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[ProtocolAdapter] ${defaultMsg}:` + " " + message);
+    process.stderr.write(`[ProtocolAdapter] ${defaultMsg}:` + " " + message + "\n");
     res.status(500).json({
       error: defaultMsg,
       ...(isProduction ? {} : { message }),
@@ -1309,7 +1309,7 @@ export class ProtocolAdapter {
             if (val) this.configRpcStore.set(section, val);
           }
         } catch (err) {
-          process.stderr.write(`[ProtocolAdapter] Config RPC store update failed: ${err instanceof Error ? err.message : String(err)}`);
+          process.stderr.write(`[ProtocolAdapter] Config RPC store update failed: ${err instanceof Error ? err.message : String(err)}\n`);
         }
       }
     }
@@ -2648,7 +2648,7 @@ export class ProtocolAdapter {
             rm.record(req.body.replyTo || req.body.parentId || req.body.inReplyTo, req.body.id || req.body.sessionId || "web-ui", {
               channel: req.body.channel || "webchat",
             });
-          } catch (err) { process.stderr.write("[ProtocolAdapter] Failed to record reply reference:" + " " + err); }
+          } catch (err) { process.stderr.write("[ProtocolAdapter] Failed to record reply reference:" + " " + err + "\n"); }
         }
 
         const agentExecutor = this.registry.resolveService<{
@@ -2716,7 +2716,7 @@ export class ProtocolAdapter {
 
           const complexity = estimateTaskComplexity(message);
           const CHAT_TIMEOUT = complexity.timeoutMs;
-          process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}`);
+          process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}\n`);
           let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
           let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
           try {
@@ -2807,7 +2807,7 @@ export class ProtocolAdapter {
         // ── Non-streaming Mode (original behavior) ──
         const complexity = estimateTaskComplexity(message);
         const CHAT_TIMEOUT = complexity.timeoutMs;
-        process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s`);
+        process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s\n`);
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
@@ -2826,7 +2826,7 @@ export class ProtocolAdapter {
           ]);
         } catch (raceErr) {
           if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
-            process.stderr.write(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"`);
+            process.stderr.write(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"\n`);
             res.json({
               reply: "⏱️ 处理超时，请稍后重试。替代方案：\n① 简化您的请求后重试\n② 将任务拆分为更小的步骤\n③ 检查网络连接和模型配置是否正常\n\n需要我帮您将任务拆分后逐步完成吗？",
               tokensUsed: 0,
@@ -2905,7 +2905,7 @@ export class ProtocolAdapter {
       } catch (err) {
         if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[ProtocolAdapter] Chat endpoint error: ${errMsg}`);
+        process.stderr.write(`[ProtocolAdapter] Chat endpoint error: ${errMsg}\n`);
         res.json({
           reply: `❌ 处理您的请求时遇到了问题：${errMsg}\n\n替代方案：\n① 请稍后重试，可能是临时性故障\n② 尝试简化您的请求\n③ 如果问题持续，请前往 Ops 页面检查系统状态\n\n需要我帮您用其他方式完成吗？`,
           tokensUsed: 0,
@@ -3985,7 +3985,7 @@ export class ProtocolAdapter {
           },
           hooks: [],
           async init() {
-            process.stdout.write(`[PluginManager] Community plugin "${name}" initialized (stub)`);
+            process.stdout.write(`[PluginManager] Community plugin "${name}" initialized (stub)\n`);
           },
           async shutdown() {},
           async healthCheck() {
@@ -4745,7 +4745,7 @@ export class ProtocolAdapter {
             // Emit event to start Weixin monitor
             this.eventBus?.publish("weixin:start-monitor", {}, "protocol-adapter");
           } catch (saveErr) {
-            process.stderr.write("[WeChat] Failed to save credentials:" + " " + saveErr);
+            process.stderr.write("[WeChat] Failed to save credentials:" + " " + saveErr + "\n");
           }
         }
 
@@ -6704,7 +6704,7 @@ export class ProtocolAdapter {
           const config = this.registry.resolveService<any>("config");
           if (config?.set) {
             for (const [key, value] of Object.entries(snapshot.config)) {
-              try { config.set(key, value); } catch (err) { process.stderr.write(`[ProtocolAdapter] Config rollback failed for key "${key}":` + " " + err); failedKeys.push(key); }
+              try { config.set(key, value); } catch (err) { process.stderr.write(`[ProtocolAdapter] Config rollback failed for key "${key}":` + " " + err + "\n"); failedKeys.push(key); }
             }
           }
         }

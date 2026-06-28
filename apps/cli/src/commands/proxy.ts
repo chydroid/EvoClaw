@@ -247,7 +247,7 @@ export function register(program: Command): void {
           printJson(r.data);
           return;
         }
-        if (r.data?.blob) process.stdout.write(r.data.blob);
+        if (r.data?.blob) process.stdout.write(r.data.blob + "\n");
         else printWarn("Blob not found.");
       } catch (err) {
         printError("Blob fetch failed", err instanceof Error ? err.message : String(err));

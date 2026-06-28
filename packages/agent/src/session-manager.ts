@@ -154,13 +154,13 @@ export class SessionManager {
     try {
       fs.writeFileSync(transcriptPath, "", "utf-8");
     } catch (err) {
-      process.stderr.write(`[SessionManager] Failed to create empty transcript: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[SessionManager] Failed to create empty transcript: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
     // Cache
     this.sessionCache.set(sessionId, session);
 
-    process.stdout.write(`[SessionManager] Created session ${sessionId} for agent "${agentId}"`);
+    process.stdout.write(`[SessionManager] Created session ${sessionId} for agent "${agentId}"\n`);
     return session;
   }
 
@@ -211,7 +211,7 @@ export class SessionManager {
 
     session.status = "archived";
     this.updateSessionMeta(session);
-    process.stdout.write(`[SessionManager] Archived session ${sessionId}: ${reason}`);
+    process.stdout.write(`[SessionManager] Archived session ${sessionId}: ${reason}\n`);
   }
 
   /** Delete a session completely */
@@ -222,7 +222,7 @@ export class SessionManager {
       try {
         const sessionDir = path.join(this.getAgentDir(agentId), sessionId);
         if (!fs.existsSync(sessionDir)) {
-          process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion`);
+          process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion\n`);
           return false;
         }
 
@@ -232,17 +232,17 @@ export class SessionManager {
         // Remove from cache
         this.sessionCache.delete(sessionId);
 
-        process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"`);
+        process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"\n`);
         return true;
       } catch (err) {
-        process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err);
+        process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err + "\n");
         return false;
       }
     });
 
     // withLock 返回 null 表示获取锁失败，此时不应继续删除
     if (result === null) {
-      process.stderr.write(`[SessionManager] Could not acquire lock to delete session ${sessionId}`);
+      process.stderr.write(`[SessionManager] Could not acquire lock to delete session ${sessionId}\n`);
       return false;
     }
 
@@ -435,12 +435,12 @@ export class SessionManager {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes("EEXIST") && !msg.includes("ENOENT")) {
-          process.stderr.write(`[SessionManager] Lock error for ${sessionId}:` + " " + err);
+          process.stderr.write(`[SessionManager] Lock error for ${sessionId}:` + " " + err + "\n");
         }
       }
     }
 
-    process.stderr.write(`[SessionManager] Failed to acquire lock for ${sessionId} after ${timeoutMs}ms`);
+    process.stderr.write(`[SessionManager] Failed to acquire lock for ${sessionId} after ${timeoutMs}ms\n`);
     return null;
   }
 
@@ -458,7 +458,7 @@ export class SessionManager {
         fs.unlinkSync(lock.lockPath);
       }
     } catch (err) {
-      process.stderr.write(`[SessionManager] Failed to release lock for ${lock.sessionId}:` + " " + err);
+      process.stderr.write(`[SessionManager] Failed to release lock for ${lock.sessionId}:` + " " + err + "\n");
     }
   }
 
@@ -534,7 +534,7 @@ export class SessionManager {
       this.updateSessionMeta(successor);
     }
 
-    process.stdout.write(`[SessionManager] Compaction chain: ${parentSessionId} -> ${successorSessionId}`);
+    process.stdout.write(`[SessionManager] Compaction chain: ${parentSessionId} -> ${successorSessionId}\n`);
   }
 
   // ─── List / Query ──────────────────────────────────────────────────────────

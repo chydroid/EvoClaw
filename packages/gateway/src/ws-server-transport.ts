@@ -56,18 +56,18 @@ export class WSServerTransport {
         }
         const raw = data.toString("utf8");
         this.protocolHandler.processFrame(client, raw).catch((err) => {
-          process.stderr.write(`[WSServerTransport] Error processing frame from ${clientId}:` + " " + err);
+          process.stderr.write(`[WSServerTransport] Error processing frame from ${clientId}:` + " " + err + "\n");
         });
       });
 
       ws.on("close", (code: number, reason: Buffer) => {
         this.wsToClientId.delete(ws);
         this.protocolHandler.handleDisconnect(clientId);
-        process.stdout.write(`[WSServerTransport] Client ${clientId} disconnected (code=${code})`);
+        process.stdout.write(`[WSServerTransport] Client ${clientId} disconnected (code=${code})\n`);
       });
 
       ws.on("error", (err: Error) => {
-        process.stderr.write(`[WSServerTransport] WebSocket error for ${clientId}:` + " " + err.message);
+        process.stderr.write(`[WSServerTransport] WebSocket error for ${clientId}:` + " " + err.message + "\n");
         this.wsToClientId.delete(ws);
         this.protocolHandler.handleDisconnect(clientId);
       });
@@ -85,10 +85,10 @@ export class WSServerTransport {
         clearInterval(pingInterval);
       });
 
-      process.stdout.write(`[WSServerTransport] New WebSocket connection: ${clientId} from ${remoteAddress}`);
+      process.stdout.write(`[WSServerTransport] New WebSocket connection: ${clientId} from ${remoteAddress}\n`);
     });
 
-    process.stdout.write("[WSServerTransport] WebSocket server attached at /ws");
+    process.stdout.write("[WSServerTransport] WebSocket server attached at /ws\n");
   }
 
   detach(): void {

@@ -180,7 +180,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
       this.registered = true;
       this.status = "running";
       process.stdout.write(
-        `[WebhookChannel:${this.config.channelId}] Started — outgoing URL: ${this.webhookUrl}, incoming path: ${this.incomingPath}`,
+        `[WebhookChannel:${this.config.channelId}] Started — outgoing URL: ${this.webhookUrl}, incoming path: ${this.incomingPath}\n`
       );
     } catch (err) {
       this.status = "error";
@@ -196,7 +196,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
       // Unregister the webhook endpoint
       this.registered = false;
       this.status = "stopped";
-      process.stdout.write(`[WebhookChannel:${this.config.channelId}] Stopped`);
+      process.stdout.write(`[WebhookChannel:${this.config.channelId}] Stopped\n`);
     } catch (err) {
       this.status = "error";
       throw new Error(
@@ -210,7 +210,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     attachments?: ChannelMessage["attachments"];
   }): Promise<ChannelSendResult> {
     if (!this.registered) {
-      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Cannot send — adapter not started\n`);
       return { success: false, error: "Adapter not started", channel: this.type };
     }
 
@@ -247,7 +247,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
 
       if (!response.ok) {
         process.stderr.write(
-          `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}`,
+          `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}\n`
         );
         return { success: false, error: `HTTP ${response.status}`, channel: this.type };
       }
@@ -271,7 +271,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     [key: string]: unknown;
   }): Promise<void> {
     if (this.status !== "running") {
-      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — adapter not running`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — adapter not running\n`);
       return;
     }
 
@@ -279,7 +279,7 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
     const message = payload.message ?? "";
 
     if (!message) {
-      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — empty message`);
+      process.stderr.write(`[WebhookChannel:${this.config.channelId}] Ignoring payload — empty message\n`);
       return;
     }
 
@@ -372,7 +372,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
 
       this.botUsername = me.result.username ?? me.result.first_name;
       process.stdout.write(
-        `[TelegramChannel:${this.config.channelId}] Connected as @${this.botUsername} (id: ${me.result.id})`,
+        `[TelegramChannel:${this.config.channelId}] Connected as @${this.botUsername} (id: ${me.result.id})\n`
       );
 
       // Start polling
@@ -394,7 +394,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
         this.pollingTimer = null;
       }
       this.status = "stopped";
-      process.stdout.write(`[TelegramChannel:${this.config.channelId}] Stopped`);
+      process.stdout.write(`[TelegramChannel:${this.config.channelId}] Stopped\n`);
     } catch (err) {
       this.status = "error";
       throw new Error(
@@ -417,7 +417,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
 
       if (!result.ok) {
         process.stderr.write(
-          `[TelegramChannel:${this.config.channelId}] Send failed: ${result.description}`,
+          `[TelegramChannel:${this.config.channelId}] Send failed: ${result.description}\n`
         );
         return { success: false, error: result.description, channel: this.type };
       }

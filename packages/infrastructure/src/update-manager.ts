@@ -341,7 +341,7 @@ export class UpdateManager {
         }
       }
 
-      process.stdout.write("[UpdateManager] Rollback completed");
+      process.stdout.write("[UpdateManager] Rollback completed\n");
       return {
         success: true,
         message: "Rollback completed. Restart required.",
@@ -572,7 +572,7 @@ export class UpdateManager {
         stdio: "inherit",
       });
 
-      process.stdout.write(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.`);
+      process.stdout.write(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.\n`);
     } else if (assetName.endsWith(".exe") || assetName.endsWith(".AppImage")) {
       // Binary replacement
       const destPath = path.join(cwd, path.basename(downloadPath));
@@ -582,10 +582,10 @@ export class UpdateManager {
         fs.chmodSync(destPath, 0o755);
       }
 
-      process.stdout.write(`[UpdateManager] Binary installed at ${destPath}`);
+      process.stdout.write(`[UpdateManager] Binary installed at ${destPath}\n`);
     } else {
       // Unknown format, just save to cache
-      process.stdout.write(`[UpdateManager] Unknown asset format, saved to ${downloadPath}`);
+      process.stdout.write(`[UpdateManager] Unknown asset format, saved to ${downloadPath}\n`);
     }
   }
 

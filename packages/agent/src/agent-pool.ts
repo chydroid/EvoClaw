@@ -48,7 +48,7 @@ export class AgentPoolManager implements AgentPool {
     if (agent.state.errorCount >= this.poolConfig.maxErrorCount) {
       agent.state.status = "error";
       process.stderr.write(
-        `[AgentPool] Agent "${agentId}" moved to error state after ${agent.state.errorCount} errors${errorMessage ? `: ${errorMessage}` : ""}`
+        `[AgentPool] Agent "${agentId}" moved to error state after ${agent.state.errorCount} errors${errorMessage ? `: ${errorMessage}` : ""}\n`
       );
       await this.eventBus.publish("agent.error", agent, "agent-pool");
     }
@@ -163,7 +163,7 @@ export class AgentPoolManager implements AgentPool {
     if (utilization >= this.poolConfig.scaleThreshold && agents.length < this.poolConfig.maxAgents) {
       this.createAgent("executor");
       process.stderr.write(
-        `[AgentPool] Auto-scaled: ${agents.length} → ${agents.length + 1} agents (utilization=${(utilization * 100).toFixed(0)}%)`
+        `[AgentPool] Auto-scaled: ${agents.length} → ${agents.length + 1} agents (utilization=${(utilization * 100).toFixed(0)}%)\n`
       );
       // 扩容后必须尝试唤醒等待队列，否则新建的空闲 agent 会一直闲置，
       // 而等待者要等到其他 release() 才能被分配，造成饥饿。
@@ -194,7 +194,7 @@ export class AgentPoolManager implements AgentPool {
 
     if (agent.state.status !== "busy") {
       process.stderr.write(
-        `[AgentPool] Ignoring release for agent "${agentId}" which is not busy (status=${agent.state.status})`
+        `[AgentPool] Ignoring release for agent "${agentId}" which is not busy (status=${agent.state.status})\n`
       );
       return;
     }

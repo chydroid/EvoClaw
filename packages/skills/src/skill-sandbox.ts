@@ -166,13 +166,13 @@ export class SkillSandbox {
         for (const candidate of candidates) {
           try {
             execSync(`"${candidate}" --version`, { stdio: "pipe", timeout: 5000 });
-            process.stdout.write(`[SkillSandbox] Python auto-discovered at: ${candidate}`);
+            process.stdout.write(`[SkillSandbox] Python auto-discovered at: ${candidate}\n`);
             return candidate;
           } catch {
             // Not executable, skip
           }
         }
-        process.stderr.write("[SkillSandbox] Neither python3 nor python found in PATH, and auto-discovery found nothing");
+        process.stderr.write("[SkillSandbox] Neither python3 nor python found in PATH, and auto-discovery found nothing\n");
         return "python3"; // Default to python3, will fail with clear error
       }
     }
@@ -277,7 +277,7 @@ export class SkillSandbox {
     // Prefer python3, fall back to python
     const pythonBin = this.resolvePythonBin();
 
-    process.stdout.write(`[SkillSandbox] Executing Python: ${scriptFile}`);
+    process.stdout.write(`[SkillSandbox] Executing Python: ${scriptFile}\n`);
 
     try {
       return await new Promise((resolve, reject) => {
@@ -451,7 +451,7 @@ export class SkillSandbox {
       }
     }
 
-    process.stdout.write(`[SkillSandbox] Executing: ${cmd.slice(0, 200)}`);
+    process.stdout.write(`[SkillSandbox] Executing: ${cmd.slice(0, 200)}\n`);
 
     return new Promise((resolve, reject) => {
       const isWindows = process.platform === "win32";

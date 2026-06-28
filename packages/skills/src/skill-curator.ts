@@ -251,13 +251,13 @@ export class SkillCurator {
    * 技能只能通过 WebUI 手动创建或显式 API 调用创建。
    */
   enableAutoExtraction(): void {
-    process.stdout.write("[SkillCurator] Auto-extraction is permanently DISABLED — call ignored. Skills can only be created manually via WebUI or explicit API.");
+    process.stdout.write("[SkillCurator] Auto-extraction is permanently DISABLED — call ignored. Skills can only be created manually via WebUI or explicit API.\n");
   }
 
   /** Disable automatic skill extraction. This is the default and permanent state. */
   disableAutoExtraction(): void {
     this.autoExtractionEnabled = false;
-    process.stdout.write("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.");
+    process.stdout.write("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.\n");
   }
 
   isAutoExtractionEnabled(): boolean {
@@ -289,7 +289,7 @@ export class SkillCurator {
     // ── Gate 0: 自动提取已永久禁用 ──
     // 历史上此方法会从任务解决方案中提取技能，但生成的技能质量过低
     // （通用模板、机械关键词），现已禁用。技能只能通过 WebUI 手动创建。
-    process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: auto-extraction permanently disabled.");
+    process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: auto-extraction permanently disabled.\n");
     return null;
   }
 
@@ -456,7 +456,7 @@ export class SkillCurator {
     // Pinned 豁免：pinned 技能永不归档
     if (entry?.pinned) {
       process.stdout.write(
-        `[SkillCurator] Skill ${entry.skillName} is pinned — archive skipped (reason: ${reason})`
+        `[SkillCurator] Skill ${entry.skillName} is pinned — archive skipped (reason: ${reason})\n`
       );
       return null;
     }

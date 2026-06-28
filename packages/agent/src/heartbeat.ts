@@ -71,14 +71,14 @@ export class HeartbeatManager {
         this.start();
       }
     }
-    process.stdout.write(`[HeartbeatManager] Heartbeat configured: enabled=${this.enabled}, interval=${this.intervalMs}ms`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat configured: enabled=${this.enabled}, interval=${this.intervalMs}ms\n`);
   }
 
   /** Start the heartbeat timer */
   start(): void {
     if (this.timer) return; // already running
     if (!this.enabled) {
-      process.stdout.write("[HeartbeatManager] Heartbeat is disabled, not starting timer");
+      process.stdout.write("[HeartbeatManager] Heartbeat is disabled, not starting timer\n");
       return;
     }
 
@@ -94,7 +94,7 @@ export class HeartbeatManager {
     }, this.intervalMs);
     // unref 防止心跳定时器阻止进程优雅退出（依赖 stop() 才能清理时，SIGTERM 期间会卡住）
     this.timer.unref();
-    process.stdout.write(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat started (interval: ${this.intervalMs}ms, next fire: ${this.nextFireTime.toISOString()})\n`);
   }
 
   /** Stop the heartbeat timer */
@@ -103,7 +103,7 @@ export class HeartbeatManager {
       clearInterval(this.timer);
       this.timer = null;
       this.nextFireTime = null;
-      process.stdout.write("[HeartbeatManager] Heartbeat stopped");
+      process.stdout.write("[HeartbeatManager] Heartbeat stopped\n");
     }
   }
 
@@ -139,7 +139,7 @@ export class HeartbeatManager {
   private async onHeartbeat(): Promise<void> {
     // Skip if agent is actively processing conversations
     if (!this.isIdle()) {
-      process.stdout.write("[HeartbeatManager] Heartbeat skipped — agent is busy");
+      process.stdout.write("[HeartbeatManager] Heartbeat skipped — agent is busy\n");
       this.nextFireTime = new Date(Date.now() + this.intervalMs);
       return;
     }
@@ -147,7 +147,7 @@ export class HeartbeatManager {
     this.lastFireTime = new Date();
     this.nextFireTime = new Date(Date.now() + this.intervalMs);
 
-    process.stdout.write(`[HeartbeatManager] Heartbeat fired at ${this.lastFireTime.toISOString()}`);
+    process.stdout.write(`[HeartbeatManager] Heartbeat fired at ${this.lastFireTime.toISOString()}\n`);
 
     const heartbeatResults: {
       queueItemsProcessed: number;
@@ -161,7 +161,7 @@ export class HeartbeatManager {
 
     try {
       if (!this.handlerDeps) {
-        process.stderr.write("[HeartbeatManager] No handler deps set, skipping heartbeat processing");
+        process.stderr.write("[HeartbeatManager] No handler deps set, skipping heartbeat processing\n");
         return;
       }
 
@@ -175,7 +175,7 @@ export class HeartbeatManager {
             const item = queueManager.dequeue(sessionId);
             if (item) {
               heartbeatResults.queueItemsProcessed++;
-              process.stdout.write(`[HeartbeatManager] Heartbeat processing queued item [${item.mode}] for session "${sessionId}": "${item.message.slice(0, 80)}"`);
+              process.stdout.write(`[HeartbeatManager] Heartbeat processing queued item [${item.mode}] for session "${sessionId}": "${item.message.slice(0, 80)}"\n`);
               try {
                 const result = await processChatMessage(item.message, {
                   sessionId,
@@ -186,7 +186,7 @@ export class HeartbeatManager {
               } catch (err) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 queueManager.markFailed(item.id, errorMsg);
-                process.stderr.write(`[HeartbeatManager] Heartbeat queue item failed: ${errorMsg}`);
+                process.stderr.write(`[HeartbeatManager] Heartbeat queue item failed: ${errorMsg}\n`);
               }
               // Only process one item per heartbeat to avoid overload
               break;
@@ -206,11 +206,11 @@ export class HeartbeatManager {
         for (const task of tasks) {
           if (task.enabled && task.nextRun && new Date(task.nextRun) <= now) {
             heartbeatResults.cronTasksDue++;
-            process.stdout.write(`[HeartbeatManager] Heartbeat found due cron task: "${task.name}" (${task.id})`);
+            process.stdout.write(`[HeartbeatManager] Heartbeat found due cron task: "${task.name}" (${task.id})\n`);
             try {
               await scheduleManager.executeTask(task.id);
             } catch (err) {
-              process.stderr.write(`[HeartbeatManager] Heartbeat cron task execution failed: ${err instanceof Error ? err.message : String(err)}`);
+              process.stderr.write(`[HeartbeatManager] Heartbeat cron task execution failed: ${err instanceof Error ? err.message : String(err)}\n`);
             }
           }
         }
@@ -226,7 +226,7 @@ export class HeartbeatManager {
           });
           heartbeatResults.memoryReminders = results.length;
           if (results.length > 0) {
-            process.stdout.write(`[HeartbeatManager] Heartbeat found ${results.length} memory reminders`);
+            process.stdout.write(`[HeartbeatManager] Heartbeat found ${results.length} memory reminders\n`);
           }
         } catch {
           // Memory search is best-effort
@@ -246,7 +246,7 @@ export class HeartbeatManager {
       }
 
     } catch (err) {
-      process.stderr.write(`[HeartbeatManager] Heartbeat error: ${err instanceof Error ? err.message : String(err)}`);
+      process.stderr.write(`[HeartbeatManager] Heartbeat error: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 }

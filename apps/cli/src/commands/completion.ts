@@ -10,17 +10,17 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
   cmd
     .command("bash")
     .description("Generate Bash completion")
-    .action(() => { process.stdout.write(generateCompletion("bash")); });
+    .action(() => { process.stdout.write(generateCompletion("bash") + "\n"); });
 
   cmd
     .command("zsh")
     .description("Generate Zsh completion")
-    .action(() => { process.stdout.write(generateCompletion("zsh")); });
+    .action(() => { process.stdout.write(generateCompletion("zsh") + "\n"); });
 
   cmd
     .command("fish")
     .description("Generate Fish completion")
-    .action(() => { process.stdout.write(generateCompletion("fish")); });
+    .action(() => { process.stdout.write(generateCompletion("fish") + "\n"); });
 
   // Default: show install instructions
   cmd.action(() => {

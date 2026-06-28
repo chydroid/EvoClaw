@@ -450,7 +450,7 @@ export class FormalVerifier {
     // Don't remove built-in threats
     const builtInIds = new Set(AGENT_THREATS.map((t) => t.id));
     if (builtInIds.has(id)) {
-      process.stderr.write(`[FormalVerifier] Cannot remove built-in threat "${id}"`);
+      process.stderr.write(`[FormalVerifier] Cannot remove built-in threat "${id}"\n`);
     }
   }
 
