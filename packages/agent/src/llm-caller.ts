@@ -2615,15 +2615,10 @@ Have a specific URL?
 
           toolCallCount++;
 
-          // Skill extraction consideration
-          try {
-            const skillCurator = deps.registry?.resolveService<{
-              considerExtraction(sessionId: string, toolCallCount: number, lastToolResult: unknown, taskDescription: string): void;
-            }>("skillCurator");
-            if (skillCurator) {
-              skillCurator.considerExtraction(sessionId, toolCallCount, rawResult, message);
-            }
-          } catch { /* skill extraction is best-effort */ }
+          // 注意：技能自动提取（considerExtraction）已移除。
+          // 历史上每 15 次工具调用会触发 SkillCurator 自动生成低质量技能，
+          // 导致 data/skills/ 堆积大量 evoclaw-curator 自动生成的无用技能。
+          // 现在技能只能通过 WebUI 手动创建或显式 API 调用创建。
 
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: toolResult };
         };

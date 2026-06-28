@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "files": {
+    "SKILL.md": "f9c43340d97e39b66a0a2a6bda5be5014ea28b39a886101db54249b091563d3c",
+    "_meta.json": "9545e78c71bc3817745dfc54179fbafc21b77305c8bfbf6008de00f5e045ab0e"
+  },
+  "skillId": "455d6c63-0df0-41fa-9ba8-e4d8f6f05d76",
+  "name": "unit-converter",
+  "version": "1.0.0",
+  "source": "bundled",
+  "sourceUrl": "D:\\abc\\EvoClaw\\packages\\skills\\bundled\\unit-converter\\SKILL.md",
+  "installedAt": "2026-06-28T05:20:36.004Z",
+  "installedBy": "system"
+}

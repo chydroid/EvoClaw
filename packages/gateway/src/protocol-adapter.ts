@@ -1607,12 +1607,31 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
+        // 扫描 data/skills（用户安装的技能）与 packages/skills/bundled（内置技能）
         const skillsDir = path.resolve(process.cwd(), "..", "..", "data", "skills");
-        const result = await skillManager.scanAndInstall(skillsDir);
+        const bundledSkillsDir = path.resolve(process.cwd(), "..", "..", "packages", "skills", "bundled");
+        const dirsToScan: string[] = [skillsDir];
+        if (fs.existsSync(bundledSkillsDir)) {
+          dirsToScan.push(bundledSkillsDir);
+        }
+        let totalInstalled = 0;
+        let totalSkipped = 0;
+        const details: Array<{ dir: string; installed: number; skipped: number }> = [];
+        for (const dir of dirsToScan) {
+          try {
+            const result = await skillManager.scanAndInstall(dir);
+            totalInstalled += result.installed.length;
+            totalSkipped += result.skipped.length;
+            details.push({ dir, installed: result.installed.length, skipped: result.skipped.length });
+          } catch (err) {
+            process.stderr.write(`[Gateway] Skill refresh scan failed for "${dir}":` + " " + err + "\n");
+            details.push({ dir, installed: 0, skipped: 0 });
+          }
+        }
         res.json({
-          installed: result.installed.length,
-          skipped: result.skipped.length,
-          details: result,
+          installed: totalInstalled,
+          skipped: totalSkipped,
+          details,
         });
       } catch (err) {
         res.status(500).json({ error: String(err) });

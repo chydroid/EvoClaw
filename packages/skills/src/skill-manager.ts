@@ -186,7 +186,10 @@ export class SkillManager {
     // Validate skill quality before installing
     if (this.skillEcosystem) {
       try {
-        const quality = await this.skillEcosystem.validateSkillQuality(skillPath);
+        // validateSkillQuality 期望目录路径（会在内部追加 /SKILL.md），
+        // 而 skillPath 是 SKILL.md 文件路径，需要取其目录。
+        const skillDir = path.dirname(skillPath);
+        const quality = await this.skillEcosystem.validateSkillQuality(skillDir);
         const MIN_QUALITY_SCORE = 0.4;
         if (quality.score < MIN_QUALITY_SCORE) {
           const message = `Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`;
@@ -1050,11 +1053,12 @@ export class SkillManager {
         } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
           try {
             const skillMdPath = path.join(fullPath, "SKILL.md");
+            // ── 自动生成 SKILL.md 已取消 ──
+            // 历史上目录缺少 SKILL.md 时会调用 tryGenerateCuratedSkill
+            // 从 curated 注册表自动生成低质量技能（evoclaw-curator 作者标记）。
+            // 现在缺少 SKILL.md 的目录会被直接跳过，不再自动生成。
             if (!fs.existsSync(skillMdPath)) {
-              const generated = await this.tryGenerateCuratedSkill(entry.name, fullPath);
-              if (!generated) {
-                continue;
-              }
+              continue;
             }
 
             const stat = fs.statSync(skillMdPath);
@@ -1092,25 +1096,6 @@ export class SkillManager {
     } finally {
       this.isScanning = false;
     }
-  }
-
-  private async tryGenerateCuratedSkill(dirName: string, dirPath: string): Promise<boolean> {
-    try {
-      const autoSkillManager = this.svcRegistry.resolveService<{
-        generateFromCurated(skillName: string): Promise<string | null>;
-      }>("autoSkillManager");
-
-      if (!autoSkillManager) return false;
-
-      const result = await autoSkillManager.generateFromCurated(dirName);
-      if (result && fs.existsSync(path.join(dirPath, "SKILL.md"))) {
-        process.stdout.write(`[SkillManager] Auto-generated SKILL.md for curated skill: ${dirName}`);
-        return true;
-      }
-    } catch {
-      // Not a curated skill or generation failed
-    }
-    return false;
   }
 
   private async installFolderSkill(folderPath: string): Promise<Skill | null> {

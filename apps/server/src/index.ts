@@ -726,13 +726,25 @@ export class EvoClawServer {
     } catch (e) {
       this.logger.error("server", `SkillIndex load failed: ${e}`);
     }
-    // Auto-skill scan interval: default 5 minutes (300000ms), configurable via env.
-    // Previous values: 30s (data/skills) / 60s (bundled) — caused excessive I/O on large skill dirs.
-    const skillScanIntervalMs = Number(process.env.EVOCLAW_SKILL_SCAN_INTERVAL_MS) || 300_000;
-    this.skillManager.startAutoScan(skillsDir, skillScanIntervalMs);
+    // ── 技能自动扫描已取消 ──
+    // 历史上每 5 分钟自动扫描 data/skills 与 packages/skills/bundled，
+    // 会在后台反复安装并触发 tryGenerateCuratedSkill 自动生成低质量技能
+    // （evoclaw-curator 作者标记）。现在改为：
+    // 1. 服务器启动时仅进行一次性扫描，加载已有技能到内存
+    // 2. 之后只有在 WebUI 技能页面手动点击「刷新」按钮时才会再次扫描安装
+    //    （对应 /api/skills/refresh 端点 → SkillManager.scanAndInstall）
+    try {
+      await this.skillManager.scanAndInstall(skillsDir);
+    } catch (err) {
+      this.logger.error("server", `Startup skill scan failed for "${skillsDir}": ${err}`);
+    }
     const bundledSkillsDir = path.resolve(__dirname, "..", "..", "..", "packages", "skills", "bundled");
     if (fs.existsSync(bundledSkillsDir)) {
-      this.skillManager.startAutoScan(bundledSkillsDir, skillScanIntervalMs);
+      try {
+        await this.skillManager.scanAndInstall(bundledSkillsDir);
+      } catch (err) {
+        this.logger.error("server", `Startup bundled skill scan failed: ${err}`);
+      }
     }
 
     this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {

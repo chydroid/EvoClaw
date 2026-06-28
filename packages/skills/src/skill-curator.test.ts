@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { SkillCurator } from "../src/skill-curator";
+import { SkillCurator, type SkillEvolutionEntry } from "../src/skill-curator";
+import { v4 as uuid } from "uuid";
 
 // Minimum solution length to pass the 300-char instruction quality gate.
 // The derived instructions include a heading and task prefix (~50 chars), so the
@@ -15,19 +16,59 @@ const LONG_SOLUTION = [
   "Step 7: Clean up any temporary resources and close open connections.",
 ].join("\n");
 
+/**
+ * 向 SkillCurator 内部 evolutions Map 注入一条演化记录。
+ *
+ * 历史上这些记录由 extractSkillFromSolution 自动创建，但自动提取已永久禁用
+ * （详见 skill-curator.ts）。测试中通过此辅助函数直接注入记录，
+ * 以便测试 improveSkill / deprecateSkill 等演化功能仍然可用。
+ */
+function seedEvolutionEntry(
+  curator: SkillCurator,
+  skillName: string,
+  overrides: Partial<SkillEvolutionEntry> = {}
+): string {
+  const skillId = uuid();
+  const entry: SkillEvolutionEntry = {
+    skillId,
+    skillName,
+    versions: [
+      {
+        version: "1.0.0",
+        timestamp: new Date(),
+        changes: `手动创建: ${skillName}`,
+        trigger: "extraction",
+        previousVersion: null,
+      },
+    ],
+    extractionSource: { task: skillName, solution: LONG_SOLUTION, context: {} },
+    improvementHistory: [],
+    deprecation: null,
+    createdAt: new Date(),
+    lastUpdatedAt: new Date(),
+    ...overrides,
+  };
+  // 直接访问私有字段注入记录（仅用于测试）
+  (curator as unknown as { evolutions: Map<string, SkillEvolutionEntry> }).evolutions.set(skillId, entry);
+  return skillId;
+}
+
 describe("SkillCurator", () => {
   function createCurator() {
     const registry = new ServiceRegistry();
     const eventBus = new EventBus();
     registry.registerService("eventBus", eventBus);
     const curator = new SkillCurator(registry, eventBus);
-    // Auto-extraction is OFF by default — tests must explicitly enable it.
-    curator.enableAutoExtraction();
     return { curator, registry, eventBus };
   }
 
-  describe("extractSkillFromSolution", () => {
-    it("should extract a skill from a successful task solution", async () => {
+  // ── 自动提取已永久禁用 ──
+  // 历史上 extractSkillFromSolution 会从任务解决方案中提取技能，
+  // 但生成的技能质量过低（通用 7 步骤模板、机械关键词触发器），
+  // 导致 data/skills/ 堆积大量 evoclaw-curator 自动生成的无用技能。
+  // 现在此方法永远返回 null，技能只能通过 WebUI 手动创建。
+  describe("extractSkillFromSolution (permanently disabled)", () => {
+    it("should return null regardless of input quality", async () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
@@ -36,14 +77,10 @@ describe("SkillCurator", () => {
         { source: "task-completion", taskId: "test-1" }
       );
 
-      expect(skill).toBeDefined();
-      expect(skill!.name).toBeDefined();
-      expect(skill!.version).toBe("1.0.0");
-      expect(skill!.description).toContain("search");
-      expect(skill!.lifecycle.status).toBe("active");
+      expect(skill).toBeNull();
     });
 
-    it("should create evolution entry on extraction", async () => {
+    it("should return null even when called with rich solution", async () => {
       const { curator } = createCurator();
 
       const skill = await curator.extractSkillFromSolution(
@@ -52,95 +89,71 @@ describe("SkillCurator", () => {
         { source: "test" }
       );
 
-      const evolution = curator.getSkillEvolution(skill!.id);
-      expect(evolution).toBeDefined();
-      expect(evolution!.skillName).toBeDefined();
-      expect(evolution!.versions).toHaveLength(1);
-      expect(evolution!.versions[0].trigger).toBe("extraction");
-      expect(evolution!.versions[0].previousVersion).toBeNull();
-      expect(evolution!.extractionSource).not.toBeNull();
-      expect(evolution!.extractionSource!.task).toBe("evaluate math expressions from user input queries");
+      expect(skill).toBeNull();
     });
 
-    it("should derive appropriate category from task description", async () => {
+    it("should return null for insufficient task/solution", async () => {
       const { curator } = createCurator();
 
-      const integrationSkill = await curator.extractSkillFromSolution(
-        "fetch data from external api endpoint integration",
-        LONG_SOLUTION,
-        {}
-      );
-      expect(integrationSkill!.category).toBe("integration");
-
-      const analysisSkill = await curator.extractSkillFromSolution(
-        "analyze sales data and generate statistical reports",
-        LONG_SOLUTION,
-        {}
-      );
-      expect(analysisSkill!.category).toBe("analysis");
-
-      const generationSkill = await curator.extractSkillFromSolution(
-        "generate project documentation from code structure",
-        LONG_SOLUTION,
-        {}
-      );
-      expect(generationSkill!.category).toBe("generation");
-    });
-
-    it("should derive triggers from task description", async () => {
-      const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "search news and return structured results",
-        LONG_SOLUTION,
-        {}
-      );
-
-      expect(skill!.triggers.length).toBeGreaterThan(0);
-      expect(skill!.triggers[0].type).toBe("keyword");
-    });
-
-    it("should return null for insufficient task/solution (quality gate)", async () => {
-      const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "a",
-        "b",
-        {}
-      );
+      const skill = await curator.extractSkillFromSolution("a", "b", {});
 
       expect(skill).toBeNull();
     });
 
-    it("should return null when auto-extraction is disabled", async () => {
-      const registry = new ServiceRegistry();
-      const eventBus = new EventBus();
-      registry.registerService("eventBus", eventBus);
-      const curator = new SkillCurator(registry, eventBus);
-      // DO NOT enable auto-extraction — verify it returns null by default
+    it("should NOT create evolution entry", async () => {
+      const { curator } = createCurator();
+      const initialCount = curator.getAllEvolutions().length;
 
-      const skill = await curator.extractSkillFromSolution(
+      await curator.extractSkillFromSolution(
         "search latest technology news with web api integration",
         LONG_SOLUTION,
         {}
       );
 
-      expect(skill).toBeNull();
+      // 不应增加任何演化记录（自动提取已永久禁用）
+      expect(curator.getAllEvolutions().length).toBe(initialCount);
+    });
+
+    it("should NOT write any files to disk", async () => {
+      const { curator } = createCurator();
+      const initialCount = curator.getAllEvolutions().length;
+
+      await curator.extractSkillFromSolution(
+        "fetch data from external api endpoint integration",
+        LONG_SOLUTION,
+        {}
+      );
+
+      // 确认没有新增演化记录（间接验证没有写文件）
+      expect(curator.getAllEvolutions().length).toBe(initialCount);
+    });
+  });
+
+  // ── considerExtraction 已永久禁用 ──
+  // 历史上每 15 次工具调用会触发此方法，现已移除调用点（llm-caller.ts）
+  // 且方法本身为 no-op。
+  describe("considerExtraction (permanently disabled)", () => {
+    it("should be a no-op (no evolution entries created)", () => {
+      const { curator } = createCurator();
+      const initialCount = curator.getAllEvolutions().length;
+
+      // 调用多次不应产生任何效果
+      curator.considerExtraction("session-1", 15, "some result", "some task");
+      curator.considerExtraction("session-1", 30, "another result", "another task");
+      curator.considerExtraction("session-1", 45, "yet another", "yet another task");
+
+      // 不应增加任何演化记录
+      expect(curator.getAllEvolutions().length).toBe(initialCount);
     });
   });
 
   describe("improveSkill", () => {
     it("should improve skill based on execution failure", async () => {
       const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "file processing utility for reading content",
-        LONG_SOLUTION,
-        {}
-      );
+      const skillId = seedEvolutionEntry(curator, "file processing utility for reading content");
 
       const executionResult = {
-        skillId: skill!.id,
+        skillId,
         success: false,
         output: null,
         errors: ["Permission denied: access to /etc/shadow"],
@@ -148,17 +161,13 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 200, peakMemoryMB: 50, networkBytes: 0 },
       };
 
-      const improved = await curator.improveSkill(
-        skill!.id,
-        executionResult,
-        null
-      );
+      const improved = await curator.improveSkill(skillId, executionResult, null);
 
       expect(improved).toBeDefined();
       expect(improved!.version).not.toBe("1.0.0");
       expect(improved!.body.instructions).toContain("权限错误");
 
-      const evolution = curator.getSkillEvolution(skill!.id);
+      const evolution = curator.getSkillEvolution(skillId);
       expect(evolution!.versions.length).toBe(2);
       expect(evolution!.versions[1].trigger).toBe("improvement");
       expect(evolution!.improvementHistory).toHaveLength(1);
@@ -166,15 +175,10 @@ describe("SkillCurator", () => {
 
     it("should improve skill based on negative user feedback", async () => {
       const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "data conversion tool for csv to json format",
-        LONG_SOLUTION,
-        {}
-      );
+      const skillId = seedEvolutionEntry(curator, "data conversion tool for csv to json format");
 
       const executionResult = {
-        skillId: skill!.id,
+        skillId,
         success: true,
         output: { result: "ok" },
         errors: [],
@@ -182,30 +186,21 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 50, peakMemoryMB: 20, networkBytes: 0 },
       };
 
-      const improved = await curator.improveSkill(
-        skill!.id,
-        executionResult,
-        "太慢了，转换速度不够快"
-      );
+      const improved = await curator.improveSkill(skillId, executionResult, "太慢了，转换速度不够快");
 
       expect(improved).toBeDefined();
       expect(improved!.body.instructions).toContain("速度");
 
-      const evolution = curator.getSkillEvolution(skill!.id);
+      const evolution = curator.getSkillEvolution(skillId);
       expect(evolution!.improvementHistory).toHaveLength(1);
     });
 
     it("should improve skill based on positive user feedback", async () => {
       const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "code formatting tool for typescript source",
-        LONG_SOLUTION,
-        {}
-      );
+      const skillId = seedEvolutionEntry(curator, "code formatting tool for typescript source");
 
       const executionResult = {
-        skillId: skill!.id,
+        skillId,
         success: true,
         output: { result: "formatted" },
         errors: [],
@@ -213,11 +208,7 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 10, peakMemoryMB: 5, networkBytes: 0 },
       };
 
-      const improved = await curator.improveSkill(
-        skill!.id,
-        executionResult,
-        "非常好用，格式化结果很准确"
-      );
+      const improved = await curator.improveSkill(skillId, executionResult, "非常好用，格式化结果很准确");
 
       expect(improved).toBeDefined();
       expect(improved!.body.instructions).toContain("最佳实践");
@@ -244,19 +235,14 @@ describe("SkillCurator", () => {
 
     it("should return null for deprecated skill", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "deprecated skill test for cleanup verification");
 
-      const skill = await curator.extractSkillFromSolution(
-        "deprecated skill test for cleanup verification",
-        LONG_SOLUTION,
-        {}
-      );
-
-      await curator.deprecateSkill(skill!.id, "不再需要");
+      await curator.deprecateSkill(skillId, "不再需要");
 
       const result = await curator.improveSkill(
-        skill!.id,
+        skillId,
         {
-          skillId: skill!.id,
+          skillId,
           success: false,
           output: null,
           errors: ["error"],
@@ -271,15 +257,10 @@ describe("SkillCurator", () => {
 
     it("should add timeout trigger when failure analysis detects timeout", async () => {
       const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "batch data processing for large records",
-        LONG_SOLUTION,
-        {}
-      );
+      const skillId = seedEvolutionEntry(curator, "batch data processing for large records");
 
       const executionResult = {
-        skillId: skill!.id,
+        skillId,
         success: false,
         output: null,
         errors: ["Execution timed out after 30000ms"],
@@ -287,11 +268,7 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 30000, peakMemoryMB: 200, networkBytes: 0 },
       };
 
-      const improved = await curator.improveSkill(
-        skill!.id,
-        executionResult,
-        null
-      );
+      const improved = await curator.improveSkill(skillId, executionResult, null);
 
       expect(improved).toBeDefined();
       const hasTimeoutTrigger = improved!.triggers.some(
@@ -304,18 +281,13 @@ describe("SkillCurator", () => {
   describe("deprecateSkill", () => {
     it("should deprecate a skill", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "legacy tool handler for migration support");
 
-      const skill = await curator.extractSkillFromSolution(
-        "legacy tool handler for migration support",
-        LONG_SOLUTION,
-        {}
-      );
-
-      const result = await curator.deprecateSkill(skill!.id, "已被新工具替代");
+      const result = await curator.deprecateSkill(skillId, "已被新工具替代");
 
       expect(result).toBe(true);
 
-      const evolution = curator.getSkillEvolution(skill!.id);
+      const evolution = curator.getSkillEvolution(skillId);
       expect(evolution!.deprecation).not.toBeNull();
       expect(evolution!.deprecation!.reason).toBe("已被新工具替代");
       expect(evolution!.versions.length).toBe(2);
@@ -332,15 +304,10 @@ describe("SkillCurator", () => {
 
     it("should return false for already deprecated skill", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "duplicate deprecation test case verification");
 
-      const skill = await curator.extractSkillFromSolution(
-        "duplicate deprecation test case verification",
-        LONG_SOLUTION,
-        {}
-      );
-
-      await curator.deprecateSkill(skill!.id, "第一次弃用");
-      const result = await curator.deprecateSkill(skill!.id, "第二次弃用");
+      await curator.deprecateSkill(skillId, "第一次弃用");
+      const result = await curator.deprecateSkill(skillId, "第二次弃用");
 
       expect(result).toBe(false);
     });
@@ -355,15 +322,10 @@ describe("SkillCurator", () => {
 
     it("should return evolution with full version history", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "version history test for tracking changes");
 
-      const skill = await curator.extractSkillFromSolution(
-        "version history test for tracking changes",
-        LONG_SOLUTION,
-        {}
-      );
-
-      await curator.improveSkill(skill!.id, {
-        skillId: skill!.id,
+      await curator.improveSkill(skillId, {
+        skillId,
         success: false,
         output: null,
         errors: ["test error"],
@@ -371,8 +333,8 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
       }, "不好用");
 
-      await curator.improveSkill(skill!.id, {
-        skillId: skill!.id,
+      await curator.improveSkill(skillId, {
+        skillId,
         success: false,
         output: null,
         errors: ["another error"],
@@ -380,7 +342,7 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
       }, null);
 
-      const evolution = curator.getSkillEvolution(skill!.id);
+      const evolution = curator.getSkillEvolution(skillId);
       expect(evolution).toBeDefined();
       expect(evolution!.versions).toHaveLength(3);
       expect(evolution!.versions[0].trigger).toBe("extraction");
@@ -394,8 +356,8 @@ describe("SkillCurator", () => {
     it("should return all tracked evolutions", async () => {
       const { curator } = createCurator();
 
-      await curator.extractSkillFromSolution("task alpha processing pipeline for data analysis", LONG_SOLUTION, {});
-      await curator.extractSkillFromSolution("task beta processing pipeline for data analysis", LONG_SOLUTION, {});
+      seedEvolutionEntry(curator, "task alpha processing pipeline for data analysis");
+      seedEvolutionEntry(curator, "task beta processing pipeline for data analysis");
 
       const evolutions = curator.getAllEvolutions();
       expect(evolutions.length).toBeGreaterThanOrEqual(2);
@@ -406,11 +368,11 @@ describe("SkillCurator", () => {
     it("should return accurate statistics", async () => {
       const { curator } = createCurator();
 
-      const skill1 = await curator.extractSkillFromSolution("stats task one processing pipeline for data analysis", LONG_SOLUTION, {});
-      const skill2 = await curator.extractSkillFromSolution("stats task two processing pipeline for data analysis", LONG_SOLUTION, {});
+      const skill1 = seedEvolutionEntry(curator, "stats task one processing pipeline for data analysis");
+      const skill2 = seedEvolutionEntry(curator, "stats task two processing pipeline for data analysis");
 
-      await curator.improveSkill(skill1!.id, {
-        skillId: skill1!.id,
+      await curator.improveSkill(skill1, {
+        skillId: skill1,
         success: false,
         output: null,
         errors: ["error"],
@@ -418,7 +380,7 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
       }, null);
 
-      await curator.deprecateSkill(skill2!.id, "不再需要");
+      await curator.deprecateSkill(skill2, "不再需要");
 
       const stats = curator.getEvolutionStats();
       expect(stats.totalTracked).toBeGreaterThanOrEqual(2);
@@ -432,17 +394,11 @@ describe("SkillCurator", () => {
   describe("version management", () => {
     it("should increment patch version on improvement", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "version management test case for tracking");
 
-      const skill = await curator.extractSkillFromSolution(
-        "version management test case for tracking",
-        LONG_SOLUTION,
-        {}
-      );
-
-      expect(skill!.version).toBe("1.0.0");
-
-      const improved = await curator.improveSkill(skill!.id, {
-        skillId: skill!.id,
+      // 通过 improveSkill 获取重构的技能
+      const improved = await curator.improveSkill(skillId, {
+        skillId,
         success: false,
         output: null,
         errors: ["error"],
@@ -450,6 +406,7 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
       }, null);
 
+      expect(improved).toBeDefined();
       expect(improved!.version).toBe("1.0.1");
 
       const improved2 = await curator.improveSkill(improved!.id, {
@@ -466,15 +423,10 @@ describe("SkillCurator", () => {
 
     it("should track previous version in evolution history", async () => {
       const { curator } = createCurator();
+      const skillId = seedEvolutionEntry(curator, "version tracking test case for history");
 
-      const skill = await curator.extractSkillFromSolution(
-        "version tracking test case for history",
-        LONG_SOLUTION,
-        {}
-      );
-
-      await curator.improveSkill(skill!.id, {
-        skillId: skill!.id,
+      await curator.improveSkill(skillId, {
+        skillId,
         success: false,
         output: null,
         errors: ["error"],
@@ -482,13 +434,16 @@ describe("SkillCurator", () => {
         resourceUsage: { cpuTime: 0, peakMemoryMB: 0, networkBytes: 0 },
       }, null);
 
-      const evolution = curator.getSkillEvolution(skill!.id);
+      const evolution = curator.getSkillEvolution(skillId);
       expect(evolution!.versions[1].previousVersion).toBe("1.0.0");
       expect(evolution!.versions[1].version).toBe("1.0.1");
     });
   });
 
-  describe("autoExtractionToggle", () => {
+  // ── autoExtractionToggle 已永久禁用 ──
+  // enableAutoExtraction() 现在是 no-op，isAutoExtractionEnabled() 永远返回 false。
+  // 这确保即使有代码尝试启用自动提取，也不会产生效果。
+  describe("autoExtractionToggle (permanently disabled)", () => {
     it("should default to disabled", () => {
       const registry = new ServiceRegistry();
       const eventBus = new EventBus();
@@ -496,14 +451,29 @@ describe("SkillCurator", () => {
       expect(curator.isAutoExtractionEnabled()).toBe(false);
     });
 
-    it("should enable and disable auto-extraction", () => {
+    it("should remain disabled even after calling enableAutoExtraction", () => {
       const registry = new ServiceRegistry();
       const eventBus = new EventBus();
       const curator = new SkillCurator(registry, eventBus);
       expect(curator.isAutoExtractionEnabled()).toBe(false);
+
+      // 尝试启用 — 应为 no-op
       curator.enableAutoExtraction();
-      expect(curator.isAutoExtractionEnabled()).toBe(true);
+
+      // 仍然应该返回 false
+      expect(curator.isAutoExtractionEnabled()).toBe(false);
+    });
+
+    it("should remain disabled after disableAutoExtraction", () => {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      const curator = new SkillCurator(registry, eventBus);
+
       curator.disableAutoExtraction();
+      expect(curator.isAutoExtractionEnabled()).toBe(false);
+
+      // 即使尝试启用，仍应保持禁用
+      curator.enableAutoExtraction();
       expect(curator.isAutoExtractionEnabled()).toBe(false);
     });
   });

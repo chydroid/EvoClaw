@@ -3,6 +3,61 @@
 > 本项目遵循语义化版本，记录每次代码修改、功能调整及系统变更的详细内容。
 > 每次成功构建后更新此文件，按时间倒序排列。
 
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
+
+## v0.60.1 (2026-06-28)
+
+### 技能系统清理与自动创建逻辑收紧
+
+本版本延续 v0.60.0 的技能子系统治理，针对 `data/skills/` 中堆积的 evoclaw-curator 自动生成低质量技能问题进行清理，并从源头切断自动创建路径。
+
+#### 1. 清理无用技能
+
+- 删除 `data/skills/` 下 20 个 evoclaw-curator 自动生成的低质量技能（通用 7 步骤模板、机械关键词触发器）
+
+#### 2. 修改技能创建逻辑，防止自动创建
+
+- `packages/agent/src/llm-caller.ts` 修改：
+  - 移除 `considerExtraction` 调用块（历史上每 15 次工具调用触发 SkillCurator 自动提取的入口），替换为注释说明
+- `packages/skills/src/skill-curator.ts` 修改：
+  - `enableAutoExtraction()` 改为 no-op，仅打印警告
+  - `disableAutoExtraction()` 保留但标记为永久状态
+  - `isAutoExtractionEnabled()` 改为永远返回 false
+  - `considerExtraction()` 改为永久 no-op
+  - `extractSkillFromSolution()` 改为直接返回 null
+  - 删除了 `extractSkillFromSolution` 方法 `return null; }` 之后约 60 行孤立代码
+- `packages/skills/src/skill-curator.test.ts` 重写：
+  - 新增 `seedEvolutionEntry` 辅助函数，直接向 SkillCurator 内部 evolutions Map 注入测试数据，替代原依赖 `extractSkillFromSolution` 创建技能的测试方式
+  - `extractSkillFromSolution` 测试改为验证始终返回 null 且不创建演化记录
+  - `considerExtraction` 测试改为验证 no-op 行为
+  - `autoExtractionToggle` 测试改为验证永久禁用（即使调用 `enableAutoExtraction` 仍返回 false）
+  - 修复 3 个失败测试（`should NOT create evolution entry`、`should NOT write any files to disk`、`should be a no-op`），改为比较 `initialCount` 而非 `toHaveLength(0)`（SkillCurator 构造时会从磁盘加载已持久化的演化记录）
+
+#### 3. 取消 5 分钟自动扫描安装
+
+- `apps/server/src/index.ts` 修改：
+  - 移除 `startAutoScan` 调用（历史上每 5 分钟扫描 `data/skills` 与 `packages/skills/bundled`，会在后台反复安装并触发 `tryGenerateCuratedSkill` 自动生成低质量技能）
+  - 替换为启动时一次性 `scanAndInstall`，仅加载已有技能到内存
+- `packages/skills/src/skill-manager.ts` 修改：
+  - 移除 `tryGenerateCuratedSkill` 方法定义与调用（历史上目录缺少 SKILL.md 时会从 curated 注册表自动生成低质量技能）
+  - 缺少 SKILL.md 的目录直接跳过，不再自动生成
+  - 修复 `validateSkillQuality` 路径不匹配 bug（`skillPath` 是 SKILL.md 文件路径，但 validator 期望目录路径，会在内部追加 `/SKILL.md` 导致检查 `SKILL.md/SKILL.md` 不存在）— 此 bug 此前导致服务器重启后 0 个技能加载，修复后 41 个技能正常加载
+
+#### 4. 改为 WebUI 手动刷新触发
+
+- `packages/gateway/src/protocol-adapter.ts` 修改：
+  - 扩展 `/api/skills/refresh` 端点，使其同时扫描 `data/skills`（用户安装的技能）与 `packages/skills/bundled`（内置技能）
+  - 返回 `{ installed, skipped, details }` 详情
+
+#### 验证结果
+
+- `pnpm -r build` — exit code 0，所有 17 个 workspace 项目编译成功
+- `pnpm typecheck` — exit code 0，所有项目类型检查通过
+- `pnpm test` — 122 个测试文件，3174 个测试通过，1 个跳过
+- `skill-curator` 专项测试 — 25 个测试全部通过
+- 服务器重启 — 88/88 services healthy
+- 技能加载 — 41 个正常（data/skills 目录 40 个 + bundled 目录 1 个），0 个 evoclaw-curator 自动生成的技能
+
 ## v0.60.0 (2026-06-28)
 
 ### 对照 openclaw-main 的 10 轮基础设施与安全提升计划

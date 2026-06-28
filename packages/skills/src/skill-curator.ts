@@ -220,7 +220,13 @@ export class SkillCurator {
   private evolutions = new Map<string, SkillEvolutionEntry>();
   private maxEvolutionEntries = 1000;
   private validator: SkillValidator;
-  /** Auto-extraction is OFF by default — must be explicitly enabled via API or config. */
+  /**
+   * 自动提取已永久禁用。
+   * 历史上此开关默认关闭，但通过 API 可启用，导致 data/skills/ 堆积
+   * 大量 evoclaw-curator 自动生成的低质量技能（通用 7 步骤模板、
+   * 机械关键词触发器）。现在自动提取逻辑已从 llm-caller.ts 移除，
+   * 此字段保留仅为向后兼容，但不再可被启用。
+   */
   private autoExtractionEnabled = false;
   /** 归档目录：被归档的技能移到此目录，可恢复。 */
   private archiveDir: string;
@@ -240,64 +246,39 @@ export class SkillCurator {
     this.loadFromDisk();
   }
 
-  /** Enable automatic skill extraction from task solutions. Use with caution. */
+  /**
+   * 自动提取已永久禁用，此方法仅为向后兼容保留，不再产生效果。
+   * 技能只能通过 WebUI 手动创建或显式 API 调用创建。
+   */
   enableAutoExtraction(): void {
-    this.autoExtractionEnabled = true;
-    process.stdout.write("[SkillCurator] Auto-extraction ENABLED — skills may be created from task solutions.");
+    process.stdout.write("[SkillCurator] Auto-extraction is permanently DISABLED — call ignored. Skills can only be created manually via WebUI or explicit API.");
   }
 
-  /** Disable automatic skill extraction. This is the default. */
+  /** Disable automatic skill extraction. This is the default and permanent state. */
   disableAutoExtraction(): void {
     this.autoExtractionEnabled = false;
     process.stdout.write("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.");
   }
 
   isAutoExtractionEnabled(): boolean {
-    return this.autoExtractionEnabled;
+    return false;
   }
 
   /**
    * Consider extracting a skill from the current task solution.
-   * Triggered periodically (every 15 tool calls) when auto-extraction is enabled,
-   * inspired by Hermes's GEPA algorithm.
+   *
+   * 已永久禁用：历史上每 15 次工具调用会触发 SkillCurator 自动生成
+   * 低质量技能（evoclaw-curator 作者、通用 7 步骤模板），导致
+   * data/skills/ 堆积大量无用技能。现在此方法为 no-op。
    */
   considerExtraction(
-    sessionId: string,
-    toolCallCount: number,
-    lastToolResult: unknown,
-    taskDescription: string
+    _sessionId: string,
+    _toolCallCount: number,
+    _lastToolResult: unknown,
+    _taskDescription: string
   ): void {
-    if (!this.autoExtractionEnabled) {
-      process.stdout.write(
-        `[SkillCurator] Extraction considered but skipped: auto-extraction disabled (session=${sessionId}, toolCallCount=${toolCallCount})`
-      );
-      return;
-    }
-
-    if (toolCallCount % 15 !== 0) {
-      process.stdout.write(
-        `[SkillCurator] Extraction considered but not triggered: toolCallCount=${toolCallCount} is not a multiple of 15 (session=${sessionId})`
-      );
-      return;
-    }
-
-    process.stdout.write(
-      `[SkillCurator] Auto-extraction triggered at toolCallCount=${toolCallCount} for session=${sessionId}`
-    );
-
-    const solution = typeof lastToolResult === "string"
-      ? lastToolResult
-      : JSON.stringify(lastToolResult);
-
-    this.extractSkillFromSolution(taskDescription, solution, {
-      sessionId,
-      toolCallCount,
-      trigger: "gepa_periodic",
-    }).catch((err) => {
-      process.stderr.write(
-        `[SkillCurator] Periodic auto-extraction failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-    });
+    // 永久 no-op：自动提取已禁用
+    return;
   }
 
   async extractSkillFromSolution(
@@ -305,171 +286,11 @@ export class SkillCurator {
     solution: string,
     context: Record<string, unknown>
   ): Promise<Skill | null> {
-    // ── Gate 0: auto-extraction must be explicitly enabled ──
-    if (!this.autoExtractionEnabled) {
-      return null;
-    }
-
-    const skillName = this.deriveSkillName(task);
-    const skillDescription = this.deriveDescription(task, solution);
-    const instructions = this.deriveInstructions(task, solution);
-
-    // ── Quality gate: reject garbage/placeholder skills ──
-    if (!this.isValidSkillName(skillName)) {
-      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: invalid name "${skillName}"`);
-      return null;
-    }
-    if (!this.isValidDescription(skillDescription)) {
-      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: placeholder description for "${skillName}"`);
-      return null;
-    }
-    if (!this.isValidInstructions(instructions)) {
-      process.stderr.write(`[SkillCurator] Rejected auto-extracted skill: insufficient instructions for "${skillName}"`);
-      return null;
-    }
-
-    const triggers = this.deriveTriggers(task, solution);
-    const keywords = this.deriveKeywords(task, solution);
-    const category = this.deriveCategory(task, context);
-    const requires = this.deriveDependencies(solution);
-
-    const version = "1.0.0";
-    const skillId = uuid();
-
-    const skillManager = this.registry.resolveService<{
-      installSkill(path: string): Promise<Skill>;
-    }>("skillManager");
-
-    const skillMd = this.generateSkillMd({
-      name: skillName,
-      version,
-      description: skillDescription,
-      author: "evoclaw-curator",
-      category,
-      keywords,
-      triggers,
-      requires,
-      instructions,
-      solution,
-    });
-
-    const skillDir = this.resolveSkillDir(skillName);
-
-    if (!fs.existsSync(skillDir)) {
-      fs.mkdirSync(skillDir, { recursive: true });
-    }
-
-    const skillMdPath = path.join(skillDir, "SKILL.md");
-    // 使用原子写入，防止崩溃时产生截断的 SKILL.md
-    atomicWriteFileLocal(skillMdPath, skillMd);
-
-    const meta = {
-      name: skillName,
-      version,
-      description: skillDescription,
-      category,
-      keywords,
-      author: "evoclaw-curator",
-      license: "MIT",
-    };
-    // 使用原子写入，防止崩溃时产生截断的 _meta.json
-    atomicWriteFileLocal(
-      path.join(skillDir, "_meta.json"),
-      JSON.stringify(meta, null, 2)
-    );
-
-    let installedSkill: Skill | null = null;
-    if (skillManager) {
-      try {
-        installedSkill = await skillManager.installSkill(skillMdPath);
-      } catch (err) {
-        process.stderr.write("[SkillCurator] Failed to auto-install extracted skill:" + " " + (err instanceof Error ? err.message : String(err)));
-      }
-    }
-
-    if (!installedSkill) {
-      installedSkill = {
-        id: skillId,
-        name: skillName,
-        version,
-        description: skillDescription,
-        author: "evoclaw-curator",
-        license: "MIT",
-        keywords,
-        category,
-        entryPoint: skillMdPath,
-        installPath: skillMdPath,
-        lifecycle: {
-          status: "active",
-          version,
-          installDate: new Date(),
-          lastUpdated: new Date(),
-          healthCheck: null,
-        },
-        config: {},
-        requires,
-        provides: [],
-        triggers,
-        sandboxPolicy: {
-          allowNetwork: false,
-          allowFileSystem: true,
-          allowSubprocess: false,
-          maxExecutionTime: 60000,
-          maxMemoryMB: 256,
-          allowedHosts: [],
-          allowedPaths: [],
-        },
-        body: {
-          instructions,
-          scripts: {},
-          examples: [],
-          hooks: {},
-        },
-        stats: {
-          invocationCount: 0,
-          successCount: 0,
-          failureCount: 0,
-          averageDuration: 0,
-          lastInvocation: null,
-          userRating: 0,
-        },
-      };
-    }
-
-    const entry: SkillEvolutionEntry = {
-      skillId: installedSkill.id,
-      skillName,
-      versions: [
-        {
-          version,
-          timestamp: new Date(),
-          changes: `从成功任务中提取: ${task.slice(0, 80)}`,
-          trigger: "extraction",
-          previousVersion: null,
-        },
-      ],
-      extractionSource: { task, solution, context },
-      improvementHistory: [],
-      deprecation: null,
-      createdAt: new Date(),
-      lastUpdatedAt: new Date(),
-    };
-
-    this.evolutions.set(entry.skillId, entry);
-    this.trimEvolutions();
-
-    await this.eventBus.publish(
-      "skill.curator.extracted",
-      {
-        skillId: entry.skillId,
-        skillName,
-        version,
-        task: task.slice(0, 100),
-      },
-      "skill-curator"
-    );
-
-    return installedSkill;
+    // ── Gate 0: 自动提取已永久禁用 ──
+    // 历史上此方法会从任务解决方案中提取技能，但生成的技能质量过低
+    // （通用模板、机械关键词），现已禁用。技能只能通过 WebUI 手动创建。
+    process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: auto-extraction permanently disabled.");
+    return null;
   }
 
   async improveSkill(

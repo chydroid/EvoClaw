@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.60.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.60.1-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -101,6 +101,21 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.60.1 更新亮点
+
+清理 `data/skills/` 下 20 个 evoclaw-curator 自动生成的低质量技能，并从源头切断自动创建路径，确保无用技能不再被自动生成。
+
+| 改动 | 模块 | 收益 |
+|---|---|---|
+| **修改技能创建逻辑** | `llm-caller.ts` + `skill-curator.ts` | 移除每 15 次工具调用触发的 `considerExtraction` 入口；`enableAutoExtraction` / `considerExtraction` / `extractSkillFromSolution` 全部改为永久 no-op，自动提取不可再被启用 |
+| **取消 5 分钟自动扫描安装** | `apps/server/src/index.ts` + `skill-manager.ts` | 移除 `startAutoScan` 周期扫描，改为启动时一次性 `scanAndInstall` 加载已有技能；移除 `tryGenerateCuratedSkill` 自动生成逻辑，缺少 `SKILL.md` 的目录直接跳过 |
+| **改为 WebUI 手动刷新触发** | `protocol-adapter.ts` | 扩展 `/api/skills/refresh` 端点，同时扫描 `data/skills` 与 `packages/skills/bundled`，返回安装/跳过详情 |
+| **附带修复** | `skill-manager.ts` | `validateSkillQuality` 路径不匹配 bug（传入文件路径而非目录导致所有技能被拒），修复后 41 个技能正常加载 |
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + 3174/3175 测试通过，88/88 服务健康，0 个 evoclaw-curator 自动生成的技能
+
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
 ### 🆕 v0.60.0 更新亮点
 

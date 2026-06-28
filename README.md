@@ -25,6 +25,14 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.60.1 亮点
+- **技能系统清理与自动创建逻辑收紧**：清理 `data/skills/` 下 20 个 evoclaw-curator 自动生成的低质量技能，并从源头切断自动创建路径
+  - **修改技能创建逻辑**：`llm-caller.ts` 移除每 15 次工具调用触发的 `considerExtraction` 入口；`skill-curator.ts` 中 `enableAutoExtraction` / `considerExtraction` / `extractSkillFromSolution` 全部改为永久 no-op，自动提取不可再被启用
+  - **取消 5 分钟自动扫描安装**：`apps/server/src/index.ts` 移除 `startAutoScan` 周期扫描，改为启动时一次性 `scanAndInstall` 加载已有技能；`skill-manager.ts` 移除 `tryGenerateCuratedSkill` 自动生成逻辑，缺少 `SKILL.md` 的目录直接跳过
+  - **改为 WebUI 手动刷新触发**：`protocol-adapter.ts` 扩展 `/api/skills/refresh` 端点，同时扫描 `data/skills` 与 `packages/skills/bundled`，返回安装/跳过详情
+  - **附带修复**：`validateSkillQuality` 路径不匹配 bug（传入文件路径而非目录导致所有技能被拒），修复后 41 个技能正常加载
+  - **验证**：`pnpm -r build` + `pnpm typecheck` + 3174/3175 测试通过，88/88 服务健康
+
 ### v0.60.0 亮点
 - **对照 openclaw-main 的 10 轮基础设施与安全提升**：以 openclaw-main 为参照系，对网关/安全/基础设施/技能子系统进行 10 轮短板补齐，对齐行业最佳实践
   - **第 1 轮（技能安装 download 种类完整实现）**：`SkillManager.executeStructuredInstall` 改为 async，新增 `executeDownloadInstall` 私有方法实现完整的 download 安装（HTTPS-only + SSRF 防护 + 100MB 上限 + zip/tar.gz/tar.bz2 解压 + stripComponents）；新增 anyBins 预检查与 bins 后置校验
