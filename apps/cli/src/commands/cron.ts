@@ -268,4 +268,83 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         console.log(c("red", `❌ ${err instanceof Error ? err.message : String(err)}`));
       }
     });
+
+  // ── cron get / show ──────────────────────────────────────────────
+  // 单个任务详情查看（openclaw 兼容：get 与 show 互为别名）
+  cron
+    .command("get <taskId>")
+    .description("Show detailed information about a single scheduled task")
+    .option("--json", "Output as JSON")
+    .action(async (taskId: string, opts: Record<string, unknown>) => {
+      try {
+        // 服务端未提供单条接口时，回退到 list 再过滤
+        const res = await apiRequest<CronResult>("GET", "/api/scheduler/tasks");
+        if (res.status !== 200) {
+          console.log(c("red", `❌ Failed: ${res.data.error || `HTTP ${res.status}`}`));
+          return;
+        }
+        const all = res.data.tasks || [];
+        const task = all.find((t) => t.id === taskId || t.name === taskId);
+        if (!task) {
+          console.log(c("yellow", `⚠ Task "${taskId}" not found`));
+          return;
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(task, null, 2));
+          return;
+        }
+        console.log(`\n${c("bold", "=== Cron Task ===")}\n`);
+        console.log(`  ID:        ${c("gray", task.id)}`);
+        console.log(`  Name:      ${c("bold", task.name)}`);
+        console.log(`  Cron:      ${c("cyan", task.cronExpression)}`);
+        console.log(`  Type:      ${c("yellow", task.handlerType)}`);
+        console.log(`  Enabled:   ${task.enabled ? c("green", "yes") : c("gray", "no")}`);
+        console.log(`  Runs:      ${task.runCount}  Errors: ${c("red", String(task.errorCount))}`);
+        console.log(`  Last run:  ${formatDate(task.lastRun)}`);
+        console.log(`  Next run:  ${c("cyan", formatDate(task.nextRun))}`);
+        if (task.description) console.log(`  Desc:      ${c("gray", task.description)}`);
+        console.log();
+      } catch (err) {
+        console.log(c("red", `❌ ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // show 作为 get 的别名
+  cron
+    .command("show <taskId>")
+    .description("Alias for `get`")
+    .option("--json", "Output as JSON")
+    .action(async (taskId: string, opts: Record<string, unknown>) => {
+      // 直接复用 get 逻辑：通过内部 dispatch
+      try {
+        const res = await apiRequest<CronResult>("GET", "/api/scheduler/tasks");
+        if (res.status !== 200) {
+          console.log(c("red", `❌ Failed: ${res.data.error || `HTTP ${res.status}`}`));
+          return;
+        }
+        const all = res.data.tasks || [];
+        const task = all.find((t) => t.id === taskId || t.name === taskId);
+        if (!task) {
+          console.log(c("yellow", `⚠ Task "${taskId}" not found`));
+          return;
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(task, null, 2));
+          return;
+        }
+        console.log(`\n${c("bold", "=== Cron Task ===")}\n`);
+        console.log(`  ID:        ${c("gray", task.id)}`);
+        console.log(`  Name:      ${c("bold", task.name)}`);
+        console.log(`  Cron:      ${c("cyan", task.cronExpression)}`);
+        console.log(`  Type:      ${c("yellow", task.handlerType)}`);
+        console.log(`  Enabled:   ${task.enabled ? c("green", "yes") : c("gray", "no")}`);
+        console.log(`  Runs:      ${task.runCount}  Errors: ${c("red", String(task.errorCount))}`);
+        console.log(`  Last run:  ${formatDate(task.lastRun)}`);
+        console.log(`  Next run:  ${c("cyan", formatDate(task.nextRun))}`);
+        if (task.description) console.log(`  Desc:      ${c("gray", task.description)}`);
+        console.log();
+      } catch (err) {
+        console.log(c("red", `❌ ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
 }

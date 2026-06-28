@@ -89,6 +89,8 @@ const commandModules = [
   "configure", "infer", "tui", "transcripts", "dns", "qr",
   "update", "backup", "uninstall", "reset",
   "enhancements",
+  // ── openclaw parity (v0.62.0) ──────────────────────────────────
+  "exec-policy", "migrate", "node", "nodes", "proxy", "devices", "commitments",
 ];
 
 for (const mod of commandModules) {

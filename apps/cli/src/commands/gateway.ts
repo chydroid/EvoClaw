@@ -244,4 +244,319 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       console.log(c("green", "✅ Gateway service registration removed"));
       clearPid();
     });
+
+  // ── gateway call ─────────────────────────────────────────────────
+  // 直接调用 Gateway RPC 方法（openclaw 兼容：通用 RPC 入口）
+  gw
+    .command("call <method>")
+    .description("Invoke a Gateway RPC method (POST /api/rpc/<method>)")
+    .option("--params <json>", "JSON-encoded params", "{}")
+    .option("--get", "Use GET instead of POST (read-only methods)")
+    .option("--json", "Output raw JSON response")
+    .action(async (method: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      let params: unknown = {};
+      if (opts.params) {
+        try {
+          params = JSON.parse(String(opts.params));
+        } catch (err) {
+          process.stderr.write(c("red", `❌ Invalid --params JSON: ${err instanceof Error ? err.message : String(err)}\n`));
+          process.exitCode = 1;
+          return;
+        }
+      }
+      try {
+        const httpMethod = opts.get ? "GET" : "POST";
+        const url = `/api/rpc/${encodeURIComponent(method)}`;
+        const r = await apiRequest<unknown>(httpMethod, url, opts.get ? undefined : params);
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("cyan", `◆ ${method}`));
+        console.log(JSON.stringify(r.data, null, 2));
+      } catch (err) {
+        process.stderr.write(c("red", `❌ RPC call failed: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  // ── gateway usage-cost ──────────────────────────────────────────
+  // 显示 token 用量与成本统计（openclaw 兼容）
+  gw
+    .command("usage-cost")
+    .description("Show token usage and cost summary")
+    .option("--since <dur>", "Window start (e.g. 24h, 7d)", "24h")
+    .option("--by-model", "Group by model")
+    .option("--by-agent", "Group by agent")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      try {
+        const query = `?since=${encodeURIComponent(String(opts.since || "24h"))}`;
+        const r = await apiRequest<{
+          totalTokens?: number;
+          totalCost?: number;
+          promptTokens?: number;
+          completionTokens?: number;
+          byModel?: Array<{ model: string; tokens: number; cost: number }>;
+          byAgent?: Array<{ agent: string; tokens: number; cost: number }>;
+        }>("GET", `/api/usage/cost${query}`);
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("cyan", "═".repeat(50)));
+        console.log(c("bold", `  ${ICONS.rock}  Usage & Cost (${opts.since || "24h"})`));
+        console.log(c("cyan", "═".repeat(50)));
+        console.log(`  Total tokens:   ${r.data?.totalTokens ?? 0}`);
+        console.log(`  Prompt:        ${r.data?.promptTokens ?? 0}`);
+        console.log(`  Completion:    ${r.data?.completionTokens ?? 0}`);
+        console.log(`  Total cost:    $${(r.data?.totalCost ?? 0).toFixed(4)}`);
+        if (opts.byModel && r.data?.byModel && r.data.byModel.length > 0) {
+          console.log(c("bold", "\n  By Model:"));
+          for (const m of r.data.byModel) {
+            console.log(`    ${c("cyan", m.model.padEnd(28))} ${String(m.tokens).padStart(10)}  $${m.cost.toFixed(4)}`);
+          }
+        }
+        if (opts.byAgent && r.data?.byAgent && r.data.byAgent.length > 0) {
+          console.log(c("bold", "\n  By Agent:"));
+          for (const a of r.data.byAgent) {
+            console.log(`    ${c("cyan", a.agent.padEnd(28))} ${String(a.tokens).padStart(10)}  $${a.cost.toFixed(4)}`);
+          }
+        }
+        console.log();
+      } catch (err) {
+        process.stderr.write(c("red", `❌ Failed to fetch usage: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  // ── gateway stability ───────────────────────────────────────────
+  // 显示 Gateway 稳定性指标（错误率、P99 延迟、最近重启）
+  gw
+    .command("stability")
+    .description("Show Gateway stability metrics (error rate, p99 latency, restarts)")
+    .option("--window <dur>", "Time window (e.g. 1h, 24h)", "1h")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      try {
+        const query = `?window=${encodeURIComponent(String(opts.window || "1h"))}`;
+        const r = await apiRequest<{
+          uptimeSeconds?: number;
+          requestCount?: number;
+          errorCount?: number;
+          errorRate?: number;
+          p50LatencyMs?: number;
+          p99LatencyMs?: number;
+          restartCount?: number;
+          lastRestart?: string;
+        }>("GET", `/api/stability${query}`);
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("cyan", "═".repeat(50)));
+        console.log(c("bold", `  ${ICONS.rock}  Gateway Stability (${opts.window || "1h"})`));
+        console.log(c("cyan", "═".repeat(50)));
+        console.log(`  Uptime:          ${(r.data?.uptimeSeconds ?? 0).toFixed(0)}s`);
+        console.log(`  Requests:        ${r.data?.requestCount ?? 0}`);
+        console.log(`  Errors:           ${r.data?.errorCount ?? 0}`);
+        console.log(`  Error rate:      ${((r.data?.errorRate ?? 0) * 100).toFixed(2)}%`);
+        console.log(`  p50 latency:     ${r.data?.p50LatencyMs ?? "—"}ms`);
+        console.log(`  p99 latency:     ${r.data?.p99LatencyMs ?? "—"}ms`);
+        console.log(`  Restarts:         ${r.data?.restartCount ?? 0}`);
+        if (r.data?.lastRestart) console.log(`  Last restart:    ${r.data.lastRestart}`);
+        console.log();
+      } catch (err) {
+        process.stderr.write(c("red", `❌ Failed to fetch stability: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  // ── gateway diagnostics ────────────────────────────────────────
+  // diagnostics export：导出诊断 bundle（含日志摘要、配置、health 快照）
+  const diagnostics = gw
+    .command("diagnostics")
+    .description("Gateway diagnostics utilities");
+
+  diagnostics
+    .command("export")
+    .description("Export a diagnostics bundle (logs/config/health snapshot)")
+    .option("--output <file>", "Write to file (default: stdout)")
+    .option("--include-logs", "Include recent log lines")
+    .option("--include-config", "Include sanitized config dump")
+    .option("--log-lines <n>", "Max log lines to include", "200")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      try {
+        const body: Record<string, unknown> = {
+          includeLogs: Boolean(opts.includeLogs),
+          includeConfig: Boolean(opts.includeConfig),
+          logLines: parseInt(String(opts.logLines || "200"), 10),
+        };
+        const r = await apiRequest<Record<string, unknown>>("POST", "/api/diagnostics/export", body);
+        const json = JSON.stringify(r.data, null, 2);
+        if (opts.output) {
+          const outPath = path.resolve(String(opts.output));
+          const tmp = `${outPath}.tmp.${process.pid}`;
+          fs.writeFileSync(tmp, json, "utf-8");
+          fs.renameSync(tmp, outPath);
+          console.log(c("green", `✅ Diagnostics bundle exported to ${outPath} (${json.length} bytes)`));
+        } else {
+          console.log(json);
+        }
+      } catch (err) {
+        process.stderr.write(c("red", `❌ Diagnostics export failed: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  diagnostics
+    .command("health")
+    .description("Show diagnostics health snapshot (alias for gateway health)")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      try {
+        const r = await apiRequest<Record<string, unknown>>("GET", "/health");
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("green", `✓ Gateway health: ok`));
+        console.log(`  Version: ${r.data.version || VERSION}`);
+        console.log(`  Uptime:   ${r.data.uptime || 0}s`);
+        console.log();
+      } catch (err) {
+        process.stderr.write(c("red", `❌ Health check failed: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  // ── gateway probe ───────────────────────────────────────────────
+  // 探测特定 endpoint 并测量响应时间
+  gw
+    .command("probe <endpoint>")
+    .description("Probe a Gateway endpoint and measure response time")
+    .option("--method <method>", "HTTP method", "GET")
+    .option("--body <json>", "JSON body for POST/PUT", "{}")
+    .option("--json", "Output as JSON")
+    .action(async (endpoint: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      const method = String(opts.method || "GET").toUpperCase();
+      let body: unknown = undefined;
+      if (method !== "GET" && method !== "HEAD") {
+        try {
+          body = JSON.parse(String(opts.body || "{}"));
+        } catch {
+          process.stderr.write(c("red", "❌ Invalid --body JSON\n"));
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const t0 = Date.now();
+      try {
+        const r = await apiRequest<unknown>(method, endpoint, body);
+        const elapsed = Date.now() - t0;
+        if (opts.json) {
+          console.log(JSON.stringify({ status: r.status, elapsedMs: elapsed, data: r.data }, null, 2));
+          return;
+        }
+        const statusIcon = r.status >= 200 && r.status < 300 ? c("green", "✓") : r.status >= 400 ? c("red", "✗") : c("yellow", "⚠");
+        console.log(`  ${statusIcon} ${method} ${endpoint}`);
+        console.log(`    Status:   ${r.status}`);
+        console.log(`    Latency:  ${c("cyan", `${elapsed}ms`)}`);
+        const preview = JSON.stringify(r.data).slice(0, 200);
+        console.log(`    Body:     ${c("gray", preview)}${preview.length >= 200 ? "..." : ""}`);
+        console.log();
+      } catch (err) {
+        const elapsed = Date.now() - t0;
+        process.stderr.write(c("red", `❌ Probe failed after ${elapsed}ms: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  // ── gateway discover ────────────────────────────────────────────
+  // 发现 Gateway 上注册的所有服务与工具
+  gw
+    .command("discover")
+    .description("Discover services and tools registered on the Gateway")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) {
+        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
+        return;
+      }
+      try {
+        const r = await apiRequest<{
+          services?: Array<{ name: string; version?: string; healthy?: boolean }>;
+          tools?: Array<{ name: string; category?: string }>;
+          channels?: Array<{ name: string; type?: string; connected?: boolean }>;
+        }>("GET", "/api/discover");
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("cyan", "═".repeat(50)));
+        console.log(c("bold", `  ${ICONS.rock}  Gateway Discovery`));
+        console.log(c("cyan", "═".repeat(50)));
+        const services = r.data?.services || [];
+        const tools = r.data?.tools || [];
+        const channels = r.data?.channels || [];
+        if (services.length > 0) {
+          console.log(c("bold", `\n  Services (${services.length}):`));
+          for (const s of services) {
+            const icon = s.healthy === false ? c("red", "✗") : c("green", "●");
+            console.log(`    ${icon} ${c("cyan", s.name)} ${s.version ? c("gray", `v${s.version}`) : ""}`);
+          }
+        }
+        if (tools.length > 0) {
+          console.log(c("bold", `\n  Tools (${tools.length}):`));
+          for (const t of tools) {
+            console.log(`    ${ICONS.bullet()} ${c("cyan", t.name)} ${t.category ? c("gray", `[${t.category}]`) : ""}`);
+          }
+        }
+        if (channels.length > 0) {
+          console.log(c("bold", `\n  Channels (${channels.length}):`));
+          for (const ch of channels) {
+            const icon = ch.connected === false ? c("red", "✗") : c("green", "●");
+            console.log(`    ${icon} ${c("cyan", ch.name)} ${ch.type ? c("gray", ch.type) : ""}`);
+          }
+        }
+        if (services.length === 0 && tools.length === 0 && channels.length === 0) {
+          console.log(c("gray", "  No services/tools/channels registered."));
+        }
+        console.log();
+      } catch (err) {
+        process.stderr.write(c("red", `❌ Discovery failed: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exitCode = 1;
+      }
+    });
 }

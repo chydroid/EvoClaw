@@ -25,6 +25,18 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.62.0 亮点
+- **WebUI 聊天输入框 3 行初始高度**：textarea `rows` 由 1 改为 3，level 0 的 `minHeight` 由 60px → 84px / `maxHeight` 由 120px → 160px，多行输入更顺手
+- **CLI 命令体系对标 openclaw 全面补齐**：对照 `D:\abc\openclaw-main` 的 ~52 个顶级命令，新增 7 个缺失命令并增强 5 个现有命令的子命令覆盖，使 EvoClaw CLI 在子命令完整度、错误处理、JSON 输出、确认提示、脱敏输出等方面比 openclaw 更全面。本版本属重大里程碑，递增 minor 位
+  - **新增共享工具 `utils/shared.ts`**：提供 `ensureServer` / `printJson` / `printTable` / `parseDurationMs` / `confirmPrompt` / `formatTimestamp` / `maskSecret` / `parseJsonArg` 等 15 个跨命令复用函数
+  - **新增 7 个命令**：`exec-policy`（show/preset/set，3 个 preset）/ `migrate`（list/plan/apply，4 步 apply 流程）/ `node`（run/status/install/uninstall/stop/start/restart）/ `nodes`（11 顶层子命令 + camera/screen/location 嵌套）/ `proxy`（8 子命令，含 4 个预设查询）/ `devices`（7 子命令，token 脱敏 + 二次确认）/ `commitments`（list/dismiss/show/summary，多端点回退）
+  - **增强 gateway**：新增 `call` / `usage-cost` / `stability` / `diagnostics export` / `diagnostics health` / `probe` / `discover` 共 7 个子命令
+  - **增强 cron**：新增 `get` / `show` 单任务详情查看
+  - **增强 sessions**：新增 `cleanup`（显式子命令）/ `tail`（轮询跟踪 + Ctrl+C 退出）/ `export-trajectory`（导出完整会话轨迹为 JSON）
+  - **增强 tasks**：新增 `audit` / `maintenance` / `notify` / `cancel` + `flow list|show|cancel` 嵌套子命令组
+  - **增强 system**：`heartbeat` 拆分为 `last`/`enable`/`disable`/`status` 4 个正式 sub-subcommand，`events` 增加 `--limit`/`--level`/`--category`/`--since` 过滤，`presence` 对接 API
+  - **验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test`（3967 passed / 73 skipped / 0 failed）全部通过，88/88 服务健康
+
 ### v0.61.0 亮点
 - **对照 openclaw-main 的 10 轮深度短板补齐**：以 openclaw-main 与 GitHub 上 openclaw 最新更新为参照系，对 EvoClaw 进行 10 轮深度系统性提升，覆盖技能生态、命令执行审批、审计矩阵、密钥管理、定时调度、机器人循环防护、诊断体系、prompt cache 稳定性、SQLite 精细化管理、gateway 重启协调体系。本版本属于重大里程碑，递增 minor 位。
   - **第 1 轮（SKILL.md frontmatter 安装规范 + 5 个 bundled skills）**：`SkillInstaller` 完整解析 `bins`/`anyBins`/`requires.env`/`requires.os` 字段，安装前 anyBins 预检查与 bins 后置校验；新增 `datetime-helper`、`calculator`、`text-utils`、`unit-converter`、`web-fetch` 5 个 bundled 技能

@@ -4,11 +4,11 @@
     "SKILL.md": "b14b8f3bf2e0c29e08323f24d9f26c6bc4862d91bc616bad4c782d16ff7bf165",
     "_meta.json": "76b57bb1b96afc072f7eae6ff47eb9484a811d3a04c03d53fbee4d258e3d3ca2"
   },
-  "skillId": "b33b950a-9685-406f-b886-cc2c5e69a102",
+  "skillId": "36ef8106-e369-42cf-b26c-41fabcbd6831",
   "name": "uuid-generator",
   "version": "1.0.0",
   "source": "bundled",
   "sourceUrl": "D:\\abc\\EvoClaw\\packages\\skills\\bundled\\uuid-generator\\SKILL.md",
-  "installedAt": "2026-06-28T11:55:41.868Z",
+  "installedAt": "2026-06-28T14:36:39.277Z",
   "installedBy": "system"
 }

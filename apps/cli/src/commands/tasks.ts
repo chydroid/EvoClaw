@@ -244,4 +244,262 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
         console.log(c("red", `${ICONS.error()} Failed to trigger evolution: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
+
+  // ── tasks audit ─────────────────────────────────────────────────
+  // 审计工作板变更记录（openclaw 兼容命令）
+  tasks
+    .command("audit")
+    .description("Show audit trail of workboard task changes")
+    .option("--task <id>", "Filter by task id")
+    .option("--limit <n>", "Max entries to show", "50")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const query = opts.task ? `?taskId=${encodeURIComponent(String(opts.task))}` : "";
+        const r = await apiRequest<{ entries?: Array<Record<string, unknown>> }>(
+          "GET",
+          `/api/workboard/audit${query}`,
+        );
+        let entries = r.data?.entries || [];
+        const limit = parseInt(String(opts.limit || "50"), 10);
+        entries = entries.slice(0, isNaN(limit) ? 50 : limit);
+        if (opts.json) {
+          console.log(JSON.stringify({ count: entries.length, entries }, null, 2));
+          return;
+        }
+        console.log(section("Workboard Audit"));
+        if (entries.length === 0) {
+          console.log(c("gray", "  No audit entries."));
+          return;
+        }
+        for (const e of entries) {
+          const ts = (e.timestamp as string) || (e.at as string) || "—";
+          const actor = (e.actor as string) || (e.user as string) || "system";
+          const action = (e.action as string) || (e.op as string) || "—";
+          const taskId = (e.taskId as string) || (e.id as string) || "—";
+          console.log(`  ${c("gray", String(ts))} ${c("cyan", String(actor))} ${action} ${c("gray", String(taskId))}`);
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Audit fetch failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // ── tasks maintenance ──────────────────────────────────────────
+  // 工作板维护：清理过期、归档已完成、统计
+  tasks
+    .command("maintenance")
+    .description("Run workboard maintenance (archive completed, prune stale)")
+    .option("--archive-age <days>", "Archive tasks completed more than N days ago", "7")
+    .option("--prune-age <days>", "Prune archived tasks older than N days", "30")
+    .option("--dry-run", "Preview without modifying")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const body: Record<string, unknown> = {
+          archiveAgeDays: parseInt(String(opts.archiveAge || "7"), 10),
+          pruneAgeDays: parseInt(String(opts.pruneAge || "30"), 10),
+          dryRun: Boolean(opts.dryRun),
+        };
+        const r = await apiRequest<{ archived?: number; pruned?: number; errors?: string[] }>(
+          "POST",
+          "/api/workboard/maintenance",
+          body,
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(section("Workboard Maintenance"));
+        if (opts.dryRun) console.log(c("yellow", `${ICONS.warn()} Dry run — no changes applied`));
+        console.log(`  Archived:   ${c("cyan", String(r.data?.archived ?? 0))}`);
+        console.log(`  Pruned:      ${c("cyan", String(r.data?.pruned ?? 0))}`);
+        if (r.data?.errors && r.data.errors.length > 0) {
+          console.log(c("red", `  Errors (${r.data.errors.length}):`));
+          for (const e of r.data.errors) console.log(c("gray", `    ${e}`));
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Maintenance failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // ── tasks notify ───────────────────────────────────────────────
+  // 为 task 推送通知（openclaw 兼容命令，对接 notification subsystem）
+  tasks
+    .command("notify <id>")
+    .description("Send a notification referencing a task")
+    .requiredOption("--message <text>", "Notification message body")
+    .option("--channel <name>", "Notification channel (e.g. webhook, email)")
+    .option("--level <level>", "Notification level (info|warn|critical)", "info")
+    .option("--json", "Output as JSON")
+    .action(async (id: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const body: Record<string, unknown> = {
+          taskId: id,
+          message: opts.message,
+          level: opts.level,
+        };
+        if (opts.channel) body.channel = opts.channel;
+        const r = await apiRequest<{ success?: boolean; notificationId?: string }>(
+          "POST",
+          "/api/workboard/notify",
+          body,
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        if (r.data?.success || r.status === 200) {
+          console.log(c("green", `${ICONS.ok()} Notification sent for task ${c("cyan", id)}`));
+          if (r.data?.notificationId) console.log(c("gray", `  Notification id: ${r.data.notificationId}`));
+        } else {
+          console.log(c("yellow", `${ICONS.warn()} Notification may not have been delivered`));
+        }
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Notify failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // ── tasks cancel ───────────────────────────────────────────────
+  // 取消任务（区别于 delete：cancel 保留记录但状态置为 cancelled）
+  tasks
+    .command("cancel <id>")
+    .description("Cancel a task (keeps the record, marks as cancelled)")
+    .option("--reason <text>", "Cancellation reason")
+    .option("--json", "Output as JSON")
+    .action(async (id: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const body: Record<string, unknown> = { status: "cancelled" };
+        if (opts.reason) body.reason = opts.reason;
+        const r = await apiRequest<WorkboardTask>(
+          "POST",
+          `/api/workboard/tasks/${encodeURIComponent(id)}/status`,
+          body,
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(c("green", `${ICONS.ok()} Task ${c("cyan", id)} cancelled`));
+        if (opts.reason) console.log(c("gray", `  Reason: ${opts.reason}`));
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Cancel failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // ── tasks flow ──────────────────────────────────────────────────
+  // 多步骤工作流管理（openclaw 兼容：flow list / show / cancel）
+  const flow = tasks
+    .command("flow")
+    .description("Manage multi-step task flows");
+
+  flow
+    .command("list")
+    .description("List active task flows")
+    .option("--status <status>", "Filter by status (running|paused|completed|failed)")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const query = opts.status ? `?status=${encodeURIComponent(String(opts.status))}` : "";
+        const r = await apiRequest<{ flows?: Array<Record<string, unknown>> }>(
+          "GET",
+          `/api/workboard/flows${query}`,
+        );
+        const flows = r.data?.flows || [];
+        if (opts.json) {
+          console.log(JSON.stringify({ count: flows.length, flows }, null, 2));
+          return;
+        }
+        console.log(section("Task Flows"));
+        if (flows.length === 0) {
+          console.log(c("gray", "  No active flows."));
+          return;
+        }
+        for (const f of flows) {
+          const fid = (f.id as string) || "—";
+          const status = (f.status as string) || "—";
+          const title = (f.title as string) || (f.name as string) || "—";
+          const progress = (f.progress as string) || (f.step as string) || "—";
+          const statusIcon = status === "running" ? c("green", "●") : status === "paused" ? c("yellow", "◐") : status === "failed" ? c("red", "✗") : c("gray", "○");
+          console.log(`  ${statusIcon} ${c("cyan", fid)} ${c("bold", title)} ${c("gray", status)} step=${progress}`);
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Failed to list flows: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  flow
+    .command("show <flowId>")
+    .description("Show details of a task flow")
+    .option("--json", "Output as JSON")
+    .action(async (flowId: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const r = await apiRequest<Record<string, unknown>>(
+          "GET",
+          `/api/workboard/flows/${encodeURIComponent(flowId)}`,
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(section(`Flow: ${flowId}`));
+        const data = r.data as Record<string, unknown> | undefined;
+        if (!data) {
+          console.log(c("gray", "  Flow not found."));
+          return;
+        }
+        for (const [k, v] of Object.entries(data)) {
+          if (v === null || v === undefined) continue;
+          const display = typeof v === "object" ? JSON.stringify(v) : String(v);
+          console.log(`  ${ICONS.arrow()} ${k}: ${display.length > 100 ? display.slice(0, 100) + "..." : display}`);
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Flow not found: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  flow
+    .command("cancel <flowId>")
+    .description("Cancel a running task flow")
+    .option("--reason <text>", "Cancellation reason")
+    .option("--json", "Output as JSON")
+    .action(async (flowId: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const body: Record<string, unknown> = {};
+        if (opts.reason) body.reason = opts.reason;
+        const r = await apiRequest<{ success?: boolean }>(
+          "POST",
+          `/api/workboard/flows/${encodeURIComponent(flowId)}/cancel`,
+          body,
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        if (r.data?.success || r.status === 200) {
+          console.log(c("green", `${ICONS.ok()} Flow ${c("cyan", flowId)} cancelled`));
+        } else {
+          console.log(c("yellow", `${ICONS.warn()} Flow cancellation may not have succeeded`));
+        }
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Cancel flow failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
 }

@@ -2433,8 +2433,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
               style={{
                 ...textAreaStyle,
                 width: "100%",
-                minHeight: textAreaExpandLevel === 0 ? "60px" : textAreaExpandLevel === 1 ? "130px" : "260px",
-                maxHeight: textAreaExpandLevel === 0 ? "120px" : textAreaExpandLevel === 1 ? "300px" : "500px",
+                minHeight: textAreaExpandLevel === 0 ? "84px" : textAreaExpandLevel === 1 ? "130px" : "260px",
+                maxHeight: textAreaExpandLevel === 0 ? "160px" : textAreaExpandLevel === 1 ? "300px" : "500px",
                 transition: "min-height 0.2s ease",
                 paddingRight: "32px",
               }}
@@ -2445,7 +2445,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
               onCompositionEnd={() => { isComposingRef.current = false; }}
               onBlur={() => { setTimeout(() => { setShowCommandPanel(false); }, 200); }}
               placeholder={t("chat.input_placeholder").replace("{0}", getNickname("assistant") || "EvoClaw")}
-              rows={1}
+              rows={3}
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"

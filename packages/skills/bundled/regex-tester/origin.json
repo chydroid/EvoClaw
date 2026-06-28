@@ -4,11 +4,11 @@
     "SKILL.md": "a79da449c9ed0176a2894c8bea2d3a26bb228bb628430e4a4d0b3189cfc2a878",
     "_meta.json": "13ad4f93397b6fa7e059fb1fb3d1785a7eb1dd3d0976a12cd0d65002ad485b24"
   },
-  "skillId": "02d01f59-3fdb-4f0e-8ac1-2b1deb2c6cae",
+  "skillId": "cb58a876-ed01-4600-b00b-ebe917ea50ff",
   "name": "regex-tester",
   "version": "1.0.0",
   "source": "bundled",
   "sourceUrl": "D:\\abc\\EvoClaw\\packages\\skills\\bundled\\regex-tester\\SKILL.md",
-  "installedAt": "2026-06-28T11:55:41.476Z",
+  "installedAt": "2026-06-28T14:36:38.979Z",
   "installedBy": "system"
 }

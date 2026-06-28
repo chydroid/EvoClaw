@@ -5,6 +5,69 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.0 (2026-06-28)
+
+### WebUI 输入框 3 行初始高度 + CLI 命令体系对标 openclaw 全面补齐
+
+本版本完成两项用户体验与命令行能力的系统性提升：(1) WebUI 聊天输入框初始高度由 1 行调整为 3 行，minHeight/maxHeight 同步上调，提升多行输入体验；(2) 对照 `D:\abc\openclaw-main` 的 CLI 命令体系（约 52 个顶级命令），补齐 7 个缺失命令并增强 5 个现有命令的子命令覆盖，使 EvoClaw CLI 的实现标准不仅对齐 openclaw，在子命令完整度、错误处理、JSON 输出、确认提示、脱敏输出等方面更全面。本轮属重大里程碑，递增 minor 位。
+
+构建验证：`pnpm -r build` exit 0 / `pnpm typecheck` exit 0 / `pnpm test` 3967 passed / 73 skipped / 0 failed（与 v0.61.0 测试基线一致，新增逻辑通过现有测试套件覆盖，无新增测试文件）。CLI 烟测确认 7 个新命令（exec-policy / migrate / node / nodes / proxy / devices / commitments）与所有增强子命令（gateway call/usage-cost/stability/diagnostics/probe/discover；cron get/show；sessions cleanup/tail/export-trajectory；tasks audit/maintenance/notify/cancel/flow list/show/cancel；system heartbeat last/enable/disable/status）均能在 `--help` 输出中正确出现。服务器重启后 88/88 服务健康。
+
+#### WebUI 调整
+
+- `packages/web-ui/src/WebChatPage.tsx`：
+  - textarea `rows` 从 1 改为 3
+  - level 0 的 `minHeight` 由 60px → 84px，`maxHeight` 由 120px → 160px
+
+#### CLI 新增 7 个缺失命令
+
+新建共享工具 `apps/cli/src/utils/shared.ts`（约 175 行），提供 `ensureServer` / `printJson` / `printTable` / `printError` / `printSuccess` / `printWarn` / `printInfo` / `parseDurationMs` / `readOptionalFile` / `confirmPrompt` / `formatTimestamp` / `maskSecret` / `parseJsonArg` / `truncate` / `notImplemented` 等跨命令复用函数。
+
+- `apps/cli/src/commands/exec-policy.ts`（约 182 行）：3 个子命令（show / preset / set），3 个 preset（yolo / cautious / deny-all），对接 v0.61.0 的 exec-approvals 子系统。
+- `apps/cli/src/commands/migrate.ts`（约 313 行）：3 个子命令（list / plan / apply），provider 别名映射（hermes/openclaw/claude/cursor/cline/evoclaw），apply 走 4 步流程（plan → warnings check → backup → apply）。
+- `apps/cli/src/commands/node.ts`（约 180 行）：7 个子命令（run / status / install / uninstall / stop / start / restart），管理 headless node host 服务。
+- `apps/cli/src/commands/nodes.ts`（约 370 行）：顶层子命令 status/list/describe/pending/approve/reject/remove/rename/invoke/notify/push + 嵌套父命令 camera(list/snap/clip)/screen(record)/location(get)，使用 parseDurationMs / parseJsonArg / formatTimestamp / printTable。
+- `apps/cli/src/commands/proxy.ts`（约 240 行）：8 个子命令（start / run / validate / coverage / sessions / query / blob / purge），query 内置 4 个预设（errors/slow/openai/anthropic），validate 支持可重复的 --allowed-url / --denied-url。
+- `apps/cli/src/commands/devices.ts`（约 220 行）：7 个子命令（list / remove / clear / approve / reject / rotate / revoke），token 输出统一 maskSecret 脱敏，clear/remove/rotate/revoke 强制 confirmPrompt 二次确认。
+- `apps/cli/src/commands/commitments.ts`（约 290 行）：4 个子命令（list / dismiss / show / summary），多端点回退（/api/commitments 与 /api/commitment/list，/api/commitments/dismiss 与 /api/commitment/dismiss/cancel），deadline 着色（overdue 标红），状态着色（pending 黄/in_progress 青/fulfilled 绿/cancelled 灰）。
+
+#### CLI 增强 5 个现有命令
+
+- `apps/cli/src/commands/gateway.ts`：新增 6 个子命令
+  - `call <method>`：通用 Gateway RPC 入口（POST /api/rpc/<method>，支持 --get / --params）
+  - `usage-cost`：token 用量与成本统计，支持 --by-model / --by-agent 分组
+  - `stability`：Gateway 稳定性指标（uptime/error rate/p50/p99 latency/restarts）
+  - `diagnostics export`：导出诊断 bundle（atomicWriteFile：temp + rename，跨设备回退到 copy+rename），支持 --include-logs / --include-config / --log-lines
+  - `diagnostics health`：health snapshot 子命令
+  - `probe <endpoint>`：探测特定 endpoint，测量响应延迟
+  - `discover`：发现 Gateway 上注册的服务 / 工具 / 频道
+
+- `apps/cli/src/commands/cron.ts`：新增 2 个子命令
+  - `get <taskId>`：单任务详情（服务端无单条接口时回退到 list 过滤）
+  - `show <taskId>`：作为 get 的别名
+
+- `apps/cli/src/commands/sessions.ts`：新增 3 个子命令
+  - `cleanup`：显式 cleanup 子命令（除原 --cleanup flag 外），支持 --status / --dry-run / --force / --json
+  - `tail <sessionId>`：轮询跟踪最新消息（--interval / --n / --once），Ctrl+C 优雅退出
+  - `export-trajectory <sessionId>`：导出完整会话轨迹为 JSON（--output 写文件 / --include-metadata 控制内部字段）
+
+- `apps/cli/src/commands/tasks.ts`：新增 5 个子命令 + flow 嵌套子命令组
+  - `audit`：工作板审计轨迹查询
+  - `maintenance`：工作板维护（archive/prune，支持 --dry-run）
+  - `notify <id>`：任务关联通知（--message / --channel / --level）
+  - `cancel <id>`：取消任务（保留记录置为 cancelled，区别于 delete）
+  - `flow list` / `flow show <id>` / `flow cancel <id>`：多步骤工作流管理
+
+- `apps/cli/src/commands/system.ts`：增强 4 个子命令
+  - `events`：增加 --limit / --level / --category / --since 过滤，使用 printTable 输出
+  - `heartbeat last` / `heartbeat enable` / `heartbeat disable` / `heartbeat status`：替换原 argument 模式为正式 sub-subcommand，对接 /api/system/heartbeat
+  - `presence`：从静态输出改为对接 /api/system/presence API，显示 sessions/agents 数量
+  - 统一使用 shared.ts 的 ensureServer / printError / printSuccess / printJson / printTable / formatTimestamp / parseDurationMs
+
+#### index.ts 注册
+
+- `apps/cli/src/index.ts`：在 `commandModules` 数组追加 7 个新命令名（exec-policy / migrate / node / nodes / proxy / devices / commitments），保留原有 45 个命令。
+
 ## v0.61.0 (2026-06-28)
 
 ### 对照 openclaw-main 的 10 轮深度短板补齐

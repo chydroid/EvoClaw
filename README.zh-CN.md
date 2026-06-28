@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.61.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.62.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -101,6 +101,33 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.62.0 更新亮点
+
+本版本完成两项用户体验与命令行能力的系统性提升：(1) WebUI 聊天输入框初始高度由 1 行调整为 3 行；(2) 对照 `D:\abc\openclaw-main` 的 CLI 命令体系（约 52 个顶级命令），补齐 7 个缺失命令并增强 5 个现有命令的子命令覆盖，使 EvoClaw CLI 在子命令完整度、错误处理、JSON 输出、确认提示、脱敏输出等方面比 openclaw 更全面。本版本属重大里程碑，递增 minor 位。
+
+| 类别 | 命令 / 模块 | 子命令 / 选项 | 收益 |
+|---|---|---|---|
+| **WebUI** | `WebChatPage.tsx` | textarea `rows=3`，minHeight 84px / maxHeight 160px | 多行输入更顺手 |
+| **共享工具** | `apps/cli/src/utils/shared.ts` | ensureServer / printJson / printTable / parseDurationMs / confirmPrompt / formatTimestamp / maskSecret / parseJsonArg 等 15 个 | 跨命令复用统一输出/解析/格式化 |
+| **新增命令** | `exec-policy` | show / preset（yolo/cautious/deny-all）/ set | 对接 v0.61.0 exec-approvals 子系统 |
+| **新增命令** | `migrate` | list / plan / apply | provider 别名（hermes/openclaw/claude/cursor/cline/evoclaw）+ 4 步 apply 流程（plan → warnings → backup → apply） |
+| **新增命令** | `node` | run / status / install / uninstall / stop / start / restart | 管理 headless node host 服务 |
+| **新增命令** | `nodes` | 11 顶层子命令 + camera(list/snap/clip) + screen(record) + location(get) | gateway 名下 node 管理 + 嵌套子命令 |
+| **新增命令** | `proxy` | start / run / validate / coverage / sessions / query / blob / purge | 8 子命令，query 含 4 个预设（errors/slow/openai/anthropic） |
+| **新增命令** | `devices` | list / remove / clear / approve / reject / rotate / revoke | token 输出 maskSecret 脱敏 + 二次确认 |
+| **新增命令** | `commitments` | list / dismiss / show / summary | 多端点回退 + deadline/状态着色 |
+| **增强 gateway** | 新增 7 子命令 | call / usage-cost / stability / diagnostics export / diagnostics health / probe / discover | RPC 入口 + 用量成本 + 稳定性指标 + 诊断 bundle + endpoint 探测 + 服务发现 |
+| **增强 cron** | 新增 2 子命令 | get / show | 单任务详情（无单条接口时回退 list 过滤） |
+| **增强 sessions** | 新增 3 子命令 | cleanup / tail / export-trajectory | 显式清理 + 轮询跟踪 + 完整轨迹导出 |
+| **增强 tasks** | 新增 5 子命令 + flow 嵌套 | audit / maintenance / notify / cancel + flow list/show/cancel | 工作板审计 + 维护 + 通知 + 取消 + 多步骤工作流 |
+| **增强 system** | 拆分 heartbeat 子命令 | heartbeat last/enable/disable/status + events 过滤 + presence API | 正式 sub-subcommand + 服务端 API 对接 |
+
+**新增文件**：`utils/shared.ts`、`commands/exec-policy.ts`、`commands/migrate.ts`、`commands/node.ts`、`commands/nodes.ts`、`commands/proxy.ts`、`commands/devices.ts`、`commands/commitments.ts`；增强 `commands/gateway.ts`、`commands/cron.ts`、`commands/sessions.ts`、`commands/tasks.ts`、`commands/system.ts`；注册于 `apps/cli/src/index.ts`
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test`（3967 passed / 73 skipped / 0 failed）全部通过，88/88 服务健康
+
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。v0.62.0 因 CLI 命令体系大规模补齐属于重大里程碑，递增 minor 位。
 
 ### 🆕 v0.61.0 更新亮点
 
