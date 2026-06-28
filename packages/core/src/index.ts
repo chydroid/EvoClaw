@@ -5,6 +5,8 @@ export type {
   OpenClawMetadata,
   OpenClawSkillMeta,
   SkillConfigStatus,
+  SkillInstallSpec,
+  SkillInstallStep,
 } from "./types/skill";
 export * from "./types/task";
 export * from "./types/agent";

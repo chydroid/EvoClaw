@@ -177,7 +177,14 @@ export interface OpenClawSkillMeta {
 
 export interface SkillInstallSpec {
   id: string;
-  kind: "brew" | "node" | "go" | "uv" | "download" | "apt" | "pip";
+  /**
+   * 安装种类。
+   * - `brew` / `apt`：系统包管理器（formula/package + bins）
+   * - `npm` / `cargo` / `pip`：语言生态包管理器（package + bins）
+   * - `node` / `go` / `uv`：兼容 OpenClaw 历史命名（语义同 npm / cargo-go / pip）
+   * - `download`：直接下载归档（url + archive + extract）
+   */
+  kind: "brew" | "node" | "go" | "uv" | "download" | "apt" | "pip" | "npm" | "cargo";
   label?: string;
   bins?: string[];
   os?: string[];
@@ -190,6 +197,19 @@ export interface SkillInstallSpec {
   stripComponents?: number;
   targetDir?: string;
 }
+
+/**
+ * `openclaw.install` 步骤的简化形态，对齐 openclaw-main 的 `skills/github/SKILL.md` 规范。
+ * 与 `SkillInstallSpec` 字段兼容，仅约束任务规范中明确要求的子集。
+ */
+export type SkillInstallStep = {
+  id: string;
+  kind: "brew" | "apt" | "npm" | "pip" | "cargo";
+  formula?: string;
+  package?: string;
+  bins?: string[];
+  label?: string;
+};
 
 export interface SKILLmdDocument {
   meta: SKILLmdMeta;

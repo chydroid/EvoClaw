@@ -25,6 +25,21 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.61.0 亮点
+- **对照 openclaw-main 的 10 轮深度短板补齐**：以 openclaw-main 与 GitHub 上 openclaw 最新更新为参照系，对 EvoClaw 进行 10 轮深度系统性提升，覆盖技能生态、命令执行审批、审计矩阵、密钥管理、定时调度、机器人循环防护、诊断体系、prompt cache 稳定性、SQLite 精细化管理、gateway 重启协调体系。本版本属于重大里程碑，递增 minor 位。
+  - **第 1 轮（SKILL.md frontmatter 安装规范 + 5 个 bundled skills）**：`SkillInstaller` 完整解析 `bins`/`anyBins`/`requires.env`/`requires.os` 字段，安装前 anyBins 预检查与 bins 后置校验；新增 `datetime-helper`、`calculator`、`text-utils`、`unit-converter`、`web-fetch` 5 个 bundled 技能
+  - **第 2 轮（exec-approvals 命令执行安全审批链路）**：新增 `exec-approvals.ts`（约 320 行），`ExecApprovalsRegistry` 支持 4 类规则匹配（commandPrefix/argPattern/workingDirScope/envScope）+ allow/deny/prompt 三级决策 + 持久化到 `data/exec-approvals/rules.json`
+  - **第 3 轮（audit-* 审计矩阵扩展）**：`AuditCenter` 新增 6 类审计事件（exec.approval/secret.detected/cron.stagger.violation/gateway.restart）+ 4 级 severity + `queryEvents` / `getEventStats` / `pruneOldEvents` 接口
+  - **第 4 轮（secrets 子系统）**：新增 4 模块 — `secret-equal.ts`（常量时间比较防时序攻击）、`safe-regex.ts`（ReDoS 风险检测）、`dangerous-config-flags.ts`（12 类危险配置标志扫描）、`secret-scan.ts`（25+ 条正则规则的密钥扫描）
+  - **第 5 轮（cron stagger + session-reaper + run-log 持久化）**：`cron-scheduler` 新增 stagger 抖动避免多实例同时触发；新增 `session-reaper.ts`（idle 30min/lifetime 24h 自动清理）；`run-log.ts` 持久化到 jsonl + 查询接口
+  - **第 6 轮（bot-loop-protection + message-turn-guardrails + history-window）**：新增 3 模块 — `BotLoopProtector`（滑动窗口 + Levenshtein 相似度 + 冷却）、`MessageTurnGuardrail`（每消息 turn/token/timeout 三重限制）、`HistoryWindow`（FIFO/Token-aware/Priority 三策略）
+  - **第 7 轮（diagnostic 体系基础）**：新增 4 模块 — `diagnostic-phase.ts`（启动/关闭/配置加载等 8 类 phase 追踪）、`diagnostic-payload.ts`（结构化 payload + 脱敏）、`diagnostic-stability.ts`（4 级稳定性评估 + 自动回调）、`diagnostic-support-bundle.ts`（支持包导出 JSON/Tar）
+  - **第 8 轮（prompt-cache-stability 显式管理）**：新增 `prompt-cache-stability.ts`（约 290 行），`stableStringify` 稳定序列化（key 排序 + 循环引用处理）+ `CacheTrace` 命中率统计 + `detectPrefixDrift` 漂移告警 + `detectCacheBustingFields` 识别破坏字段
+  - **第 9 轮（sqlite 精细化管理）**：新增 3 模块 — `sqlite-pragma.ts`（PRAGMA 配置 + 生产/开发默认值 + 校验）、`sqlite-transaction.ts`（withTransaction + withSavepoint + batchExec + 统计）、`sqlite-wal.ts`（checkpointWal + WalAutoCheckpoint 周期清理 + 状态查询）
+  - **第 10 轮（gateway restart 协调体系）**：新增 5 模块架构 — `restart-intent.ts`（持久化 intent 文件 + 原子写入 + TTL 60s）、`restart-sentinel.ts`（内存授权哨兵 + authorize/consume + 30s 冷却期）、`restart-stale-pids.ts`（跨平台陈旧进程清理 + self+ancestor 排除 + waitForPortFreeSync）、`restart-handoff.ts`（Supervisor 交接：Linux systemd / macOS launchctl / Windows schtasks）、`restart-coordinator.ts`（顶层编排器 + schedule 合并/防抖/冷却期 + 跨会话保护）
+  - **新增测试**：约 860+ 个新测试用例（v0.60.1 基线 3174 → v0.61.0 共 3967 passed / 73 skipped / 0 failed）
+  - **验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test` 全部通过，88/88 服务健康
+
 ### v0.60.1 亮点
 - **技能系统清理与自动创建逻辑收紧**：清理 `data/skills/` 下 20 个 evoclaw-curator 自动生成的低质量技能，并从源头切断自动创建路径
   - **修改技能创建逻辑**：`llm-caller.ts` 移除每 15 次工具调用触发的 `considerExtraction` 入口；`skill-curator.ts` 中 `enableAutoExtraction` / `considerExtraction` / `extractSkillFromSolution` 全部改为永久 no-op，自动提取不可再被启用

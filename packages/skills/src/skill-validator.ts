@@ -3,6 +3,7 @@ import {
   type SKILLmdMeta,
   type SkillTrigger,
   type Skill,
+  type SkillInstallSpec,
   type SecurityScanResult,
   type SecurityFinding,
 } from "@evoclaw/core";
@@ -16,6 +17,9 @@ const VALID_TRIGGER_TYPES: SkillTrigger["type"][] = [
   "event",
   "webhook",
 ];
+const VALID_INSTALL_KINDS: ReadonlySet<SkillInstallSpec["kind"]> = new Set([
+  "brew", "node", "go", "uv", "download", "apt", "pip", "npm", "cargo",
+]);
 
 // Content quality: patterns that indicate placeholder/garbage skill content
 const PLACEHOLDER_PATTERNS: RegExp[] = [
@@ -139,6 +143,105 @@ export class SkillValidator {
     return { errors, warnings };
   }
 
+  /**
+   * 校验 `openclaw.install` 步骤数组：每个 step 必须有 `id` 和合法 `kind`，
+   * 至少提供 `formula`/`package`/`bins`/`module`/`url` 之一（`download` 用 url/archive）。
+   */
+  validateInstallSpecs(install: SkillInstallSpec[] | string | undefined): {
+    errors: string[];
+    warnings: string[];
+  } {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    if (install === undefined) return { errors, warnings };
+    if (typeof install === "string") {
+      if (install.trim() === "") {
+        errors.push("openclaw.install string cannot be empty");
+      }
+      return { errors, warnings };
+    }
+    if (!Array.isArray(install)) {
+      errors.push("openclaw.install must be a string or an array of install specs");
+      return { errors, warnings };
+    }
+
+    const seenIds = new Set<string>();
+    for (let i = 0; i < install.length; i++) {
+      const spec = install[i];
+      const ctx = `install[${i}] (id="${spec.id ?? ""}", kind="${spec.kind ?? ""}")`;
+      if (!spec.id || typeof spec.id !== "string") {
+        errors.push(`${ctx}: id is required`);
+        continue;
+      }
+      if (seenIds.has(spec.id)) {
+        warnings.push(`${ctx}: duplicate id "${spec.id}" — earlier spec wins`);
+      } else {
+        seenIds.add(spec.id);
+      }
+      if (!spec.kind || !VALID_INSTALL_KINDS.has(spec.kind)) {
+        errors.push(
+          `${ctx}: invalid kind "${spec.kind}" (must be one of: ${Array.from(VALID_INSTALL_KINDS).join(", ")})`
+        );
+        continue;
+      }
+      const hasFormula = typeof spec.formula === "string" && spec.formula.trim() !== "";
+      const hasPackage = typeof spec.package === "string" && spec.package.trim() !== "";
+      const hasModule = typeof spec.module === "string" && spec.module.trim() !== "";
+      const hasUrl = typeof spec.url === "string" && spec.url.trim() !== "";
+      const hasBins = Array.isArray(spec.bins) && spec.bins.length > 0;
+      // brew/apt 主要靠 formula/package；npm/cargo/pip/go/uv/node 主要靠 package/module；
+      // download 必须有 url。允许 bins 作为补充声明。
+      if (spec.kind === "download") {
+        if (!hasUrl) {
+          errors.push(`${ctx}: download kind requires a non-empty "url"`);
+        }
+      } else if (!hasFormula && !hasPackage && !hasModule && !hasBins) {
+        errors.push(
+          `${ctx}: must provide at least one of "formula", "package", "bins", "module"`
+        );
+      }
+      if (hasBins) {
+        for (const b of spec.bins!) {
+          if (typeof b !== "string" || b.trim() === "") {
+            errors.push(`${ctx}: bins entries must be non-empty strings`);
+            break;
+          }
+        }
+      }
+    }
+
+    return { errors, warnings };
+  }
+
+  /**
+   * 校验 `openclaw.requires.bins` 字段：必须是非空字符串数组（空数组视为缺失并警告）。
+   */
+  validateRequiresBins(bins: string[] | undefined): {
+    errors: string[];
+    warnings: string[];
+  } {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    if (bins === undefined) return { errors, warnings };
+    if (!Array.isArray(bins)) {
+      errors.push("openclaw.requires.bins must be an array of strings");
+      return { errors, warnings };
+    }
+    if (bins.length === 0) {
+      warnings.push("openclaw.requires.bins is empty — omit the field if no binaries are required");
+      return { errors, warnings };
+    }
+    for (let i = 0; i < bins.length; i++) {
+      if (typeof bins[i] !== "string" || bins[i].trim() === "") {
+        errors.push(`requires.bins[${i}] must be a non-empty string`);
+      }
+    }
+
+    return { errors, warnings };
+  }
+
   validateScripts(scripts: Record<string, string>): {
     errors: string[];
     warnings: string[];
@@ -188,6 +291,17 @@ export class SkillValidator {
     const triggersResult = this.validateTriggers(skill.meta.triggers);
     allErrors.push(...triggersResult.errors);
     allWarnings.push(...triggersResult.warnings);
+
+    // 校验 openclaw.install 步骤数组（对齐 openclaw-main SKILL.md 规范）
+    const ocMeta = skill.meta.metadata?.openclaw;
+    const installResult = this.validateInstallSpecs(ocMeta?.install);
+    allErrors.push(...installResult.errors);
+    allWarnings.push(...installResult.warnings);
+
+    // 校验 openclaw.requires.bins（必须是非空字符串数组）
+    const binsResult = this.validateRequiresBins(ocMeta?.requires?.bins);
+    allErrors.push(...binsResult.errors);
+    allWarnings.push(...binsResult.warnings);
 
     // Validate instructions content quality
     if (skill.instructions && skill.instructions.trim()) {

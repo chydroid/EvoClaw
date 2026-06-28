@@ -1,0 +1,14 @@
+{
+  "name": "hash-computer",
+  "displayName": "哈希计算器",
+  "description": "计算 MD5/SHA1/SHA256/SHA512，支持文件与字符串、十六进制/Base64 输出。使用 Node.js 内置 crypto，无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["hash", "md5", "sha1", "sha256", "sha512", "哈希", "摘要"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🔑",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

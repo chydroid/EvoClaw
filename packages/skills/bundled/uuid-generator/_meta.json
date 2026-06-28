@@ -1,0 +1,14 @@
+{
+  "name": "uuid-generator",
+  "displayName": "UUID 生成器",
+  "description": "生成 UUID v4（随机）和 v7（时间戳排序），支持批量生成与版本解析。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["uuid", "guid", "v4", "v7", "标识符"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🆔",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

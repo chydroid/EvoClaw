@@ -4,6 +4,7 @@ import {
   type OpenClawMetadata,
   type OpenClawSkillMeta,
   type SkillCategory,
+  type SkillInstallSpec,
 } from "@evoclaw/core";
 import matter from "gray-matter";
 import { readFile } from "fs/promises";
@@ -108,7 +109,13 @@ export class SKILLmdParser {
     if (typeof ocMeta.install === "string") {
       result.install = ocMeta.install;
     } else if (Array.isArray(ocMeta.install)) {
-      result.install = ocMeta.install as any[];
+      // 解析 frontmatter 中的 `openclaw.install` 数组（对齐 openclaw-main 的
+      // `skills/github/SKILL.md` 规范）。原始数据来自 gray-matter，类型未知，
+      // 必须先用 `parseInstallSpecs` 缩窄为合法 `SkillInstallSpec[]`。
+      const specs = this.parseInstallSpecs(ocMeta.install);
+      if (specs.length > 0) {
+        result.install = specs;
+      }
     }
     if (typeof ocMeta.source === "string") {
       result.source = ocMeta.source;
@@ -131,6 +138,48 @@ export class SKILLmdParser {
     }
 
     return result;
+  }
+
+  /**
+   * 将 frontmatter 中的 `openclaw.install` 原始数组缩窄为 `SkillInstallSpec[]`。
+   * 严格拒绝未知字段类型，丢弃明显非法的元素；保留宽松字段以兼容 openclaw-main
+   * 历史命名（如 `node`/`go`/`uv`/`download`）。
+   */
+  private parseInstallSpecs(raw: unknown): SkillInstallSpec[] {
+    if (!Array.isArray(raw)) return [];
+    const VALID_KINDS = new Set<SkillInstallSpec["kind"]>([
+      "brew", "node", "go", "uv", "download", "apt", "pip", "npm", "cargo",
+    ]);
+    const out: SkillInstallSpec[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const obj = item as Record<string, unknown>;
+      const id = typeof obj.id === "string" ? obj.id : undefined;
+      const kind = typeof obj.kind === "string" ? obj.kind as SkillInstallSpec["kind"] : undefined;
+      if (!id || !kind || !VALID_KINDS.has(kind)) continue;
+      const spec: SkillInstallSpec = { id, kind };
+      if (typeof obj.label === "string") spec.label = obj.label;
+      if (typeof obj.formula === "string") spec.formula = obj.formula;
+      if (typeof obj.package === "string") spec.package = obj.package;
+      if (typeof obj.module === "string") spec.module = obj.module;
+      if (typeof obj.url === "string") spec.url = obj.url;
+      if (typeof obj.archive === "string") spec.archive = obj.archive;
+      if (typeof obj.targetDir === "string") spec.targetDir = obj.targetDir;
+      if (typeof obj.extract === "boolean") spec.extract = obj.extract;
+      if (typeof obj.stripComponents === "number" && Number.isFinite(obj.stripComponents)) {
+        spec.stripComponents = obj.stripComponents;
+      }
+      if (Array.isArray(obj.bins)) {
+        const bins = obj.bins.filter((b): b is string => typeof b === "string");
+        if (bins.length > 0) spec.bins = bins;
+      }
+      if (Array.isArray(obj.os)) {
+        const oses = obj.os.filter((o): o is string => typeof o === "string");
+        if (oses.length > 0) spec.os = oses;
+      }
+      out.push(spec);
+    }
+    return out;
   }
 
   private parseTriggers(

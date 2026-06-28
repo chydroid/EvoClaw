@@ -1,0 +1,14 @@
+{
+  "name": "base64-codec",
+  "displayName": "Base64 编解码器",
+  "description": "Base64 编码/解码器，支持 UTF-8 字符串、字节数组、URL-safe 变体。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["base64", "encode", "decode", "url-safe", "编码"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🔐",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

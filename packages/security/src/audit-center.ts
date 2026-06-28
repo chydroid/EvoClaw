@@ -6,6 +6,14 @@ import {
   type SecuritySeverity,
 } from "@evoclaw/core";
 import { v4 } from "uuid";
+import { auditConfig, type ConfigAuditInput } from "./audit-config";
+import { auditChannels, type ChannelAuditInput } from "./audit-channel";
+import { auditToolPolicy, type ToolPolicyAuditInput } from "./audit-tool-policy";
+import { auditTrustModel, type TrustModelAuditInput } from "./audit-trust-model";
+import {
+  auditGatewayExposure,
+  type GatewayExposureAuditInput,
+} from "./audit-gateway-exposure";
 
 export interface AuditQuery {
   startTime?: Date;
@@ -48,6 +56,63 @@ export interface AuditRule {
   cooldownMs: number;
   windowMs?: number;
 }
+
+// ═══════════════════════════════════════════════════════════
+// 综合审计：合并 5 个专项 audit 模块的发现并按 severity 排序
+// ═══════════════════════════════════════════════════════════
+
+export type ComprehensiveAuditModule =
+  | "config"
+  | "channel"
+  | "tool-policy"
+  | "trust-model"
+  | "gateway";
+
+export type ComprehensiveAuditSeverity = "info" | "warning" | "error";
+
+export interface ComprehensiveAuditFinding {
+  module: ComprehensiveAuditModule;
+  severity: ComprehensiveAuditSeverity;
+  rule: string;
+  message: string;
+  suggestion?: string;
+  /** 配置路径（config 模块） */
+  path?: string;
+  /** 渠道标识（channel 模块） */
+  channelId?: string;
+  channelType?: string;
+  /** agent 标识（tool-policy 模块） */
+  agentId?: string;
+  /** 实体标识（trust-model 模块） */
+  entityId?: string;
+  entityType?: "skill" | "agent";
+}
+
+export interface ComprehensiveAuditInput {
+  config?: ConfigAuditInput;
+  channels?: ChannelAuditInput;
+  toolPolicies?: ToolPolicyAuditInput;
+  trustModel?: TrustModelAuditInput;
+  gateway?: GatewayExposureAuditInput;
+}
+
+export interface ComprehensiveAuditSummary {
+  total: number;
+  bySeverity: Record<ComprehensiveAuditSeverity, number>;
+  byModule: Record<ComprehensiveAuditModule, number>;
+}
+
+export interface ComprehensiveAuditResult {
+  findings: ComprehensiveAuditFinding[];
+  summary: ComprehensiveAuditSummary;
+}
+
+// severity 排序权重：error > warning > info
+const SEVERITY_ORDER: Record<ComprehensiveAuditSeverity, number> = {
+  error: 3,
+  warning: 2,
+  info: 1,
+};
 
 export class AuditCenter {
   private records: AuditRecord[] = [];
@@ -315,6 +380,102 @@ export class AuditCenter {
         ).catch((err) => process.stderr.write('[AuditCenter] event publish failed: ' + err + '\n'));
       }
     }
+  }
+
+  /**
+   * 综合审计：依次调用 5 个专项 audit 模块（config/channel/toolPolicy/trustModel/gateway），
+   * 合并所有发现并按 severity 降序排序（error > warning > info）。
+   * 仅审计 input 中显式提供的模块；未提供的模块跳过。
+   */
+  runComprehensiveAudit(input: ComprehensiveAuditInput): ComprehensiveAuditResult {
+    const findings: ComprehensiveAuditFinding[] = [];
+
+    if (input.config) {
+      for (const f of auditConfig(input.config)) {
+        findings.push({
+          module: "config",
+          severity: f.severity,
+          rule: f.rule,
+          message: f.message,
+          suggestion: f.suggestion,
+          path: f.path,
+        });
+      }
+    }
+
+    if (input.channels) {
+      for (const f of auditChannels(input.channels)) {
+        findings.push({
+          module: "channel",
+          severity: f.severity,
+          rule: f.rule,
+          message: f.message,
+          suggestion: f.suggestion,
+          channelId: f.channelId,
+          channelType: f.channelType,
+        });
+      }
+    }
+
+    if (input.toolPolicies) {
+      for (const f of auditToolPolicy(input.toolPolicies)) {
+        findings.push({
+          module: "tool-policy",
+          severity: f.severity,
+          rule: f.rule,
+          message: f.message,
+          suggestion: f.suggestion,
+          agentId: f.agentId,
+        });
+      }
+    }
+
+    if (input.trustModel) {
+      for (const f of auditTrustModel(input.trustModel)) {
+        findings.push({
+          module: "trust-model",
+          severity: f.severity,
+          rule: f.rule,
+          message: f.message,
+          suggestion: f.suggestion,
+          entityId: f.entityId,
+          entityType: f.entityType,
+        });
+      }
+    }
+
+    if (input.gateway) {
+      for (const f of auditGatewayExposure(input.gateway)) {
+        findings.push({
+          module: "gateway",
+          severity: f.severity,
+          rule: f.rule,
+          message: f.message,
+          suggestion: f.suggestion,
+        });
+      }
+    }
+
+    // 按 severity 降序排序（error 优先），同 severity 保持稳定顺序
+    findings.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]);
+
+    const summary: ComprehensiveAuditSummary = {
+      total: findings.length,
+      bySeverity: { error: 0, warning: 0, info: 0 },
+      byModule: {
+        config: 0,
+        channel: 0,
+        "tool-policy": 0,
+        "trust-model": 0,
+        gateway: 0,
+      },
+    };
+    for (const f of findings) {
+      summary.bySeverity[f.severity]++;
+      summary.byModule[f.module]++;
+    }
+
+    return { findings, summary };
   }
 
   async healthCheck(): Promise<boolean> {

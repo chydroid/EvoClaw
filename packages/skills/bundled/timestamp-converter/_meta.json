@@ -1,0 +1,14 @@
+{
+  "name": "timestamp-converter",
+  "displayName": "时间戳转换器",
+  "description": "Unix 时间戳与 ISO8601/本地时间互转，支持时区、相对时间、人类可读格式。无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["timestamp", "unix", "epoch", "iso8601", "date", "时间戳"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "⏱️",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

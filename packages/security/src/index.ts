@@ -113,3 +113,98 @@ export type { FileSafetyResult } from "./file-safety";
 // MCP Config Security — MCP 服务器配置安全检查
 export { validateMCPServerConfig } from "./mcp-config-security";
 export type { MCPServerSecurityResult, MCPSecurityThreat } from "./mcp-config-security";
+
+// Exec Approvals — 命令执行安全审批链路（决策/策略/白名单/自动审查）
+export { ExecApprovalPolicy, DEFAULT_DANGEROUS_RULES, minimatchLike } from "./exec-approval";
+export type {
+  ExecApprovalAction,
+  ExecRiskLevel,
+  ExecApprovalRequest,
+  ExecApprovalDecision,
+  ExecApprovalRule,
+  ExecRulePatternType,
+} from "./exec-approval";
+export { ExecSafeBinNormalizer, ExecSafeBinPolicy } from "./exec-safe-bin";
+export { ExecAllowlist } from "./exec-allowlist";
+export type { AllowlistEntry } from "./exec-allowlist";
+export { ExecAutoReviewer } from "./exec-auto-reviewer";
+export type { ExecReviewFinding } from "./exec-auto-reviewer";
+
+// Audit Matrix — audit-* 审计矩阵扩展（对齐 openclaw-main audit-* 11 专项模块）
+export { auditConfig } from "./audit-config";
+export type {
+  ConfigAuditInput,
+  ConfigAuditFinding,
+  ConfigAuditSeverity,
+} from "./audit-config";
+export { auditChannels } from "./audit-channel";
+export type {
+  ChannelAuditInput,
+  ChannelAuditChannel,
+  ChannelAuditFinding,
+  ChannelAuditSeverity,
+} from "./audit-channel";
+export { auditToolPolicy } from "./audit-tool-policy";
+export type {
+  ToolPolicyAuditInput,
+  ToolPolicyEntry,
+  ToolPolicyAuditCondition,
+  ToolPolicyAuditFinding,
+  ToolPolicyAuditSeverity,
+} from "./audit-tool-policy";
+export { auditTrustModel } from "./audit-trust-model";
+export type {
+  TrustLevel,
+  TrustModelAuditInput,
+  TrustModelSkill,
+  TrustModelAgent,
+  TrustModelSkillPermissions,
+  TrustModelAuditFinding,
+  TrustModelAuditSeverity,
+} from "./audit-trust-model";
+export { auditGatewayExposure } from "./audit-gateway-exposure";
+export type {
+  GatewayExposureAuditInput,
+  GatewayExposureChannel,
+  GatewayExposureAuditFinding,
+  GatewayExposureAuditSeverity,
+} from "./audit-gateway-exposure";
+// 综合审计入口（AuditCenter.runComprehensiveAudit 的输入/输出类型）
+export type {
+  ComprehensiveAuditInput,
+  ComprehensiveAuditResult,
+  ComprehensiveAuditFinding,
+  ComprehensiveAuditSeverity,
+  ComprehensiveAuditModule,
+  ComprehensiveAuditSummary,
+} from "./audit-center";
+
+// Secrets 子系统 — 防 timing attack / ReDoS 防护 / 危险配置标记 / 明文密钥扫描
+export { secretEqual, secretEqualBuffer, safeEqualSecret, safeEqualSecretBuffer } from "./secret-equal";
+export {
+  checkRegexSafety,
+  safeRegExp,
+  isUnsafeRegex,
+} from "./safe-regex";
+export type { RegexSafetyResult, RegexRisk } from "./safe-regex";
+export {
+  DANGEROUS_CONFIG_FLAGS,
+  scanDangerousConfigFlags,
+  getDangerousFlag,
+  registerDangerousFlag,
+  clearCustomDangerousFlags,
+} from "./dangerous-config-flags";
+export type {
+  DangerousConfigFlag,
+  ConfigFlagSeverity,
+  ConfigEnvironment,
+  ConfigFlagFinding,
+} from "./dangerous-config-flags";
+export {
+  DEFAULT_SECRET_RULES,
+  scanSecrets,
+  hasPlaintextSecrets,
+  redactValue,
+  getDefaultSecretRules,
+} from "./secret-scan";
+export type { SecretScanFinding, SecretScanRule } from "./secret-scan";

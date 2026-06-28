@@ -136,6 +136,36 @@ export type { Span, Trace, TraceSummary, Metric, SpanKind, SpanEvent, Observabil
 export { PromptCache } from "./prompt-cache";
 export type { PromptCacheConfig, CacheEntry, CacheStats } from "./prompt-cache";
 
+// Stable Stringify & Prompt Cache Stability — prompt-cache 显式管理
+// 灵感来自 openclaw-main 的 prompt-cache-stability / stable-stringify / cache-trace
+export {
+  stableStringify,
+  stableHash,
+  stableEqual,
+  stableDiff,
+} from "./stable-stringify";
+export type {
+  StableStringifyOptions,
+  StableDiffResult,
+} from "./stable-stringify";
+export {
+  PromptCacheStabilityManager,
+  estimateTokens,
+} from "./prompt-cache-stability";
+export type {
+  CacheProvider,
+  PromptCacheKey,
+  CacheStabilityResult,
+} from "./prompt-cache-stability";
+export { CacheTracer } from "./cache-trace";
+export type {
+  CacheTraceEntry,
+  CacheTraceQuery,
+  CacheTraceStats,
+  ModelCostEntry,
+  CostTable,
+} from "./cache-trace";
+
 // /steer real-time control command
 export { SteerManager } from "./steer-command";
 export type { SteerInstruction, SteerResult } from "./steer-command";

@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.60.1-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.61.0-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
   <img src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square" alt="License" />
-  <img src="https://img.shields.io/badge/tests-3173%20passed-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-3967%20passed-brightgreen?style=flat-square" alt="Tests" />
 </p>
 
 <p align="center">
@@ -101,6 +101,29 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.61.0 更新亮点
+
+对照 `D:\abc\openclaw-main` 与 GitHub 上 openclaw 最新更新，对 EvoClaw 进行 **10 轮深度系统性短板补齐**，覆盖技能生态、命令执行审批、审计矩阵、密钥管理、定时调度、机器人循环防护、诊断体系、prompt cache 稳定性、SQLite 精细化管理、gateway 重启协调体系。本版本属于重大里程碑，递增 minor 位。
+
+| 轮次 | 模块 | 对标 openclaw-main | 收益 |
+|---|---|---|---|
+| **第 1 轮** | SKILL.md frontmatter 安装规范 + 5 个 bundled skills | skill install frontmatter | `bins`/`anyBins`/`requires.env`/`requires.os` 解析 + 预检查与后置校验 + 5 个新 bundled 技能 |
+| **第 2 轮** | exec-approvals 命令执行审批链路 | exec-approvals registry | 4 类规则匹配（commandPrefix/argPattern/workingDirScope/envScope）+ allow/deny/prompt 三级决策 + 持久化 |
+| **第 3 轮** | audit-* 审计矩阵扩展 | audit-center events | 6 类新事件（exec.approval/secret.detected/cron.stagger.violation/gateway.restart）+ 4 级 severity + 查询/统计/清理接口 |
+| **第 4 轮** | secrets 子系统 | secret-equal + safe-regex + dangerous-config-flags + secret-scan | 4 模块：常量时间比较 / ReDoS 检测 / 12 类危险配置扫描 / 25+ 条正则密钥扫描 |
+| **第 5 轮** | cron stagger + session-reaper + run-log 持久化 | cron stagger + session reaper + run-log | stagger 抖动避免多实例同时触发 + idle 30min/lifetime 24h 自动清理 + jsonl 持久化 + 查询接口 |
+| **第 6 轮** | bot-loop-protection + message-turn-guardrails + history-window | loop protection + turn guardrails + history window | 3 模块：滑动窗口 + Levenshtein 相似度 + 冷却 / 每消息 turn/token/timeout 三重限制 / FIFO/Token-aware/Priority 三策略 |
+| **第 7 轮** | diagnostic 体系基础 | diagnostic phase + payload + stability + support-bundle | 4 模块：8 类 phase 追踪 / 结构化 payload + 脱敏 / 4 级稳定性评估 + 自动回调 / 支持包导出 JSON/Tar |
+| **第 8 轮** | prompt-cache-stability 显式管理 | prompt cache stability | `stableStringify` 稳定序列化 + `CacheTrace` 命中率统计 + `detectPrefixDrift` 漂移告警 + `detectCacheBustingFields` 识别破坏字段 |
+| **第 9 轮** | sqlite 精细化管理 | sqlite pragma + transaction + wal | 3 模块：PRAGMA 配置 + 生产/开发默认值 + 校验 / withTransaction + withSavepoint + batchExec + 统计 / checkpointWal + WalAutoCheckpoint + 状态查询 |
+| **第 10 轮** | gateway restart 协调体系 | restart coordinator + sentinel + intent + stale-pids + handoff | 5 模块架构：intent 持久化 + 原子写入 + TTL 60s / authorize + consume + 30s 冷却 / 跨平台陈旧进程清理 + self+ancestor 排除 / Supervisor 交接（systemd/launchctl/schtasks）/ 顶层编排 + schedule 合并 + 跨会话保护 |
+
+**新增文件**：`exec-approvals.ts`、`secret-equal.ts`、`safe-regex.ts`、`dangerous-config-flags.ts`、`secret-scan.ts`、`session-reaper.ts`、`bot-loop-protection.ts`、`message-turn-guardrails.ts`、`history-window.ts`、`diagnostic-phase.ts`、`diagnostic-payload.ts`、`diagnostic-stability.ts`、`diagnostic-support-bundle.ts`、`prompt-cache-stability.ts`、`sqlite-pragma.ts`、`sqlite-transaction.ts`、`sqlite-wal.ts`、`restart-intent.ts`、`restart-sentinel.ts`、`restart-stale-pids.ts`、`restart-handoff.ts`、`restart-coordinator.ts` 及配套 18 个测试文件
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test`（3967 passed / 73 skipped / 0 failed，新增约 860+ 测试用例），88/88 服务健康
+
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。v0.61.0 因 10 轮深度提升属于重大里程碑，递增 minor 位。
 
 ### 🆕 v0.60.1 更新亮点
 

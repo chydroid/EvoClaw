@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "files": {
+    "SKILL.md": "620332e585e7997aa1f51a6c8b7eb66e4884383f8e45c64d003418c8f3b2a431",
+    "_meta.json": "1f3e9f6d973d685980234012b0186b870db1817a0f5111e1d739ca5313ab5427"
+  },
+  "skillId": "e1c6415a-ce4b-4312-abec-213a27fa95b2",
+  "name": "hash-computer",
+  "version": "1.0.0",
+  "source": "bundled",
+  "sourceUrl": "D:\\abc\\EvoClaw\\packages\\skills\\bundled\\hash-computer\\SKILL.md",
+  "installedAt": "2026-06-28T11:55:41.450Z",
+  "installedBy": "system"
+}

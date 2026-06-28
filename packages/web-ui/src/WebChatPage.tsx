@@ -1920,7 +1920,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
           {messages.map((msg) => (
             <div key={msg.id} style={messageRowStyle(msg.role)}>
-              <div style={{ display: "inline-flex", flexDirection: "column", maxWidth: "75%", alignItems: msg.role === "user" ? "flex-end" : "flex-start" }}>
+              <div
+                style={{
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  maxWidth: "75%",
+                  alignItems: msg.role === "user" ? "flex-end" : "flex-start",
+                  position: "relative",
+                }}
+                onMouseEnter={() => setHoveredMsgId(msg.id)}
+                onMouseLeave={() => setHoveredMsgId(null)}
+              >
                 {/* Nickname + timestamp + avatar above bubble */}
                 {(() => {
                   const nick = getNickname(msg.role);
@@ -1985,9 +1995,55 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                   position: "relative",
                   ...(msg.role === "assistant" ? { paddingTop: "32px" } : {}),
                 }}
-                onMouseEnter={() => setHoveredMsgId(msg.id)}
-                onMouseLeave={() => setHoveredMsgId(null)}
               >
+                {/* 左侧复制按钮：鼠标悬停在消息气泡上时显示，对所有消息生效 */}
+                {hoveredMsgId === msg.id && (
+                  <button
+                    style={{
+                      position: "absolute",
+                      left: "-30px",
+                      top: 0,
+                      background: "transparent",
+                      border: "none",
+                      borderRadius: "4px",
+                      padding: "4px",
+                      color: "var(--text-muted, #6e7681)",
+                      cursor: "pointer",
+                      zIndex: 10,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: 0.5,
+                      transition: "opacity 0.15s, color 0.15s, background 0.15s",
+                    }}
+                    title={t("chat.copy_message")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyAsMarkdown(msg);
+                      e.currentTarget.style.color = "var(--accent, #58a6ff)";
+                      e.currentTarget.style.opacity = "1";
+                      setTimeout(() => {
+                        e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                        e.currentTarget.style.opacity = "0.5";
+                      }, 600);
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = "1";
+                      e.currentTarget.style.background = "var(--bg-tertiary, #21262d)";
+                      e.currentTarget.style.color = "var(--text-primary, #c9d1d9)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = "0.5";
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.color = "var(--text-muted, #6e7681)";
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                  </button>
+                )}
                 {hoveredMsgId === msg.id && msg.role === "assistant" && (
                   <>
                     <button

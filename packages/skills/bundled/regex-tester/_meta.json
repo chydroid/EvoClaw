@@ -1,0 +1,14 @@
+{
+  "name": "regex-tester",
+  "displayName": "正则表达式测试器",
+  "description": "正则表达式测试器，匹配、捕获组、替换、全局匹配、标志位测试。使用 Node.js 内置 RegExp，无外部依赖。",
+  "author": "evoclaw-official",
+  "category": "utility",
+  "keywords": ["regex", "regexp", "pattern", "match", "replace", "正则"],
+  "license": "MIT",
+  "homepage": "https://github.com/chydroid/EvoClaw",
+  "emoji": "🔍",
+  "version": "1.0.0",
+  "platform": ["node"],
+  "language": ["javascript"]
+}

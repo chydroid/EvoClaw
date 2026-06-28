@@ -244,12 +244,21 @@ export class SkillManager {
     }
 
     if (ocMeta?.requires?.bins) {
+      // 系统包管理器（brew/apt）的安装是用户责任，不在此处主动执行。
+      // 仅在 warnings 中显式提示缺失的二进制，并附带 openclaw.install 中声明的
+      // 可选安装步骤作为参考。
+      const installHints = Array.isArray(ocMeta.install)
+        ? ocMeta.install
+            .map((s) => s.label || `${s.kind}:${s.formula || s.package || s.id}`)
+            .join(", ")
+        : undefined;
       for (const bin of ocMeta.requires.bins) {
         // Actually check if the binary exists in PATH
         const binExists = this.checkBinaryExists(bin);
         if (!binExists) {
+          const hint = installHints ? ` (install hint: ${installHints})` : "";
           warnings.push(
-            `Missing optional binary: "${bin}" — some features of "${parsed.meta.name}" may be unavailable`
+            `Missing required binary "${bin}" — please install it manually (brew/apt are user-managed)${hint}`
           );
         }
       }
@@ -1919,6 +1928,12 @@ export class SkillManager {
           program = "brew";
           break;
         case "node":
+          // 历史 OpenClaw 命名：等价于 npm 全局安装
+          args = ["install", "-g", validateIdent(spec.package, "package")];
+          program = "npm";
+          break;
+        case "npm":
+          // 全局安装 npm 包（CLI 工具，例如 typescript/prettier）
           args = ["install", "-g", validateIdent(spec.package, "package")];
           program = "npm";
           break;
@@ -1937,6 +1952,11 @@ export class SkillManager {
         case "pip":
           args = ["install", validateIdent(spec.package, "package")];
           program = "pip";
+          break;
+        case "cargo":
+          // Rust 生态包管理器：cargo install <crate>
+          args = ["install", validateIdent(spec.package, "package")];
+          program = "cargo";
           break;
         default:
           step.warnings.push(`Unknown install kind: ${spec.kind}`);

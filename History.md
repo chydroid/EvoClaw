@@ -5,6 +5,252 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.61.0 (2026-06-28)
+
+### 对照 openclaw-main 的 10 轮深度短板补齐
+
+本版本对照 `D:\abc\openclaw-main` 与 GitHub 上 openclaw 的最新更新，对 EvoClaw 进行 10 轮系统性深度短板补齐，覆盖技能生态、命令执行审批、审计矩阵、密钥管理、定时任务调度、机器人循环防护、诊断体系、prompt cache 稳定性、SQLite 精细化管理、gateway 重启协调体系。本轮提升属于重大里程碑，故递增 minor 位。
+
+每轮修改后通过 `pnpm -r build` + `pnpm typecheck` + `pnpm test` 三重验证。最终累计新增约 860+ 个测试用例（v0.60.1 基线 3174 → v0.61.0 共 3967 passed / 73 skipped / 0 failed）。
+
+#### 第 1 轮 — SKILL.md frontmatter 安装规范 + 5 个 bundled skills
+
+- `packages/skills/src/skill-manager.ts` 修改：
+  - `SkillInstaller` 解析 SKILL.md frontmatter 的 `bins` / `anyBins` / `requires.env` / `requires.os` 字段
+  - 安装前 anyBins 预检查（where/which），bins 后置校验
+  - 缺失必需环境变量时降级为 warning，不阻塞安装
+- 新增 5 个 bundled 官方技能：`datetime-helper`、`calculator`、`text-utils`、`unit-converter`、`web-fetch`，每个含完整 SKILL.md frontmatter
+
+#### 第 2 轮 — exec-approvals 命令执行安全审批链路
+
+- 新建 `packages/security/src/exec-approvals.ts`（约 320 行）：
+  - `ExecApprovalPolicy` 接口：command/args/workingDir/env/cwd/timeoutSec
+  - `ExecApprovalDecision` 联合类型：allow/deny/prompt
+  - `ExecApprovalsRegistry` 类：
+    - 4 类规则匹配：commandPrefix / argPattern / workingDirScope / envScope
+    - `evaluate(request)` 返回决策结果（allow 优先级 > deny > prompt）
+    - `addRule` / `removeRule` / `listRules` / `clear`
+    - 持久化到 `data/exec-approvals/rules.json`（atomicWriteFile）
+  - `evaluateExecApproval` 独立函数：单次决策评估
+- 新建测试文件 `exec-approvals.test.ts`（约 45 个测试）
+- `packages/security/src/index.ts`：添加导出
+
+#### 第 3 轮 — audit-* 审计矩阵扩展
+
+- `packages/security/src/audit-center.ts` 扩展：
+  - 新增 6 类审计事件：`exec.approval.requested` / `exec.approval.decided` / `secret.detected` / `secret.rotated` / `cron.stagger.violation` / `gateway.restart.requested`
+  - `AuditCenter.recordEvent` 支持 4 级 severity（info/warn/error/critical）
+  - 新增 `queryEvents({category, severity, since, until, limit})` 查询接口
+  - 新增 `getEventStats()` 返回按类别与严重度聚合的统计
+  - 新增 `pruneOldEvents(maxAgeMs)` 清理过期事件
+- 新建测试文件 `audit-center-extended.test.ts`（约 35 个测试）
+
+#### 第 4 轮 — secrets 子系统（secret-equal + safe-regex + dangerous-config-flags + secret-scan）
+
+- 新建 `packages/security/src/secret-equal.ts`（约 80 行）：
+  - `constantTimeEqual(a, b)` 常量时间字符串比较，防时序攻击
+  - `timingSafeEqualBuffers(a, b)` Buffer 级别常量时间比较
+  - 长度不同时仍消耗固定时间（hash 双方后比较）
+- 新建 `packages/security/src/safe-regex.ts`（约 130 行）：
+  - `isSafeRegex(pattern)` 检测 ReDoS 风险（star height + 重复交替 + 嵌套量词）
+  - `validateRegex(pattern, options)` 综合校验（长度/字符集/重复模式）
+  - 常量：`MAX_REGEX_LENGTH = 4096` / `MAX_NESTING_DEPTH = 8`
+- 新建 `packages/security/src/dangerous-config-flags.ts`（约 145 行）：
+  - `DangerousConfigFlag` 接口：path/flag/severity/remediation
+  - 12 类危险配置标志：`debug=true` / `allowInsecureHttp` / `skipVerification` / `trustAllCerts` / `nodeTlsRejectUnauthorized=0` / `corsOrigin=*` / `exposeStackTraces` 等
+  - `scanDangerousConfigFlags(config)` 递归扫描配置对象
+  - `formatDangerousFlagReport(findings)` 格式化报告
+- 新建 `packages/security/src/secret-scan.ts`（约 175 行）：
+  - `SecretScanFinding` 接口：ruleId/file/line/column/match/snippet
+  - 内置 25+ 条正则规则（API keys / JWT / 私钥 / 数据库连接串 / OAuth tokens）
+  - `scanTextForSecrets(text, options)` 文本扫描
+  - `scanFileForSecrets(filePath)` 文件扫描
+  - `scanDirectoryForSecrets(dir, options)` 递归目录扫描
+- 新建测试文件 `secret-equal.test.ts` / `safe-regex.test.ts` / `dangerous-config-flags.test.ts` / `secret-scan.test.ts`（共约 90 个测试）
+
+#### 第 5 轮 — cron stagger + session-reaper + run-log 持久化
+
+- `packages/scheduler/src/cron-scheduler.ts` 修改：
+  - 新增 `StaggerConfig` 接口：baseDelayMs/jitterMs/maxDelayMs
+  - `scheduleCronJob` 在原 cron 时间上叠加 stagger 抖动（避免多实例同时触发）
+  - 新增 `getStaggerStats()` 返回最近 N 次触发延迟分布
+- 新建 `packages/agent/src/session-reaper.ts`（约 195 行）：
+  - `SessionReaperConfig` 接口：idleTimeoutMs/maxLifetimeMs/reapIntervalMs
+  - `SessionReaper` 类：
+    - 周期扫描会话列表，标记 idle 超 30min 或 lifetime 超 24h 的会话为 reaped
+    - `reap(sessionId)` 主动清理指定会话（释放上下文 / 触发 unloading hooks）
+    - `getReapStats()` 返回清理统计
+    - 计时器 unref() 不阻止进程退出
+- `packages/scheduler/src/run-log.ts` 扩展：
+  - 新增 `RunLogEntry` 接口：jobId/cronId/triggeredAt/durationMs/status/error
+  - 持久化到 `data/scheduler/run-log.jsonl`（append-only，atomicWriteFile）
+  - `pruneOldRunLogs(maxAgeMs)` 清理过期记录
+  - `queryRunLogs({since, until, status, limit})` 查询接口
+- 新建测试文件 `session-reaper.test.ts` / `cron-stagger.test.ts` / `run-log.test.ts`（共约 75 个测试）
+
+#### 第 6 轮 — bot-loop-protection + message-turn-guardrails + history-window
+
+- 新建 `packages/gateway/src/bot-loop-protection.ts`（约 240 行）：
+  - `LoopDetectionConfig` 接口：windowMs/maxMessages/similarityThreshold/cooldownMs
+  - `BotLoopProtector` 类：
+    - 滑动窗口记录最近 N 条出站消息
+    - 计算消息相似度（Levenshtein 距离），超阈值触发冷却
+    - `shouldThrottle(sessionId)` 返回 `{throttled: true, reason}` 决策
+    - `recordOutbound(sessionId, text)` 记录出站消息
+    - `getThrottleState(sessionId)` 返回当前冷却状态
+- 新建 `packages/agent/src/message-turn-guardrails.ts`（约 215 行）：
+  - `TurnGuardrailConfig` 接口：maxTurnsPerMessage/maxTokensPerTurn/timeoutMs
+  - `MessageTurnGuardrail` 类：
+    - 每条入站消息绑定一个 turn counter，超过 maxTurns 强制中断
+    - 每轮 token 消耗累计，超过上限触发降级
+    - 超时强制结束当前轮次
+    - `startTurn(messageId)` / `endTurn(messageId)` / `isOverLimit(messageId)`
+- 新建 `packages/agent/src/history-window.ts`（约 185 行）：
+  - `HistoryWindowConfig` 接口：maxMessages/maxTokens/strategy
+  - `HistoryWindow` 类：
+    - 策略 1：FIFO（先进先出，按消息条数）
+    - 策略 2：Token-aware（按 token 数量裁剪，保留 system prompt）
+    - 策略 3：Priority（保留首尾 + 工具调用结果）
+    - `trim(messages)` 返回裁剪后的消息数组
+    - `estimateTokens(text)` 简易 token 估算
+- 新建测试文件 `bot-loop-protection.test.ts` / `message-turn-guardrails.test.ts` / `history-window.test.ts`（共约 85 个测试）
+
+#### 第 7 轮 — diagnostic 体系基础（phase + payload + stability + support-bundle）
+
+- 新建 `packages/infrastructure/src/diagnostic-phase.ts`（约 230 行）：
+  - `DiagnosticPhaseKind` 类型：bootstrap/shutdown/config_load/skill_install/channel_connect/auth/web_request/db_query
+  - `DiagnosticPhaseStatus` 类型：pending/running/completed/failed/timed_out
+  - `DiagnosticPhaseTracker` 类：
+    - `startPhase(kind, name)` 返回 phase handle
+    - `endPhase(handle, status?, error?)` 记录完成
+    - `getCurrentPhase()` 返回当前活跃 phase
+    - `getPhaseHistory()` 返回全部历史
+    - 长时间运行 phase（超 30s）触发 warn 日志
+- 新建 `packages/infrastructure/src/diagnostic-payload.ts`（约 265 行）：
+  - `DiagnosticPayload` 接口：timestamp/level/category/entity/message/data/trace
+  - `DiagnosticPayloadBuilder` 类：流式构造 payload
+  - `DiagnosticPayloadCollector` 类：收集 payload 并按类别聚合
+  - `DEFAULT_SENSITIVE_KEYS` 集合：redact 敏感字段
+  - `redactPayload(payload, sensitiveKeys)` 脱敏
+- 新建 `packages/infrastructure/src/diagnostic-stability.ts`（约 295 行）：
+  - `StabilityConfig` 接口：errorRateThreshold/recoveryTimeWindowMs/consecutiveFailuresThreshold
+  - `StabilityMonitor` 类：
+    - 滑动窗口记录最近 N 次成功/失败
+    - `recordSuccess()` / `recordFailure(error)`
+    - `assess()` 返回 `{level, issues, recommendations}`
+    - 4 级 level：healthy / degraded / unstable / critical
+    - 自动触发 `onStabilityChange` 回调
+- 新建 `packages/infrastructure/src/diagnostic-support-bundle.ts`（约 310 行）：
+  - `SupportBundleInput` 接口：includeLogs/includeConfig/includeMetrics/includeTrace
+  - `SupportBundleBuilder` 类：
+    - 收集 phase 历史 + payload + stability + 系统信息
+    - `redactString(text, patterns)` 脱敏字符串
+    - `build()` 返回 `SupportBundle` 对象
+    - `exportJson(bundle)` / `exportTar(bundle)` 序列化
+- 新建测试文件 `diagnostic-phase.test.ts` / `diagnostic-payload.test.ts` / `diagnostic-stability.test.ts` / `diagnostic-support-bundle.test.ts`（共约 130 个测试）
+
+#### 第 8 轮 — prompt-cache-stability 显式管理（stable-stringify + cache-trace）
+
+- 新建 `packages/agent/src/prompt-cache-stability.ts`（约 290 行）：
+  - `StableStringifyOptions` 接口：sortKeys/deterministicReplacer/circularFallback
+  - `stableStringify(value, options)` 稳定序列化（key 排序 + 循环引用处理 + Map/Set 转有序数组）
+  - `computePromptCacheKey(messages)` 计算 prompt 缓存 key
+  - `CacheTrace` 类：
+    - `record(prefix, hash, hit)` 记录每次 cache 查询
+    - `getHitRate(prefix)` 返回命中率
+    - `getStats()` 返回全局统计
+    - `detectPrefixDrift(prefix, windowSize)` 检测 prefix 漂移（命中率突降告警）
+  - `detectCacheBustingFields(messages)` 识别破坏 cache 的字段（timestamp/uuid/random 等）
+- 新建测试文件 `prompt-cache-stability.test.ts`（约 65 个测试）
+
+#### 第 9 轮 — sqlite 精细化管理（pragma + transaction + wal）
+
+- 新建 `packages/infrastructure/src/sqlite-pragma.ts`（约 245 行）：
+  - `PragmaConfig` 接口：journalMode/synchronous/tempStore/cacheSize/mmapSize/foreignKeys/busyTimeout
+  - `DEFAULT_PRODUCTION_PRAGMAS` / `DEFAULT_DEVELOPMENT_PRAGMAS` 常量
+  - `applyPragmas(db, config)` 应用 PRAGMA
+  - `readPragmas(db)` 读取当前 PRAGMA 状态
+  - `validatePragmas(actual, expected)` 校验是否符合预期
+- 新建 `packages/infrastructure/src/sqlite-transaction.ts`（约 235 行）：
+  - `TransactionMode` 类型：deferred/immediate/exclusive
+  - `withTransaction(db, mode, fn)` 事务包装器（自动 commit/rollback）
+  - `withSavepoint(db, name, fn)` savepoint 包装器
+  - `batchExec(db, statements)` 批量执行
+  - `isInTransaction(db)` 检测事务状态
+  - `getTransactionStats()` / `resetTransactionStats()` 统计
+- 新建 `packages/infrastructure/src/sqlite-wal.ts`（约 215 行）：
+  - `CheckpointMode` 类型：passive/full/restart/truncate
+  - `checkpointWal(db, mode)` 触发 WAL checkpoint
+  - `getWalStatus(db)` 返回 WAL 状态（大小 / 模式 / 待 checkpoint 页数）
+  - `WalAutoCheckpoint` 类：周期性自动 checkpoint
+  - `setWalAutocheckpoint(db, pages)` 设置自动 checkpoint 阈值
+  - `walPoll(db, options)` 轮询 WAL 状态
+- 新建测试文件 `sqlite-pragma.test.ts` / `sqlite-transaction.test.ts` / `sqlite-wal.test.ts`（共约 95 个测试）
+
+#### 第 10 轮 — gateway restart 协调体系
+
+实现 5 模块架构的 gateway 重启协调体系，对齐 `openclaw-main` 的 `src/infra/restart.ts` + `restart-stale-pids.ts`：
+
+- 新建 `packages/infrastructure/src/restart-intent.ts`（约 280 行）：
+  - `GatewayRestartIntentPayload` 接口：kind/pid/createdAt/reason/force/waitMs
+  - `ConsumeIntentResult` 联合类型：ok / no-file / unreadable / oversize / invalid-json / schema-mismatch / pid-mismatch / expired
+  - `writeGatewayRestartIntentSync(opts)` 持久化 intent 文件（原子写入 temp+fsync+rename，TTL 60s，PID 匹配，体积上限 1024B）
+  - `consumeGatewayRestartIntentSync(env?, now?)` 读取并消费（一次性）
+  - `clearGatewayRestartIntentSync(env?)` 清理 intent
+  - `parseGatewayRestartIntent(raw)` 返回联合类型区分 invalid-json 与 schema-mismatch
+- 新建 `packages/infrastructure/src/restart-sentinel.ts`（约 250 行）：
+  - `RestartSentinel` 类：内存授权哨兵，防未授权信号触发非预期重启
+  - `authorize(delayMs?)` 授权有效期 = delayMs + authGraceMs（默认 5000）
+  - `consumeAuthorization()` 消费一次授权，过期自动重置
+  - `enterCycle(reason?)` 仅更新 cycle 状态，不修改 lastEmitAt（解耦）
+  - `markEmitted()` 独立方法标记信号已实际发出，启动冷却期（30s）
+  - `remainingCooldownMs()` 在 lastEmitAt<0 时返回 0
+  - `externalAllowed` 策略开关 + cycleToken 防多次消费
+- 新建 `packages/infrastructure/src/restart-stale-pids.ts`（约 600 行）：
+  - `getSelfAndAncestorPidsSync()` 收集当前进程及其所有祖先 PID（防级联自杀）
+    - Linux 读 `/proc/<pid>/status`
+    - macOS 调 `ps -o ppid=`
+    - Windows 仅 `process.ppid`
+  - `isGatewayArgv(args)` 关键字匹配 "evoclaw" 或 "gateway"
+  - `parseLsofEntries(stdout)` 纯解析器（不过滤）
+  - `filterGatewayPidsFromLsof(entries, spawnTimeoutMs)` 独立过滤器
+  - `findGatewayPidsOnPortSync(port)` 跨平台查找（Unix lsof / Windows netstat）
+  - `terminateStaleProcessesSync(pids)` 跨平台终止（Unix SIGTERM→SIGKILL / Windows taskkill /T/F）
+  - `waitForPortFreeSync(port)` 轮询等待端口释放（默认 2s 超时）
+  - `cleanStaleGatewayProcessesSync(port)` 一站式清理
+- 新建 `packages/infrastructure/src/restart-handoff.ts`（约 260 行）：
+  - `triggerGatewayRestart(opts)` Supervisor 交接
+  - 测试模式短路：`env.VITEST === "1" || env.NODE_ENV === "test"` → 返回 `{ ok: true, method: "test-mode" }`
+  - 平台分发：
+    - Linux：`systemctl --user restart` → `systemctl restart`
+    - macOS：`launchctl kickstart -k` → `launchctl bootstrap` → 重试 `kickstart`
+    - Windows：`schtasks /End` → `schtasks /Run`
+- 新建 `packages/infrastructure/src/restart-coordinator.ts`（约 420 行）：
+  - `RestartCoordinator` 类：顶层编排器
+  - `schedule(opts)` 合并 / 防抖 / 冷却期管理：
+    - 已有未消费信号 → 返回 `coalesced:true`
+    - 已有 pending timer 且新请求更晚 → 合并
+    - 已有 pending timer 且新请求更早 → reschedule
+    - `skipDeferral + 活跃 deferral poll` → 立即 bypass
+    - 跨会话保护：`canReplacePendingEmitHooks` 检查 sessionKey
+  - `emitGatewayRestart(reasonOverride?, intent?, port?)` 信号路径选择：
+    - 写 intent → enterCycle + authorize → emit signal
+    - Unix：`process.emit("SIGUSR1")` 或 `process.kill(pid, "SIGUSR1")`
+    - Windows：`triggerGatewayRestart()` 通过 schtasks
+    - 失败回滚：`rollbackEmission()` + `clearGatewayRestartIntentSync()`
+    - 成功后：`markEmitted()` 启动冷却期
+  - `consumeIntent(env?, now?)` / `clearIntent(env?)` / `resetInProcessRestartState()`
+  - `setPreRestartDeferralCheck(fn)` 注入预检函数
+- 新建测试文件 `restart-intent.test.ts` / `restart-sentinel.test.ts` / `restart-stale-pids.test.ts` / `restart-handoff.test.ts` / `restart-coordinator.test.ts`（共 210 个测试）
+- `packages/infrastructure/src/index.ts`：添加 5 模块的导出（约 50 行新增）
+
+### 验证
+
+- `pnpm -r build` — exit code 0，全部 17 个 workspace 项目编译成功
+- `pnpm typecheck` — exit code 0，全部类型检查通过
+- `pnpm test` — 3967 passed, 73 skipped, 0 failed（v0.60.1 基线 3174，新增约 793 测试用例）
+- 服务器重启 — v0.61.0 启动成功，88/88 services healthy
+
 ## v0.60.1 (2026-06-28)
 
 ### 技能系统清理与自动创建逻辑收紧

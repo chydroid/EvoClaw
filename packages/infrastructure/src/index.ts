@@ -84,3 +84,133 @@ export {
   pidExists,
 } from "./process-tree-killer";
 export type { KillOptions, KillResult } from "./process-tree-killer";
+
+// Diagnostic 体系 — 诊断阶段 / 载荷 / 稳定性 / 支持包
+// 对齐 openclaw-main 的 src/logging/diagnostic-*.ts
+export { DiagnosticPhaseTracker } from "./diagnostic-phase";
+export type {
+  DiagnosticPhase,
+  DiagnosticPhaseKind,
+  DiagnosticPhaseStatus,
+} from "./diagnostic-phase";
+export {
+  DiagnosticPayloadBuilder,
+  DiagnosticPayloadCollector,
+  DEFAULT_SENSITIVE_KEYS,
+} from "./diagnostic-payload";
+export type {
+  DiagnosticPayload,
+  DiagnosticSeverity,
+  DiagnosticEntityType,
+  DiagnosticPayloadCreateOptions,
+  DiagnosticPayloadQuery,
+} from "./diagnostic-payload";
+export { StabilityMonitor, DEFAULT_STABILITY_CONFIG } from "./diagnostic-stability";
+export type {
+  StabilityAssessment,
+  StabilityConfig,
+  StabilityIssue,
+} from "./diagnostic-stability";
+export { SupportBundleBuilder, redactString } from "./diagnostic-support-bundle";
+export type {
+  SupportBundle,
+  SupportBundleInput,
+  SupportBundleExportOptions,
+  PhaseInput,
+} from "./diagnostic-support-bundle";
+
+// SQLite 精细化管理 — PRAGMA / 事务 / WAL checkpoint
+// 对齐 openclaw-main 的 src/infra/sqlite-transaction.ts + sqlite-wal.ts
+export {
+  applyPragmas,
+  readPragmas,
+  validatePragmas,
+  getDefaultPragmas,
+  DEFAULT_PRODUCTION_PRAGMAS,
+  DEFAULT_DEVELOPMENT_PRAGMAS,
+} from "./sqlite-pragma";
+export type {
+  PragmaConfig,
+  AppliedPragmas,
+  SqliteDb,
+  SqliteStatement,
+  JournalMode,
+  SynchronousMode,
+  TempStoreMode,
+} from "./sqlite-pragma";
+export {
+  withTransaction,
+  withSavepoint,
+  batchExec,
+  isInTransaction,
+  getTransactionStats,
+  resetTransactionStats,
+  TransactionError,
+} from "./sqlite-transaction";
+export type {
+  TransactionMode,
+  TransactionStats,
+} from "./sqlite-transaction";
+export {
+  checkpointWal,
+  getWalStatus,
+  WalAutoCheckpoint,
+  setWalAutocheckpoint,
+  walPoll,
+} from "./sqlite-wal";
+export type {
+  CheckpointMode,
+  WalCheckpointResult,
+  WalStatus,
+} from "./sqlite-wal";
+
+// Gateway restart 协调体系 — coordinator + sentinel + intent + stale-pids + handoff
+// 对齐 openclaw-main 的 src/infra/restart.ts + restart-stale-pids.ts
+export {
+  RestartCoordinator,
+  getDefaultRestartCoordinator,
+  resetDefaultRestartCoordinator,
+} from "./restart-coordinator";
+export type {
+  RestartAuditInfo,
+  RestartDeferralHooks,
+  RestartEmitHooks,
+  ScheduledRestart,
+} from "./restart-coordinator";
+export {
+  RestartSentinel,
+  getDefaultRestartSentinel,
+  resetDefaultRestartSentinel,
+} from "./restart-sentinel";
+export type { SentinelState } from "./restart-sentinel";
+export {
+  writeGatewayRestartIntentSync,
+  consumeGatewayRestartIntentSync,
+  clearGatewayRestartIntentSync,
+  readGatewayRestartIntentPayloadSync,
+  resolveDefaultStateDir,
+  resolveRestartIntentPath,
+  getIntentTtlMs,
+  getIntentMaxBytes,
+} from "./restart-intent";
+export type {
+  GatewayRestartIntent,
+  GatewayRestartIntentPayload,
+  ConsumeIntentResult,
+} from "./restart-intent";
+export {
+  triggerGatewayRestart,
+} from "./restart-handoff";
+export type { RestartAttempt, RestartMethod } from "./restart-handoff";
+export {
+  cleanStaleGatewayProcessesSync,
+  findGatewayPidsOnPortSync,
+  getSelfAndAncestorPidsSync,
+  isGatewayArgv,
+  terminateStaleProcessesSync,
+  waitForPortFreeSync,
+} from "./restart-stale-pids";
+export type {
+  TerminateResult,
+  PollPortResult,
+} from "./restart-stale-pids";

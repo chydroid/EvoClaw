@@ -101,3 +101,29 @@ export type { VoiceConfig, VoiceStatus, VoiceVerificationResult, VoiceEngine } f
 
 export { ChannelAdapterBase, WebhookChannelAdapter, TelegramChannelAdapter } from "./channel-adapter-framework";
 export type { ChannelAdapterConfig, ChannelAdapterStatus, WebhookChannelConfig, TelegramChannelConfig } from "./channel-adapter-framework";
+
+// v0.66: turn 子系统对齐 openclaw-main（history-window + bot-loop-protection + message-turn-guardrails）
+export { HistoryWindow } from "./history-window";
+export type { HistoryEntry, HistoryWindowOptions } from "./history-window";
+export {
+  BotLoopProtection,
+  DEFAULT_BOT_LOOP_CONFIG,
+} from "./bot-loop-protection";
+export type {
+  LoopSeverity,
+  LoopAction,
+  LoopPattern,
+  LoopDetectionResult,
+  BotLoopProtectionConfig,
+} from "./bot-loop-protection";
+export {
+  MessageTurnGuardrails,
+  DEFAULT_TURN_GUARDRAILS_CONFIG,
+} from "./message-turn-guardrails";
+export type {
+  GuardrailAction,
+  GuardrailResult,
+  TurnGuardrailsConfig,
+  TurnContext,
+  GuardrailMessage,
+} from "./message-turn-guardrails";
