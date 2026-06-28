@@ -53,17 +53,28 @@ export class FTS5SearchEngine {
     } else {
       this.dbPath = dbPath;
     }
+    let BetterSqlite3: new (file: string, opts?: Record<string, unknown>) => SqliteDatabase;
     try {
-      const BetterSqlite3 = require("better-sqlite3");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      BetterSqlite3 = require("better-sqlite3");
+    } catch (err) {
+      this.db = null;
+      this.useFallback = true;
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[FTS5Search] better-sqlite3 module not available, falling back to in-memory mode (${reason})\n`);
+      return;
+    }
+    try {
       this.db = new BetterSqlite3(this.dbPath) as SqliteDatabase;
       this.useFallback = false;
       if (this.dbPath !== ":memory:") {
         process.stdout.write(`[FTS5Search] Using persistent database at ${this.dbPath}\n`);
       }
-    } catch {
+    } catch (err) {
       this.db = null;
       this.useFallback = true;
-      process.stderr.write(`[FTS5Search] better-sqlite3 not available, falling back to in-memory mode\n`);
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[FTS5Search] SQLite init failed, falling back to in-memory mode (${reason})\n`);
     }
   }
 

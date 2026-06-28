@@ -5,6 +5,30 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.1 (2026-06-28)
+
+### 启动日志可读性与误报修复
+
+针对 `pnpm start` 启动服务器时日志中出现的若干可读性问题与误报进行修复，无功能行为变更。所有修复均经 `pnpm -r build` + `pnpm typecheck` + `pnpm test`（3967 passed）+ 服务器重启验证通过。
+
+#### 修复内容
+
+1. **日志行堆叠**（`packages/skills/src/skill-manager.ts`）：约 30 处 `process.stderr.write` / `process.stdout.write` 调用缺少末尾 `\n`，导致启动时 44 行 "Install requires review" 与 19 行 "Skill has no triggers defined" 等日志被拼成超长单行。统一补齐换行符。
+2. **better-sqlite3 错误消息误导**（`packages/memory/src/long-term-memory.ts`、`packages/memory/src/fts5-search.ts`）：原代码将 `require("better-sqlite3")` 与 `new BetterSqlite3(...)` 放在同一 try-catch 中，无法区分"模块不存在"与"模块存在但初始化失败"。拆分为两个 try-catch 分别打印明确原因。修复后日志由误导性的 "not available" 改为 "SQLite backend init failed, falling back to JSON (Could not locate the bindings file...)"，与实际环境（Node v137 / win32-x64 暂无预编译 bindings）一致。
+3. **安全扫描器误报**（`packages/skills/src/skill-validator.ts`）：prompt injection 检测正则中 `DAN` 会子串匹配 "dan**gerous**" / "d**an**ce" 等正常单词，导致 calculator / humanizer 两个技能被误判为 critical 拒绝。为正则添加 `\b` 词边界。
+4. **datetime-helper 命名规范错误**（`packages/skills/src/skill-manager.ts` + `packages/skills/bundled/datetime-helper/SKILL.md`）：原 SKILL.md 为空文件导致解析后 name 为 "unnamed-skill"，代码将中文 `displayName`（"日期时间助手"）直接作为 skill name，违反命名规范被拒绝。修复回退逻辑：优先用 `metaJson.name`，仅当 `displayName` 符合命名规范时才使用；同时为 datetime-helper 补全 SKILL.md 内容。
+5. **远程注册表异常**（`packages/skills/src/skill-registry.ts`）：远程注册表 `cn.clawhub-mirror.com` 返回非标准格式（无 `entries` 数组），原代码直接 `for (const entry of data.entries)` 抛出 "data.entries is not iterable"。添加防御性校验，未通过时抛出包含响应预览的明确错误。
+
+#### 构造签名类型修复
+
+为支持 try-catch 拆分，将 `require("better-sqlite3")` 赋值目标类型从 `(file: string, opts?) => SqliteDatabase` 改为 `new (file: string, opts?: Record<string, unknown>) => SqliteDatabase`（构造签名），避免 TS7009 `'new' expression, whose target lacks a construct signature`。
+
+#### 验证
+
+`pnpm -r build` exit 0 / `pnpm typecheck` exit 0 / `pnpm test` 3967 passed / 73 skipped / 0 failed / 服务器重启后 50 skills checked, 46 translated, 88/88 服务健康，calculator / humanizer 不再被误拒绝，better-sqlite3 错误消息明确说明原因。
+
+---
+
 ## v0.62.0 (2026-06-28)
 
 ### WebUI 输入框 3 行初始高度 + CLI 命令体系对标 openclaw 全面补齐

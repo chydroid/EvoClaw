@@ -25,6 +25,13 @@ EvoClaw（进化之爪）是一个自进化智能助理平台，通过自我改�
 - 运行时数据与自带技能目录分离（`data/skills/` vs `packages/skills/bundled/`）
 - 全仓库敏感信息扫描与 Git 防泄漏策略
 
+### v0.62.1 亮点
+- **启动日志可读性修复**：修复 `skill-manager.ts` 中约 30 处 `process.stderr/stdout.write` 缺少末尾 `\n` 导致的日志行堆叠问题（44 行 "Install requires review" 等被拼成超长单行）
+- **better-sqlite3 错误消息修复**：拆分 `long-term-memory.ts` / `fts5-search.ts` 中的 try-catch，区分"模块不存在"与"初始化失败"，日志由误导性的 "not available" 改为 "init failed, falling back to JSON (Could not locate the bindings file...)"
+- **安全扫描误报修复**：`skill-validator.ts` 的 prompt injection 正则中 `DAN` 子串匹配到 "dangerous" / "dance" 等正常单词，导致 calculator / humanizer 技能被误判为 critical 拒绝。添加 `\b` 词边界
+- **datetime-helper 命名回退修复**：空 SKILL.md 时将中文 `displayName` 误用作 skill name 违反命名规范；改为优先 `metaJson.name`，仅当 `displayName` 符合规范时才使用；同时补全 SKILL.md 内容
+- **远程注册表防御性校验**：`skill-registry.ts` 在迭代 `data.entries` 前校验为数组，否则抛出包含响应预览的明确错误（避免 "data.entries is not iterable"）
+
 ### v0.62.0 亮点
 - **WebUI 聊天输入框 3 行初始高度**：textarea `rows` 由 1 改为 3，level 0 的 `minHeight` 由 60px → 84px / `maxHeight` 由 120px → 160px，多行输入更顺手
 - **CLI 命令体系对标 openclaw 全面补齐**：对照 `D:\abc\openclaw-main` 的 ~52 个顶级命令，新增 7 个缺失命令并增强 5 个现有命令的子命令覆盖，使 EvoClaw CLI 在子命令完整度、错误处理、JSON 输出、确认提示、脱敏输出等方面比 openclaw 更全面。本版本属重大里程碑，递增 minor 位

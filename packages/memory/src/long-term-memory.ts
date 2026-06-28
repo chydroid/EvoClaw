@@ -32,8 +32,17 @@ export class LongTermMemoryStore implements LongTermMemory {
   }
 
   private initSqlite(): void {
+    let BetterSqlite3: new (file: string, opts?: Record<string, unknown>) => SqliteDatabase;
     try {
-      const BetterSqlite3 = require("better-sqlite3");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      BetterSqlite3 = require("better-sqlite3");
+    } catch (err) {
+      this.sqliteDb = null;
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[LongTermMemory] better-sqlite3 module not available, SQLite backend disabled (${reason})\n`);
+      return;
+    }
+    try {
       const dir = path.dirname(SQLITE_FILE);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -43,9 +52,10 @@ export class LongTermMemoryStore implements LongTermMemory {
         "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, type TEXT, content TEXT, importance REAL, tags TEXT, createdAt TEXT, updatedAt TEXT, ttl INTEGER, data TEXT)"
       );
       process.stdout.write(`[LongTermMemory] SQLite backend opened at ${SQLITE_FILE}\n`);
-    } catch {
+    } catch (err) {
       this.sqliteDb = null;
-      process.stderr.write(`[LongTermMemory] better-sqlite3 not available, SQLite backend disabled\n`);
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[LongTermMemory] SQLite backend init failed, falling back to JSON (${reason})\n`);
     }
   }
 

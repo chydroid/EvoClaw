@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.62.0-7c3aed?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.62.1-7c3aed?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-22c55e?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-%3E%3D9.0.0-f69220?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
@@ -101,6 +101,23 @@ EvoClaw 的皇冠明珠。进化引擎闭环：失败 → 分析 → 提案 → 
 - **审批超时（fail-closed）** — 限时审批 + 安全默认拒绝 **[v0.35.0]**
 - **敏感信息遮蔽** — 自动遮蔽 API Key、JWT、邮箱等 12 类敏感信息 **[v0.35.0]**
 - **MCP 投毒扫描器** — 检测 MCP 工具描述中隐藏的提示词注入 **[v0.35.0]**
+
+### 🆕 v0.62.1 更新亮点
+
+针对 `pnpm start` 启动服务器时日志中出现的若干可读性问题与误报进行修复，无功能行为变更。属 patch bugfix，递增最后一位 patch 号。
+
+| 类别 | 文件 | 问题 | 修复 |
+|---|---|---|---|
+| **日志行堆叠** | `packages/skills/src/skill-manager.ts` | 约 30 处 `process.stderr/stdout.write` 缺少末尾 `\n`，44 行 "Install requires review" 等被拼成超长单行 | 统一补齐换行符 |
+| **SQLite 错误误导** | `packages/memory/src/long-term-memory.ts`、`fts5-search.ts` | `require()` 与 `new` 在同一 try-catch，无法区分"模块不存在"与"初始化失败" | 拆分为两个 try-catch，分别打印明确原因 |
+| **安全扫描误报** | `packages/skills/src/skill-validator.ts` | prompt injection 正则 `DAN` 子串匹配 "dangerous"/"dance"，calculator / humanizer 被误判 critical 拒绝 | 添加 `\b` 词边界 |
+| **命名规范错误** | `skill-manager.ts` + `datetime-helper/SKILL.md` | 空 SKILL.md 时将中文 `displayName` 误用作 skill name | 优先 `metaJson.name`，仅当 `displayName` 符合规范时才使用；补全 SKILL.md 内容 |
+| **远程注册表异常** | `packages/skills/src/skill-registry.ts` | 远程返回非标准格式时 `for (data.entries)` 抛 "not iterable" | 迭代前校验为数组，否则抛出包含响应预览的明确错误 |
+| **TS 构造签名** | `long-term-memory.ts`、`fts5-search.ts` | `require("better-sqlite3")` 赋值给非构造签名类型后 `new` 调用报 TS7009 | 类型改为 `new (file: string, opts?) => SqliteDatabase` |
+
+**验证**：`pnpm -r build` + `pnpm typecheck` + `pnpm test`（3967 passed / 73 skipped / 0 failed）全部通过，88/88 服务健康，calculator / humanizer 不再被误拒绝
+
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.62.0 → 0.62.1`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。v0.62.1 属 patch bugfix，递增最后一位 patch 号。
 
 ### 🆕 v0.62.0 更新亮点
 

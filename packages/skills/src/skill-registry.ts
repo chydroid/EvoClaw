@@ -436,6 +436,15 @@ export class SkillRegistry {
 
       const data = (await response.json()) as RegistrySearchResult;
 
+      // 防御性检查：远程注册表可能返回非预期格式（如 HTML 错误页、空对象、字段缺失）
+      if (!data || typeof data !== "object") {
+        throw new Error(`Remote registry "${remote.url}" returned non-object response`);
+      }
+      if (!Array.isArray(data.entries)) {
+        const bodyPreview = JSON.stringify(data).slice(0, 200);
+        throw new Error(`Remote registry "${remote.url}" returned unexpected shape (entries is ${data.entries === undefined ? "missing" : typeof data.entries}): ${bodyPreview}`);
+      }
+
       for (const entry of data.entries) {
         if (!entry.skillId) {
           entry.skillId = `remote:${entry.name}@${entry.version}`;

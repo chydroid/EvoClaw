@@ -121,7 +121,7 @@ export class SkillManager {
         throw new Error(`Install blocked by policy: ${decision.reason}`);
       }
       if (decision.action === "review") {
-        process.stderr.write(`[SkillManager] Install requires review: ${decision.reason}`);
+        process.stderr.write(`[SkillManager] Install requires review: ${decision.reason}\n`);
         // Continue but log the review requirement
       }
     }
@@ -163,13 +163,21 @@ export class SkillManager {
       if (!parsed.meta.homepage && metaJson.homepage) {
         parsed.meta.homepage = String(metaJson.homepage);
       }
-      // 远程技能的 displayName 作为 name 备选
-      if (parsed.meta.name === "unnamed-skill" && metaJson.displayName) {
-        parsed.meta.name = String(metaJson.displayName);
+      // _meta.json 的 name 字段作为 name 备选（优先于 displayName，因为 name 遵循命名规范而 displayName 可能是本地化文本）
+      if (parsed.meta.name === "unnamed-skill" && metaJson.name) {
+        parsed.meta.name = String(metaJson.name);
       }
-      // 远程技能的 slug 作为 name 备选
+      // _meta.json 的 slug 作为 name 备选
       if (parsed.meta.name === "unnamed-skill" && metaJson.slug) {
         parsed.meta.name = String(metaJson.slug);
+      }
+      // 最后才回退到 displayName（可能包含非 ASCII 字符，仅作展示用）
+      if (parsed.meta.name === "unnamed-skill" && metaJson.displayName) {
+        const dn = String(metaJson.displayName);
+        // 仅当 displayName 也符合命名规范时才用作 name
+        if (/^[a-z][a-z0-9_-]*$/i.test(dn)) {
+          parsed.meta.name = dn;
+        }
       }
     }
 
@@ -179,7 +187,7 @@ export class SkillManager {
     }
     if (validation.warnings.length > 0) {
       for (const w of validation.warnings) {
-        process.stderr.write(`[SkillManager] ⚠ ${w}`);
+        process.stderr.write(`[SkillManager] ⚠ ${w}\n`);
       }
     }
 
@@ -194,14 +202,14 @@ export class SkillManager {
         if (quality.score < MIN_QUALITY_SCORE) {
           const message = `Skill quality too low (${quality.score.toFixed(2)}): ${quality.issues.join("; ")}`;
           if (force) {
-            process.stderr.write(`[SkillManager] Forcing install despite ${message}`);
+            process.stderr.write(`[SkillManager] Forcing install despite ${message}\n`);
           } else {
             throw new Error(message);
           }
         }
       } catch (err) {
         if (force) {
-          process.stderr.write(`[SkillManager] Forcing install despite quality validation error: ${err instanceof Error ? err.message : String(err)}`);
+          process.stderr.write(`[SkillManager] Forcing install despite quality validation error: ${err instanceof Error ? err.message : String(err)}\n`);
         } else {
           // Quality validation is non-critical only when it fails internally;
           // an explicit low-score result is already thrown above.
@@ -230,7 +238,7 @@ export class SkillManager {
     const declaredEnv = ocMeta?.requires?.env || [];
     const allEnvVars = [...new Set([...declaredEnv, ...detectedEnvVars])];
     if (detectedEnvVars.length > 0) {
-      process.stdout.write(`[SkillManager] Auto-detected env vars from SKILL.md body: ${detectedEnvVars.join(", ")}`);
+      process.stdout.write(`[SkillManager] Auto-detected env vars from SKILL.md body: ${detectedEnvVars.join(", ")}\n`);
     }
 
     if (allEnvVars.length > 0) {
@@ -277,7 +285,7 @@ export class SkillManager {
 
     if (warnings.length > 0) {
       for (const w of warnings) {
-        process.stderr.write(`[SkillManager] ⚠ ${w}`);
+        process.stderr.write(`[SkillManager] ⚠ ${w}\n`);
       }
     }
 
@@ -378,12 +386,12 @@ export class SkillManager {
 
       if (highFindings.length > 0) {
         for (const f of highFindings) {
-          process.stderr.write(`[SkillManager] 🔴 Security warning [${f.type}]: ${f.description} (${f.location})`);
+          process.stderr.write(`[SkillManager] 🔴 Security warning [${f.type}]: ${f.description} (${f.location})\n`);
         }
       }
       if (mediumFindings.length > 0) {
         for (const f of mediumFindings) {
-          process.stderr.write(`[SkillManager] 🟡 Security warning [${f.type}]: ${f.description} (${f.location})`);
+          process.stderr.write(`[SkillManager] 🟡 Security warning [${f.type}]: ${f.description} (${f.location})\n`);
         }
       }
     }
@@ -463,7 +471,7 @@ export class SkillManager {
         e.includes("verification failed")
       );
       if (criticalErrors.length > 0) {
-        process.stderr.write(`[SkillManager] Install failed with critical errors, rolling back "${skill.name}"`);
+        process.stderr.write(`[SkillManager] Install failed with critical errors, rolling back "${skill.name}"\n`);
         // Roll back: remove from memory and disk
         this.skills.delete(skill.id);
         this.registry.unregisterSkill(skill.id);
@@ -481,7 +489,7 @@ export class SkillManager {
       process.stderr.write(`[SkillManager] Install completed with warnings for "${skill.name}": ${[
         ...installReport.warnings,
         ...installReport.steps.flatMap(s => s.warnings),
-      ].join("; ")}`);
+      ].join("; ")}\n`);
     }
 
     const existingI18n = this.localization.loadI18nFile(skillDir);
@@ -741,7 +749,7 @@ export class SkillManager {
         if (skill) {
           this.registry.unregisterSkill(id);
           this.skills.delete(id);
-          process.stdout.write(`[SkillManager] Pruned stale skill "${skill.name}" (files deleted from disk)`);
+          process.stdout.write(`[SkillManager] Pruned stale skill "${skill.name}" (files deleted from disk)\n`);
         }
       }
     }
@@ -813,10 +821,10 @@ export class SkillManager {
         const skillDir = path.dirname(skill.installPath);
         if (fs.existsSync(skillDir)) {
           fs.rmSync(skillDir, { recursive: true, force: true });
-          process.stdout.write(`[SkillManager] Deleted skill directory: ${skillDir}`);
+          process.stdout.write(`[SkillManager] Deleted skill directory: ${skillDir}\n`);
         }
       } catch (err) {
-        process.stderr.write(`[SkillManager] Failed to delete skill directory: ${err instanceof Error ? err.message : err}`);
+        process.stderr.write(`[SkillManager] Failed to delete skill directory: ${err instanceof Error ? err.message : err}\n`);
       }
 
       // Clean up processedItems cache
@@ -974,18 +982,18 @@ export class SkillManager {
 
   startAutoScan(skillsDir: string, intervalMs = 30000): void {
     this.scanDirs.push({ dir: skillsDir, intervalMs });
-    process.stdout.write(`[SkillManager] Auto-scan started on "${skillsDir}" (every ${intervalMs / 1000}s)`);
+    process.stdout.write(`[SkillManager] Auto-scan started on "${skillsDir}" (every ${intervalMs / 1000}s)\n`);
 
     const runScan = async (dir: string) => {
       try {
         const result = await this.scanAndInstall(dir);
         if (result.installed.length > 0 || result.skipped.length > 0) {
           process.stdout.write(
-            `[SkillManager] Scan "${dir}": ${result.installed.length} installed, ${result.skipped.length} skipped`
+            `[SkillManager] Scan "${dir}": ${result.installed.length} installed, ${result.skipped.length} skipped\n`
           );
         }
       } catch (err) {
-        process.stderr.write(`[SkillManager] Auto-scan error for "${dir}":` + " " + err);
+        process.stderr.write(`[SkillManager] Auto-scan error for "${dir}":` + " " + err + "\n");
       }
     };
 
@@ -1001,7 +1009,7 @@ export class SkillManager {
     }
     this.scanTimers = [];
     this.scanDirs = [];
-    process.stdout.write("[SkillManager] Auto-scan stopped");
+    process.stdout.write("[SkillManager] Auto-scan stopped\n");
   }
 
   async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {
@@ -1382,7 +1390,7 @@ export class SkillManager {
       fs.writeFileSync(configPath, JSON.stringify(persistable, null, 2), "utf-8");
       return true;
     } catch (err) {
-      process.stderr.write(`[SkillManager] Failed to save config for ${skillId}:` + " " + err);
+      process.stderr.write(`[SkillManager] Failed to save config for ${skillId}:` + " " + err + "\n");
       return false;
     }
   }
@@ -1395,7 +1403,7 @@ export class SkillManager {
         return JSON.parse(raw);
       }
     } catch (err) {
-      process.stderr.write(`[SkillManager] Failed to load _config.json from ${skillDir}:` + " " + err);
+      process.stderr.write(`[SkillManager] Failed to load _config.json from ${skillDir}:` + " " + err + "\n");
     }
     return null;
   }
@@ -1581,7 +1589,7 @@ export class SkillManager {
     }
 
     if (translated > 0) {
-      process.stdout.write(`[SkillManager] Localization check: ${checked} skills checked, ${translated} translated`);
+      process.stdout.write(`[SkillManager] Localization check: ${checked} skills checked, ${translated} translated\n`);
     }
     return { checked, translated };
   }
@@ -1610,7 +1618,7 @@ export class SkillManager {
           const parsed = await this.parser.parseFromFile(skillMdPath);
           const validation = this.validator.validate(parsed);
           if (!validation.valid) {
-            process.stderr.write(`[SkillManager] Skipping invalid skill "${parsed.meta.name}" from ${searchPath}: ${validation.errors.join("; ")}`);
+            process.stderr.write(`[SkillManager] Skipping invalid skill "${parsed.meta.name}" from ${searchPath}: ${validation.errors.join("; ")}\n`);
             continue;
           }
 
@@ -1629,7 +1637,7 @@ export class SkillManager {
             skillByName.set(skillName, { skill: installedSkill, priority });
           }
         } catch (err) {
-          process.stderr.write(`[SkillManager] Failed to load skill from ${skillMdPath}:` + " " + err);
+          process.stderr.write(`[SkillManager] Failed to load skill from ${skillMdPath}:` + " " + err + "\n");
         }
       }
     }
@@ -1673,8 +1681,8 @@ export class SkillManager {
   async installFromClawHub(skillName: string): Promise<Skill> {
     const skill = await this.installFromMarketplace(skillName);
 
-    process.stdout.write(`[SkillManager] ClawHub sync: syncing installed skill "${skillName}" with ClawHub registry`);
-    process.stdout.write(`[SkillManager] ClawHub sync completed for "${skillName}" (v${skill.version})`);
+    process.stdout.write(`[SkillManager] ClawHub sync: syncing installed skill "${skillName}" with ClawHub registry\n`);
+    process.stdout.write(`[SkillManager] ClawHub sync completed for "${skillName}" (v${skill.version})\n`);
 
     return skill;
   }
@@ -1820,11 +1828,11 @@ export class SkillManager {
           encoding: "utf-8",
         });
         step.message += `Installed ${npmPkgs.length} npm package(s). `;
-        process.stdout.write(`[SkillManager] Installed npm packages in ${skillDir}: ${npmPkgs.join(", ")}`);
+        process.stdout.write(`[SkillManager] Installed npm packages in ${skillDir}: ${npmPkgs.join(", ")}\n`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         step.warnings.push(`npm install failed (non-critical, skill may still work): ${errMsg.slice(0, 200)}`);
-        process.stderr.write(`[SkillManager] npm install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}`);
+        process.stderr.write(`[SkillManager] npm install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}\n`);
       }
     }
 
@@ -1838,11 +1846,11 @@ export class SkillManager {
           encoding: "utf-8",
         });
         step.message += `Installed ${pipPkgs.length} pip package(s). `;
-        process.stdout.write(`[SkillManager] Installed pip packages: ${pipPkgs.join(", ")}`);
+        process.stdout.write(`[SkillManager] Installed pip packages: ${pipPkgs.join(", ")}\n`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         step.warnings.push(`pip install failed (non-critical, skill may still work): ${errMsg.slice(0, 200)}`);
-        process.stderr.write(`[SkillManager] pip install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}`);
+        process.stderr.write(`[SkillManager] pip install failed for skill at ${skillDir}: ${errMsg.slice(0, 200)}\n`);
       }
     }
 
@@ -1964,7 +1972,7 @@ export class SkillManager {
           return step;
       }
 
-      process.stdout.write(`[SkillManager] Executing structured install: ${program} ${args.join(" ")}`);
+      process.stdout.write(`[SkillManager] Executing structured install: ${program} ${args.join(" ")}\n`);
       execFileSync(program, args, { cwd: skillDir, timeout: 120_000, stdio: "pipe", shell: false });
       step.message = `Successfully installed via ${spec.kind}`;
 
@@ -2201,7 +2209,7 @@ export class SkillManager {
       errors: [],
     };
 
-    process.stdout.write(`[SkillManager] Executing ${scriptName} script in ${skillDir}`);
+    process.stdout.write(`[SkillManager] Executing ${scriptName} script in ${skillDir}\n`);
 
     try {
       // Determine shell and script
@@ -2217,13 +2225,13 @@ export class SkillManager {
       });
 
       step.message = `${scriptName} script executed successfully`;
-      process.stdout.write(`[SkillManager] ${scriptName} script output: ${String(result).slice(0, 200)}`);
+      process.stdout.write(`[SkillManager] ${scriptName} script output: ${String(result).slice(0, 200)}\n`);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       step.status = "failed";
       step.errors.push(`${scriptName} script failed: ${errMsg.slice(0, 300)}`);
       step.message = `${scriptName} script failed`;
-      process.stderr.write(`[SkillManager] ${scriptName} script failed in ${skillDir}: ${errMsg.slice(0, 300)}`);
+      process.stderr.write(`[SkillManager] ${scriptName} script failed in ${skillDir}: ${errMsg.slice(0, 300)}\n`);
     }
 
     return step;
@@ -2317,7 +2325,7 @@ export class SkillManager {
       step.message = "All verification checks passed";
     }
 
-    process.stdout.write(`[SkillManager] Post-install verification for "${skill.name}": ${step.status} — ${step.message}`);
+    process.stdout.write(`[SkillManager] Post-install verification for "${skill.name}": ${step.status} — ${step.message}\n`);
     return step;
   }
 }
