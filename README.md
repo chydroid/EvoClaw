@@ -16,8 +16,11 @@
 <p align="center">
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
+  <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
+
+---
 
 ## Quick Start
 
@@ -29,7 +32,7 @@
 ### Installation
 
 ```bash
-# 1. Clone the repository
+# 1. Clone
 git clone https://github.com/chydroid/EvoClaw.git
 cd EvoClaw
 
@@ -40,14 +43,25 @@ pnpm install
 cp .env.example .env
 # Edit .env to add your API keys and configuration
 
-# 4. Build the project
+# 4. Build
 pnpm build
 
-# 5. Start the server
+# 5. Start
 pnpm start
 ```
 
-The server runs at **http://localhost:27788** by default.
+Open **http://localhost:27788** in your browser.
+
+### Configure Your First LLM
+
+1. Open Web UI → **LLM** tab
+2. Select a provider (e.g. OpenAI)
+3. Toggle **Enable Provider**
+4. Enter your **API Key**
+5. Select a **Model** (e.g. gpt-4o)
+6. Click **Save All**
+
+> **Local models?** Install [Ollama](https://ollama.com), run `ollama pull llama3`, then set Base URL to `http://localhost:11434/v1`.
 
 ### Verify
 
@@ -68,6 +82,91 @@ pnpm test         # Run tests
 | Evolution | Experience learning, reinforcement feedback, auto-optimization |
 | Security | Command approval, path protection, SSRF guard, secrets, audit |
 | Plugins | Plugin SDK, MCP protocol support |
+
+## Architecture
+
+EvoClaw is built on a modular, event-driven architecture:
+
+- **Gateway Layer** — REST/WS/MCP gateways, Web UI (React 19), CLI — all external interfaces
+- **EventBus** — Centralized pub-sub event bus decoupling all internal services
+- **Core Services** — Agent (Actor model + DAG orchestration), Evolution (self-evolution engine), Memory (multi-layer: short/long/vector/FTS5)
+- **Supporting** — Skills (registry, sandbox, security scanning), Security (RBAC, audit, tenant isolation), Infrastructure (logging, message queue, filesystem)
+- **Cross-cutting** — Copilot Router (intelligent model routing), Credential Pool (API key rotation), Prompt Cache
+
+Key design patterns: IoC/DI via ServiceRegistry, Actor model concurrency, DAG-based task decomposition, Observer pattern for evolution.
+
+## CLI Reference
+
+30+ subcommands available:
+
+```bash
+# Setup & onboarding
+evoclaw setup                    # Create base config and workspace
+evoclaw onboard                  # Interactive onboarding
+
+# Health & status
+evoclaw health [--json]          # Health check
+evoclaw status [--all]           # Runtime status
+evoclaw doctor [--fix]           # System diagnostics
+
+# Agent & messaging
+evoclaw agent -m <msg>           # Run agent with message
+evoclaw message send             # Send message to agent
+
+# Skills
+evoclaw skills search <q>        # Search skills
+evoclaw skills install <s>       # Install a skill
+evoclaw skills list              # List installed skills
+
+# Models
+evoclaw models list              # List available models
+evoclaw models set <id>          # Switch default model
+evoclaw models scan              # Scan available models
+
+# Configuration
+evoclaw config get <key>         # Get config value
+evoclaw config set <key> <val>   # Set config value
+
+# Security
+evoclaw security audit           # Run security audit
+evoclaw secrets list             # List secrets
+
+# Integration
+evoclaw mcp list                 # List MCP servers
+evoclaw plugins list             # List plugins
+evoclaw channels list            # Channel management
+```
+
+## REST API
+
+Key endpoints (50+ total):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/health` | GET | Health check |
+| `/api/chat` | POST | Send chat message |
+| `/api/skills` | GET | List installed skills |
+| `/api/system/services` | GET | Service runtime status |
+| `/api/config/llm` | GET/PUT | LLM configuration |
+| `/api/config/channels` | GET/PUT | Channel configuration |
+| `/api/feature-flags` | GET | List feature flags |
+| `/api/evolution/dashboard` | GET | Evolution engine dashboard |
+| `/api/memory/search?q=` | GET | Semantic memory search |
+| `/metrics` | GET | Prometheus metrics |
+
+## Configuration
+
+Key environment variables in `.env`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVOCLAW_PORT` | `27788` | Server port |
+| `EVOCLAW_HOST` | `0.0.0.0` | Bind address |
+| `JWT_SECRET` | — | JWT signing key (**must change in production**) |
+| `EVOCLAW_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
+| `EVOCLAW_MCP_ENABLED` | `true` | Enable MCP protocol |
+| `CORS_ORIGINS` | — | Allowed CORS origins |
+| `RATE_LIMIT_MAX` | — | Max rate limit requests |
 
 ## Project Structure
 
@@ -120,6 +219,39 @@ pnpm test:watch   # Watch mode
 ```bash
 docker build -t evoclaw .
 docker run -p 27788:27788 --env-file .env evoclaw
+```
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `pnpm: command not found` | Install pnpm: `npm install -g pnpm@10` |
+| `port 27788 already in use` | Change `EVOCLAW_PORT` in `.env` or kill the process |
+| Build fails | Clean and retry: `pnpm clean && pnpm install && pnpm build` |
+| Web UI blank page | Ensure `pnpm build` completed, check browser console |
+| LLM connection fails | Verify API key and Base URL, check network connectivity |
+| Channel connection fails | Ensure callback URL is publicly accessible, verify token |
+
+### Port conflict
+
+```bash
+# Linux/macOS
+lsof -i :27788
+kill -9 <PID>
+
+# Windows
+netstat -ano | findstr :27788
+taskkill /PID <PID> /F
+```
+
+### Full reset
+
+```bash
+pnpm clean
+rm -rf node_modules pnpm-lock.yaml
+pnpm install
+pnpm build
+pnpm test
 ```
 
 ## Contributing

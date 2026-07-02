@@ -16,8 +16,11 @@
 <p align="center">
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
+  <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
+
+---
 
 ## 快速开始
 
@@ -38,7 +41,7 @@ pnpm install
 
 # 3. 配置环境变量
 cp .env.example .env
-# 编辑 .env 填入你的 API Key 等配置
+# 编辑 .env 填入 API Key 等配置
 
 # 4. 构建项目
 pnpm build
@@ -47,9 +50,20 @@ pnpm build
 pnpm start
 ```
 
-服务默认运行在 **http://localhost:27788**。
+浏览器打开 **http://localhost:27788**。
 
-### 验证安装
+### 配置首个 LLM
+
+1. 打开 Web 界面 → **LLM** 选项卡
+2. 选择提供商（如 OpenAI）
+3. 开启 **Enable Provider**
+4. 填入 **API Key**
+5. 选择 **Model**（如 gpt-4o）
+6. 点击 **Save All**
+
+> **本地模型？** 安装 [Ollama](https://ollama.com)，运行 `ollama pull llama3`，然后在 Base URL 填入 `http://localhost:11434/v1`。
+
+### 验证
 
 ```bash
 pnpm typecheck    # 类型检查
@@ -61,13 +75,98 @@ pnpm test         # 运行测试
 | 类别 | 能力 |
 |------|------|
 | 智能对话 | 多模型、多提供商、流式响应、上下文压缩 |
-| 技能系统 | 本地技能 + 远程注册表、自动安装、安全扫描 |
+| 技能系统 | 本地 + 远程注册表、自动安装、安全扫描 |
 | 工具生态 | 文件操作、浏览器自动化、网络搜索、Office 文档生成 |
 | 多渠道 | 微信、飞书、钉钉、Telegram、WhatsApp、REST API、WebSocket |
 | 记忆系统 | 长短期记忆、RAG 检索、语义搜索 |
 | 自进化 | 经验学习、强化反馈、自动优化 |
 | 安全 | 命令审批、路径防护、SSRF 防护、密钥管理、审计日志 |
 | 插件 | Plugin SDK 扩展、MCP 协议支持 |
+
+## 架构
+
+EvoClaw 采用模块化事件驱动架构：
+
+- **网关层** — REST/WS/MCP 网关、Web UI（React 19）、CLI 命令行，所有外部接口
+- **EventBus** — 集中式发布订阅事件总线，解耦所有内部服务
+- **核心服务** — Agent（Actor 模型 + DAG 编排）、Evolution（自进化引擎）、Memory（多层：短期/长期/向量/FTS5）
+- **支撑层** — Skills（注册表、沙箱、安全扫描）、Security（RBAC、审计、租户隔离）、Infrastructure（日志、消息队列、文件系统）
+- **横切关注** — Copilot Router（智能模型路由）、Credential Pool（API Key 轮转）、Prompt Cache
+
+关键设计模式：ServiceRegistry 实现 IoC/DI、Actor 模型并发、DAG 任务分解、Observer 模式驱动进化。
+
+## CLI 命令参考
+
+提供 30+ 子命令：
+
+```bash
+# 初始化与引导
+evoclaw setup                    # 创建基础配置和工作区
+evoclaw onboard                  # 交互式引导配置
+
+# 健康与状态
+evoclaw health [--json]          # 健康检查
+evoclaw status [--all]           # 运行时状态
+evoclaw doctor [--fix]           # 系统诊断
+
+# Agent 与消息
+evoclaw agent -m <msg>           # 运行 Agent 并发送消息
+evoclaw message send             # 向 Agent 发送消息
+
+# 技能
+evoclaw skills search <q>        # 搜索技能
+evoclaw skills install <s>       # 安装技能
+evoclaw skills list              # 列出已安装技能
+
+# 模型
+evoclaw models list              # 列出可用模型
+evoclaw models set <id>          # 切换默认模型
+evoclaw models scan              # 扫描可用模型
+
+# 配置
+evoclaw config get <key>         # 获取配置值
+evoclaw config set <key> <val>   # 设置配置值
+
+# 安全
+evoclaw security audit           # 运行安全审计
+evoclaw secrets list             # 查看密钥
+
+# 集成
+evoclaw mcp list                 # 列出 MCP 服务器
+evoclaw plugins list             # 列出插件
+evoclaw channels list            # 渠道管理
+```
+
+## REST API
+
+主要端点（共 50+）：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/health` | GET | 健康检查 |
+| `/api/chat` | POST | 发送对话消息 |
+| `/api/skills` | GET | 列出已安装技能 |
+| `/api/system/services` | GET | 服务运行时状态 |
+| `/api/config/llm` | GET/PUT | LLM 配置 |
+| `/api/config/channels` | GET/PUT | 渠道配置 |
+| `/api/feature-flags` | GET | 列出功能开关 |
+| `/api/evolution/dashboard` | GET | 进化引擎仪表盘 |
+| `/api/memory/search?q=` | GET | 语义记忆搜索 |
+| `/metrics` | GET | Prometheus 指标 |
+
+## 配置
+
+`.env` 中的关键环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `EVOCLAW_PORT` | `27788` | 服务端口 |
+| `EVOCLAW_HOST` | `0.0.0.0` | 绑定地址 |
+| `JWT_SECRET` | — | JWT 签名密钥（**生产环境务必修改**） |
+| `EVOCLAW_EVOLUTION_ENABLED` | `true` | 启用自进化引擎 |
+| `EVOCLAW_MCP_ENABLED` | `true` | 启用 MCP 协议 |
+| `CORS_ORIGINS` | — | 允许的跨域来源 |
+| `RATE_LIMIT_MAX` | — | 最大请求速率限制 |
 
 ## 项目结构
 
@@ -120,6 +219,39 @@ pnpm test:watch   # 监听模式
 ```bash
 docker build -t evoclaw .
 docker run -p 27788:27788 --env-file .env evoclaw
+```
+
+## 常见问题
+
+| 问题 | 解决方案 |
+|---|---|
+| `pnpm: command not found` | 安装 pnpm：`npm install -g pnpm@10` |
+| `port 27788 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程 |
+| 构建失败 | 清理后重试：`pnpm clean && pnpm install && pnpm build` |
+| Web UI 白屏 | 确认 `pnpm build` 已完成，检查浏览器控制台 |
+| LLM 连接失败 | 检查 API Key 和 Base URL，确认网络连通性 |
+| 渠道连接失败 | 确认回调 URL 可公网访问，验证 Token |
+
+### 端口冲突
+
+```bash
+# Linux/macOS
+lsof -i :27788
+kill -9 <PID>
+
+# Windows
+netstat -ano | findstr :27788
+taskkill /PID <PID> /F
+```
+
+### 完全重置
+
+```bash
+pnpm clean
+rm -rf node_modules pnpm-lock.yaml
+pnpm install
+pnpm build
+pnpm test
 ```
 
 ## 贡献
