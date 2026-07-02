@@ -2,13 +2,22 @@
 
 ---
 
-# 🧬 EvoClaw
+<p align="center">
+  <img src="https://github.com/chydroid/EvoClaw/raw/main/assets/images/evoclaw-400-100.png" alt="EvoClaw" width="420">
+</p>
 
-> A self-evolving AI assistant platform — personalized intelligent experiences through skill learning, task orchestration, and multi-channel integration
+<h1 align="center">🧬 EvoClaw</h1>
 
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
-[![pnpm](https://img.shields.io/badge/pnpm-10.33.2-blue)](https://pnpm.io)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+<p align="center">
+  <strong>A self-evolving AI assistant platform</strong><br>
+  <sub>Personalized intelligent experiences through skill learning, task orchestration, and multi-channel integration</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
+  <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
+</p>
 
 ## Quick Start
 

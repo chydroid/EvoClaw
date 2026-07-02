@@ -2,13 +2,22 @@
 
 ---
 
-# 🧬 EvoClaw
+<p align="center">
+  <img src="https://github.com/chydroid/EvoClaw/raw/main/assets/images/evoclaw-400-100.png" alt="EvoClaw" width="420">
+</p>
 
-> 自进化 AI 智能助理平台 — 通过技能学习、任务编排与多渠道接入提供个性化智能体验
+<h1 align="center">🧬 EvoClaw</h1>
 
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
-[![pnpm](https://img.shields.io/badge/pnpm-10.33.2-blue)](https://pnpm.io)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+<p align="center">
+  <strong>具备增强式自我进化能力的下一代自主智能体操作系统</strong><br>
+  <sub>通过技能学习、任务编排与多渠道接入提供个性化智能体验</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
+  <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
+</p>
 
 ## 快速开始
 
