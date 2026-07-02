@@ -5,6 +5,32 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.3 (2026-07-02)
+
+### pnpm install 不再因 better-sqlite3 编译失败而中断
+
+**根因分析**：`better-sqlite3@12.10.0` 的 install 脚本为 `prebuild-install || node-gyp rebuild --release`。安装时先尝试从 GitHub Releases 下载预编译二进制（prebuild），若失败（Node v24 ABI 无对应 prebuild、或国内网络无法访问 GitHub），则回退到 `node-gyp` 本地源码编译。Windows 环境若未安装 Visual Studio C++ Build Tools 和 Python，node-gyp 编译必然失败（`gyp ERR! not ok`），导致 `ELIFECYCLE` 退出码 1，`pnpm install` 整体中断。
+
+项目对 better-sqlite3 的使用已有完善的 graceful fallback（`require("better-sqlite3")` 被 try-catch 包裹，失败时回退到 JSON/内存模式），因此 better-sqlite3 在功能上是**可选**的——它仅作为 SQLite 持久化的性能优化，不存在时系统正常运行。
+
+#### 修复内容
+
+1. **better-sqlite3 改为 optionalDependencies**（根 [package.json](file:///d:/abc/EvoClaw/package.json) 和 [packages/infrastructure/package.json](file:///d:/abc/EvoClaw/packages/infrastructure/package.json)）：将 better-sqlite3 从 `dependencies` 移至 `optionalDependencies`。pnpm 对 optionalDependencies 的安装/编译失败视为非致命警告，不再以退出码 1 中断整个 `pnpm install`。在有编译环境+网络正常的机器上 prebuild 仍会成功下载并使用；在缺少编译工具的机器上安装会跳过（警告），但所有其他依赖正常安装。
+
+2. **添加 .npmrc 镜像配置**（新建 [.npmrc](file:///d:/abc/EvoClaw/.npmrc)）：为国内开发者配置以下镜像源，大幅提高 prebuild 下载成功率：
+   - `disturl` → npmmirror Node 头文件镜像（node-gyp 编译时使用）
+   - `better-sqlite3_binary_host_mirror` → npmmirror better-sqlite3 预编译二进制镜像（prebuild-install 按包名读取此配置，优先下载 prebuild 而非本地编译）
+   - `sharp_binary_host` / `sharp_libvips_binary_host` → sharp 图片处理库预编译镜像
+   - `electron_mirror` → Electron 镜像
+
+3. **验证所有使用点均为动态 require**：确认 `packages/memory/src/long-term-memory.ts`、`packages/memory/src/fts5-search.ts`、`packages/infrastructure/src/sqlite-*.test.ts`、`packages/scheduler/src/run-log-store*.ts` 中 better-sqlite3 均通过 `require()` 在 try-catch 中动态加载，无静态 import，因此运行时缺失不影响 TypeScript 编译和系统启动。
+
+#### 验证
+
+`pnpm -r build` exit 0 / `pnpm typecheck` exit 0 / `pnpm test` 全部通过（exit 0，所有 testsuite failures=0 errors=0）。
+
+---
+
 ## v0.62.2 (2026-06-28)
 
 ### 启动日志全面清理：行堆叠根治 + 跨平台安装 + review 去重

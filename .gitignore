@@ -83,3 +83,11 @@ nouse/
 
 # Runtime data maintained by evolution engine (auto-recreated)
 LEARNINGS.md
+
+# Archive/compressed files in repo root
+*.rar
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
