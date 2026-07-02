@@ -9,7 +9,7 @@
 
 ### README 重写 + .npmrc 镜像配置修正
 
-- **README.md 全面重写**：将原来 322 行、包含大量版本细节的冗长 README 精简为 ~120 行的现代简洁风格。移除所有版本历史亮点（v0.62.2~v0.50.0），改为清晰的安装步骤、核心能力表格、项目结构、技术栈和开发指南，版本历史统一指向 History.md
+- **README.md 和 README.zh-CN.md 全面重写**：将原来 322+723 行、包含大量版本细节的冗长 README 精简为两个语言版本各 ~130 行的现代简洁风格。移除所有版本历史亮点（v0.62.2~v0.50.0），改为清晰的安装步骤、核心能力表格、项目结构、技术栈和开发指南，版本历史统一指向 History.md。两个版本均添加了语言切换链接
 - **.npmrc 镜像配置修正**：`prebuild-install_binary_host_mirror` 键名错误，prebuild-install 按包名读取配置，已修正为 `better-sqlite3_binary_host_mirror`
 
 ---

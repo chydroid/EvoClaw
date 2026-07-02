@@ -1,3 +1,7 @@
+[English](README.md) | [中文](README.zh-CN.md)
+
+---
+
 # 🧬 EvoClaw
 
 > 自进化 AI 智能助理平台 — 通过技能学习、任务编排与多渠道接入提供个性化智能体验
