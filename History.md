@@ -5,6 +5,15 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.4 (2026-07-02)
+
+### README 重写 + .npmrc 镜像配置修正
+
+- **README.md 全面重写**：将原来 322 行、包含大量版本细节的冗长 README 精简为 ~120 行的现代简洁风格。移除所有版本历史亮点（v0.62.2~v0.50.0），改为清晰的安装步骤、核心能力表格、项目结构、技术栈和开发指南，版本历史统一指向 History.md
+- **.npmrc 镜像配置修正**：`prebuild-install_binary_host_mirror` 键名错误，prebuild-install 按包名读取配置，已修正为 `better-sqlite3_binary_host_mirror`
+
+---
+
 ## v0.62.3 (2026-07-02)
 
 ### pnpm install 不再因 better-sqlite3 编译失败而中断
