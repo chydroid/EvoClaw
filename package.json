@@ -1,6 +1,6 @@
 {
   "name": "evoclaw",
-  "version": "0.62.4",
+  "version": "0.62.5",
   "private": true,
   "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
@@ -23,8 +23,16 @@
   "packageManager": "pnpm@10.33.2",
   "pnpm": {
     "onlyBuiltDependencies": [
+      "@google/genai",
       "better-sqlite3",
-      "esbuild"
+      "esbuild",
+      "koffi",
+      "msgpackr-extract",
+      "onnxruntime-node",
+      "openclaw",
+      "protobufjs",
+      "sharp",
+      "tree-sitter-bash"
     ]
   },
   "devDependencies": {

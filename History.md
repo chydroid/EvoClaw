@@ -5,6 +5,22 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.5 (2026-07-02)
+
+### 修复 pnpm install 时 ERR_PNPM_IGNORED_BUILDS 错误
+
+**根因**：pnpm v10 的 `onlyBuiltDependencies` 是严格白名单，只有列表中的包才能执行 build scripts。之前的列表仅包含 `better-sqlite3` 和 `esbuild`，但项目依赖了 8 个额外需要执行 build scripts 的包（`@google/genai`、`koffi`、`msgpackr-extract`、`onnxruntime-node`、`openclaw`、`protobufjs`、`sharp`、`tree-sitter-bash`），导致这些包的 build scripts 被拒绝，`pnpm install` 失败。
+
+**修复**：将 8 个缺失的包加入 `pnpm.onlyBuiltDependencies` 白名单。
+
+### README 内容充实
+
+- 新增架构、CLI 命令参考、REST API 端点表、配置参考、常见问题排错章节
+- 快速开始新增「配置首个 LLM」步骤指南
+- 英文版和中文版结构完全同步
+
+---
+
 ## v0.62.4 (2026-07-02)
 
 ### README 重写 + .npmrc 镜像配置修正
