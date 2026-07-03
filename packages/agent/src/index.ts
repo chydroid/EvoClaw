@@ -2,6 +2,8 @@ export { TaskOrchestrator } from "./task-orchestrator";
 export { AgentPoolManager } from "./agent-pool";
 export { ActorSystem } from "./actor-system";
 export { DAGExecutor } from "./dag-executor";
+export { StateGraph, CompiledGraph, MemoryCheckpointer } from "./state-graph";
+export type { NodeFn, Reducer, StateSchema, RouterFn, GraphEvent, CompileOptions, Checkpointer, Checkpoint, CheckpointMetadata } from "./state-graph";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
 export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -194,6 +196,8 @@ export type { RateLimitBucket, RateLimitState } from "./rate-limit-tracker";
 export { PipelineRunner } from "./input-pipeline";
 export type { PipelineContext, PipelineStage } from "./input-pipeline";
 export { createXssSanitizeStage, createLengthGuardStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage, createSystemTagSanitizeStage, createEchoDetectionStage } from "./input-pipeline";
+export { ConversationFlow, createConversationFlowStage } from "./conversation-flow";
+export type { ConversationIntent, ConversationState, ConversationFlowConfig, FlowCheckResult } from "./conversation-flow";
 
 // Context Pruning system
 export { ContextPruningManager } from "./context-pruning";

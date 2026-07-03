@@ -75,6 +75,7 @@ export class EvoClawServer {
   private agentPool: AgentPoolManager;
   private actorSystem: ActorSystem;
   private sandboxManager: SandboxManager;
+  private conversationFlow: any;
   private agentModelExecutor: AgentModelExecutor;
   private skillManager: SkillManager;
   private evolutionEngine: EvolutionEngine;
@@ -476,7 +477,10 @@ export class EvoClawServer {
     process.stdout.write(`[Server] ContextPruning initialized\n`);
 
     // ── InputPipeline: sequential stage-based input processing ──
-    const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage } = require("@evoclaw/agent");
+    const { PipelineRunner, createXssSanitizeStage, createSystemTagSanitizeStage, createLengthGuardStage, createEchoDetectionStage, createAttachmentInjectionStage, createGuardrailsStage, createPluginPreProcessStage, ConversationFlow, createConversationFlowStage } = require("@evoclaw/agent");
+    // 对话流护栏（NeMo Guardrails 风格）：维护多轮对话状态机，
+    // 意图分类 + 状态转移规则 + 话题白名单 + 渐进式 jailbreak 检测
+    this.conversationFlow = new ConversationFlow({ suspicionThreshold: 5 });
     const inputPipeline = new PipelineRunner([
       createXssSanitizeStage(),
       createSystemTagSanitizeStage(),
@@ -484,11 +488,13 @@ export class EvoClawServer {
       createEchoDetectionStage(),
       createAttachmentInjectionStage(),
       createGuardrailsStage(this.agentModelExecutor.getGuardrailsManager()),
+      createConversationFlowStage(this.conversationFlow),
       createPluginPreProcessStage(this.pluginManager),
     ]);
     this.agentModelExecutor.setInputPipeline(inputPipeline);
     this.registry.registerService("inputPipeline", inputPipeline);
-    process.stdout.write(`[Server] InputPipeline initialized with 7 stages\n`);
+    this.registry.registerService("conversationFlow", this.conversationFlow);
+    process.stdout.write(`[Server] InputPipeline initialized with 8 stages (incl. conversation-flow)\n`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // v0.42.0: No longer defaults to gpt-4o-mini. Uses user's LLM config order.

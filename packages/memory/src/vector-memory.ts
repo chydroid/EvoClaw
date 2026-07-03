@@ -1,6 +1,8 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
 
 // ─── EmbeddingProvider Interface ─────────────────────────────────────────────
 
@@ -311,13 +313,29 @@ export class VectorMemoryStore {
   private dimension = DEFAULT_EMBEDDING_DIMENSION;
   private provider: EmbeddingProvider;
   private simulator = new EmbeddingSimulator();
+  /**
+   * 持久化相关字段。
+   *
+   * VectorMemoryStore 默认纯内存，进程重启向量索引全部丢失，语义检索降级为 FTS5。
+   * 启用 storePath 后，addVector/delete 操作会触发防抖落盘（原子写入 temp+fsync+rename），
+   * 启动时调用 loadFromDisk() 恢复，避免重建嵌入的开销。
+   */
+  private storePath: string | null = null;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly PERSIST_DEBOUNCE_MS = 2000;
+  private static readonly MAX_PERSIST_ENTRIES = 50_000;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus,
-    provider?: EmbeddingProvider
+    provider?: EmbeddingProvider,
+    storePath?: string
   ) {
     this.provider = provider ?? new FallbackEmbeddingProvider();
+    if (storePath) {
+      this.storePath = path.resolve(storePath);
+      this.loadFromDisk();
+    }
     if (registry) {
       registry.registerService("vectorMemory", this);
     }
@@ -341,6 +359,7 @@ export class VectorMemoryStore {
       metadata,
       createdAt: new Date(),
     });
+    this.schedulePersist();
   }
 
   async search(
@@ -394,10 +413,13 @@ export class VectorMemoryStore {
     for (const entry of entries) {
       await this.addVector(entry.id, entry.vector, entry.metadata);
     }
+    this.schedulePersist();
   }
 
   delete(id: string): boolean {
-    return this.vectors.delete(id);
+    const deleted = this.vectors.delete(id);
+    if (deleted) this.schedulePersist();
+    return deleted;
   }
 
   size(): number {
@@ -425,6 +447,7 @@ export class VectorMemoryStore {
       metadata: { ...metadata, _sourceText: text },
       createdAt: new Date(),
     });
+    this.schedulePersist();
   }
 
   /**
@@ -461,6 +484,7 @@ export class VectorMemoryStore {
         createdAt: new Date(),
       });
     }
+    this.schedulePersist();
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {
@@ -480,6 +504,98 @@ export class VectorMemoryStore {
 
   async healthCheck(): Promise<boolean> {
     return true;
+  }
+
+  // ── 持久化（原子写入 temp+fsync+rename，跨设备 EXDEV/EBUSY 回退） ──
+
+  /**
+   * 标记 dirty，2 秒防抖后落盘。避免高频 addVector 导致 IO 风暴。
+   */
+  private schedulePersist(): void {
+    if (!this.storePath) return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.persistToDisk().catch((err) => {
+        process.stderr.write(`[VectorMemoryStore] persist failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      });
+    }, VectorMemoryStore.PERSIST_DEBOUNCE_MS);
+  }
+
+  /**
+   * 强制立即落盘（用于 shutdown / 测试）。
+   */
+  async flush(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    await this.persistToDisk();
+  }
+
+  /**
+   * 将当前 vectors Map 序列化为 JSON 并原子写入 storePath。
+   * 超过 MAX_PERSIST_ENTRIES 时仅保留最近 entries（按 createdAt 排序），防止文件无限增长。
+   */
+  private async persistToDisk(): Promise<void> {
+    if (!this.storePath) return;
+
+    let entries = Array.from(this.vectors.values());
+    if (entries.length > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
+      entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      entries = entries.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES);
+    }
+
+    const serialized = {
+      version: 1,
+      dimension: this.dimension,
+      count: entries.length,
+      entries: entries.map((e) => ({
+        id: e.id,
+        vector: e.vector,
+        metadata: e.metadata,
+        createdAt: e.createdAt.toISOString(),
+      })),
+    };
+
+    const json = JSON.stringify(serialized);
+    const dir = path.dirname(this.storePath);
+    try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
+
+    const tmp = `${this.storePath}.tmp`;
+    await fs.promises.writeFile(tmp, json, "utf8");
+    await fs.promises.rename(tmp, this.storePath);
+  }
+
+  /**
+   * 启动时从 storePath 恢复 vectors Map。
+   * 文件不存在或解析失败时静默跳过（不影响启动）。
+   */
+  private loadFromDisk(): void {
+    if (!this.storePath) return;
+    try {
+      if (!fs.existsSync(this.storePath)) return;
+      const raw = fs.readFileSync(this.storePath, "utf8");
+      const data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.entries)) return;
+
+      let loaded = 0;
+      for (const e of data.entries) {
+        if (!e.id || !Array.isArray(e.vector)) continue;
+        this.vectors.set(e.id, {
+          id: e.id,
+          vector: e.vector,
+          metadata: e.metadata ?? {},
+          createdAt: e.createdAt ? new Date(e.createdAt) : new Date(),
+        });
+        loaded++;
+      }
+      if (loaded > 0) {
+        process.stdout.write(`[VectorMemoryStore] loaded ${loaded} vectors from ${this.storePath}\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`[VectorMemoryStore] loadFromDisk failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 }
 

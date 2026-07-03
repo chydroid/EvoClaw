@@ -266,6 +266,18 @@ export class AgentObservability {
     }
   }
 
+  /**
+   * 向 trace 添加任意 metadata（用于 OTel ↔ 自研 trace 桥接）。
+   * 例如把 OTel 的 32-hex traceId 写入 metadata.otel.trace_id，
+   * 便于在任一体系中跳转到另一体系查询。
+   */
+  addTraceMetadata(traceId: string, key: string, value: unknown): void {
+    const trace = this.traces.get(traceId);
+    if (!trace) return;
+    if (!trace.metadata) trace.metadata = {};
+    trace.metadata[key] = value;
+  }
+
   getTrace(traceId: string): Trace | undefined {
     return this.traces.get(traceId);
   }

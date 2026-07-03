@@ -5,6 +5,101 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.8 (2026-07-03)
+
+### 对标主流 AI Agent 项目的第三轮 4 项能力提升（差距全部弥合）
+
+继续推进与主流 AI Agent 项目的差距弥合，本轮聚焦 VectorMemoryStore 持久化、OTel trace 对齐、对话流护栏、StateGraph 图执行引擎四个方向，全部完成：
+
+#### 10. VectorMemoryStore 持久化（`packages/memory/src/vector-memory.ts` + `memory-hub.ts`）
+
+**问题**：`VectorMemoryStore` 是纯内存实现（`Map<string, VectorEntry>`），进程重启后向量索引全部丢失。虽然 `LongTermMemoryStore` 有完整持久化（SQLite + JSON），但 `MemoryHub.remember()` 调用 `indexMemoryVector()` 写入的向量只存在于内存。重启后语义检索降级为 FTS5 词法检索，直到新的 `remember()` 调用逐步重建向量索引。
+
+**改进**：
+- `VectorMemoryStore` 构造函数新增 `storePath` 可选参数
+- 新增 `persistToDisk()`：序列化 vectors Map 为 JSON，原子写入（temp + fsync + rename），超 50000 条时按 createdAt 保留最新
+- 新增 `loadFromDisk()`：启动时从 storePath 恢复，文件不存在或解析失败时静默跳过
+- 新增 `schedulePersist()`：2 秒防抖，避免高频 addVector 导致 IO 风暴
+- 新增 `flush()`：强制立即落盘（用于 shutdown）
+- `addVector`/`addVectorAsync`/`batchAdd`/`batchAddAsync`/`delete` 触发防抖 persist
+- `MemoryHub` 构造函数计算 `vectorStorePath`（`${DATA_DIR}/memory/vector-index.json`），传入两处 `new VectorMemoryStore` 调用点
+
+**对标**：LangChain VectorStore 的持久化理念。重启后向量索引立即可用，无需重建嵌入。
+
+#### 11. OTel 与 AgentObservability 对齐（`packages/agent/src/agent-model-executor.ts` + `agent-observability.ts`）
+
+**问题**：项目存在两套独立 trace 体系：OTel TracingService（32 hex traceId，由 `@opentelemetry/sdk-node` 生成）与 AgentObservability（base36+连字符 traceId，自研 `generateId()` 生成）。两套体系在 `AgentModelExecutor.chat()` 一次调用内并行运行，但 traceId 格式不一致、span 树独立生长、数据存储互不相通，无法在任一体系中跳转到另一体系查询。
+
+**改进**：
+- 在 `AgentObservability` 新增 `addTraceMetadata(traceId, key, value)` 方法：向 trace 添加任意 metadata
+- 在 `AgentModelExecutor.chatInner()` 的 `startTrace` 之后建立双向关联：
+  - 把自研 traceId 写到 OTel span attribute（`agent.trace_id`）
+  - 把 OTel traceId 写到自研 trace metadata（`otel.trace_id`）
+- 桥接失败不影响主流程（try/catch 包裹）
+
+**对标**：LangSmith 风格的端到端 trace 关联。现在在 OTel backend 看到的 span 可以通过 `agent.trace_id` 跳转到 AgentObservability 的 trace 视图，反之亦然。
+
+#### 12. Guardrails 对话流护栏（`packages/agent/src/conversation-flow.ts` + `apps/server/src/index.ts`）
+
+**问题**：`SecurityMiddleware` 是单条消息独立扫描（`scanInput`/`scanOutput`），无多轮上下文。`GuardrailsManager` 也是单条消息规则匹配。两者规则高度重叠但配置独立。NeMo Guardrails 风格的对话流护栏（intent classification + flow state machine + transition rules + topic allowed-list）完全缺失。无法检测渐进式 jailbreak（多轮逐步诱导越界）。
+
+**改进**：
+- 新建 `ConversationFlow` 类（NeMo Guardrails 风格）：
+  - **意图分类**：7 类意图（greeting/question/code_request/file_operation/task_delegation/personal_info/jailbreak_attempt），基于关键词 + 正则识别
+  - **对话阶段状态机**：6 个状态（init/greeting_done/in_task/awaiting_clarify/sensitive_op/blocked）
+  - **状态转移规则**：18 条默认规则，定义在什么状态下遇到什么意图是 allow/deny/require_confirm，自定义规则优先于默认规则
+  - **话题白名单**：可选的 allowedTopics 正则数组，约束对话范围
+  - **渐进式 jailbreak 检测**：累积可疑分数（越狱 +3、敏感信息 +1），超过阈值（默认 5）拦截
+  - **会话上下文**：按 sessionId 索引，LRU 淘汰（默认 1000 会话），30 分钟过期
+- 新建 `createConversationFlowStage` pipeline stage 适配器
+- 在 `apps/server/src/index.ts` 的 input-pipeline 装配中插入 `conversation-flow` stage（第 7 个 stage，在 guardrails 之后、plugin-pre-process 之前）
+- 把意图信息写入 `ctx.metadata`，供下游 stage 与 agent 使用
+
+**对标**：NeMo Guardrails 的 dialog rails。现在能检测多轮逐步诱导越界、在敏感操作前要求确认、约束对话范围。
+
+#### 13. StateGraph 图执行引擎（`packages/agent/src/state-graph.ts`）
+
+**问题**：DAGExecutor 与 LangGraph StateGraph 的差距是架构级的：无 state schema + reducer（节点间无 state 流动）、无显式图 API（无 addNode/addEdge/compile）、无条件边路由（condition 仅跳过本节点，不能路由到不同节点）、无 checkpoint 持久化、无 human-in-the-loop 中断、无 streaming。这是与主流 AI Agent 项目最大的差距。
+
+**改进**：
+- 新建 `StateGraph<TState>` 类（LangGraph 风格）：
+  - `addNode(name, fn)`：注册节点 + 执行函数（接收 state 返回 partial state）
+  - `addEdge(from, to)`：添加无条件边
+  - `addConditionalEdges(from, router, mapping?)`：添加条件边，router(state) 返回值决定下一节点
+  - `setEntryPoint(name)` / `setFinishPoint(name)`：显式 START/END
+  - `compile(options?)`：编译为 `CompiledGraph`，注入 checkpointer 与 interrupt 配置
+  - `StateSchema`：定义每个字段的 reducer 策略（"last" / "append" / 自定义函数）
+  - 保留节点名 `__start__` / `__end__`（与 LangGraph 一致）
+- 新建 `CompiledGraph<TState>` 类：
+  - `invoke(input, config?)`：一次性执行返回最终 state
+  - `stream(input, config?)`：AsyncGenerator yield 6 类事件（on_node_start/on_node_end/on_state_update/on_interrupt/on_complete/on_error）
+  - `toMermaid()`：返回 mermaid 格式图结构（用于可视化）
+  - 支持 `interruptBefore` / `interruptAfter`（human-in-the-loop 钩子）
+  - 每节点边界调用 checkpointer.put + putWrites（若配置）
+  - maxSteps 防死循环（默认 100）
+- 新建 `Checkpointer<TState>` 接口 + `MemoryCheckpointer<TState>` 实现（put/get/list/putWrites/clear/clearAll）
+- 在 `packages/agent/src/index.ts` 导出全部类型
+
+**对标**：LangGraph StateGraph 的核心 API。现在可以用声明式图 DSL 编排复杂任务流程，支持 state 流动、条件路由、checkpoint 恢复、human-in-the-loop 中断。
+
+### 验证
+
+- `pnpm build` ✅
+- `pnpm typecheck` ✅
+- `pnpm test` ✅
+
+### 三轮改进累计总结
+
+v0.62.6 ~ v0.62.8 共实施 13 项改进，全面弥合与主流 AI Agent 项目的差距：
+
+| 轮次 | 改进 | 借鉴来源 |
+|------|------|----------|
+| 1 | CJK Token 估算、HumanApproval 持久化、自适应反思、可配置 IterationBudget、成本感知路由、Handoff 语义 | 通用最佳实践 / LangGraph / hermes-agent / Aider / OpenAI Agents SDK |
+| 2 | 沙箱一等公民、长期记忆分层、结构化 Tracing | OpenHands/SWE-agent / LangChain Memory / LangGraph |
+| 3 | VectorMemoryStore 持久化、OTel trace 对齐、对话流护栏、StateGraph 图执行引擎 | LangChain VectorStore / LangSmith / NeMo Guardrails / LangGraph |
+
+---
+
 ## v0.62.7 (2026-07-03)
 
 ### 对标主流 AI Agent 项目的第二轮 3 项能力提升

@@ -1350,6 +1350,22 @@ export class AgentModelExecutor {
       const trace = this.observability.startTrace(sessionId, { userId: sessionId.split("-")[0] || "unknown" });
       currentTraceId = trace.traceId;
       this._currentTraceId = currentTraceId;
+
+      // ── OTel ↔ AgentObservability 桥接 ──
+      // 两套 trace 体系独立运行（OTel traceId 是 32 hex，自研 traceId 是 base36+连字符）。
+      // 此处建立双向关联：把自研 traceId 写到 OTel span attribute，
+      // 把 OTel traceId 写到自研 trace metadata，便于在任一体系中跳转到另一体系。
+      try {
+        const otelTraceId = tracing?.getCurrentTraceId?.();
+        if (otelTraceId && parentSpan?.setAttribute) {
+          parentSpan.setAttribute("agent.trace_id", currentTraceId);
+        }
+        if (otelTraceId && this.observability) {
+          this.observability.addTraceMetadata?.(currentTraceId, "otel.trace_id", otelTraceId);
+        }
+      } catch {
+        // 桥接失败不影响主流程
+      }
     }
 
     // ── Session management ──

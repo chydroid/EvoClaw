@@ -10,6 +10,7 @@ import {
   type MemorySearchResult,
   inferCognitiveLayer,
 } from "@evoclaw/core";
+import * as path from "path";
 import { ShortTermMemoryStore } from "./short-term-memory";
 import { LongTermMemoryStore } from "./long-term-memory";
 import { KnowledgeGraphStore } from "./knowledge-graph";
@@ -34,6 +35,12 @@ export class MemoryHub {
   private fts5: FTS5SearchEngine;
   private curator: MemoryCurator;
   private vectorStore: VectorMemoryStore | null = null;
+  /**
+   * 向量索引持久化路径（与 LongTermMemoryStore 同目录）。
+   * 启用后 VectorMemoryStore 在 addVector/delete 时防抖落盘，
+   * 启动时自动 loadFromDisk 恢复，避免重启后语义检索降级为 FTS5。
+   */
+  private readonly vectorStorePath: string;
   private embeddingProvider: EmbeddingProvider | null = null;
   /** Provider label for /api/memory/status and diagnostics. */
   private embeddingProviderLabel: "transformers" | "local-tfidf" | "unavailable" | "disabled" = "unavailable";
@@ -49,6 +56,10 @@ export class MemoryHub {
     private eventBus: EventBus,
     embeddingOptions?: MemoryHubEmbeddingOptions
   ) {
+    // 向量索引持久化路径：${DATA_DIR}/memory/vector-index.json
+    const dataDir = process.env.EVOCLAW_DATA_DIR || path.join(process.cwd(), "data");
+    this.vectorStorePath = path.join(dataDir, "memory", "vector-index.json");
+
     this.shortTerm = new ShortTermMemoryStore();
     this.longTerm = new LongTermMemoryStore();
     this.graph = new KnowledgeGraphStore();
@@ -91,7 +102,7 @@ export class MemoryHub {
         });
         this.transformersProvider = transformers;
         this.embeddingProvider = transformers;
-        this.vectorStore = new VectorMemoryStore(registry, eventBus, transformers);
+        this.vectorStore = new VectorMemoryStore(registry, eventBus, transformers, this.vectorStorePath);
         this.embeddingProviderLabel = "transformers";
         this.embeddingLoadError = null;
         // Eagerly verify the model actually loads. The first call downloads
@@ -178,7 +189,7 @@ export class MemoryHub {
     if (this.registry.hasService("vectorMemory")) {
       this.registry.unregisterService("vectorMemory");
     }
-    this.vectorStore = new VectorMemoryStore(this.registry, this.eventBus, local);
+    this.vectorStore = new VectorMemoryStore(this.registry, this.eventBus, local, this.vectorStorePath);
     this.registry.replaceService("vectorMemory", this.vectorStore);
     if (transformersToReplace) {
       // Drop the transformers reference so the heavy static pipeline cache
