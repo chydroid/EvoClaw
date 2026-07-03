@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import type { MemoryEntry } from "@evoclaw/core";
+import { inferCognitiveLayer, type CognitiveLayer } from "@evoclaw/core";
 import { FTS5SearchEngine } from "./fts5-search";
 
 export interface CurationDecision {
@@ -7,6 +8,12 @@ export interface CurationDecision {
   category: "user_preference" | "environment_fact" | "experience_lesson" | "task_pattern" | "none";
   importance: number;
   reason: string;
+  /**
+   * 认知层级（episodic/semantic/procedural）。
+   * 由 category 推断：user_preference→semantic，environment_fact→semantic，
+   * experience_lesson→episodic，task_pattern→procedural，none→episodic（默认）。
+   */
+  cognitiveLayer: CognitiveLayer;
 }
 
 export interface MemorySnapshot {
@@ -73,6 +80,23 @@ const CATEGORY_IMPORTANCE: Record<CurationDecision["category"], number> = {
   none: 0,
 };
 
+/**
+ * category → cognitiveLayer 映射（认知科学三层记忆）。
+ *
+ * - user_preference → semantic（用户偏好是稳定的语义属性）
+ * - environment_fact → semantic（环境事实是脱离上下文仍成立的语义知识）
+ * - experience_lesson → episodic（经验教训是特定事件中习得的情景记忆）
+ * - task_pattern → procedural（任务流程是"如何做"的程序记忆）
+ * - none → episodic（默认归入情景层）
+ */
+const CATEGORY_COGNITIVE_LAYER: Record<CurationDecision["category"], CognitiveLayer> = {
+  user_preference: "semantic",
+  environment_fact: "semantic",
+  experience_lesson: "episodic",
+  task_pattern: "procedural",
+  none: "episodic",
+};
+
 export class MemoryCurator {
   private fts5: FTS5SearchEngine;
   private snapshot: MemorySnapshot | null = null;
@@ -96,6 +120,7 @@ export class MemoryCurator {
         category: "none",
         importance: 0,
         reason: "Potential prompt injection detected",
+        cognitiveLayer: CATEGORY_COGNITIVE_LAYER.none,
       };
     }
 
@@ -105,6 +130,7 @@ export class MemoryCurator {
         category: "none",
         importance: 0,
         reason: "Sensitive information detected",
+        cognitiveLayer: CATEGORY_COGNITIVE_LAYER.none,
       };
     }
 
@@ -115,6 +141,7 @@ export class MemoryCurator {
           category: "user_preference",
           importance: CATEGORY_IMPORTANCE.user_preference,
           reason: "User preference indicator detected",
+          cognitiveLayer: CATEGORY_COGNITIVE_LAYER.user_preference,
         };
       }
     }
@@ -126,6 +153,7 @@ export class MemoryCurator {
           category: "experience_lesson",
           importance: CATEGORY_IMPORTANCE.experience_lesson,
           reason: "Experience lesson indicator detected",
+          cognitiveLayer: CATEGORY_COGNITIVE_LAYER.experience_lesson,
         };
       }
     }
@@ -137,6 +165,7 @@ export class MemoryCurator {
           category: "environment_fact",
           importance: CATEGORY_IMPORTANCE.environment_fact,
           reason: "Environment fact indicator detected",
+          cognitiveLayer: CATEGORY_COGNITIVE_LAYER.environment_fact,
         };
       }
     }
@@ -148,6 +177,7 @@ export class MemoryCurator {
           category: "task_pattern",
           importance: CATEGORY_IMPORTANCE.task_pattern,
           reason: "Task pattern indicator detected",
+          cognitiveLayer: CATEGORY_COGNITIVE_LAYER.task_pattern,
         };
       }
     }
@@ -157,6 +187,7 @@ export class MemoryCurator {
       category: "none",
       importance: 0,
       reason: "No persistable information detected",
+      cognitiveLayer: CATEGORY_COGNITIVE_LAYER.none,
     };
   }
 
@@ -187,7 +218,14 @@ export class MemoryCurator {
       ttl: 0,
       createdAt: new Date(),
       accessedAt: new Date(),
+      // 明确设置认知层级，便于分层检索与衰减
+      cognitiveLayer: decision.cognitiveLayer,
     };
+
+    // 双重保险：若未设置 cognitiveLayer，由 type + metadata 推断
+    if (!entry.cognitiveLayer) {
+      entry.cognitiveLayer = inferCognitiveLayer(entry);
+    }
 
     const stored = await memoryStore.store(entry);
 

@@ -5,6 +5,70 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.7 (2026-07-03)
+
+### 对标主流 AI Agent 项目的第二轮 3 项能力提升
+
+继续推进与主流 AI Agent 项目（OpenHands/SWE-agent/LangChain Memory/LangGraph 等）的差距弥合，本轮聚焦沙箱、记忆分层、Tracing 三个方向：
+
+#### 7. 沙箱一等公民（`apps/server/src/index.ts` + `apps/server/src/tools/shell-media-tools.ts`）
+
+**问题**：`packages/infrastructure` 已完整实现 `DockerSandbox`（含 `--read-only` / `--cap-drop=ALL` / `--network=none` / `--memory` / `--cpu-shares` / `-u nobody` / `--tmpfs /workspace:noexec,nosuid` 等安全加固）与 `SandboxManager`，但从未在 `apps/server/src/index.ts` 中实例化或注册为服务。Gateway 的 `/api/sandbox/*` REST 路由运行时全部返回 503 `"Sandbox service not available"`。Agent 唯一可用的代码执行工具 `shell_exec` 跑在宿主机上、仅靠正则黑名单防护。
+
+**改进**：
+- 在 `apps/server/src/index.ts` 注册 `SandboxManager` 服务，启动时探测 Docker 后端可用性并记录日志
+- 在 `shell-media-tools.ts` 新增 `execute_code` 工具，路由到 `SandboxManager`（Docker 后端）
+- 工具参数：`code`（代码）、`language`（`python` / `node`，默认 `node`）、`timeout`（默认 30s，上限 120s）
+- 会话复用：首次调用创建 docker session，后续复用；10 分钟空闲后自动销毁
+- Docker 不可用时返回明确错误 + 提示（安装 Docker 或回退到 `shell_exec`），不静默降级到宿主机执行
+- 输出超 100KB 自动截断
+
+**对标**：OpenHands/SWE-agent 把容器化代码执行作为核心抽象。本次让 EvoClaw 的 Agent 拥有安全的代码执行能力。
+
+#### 8. 长期记忆分层（`packages/core/src/types/memory.ts` + `packages/memory/src/memory-curator.ts` + `memory-hub.ts`）
+
+**问题**：`MemoryEntry.type` 是 5 类扁平分类（conversation/experience/knowledge/feedback/system），无认知科学的三层分层（episodic/semantic/procedural）。LangChain Memory、Letta（MemGPT）等主流项目都明确区分记忆层级。EvoClaw 的 `MemoryDreaming.DreamFact.category` 已有 4 类（preference/fact/pattern/procedure）但仅在 dreaming 阶段产出，未持久化到独立层级。
+
+**改进**：
+- 在 `packages/core/src/types/memory.ts` 新增 `CognitiveLayer` 类型（`"episodic" | "semantic" | "procedural" | "working"`）
+- 在 `MemoryEntry` 添加可选 `cognitiveLayer` 字段
+- 在 `MemorySearchQuery` 添加 `cognitiveLayer` 过滤维度
+- 新增 `inferCognitiveLayer(entry)` 辅助函数：按 type + metadata.tags 推断认知层级（conversation→episodic、knowledge/feedback→semantic、experience+task_pattern→procedural 等）
+- 在 `MemoryCurator.CurationDecision` 添加 `cognitiveLayer` 字段，新增 `CATEGORY_COGNITIVE_LAYER` 映射表（user_preference→semantic、environment_fact→semantic、experience_lesson→episodic、task_pattern→procedural）
+- `curateFromTurn()` 创建 MemoryEntry 时明确设置 `cognitiveLayer`，并有 `inferCognitiveLayer` 兜底
+- `MemoryHub.remember()` 外部 API 写入时若未指定 `cognitiveLayer`，自动推断
+- `MemoryHub.recall()` 支持 `cognitiveLayer` 客户端过滤（推断每条结果的层级后按查询条件过滤）
+
+**对标**：认知心理学的三层记忆模型 + LangChain Memory 的分层检索理念。让反思时只取 episodic、事实查询时只取 semantic、流程学习时只取 procedural 成为可能。
+
+#### 9. 结构化 Tracing（`packages/agent/src/task-orchestrator.ts`）
+
+**问题**：`TaskOrchestrator` 是任务编排核心（优先级队列 + DAG 调度 + 重试），但完全不参与 tracing。`AgentModelExecutor` 已在 chat/session/skill/memory/search 等节点创建 OTel span，但任务编排层是 tracing 盲区，无法在 trace 视图中看到任务执行、队列消费、DAG 节点等关键编排事件。
+
+**改进**：
+- 新增 `TracingLike` 最小接口（避免引入 `@opentelemetry/api` 类型耦合）
+- 新增 `getTracing()` 懒解析方法（与 `AgentModelExecutor` 一致的模式：从 registry 解析 observability 服务，可选）
+- `execute()` 方法用 `tracing.withSpan("task.execute", ...)` 包裹，设置 `task.id` / `task.type` / `task.priority` / `task.dag_nodes` / `task.retry_count` / `task.session_id` / `task.final_status` 等 attributes，失败时 `span.setStatus({code: 2})`
+- 新增 `processQueueTraced()` 用 `task.process_queue` span 包裹队列处理
+- `createTask()` 与 `resume()` 改用 `processQueueTraced()`
+
+**对标**：LangGraph/LangSmith 风格的端到端 trace 可视化。让任务编排层的每个 task 执行在 OTel trace 中可见，与 Agent 层的 `agent.chat` span 形成 trace 链路。
+
+### 验证
+
+- `pnpm build` ✅
+- `pnpm typecheck` ✅
+- `pnpm test` ✅
+
+### 仍存在的差距（后续可继续推进）
+
+- **图/状态机编排**：LangGraph 风格的显式 StateGraph（`.addNode()/.addEdge()/.compile()`）仍是最大缺口，DAG 必须无环、无 checkpoint 持久化、无 human-in-the-loop 中断
+- **Guardrails 对话流护栏**：NeMo Guardrails 风格的 input rails → dialog → output rails 流水线，当前 `SecurityMiddleware` 是单条消息独立扫描，无多轮上下文
+- **OTel 与 AgentObservability 对齐**：两套独立 traceId 体系未交叉关联
+- **VectorMemoryStore 无持久化**：重启需从 LongTermMemory 重建
+
+---
+
 ## v0.62.6 (2026-07-03)
 
 ### 对标主流 AI Agent 项目的 6 项核心能力提升

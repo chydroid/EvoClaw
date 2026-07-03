@@ -15,6 +15,20 @@ import { AgentPoolManager } from "./agent-pool";
 
 const LOG = "task-orchestrator";
 
+/**
+ * TracingService 类型（最小接口，避免引入 @opentelemetry/api 类型耦合）。
+ * 仅声明 TaskOrchestrator 用到的方法，与 AgentModelExecutor 的获取方式一致。
+ */
+interface TracingLike {
+  isEnabled(): boolean;
+  withSpan<T>(name: string, fn: (span: {
+    setAttribute(key: string, value: string | number | boolean): void;
+    addEvent(name: string, attributes?: Record<string, unknown>): void;
+    recordException(err: Error): void;
+    setStatus(status: { code: number; message?: string }): void;
+  }) => Promise<T>, options?: { attributes?: Record<string, unknown> }): Promise<T>;
+}
+
 export class TaskOrchestrator implements ITaskExecutor {
   private taskQueue: TaskQueue;
   private activeTasks = new Map<string, Task>();
@@ -28,6 +42,18 @@ export class TaskOrchestrator implements ITaskExecutor {
     this.taskQueue = new InMemoryTaskQueue();
     this.dagExecutor = new DAGExecutor(registry, eventBus);
     this.agentPool = registry.resolveService<AgentPoolManager>("agentPool") ?? new AgentPoolManager(registry, eventBus);
+  }
+
+  /**
+   * 获取 TracingService（与 AgentModelExecutor 一致的懒解析模式）。
+   * observability 服务由 apps/server 注册，可选；缺失时返回 undefined，tracing 静默跳过。
+   */
+  private getTracing(): TracingLike | undefined {
+    const observability = this.registry?.resolveService?.("observability") as
+      | { getTracingService?: () => TracingLike }
+      | undefined;
+    const tracing = observability?.getTracingService?.();
+    return tracing?.isEnabled() ? tracing : undefined;
   }
 
   async createTask(input: {
@@ -71,7 +97,7 @@ export class TaskOrchestrator implements ITaskExecutor {
 
     await this.eventBus.publish(SystemEvents.TASK_CREATED, task, LOG);
 
-    this.processQueue().catch((err) => {
+    this.processQueueTraced().catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[${LOG}] Queue processing error: ${msg}\n`);
     });
@@ -86,47 +112,72 @@ export class TaskOrchestrator implements ITaskExecutor {
 
     await this.eventBus.publish(SystemEvents.TASK_STARTED, task, LOG);
 
-    try {
-      if (task.dag.length > 0) {
-        const result = await this.dagExecutor.executeDAG(task);
-        task.output = result.output;
-        task.executionPlan = result.steps;
-        // Check if any DAG nodes failed — treat as task failure
-        const failedNodes = result.steps.filter((s) => s.status === "failed");
-        if (failedNodes.length > 0) {
-          const failedIds = failedNodes.map((s) => s.nodeId).join(", ");
-          throw new Error(`DAG execution had ${failedNodes.length} failed node(s): ${failedIds}`);
+    const tracing = this.getTracing();
+    const runWithSpan = async (): Promise<void> => {
+      try {
+        if (task.dag.length > 0) {
+          const result = await this.dagExecutor.executeDAG(task);
+          task.output = result.output;
+          task.executionPlan = result.steps;
+          // Check if any DAG nodes failed — treat as task failure
+          const failedNodes = result.steps.filter((s) => s.status === "failed");
+          if (failedNodes.length > 0) {
+            const failedIds = failedNodes.map((s) => s.nodeId).join(", ");
+            throw new Error(`DAG execution had ${failedNodes.length} failed node(s): ${failedIds}`);
+          }
+        } else {
+          task.output = { message: "Task processed successfully" };
+          task.executionPlan = [
+            {
+              nodeId: "root",
+              status: "completed",
+              attempt: 1,
+              result: { success: true, data: task.output, artifacts: [], metrics: { startTime: new Date(), endTime: new Date(), durationMs: 0, cpuUsage: 0, memoryUsageMB: 0 } },
+            },
+          ];
         }
-      } else {
-        task.output = { message: "Task processed successfully" };
-        task.executionPlan = [
-          {
-            nodeId: "root",
-            status: "completed",
-            attempt: 1,
-            result: { success: true, data: task.output, artifacts: [], metrics: { startTime: new Date(), endTime: new Date(), durationMs: 0, cpuUsage: 0, memoryUsageMB: 0 } },
-          },
-        ];
+
+        task.status = "completed";
+        task.completedAt = new Date();
+        task.updatedAt = new Date();
+
+        await this.eventBus.publish(SystemEvents.TASK_COMPLETED, task, LOG);
+      } catch (err) {
+        task.status = "failed";
+        task.updatedAt = new Date();
+        const message = err instanceof Error ? err.message : String(err);
+
+        await this.eventBus.publish(SystemEvents.TASK_FAILED, { task, error: message }, LOG);
+
+        if (task.retryCount < task.maxRetries) {
+          task.retryCount++;
+          task.status = "queued";
+          await this.taskQueue.enqueue(task);
+          await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, LOG);
+        }
       }
+    };
 
-      task.status = "completed";
-      task.completedAt = new Date();
-      task.updatedAt = new Date();
-
-      await this.eventBus.publish(SystemEvents.TASK_COMPLETED, task, LOG);
-    } catch (err) {
-      task.status = "failed";
-      task.updatedAt = new Date();
-      const message = err instanceof Error ? err.message : String(err);
-
-      await this.eventBus.publish(SystemEvents.TASK_FAILED, { task, error: message }, LOG);
-
-      if (task.retryCount < task.maxRetries) {
-        task.retryCount++;
-        task.status = "queued";
-        await this.taskQueue.enqueue(task);
-        await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, LOG);
-      }
+    if (tracing) {
+      await tracing.withSpan(
+        "task.execute",
+        async (span) => {
+          span.setAttribute("task.id", task.id);
+          span.setAttribute("task.type", task.type);
+          span.setAttribute("task.priority", task.priority);
+          span.setAttribute("task.dag_nodes", task.dag.length);
+          span.setAttribute("task.retry_count", task.retryCount);
+          if (task.context.sessionId) span.setAttribute("task.session_id", task.context.sessionId);
+          await runWithSpan();
+          span.setAttribute("task.final_status", task.status);
+          if (task.status === "failed") {
+            span.setStatus({ code: 2, message: "Task ended in failed state" });
+          }
+        },
+        { attributes: { "task.id": task.id, "task.type": task.type } }
+      );
+    } else {
+      await runWithSpan();
     }
 
     return task;
@@ -156,7 +207,7 @@ export class TaskOrchestrator implements ITaskExecutor {
       task.status = "queued";
       task.updatedAt = new Date();
       await this.taskQueue.enqueue(task);
-      this.processQueue().catch((err) => {
+      this.processQueueTraced().catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[${LOG}] Queue processing error on resume: ${msg}\n`);
       });
@@ -209,6 +260,21 @@ export class TaskOrchestrator implements ITaskExecutor {
 
     if (iterations >= maxIterations) {
       process.stderr.write(`[${LOG}] Queue processing reached max iterations, stopping to prevent infinite loop\n`);
+    }
+  }
+
+  /**
+   * 带 tracing 的队列处理包装（每个 task 一个子 span，便于在 trace 视图中看到队列消费节奏）。
+   * 当前 processQueue 内部已通过 execute() 的 span 覆盖，此方法预留给外部显式调用场景。
+   */
+  private async processQueueTraced(): Promise<void> {
+    const tracing = this.getTracing();
+    if (tracing) {
+      await tracing.withSpan("task.process_queue", async () => {
+        await this.processQueue();
+      });
+    } else {
+      await this.processQueue();
     }
   }
 }

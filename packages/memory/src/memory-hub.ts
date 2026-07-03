@@ -8,6 +8,7 @@ import {
   type MemoryEntry,
   type MemorySearchQuery,
   type MemorySearchResult,
+  inferCognitiveLayer,
 } from "@evoclaw/core";
 import { ShortTermMemoryStore } from "./short-term-memory";
 import { LongTermMemoryStore } from "./long-term-memory";
@@ -289,6 +290,10 @@ export class MemoryHub {
       createdAt: new Date(),
       accessedAt: new Date(),
     };
+    // 若调用方未指定 cognitiveLayer，由 type + metadata 推断（认知三层分层）
+    if (!fullEntry.cognitiveLayer) {
+      fullEntry.cognitiveLayer = inferCognitiveLayer(fullEntry);
+    }
     const storedEntry = await this.longTerm.store(fullEntry);
     this.fts5.indexEntry(storedEntry.id, storedEntry.content, {
       sessionId: storedEntry.metadata.sessionId,
@@ -320,8 +325,16 @@ export class MemoryHub {
 
   async recall(query: MemorySearchQuery): Promise<MemorySearchResult[]> {
     const results = await this.longTerm.search(query);
-    await this.eventBus.publish(SystemEvents.MEMORY_RETRIEVED, { query, results }, "memory-hub");
-    return results;
+    // 客户端按 cognitiveLayer 过滤（LongTermMemoryStore 的 SQLite/JSON 实现未感知此字段）
+    // 推断每条结果的 cognitiveLayer（若存储时未设置），再按查询条件过滤
+    const filtered = query.cognitiveLayer
+      ? results.filter((r) => {
+          const layer = r.entry.cognitiveLayer ?? inferCognitiveLayer(r.entry);
+          return layer === query.cognitiveLayer;
+        })
+      : results;
+    await this.eventBus.publish(SystemEvents.MEMORY_RETRIEVED, { query, results: filtered }, "memory-hub");
+    return filtered;
   }
 
   searchFullText(query: string, limit?: number): FTS5SearchResult[] {

@@ -39,7 +39,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
@@ -74,6 +74,7 @@ export class EvoClawServer {
   private taskOrchestrator: TaskOrchestrator;
   private agentPool: AgentPoolManager;
   private actorSystem: ActorSystem;
+  private sandboxManager: SandboxManager;
   private agentModelExecutor: AgentModelExecutor;
   private skillManager: SkillManager;
   private evolutionEngine: EvolutionEngine;
@@ -380,6 +381,19 @@ export class EvoClawServer {
     this.registry.registerService("taskOrchestrator", this.taskOrchestrator);
     this.actorSystem = new ActorSystem();
     this.registry.registerService("actorSystem", this.actorSystem);
+    // ── SandboxManager（沙箱一等公民） ──
+    // DockerSandbox/SSHSandbox 已在 packages/infrastructure 完整实现（含安全加固：
+    // --read-only / --cap-drop=ALL / --network=none / --memory / --cpu-shares / -u nobody /
+    // --tmpfs /workspace:noexec,nosuid），此处注册为服务让 execute_code 工具与
+    // /api/sandbox/* REST 端点可用。Docker 不可用时降级返回 not-available，不影响启动。
+    this.sandboxManager = new SandboxManager();
+    this.registry.registerService("sandboxManager", this.sandboxManager);
+    this.sandboxManager.listBackends().then((backends) => {
+      const available = backends.filter((b) => b.available).map((b) => b.type).join(",") || "none";
+      this.logger.info("server", `SandboxManager registered; available backends: ${available}`);
+    }).catch((err) => {
+      this.logger.warn("server", `SandboxManager backend probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     this.agentModelExecutor = new AgentModelExecutor(
       this.registry,
       this.eventBus,

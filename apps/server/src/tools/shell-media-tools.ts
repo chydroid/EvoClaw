@@ -653,4 +653,129 @@ except Exception as e:
       }
     }
   );
+
+  // ── execute_code: 在沙箱中执行代码（一等公民工具） ──
+  // 借鉴 OpenHands/SWE-agent 的 code execution as first-class 工具理念。
+  // 路由到 SandboxManager（Docker 后端，安全加固：read-only rootfs / cap-drop=ALL /
+  // network=none / memory+cpu 限制 / nobody 用户 / tmpfs noexec），Docker 不可用时
+  // 返回明确错误而非静默降级到宿主机执行。
+  // 自动管理会话生命周期：首次调用创建会话，后续复用；空闲 10 分钟后自动销毁。
+  const sandboxManager = registry?.resolveService<{
+    createSession(config: { backend: "docker" | "ssh"; timeoutMs?: number }): Promise<{ id: string }>;
+    executeScript(
+      sessionId: string,
+      script: string,
+      options?: { interpreter?: string; timeoutMs?: number }
+    ): Promise<{ success: boolean; exitCode: number; stdout: string; stderr: string; durationMs: number; timedOut: boolean; error?: string }>;
+    destroySession(sessionId: string): Promise<void>;
+    listBackends(): Promise<Array<{ type: string; available: boolean }>>;
+  }>("sandboxManager");
+
+  // 沙箱会话缓存：executor 进程内复用同一个 docker 会话
+  let sandboxSessionId: string | null = null;
+  let sandboxSessionCreatedAt = 0;
+  const SANDBOX_SESSION_TTL_MS = 10 * 60 * 1000; // 10 分钟空闲后销毁
+
+  executor.registerTool(
+    "execute_code",
+    {
+      name: "execute_code",
+      description:
+        "Execute code in an isolated sandbox (Docker container with read-only rootfs, no network, memory+CPU limits, nobody user). " +
+        "Safer than shell_exec for running untrusted or user-provided code. " +
+        "Supports Python and Node.js interpreters. " +
+        "Requires Docker to be available on the host; returns a clear error if Docker is not installed.",
+      parameters: {
+        code: {
+          type: "string",
+          description: "The code to execute. For Python: 'print(\"hello\")'. For Node.js: 'console.log(\"hello\")'.",
+        },
+        language: {
+          type: "string",
+          description: "Interpreter: 'python' or 'node' (default: 'node').",
+        },
+        timeout: {
+          type: "string",
+          description: "Optional timeout in seconds (default: 30, max: 120).",
+        },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      if (!sandboxManager) {
+        return {
+          success: false,
+          error: "SandboxManager service is not registered. Cannot execute code in sandbox.",
+          hint: "Use shell_exec instead, or ensure the server registers SandboxManager.",
+        };
+      }
+
+      const code = String(params.code || "");
+      if (!code) return { error: "Parameter 'code' is required" };
+
+      const language = String(params.language || "node").toLowerCase();
+      if (language !== "python" && language !== "node") {
+        return { error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
+      }
+
+      const timeoutSec = Math.min(parseInt(String(params.timeout || "30"), 10) || 30, 120);
+
+      try {
+        // 检查 Docker 后端是否可用
+        const backends = await sandboxManager.listBackends();
+        const dockerAvailable = backends.some((b) => b.type === "docker" && b.available);
+        if (!dockerAvailable) {
+          return {
+            success: false,
+            error: "Docker is not available on the host. Cannot execute code in sandbox.",
+            hint: "Install Docker, or use shell_exec for non-sandboxed execution.",
+            backends,
+          };
+        }
+
+        // 复用或创建会话（10 分钟 TTL）
+        const now = Date.now();
+        if (sandboxSessionId && now - sandboxSessionCreatedAt > SANDBOX_SESSION_TTL_MS) {
+          try { await sandboxManager.destroySession(sandboxSessionId); } catch { /* best-effort */ }
+          sandboxSessionId = null;
+        }
+        if (!sandboxSessionId) {
+          const session = await sandboxManager.createSession({
+            backend: "docker",
+            timeoutMs: timeoutSec * 1000,
+          });
+          sandboxSessionId = session.id;
+          sandboxSessionCreatedAt = now;
+        }
+
+        const result = await sandboxManager.executeScript(sandboxSessionId, code, {
+          interpreter: language,
+          timeoutMs: timeoutSec * 1000,
+        });
+
+        // 刷新会话活跃时间
+        sandboxSessionCreatedAt = Date.now();
+
+        // 截断超长输出
+        const MAX_OUTPUT = 100_000;
+        const truncate = (s: string) => (s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n... [output truncated]" : s);
+
+        return {
+          success: result.success,
+          exitCode: result.exitCode,
+          stdout: truncate(result.stdout),
+          stderr: truncate(result.stderr),
+          durationMs: result.durationMs,
+          timedOut: result.timedOut,
+          language,
+          sandbox: "docker",
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          error: err?.message || String(err),
+          hint: "If Docker daemon is not running, start it with 'dockerd' or 'service docker start'.",
+        };
+      }
+    }
+  );
 }
