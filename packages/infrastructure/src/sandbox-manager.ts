@@ -1,5 +1,7 @@
 import { DockerSandbox, type SandboxConfig, type SandboxResult } from "./docker-sandbox";
 import { SSHSandbox, type SSHSandboxConfig, type SSHSandboxResult } from "./ssh-sandbox";
+import { LocalSandboxBackend, type SandboxExecuteOptions } from "./sandbox-backend";
+import type { SandboxPolicy } from "@evoclaw/core";
 
 export type SandboxBackendType = "docker" | "ssh" | "process";
 
@@ -9,6 +11,8 @@ export interface UnifiedSandboxConfig {
   ssh?: SSHSandboxConfig;
   timeoutMs?: number;
   maxOutputBytes?: number;
+  /** 安全策略：网络/文件系统/子进程开关 + 资源限额（所有后端尽力执行） */
+  policy?: SandboxPolicy;
 }
 
 export interface SandboxSession {
@@ -19,16 +23,20 @@ export interface SandboxSession {
   lastActivityAt: Date;
   executeCount: number;
   lastError?: string;
+  /** 会话绑定的安全策略（createSession 时传入，后续 execute 自动应用） */
+  policy?: SandboxPolicy;
 }
 
 export class SandboxManager {
   private dockerSandbox: DockerSandbox;
+  private localBackend: LocalSandboxBackend;
   private sshSandboxes = new Map<string, SSHSandbox>();
   private sessions = new Map<string, SandboxSession>();
   private sessionCounter = 0;
 
   constructor() {
     this.dockerSandbox = new DockerSandbox();
+    this.localBackend = new LocalSandboxBackend();
   }
 
   async createSession(config: UnifiedSandboxConfig): Promise<SandboxSession> {
@@ -40,6 +48,7 @@ export class SandboxManager {
       createdAt: new Date(),
       lastActivityAt: new Date(),
       executeCount: 0,
+      policy: config.policy,
     };
 
     this.sessions.set(id, session);
@@ -64,6 +73,12 @@ export class SandboxManager {
           throw new Error(`SSH connection to ${config.ssh.user}@${config.ssh.host} is not available`);
         }
         this.sshSandboxes.set(id, ssh);
+      } else if (config.backend === "process") {
+        const available = await this.localBackend.isAvailable();
+        if (!available) {
+          session.status = "error";
+          throw new Error("Local process backend is not available");
+        }
       }
 
       session.status = "ready";
@@ -78,7 +93,7 @@ export class SandboxManager {
   async execute(
     sessionId: string,
     command: string[],
-    options?: { timeoutMs?: number; env?: Record<string, string>; workdir?: string }
+    options?: { timeoutMs?: number; env?: Record<string, string>; workdir?: string; maxOutputBytes?: number }
   ): Promise<SandboxResult> {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -123,8 +138,17 @@ export class SandboxManager {
           timedOut: sshResult.timedOut,
           error: sshResult.error,
         };
+      } else if (session.backend === "process") {
+        const execOpts: SandboxExecuteOptions = {
+          timeoutMs: options?.timeoutMs,
+          env: options?.env,
+          workdir: options?.workdir,
+          maxOutputBytes: options?.maxOutputBytes,
+          policy: session.policy,
+        };
+        result = await this.localBackend.execute(command, execOpts);
       } else {
-        return this.errorResult("Process backend not yet supported in unified manager");
+        return this.errorResult(`Unsupported backend: ${session.backend}`);
       }
 
       session.executeCount++;
@@ -176,6 +200,12 @@ export class SandboxManager {
         timedOut: sshResult.timedOut,
         error: sshResult.error,
       };
+    } else if (session.backend === "process") {
+      return this.localBackend.executeScript(script, {
+        timeoutMs: options?.timeoutMs,
+        interpreter: interpreter === "python" || interpreter === "python3" ? interpreter : "node",
+        policy: session.policy,
+      });
     }
 
     return this.errorResult("Unsupported backend");
@@ -214,11 +244,12 @@ export class SandboxManager {
   }
 
   async dispose(): Promise<void> {
-    for (const [id, ssh] of this.sshSandboxes) {
+    for (const [, ssh] of this.sshSandboxes) {
       ssh.dispose();
     }
     this.sshSandboxes.clear();
     this.sessions.clear();
+    await this.localBackend.dispose();
   }
 
   private errorResult(error: string): SandboxResult {

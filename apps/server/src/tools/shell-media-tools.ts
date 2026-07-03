@@ -3,6 +3,8 @@ import * as fs from "fs";
 import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
+import { LocalSandboxBackend } from "@evoclaw/infrastructure";
+import type { SandboxPolicy } from "@evoclaw/core";
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
 function findFileRecursive(root: string, filename: string, maxDepth = 4): string | null {
@@ -166,11 +168,12 @@ export function registerShellMediaTools(
     "shell_exec",
     {
       name: "shell_exec",
-      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint.",
+      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation).",
       parameters: {
         command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'" },
         cwd: { type: "string", description: "Optional working directory for the command (default: workspace)" },
         timeout: { type: "string", description: "Optional timeout in seconds (default: 120, max: 1200). Use higher values for crawler tasks." },
+        sandbox: { type: "boolean", description: "Optional. When true, execute via LocalSandboxBackend with a restrictive SandboxPolicy (enforces timeout, memory, path allowlist). Default: false (direct spawn)." },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -255,6 +258,51 @@ export function registerShellMediaTools(
       for (const pattern of DANGEROUS_PATTERNS) {
         if (pattern.test(command)) {
           return { error: `Command blocked by safety filter: matched dangerous pattern`, command };
+        }
+      }
+
+      // ── 沙箱模式：通过 LocalSandboxBackend 执行，应用限制性 SandboxPolicy ──
+      // 硬隔离（网络/子进程阻断）需 docker 后端；本地后端强制 timeout/memory/path。
+      if (params.sandbox === true) {
+        const SANDBOX_POLICY: SandboxPolicy = {
+          allowNetwork: false,
+          allowFileSystem: true, // 脚本需读写工作区
+          allowSubprocess: true, // shell 本身即子进程，无法在本地后端强制阻断
+          maxExecutionTime: timeoutSec * 1000,
+          maxMemoryMB: 512,
+          allowedHosts: [],
+          allowedPaths: [cwd],
+        };
+        const backend = new LocalSandboxBackend();
+        const shellWrap = process.platform === "win32"
+          ? [process.env.ComSpec || "cmd.exe", "/c", effectiveCommand]
+          : ["/bin/bash", "-c", effectiveCommand];
+        try {
+          const result = await backend.execute(shellWrap, {
+            timeoutMs: timeoutSec * 1000,
+            workdir: cwd,
+            policy: SANDBOX_POLICY,
+            maxOutputBytes: 5 * 1024 * 1024,
+          });
+          await backend.dispose();
+          return {
+            success: result.success,
+            output: result.stdout.slice(0, 50000),
+            stderr: result.stderr.slice(0, 5000) || undefined,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            error: result.error,
+            sandboxed: true,
+            command,
+          };
+        } catch (err) {
+          await backend.dispose();
+          return {
+            success: false,
+            error: `Sandbox execution failed: ${err instanceof Error ? err.message : String(err)}`,
+            sandboxed: true,
+            command,
+          };
         }
       }
 

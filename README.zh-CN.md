@@ -160,8 +160,8 @@ evoclaw channels list            # 渠道管理
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `EVOCLAW_PORT` | `27788` | 服务端口 |
-| `EVOCLAW_HOST` | `0.0.0.0` | 绑定地址 |
+| `EvoClaw_PORT` | `27788` | 服务端口 |
+| `EvoClaw_HOST` | `0.0.0.0` | 绑定地址 |
 | `JWT_SECRET` | — | JWT 签名密钥（**生产环境务必修改**） |
 | `EVOCLAW_EVOLUTION_ENABLED` | `true` | 启用自进化引擎 |
 | `EVOCLAW_MCP_ENABLED` | `true` | 启用 MCP 协议 |
@@ -226,7 +226,7 @@ docker run -p 27788:27788 --env-file .env evoclaw
 | 问题 | 解决方案 |
 |---|---|
 | `pnpm: command not found` | 安装 pnpm：`npm install -g pnpm@10` |
-| `port 27788 already in use` | 修改 `.env` 中的 `EVOCLAW_PORT` 或终止占用进程 |
+| `port 27788 already in use` | 修改 `.env` 中的 `EvoClaw_PORT` 或终止占用进程 |
 | 构建失败 | 清理后重试：`pnpm clean && pnpm install && pnpm build` |
 | Web UI 白屏 | 确认 `pnpm build` 已完成，检查浏览器控制台 |
 | LLM 连接失败 | 检查 API Key 和 Base URL，确认网络连通性 |

@@ -117,4 +117,4 @@ Tool registration lives in `apps/server/src/tools/` (file-tools, browser-tools, 
 - Vitest config maps `@evoclaw/*` aliases to `packages/*/src` — tests run against source, not dist.
 - The `go-bookstore/` directory is a standalone Go microservices demo, not part of the pnpm workspace.
 - `coding-tasks/` directory (if present) also has tests picked up by vitest config.
-- Port is 27788 (README.md). `.env.example` and Dockerfile show 17788 — those are outdated or wrong.
+- Port is 27788 across README / .env.example / Dockerfile / docker-compose.yml / code defaults. Env var name is `EvoClaw_PORT` (mixed case) — README's `EVOCLAW_PORT` (all-caps) is a docs-only mismatch that breaks on case-sensitive OSes.

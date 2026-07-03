@@ -160,8 +160,8 @@ Key environment variables in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `EVOCLAW_PORT` | `27788` | Server port |
-| `EVOCLAW_HOST` | `0.0.0.0` | Bind address |
+| `EvoClaw_PORT` | `27788` | Server port |
+| `EvoClaw_HOST` | `0.0.0.0` | Bind address |
 | `JWT_SECRET` | — | JWT signing key (**must change in production**) |
 | `EVOCLAW_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
 | `EVOCLAW_MCP_ENABLED` | `true` | Enable MCP protocol |
@@ -226,7 +226,7 @@ docker run -p 27788:27788 --env-file .env evoclaw
 | Problem | Solution |
 |---|---|
 | `pnpm: command not found` | Install pnpm: `npm install -g pnpm@10` |
-| `port 27788 already in use` | Change `EVOCLAW_PORT` in `.env` or kill the process |
+| `port 27788 already in use` | Change `EvoClaw_PORT` in `.env` or kill the process |
 | Build fails | Clean and retry: `pnpm clean && pnpm install && pnpm build` |
 | Web UI blank page | Ensure `pnpm build` completed, check browser console |
 | LLM connection fails | Verify API key and Base URL, check network connectivity |

@@ -44,6 +44,8 @@ export { SSHSandbox } from "./ssh-sandbox";
 export type { SSHSandboxConfig, SSHSandboxResult } from "./ssh-sandbox";
 export { SandboxManager } from "./sandbox-manager";
 export type { SandboxBackendType, UnifiedSandboxConfig, SandboxSession } from "./sandbox-manager";
+export { LocalSandboxBackend } from "./sandbox-backend";
+export type { ISandboxBackend, SandboxExecuteOptions, SandboxScriptOptions } from "./sandbox-backend";
 export { DaemonManager } from "./daemon-manager";
 export type { DaemonConfig, DaemonStatus } from "./daemon-manager";
 export { UpdateManager } from "./update-manager";
