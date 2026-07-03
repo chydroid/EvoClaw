@@ -182,6 +182,20 @@ export class GoalContract {
   }
 
   /**
+   * 设置/替换合约条款。
+   * 仅在 status === "pending" 时允许修改，运行中不可变。
+   */
+  setContract(clauses: ContractClause[]): void {
+    if (this.status !== "pending") {
+      throw new Error(`Cannot set contract: goal is in status "${this.status}" (only "pending" allows modification)`);
+    }
+    if (!Array.isArray(clauses)) {
+      throw new Error("Contract clauses must be an array");
+    }
+    this.config.contract = clauses;
+  }
+
+  /**
    * 执行一次合约验证（不重试）。
    * 返回验证结果，但不改变 goal 状态。
    */

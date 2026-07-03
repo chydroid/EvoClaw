@@ -1049,8 +1049,28 @@ export async function handleSlashCommand(
       } else if (subCmd === "cleanup") {
         const count = deps.backgroundDelegator.cleanup();
         reply = `✅ 已清理 ${count} 个已完成任务`;
+      } else if (subCmd === "await") {
+        // /bg await [taskId] — 等待任务完成（不指定则等待所有活动任务）
+        const taskId = args[1];
+        try {
+          if (taskId) {
+            const task = await deps.backgroundDelegator.awaitTask(taskId);
+            const icon = task.status === "completed" ? "✅" : task.status === "failed" ? "❌" : task.status === "timeout" ? "⏰" : "⚠";
+            reply = `${icon} 任务 \`${taskId}\` 已完成 [${task.status}]: ${task.description}\n${task.result ? task.result.slice(0, 1000) : task.error ?? ""}`;
+          } else {
+            const tasks = await deps.backgroundDelegator.awaitAllActive();
+            const lines = [`**⏳ 等待完成** (${tasks.length} 个任务)\n`];
+            for (const t of tasks) {
+              const icon = t.status === "completed" ? "✅" : t.status === "failed" ? "❌" : t.status === "timeout" ? "⏰" : "⚠";
+              lines.push(`${icon} \`${t.id}\` [${t.status}] ${t.description}`);
+            }
+            reply = lines.join("\n");
+          }
+        } catch (err) {
+          reply = `❌ 等待失败: ${err instanceof Error ? err.message : String(err)}`;
+        }
       } else {
-        reply = `⚠ 未知的 /bg 子命令: "${subCmd}"\n可用: list, active, pending, merge, cancel, cancelall, cleanup`;
+        reply = `⚠ 未知的 /bg 子命令: "${subCmd}"\n可用: list, active, pending, merge, cancel, cancelall, await, cleanup`;
       }
       break;
     }
@@ -1164,6 +1184,12 @@ export async function handleSlashCommand(
           description: `验证命令 ${idx + 1}`,
           timeoutMs: 120000,
         }));
+        try {
+          goal.setContract(clauses);
+        } catch (err) {
+          reply = `❌ 合约设置失败: ${err instanceof Error ? err.message : String(err)}`;
+          break;
+        }
         reply = `📋 合约已设置 (${clauses.length} 条验证):\n` + clauses.map((c: { id: string; command: string }) => `  • \`${c.id}\`: \`${c.command}\``).join("\n") + `\n\n目标: **${goal.description}**\n使用 \`/goal run\` 运行验证。`;
       } else if (subCmd === "run") {
         const goalIds = deps.goalRegistry.list();
@@ -1178,7 +1204,25 @@ export async function handleSlashCommand(
           reply = "⚠ 目标没有验证合约。请先用 \`/goal contract <命令>\` 设置。";
           break;
         }
-        reply = `⏳ 正在运行验证合约... (${goal.contract.length} 条验证，最多 ${5} 次尝试)`;
+        // 实际运行验证合约（含重试循环）
+        try {
+          const record = await deps.goalRegistry.run(goalId);
+          const icon = record.status === "verified" ? "✅" : record.status === "failed" ? "❌" : "⚠";
+          const lines = [
+            `${icon} 目标验证完成: **${record.description}**`,
+            `状态: \`${record.status}\` | 尝试次数: ${record.totalAttempts}`,
+          ];
+          if (record.lastResult) {
+            lines.push(`通过: ${record.lastResult.passedCount}/${record.lastResult.totalCount} 条 | 耗时: ${record.lastResult.totalDurationMs}ms`);
+            for (const r of record.lastResult.results) {
+              const ricon = r.passed ? "✅" : "❌";
+              lines.push(`  ${ricon} \`${r.command}\` (exit=${r.exitCode}, ${r.durationMs}ms)${r.failureReason ? ` — ${r.failureReason}` : ""}`);
+            }
+          }
+          reply = lines.join("\n");
+        } catch (err) {
+          reply = `❌ 验证运行失败: ${err instanceof Error ? err.message : String(err)}`;
+        }
       } else if (subCmd === "status") {
         const goalIds = deps.goalRegistry.list();
         if (goalIds.length === 0) { reply = "📦 没有活动目标"; break; }

@@ -31,6 +31,63 @@ import { exec as execCallback } from "child_process";
 
 const execAsync = promisify(execCallback);
 
+/**
+ * 原子写入文件（temp + fsync + rename）。
+ * 遵循项目硬约束：禁止直接使用 fs.writeFileSync 写持久化状态。
+ * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
+ */
+function atomicWriteFile(targetPath: string, content: string): void {
+  const dir = path.dirname(targetPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+  fs.closeSync(fd);
+  try {
+    if (fs.existsSync(targetPath)) {
+      const st = fs.statSync(targetPath);
+      fs.chmodSync(tmpPath, st.mode);
+    }
+  } catch {
+    // 权限复制失败不阻断写入
+  }
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EXDEV" || code === "EBUSY") {
+      // 跨设备：在目标侧写临时文件后 rename，保持原子性
+      const dstDir = path.dirname(targetPath);
+      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
+      const c = fs.readFileSync(tmpPath, "utf-8");
+      const fd2 = fs.openSync(dstTmp, "w");
+      try {
+        fs.writeFileSync(fd2, c, "utf-8");
+        fs.fsyncSync(fd2);
+      } catch (werr) {
+        try { fs.closeSync(fd2); } catch { /* ignore */ }
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        throw werr;
+      }
+      fs.closeSync(fd2);
+      fs.renameSync(dstTmp, targetPath);
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    } else {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────
 
 /** 学习来源类型 */
@@ -498,7 +555,7 @@ export class SkillLearner {
       }
       fs.mkdirSync(finalDir, { recursive: true });
       const skillPath = path.join(finalDir, "SKILL.md");
-      fs.writeFileSync(skillPath, content, "utf-8");
+      atomicWriteFile(skillPath, content);
 
       // 生成 _meta.json
       const meta = {
@@ -513,7 +570,7 @@ export class SkillLearner {
         sourceDescription,
         learnedAt: new Date().toISOString(),
       };
-      fs.writeFileSync(path.join(finalDir, "_meta.json"), JSON.stringify(meta, null, 2), "utf-8");
+      atomicWriteFile(path.join(finalDir, "_meta.json"), JSON.stringify(meta, null, 2));
 
       return {
         skillName: name,
