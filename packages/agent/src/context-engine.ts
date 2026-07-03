@@ -337,9 +337,33 @@ export class ContextEngine {
     };
   }
 
+  /**
+   * CJK 感知的 Token 估算。
+   *
+   * 英文约 4 字符/token，中文约 1.5 字符/token，日韩文约 2 字符/token。
+   * 通过统计 CJK 字符数量动态调整比例，比固定 chars/4 更准确。
+   * 参考：GPT-4 tokenizer 中 "你好" = 2 tokens（2 chars → 2 tokens，而非 0.5）
+   */
   estimateTokens(text: string): number {
     if (!text) return 0;
-    return Math.ceil(text.length / 4);
+    let cjkCount = 0;
+    let otherCount = 0;
+    for (const ch of text) {
+      const code = ch.codePointAt(0)!;
+      // CJK 统一表意文字 + 扩展A + 日文假名 + 韩文音节
+      if (
+        (code >= 0x4e00 && code <= 0x9fff) ||   // CJK 统一表意
+        (code >= 0x3400 && code <= 0x4dbf) ||   // CJK 扩展A
+        (code >= 0x3040 && code <= 0x30ff) ||   // 日文假名
+        (code >= 0xac00 && code <= 0xd7af)      // 韩文音节
+      ) {
+        cjkCount++;
+      } else {
+        otherCount++;
+      }
+    }
+    // CJK: ~1.5 chars/token; 其他: ~4 chars/token
+    return Math.ceil(cjkCount / 1.5 + otherCount / 4);
   }
 
   needsCompaction(

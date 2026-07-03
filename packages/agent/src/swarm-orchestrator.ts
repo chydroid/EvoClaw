@@ -117,6 +117,44 @@ export interface SwarmConfig {
   autoReassign?: boolean;
 }
 
+// ── Handoff 类型（借鉴 OpenAI Agents SDK 的 handoff 语义） ──
+
+/**
+ * Handoff 请求 — 对话控制权转移。
+ *
+ * 与 delegate 的关键区别：
+ * - delegate（agents-as-tools）：调用方保留控制权，被委托方执行后返回结果
+ * - handoff：调用方将对话控制权完全转移给目标 agent，自身退出对话
+ *
+ * 典型场景：客服转接、专家会诊、任务升级
+ */
+export interface HandoffRequest {
+  id: string;
+  fromAgentId: string;
+  toAgentId: string;
+  /** 转接原因 */
+  reason: string;
+  /** 转接时携带的上下文摘要 */
+  contextSummary?: string;
+  /** 对话历史（可选，用于目标 agent 续接） */
+  conversationHistory?: Array<{ role: string; content: string }>;
+  /** 转接时间戳 */
+  createdAt: number;
+}
+
+/**
+ * Handoff 结果
+ */
+export interface HandoffResult {
+  requestId: string;
+  success: boolean;
+  /** 接管 agent 的 ID */
+  receivingAgentId: string;
+  /** 转出 agent 的 ID（转出后变为 idle） */
+  transferringAgentId: string;
+  error?: string;
+}
+
 // ── Swarm Orchestrator ────────────────────────────────────
 
 export class SwarmOrchestrator {
@@ -128,6 +166,8 @@ export class SwarmOrchestrator {
   private delegationTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private proposals = new Map<string, ConsensusProposal>();
   private votes = new Map<string, ConsensusVote[]>();
+  /** 活跃的 handoff 请求 */
+  private activeHandoffs = new Map<string, HandoffRequest>();
   private config: Required<SwarmConfig>;
   private eventBus: EventBus;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -355,6 +395,157 @@ export class SwarmOrchestrator {
 
     // Process pending delegations
     this.processPending(agent?.id);
+  }
+
+  // ── Handoff（控制权转移，借鉴 OpenAI Agents SDK） ──────
+
+  /**
+   * 将对话控制权从一个 agent 转移到另一个 agent。
+   *
+   * 与 delegate 的关键区别：
+   * - delegate（agents-as-tools）：调用方保留控制权，被委托方执行后返回结果
+   * - handoff：调用方将对话控制权完全转移给目标 agent，自身退出对话
+   *
+   * 典型场景：客服转接、专家会诊、任务升级（tier-1 → tier-2 support）
+   *
+   * 流程：
+   * 1. 验证双方 agent 存在且非 offline
+   * 2. 转出 agent 标记为 idle（退出当前对话）
+   * 3. 转入 agent 接管对话（标记为 busy，记录 contextSummary 与 conversationHistory）
+   * 4. 发布 swarm:handoff 事件，供上层（如 SessionManager）切换对话主体
+   * 5. 调用方可通过 completeHandoff() 显式结束 handoff 生命周期
+   */
+  handoff(request: Omit<HandoffRequest, "id" | "createdAt">): HandoffResult {
+    const fromAgent = this.agents.get(request.fromAgentId);
+    const toAgent = this.agents.get(request.toAgentId);
+
+    if (!fromAgent) {
+      return {
+        requestId: "",
+        success: false,
+        receivingAgentId: request.toAgentId,
+        transferringAgentId: request.fromAgentId,
+        error: `Transferring agent not found: ${request.fromAgentId}`,
+      };
+    }
+    if (!toAgent) {
+      return {
+        requestId: "",
+        success: false,
+        receivingAgentId: request.toAgentId,
+        transferringAgentId: request.fromAgentId,
+        error: `Receiving agent not found: ${request.toAgentId}`,
+      };
+    }
+    if (toAgent.status === "offline") {
+      return {
+        requestId: "",
+        success: false,
+        receivingAgentId: request.toAgentId,
+        transferringAgentId: request.fromAgentId,
+        error: `Receiving agent is offline: ${request.toAgentId}`,
+      };
+    }
+    // 不允许 handoff 给自己（无意义的循环）
+    if (request.fromAgentId === request.toAgentId) {
+      return {
+        requestId: "",
+        success: false,
+        receivingAgentId: request.toAgentId,
+        transferringAgentId: request.fromAgentId,
+        error: "Cannot hand off to the same agent",
+      };
+    }
+
+    const fullRequest: HandoffRequest = {
+      ...request,
+      id: `handoff_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+    };
+
+    // 转出 agent：标记为 idle（退出当前对话）
+    fromAgent.status = "idle";
+    fromAgent.currentTask = undefined;
+
+    // 转入 agent：接管对话，标记为 busy
+    toAgent.status = "busy";
+    toAgent.currentTask = `handoff-receiving: ${request.reason}`;
+    // 携带的上下文摘要与会话历史存入 metadata，供接收方读取
+    toAgent.metadata = {
+      ...(toAgent.metadata ?? {}),
+      handoffContext: {
+        fromAgentId: request.fromAgentId,
+        fromAgentName: fromAgent.name,
+        reason: request.reason,
+        contextSummary: request.contextSummary,
+        conversationHistory: request.conversationHistory,
+        receivedAt: fullRequest.createdAt,
+      },
+    };
+
+    this.activeHandoffs.set(fullRequest.id, fullRequest);
+    this.trimMaps();
+
+    this.eventBus.publish(
+      "swarm:handoff",
+      {
+        handoffId: fullRequest.id,
+        fromAgentId: request.fromAgentId,
+        toAgentId: request.toAgentId,
+        reason: request.reason,
+        contextSummary: request.contextSummary,
+      },
+      "swarm-orchestrator",
+    );
+
+    return {
+      requestId: fullRequest.id,
+      success: true,
+      receivingAgentId: request.toAgentId,
+      transferringAgentId: request.fromAgentId,
+    };
+  }
+
+  /**
+   * 完成 handoff：转入 agent 完成接管工作后调用，清理 activeHandoffs 记录，
+   * 将接收 agent 恢复为 idle，并发布 swarm:handoff-completed 事件。
+   */
+  completeHandoff(handoffId: string): boolean {
+    const request = this.activeHandoffs.get(handoffId);
+    if (!request) return false;
+
+    const receivingAgent = this.agents.get(request.toAgentId);
+    if (receivingAgent) {
+      receivingAgent.status = "idle";
+      receivingAgent.currentTask = undefined;
+      // 清理 handoff 上下文 metadata
+      if (receivingAgent.metadata?.handoffContext) {
+        const { handoffContext, ...rest } = receivingAgent.metadata;
+        receivingAgent.metadata = Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      // 接收 agent 完成一次任务，更新指标
+      receivingAgent.metrics.tasksCompleted++;
+      receivingAgent.metrics.reliabilityScore = this.calculateReliability(receivingAgent);
+    }
+
+    this.activeHandoffs.delete(handoffId);
+
+    this.eventBus.publish(
+      "swarm:handoff-completed",
+      {
+        handoffId,
+        fromAgentId: request.fromAgentId,
+        toAgentId: request.toAgentId,
+      },
+      "swarm-orchestrator",
+    );
+
+    return true;
+  }
+
+  /** 获取当前活跃的 handoff 请求 */
+  getActiveHandoffs(): HandoffRequest[] {
+    return Array.from(this.activeHandoffs.values());
   }
 
   // ── Consensus ───────────────────────────────────────────

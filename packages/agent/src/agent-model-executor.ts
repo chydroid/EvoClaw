@@ -290,7 +290,8 @@ export class AgentModelExecutor {
   getIterationBudget(sessionId: string): IterationBudget {
     let budget = this.iterationBudgets.get(sessionId);
     if (!budget) {
-      budget = new IterationBudget({ maxIterations: 20, enableGraceCall: true });
+      const maxIter = this.config.maxIterations ?? 20;
+      budget = new IterationBudget({ maxIterations: maxIter, enableGraceCall: true });
       this.iterationBudgets.set(sessionId, budget);
     }
     return budget;

@@ -5,6 +5,44 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.6 (2026-07-03)
+
+### 对标主流 AI Agent 项目的 6 项核心能力提升
+
+全面对比 AutoGPT、LangGraph、CrewAI、OpenHands、SWE-agent、Aider、AutoGen、MetaGPT、OpenAI Agents SDK、Google ADK 等主流项目后，识别并实施了 6 项关键能力提升：
+
+#### 1. CJK 感知的 Token 估算（`packages/agent/src/context-engine.ts`）
+
+旧版 `chars/4` 启发式对中文严重高估 token 数（中文实际 ~1.5 chars/token，英文 ~4 chars/token）。改进为 CJK 感知估算：遍历每个字符的 Unicode 码位，识别 CJK 统一表意（0x4e00-0x9fff）、CJK 扩展A、日文假名、韩文音节，按 `cjkCount/1.5 + otherCount/4` 计算。让上下文压缩触发点更精准，避免不必要的压缩或超限。
+
+#### 2. HumanApprovalManager 状态持久化（`packages/agent/src/human-approval.ts`）
+
+之前信任规则、待审批准请求都只存在内存中，进程重启全部丢失。新增 JSON 原子写入（temp + fsync + rename，EXDEV/EBUSY 跨设备回退）+ 2 秒防抖。新增 `storePath` 配置项，构造函数自动 `loadState()`，`addTrustRule`/`removeTrustRule`/`requestApproval` 标记 dirty，`destroy()` 强制 flush。pending approvals 重启后自动标记 expired。
+
+#### 3. 自适应反思频率（`packages/agent/src/reflection-engine.ts`）
+
+之前固定每 N 次工具调用触发一次反思，无法响应运行时错误率。新增 `adaptiveReflection`/`minReflectInterval`/`maxReflectInterval` 配置（默认 2-6）。`shouldReflect()` 改用 `getAdaptiveInterval(trace)`：取最近 10 次工具调用的滑动窗口，errorRate≥0.5 → min（频繁反思纠错），errorRate≤0.1 → max（节省 token），中间线性插值。
+
+#### 4. 可配置的 IterationBudget（`packages/agent/src/types.ts` + `agent-model-executor.ts`）
+
+之前 ReAct 循环最大迭代次数硬编码为 20，复杂任务容易触顶。新增 `ModelConfig.maxIterations` 配置项，`getIterationBudget()` 改为 `this.config.maxIterations ?? 20`，让复杂任务可调高（如设为 50）。
+
+#### 5. 成本感知模型路由（`packages/agent/src/copilot-router.ts`）
+
+借鉴 Aider 的双模型分工理念（简单任务用便宜模型、复杂任务用强力模型）。新增 `ModelCostInfo` 接口（inputCostPer1K、outputCostPer1K）和 `modelCosts` 映射。`CopilotRouterConfig` 新增 `costAware` 选项（默认 true）。`getFirstEnabledHealthyProvider()` 在所有健康已启用 provider 中用 `findCheapestProvider()` 选择总成本最低的，仅当所有 provider 都没成本数据时才回退到「第一个健康 provider」。
+
+#### 6. Handoff 语义区分（`packages/agent/src/swarm-orchestrator.ts`）
+
+借鉴 OpenAI Agents SDK 的 handoff vs delegate 区分：delegate 是 agents-as-tools（调用方保留控制权，被委托方执行后返回结果），handoff 是控制权完全转移（调用方退出对话，目标 agent 接管）。新增 `HandoffRequest`/`HandoffResult` 接口，`activeHandoffs` 字段，`handoff()` 公开方法（验证双方 agent 存在且非 offline、禁止自环、转出方标 idle、转入方标 busy 并接收 handoffContext metadata、发布 `swarm:handoff` 事件），`completeHandoff()`（接收方恢复 idle、清理 metadata、发布 `swarm:handoff-completed` 事件），`getActiveHandoffs()` 查询。典型场景：客服转接、专家会诊、任务升级。
+
+### 验证
+
+- `pnpm build` ✅
+- `pnpm typecheck` ✅
+- `pnpm test` ✅
+
+---
+
 ## v0.62.5 (2026-07-02)
 
 ### 修复 pnpm install 时 ERR_PNPM_IGNORED_BUILDS 错误

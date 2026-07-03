@@ -26,6 +26,12 @@ export interface ReflectionConfig {
   reflectOnFailure: boolean;
   maxReflections: number;
   confidenceThreshold: number;
+  /** 启用自适应反思频率（根据错误率动态调整） */
+  adaptiveReflection?: boolean;
+  /** 自适应模式下的最小反思间隔（错误率高时） */
+  minReflectInterval?: number;
+  /** 自适应模式下的最大反思间隔（错误率低时） */
+  maxReflectInterval?: number;
 }
 
 const DEFAULT_CONFIG: ReflectionConfig = {
@@ -34,6 +40,9 @@ const DEFAULT_CONFIG: ReflectionConfig = {
   reflectOnFailure: true,
   maxReflections: 3,
   confidenceThreshold: 0.3,
+  adaptiveReflection: true,
+  minReflectInterval: 2,
+  maxReflectInterval: 6,
 };
 
 export class ReflectionEngine {
@@ -126,12 +135,37 @@ Rules:
       }
     }
 
-    // Reflect after N tool calls
-    if (trace.length >= this.config.reflectAfterNTools && trace.length % this.config.reflectAfterNTools === 0) {
+    // 自适应反思频率：根据最近工具调用的错误率动态调整间隔
+    const interval = this.getAdaptiveInterval(trace);
+    if (trace.length >= interval && trace.length % interval === 0) {
       return true;
     }
 
     return false;
+  }
+
+  /**
+   * 根据最近工具调用的错误率计算反思间隔。
+   * - 错误率 > 50%：使用 minReflectInterval（频繁反思）
+   * - 错误率 < 10%：使用 maxReflectInterval（稀疏反思）
+   * - 中间值：线性插值
+   */
+  private getAdaptiveInterval(trace: ToolExecutionTrace[]): number {
+    if (!this.config.adaptiveReflection) {
+      return this.config.reflectAfterNTools;
+    }
+    const min = this.config.minReflectInterval ?? 2;
+    const max = this.config.maxReflectInterval ?? 6;
+    // 取最近 10 次工具调用的滑动窗口
+    const window = trace.slice(-10);
+    const failures = window.filter(t => !t.success).length;
+    const errorRate = window.length > 0 ? failures / window.length : 0;
+    // errorRate 0.5+ → min; errorRate 0.1- → max; 中间线性
+    if (errorRate >= 0.5) return min;
+    if (errorRate <= 0.1) return max;
+    // 线性插值：errorRate 越高，interval 越小
+    const ratio = (errorRate - 0.1) / (0.5 - 0.1); // 0..1
+    return Math.round(max - ratio * (max - min));
   }
 
   formatTraceForLLM(trace: ToolExecutionTrace[]): string {

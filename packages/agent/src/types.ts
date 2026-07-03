@@ -11,6 +11,8 @@ export interface ModelConfig {
   temperature: number;
   timeout: number;
   topP?: number;
+  /** ReAct 循环最大迭代次数（默认 20，复杂任务可调高） */
+  maxIterations?: number;
 }
 
 export interface ProviderConfig extends ModelConfig {

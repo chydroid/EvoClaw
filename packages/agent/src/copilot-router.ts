@@ -28,6 +28,8 @@ export interface CopilotRouterConfig {
   cacheTtlMs?: number;
   /** 路由缓存最大条目数，默认 200 */
   cacheMaxEntries?: number;
+  /** 启用成本感知路由（简单任务优先选择更便宜的 provider） */
+  costAware?: boolean;
 }
 
 export interface UserLLMProvider {
@@ -62,6 +64,17 @@ export interface ProviderHealthInfo {
   circuitOpen: boolean;
   /** 平均延迟（ms） */
   avgLatencyMs: number;
+}
+
+/**
+ * 模型成本信息（每 1K token 的美元价格）。
+ * 借鉴 Aider 的双模型分工理念：简单任务用便宜模型，复杂任务用强力模型。
+ */
+export interface ModelCostInfo {
+  /** 每 1K input token 价格（美元） */
+  inputCostPer1K: number;
+  /** 每 1K output token 价格（美元） */
+  outputCostPer1K: number;
 }
 
 const CODE_PATTERNS: RegExp[] = [
@@ -103,6 +116,8 @@ export class CopilotRouter {
   private routeCache = new Map<string, CacheEntry>();
   /** Provider 健康状态映射 */
   private providerHealth = new Map<string, ProviderHealthInfo>();
+  /** 模型成本映射（model name → cost info） */
+  private modelCosts = new Map<string, ModelCostInfo>();
   /** 缓存统计 */
   private cacheStats = { hits: 0, misses: 0 };
 
@@ -115,6 +130,7 @@ export class CopilotRouter {
       userProviders: config?.userProviders ?? [],
       cacheTtlMs: config?.cacheTtlMs ?? 60_000,
       cacheMaxEntries: config?.cacheMaxEntries ?? 200,
+      costAware: config?.costAware ?? true,
     };
   }
 
@@ -245,6 +261,13 @@ export class CopilotRouter {
     this.config.userProviders = providers;
   }
 
+  /** 更新模型成本映射，用于成本感知路由 */
+  updateModelCosts(costs: Record<string, ModelCostInfo>): void {
+    for (const [model, cost] of Object.entries(costs)) {
+      this.modelCosts.set(model, cost);
+    }
+  }
+
   // ── Private ──
 
   private isSimpleTask(taskDescription: string): boolean {
@@ -292,6 +315,9 @@ export class CopilotRouter {
    * 获取第一个已启用的健康用户Provider。
    * 不默认GPT-4o，严格按用户配置顺序。
    * 跳过熔断中的 provider，优先选择健康的 provider。
+   *
+   * 成本感知模式（costAware=true）：在所有健康的已启用 provider 中，
+   * 选择成本最低的（基于 modelCosts 映射），借鉴 Aider 的双模型分工理念。
    */
   private getFirstEnabledHealthyProvider(currentModel: string, currentProvider: string): {
     model: string;
@@ -302,26 +328,44 @@ export class CopilotRouter {
     if (providers && providers.length > 0) {
       const sorted = [...providers].sort((a, b) => a.order - b.order);
 
-      // 优先选择已启用且健康的 provider
+      // 收集所有已启用且健康的 provider
+      const healthy: typeof sorted = [];
       for (const p of sorted) {
         if (!p.enabled) continue;
         const health = this.providerHealth.get(p.id);
-        // 跳过熔断中的 provider
         if (health?.circuitOpen) continue;
-        return {
-          model: p.selectedModel,
-          provider: p.id,
-          shouldDowngrade: p.id !== currentProvider,
-        };
+        healthy.push(p);
       }
 
-      // 所有 provider 都熔断了，回退到第一个已启用的（即使不健康）
-      const first = sorted.find(p => p.enabled);
-      if (first) {
+      if (healthy.length > 0) {
+        // 成本感知：简单任务优先选择最便宜的 provider
+        if (this.config.costAware && this.modelCosts.size > 0) {
+          const cheapest = this.findCheapestProvider(healthy);
+          if (cheapest) {
+            return {
+              model: cheapest.selectedModel,
+              provider: cheapest.id,
+              shouldDowngrade: cheapest.id !== currentProvider,
+            };
+          }
+        }
+
+        // 默认：取第一个健康的 provider（按用户配置顺序）
+        const first = healthy[0];
         return {
           model: first.selectedModel,
           provider: first.id,
           shouldDowngrade: first.id !== currentProvider,
+        };
+      }
+
+      // 所有 provider 都熔断了，回退到第一个已启用的（即使不健康）
+      const fallback = sorted.find(p => p.enabled);
+      if (fallback) {
+        return {
+          model: fallback.selectedModel,
+          provider: fallback.id,
+          shouldDowngrade: fallback.id !== currentProvider,
         };
       }
     }
@@ -332,6 +376,24 @@ export class CopilotRouter {
       provider: currentProvider,
       shouldDowngrade: false,
     };
+  }
+
+  /** 在健康 provider 列表中选择成本最低的 */
+  private findCheapestProvider(providers: UserLLMProvider[]): UserLLMProvider | null {
+    let cheapest: UserLLMProvider | null = null;
+    let cheapestCost = Infinity;
+    for (const p of providers) {
+      const cost = this.modelCosts.get(p.selectedModel);
+      if (cost) {
+        // 用 input + output 成本之和作为排序依据
+        const total = cost.inputCostPer1K + cost.outputCostPer1K;
+        if (total < cheapestCost) {
+          cheapestCost = total;
+          cheapest = p;
+        }
+      }
+    }
+    return cheapest;
   }
 
   // ── 缓存管理 ──────────────────────────────────────────────

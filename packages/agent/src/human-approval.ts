@@ -4,7 +4,13 @@
  * Provides a breakpoint mechanism that pauses execution before high-risk
  * tool calls and waits for human approval. Includes risk-level classification,
  * trust whitelisting, timeout handling, and progress event emission.
+ *
+ * 状态持久化：trustRules 和 pendingApprovals 可选持久化到 JSON 文件，
+ * 进程重启后恢复 trust rules，pending approvals 标记为 expired（Promise 无法恢复）。
  */
+
+import * as fs from "fs";
+import * as path from "path";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -46,6 +52,8 @@ export interface ApprovalConfig {
   approvalTimeout: number;
   /** Maximum number of pending approvals per session */
   maxPendingPerSession: number;
+  /** 持久化文件路径（可选，设置后 trust rules 和 pending approvals 会持久化） */
+  storePath?: string;
 }
 
 /** A trust rule that auto-approves certain operations */
@@ -127,6 +135,9 @@ export class HumanApprovalManager {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   /** Track active timeout handles so they can be cleared on destroy */
   private pendingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 防抖持久化定时器 */
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dirty = false;
 
   constructor(config?: Partial<ApprovalConfig>) {
     this.config = {
@@ -134,7 +145,10 @@ export class HumanApprovalManager {
       requireApproval: { ...DEFAULT_REQUIRE_APPROVAL, ...config?.requireApproval },
       approvalTimeout: config?.approvalTimeout ?? 5 * 60 * 1000,
       maxPendingPerSession: config?.maxPendingPerSession ?? 10,
+      storePath: config?.storePath,
     };
+    // 从磁盘恢复状态
+    this.loadState();
     this.startCleanupTimer();
   }
 
@@ -192,6 +206,7 @@ export class HumanApprovalManager {
     };
 
     this.pendingApprovals.set(id, pending);
+    this.markDirty();
 
     // Create a promise that will be resolved when the user makes a decision
     return new Promise((resolve, reject) => {
@@ -300,11 +315,13 @@ export class HumanApprovalManager {
   /** Add a trust rule */
   addTrustRule(rule: TrustRule): void {
     this.trustRules.push(rule);
+    this.markDirty();
   }
 
   /** Remove a trust rule */
   removeTrustRule(toolName: string): void {
     this.trustRules = this.trustRules.filter(r => r.toolName !== toolName);
+    this.markDirty();
   }
 
   /** Get all trust rules */
@@ -397,6 +414,92 @@ export class HumanApprovalManager {
       resolver.resolve("rejected");
     }
     this.approvalResolvers.clear();
+    // 刷盘确保持久化状态最新
+    this.flush();
+  }
+
+  /** 标记状态已变更，防抖写入 */
+  private markDirty(): void {
+    if (!this.config.storePath) return;
+    this.dirty = true;
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.flush(), 2000);
+    this.saveTimer.unref?.();
+  }
+
+  /** 原子写入状态到磁盘（temp + fsync + rename） */
+  private flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.dirty || !this.config.storePath) return;
+    try {
+      const dir = path.dirname(this.config.storePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const state = {
+        trustRules: this.trustRules,
+        pendingApprovals: Array.from(this.pendingApprovals.values()).filter(p => p.status === "pending"),
+        savedAt: new Date().toISOString(),
+      };
+      const tmpPath = `${this.config.storePath}.${process.pid}.${Date.now()}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(state, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, this.config.storePath);
+      } catch {
+        // EXDEV/EBUSY 跨设备回退
+        const dstTmp = `${this.config.storePath}.${process.pid}.${Date.now()}.dst.tmp`;
+        try {
+          fs.copyFileSync(tmpPath, dstTmp);
+          fs.renameSync(dstTmp, this.config.storePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } catch (fallbackErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw fallbackErr;
+        }
+      }
+      this.dirty = false;
+    } catch (err) {
+      process.stderr.write("[HumanApproval] flush failed: " + err + "\n");
+    }
+  }
+
+  /** 从磁盘恢复状态：trust rules 恢复，pending approvals 标记为 expired */
+  private loadState(): void {
+    if (!this.config.storePath) return;
+    try {
+      if (!fs.existsSync(this.config.storePath)) return;
+      const raw = fs.readFileSync(this.config.storePath, "utf-8");
+      const state = JSON.parse(raw);
+      if (Array.isArray(state.trustRules)) {
+        this.trustRules = state.trustRules;
+      }
+      if (Array.isArray(state.pendingApprovals)) {
+        // Promise resolvers 无法恢复，将 pending 标记为 expired
+        const now = Date.now();
+        for (const p of state.pendingApprovals) {
+          if (p.status === "pending") {
+            p.status = "expired";
+            p.decidedAt = now;
+            p.rejectionReason = "Process restarted";
+          }
+          if (p.id) {
+            this.pendingApprovals.set(p.id, p);
+          }
+        }
+      }
+    } catch (err) {
+      process.stderr.write("[HumanApproval] loadState failed: " + err + "\n");
+    }
   }
 
   /** Update configuration */
