@@ -88,6 +88,8 @@ const PERSISTENCE_PATTERNS: readonly RegExp[] = [
 const IOC_SUBSTRINGS: readonly string[] = [
   // 已知恶意 SSH 公钥（攻击者植入的后门密钥）
   "AAAAC3NzaC1lZDI1NTE5AAAAICBoh1oDC4DnsO1m5mJ4yfEKrQebaFh",
+  // 攻击活动标识符
+  "hermes-0day",
   // 已知攻击源 IP
   "60.165.167.",
   "118.182.244.156",
@@ -220,9 +222,12 @@ export function validateMCPServerConfig(
   //   - 命中 known_ioc 或 persistence → 立即拒绝（critical）
   //   - 有 shell 解释器 + 网络外传 → 高风险（数据外传攻击）
   //   - 有 shell 解释器 + 敏感数据引用 → 高风险
-  //   - 有网络外传 + 敏感数据引用 → 高风险
   //   - 只有 shell 解释器 → 中风险（可疑但可能合法）
   //   - 只有网络外传 → 低风险（可能是合法的 HTTP MCP 服务器）
+  //
+  // 注意：与 Hermes mcp_security.py 一致，所有 egress/exfil 检查都以
+  // shell 解释器为前提。合法的 HTTP-first MCP（如 command:"curl" 直接
+  // 调用 webhook，无 shell 中介）不应被误判为高危。
   const hasCritical = threats.some((t) => t.risk === "critical");
   const hasShell = threats.some((t) => t.type === "shell_interpreter");
   const hasEgress = threats.some((t) => t.type === "egress_command");
@@ -231,8 +236,7 @@ export function validateMCPServerConfig(
   const isHighRisk =
     hasCritical ||
     (hasShell && hasEgress) ||
-    (hasShell && hasExfil) ||
-    (hasEgress && hasExfil);
+    (hasShell && hasExfil);
 
   return {
     safe: !isHighRisk,

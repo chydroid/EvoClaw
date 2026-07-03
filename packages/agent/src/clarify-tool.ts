@@ -236,6 +236,14 @@ export interface ClarifyEntry {
   reject: (err: unknown) => void;
   /** Deadline (Date.now() + timeoutMs) for timeout enforcement. */
   deadline: number;
+  /**
+   * Promise that resolves with the user response (or null on timeout/cancel).
+   * Stored on the entry so `waitForResponse` can race it directly without
+   * wrapping `entry.resolve` (the wrapping approach loses responses when
+   * `resolveGatewayClarify` fires before `waitForResponse` installs the
+   * wrapper — see F9.1 race condition fix).
+   */
+  responsePromise: Promise<string | null>;
 }
 
 /**
@@ -311,6 +319,7 @@ export class ClarifyGateway {
       resolve: resolveFn,
       reject: rejectFn,
       deadline: Date.now() + timeout,
+      responsePromise: response,
     };
 
     this.entries.set(clarifyId, entry);
@@ -340,16 +349,25 @@ export class ClarifyGateway {
   /**
    * Block on the entry's event until resolved or timeout fires. Convenience
    * wrapper around the promise returned by `register`.
+   *
+   * NOTE: `timeoutMs` is in **milliseconds** (consistent with `register`'s
+   * `timeoutMs` and `DEFAULT_CLARIFY_TIMEOUT_MS`). Earlier versions accepted
+   * seconds and multiplied by 1000 — that was a unit-mismatch footgun.
+   *
+   * Race-safe: uses the `responsePromise` stored on the entry (created in
+   * `register`) rather than wrapping `entry.resolve`. The wrapping approach
+   * could lose responses when `resolveGatewayClarify` fired before this
+   * method installed the wrapper.
    */
-  async waitForResponse(clarifyId: string, timeout: number): Promise<string | null> {
+  async waitForResponse(clarifyId: string, timeoutMs: number): Promise<string | null> {
     const entry = this.entries.get(clarifyId);
     if (!entry) return null;
     // The entry's own deadline already incorporates the original timeout;
     // honour a shorter caller timeout if provided.
     const remaining = Math.max(0, entry.deadline - Date.now());
-    const effective = Math.min(timeout * 1000, remaining);
+    const effective = Math.min(timeoutMs, remaining);
     return Promise.race([
-      entryPromise(entry),
+      entry.responsePromise,
       timeoutPromise<string | null>(effective, null),
     ]);
   }
@@ -493,20 +511,21 @@ export class ClarifyGateway {
       }
     }
   }
-}
 
-// Helper: wrap an entry's response promise so it has the right type.
-function entryPromise(entry: ClarifyEntry): Promise<string | null> {
-  // The entry's resolve/reject are set in `register`. We can't reconstruct
-  // the original promise from outside, so re-expose via the entry's stored
-  // callbacks. This is fine because the entry is only resolved once.
-  return new Promise<string | null>((resolve) => {
-    const original = entry.resolve;
-    entry.resolve = (r: string | null) => {
-      original(r);
-      resolve(r);
-    };
-  });
+  /**
+   * Cancel every pending clarify across all sessions and clear all timers.
+   * Used by `_resetClarifyGatewayForTests` to prevent leaks across test
+   * cases (the prior implementation only cleared a synthetic `__test_reset__`
+   * session, leaving real test sessions' entries + setTimeout handles leaked).
+   * Returns the number of entries cancelled.
+   */
+  clearAll(): number {
+    let n = 0;
+    for (const sessionKey of [...this.sessionIndex.keys()]) {
+      n += this.clearSession(sessionKey);
+    }
+    return n;
+  }
 }
 
 function timeoutPromise<T>(ms: number, value: T): Promise<T> {
@@ -529,10 +548,11 @@ export function getClarifyGateway(): ClarifyGateway {
   return _singleton;
 }
 
-/** Test-only: reset the module-level singleton. */
+/** Test-only: reset the module-level singleton. Clears ALL pending entries
+ * (across every session) and their timeouts to prevent leaks between tests. */
 export function _resetClarifyGatewayForTests(): void {
   if (_singleton) {
-    _singleton.clearSession("__test_reset__");
+    _singleton.clearAll();
   }
   _singleton = null;
 }

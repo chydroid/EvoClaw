@@ -125,7 +125,7 @@ const PATTERNS: ReadonlyArray<Omit<ThreatPattern, "regex"> & { pattern: string }
 
   // ── Destructive（all） ──────────────────────────────────
   { pattern: `rm\\s+-rf\\s+/(?:usr|etc|var|home|root|boot|sys|proc)\\b`, id: "rm_rf_system", kind: "destructive", scope: "all", description: "Recursive delete of system directory" },
-  { pattern: `:(){:|:&};:`, id: "fork_bomb", kind: "destructive", scope: "all", description: "Fork bomb" },
+  { pattern: `:\\(\\)\\{:\\|:\\&\\};:`, id: "fork_bomb", kind: "destructive", scope: "all", description: "Fork bomb" },
   { pattern: `mkfs\\.(ext[234]|btrfs|xfs|zfs)\\s+/dev/`, id: "format_disk", kind: "destructive", scope: "all", description: "Format disk" },
   { pattern: `dd\\s+if=/dev/zero\\s+of=/dev/(?:sd|nvme|hd)`, id: "dd_wipe_disk", kind: "destructive", scope: "all", description: "Wipe disk with dd" },
   { pattern: `>\\s*/dev/sda`, id: "redirect_to_disk", kind: "destructive", scope: "all", description: "Redirect to raw disk device" },
@@ -154,6 +154,12 @@ let compiled = false;
 
 function ensureCompiled(): void {
   if (compiled) return;
+  // 作用域包含关系（与 Hermes threat_patterns.py 一致）：
+  //   all     → all / context / strict 都检查
+  //   context → context / strict 检查（"all" 扫描不触发）
+  //   strict  → 仅 strict 检查（"all"/"context" 扫描不触发）
+  // 这样可在 "all" 做廉价粗扫，避免 strict-only 的敏感词（如 authorized_keys）
+  // 在普通文本里误报。
   for (const p of PATTERNS) {
     const tp: ThreatPattern = {
       regex: new RegExp(p.pattern, "i"),
@@ -162,8 +168,8 @@ function ensureCompiled(): void {
       scope: p.scope,
       description: p.description,
     };
-    COMPILED.all.push(tp);
     if (p.scope === "all") {
+      COMPILED.all.push(tp);
       COMPILED.context.push(tp);
       COMPILED.strict.push(tp);
     } else if (p.scope === "context") {
@@ -505,8 +511,18 @@ export function scanSkill(
   }
 
   // 判定：strict scope 的威胁 + 结构问题 + AST 发现 → 不安全
+  // 与 Hermes skills_guard.py 一致：persistence / hardcoded_secret /
+  // known_c2_framework 同样属于阻断类（含 SSH 后门、硬编码密钥、已知 C2）
   const hasCriticalThreats = threats.some(
-    (t) => t.kind === "prompt_injection" || t.kind === "exfiltration" || t.kind === "destructive" || t.kind === "supply_chain",
+    (t) =>
+      t.kind === "prompt_injection" ||
+      t.kind === "exfiltration" ||
+      t.kind === "destructive" ||
+      t.kind === "supply_chain" ||
+      t.kind === "persistence" ||
+      t.kind === "hardcoded_secret" ||
+      t.kind === "known_c2_framework" ||
+      t.kind === "role_hijack",
   );
   const hasStructIssues = structuralIssues.length > 0;
   const hasAst = astFindings.length > 0;

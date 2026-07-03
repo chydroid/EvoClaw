@@ -643,10 +643,13 @@ export function formatDurationCompact(seconds: number): string {
 }
 
 export function formatTokenCountCompact(value: number): string {
-  const absValue = Math.abs(Math.floor(value));
-  if (absValue < 1_000) return String(Math.floor(value));
+  // 用 trunc 而非 floor：对负数 token（如 sumUsage 边界情况），
+  // floor(-1.5) = -2 会偏离 -1，trunc(-1.5) = -1 与 toInt 一致
+  const trunced = Math.trunc(value);
+  const absValue = Math.abs(trunced);
+  if (absValue < 1_000) return String(trunced);
 
-  const sign = value < 0 ? "-" : "";
+  const sign = trunced < 0 ? "-" : "";
   const units: Array<[number, string]> = [
     [1_000_000_000, "B"],
     [1_000_000, "M"],

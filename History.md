@@ -5,6 +5,37 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.64.1 (2026-07-03)
+
+### F1-F16 代码质量审查 + 30 条集成测试 + 关键 bug 修复
+
+对 v0.64.0 引入的 F1-F16 共 16 个新模块进行代码质量审查，发现并修复 11 个源码 bug，新增 18 个单元测试文件 + 1 个 30 场景集成测试文件。全量 `pnpm build / typecheck / test` 通过（174 test files passed | 1 skipped，较上版 +1 测试文件 +30 集成测试场景）。
+
+#### 关键 bug 修复
+
+1. **`redact.ts` PREFIX_PATTERNS 缺失量词（严重）**：所有 `sk-` / `ghp_` / `xox` / `AKIA` / `AIza` 等前缀正则均缺少 `+` 量词，导致 regex 只匹配「前缀 + 1 字符」，`match.length` 永远 < `minLength`，密钥从未被脱敏。本轮统一添加 `+` 量词（对标 Hermes `{10,}`），并扩展 `connection_string` pattern 支持 `mongodb+srv://` / `postgres+replica://` 等 RFC 3986 scheme suffix。
+2. **`skill-scanner.ts` ensureCompiled scope 过滤**：`COMPILED.all.push(tp)` 无条件将所有 scope 的 pattern 塞入 `all` 桶，导致 strict-only 的 `authorized_keys` 在 `all` 扫描时误报。改为按 scope 条件分发（`all` → all/context/strict；`context` → context/strict；`strict` → 仅 strict），与 Hermes `threat_patterns.py` 一致。
+3. **`patch-parser.ts` applyHunks no-op hunk**：纯 context hunk（oldStr===newStr）调用 `fuzzyFindAndReplace` 报错，被捕获后返回「预校验失败」而非让 `newContent === oldContent` 检测「未产生变更」。改为 oldStr===newStr 时 `continue` 跳过。
+4. **`file-state-registry.ts` recordRead 语义**：`recordRead` 不应更新 `state.mtime` / `state.hash`（否则破坏 staleness 检测语义）。对标 Hermes `file_state.py` 的 `record_read` 仅写 `_read_stamps`，不动 `_state`。
+5. **`background-review.ts` 负索引陷阱**：`arr[arr.length - N]` 而非 `arr[-N]`（JS 返回 undefined）。
+6. **`process-registry.ts` formatUptimeShort 零值省略**：`formatUptimeShort(7200)` 返回 `"2h"` 而非 `"2h 0m"`（省略零值分量）；同时修复 `kill` ESRCH（进程已退出时 kill 抛错需捕获）。
+7. **`coding-context.ts` focus 模式**：`detectProfileName` 只把 `"on"` 当 coding profile，`"focus"` 被当 `"auto"` 走自动检测。改为 `"on"` 和 `"focus"` 都强制 coding profile。
+8. **`tool-search.ts` shouldActivate**：仅按 deferrable 工具 token 估算（与 Hermes 一致），避免 always-visible 工具膨胀 token 计数。
+9. **`auxiliary-client.ts` AsyncLocalStorage**：替代 Python `threading.local()` 实现异步上下文局部状态隔离。
+10. **`clarify-tool.ts` 竞态/泄漏/单位**：Promise.race 竞态修复（entry 上存储 `responsePromise`），unref'd timers 防泄漏，超时单位统一为 ms。
+11. **`mcp-config-security.ts` IOC + shell gate**：补充已知 IOC 黑名单 + shell 解释器检测。
+
+#### 测试新增
+
+- 17 个 F1-F16 单元测试文件（fuzzy-match / patch-parser / think-scrubber / redact / file-state-registry / write-approval / mcp-config-security / tool-search / reasoning-timeouts / coding-context / background-review / auxiliary-client / skill-scanner / process-registry / credits-tracker / usage-pricing / clarify-tool）
+- 1 个 30 场景集成测试 `f1-f16-integration.test.ts`：模拟 30 条复杂用户任务，跨模块端到端验证 F1-F16 各功能（文件编辑 / patch / PII 脱敏 / 进程管理 / 工具检索 / 用户澄清 / 编码姿态 / 推理剥离 / 额度追踪 / 对话摘要）
+
+#### 验证
+
+- `pnpm build` ✅ 17 workspace projects Done
+- `pnpm typecheck` ✅ 全部通过
+- `pnpm test` ✅ 174 test files passed | 1 skipped（较上版 +1 测试文件 +30 集成测试场景，无回归）
+
 ## v0.64.0 (2026-07-03)
 
 ### 对标 Hermes 源码的 8 项深度能力补齐（F9-F16）

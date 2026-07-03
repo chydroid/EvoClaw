@@ -20,7 +20,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 /** 编码 toolset 标识 */
 export const CODING_TOOLSET = "coding";
@@ -208,7 +208,9 @@ function parseCodingInstructions(config: Record<string, unknown> | null | undefi
 
 function detectProfileName(mode: RuntimeMode["configMode"], platform: string, cwdStr: string): string {
   if (mode === "off") return GENERAL_PROFILE.name;
-  if (mode === "on") return CODING_PROFILE.name;
+  // "on" 和 "focus" 都是用户显式 opt-in → 强制 coding profile。
+  // 区别在于 configMode 保留 "focus" 让下游收窄 toolset（见 ContextProfile.toolset）。
+  if (mode === "on" || mode === "focus") return CODING_PROFILE.name;
   if (platform && !INTERACTIVE_CODING_PLATFORMS.has(platform.trim().toLowerCase())) {
     return GENERAL_PROFILE.name;
   }
@@ -448,7 +450,9 @@ export function buildCodingWorkspaceBlock(cwd?: string | null): string {
 
 function git(cwd: string, ...args: string[]): string {
   try {
-    const out = execSync(`git -C "${cwd}" ${args.join(" ")}`, {
+    // 用 execFileSync（不经过 shell）而非 execSync，避免 cwd 含 `"`/`&`
+    // 等 shell 元字符时的命令注入风险。args 作为数组传递，无需转义。
+    const out = execFileSync("git", ["-C", cwd, ...args], {
       encoding: "utf-8",
       timeout: GIT_TIMEOUT_MS,
       stdio: ["pipe", "pipe", "ignore"],

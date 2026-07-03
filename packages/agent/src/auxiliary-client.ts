@@ -11,6 +11,8 @@
  * 配置：`auxiliary.<task>.{provider,model}` 覆盖自动解析。
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 // ── 类型定义 ────────────────────────────────────────────────
 
 export type AuxTask =
@@ -430,7 +432,7 @@ export function collectAllRuntimes(
 // ── 中断保护（atomic side-task） ──────────────────────────
 
 /**
- * 中断保护标志（thread-local 等价）。
+ * 中断保护标志（异步上下文局部，等价 Python threading.local）。
  *
  * 某些 side-task（如 context compression）不能被 gateway interrupt 中途打断：
  * 若 summary LLM 调用被部分中断，压缩会回退到静态 "summary unavailable" 标记，
@@ -438,18 +440,20 @@ export function collectAllRuntimes(
  *
  * TIMEOUT 仍然生效（hung 调用必须死）；其他 side-task（vision / web_extract /
  * title_generation）保持可中断。
+ *
+ * 实现说明：Hermes 原版用 threading.local() 实现线程隔离；TS 移植用模块级
+ * 全局计数器会让所有并发 side-task 共享同一标志，违背"其他 side-task 保持
+ * 可中断"的语义。改用 AsyncLocalStorage 在异步调用链中传播上下文局部状态。
  */
-let interruptProtectionDepth = 0;
+const protectionDepth = new AsyncLocalStorage<number>();
 
 /** 标记当前调用为中断保护（atomic side-task 专用） */
 export function withInterruptProtection<T>(fn: () => Promise<T>): Promise<T> {
-  interruptProtectionDepth++;
-  return fn().finally(() => {
-    interruptProtectionDepth--;
-  });
+  const depth = (protectionDepth.getStore() ?? 0) + 1;
+  return protectionDepth.run(depth, fn);
 }
 
-/** 查询当前是否处于中断保护状态 */
+/** 查询当前异步上下文是否处于中断保护状态 */
 export function isInterruptProtected(): boolean {
-  return interruptProtectionDepth > 0;
+  return (protectionDepth.getStore() ?? 0) > 0;
 }

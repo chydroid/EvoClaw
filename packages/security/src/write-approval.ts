@@ -257,9 +257,7 @@ export class WriteApprovalGate {
 
     // needs_confirm：暂存
     const stageId = `stage-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-    const contentBase64 = Buffer.from(
-      typeof content === "string" ? content : content,
-    ).toString("base64");
+    const contentBase64 = Buffer.from(content).toString("base64");
 
     const staged: StagedWrite = {
       stageId,

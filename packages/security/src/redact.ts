@@ -48,38 +48,42 @@ interface PrefixPattern {
 
 /**
  * 30+ 前缀模式。
- * 参考各家官方文档的 key 格式规范。
+ * 参考各家官方文档的 key 格式规范 + Hermes v0.18.0 redact.py。
+ *
+ * 关键：character class 必须带 `+` 量词（对标 Hermes 的 `{10,}`），
+ * 否则 regex 只匹配 prefix + 1 字符，match.length 永远 < minLength，
+ * 密钥从未被脱敏（预存 bug，本轮修复）。
  */
 const PREFIX_PATTERNS: PrefixPattern[] = [
   // OpenAI
-  { kind: "openai", pattern: /sk-[a-zA-Z0-9]/, minLength: 20 },
-  { kind: "openai", pattern: /sk-proj-[a-zA-Z0-9]/, minLength: 28 },
-  { kind: "openai", pattern: /sk-ant-[a-zA-Z0-9]/, minLength: 28 },
+  { kind: "openai", pattern: /sk-[A-Za-z0-9_-]+/, minLength: 20 },
+  { kind: "openai", pattern: /sk-proj-[A-Za-z0-9_-]+/, minLength: 28 },
+  { kind: "openai", pattern: /sk-ant-[A-Za-z0-9_-]+/, minLength: 28 },
   // Anthropic
-  { kind: "anthropic", pattern: /sk-ant-api[0-9]?-[a-zA-Z0-9]/, minLength: 30 },
+  { kind: "anthropic", pattern: /sk-ant-api[0-9]?-[A-Za-z0-9_-]+/, minLength: 30 },
   // AWS
-  { kind: "aws_access_key", pattern: /AKIA[0-9A-Z]/, minLength: 16 },
-  { kind: "aws_access_key", pattern: /ASIA[0-9A-Z]/, minLength: 16 },
-  { kind: "aws_secret", pattern: /aws_secret_access_key\s*[=:]\s*[A-Za-z0-9/+=]{40}/, minLength: 60 },
+  { kind: "aws_access_key", pattern: /AKIA[0-9A-Z]+/, minLength: 16 },
+  { kind: "aws_access_key", pattern: /ASIA[0-9A-Z]+/, minLength: 16 },
+  { kind: "aws_secret", pattern: /aws_secret_access_key\s*[=:]\s*[A-Za-z0-9/+=]+/, minLength: 60 },
   // GCP
-  { kind: "gcp_api_key", pattern: /AIza[0-9A-Za-z_-]/, minLength: 35 },
+  { kind: "gcp_api_key", pattern: /AIza[0-9A-Za-z_-]+/, minLength: 35 },
   // Azure
   { kind: "azure_key", pattern: /[0-9a-f]{32}-[0-9a-f]{32}/, minLength: 65 },
   // GitHub
-  { kind: "github_token", pattern: /ghp_[A-Za-z0-9]/, minLength: 36 },
-  { kind: "github_token", pattern: /gho_[A-Za-z0-9]/, minLength: 36 },
-  { kind: "github_token", pattern: /ghu_[A-Za-z0-9]/, minLength: 36 },
-  { kind: "github_token", pattern: /ghs_[A-Za-z0-9]/, minLength: 36 },
-  { kind: "github_token", pattern: /ghr_[A-Za-z0-9]/, minLength: 36 },
+  { kind: "github_token", pattern: /ghp_[A-Za-z0-9]+/, minLength: 36 },
+  { kind: "github_token", pattern: /gho_[A-Za-z0-9]+/, minLength: 36 },
+  { kind: "github_token", pattern: /ghu_[A-Za-z0-9]+/, minLength: 36 },
+  { kind: "github_token", pattern: /ghs_[A-Za-z0-9]+/, minLength: 36 },
+  { kind: "github_token", pattern: /ghr_[A-Za-z0-9]+/, minLength: 36 },
   // GitLab
-  { kind: "gitlab_token", pattern: /glpat-[A-Za-z0-9_-]/, minLength: 25 },
+  { kind: "gitlab_token", pattern: /glpat-[A-Za-z0-9_-]+/, minLength: 25 },
   // Slack
-  { kind: "slack_token", pattern: /xox[baprs]-[A-Za-z0-9-]/, minLength: 25 },
+  { kind: "slack_token", pattern: /xox[baprs]-[A-Za-z0-9-]+/, minLength: 25 },
   // Stripe
-  { kind: "stripe_key", pattern: /sk_live_[A-Za-z0-9]/, minLength: 32 },
-  { kind: "stripe_key", pattern: /sk_test_[A-Za-z0-9]/, minLength: 32 },
-  { kind: "stripe_key", pattern: /rk_live_[A-Za-z0-9]/, minLength: 32 },
-  { kind: "stripe_key", pattern: /rk_test_[A-Za-z0-9]/, minLength: 32 },
+  { kind: "stripe_key", pattern: /sk_live_[A-Za-z0-9]+/, minLength: 32 },
+  { kind: "stripe_key", pattern: /sk_test_[A-Za-z0-9]+/, minLength: 32 },
+  { kind: "stripe_key", pattern: /rk_live_[A-Za-z0-9]+/, minLength: 32 },
+  { kind: "stripe_key", pattern: /rk_test_[A-Za-z0-9]+/, minLength: 32 },
   // JWT（三个 base64 段，以 eyJ 开头）
   { kind: "jwt", pattern: /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/, minLength: 30 },
   // Bearer token（Authorization header）
@@ -88,8 +92,8 @@ const PREFIX_PATTERNS: PrefixPattern[] = [
   { kind: "basic_auth", pattern: /[Bb]asic\s+[A-Za-z0-9+/=]+/, minLength: 15 },
   // Private key
   { kind: "private_key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/, minLength: 30 },
-  // Connection string
-  { kind: "connection_string", pattern: /(?:postgres|postgresql|mysql|mongodb|redis|amqp):\/\/[^\s:]+:[^\s@]+@/, minLength: 20 },
+  // Connection string — 允许 mongodb+srv:// / postgres+replica:// 等 RFC 3986 scheme suffix
+  { kind: "connection_string", pattern: /(?:postgres(?:ql)?|mysql|mongodb(?:\+\w+)?|redis|amqp):\/\/[^\s:]+:[^\s@]+@/, minLength: 20 },
   // 通用 API key（key=XXX 或 api_key=XXX）
   { kind: "generic_api_key", pattern: /(?:api[_-]?key|secret|password|passwd|token)\s*[=:]\s*['"]?[A-Za-z0-9_-]{16,}/i, minLength: 25 },
 ];
@@ -134,16 +138,21 @@ export function redactSensitiveText(
   let count = 0;
   const kinds = new Set<SecretKind>();
 
-  // 按模式长度降序处理（避免短前缀覆盖长前缀，如 sk-ant- 应优先于 sk-）
+  // 按模式 source 长度降序处理（避免短前缀覆盖长前缀，如 sk-ant- 应优先于 sk-）
+  // 用 pattern.source 排除定界符噪声，使长度比较反映真实特异性
   const sortedPatterns = [...PREFIX_PATTERNS].sort((a, b) => {
-    const aLen = String(a.pattern).length;
-    const bLen = String(b.pattern).length;
+    const aLen = a.pattern.source.length;
+    const bLen = b.pattern.source.length;
     return bLen - aLen;
   });
 
   for (const { kind, pattern, minLength } of sortedPatterns) {
-    // 使用 replace 的回调形式处理每个匹配
-    result = result.replace(pattern, (match) => {
+    // 强制 global 标志：所有匹配（非仅首个）都需脱敏，否则同一密钥在
+    // 请求体 + 响应体回显时第二次会泄漏。Python re.sub 默认替换全部。
+    const globalPattern = pattern.global
+      ? pattern
+      : new RegExp(pattern.source, pattern.flags + "g");
+    result = result.replace(globalPattern, (match) => {
       if (match.length < minLength) return match;
       count++;
       kinds.add(kind);
@@ -259,8 +268,10 @@ export function redactingFormatter() {
 /** URL 内嵌凭据脱敏：https://user:pass@host → https://[REDACTED:url-cred]@host */
 export function redactUrlCredentials(url: string): string {
   if (!url) return url;
+  // RFC 3986 scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+  // \w 不含 "+"，导致 mongodb+srv://user:pass@... / postgres+replica://... 漏判
   return url.replace(
-    /(\w+):\/\/[^\s:]+:[^\s@]+@/,
+    /([a-zA-Z][a-zA-Z0-9+.-]*):\/\/[^\s:]+:[^\s@]+@/g,
     "$1://[REDACTED:url-cred]@",
   );
 }

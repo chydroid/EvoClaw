@@ -196,19 +196,20 @@ export class ToolSearchEngine {
     if (this.config.mode === "on") return true;
     if (this.config.mode === "off") return false;
 
-    // auto 模式：根据工具数和 schema token 阈值判断
+    // auto 模式：仅根据 deferrable 工具的 schema token 阈值判断。
+    // 与 Python tool_search.py should_activate 一致：always-visible 工具
+    // 不参与计算（它们总会被注入 prompt，搜索它们无收益）。
     const deferrableTools = this.tools.filter((t) => !t.alwaysVisible);
-    if (deferrableTools.length > this.config.toolCountThreshold) return true;
 
-    // 估算 schema token（4 字符 ≈ 1 token）
-    const schemaChars = this.tools.reduce((sum, t) => {
+    // 估算 deferrable schema token（4 字符 ≈ 1 token）
+    const schemaChars = deferrableTools.reduce((sum, t) => {
       const schemaStr = JSON.stringify(t.schema ?? "");
       const descLen = t.description.length + t.name.length;
       return sum + schemaStr.length + descLen;
     }, 0);
     const estimatedTokens = Math.ceil(schemaChars / 4);
 
-    return estimatedTokens > this.config.schemaTokenThreshold;
+    return estimatedTokens >= this.config.schemaTokenThreshold;
   }
 
   /** 是否已激活 */
@@ -238,15 +239,19 @@ export class ToolSearchEngine {
     const limit = maxResults ?? this.config.maxResults;
     const results = this.index.search(query, limit);
 
-    return results.map(({ docId, score }) => {
-      const tool = this.tools[this.docIdToToolIdx[docId]];
-      return {
+    const out: ToolSearchResult[] = [];
+    for (const { docId, score } of results) {
+      const idx = this.docIdToToolIdx[docId];
+      const tool = idx === undefined ? undefined : this.tools[idx];
+      if (!tool) continue; // 索引未重建或 docId 失效，跳过而非抛错
+      out.push({
         name: tool.name,
         score,
         description: tool.description,
         category: tool.category,
-      };
-    });
+      });
+    }
+    return out;
   }
 
   /** 获取工具详情 */

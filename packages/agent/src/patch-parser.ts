@@ -356,6 +356,13 @@ export function applyHunks(content: string, hunks: V4AHunk[]): string {
     const oldStr = oldLines.join("\n");
     const newStr = newLines.join("\n");
 
+    // no-op hunk：oldStr === newStr（纯 context 行，无 add/remove）。
+    // 跳过 fuzzyFindAndReplace（它会因 old===new 报错），让上层
+    // applyV4AOperations 通过 newContent === oldContent 检测"未产生变更"。
+    if (oldStr === newStr) {
+      continue;
+    }
+
     if (!oldStr) {
       // 纯添加：在指定位置插入（无 context 时追加到末尾）
       result = result + (result.endsWith("\n") ? "" : "\n") + newStr;

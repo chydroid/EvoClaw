@@ -113,12 +113,14 @@ function reindent(text: string, targetIndent: string): string {
 /** 1. exact — 直接字符串比较 */
 function strategyExact(content: string, oldStr: string): Match[] {
   const matches: Match[] = [];
+  if (!oldStr) return matches;
   let from = 0;
   while (true) {
     const idx = content.indexOf(oldStr, from);
     if (idx === -1) break;
     matches.push([idx, idx + oldStr.length]);
-    from = idx + 1;
+    // 推进到匹配末尾，避免重叠匹配（与 Python fuzzy_match.py 一致）
+    from = idx + oldStr.length;
   }
   return matches;
 }

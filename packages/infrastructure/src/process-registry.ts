@@ -57,6 +57,9 @@ export interface ProcessSession {
   cwd: string | null;
   /** 启动时间（time.time() 等价） */
   startedAt: number;
+  /** 完成时间戳（markCompleted 时设置；null 表示仍在运行）。
+   *  pruneExpired 用此字段而非 startedAt 算 TTL，避免长任务一完成就被清理。 */
+  finishedAt: number | null;
   /** 内核启动 ticks — PID 复用保护（/proc/<pid>/stat f22） */
   hostStartTime: number | null;
   /** 是否已完成 */
@@ -176,6 +179,7 @@ export class ProcessRegistry {
       process: opts.process ?? null,
       cwd: opts.cwd ?? null,
       startedAt: Date.now(),
+      finishedAt: null,
       hostStartTime: opts.hostStartTime ?? null,
       exited: false,
       exitCode: null,
@@ -265,6 +269,7 @@ export class ProcessRegistry {
     session.exitCode = exitCode;
     session.completionReason = reason;
     session.terminationSource = source;
+    session.finishedAt = Date.now();
 
     // 移到 finished 表
     this.running.delete(sessionId);
@@ -308,17 +313,30 @@ export class ProcessRegistry {
 
   /**
    * 杀死进程。
+   * 对已退出的进程 kill() 会抛 ESRCH；捕获后仍标记完成，避免僵尸会话驻留。
    */
   kill(sessionId: string): boolean {
     const session = this.running.get(sessionId);
     if (!session || !session.process) return false;
+    let alreadyExited = false;
     try {
       session.process.kill("SIGTERM");
-      this.markCompleted(sessionId, null, "killed", "process.kill");
-      return true;
-    } catch {
-      return false;
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | null)?.code;
+      // ESRCH (No such process) / ENOENT (Windows 等价) → 进程已退出
+      if (code === "ESRCH" || code === "ENOENT") {
+        alreadyExited = true;
+      } else {
+        return false;
+      }
     }
+    this.markCompleted(
+      sessionId,
+      null,
+      alreadyExited ? "already_exited" : "killed",
+      "process.kill",
+    );
+    return true;
   }
 
   /**
@@ -387,17 +405,25 @@ export class ProcessRegistry {
       return;
     }
 
-    // 实际匹配检测
+    // cooldown 已过期：重置 strike 状态（与 Hermes _check_watch_patterns 一致，
+    // 健康窗口过后清零 consecutiveStrikes，避免偶发命中累计导致永久降级）
+    // 仅当上一窗口未产生 strike_candidate（即无 match）时重置 consecutiveStrikes，
+    // 保持 strike 序列的连续性语义。
+    if (!state.strikeCandidate) {
+      state.consecutiveStrikes = 0;
+    }
+    state.strikeCandidate = false;
+
+    // 实际匹配检测（逐行 substring，与 Hermes _check_watch_patterns 一致；
+    // 避免 regex 元字符误匹配 + 防 ReDoS）
     let matchedPattern: string | null = null;
-    for (const pattern of session.watchPatterns) {
-      try {
-        const re = new RegExp(pattern, "i");
-        if (re.test(chunk)) {
+    const lines = chunk.split("\n");
+    outer: for (const line of lines) {
+      for (const pattern of session.watchPatterns) {
+        if (line.includes(pattern)) {
           matchedPattern = pattern;
-          break;
+          break outer;
         }
-      } catch {
-        // 忽略无效正则
       }
     }
     if (!matchedPattern) return;
@@ -454,12 +480,15 @@ export class ProcessRegistry {
 
   /**
    * 清理过期的已完成会话（超过 FINISHED_TTL_SECONDS）。
+   * 用 finishedAt 而非 startedAt 算 age：长任务一完成就立即清理会丢失日志读取窗口。
    */
   pruneExpired(): number {
     const now = Date.now();
     let pruned = 0;
     for (const [id, session] of this.finished.entries()) {
-      const ageSeconds = (now - session.startedAt) / 1000;
+      // 用 finishedAt（若存在）作为 TTL 起点；否则回退到 startedAt
+      const baseTime = session.finishedAt ?? session.startedAt;
+      const ageSeconds = (now - baseTime) / 1000;
       if (ageSeconds > FINISHED_TTL_SECONDS) {
         this.finished.delete(id);
         this.watchState.delete(id);
@@ -571,6 +600,7 @@ export class ProcessRegistry {
           process: null,
           cwd: s.cwd ?? null,
           startedAt: s.startedAt ?? Date.now(),
+          finishedAt: s.finishedAt ?? null,
           hostStartTime: s.hostStartTime ?? null,
           exited: s.exited ?? false,
           exitCode: s.exitCode ?? null,
@@ -616,8 +646,12 @@ export function formatUptimeShort(seconds: number): string {
   if (s < 60) return `${s}s`;
   const mins = Math.floor(s / 60);
   const secs = s % 60;
-  if (mins < 60) return `${mins}m ${secs}s`;
+  if (mins < 60) {
+    if (secs === 0) return `${mins}m`;
+    return `${mins}m ${secs}s`;
+  }
   const hours = Math.floor(mins / 60);
   const minsRem = mins % 60;
+  if (minsRem === 0) return `${hours}h`;
   return `${hours}h ${minsRem}m`;
 }

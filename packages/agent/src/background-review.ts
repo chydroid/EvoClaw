@@ -166,12 +166,16 @@ export function digestHistory(
   messagesSnapshot: ReviewMessage[],
   tail = DEFAULT_REVIEW_CONFIG.digestTail,
 ): ReviewMessage[] {
-  const msgs = [...(messagesSnapshot ?? [])];
+  const msgs = messagesSnapshot ?? [];
+  // 长度 <= tail 时无需 digest，直接返回原数组引用（避免无谓拷贝；
+  // 也让调用方能用引用相等判断"是否被压缩过"）
   if (msgs.length <= tail) return msgs;
 
   let effectiveTail = tail;
   // 保留段不能以 tool 消息开头（role 交替规则）
-  while (msgs[effectiveTail * -1]?.role === "tool") {
+  // 注意：JS 的 arr[-N] 返回 undefined（不是倒数第 N 个元素），
+  // 必须用 msgs.length - N 访问尾部元素
+  while (msgs[msgs.length - effectiveTail]?.role === "tool") {
     effectiveTail++;
     if (msgs.length <= effectiveTail) return msgs;
   }

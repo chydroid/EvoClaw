@@ -166,11 +166,12 @@ export class FileStateRegistry {
         lockRelease: null,
       };
       this.states.set(absPath, state);
-    } else {
-      // 更新当前状态（但不递增 version，version 仅在 recordWrite 时递增）
-      state.mtime = mtime;
-      state.hash = actualHash;
     }
+    // 注意：recordRead 不更新 state.mtime / state.hash。
+    // state.mtime / state.hash 只能由 recordWrite 更新，否则会破坏
+    // staleness 检测语义：其他 agent 的 read stamp 会被错误地与最新
+    // 文件状态比对，而非与该 agent 读取时的快照比对（对标 Python
+    // file_state.py 的 record_read 仅写 _read_stamps，不动 _state）。
 
     state.readStamps.set(agentId, {
       mtime,
