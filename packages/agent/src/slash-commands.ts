@@ -56,6 +56,14 @@ export interface SlashCommandDeps {
   executionCheckpointStore?: ExecutionCheckpointStore;
   humanApprovalManager?: HumanApprovalManager;
   evalRunner?: EvalRunner;
+  goalRegistry?: import("./goal-contract").GoalRegistry;
+  skillLearner?: {
+    learnFromDirectory(dirPath: string, skillName?: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
+    learnFromUrl(url: string, skillName?: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
+    learnFromConversation(history: Array<{ role: "user" | "assistant" | "tool"; content: string; toolName?: string }>, skillName: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
+  };
+  backgroundDelegator?: import("./background-delegator").BackgroundDelegator;
+  learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
 }
 
 /** Result type for slash command handling */
@@ -131,6 +139,12 @@ export async function handleSlashCommand(
         "`/eval list` — 列出可用评估用例",
         "`/eval run [category]` — 运行评估（可按类别筛选）",
         "`/eval results [runId]` — 查看评估结果",
+        "",
+        "**🎯 Goal Contract 验证**",
+        "`/goal set <描述>` — 设置目标",
+        "`/goal contract <cmd1> | <cmd2>` — 设置验证合约",
+        "`/goal run` — 运行验证（直到合约满足）",
+        "`/goal status` — 查看目标状态",
         "",
         "**📡 A2A 协议命令**",
         "`/a2a discover <url>` — 发现远程代理",
@@ -910,6 +924,296 @@ export async function handleSlashCommand(
         ].join("\n");
       } else {
         reply = `⚠ 未知的 /a2a 子命令: "${subCmd}"\n可用: discover, agents, send, card`;
+      }
+      break;
+    }
+
+    case "journey": {
+      if (!deps.learningJournal) {
+        reply = "⚠ LearningJournal 未注册。无法查看学习时间线。";
+        break;
+      }
+      const subCmd = args[0]?.toLowerCase();
+      if (!subCmd || subCmd === "help") {
+        reply = [
+          "**🧭 /journey — 学习时间线**",
+          "",
+          "`/journey` — 查看最近学习记录",
+          "`/journey all` — 查看全部学习记录",
+          "`/journey stats` — 查看学习统计",
+        ].join("\n");
+        break;
+      }
+      const limit = subCmd === "all" ? 100 : 20;
+      if (subCmd === "stats") {
+        reply = "📊 学习统计功能请通过 WebUI Evolution Dashboard 查看。";
+        break;
+      }
+      const entries = deps.learningJournal.getEntries({ limit });
+      if (entries.length === 0) {
+        reply = "📦 暂无学习记录";
+        break;
+      }
+      const lines = [`**🧭 学习时间线** (${entries.length} 条记录)\n`];
+      for (const e of entries) {
+        const icon = e.resolved ? "✅" : "⏳";
+        const sevIcon = e.severity === "critical" ? "🔴" : e.severity === "high" ? "🟠" : "🟡";
+        const date = e.timestamp instanceof Date ? e.timestamp.toLocaleDateString("zh-CN") : "?";
+        lines.push(`${icon} ${sevIcon} [${date}] **${e.title}** (${e.category})`);
+      }
+      reply = lines.join("\n");
+      break;
+    }
+
+    case "prompt": {
+      // /prompt — 在 $EDITOR 中编辑长消息，存盘即发送
+      const editor = process.env.EDITOR || process.env.VISUAL;
+      if (!editor) {
+        reply = "⚠ 未设置 $EDITOR 或 $VISUAL 环境变量。请设置后重试，例如 `export EDITOR=vim`。";
+        break;
+      }
+      const { execFileSync } = await import("child_process");
+      const os = await import("os");
+      const pathMod = await import("path");
+      const tmpFile = pathMod.join(os.tmpdir(), `evoclaw-prompt-${Date.now()}.md`);
+      // 写入初始内容（如果有参数作为模板）
+      const initialContent = args.length > 0 ? args.join(" ") + "\n" : "";
+      const fsMod = await import("fs");
+      fsMod.writeFileSync(tmpFile, initialContent, "utf-8");
+      try {
+        // 同步调用编辑器
+        execFileSync(editor, [tmpFile], { stdio: "inherit" });
+        const content = fsMod.readFileSync(tmpFile, "utf-8").trim();
+        if (!content) {
+          reply = "⚠ 编辑器内容为空，未发送消息。";
+        } else {
+          // 返回编辑后的内容作为 reply，调用方应将其作为消息发送
+          reply = `📝 已从编辑器读取消息（${content.length} 字符）:\n\n${content}`;
+        }
+      } catch (err) {
+        reply = `❌ 编辑器调用失败: ${err instanceof Error ? err.message : String(err)}`;
+      } finally {
+        try { fsMod.unlinkSync(tmpFile); } catch { /* ignore */ }
+      }
+      break;
+    }
+
+    case "bg": {
+      // /bg — 后台任务管理
+      if (!deps.backgroundDelegator) {
+        reply = "⚠ BackgroundDelegator 未注册。";
+        break;
+      }
+      const subCmd = args[0]?.toLowerCase();
+      if (!subCmd || subCmd === "help") {
+        reply = [
+          "**🔄 /bg — 后台任务管理**",
+          "",
+          "`/bg list` — 列出所有后台任务",
+          "`/bg active` — 列出活动任务",
+          "`/bg pending` — 查看待合并的结果",
+          "`/bg merge` — 合并待处理结果到对话",
+          "`/bg cancel <id>` — 取消任务",
+          "`/bg cancelall` — 取消所有活动任务",
+          "`/bg await` — 等待所有活动任务完成",
+          "`/bg cleanup` — 清理已完成任务",
+        ].join("\n");
+        break;
+      }
+      if (subCmd === "list") {
+        const tasks = deps.backgroundDelegator.listTasks();
+        reply = tasks.length > 0
+          ? `**🔄 后台任务** (${tasks.length})\n` + tasks.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
+          : "📦 没有后台任务";
+      } else if (subCmd === "active") {
+        const tasks = deps.backgroundDelegator.listActiveTasks();
+        reply = tasks.length > 0
+          ? `**🔄 活动后台任务** (${tasks.length})\n` + tasks.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
+          : "📦 没有活动后台任务";
+      } else if (subCmd === "pending") {
+        const results = deps.backgroundDelegator.listPendingResults();
+        reply = results.length > 0
+          ? `**📦 待合并结果** (${results.length})\n` + results.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
+          : "📦 没有待合并结果";
+      } else if (subCmd === "merge") {
+        const results = deps.backgroundDelegator.consumePendingResults();
+        reply = results.length > 0 ? deps.backgroundDelegator.mergeResults(results) : "📦 没有待合并结果";
+      } else if (subCmd === "cancel") {
+        const taskId = args[1];
+        if (!taskId) { reply = "⚠ 请提供任务 ID"; break; }
+        const cancelled = deps.backgroundDelegator.cancel(taskId);
+        reply = cancelled ? `✅ 任务 \`${taskId}\` 已取消` : `⚠ 任务 \`${taskId}\` 不存在或已完成`;
+      } else if (subCmd === "cancelall") {
+        const count = deps.backgroundDelegator.cancelAll();
+        reply = `✅ 已取消 ${count} 个活动任务`;
+      } else if (subCmd === "cleanup") {
+        const count = deps.backgroundDelegator.cleanup();
+        reply = `✅ 已清理 ${count} 个已完成任务`;
+      } else {
+        reply = `⚠ 未知的 /bg 子命令: "${subCmd}"\n可用: list, active, pending, merge, cancel, cancelall, cleanup`;
+      }
+      break;
+    }
+
+    case "learn": {
+      if (!deps.skillLearner) {
+        reply = "⚠ SkillLearner 未注册。无法使用 /learn。";
+        break;
+      }
+      const arg = args.join(" ").trim();
+      if (!arg || arg === "help") {
+        reply = [
+          "**📚 /learn 命令 — 自动技能生成**",
+          "",
+          "`/learn <目录路径>` — 从本地目录学习技能",
+          "`/learn <URL>` — 从 URL（如 GitHub README）学习技能",
+          "`/learn 最近 <技能名>` — 从最近对话历史学习技能",
+          "",
+          "示例：",
+          "```\n/learn ~/projects/deploy-scripts\n/learn https://github.com/example/workflow\n/learn 最近 ci-config\n```",
+          "",
+          "执行后自动提炼成 SKILL.md，放到 skills 目录。下次直接加载即可。",
+        ].join("\n");
+        break;
+      }
+
+      // 判断来源类型
+      const isUrl = /^https?:\/\//i.test(arg);
+      const isRecent = arg.toLowerCase().startsWith("最近 ") || arg.toLowerCase().startsWith("recent ");
+      const isDirectory = !isUrl && !isRecent;
+
+      try {
+        let result;
+        if (isUrl) {
+          result = await deps.skillLearner.learnFromUrl(arg);
+        } else if (isRecent) {
+          const skillName = arg.split(/\s+/).slice(1).join(" ").trim() || "recent-workflow";
+          // 从对话历史提取
+          const history = deps.conversationHistory.get("default") ?? [];
+          const convEntries = history.map((h: ConversationHistoryEntry) => ({
+            role: (h.role === "assistant" ? "assistant" : h.role === "tool" ? "tool" : "user") as "user" | "assistant" | "tool",
+            content: typeof h.content === "string" ? h.content : JSON.stringify(h.content ?? ""),
+            toolName: h.name,
+          }));
+          result = await deps.skillLearner.learnFromConversation(convEntries, skillName);
+        } else {
+          result = await deps.skillLearner.learnFromDirectory(arg);
+        }
+
+        if (result.success) {
+          reply = `✅ 技能已生成: **${result.skillName}**\n📁 路径: \`${result.skillPath}\`\n📝 来源: ${result.source} (${result.sourceDescription})\n\n下次使用 \`/skill ${result.skillName}\` 加载。`;
+        } else {
+          reply = `❌ 技能生成失败: ${result.error}`;
+        }
+      } catch (err) {
+        reply = `❌ /learn 出错: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      break;
+    }
+
+    case "goal": {
+      if (!deps.goalRegistry) {
+        reply = "⚠ Goal Contract 系统未启用。GoalRegistry 未注册。";
+        break;
+      }
+      const subCmd = args[0]?.toLowerCase();
+      if (!subCmd || subCmd === "help") {
+        reply = [
+          "**🎯 Goal Contract 验证系统**",
+          "",
+          "`/goal set <描述>` — 设置目标（不含验证合约）",
+          "`/goal contract <命令1> | <命令2> | ...` — 为当前目标设置完成合约",
+          "`/goal run` — 运行验证（Agent 持续运行直到合约满足）",
+          "`/goal status` — 查看当前目标状态",
+          "`/goal list` — 列出所有目标",
+          "`/goal cancel <id>` — 取消目标",
+          "`/goal history` — 查看历史目标",
+          "",
+          "示例：",
+          "```\n/goal set 把登录页面改成响应式布局\n/goal contract npm test | npx lighthouse --threshold 85\n/goal run\n```",
+          "",
+          "区别：不是\"模型说修好了\"，而是\"测试通过了，这是证据\"。",
+        ].join("\n");
+      } else if (subCmd === "set") {
+        const description = args.slice(1).join(" ").trim();
+        if (!description) {
+          reply = "⚠ 请提供目标描述。用法: `/goal set <描述>`";
+          break;
+        }
+        const goalId = `goal-${Date.now()}`;
+        deps.goalRegistry.create(goalId, { description, contract: [] });
+        reply = `🎯 目标已创建: **${description}**\nID: \`${goalId}\`\n\n使用 \`/goal contract <命令>\` 设置验证合约，然后 \`/goal run\` 运行。`;
+      } else if (subCmd === "contract") {
+        const contractStr = args.slice(1).join(" ").trim();
+        if (!contractStr) {
+          reply = "⚠ 请提供验证合约。用法: `/goal contract <命令1> | <命令2> | ...`";
+          break;
+        }
+        const goalIds = deps.goalRegistry.list();
+        if (goalIds.length === 0) {
+          reply = "⚠ 没有活动目标。请先用 `/goal set <描述>` 创建目标。";
+          break;
+        }
+        const goalId = goalIds[goalIds.length - 1];
+        const goal = deps.goalRegistry.get(goalId);
+        if (!goal) { reply = "⚠ 目标不存在"; break; }
+        const commands = contractStr.split("|").map((s: string) => s.trim()).filter(Boolean);
+        const clauses = commands.map((cmd: string, idx: number) => ({
+          id: `clause-${idx + 1}`,
+          command: cmd,
+          description: `验证命令 ${idx + 1}`,
+          timeoutMs: 120000,
+        }));
+        reply = `📋 合约已设置 (${clauses.length} 条验证):\n` + clauses.map((c: { id: string; command: string }) => `  • \`${c.id}\`: \`${c.command}\``).join("\n") + `\n\n目标: **${goal.description}**\n使用 \`/goal run\` 运行验证。`;
+      } else if (subCmd === "run") {
+        const goalIds = deps.goalRegistry.list();
+        if (goalIds.length === 0) {
+          reply = "⚠ 没有活动目标。请先用 \`/goal set\` 和 \`/goal contract\` 创建。";
+          break;
+        }
+        const goalId = goalIds[goalIds.length - 1];
+        const goal = deps.goalRegistry.get(goalId);
+        if (!goal) { reply = "⚠ 目标不存在"; break; }
+        if (goal.contract.length === 0) {
+          reply = "⚠ 目标没有验证合约。请先用 \`/goal contract <命令>\` 设置。";
+          break;
+        }
+        reply = `⏳ 正在运行验证合约... (${goal.contract.length} 条验证，最多 ${5} 次尝试)`;
+      } else if (subCmd === "status") {
+        const goalIds = deps.goalRegistry.list();
+        if (goalIds.length === 0) { reply = "📦 没有活动目标"; break; }
+        const lines = ["**🎯 活动目标**", ""];
+        for (const id of goalIds) {
+          const goal = deps.goalRegistry.get(id);
+          if (goal) {
+            lines.push(`• \`${id}\` — ${goal.description} [${goal.getStatus()}]`);
+            if (goal.contract.length > 0) {
+              lines.push(`  合约: ${goal.contract.length} 条`);
+            }
+          }
+        }
+        reply = lines.join("\n");
+      } else if (subCmd === "list") {
+        const goalIds = deps.goalRegistry.list();
+        reply = goalIds.length > 0
+          ? `**🎯 活动目标** (${goalIds.length})\n${goalIds.map((id: string) => `  • \`${id}\``).join("\n")}`
+          : "📦 没有活动目标";
+      } else if (subCmd === "cancel") {
+        const goalId = args[1];
+        if (!goalId) { reply = "⚠ 请提供目标 ID"; break; }
+        const cancelled = deps.goalRegistry.cancel(goalId);
+        reply = cancelled ? `✅ 目标 \`${goalId}\` 已取消` : `⚠ 目标 \`${goalId}\` 不存在`;
+      } else if (subCmd === "history") {
+        const history = deps.goalRegistry.getHistory();
+        if (history.length === 0) { reply = "📦 没有历史记录"; break; }
+        const lines = ["**📜 目标历史**", ""];
+        for (const h of history.slice(-10)) {
+          const icon = h.status === "verified" ? "✅" : h.status === "failed" ? "❌" : "⚠";
+          lines.push(`• ${icon} ${h.description} [${h.status}] (${h.totalAttempts} 次尝试)`);
+        }
+        reply = lines.join("\n");
+      } else {
+        reply = `⚠ 未知的 /goal 子命令: "${subCmd}"\n可用: set, contract, run, status, list, cancel, history`;
       }
       break;
     }

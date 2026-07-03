@@ -5,6 +5,110 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.63.0 (2026-07-03)
+
+### 对标 Hermes v0.18.0 的 8 项能力提升（多 Agent 协作 + 工程化增强）
+
+参考 Hermes v0.18.0 文章，对比本项目差距后形成提升方案并实施。本轮共 8 项改进，涉及 MoA 委员会、Goal Contract、技能自学习、后台子 Agent、Slash 命令扩展、FTS5 索引合并、cron 凭据泄露检测七个方向。由于新增了 MoA / Goal Contract / BackgroundDelegator 等 Agent 协作核心能力，按版本号规则递增 minor 位。
+
+#### H1. MoA 委员会（`packages/agent/src/moa-committee.ts` 新增）
+
+**差距**：Hermes v0.18.0 支持 Mixture-of-Agents 多模型并行推理 + 聚合，本项目此前缺失。
+
+**改进**：
+- 新增 `MoaCommittee` 类：`invoke()` / `invokeReferences()` / `invokeOneReference()` / `buildAggregationPrompt()`
+- Phase 1：`Promise.allSettled` 并行调用所有参考模型（容错，单个失败不影响整体）
+- Phase 2：聚合模型合成最终答案，失败时降级为最长参考答案
+- `maxConcurrency` 限流：分批并行，避免瞬时并发过高
+- 新增 `MoaPresetRegistry`：`register()` / `get()` / `getCommittee()` / `list()` / `clear()`
+- 辅助函数：`parseMoaMember()`（解析 `provider/model` 字符串）、`formatMoaResult()`（格式化输出）
+
+#### H2. Goal Contract 验证系统（`packages/agent/src/goal-contract.ts` 新增）
+
+**差距**：Hermes v0.18.0 的 `/goal` 命令支持完成合约（"测试通过了，这是证据"），本项目此前只有 LLM 自评。
+
+**改进**：
+- 新增 `GoalContract` 类：`verifyOnce()` / `run()` / `cancel()`
+- 合约条款 `ContractClause`：执行真实 shell 命令，检查 `exitCode` / `stdout` / `stderr`
+- 重试循环：`maxAttempts` + `retryDelayMs`，每次重试前可调用 `preVerify` 钩子
+- `preVerify` 钩子可修改合约或阻止验证
+- 默认执行器使用 `child_process.exec`，支持注入 mock 用于测试
+- 新增 `GoalRegistry`：`create()` / `get()` / `list()` / `run()` / `cancel()` / `getHistory()`
+- 状态机：`pending` → `running` → `verified` / `failed` / `cancelled`
+
+#### H3. /learn 命令 — 技能自学习（`packages/skills/src/skill-learner.ts` 新增）
+
+**差距**：Hermes v0.18.0 的 `/learn` 命令可从目录/URL/工作流自动生成 SKILL.md，本项目此前缺失。
+
+**改进**：
+- 新增 `SkillLearner` 类：`learnFromDirectory()` / `learnFromUrl()` / `learnFromConversation()`
+- 目录扫描：README.md / *.sh / *.py / *.js / *.ts / Makefile / package.json
+- URL 抓取：GitHub URL 自动转换为 raw URL
+- 对话历史提取：user messages + tool calls
+- TF 关键词提取，过滤 stop words
+- 幂等保存：同名技能自动追加 -v2 / -v3 版本号
+
+#### H4. 后台子 Agent 并行派发（`packages/agent/src/background-delegator.ts` 新增）
+
+**差距**：Hermes v0.18.0 的 `delegate_task` 支持后台并行执行子任务，本项目此前所有子任务都是同步阻塞。
+
+**改进**：
+- 新增 `BackgroundDelegator` 类：`delegate()` / `delegateBatch()` / `awaitTask()` / `awaitAll()` / `consumePendingResults()` / `mergeResults()` / `cancel()` / `cancelAll()` / `cleanup()`
+- Fire-and-forget：`delegate()` 立即返回 task 对象，不阻塞主对话
+- Timeout 保护：`setTimeout` + `AbortController.abort()`
+- 结果合并：`pendingResults` 队列 + `consumePendingResults()` + `mergeResults()`
+- 任务状态机：`pending` → `running` → `completed` / `failed` / `cancelled` / `timeout`
+- TypeScript 类型收窄问题修复：`task.status as BackgroundTaskStatus` 绕过赋值后的类型收窄
+
+#### H5. /journey 命令 — 学习时间线（`packages/agent/src/slash-commands.ts` 修改）
+
+**差距**：Hermes v0.18.0 的 `/journey` 命令展示学习进度时间线，本项目此前缺失。
+
+**改进**：
+- `SlashCommandDeps` 新增 `learningJournal?: { getEntries(filter?: { limit?: number }): Array<...> }`
+- 新增 `case "journey"` 处理块：展示学习日志条目（id / title / category / severity / resolved 状态）
+- `/help` 输出新增 Goal Contract 验证命令分组
+
+#### H6. /prompt 命令 — $EDITOR 编辑长消息（`packages/agent/src/slash-commands.ts` 修改）
+
+**差距**：Hermes v0.18.0 的 `/prompt` 命令调用 `$EDITOR` 编辑长消息，本项目此前缺失。
+
+**改进**：
+- 新增 `case "prompt"` 处理块
+- 自动选择编辑器：`$EDITOR` → `$VISUAL` → `notepad`（Windows）/ `vim`（Unix）
+- 临时文件 `.evoclaw-prompt-<timestamp>.md`，编辑完成后读取内容
+- 跨平台支持：Windows 使用 `start /wait`，Unix 使用 `spawn` 同步等待
+
+#### H7. FTS5 索引批量合并（`packages/memory/src/fts5-search.ts` 修改）
+
+**差距**：Hermes v0.18.0 在批量索引时使用事务合并降低写锁竞争，本项目此前每条记录独立 INSERT。
+
+**改进**：
+- 新增 `indexBatch(entries)` 方法
+- 在单个 `BEGIN` / `COMMIT` 事务中批量 INSERT，FTS5 写锁只在 BEGIN 时获取一次
+- 失败时 `ROLLBACK` 回滚，保证原子性
+- `INSERT OR REPLACE` 语义，支持幂等重索引
+
+#### H8. cron 凭据泄露检测（`packages/scheduler/src/credential-guard.ts` 新增）
+
+**差距**：Hermes v0.18.0 检测 cron 配置中的 `base_url` 凭据泄露，本项目此前无任何凭据扫描。
+
+**改进**：
+- 新增 `CredentialGuard` 类：`scan(config)` / `scanString(str)` / `redactString(str)`
+- 检测项：
+  - **critical** — URL 内嵌凭据 `https://user:pass@host`
+  - **high** — Bearer token 明文 / Authorization header 明文 / 已知 API key 前缀（`sk-` / `ghp_` / `xox-` / `AIza` 等）
+  - **medium** — URL query 参数中的 secret / 敏感字段名 + 硬编码值
+- `redactString()` 脱敏函数：保留前 4 字符 + `***`
+- `packages/scheduler/src/index.ts` 导出 `CredentialGuard` 及相关类型
+
+#### 其他变更
+
+- `packages/agent/src/index.ts`：导出 `MoaCommittee` / `MoaPresetRegistry` / `GoalContract` / `GoalRegistry` / `BackgroundDelegator` 及相关类型
+- `packages/agent/src/slash-commands.ts`：`SlashCommandDeps` 新增 `goalRegistry` / `skillLearner` / `backgroundDelegator` / `learningJournal` 字段（使用内联结构化类型避免 agent 包静态依赖 skills 包）
+- `packages/skills/src/index.ts`：导出 `SkillLearner` 及相关类型
+- 验证：`pnpm build` ✅ / `pnpm typecheck` ✅ / `pnpm test` ✅ 全部通过
+
 ## v0.62.9 (2026-07-03)
 
 ### 对标主流 AI Agent 项目的第四轮 10 项能力提升（剩余差距全部弥合）

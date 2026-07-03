@@ -16,6 +16,11 @@ export type {
 export { CronRunLogger } from "./run-log";
 export type { RunLogEntry, RunLogQuery, RunLogConfig, RunLogStats } from "./run-log";
 
+// CredentialGuard — cron 任务配置凭据泄露检测
+// 对标 Hermes v0.18.0 "cron base_url 凭据泄露阻断"
+export { CredentialGuard } from "./credential-guard";
+export type { CredentialRisk, CredentialRiskLevel, CredentialScanResult } from "./credential-guard";
+
 // 第 5 轮提升：cron 子系统能力扩展
 export {
   StaggerCoordinator,

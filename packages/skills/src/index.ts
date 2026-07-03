@@ -7,6 +7,8 @@ export { SkillLifecycleManager } from "./skill-lifecycle";
 export { SkillRegistry } from "./skill-registry";
 export { SkillResolver } from "./skill-resolver";
 export { AutoSkillManager } from "./auto-skill-manager";
+export { SkillLearner } from "./skill-learner";
+export type { LearnResult, LearnSource, ConversationEntry, SkillMetadata } from "./skill-learner";
 export { SkillDispatcher } from "./skill-dispatcher";
 export { TfidfMatcher } from "./tfidf-matcher";
 export { SkillCircuitBreaker } from "./skill-circuit-breaker";

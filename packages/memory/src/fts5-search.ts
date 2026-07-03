@@ -111,6 +111,59 @@ export class FTS5SearchEngine {
     stmt.run(id, content, metadata.sessionId ?? "", metadata.type ?? "", metadata.createdAt.toISOString());
   }
 
+  /**
+   * 批量索引 —— 在单个事务中写入多条记录，降低 FTS5 写锁竞争。
+   *
+   * 对标 Hermes v0.18.0 的 "FTS5 索引合并降低写入锁竞争"：
+   * - 旧方式：每条 indexEntry 一次 INSERT，每触发一次 FTS5 写锁
+   * - 新方式：所有条目在 BEGIN/COMMIT 事务内批量写入，只触发一次写锁
+   *
+   * 对于批量导入（如会话历史索引、RAG 文档分块索引），
+   * 批量事务可以将写入性能提升 5-10 倍。
+   */
+  indexBatch(
+    entries: Array<{
+      id: string;
+      content: string;
+      metadata: { sessionId?: string; type?: string; createdAt: Date };
+    }>,
+  ): void {
+    if (entries.length === 0) return;
+    if (this.useFallback || !this.db) {
+      for (const entry of entries) {
+        this.fallback.set(entry.id, {
+          id: entry.id,
+          content: entry.content,
+          sessionId: entry.metadata.sessionId ?? "",
+          type: entry.metadata.type ?? "",
+          createdAt: entry.metadata.createdAt.toISOString(),
+        });
+      }
+      return;
+    }
+    // 在单个事务中批量写入 —— FTS5 写锁只在 BEGIN 时获取一次
+    this.db.exec("BEGIN");
+    try {
+      const stmt = this.db.prepare(
+        "INSERT OR REPLACE INTO memory_fts (id, content, session_id, type, created_at) VALUES (?, ?, ?, ?, ?)"
+      );
+      for (const entry of entries) {
+        stmt.run(
+          entry.id,
+          entry.content,
+          entry.metadata.sessionId ?? "",
+          entry.metadata.type ?? "",
+          entry.metadata.createdAt.toISOString(),
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      // 事务失败时回滚，避免部分写入
+      try { this.db.exec("ROLLBACK"); } catch { /* ignore rollback errors */ }
+      throw err;
+    }
+  }
+
   search(options: FTS5SearchOptions): FTS5SearchResult[] {
     if (this.useFallback || !this.db) {
       return this.fallbackSearch(options);

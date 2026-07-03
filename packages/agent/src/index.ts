@@ -82,6 +82,21 @@ export type { SwarmAgent, SwarmConfig, AgentRole, DelegationRequest, DelegationR
 // 借鉴 AutoGen GroupChat / CrewAI Crew / ChatDev debate / OpenAI Agents SDK orchestration
 export { RoundRobinChat, GroupChat, DebatePattern, createSpeaker, formatChatResult } from "./multi-agent-patterns";
 export type { AgentSpeaker, ChatTurn, ChatResult, ChatFn, SelectorFn, StopConditionFn } from "./multi-agent-patterns";
+
+// MoA (Mixture-of-Agents) Committee — 多模型并行推理 + 聚合模型合成
+// 对标 Hermes v0.18.0 "MoA 委员会"：多模型 fan-out → 聚合模型合成
+export { MoaCommittee, MoaPresetRegistry, parseMoaMember, formatMoaResult } from "./moa-committee";
+export type { MoaMember, MoaPreset, MoaReferenceResult, MoaResult, MoaChatFn, MoaAggregatorChunkCallback } from "./moa-committee";
+
+// Goal Contract — 目标合约验证系统
+// 对标 Hermes v0.18.0 "Goal Contract"：从"我觉得修好了"到"测试通过了，这是证据"
+export { GoalContract, GoalRegistry } from "./goal-contract";
+export type { ContractClause, ClauseResult, ContractVerificationResult, GoalContractConfig, GoalStatus, GoalRunRecord } from "./goal-contract";
+
+// BackgroundDelegator — 后台子 Agent 并行派发 + 结果合并
+// 对标 Hermes v0.18.0 "子 Agent 后台并行"：delegate_task fire-and-forget + 继续聊天
+export { BackgroundDelegator } from "./background-delegator";
+export type { BackgroundTask, BackgroundTaskStatus, DelegateOptions, DelegateFn, TaskCompleteCallback } from "./background-delegator";
 export { ReplyDeduplicator, areMessagesDuplicate } from "./reply-dedup";
 export type { DedupConfig, DedupEntry, DedupCheckResult } from "./reply-dedup";
 
