@@ -5,6 +5,133 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.64.0 (2026-07-03)
+
+### 对标 Hermes 源码的 8 项深度能力补齐（F9-F16）
+
+参照 `D:\abc\hermes\hermes-agent` 源码，逐文件对比后发现本项目在推理超时、编码姿态、后台 review、辅助 LLM 路由、技能安全扫描、进程注册表、积分追踪、成本定价、用户提问原语 9 个方向存在实现缺口。本轮共补齐 8 项（F9-F16），新增 9 个源文件 + 1 个安全模块 + 1 个基础设施模块，全部通过 build / typecheck / test。由于新增多个核心子系统（ClarifyGateway / CreditsTracker / SkillScanner / ProcessRegistry 等），按版本号规则递增 minor 位。
+
+#### F9. 推理模型 stale-timeout floor（`packages/agent/src/reasoning-timeouts.ts` 新增）
+
+**差距**：Hermes `agent/reasoning_timeouts.py` 为 21 个推理模型 slug 设定 stale-timeout 下限，避免 `<think/>` 块被错误判定为超时；本项目此前对所有模型用同一 timeout。
+
+**改进**：
+- 21 个推理模型 slug：nemotron / deepseek-r1 / qwq / qwen3 / o1 / o3 / claude-opus-4 / grok-reasoning 等
+- 起锚定 regex `^<slug>(?:$|[\-._])`，剥掉聚合器前缀（openrouter/nousresearch 等不影响匹配）
+- 长 slug 优先匹配（避免 `o1` 误命中 `o1-mini` 等）
+- `applyReasoningFloor()`：当 configured timeout < floor 时自动抬升
+- `isKnownReasoningModel()`：模型名规范化 + 锚定匹配
+
+#### F10. 编码姿态检测（`packages/agent/src/coding-context.ts` 新增）
+
+**差距**：Hermes `agent/coding_context.py` 根据运行环境切换 coding/general 两种姿态（system prompt / 工具集 / skill 分类），本项目此前一刀切。
+
+**改进**：
+- `RuntimeMode` 不可变对象：`mode` / `runtimeName` / `editFormat` / `workspaceSnapshot`
+- project markers：pyproject.toml / package.json / Cargo.toml / go.mod 等
+- code extension 扫描（避免 notes repo 误判为 coding）
+- `CODE_SCAN_SKIP_DIRS`：node_modules / .git / dist / build 等
+- git workspace snapshot：`git rev-parse --show-toplevel` + `git status --porcelain`
+- verify command 探测：Makefile / package.json scripts
+- per-model edit-format steering：`patch` vs `replace`
+- focus 模式 compact skill categories
+
+#### F11. Background review fork（`packages/agent/src/background-review.ts` 新增）
+
+**差距**：Hermes `agent/background_review.py` 在主对话结束时 fire-and-forget 派发 review fork（记忆/技能/combined），本项目此前无此机制。
+
+**改进**：
+- 3 个 review prompt：`MEMORY_REVIEW_PROMPT` / `SKILL_REVIEW_PROMPT` / `COMBINED_REVIEW_PROMPT`
+- `routed` 标志：同模型走 warm cache / 不同模型走 digest 重放
+- `digestHistory` 紧凑重放：避免重复传输完整对话
+- `summarizeBackgroundReviewActions()`：从 LLM 输出提取 ReviewAction 列表
+- fire-and-forget 模式：不阻塞主对话返回
+- `shouldRunBackgroundReview()` 节流：避免每轮都触发
+
+#### F12. Auxiliary LLM client router（`packages/agent/src/auxiliary-client.ts` 新增）
+
+**差距**：Hermes `agent/auxiliary_client.py` 为 side-task（review / summarize / classify）提供统一回退链，本项目此前每个 side-task 自己实现回退逻辑。
+
+**改进**：
+- 回退链：main → OpenRouter → custom → Anthropic → direct
+- 402 / 积分耗尽自动回退到下一供应商
+- `isCreditExhaustedError()` / `isRateLimitError()` 检测（402 / 429 / 关键词）
+- `withInterruptProtection()`：atomic side-task，主对话中断时不留半成品
+- `classifyProvider()`：从 base_url host 推断 provider kind
+- `collectAllRuntimes()`：聚合 main + auxiliary 配置
+
+#### F13. Skill security scanner（`packages/security/src/skill-scanner.ts` 新增）
+
+**差距**：Hermes `tools/threat_patterns.py` + `skills_guard.py` + `skills_ast_audit.py` 三层防御技能投毒，本项目此前只有简单的关键词过滤。
+
+**改进**：
+- 80+ 威胁正则 7 大类：prompt_injection / role_hijack / c2_promptware / exfiltration / persistence / hardcoded_secret / destructive / supply_chain / obfuscation / known_c2_framework
+- 3 scopes：all / context / strict
+- 16 个不可见 Unicode 字符检测（零宽空格 / 同形符 / RLO 等）
+- 15 个 AST 危险模式（eval / exec / __import__ / child_process 等）
+- 结构检查：文件数 ≤50 / 总大小 ≤1MB / symlink 逃逸检测
+- 4 级信任策略：trust / caution / sandbox / block
+
+#### F14. Process registry（`packages/infrastructure/src/process-registry.ts` 新增）
+
+**差距**：Hermes `tools/process_registry.py` 提供后台进程注册表 + watch pattern 限速 + 断路器，本项目此前无统一进程管理。
+
+**改进**：
+- 200KB 滚动输出缓冲
+- per-session watch 限速：15s 间隔 + 3 strike 降级
+- 全局断路器：15 hits / 10s + 30s cooldown
+- PID 复用保护（`hostStartTime`）
+- JSON checkpoint 崩溃恢复
+- LRU 剪枝（64 max）
+- `formatUptimeShort()` 紧凑运行时长格式化
+
+#### F15a. Credits tracker（`packages/agent/src/credits-tracker.ts` 新增）
+
+**差距**：Hermes `agent/credits_tracker.py` 解析 x-nous-credits-* 响应头追踪积分消耗，本项目此前无积分感知。
+
+**改进**：
+- `parseCreditsHeaders()`：完整头解析（version / micros / usd / limit pair / denominator / paid_access / tool_pool），fail-open 语义
+- `CreditsState`：双轨余额（micros 整数 + USD 字符串）
+- `evaluateCreditsNotices()` 纯函数 notice 调解：usage band 升级（50/75/90%）+ grant_spent + depleted + restored TTL
+- `isFreeTierModel()`：`:free` 后缀检测
+- `creditsStateFromAccount()`：账户信息→CreditsState 映射
+- `versionWarningEmitted` 模块级 warn-once latch
+
+#### F15b. Usage pricing（`packages/agent/src/usage-pricing.ts` 新增）
+
+**差距**：Hermes `agent/usage_pricing.py` 内置 30+ 模型定价表 + BillingRoute 解析 + CanonicalUsage 归一化，本项目此前无成本估算能力。
+
+**改进**：
+- 30+ 模型定价表 `OFFICIAL_DOCS_PRICING`：Anthropic Claude 4.5/4.6/4.7/4.8 / OpenAI / DeepSeek / Google / Bedrock / MiniMax
+- `resolveBillingRoute()`：provider + base_url host 匹配（openrouter.ai / nousresearch.com / aiplatform.googleapis.com）
+- `normalizeUsage()`：三 API shape 处理（Anthropic_messages / codex_responses / chat_completions），reasoning_tokens 双 fallback
+- `estimateUsageCost()`：带 cache pricing 缺失检测
+- 5 桶 CanonicalUsage：input / output / cache_read / cache_write / reasoning
+- `pricingEntryFromMetadata()`：调用方提供的 /v1/models 元数据优先
+
+#### F16. Clarify tool + Gateway（`packages/agent/src/clarify-tool.ts` 新增）
+
+**差距**：Hermes `tools/clarify_tool.py` + `tools/clarify_gateway.py` 提供结构化用户提问原语（阻塞队列 + 按钮回调 + 文本回退），本项目此前只能让 LLM 自己写"请选择 A/B/C"。
+
+**改进**：
+- `MAX_CHOICES = 4`，`flattenChoice()` 多键解包（label → description → text → title）
+- `CLARIFY_SCHEMA`：OpenAI function-calling schema（question + choices array）
+- `clarifyTool()`：返回 ClarifyResult 对象（非 JSON 字符串）
+- `ClarifyGateway` 类：register / waitForResponse / resolveGatewayClarify / clearSession
+- session-key FIFO 索引：text-fallback intercept + session cleanup
+- text-capture mode：用户选 "Other" 后切换为 awaitingText
+- 1 小时默认超时（`DEFAULT_CLARIFY_TIMEOUT_MS = 3_600_000`）
+- timeout handle `unref()` 守卫（不阻塞 Node 退出）
+- 模块级 singleton `getClarifyGateway()` + `_resetClarifyGatewayForTests()`
+
+### 构建与测试验证
+
+- `pnpm build`：17 个 workspace 项目全部通过
+- `pnpm typecheck`：17 个 workspace 项目全部通过
+- `pnpm test`：所有测试通过，exit code 0
+
+---
+
 ## v0.63.0 (2026-07-03)
 
 ### 对标 Hermes v0.18.0 的 8 项能力提升（多 Agent 协作 + 工程化增强）

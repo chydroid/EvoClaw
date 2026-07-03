@@ -214,3 +214,17 @@ export type {
   TerminateResult,
   PollPortResult,
 } from "./restart-stale-pids";
+
+// F14: ProcessRegistry — 后台进程注册表 + watch pattern 限速 + 断路器 + PID 复用保护（对标 Hermes tools/process_registry.py）
+export {
+  ProcessRegistry,
+  processRegistry,
+  formatUptimeShort,
+} from "./process-registry";
+export type {
+  ProcessSession,
+  WatchEvent,
+  CompletionReason,
+  TerminationSource,
+  PidScope,
+} from "./process-registry";

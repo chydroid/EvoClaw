@@ -114,6 +114,14 @@ export type { FileSafetyResult } from "./file-safety";
 export { validateMCPServerConfig } from "./mcp-config-security";
 export type { MCPServerSecurityResult, MCPSecurityThreat } from "./mcp-config-security";
 
+// Redact — 全栈密钥脱敏（对标 Hermes agent/redact.py）
+export { redactSensitiveText, maskSecret, containsSecret, redactObject, redactingFormatter, redactUrlCredentials, redactEnvValue } from "./redact";
+export type { SecretKind, RedactResult } from "./redact";
+
+// WriteApproval — 写审批门 + pending store（对标 Hermes tools/write_approval.py）
+export { WriteApprovalGate, createDefaultWriteGate } from "./write-approval";
+export type { GateDecisionType, GateDecision, WriteApprovalConfig, ApprovalResult } from "./write-approval";
+
 // Exec Approvals — 命令执行安全审批链路（决策/策略/白名单/自动审查）
 export { ExecApprovalPolicy, DEFAULT_DANGEROUS_RULES, minimatchLike } from "./exec-approval";
 export type {
@@ -208,3 +216,24 @@ export {
   getDefaultSecretRules,
 } from "./secret-scan";
 export type { SecretScanFinding, SecretScanRule } from "./secret-scan";
+
+// F13: SkillScanner — 技能威胁正则库 + AST 审计 + 结构检查（对标 Hermes tools/threat_patterns.py + skills_guard.py + skills_ast_audit.py）
+// NOTE: skill-scanner 也导出 INVISIBLE_CHARS / detectInvisibleChars / TrustLevel，但与
+// command-guard / install-policy 同名冲突。需要这些符号的调用方应直接从 "./skill-scanner" 导入。
+export {
+  scanForThreats,
+  astScanContent,
+  checkSkillStructure,
+  scanSkill,
+  evaluateTrustPolicy,
+} from "./skill-scanner";
+export type {
+  ThreatScope,
+  ThreatKind,
+  ThreatPattern,
+  ThreatFinding,
+  SkillScanResult,
+  StructuralIssue,
+  TrustLevel as SkillTrustLevel,
+  TrustPolicy as SkillTrustPolicy,
+} from "./skill-scanner";

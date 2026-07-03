@@ -161,6 +161,25 @@ export type { ToolInputSchema, JsonSchemaProperty, ToolResult, ToolDescriptor, T
 export { PromptRegistry, registerBuiltinPromptTemplates } from "./prompt-registry";
 export type { PromptTemplateEntry, PromptRegistryConfig } from "./prompt-registry";
 
+// FuzzyMatch — 多策略模糊匹配链（对标 Hermes tools/fuzzy_match.py）
+export { fuzzyFindAndReplace, fuzzyFind } from "./fuzzy-match";
+export type { FuzzyMatchResult, FuzzyStrategy } from "./fuzzy-match";
+
+// PatchParser — V4A patch 格式解析器（对标 Hermes tools/patch_parser.py）
+export { parseV4APatch, applyV4AOperations, applyHunks, serializeV4A } from "./patch-parser";
+export type { V4AOperation, V4AHunk, V4AHunkLine, V4AOpType, ParseResult, ApplyResult } from "./patch-parser";
+
+// StreamingThinkScrubber — 流式推理块剥离状态机（对标 Hermes agent/think_scrubber.py）
+export { StreamingThinkScrubber, stripThinkBlocks } from "./think-scrubber";
+
+// FileStateRegistry — 跨 agent 文件状态协调（对标 Hermes tools/file_state.py）
+export { FileStateRegistry, assertNotStale } from "./file-state-registry";
+export type { StaleResult } from "./file-state-registry";
+
+// ToolSearch — 渐进式工具披露 BM25（对标 Hermes tools/tool_search.py）
+export { ToolSearchEngine, estimateTokens, estimateToolTokens, estimateTotalTokens } from "./tool-search";
+export type { ToolMeta, ToolSearchConfig, ToolSearchResult } from "./tool-search";
+
 // Observability system
 export { AgentObservability } from "./agent-observability";
 export type { Span, Trace, TraceSummary, Metric, SpanKind, SpanEvent, ObservabilityConfig } from "./agent-observability";
@@ -183,7 +202,6 @@ export type {
 } from "./stable-stringify";
 export {
   PromptCacheStabilityManager,
-  estimateTokens,
 } from "./prompt-cache-stability";
 export type {
   CacheProvider,
@@ -278,7 +296,7 @@ export type { CrossSessionRateLimitState, RateGuardConfig } from "./cross-sessio
 // Streaming Recovery Manager — 流式响应中断恢复管理器
 // 借鉴 hermes-agent agent/conversation_loop.py lines 4080-4119：
 //   partial_stream_recovery / truncated_tool_call_retries / length_continue / thinking_prefill / housekeeping_fallback
-export { StreamingRecoveryManager, getStreamingRecoveryManager, resetStreamingRecoveryManager, hasContentAfterThinkBlock, stripThinkBlocks, PARTIAL_STREAM_STUB_ID, DEFAULT_STREAMING_RECOVERY_CONFIG } from "./streaming-recovery";
+export { StreamingRecoveryManager, getStreamingRecoveryManager, resetStreamingRecoveryManager, hasContentAfterThinkBlock, PARTIAL_STREAM_STUB_ID, DEFAULT_STREAMING_RECOVERY_CONFIG } from "./streaming-recovery";
 export type { StreamRecoveryContext, StreamRecoveryResult, StreamingRecoveryConfig } from "./streaming-recovery";
 
 // Tool Result Middleware — 工具结果后处理中间件
@@ -286,3 +304,147 @@ export type { StreamRecoveryContext, StreamRecoveryResult, StreamingRecoveryConf
 //   请求中间件 + 执行中间件 + 结果转换 hook + 终端输出转换
 export { ToolResultMiddleware, getToolResultMiddleware, resetToolResultMiddleware, DownstreamExecutionError, MiddlewareAlreadyConsumedError, createRedactionTransform, createSizeLimitTransform, createJsonFormatTransform, DEFAULT_MIDDLEWARE_CONFIG } from "./tool-result-middleware";
 export type { ToolCallContext, ToolResultContext, ToolRequestMiddleware, ToolExecutionMiddleware, ToolResultTransform, TerminalOutputTransform, MiddlewareConfig } from "./tool-result-middleware";
+
+// F9: ReasoningTimeouts — 推理模型感知 stale-timeout 下限（对标 Hermes agent/reasoning_timeouts.py）
+export {
+  getReasoningStaleTimeoutFloor,
+  applyReasoningFloor,
+  isKnownReasoningModel,
+  REASONING_STALE_TIMEOUT_FLOORS,
+} from "./reasoning-timeouts";
+
+// F10: CodingContext — 工作区检测 + 编码姿态注入（对标 Hermes agent/coding_context.py）
+export {
+  resolveRuntimeMode,
+  isCodingMode,
+  isCodingContext,
+  detectProjectFacts,
+  buildCodingWorkspaceBlock,
+  codingSystemBlocks,
+  codingCompactSkillCategories,
+  projectFactsFor,
+  editFormatLine,
+  getProfile,
+  PROJECT_MARKERS,
+  CODE_EXTENSIONS,
+  CODE_SCAN_SKIP_DIRS,
+  CODING_TOOLSET,
+  CODING_AGENT_GUIDANCE,
+  GENERAL_PROFILE,
+  CODING_PROFILE,
+} from "./coding-context";
+export type {
+  RuntimeMode,
+  ContextProfile,
+  ProjectFacts,
+} from "./coding-context";
+
+// F11: BackgroundReview — turn 后自我反思 fork（对标 Hermes agent/background_review.py）
+export {
+  runBackgroundReview,
+  shouldRunBackgroundReview,
+  summarizeBackgroundReviewActions,
+  MEMORY_REVIEW_PROMPT,
+  SKILL_REVIEW_PROMPT,
+  COMBINED_REVIEW_PROMPT,
+  DEFAULT_REVIEW_CONFIG,
+} from "./background-review";
+export type {
+  BackgroundReviewConfig,
+  ReviewAction,
+  ReviewRuntime,
+  ReviewMessage,
+  ReviewChatFn,
+} from "./background-review";
+
+// F12: AuxiliaryClient — 统一 side-task LLM 回退链（对标 Hermes agent/auxiliary_client.py）
+// NOTE: isRateLimitError 在 error-classifier 已导出，此处不重复导出
+export {
+  resolveAuxRuntime,
+  callAuxLLM,
+  collectAllRuntimes,
+  isCreditExhaustedError,
+  classifyProvider,
+  withInterruptProtection,
+} from "./auxiliary-client";
+export type {
+  AuxRuntime,
+  AuxCallRequest,
+  AuxCallResult,
+  AuxChatFn,
+  MainRuntimeContext,
+  AuxiliaryConfig,
+  ProviderKind,
+} from "./auxiliary-client";
+
+// F15a: CreditsTracker — 响应头积分追踪 + 通知策略（对标 Hermes agent/credits_tracker.py）
+export {
+  parseCreditsHeaders,
+  evaluateCreditsNotices,
+  createLatch,
+  hasData,
+  ageSeconds,
+  isDepleted,
+  usedFraction,
+  isFreeTierModel,
+  creditsStateFromAccount,
+  makeNotice,
+  CREDITS_NOTICE_KIND,
+  CREDITS_RESTORED_TTL_MS,
+  CREDITS_USAGE_BANDS,
+  CREDITS_USAGE_KEY,
+} from "./credits-tracker";
+export type {
+  CreditsState,
+  CreditsLatch,
+  AgentNotice,
+  NoticeDelta,
+  AccountCreditsInput,
+  HeaderMap,
+} from "./credits-tracker";
+
+// F15b: UsagePricing — 模型定价表 + 成本估算（对标 Hermes agent/usage_pricing.py）
+export {
+  resolveBillingRoute,
+  getPricingEntry,
+  normalizeUsage,
+  estimateUsageCost,
+  hasKnownPricing,
+  emptyUsage,
+  promptTokens,
+  totalTokens,
+  sumUsage,
+  formatDurationCompact,
+  formatTokenCountCompact,
+  makePricingEntry,
+} from "./usage-pricing";
+export type {
+  CanonicalUsage,
+  BillingRoute,
+  BillingMode,
+  PricingEntry,
+  CostResult,
+  CostStatus,
+  CostSource,
+  RawUsageLike,
+} from "./usage-pricing";
+
+// F16: ClarifyTool — 结构化用户提问原语（对标 Hermes tools/clarify_tool.py + clarify_gateway.py）
+export {
+  clarifyTool,
+  flattenChoice,
+  clarifyError,
+  clarifySuccess,
+  checkClarifyRequirements,
+  ClarifyGateway,
+  getClarifyGateway,
+  _resetClarifyGatewayForTests,
+  CLARIFY_SCHEMA,
+  MAX_CHOICES,
+  DEFAULT_CLARIFY_TIMEOUT_MS,
+} from "./clarify-tool";
+export type {
+  ClarifyCallback,
+  ClarifyResult,
+  ClarifyEntry,
+} from "./clarify-tool";
