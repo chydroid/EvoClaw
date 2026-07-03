@@ -4,6 +4,8 @@ export { ActorSystem } from "./actor-system";
 export { DAGExecutor } from "./dag-executor";
 export { StateGraph, CompiledGraph, MemoryCheckpointer } from "./state-graph";
 export type { NodeFn, Reducer, StateSchema, RouterFn, GraphEvent, CompileOptions, Checkpointer, Checkpoint, CheckpointMetadata } from "./state-graph";
+export { SqliteCheckpointer, asSqliteDatabase } from "./sqlite-checkpointer";
+export type { SqliteDatabaseLike as AgentSqliteDatabaseLike } from "./sqlite-checkpointer";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
 export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -75,6 +77,11 @@ export { SelfHealingEngine } from "./self-healing";
 export type { ResilienceConfig, HealthScore, ErrorPattern, MutationStrategy, AnomalyRecord, RecoveryStrategy } from "./self-healing";
 export { SwarmOrchestrator } from "./swarm-orchestrator";
 export type { SwarmAgent, SwarmConfig, AgentRole, DelegationRequest, DelegationResult, ConsensusProposal, ConsensusVote, ConsensusResult } from "./swarm-orchestrator";
+
+// Multi-Agent Collaboration Patterns — GroupChat / Debate / RoundRobin / Selector
+// 借鉴 AutoGen GroupChat / CrewAI Crew / ChatDev debate / OpenAI Agents SDK orchestration
+export { RoundRobinChat, GroupChat, DebatePattern, createSpeaker, formatChatResult } from "./multi-agent-patterns";
+export type { AgentSpeaker, ChatTurn, ChatResult, ChatFn, SelectorFn, StopConditionFn } from "./multi-agent-patterns";
 export { ReplyDeduplicator, areMessagesDuplicate } from "./reply-dedup";
 export type { DedupConfig, DedupEntry, DedupCheckResult } from "./reply-dedup";
 
@@ -107,8 +114,8 @@ export type { CredentialEntry, CredentialPoolOptions, CredentialPoolLegacyConfig
 export { stripWebNoise, collapseNewlines, summarizeToolResult, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
 
 // Evals system
-export { EvalRunner, BUILTIN_EVAL_CASES } from "./evals";
-export type { EvalCase, EvalResult, EvalRunSummary, EvalConfig } from "./evals";
+export { EvalRunner, BUILTIN_EVAL_CASES, DEFAULT_JUDGE_CRITERIA } from "./evals";
+export type { EvalCase, EvalResult, EvalRunSummary, EvalConfig, CustomEvaluator, LLMJudgeCriteria } from "./evals";
 
 // A2A (Agent-to-Agent) protocol
 export { A2AClient, A2AServer } from "./a2a";
@@ -129,6 +136,15 @@ export type { GuardrailResult, GuardrailConfig, GuardrailStats, InputRule, Outpu
 // Structured Output system
 export { StructuredOutputParser, SchemaRegistry } from "./structured-output";
 export type { OutputSchema, StructuredOutputResult, StructuredOutputConfig } from "./structured-output";
+
+// Tool types & result schema validation
+export { validateToolResult, validateToolDescriptor, createToolDescriptor, ToolValidationError, ToolExecutionError } from "./tool-types";
+export type { ToolInputSchema, JsonSchemaProperty, ToolResult, ToolDescriptor, ToolExecutor, ToolCallRequest, ToolCallResponse, ToolExecutionContext, ToolRegistry, ToolExecutionOptions, ToolResultValidation, JsonPrimitive, JsonValue, JsonObject, JsonArray } from "./tool-types";
+
+// Prompt Registry — 集中式 Prompt 模板管理与变量插值
+// 借鉴 LangChain PromptTemplate / LangSmith Prompt Hub / AutoGen role-based prompt templates
+export { PromptRegistry, registerBuiltinPromptTemplates } from "./prompt-registry";
+export type { PromptTemplateEntry, PromptRegistryConfig } from "./prompt-registry";
 
 // Observability system
 export { AgentObservability } from "./agent-observability";

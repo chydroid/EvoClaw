@@ -1,4 +1,5 @@
-import type { EvalCase, EvalResult, EvalRunSummary, EvalConfig } from "./types";
+import type { EvalCase, EvalResult, EvalRunSummary, EvalConfig, CustomEvaluator, LLMJudgeCriteria } from "./types";
+import { DEFAULT_JUDGE_CRITERIA } from "./types";
 
 export class EvalRunner {
   private cases: EvalCase[] = [];
@@ -112,7 +113,8 @@ export class EvalRunner {
         ]);
 
         const durationMs = Date.now() - startTime;
-        const result = this.evaluateOutput(evalCase, output, durationMs, config);
+        // Use async evaluation to support LLM judge and custom evaluators.
+        const result = await this.evaluateOutputAsync(evalCase, output, durationMs, config, sessionId);
         results.push(result);
       } catch (err) {
         results.push({
@@ -139,6 +141,147 @@ export class EvalRunner {
     const summary = this.buildSummary(config.name, results, casesToRun);
     this.runHistory.push(summary);
     return summary;
+  }
+
+  /**
+   * Async evaluation wrapper — supports LLM-as-judge and custom evaluators.
+   * Falls back to the synchronous heuristic evaluator when neither is enabled.
+   */
+  private async evaluateOutputAsync(
+    evalCase: EvalCase,
+    output: string,
+    durationMs: number,
+    config: EvalConfig,
+    sessionId: string,
+  ): Promise<EvalResult> {
+    // Start with the heuristic baseline.
+    const heuristic = this.evaluateOutput(evalCase, output, durationMs, config);
+
+    // If LLM judge is enabled, override the score with the judge's verdict.
+    if (config.useLLMJudge && config.judgeProvider) {
+      try {
+        const judgeResult = await this.runLLMJudge(evalCase, output, config.judgeProvider, DEFAULT_JUDGE_CRITERIA);
+        // Blend: 70% judge, 30% heuristic (preserves pattern-match signal).
+        const blended = judgeResult.score * 0.7 + heuristic.score * 0.3;
+        return {
+          ...heuristic,
+          score: Math.round(blended * 100) / 100,
+          taskCompleted: blended >= config.passThreshold,
+          details: `${heuristic.details}; [LLM-judge] ${judgeResult.rationale}`,
+          hallucinationDetected: judgeResult.hallucinationFlagged ?? heuristic.hallucinationDetected,
+        };
+      } catch (err) {
+        // Judge failed — fall back to heuristic and annotate.
+        return {
+          ...heuristic,
+          details: `${heuristic.details}; [LLM-judge failed: ${err instanceof Error ? err.message : String(err)}]`,
+        };
+      }
+    }
+
+    // If custom evaluators are provided, blend their scores with the heuristic.
+    if (config.customEvaluators && config.customEvaluators.length > 0) {
+      try {
+        const customScores = await Promise.all(
+          config.customEvaluators.map(ev =>
+            ev(evalCase, output, { sessionId, durationMs }).catch(() => ({ score: 0, rationale: "evaluator error" }))
+          )
+        );
+        const avgCustom = customScores.reduce((s, r) => s + r.score, 0) / customScores.length;
+        const blended = avgCustom * 0.6 + heuristic.score * 0.4;
+        const rationales = customScores.map(r => r.rationale).filter(Boolean).join("; ");
+        return {
+          ...heuristic,
+          score: Math.round(blended * 100) / 100,
+          taskCompleted: blended >= config.passThreshold,
+          details: `${heuristic.details}; [custom] ${rationales}`,
+        };
+      } catch {
+        // Custom evaluators failed — fall back to heuristic.
+        return heuristic;
+      }
+    }
+
+    return heuristic;
+  }
+
+  /**
+   * LLM-as-judge: asks the judge LLM to score the output on multiple criteria.
+   * Returns a weighted score in [0, 1] and a rationale.
+   *
+   * Inspired by LangSmith's LLM-as-judge evaluator and OpenAI Evals scoring templates.
+   */
+  private async runLLMJudge(
+    evalCase: EvalCase,
+    output: string,
+    provider: { provider: string; model: string; apiKey?: string; baseURL?: string },
+    criteria: LLMJudgeCriteria[],
+  ): Promise<{ score: number; rationale: string; hallucinationFlagged?: boolean }> {
+    const apiKey = provider.apiKey || process.env.OPENAI_API_KEY || process.env.EVOCLAW_JUDGE_API_KEY;
+    if (!apiKey) {
+      throw new Error("LLM judge requires an API key (set judgeProvider.apiKey or OPENAI_API_KEY)");
+    }
+    const baseURL = (provider.baseURL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+
+    const criteriaText = criteria.map((c, i) => `${i + 1}. ${c.name} (weight ${c.weight}): ${c.description}`).join("\n");
+    const prompt = `You are an expert evaluator. Score the following AI assistant response on these criteria:
+${criteriaText}
+
+For each criterion, give a score from 0 to 5 (0=terrible, 5=excellent). Then compute a weighted average normalized to [0, 1].
+
+User request:
+${evalCase.input}
+
+Expected behavior:
+${evalCase.expectedBehavior}
+
+Assistant response:
+${output}
+
+Respond in JSON only:
+{
+  "scores": { "${criteria[0].name}": <0-5>, ... },
+  "weighted_score": <0.0-1.0>,
+  "rationale": "<one-sentence explanation>",
+  "hallucination_flagged": <true|false>
+}`;
+
+    const res = await fetch(`${baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [
+          { role: "system", content: "You are a strict but fair evaluator. Respond only in JSON." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Judge LLM returned ${res.status}: ${await res.text().catch(() => "")}`);
+    }
+
+    const data = await res.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content || "{}";
+    const parsed = JSON.parse(content) as {
+      weighted_score?: number;
+      rationale?: string;
+      hallucination_flagged?: boolean;
+    };
+
+    return {
+      score: typeof parsed.weighted_score === "number" ? Math.max(0, Math.min(1, parsed.weighted_score)) : 0,
+      rationale: parsed.rationale ?? "no rationale provided",
+      hallucinationFlagged: parsed.hallucination_flagged === true,
+    };
   }
 
   /** Evaluate a single output against its expected case */

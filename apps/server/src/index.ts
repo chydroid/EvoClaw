@@ -33,7 +33,7 @@ const SERVER_VERSION = getServerVersion();
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
-import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService } from "@evoclaw/gateway";
+import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
@@ -46,7 +46,7 @@ import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
 import { SecurityMiddleware } from "@evoclaw/security";
-import { CopilotRouter, CredentialPool, A2AClient, A2AServer, EvalRunner, BUILTIN_EVAL_CASES } from "@evoclaw/agent";
+import { CopilotRouter, CredentialPool, A2AClient, A2AServer, EvalRunner, BUILTIN_EVAL_CASES, PromptRegistry, registerBuiltinPromptTemplates } from "@evoclaw/agent";
 import { SkillIndex } from "@evoclaw/skills";
 import {
   registerFileTools,
@@ -402,6 +402,12 @@ export class EvoClawServer {
       this.configManager.get("persona"),
       { storeDir: dataDir }
     );
+    // Wire GatewayMetadataCache → agentModelExecutor → tokenUsageTracker so
+    // real-time cost estimation uses actual provider prices (not the stub
+    // getModelCost: () => undefined that previously forced fallback defaults).
+    const gatewayMetadataCache = new GatewayMetadataCache();
+    this.registry.registerService("gatewayMetadataCache", gatewayMetadataCache);
+    this.agentModelExecutor.setGatewayMetadataCache(gatewayMetadataCache);
     // Register TokenUsageTracker for real-time token/cost tracking
     const tokenUsageTracker = new TokenUsageTracker({
       retainCount: 10000,
@@ -411,6 +417,14 @@ export class EvoClawServer {
     this.registry.registerService("tokenUsageTracker", tokenUsageTracker);
     // Wire token usage recording into the LLM call flow
     this.agentModelExecutor.setTokenUsageTracker(tokenUsageTracker);
+    // Register PromptRegistry singleton and load built-in templates.
+    // Centralised prompt management: templates can be overridden by files in
+    // data/prompts/*.md and versioned for A/B testing.
+    const promptRegistry = PromptRegistry.getInstance({
+      promptsDir: path.join(dataDir, "prompts"),
+    });
+    registerBuiltinPromptTemplates(promptRegistry);
+    this.registry.registerService("promptRegistry", promptRegistry);
     // Register agent-layer observability for /metrics endpoint
     const agentObs = this.agentModelExecutor.getAgentObservability();
     if (agentObs) {

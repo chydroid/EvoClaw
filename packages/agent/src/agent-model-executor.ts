@@ -263,9 +263,29 @@ export class AgentModelExecutor {
     this.tokenUsageTracker = tracker;
   }
 
-  /** Get model cost provider from the gateway metadata cache */
+  /**
+   * Gateway metadata cache, used to look up real-time model cost info.
+   * Injected from apps/server during wiring; falls back to undefined which
+   * causes TokenUsageTracker to use its defaultInputCostPer1k/defaultOutputCostPer1k.
+   *
+   * Typed structurally (not via `import("@evoclaw/gateway")`) so the agent
+   * package does not need a static dependency on the gateway package.
+   * The server wires a real GatewayMetadataCache instance at runtime.
+   */
+  private gatewayMetadataCache?: { getModelCost(provider: string, model: string): import("./token-usage-tracker").ModelCostInfo | undefined };
+
+  /** Set gateway metadata cache (called during server wiring) */
+  setGatewayMetadataCache(cache: { getModelCost(provider: string, model: string): import("./token-usage-tracker").ModelCostInfo | undefined }): void {
+    this.gatewayMetadataCache = cache;
+  }
+
+  /** Get model cost provider backed by the gateway metadata cache (real prices, not stub) */
   getModelCostProvider(): import("./token-usage-tracker").ModelCostProvider | undefined {
-    return this.tokenUsageTracker ? { getModelCost: () => undefined } : undefined;
+    if (!this.gatewayMetadataCache) return undefined;
+    const cache = this.gatewayMetadataCache;
+    return {
+      getModelCost: (provider: string, model: string) => cache.getModelCost(provider, model),
+    };
   }
 
   /** Record token usage after an LLM call */
@@ -1197,6 +1217,10 @@ export class AgentModelExecutor {
 
     // Mark session as active for heartbeat pausing
     this.markSessionActive(sessionId);
+    // Register a fresh abort controller for this session so callers can
+    // invoke abortSession(sessionId) at any time to cancel in-flight LLM
+    // fetches and stop the tryCallLLM loop at the next round boundary.
+    this.registerSessionAbortController(sessionId);
 
     try {
     // Record session start in EventLedger
@@ -2134,6 +2158,9 @@ export class AgentModelExecutor {
       this._currentTraceId = undefined;
       // 清除会话级上下文引擎结果，避免跨会话泄漏
       this._currentContextEngineResult = null;
+      // Clean up the per-session abort controller so a subsequent chat() in
+      // the same session starts with a fresh (non-aborted) signal.
+      this.clearSessionAbortController(sessionId);
     }
   }
 
@@ -2640,11 +2667,62 @@ export class AgentModelExecutor {
     // Inject iteration budget and context engine result for this session
     deps.iterationBudget = this.getIterationBudget(sessionId);
     deps.contextEngineResult = this._currentContextEngineResult ?? undefined;
+    // Wire per-session abort signal (set by abortSession) so callLLMOnce and
+    // the tryCallLLM main loop can react to cancellation.
+    const sessionController = this.sessionAbortControllers.get(sessionId);
+    if (sessionController) {
+      deps.abortSignal = sessionController.signal;
+    }
     return tryCallLLMFn(deps, {
       message, systemPrompt, installedSkills, providers, startTime,
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,
+      abortSignal: sessionController?.signal,
     });
+  }
+
+  // ── End-to-end cancellation ─────────────────────────────────────────────
+  //
+  // Per-session AbortControllers. When abortSession(sessionId) is called, the
+  // in-flight LLM fetch is aborted (via the signal wired into callLLMOnce) and
+  // the tryCallLLM loop short-circuits at the next round boundary, returning
+  // the best reply accumulated so far (or a cancellation notice).
+  //
+  // Inspired by:
+  // - OpenAI Agents SDK CancellationToken
+  // - LangGraph interrupt()
+  // - AutoGen agent.cancel()
+  private sessionAbortControllers = new Map<string, AbortController>();
+
+  /**
+   * Abort the in-flight chat for a session. Safe to call when no chat is in
+   * flight (no-op). The aborted signal is consumed by the next tryCallLLM
+   * invocation for this session; the controller is cleared after consumption.
+   * Returns true if a controller was found and aborted.
+   */
+  abortSession(sessionId: string): boolean {
+    const controller = this.sessionAbortControllers.get(sessionId);
+    if (!controller) return false;
+    controller.abort(new Error(`Session ${sessionId} aborted by user`));
+    this.sessionAbortControllers.delete(sessionId);
+    process.stdout.write(`[AgentModelExecutor] Abort signal fired for session "${sessionId}"\n`);
+    return true;
+  }
+
+  /**
+   * Register a fresh abort controller for a session at chat start.
+   * Replaces any pre-existing controller (e.g., from a previous turn that
+   * completed normally without being aborted).
+   */
+  private registerSessionAbortController(sessionId: string): AbortController {
+    const controller = new AbortController();
+    this.sessionAbortControllers.set(sessionId, controller);
+    return controller;
+  }
+
+  /** Clear abort controller after chat completes (called from chatInner). */
+  private clearSessionAbortController(sessionId: string): void {
+    this.sessionAbortControllers.delete(sessionId);
   }
 
   private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {

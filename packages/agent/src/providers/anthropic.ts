@@ -23,6 +23,7 @@ import type {
   ToolCall,
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
+import { parseMimeTypeFromDataUri } from "../llm-caller.js";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -455,14 +456,38 @@ export class AnthropicProvider implements ProviderPlugin {
         if (part.type === "text" && part.text) {
           content.push({ type: "text", text: part.text });
         } else if (part.type === "image_url" && part.image_url?.url) {
+          // Parse real MIME from data URI prefix; default to image/jpeg for URLs.
+          const url = part.image_url.url;
+          const isDataUri = url.startsWith("data:");
+          const mimeType = isDataUri
+            ? parseMimeTypeFromDataUri(url) || "image/jpeg"
+            : "image/jpeg";
+          if (isDataUri) {
+            // Anthropic expects base64 source for inline images.
+            const base64 = url.indexOf("base64,") >= 0 ? url.slice(url.indexOf("base64,") + 7) : "";
+            content.push({
+              type: "image",
+              source: { type: "base64", media_type: mimeType, data: base64 },
+            });
+          } else {
+            content.push({
+              type: "image",
+              source: { type: "url", url },
+            });
+          }
+        } else if (part.type === "file" && part.file?.data) {
+          // Anthropic document content part — PDFs and other docs.
           content.push({
-            type: "image",
+            type: "document",
             source: {
-              type: "url",
-              url: part.image_url.url,
+              type: "base64",
+              media_type: part.file.mimeType,
+              data: part.file.data,
             },
           });
         }
+        // Note: Anthropic does not support input_audio content parts as of
+        // 2025-08; audio inputs are skipped. OpenAI GPT-4o supports audio.
       }
       out.content = content;
     }

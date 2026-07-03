@@ -42,6 +42,16 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * Optional output schema (JSON Schema compatible) describing the shape of
+   * the value returned by the tool handler. When present, the runtime
+   * validates the tool's return value against this schema and surfaces
+   * mismatches to the LLM as a tool error so it can retry / self-correct.
+   *
+   * Inspired by LangChain `Tool.args_schema` (input) and OpenAI function
+   * calling's strict-mode result schema.
+   */
+  outputSchema?: import("./tool-types").ToolInputSchema;
 }
 
 export const DEFAULT_PERSONA: PersonaConfig = {
@@ -72,7 +82,7 @@ export interface TaskStatus {
 }
 
 export interface AgentProgressEvent {
-  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending";
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token";
   phase?: TaskStatus["phase"];
   detail: string;
   progress?: number;
@@ -82,7 +92,15 @@ export interface AgentProgressEvent {
   toolError?: boolean;
   providerName?: string;
   round?: number;
+  /** Accumulated reply content (sent for backward-compat with status events). */
   reply?: string;
+  /**
+   * Token-level delta: the new text fragment produced since the last event.
+   * Sent with `type: "token"` events to enable incremental rendering on the
+   * client without diffing the accumulated `reply`. Inspired by OpenAI's
+   * ResponseTextDeltaEvent and LangChain's astream_events token deltas.
+   */
+  delta?: string;
   tokensUsed?: number;
   duration?: number;
   subtaskIndex?: number;

@@ -72,4 +72,35 @@ export interface EvalConfig {
   useLLMJudge: boolean;
   /** Provider to use for LLM judge */
   judgeProvider?: { provider: string; model: string; apiKey?: string; baseURL?: string };
+  /** Custom evaluators to run alongside the built-in heuristics. */
+  customEvaluators?: CustomEvaluator[];
 }
+
+/**
+ * Custom evaluator: a user-supplied function that scores a case's output.
+ * Returns a score in [0, 1] and an optional rationale string.
+ *
+ * Inspired by LangSmith's `Evaluator` interface and Inspect AI's `scorer`.
+ */
+export type CustomEvaluator = (
+  evalCase: EvalCase,
+  output: string,
+  context: { sessionId: string; durationMs: number },
+) => Promise<{ score: number; rationale?: string } | { score: number; rationale?: string }>;
+
+/**
+ * LLM judge configuration: which criteria to evaluate, and how to weight them.
+ * Each criterion is scored 0-5 by the judge LLM; weights are normalized.
+ */
+export interface LLMJudgeCriteria {
+  name: string;
+  description: string;
+  weight: number;
+}
+
+export const DEFAULT_JUDGE_CRITERIA: LLMJudgeCriteria[] = [
+  { name: "correctness", description: "Does the output answer the question correctly?", weight: 0.4 },
+  { name: "completeness", description: "Does the output cover all aspects of the request?", weight: 0.3 },
+  { name: "clarity", description: "Is the output clear and well-structured?", weight: 0.2 },
+  { name: "hallucination", description: "Does the output avoid fabricating information?", weight: 0.1 },
+];

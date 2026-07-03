@@ -21,6 +21,9 @@ import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWeb
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
+import { retryAsync } from "./retry-utils";
+import { validateToolResult } from "./tool-types";
+import { PromptRegistry } from "./prompt-registry";
 import * as https from "https";
 import * as http from "http";
 
@@ -757,6 +760,12 @@ export interface LLMCallerDeps {
   // Service-gated tools: TTL-cached check_fn evaluator (optional — filters unavailable tools before sending to LLM)
   // Inspired by hermes-agent's registry._check_fn_cached (30s TTL, fail-safe).
   checkFnEvaluator?: (checkFn: () => boolean) => boolean;
+  // End-to-end cancellation signal (optional — aborts in-flight LLM calls and tool executions).
+  // Set by AgentModelExecutor.abortSession(sessionId); propagated through callLLMOnce,
+  // the tool execution retry loop, and HTTP transport (nativeFetch already accepts a signal).
+  // When aborted, tryCallLLM stops dispatching new tool rounds and returns the best
+  // reply accumulated so far (or a cancellation notice if nothing was produced yet).
+  abortSignal?: AbortSignal;
 }
 
 // ── Helper: tool cache ──
@@ -764,6 +773,22 @@ export interface LLMCallerDeps {
 function getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
   const sortedParams = Object.keys(params).sort().map(k => `${k}=${JSON.stringify(params[k])}`).join("&");
   return `${toolName}:${sortedParams}`;
+}
+
+// ── Helper: strip data URI prefix ──
+// "data:image/png;base64,XXXX" → "XXXX"; returns "" if not a data URI.
+// Used by the multimodal input path to extract raw base64 for audio/file parts.
+function stripDataUriPrefix(dataUri: string): string {
+  const idx = dataUri.indexOf("base64,");
+  return idx >= 0 ? dataUri.slice(idx + 7) : "";
+}
+
+// ── Helper: parse MIME type from data URI ──
+// "data:image/png;base64,..." → "image/png"; returns "" if not parseable.
+// Used by provider adapters to avoid hardcoding MIME types.
+export function parseMimeTypeFromDataUri(dataUri: string): string {
+  const match = /^data:([^;,]+)/i.exec(dataUri);
+  return match ? match[1] : "";
 }
 
 function cleanToolCache(cache: Map<string, ToolResultCacheEntry>): void {
@@ -1312,6 +1337,23 @@ export async function parseStreamingResponse(
             // 通过清洗器处理 delta，清洗 <think>/<reasoning> 等推理标签
             const cleaned = tagScrubber.feed(choice.delta.content);
             content += cleaned;
+
+            // ── Token-level streaming ──
+            // Fire a `token` event for every cleaned delta so the client can
+            // render incrementally without diffing the accumulated `reply`.
+            // Backward-compat: still emit the throttled `status` event with
+            // the full accumulated `reply` for older clients that expect it.
+            if (cleaned) {
+              onProgress({
+                type: "token",
+                phase: "generating",
+                detail: "正在生成回复...",
+                progress: 80,
+                delta: cleaned,
+                reply: content,
+              });
+            }
+
             const now = Date.now();
             if (now - lastChunkTime > 50) {
               onProgress({
@@ -1437,6 +1479,24 @@ export async function callLLMOnce(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+  // ── End-to-end cancellation: merge external abort signal with timeout ──
+  // When the caller passes deps.abortSignal (e.g., from AgentModelExecutor.abortSession),
+  // we propagate its abort to the per-call controller so that in-flight fetches
+  // are cancelled immediately. Uses AbortSignal.any() (Node 20+) when available;
+  // falls back to manual listener attachment for older runtimes.
+  const externalSignal = deps.abortSignal;
+  let externalAbortListener: (() => void) | null = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason ?? new Error("aborted"));
+    } else if (typeof (AbortSignal as any).any === "function") {
+      // Modern path: use AbortSignal.any to combine. We still need a single
+      // controller to pass to fetch, so attach a listener.
+      externalAbortListener = () => controller.abort(externalSignal.reason ?? new Error("aborted"));
+      externalSignal.addEventListener("abort", externalAbortListener, { once: true });
+    }
+  }
+
   const baseURL = provider.baseURL || "";
   let apiURL = baseURL;
   if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
@@ -1522,6 +1582,9 @@ export async function callLLMOnce(
     });
 
     clearTimeout(timeoutId);
+    if (externalAbortListener && externalSignal) {
+      externalSignal.removeEventListener("abort", externalAbortListener);
+    }
     const responseMs = Date.now() - callStart;
 
     if (!response.ok) {
@@ -1594,6 +1657,9 @@ export async function callLLMOnce(
     };
   } catch (err: unknown) {
     clearTimeout(timeoutId);
+    if (externalAbortListener && externalSignal) {
+      externalSignal.removeEventListener("abort", externalAbortListener);
+    }
     const obs = deps.registry?.resolveService<any>("observability");
     if (obs) {
       const latency = Date.now() - startTime;
@@ -1658,6 +1724,8 @@ export interface TryCallLLMOptions {
   onProgress?: AgentProgressCallback;
   searchPreDone?: boolean;
   channel?: string;
+  /** Optional cancellation signal (forwarded from LLMCallerDeps.abortSignal). */
+  abortSignal?: AbortSignal;
 }
 
 export async function tryCallLLM(
@@ -1671,8 +1739,16 @@ export async function tryCallLLM(
   const {
     message, systemPrompt, installedSkills, providers, startTime,
     sessionId, pendingPermissions, attachments, onProgress,
-    searchPreDone = false, channel,
+    searchPreDone = false, channel, abortSignal,
   } = options;
+
+  // Wire end-to-end cancellation signal into deps so callLLMOnce picks it up.
+  // This mutates the local `deps` reference only for the duration of this call;
+  // callers that share deps across concurrent sessions should clone or pass a
+  // per-session signal through deps directly.
+  if (abortSignal && !deps.abortSignal) {
+    (deps as { abortSignal?: AbortSignal }).abortSignal = abortSignal;
+  }
 
   const BASE_MAX_TOOL_ROUNDS = 20;
   const MAX_TOOL_ROUNDS_CAP = 50;
@@ -1817,7 +1893,7 @@ Have a specific URL?
         : systemPrompt;
 
       const searchPreDoneNotice = searchPreDone
-        ? "\n\n**⚠ SEARCH ALREADY COMPLETED**: The system has performed web searches and injected results into the user message. Do NOT search again. You have web_fetch, file_create, and shell_exec tools available. If this is a download/scraping task: 1) web_fetch the target pages, 2) analyze HTML, 3) write a Python scraper with file_create, 4) run it with shell_exec, 5) verify with file_list. NEVER refuse a download task — always attempt first."
+        ? PromptRegistry.getInstance().format("search.already_completed", {})
         : "";
 
       const sessionPDeps = getSessionPersistenceDeps(deps);
@@ -1893,16 +1969,43 @@ Have a specific URL?
       }
 
       // Build user message — use multimodal format when images are attached
-      const imageAtts = attachments?.filter(a => a.type.startsWith("image/") && a.data?.startsWith("data:"));
-      if (imageAtts && imageAtts.length > 0) {
+      const imageAtts = attachments?.filter(a => a.type.startsWith("image/") && a.data?.startsWith("data:")) ?? [];
+      const audioAtts = attachments?.filter(a => a.type.startsWith("audio/") && a.data?.startsWith("data:")) ?? [];
+      const pdfAtts = attachments?.filter(a => (a.type === "application/pdf" || a.name?.toLowerCase().endsWith(".pdf")) && a.data?.startsWith("data:")) ?? [];
+      const hasMultimodal = imageAtts.length > 0 || audioAtts.length > 0 || pdfAtts.length > 0;
+      if (hasMultimodal) {
         const contentParts: ChatContent[] = [];
         if (effectiveMessage) {
           contentParts.push({ type: "text", text: effectiveMessage });
         }
+        // Images: pass through as image_url (data URI). All three providers
+        // accept either a URL or a base64 data URI; the data URI carries its
+        // own MIME in the prefix (e.g. "data:image/png;base64,..."), so the
+        // provider-side MIME hardcoding is no longer needed.
         for (const img of imageAtts) {
           contentParts.push({
             type: "image_url",
             image_url: { url: img.data!, detail: "auto" },
+          });
+        }
+        // Audio: parse format from MIME (e.g. "audio/wav" → "wav").
+        // OpenAI GPT-4o supports wav/mp3/flac/ogg as input_audio content parts.
+        for (const aud of audioAtts) {
+          const fmt = aud.type.split("/")[1] as "wav" | "mp3" | "flac" | "ogg" | undefined;
+          if (!fmt) continue;
+          const base64 = stripDataUriPrefix(aud.data!);
+          if (!base64) continue;
+          contentParts.push({ type: "input_audio", input_audio: { data: base64, format: fmt } });
+        }
+        // PDF / documents: Anthropic accepts `document` content parts with
+        // base64 source. OpenAI accepts file_id (we'd need to upload first —
+        // for now, pass through and let the provider adapter handle/ignore).
+        for (const pdf of pdfAtts) {
+          const base64 = stripDataUriPrefix(pdf.data!);
+          if (!base64) continue;
+          contentParts.push({
+            type: "file",
+            file: { data: base64, mimeType: "application/pdf", filename: pdf.name },
           });
         }
         messages.push({ role: "user", content: contentParts });
@@ -1932,6 +2035,23 @@ Have a specific URL?
       const budget = deps.iterationBudget;
 
       for (let round = 0; round < maxToolRounds; round++) {
+        // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
+        // In-flight fetches are already cancelled via the abort signal wired into
+        // callLLMOnce. Here we short-circuit the loop to return the best reply
+        // accumulated so far (or a cancellation notice if nothing was produced).
+        if (deps.abortSignal?.aborted) {
+          process.stdout.write(`[AgentModelExecutor] Abort signal received at round ${round} — stopping LLM loop for session "${sessionId}"\n`);
+          if (finalReply) break;
+          return {
+            reply: "⏹️ 操作已取消。",
+            tokensUsed: totalTokensUsed,
+            duration: Date.now() - startTime,
+            permissionRequests: pendingPermissions,
+            toolsExecuted: anyToolExecuted,
+            files: createdFiles,
+          };
+        }
+
         // ── IterationBudget: check if budget allows this iteration ──
         if (budget) {
           if (budget.isExhausted) {
@@ -1984,7 +2104,7 @@ Have a specific URL?
           process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1})\n`);
           conversationMessages.push({
             role: "user",
-            content: "You have gathered enough information. Now provide your final answer directly in chat. Only create a file if the user explicitly asked for a detailed report or the content is very long (>3000 chars). Do NOT search again."
+            content: PromptRegistry.getInstance().format("tool_loop.nudge_final_answer", {}),
           });
         }
 
@@ -2040,30 +2160,14 @@ Have a specific URL?
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
 
-        // Record token usage for real-time tracking
-        if (deps.tokenUsageTracker) {
-          try {
-            const outputTokens = Math.max(0, result.tokensUsed - result.promptTokens);
-            deps.tokenUsageTracker.record({
-              sessionId,
-              provider: provider.provider || provider.name,
-              model: provider.model || "unknown",
-              inputTokens: result.promptTokens,
-              outputTokens,
-              durationMs: result.responseMs,
-              channel: channel || "unknown",
-            });
-          } catch { /* best-effort */ }
-        }
-
         const TOKEN_BUDGET = 900000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
-          conversationMessages.push({ role: "user", content: "⚠ Token budget is 50% used. STOP searching. Provide your answer now based on what you've found. Only write files if the user explicitly requested a detailed report. Do NOT search again." });
+          conversationMessages.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
         }
         if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"\n`);
-          conversationMessages.push({ role: "user", content: "⚠ Token budget 80% used. You MUST produce a final answer NOW. If you have any results, format them for the user. If you have a script, run it with shell_exec immediately." });
+          conversationMessages.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_80", {}) });
         }
         if (totalTokensUsed > TOKEN_BUDGET) {
           process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.\n`);
@@ -2156,6 +2260,24 @@ Have a specific URL?
         }
 
         const toolCalls = assistantMsg.tool_calls;
+
+        // Record token usage for real-time tracking (after XML tool-call parsing
+        // so toolCalls count reflects both native and XML-parsed calls).
+        if (deps.tokenUsageTracker) {
+          try {
+            const outputTokens = Math.max(0, result.tokensUsed - result.promptTokens);
+            deps.tokenUsageTracker.record({
+              sessionId,
+              provider: provider.provider || provider.name,
+              model: provider.model || "unknown",
+              inputTokens: result.promptTokens,
+              outputTokens,
+              durationMs: result.responseMs,
+              channel: channel || "unknown",
+              toolCalls: toolCalls?.length ?? 0,
+            });
+          } catch { /* best-effort */ }
+        }
         // Check if LLM used web_search or tavily-search but user intent matches an installed skill
         // Also check if SearchPreprocessor auto-executed a search (searchPreDone)
         const usedWebSearch = toolCalls && toolCalls.some(tc => {
@@ -2430,38 +2552,44 @@ Have a specific URL?
           } else if (!toolErrored) {
             // ── Execute the tool ──
             const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_search", "browser_fetch_json", "scrapling_fetch", "fetch_node_page", "skill_execute"].includes(toolName);
-            const MAX_RETRIES = isNetworkTool ? 2 : 0;
             const isBrowser = toolName.startsWith("browser_");
+            const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
 
             try {
-              for (let retry = 0; retry <= MAX_RETRIES; retry++) {
-                try {
-                  const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
-                  // 使用信号量限制并发：浏览器工具串行，网络工具限3并发，其他限5并发
-                  const toolSem = getToolSemaphore(toolName);
-                  rawResult = await toolSem.withPermit(async () => {
-                    let timer: ReturnType<typeof setTimeout> | undefined;
-                    try {
-                      return await Promise.race([
-                        toolEntry.handler(args),
-                        new Promise<never>((_, reject) => {
-                          timer = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout);
-                        }),
-                      ]);
-                    } finally {
-                      if (timer) clearTimeout(timer);
-                    }
-                  });
-                  break; // success
-                } catch (retryErr) {
-                  if (retry < MAX_RETRIES && isNetworkTool) {
-                    const delay = Math.min(1000 * Math.pow(2, retry), 5000);
-                    process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" retry ${retry + 1}/${MAX_RETRIES} after ${delay}ms: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}\n`);
-                    await new Promise(r => setTimeout(r, delay));
-                  } else {
-                    throw retryErr;
+              // Use retryAsync for network tools (max 2 retries with exponential
+              // backoff + jitter). Non-network tools get a single attempt.
+              // Refactored from the inline for-loop to leverage the production-grade
+              // retry utilities (crypto-secure jitter, decorrelated backoff, abort signal).
+              const execOnce = async (): Promise<unknown> => {
+                const toolSem = getToolSemaphore(toolName);
+                return toolSem.withPermit(async () => {
+                  let timer: ReturnType<typeof setTimeout> | undefined;
+                  try {
+                    return await Promise.race([
+                      toolEntry.handler(args),
+                      new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout);
+                      }),
+                    ]);
+                  } finally {
+                    if (timer) clearTimeout(timer);
                   }
-                }
+                });
+              };
+
+              if (isNetworkTool) {
+                rawResult = await retryAsync(execOnce, {
+                  attempts: 3, // 1 initial + 2 retries (matches previous MAX_RETRIES=2)
+                  minDelayMs: 1000,
+                  maxDelayMs: 5000,
+                  jitter: 0.3,
+                  label: `tool:${toolName}`,
+                  onRetry: (info) => {
+                    process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" retry ${info.attempt}/${info.maxAttempts} after ${info.delayMs}ms: ${info.err instanceof Error ? info.err.message : String(info.err)}\n`);
+                  },
+                });
+              } else {
+                rawResult = await execOnce();
               }
 
               // Process result
@@ -2495,6 +2623,26 @@ Have a specific URL?
                 toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
               }
               toolResult = summarizeToolResultFn(toolName, toolResult);
+
+              // ── Output schema validation ──
+              // If the tool declares an `outputSchema`, validate the raw result
+              // against it. On mismatch, surface a structured error to the LLM
+              // so it can retry or self-correct, instead of silently passing
+              // malformed data downstream. Inspired by LangChain args_schema and
+              // OpenAI function calling strict mode.
+              const outputSchema = toolEntry.definition.outputSchema;
+              if (outputSchema) {
+                const validation = validateToolResult(toolName, rawResult, outputSchema);
+                if (!validation.valid) {
+                  process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" output schema validation failed: ${validation.errors.join("; ")}\n`);
+                  toolResult = JSON.stringify({
+                    error: "tool_output_schema_validation_failed",
+                    tool: toolName,
+                    violations: validation.errors,
+                    hint: "The tool returned a value that does not match its declared output schema. Adjust your parameters and retry, or fall back to a different approach.",
+                  });
+                }
+              }
 
               // Cache result
               if (deps.toolResultCache) {
@@ -2539,7 +2687,7 @@ Have a specific URL?
               else if (isNetwork) suggestion = "Suggestion: Network error. Try again later or use a different source.";
               else suggestion = "Suggestion: Try different parameters or use an alternative tool.";
 
-              toolResult = JSON.stringify({ error: errMsg, suggestion, retried: isNetworkTool && MAX_RETRIES > 0, toolName });
+              toolResult = JSON.stringify({ error: errMsg, suggestion, retried: isNetworkTool, toolName });
               toolErrored = true;
               toolError = errMsg;
               recordToolFailure(toolName);

@@ -56,9 +56,22 @@ export interface ChatMessage {
 }
 
 export interface ChatContent {
-  type: "text" | "image_url";
+  type: "text" | "image_url" | "input_audio" | "file";
   text?: string;
   image_url?: { url: string; detail?: "auto" | "low" | "high" };
+  /**
+   * Audio input (OpenAI GPT-4o audio modality).
+   * `data` is a base64 string (without the `data:audio/wav;base64,` prefix).
+   * `format` is one of the audio formats supported by the model.
+   */
+  input_audio?: { data: string; format: "wav" | "mp3" | "flac" | "ogg" };
+  /**
+   * File / document input (Anthropic `document` content part, OpenAI file).
+   * `data` is a base64 string (without the `data:application/pdf;base64,` prefix).
+   * `filename` is optional (used by some providers for display).
+   * `mimeType` is required (e.g. "application/pdf").
+   */
+  file?: { data: string; mimeType: string; filename?: string };
 }
 
 export interface ModelToolDefinition {

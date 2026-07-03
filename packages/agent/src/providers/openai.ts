@@ -507,6 +507,31 @@ export class OpenAIProvider implements ProviderPlugin {
             },
           };
         }
+        if (part.type === "input_audio" && part.input_audio?.data) {
+          // OpenAI GPT-4o audio modality: input_audio content part with base64 data.
+          return {
+            type: "input_audio",
+            input_audio: {
+              data: part.input_audio.data,
+              format: part.input_audio.format,
+            },
+          };
+        }
+        if (part.type === "file" && part.file?.data) {
+          // OpenAI does not directly accept inline base64 PDFs in chat
+          // completions (requires a file upload step first). Pass through
+          // as-is; the model will see the structure but may not be able to
+          // read the PDF content. For Anthropic/Gemini, the adapter handles
+          // this via their document/inlineData formats.
+          return {
+            type: "file",
+            file: {
+              data: part.file.data,
+              mime_type: part.file.mimeType,
+              filename: part.file.filename,
+            },
+          };
+        }
         return part;
       });
     }

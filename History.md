@@ -5,6 +5,139 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.62.9 (2026-07-03)
+
+### 对标主流 AI Agent 项目的第四轮 10 项能力提升（剩余差距全部弥合）
+
+完成 v0.62.8 之前规划的剩余 10 项改进，至此与主流 AI Agent 项目的差距弥合工作全部完成。本轮聚焦 Token/Cost 跟踪、重试机制、Schema 验证、异步取消、流式推送、多模态、LLM 评估、Prompt 集中化、SQLite Checkpointer、多 Agent 协作十个方向：
+
+#### P0-1. Token/Cost 跟踪 stub 修复（`packages/agent/src/agent-model-executor.ts` + `apps/server/src/index.ts`）
+
+**问题**：`AgentModelExecutor.getModelCostProvider()` 返回 stub `{ getModelCost: () => undefined }`，导致 `TokenUsageTracker` 始终 fallback 到默认价格，无法反映真实的 provider 实时价格。
+
+**改进**：
+- `AgentModelExecutor` 新增 `gatewayMetadataCache` 字段（结构化类型，避免 agent 包静态依赖 gateway 包）
+- `setGatewayMetadataCache()` 接收 `GatewayMetadataCache` 实例
+- `getModelCostProvider()` 返回真实实现：`cache.getModelCost(provider, model)`
+- `apps/server/src/index.ts` 实例化 `GatewayMetadataCache`，注册为服务，注入 `AgentModelExecutor`
+- `llm-caller.ts` 中 Token usage 记录移到 XML 工具调用解析之后，添加 `toolCalls` 字段
+
+#### P0-2. retryAsync 接入主路径（`packages/agent/src/llm-caller.ts`）
+
+**问题**：网络工具调用失败后使用内联重试循环，缺乏统一的双 jitter 策略、Retry-After 契约和 AbortSignal 支持。
+
+**改进**：
+- 网络工具调用改用 `retryAsync(execOnce, { attempts: 3, minDelayMs: 1000, maxDelayMs: 5000, jitter: 0.3, label, onRetry })`
+- `onRetry` 回调输出 stderr 日志，记录重试次数、延迟、错误原因
+- 非网络工具直接执行，不重试
+
+#### P1-1. 工具结果 Schema 验证（`packages/agent/src/tool-types.ts` + `llm-caller.ts`）
+
+**问题**：工具返回值没有 schema 验证，格式错误的结果会被直接注入对话，LLM 可能基于错误数据继续推理。
+
+**改进**：
+- `ToolDefinition` 新增 `outputSchema?: ToolInputSchema` 字段
+- `ToolDescriptor` 新增 `outputSchema` 字段
+- 新增 `validateToolResult(toolName, result, schema)` 函数 + `ToolResultValidation` 接口
+- JSON Schema 子集验证：type / enum / minimum / maximum / minLength / maxLength / pattern / items (arrays) / properties+required (objects)
+- `llm-caller.ts` 中工具执行后验证 outputSchema，失败时返回结构化错误 JSON（包含 violations 和 hint）
+
+#### P1-2. 异步取消端到端（`packages/agent/src/agent-model-executor.ts` + `llm-caller.ts` + `packages/gateway/src/protocol-adapter.ts`）
+
+**问题**：用户关闭 SSE 连接或点击取消后，LLM 调用和工具执行仍继续运行，浪费 Token 和资源。
+
+**改进**：
+- `AgentModelExecutor` 新增 per-session `AbortController` 管理（`sessionAbortControllers` Map）
+- 新增 `abortSession(sessionId)` 公开方法，触发 abort signal
+- `chatInner` 开头注册 controller，finally 块清理
+- `LLMCallerDeps` 和 `TryCallLLMOptions` 新增 `abortSignal?: AbortSignal`
+- `callLLMOnce` 中合并外部 signal 与 timeout controller（支持 `AbortSignal.any`）
+- tryCallLLM 循环中检查 abort 状态，返回取消响应
+- `protocol-adapter.ts` SSE handler 添加 `req.on("close")` 监听，触发 `abortSession`
+- 新增 `POST /api/chat/cancel` 端点，支持显式取消
+
+#### P1-3. Token 级 SSE 流式推送（`packages/agent/src/types.ts` + `llm-caller.ts`）
+
+**问题**：SSE 流式响应只推送 phase 级别进度，LLM 生成的每个 token 不推送到前端，用户等待感强。
+
+**改进**：
+- `AgentProgressEvent` 新增 `"token"` 类型和 `delta?: string` 字段
+- `llm-caller.ts` 中流式回调每收到 delta 时触发 `onProgress({ type: "token", delta: cleaned, reply: content })`
+
+#### P2-1. 多模态输入扩展（`packages/plugin-sdk/src/provider.ts` + `packages/agent/src/providers/*.ts` + `llm-caller.ts`）
+
+**问题**：`ChatContent` 仅支持 `text` 和 `image_url`，不支持音频、PDF 等多模态输入。主流项目已广泛支持 GPT-4o 音频、Claude PDF、Gemini 音频/PDF。
+
+**改进**：
+- `ChatContent` 扩展：新增 `input_audio`（OpenAI GPT-4o）和 `file`（Anthropic PDF / Gemini）类型
+- `packages/agent/src/llm-caller.ts` 新增 `stripDataUriPrefix()` 和 `parseMimeTypeFromDataUri()` 辅助函数
+- `OpenAIProvider`：支持 `input_audio` 和 `file` content part
+- `AnthropicProvider`：解析真实 MIME（从 data URI 前缀），支持 PDF document content part
+- `GoogleProvider`：解析真实 MIME，支持音频（`inlineData.mimeType: audio/xxx`）和 PDF
+
+#### P2-2. LLM-as-judge 评估器（`packages/agent/src/evals/types.ts` + `eval-runner.ts`）
+
+**问题**：`EvalRunner` 仅有启发式评分（长度/模式匹配/关键词），无法评估语义正确性。主流项目（LangSmith、OpenAI Evals）都支持 LLM-as-judge。
+
+**改进**：
+- `evals/types.ts` 新增 `CustomEvaluator` 类型、`LLMJudgeCriteria` 接口、`DEFAULT_JUDGE_CRITERIA` 常量（4 个维度：correctness/completeness/clarity/hallucination）
+- `EvalConfig` 新增 `customEvaluators?: CustomEvaluator[]` 字段
+- `EvalRunner` 新增 `evaluateOutputAsync()` 方法：70% judge + 30% heuristic 混合评分
+- 新增 `runLLMJudge()` 方法：构建评分 prompt → 调用 judge LLM → 解析 JSON 响应（weighted_score / rationale / hallucination_flagged）
+- Custom evaluator 支持：60% custom + 40% heuristic 混合
+
+#### P2-3. PromptRegistry — 集中式 Prompt 模板管理（`packages/agent/src/prompt-registry.ts`）
+
+**问题**：关键 prompt 字符串（token budget 警告、tool_loop 提示、search 已完成提示等）散落在 `llm-caller.ts` 内联字符串中，无法统一版本管理、A/B 测试或外部覆盖。
+
+**改进**：
+- 新增 `PromptRegistry` 单例类：`register/unregister/get/list/listByTag/format/formatTemplate/loadFromDisk/parseFrontmatter/clear` 方法
+- `{{var}}` 双花括号变量插值语法，缺失变量保留原样便于日志排查
+- 支持 `data/prompts/*.md` 外部文件加载，frontmatter 格式解析
+- 4 个内置模板：`token_budget.warning_50`、`token_budget.warning_80`、`tool_loop.nudge_final_answer`、`search.already_completed`
+- `registerBuiltinPromptTemplates()` 函数：安全注册（不覆盖已存在模板）
+- `apps/server/src/index.ts` 启动时注入 `PromptRegistry` 单例，注册为 `promptRegistry` 服务
+- `llm-caller.ts` 中 4 处内联字符串替换为 `PromptRegistry.getInstance().format(name, {})` 调用
+
+**对标**：LangChain PromptTemplate、LangSmith Prompt Hub、AutoGen role-based prompt templates。
+
+#### P3-1. SqliteCheckpointer — SQLite 持久化 Checkpointer（`packages/agent/src/sqlite-checkpointer.ts`）
+
+**问题**：`StateGraph` 仅有 `MemoryCheckpointer`（纯内存），进程重启后图执行状态全部丢失。
+
+**改进**：
+- 新增 `SqliteCheckpointer<TState>` 类，实现 `Checkpointer<TState>` 接口
+- `init()` 创建 `agent_checkpoints` 表 + 索引（thread_id + timestamp DESC）
+- `put()` 使用 `INSERT OR REPLACE` 幂等写入
+- `get()` 返回最新 checkpoint，`list()` 按 timestamp 倒序返回
+- `putWrites()` 读取现有 writes JSON 数组，追加新 write 后更新
+- `clear(threadId)` / `clearAll()` 清理方法
+- 不直接 import better-sqlite3：定义 `SqliteDatabaseLike` 接口，由调用方传入 Database 实例
+- `rowToCheckpoint()` 解析时对损坏的 JSON 静默退化
+
+**对标**：LangGraph SqliteSaver / AsyncSqliteSaver、OpenAI Agents SDK session persistence、AutoGen save_state / load_state。
+
+#### P3-2. Multi-Agent Collaboration Patterns — GroupChat / Debate / RoundRobin（`packages/agent/src/multi-agent-patterns.ts`）
+
+**问题**：`SwarmOrchestrator` 处理 agent 注册、delegation、handoff（基础设施），但缺少「对话级」协作模式。
+
+**改进**：
+- 新增 `AgentSpeaker` 接口（id / name / role / systemPrompt）
+- `RoundRobinChat` 类：按顺序依次发言，适合流水线任务
+- `GroupChat` 类：由 selector 决定下一发言者，支持自定义 selectorFn
+- `DebatePattern` 类：两组 agent 多轮辩论，judge agent 总结裁决
+- 所有模式支持 `maxRounds` / `stopCondition` 提前终止
+- `createSpeaker()` 工厂函数、`formatChatResult()` 格式化输出
+- ChatFn 注入设计：不绑定具体 LLM provider
+
+**对标**：AutoGen GroupChat / Selector / RoundRobin、CrewAI Crew、ChatDev debate、OpenAI Agents SDK orchestration patterns。
+
+### 验证
+
+- `pnpm build`：✅ 全部 17 个 workspace 项目构建成功
+- `pnpm typecheck`：✅ 全部 17 个 workspace 项目类型检查通过
+- `pnpm test`：✅ 全部测试通过
+
 ## v0.62.8 (2026-07-03)
 
 ### 对标主流 AI Agent 项目的第三轮 4 项能力提升（差距全部弥合）

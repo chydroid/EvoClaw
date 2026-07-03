@@ -2653,6 +2653,8 @@ export class ProtocolAdapter {
 
         const agentExecutor = this.registry.resolveService<{
           chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+          /** End-to-end cancellation: aborts in-flight LLM fetches for a session. */
+          abortSession?(sessionId: string): boolean;
           getGreeting(): string | null;
           generateBriefUnderstanding(userMessage: string): Promise<string>;
         }>("agentModelExecutor");
@@ -2719,6 +2721,20 @@ export class ProtocolAdapter {
           process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}\n`);
           let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
           let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
+          // ── End-to-end cancellation: listen for client disconnect ──
+          // When the browser closes the SSE connection (user navigates away,
+          // clicks "stop", or the network drops), trigger abortSession so the
+          // in-flight LLM fetch is cancelled and the tryCallLLM loop short-circuits.
+          // Without this, the server keeps processing and burning tokens even
+          // though no one is listening. The listener is removed in `finally`.
+          let clientDisconnected = false;
+          const onClose = () => {
+            clientDisconnected = true;
+            if (agentExecutor?.abortSession) {
+              try { agentExecutor.abortSession(resolvedSessionId); } catch { /* best-effort */ }
+            }
+          };
+          req.on("close", onClose);
           try {
             // Tell the user right away that a long-running task is being processed.
             sendSSE("working", { phase: "working", detail: "正在进行生成，请耐心等待..." });
@@ -2790,13 +2806,17 @@ export class ProtocolAdapter {
               files: result.files || [],
             });
           } catch (chatErr) {
-            if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
+            if (clientDisconnected) {
+              // Client already left; no point sending an SSE error event.
+              console.debug("[ProtocolAdapter] Client disconnected; aborting chat silently");
+            } else if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
               sendSSE("error", { message: "⏱️ 处理超时，请稍后重试。替代方案：① 简化您的请求后重试；② 将任务拆分为更小的步骤；③ 检查网络连接是否正常。" });
             } else {
               const errMsg = chatErr instanceof Error ? chatErr.message : String(chatErr);
               sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n替代方案：① 请稍后重试；② 尝试简化请求；③ 前往 Ops 页面检查系统状态。` });
             }
           } finally {
+            req.off("close", onClose);
             if (keepAliveHandle) clearInterval(keepAliveHandle);
             if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
             try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
@@ -2925,6 +2945,28 @@ export class ProtocolAdapter {
         return;
       }
       res.json(status);
+    });
+
+    // ── End-to-end cancellation endpoint ──
+    // Allows the WebUI / external clients to explicitly cancel an in-flight
+    // chat for a session. Triggers AgentModelExecutor.abortSession, which
+    // fires the per-session AbortController, propagating to:
+    //  - in-flight LLM fetch (via signal wired into callLLMOnce)
+    //  - tool execution (via retryAsync abortSignal)
+    //  - tryCallLLM main loop (short-circuits at the next round boundary)
+    app.post("/api/chat/cancel", (req: Request, res: Response) => {
+      const sessionId = (req.body.sessionId as string) || (req.query.sessionId as string) || "";
+      if (!sessionId) {
+        res.status(400).json({ error: "sessionId is required" });
+        return;
+      }
+      const agentExecutor = this.registry.resolveService<{ abortSession?(sessionId: string): boolean }>("agentModelExecutor");
+      if (!agentExecutor?.abortSession) {
+        res.status(501).json({ error: "Cancellation not supported by this agent executor" });
+        return;
+      }
+      const aborted = agentExecutor.abortSession(sessionId);
+      res.json({ aborted, sessionId });
     });
 
     app.get("/api/chat/checkpoint", (req: Request, res: Response) => {

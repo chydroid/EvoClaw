@@ -24,6 +24,7 @@ import type {
   ToolCall,
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
+import { parseMimeTypeFromDataUri } from "../llm-caller.js";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -428,11 +429,30 @@ export class GoogleProvider implements ProviderPlugin {
             if (part.type === "text" && part.text) {
               (content.parts as Record<string, unknown>[]).push({ text: part.text });
             } else if (part.type === "image_url" && part.image_url?.url) {
+              // Parse MIME from data URI; Gemini requires raw base64 (no prefix).
+              const url = part.image_url.url;
+              const isDataUri = url.startsWith("data:");
+              const mimeType = isDataUri
+                ? parseMimeTypeFromDataUri(url) || "image/jpeg"
+                : "image/jpeg";
+              const base64 = isDataUri && url.indexOf("base64,") >= 0
+                ? url.slice(url.indexOf("base64,") + 7)
+                : url;
+              (content.parts as Record<string, unknown>[]).push({
+                inlineData: { mimeType, data: base64 },
+              });
+            } else if (part.type === "input_audio" && part.input_audio?.data) {
+              // Gemini supports audio/wav, audio/mp3, audio/aiff, audio/ogg, audio/flac
               (content.parts as Record<string, unknown>[]).push({
                 inlineData: {
-                  mimeType: "image/jpeg",
-                  data: part.image_url.url, // Gemini accepts base64 or URL
+                  mimeType: `audio/${part.input_audio.format}`,
+                  data: part.input_audio.data,
                 },
+              });
+            } else if (part.type === "file" && part.file?.data) {
+              // Gemini supports application/pdf via inlineData
+              (content.parts as Record<string, unknown>[]).push({
+                inlineData: { mimeType: part.file.mimeType, data: part.file.data },
               });
             }
           }
