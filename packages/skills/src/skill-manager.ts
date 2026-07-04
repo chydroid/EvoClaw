@@ -263,6 +263,8 @@ export class SkillManager {
       }
     }
 
+    // 收集缺失的 binary，供 skill.missingBins 字段使用（WebUI 据此显示"一键安装"按钮）
+    const missingBins: string[] = [];
     if (ocMeta?.requires?.bins) {
       // 系统包管理器（brew/apt）的安装是用户责任，不在此处主动执行。
       // 仅在 warnings 中显式提示缺失的二进制，并附带 openclaw.install 中声明的
@@ -276,6 +278,7 @@ export class SkillManager {
         // Actually check if the binary exists in PATH
         const binExists = this.checkBinaryExists(bin);
         if (!binExists) {
+          missingBins.push(bin);
           const hint = installHints ? ` (install hint: ${installHints})` : "";
           warnings.push(
             `Missing required binary "${bin}" — please install it manually (brew/apt are user-managed)${hint}`
@@ -380,6 +383,9 @@ export class SkillManager {
         userRating: 0,
       },
     };
+
+    // 存储缺失的 binary 列表，供 WebUI 显示"一键安装"按钮
+    skill.missingBins = missingBins;
 
     // Security scan BEFORE registering the skill
     const securityResult = this.validator.securityScan(skill);
@@ -661,6 +667,125 @@ export class SkillManager {
     const skill = this.skills.get(skillId);
     if (!skill) return null;
     return this.validator.securityScan(skill);
+  }
+
+  /**
+   * 安装技能缺失的系统 binary。
+   * 优先使用技能声明的 openclaw.install 安装步骤（executeStructuredInstall）；
+   * 若无匹配步骤，则 fallback 用系统包管理器（winget/brew/apt）直接安装。
+   * 安装后重新检测 binary 是否就位，更新 skill.missingBins。
+   */
+  async installMissingBins(skillId: string): Promise<{
+    success: boolean;
+    results: Array<{ binary: string; installed: boolean; message: string; error?: string }>;
+    stillMissing: string[];
+  }> {
+    const skill = this.skills.get(skillId);
+    if (!skill) {
+      return { success: false, results: [], stillMissing: [] };
+    }
+
+    const missingBins = skill.missingBins ?? [];
+    if (missingBins.length === 0) {
+      return { success: true, results: [], stillMissing: [] };
+    }
+
+    // 读取技能声明的安装步骤（SkillInstallSpec[]）
+    const installSpecs: import("@evoclaw/core").SkillInstallSpec[] =
+      Array.isArray(skill.openclawMeta?.install) ? skill.openclawMeta!.install as import("@evoclaw/core").SkillInstallSpec[] : [];
+    const skillDir = skill.installPath;
+
+    const results: Array<{ binary: string; installed: boolean; message: string; error?: string }> = [];
+
+    for (const bin of missingBins) {
+      // 1. 查找匹配的 install spec（spec.bins 包含该 binary）
+      const matchingSpec = installSpecs.find(spec => spec.bins && spec.bins.includes(bin));
+
+      if (matchingSpec) {
+        try {
+          const step = await this.executeStructuredInstall(matchingSpec, skillDir);
+          const installed = this.checkBinaryExists(bin);
+          results.push({
+            binary: bin,
+            installed,
+            message: step.message || `Installed via ${matchingSpec.kind}`,
+            error: step.errors.length > 0 ? step.errors.join("; ") : undefined,
+          });
+        } catch (err) {
+          results.push({
+            binary: bin,
+            installed: false,
+            message: `Install spec failed: ${err instanceof Error ? err.message : String(err)}`,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        // 2. Fallback: 用系统包管理器直接安装
+        const result = this.installBinaryViaPackageManager(bin);
+        results.push({
+          binary: bin,
+          installed: result.installed,
+          message: result.message,
+          error: result.error,
+        });
+      }
+    }
+
+    // 更新 skill.missingBins：重新检测所有原缺失的 binary
+    skill.missingBins = missingBins.filter(bin => !this.checkBinaryExists(bin));
+
+    return {
+      success: skill.missingBins.length === 0,
+      results,
+      stillMissing: skill.missingBins,
+    };
+  }
+
+  /**
+   * 用系统包管理器安装 binary（winget/brew/apt）。
+   * Windows → winget，macOS → brew，Linux → apt-get（需 sudo，可能失败）。
+   * 使用 execFileSync(shell:false) 安全执行，白名单校验 binary 名防止注入。
+   */
+  private installBinaryViaPackageManager(bin: string): { installed: boolean; message: string; error?: string } {
+    // 白名单校验 binary 名，防止命令注入
+    if (!/^[A-Za-z0-9_.@-]+$/.test(bin)) {
+      return { installed: false, message: `Invalid binary name: ${bin}`, error: "Invalid binary name" };
+    }
+
+    const { execFileSync } = require("child_process") as typeof import("child_process");
+    const platform = process.platform;
+
+    let program: string;
+    let args: string[];
+
+    if (platform === "win32") {
+      program = "winget";
+      args = ["install", "--accept-source-agreements", "--accept-package-agreements", bin];
+    } else if (platform === "darwin") {
+      program = "brew";
+      args = ["install", bin];
+    } else {
+      // Linux: apt-get install（可能需要 sudo，非 root 会失败）
+      program = "apt-get";
+      args = ["install", "-y", bin];
+    }
+
+    try {
+      execFileSync(program, args, { stdio: "pipe", shell: false, timeout: 120_000 });
+      const installed = this.checkBinaryExists(bin);
+      return {
+        installed,
+        message: installed
+          ? `Installed ${bin} via ${program}`
+          : `${program} completed but ${bin} not found in PATH — try restarting your shell`,
+      };
+    } catch (err) {
+      return {
+        installed: false,
+        message: `Failed to install ${bin} via ${program}`,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   async executeSkill(

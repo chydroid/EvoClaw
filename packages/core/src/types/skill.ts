@@ -94,6 +94,9 @@ export interface Skill extends SkillManifest {
   configStatus?: SkillConfigStatus;
   latestVersion?: string;
   updateAvailable?: boolean;
+  /** 缺失的系统 binary（requires.bins 中检测到不在 PATH 上的）。
+   * 由 registerSkillFromDir 在启动扫描时填充，供 WebUI 展示"一键安装"按钮。 */
+  missingBins?: string[];
 }
 
 export interface SkillBody {

@@ -2211,6 +2211,29 @@ export class ProtocolAdapter {
       }
     });
 
+    // POST /api/skills/:id/install-binary — 安装技能缺失的系统 binary
+    // 优先用技能声明的 openclaw.install 安装步骤，失败 fallback 到系统包管理器。
+    // 由 WebUI 按钮触发（避免启动时自动安装带来的副作用）。
+    app.post("/api/skills/:id/install-binary", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          installMissingBins(skillId: string): Promise<{
+            success: boolean;
+            results: Array<{ binary: string; installed: boolean; message: string; error?: string }>;
+            stillMissing: string[];
+          }>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const result = await skillManager.installMissingBins(String(req.params.id));
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     // GET /api/skills/system/health — 技能系统健康检查（Round 10: 高可用性）
     app.get("/api/skills/system/health", (_req: Request, res: Response) => {
       try {

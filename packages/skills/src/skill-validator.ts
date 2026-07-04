@@ -554,11 +554,13 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     // Check for unsanitized user input in shell commands
+    // 注意：不检测 exec(变量) 模式，因为 const cmd = "ls"; exec(cmd) 是安全用法，静态分析无法区分。
+    // 只检测明确的字符串拼接/模板字符串插值——这些才可能引入用户输入导致注入。
     const shellExecPatterns = [
       { pattern: /exec(?:Sync)?\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in exec call — potential command injection" },
       { pattern: /execFile(?:Sync)?\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in execFile call — potential command injection" },
       { pattern: /spawn\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in spawn call — potential command injection" },
-      { pattern: /exec\s*\(\s*[^`"']/g, desc: "Variable passed directly to exec — potential command injection" },
+      { pattern: /exec\s*\(\s*['"`].*['"`]\s*\+/g, desc: "String concatenation in exec call — potential command injection" },
     ];
 
     for (const { pattern, desc } of shellExecPatterns) {
@@ -682,9 +684,15 @@ export class SkillValidator {
   private scanInstructionsForExfiltration(instructions: string, findings: SecurityFinding[]): void {
     const lines = instructions.split("\n");
 
+    // 收窄规则避免误报：正常 API 文档会写 "send the API key in the Authorization header"，
+    // 这不是外泄。只匹配明确引导 AI 将敏感数据发送到外部目的地的情况。
     const exfilPatterns = [
+      // critical: 明确指令发送环境变量/密钥/凭证到某处（"send the env/secrets to ..."）
       { pattern: /(?:send|post|upload|transmit)\s+(?:the\s+)?(?:environment|env|secrets?|credentials?|tokens?|API\s+keys?)\s+to/gi, desc: "Instructions may direct the AI to exfiltrate sensitive data", severity: "critical" as const },
-      { pattern: /(?:send|post|upload|transmit)\s+.*(?:password|secret|token|api[_-]?key)/gi, desc: "Instructions may direct the AI to transmit sensitive data", severity: "high" as const },
+      // high: 发送敏感数据到外部 URL（要求 to/at + http(s)://，避免 "send token in header" 误报）
+      { pattern: /(?:send|post|upload|transmit)\s+.*(?:password|secret|token|api[_-]?key)\s+.*(?:to|at)\s+https?:\/\//gi, desc: "Instructions may direct the AI to transmit sensitive data to external URL", severity: "high" as const },
+      // high: 明确使用 exfiltrate/leak 等恶意词汇
+      { pattern: /(?:exfiltrate|leak|steal)\s+.*(?:password|secret|token|api[_-]?key|env|credential)/gi, desc: "Instructions explicitly direct the AI to exfiltrate sensitive data", severity: "high" as const },
     ];
 
     for (const { pattern, desc, severity } of exfilPatterns) {

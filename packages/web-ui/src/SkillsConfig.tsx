@@ -78,6 +78,8 @@ interface SkillInfo {
   configStatus?: "configured" | "partial" | "unconfigured" | "none";
   latestVersion?: string;
   updateAvailable?: boolean;
+  /** 缺失的系统 binary（requires.bins 中检测到不在 PATH 上的），供 WebUI 展示一键安装按钮 */
+  missingBins?: string[];
 }
 
 interface ValidationResult {
@@ -790,6 +792,8 @@ export default function SkillsConfig() {
   // 安全详情弹窗：当前展示的 skillId
   const [securityDialogSkillId, setSecurityDialogSkillId] = useState<string | null>(null);
   const [securityScanLoading, setSecurityScanLoading] = useState<string | null>(null);
+  // Binary 安装状态：记录正在安装 binary 的 skillId
+  const [installingBins, setInstallingBins] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
   // Round 9: stale-aware 请求防护 — 取消过期请求，避免旧结果覆盖新结果
@@ -825,6 +829,39 @@ export default function SkillsConfig() {
       }
     }
   }, [securityScans]);
+
+  // 触发安装缺失 binary：调用后端 POST /api/skills/:id/install-binary
+  // 成功后更新 selectedSkill.missingBins，并显示安装结果
+  const handleInstallBins = useCallback(async (skillId: string) => {
+    if (installingBins) return; // 防止并发触发
+    setInstallingBins(skillId);
+    try {
+      const res = await fetch(`/api/skills/${skillId}/install-binary`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        const failed = (data.results || []).filter((r: any) => !r.installed);
+        const stillMissing = data.stillMissing || [];
+        if (stillMissing.length > 0) {
+          const detail = failed.map((r: any) => `${r.binary}: ${r.error || r.message}`).join("; ");
+          setMessage({ type: "error", text: `${t("skills.binary_install_failed", "Binary 安装失败")}: ${stillMissing.join(", ")}${detail ? " — " + detail : ""}` });
+        } else {
+          setMessage({ type: "warning", text: t("skills.binary_install_partial", "部分 binary 安装完成，请查看详情") });
+        }
+      } else {
+        const installed = (data.results || []).filter((r: any) => r.installed).map((r: any) => r.binary);
+        setMessage({ type: "success", text: `${t("skills.binary_install_success", "Binary 已安装")}: ${installed.join(", ")}` });
+      }
+      // 更新 selectedSkill.missingBins（无论成功失败都按后端返回的最新状态）
+      const stillMissing: string[] = data.stillMissing || [];
+      setSelectedSkill(prev => prev && prev.id === skillId ? { ...prev, missingBins: stillMissing } : prev);
+      // 同步更新左侧列表中的 skill 信息
+      setSkills(prev => prev.map(s => s.id === skillId ? { ...s, missingBins: stillMissing } : s));
+    } catch (err) {
+      setMessage({ type: "error", text: `${t("skills.binary_install_failed", "Binary 安装失败")}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setInstallingBins(null);
+    }
+  }, [installingBins, t]);
 
   const loadSkills = useCallback(async () => {
     try {
@@ -1268,6 +1305,9 @@ export default function SkillsConfig() {
   const requiredBins: string[] = Array.isArray(requiredBinsRaw) ? requiredBinsRaw as string[] : (typeof requiredBinsRaw === "string" ? [requiredBinsRaw] : []);
   const hasEnvConfig = configKeys.some(k => /^[A-Z_]+$/.test(k) && k !== "_");
   const envMeta = (skillConfig._envMeta || {}) as Record<string, EnvMeta>;
+  // 拆分缺失/已安装 binary：missingBins 由后端 registerSkillFromDir 检测并填充
+  const missingBins: string[] = Array.isArray(selectedSkill?.missingBins) ? selectedSkill!.missingBins! : [];
+  const installedBins: string[] = requiredBins.filter(b => !missingBins.includes(b));
 
   const updatableCount = skills.filter((s) => {
     if (s.updateAvailable) return true;
@@ -2244,8 +2284,43 @@ export default function SkillsConfig() {
                 </div>
               )}
               {requiredBins.length > 0 && (
-                <div style={{ ...styles.configNoConfig, color: "var(--success)", marginBottom: "8px", textAlign: "left" }}>
-                  {t("skills.requires_system_tools", "需要系统工具")}: {requiredBins.join(", ")}
+                <div style={{ marginBottom: "10px", textAlign: "left", fontSize: "12px", padding: "8px 10px", background: "var(--bg-sidebar)", borderRadius: "4px", border: "1px solid var(--border-light)" }}>
+                  <div style={{ color: "var(--text-muted)", marginBottom: "4px" }}>
+                    {t("skills.requires_system_tools", "需要系统工具")}:
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+                    {installedBins.map(bin => (
+                      <span key={bin} style={{ display: "inline-block", padding: "2px 8px", borderRadius: "3px", fontSize: "11px", background: "var(--success-bg)", color: "var(--success)", border: "1px solid var(--success)" }} title={t("skills.binary_installed", "已安装")}>
+                        ✓ {bin}
+                      </span>
+                    ))}
+                    {missingBins.map(bin => (
+                      <span key={bin} style={{ display: "inline-block", padding: "2px 8px", borderRadius: "3px", fontSize: "11px", background: "var(--error-bg)", color: "var(--error)", border: "1px solid var(--error)" }} title={t("skills.binary_missing", "缺失")}>
+                        ✗ {bin}
+                      </span>
+                    ))}
+                    {missingBins.length > 0 && (
+                      <button
+                        onClick={() => selectedSkill && handleInstallBins(selectedSkill.id)}
+                        disabled={!!installingBins}
+                        style={{
+                          marginLeft: "6px", padding: "3px 10px", fontSize: "11px", borderRadius: "3px",
+                          border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff",
+                          cursor: installingBins ? "not-allowed" : "pointer",
+                          opacity: installingBins ? 0.6 : 1,
+                        }}
+                      >
+                        {installingBins === selectedSkill?.id
+                          ? t("skills.installing", "安装中...")
+                          : t("skills.install_missing_bins", "一键安装缺失工具")}
+                      </button>
+                    )}
+                  </div>
+                  {missingBins.length > 0 && (
+                    <div style={{ color: "var(--text-muted)", fontSize: "10px", marginTop: "6px" }}>
+                      {t("skills.binary_install_hint", "将尝试用技能声明的安装步骤或系统包管理器（winget/brew/apt）安装")}
+                    </div>
+                  )}
                 </div>
               )}
               <form autoComplete="off" onSubmit={e => e.preventDefault()} style={styles.configForm}>
