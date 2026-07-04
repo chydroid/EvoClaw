@@ -46,6 +46,18 @@ export interface ClawHubSkillSearchResult {
   summary?: string;
   version?: string;
   updatedAt?: number;
+  /** ClawHub 镜像可能返回完整元数据，用于前端详情展示 */
+  metaContent?: {
+    Files?: string[];
+    Keywords?: string[];
+    License?: string;
+    DisplayDescription?: string;
+    displayName?: string;
+    owner?: string;
+    skillMd?: string;
+    latest?: { commit?: string | null; publishedAt?: number; version?: string };
+    history?: Array<{ version?: string; createdAt?: number }>;
+  } | null;
 }
 
 /** ClawHub 技能详情 — GET /api/v1/skills/{slug} */

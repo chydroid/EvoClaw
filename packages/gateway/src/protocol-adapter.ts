@@ -1905,6 +1905,11 @@ export class ProtocolAdapter {
             refreshCatalog(): Promise<number>;
             searchRemote(query: string, limit?: number): Promise<Array<{
               slug: string; displayName: string; summary?: string; version?: string; updatedAt?: number;
+              metaContent?: {
+                Files?: string[]; Keywords?: string[]; License?: string; DisplayDescription?: string;
+                owner?: string; skillMd?: string;
+                latest?: { commit?: string | null; publishedAt?: number; version?: string };
+              } | null;
             }>>;
           };
         }>("skillManager");
@@ -1919,11 +1924,10 @@ export class ProtocolAdapter {
         }
 
         // 1) 优先走 ClawHub 官方搜索 API（GET /api/v1/search?q=...）
-        //    这是 openclaw 兼容的搜索端点，支持全文匹配 slug/displayName/summary
         let refreshError: string | undefined;
         try {
           const remoteResults = await skillManager.getMarketplace().searchRemote(q, 20);
-          // 转换为前端期望的格式：results 数组，每项含 slug/name/displayName/summary/version
+          // 透传给前端：含 metaContent（skillMd/owner/License 等）供详情面板直接展示
           const results = remoteResults.map((r) => ({
             slug: r.slug,
             name: r.slug,
@@ -1931,11 +1935,16 @@ export class ProtocolAdapter {
             summary: r.summary ?? "",
             version: r.version ?? "",
             updatedAt: r.updatedAt,
+            owner: r.metaContent?.owner ?? "",
+            license: r.metaContent?.License ?? "",
+            keywords: r.metaContent?.Keywords ?? [],
+            files: r.metaContent?.Files ?? [],
+            skillMd: r.metaContent?.skillMd ?? "",
+            displayDescription: r.metaContent?.DisplayDescription ?? "",
           }));
           res.json({ success: true, results, total: results.length, partial: false });
           return;
         } catch (err: unknown) {
-          // 远程搜索失败，记录错误并回退到本地 catalog
           refreshError = err instanceof Error ? err.message : String(err);
           process.stderr.write(`[ProtocolAdapter] Remote search failed, falling back to local catalog: ${refreshError}\n`);
         }

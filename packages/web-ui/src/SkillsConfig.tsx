@@ -9,6 +9,22 @@ interface EnvMeta {
   envValue?: string;
 }
 
+// 技能市场搜索结果项：包含从 ClawHub metaContent 透传的完整字段，供详情面板展示
+interface MarketplaceSearchResult {
+  name: string;
+  slug?: string;
+  displayName?: string;
+  summary?: string;
+  version?: string;
+  updatedAt?: number;
+  owner?: string;
+  license?: string;
+  keywords?: string[];
+  files?: string[];
+  skillMd?: string;
+  displayDescription?: string;
+}
+
 interface SkillInfo {
   id: string;
   name: string;
@@ -572,6 +588,155 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+// 技能市场详情面板：展示选中技能的完整信息（owner/version/license/keywords/SKILL.md 等）
+function MarketplaceSkillDetail({
+  skill,
+  t,
+  onInstall,
+  installing,
+}: {
+  skill: MarketplaceSearchResult;
+  t: (key: string, fallback?: string) => string;
+  onInstall: (slug: string) => void;
+  installing: string | null;
+}) {
+  const slug = skill.slug || skill.name;
+  const isInstalling = installing === slug;
+
+  // skillMd 可能含 YAML front matter（--- ... ---），剥离后只保留正文用于展示
+  const skillMdBody = (() => {
+    const md = skill.skillMd || "";
+    const fmMatch = md.match(/^---\n[\s\S]*?\n---\n/);
+    return fmMatch ? md.slice(fmMatch[0].length) : md;
+  })();
+
+  // 从 SKILL.md front matter 提取 name/description 作为标题和描述兜底
+  const frontMeta = (() => {
+    const md = skill.skillMd || "";
+    const fmMatch = md.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!fmMatch) return { name: "", description: "" };
+    const fm = fmMatch[1];
+    const nameMatch = fm.match(/^name:\s*(.+)$/m);
+    const descMatch = fm.match(/^description:\s*["']?(.+?)["']?\s*$/m);
+    return {
+      name: nameMatch ? nameMatch[1].trim() : "",
+      description: descMatch ? descMatch[1].trim() : "",
+    };
+  })();
+
+  const displayTitle = skill.displayName || frontMeta.name || skill.name;
+  const displayDesc = skill.displayDescription || skill.summary || frontMeta.description;
+  const updatedAtStr = skill.updatedAt
+    ? new Date(typeof skill.updatedAt === "number" ? skill.updatedAt : Date.parse(String(skill.updatedAt))).toLocaleString()
+    : "";
+
+  return (
+    <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+      {/* 标题区 */}
+      <div style={{ marginBottom: "8px" }}>
+        <div style={{ fontSize: "14px", fontWeight: "bold", color: "var(--text-primary)" }}>{displayTitle}</div>
+        <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>{slug}</div>
+      </div>
+
+      {/* 描述 */}
+      {displayDesc && (
+        <div style={{
+          background: "var(--bg-sidebar)", border: "1px solid var(--border-light)",
+          borderRadius: "4px", padding: "6px 8px", marginBottom: "8px",
+          fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.5,
+        }}>
+          {displayDesc}
+        </div>
+      )}
+
+      {/* 元数据表格 */}
+      <div style={{ marginBottom: "8px" }}>
+        {skill.owner && (
+          <div style={{ display: "flex", padding: "2px 0" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_owner", "作者")}</span>
+            <span style={{ color: "var(--text-primary)" }}>@{skill.owner}</span>
+          </div>
+        )}
+        {skill.version && (
+          <div style={{ display: "flex", padding: "2px 0" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_version", "版本")}</span>
+            <span style={{ color: "var(--text-primary)" }}>{skill.version}</span>
+          </div>
+        )}
+        {skill.license && (
+          <div style={{ display: "flex", padding: "2px 0" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_license", "许可证")}</span>
+            <span style={{ color: "var(--text-primary)" }}>{skill.license}</span>
+          </div>
+        )}
+        {updatedAtStr && (
+          <div style={{ display: "flex", padding: "2px 0" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_updated", "更新于")}</span>
+            <span style={{ color: "var(--text-primary)" }}>{updatedAtStr}</span>
+          </div>
+        )}
+        {skill.keywords && skill.keywords.length > 0 && (
+          <div style={{ display: "flex", padding: "2px 0", alignItems: "flex-start" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_keywords", "关键词")}</span>
+            <div style={{ flex: 1 }}>
+              {skill.keywords.map((kw, i) => (
+                <span key={i} style={{
+                  display: "inline-block", background: "var(--bg-hover)", color: "var(--text-secondary)",
+                  padding: "1px 6px", borderRadius: "3px", fontSize: "10px", marginRight: "4px", marginBottom: "2px",
+                }}>{kw}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {skill.files && skill.files.length > 0 && (
+          <div style={{ display: "flex", padding: "2px 0", alignItems: "flex-start" }}>
+            <span style={{ color: "var(--text-muted)", minWidth: "70px" }}>{t("skills.detail_files", "文件")}</span>
+            <div style={{ flex: 1, color: "var(--text-primary)", fontSize: "10px", wordBreak: "break-all" }}>
+              {skill.files.join(", ")}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 安装按钮 */}
+      <button
+        onClick={() => onInstall(slug)}
+        disabled={isInstalling}
+        style={{
+          width: "100%", padding: "6px 0", fontSize: "11px", fontWeight: "bold", borderRadius: "4px",
+          border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff",
+          cursor: isInstalling ? "wait" : "pointer", opacity: isInstalling ? 0.6 : 1,
+          marginBottom: "8px",
+        }}
+      >
+        {isInstalling ? t("skills.installing", "安装中...") : t("skills.install_btn", "安装")}
+      </button>
+
+      {/* SKILL.md 正文（Markdown 渲染） */}
+      {skillMdBody && (
+        <div>
+          <div style={{
+            fontSize: "11px", fontWeight: "bold", color: "var(--section-title-color)",
+            marginTop: "8px", marginBottom: "4px", paddingBottom: "2px",
+            borderBottom: "1px solid var(--border-light)",
+          }}>
+            {t("skills.detail_skill_md", "技能文档")}
+          </div>
+          <div
+            className="markdown-body"
+            style={{
+              background: "var(--bg-sidebar)", border: "1px solid var(--border-light)",
+              borderRadius: "4px", padding: "8px 10px", fontSize: "11px", lineHeight: 1.6,
+              maxHeight: "180px", overflowY: "auto",
+            }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(skillMdBody) }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SkillsConfig() {
   const { t } = useTranslation();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -599,15 +764,17 @@ export default function SkillsConfig() {
   const [sortBy, setSortBy] = useState<"name" | "category" | "status" | "invocations" | "rating" | "updated">("name");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const [marketplaceTab, setMarketplaceTab] = useState(false);
-  const [marketplaceResults, setMarketplaceResults] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
+  const [marketplaceResults, setMarketplaceResults] = useState<MarketplaceSearchResult[]>([]);
   const [marketplaceSearching, setMarketplaceSearching] = useState(false);
   const [marketplaceInstalling, setMarketplaceInstalling] = useState<string | null>(null);
-  const [trendingSkills, setTrendingSkills] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
+  const [trendingSkills, setTrendingSkills] = useState<MarketplaceSearchResult[]>([]);
   // 市场错误状态：仅用于真正的错误（网络/鉴权/registry 不可达），空搜索结果不算错误
   const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
   // 追踪用户是否已提交过搜索，用于区分"未搜索"和"搜索无结果"两种空态
   const [marketplaceQueried, setMarketplaceQueried] = useState(false);
   const [marketplaceLastQuery, setMarketplaceLastQuery] = useState("");
+  // 当前选中的市场技能 slug，用于右侧详情面板展示
+  const [selectedMarketplaceSlug, setSelectedMarketplaceSlug] = useState<string | null>(null);
   // Round 8: 安全扫描结果缓存（skillId → scan result）
   const [securityScans, setSecurityScans] = useState<Record<string, {
     safe: boolean;
@@ -791,6 +958,8 @@ export default function SkillsConfig() {
     setMarketplaceError(null);
     setMarketplaceQueried(true);
     setMarketplaceLastQuery(query);
+    // 新搜索时清除选中状态，避免旧选中项残留
+    setSelectedMarketplaceSlug(null);
     try {
       const res = await fetch(`/api/marketplace/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
       if (controller.signal.aborted) return;
@@ -1219,58 +1388,85 @@ export default function SkillsConfig() {
                 {marketplaceError}
               </div>
             )}
-            {marketplaceResults.length > 0 && (
-              <div style={{ maxHeight: "300px", overflowY: "auto" }}>
-                {marketplaceResults.map((ms, idx) => (
-                  <div key={idx} style={{ padding: "6px 4px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: "12px", fontWeight: 500, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {ms.displayName || ms.name}
-                      </div>
-                      {ms.summary && <div style={{ fontSize: "10px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ms.summary}</div>}
-                    </div>
-                    <button
-                      onClick={() => handleMarketplaceInstall(ms.slug || ms.name)}
-                      disabled={marketplaceInstalling === (ms.slug || ms.name)}
-                      style={{
-                        marginLeft: "6px", padding: "2px 8px", fontSize: "10px", borderRadius: "3px",
-                        border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff",
-                        cursor: marketplaceInstalling === (ms.slug || ms.name) ? "wait" : "pointer",
-                        opacity: marketplaceInstalling === (ms.slug || ms.name) ? 0.6 : 1,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {marketplaceInstalling === (ms.slug || ms.name) ? "安装中..." : "安装"}
-                    </button>
+            {/* 两栏布局：左侧搜索结果列表，右侧技能详情面板 */}
+            {(() => {
+              // 构建左侧要渲染的列表：有搜索结果时用结果，否则用 trending
+              const listItems = marketplaceResults.length > 0
+                ? marketplaceResults
+                : (!marketplaceQueried && trendingSkills.length > 0 ? trendingSkills : []);
+              const showList = listItems.length > 0 && !marketplaceError;
+              const selectedSkill = selectedMarketplaceSlug
+                ? listItems.find((ms) => (ms.slug || ms.name) === selectedMarketplaceSlug)
+                : null;
+
+              if (!showList) return null;
+
+              return (
+                <div style={{ display: "flex", gap: "8px", marginTop: "4px", maxHeight: "340px" }}>
+                  {/* 左栏：搜索/热门结果列表 */}
+                  <div style={{ flex: "0 0 45%", minWidth: "0", overflowY: "auto", borderRight: "1px solid var(--border)", paddingRight: "6px" }}>
+                    {marketplaceResults.length === 0 && trendingSkills.length > 0 && (
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>{t("skills.trending", "热门技能")}</div>
+                    )}
+                    {listItems.map((ms, idx) => {
+                      const slug = ms.slug || ms.name;
+                      const isSelected = slug === selectedMarketplaceSlug;
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => setSelectedMarketplaceSlug(isSelected ? null : slug)}
+                          style={{
+                            padding: "6px 8px", borderBottom: "1px solid var(--border)", cursor: "pointer",
+                            background: isSelected ? "var(--accent-bg, var(--bg-hover))" : "transparent",
+                            borderLeft: isSelected ? "3px solid var(--accent)" : "3px solid transparent",
+                            transition: "background 0.15s",
+                          }}
+                          onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                          onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: "12px", fontWeight: 500, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {ms.displayName || ms.name}
+                              </div>
+                              {ms.owner && <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>@{ms.owner}</div>}
+                              {ms.summary && <div style={{ fontSize: "10px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }}>{ms.summary}</div>}
+                            </div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleMarketplaceInstall(slug); }}
+                              disabled={marketplaceInstalling === slug}
+                              style={{
+                                marginLeft: "4px", padding: "2px 8px", fontSize: "10px", borderRadius: "3px",
+                                border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff",
+                                cursor: marketplaceInstalling === slug ? "wait" : "pointer",
+                                opacity: marketplaceInstalling === slug ? 0.6 : 1,
+                                whiteSpace: "nowrap", flexShrink: 0,
+                              }}
+                            >
+                              {marketplaceInstalling === slug ? "..." : t("skills.install_btn", "安装")}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
-            )}
+                  {/* 右栏：技能详情面板 */}
+                  <div style={{ flex: 1, minWidth: 0, overflowY: "auto", paddingLeft: "4px" }}>
+                    {selectedSkill ? (
+                      <MarketplaceSkillDetail skill={selectedSkill} t={t} onInstall={handleMarketplaceInstall} installing={marketplaceInstalling} />
+                    ) : (
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "12px 4px", textAlign: "center" }}>
+                        {t("skills.marketplace_select_hint", "点击左侧技能查看详情")}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
             {/* 搜索无结果：仅当用户已提交搜索且无错误且无结果时显示，是信息提示而非错误 */}
             {!marketplaceSearching && marketplaceResults.length === 0 && marketplaceQueried && !marketplaceError && (
               <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "8px 4px" }}>
                 {t("skills.marketplace_no_match", "未找到匹配「{0}」的技能").replace("{0}", marketplaceLastQuery)}
-              </div>
-            )}
-            {!marketplaceSearching && marketplaceResults.length === 0 && trendingSkills.length > 0 && !marketplaceQueried && (
-              <div>
-                <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>{t("skills.trending", "热门技能")}</div>
-                {trendingSkills.map((ts, idx) => (
-                  <div key={idx} style={{ padding: "4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "11px", color: "var(--text-primary)" }}>{ts.displayName || ts.name}</span>
-                    <button
-                      onClick={() => handleMarketplaceInstall(ts.slug || ts.name)}
-                      disabled={marketplaceInstalling === (ts.slug || ts.name)}
-                      style={{
-                        padding: "1px 6px", fontSize: "10px", borderRadius: "3px",
-                        border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)",
-                        cursor: marketplaceInstalling === (ts.slug || ts.name) ? "wait" : "pointer",
-                      }}
-                    >
-                      {marketplaceInstalling === (ts.slug || ts.name) ? "..." : "+"}
-                    </button>
-                  </div>
-                ))}
               </div>
             )}
             {/* 初始空态：未搜索、无 trending、无错误时显示友好引导 */}
