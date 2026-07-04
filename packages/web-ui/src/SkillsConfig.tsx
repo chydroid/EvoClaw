@@ -603,6 +603,8 @@ export default function SkillsConfig() {
   const [marketplaceSearching, setMarketplaceSearching] = useState(false);
   const [marketplaceInstalling, setMarketplaceInstalling] = useState<string | null>(null);
   const [trendingSkills, setTrendingSkills] = useState<Array<{ name: string; displayName?: string; summary?: string; version?: string; slug?: string }>>([]);
+  // 市场错误状态：远程 registry 不可达 / 鉴权失败 / 部分降级时向用户显示提示
+  const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
   // Round 8: 安全扫描结果缓存（skillId → scan result）
   const [securityScans, setSecurityScans] = useState<Record<string, {
     safe: boolean;
@@ -783,22 +785,38 @@ export default function SkillsConfig() {
     const controller = new AbortController();
     marketplaceAbortRef.current = controller;
     setMarketplaceSearching(true);
+    setMarketplaceError(null);
     try {
       const res = await fetch(`/api/marketplace/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
-      if (res.ok) {
-        const data = await res.json();
-        if (controller.signal.aborted) return;
-        setMarketplaceResults(Array.isArray(data.results) ? data.results : []);
+      if (controller.signal.aborted) return;
+      if (!res.ok) {
+        // 401/500 等错误明确反馈给用户，不再静默吞掉
+        const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setMarketplaceResults([]);
+        setMarketplaceError(String(errBody.error || `HTTP ${res.status}`));
+        return;
+      }
+      const data = await res.json();
+      if (controller.signal.aborted) return;
+      // 后端返回 { results: SkillPackage[], total, partial, refreshError }
+      const packages = Array.isArray(data.results) ? data.results : [];
+      setMarketplaceResults(packages);
+      // 远程 registry 不可达时 catalog 为空，透传 refreshError 让用户知道原因
+      if (data.partial && data.refreshError) {
+        setMarketplaceError(data.refreshError);
+      } else if (packages.length === 0) {
+        setMarketplaceError(t("skills.marketplace_no_match", "未找到匹配的技能"));
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      /* marketplace not available */
+      setMarketplaceResults([]);
+      setMarketplaceError(err instanceof Error ? err.message : String(err));
     } finally {
       if (!controller.signal.aborted) {
         setMarketplaceSearching(false);
       }
     }
-  }, []);
+  }, [t]);
 
   const handleMarketplaceInstall = useCallback(async (skillName: string) => {
     setMarketplaceInstalling(skillName);
@@ -825,9 +843,23 @@ export default function SkillsConfig() {
   useEffect(() => {
     if (marketplaceTab && trendingSkills.length === 0) {
       fetch("/api/marketplace/trending?limit=20")
-        .then(r => r.ok ? r.json() : { skills: [] })
-        .then(data => setTrendingSkills(Array.isArray(data.skills) ? data.skills : []))
-        .catch(() => {});
+        .then(async r => {
+          if (!r.ok) {
+            // trending 拉取失败时静默降级为空列表，不阻塞渲染
+            return { skills: [], partial: true, refreshError: `HTTP ${r.status}` };
+          }
+          return r.json();
+        })
+        .then(data => {
+          setTrendingSkills(Array.isArray(data.skills) ? data.skills : []);
+          // 仅在 trending 也拿到错误且 marketError 当前无值时显示一次提示
+          if (data.partial && data.refreshError && data.skills.length === 0) {
+            setMarketplaceError(prev => prev ?? data.refreshError);
+          }
+        })
+        .catch(() => {
+          /* 网络错误：保持 trendingSkills 为空，UI 显示空态即可 */
+        });
     }
   }, [marketplaceTab, trendingSkills.length]);
 
@@ -1173,6 +1205,14 @@ export default function SkillsConfig() {
               }}
             />
             {marketplaceSearching && <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "4px 0" }}>搜索中...</div>}
+            {marketplaceError && !marketplaceSearching && (
+              <div style={{
+                fontSize: "11px", color: "var(--warning)", padding: "6px 8px", margin: "4px 0",
+                background: "var(--warning-bg)", borderRadius: "3px", wordBreak: "break-word",
+              }}>
+                {t("skills.marketplace_unavailable", "技能市场暂不可用")}: {marketplaceError}
+              </div>
+            )}
             {marketplaceResults.length > 0 && (
               <div style={{ maxHeight: "300px", overflowY: "auto" }}>
                 {marketplaceResults.map((ms, idx) => (
@@ -1219,6 +1259,11 @@ export default function SkillsConfig() {
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {!marketplaceSearching && marketplaceResults.length === 0 && trendingSkills.length === 0 && !marketplaceError && (
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "8px 4px" }}>
+                {t("skills.marketplace_empty_hint", "输入关键词搜索技能市场，或配置 EVOCLAW_MARKETPLACE_REGISTRY_URL 指向可用的 registry")}
               </div>
             )}
           </div>

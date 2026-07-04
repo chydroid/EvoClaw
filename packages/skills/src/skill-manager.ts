@@ -89,7 +89,11 @@ export class SkillManager {
     this.localization = new LocalizationService(svcRegistry);
     this.validator = new SkillValidator();
     this.hookEngine = new SkillHookEngine(svcRegistry, eventBus);
-    this.marketplace = new SkillMarketplace(eventBus, {}, this);
+    this.marketplace = new SkillMarketplace(eventBus, {
+      // 允许通过环境变量覆盖远程注册表 URL；默认仍为 clawhub.ai。
+      // 这在 clawhub.ai 不可达或自建 registry 时有用。
+      registryURL: process.env.EVOCLAW_MARKETPLACE_REGISTRY_URL || undefined,
+    }, this);
 
     try {
       const { SkillEcosystem } = require("./skill-ecosystem");

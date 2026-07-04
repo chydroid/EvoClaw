@@ -325,7 +325,9 @@ export class ConfigManager {
       if (process.env.NODE_ENV === "production") {
         throw new Error("[Config] FATAL: JWT secret uses default/weak value. Set JWT_SECRET env var with a strong random secret (>= 16 chars) before running in production.");
       }
-      process.stderr.write("[Config] WARNING: JWT secret uses default/weak value. Set JWT_SECRET env var for production use.\n");
+      // dev 模式下不再 stderr 输出，避免与 apps/server/src/index.ts 中
+      // securityMiddleware.validateJWTSecret 的 authoritative 检查重复告警。
+      // 启动时由 server 主流程统一输出一次警告即可。
     }
     this.config.evolution.enabled = process.env.EvoClaw_EVOLUTION_ENABLED !== "false";
     if (process.env.EvoClaw_MCP_ENABLED !== undefined) {

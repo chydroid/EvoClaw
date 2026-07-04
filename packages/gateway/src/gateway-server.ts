@@ -84,7 +84,11 @@ export class GatewayServer {
 
     if (!this.config.jwtSecret || this.config.jwtSecret.length === 0) {
       this.config.jwtSecret = crypto.randomBytes(32).toString("hex");
-      process.stderr.write("[Gateway] WARNING: JWT secret is not set. A temporary random secret has been generated for this session. Set JWT_SECRET environment variable for persistent authentication.\n");
+      // 仅在 debug 级别输出，避免与 apps/server/src/index.ts 的 authoritative 检查重复告警
+      // 用户启动时已经看到 server 主流程的 JWT 警告，此处不再重复打扰
+      if (process.env.EVOCLAW_VERBOSE === "true" || process.env.NODE_ENV === "test") {
+        process.stderr.write("[Gateway] JWT secret not set; using temporary random secret for this session.\n");
+      }
     }
 
     this.authProvider = new AuthProvider(this.config.jwtSecret, registry);

@@ -1900,7 +1900,7 @@ export class ProtocolAdapter {
     app.get("/api/marketplace/search", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
-          searchMarketplace(query: string, category?: string): unknown;
+          searchMarketplace(query: string, category?: string): { packages: unknown[]; total: number };
           getMarketplace(): { refreshCatalog(): Promise<number>; search(query: Record<string, unknown>): unknown };
         }>("skillManager");
         if (!skillManager) {
@@ -1913,9 +1913,20 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Query parameter 'q' is required" });
           return;
         }
-        await skillManager.getMarketplace().refreshCatalog().catch((err) => { process.stderr.write('[ProtocolAdapter] refreshCatalog failed: ' + err + '\n'); });
-        const results = skillManager.searchMarketplace(q, category);
-        res.json({ success: true, results });
+        // refreshCatalog 失败时仍尝试本地 catalog 搜索，但向客户端透传 partial 标记
+        let refreshError: string | undefined;
+        const staleCount = await skillManager.getMarketplace().refreshCatalog().catch((err: unknown) => {
+          refreshError = err instanceof Error ? err.message : String(err);
+          return -1;
+        });
+        const searchResult = skillManager.searchMarketplace(q, category);
+        res.json({
+          success: true,
+          results: searchResult.packages,
+          total: searchResult.total,
+          partial: staleCount < 0,
+          refreshError,
+        });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1963,16 +1974,20 @@ export class ProtocolAdapter {
     app.get("/api/marketplace/trending", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
-          getMarketplace(): { refreshCatalog(): Promise<number>; getTrending(limit?: number): unknown };
+          getMarketplace(): { refreshCatalog(): Promise<number>; getTrending(limit?: number): unknown[] };
         }>("skillManager");
         if (!skillManager) {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        await skillManager.getMarketplace().refreshCatalog().catch((err) => { process.stderr.write('[ProtocolAdapter] refreshCatalog failed: ' + err + '\n'); });
+        let refreshError: string | undefined;
+        const staleCount = await skillManager.getMarketplace().refreshCatalog().catch((err: unknown) => {
+          refreshError = err instanceof Error ? err.message : String(err);
+          return -1;
+        });
         const limit = parseInt(req.query.limit as string, 10) || 10;
         const trending = skillManager.getMarketplace().getTrending(limit);
-        res.json({ success: true, trending });
+        res.json({ success: true, skills: trending, partial: staleCount < 0, refreshError });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

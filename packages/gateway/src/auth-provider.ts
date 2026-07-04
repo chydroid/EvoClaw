@@ -49,6 +49,12 @@ export class AuthProvider {
       "/health", "/healthz", "/live", "/ready", "/readyz",
       "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh",
       "/api/status", "/api/bootstrap", "/api/skills", "/api/chat",
+      // 技能市场只读端点：search/trending/categories 仅返回 catalog 元数据，
+      // 不触及本地技能安装或状态变更，安全可公开。安装端点 /api/marketplace/install
+      // 仍需认证，防止未认证攻击者通过安装恶意技能实现 RCE。
+      "/api/marketplace/search",
+      "/api/marketplace/trending",
+      "/api/marketplace/categories",
     ]);
 
     if (publicExactPaths.has(req.path)) {
