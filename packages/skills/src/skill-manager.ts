@@ -9,6 +9,7 @@ import {
   type OpenClawSkillMeta,
   type SkillConfigStatus,
   type SkillLoadConfig,
+  type SkillTrigger,
   type SecurityScanResult,
 } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
@@ -304,7 +305,23 @@ export class SkillManager {
       }
     }
 
-    const triggers = parsed.meta.triggers || [];
+    // Trigger 优先级：frontmatter 显式声明 > 从 SKILL.md 内容自动提取
+    // openclaw 生态中绝大多数技能不声明 triggers，由 LLM 基于 description 判断调用。
+    // 自动提取只用于提升 chat 场景下的可发现性，不覆盖显式声明。
+    let triggers = parsed.meta.triggers || [];
+    if (triggers.length === 0) {
+      const detectedTriggers = this.detectTriggersFromContent(
+        parsed.meta.name,
+        parsed.meta.description,
+        parsed.instructions
+      );
+      if (detectedTriggers.length > 0) {
+        triggers = detectedTriggers;
+        process.stdout.write(
+          `[SkillManager] Auto-detected ${detectedTriggers.length} triggers from SKILL.md: ${detectedTriggers.map(t => `${t.type}:${t.pattern}`).join(", ")}\n`
+        );
+      }
+    }
     // 优先使用 SKILL.md frontmatter 中的 keywords，否则从 triggers 提取
     const keywords = parsed.meta.keywords && parsed.meta.keywords.length > 0
       ? parsed.meta.keywords
@@ -1402,6 +1419,86 @@ export class SkillManager {
     }
 
     return envVars;
+  }
+
+  /**
+   * 从 SKILL.md 内容中自动提取 trigger。
+   *
+   * 设计原则：openclaw 生态中 trigger 是可选的，绝大多数技能依赖 description
+   * 让 LLM 自行判断调用时机。但提取 keyword/intent trigger 可提升 chat 场景下
+   * 的可发现性，因此当 frontmatter 未声明 triggers 时用本方法填充。
+   *
+   * 提取规则：
+   * 1. Section headers（## XXX）→ keyword trigger（"PRs" → "pr"，"CI/runs" → "ci"）
+   * 2. 技能 name → keyword trigger（确保用户提到技能名时能命中）
+   * 3. Description 中的动作动词 + 对象 → intent trigger
+   *    （"list issues" → intent: "list issues"）
+   * 4. 去重 + 限长（最多 15 条，避免噪音）
+   */
+  private detectTriggersFromContent(
+    skillName: string,
+    description: string,
+    instructions: string
+  ): SkillTrigger[] {
+    const triggers: SkillTrigger[] = [];
+    const seenPatterns = new Set<string>();
+    const addKeyword = (pattern: string, desc: string) => {
+      // 仅保留字母数字与短横线，长度 2-30
+      const cleaned = pattern.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!cleaned || cleaned.length < 2 || cleaned.length > 30) return;
+      if (seenPatterns.has(cleaned)) return;
+      seenPatterns.add(cleaned);
+      triggers.push({
+        type: "keyword",
+        pattern: cleaned,
+        description: desc,
+      });
+    };
+    const addIntent = (pattern: string, desc: string) => {
+      const cleaned = pattern.toLowerCase().trim();
+      if (!cleaned || cleaned.length < 3 || cleaned.length > 60) return;
+      if (seenPatterns.has(cleaned)) return;
+      seenPatterns.add(cleaned);
+      triggers.push({
+        type: "intent",
+        pattern: cleaned,
+        description: desc,
+      });
+    };
+
+    // 1. 技能 name 作为 keyword trigger（保证用户提技能名时能命中）
+    if (skillName && skillName !== "unnamed-skill") {
+      addKeyword(skillName, `Skill name: ${skillName}`);
+    }
+
+    // 2. Section headers → keyword trigger（## PRs → "pr"，## CI/runs → "ci"）
+    const sectionRegex = /^##\s+(.+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = sectionRegex.exec(instructions)) !== null) {
+      const header = m[1].trim();
+      // 过滤纯参考类 header（References / Auth / Setup / License 等）
+      const skipHeaders = ["references", "auth", "setup", "license", "prerequisites", "requirements", "configuration", "install", "参考", "认证", "配置"];
+      if (skipHeaders.some(s => header.toLowerCase().includes(s))) continue;
+      // 取 header 的第一个单词作为 keyword（如 "Pull Requests" → "pull-request"）
+      const firstWord = header.split(/[\s/]+/)[0];
+      addKeyword(firstWord, `Section: ${header}`);
+      // 整个 header（清理后）也作为 keyword
+      addKeyword(header, `Section: ${header}`);
+    }
+
+    // 3. Description 中的"动词 + 对象"模式 → intent trigger
+    //    匹配如 "list issues", "create PR", "search packages" 等
+    if (description) {
+      const actionVerbs = ["list", "create", "view", "search", "find", "get", "show", "manage", "send", "read", "write", "update", "delete", "close", "merge", "deploy", "run", "build", "test"];
+      const verbPattern = new RegExp(`\\b(${actionVerbs.join("|")})\\s+([a-z][a-z0-9-]{1,20})\\b`, "gi");
+      while ((m = verbPattern.exec(description)) !== null) {
+        const intent = `${m[1]} ${m[2]}`;
+        addIntent(intent, `Action from description: ${intent}`);
+      }
+    }
+
+    // 4. 限长，避免噪音
+    return triggers.slice(0, 15);
   }
 
   /** Merge OpenClaw metadata required env vars and auto-detected env vars into skill config.

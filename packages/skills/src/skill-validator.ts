@@ -97,13 +97,10 @@ export class SkillValidator {
       }
     }
 
-    if (
-      !meta.triggers ||
-      !Array.isArray(meta.triggers) ||
-      meta.triggers.length === 0
-    ) {
-      warnings.push("Skill has no triggers defined — it will only be invocable by the LLM based on its description. Consider adding keyword/intent triggers for better discoverability.");
-    }
+    // Triggers are optional — openclaw skills are typically invoked by the LLM
+    // based on their description. SkillManager will auto-extract keyword/intent
+    // triggers from SKILL.md content (section headers, skill name, action verbs)
+    // when frontmatter doesn't declare them, so omitting triggers is not a warning.
 
     if (!meta.author || meta.author.trim() === "") {
       errors.push("Skill author is required and cannot be empty");
