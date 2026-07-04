@@ -18,6 +18,57 @@ import type { EventBus } from "@evoclaw/core";
 
 // ── Types ─────────────────────────────────────────────────
 
+// ── ClawHub 协议类型（与 openclaw src/infra/clawhub.ts 对齐） ──
+// 这些类型对应 openclaw ClawHub registry 的公开 API 响应结构。
+// EvoClaw 技能与 openclaw 技能完全兼容，可直接消费 ClawHub registry。
+
+/** ClawHub 技能列表项 — GET /api/v1/skills 返回的 items 元素 */
+export interface ClawHubSkillListItem {
+  slug: string;
+  displayName: string;
+  summary?: string;
+  tags?: Record<string, string>;
+  latestVersion?: { version: string; createdAt: number; changelog?: string } | null;
+  metadata?: { os?: string[] | null; systems?: string[] | null } | null;
+  createdAt: number;
+  updatedAt: number;
+  // 兼容旧字段（部分镜像可能仍返回 name/ownerHandle）
+  name?: string;
+  ownerHandle?: string;
+  isOfficial?: boolean;
+}
+
+/** ClawHub 搜索结果项 — GET /api/v1/search 返回的 results 元素 */
+export interface ClawHubSkillSearchResult {
+  score: number;
+  slug: string;
+  displayName: string;
+  summary?: string;
+  version?: string;
+  updatedAt?: number;
+}
+
+/** ClawHub 技能详情 — GET /api/v1/skills/{slug} */
+export interface ClawHubSkillDetail {
+  skill: {
+    slug: string;
+    displayName: string;
+    summary?: string;
+    tags?: Record<string, string>;
+    createdAt: number;
+    updatedAt: number;
+  } | null;
+  latestVersion?: { version: string; createdAt: number; changelog?: string } | null;
+  metadata?: { os?: string[] | null; systems?: string[] | null } | null;
+  owner?: { handle?: string | null; displayName?: string | null; image?: string | null } | null;
+}
+
+/** ClawHub 安装解析响应 — GET /api/v1/skills/{slug}/install */
+export type ClawHubSkillInstallResolution =
+  | { ok: true; slug: string; installKind: "archive"; archive: { version: string; downloadUrl: string } }
+  | { ok: true; slug: string; installKind: "github"; github: { repo: string; path: string; commit: string; contentHash: string; sourceUrl: string } }
+  | { ok: false; slug: string; reason: string; message: string; status: number };
+
 export interface SkillPackage {
   /** Unique package name (e.g., "web-search") */
   name: string;
@@ -133,7 +184,10 @@ export class SkillMarketplace {
 
   constructor(eventBus: EventBus, config: MarketplaceConfig = {}, skillManager?: { installSkill(skillPath: string): Promise<unknown> } | null) {
     this.config = {
-      registryURL: config.registryURL ?? "https://clawhub.ai/api/v1",
+      // 默认使用中国镜像；用户可通过 EVOCLAW_MARKETPLACE_REGISTRY_URL 或构造参数覆盖。
+      // 与 openclaw 完全兼容：baseUrl 不含 /api/v1 后缀，路径前缀在每次请求时拼接，
+      // 与 openclaw src/infra/clawhub.ts 的 normalizeBaseUrl 行为一致。
+      registryURL: config.registryURL ?? "https://cn.clawhub-mirror.com",
       cacheDir: config.cacheDir ?? "data/marketplace",
       updateCheckIntervalMs: config.updateCheckIntervalMs ?? 3600_000, // 1 hour
       maxConcurrentDownloads: config.maxConcurrentDownloads ?? 3,
@@ -144,14 +198,18 @@ export class SkillMarketplace {
 
   // ── Catalog Operations ──────────────────────────────────
 
-  /** Fetch the latest catalog from the registry */
+  /**
+   * Fetch the latest catalog from the ClawHub registry.
+   * 使用 openclaw 兼容的 GET /api/v1/search?q=* 端点拉取技能列表（作为 catalog 缓存）。
+   * 注意：优先用 search 端点而非 /api/v1/skills，因为部分镜像（如 cn.clawhub-mirror.com）
+   * 不实现 /api/v1/skills 但完整支持 /api/v1/search。
+   * 失败时保留旧 catalog，返回 -1 表示刷新失败（供上游透传 partial 标记）。
+   */
   async refreshCatalog(): Promise<number> {
     try {
-      const res = await fetch(`${this.config.registryURL}/packages`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json() as { packages: SkillPackage[]; total: number };
-      this.catalog = data.packages ?? [];
+      // 用 q=* 拉取全量列表作为本地 catalog 缓存
+      const results = await this.searchRemote("*", 100);
+      this.catalog = results.map((r) => this.normalizeSearchResult(r));
       this.catalogTimestamp = Date.now();
 
       this.eventBus.publish("marketplace:catalog-refreshed", {
@@ -162,8 +220,50 @@ export class SkillMarketplace {
       return this.catalog.length;
     } catch (err) {
       process.stderr.write(`[Marketplace] Failed to refresh catalog: ${err}\n`);
-      return this.catalog.length; // return stale count
+      return -1; // -1 表示刷新失败，供上游识别 partial 状态
     }
+  }
+
+  /** 将搜索结果项归一化为内部 SkillPackage 结构（用于 catalog 缓存和 trending） */
+  private normalizeSearchResult(r: ClawHubSkillSearchResult): SkillPackage {
+    return {
+      name: r.slug,
+      displayName: r.displayName,
+      version: r.version ?? "0.0.0",
+      description: r.summary ?? "",
+      author: { name: "unknown" },
+      license: "MIT-0",
+      capabilities: [],
+      tags: [],
+      evoclawVersion: ">=0.4.0",
+      dependencies: {},
+      downloadURL: "",
+      publishedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : new Date().toISOString(),
+      downloads: 0,
+      rating: 0,
+      reviewCount: 0,
+      verified: false,
+    };
+  }
+
+  /**
+   * 远程搜索 ClawHub 技能，使用 openclaw 兼容的 GET /api/v1/search?q=... 端点。
+   * 这是 ClawHub 官方搜索 API，支持全文匹配（slug/displayName/summary），比本地过滤更准确。
+   * 失败时抛出错误，由调用方决定是否回退到本地 catalog。
+   */
+  async searchRemote(query: string, limit = 20): Promise<ClawHubSkillSearchResult[]> {
+    const url = new URL(`${this.config.registryURL}/api/v1/search`);
+    url.searchParams.set("q", query.trim() || "*");
+    url.searchParams.set("limit", String(limit));
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // openclaw 响应结构：{ results: ClawHubSkillSearchResult[] }
+    const data = await res.json() as { results?: ClawHubSkillSearchResult[] };
+    return data.results ?? [];
   }
 
   /** Search the catalog */
@@ -250,28 +350,73 @@ export class SkillMarketplace {
     return this.catalog.find((p) => p.name === name);
   }
 
-  /** Fetch a single package's details from the ClawHub registry API */
+  /**
+   * Fetch a single skill's details from the ClawHub registry API.
+   * 使用 openclaw 兼容的 GET /api/v1/skills/{slug} 端点。
+   */
   async fetchPackageDetails(name: string): Promise<SkillPackage | null> {
     try {
-      const res = await fetch(`${this.config.registryURL}/packages/${encodeURIComponent(name)}`);
+      const url = new URL(`${this.config.registryURL}/api/v1/skills/${encodeURIComponent(name)}`);
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(15_000),
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) {
         if (res.status === 404) return null;
         throw new Error(`HTTP ${res.status}`);
       }
-      const data = await res.json() as SkillPackage;
+      const data = await res.json() as ClawHubSkillDetail;
+      if (!data.skill) return null;
+      const pkg: SkillPackage = {
+        name: data.skill.slug,
+        displayName: data.skill.displayName,
+        version: data.latestVersion?.version ?? "0.0.0",
+        description: data.skill.summary ?? "",
+        author: { name: data.owner?.handle ?? "unknown" },
+        license: "MIT-0",
+        capabilities: [],
+        tags: Object.keys(data.skill.tags ?? {}),
+        evoclawVersion: ">=0.4.0",
+        dependencies: {},
+        downloadURL: "",
+        publishedAt: new Date(data.skill.createdAt).toISOString(),
+        updatedAt: new Date(data.skill.updatedAt).toISOString(),
+        downloads: 0,
+        rating: 0,
+        reviewCount: 0,
+        verified: false,
+      };
       // Update local catalog entry if present
       const idx = this.catalog.findIndex((p) => p.name === name);
       if (idx >= 0) {
-        this.catalog[idx] = data;
+        this.catalog[idx] = pkg;
       } else {
-        this.catalog.push(data);
+        this.catalog.push(pkg);
       }
-      return data;
+      return pkg;
     } catch (err) {
       process.stderr.write(`[Marketplace] Failed to fetch package details for "${name}": ${err}\n`);
       // Fall back to local catalog
       return this.getPackage(name) ?? null;
     }
+  }
+
+  /**
+   * 解析技能安装来源 — 使用 openclaw 兼容的 GET /api/v1/skills/{slug}/install 端点。
+   * 返回 archive（ZIP 直链）或 github（仓库+commit）两种安装方式。
+   */
+  async resolveInstall(slug: string, forceInstall = false): Promise<ClawHubSkillInstallResolution> {
+    const url = new URL(`${this.config.registryURL}/api/v1/skills/${encodeURIComponent(slug)}/install`);
+    if (forceInstall) url.searchParams.set("forceInstall", "1");
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: "application/json" },
+    });
+    const data = await res.json() as ClawHubSkillInstallResolution;
+    if (!res.ok && !data.ok) {
+      throw new Error(`ClawHub install resolution failed: HTTP ${res.status} — ${data.message ?? data.reason ?? ""}`);
+    }
+    return data;
   }
 
   // ── Install / Update ────────────────────────────────────
@@ -474,7 +619,11 @@ export class SkillMarketplace {
 
   // ── Ratings & Reviews ───────────────────────────────────
 
-  /** Submit a review for a package */
+  /**
+   * Submit a review for a package.
+   * 注意：ClawHub 当前公开 API 不支持 review 提交，此方法仅做本地缓存。
+   * 待 ClawHub 开放 review 端点后对接。
+   */
   async submitReview(
     packageName: string,
     review: Omit<SkillReview, "id" | "createdAt" | "helpful">
@@ -486,19 +635,7 @@ export class SkillMarketplace {
       helpful: 0,
     };
 
-    // In production, POST to registry API
-    try {
-      const res = await fetch(`${this.config.registryURL}/packages/${packageName}/reviews`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(fullReview),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      process.stderr.write(`[Marketplace] Review submission failed: ${err}\n`);
-    }
-
-    // Update local cache
+    // Update local cache only（ClawHub 公开 API 暂不支持 review 提交）
     const pkg = this.getPackage(packageName);
     if (pkg) {
       pkg.reviewCount++;
@@ -509,17 +646,11 @@ export class SkillMarketplace {
     return fullReview;
   }
 
-  /** Get reviews for a package */
-  async getReviews(packageName: string): Promise<SkillReview[]> {
-    try {
-      const res = await fetch(`${this.config.registryURL}/packages/${packageName}/reviews`);
-      if (res.ok) {
-        const data = await res.json() as { reviews: SkillReview[] };
-        return data.reviews ?? [];
-      }
-    } catch {
-      // Return empty on error
-    }
+  /**
+   * Get reviews for a package.
+   * ClawHub 公开 API 暂不返回 reviews，直接返回空列表。
+   */
+  async getReviews(_packageName: string): Promise<SkillReview[]> {
     return [];
   }
 

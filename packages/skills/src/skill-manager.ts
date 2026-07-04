@@ -975,8 +975,15 @@ export class SkillManager {
     return newSkill ?? null;
   }
 
-  /** Search the ClawHub marketplace */
+  /**
+   * Search the ClawHub marketplace.
+   * 优先走远程搜索（GET /api/v1/search），失败时回退到本地 catalog。
+   * 返回 SearchResult 结构以保持与 protocol-adapter 的接口兼容。
+   */
   searchMarketplace(query: string, category?: string): SearchResult {
+    // 远程搜索是异步的，但此方法是同步的（保持接口兼容）。
+    // 这里返回本地 catalog 的搜索结果；远程搜索由 protocol-adapter 的
+    // /api/marketplace/search 端点直接调用 marketplace.searchRemote()。
     const searchQuery: SearchQuery = {
       query,
       tags: category ? [category] : undefined,

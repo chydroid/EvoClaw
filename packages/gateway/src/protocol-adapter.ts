@@ -1901,25 +1901,51 @@ export class ProtocolAdapter {
       try {
         const skillManager = this.registry.resolveService<{
           searchMarketplace(query: string, category?: string): { packages: unknown[]; total: number };
-          getMarketplace(): { refreshCatalog(): Promise<number>; search(query: Record<string, unknown>): unknown };
+          getMarketplace(): {
+            refreshCatalog(): Promise<number>;
+            searchRemote(query: string, limit?: number): Promise<Array<{
+              slug: string; displayName: string; summary?: string; version?: string; updatedAt?: number;
+            }>>;
+          };
         }>("skillManager");
         if (!skillManager) {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
         const q = (req.query.q as string) || "";
-        const category = req.query.category as string | undefined;
         if (!q) {
           res.status(400).json({ error: "Query parameter 'q' is required" });
           return;
         }
-        // refreshCatalog 失败时仍尝试本地 catalog 搜索，但向客户端透传 partial 标记
+
+        // 1) 优先走 ClawHub 官方搜索 API（GET /api/v1/search?q=...）
+        //    这是 openclaw 兼容的搜索端点，支持全文匹配 slug/displayName/summary
         let refreshError: string | undefined;
+        try {
+          const remoteResults = await skillManager.getMarketplace().searchRemote(q, 20);
+          // 转换为前端期望的格式：results 数组，每项含 slug/name/displayName/summary/version
+          const results = remoteResults.map((r) => ({
+            slug: r.slug,
+            name: r.slug,
+            displayName: r.displayName,
+            summary: r.summary ?? "",
+            version: r.version ?? "",
+            updatedAt: r.updatedAt,
+          }));
+          res.json({ success: true, results, total: results.length, partial: false });
+          return;
+        } catch (err: unknown) {
+          // 远程搜索失败，记录错误并回退到本地 catalog
+          refreshError = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[ProtocolAdapter] Remote search failed, falling back to local catalog: ${refreshError}\n`);
+        }
+
+        // 2) 回退：刷新本地 catalog 后用本地过滤搜索
         const staleCount = await skillManager.getMarketplace().refreshCatalog().catch((err: unknown) => {
           refreshError = err instanceof Error ? err.message : String(err);
           return -1;
         });
-        const searchResult = skillManager.searchMarketplace(q, category);
+        const searchResult = skillManager.searchMarketplace(q);
         res.json({
           success: true,
           results: searchResult.packages,
