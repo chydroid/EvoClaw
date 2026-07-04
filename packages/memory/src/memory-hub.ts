@@ -50,6 +50,12 @@ export class MemoryHub {
   private embeddingLoadError: string | null = null;
   private memoryCuratorV2: import("./memory-curator-v2").MemoryCuratorV2 | null = null;
   private memoryDreaming: import("./memory-dreaming").MemoryDreaming | null = null;
+  /**
+   * 分层记忆系统（L0→L1→L2→L3 + 符号画布），借鉴 TencentDB-Agent-Memory。
+   * 通过 captureTurn 写入、recall 注入到 prompt。可选启用——若构造失败
+   * （如 dataDir 不可写），MemoryHub 仍可降级到原有 vector/FTS5 链路。
+   */
+  private layeredMemory: import("./layered").LayeredMemory | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -79,6 +85,16 @@ export class MemoryHub {
       this.memoryDreaming = new MemoryDreaming(this);
     } catch (err) {
       process.stderr.write('[memory-hub] operation failed: ' + err + '\n');
+    }
+
+    // 分层记忆（L0→L1→L2→L3 + 符号画布）—— 借鉴 TencentDB-Agent-Memory。
+    // 失败时降级到原有 vector/FTS5 链路，不影响 MemoryHub 主功能。
+    try {
+      const { LayeredMemory } = require("./layered");
+      this.layeredMemory = new LayeredMemory(dataDir);
+    } catch (err) {
+      process.stderr.write('[memory-hub] LayeredMemory init failed, falling back to flat memory: ' + err + '\n');
+      this.layeredMemory = null;
     }
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
@@ -216,6 +232,49 @@ export class MemoryHub {
 
   getCurator(): MemoryCurator {
     return this.curator;
+  }
+
+  /**
+   * 获取分层记忆系统（L0→L1→L2→L3 + 符号画布）。
+   * 若构造失败则返回 null，调用方需判空。
+   */
+  getLayeredMemory(): import("./layered").LayeredMemory | null {
+    return this.layeredMemory;
+  }
+
+  /**
+   * 捕获一轮对话到分层记忆系统（L0→L1→L2→L3）。
+   * 若分层记忆未启用，返回 null。失败不抛错（best-effort）。
+   */
+  async captureTurnToLayeredMemory(turn: {
+    userText: string;
+    assistantText: string;
+    sessionKey: string;
+    sessionId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<import("./layered").LayeredRecallResult | null> {
+    if (!this.layeredMemory) return null;
+    try {
+      await this.layeredMemory.captureTurn(turn);
+      return this.layeredMemory.recall(turn.userText);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] captureTurnToLayeredMemory failed: ${err}\n`);
+      return null;
+    }
+  }
+
+  /**
+   * 召回分层记忆（L1 + L3 画像），返回可注入到 prompt 的上下文。
+   * 若分层记忆未启用，返回 null。
+   */
+  recallFromLayeredMemory(query: string): import("./layered").LayeredRecallResult | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.recall(query);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] recallFromLayeredMemory failed: ${err}\n`);
+      return null;
+    }
   }
 
   /** Get the vector store. Returns null when no embedding backend is wired. */

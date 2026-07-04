@@ -23,3 +23,33 @@ export { MemoryDreaming, DreamPhase } from "./memory-dreaming";
 export type { DreamSession, DreamFact, DreamDiary, DreamingConfig } from "./memory-dreaming";
 export { chunkDocument, RAGPipeline, SimpleReranker } from "./rag";
 export type { ChunkOptions, DocumentChunk, RAGPipelineConfig, RAGDocument, RAGRetrievalResult, RerankInput, RerankResult } from "./rag";
+
+// ── Layered Memory (L0→L1→L2→L3 + Symbolic Canvas) ──
+// 借鉴 TencentDB-Agent-Memory 的语义金字塔设计
+export {
+  ConversationRecorder,
+  AtomicMemoryExtractor,
+  SceneBlockAggregator,
+  PersonaProfileGenerator,
+  SymbolicMemoryCanvas,
+  LayeredMemory,
+} from "./layered";
+export type {
+  ConversationMessage,
+  AtomicMemory,
+  AtomicMemoryType,
+  SceneBlock,
+  SceneAggregationOptions,
+  PersonaProfile,
+  PersonaEntry,
+  PersonaTopic,
+  PersonaProfileOptions,
+  MemoryCanvas,
+  CanvasNode,
+  CanvasEdge,
+  CanvasNodeType,
+  CanvasOptions,
+  TurnInput,
+  LayeredRecallResult,
+  LayeredMemoryConfig,
+} from "./layered";

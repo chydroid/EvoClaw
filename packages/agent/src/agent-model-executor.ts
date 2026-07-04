@@ -85,6 +85,42 @@ export class AgentModelExecutor {
       search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]>;
     };
     remember?(entry: Omit<import("@evoclaw/core").MemoryEntry, "id" | "createdAt" | "accessedAt">): Promise<import("@evoclaw/core").MemoryEntry>;
+    /** 分层记忆（L0→L1→L2→L3）。MemoryHub 暴露的可选接口。 */
+    getLayeredMemory?(): {
+      captureTurn(turn: {
+        userText: string;
+        assistantText: string;
+        sessionKey: string;
+        sessionId?: string;
+        metadata?: Record<string, unknown>;
+      }): Promise<unknown>;
+      recall(query: string): {
+        prependContext: string;
+        appendSystemContext: string;
+        l1Memories: unknown[];
+        strategy: string;
+      };
+      getCanvas?(): unknown;
+      startCanvas?(sessionKey: string, userRequest: string): unknown;
+    } | null;
+    captureTurnToLayeredMemory?(turn: {
+      userText: string;
+      assistantText: string;
+      sessionKey: string;
+      sessionId?: string;
+      metadata?: Record<string, unknown>;
+    }): Promise<{
+      prependContext: string;
+      appendSystemContext: string;
+      l1Memories: unknown[];
+      strategy: string;
+    } | null>;
+    recallFromLayeredMemory?(query: string): {
+      prependContext: string;
+      appendSystemContext: string;
+      l1Memories: unknown[];
+      strategy: string;
+    } | null;
   } | null = null;
   private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
   private compactionManager: import("./compaction-manager").CompactionManager | null = null;
@@ -1793,19 +1829,34 @@ export class AgentModelExecutor {
     }
 
     // Recall relevant past memories for contextual awareness
+    // ── 优先使用分层记忆（L1+L3），失败时回退到 LongTermMemory 全类型检索 ──
+    // 注意：原实现写死 `type: "system"`，但 rememberInteraction 存的是
+    // `type: "conversation"`，导致永远召不出记忆。这里修复为：
+    // 1. 先尝试 LayeredMemory（命中 L1 原子记忆 + L3 画像）
+    // 2. 若分层记忆未启用或无结果，再无 type 限制地检索 LongTermMemory
     let memoryContext = "";
+    let personaContext = "";
     if (this.memoryHub) {
       const memorySearchFn = async () => {
         try {
+          // 1. 优先分层记忆
+          if (this.memoryHub!.recallFromLayeredMemory) {
+            const layered = this.memoryHub!.recallFromLayeredMemory(message);
+            if (layered) {
+              memoryContext = layered.prependContext || "";
+              personaContext = layered.appendSystemContext || "";
+              if (memoryContext || personaContext) return;
+            }
+          }
+          // 2. 回退：LongTermMemory 全类型检索（不再写死 type: "system"）
           const longTerm = this.memoryHub!.getLongTerm();
           const memories = await longTerm.search({
             query: message,
-            type: "system",
-            limit: 3,
+            limit: 5,
           });
           if (memories.length > 0) {
             memoryContext = "\n[相关历史记忆]\n" + memories.map((m, i) =>
-              `  ${i + 1}. ${m.entry.content.slice(0, 300)}`
+              `  ${i + 1}. [${m.entry.type}] ${m.entry.content.slice(0, 300)}`
             ).join("\n") + "\n";
           }
         } catch (err) {
@@ -1815,6 +1866,7 @@ export class AgentModelExecutor {
       if (tracing?.isEnabled()) {
         await tracing.withSpan("agent.memory.search", async (s: Span) => {
           s.setAttribute("session.id", sessionId);
+          s.setAttribute("memory.strategy", this.memoryHub!.recallFromLayeredMemory ? "layered" : "longterm-flat");
           await memorySearchFn();
         });
       } else {
@@ -1822,7 +1874,7 @@ export class AgentModelExecutor {
       }
     }
 
-    const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + memoryContext;
+    const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + personaContext + memoryContext;
 
     // ── ContextEngine: use layered context assembly when available ──
     // This replaces the manual message assembly with ContextEngine.assembleContext()
@@ -2211,7 +2263,8 @@ export class AgentModelExecutor {
         embedding: null,
       };
       const useRemember = !!this.memoryHub.remember;
-      process.stdout.write(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember}\n`);
+      const useLayered = !!this.memoryHub.captureTurnToLayeredMemory;
+      process.stdout.write(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember} useLayered=${useLayered}\n`);
       // Prefer memory hub's remember() so the entry is mirrored into the
       // vector store (Transformers embeddings). Fallback to longTerm.store
       // when remember() is not provided by the injected hub.
@@ -2228,6 +2281,18 @@ export class AgentModelExecutor {
       }, (err) => {
         process.stderr.write(`[AgentModelExecutor] Memory save failed: ${err}\n`);
       });
+
+      // 同时写入分层记忆（L0→L1→L2→L3），由 LayeredMemory 内部周期触发 L2/L3 聚合。
+      // 失败 best-effort，不影响主流程。
+      if (this.memoryHub.captureTurnToLayeredMemory) {
+        this.memoryHub.captureTurnToLayeredMemory({
+          userText: userMsg,
+          assistantText: agentReply,
+          sessionKey: sessionId,
+        }).catch(err => {
+          process.stderr.write(`[AgentModelExecutor] LayeredMemory captureTurn failed: ${err}\n`);
+        });
+      }
     } catch (err) {
       process.stderr.write(`[AgentModelExecutor] rememberInteraction threw: ${err}\n`);
     }
