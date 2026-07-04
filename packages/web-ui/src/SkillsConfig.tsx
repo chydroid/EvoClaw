@@ -2044,9 +2044,6 @@ export default function SkillsConfig() {
 
           <div style={styles.banner}>
             <div>{t("skills.file_location", "Skill 文件位置")}: <code style={{ color: "var(--section-title-color)" }}>{selectedSkill.installPath}</code></div>
-            <div style={styles.bannerTip}>
-              {t("skills.zip_hint", "ZIP 文件请放入 skills/ 文件夹，系统每 30 秒自动扫描检测")}
-            </div>
           </div>
 
           <div style={styles.sectionTitle}>{t("skills.version_management", "版本管理")}</div>

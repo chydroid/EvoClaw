@@ -1140,39 +1140,21 @@ export class SkillManager {
     return this.marketplace;
   }
 
-  private scanDirs: Array<{ dir: string; intervalMs: number }> = [];
-  private scanTimers: ReturnType<typeof setInterval>[] = [];
-
-  startAutoScan(skillsDir: string, intervalMs = 30000): void {
-    this.scanDirs.push({ dir: skillsDir, intervalMs });
-    process.stdout.write(`[SkillManager] Auto-scan started on "${skillsDir}" (every ${intervalMs / 1000}s)\n`);
-
-    const runScan = async (dir: string) => {
-      try {
-        const result = await this.scanAndInstall(dir);
-        if (result.installed.length > 0 || result.skipped.length > 0) {
-          process.stdout.write(
-            `[SkillManager] Scan "${dir}": ${result.installed.length} installed, ${result.skipped.length} skipped\n`
-          );
-        }
-      } catch (err) {
-        process.stderr.write(`[SkillManager] Auto-scan error for "${dir}":` + " " + err + "\n");
-      }
-    };
-
-    runScan(skillsDir);
-    const timer = setInterval(() => runScan(skillsDir), intervalMs);
-    timer.unref();
-    this.scanTimers.push(timer);
+  /**
+   * @deprecated 自动定时扫描已移除（会在后台反复安装并触发低质量技能自动生成）。
+   * 保留方法签名仅为向后兼容，调用时仅做一次性扫描，不再启动 setInterval。
+   * 安装技能应由用户在对话中明确请求（"帮我安装技能"）时触发，
+   * 或通过 WebUI 的「刷新」按钮手动触发（/api/skills/refresh 端点）。
+   */
+  startAutoScan(skillsDir: string, _intervalMs = 30000): void {
+    process.stdout.write(`[SkillManager] startAutoScan is deprecated, doing one-time scan on "${skillsDir}"\n`);
+    void this.scanAndInstall(skillsDir).catch(err => {
+      process.stderr.write(`[SkillManager] One-time scan error for "${skillsDir}": ${err}\n`);
+    });
   }
 
   stopAutoScan(): void {
-    for (const timer of this.scanTimers) {
-      clearInterval(timer);
-    }
-    this.scanTimers = [];
-    this.scanDirs = [];
-    process.stdout.write("[SkillManager] Auto-scan stopped\n");
+    // 兼容方法：定时器已不存在，无需清理
   }
 
   async scanAndInstall(skillsDir: string): Promise<{ installed: Skill[]; skipped: string[] }> {

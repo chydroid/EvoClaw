@@ -847,7 +847,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "skills.no_skills_registered": "暂无已注册技能。点击 Scan 扫描 skills/ 文件夹。",
     "skills.has_update": "有更新",
     "skills.file_location": "Skill 文件位置",
-    "skills.zip_hint": "ZIP 文件请放入 skills/ 文件夹，系统每 30 秒自动扫描检测",
+    "skills.zip_hint": "",
     "skills.version_management": "版本管理",
     "skills.current_version": "当前版本",
     "skills.latest_version": "最新版本",

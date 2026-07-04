@@ -64,6 +64,21 @@ export async function handleSkillInstall(
     // ── Extract API key from user message ──
     const extractedApiKey = extractApiKey(message);
 
+    // ── "查找并安装"复合请求：用户描述任务需求，由系统搜索并安装 ──
+    // 匹配 "查找可以查询股市行情的技能并安装"、"找一个能翻译的技能装上" 等模式。
+    // 必须在 batch install 之前处理，否则 "查找可以..." 会被识别为技能名（实际会被过滤）。
+    const findAndInstallMatch = message.match(
+      /(?:帮\s*我\s*)?(?:查找?|找一下|搜索|查一下|看看|有没有|需要|想要).{0,20}?(?:能够?|可以|能|会)?(.+?)(?:的|之)?(?:技能|skill).{0,10}?(?:并\s*)?(?:安装|下载|添加|装(?:上|一下)?)/i
+    );
+    if (findAndInstallMatch && findAndInstallMatch[1]) {
+      const taskDescription = findAndInstallMatch[1].trim();
+      if (taskDescription.length >= 2) {
+        const result = await handleFindAndInstall(deps, taskDescription, installedNames, startTime, extractedApiKey);
+        if (result) return result;
+        // 若搜索未找到匹配，继续走 browse 模式让用户手动选
+      }
+    }
+
     // ── Batch install mode ──
     if (selectedSkills.length > 0) {
       return await handleBatchSkillInstall(deps, selectedSkills, installedNames, startTime, extractedApiKey);
@@ -75,6 +90,14 @@ export async function handleSkillInstall(
     if (/https?:\/\//i.test(message)) {
       process.stdout.write(`[AgentModelExecutor] Skill install request contains URLs but extraction failed, falling through to LLM\n`);
       return null;
+    }
+
+    // ── 本地 ZIP 扫描模式：用户放入 ZIP 到 data/skills/ 后说"安装技能" ──
+    // 扫描 data/skills/*.zip，解压并安装。安装成功后删除 ZIP 文件避免重复扫描。
+    // 仅在用户明确说"安装技能"且未指定具体技能名/URL 时触发。
+    const localZipResult = await scanAndInstallLocalZips(deps, startTime);
+    if (localZipResult) {
+      return localZipResult;
     }
 
     // ── Browse mode: show available skills ──
@@ -412,6 +435,218 @@ export async function configureSkillApiKey(deps: SkillInstallerDeps, skillIds: s
 }
 
 // ─── Batch skill install ──────────────────────────────────────────────────────
+
+/**
+ * Handle "find and install" compound requests.
+ * User describes a task (e.g. "查询股市行情"), system searches ClawHub marketplace
+ * for matching skills, lists candidates, and auto-installs if only one match found.
+ *
+ * Returns null if no match found (caller should fall through to browse mode).
+ */
+export async function handleFindAndInstall(
+  deps: SkillInstallerDeps,
+  taskDescription: string,
+  installedNames: Set<string>,
+  startTime: number,
+  _apiKey?: string | null
+): Promise<SkillInstallResult | null> {
+  process.stdout.write(`[SkillInstaller] findAndInstall: taskDescription="${taskDescription}"\n`);
+
+  // 通过 SkillMarketplace.searchRemote 搜索 ClawHub
+  type MarketplaceLike = {
+    searchRemote(query: string, limit?: number): Promise<Array<{
+      slug: string;
+      displayName: string;
+      summary?: string;
+    }>>;
+    install(name: string): Promise<{ success: boolean; error?: string; installedPath?: string }>;
+  };
+  const skillManager = deps.registry?.resolveService<{
+    getMarketplace(): MarketplaceLike;
+  }>("skillManager");
+
+  if (!skillManager) {
+    return null;
+  }
+
+  let marketplace: MarketplaceLike | null = null;
+  try {
+    marketplace = skillManager.getMarketplace();
+  } catch {
+    marketplace = null;
+  }
+  if (!marketplace) return null;
+
+  // 搜索 ClawHub（用任务描述作为关键词）
+  let results: Array<{ slug: string; displayName: string; summary?: string }> = [];
+  try {
+    results = await marketplace.searchRemote(taskDescription, 10);
+  } catch (err) {
+    process.stderr.write(`[SkillInstaller] findAndInstall search failed: ${err}\n`);
+    return null;
+  }
+
+  // 过滤已安装的
+  const candidates = results.filter(r => !installedNames.has(r.slug));
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // 如果只有一个匹配，直接安装
+  if (candidates.length === 1) {
+    const skill = candidates[0];
+    process.stdout.write(`[SkillInstaller] findAndInstall: single match "${skill.slug}", installing...\n`);
+    try {
+      const installResult = await marketplace.install(skill.slug);
+      if (installResult.success) {
+        return {
+          reply: `🔍 根据您的需求「${taskDescription}」找到技能：\n\n**\`${skill.slug}\`** — ${skill.summary || skill.displayName || "无描述"}\n\n✅ 已自动安装成功\n\n您现在可以使用该技能处理相关任务了。`,
+          tokensUsed: 0,
+          duration: Date.now() - startTime,
+          permissionRequests: [],
+          toolsExecuted: false,
+        };
+      } else {
+        return {
+          reply: `🔍 根据您的需求「${taskDescription}」找到技能：**\`${skill.slug}\`**\n\n❌ 安装失败：${installResult.error || "未知错误"}\n\n请稍后重试，或在技能管理页面手动安装。`,
+          tokensUsed: 0,
+          duration: Date.now() - startTime,
+          permissionRequests: [],
+          toolsExecuted: false,
+        };
+      }
+    } catch (err) {
+      return {
+        reply: `🔍 根据您的需求「${taskDescription}」找到技能：**\`${skill.slug}\`**\n\n❌ 安装出错：${err instanceof Error ? err.message : String(err)}`,
+        tokensUsed: 0,
+        duration: Date.now() - startTime,
+        permissionRequests: [],
+        toolsExecuted: false,
+      };
+    }
+  }
+
+  // 多个匹配：列出让用户选择
+  let reply = `🔍 根据您的需求「${taskDescription}」找到 **${candidates.length}** 个相关技能：\n\n`;
+  candidates.forEach((skill, i) => {
+    reply += `${i + 1}. **\`${skill.slug}\`** — ${skill.summary || skill.displayName || "无描述"}\n`;
+  });
+  reply += `\n💡 回复 \`安装 <技能名>\` 选择安装，例如：\`安装 ${candidates[0].slug}\`\n`;
+  const batchExample = candidates.slice(0, 3).map(s => s.slug).join(", ");
+  reply += `或批量安装：\`安装 ${batchExample}\``;
+  return {
+    reply,
+    tokensUsed: 0,
+    duration: Date.now() - startTime,
+    permissionRequests: [],
+    toolsExecuted: false,
+  };
+}
+
+/**
+ * Scan local skills/ directory for ZIP files and install them.
+ * Triggered when user explicitly says "安装技能" without specifying names or URLs.
+ * Scans data/skills/*.zip for valid SKILL.md archives and installs them in one pass.
+ *
+ * Returns null if no ZIP files found (caller should continue to other install modes).
+ */
+export async function scanAndInstallLocalZips(
+  deps: SkillInstallerDeps,
+  startTime: number
+): Promise<SkillInstallResult | null> {
+  const skillsDir = path.resolve(deps.workspacePath, "data", "skills");
+  if (!fs.existsSync(skillsDir)) return null;
+
+  let zipFiles: string[] = [];
+  try {
+    zipFiles = fs.readdirSync(skillsDir)
+      .filter(f => f.toLowerCase().endsWith(".zip"))
+      .map(f => path.join(skillsDir, f));
+  } catch {
+    return null;
+  }
+
+  if (zipFiles.length === 0) return null;
+
+  process.stdout.write(`[SkillInstaller] Found ${zipFiles.length} ZIP file(s) in skills/, installing...\n`);
+
+  const skillManager = deps.registry?.resolveService<{
+    installSkill(path: string): Promise<{ name: string }>;
+  }>("skillManager");
+
+  if (!skillManager) {
+    return null;
+  }
+
+  const successList: string[] = [];
+  const failList: Array<{ name: string; reason: string }> = [];
+  const progressLines: string[] = [];
+  const total = zipFiles.length;
+
+  for (let i = 0; i < zipFiles.length; i++) {
+    const zipPath = zipFiles[i];
+    const idx = i + 1;
+    const displayName = path.basename(zipPath, ".zip");
+
+    progressLines.push(`⏳ [${idx}/${total}] 正在解压 ${displayName}...`);
+
+    try {
+      // 直接解压本地 ZIP 文件到临时目录，查找 SKILL.md
+      const extractDir = path.resolve(deps.workspacePath, "..", "skills", `_zip_${displayName}_${Date.now()}`);
+      if (!fs.existsSync(extractDir)) {
+        fs.mkdirSync(extractDir, { recursive: true });
+      }
+
+      await extractZip(zipPath, extractDir);
+
+      const skillMdPath = findSkillMd(extractDir, displayName);
+      if (!skillMdPath) {
+        // 清理临时目录
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        failList.push({ name: displayName, reason: "ZIP 中未找到 SKILL.md" });
+        progressLines.push(`❌ [${idx}/${total}] ${displayName}: ZIP 中未找到 SKILL.md`);
+        continue;
+      }
+
+      const installed = await skillManager.installSkill(skillMdPath);
+      successList.push(installed.name);
+      progressLines.push(`✅ [${idx}/${total}] ${installed.name} 安装成功`);
+
+      // 安装成功后删除 ZIP 文件（避免重复扫描）
+      try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failList.push({ name: displayName, reason });
+      progressLines.push(`❌ [${idx}/${total}] ${displayName}: ${reason}`);
+    }
+  }
+
+  // 如果全部失败，返回失败汇总
+  if (successList.length === 0) {
+    return {
+      reply: `📦 扫描 \`data/skills/\` 目录发现 ${zipFiles.length} 个 ZIP 文件，但全部安装失败：\n\n` +
+             progressLines.join("\n") +
+             `\n\n❌ 失败原因：` + failList.map(f => `${f.name}: ${f.reason}`).join("; "),
+      tokensUsed: 0,
+      duration: Date.now() - startTime,
+      permissionRequests: [],
+      toolsExecuted: false,
+    };
+  }
+
+  let reply = `📦 已扫描 \`data/skills/\` 目录并安装 ${successList.length}/${total} 个技能：\n\n`;
+  reply += progressLines.join("\n");
+  if (failList.length > 0) {
+    reply += `\n\n⚠️ ${failList.length} 个失败：` + failList.map(f => `${f.name} (${f.reason})`).join(", ");
+  }
+  return {
+    reply,
+    tokensUsed: 0,
+    duration: Date.now() - startTime,
+    permissionRequests: [],
+    toolsExecuted: true,
+  };
+}
 
 /**
  * Handle batch installation of specific skills.

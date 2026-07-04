@@ -1587,7 +1587,9 @@ export class AgentModelExecutor {
     const installRequest = /(?:给我|帮我|需要|想要|如果).*?(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*.*?(?:技能|skill|skills?)/i;
     const installSpecificSkill = /(?:安装|下载|添加|配置|装)\s+([a-zA-Z][\w\-]{1,})/i;
     const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
-    const findAndInstallSkill = /(?:找|查找|搜索|看看|查一下).*(?:技能|skill).*?(?:安装|下载|添加|装)/i;
+    // findAndInstallSkill: "查找可以查询股市行情的技能并安装"、"找一个能翻译的技能装上"
+    // 必须同时包含"查找类动词+技能+安装类动词"，避免误匹配普通"找技能"浏览请求
+    const findAndInstallSkill = /(?:查找?|找一下|搜索|查一下|看看|有没有).{0,30}?(?:技能|skill).{0,15}?(?:并\s*)?(?:安装|下载|添加|装(?:上|一下)?)/i;
     if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
       process.stdout.write(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
       const skillInstallerDeps: SkillInstallerDeps = { registry: this.registry, workspacePath: this.workspacePath };
