@@ -530,7 +530,11 @@ export class SkillValidator {
       { pattern: /(?:I\s+am|this\s+is)\s+(?:the|your)\s+(?:creator|developer|admin|administrator|owner|system\s+admin)/gi, desc: "Prompt injection: false authority claim to bypass restrictions", severity: "critical" as const },
       { pattern: /(?:repeat|echo|copy)\s+(?:the\s+)?(?:above|previous|system)\s+(?:text|prompt|message)/gi, desc: "Prompt injection: attempts to leak prior context via repetition", severity: "medium" as const },
       { pattern: /\[\s*(?:system|admin|developer|assistant|user)\s*\]/gi, desc: "Prompt injection: fake role-tag injection", severity: "medium" as const },
-      { pattern: /<\/?(?:system|assistant|developer|user|instructions|rules)>/gi, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
+      // Fake XML/HTML role tag injection.
+      // 使用 lookbehind 排除 URL 路径占位符（如 `https://x.com/<user>/status/<id>`）：
+      // 真实的 role tag 注入通常独占一行或前后是空白/引号，而 URL 中的 `<user>` 前面是 `/` 等路径字符。
+      // 排除前缀字符：`/`（URL 路径）、`:`（协议）、`=`（属性赋值）、`?`（查询）、`&`（参数）、`#`（片段）。
+      { pattern: /(?<![/:=?&#])<\/?(?:system|assistant|developer|user|instructions|rules)>/gi, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
     ];
 
     for (const { pattern, desc, severity } of injectionPatterns) {
