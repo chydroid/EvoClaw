@@ -511,7 +511,6 @@ export class SkillRegistry {
     bundledAs?: string;
   }> = [
     // ── 与 bundled/ 目录对应的官方自带技能 ──
-    { name: "datetime-helper", description: "查询当前时间、时区转换、日期格式化、时间差计算。无外部依赖。", keywords: ["time", "date", "timezone", "时间", "日期"], category: "utility", bundledAs: "datetime-helper" },
     { name: "calculator", description: "数学计算器 — 四则运算、幂运算、三角函数、对数、统计。", keywords: ["calc", "math", "计算", "数学"], category: "utility", bundledAs: "calculator" },
     { name: "text-utils", description: "文本工具 — 统计、大小写转换、Base64、URL 编码、JSON 美化。", keywords: ["text", "string", "base64", "文本", "字符串"], category: "utility", bundledAs: "text-utils" },
     { name: "unit-converter", description: "单位转换 — 长度、重量、温度、面积、体积、速度、时间、数据存储。", keywords: ["unit", "convert", "单位", "换算"], category: "utility", bundledAs: "unit-converter" },

@@ -317,9 +317,6 @@ export class SkillManager {
       );
       if (detectedTriggers.length > 0) {
         triggers = detectedTriggers;
-        process.stdout.write(
-          `[SkillManager] Auto-detected ${detectedTriggers.length} triggers from SKILL.md: ${detectedTriggers.map(t => `${t.type}:${t.pattern}`).join(", ")}\n`
-        );
       }
     }
     // 优先使用 SKILL.md frontmatter 中的 keywords，否则从 triggers 提取

@@ -226,8 +226,9 @@ export class SkillValidator {
       errors.push("openclaw.requires.bins must be an array of strings");
       return { errors, warnings };
     }
+    // 空数组是合法的（表示不需要 binary），不发出警告。
+    // openclaw 生态中许多技能声明 requires.bins: [] 作为显式标记。
     if (bins.length === 0) {
-      warnings.push("openclaw.requires.bins is empty — omit the field if no binaries are required");
       return { errors, warnings };
     }
     for (let i = 0; i < bins.length; i++) {
