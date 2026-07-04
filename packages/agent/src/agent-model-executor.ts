@@ -166,6 +166,19 @@ export class AgentModelExecutor {
   /** Tool execution traces per session for reflection */
   private executionTraces = new Map<string, import("./reflection-engine").ToolExecutionTrace[]>();
 
+  /**
+   * 反思历史（持久化，喂 LLM 上下文）— 借鉴 page-agent 的 history 流。
+   * 每条记录包含 stepIndex / reflection / action / result，渲染为 <step_N> 格式
+   * 注入到 LLM 上下文，让 LLM 看到自己之前每步的判定、记忆、目标。
+   */
+  private reflectionHistory = new Map<string, import("./reflection-contract").ReflectionHistoryEntry[]>();
+
+  /**
+   * 活动事件流（瞬态，仅 UI 反馈）— 借鉴 page-agent 的 activity 流。
+   * 不进 LLM 上下文，避免瞬态错误污染推理。订阅者可用于实时 UI 更新。
+   */
+  private activityStreams = new Map<string, Array<(event: import("./reflection-contract").DualStreamEvent["activity"]) => void>>();
+
   /** Swarm orchestrator for multi-agent delegation */
   private swarmOrchestrator: import("./swarm-orchestrator").SwarmOrchestrator | null = null;
 
@@ -1176,6 +1189,8 @@ export class AgentModelExecutor {
       this.activePlans.delete(sessionId);
       this.iterationBudgets.delete(sessionId);
       this.pendingApprovalCommands.delete(sessionId);
+      this.reflectionHistory.delete(sessionId);
+      this.activityStreams.delete(sessionId);
       // pendingOperations 按 requestId 索引，需遍历清理该会话的条目
       for (const [key, val] of this.pendingOperations) {
         if (val.sessionId === sessionId) this.pendingOperations.delete(key);
@@ -1188,6 +1203,8 @@ export class AgentModelExecutor {
       this.iterationBudgets.clear();
       this.pendingApprovalCommands.clear();
       this.pendingOperations.clear();
+      this.reflectionHistory.clear();
+      this.activityStreams.clear();
     }
   }
 
@@ -3099,6 +3116,113 @@ export class AgentModelExecutor {
         process.stderr.write(`[AgentModelExecutor] recordToolNodeToCanvas failed: ${err}\n`);
       }
     }
+
+    // 发射活动事件（瞬态，仅 UI）— 借鉴 page-agent 双流架构的 activity 流
+    this.emitActivity(sessionId, {
+      type: "executed",
+      tool: toolName,
+      duration,
+      success,
+    });
+  }
+
+  // ── 反思契约（借鉴 page-agent MacroTool "Reflection-Before-Action"） ──
+
+  /**
+   * 记录反思+行动历史条目（持久化，喂 LLM 上下文）。
+   *
+   * 借鉴 page-agent PageAgentCore 的 #emitHistoryChange：每步完成后把反思
+   * (evaluation/memory/nextGoal) + 行动 (toolName/input) + 结果推入历史，
+   * 下一步组装 prompt 时渲染为 <step_N> 格式注入。
+   */
+  recordReflectionEntry(sessionId: string, entry: import("./reflection-contract").ReflectionHistoryEntry): void {
+    const history = this.reflectionHistory.get(sessionId) || [];
+    history.push(entry);
+    // 保留最近 30 步（避免上下文膨胀）
+    if (history.length > 30) history.splice(0, history.length - 30);
+    this.reflectionHistory.set(sessionId, history);
+  }
+
+  /** 获取会话的反思历史。 */
+  getReflectionHistory(sessionId: string): import("./reflection-contract").ReflectionHistoryEntry[] {
+    return this.reflectionHistory.get(sessionId) || [];
+  }
+
+  /**
+   * 渲染反思历史为 LLM 上下文文本。
+   *
+   * 借鉴 page-agent 的 #assembleUserPrompt：把 history 渲染为
+   * <step_N>Evaluation/Memory/NextGoal/Action/Result</step_N> 格式。
+   */
+  renderReflectionHistory(sessionId: string): string {
+    const history = this.reflectionHistory.get(sessionId) || [];
+    if (history.length === 0) return "";
+    // 用动态导入避免循环依赖
+    const rendered = history.map((entry) => {
+      // 内联 renderHistoryEntry 逻辑避免循环依赖
+      const lines: string[] = [`<step_${entry.stepIndex}>`];
+      if (entry.reflection.evaluationPreviousGoal) {
+        lines.push(`Evaluation of Previous Step: ${entry.reflection.evaluationPreviousGoal}`);
+      }
+      if (entry.reflection.memory) {
+        lines.push(`Memory: ${entry.reflection.memory}`);
+      }
+      if (entry.reflection.nextGoal) {
+        lines.push(`Next Goal: ${entry.reflection.nextGoal}`);
+      }
+      const inputStr = JSON.stringify(entry.actionInput).slice(0, 200);
+      lines.push(`Action: ${entry.actionName}(${inputStr})`);
+      if (entry.actionOutput) {
+        lines.push(`Result: ${entry.success ? "✅" : "❌"} ${entry.actionOutput}`);
+      }
+      if (entry.error) {
+        lines.push(`Error: ${entry.error}`);
+      }
+      lines.push(`</step_${entry.stepIndex}>`);
+      return lines.join("\n");
+    });
+    return `<agent_history>\n${rendered.join("\n")}\n</agent_history>`;
+  }
+
+  /** 清空会话的反思历史。 */
+  clearReflectionHistory(sessionId: string): void {
+    this.reflectionHistory.delete(sessionId);
+  }
+
+  // ── 双流信息架构：活动事件（瞬态，仅 UI，不进 LLM 上下文） ──
+
+  /**
+   * 订阅会话的活动事件流。
+   * 借鉴 page-agent PageAgentCore 的 activity 事件：thinking/executing/executed/error/retrying。
+   * 订阅者用于实时 UI 反馈（如进度条、状态栏），不应影响 LLM 推理。
+   */
+  subscribeActivity(
+    sessionId: string,
+    handler: (event: import("./reflection-contract").DualStreamEvent["activity"]) => void
+  ): () => void {
+    const handlers = this.activityStreams.get(sessionId) || [];
+    handlers.push(handler);
+    this.activityStreams.set(sessionId, handlers);
+    return () => {
+      const arr = this.activityStreams.get(sessionId);
+      if (!arr) return;
+      const idx = arr.indexOf(handler);
+      if (idx >= 0) arr.splice(idx, 1);
+    };
+  }
+
+  /** 发射活动事件（瞬态）。 */
+  emitActivity(sessionId: string, event: import("./reflection-contract").DualStreamEvent["activity"]): void {
+    const handlers = this.activityStreams.get(sessionId);
+    if (!handlers || handlers.length === 0) return;
+    for (const h of handlers) {
+      try { h(event); } catch { /* 订阅者错误不影响主流程 */ }
+    }
+  }
+
+  /** 清空会话的活动事件订阅。 */
+  clearActivityStream(sessionId: string): void {
+    this.activityStreams.delete(sessionId);
   }
 
   /** Update planning step status after tool execution */

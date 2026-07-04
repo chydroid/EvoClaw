@@ -28,6 +28,7 @@ import { AtomicMemoryExtractor, type AtomicMemory } from "./atomic-memory-extrac
 import { SceneBlockAggregator, type SceneBlock } from "./scene-block-aggregator";
 import { PersonaProfileGenerator, type PersonaProfile } from "./persona-profile";
 import { SymbolicMemoryCanvas, type MemoryCanvas } from "./symbolic-memory-canvas";
+import { applyCanvasAgentOps, type CanvasAgentOp } from "./canvas-agent-ops";
 
 /** 单轮对话输入。 */
 export interface TurnInput {
@@ -280,6 +281,30 @@ export class LayeredMemory {
       sessionKey: canvas.sessionKey,
       createdAt: canvas.createdAt,
     };
+  }
+
+  /**
+   * 应用 CanvasAgentOp 数组到画布（借鉴 Infinite-Canvas 的 applyCanvasAgentOps）。
+   *
+   * 这是结构化操作画布的统一入口：所有 Agent 对画布的修改都通过 ops 数组
+   * 而非直接调 addNode/connect，便于撤销/重做、批量化、跨进程同步。
+   *
+   * @returns 应用后的画布快照，或 null（画布未启动）
+   */
+  applyCanvasOps(ops: CanvasAgentOp[]): {
+    nodes: import("./symbolic-memory-canvas").CanvasNode[];
+    edges: import("./symbolic-memory-canvas").CanvasEdge[];
+  } | null {
+    const canvas = this.canvas.getCanvas();
+    if (!canvas) return null;
+    // 用纯函数 reducer 应用 ops
+    const result = applyCanvasAgentOps(canvas, ops);
+    // 把结果写回 canvas（直接操作内部 canvas 对象）
+    canvas.nodes = result.nodes;
+    canvas.edges = result.edges;
+    // 触发重新渲染 Mermaid
+    this.canvas.render();
+    return { nodes: result.nodes, edges: result.edges };
   }
 
   // ── 子组件直接访问 ──

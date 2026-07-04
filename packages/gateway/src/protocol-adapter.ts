@@ -7202,6 +7202,33 @@ export class ProtocolAdapter {
       }
     });
 
+    // POST /api/canvas-graph/apply-ops — 应用 CanvasAgentOp 数组到画布
+    // 借鉴 Infinite-Canvas 的 canvas_apply_ops：前端/Agent 通过 ops 修改画布
+    app.post("/api/canvas-graph/apply-ops", (req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          applyCanvasOps(ops: unknown[]): { nodes: unknown[]; edges: unknown[] } | null;
+        }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const ops = Array.isArray(req.body?.ops) ? req.body.ops : [];
+        if (ops.length === 0) {
+          res.status(400).json({ error: "Missing 'ops' array in body" });
+          return;
+        }
+        const result = hub.applyCanvasOps(ops);
+        if (!result) {
+          res.json({ active: false, nodes: [], edges: [] });
+          return;
+        }
+        res.json({ active: true, ...result });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
 
     // ── Heartbeat API ──
 

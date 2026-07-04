@@ -448,3 +448,34 @@ export type {
   ClarifyResult,
   ClarifyEntry,
 } from "./clarify-tool";
+
+// AutoFixer — LLM 响应格式自动修复（借鉴 page-agent normalizeResponse）
+export {
+  normalizeResponse,
+  formatReflection,
+} from "./auto-fixer";
+export type {
+  NormalizeResult,
+  NormalizedToolCall,
+  ToolCall as LLMToolCall,
+  LLMMessage,
+} from "./auto-fixer";
+
+// ReflectionContract — MacroTool "Reflection-Before-Action" 契约（借鉴 page-agent）
+export {
+  buildMacroToolSchema,
+  extractReflectionAndAction,
+  renderHistoryEntry,
+  MACRO_TOOL_SYSTEM_PROMPT,
+  observeUrlChange,
+  observeWaitBudget,
+  observeStepBudget,
+  observeStuckWarning,
+} from "./reflection-contract";
+export type {
+  ReflectionFields,
+  ReflectionHistoryEntry,
+  DualStreamEvent,
+  ToolSchema as MacroToolSchemaDef,
+  ObservationEvent,
+} from "./reflection-contract";

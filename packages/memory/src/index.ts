@@ -33,6 +33,10 @@ export {
   PersonaProfileGenerator,
   SymbolicMemoryCanvas,
   LayeredMemory,
+  applyCanvasAgentOps,
+  batchAddToolNodes,
+  chainConnectOps,
+  summarizeCanvasAgentOps,
 } from "./layered";
 export type {
   ConversationMessage,
@@ -52,4 +56,5 @@ export type {
   TurnInput,
   LayeredRecallResult,
   LayeredMemoryConfig,
+  CanvasAgentOp,
 } from "./layered";

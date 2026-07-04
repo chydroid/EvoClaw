@@ -310,6 +310,20 @@ export class MemoryHub {
     }
   }
 
+  /**
+   * 应用 CanvasAgentOp 数组到画布（借鉴 Infinite-Canvas 的 applyCanvasAgentOps）。
+   * 失败不抛错（best-effort）。
+   */
+  applyCanvasOps(ops: unknown[]): { nodes: unknown[]; edges: unknown[] } | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.applyCanvasOps(ops as never);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] applyCanvasOps failed: ${err}\n`);
+      return null;
+    }
+  }
+
   /** 获取符号画布 Mermaid 文本。 */
   getCanvasMermaid(): string {
     if (!this.layeredMemory) return "";

@@ -28,3 +28,11 @@ export type { MemoryCanvas, CanvasNode, CanvasEdge, CanvasNodeType, CanvasOption
 
 export { LayeredMemory } from "./layered-memory";
 export type { TurnInput, LayeredRecallResult, LayeredMemoryConfig } from "./layered-memory";
+
+export {
+  applyCanvasAgentOps,
+  batchAddToolNodes,
+  chainConnectOps,
+  summarizeCanvasAgentOps,
+} from "./canvas-agent-ops";
+export type { CanvasAgentOp } from "./canvas-agent-ops";
