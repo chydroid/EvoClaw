@@ -55,6 +55,7 @@ export class AuthProvider {
       "/api/marketplace/search",
       "/api/marketplace/trending",
       "/api/marketplace/categories",
+      "/api/marketplace/debug",
     ]);
 
     if (publicExactPaths.has(req.path)) {

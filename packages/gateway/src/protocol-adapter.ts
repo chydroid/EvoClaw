@@ -1958,6 +1958,31 @@ export class ProtocolAdapter {
       }
     });
 
+    // 调试端点：检查 ClawHub registry 连通性和响应格式
+    app.get("/api/marketplace/debug", async (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          getMarketplace(): { searchRemote(query: string, limit?: number): Promise<unknown[]> };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const debug: { tests: Array<{ query: string; ok: boolean; count: number; error?: string; sample?: unknown }> } = { tests: [] };
+        for (const q of ["brainstorming", "*", "trace"]) {
+          try {
+            const results = await skillManager.getMarketplace().searchRemote(q, 3);
+            debug.tests.push({ query: q, ok: true, count: results.length, sample: results[0] });
+          } catch (err: unknown) {
+            debug.tests.push({ query: q, ok: false, count: 0, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        res.json(debug);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.post("/api/marketplace/install", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{

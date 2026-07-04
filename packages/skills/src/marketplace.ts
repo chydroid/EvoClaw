@@ -256,14 +256,36 @@ export class SkillMarketplace {
     const url = new URL(`${this.config.registryURL}/api/v1/search`);
     url.searchParams.set("q", query.trim() || "*");
     url.searchParams.set("limit", String(limit));
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(15_000),
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // openclaw 响应结构：{ results: ClawHubSkillSearchResult[] }
-    const data = await res.json() as { results?: ClawHubSkillSearchResult[] };
-    return data.results ?? [];
+
+    // 使用 AbortController + setTimeout 而非 AbortSignal.timeout()，兼容更广的 Node 版本
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+    try {
+      const res = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => "");
+        throw new Error(`ClawHub search HTTP ${res.status} ${res.statusText}: ${bodyText.slice(0, 200)}`);
+      }
+
+      // 先拿文本再解析，便于诊断非 JSON 响应（如 HTML 错误页）
+      const text = await res.text();
+      let data: { results?: ClawHubSkillSearchResult[] };
+      try {
+        data = JSON.parse(text);
+      } catch (parseErr) {
+        throw new Error(`ClawHub search returned non-JSON response (first 300 chars): ${text.slice(0, 300)}`);
+      }
+
+      const results = data.results ?? [];
+      process.stdout.write(`[Marketplace] searchRemote("${query}", limit=${limit}) → ${results.length} results from ${url.host}\n`);
+      return results;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /** Search the catalog */
