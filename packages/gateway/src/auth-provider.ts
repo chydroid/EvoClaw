@@ -68,6 +68,7 @@ export class AuthProvider {
       "/api/config/avatars",  // Avatar config needed for UI
       "/api/config/channels", // Channel config needed for UI
       "/api/events",          // SSE event stream (has its own auth via query param)
+      "/api/marketplace/skills/", // 技能市场详情只读端点（GET /api/marketplace/skills/:slug/details）
       // 注意：/api/skills 已从此处移除。保留 publicExactPaths 中的 /api/skills
       // 仅允许 GET 列表免认证；所有子路径（install/delete/config/curate 等
       // 状态变更操作）必须认证，否则未认证攻击者可安装恶意技能实现 RCE。

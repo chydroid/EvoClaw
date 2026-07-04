@@ -2070,6 +2070,79 @@ export class ProtocolAdapter {
       }
     });
 
+    // GET /api/marketplace/skills/:slug/details — 从 ClawHub 获取技能完整详情（含完整 SKILL.md）
+    // 前端点击技能列表时懒加载调用，确保详情面板始终有完整内容（不依赖搜索结果中的 skillMd 字段）
+    app.get("/api/marketplace/skills/:slug/details", async (req: Request, res: Response) => {
+      try {
+        const slug = String(req.params.slug);
+        const skillManager = this.registry.resolveService<{
+          getMarketplace(): {
+            fetchPackageDetails(name: string): Promise<unknown>;
+            searchRemote(query: string, limit?: number): Promise<Array<{
+              slug: string; displayName: string; summary?: string; version?: string; updatedAt?: number;
+              metaContent?: {
+                Files?: string[]; Keywords?: string[]; License?: string; DisplayDescription?: string;
+                owner?: string; skillMd?: string;
+                latest?: { commit?: string | null; publishedAt?: number; version?: string };
+              } | null;
+            }>>;
+          };
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        // 直接调用 ClawHub 详情 API（GET /api/v1/skills/{slug}），返回 metaContent.skillMd 等完整字段
+        const registryURL = process.env.EVOCLAW_MARKETPLACE_REGISTRY_URL || "https://cn.clawhub-mirror.com";
+        const detailURL = `${registryURL}/api/v1/skills/${encodeURIComponent(slug)}`;
+        const detailRes = await fetch(detailURL, {
+          signal: AbortSignal.timeout(15_000),
+          headers: { Accept: "application/json" },
+        });
+        if (!detailRes.ok) {
+          res.status(detailRes.status).json({ error: `ClawHub API returned HTTP ${detailRes.status}` });
+          return;
+        }
+        const data = await detailRes.json() as {
+          skill?: { slug: string; displayName: string; summary?: string; tags?: Record<string, string>; createdAt: number; updatedAt: number } | null;
+          latestVersion?: { version: string; createdAt: number; changelog?: string } | null;
+          owner?: { handle?: string | null; displayName?: string | null } | null;
+          metaContent?: {
+            Files?: string[]; Keywords?: string[]; License?: string; DisplayDescription?: string;
+            owner?: string; skillMd?: string; summary?: string; displayName?: string;
+            requires?: { env?: string[]; bins?: string[] };
+            latest?: { commit?: string | null; publishedAt?: number; version?: string };
+          } | null;
+        };
+        if (!data.skill) {
+          res.status(404).json({ error: "Skill not found" });
+          return;
+        }
+        res.json({
+          success: true,
+          detail: {
+            slug: data.skill.slug,
+            displayName: data.metaContent?.displayName || data.skill.displayName,
+            summary: data.metaContent?.summary || data.skill.summary || "",
+            displayDescription: data.metaContent?.DisplayDescription || "",
+            version: data.latestVersion?.version || data.metaContent?.latest?.version || "",
+            owner: data.metaContent?.owner || data.owner?.handle || "",
+            license: data.metaContent?.License || "",
+            keywords: data.metaContent?.Keywords || [],
+            files: data.metaContent?.Files || [],
+            skillMd: data.metaContent?.skillMd || "",
+            updatedAt: data.skill.updatedAt,
+            createdAt: data.skill.createdAt,
+            tags: data.skill.tags ? Object.keys(data.skill.tags) : [],
+            requires: data.metaContent?.requires || null,
+            detailPageURL: data.metaContent?.owner ? `${registryURL}/${data.metaContent.owner}/${data.skill.slug}` : "",
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.post("/api/skills/:id/upgrade-from-marketplace", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{

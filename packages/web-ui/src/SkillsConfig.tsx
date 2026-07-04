@@ -632,9 +632,9 @@ function MarketplaceSkillDetail({
   const updatedAtStr = skill.updatedAt
     ? new Date(typeof skill.updatedAt === "number" ? skill.updatedAt : Date.parse(String(skill.updatedAt))).toLocaleString()
     : "";
-  // ClawHub 详情页 URL：{registryURL}/{owner}/{slug}
+  // ClawHub 详情页 URL：优先用后端返回的 detailPageURL，否则前端拼接
   const registryURL = (import.meta as any).env?.VITE_MARKETPLACE_REGISTRY_URL || "https://cn.clawhub-mirror.com";
-  const detailPageURL = skill.owner ? `${registryURL}/${skill.owner}/${slug}` : "";
+  const detailPageURL = (skill as any).detailPageURL || (skill.owner ? `${registryURL}/${skill.owner}/${slug}` : "");
 
   return (
     <div style={{ color: "var(--text-secondary)" }}>
@@ -792,6 +792,11 @@ export default function SkillsConfig() {
   const [marketplaceLastQuery, setMarketplaceLastQuery] = useState("");
   // 当前选中的市场技能 slug，用于右侧详情面板展示
   const [selectedMarketplaceSlug, setSelectedMarketplaceSlug] = useState<string | null>(null);
+  // 市场技能详情懒加载：点击技能时从 /api/marketplace/skills/:slug/details 获取完整详情
+  // 不依赖搜索结果中的 skillMd（trending 列表不返回 skillMd，搜索结果可能为空或截断）
+  const [marketplaceDetail, setMarketplaceDetail] = useState<MarketplaceSearchResult | null>(null);
+  const [marketplaceDetailLoading, setMarketplaceDetailLoading] = useState<string | null>(null);
+  const [marketplaceDetailError, setMarketplaceDetailError] = useState<string | null>(null);
   // Round 8: 安全扫描结果缓存（skillId → scan result）
   const [securityScans, setSecurityScans] = useState<Record<string, {
     safe: boolean;
@@ -1043,6 +1048,40 @@ export default function SkillsConfig() {
       }
     }
   }, [t]);
+
+  // 懒加载市场技能详情：点击技能列表项时从后端 /api/marketplace/skills/:slug/details 获取
+  // 后端再调用 ClawHub GET /api/v1/skills/{slug}，返回完整 metaContent（含 skillMd）
+  const loadMarketplaceDetail = useCallback(async (slug: string) => {
+    setMarketplaceDetailLoading(slug);
+    setMarketplaceDetailError(null);
+    try {
+      const res = await fetch(`/api/marketplace/skills/${encodeURIComponent(slug)}/details`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(String(err.error || `HTTP ${res.status}`));
+      }
+      const data = await res.json();
+      if (!data.success || !data.detail) {
+        throw new Error("Invalid response format");
+      }
+      setMarketplaceDetail(data.detail as MarketplaceSearchResult);
+    } catch (err) {
+      setMarketplaceDetailError(err instanceof Error ? err.message : String(err));
+      setMarketplaceDetail(null);
+    } finally {
+      setMarketplaceDetailLoading(null);
+    }
+  }, []);
+
+  // 选中/取消选中市场技能时触发懒加载
+  useEffect(() => {
+    if (selectedMarketplaceSlug) {
+      loadMarketplaceDetail(selectedMarketplaceSlug);
+    } else {
+      setMarketplaceDetail(null);
+      setMarketplaceDetailError(null);
+    }
+  }, [selectedMarketplaceSlug, loadMarketplaceDetail]);
 
   const handleMarketplaceInstall = useCallback(async (skillName: string) => {
     setMarketplaceInstalling(skillName);
@@ -1632,15 +1671,35 @@ export default function SkillsConfig() {
       </div>
 
       {marketplaceTab ? (
-        // ── Marketplace Tab: 右侧大面积区域显示选中技能的详情 ──
+        // ── Marketplace Tab: 右侧大面积区域显示选中技能的详情（懒加载完整详情） ──
         (() => {
-          const listItems = marketplaceResults.length > 0
-            ? marketplaceResults
-            : (!marketplaceQueried && trendingSkills.length > 0 ? trendingSkills : []);
-          const selectedMs = selectedMarketplaceSlug
-            ? listItems.find((ms) => (ms.slug || ms.name) === selectedMarketplaceSlug)
-            : null;
-          if (!selectedMs) {
+          if (!selectedMarketplaceSlug) {
+            return (
+              <div style={styles.placeholder}>
+                {t("skills.marketplace_select_hint", "点击左侧技能查看详情")}
+              </div>
+            );
+          }
+          // 加载中状态
+          if (marketplaceDetailLoading === selectedMarketplaceSlug) {
+            return (
+              <div style={styles.placeholder}>
+                {t("skills.loading_detail", "正在加载技能详情...")}
+              </div>
+            );
+          }
+          // 加载失败状态
+          if (marketplaceDetailError) {
+            return (
+              <div style={styles.contentPanel}>
+                <div style={msgBannerStyle("error")}>
+                  {t("skills.detail_load_failed", "加载详情失败")}: {marketplaceDetailError}
+                </div>
+              </div>
+            );
+          }
+          // 详情未加载完成（理论上不会到这里，但作为兜底）
+          if (!marketplaceDetail) {
             return (
               <div style={styles.placeholder}>
                 {t("skills.marketplace_select_hint", "点击左侧技能查看详情")}
@@ -1660,7 +1719,7 @@ export default function SkillsConfig() {
                   </button>
                 </div>
               )}
-              <MarketplaceSkillDetail skill={selectedMs} t={t} onInstall={handleMarketplaceInstall} installing={marketplaceInstalling} />
+              <MarketplaceSkillDetail skill={marketplaceDetail} t={t} onInstall={handleMarketplaceInstall} installing={marketplaceInstalling} />
             </div>
           );
         })()
