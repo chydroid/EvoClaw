@@ -73,6 +73,18 @@ export interface ClawHubSkillDetail {
   latestVersion?: { version: string; createdAt: number; changelog?: string } | null;
   metadata?: { os?: string[] | null; systems?: string[] | null } | null;
   owner?: { handle?: string | null; displayName?: string | null; image?: string | null } | null;
+  /** ClawHub 镜像在详情端点返回的完整元内容（含 SKILL.md 全文、文件列表、commit URL 等） */
+  metaContent?: {
+    Files?: string[];
+    Keywords?: string[];
+    License?: string;
+    DisplayDescription?: string;
+    displayName?: string;
+    owner?: string;
+    skillMd?: string;
+    latest?: { commit?: string | null; publishedAt?: number; version?: string } | null;
+    history?: Array<{ version?: string; createdAt?: number; commit?: string | null }> | null;
+  } | null;
 }
 
 /** ClawHub 安装解析响应 — GET /api/v1/skills/{slug}/install */
@@ -122,6 +134,12 @@ export interface SkillPackage {
   reviewCount: number;
   /** Whether this is verified/official */
   verified: boolean;
+  /** 完整 SKILL.md 内容（从 ClawHub metaContent.skillMd 获取，用于无 GitHub 下载时的回退安装） */
+  skillMd?: string;
+  /** 技能包含的文件列表（来自 ClawHub metaContent.Files，仅供展示，不用于下载） */
+  filesList?: string[];
+  /** GitHub commit URL（从 metaContent.latest.commit 提取，用于构造 tarball 下载 URL） */
+  commitURL?: string;
 }
 
 export interface SkillReview {
@@ -387,6 +405,9 @@ export class SkillMarketplace {
   /**
    * Fetch a single skill's details from the ClawHub registry API.
    * 使用 openclaw 兼容的 GET /api/v1/skills/{slug} 端点。
+   * ClawHub 镜像在详情端点返回 metaContent，包含完整 SKILL.md 内容（skillMd）、
+   * 文件列表（Files）、最新版本的 GitHub commit URL（latest.commit）等。
+   * 这些字段用于后续安装流程：优先尝试 GitHub tarball 下载，失败则回退到 skillMd 安装。
    */
   async fetchPackageDetails(name: string): Promise<SkillPackage | null> {
     try {
@@ -407,7 +428,7 @@ export class SkillMarketplace {
         version: data.latestVersion?.version ?? "0.0.0",
         description: data.skill.summary ?? "",
         author: { name: data.owner?.handle ?? "unknown" },
-        license: "MIT-0",
+        license: data.metaContent?.License || "MIT-0",
         capabilities: [],
         tags: Object.keys(data.skill.tags ?? {}),
         evoclawVersion: ">=0.4.0",
@@ -419,6 +440,9 @@ export class SkillMarketplace {
         rating: 0,
         reviewCount: 0,
         verified: false,
+        skillMd: data.metaContent?.skillMd ?? undefined,
+        filesList: data.metaContent?.Files ?? undefined,
+        commitURL: data.metaContent?.latest?.commit ?? undefined,
       };
       // Update local catalog entry if present
       const idx = this.catalog.findIndex((p) => p.name === name);
@@ -457,9 +481,24 @@ export class SkillMarketplace {
 
   /** Install a skill package from the marketplace */
   async install(name: string, version?: string): Promise<InstallResult> {
-    const pkg = this.getPackage(name);
+    let pkg = this.getPackage(name);
+    // catalog 中可能没有该技能（refreshCatalog 只拉取 trending，未含全量），
+    // 此时从 ClawHub 详情 API 拉取并加入 catalog，再继续安装流程。
     if (!pkg) {
-      return { success: false, packageName: name, version: version ?? "latest", error: "Package not found in catalog" };
+      try {
+        await this.fetchPackageDetails(name);
+        pkg = this.getPackage(name);
+      } catch (err) {
+        return {
+          success: false,
+          packageName: name,
+          version: version ?? "latest",
+          error: `Package "${name}" not found in catalog and ClawHub fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+    if (!pkg) {
+      return { success: false, packageName: name, version: version ?? "latest", error: `Package "${name}" not found on ClawHub` };
     }
 
     const targetVersion = version && !version.startsWith("__depth_") ? version : pkg.version;
@@ -495,79 +534,66 @@ export class SkillMarketplace {
               success: false,
               packageName: name,
               version: targetVersion,
-              error: `Dependency install failed: ${depName}`,
+              error: `Dependency install failed: ${depName}: ${depResult.error}`,
               dependencies: depResults,
             };
           }
         }
       }
 
-      // Download package
-      const response = await fetch(pkg.downloadURL);
-      if (!response.ok) {
-        return { success: false, packageName: name, version: targetVersion, error: `Download failed: HTTP ${response.status}` };
-      }
-
-      const data = await response.arrayBuffer();
-
-      // Verify checksum if provided
-      if (pkg.checksum) {
-        const crypto = await import("crypto");
-        const hash = crypto.createHash("sha256").update(Buffer.from(data)).digest("hex");
-        if (hash !== pkg.checksum) {
-          return { success: false, packageName: name, version: targetVersion, error: `Checksum verification failed: expected ${pkg.checksum}, got ${hash}` };
-        }
-      }
-
-      // Write to disk
       const fs = await import("fs");
-      const path = await import("path");
-      const skillDir = path.join(this.config.cacheDir, "skills", name);
-      if (!fs.existsSync(skillDir)) {
-        fs.mkdirSync(skillDir, { recursive: true });
-      }
+      const pathMod = await import("path");
 
-      const zipPath = path.join(skillDir, `${name}-${targetVersion}.zip`);
-      fs.writeFileSync(zipPath, Buffer.from(data));
+      // ── 安装策略 ──
+      // ClawHub 镜像 (cn.clawhub-mirror.com) 不支持 /api/v1/skills/{slug}/install 端点，
+      // 也不提供文件下载 API。它只在 /api/v1/skills/{slug} 详情端点返回：
+      //   - metaContent.skillMd: 完整 SKILL.md 内容
+      //   - metaContent.Files: 文件名列表（无法下载文件内容）
+      //   - metaContent.latest.commit: GitHub commit URL（可能指向不存在的仓库）
+      //
+      // 安装优先级：
+      //   1. GitHub tarball 下载（如果 commitURL 指向有效仓库，可获取完整技能文件）
+      //   2. skillMd 内容安装（回退方案，只创建 SKILL.md，适用于纯文档技能或暂时无法下载的场景）
 
-      // Extract ZIP
-      const extractDir = path.join(this.config.cacheDir, "installed", name);
-      if (fs.existsSync(extractDir)) {
-        fs.rmSync(extractDir, { recursive: true, force: true });
-      }
-      fs.mkdirSync(extractDir, { recursive: true });
-
-      try {
-        const AdmZip = await import("adm-zip");
-        const zip = new AdmZip.default(zipPath);
-        zip.extractAllTo(extractDir, true);
-      } catch (extractErr) {
-        process.stderr.write(`[SkillMarketplace] ZIP extraction failed for ${name}: ${extractErr instanceof Error ? extractErr.message : String(extractErr)}\n`);
-      }
-
-      // Find SKILL.md in extracted directory
       let skillMdPath: string | null = null;
-      const findSkillMd = (dir: string): string | null => {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isFile() && entry.name === "SKILL.md") return fullPath;
-          if (entry.isDirectory()) {
-            const found = findSkillMd(fullPath);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
 
-      skillMdPath = findSkillMd(extractDir);
+      // ── 策略 1：尝试 GitHub tarball 下载 ──
+      if (pkg.commitURL) {
+        try {
+          skillMdPath = await this.tryInstallFromGitHub(name, pkg.commitURL, targetVersion, fs, pathMod);
+        } catch (ghErr) {
+          const msg = ghErr instanceof Error ? ghErr.message : String(ghErr);
+          process.stderr.write(`[SkillMarketplace] GitHub tarball install failed for ${name}: ${msg} (will fall back to skillMd)\n`);
+        }
+      }
+
+      // ── 策略 2：回退到 skillMd 内容安装 ──
+      if (!skillMdPath && pkg.skillMd) {
+        try {
+          skillMdPath = await this.installFromSkillMd(name, pkg, targetVersion, fs, pathMod);
+        } catch (mdErr) {
+          const msg = mdErr instanceof Error ? mdErr.message : String(mdErr);
+          return { success: false, packageName: name, version: targetVersion, error: `skillMd install failed: ${msg}` };
+        }
+      }
+
+      if (!skillMdPath) {
+        return {
+          success: false,
+          packageName: name,
+          version: targetVersion,
+          error: `Cannot install "${name}": no GitHub commitURL and no skillMd content available from ClawHub`,
+        };
+      }
 
       // Register with SkillManager if available
-      if (this.skillManager && skillMdPath) {
+      if (this.skillManager) {
         try {
           await this.skillManager.installSkill(skillMdPath);
         } catch (regErr) {
-          process.stderr.write(`[SkillMarketplace] SkillManager registration failed for ${name}: ${regErr instanceof Error ? regErr.message : String(regErr)}\n`);
+          const msg = regErr instanceof Error ? regErr.message : String(regErr);
+          process.stderr.write(`[SkillMarketplace] SkillManager registration failed for ${name}: ${msg}\n`);
+          // 注册失败不视为整体安装失败——文件已落盘，用户可后续手动修复
         }
       }
 
@@ -578,24 +604,166 @@ export class SkillMarketplace {
         package: pkg,
         version: targetVersion,
         dependencies: depResults,
-        installedPath: skillMdPath || extractDir,
+        installedPath: skillMdPath,
       }, "skill-marketplace");
 
       return {
         success: true,
         packageName: name,
         version: targetVersion,
-        installedPath: skillMdPath || extractDir,
+        installedPath: skillMdPath,
         dependencies: depResults.length > 0 ? depResults : undefined,
       };
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return {
         success: false,
         packageName: name,
         version: targetVersion,
-        error: (err as Error).message,
+        error: msg,
       };
     }
+  }
+
+  /**
+   * 策略 1：从 GitHub tarball 安装。
+   * commitURL 格式: https://github.com/{owner}/{repo}/commit/{sha}
+   * 构造下载 URL: https://codeload.github.com/{owner}/{repo}/tar.gz/refs/commits/{sha}
+   * openclaw/skills 是 monorepo，需要在解压后查找 {slug}/ 子目录。
+   * 返回 SKILL.md 路径；失败时抛出错误（由调用方捕获并回退）。
+   */
+  private async tryInstallFromGitHub(
+    slug: string,
+    commitURL: string,
+    version: string,
+    fs: typeof import("fs"),
+    pathMod: typeof import("path"),
+  ): Promise<string> {
+    // 解析 commit URL
+    const commitMatch = commitURL.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/commit\/([a-f0-9]+)$/);
+    if (!commitMatch) {
+      throw new Error(`Invalid commit URL format: ${commitURL}`);
+    }
+    const repo = commitMatch[1];
+    const commitSha = commitMatch[2];
+    const downloadURL = `https://codeload.github.com/${repo}/tar.gz/refs/commits/${commitSha}`;
+
+    process.stdout.write(`[SkillMarketplace] Downloading ${slug} from GitHub: ${repo}@${commitSha.slice(0, 8)}\n`);
+
+    const response = await fetch(downloadURL, {
+      signal: AbortSignal.timeout(60_000),
+      headers: { Accept: "application/gzip" },
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub download failed: HTTP ${response.status} ${response.statusText} (repo=${repo}, commit=${commitSha.slice(0, 8)})`);
+    }
+
+    const data = Buffer.from(await response.arrayBuffer());
+
+    // 准备目录
+    const skillDir = pathMod.join(this.config.cacheDir, "skills", slug);
+    if (!fs.existsSync(skillDir)) {
+      fs.mkdirSync(skillDir, { recursive: true });
+    }
+    const archivePath = pathMod.join(skillDir, `${slug}-${version}.tar.gz`);
+    fs.writeFileSync(archivePath, data);
+
+    // 解压到临时目录（不 strip，保留完整结构以便查找 {slug}/ 子目录）
+    const extractDir = pathMod.join(this.config.cacheDir, "extracted", `${slug}-${commitSha.slice(0, 8)}`);
+    if (fs.existsSync(extractDir)) {
+      fs.rmSync(extractDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const tar = await import("tar");
+    await tar.x({ file: archivePath, cwd: extractDir });
+
+    // 在解压目录中查找 {slug}/ 子目录（含 SKILL.md）
+    const findSkillDir = (dir: string, depth = 0): string | null => {
+      if (depth > 3) return null;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory() && e.name === slug) {
+          const candidate = pathMod.join(dir, e.name);
+          if (fs.existsSync(pathMod.join(candidate, "SKILL.md"))) {
+            return candidate;
+          }
+        }
+        if (e.isDirectory()) {
+          const found = findSkillDir(pathMod.join(dir, e.name), depth + 1);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const skillSourceDir = findSkillDir(extractDir);
+    if (!skillSourceDir) {
+      throw new Error(`SKILL.md not found in ${slug}/ subdirectory of GitHub tarball (repo=${repo})`);
+    }
+
+    // 复制到最终安装路径
+    const installDir = pathMod.join(this.config.cacheDir, "installed", slug);
+    if (fs.existsSync(installDir)) {
+      fs.rmSync(installDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(installDir, { recursive: true });
+    fs.cpSync(skillSourceDir, installDir, { recursive: true });
+
+    // 清理临时解压目录
+    try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+    const skillMdPath = pathMod.join(installDir, "SKILL.md");
+    if (!fs.existsSync(skillMdPath)) {
+      throw new Error(`SKILL.md missing after copy to ${installDir}`);
+    }
+    return skillMdPath;
+  }
+
+  /**
+   * 策略 2：从 metaContent.skillMd 内容安装。
+   * 创建目标目录，写入 SKILL.md 和 _meta.json，返回 SKILL.md 路径。
+   * 适用于 ClawHub 镜像不提供文件下载、或 GitHub 仓库不可达的场景。
+   * 注意：此方式只能安装 SKILL.md 文档，不含技能的其他文件（如 tools/*.py），
+   * 但 SKILL.md 中的说明可指导 LLM 或用户手动创建所需文件。
+   */
+  private async installFromSkillMd(
+    slug: string,
+    pkg: SkillPackage,
+    version: string,
+    fs: typeof import("fs"),
+    pathMod: typeof import("path"),
+  ): Promise<string> {
+    process.stdout.write(`[SkillMarketplace] Installing ${slug} from skillMd content (fallback mode)\n`);
+
+    const installDir = pathMod.join(this.config.cacheDir, "installed", slug);
+    if (fs.existsSync(installDir)) {
+      fs.rmSync(installDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(installDir, { recursive: true });
+
+    // 写入 SKILL.md
+    const skillMdPath = pathMod.join(installDir, "SKILL.md");
+    fs.writeFileSync(skillMdPath, pkg.skillMd!, "utf-8");
+
+    // 写入 _meta.json（包含从 ClawHub 获取的元数据，供 SkillManager 读取）
+    const meta = {
+      name: pkg.name,
+      slug: pkg.name,
+      displayName: pkg.displayName,
+      description: pkg.description,
+      version: pkg.version,
+      author: pkg.author.name,
+      license: pkg.license,
+      keywords: pkg.tags,
+      files: pkg.filesList ?? ["SKILL.md"],
+      homepage: pkg.commitURL ?? undefined,
+      installedFrom: "clawhub-skillmd",
+      installedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(pathMod.join(installDir, "_meta.json"), JSON.stringify(meta, null, 2), "utf-8");
+
+    return skillMdPath;
   }
 
   /** Check for available updates to installed packages */

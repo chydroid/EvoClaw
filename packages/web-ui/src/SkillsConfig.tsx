@@ -1092,17 +1092,27 @@ export default function SkillsConfig() {
         body: JSON.stringify({ name: skillName }),
       });
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
         setMessage({ type: "success", text: t("skills.install_success", "技能 {0} 安装成功").replace("{0}", skillName) });
         await loadSkills();
+        // 安装成功后清除详情缓存，重新加载以反映已安装状态
+        if (selectedMarketplaceSlug === skillName) {
+          loadMarketplaceDetail(skillName);
+        }
+        void data;
       } else {
-        const err = await res.json().catch(() => ({ error: "Install failed" }));
-        setMessage({ type: "error", text: String(err.error || "Install failed") });
+        const err = await res.json().catch(() => ({ error: `Install failed (HTTP ${res.status})` }));
+        // 完整显示后端返回的错误信息（包含 ClawHub 解析失败、下载失败、解压失败等详细原因）
+        const errMsg = String(err.error || `Install failed (HTTP ${res.status})`);
+        setMessage({ type: "error", text: `${t("skills.install_fail", "安装失败")}: ${errMsg}` });
       }
-    } catch {
-      setMessage({ type: "error", text: t("skills.install_fail", "安装失败") });
+    } catch (err) {
+      // 网络错误或 JSON 解析错误，显示具体异常信息
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessage({ type: "error", text: `${t("skills.install_fail", "安装失败")}: ${msg}` });
     }
     setMarketplaceInstalling(null);
-  }, [loadSkills]);
+  }, [loadSkills, selectedMarketplaceSlug, loadMarketplaceDetail]);
 
   // Load trending on marketplace tab open
   useEffect(() => {

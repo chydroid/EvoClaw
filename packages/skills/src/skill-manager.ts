@@ -1023,27 +1023,32 @@ export class SkillManager {
 
   /** Install a skill from the ClawHub marketplace by name */
   async installFromMarketplace(skillName: string): Promise<Skill> {
-    await this.marketplace.refreshCatalog();
-
-    const searchResult = this.marketplace.search({ query: skillName, limit: 1 });
-    const pkg = searchResult.packages.find(p => p.name === skillName) || searchResult.packages[0];
-    if (!pkg) {
-      throw new Error(`Skill "${skillName}" not found on ClawHub marketplace`);
+    // refreshCatalog 只拉取 trending 列表（limit=100），不一定包含目标技能。
+    // 失败不阻塞安装流程——marketplace.install() 内部会通过 fetchPackageDetails
+    // 从 ClawHub 详情 API 拉取技能元数据，即使 catalog 中没有也能完成安装。
+    try {
+      await this.marketplace.refreshCatalog();
+    } catch (err) {
+      process.stderr.write(`[SkillManager] refreshCatalog failed (will proceed with direct install): ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
-    const installResult = await this.marketplace.install(pkg.name);
+    // 直接调用 marketplace.install()，由其内部处理 catalog 缺失情况：
+    // 1. 先从本地 catalog 查找
+    // 2. 若未找到，调用 fetchPackageDetails(name) 从 ClawHub GET /api/v1/skills/{slug} 拉取
+    // 3. 再通过 resolveInstall(name) 获取真实下载 URL（archive 或 github）
+    const installResult = await this.marketplace.install(skillName);
     if (!installResult.success) {
-      throw new Error(`Failed to install "${pkg.name}" from marketplace: ${installResult.error || "unknown error"}`);
+      throw new Error(`Failed to install "${skillName}" from marketplace: ${installResult.error || "unknown error"}`);
     }
 
     const extractedPath = installResult.installedPath;
     if (!extractedPath) {
-      throw new Error(`Installation of "${pkg.name}" succeeded but no path returned`);
+      throw new Error(`Installation of "${skillName}" succeeded but no path returned`);
     }
 
     // If SkillMarketplace already registered via skillManager callback, find the skill
     const existing = Array.from(this.skills.values()).find(
-      s => s.name === pkg.name || s.installPath === extractedPath
+      s => s.name === skillName || s.installPath === extractedPath
     );
     if (existing) {
       return existing;
@@ -1061,7 +1066,7 @@ export class SkillManager {
 
     const installedSkill = await this.installSkill(skillMdPath);
     // 标记来源为 marketplace（覆盖 installSkill 默认的 local）
-    this.recordSkillOrigin(installedSkill.id, "marketplace", pkg.name);
+    this.recordSkillOrigin(installedSkill.id, "marketplace", skillName);
     return installedSkill;
   }
 
