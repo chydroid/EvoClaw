@@ -706,3 +706,124 @@ describe("LayeredMemory 集成测试", () => {
     expect(canvas.nodes[0].label).toContain("查询部署状态");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 任务2 关键测试：recordToolNode 接入 + getCanvasSnapshot
+// 借鉴 Infinite-Canvas 的 CanvasAgentOp：Agent 工具调用 → 画布节点
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LayeredMemory.recordToolNode（Agent 工具调用接入画布）", () => {
+  let dir: string;
+  let mem: LayeredMemory;
+
+  beforeEach(() => {
+    dir = mkTempDir();
+    mem = new LayeredMemory(dir, { l2AggregateEveryNTurns: 999, l3RefreshEveryNTurns: 999 });
+    mem.startCanvas("test-session", "用户请求：测试工具调用画布");
+  });
+
+  afterEach(() => {
+    rmTempDir(dir);
+  });
+
+  it("记录成功的工具调用为 tool_call 节点", () => {
+    const result = mem.recordToolNode({
+      toolName: "browser_navigate",
+      params: { url: "https://example.com" },
+      success: true,
+      resultPreview: "页面加载完成",
+      sessionId: "test-session",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toMatch(/^n\d+$/);
+    expect(result!.mermaid).toContain("browser_navigate");
+    expect(result!.mermaid).toContain("graph LR");
+  });
+
+  it("记录失败的工具调用为 error 节点", () => {
+    const result = mem.recordToolNode({
+      toolName: "browser_click",
+      params: { selector: "#missing" },
+      success: false,
+      error: "element not found",
+      sessionId: "test-session",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.mermaid).toContain("❌");
+    expect(result!.mermaid).toContain("element not found");
+  });
+
+  it("多个工具调用形成链式流程图（自动连线）", () => {
+    mem.recordToolNode({ toolName: "step1", success: true, sessionId: "s" });
+    mem.recordToolNode({ toolName: "step2", success: true, sessionId: "s" });
+    const result = mem.recordToolNode({ toolName: "step3", success: true, sessionId: "s" });
+    expect(result).not.toBeNull();
+    // 4 个节点：user_request + 3 个 tool_call
+    const snapshot = mem.getCanvasSnapshot();
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.nodes.length).toBe(4);
+    expect(snapshot!.edges.length).toBe(3);
+    // mermaid 应包含 3 条边
+    expect(result!.mermaid.match(/-->/g)?.length).toBe(3);
+  });
+
+  it("getCanvasSnapshot 返回完整数据结构", () => {
+    mem.recordToolNode({ toolName: "test_tool", success: true, sessionId: "s" });
+    const snapshot = mem.getCanvasSnapshot();
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.sessionKey).toBe("test-session");
+    expect(snapshot!.createdAt).toBeGreaterThan(0);
+    expect(Array.isArray(snapshot!.nodes)).toBe(true);
+    expect(Array.isArray(snapshot!.edges)).toBe(true);
+    // 节点应有 id/type/label 字段
+    const toolNode = snapshot!.nodes.find(
+      (n) => (n as { type: string }).type === "tool_call"
+    );
+    expect(toolNode).toBeDefined();
+    expect((toolNode as { label: string }).label).toContain("test_tool");
+  });
+
+  it("getCanvasMermaid 返回 Mermaid 文本", () => {
+    mem.recordToolNode({ toolName: "mermaid_test", success: true, sessionId: "s" });
+    const mermaid = mem.getCanvasMermaid();
+    expect(mermaid).toContain("graph LR");
+    expect(mermaid).toContain("mermaid_test");
+  });
+
+  it("未启动画布时 recordToolNode 返回 null", () => {
+    const freshMem = new LayeredMemory(dir);
+    const result = freshMem.recordToolNode({
+      toolName: "x",
+      success: true,
+      sessionId: "s",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("未启动画布时 getCanvasSnapshot 返回 null", () => {
+    const freshMem = new LayeredMemory(dir);
+    expect(freshMem.getCanvasSnapshot()).toBeNull();
+  });
+
+  it("未启动画布时 getCanvasMermaid 返回空字符串", () => {
+    const freshMem = new LayeredMemory(dir);
+    expect(freshMem.getCanvasMermaid()).toBe("");
+  });
+
+  it("工具调用节点的 metadata 包含 toolName 和 success", () => {
+    mem.recordToolNode({
+      toolName: "metadata_test",
+      success: true,
+      sessionId: "meta-session",
+    });
+    const snapshot = mem.getCanvasSnapshot();
+    const node = snapshot!.nodes.find(
+      (n) => (n as { metadata?: { toolName?: string } }).metadata?.toolName === "metadata_test"
+    );
+    expect(node).toBeDefined();
+    const meta = (node as { metadata: { toolName: string; success: boolean; sessionId: string } }).metadata;
+    expect(meta.toolName).toBe("metadata_test");
+    expect(meta.success).toBe(true);
+    expect(meta.sessionId).toBe("meta-session");
+  });
+});
+

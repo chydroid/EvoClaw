@@ -11,6 +11,7 @@ import { StatusPage } from "./StatusPage";
 import { LogsPage } from "./LogsPage";
 import { CronPage } from "./CronPage";
 import { CanvasPage } from "./CanvasPage";
+import { CanvasGraphPage } from "./CanvasGraphPage";
 import { WebChatPage } from "./WebChatPage";
 import { PluginsPage } from "./PluginsPage";
 import { EventsPage } from "./EventsPage";
@@ -86,6 +87,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "skills", i18nKey: "nav.skills", iconId: "skills" },
       { id: "bootstrap", i18nKey: "nav.bootstrap", iconId: "bootstrap" },
       { id: "canvas", i18nKey: "nav.canvas", iconId: "canvas" },
+      { id: "canvas-graph", i18nKey: "nav.canvas_graph", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
       { id: "observability" as TabId, i18nKey: "nav.observability", iconId: "observability" },
       { id: "token-usage" as TabId, i18nKey: "nav.token_usage", iconId: "monitoring" },
@@ -606,6 +608,7 @@ export default function App() {
       case "skills": return <ErrorBoundary><SkillsConfig /></ErrorBoundary>;
       case "bootstrap": return <ErrorBoundary><BootstrapConfig /></ErrorBoundary>;
       case "canvas": return <ErrorBoundary><CanvasPage /></ErrorBoundary>;
+      case "canvas-graph": return <ErrorBoundary><CanvasGraphPage /></ErrorBoundary>;
       case "monitoring": return <ErrorBoundary><LogsPage /></ErrorBoundary>;
       case "plugins": return <ErrorBoundary><PluginsPage /></ErrorBoundary>;
       case "permissions": return <ErrorBoundary><PermissionsPage /></ErrorBoundary>;

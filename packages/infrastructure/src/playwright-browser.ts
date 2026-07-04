@@ -44,6 +44,30 @@ export interface FormFillOptions {
   clearFirst?: boolean;
 }
 
+/** 索引化 DOM 提取结果（借鉴 page-agent 的 flatTreeToString 思路）。 */
+export interface DomSelectorInfo {
+  tag: string;
+  role: string;
+  text: string;
+  href: string;
+  type: string;
+  name: string;
+  selector: string;
+}
+
+export interface DomExtractResult {
+  /** 扁平化 DOM 文本，形如 `[0]<button>登录</button>`。 */
+  flatTree: string;
+  /** index → 元素信息映射。 */
+  selectorMap: Record<number, DomSelectorInfo>;
+  /** 提取到的元素总数。 */
+  count: number;
+  /** 当前页面 URL。 */
+  url: string;
+  /** 当前页面标题。 */
+  title: string;
+}
+
 export class PlaywrightBrowser {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -292,6 +316,169 @@ export class PlaywrightBrowser {
         [dx, dy] as [number, number]
       );
     }
+  }
+
+  // ── 索引化 DOM 提取与操作（借鉴 page-agent 的 flatTreeToString 思路）──
+  // 通过 page.evaluate 在浏览器里跑提取脚本，给交互元素打 data-pa-idx 属性，
+  // LLM 通过 [index] 操作元素，比 CSS selector 更直观可靠。
+
+  async extractDom(options?: { maxElements?: number }): Promise<DomExtractResult> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    const maxElements = options?.maxElements ?? 200;
+    const result = await page.evaluate(
+      (maxN: number) => {
+        const seen = new Set<Element>();
+        const selectorMap: Record<number, DomSelectorInfo> = {};
+        const lines: string[] = [];
+
+        function isInteractive(el: Element): boolean {
+          if (seen.has(el)) return false;
+          const tag = el.tagName.toLowerCase();
+          if (["a", "button", "input", "select", "textarea"].includes(tag)) return true;
+          const role = el.getAttribute("role");
+          if (["button", "link", "checkbox", "tab", "menuitem", "option", "combobox", "textbox", "switch", "radio"].includes(role || "")) return true;
+          if (el.getAttribute("contenteditable") === "true") return true;
+          if (el.hasAttribute("onclick")) return true;
+          const tabIdx = el.getAttribute("tabindex");
+          if (tabIdx !== null && parseInt(tabIdx, 10) >= 0) return true;
+          try {
+            const cursor = window.getComputedStyle(el as HTMLElement).cursor;
+            if (cursor === "pointer") return true;
+          } catch { /* ignore */ }
+          return false;
+        }
+
+        function isVisible(el: Element): boolean {
+          const rect = (el as HTMLElement).getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return false;
+          const style = window.getComputedStyle(el as HTMLElement);
+          if (style.display === "none" || style.visibility === "hidden") return false;
+          if (parseFloat(style.opacity) === 0) return false;
+          return true;
+        }
+
+        function getText(el: Element): string {
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return ariaLabel.trim().slice(0, 80);
+          const title = el.getAttribute("title");
+          if (title) return title.trim().slice(0, 80);
+          const placeholder = el.getAttribute("placeholder");
+          if (placeholder) return placeholder.trim().slice(0, 80);
+          const alt = el.getAttribute("alt");
+          if (alt) return alt.trim().slice(0, 80);
+          const text = el.textContent?.trim();
+          if (text) return text.slice(0, 80);
+          const value = (el as HTMLInputElement).value;
+          if (value) return String(value).slice(0, 80);
+          return "";
+        }
+
+        const all = Array.from(document.querySelectorAll("*"));
+        let idx = 0;
+        for (const el of all) {
+          if (idx >= maxN) break;
+          if (!isInteractive(el) || !isVisible(el)) continue;
+          seen.add(el);
+          el.setAttribute("data-pa-idx", String(idx));
+          const tag = el.tagName.toLowerCase();
+          const role = el.getAttribute("role") || "";
+          const text = getText(el);
+          const href = el.getAttribute("href") || "";
+          const type = el.getAttribute("type") || "";
+          const name = el.getAttribute("name") || "";
+
+          const parts: string[] = [`[${idx}]`];
+          parts.push(`<${tag}`);
+          if (role) parts.push(`role=${role}`);
+          if (type) parts.push(`type=${type}`);
+          if (name) parts.push(`name=${name}`);
+          if (href) parts.push(`href="${href.slice(0, 50)}"`);
+          parts.push(">");
+          if (text) parts.push(text);
+          lines.push(parts.join(" "));
+
+          selectorMap[idx] = { tag, role, text, href: href.slice(0, 120), type, name, selector: `[data-pa-idx="${idx}"]` };
+          idx++;
+        }
+
+        return {
+          flatTree: lines.join("\n"),
+          selectorMap,
+          count: idx,
+          url: location.href,
+          title: document.title,
+        } as DomExtractResult;
+      },
+      maxElements
+    );
+    return result;
+  }
+
+  async clickByIndex(index: number): Promise<{ ok: true; index: number; selector: string } | { ok: false; error: string }> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    const selector = `[data-pa-idx="${index}"]`;
+    try {
+      await page.waitForSelector(selector, { timeout: 10000 });
+      await page.click(selector);
+      return { ok: true, index, selector };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async inputByIndex(index: number, text: string, options?: { clearFirst?: boolean; delay?: number }): Promise<{ ok: true; index: number } | { ok: false; error: string }> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    const selector = `[data-pa-idx="${index}"]`;
+    try {
+      await page.waitForSelector(selector, { timeout: 10000 });
+      if (options?.clearFirst !== false) {
+        await page.fill(selector, "");
+      }
+      if (options?.delay && options.delay > 0) {
+        await page.type(selector, text, { delay: options.delay });
+      } else {
+        await page.fill(selector, text);
+      }
+      return { ok: true, index };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async scrollByIndex(index: number, direction: "up" | "down" | "left" | "right", amount: number = 300): Promise<{ ok: true; index: number } | { ok: false; error: string }> {
+    const page = this.activePage;
+    if (!page) throw new Error("No active page");
+    const selector = `[data-pa-idx="${index}"]`;
+    const scrollMap: Record<string, [number, number]> = {
+      up: [0, -amount], down: [0, amount], left: [-amount, 0], right: [amount, 0],
+    };
+    const [dx, dy] = scrollMap[direction] || [0, amount];
+    try {
+      await page.waitForSelector(selector, { timeout: 10000 });
+      await page.evaluate(
+        ([sel, ddx, ddy]) => {
+          const el = document.querySelector(sel as string);
+          if (el) el.scrollBy(ddx as number, ddy as number);
+        },
+        [selector, dx, dy] as [string, number, number]
+      );
+      return { ok: true, index };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async clearDomIndexes(): Promise<void> {
+    const page = this.activePage;
+    if (!page) return;
+    try {
+      await page.evaluate(() => {
+        document.querySelectorAll("[data-pa-idx]").forEach((el) => el.removeAttribute("data-pa-idx"));
+      });
+    } catch { /* ignore */ }
   }
 
   async login(

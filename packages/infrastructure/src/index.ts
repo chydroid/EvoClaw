@@ -29,7 +29,7 @@ export { DatabaseManager } from "./database-manager";
 export { BrowserController } from "./browser-controller";
 export type { NavigationResult, BrowserElement, BrowserPage, FormData } from "./browser-controller";
 export { PlaywrightBrowser } from "./playwright-browser";
-export type { PlaywrightTab, ScreenshotOptions, CookieData, LoginResult, FormFillOptions } from "./playwright-browser";
+export type { PlaywrightTab, ScreenshotOptions, CookieData, LoginResult, FormFillOptions, DomSelectorInfo, DomExtractResult } from "./playwright-browser";
 export { parseMarkdown, stripFormatting, extractLinks, extractUrls, renderTable, chunkMarkdown, detectLanguage } from "./markdown";
 export type { CodeBlock, Frontmatter, ParsedMarkdown, ChunkOptions } from "./markdown";
 export { LinkPreviewer } from "./link-understanding";

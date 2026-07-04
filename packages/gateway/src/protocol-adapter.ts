@@ -7162,6 +7162,47 @@ export class ProtocolAdapter {
       });
     });
 
+    // ── 符号画布（SymbolicMemoryCanvas）路由 ──
+    // 借鉴 Infinite-Canvas 的可视化节点图思路，暴露 Agent 执行过程中累积的
+    // 任务状态节点图（工具调用 → 节点，节点间自动连线）。
+
+    // GET /api/canvas-graph/snapshot — 返回当前画布的完整节点+边数据
+    app.get("/api/canvas-graph/snapshot", (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          getCanvasSnapshot(): { nodes: unknown[]; edges: unknown[]; sessionKey: string; createdAt: number } | null;
+        }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const snapshot = hub.getCanvasSnapshot();
+        if (!snapshot) {
+          res.json({ active: false, nodes: [], edges: [], sessionKey: "", createdAt: 0 });
+          return;
+        }
+        res.json({ active: true, ...snapshot });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/canvas-graph/mermaid — 返回当前画布的 Mermaid 文本
+    app.get("/api/canvas-graph/mermaid", (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{ getCanvasMermaid(): string }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const mermaid = hub.getCanvasMermaid();
+        res.type("text/plain").send(mermaid || "");
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+
     // ── Heartbeat API ──
 
     // GET /api/agent/heartbeat-status — Returns current heartbeat state

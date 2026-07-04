@@ -277,6 +277,49 @@ export class MemoryHub {
     }
   }
 
+  /**
+   * 记录工具调用节点到符号画布（Agent 执行流程的 hook）。
+   * 借鉴 Infinite-Canvas 的 CanvasAgentOp 思路：Agent 操作 → 画布节点。
+   * 失败不抛错（best-effort）。
+   */
+  recordToolNodeToCanvas(params: {
+    toolName: string;
+    params?: Record<string, unknown>;
+    success: boolean;
+    error?: string;
+    resultPreview?: string;
+    sessionId: string;
+  }): { nodeId: string; mermaid: string } | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.recordToolNode(params);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] recordToolNodeToCanvas failed: ${err}\n`);
+      return null;
+    }
+  }
+
+  /** 获取符号画布快照（用于前端节点图渲染）。 */
+  getCanvasSnapshot(): { nodes: unknown[]; edges: unknown[]; sessionKey: string; createdAt: number } | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.getCanvasSnapshot();
+    } catch (err) {
+      process.stderr.write(`[memory-hub] getCanvasSnapshot failed: ${err}\n`);
+      return null;
+    }
+  }
+
+  /** 获取符号画布 Mermaid 文本。 */
+  getCanvasMermaid(): string {
+    if (!this.layeredMemory) return "";
+    try {
+      return this.layeredMemory.getCanvasMermaid();
+    } catch {
+      return "";
+    }
+  }
+
   /** Get the vector store. Returns null when no embedding backend is wired. */
   getVectorStore(): VectorMemoryStore | null {
     return this.vectorStore;

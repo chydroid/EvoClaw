@@ -219,6 +219,69 @@ export class LayeredMemory {
     return this.canvas.getCanvas()!;
   }
 
+  /**
+   * 记录工具调用节点到符号画布（Agent 执行流程的 hook）。
+   *
+   * 这是 SymbolicMemoryCanvas 真正接入生产流程的入口：每次 Agent 执行工具
+   * 时调用此方法，把工具调用压缩成 Mermaid 节点，形成可视化任务状态图。
+   *
+   * 借鉴 Infinite-Canvas 的 CanvasAgentOp 思路：Agent 操作 → 画布节点。
+   *
+   * @returns 新增的节点，或 null（画布未启动）
+   */
+  recordToolNode(params: {
+    toolName: string;
+    params?: Record<string, unknown>;
+    success: boolean;
+    error?: string;
+    resultPreview?: string;
+    sessionId: string;
+  }): { nodeId: string; mermaid: string } | null {
+    const canvas = this.canvas.getCanvas();
+    if (!canvas) return null;
+
+    const { toolName, success, error, resultPreview, sessionId } = params;
+    const labelParts = [toolName];
+    if (resultPreview) labelParts.push(`→ ${resultPreview.slice(0, 50)}`);
+    if (error) labelParts.push(`❌ ${error.slice(0, 60)}`);
+    const label = labelParts.join(" ");
+
+    const nodeType = success ? "tool_call" : "error";
+    const node = this.canvas.addNode(nodeType, label, {
+      sourceMessageId: `tool_${toolName}_${Date.now()}`,
+      toolName,
+      sessionId,
+      success,
+    });
+
+    // 连接到上一个节点（形成链式流程图）
+    const nodes = canvas.nodes;
+    if (nodes.length >= 2) {
+      const prev = nodes[nodes.length - 2];
+      this.canvas.connect(prev.id, node.id, success ? "成功" : "失败");
+    }
+
+    const mermaid = this.canvas.render();
+    return { nodeId: node.id, mermaid };
+  }
+
+  /** 获取当前画布的 Mermaid 文本（用于前端渲染或注入 LLM 上下文）。 */
+  getCanvasMermaid(): string {
+    return this.canvas.render();
+  }
+
+  /** 获取当前画布的完整数据（用于前端节点图渲染）。 */
+  getCanvasSnapshot(): { nodes: unknown[]; edges: unknown[]; sessionKey: string; createdAt: number } | null {
+    const canvas = this.canvas.getCanvas();
+    if (!canvas) return null;
+    return {
+      nodes: canvas.nodes,
+      edges: canvas.edges,
+      sessionKey: canvas.sessionKey,
+      createdAt: canvas.createdAt,
+    };
+  }
+
   // ── 子组件直接访问 ──
 
   getRecorder(): ConversationRecorder { return this.recorder; }

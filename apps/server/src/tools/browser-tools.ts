@@ -521,4 +521,141 @@ export function registerBrowserTools(
       }
     }
   );
+
+  // ── 索引化 DOM 操作工具（借鉴 page-agent 的 flatTreeToString 思路）──
+  // 先调用 browser_extract_dom 提取，再用 [index] 调用 click/input/scroll。
+  // 比传统的 CSS selector 方式更直观，LLM 可以从扁平化文本中直接读出可操作元素。
+
+  executor.registerTool(
+    "browser_extract_dom",
+    {
+      name: "browser_extract_dom",
+      description: "Extract an indexed flat DOM tree from the current page. Returns text like '[0]<button>登录</button>' and a selectorMap. Use browser_click_by_index / browser_input_by_index with the index after calling this.",
+      parameters: {
+        max_elements: { type: "string", description: "Maximum number of interactive elements to extract (default: 200)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const maxElements = parseInt(String(params.max_elements || "200"), 10) || 200;
+      try {
+        const result = await pwBrowser.extractDom({ maxElements });
+        return {
+          success: true,
+          url: result.url,
+          title: result.title,
+          count: result.count,
+          flatTree: result.flatTree,
+          selectorMap: result.selectorMap,
+          hint: "Use browser_click_by_index / browser_input_by_index / browser_scroll_by_index with the [index] numbers above.",
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `extractDom failed: ${msg}` };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_click_by_index",
+    {
+      name: "browser_click_by_index",
+      description: "Click an element by its [index] from browser_extract_dom. Must call browser_extract_dom first.",
+      parameters: {
+        index: { type: "string", description: "Element index from browser_extract_dom (e.g. '5')" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const index = parseInt(String(params.index || ""), 10);
+      if (Number.isNaN(index) || index < 0) {
+        return { error: "Invalid index. Provide a non-negative integer." };
+      }
+      try {
+        const result = await pwBrowser.clickByIndex(index);
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `clickByIndex failed: ${msg}` };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_input_by_index",
+    {
+      name: "browser_input_by_index",
+      description: "Type text into an input element by its [index] from browser_extract_dom. Must call browser_extract_dom first.",
+      parameters: {
+        index: { type: "string", description: "Element index from browser_extract_dom" },
+        text: { type: "string", description: "Text to type into the field" },
+        clear_first: { type: "string", description: "Clear field before typing ('true' default, 'false' to skip)" },
+        delay: { type: "string", description: "Delay between keystrokes in ms (default: 0)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const index = parseInt(String(params.index || ""), 10);
+      if (Number.isNaN(index) || index < 0) {
+        return { error: "Invalid index. Provide a non-negative integer." };
+      }
+      const text = String(params.text || "");
+      const clearFirst = String(params.clear_first || "true").toLowerCase() !== "false";
+      const delay = parseInt(String(params.delay || "0"), 10) || 0;
+      try {
+        const result = await pwBrowser.inputByIndex(index, text, { clearFirst, delay });
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `inputByIndex failed: ${msg}` };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_scroll_by_index",
+    {
+      name: "browser_scroll_by_index",
+      description: "Scroll a scrollable element by its [index] from browser_extract_dom. Must call browser_extract_dom first.",
+      parameters: {
+        index: { type: "string", description: "Element index from browser_extract_dom" },
+        direction: { type: "string", description: "Direction: up, down, left, right (default: down)" },
+        amount: { type: "string", description: "Pixels to scroll (default: 300)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      touchBrowserSession();
+      const index = parseInt(String(params.index || ""), 10);
+      if (Number.isNaN(index) || index < 0) {
+        return { error: "Invalid index. Provide a non-negative integer." };
+      }
+      const direction = String(params.direction || "down") as "up" | "down" | "left" | "right";
+      const amount = parseInt(String(params.amount || "300"), 10) || 300;
+      try {
+        const result = await pwBrowser.scrollByIndex(index, direction, amount);
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `scrollByIndex failed: ${msg}` };
+      }
+    }
+  );
+
+  executor.registerTool(
+    "browser_clear_dom_indexes",
+    {
+      name: "browser_clear_dom_indexes",
+      description: "Remove all data-pa-idx attributes set by browser_extract_dom. Call before re-extracting to avoid stale indexes.",
+      parameters: {},
+    },
+    async () => {
+      try {
+        await pwBrowser.clearDomIndexes();
+        return { success: true };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { error: `clearDomIndexes failed: ${msg}` };
+      }
+    }
+  );
 }

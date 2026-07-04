@@ -121,6 +121,17 @@ export class AgentModelExecutor {
       l1Memories: unknown[];
       strategy: string;
     } | null;
+    /** 记录工具调用节点到符号画布（消除死代码，接入生产流程）。 */
+    recordToolNodeToCanvas?(params: {
+      toolName: string;
+      params?: Record<string, unknown>;
+      success: boolean;
+      error?: string;
+      resultPreview?: string;
+      sessionId: string;
+    }): { nodeId: string; mermaid: string } | null;
+    getCanvasSnapshot?(): { nodes: unknown[]; edges: unknown[]; sessionKey: string; createdAt: number } | null;
+    getCanvasMermaid?(): string;
   } | null = null;
   private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
   private compactionManager: import("./compaction-manager").CompactionManager | null = null;
@@ -3070,6 +3081,24 @@ export class AgentModelExecutor {
     // Keep last 20 traces per session
     if (traces.length > 20) traces.splice(0, traces.length - 20);
     this.executionTraces.set(sessionId, traces);
+
+    // 同步记录到符号画布（借鉴 Infinite-Canvas CanvasAgentOp：Agent 操作 → 画布节点）
+    // 把 SymbolicMemoryCanvas 从死代码变为生产可用，工具调用自动形成可视化任务图。
+    if (this.memoryHub?.recordToolNodeToCanvas) {
+      try {
+        const resultPreview = typeof result === "string" ? result.slice(0, 80) : JSON.stringify(result).slice(0, 80);
+        this.memoryHub.recordToolNodeToCanvas({
+          toolName,
+          params,
+          success,
+          error,
+          resultPreview,
+          sessionId,
+        });
+      } catch (err) {
+        process.stderr.write(`[AgentModelExecutor] recordToolNodeToCanvas failed: ${err}\n`);
+      }
+    }
   }
 
   /** Update planning step status after tool execution */
