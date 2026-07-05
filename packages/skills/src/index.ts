@@ -78,3 +78,30 @@ export type {
   WorkspaceAuditFinding,
   WorkspaceSkillScanLimits,
 } from "./workspace-audit";
+
+// 三态演化模型 + 版本血缘 DAG（借鉴 OpenSpace skill_engine）
+//   EvolutionType: FIX/DERIVED/CAPTURED 三态语义化演化分类
+//   LineageStore: 多父 DAG + 环检测 + 祖先/后代查询
+//   .skill_id sidecar: 技能目录可移植身份
+export type {
+  EvolutionType,
+  SkillOrigin as EvolutionSkillOrigin,
+  SkillLineage,
+  LineageTreeNode,
+  LineageQueryResult,
+  EvolutionSuggestion,
+} from "./evolution-types";
+export {
+  requiresParent,
+  supportsMultipleParents,
+  shouldDeactivateParent,
+  describeEvolutionType,
+  describeEvolutionTypeEn,
+} from "./evolution-types";
+export {
+  LineageStore,
+  writeSkillIdSidecar,
+  readSkillIdSidecar,
+  ensureSkillIdSidecar,
+  generateSkillId,
+} from "./lineage-store";

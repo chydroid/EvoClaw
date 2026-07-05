@@ -30,3 +30,15 @@ export { SkillAutoGenerator } from "./skill-auto-generator";
 export type { EvolutionResult, GeneratedSkill } from "./skill-auto-generator";
 export { EvolutionABTest } from "./evolution-ab-test";
 export type { TestStatus } from "./evolution-ab-test";
+
+// EvolutionTriggers — 三触发器演化系统（借鉴 OpenSpace skill_engine/evolver.py）
+//   1. post-analysis: LLM 分析后接受 EvolutionSuggestion
+//   2. tool-degradation: 工具成功率跌破阈值时触发（联动 ToolQualityManager）
+//   3. metric-monitor: 技能应用 ≥5 次但完成率 < 0.35 时触发
+//   关键：必须 LLM 二次确认才执行，防循环机制
+export { EvolutionTriggers } from "./evolution-triggers";
+export type {
+  EvolutionTriggerConfig,
+  LlmConfirmationFn,
+  SkillMetrics,
+} from "./evolution-triggers";

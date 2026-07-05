@@ -507,3 +507,37 @@ export type {
   TokenBudgetOptions,
   BudgetReport,
 } from "./token-budget";
+
+// ToolQualityManager — 工具质量跟踪 + 惩罚式排序（借鉴 OpenSpace ToolQualityManager）
+//   recordExecution / getPenalty / adjustRanking / recordLlmToolIssues / getQualityReport
+export { ToolQualityManager } from "./tool-quality-manager";
+export type {
+  ToolExecutionRecord,
+  ToolQualityRecord,
+  ToolPenaltyInfo,
+  ToolQualityReport,
+  ToolQualityManagerOptions,
+} from "./tool-quality-manager";
+
+// ConversationFormatter — 对话优先级截断（借鉴 OpenSpace conversation_formatter）
+//   0-5 级优先级（用户指令=0，最终迭代=1，工具错误=2...），截断时优先保留低数字
+export { ConversationFormatter, MessagePriority } from "./conversation-formatter";
+export type { PrioritizedMessage, TruncationResult, TruncationOptions } from "./conversation-formatter";
+
+// RecordingManager — 任务执行录制（借鉴 OpenSpace RecordingManager）
+//   三件套：conversations.jsonl + traj.jsonl + metadata.json
+export { RecordingManager } from "./recording-manager";
+export type {
+  ConversationSetupRecord,
+  IterationContextRecord,
+  ToolExecutionRecord as RecordingToolExecutionRecord,
+  SkillSelectionRecord,
+  RetrievedToolsRecord,
+  RecordingRecord,
+  RecordingMetadata,
+} from "./recording-manager";
+
+// IterationContextPolicy — 基于迭代轮次的渐进式上下文裁剪（借鉴 OpenSpace grounding_agent）
+//   第 2 轮起 cap 单条消息；第 5 轮起 truncate 历史；首轮后剥离技能上下文
+export { IterationContextPolicy } from "./iteration-context-policy";
+export type { IterationPolicyConfig, PolicyMessage, PolicyResult } from "./iteration-context-policy";

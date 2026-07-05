@@ -7297,6 +7297,68 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── v0.70 借鉴 OpenSpace 闭环演化引擎：工具质量/录制/演化触发器/血缘 DAG ──
+
+    // GET /api/agent/tool-quality-stats — 工具质量统计（惩罚因子/成功率/问题工具）
+    app.get("/api/agent/tool-quality-stats", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{ getToolQualityReport?: () => unknown }>("agentModelExecutor");
+        if (!executor?.getToolQualityReport) {
+          res.json({ enabled: false, summary: { totalTools: 0, problematicTools: 0 }, byTool: [], problematicTools: [], recommendations: [] });
+          return;
+        }
+        const report = executor.getToolQualityReport();
+        res.json({ enabled: true, ...(report as object || {}) });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/recording-stats — 任务录制统计
+    app.get("/api/agent/recording-stats", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{ getRecordingStats?: () => unknown }>("agentModelExecutor");
+        if (!executor?.getRecordingStats) {
+          res.json({ enabled: false, recordings: [] });
+          return;
+        }
+        const stats = executor.getRecordingStats();
+        res.json({ enabled: true, stats });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/evolution-trigger-stats — 三触发器演化统计
+    app.get("/api/agent/evolution-trigger-stats", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{ getEvolutionTriggerStats?: () => unknown }>("agentModelExecutor");
+        if (!executor?.getEvolutionTriggerStats) {
+          res.json({ enabled: false });
+          return;
+        }
+        const stats = executor.getEvolutionTriggerStats();
+        res.json({ enabled: true, stats });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/skills/lineage-stats — 技能版本血缘 DAG 统计
+    app.get("/api/skills/lineage-stats", (_req: Request, res: Response) => {
+      try {
+        const skillMgr = this.registry.resolveService<{ getLineageStats?: () => unknown }>("skillManager");
+        if (!skillMgr?.getLineageStats) {
+          res.json({ enabled: false, totalLineages: 0, activeLineages: 0, roots: 0 });
+          return;
+        }
+        const stats = skillMgr.getLineageStats();
+        res.json({ enabled: true, ...(stats as object || {}) });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     // ── Heartbeat API ──
 
     // GET /api/agent/heartbeat-status — Returns current heartbeat state

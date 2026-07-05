@@ -19,6 +19,7 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@evoclaw/agent": "workspace:*",
     "@evoclaw/core": "workspace:*",
     "@evoclaw/memory": "workspace:*",
     "@evoclaw/security": "workspace:*",
