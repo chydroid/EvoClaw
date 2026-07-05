@@ -7359,6 +7359,182 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── v0.70 一线 AI Agent 能力对齐模块 stats 端点 ──
+    // 7 类新工具（git/code-intel/apply-patch/vision/batch/workflow/checkpoint-dlq）
+    // 模块本身无内置 stats 计数器，端点返回服务注册状态 + 占位 stats，供 WebUI 卡片确认服务可达。
+
+    // GET /api/agent/git-stats — GitOperations 调用统计
+    app.get("/api/agent/git-stats", (_req: Request, res: Response) => {
+      try {
+        const gitOps = this.registry.resolveService<unknown>("gitOperations");
+        const available = !!gitOps;
+        res.json({
+          available,
+          serviceName: "GitOperations",
+          version: "v0.70",
+          registered: available,
+          note: available ? "stats counters not yet instrumented" : "service not registered",
+          stats: {
+            successCount: 0,
+            failureCount: 0,
+            lastInvokedAt: null,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/code-intel-stats — CodeIntelligence 调用统计
+    app.get("/api/agent/code-intel-stats", (_req: Request, res: Response) => {
+      try {
+        const codeIntel = this.registry.resolveService<unknown>("codeIntelligence");
+        const available = !!codeIntel;
+        res.json({
+          available,
+          serviceName: "CodeIntelligence",
+          version: "v0.70",
+          registered: available,
+          note: available ? "stats counters not yet instrumented" : "service not registered",
+          stats: {
+            parseSymbols: 0,
+            findReferences: 0,
+            planRename: 0,
+            applyRename: 0,
+            cacheHitRate: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/apply-patch-stats — applyPatch 调用统计
+    app.get("/api/agent/apply-patch-stats", (_req: Request, res: Response) => {
+      try {
+        // applyPatch 通过工具注册，无独立 service 实例
+        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
+        const registered = !!executor?.hasTool?.("apply_patch") || !!executor;
+        res.json({
+          available: registered,
+          serviceName: "ApplyPatch",
+          version: "v0.70",
+          registered,
+          note: registered ? "tool registered via agentModelExecutor; stats counters not yet instrumented" : "tool not registered",
+          stats: {
+            successCount: 0,
+            failureCount: 0,
+            averageHunks: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/vision-stats — VisionAnalyzer 调用统计
+    app.get("/api/agent/vision-stats", (_req: Request, res: Response) => {
+      try {
+        const vision = this.registry.resolveService<unknown>("visionAnalyzer");
+        const available = !!vision;
+        res.json({
+          available,
+          serviceName: "VisionAnalyzer",
+          version: "v0.70",
+          registered: available,
+          note: available ? "stats counters not yet instrumented" : "service not registered",
+          stats: {
+            analyze: 0,
+            describeScreen: 0,
+            findElements: 0,
+            detectUIIssues: 0,
+            compareImages: 0,
+            cacheHitRate: 0,
+            inFlightHitRate: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/batch-stats — BatchExecutor 调用统计
+    app.get("/api/agent/batch-stats", (_req: Request, res: Response) => {
+      try {
+        // BatchExecutor 通过 vision-batch-tools 按需实例化，无独立 service 注册
+        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
+        const registered = !!executor?.hasTool?.("batch_execute") || !!executor;
+        res.json({
+          available: registered,
+          serviceName: "BatchExecutor",
+          version: "v0.70",
+          registered,
+          note: registered ? "tool registered via agentModelExecutor; stats counters not yet instrumented" : "tool not registered",
+          stats: {
+            executeParallel: 0,
+            executeSequential: 0,
+            executeDAG: 0,
+            averageConcurrency: 0,
+            timeoutCount: 0,
+            retryCount: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/workflow-stats — WorkflowEngine 调用统计
+    app.get("/api/agent/workflow-stats", (_req: Request, res: Response) => {
+      try {
+        // WorkflowEngine 通过 vision-batch-tools 按需实例化，无独立 service 注册
+        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
+        const registered = !!executor?.hasTool?.("workflow_execute") || !!executor;
+        res.json({
+          available: registered,
+          serviceName: "WorkflowEngine",
+          version: "v0.70",
+          registered,
+          note: registered ? "tool registered via agentModelExecutor; stats counters not yet instrumented" : "tool not registered",
+          stats: {
+            execute: 0,
+            resume: 0,
+            nodeSuccessRate: 0,
+            averageExecutionMs: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/checkpoint-stats — SessionCheckpointManager + DLQBatchRetry 统计
+    app.get("/api/agent/checkpoint-stats", (_req: Request, res: Response) => {
+      try {
+        // SessionCheckpointManager / DLQBatchRetry 通过 vision-batch-tools 按需实例化，无独立 service 注册
+        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
+        const dlq = this.registry.resolveService<unknown>("deadLetterQueue");
+        const registered = !!executor?.hasTool?.("checkpoint_save") || !!executor;
+        res.json({
+          available: registered,
+          serviceName: "SessionCheckpointManager+DLQBatchRetry",
+          version: "v0.70",
+          registered,
+          dlqAvailable: !!dlq,
+          note: registered ? "tool registered via agentModelExecutor; stats counters not yet instrumented" : "tool not registered",
+          stats: {
+            save: 0,
+            load: 0,
+            delete: 0,
+            diff: 0,
+            dlqRetrySuccessRate: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     // ── Heartbeat API ──
 
     // GET /api/agent/heartbeat-status — Returns current heartbeat state

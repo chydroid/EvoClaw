@@ -113,6 +113,10 @@ class SlidingWindowRateLimiter {
 
   /**
    * 如果当前窗口内调用数已达上限，返回需要等待的毫秒数；否则返回 0。
+   *
+   * 注意：单独调用此方法后再调用 `record()` 不是原子的，
+   * 多个并发调用者可能同时看到返回 0 而全部 record，导致限速失效。
+   * 生产代码应使用 `acquire()`。
    */
   waitMs(): number {
     const now = Date.now();
@@ -131,9 +135,37 @@ class SlidingWindowRateLimiter {
 
   /**
    * 记录一次调用。
+   *
+   * 注意：与 `waitMs()` 配合使用存在竞态，请优先使用 `acquire()`。
    */
   record(): void {
     this.timestamps.push(Date.now());
+  }
+
+  /**
+   * 原子地等待并通过限速：把 `waitMs()` + `record()` 合并为原子操作。
+   *
+   * 在 JS 单线程模型下，async 函数内 `waitMs()` 返回 0 到 `record()` 之间
+   * 没有 await，不会被其他并发任务插入，因此不会出现 N 个任务同时看到
+   * 未满而全部 record 的竞态。
+   */
+  async acquire(): Promise<void> {
+    for (;;) {
+      const wait = this.waitMs();
+      if (wait === 0) {
+        this.record();
+        return;
+      }
+      await this.sleep(wait);
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      if (t.unref) t.unref();
+    });
   }
 }
 
@@ -369,18 +401,24 @@ export class BatchExecutor {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       attempts++;
-      // 限速等待
+      // 限速等待：使用原子 acquire，避免 waitMs + record 分离导致的并发竞态
       if (rateLimiter) {
-        let wait = rateLimiter.waitMs();
-        while (wait > 0) {
-          await this.delay(wait);
-          wait = rateLimiter.waitMs();
-        }
-        rateLimiter.record();
+        if (aborted.value) break;
+        await rateLimiter.acquire();
       }
 
       await semaphore.acquire();
       try {
+        // 拿到信号量后再检查一次 abort，避免在 failFast 触发后仍执行任务
+        if (aborted.value) {
+          return {
+            id: task.id,
+            success: false,
+            error: "skipped due to failFast",
+            durationMs: Date.now() - start,
+            attempts,
+          };
+        }
         const result = await this.raceWithTimeout(
           this.executorFn(task.toolName, task.params),
           timeoutMs,

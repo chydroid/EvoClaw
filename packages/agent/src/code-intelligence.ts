@@ -120,10 +120,42 @@ interface CacheEntry {
   symbols: CodeSymbol[];
 }
 
-const symbolCache = new Map<string, CacheEntry>();
-
 export class CodeIntelligence {
+  private static readonly CACHE_LIMIT = 500;
+  private readonly symbolCache = new Map<string, CacheEntry>();
+
   constructor(private readonly workspaceRoot: string) {}
+
+  /** 断言 target 解析后位于 workspaceRoot 内，返回绝对路径 */
+  private assertWithinWorkspace(target: string): string {
+    const abs = path.resolve(this.workspaceRoot, target);
+    const root = path.resolve(this.workspaceRoot);
+    if (abs !== root && !abs.startsWith(root + path.sep)) {
+      throw new Error(`Path escapes workspace: ${target}`);
+    }
+    return abs;
+  }
+
+  /** 写入缓存，超过上限时按 mtime 淘汰最旧条目 */
+  private cacheSet(key: string, entry: CacheEntry): void {
+    this.symbolCache.set(key, entry);
+    if (this.symbolCache.size > CodeIntelligence.CACHE_LIMIT) {
+      let oldestKey: string | null = null;
+      let oldestMtime = Infinity;
+      for (const [k, v] of this.symbolCache) {
+        if (v.mtime < oldestMtime) {
+          oldestMtime = v.mtime;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey) this.symbolCache.delete(oldestKey);
+    }
+  }
+
+  /** 清空符号缓存 */
+  clearCache(): void {
+    this.symbolCache.clear();
+  }
 
   detectLanguage(filePath: string): string {
     const ext = path.extname(filePath).toLowerCase();
@@ -131,15 +163,15 @@ export class CodeIntelligence {
   }
 
   async parseSymbols(filePath: string): Promise<CodeSymbol[]> {
-    const abs = path.resolve(this.workspaceRoot, filePath);
+    const abs = this.assertWithinWorkspace(filePath);
     const stat = await fs.promises.stat(abs);
-    const cached = symbolCache.get(abs);
+    const cached = this.symbolCache.get(abs);
     if (cached && cached.mtime === stat.mtimeMs) return cached.symbols;
 
     const content = await fs.promises.readFile(abs, "utf-8");
     const language = this.detectLanguage(abs);
     const symbols = extractSymbols(content, abs, language);
-    symbolCache.set(abs, { mtime: stat.mtimeMs, symbols });
+    this.cacheSet(abs, { mtime: stat.mtimeMs, symbols });
     return symbols;
   }
 
@@ -180,7 +212,7 @@ export class CodeIntelligence {
     const results: ReferenceResult[] = [];
 
     if (filePath) {
-      const abs = path.resolve(this.workspaceRoot, filePath);
+      const abs = this.assertWithinWorkspace(filePath);
       await scanFileForReferences(abs, pattern, results);
       return results;
     }
@@ -193,12 +225,13 @@ export class CodeIntelligence {
   }
 
   async planRename(oldName: string, newName: string, filePath?: string): Promise<RenamePlan> {
+    if (filePath) this.assertWithinWorkspace(filePath);
     const refs = await this.findReferences(oldName, filePath);
     const changesByFile = new Map<string, RenamePlan["changes"][number]["changes"]>();
 
     for (const ref of refs) {
-      // 启发式：跳过注释行或含引号的字符串字面量行
-      if (shouldSkipForRename(ref.lineContent, this.detectLanguage(ref.filePath))) continue;
+      // 启发式：跳过注释行或 oldName 出现在字符串字面量内的行
+      if (shouldSkipForRename(ref.lineContent, this.detectLanguage(ref.filePath), oldName)) continue;
       const fileChanges = changesByFile.get(ref.filePath) ?? [];
       fileChanges.push({
         line: ref.line,
@@ -227,20 +260,21 @@ export class CodeIntelligence {
     const pattern = new RegExp(`\\b${escapeRegex(plan.oldName)}\\b`, "g");
 
     for (const fileChange of plan.changes) {
+      const abs = this.assertWithinWorkspace(fileChange.filePath);
       let content: string;
       try {
-        content = await fs.promises.readFile(fileChange.filePath, "utf-8");
+        content = await fs.promises.readFile(abs, "utf-8");
       } catch {
         continue;
       }
 
       const lines = content.split("\n");
-      const lang = this.detectLanguage(fileChange.filePath);
+      const lang = this.detectLanguage(abs);
       let fileOcc = 0;
       const newLines: string[] = [];
 
       for (const line of lines) {
-        if (shouldSkipForRename(line, lang)) {
+        if (shouldSkipForRename(line, lang, plan.oldName)) {
           newLines.push(line);
           continue;
         }
@@ -254,7 +288,7 @@ export class CodeIntelligence {
       }
 
       if (fileOcc > 0) {
-        await atomicWriteFile(fileChange.filePath, newLines.join("\n"));
+        await atomicWriteFile(abs, newLines.join("\n"));
         filesChanged++;
         occurrences += fileOcc;
       }
@@ -435,12 +469,15 @@ function isCommentLine(line: string, _lang: string): boolean {
   );
 }
 
-/** 重命名时跳过注释行或明显含字符串字面量的行（启发式） */
-function shouldSkipForRename(line: string, lang: string): boolean {
+/** 重命名时跳过注释行或 oldName 出现在字符串字面量内的行（启发式） */
+function shouldSkipForRename(line: string, lang: string, oldName: string): boolean {
   if (isCommentLine(line, lang)) return true;
-  // 启发式：行内出现 "name" 或 'name' 形式时跳过（避免替换字符串字面量）
-  const trimmed = line.trim();
-  if (/^["'`].*["'`]$/.test(trimmed)) return true;
+  // 检查 oldName 是否出现在字符串字面量（"..." / '...' / `...`）内
+  const strLitPattern = /(["'`])(?:\\.|(?!\1).)*\1/g;
+  let m: RegExpExecArray | null;
+  while ((m = strLitPattern.exec(line)) !== null) {
+    if (m[0].includes(oldName)) return true;
+  }
   return false;
 }
 

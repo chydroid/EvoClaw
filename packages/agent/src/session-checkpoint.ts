@@ -102,6 +102,33 @@ function isValidCheckpoint(obj: unknown): obj is SessionCheckpoint {
   );
 }
 
+/**
+ * 校验路径段：拒绝空 / null / undefined / 含路径分隔符 / `.` / `..` / 含 null byte 的输入。
+ * 用于防止 sessionId / checkpointId 路径注入（如 `../../etc`）。
+ * 返回原字符串或抛出 Error。
+ */
+function safeSegment(name: unknown): string {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error(`Invalid checkpoint id/sessionId: ${String(name)}`);
+  }
+  if (name === "." || name === "..") {
+    throw new Error(`Invalid checkpoint id/sessionId: ${name}`);
+  }
+  if (name.includes("/") || name.includes("\\") || name.includes("\0")) {
+    throw new Error(`Invalid checkpoint id/sessionId: ${name}`);
+  }
+  return name;
+}
+
+/** 判断错误是否为 ENOENT（文件不存在） */
+function isEnoent(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
 // ── 文件存储实现 ────────────────────────────────────────────────────────────
 
 /**
@@ -122,6 +149,7 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   async load(id: string): Promise<SessionCheckpoint | null> {
+    safeSegment(id);
     // id 可能跨多个 session 目录，需要扫描
     const sessions = await this.listSessionDirs();
     for (const sid of sessions) {
@@ -143,7 +171,7 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   async list(sessionId?: string): Promise<CheckpointMeta[]> {
-    const sessions = sessionId ? [sessionId] : await this.listSessionDirs();
+    const sessions = sessionId ? [safeSegment(sessionId)] : await this.listSessionDirs();
     const metas: CheckpointMeta[] = [];
 
     for (const sid of sessions) {
@@ -180,14 +208,19 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   async delete(id: string): Promise<void> {
+    safeSegment(id);
     const sessions = await this.listSessionDirs();
     for (const sid of sessions) {
       const filePath = path.join(this.baseDir, sid, `${id}.json`);
       if (fs.existsSync(filePath)) {
         try {
           await fs.promises.unlink(filePath);
-        } catch {
-          /* ignore */
+        } catch (err) {
+          // ENOENT 视为已删除，可静默；其他错误必须抛出
+          if (isEnoent(err)) {
+            return;
+          }
+          throw err;
         }
         return;
       }
@@ -197,7 +230,9 @@ export class FileCheckpointStore implements CheckpointStore {
   // ── 私有 ──────────────────────────────────────────────────────────────────
 
   private checkpointPath(sessionId: string, id: string): string {
-    return path.join(this.baseDir, sessionId, `${id}.json`);
+    const safeSessionId = safeSegment(sessionId);
+    const safeId = safeSegment(id);
+    return path.join(this.baseDir, safeSessionId, `${safeId}.json`);
   }
 
   private async listSessionDirs(): Promise<string[]> {
@@ -283,6 +318,8 @@ export class SessionCheckpointManager {
     checkpointId1: string,
     checkpointId2: string,
   ): Promise<{ addedMessages: number; removedMessages: number; toolCallsDiff: number }> {
+    safeSegment(checkpointId1);
+    safeSegment(checkpointId2);
     const cp1 = await this.store.load(checkpointId1);
     const cp2 = await this.store.load(checkpointId2);
 

@@ -504,4 +504,25 @@ describe("BatchExecutor", () => {
     expect(result.succeeded).toBe(0);
     expect(result.failed).toBe(0);
   });
+
+  it("并行 failFast：首个失败后已启动任务完成，信号量不泄漏", async () => {
+    executor = new BatchExecutor(executorFn, { failFast: true, maxConcurrency: 3 });
+    executorFn.mockImplementation(async (_n: string, p: Record<string, unknown>) => {
+      if (p.id === "t0") throw new Error("fail-t0");
+      await new Promise((r) => setTimeout(r, 20));
+      return "ok";
+    });
+    const tasks: BatchTask[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `t${i}`,
+      toolName: "x",
+      params: { id: `t${i}` },
+    }));
+    const result = await executor.executeParallel(tasks);
+    expect(result.failed).toBeGreaterThan(0);
+
+    // 关键：验证信号量未泄漏 — 紧接一个新 executeParallel 应正常完成
+    executorFn.mockResolvedValue("ok");
+    const r2 = await executor.executeParallel([{ id: "x", toolName: "x", params: {} }]);
+    expect(r2.succeeded).toBe(1);
+  });
 });

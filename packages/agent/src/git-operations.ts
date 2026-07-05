@@ -102,19 +102,20 @@ export class GitOperations {
   async diff(target?: string, staged?: boolean): Promise<string> {
     const args = ["diff"];
     if (staged) args.push("--staged");
-    if (target) args.push(target);
+    if (target) args.push("--", target);
     return this.run(args);
   }
 
   async diffStat(target?: string): Promise<GitDiffResult> {
     const args = ["diff", "--numstat"];
-    if (target) args.push(target);
+    if (target) args.push("--", target);
     return parseNumstat(await this.run(args));
   }
 
   async log(maxCount?: number): Promise<GitLogEntry[]> {
     const args = ["log", "--pretty=format:%H|%an|%ae|%ad|%s", "--date=iso", "--numstat"];
-    if (typeof maxCount === "number" && maxCount > 0) {
+    if (typeof maxCount === "number") {
+      if (maxCount <= 0) throw new Error("maxCount must be positive");
       args.push("-n", String(maxCount));
     }
     return parseLog(await this.run(args));
@@ -145,8 +146,13 @@ export class GitOperations {
       const line = raw.trim();
       if (!line) continue;
       if (line.startsWith("* ")) {
-        current = line.slice(2).trim();
-        branches.push(current);
+        const name = line.slice(2).trim();
+        if (name.includes("detached")) {
+          current = "HEAD";
+        } else {
+          current = name;
+          branches.push(current);
+        }
       } else {
         branches.push(line);
       }
@@ -171,19 +177,32 @@ export class GitOperations {
       console.warn(`[GitOperations] push --force 即将执行（cwd=${this.cwd}）`);
       args.push("--force");
     }
-    if (remote) args.push(remote);
-    if (branch) args.push(branch);
+    if (remote) {
+      assertNotOption("remote", remote);
+      args.push(remote);
+    }
+    if (branch) {
+      assertNotOption("branch", branch);
+      args.push(branch);
+    }
     await this.run(args);
   }
 
   async pull(remote?: string, branch?: string): Promise<void> {
     const args = ["pull"];
-    if (remote) args.push(remote);
-    if (branch) args.push(branch);
+    if (remote) {
+      assertNotOption("remote", remote);
+      args.push(remote);
+    }
+    if (branch) {
+      assertNotOption("branch", branch);
+      args.push(branch);
+    }
     await this.run(args);
   }
 
   async checkout(target: string, createBranch?: boolean): Promise<void> {
+    assertNotOption("target", target);
     const args = ["checkout"];
     if (createBranch) args.push("-b");
     args.push(target);
@@ -191,27 +210,56 @@ export class GitOperations {
   }
 
   async merge(target: string): Promise<void> {
+    assertNotOption("target", target);
     await this.run(["merge", target]);
   }
 
   async rebase(target: string): Promise<void> {
+    assertNotOption("target", target);
     await this.run(["rebase", target]);
   }
 }
 
 // ── 危险命令拦截 ──────────────────────────────────────────────
 
+/** 拒绝以 `-` 开头的参数，防止参数注入 */
+function assertNotOption(name: string, value: string): void {
+  if (value.startsWith("-")) {
+    throw new Error(`${name} must not start with '-': ${value}`);
+  }
+}
+
 /** 检查命令序列中是否含禁止项，命中即抛错 */
 function assertSafe(args: string[]): void {
-  const joined = args.join(" ");
-  if (/\breset\b.*--hard\b/.test(joined)) {
+  const has = (val: string) => args.includes(val);
+  const hasOpt = (opt: string) => args.some((a) => a === opt || a.startsWith(opt + "="));
+  const hasShort = (flag: string) =>
+    args.some((a) => /^-[a-zA-Z]+$/.test(a) && a.includes(flag));
+
+  // reset --hard（短/长形式）
+  if (has("reset") && hasOpt("--hard")) {
     throw new Error("reset --hard is not allowed");
   }
-  if (/\bclean\b/.test(joined) && /(^|\s)-[a-zA-Z]*f/.test(joined) && /(^|\s)-[a-zA-Z]*d/.test(joined)) {
-    throw new Error("clean -fd is not allowed");
+
+  // clean -fd / --force --directory 等任意组合
+  if (has("clean")) {
+    const force = hasOpt("--force") || hasShort("f");
+    const dir = hasOpt("--directory") || hasShort("d");
+    if (force && dir) {
+      throw new Error("clean -fd is not allowed");
+    }
   }
-  if (/\bbranch\b.*\s-D\b/.test(joined)) {
-    throw new Error("branch -D is not allowed");
+
+  // branch -D / --delete --force 组合
+  if (has("branch")) {
+    if (hasShort("D")) {
+      throw new Error("branch -D is not allowed");
+    }
+    const del = hasOpt("--delete") || hasShort("d");
+    const force = hasOpt("--force") || hasShort("f");
+    if (del && force) {
+      throw new Error("branch -D is not allowed");
+    }
   }
 }
 

@@ -213,6 +213,44 @@ describe("WorkflowEngine > execute", () => {
       rmrf(tmpDir);
     }
   });
+
+  it("节点超时后重试耗尽标记 failed", async () => {
+    let callCount = 0;
+    const executor: WorkflowExecutorFn = async () => {
+      callCount++;
+      await new Promise((r) => setTimeout(r, 200)); // 超过 timeoutMs
+      return "ok";
+    };
+    const engine = new WorkflowEngine(executor, { defaultTimeoutMs: 50, defaultRetries: 1 });
+    const wf: WorkflowDefinition = {
+      id: "wf-timeout",
+      name: "t",
+      nodes: [{ id: "A", toolName: "t", params: {}, dependsOn: [] }],
+    };
+    const result = await engine.execute(wf);
+    expect(result.nodeResults.get("A")?.status).toBe("failed");
+    expect(result.nodeResults.get("A")?.error).toMatch(/超时|timeout/i);
+    expect(callCount).toBe(2); // 1 + 1 retry
+  });
+
+  it("resume 损坏 checkpoint 时返回 partial 且节点 failed", async () => {
+    const corruptTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-corrupt-"));
+    try {
+      const corruptPath = path.join(corruptTmpDir, "corrupt.json");
+      fs.writeFileSync(corruptPath, "{ invalid json !!!");
+      const engine = new WorkflowEngine(async () => "ok");
+      const wf: WorkflowDefinition = {
+        id: "wf",
+        name: "t",
+        nodes: [{ id: "A", toolName: "t", params: {}, dependsOn: [] }],
+      };
+      const result = await engine.resume(wf, corruptPath);
+      expect(result.status).toBe("partial");
+      expect(result.nodeResults.get("A")?.status).toBe("failed");
+    } finally {
+      fs.rmSync(corruptTmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -351,6 +389,41 @@ describe("SessionCheckpointManager", () => {
     expect(d.addedMessages).toBe(2);
     expect(d.removedMessages).toBe(0);
     expect(d.toolCallsDiff).toBe(1);
+  });
+
+  it("sessionId 含 ../ 时应被拒绝（防路径逃逸）", async () => {
+    const store = new FileCheckpointStore(tmpDir);
+    const manager = new SessionCheckpointManager(store);
+
+    // sessionId 路径注入
+    await expect(
+      manager.save("../../etc", [{ role: "user", content: "x" }], [], {}),
+    ).rejects.toThrow(/Invalid checkpoint id\/sessionId/i);
+
+    // checkpointId 路径注入（restore / delete / diff 入口）
+    await expect(manager.restore("../../etc/passwd")).rejects.toThrow(
+      /Invalid checkpoint id\/sessionId/i,
+    );
+
+    await expect(manager.delete("../../etc/passwd")).rejects.toThrow(
+      /Invalid checkpoint id\/sessionId/i,
+    );
+
+    await expect(manager.diff("..", "..")).rejects.toThrow(
+      /Invalid checkpoint id\/sessionId/i,
+    );
+
+    // 直接通过 store.save 测试 id 路径注入
+    await expect(
+      store.save({
+        id: "../../etc/passwd",
+        sessionId: "valid-session",
+        createdAt: Date.now(),
+        messages: [],
+        toolCallHistory: [],
+        context: {},
+      }),
+    ).rejects.toThrow(/Invalid checkpoint id\/sessionId/i);
   });
 });
 

@@ -118,6 +118,11 @@ export class VisionAnalyzer {
   private readonly cacheEnabled: boolean;
   private readonly cacheTtlMs: number;
   private readonly cache: Map<string, CacheEntry<unknown>> = new Map();
+  /**
+   * in-flight 去重：key 形如 `methodName:cacheKey`，value 为进行中的 Promise。
+   * 并发相同请求复用同一个 Promise，避免重复调用 VLM 浪费 token/费用。
+   */
+  private readonly inFlight: Map<string, Promise<unknown>> = new Map();
 
   constructor(chatFn: VisionChatFn, config?: VisionAnalyzerConfig) {
     this.chatFn = chatFn;
@@ -134,12 +139,24 @@ export class VisionAnalyzer {
     const maxTokens = request.maxTokens ?? this.defaultMaxTokens;
 
     // 缓存命中检查
-    const cacheKey = this.buildCacheKey(request.prompt, request.imageBase64);
+    const cacheKey = this.buildCacheKey(
+      request.prompt,
+      request.imageBase64,
+      maxTokens,
+      mimeType,
+    );
     if (this.cacheEnabled) {
       const cached = this.getFromCache(cacheKey);
       if (cached !== undefined) {
         return this.coerceAnalysisResult(cached, request.prompt);
       }
+    }
+
+    // in-flight 去重：并发相同请求复用同一个 Promise，避免重复调用 VLM
+    const inflightKey = `analyze:${cacheKey}`;
+    const inflight = this.inFlight.get(inflightKey);
+    if (inflight) {
+      return this.coerceAnalysisResult(await inflight, request.prompt);
     }
 
     // 构造 vision message（OpenAI/Anthropic 通用格式）
@@ -158,30 +175,39 @@ export class VisionAnalyzer {
       },
     ];
 
-    let rawResponse: unknown;
+    const p = (async () => {
+      let rawResponse: unknown;
+      try {
+        rawResponse = await this.chatFn(messages, {
+          image: { base64: request.imageBase64, mimeType },
+          maxTokens,
+        });
+      } catch (err) {
+        // 错误隔离：附加图片大小信息，不泄露 base64 内容
+        const imageSize = this.estimateBase64Bytes(request.imageBase64);
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `VisionAnalyzer.analyze failed: ${reason} (imageSize=${imageSize}B, mimeType=${mimeType})`,
+          { cause: err },
+        );
+      }
+
+      const parsed = this.parseAnalysisResponse(rawResponse, request.prompt);
+
+      // 写入缓存
+      if (this.cacheEnabled) {
+        this.putIntoCache(cacheKey, parsed);
+      }
+
+      return parsed;
+    })();
+
+    this.inFlight.set(inflightKey, p);
     try {
-      rawResponse = await this.chatFn(messages, {
-        image: { base64: request.imageBase64, mimeType },
-        maxTokens,
-      });
-    } catch (err) {
-      // 错误隔离：附加图片大小信息，不泄露 base64 内容
-      const imageSize = this.estimateBase64Bytes(request.imageBase64);
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `VisionAnalyzer.analyze failed: ${reason} (imageSize=${imageSize}B, mimeType=${mimeType})`,
-        { cause: err },
-      );
+      return this.coerceAnalysisResult(await p, request.prompt);
+    } finally {
+      this.inFlight.delete(inflightKey);
     }
-
-    const parsed = this.parseAnalysisResponse(rawResponse, request.prompt);
-
-    // 写入缓存
-    if (this.cacheEnabled) {
-      this.putIntoCache(cacheKey, parsed);
-    }
-
-    return parsed;
   }
 
   /**
@@ -236,13 +262,25 @@ export class VisionAnalyzer {
     prompt?: string,
   ): Promise<{ differences: string; similarity: number }> {
     const finalPrompt = prompt ?? PROMPT_COMPARE_IMAGES;
-    const cacheKey = this.buildCacheKey(finalPrompt, image1Base64 + image2Base64);
+    const cacheKey = this.buildCacheKey(
+      finalPrompt,
+      image1Base64 + image2Base64,
+      this.defaultMaxTokens,
+      "image/png",
+    );
 
     if (this.cacheEnabled) {
       const cached = this.getFromCache(cacheKey);
       if (cached !== undefined) {
         return this.coerceCompareResult(cached);
       }
+    }
+
+    // in-flight 去重
+    const inflightKey = `compare:${cacheKey}`;
+    const inflight = this.inFlight.get(inflightKey);
+    if (inflight) {
+      return this.coerceCompareResult(await inflight);
     }
 
     // 同时发送两张图片
@@ -267,28 +305,37 @@ export class VisionAnalyzer {
       },
     ];
 
-    let rawResponse: unknown;
+    const p = (async () => {
+      let rawResponse: unknown;
+      try {
+        rawResponse = await this.chatFn(messages, {
+          maxTokens: this.defaultMaxTokens,
+        });
+      } catch (err) {
+        const size1 = this.estimateBase64Bytes(image1Base64);
+        const size2 = this.estimateBase64Bytes(image2Base64);
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `VisionAnalyzer.compareImages failed: ${reason} (image1Size=${size1}B, image2Size=${size2}B)`,
+          { cause: err },
+        );
+      }
+
+      const parsed = this.parseCompareResponse(rawResponse);
+
+      if (this.cacheEnabled) {
+        this.putIntoCache(cacheKey, parsed);
+      }
+
+      return parsed;
+    })();
+
+    this.inFlight.set(inflightKey, p);
     try {
-      rawResponse = await this.chatFn(messages, {
-        maxTokens: this.defaultMaxTokens,
-      });
-    } catch (err) {
-      const size1 = this.estimateBase64Bytes(image1Base64);
-      const size2 = this.estimateBase64Bytes(image2Base64);
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `VisionAnalyzer.compareImages failed: ${reason} (image1Size=${size1}B, image2Size=${size2}B)`,
-        { cause: err },
-      );
+      return this.coerceCompareResult(await p);
+    } finally {
+      this.inFlight.delete(inflightKey);
     }
-
-    const parsed = this.parseCompareResponse(rawResponse);
-
-    if (this.cacheEnabled) {
-      this.putIntoCache(cacheKey, parsed);
-    }
-
-    return parsed;
   }
 
   /**
@@ -300,10 +347,17 @@ export class VisionAnalyzer {
 
   // ── 私有：缓存 ───────────────────────────────────────────────────────────
 
-  private buildCacheKey(prompt: string, imageBase64: string): string {
+  private buildCacheKey(
+    prompt: string,
+    imageBase64: string,
+    maxTokens?: number,
+    mimeType?: string,
+  ): string {
+    // maxTokens / mimeType 会影响 VLM 输出，必须纳入 key 防止误命中
     const hash = crypto
       .createHash("sha256")
       .update(imageBase64)
+      .update(`|${maxTokens ?? this.defaultMaxTokens}|${mimeType ?? "image/png"}`)
       .digest("hex")
       .slice(0, 16);
     return `${prompt}:${hash}`;

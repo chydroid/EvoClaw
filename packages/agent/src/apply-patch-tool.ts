@@ -223,9 +223,20 @@ export async function applyPatch(
     return { success: false, appliedHunks: 0, failedHunks, errors };
   }
 
-  // Phase 2: 原子写盘
+  // Phase 2: 原子写盘（逐文件捕获错误，避免部分写入后 unhandled rejection）
+  const writeErrors: Array<{ path: string; reason: string }> = [];
   for (const [absPath, newContent] of plannedWrites) {
-    await atomicWriteFile(absPath, newContent);
+    try {
+      await atomicWriteFile(absPath, newContent);
+    } catch (err) {
+      writeErrors.push({
+        path: path.relative(workspaceRoot, absPath),
+        reason: `Write failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+  if (writeErrors.length > 0) {
+    return { success: false, appliedHunks: 0, failedHunks: writeErrors.length, errors: writeErrors };
   }
 
   return { success: true, appliedHunks, failedHunks: 0, errors: [] };
@@ -374,7 +385,11 @@ function isPathSafe(workspaceRoot: string, absPath: string): boolean {
 // ── 原子写入 ─────────────────────────────────────────────────
 
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}.tmp`;
   try {
     const fd = fs.openSync(tmpPath, "w");
     try {

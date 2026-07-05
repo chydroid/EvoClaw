@@ -67,6 +67,8 @@ export interface WorkflowExecutionResult {
   status: "running" | "succeeded" | "failed" | "partial";
   nodeResults: Map<string, WorkflowNodeResult>;
   totalDurationMs: number;
+  /** workflow 级 + 运行时 inputs 合并结果，用于 checkpoint 持久化与 resume 回放 */
+  inputs?: Record<string, unknown>;
 }
 
 export type WorkflowExecutorFn = (
@@ -130,7 +132,10 @@ function atomicWriteFile(targetPath: string, content: string): void {
 
 /** 休眠工具 */
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    if (t.unref) t.unref();
+  });
 }
 
 // ── 主类 ────────────────────────────────────────────────────────────────────
@@ -245,7 +250,7 @@ export class WorkflowEngine {
           r.status = "failed";
           r.error = "工作流校验失败";
         }
-        return this.buildResult(workflow, nodeResults, "partial", start);
+        return this.buildResult(workflow, nodeResults, "partial", start, mergedInputs);
       }
 
       const levels = this.computeLevels(workflow);
@@ -255,7 +260,7 @@ export class WorkflowEngine {
       }
 
       const finalStatus = this.computeFinalStatus(nodeResults);
-      const result = this.buildResult(workflow, nodeResults, finalStatus, start);
+      const result = this.buildResult(workflow, nodeResults, finalStatus, start, mergedInputs);
       if (this.config.persistPath) {
         try {
           await this.saveCheckpoint(workflow, result, this.config.persistPath);
@@ -272,7 +277,7 @@ export class WorkflowEngine {
           if (!r.endedAt) r.endedAt = Date.now();
         }
       }
-      return this.buildResult(workflow, nodeResults, "partial", start);
+      return this.buildResult(workflow, nodeResults, "partial", start, mergedInputs);
     }
   }
 
@@ -290,13 +295,30 @@ export class WorkflowEngine {
   ): Promise<WorkflowExecutionResult> {
     const start = Date.now();
     const nodeResults = this.initNodeResults(workflow);
+    // 默认使用 workflow.inputs；读到 checkpoint 后用 parsed.inputs 覆盖
+    let resumeInputs: Record<string, unknown> = { ...workflow.inputs };
 
     try {
+      // 校验：脏 workflow 定义（增删节点、引入环）需早失败
+      const validation = this.validate(workflow);
+      if (!validation.valid) {
+        for (const r of nodeResults.values()) {
+          r.status = "failed";
+          r.error = "工作流校验失败";
+        }
+        return this.buildResult(workflow, nodeResults, "partial", start, resumeInputs);
+      }
+
       // 加载 checkpoint
       const data = await fs.promises.readFile(checkpointPath, "utf-8");
       const parsed = JSON.parse(data) as {
         nodeResults?: Array<[string, WorkflowNodeResult]>;
+        inputs?: Record<string, unknown>;
       };
+
+      // 回放运行时 inputs：checkpoint 优先，workflow.inputs 兜底
+      resumeInputs = { ...workflow.inputs, ...parsed.inputs };
+
       if (parsed.nodeResults && Array.isArray(parsed.nodeResults)) {
         for (const [id, r] of parsed.nodeResults) {
           // 已 succeeded 的节点保留状态，其余重置为 pending
@@ -317,11 +339,11 @@ export class WorkflowEngine {
         // 跳过本层中已 succeeded 的节点
         const todo = level.filter((n) => nodeResults.get(n.id)?.status !== "succeeded");
         if (todo.length === 0) continue;
-        await this.runLevel(workflow, todo, nodeResults, workflow.inputs ?? {}, true);
+        await this.runLevel(workflow, todo, nodeResults, resumeInputs, true);
       }
 
       const finalStatus = this.computeFinalStatus(nodeResults);
-      const result = this.buildResult(workflow, nodeResults, finalStatus, start);
+      const result = this.buildResult(workflow, nodeResults, finalStatus, start, resumeInputs);
       if (this.config.persistPath) {
         try {
           await this.saveCheckpoint(workflow, result, this.config.persistPath);
@@ -337,7 +359,7 @@ export class WorkflowEngine {
           if (!r.endedAt) r.endedAt = Date.now();
         }
       }
-      return this.buildResult(workflow, nodeResults, "partial", start);
+      return this.buildResult(workflow, nodeResults, "partial", start, resumeInputs);
     }
   }
 
@@ -358,6 +380,7 @@ export class WorkflowEngine {
       status: result.status,
       nodeResults: Array.from(result.nodeResults.entries()),
       totalDurationMs: result.totalDurationMs,
+      inputs: result.inputs ?? {},
       savedAt: Date.now(),
     };
     const content = JSON.stringify(payload, null, 2);
@@ -445,8 +468,20 @@ export class WorkflowEngine {
       // 收集 inputs
       const inputs = this.gatherInputs(workflow, node, nodeResults, workflowInputs);
 
-      // condition 检查
-      if (node.condition && !node.condition(inputs)) {
+      // condition 检查：用户函数抛错时仅跳过本节点，不影响其他节点
+      let condOk = true;
+      if (node.condition) {
+        try {
+          condOk = node.condition(inputs);
+        } catch (err) {
+          const r = nodeResults.get(node.id)!;
+          r.status = "skipped";
+          r.error = `condition threw: ${err instanceof Error ? err.message : String(err)}`;
+          r.endedAt = Date.now();
+          continue;
+        }
+      }
+      if (!condOk) {
         const r = nodeResults.get(node.id)!;
         r.status = "skipped";
         continue;
@@ -456,7 +491,7 @@ export class WorkflowEngine {
     }
 
     // 并发执行
-    await this.runWithConcurrency(workflow, tasks, nodeResults);
+    await this.runWithConcurrency(workflow, tasks, nodeResults, workflowInputs);
   }
 
   /** 汇总节点 inputs：workflow 级 inputs + 上游 succeeded 节点的 output */
@@ -481,6 +516,7 @@ export class WorkflowEngine {
     workflow: WorkflowDefinition,
     tasks: Array<{ node: WorkflowNode; inputs: Record<string, unknown> }>,
     nodeResults: Map<string, WorkflowNodeResult>,
+    workflowInputs: Record<string, unknown>,
   ): Promise<void> {
     if (tasks.length === 0) return;
     const concurrency = Math.min(this.config.maxConcurrency, tasks.length);
@@ -490,7 +526,7 @@ export class WorkflowEngine {
       while (queue.length > 0) {
         const task = queue.shift();
         if (!task) break;
-        await this.runNode(workflow, task.node, task.inputs, nodeResults);
+        await this.runNode(workflow, task.node, task.inputs, nodeResults, workflowInputs);
       }
     };
 
@@ -507,6 +543,7 @@ export class WorkflowEngine {
     node: WorkflowNode,
     inputs: Record<string, unknown>,
     nodeResults: Map<string, WorkflowNodeResult>,
+    workflowInputs: Record<string, unknown>,
   ): Promise<void> {
     const result = nodeResults.get(node.id)!;
     result.status = "running";
@@ -542,6 +579,7 @@ export class WorkflowEngine {
             nodeResults,
             "running",
             0,
+            workflowInputs,
           );
           await this.saveCheckpoint(workflow, snapshot, this.config.persistPath);
         } catch { /* ignore checkpoint errors */ }
@@ -585,6 +623,7 @@ export class WorkflowEngine {
         () => reject(new Error(`节点执行超时 (${timeoutMs}ms)`)),
         timeoutMs,
       );
+      if (timer.unref) timer.unref();
     });
     try {
       return await Promise.race([
@@ -617,12 +656,14 @@ export class WorkflowEngine {
     nodeResults: Map<string, WorkflowNodeResult>,
     status: WorkflowExecutionResult["status"],
     start: number,
+    inputs?: Record<string, unknown>,
   ): WorkflowExecutionResult {
     return {
       workflowId: workflow.id,
       status,
       nodeResults,
       totalDurationMs: start === 0 ? 0 : Date.now() - start,
+      inputs,
     };
   }
 }

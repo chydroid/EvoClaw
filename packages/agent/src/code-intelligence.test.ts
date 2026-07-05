@@ -15,6 +15,21 @@ import { parsePatch, applyPatch } from "./apply-patch-tool";
 
 let tmpDir: string;
 
+/** 检测当前环境是否支持创建 symlink（Windows 非管理员/未开启开发者模式时会失败） */
+const SYMLINK_SUPPORTED = (() => {
+  try {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "symtest-"));
+    const t = path.join(d, "target.txt");
+    const l = path.join(d, "link.txt");
+    fs.writeFileSync(t, "");
+    fs.symlinkSync(t, l);
+    fs.rmSync(d, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-test-"));
   vi.mocked(execFile).mockReset();
@@ -140,6 +155,21 @@ describe("GitOperations", () => {
     await expect(callRun(git, ["branch", "-D", "feature"])).rejects.toThrow(
       "branch -D is not allowed",
     );
+  });
+
+  it("git 命令失败时 reject 的 Error 应包含 stderr", async () => {
+    // 重新 mock 让 cb 返回 err+stderr
+    vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (
+        err: Error | null,
+        stdout?: string,
+        stderr?: string,
+      ) => void;
+      if (typeof cb === "function") cb(new Error("exit code 1"), "", "fatal: not a git repository");
+      return undefined;
+    }) as unknown as typeof execFile);
+    const git = new GitOperations({ cwd: tmpDir });
+    await expect(git.status()).rejects.toThrow(/fatal: not a git repository/);
   });
 });
 
@@ -340,5 +370,22 @@ describe("applyPatch", () => {
     expect(result.success).toBe(true);
     const newContent = fs.readFileSync(path.join(tmpDir, "rstrip.ts"), "utf-8");
     expect(newContent).toContain("LINE ONE");
+  });
+
+  it.skipIf(!SYMLINK_SUPPORTED)("applyPatch 应拦截 symlink 逃逸（symlink 指向 workspace 外）", async () => {
+    const outsideFile = path.join(os.tmpdir(), `outside-target-${Date.now()}.txt`);
+    fs.writeFileSync(outsideFile, "outside content");
+    const symlinkPath = path.join(tmpDir, "link.ts");
+    fs.symlinkSync(outsideFile, symlinkPath);
+    try {
+      const result = await applyPatch(tmpDir, [
+        { relativePath: "link.ts", search: "outside", replace: "hacked" },
+      ]);
+      expect(result.success).toBe(false);
+      // 原文件未被修改
+      expect(fs.readFileSync(outsideFile, "utf-8")).toBe("outside content");
+    } finally {
+      fs.unlinkSync(outsideFile);
+    }
   });
 });
