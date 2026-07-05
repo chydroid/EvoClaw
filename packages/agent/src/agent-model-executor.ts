@@ -42,6 +42,8 @@ import { SemanticQuickReply } from "./semantic-quick-reply";
 import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
 import { IterationBudget, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
 import { classifySkillError, isEmptySkillOutput, formatSkillReply, sanitizeSkillOutput } from "./skill-dispatch-error-handler";
+import { ToolResultCache, type CacheStats } from "./tool-result-cache";
+import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -229,6 +231,21 @@ export class AgentModelExecutor {
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
   private static TOOL_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
   private static TOOL_CACHE_MAX = 100;
+
+  /**
+   * 新版工具结果缓存（ToolResultCache 模块，LRU + TTL + 白/黑名单）。
+   * 与上面简易 Map 缓存并存：简易缓存服务于 LLM 调用去重，此模块服务于
+   * WebUI 统计与未来工具调用层接入。命名为 V2 以避免与现有字段冲突。
+   * 懒初始化，首次访问时通过 ensureToolResultCacheV2() 创建。
+   */
+  private toolResultCacheV2: ToolResultCache | null = null;
+
+  /**
+   * Token Budget 优化器（TokenBudgetOptimizer 模块）。
+   * 懒初始化；保留最近一次 BudgetReport 供 WebUI 展示。
+   */
+  private tokenBudgetOptimizer: TokenBudgetOptimizer | null = null;
+  private lastBudgetReport: BudgetReport | null = null;
 
   /**
    * Service-gated tools: check_fn TTL 缓存。
@@ -2797,6 +2814,26 @@ export class AgentModelExecutor {
     searchPreDone: boolean = false,
     channel?: string
   ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+    // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
+    this.ensureToolResultCacheV2();
+    this.ensureTokenBudgetOptimizer();
+    // 用当前请求内容生成一次预算报告（不修改 messages，仅记录供 WebUI 展示）
+    if (this.tokenBudgetOptimizer) {
+      try {
+        const history = this.conversationHistory.get(sessionId) ?? [];
+        const report = this.tokenBudgetOptimizer.allocate({
+          systemPrompt,
+          memories: [],
+          history: history.map((m) => ({ role: m.role, content: m.content })),
+          toolResults: [],
+          userMessage: message,
+        });
+        this.lastBudgetReport = report.report;
+      } catch {
+        // best-effort：报告失败不影响 LLM 调用
+      }
+    }
+
     const deps = this.getLLMCallerDeps();
     // Inject iteration budget and context engine result for this session
     deps.iterationBudget = this.getIterationBudget(sessionId);
@@ -2813,6 +2850,47 @@ export class AgentModelExecutor {
       searchPreDone, channel,
       abortSignal: sessionController?.signal,
     });
+  }
+
+  /** 懒初始化 ToolResultCacheV2（best-effort，失败返回 null）。 */
+  private ensureToolResultCacheV2(): void {
+    if (this.toolResultCacheV2) return;
+    try {
+      this.toolResultCacheV2 = new ToolResultCache({ maxEntries: 200, defaultTtlMs: 5 * 60 * 1000 });
+    } catch {
+      this.toolResultCacheV2 = null;
+    }
+  }
+
+  /** 懒初始化 TokenBudgetOptimizer（best-effort，失败返回 null）。 */
+  private ensureTokenBudgetOptimizer(): void {
+    if (this.tokenBudgetOptimizer) return;
+    try {
+      this.tokenBudgetOptimizer = new TokenBudgetOptimizer({ contextWindow: 200_000, reservedOutput: 4096 });
+    } catch {
+      this.tokenBudgetOptimizer = null;
+    }
+  }
+
+  /**
+   * 获取 ToolResultCache 统计快照（用于 WebUI / API）。
+   * 未启用时返回 null。
+   */
+  getToolResultCacheStats(): CacheStats | null {
+    if (!this.toolResultCacheV2) return null;
+    try {
+      return this.toolResultCacheV2.getStats();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 获取最近一次 Token Budget 报告（用于 WebUI / API）。
+   * 未启用或尚未生成报告时返回 null。
+   */
+  getTokenBudgetReport(): BudgetReport | null {
+    return this.lastBudgetReport;
   }
 
   // ── End-to-end cancellation ─────────────────────────────────────────────

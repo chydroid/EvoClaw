@@ -7229,6 +7229,73 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── 分层记忆 Stats API ──
+    // 暴露 L0/L1/L2/L3 各层状态指标，供 WebUI MemoryHubPage 展示。
+
+    app.get("/api/memory/layered-stats", (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{ getLayeredStats(): unknown }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const stats = hub.getLayeredStats();
+        if (!stats) {
+          res.json({ active: false, turnCount: 0, l0: { sessionCount: 0, totalMessages: 0, sessions: [] }, l1: { totalMemories: 0, pendingCount: 0, dedupSkippedTotal: 0, byType: {}, byPriority: {} }, l2: { sceneCount: 0, lastTrigger: null }, l3: { personaEntries: 0, lastUpdatedAt: null }, canvas: { nodeCount: 0, edgeCount: 0, active: false, sessionKey: null }, config: {} });
+          return;
+        }
+        res.json({ active: true, ...stats });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.get("/api/memory/semantic-search", async (req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{ semanticSearch(q: string, limit?: number): Promise<unknown[]> }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const q = typeof req.query.q === "string" ? req.query.q : "";
+        const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit ?? "10"), 10) || 10));
+        const results = await hub.semanticSearch(q, limit);
+        res.json({ query: q, results });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // ── Agent 工具缓存 / Token 预算 Stats API ──
+    // 暴露 AgentModelExecutor 的 ToolResultCache 与 TokenBudgetOptimizer 状态。
+
+    app.get("/api/agent/tool-cache-stats", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{ getToolResultCacheStats(): unknown }>("agentModelExecutor");
+        if (!executor) {
+          res.json({ enabled: false, hits: 0, misses: 0, size: 0, hitRate: 0, byTool: {} });
+          return;
+        }
+        const stats = executor.getToolResultCacheStats();
+        res.json({ enabled: !!stats, ...(stats as object || {}) });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    app.get("/api/agent/token-budget-report", (_req: Request, res: Response) => {
+      try {
+        const executor = this.registry.resolveService<{ getTokenBudgetReport(): unknown }>("agentModelExecutor");
+        if (!executor) {
+          res.json({ enabled: false });
+          return;
+        }
+        const report = executor.getTokenBudgetReport();
+        res.json({ enabled: !!report, report });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
 
     // ── Heartbeat API ──
 

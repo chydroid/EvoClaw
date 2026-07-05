@@ -53,6 +53,7 @@ import ApprovalCenterPage from "./ApprovalCenterPage";
 import MCPScannerPage from "./MCPScannerPage";
 import { VoiceConfigPage } from "./VoiceConfigPage";
 import EnhancementHubPage from "./EnhancementHubPage";
+import MemoryHubPage from "./MemoryHubPage";
 
 interface NavGroup {
   id: string;
@@ -94,6 +95,7 @@ const NAV_GROUPS: NavGroup[] = [
 
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
       { id: "enhancement-hub" as TabId, i18nKey: "nav.enhancement_hub", iconId: "enhancement" },
+      { id: "memory-hub" as TabId, i18nKey: "nav.memory_hub", iconId: "monitoring" },
     ],
   },
   {
@@ -644,6 +646,7 @@ export default function App() {
       case "mcp-scanner": return <ErrorBoundary><MCPScannerPage /></ErrorBoundary>;
       case "voice-settings": return <ErrorBoundary><VoiceConfigPage /></ErrorBoundary>;
       case "enhancement-hub": return <ErrorBoundary><EnhancementHubPage /></ErrorBoundary>;
+      case "memory-hub": return <ErrorBoundary><MemoryHubPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }

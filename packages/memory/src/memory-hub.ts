@@ -334,6 +334,25 @@ export class MemoryHub {
     }
   }
 
+  /** 获取分层记忆统计快照（用于 WebUI）。失败返回 null。 */
+  getLayeredStats(): {
+    turnCount: number;
+    l0: { sessionCount: number; totalMessages: number; sessions: Array<{ key: string; messageCount: number }> };
+    l1: { totalMemories: number; pendingCount: number; dedupSkippedTotal: number; byType: Record<string, number>; byPriority: Record<string, number> };
+    l2: { sceneCount: number; lastTrigger: unknown };
+    l3: { personaEntries: number; lastUpdatedAt: number | null };
+    canvas: { nodeCount: number; edgeCount: number; active: boolean; sessionKey: string | null };
+    config: Record<string, unknown>;
+  } | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.getStats();
+    } catch (err) {
+      process.stderr.write(`[memory-hub] getLayeredStats failed: ${err}\n`);
+      return null;
+    }
+  }
+
   /**
    * 剥离消息历史中的召回标签（<relevant-memories> / <task-canvas>）。
    *

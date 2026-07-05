@@ -631,6 +631,111 @@ export class LayeredMemory {
     return { ...this.l2TriggerState };
   }
 
+  /**
+   * 获取分层记忆完整统计快照（用于 WebUI / API 暴露）。
+   *
+   * 汇总 L0/L1/L2/L3 + Canvas + Config 各层指标，所有 IO 操作包裹在
+   * try/catch 中，避免单层故障导致整个快照失败。
+   */
+  getStats(): {
+    turnCount: number;
+    l0: { sessionCount: number; totalMessages: number; sessions: Array<{ key: string; messageCount: number }> };
+    l1: { totalMemories: number; pendingCount: number; dedupSkippedTotal: number; byType: Record<string, number>; byPriority: Record<string, number> };
+    l2: { sceneCount: number; lastTrigger: L2TriggerState };
+    l3: { personaEntries: number; lastUpdatedAt: number | null };
+    canvas: { nodeCount: number; edgeCount: number; active: boolean; sessionKey: string | null };
+    config: { enableL1Persistence: boolean; enableL1Dedup: boolean; enableL2Recall: boolean; enableRecallBudget: boolean; enableSymbolicCanvas: boolean; l1MaxMemories: number; l3RefreshEveryNTurns: number };
+  } {
+    // L0：遍历 recorder 的所有会话
+    const l0Sessions: Array<{ key: string; messageCount: number }> = [];
+    let l0TotalMessages = 0;
+    try {
+      const sessionKeys = this.recorder.listSessions();
+      for (const key of sessionKeys) {
+        const msgs = this.recorder.loadRecent(key, 100000);
+        l0Sessions.push({ key, messageCount: msgs.length });
+        l0TotalMessages += msgs.length;
+      }
+    } catch {
+      // best-effort：失败时返回已收集的部分
+    }
+
+    // L1：按 type / priority 分桶
+    const byType: Record<string, number> = {};
+    const byPriority: Record<string, number> = {};
+    for (const mem of this.allL1Memories) {
+      byType[mem.type] = (byType[mem.type] ?? 0) + 1;
+      // 优先级按 0-49 / 50-69 / 70-84 / 85-100 分桶，便于 WebUI 直观展示
+      const bucket = mem.priority < 50
+        ? "0-49"
+        : mem.priority < 70
+          ? "50-69"
+          : mem.priority < 85
+            ? "70-84"
+            : "85-100";
+      byPriority[bucket] = (byPriority[bucket] ?? 0) + 1;
+    }
+
+    // L2：sceneCount 从 scenesDir 文件数推断（aggregator 没有内置 stats）
+    const scenesDir = path.join(this.dataDir, "memory", "layered", "scene_blocks");
+    let sceneCount = 0;
+    try {
+      if (fs.existsSync(scenesDir)) {
+        sceneCount = fs.readdirSync(scenesDir).filter((f) => f.endsWith(".json")).length;
+      }
+    } catch {
+      // best-effort
+    }
+
+    // L3：从 personaGen 获取当前画像
+    const persona = this.personaGen.getCurrent();
+    const l3Entries = persona?.entries.length ?? 0;
+    const l3UpdatedAt = persona?.updatedAt ?? null;
+
+    // Canvas：从 canvas 快照拉取
+    const canvasSnapshot = this.canvas.getCanvas();
+    const canvasStats = {
+      nodeCount: canvasSnapshot?.nodes.length ?? 0,
+      edgeCount: canvasSnapshot?.edges.length ?? 0,
+      active: canvasSnapshot !== null,
+      sessionKey: canvasSnapshot?.sessionKey ?? null,
+    };
+
+    return {
+      turnCount: this.turnCount,
+      l0: {
+        sessionCount: l0Sessions.length,
+        totalMessages: l0TotalMessages,
+        sessions: l0Sessions,
+      },
+      l1: {
+        totalMemories: this.allL1Memories.length,
+        pendingCount: this.pendingL1Memories.length,
+        dedupSkippedTotal: this.dedupSkippedTotal,
+        byType,
+        byPriority,
+      },
+      l2: {
+        sceneCount,
+        lastTrigger: { ...this.l2TriggerState },
+      },
+      l3: {
+        personaEntries: l3Entries,
+        lastUpdatedAt: l3UpdatedAt,
+      },
+      canvas: canvasStats,
+      config: {
+        enableL1Persistence: this.cfg.enableL1Persistence,
+        enableL1Dedup: this.cfg.enableL1Dedup,
+        enableL2Recall: this.cfg.enableL2Recall,
+        enableRecallBudget: this.cfg.enableRecallBudget,
+        enableSymbolicCanvas: this.cfg.enableSymbolicCanvas,
+        l1MaxMemories: this.cfg.l1MaxMemories,
+        l3RefreshEveryNTurns: this.cfg.l3RefreshEveryNTurns,
+      },
+    };
+  }
+
   // ── 私有辅助 ──
 
   /**
