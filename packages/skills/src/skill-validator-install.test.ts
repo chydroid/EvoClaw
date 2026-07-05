@@ -139,10 +139,11 @@ describe("SkillValidator — validateRequiresBins", () => {
     expect(validator.validateRequiresBins(undefined).errors).toEqual([]);
   });
 
-  it("空数组仅警告（建议省略字段）", () => {
+  it("空数组是合法的显式声明，不产生警告", () => {
+    // 按项目约定：openclaw.requires.bins: [] 是有效的显式声明，不应触发警告
     const result = validator.validateRequiresBins([]);
     expect(result.errors).toEqual([]);
-    expect(result.warnings.some((w) => w.includes("is empty"))).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it("非空字符串数组通过", () => {
@@ -197,12 +198,13 @@ describe("SkillValidator — validate 集成 install/requires.bins 校验", () =
     expect(result.errors.some((e) => e.includes("must be a non-empty string"))).toBe(true);
   });
 
-  it("requires.bins 空数组仅产生警告，validate 仍通过", () => {
+  it("requires.bins 空数组是合法声明，validate 通过且无警告", () => {
     const doc = withOpenClaw({
       requires: { bins: [] },
     });
     const result = validator.validate(doc);
     expect(result.valid).toBe(true);
-    expect(result.warnings.some((w) => w.includes("is empty"))).toBe(true);
+    // 按项目约定：空数组是显式声明"无 binary 需求"，不应产生警告
+    expect(result.warnings.filter((w) => w.includes("is empty"))).toEqual([]);
   });
 });

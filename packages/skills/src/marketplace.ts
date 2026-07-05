@@ -256,15 +256,24 @@ export class SkillMarketplace {
 
   /** 将搜索结果项归一化为内部 SkillPackage 结构（用于 catalog 缓存和 trending） */
   private normalizeSearchResult(r: ClawHubSkillSearchResult): SkillPackage {
+    const meta = r.metaContent ?? null;
+    // 标签：优先从 metaContent.Keywords 提取
+    const tags = meta?.Keywords ?? [];
+    // 描述：优先 DisplayDescription，其次 summary
+    const description = meta?.DisplayDescription ?? r.summary ?? "";
+    // License：从 metaContent.License 提取（默认 MIT-0）
+    const license = meta?.License || "MIT-0";
+    // 作者：从 metaContent.owner 提取
+    const authorName = meta?.owner ?? "unknown";
     return {
       name: r.slug,
-      displayName: r.displayName,
-      version: r.version ?? "0.0.0",
-      description: r.summary ?? "",
-      author: { name: "unknown" },
-      license: "MIT-0",
+      displayName: meta?.displayName ?? r.displayName,
+      version: r.version ?? meta?.latest?.version ?? "0.0.0",
+      description,
+      author: { name: authorName },
+      license,
       capabilities: [],
-      tags: [],
+      tags,
       evoclawVersion: ">=0.4.0",
       dependencies: {},
       downloadURL: "",
@@ -590,12 +599,21 @@ export class SkillMarketplace {
       }
       fs.mkdirSync(installDir, { recursive: true });
 
-      // 保存 ZIP 归档（便于后续审计或重装）
+      // 保存 ZIP 归档（便于后续审计或重装）；使用原子写避免进程崩溃时损坏归档
       const archiveDir = pathMod.join(this.config.cacheDir, "skills", name);
       if (!fs.existsSync(archiveDir)) {
         fs.mkdirSync(archiveDir, { recursive: true });
       }
-      fs.writeFileSync(pathMod.join(archiveDir, `${name}-${targetVersion}.zip`), zipBuf);
+      const archivePath = pathMod.join(archiveDir, `${name}-${targetVersion}.zip`);
+      const archiveTmp = `${archivePath}.${process.pid}.tmp`;
+      const archiveFd = fs.openSync(archiveTmp, "w");
+      try {
+        fs.writeFileSync(archiveFd, zipBuf);
+        fs.fsyncSync(archiveFd);
+      } finally {
+        fs.closeSync(archiveFd);
+      }
+      fs.renameSync(archiveTmp, archivePath);
 
       // 解压 ZIP 到安装目录
       try {

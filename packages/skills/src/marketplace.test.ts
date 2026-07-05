@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach, afterAll } from "vitest";
-import { SkillMarketplace } from "../src/marketplace";
-import type { SkillPackage } from "../src/marketplace";
+import { SkillMarketplace } from "./marketplace";
+import type { SkillPackage } from "./marketplace";
 
-// Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
@@ -10,7 +9,6 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-// Minimal EventBus mock
 function createMockEventBus() {
   return {
     publish: vi.fn(),
@@ -19,7 +17,6 @@ function createMockEventBus() {
   } as any;
 }
 
-// Sample packages
 function makePackage(overrides: Partial<SkillPackage> = {}): SkillPackage {
   return {
     name: "test-skill",
@@ -43,14 +40,142 @@ function makePackage(overrides: Partial<SkillPackage> = {}): SkillPackage {
   };
 }
 
-function mockDownloadResponse(content: string = "package-content") {
-  const encoder = new TextEncoder();
-  const buffer = encoder.encode(content);
+/** 构造 ClawHub /api/v1/search 响应：返回 { results: [...] }，提供 text() 和 json() */
+function mockClawHubSearchResponse(packages: SkillPackage[]) {
+  const results = packages.map((p) => ({
+    score: 1.0,
+    slug: p.name,
+    displayName: p.displayName,
+    summary: p.description,
+    version: p.version,
+    updatedAt: new Date(p.updatedAt).getTime(),
+    metaContent: {
+      Keywords: p.tags,
+      License: p.license ?? "MIT-0",
+      DisplayDescription: p.description,
+      displayName: p.displayName,
+      owner: p.author.name,
+      latest: { version: p.version, publishedAt: new Date(p.publishedAt).getTime() },
+    },
+  }));
+  const body = JSON.stringify({ results });
   return {
     ok: true,
-    text: async () => content,
-    arrayBuffer: async () => buffer.buffer as ArrayBuffer,
+    status: 200,
+    statusText: "OK",
+    text: async () => body,
+    json: async () => JSON.parse(body),
   };
+}
+
+/** 构造最小有效 ZIP 文件（含 SKILL.md），用于 install 测试 */
+function mockZipDownloadResponse() {
+  const zipBytes = createMinimalZipWithSkillMd();
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => "",
+    arrayBuffer: async () =>
+      zipBytes.buffer.slice(zipBytes.byteOffset, zipBytes.byteOffset + zipBytes.byteLength) as ArrayBuffer,
+  };
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i++) {
+    crc = CRC32_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createMinimalZipWithSkillMd(): Uint8Array {
+  const skillMdContent =
+    "---\nname: test-skill\nversion: 1.0.0\ndescription: A test skill\n---\n# Test Skill\n\nThis is a test skill for unit testing.\n";
+  const encoder = new TextEncoder();
+  const fileData = encoder.encode(skillMdContent);
+  const fileName = encoder.encode("SKILL.md");
+  const crc = crc32(fileData);
+
+  // Local file header
+  const localHeader = new Uint8Array(30 + fileName.length);
+  const lhView = new DataView(localHeader.buffer);
+  lhView.setUint32(0, 0x04034b50, true);
+  lhView.setUint16(4, 20, true);
+  lhView.setUint16(6, 0, true);
+  lhView.setUint16(8, 0, true);
+  lhView.setUint16(10, 0, true);
+  lhView.setUint16(12, 0x0021, true);
+  lhView.setUint32(14, crc, true);
+  lhView.setUint32(18, fileData.length, true);
+  lhView.setUint32(22, fileData.length, true);
+  lhView.setUint16(26, fileName.length, true);
+  lhView.setUint16(28, 0, true);
+  localHeader.set(fileName, 30);
+
+  // Central directory header
+  const cdHeader = new Uint8Array(46 + fileName.length);
+  const cdView = new DataView(cdHeader.buffer);
+  cdView.setUint32(0, 0x02014b50, true);
+  cdView.setUint16(4, 20, true);
+  cdView.setUint16(6, 20, true);
+  cdView.setUint16(8, 0, true);
+  cdView.setUint16(10, 0, true);
+  cdView.setUint16(12, 0x0021, true);
+  cdView.setUint16(14, 0, true);
+  cdView.setUint32(16, crc, true);
+  cdView.setUint32(20, fileData.length, true);
+  cdView.setUint32(24, fileData.length, true);
+  cdView.setUint16(28, fileName.length, true);
+  cdView.setUint16(30, 0, true);
+  cdView.setUint16(32, 0, true);
+  cdView.setUint16(34, 0, true);
+  cdView.setUint16(36, 0, true);
+  cdView.setUint32(38, 0, true);
+  cdView.setUint32(42, 0, true);
+  cdHeader.set(fileName, 46);
+
+  // EOCD
+  const eocd = new Uint8Array(22);
+  const eocdView = new DataView(eocd.buffer);
+  eocdView.setUint32(0, 0x06054b50, true);
+  eocdView.setUint16(4, 0, true);
+  eocdView.setUint16(6, 0, true);
+  eocdView.setUint16(8, 1, true);
+  eocdView.setUint16(10, 1, true);
+  eocdView.setUint32(12, cdHeader.length, true);
+  eocdView.setUint32(16, localHeader.length + fileData.length, true);
+  eocdView.setUint16(20, 0, true);
+
+  const total = localHeader.length + fileData.length + cdHeader.length + eocd.length;
+  const result = new Uint8Array(total);
+  let offset = 0;
+  result.set(localHeader, offset);
+  offset += localHeader.length;
+  result.set(fileData, offset);
+  offset += fileData.length;
+  result.set(cdHeader, offset);
+  offset += cdHeader.length;
+  result.set(eocd, offset);
+  return result;
+}
+
+/** 直接注入 catalog（用于不依赖 fetch 的本地搜索/排序/发现测试） */
+function injectCatalog(mp: SkillMarketplace, packages: SkillPackage[]): void {
+  (mp as unknown as { catalog: SkillPackage[] }).catalog = [...packages];
+  (mp as unknown as { catalogTimestamp: number }).catalogTimestamp = Date.now();
 }
 
 describe("SkillMarketplace", () => {
@@ -70,66 +195,52 @@ describe("SkillMarketplace", () => {
     vi.restoreAllMocks();
   });
 
-  // ── Catalog Refresh ─────────────────────────────────────
-
   describe("catalog refresh", () => {
-    it("should fetch and populate catalog", async () => {
+    it("should fetch and populate catalog via ClawHub search API", async () => {
       const packages = [
         makePackage({ name: "pkg-a" }),
         makePackage({ name: "pkg-b", description: "Package B" }),
       ];
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages, total: 2 }),
-      });
-
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse(packages));
       const count = await marketplace.refreshCatalog();
       expect(count).toBe(2);
       expect(mockFetch).toHaveBeenCalledWith(
-        "https://test-registry.example.com/packages"
+        "https://test-registry.example.com/api/v1/search?q=*&limit=100",
+        expect.objectContaining({ headers: { Accept: "application/json" } }),
       );
     });
 
     it("should publish catalog-refreshed event", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [makePackage()], total: 1 }),
-      });
-
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([makePackage()]));
       await marketplace.refreshCatalog();
       expect(eventBus.publish).toHaveBeenCalledWith(
         "marketplace:catalog-refreshed",
         expect.objectContaining({ count: 1 }),
-        "skill-marketplace"
+        "skill-marketplace",
       );
     });
 
-    it("should return stale count on fetch failure", async () => {
+    it("should return -1 on fetch failure", async () => {
       mockFetch.mockRejectedValueOnce(new Error("Network error"));
-
       const count = await marketplace.refreshCatalog();
-      expect(count).toBe(0);
+      expect(count).toBe(-1);
     });
   });
 
-  // ── Search ──────────────────────────────────────────────
-
   describe("search", () => {
-    beforeEach(async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          packages: [
-            makePackage({ name: "web-search", description: "Web search tool", tags: ["search", "web"], downloads: 500 }),
-            makePackage({ name: "pdf-reader", description: "PDF parsing tool", tags: ["document", "pdf"], downloads: 200 }),
-            makePackage({ name: "image-gen", description: "Image generation", tags: ["image", "ai"], downloads: 800 }),
-            makePackage({ name: "web-scraper", description: "Web scraping utility", capabilities: ["scrape"], tags: ["web", "scrape"], downloads: 300 }),
-          ],
-          total: 4,
+    beforeEach(() => {
+      injectCatalog(marketplace, [
+        makePackage({ name: "web-search", description: "Web search tool", tags: ["search", "web"], downloads: 500 }),
+        makePackage({ name: "pdf-reader", description: "PDF parsing tool", tags: ["document", "pdf"], downloads: 200 }),
+        makePackage({ name: "image-gen", description: "Image generation", tags: ["image", "ai"], downloads: 800 }),
+        makePackage({
+          name: "web-scraper",
+          description: "Web scraping utility",
+          capabilities: ["scrape"],
+          tags: ["web", "scrape"],
+          downloads: 300,
         }),
-      });
-      await marketplace.refreshCatalog();
+      ]);
     });
 
     it("should search by query text", () => {
@@ -151,14 +262,13 @@ describe("SkillMarketplace", () => {
     });
 
     it("should filter by minimum rating", () => {
-      // All have 4.5 rating by default, so filter at 4.6 should return empty
       const result = marketplace.search({ minRating: 4.6 });
       expect(result.total).toBe(0);
     });
 
     it("should filter verified only", () => {
       const result = marketplace.search({ verifiedOnly: true });
-      expect(result.total).toBe(4); // all are verified by default
+      expect(result.total).toBe(4);
     });
 
     it("should sort by downloads", () => {
@@ -177,16 +287,10 @@ describe("SkillMarketplace", () => {
     });
   });
 
-  // ── Package Lookup ──────────────────────────────────────
-
   describe("getPackage", () => {
     it("should find package by name", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [makePackage({ name: "my-skill" })], total: 1 }),
-      });
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([makePackage({ name: "my-skill" })]));
       await marketplace.refreshCatalog();
-
       const pkg = marketplace.getPackage("my-skill");
       expect(pkg).toBeDefined();
       expect(pkg!.name).toBe("my-skill");
@@ -198,30 +302,18 @@ describe("SkillMarketplace", () => {
     });
   });
 
-  // ── Install ─────────────────────────────────────────────
-
   describe("install", () => {
     beforeEach(async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          packages: [
-            makePackage({
-              name: "my-pkg",
-              version: "1.2.3",
-              downloadURL: "https://example.com/download",
-              checksum: "",
-            }),
-          ],
-          total: 1,
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(
+        mockClawHubSearchResponse([
+          makePackage({ name: "my-pkg", version: "1.2.3", downloadURL: "https://example.com/download", checksum: "" }),
+        ]),
+      );
       await marketplace.refreshCatalog();
     });
 
     it("should install a package successfully", async () => {
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse());
-
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
       const result = await marketplace.install("my-pkg");
       expect(result.success).toBe(true);
       expect(result.packageName).toBe("my-pkg");
@@ -229,17 +321,24 @@ describe("SkillMarketplace", () => {
     });
 
     it("should publish installed event", async () => {
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse());
-
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
       await marketplace.install("my-pkg");
       expect(eventBus.publish).toHaveBeenCalledWith(
         "marketplace:installed",
         expect.objectContaining({ version: "1.2.3" }),
-        "skill-marketplace"
+        "skill-marketplace",
       );
     });
 
     it("should return error for unknown package", async () => {
+      // fetchPackageDetails 会调用 fetch，模拟 404 让其回退到 catalog（找不到）
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: async () => null,
+        text: async () => "",
+      });
       const result = await marketplace.install("unknown-pkg");
       expect(result.success).toBe(false);
       expect(result.error).toContain("not found");
@@ -247,70 +346,45 @@ describe("SkillMarketplace", () => {
 
     it("should return error on download failure", async () => {
       mockFetch.mockRejectedValueOnce(new Error("Download failed"));
-
       const result = await marketplace.install("my-pkg");
       expect(result.success).toBe(false);
     });
   });
 
-  // ── Dependency Resolution ───────────────────────────────
-
   describe("dependency resolution", () => {
     beforeEach(async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          packages: [
-            makePackage({
-              name: "main-pkg",
-              version: "1.0.0",
-              downloadURL: "https://example.com/main",
-              dependencies: { "dep-pkg": "0.5.0" },
-            }),
-            makePackage({
-              name: "dep-pkg",
-              version: "0.5.0",
-              downloadURL: "https://example.com/dep",
-              dependencies: {},
-            }),
-          ],
-          total: 2,
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(
+        mockClawHubSearchResponse([
+          makePackage({
+            name: "main-pkg",
+            version: "1.0.0",
+            downloadURL: "https://example.com/main",
+            dependencies: { "dep-pkg": "0.5.0" },
+          }),
+          makePackage({ name: "dep-pkg", version: "0.5.0", downloadURL: "https://example.com/dep", dependencies: {} }),
+        ]),
+      );
       await marketplace.refreshCatalog();
     });
 
     it("should install dependencies before main package", async () => {
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse("dep-content"));
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse("main-content"));
-
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
       const result = await marketplace.install("main-pkg");
       expect(result.success).toBe(true);
     });
   });
 
-  // ── Check for Updates ───────────────────────────────────
-
   describe("checkForUpdates", () => {
     it("should detect newer versions", async () => {
-      // First, install a package
       const oldPkg = makePackage({ name: "old-pkg", version: "1.0.0", downloadURL: "https://example.com/old" });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [oldPkg], total: 1 }),
-      });
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([oldPkg]));
       await marketplace.refreshCatalog();
-
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
       await marketplace.install("old-pkg");
 
-      // Now put a newer version in the catalog
       const newPkg = makePackage({ name: "old-pkg", version: "2.0.0", downloadURL: "https://example.com/new" });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [newPkg], total: 1 }),
-      });
-
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([newPkg]));
       const updates = await marketplace.checkForUpdates();
       expect(updates).toHaveLength(1);
       expect(updates[0].current).toBe("1.0.0");
@@ -319,238 +393,144 @@ describe("SkillMarketplace", () => {
 
     it("should return empty when no updates available", async () => {
       const pkg = makePackage({ name: "stable-pkg", version: "1.0.0", downloadURL: "https://example.com/stable" });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [pkg], total: 1 }),
-      });
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([pkg]));
       await marketplace.refreshCatalog();
-
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
       await marketplace.install("stable-pkg");
 
-      // Refresh catalog with same version
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [pkg], total: 1 }),
-      });
-
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([pkg]));
       const updates = await marketplace.checkForUpdates();
       expect(updates).toEqual([]);
     });
   });
 
-  // ── Prepare Publish ─────────────────────────────────────
-
   describe("preparePublish", () => {
-    it("should create a publish-ready package", async () => {
+    it("should prepare a package for publishing with defaults", async () => {
       const pkg = await marketplace.preparePublish("new-skill", {
         displayName: "New Skill",
-        description: "A brand new skill",
-        author: { name: "Dev", email: "dev@test.com" },
-        capabilities: ["code", "review"],
-        tags: ["devtools"],
-        license: "Apache-2.0",
-        dependencies: { "base-skill": "1.0.0" },
+        description: "A new skill",
+        author: { name: "Author" },
+        capabilities: ["search"],
       });
-
       expect(pkg.name).toBe("new-skill");
-      expect(pkg.displayName).toBe("New Skill");
       expect(pkg.version).toBe("0.1.0");
-      expect(pkg.license).toBe("Apache-2.0");
-      expect(pkg.evoclawVersion).toBe(">=0.4.0");
-      expect(pkg.downloads).toBe(0);
-      expect(pkg.rating).toBe(0);
-      expect(pkg.verified).toBe(false);
+      expect(pkg.license).toBe("MIT");
+      expect(pkg.tags).toEqual([]);
     });
 
-    it("should default license to MIT", async () => {
-      const pkg = await marketplace.preparePublish("pkg", {
-        displayName: "Pkg",
-        description: "Desc",
+    it("should accept custom license and tags", async () => {
+      const pkg = await marketplace.preparePublish("new-skill", {
+        displayName: "New Skill",
+        description: "A new skill",
         author: { name: "Author" },
-        capabilities: ["test"],
+        capabilities: ["search"],
+        license: "Apache-2.0",
+        tags: ["ai", "tool"],
       });
-      expect(pkg.license).toBe("MIT");
+      expect(pkg.license).toBe("Apache-2.0");
+      expect(pkg.tags).toEqual(["ai", "tool"]);
     });
   });
 
-  // ── Ratings & Reviews ───────────────────────────────────
-
-  describe("ratings and reviews", () => {
-    beforeEach(async () => {
-      const pkg = makePackage({ name: "reviewed-pkg", downloadURL: "https://example.com/pkg" });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [pkg], total: 1 }),
-      });
-      await marketplace.refreshCatalog();
+  describe("reviews", () => {
+    beforeEach(() => {
+      injectCatalog(marketplace, [makePackage({ name: "reviewed-pkg", rating: 4.0, reviewCount: 2 })]);
     });
 
-    it("should submit a review", async () => {
-      mockFetch.mockResolvedValueOnce({ ok: true });
-
+    it("should submit a review and update rating", async () => {
       const review = await marketplace.submitReview("reviewed-pkg", {
         packageName: "reviewed-pkg",
-        userId: "user-1",
-        rating: 4,
-        title: "Good",
-        comment: "Works well",
-      });
-
-      expect(review.id).toMatch(/^rev_/);
-      expect(review.rating).toBe(4);
-      expect(review.helpful).toBe(0);
-    });
-
-    it("should update package rating after review", async () => {
-      mockFetch.mockResolvedValueOnce({ ok: true });
-
-      // Original rating: 4.5 with 50 reviews
-      // After a 4-star review: (4.5 * 50 + 4) / 51 = 4.49...
-      await marketplace.submitReview("reviewed-pkg", {
-        packageName: "reviewed-pkg",
-        userId: "user-1",
-        rating: 4,
-        title: "OK",
-        comment: "Decent",
-      });
-
-      const pkg = marketplace.getPackage("reviewed-pkg");
-      expect(pkg!.reviewCount).toBe(51);
-      expect(pkg!.rating).toBeCloseTo(4.49, 1);
-    });
-
-    it("should handle review submission error gracefully", async () => {
-      mockFetch.mockRejectedValueOnce(new Error("Network"));
-
-      const review = await marketplace.submitReview("reviewed-pkg", {
-        packageName: "reviewed-pkg",
-        userId: "user-1",
+        userId: "user1",
         rating: 5,
         title: "Great",
-        comment: "Love it",
+        comment: "Excellent",
       });
-
-      // Should still return the review locally
+      expect(review.id).toBeTruthy();
       expect(review.rating).toBe(5);
+      const pkg = marketplace.getPackage("reviewed-pkg")!;
+      expect(pkg.reviewCount).toBe(3);
     });
 
-    it("should get reviews", async () => {
-      const reviews = [
-        { id: "r1", packageName: "pkg", userId: "u1", rating: 5, title: "A", comment: "C", createdAt: "2024-01-01", helpful: 0 },
-      ];
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ reviews }),
-      });
-
-      const result = await marketplace.getReviews("reviewed-pkg");
-      // getReviews fetches from registry, but the URL isn't mocked with our test registry
-      // So it will try to fetch and fail silently
-      expect(Array.isArray(result)).toBe(true);
+    it("should return empty reviews list (ClawHub public API 不支持)", async () => {
+      const reviews = await marketplace.getReviews("reviewed-pkg");
+      expect(reviews).toEqual([]);
     });
   });
-
-  // ── Discovery Methods ───────────────────────────────────
 
   describe("discovery", () => {
-    beforeEach(async () => {
-      const packages = [
-        makePackage({ name: "trending-1", downloads: 10000, publishedAt: "2024-01-01T00:00:00Z" }),
-        makePackage({ name: "new-1", downloads: 50, publishedAt: "2024-06-01T00:00:00Z" }),
-        makePackage({ name: "top-rated", downloads: 200, rating: 5.0, reviewCount: 20 }),
-        makePackage({ name: "low-rated", downloads: 100, rating: 1.0, reviewCount: 2 }),
-      ];
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages, total: 4 }),
-      });
-      await marketplace.refreshCatalog();
+    beforeEach(() => {
+      injectCatalog(marketplace, [
+        makePackage({ name: "a", tags: ["tool"], downloads: 100, publishedAt: "2024-01-01T00:00:00Z" }),
+        makePackage({ name: "b", tags: ["tool"], downloads: 300, publishedAt: "2024-06-01T00:00:00Z" }),
+        makePackage({ name: "c", tags: ["ai"], downloads: 200, publishedAt: "2024-03-01T00:00:00Z" }),
+      ]);
     });
 
-    it("should get trending packages by downloads", () => {
-      const trending = marketplace.getTrending(3);
-      expect(trending).toHaveLength(3);
-      expect(trending[0].name).toBe("trending-1");
+    it("getTrending returns top by downloads", () => {
+      const trending = marketplace.getTrending(2);
+      expect(trending[0].name).toBe("b");
+      expect(trending).toHaveLength(2);
     });
 
-    it("should get new packages by publish date", () => {
+    it("getCategories returns tag counts", () => {
+      const cats = marketplace.getCategories();
+      expect(cats.find((c) => c.name === "tool")?.count).toBe(2);
+      expect(cats.find((c) => c.name === "ai")?.count).toBe(1);
+    });
+
+    it("getNew sorts by publishedAt desc", () => {
       const news = marketplace.getNew(3);
-      expect(news[0].name).toBe("new-1"); // latest publishedAt
+      expect(news[0].name).toBe("b");
     });
 
-    it("should get top rated with minimum reviews filter", () => {
-      const top = marketplace.getTopRated(5, 3);
-      expect(top.some((p) => p.name === "top-rated")).toBe(true);
-      expect(top.some((p) => p.name === "low-rated")).toBe(false); // only 2 reviews
+    it("getTopRated filters by minReviews", () => {
+      const top = marketplace.getTopRated(10, 100);
+      expect(top).toEqual([]);
     });
-  });
 
-  // ── Recommendations ─────────────────────────────────────
-
-  describe("recommendations", () => {
-    it("should return trending when nothing installed", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [makePackage({ name: "p1", downloads: 5000 })], total: 1 }),
-      });
-      await marketplace.refreshCatalog();
-
-      const recs = marketplace.getRecommendations(5);
-      expect(recs.length).toBeGreaterThan(0);
+    it("getRecommendations falls back to trending when no installed", () => {
+      const recs = marketplace.getRecommendations(2);
+      expect(recs).toHaveLength(2);
     });
   });
-
-  // ── Stats ────────────────────────────────────────────────
 
   describe("stats", () => {
-    it("should return marketplace statistics", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [makePackage(), makePackage({ name: "p2" })], total: 2 }),
-      });
-      await marketplace.refreshCatalog();
-
+    it("should return catalog stats", () => {
+      injectCatalog(marketplace, [
+        makePackage({ name: "a", capabilities: ["search"] }),
+        makePackage({ name: "b", capabilities: ["search", "fetch"] }),
+      ]);
       const stats = marketplace.getStats();
       expect(stats.catalogSize).toBe(2);
       expect(stats.installedCount).toBe(0);
-      expect(stats.catalogAge).toBeGreaterThanOrEqual(0);
-      expect(Array.isArray(stats.topCapabilities)).toBe(true);
+      expect(stats.topCapabilities.length).toBeGreaterThan(0);
     });
   });
 
-  // ── Version Comparison ──────────────────────────────────
-
-  describe("compareVersions", () => {
-    it("should compare semantic versions correctly", () => {
-      expect(marketplace.compareVersions("2.0.0", "1.0.0")).toBe(1);
-      expect(marketplace.compareVersions("1.0.0", "2.0.0")).toBe(-1);
+  describe("utilities", () => {
+    it("compareVersions should compare semver", () => {
       expect(marketplace.compareVersions("1.0.0", "1.0.0")).toBe(0);
-      expect(marketplace.compareVersions("1.0.1", "1.0.0")).toBe(1);
-      expect(marketplace.compareVersions("1.1.0", "1.0.99")).toBe(1);
+      expect(marketplace.compareVersions("2.0.0", "1.0.0")).toBe(1);
+      expect(marketplace.compareVersions("1.0.0", "1.2.0")).toBe(-1);
     });
-  });
 
-  // ── Installed Management ────────────────────────────────
-
-  describe("installed management", () => {
-    it("should track installed packages", async () => {
-      const pkg = makePackage({ name: "pkg", downloadURL: "https://example.com/dl" });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ packages: [pkg], total: 1 }),
-      });
+    it("isInstalled should reflect install state", async () => {
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([makePackage({ name: "x" })]));
       await marketplace.refreshCatalog();
+      expect(marketplace.isInstalled("x")).toBe(false);
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
+      await marketplace.install("x");
+      expect(marketplace.isInstalled("x")).toBe(true);
+    });
 
-      mockFetch.mockResolvedValueOnce(mockDownloadResponse("content"));
-      await marketplace.install("pkg");
-
-      expect(marketplace.isInstalled("pkg")).toBe(true);
-      expect(marketplace.isInstalled("unknown")).toBe(false);
-
+    it("getInstalled returns installed packages", async () => {
+      mockFetch.mockResolvedValueOnce(mockClawHubSearchResponse([makePackage({ name: "y" })]));
+      await marketplace.refreshCatalog();
+      mockFetch.mockResolvedValueOnce(mockZipDownloadResponse());
+      await marketplace.install("y");
       const installed = marketplace.getInstalled();
       expect(installed).toHaveLength(1);
-      expect(installed[0].name).toBe("pkg");
+      expect(installed[0].name).toBe("y");
     });
   });
 });

@@ -2,16 +2,33 @@ import { describe, it, expect } from "vitest";
 import { handleChatCommand, dispatchCommand } from "./chat-commands";
 import type { CommandContext } from "./chat-commands";
 
-// Minimal mock of AgentModelExecutor
+// Minimal mock of AgentModelExecutor — 对齐真实 AgentModelExecutor 公开接口：
+// - currentSessionId: string | undefined（public 字段）
+// - thinkingLevel: "off" | "low" | "medium" | "high"
+// - getChatHistory(sessionId): Array<{ role, content }>
+// - clearChatHistory(sessionId?): void
+// 不再使用 conversationHistory/verbose/usageMode 等不存在或不匹配的字段。
 function createMockExecutor(overrides: Record<string, unknown> = {}) {
-  return {
-    currentSessionId: "test-session-1",
-    thinkingLevel: "off",
-    verbose: false,
-    usageMode: "tokens",
-    conversationHistory: [] as Array<{ role: string; content: string }>,
+  const historyMap = new Map<string, Array<{ role: string; content: string | null }>>();
+  const executor = {
+    currentSessionId: "test-session-1" as string | undefined,
+    thinkingLevel: "off" as "off" | "low" | "medium" | "high",
+    getChatHistory: (sessionId: string) => historyMap.get(sessionId) || [],
+    clearChatHistory: (sessionId?: string) => {
+      if (sessionId) historyMap.delete(sessionId);
+      else historyMap.clear();
+    },
+    // 测试辅助：直接注入历史以模拟已有对话
+    _setHistory: (sessionId: string, history: Array<{ role: string; content: string }>) => {
+      historyMap.set(sessionId, history);
+    },
     ...overrides,
   } as any;
+  // 支持 overrides 中直接传入 conversationHistory 数组（向后兼容旧测试）
+  if (Array.isArray((overrides as any).conversationHistory)) {
+    executor._setHistory("test-session-1", (overrides as any).conversationHistory);
+  }
+  return executor;
 }
 
 // Minimal mock of SessionManager
@@ -187,7 +204,8 @@ describe("ChatCommands", () => {
       expect(result.handled).toBe(true);
       expect(executor.currentSessionId).toBeDefined();
       expect(executor.currentSessionId).not.toBe("test-session-1");
-      expect(executor.conversationHistory).toEqual([]);
+      // 验证 clearChatHistory 被调用（历史被清空）
+      expect(executor.getChatHistory("test-session-1")).toEqual([]);
     });
 
     it("should execute compact side-effect", () => {

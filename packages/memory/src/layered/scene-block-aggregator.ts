@@ -423,9 +423,12 @@ export class SceneBlockAggregator {
     while ((m = memRegex.exec(md)) !== null) {
       const content = m[1];
       const priority = parseInt(m[2], 10);
-      // 推断类型：看上一个 ## 标题
+      // 推断类型：看上一个 ## 标题（用 matchAll 找所有匹配，取最后一个，避免 match() 只返回第一个的错误）
       const before = md.slice(0, m.index);
-      const lastHeader = before.match(/## (Persona|Episodic|Instruction)$/m)?.[1]?.toLowerCase() ?? "persona";
+      const headerMatches = [...before.matchAll(/## (Persona|Episodic|Instruction)\s*$/gm)];
+      const lastHeader = headerMatches.length > 0
+        ? headerMatches[headerMatches.length - 1][1].toLowerCase()
+        : "persona";
       memories.push({
         id: `${sceneId}_m${idx++}`,
         type: lastHeader as AtomicMemory["type"],

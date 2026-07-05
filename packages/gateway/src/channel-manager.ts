@@ -241,9 +241,10 @@ export class ChannelManager {
       const policy = this.getDMPolicy(msg.channel);
       if (policy === "pairing" && !this.isPeerApproved(msg.channel, msg.from)) {
         // Clean up expired codes and old codes for this peer
+        // 使用与 approvePairing 一致的 5 分钟 TTL，避免过期码长时间残留
         const now = Date.now();
         for (const [oldCode, entry] of this.pairingCodes) {
-          if (now - entry.createdAt > 10 * 60 * 1000 || (entry.peerId === msg.from && entry.channel === msg.channel)) {
+          if (now - entry.createdAt > 5 * 60 * 1000 || (entry.peerId === msg.from && entry.channel === msg.channel)) {
             this.pairingCodes.delete(oldCode);
           }
         }

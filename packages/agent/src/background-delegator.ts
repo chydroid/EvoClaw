@@ -166,7 +166,9 @@ export class BackgroundDelegator {
         if (t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "timeout") {
           resolve(t);
         } else {
-          setTimeout(check, 500);
+          // unref 避免 timer 阻止进程优雅退出
+          const h = setTimeout(check, 500);
+          h.unref?.();
         }
       };
       check();

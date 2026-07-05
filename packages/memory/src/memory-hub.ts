@@ -675,9 +675,40 @@ export class MemoryHub {
     return this.memoryDreaming.shouldDream();
   }
 
-  /** 释放底层 SQLite 句柄与定时器，防止文件描述符泄漏 */
+  /** 释放底层 SQLite 句柄、定时器与未落盘的脏数据，防止文件描述符泄漏和数据丢失 */
   close(): void {
+    // 1. 先 drain 分层记忆的后台任务（L1 持久化等），防止未落盘的 JSONL 行丢失
+    try {
+      const lm = this.layeredMemory as unknown as { drain?: () => Promise<unknown> };
+      if (typeof lm?.drain === "function") {
+        void lm.drain().catch(() => { /* ignore */ });
+      }
+    } catch { /* ignore */ }
+
+    // 2. flush 向量存储的 dirty 数据，防止未落盘的向量丢失
+    try {
+      const vs = this.vectorStore as unknown as { flush?: () => Promise<unknown> };
+      if (typeof vs?.flush === "function") {
+        void vs.flush().catch(() => { /* ignore */ });
+      }
+    } catch { /* ignore */ }
+
+    // 3. 释放知识图谱（dispose 会 save dirty + clear timer）
+    try {
+      const g = this.graph as unknown as { dispose?: () => void };
+      if (typeof g?.dispose === "function") g.dispose();
+    } catch { /* ignore */ }
+
+    // 4. 释放短期记忆的 cleanupInterval
+    try {
+      const st = this.shortTerm as unknown as { destroy?: () => void };
+      if (typeof st?.destroy === "function") st.destroy();
+    } catch { /* ignore */ }
+
+    // 5. 关闭 FTS5
     try { this.fts5.close(); } catch { /* ignore */ }
+
+    // 6. 关闭长期记忆（SQLite）
     try {
       const lt = this.longTerm as unknown as { close?: () => void | Promise<void> };
       if (typeof lt?.close === "function") {

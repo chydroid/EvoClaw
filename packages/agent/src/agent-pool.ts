@@ -113,6 +113,8 @@ export class AgentPoolManager implements AgentPool {
         if (idx >= 0) this.waitQueue.splice(idx, 1);
         resolve(null);
       }, timeoutMs);
+      // unref 防止排队超时 timer 阻止进程优雅退出（drainWaitQueue 会 clearTimeout）
+      timer.unref?.();
 
       this.waitQueue.push({ role, resolve, timer });
 

@@ -221,9 +221,13 @@ export class L3Compactor {
       currentTokens -= this.estimateTokens([msg]);
     }
 
+    // 调整删除列表，避免 tool pair 孤立（与 aggressiveCompress 一致）
+    // emergency 场景更易产生孤立 tool_use，必须调用此方法
+    const adjustedCount = this.adjustDeleteCountForToolPairing(messages, messagesToDelete, messagesToDelete.length);
+
     const toDeleteSet = new Set(messagesToDelete);
     result.messages = messages.filter((m) => !toDeleteSet.has(m));
-    result.emergencyDeleted = messagesToDelete.length;
+    result.emergencyDeleted = adjustedCount;
     result.afterTokens = this.estimateTokens(result.messages);
 
     // 2. 还是超 → 原地截断最大消息

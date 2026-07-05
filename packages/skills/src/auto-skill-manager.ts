@@ -661,7 +661,7 @@ export class AutoSkillManager {
 
       const skillMd = this.generateSkillMdFromCurated(curated);
       const skillMdPath = path.join(skillDir, "SKILL.md");
-      fs.writeFileSync(skillMdPath, skillMd, "utf-8");
+      this.atomicWriteFileSync(skillMdPath, skillMd);
 
       // Generate _meta.json
       const meta = {
@@ -673,7 +673,7 @@ export class AutoSkillManager {
         author: "evoclaw-curated",
         license: "MIT",
       };
-      fs.writeFileSync(path.join(skillDir, "_meta.json"), JSON.stringify(meta, null, 2), "utf-8");
+      this.atomicWriteFileSync(path.join(skillDir, "_meta.json"), JSON.stringify(meta, null, 2));
 
       process.stdout.write(`[AutoSkillManager] Generated SKILL.md from curated: ${skillName}\n`);
       return skillMdPath;
@@ -681,6 +681,22 @@ export class AutoSkillManager {
       process.stderr.write(`[AutoSkillManager] Failed to generate curated skill "${skillName}": ${err}\n`);
       return null;
     }
+  }
+
+  /**
+   * 同步原子写入（temp + fsync + rename），避免进程崩溃时 SKILL.md / _meta.json 被截断损坏。
+   * 项目硬约束：持久状态写入必须用原子写。
+   */
+  private atomicWriteFileSync(targetPath: string, content: string): void {
+    const tmpPath = `${targetPath}.${process.pid}.tmp`;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, content, "utf-8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmpPath, targetPath);
   }
 
   /**

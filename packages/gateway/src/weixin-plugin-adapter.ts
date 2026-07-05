@@ -1676,7 +1676,8 @@ export class WeixinPluginAdapter {
           if (updates) {
             if (updates.get_updates_buf && updates.get_updates_buf !== "") {
               getUpdatesBuf = updates.get_updates_buf;
-              fs.writeFileSync(syncPath, getUpdatesBuf);
+              // 使用原子写（temp+fsync+rename）保护跨重启的同步游标，避免进程崩溃时损坏
+              atomicWriteFileSync(syncPath, getUpdatesBuf);
             }
 
             if (updates.msgs && Array.isArray(updates.msgs) && updates.msgs.length > 0) {

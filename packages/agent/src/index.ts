@@ -479,3 +479,31 @@ export type {
   ToolSchema as MacroToolSchemaDef,
   ObservationEvent,
 } from "./reflection-contract";
+
+// ToolResultCache — 工具结果缓存（借鉴 Cursor / Continue / Aider）
+//   LRU + TTL + 黑白名单 + 统计，减少重复工具调用的 API 成本
+export { ToolResultCache } from "./tool-result-cache";
+export type { ToolResultCacheOptions, CacheStats as ToolResultCacheStats } from "./tool-result-cache";
+
+// ToolRetry — 工具调用重试与指数退避（借鉴 LangChain / AutoGPT / OpenAI SDK）
+//   瞬时错误自动重试 + 指数退避 + 抖动 + 可重试错误判定
+export {
+  withRetry,
+  createRetryExecutor,
+  defaultIsRetryable,
+  computeBackoff as computeRetryBackoff,
+} from "./tool-retry";
+export type { RetryOptions } from "./tool-retry";
+
+// TokenBudgetOptimizer — 动态 token 预算分配（借鉴 Claude Code / Cursor / Continue）
+//   按优先级为 system/memory/history/tool/user 分配 context window 预算
+export {
+  TokenBudgetOptimizer,
+  estimateTokens as estimateBudgetTokens,
+  estimateMessagesTokens as estimateBudgetMessagesTokens,
+} from "./token-budget";
+export type {
+  BudgetAllocation,
+  TokenBudgetOptions,
+  BudgetReport,
+} from "./token-budget";

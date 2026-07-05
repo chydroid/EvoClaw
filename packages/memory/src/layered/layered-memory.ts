@@ -403,7 +403,10 @@ export class LayeredMemory {
     if (l1Memories.length > 0) {
       memoryLines.push("[相关历史记忆]");
       l1Memories.forEach((m, i) => {
-        memoryLines.push(`  ${i + 1}. [${m.type}] ${m.content} (优先级 ${m.priority})`);
+        // 优先使用预算截断后的文本，避免单条超长记忆撑爆 prompt
+        const truncatedText = (m as AtomicMemory & { _truncatedText?: string })._truncatedText;
+        const memoryText = truncatedText ?? `[${m.type}] ${m.content}`;
+        memoryLines.push(`  ${i + 1}. ${memoryText} (优先级 ${m.priority})`);
       });
     }
     if (l2Scenes && l2Scenes.length > 0) {

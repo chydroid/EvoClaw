@@ -73,6 +73,8 @@ export class AgentModelExecutor {
   }>();
   private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
   private maxHistoryLength = 20;
+  /** 当前会话 ID（由 dispatchCommand 维护，chat() 在 context.sessionId 缺失时回退使用） */
+  public currentSessionId: string | undefined;
   private sessionDataDir: string;
   private sessionPersistenceEnabled = true;
   private compactionTokenThreshold: number;

@@ -149,7 +149,8 @@ export class LazySkillLoader {
       }
     };
     if (typeof setTimeout !== "undefined") {
-      setTimeout(schedule, this.config.preloadDelayMs);
+      const h = setTimeout(schedule, this.config.preloadDelayMs);
+      h.unref?.();
     }
   }
 

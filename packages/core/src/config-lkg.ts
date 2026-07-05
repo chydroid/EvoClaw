@@ -99,7 +99,7 @@ export class LastKnownGoodConfig {
     };
 
     const filePath = this.snapshotPath(id);
-    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), "utf-8");
+    this.atomicWriteFileSync(filePath, JSON.stringify(snapshot, null, 2));
 
     this.rotateSnapshots();
     return snapshot;
@@ -120,10 +120,9 @@ export class LastKnownGoodConfig {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(
+      this.atomicWriteFileSync(
         this.config.configPath,
         JSON.stringify(target.content, null, 2),
-        "utf-8",
       );
     }
 
@@ -143,14 +142,28 @@ export class LastKnownGoodConfig {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(
+      this.atomicWriteFileSync(
         this.config.configPath,
         JSON.stringify(target.content, null, 2),
-        "utf-8",
       );
     }
 
     return target;
+  }
+
+  /**
+   * 同步原子写入（temp + fsync + rename），保护 LKG 快照与配置回滚不被损坏。
+   */
+  private atomicWriteFileSync(targetPath: string, content: string): void {
+    const tmpPath = `${targetPath}.${process.pid}.tmp`;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, content, "utf-8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmpPath, targetPath);
   }
 
   /**

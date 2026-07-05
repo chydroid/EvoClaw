@@ -274,13 +274,16 @@ export class ReplyReferenceManager {
       const children = this.getChildren(current);
       if (children.length === 0) break;
 
-      current = children[0];
+      // 在 children 中找通往目标的分支；找不到时停止遍历，避免沿不通往目标的 children[0] 走偏
+      let next: string | null = null;
       for (const child of children) {
         if (child === messageId || this.isAncestor(child, messageId)) {
-          current = child;
+          next = child;
           break;
         }
       }
+      if (next === null) break;
+      current = next;
     }
 
     return {

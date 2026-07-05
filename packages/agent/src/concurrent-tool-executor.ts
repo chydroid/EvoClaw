@@ -390,6 +390,8 @@ export class ConcurrentToolExecutor {
         }
       }
     }, this.config.pollIntervalMs);
+    // unref 防止心跳 timer 阻止进程优雅退出（finally 块会 clearInterval）
+    heartbeatTimer.unref?.();
 
     // 超时控制
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;

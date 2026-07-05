@@ -330,7 +330,7 @@ export class PermissionManager {
         whitelisted: addToWhitelist,
       },
       "permission-manager"
-    );
+    ).catch((err) => process.stderr.write(`[PermissionManager] event publish failed: ${err}\n`));
 
     return request;
   }

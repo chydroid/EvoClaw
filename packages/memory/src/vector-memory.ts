@@ -322,6 +322,10 @@ export class VectorMemoryStore {
    */
   private storePath: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 标记是否有未落盘的修改，配合 isPersisting 串行化避免并发写入同一 .tmp 文件 */
+  private dirty = false;
+  /** 是否正在落盘；防止 schedulePersist/flush 与后台 timer 触发的 persistToDisk 并发执行 */
+  private isPersisting = false;
   private static readonly PERSIST_DEBOUNCE_MS = 2000;
   private static readonly MAX_PERSIST_ENTRIES = 50_000;
 
@@ -513,6 +517,7 @@ export class VectorMemoryStore {
    */
   private schedulePersist(): void {
     if (!this.storePath) return;
+    this.dirty = true;
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
@@ -530,41 +535,56 @@ export class VectorMemoryStore {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+    this.dirty = true;
     await this.persistToDisk();
   }
 
   /**
    * 将当前 vectors Map 序列化为 JSON 并原子写入 storePath。
    * 超过 MAX_PERSIST_ENTRIES 时仅保留最近 entries（按 createdAt 排序），防止文件无限增长。
+   * 使用 isPersisting + dirty 串行化：并发调用时仅一个执行实际写入，其他标记 dirty 等待重试。
    */
   private async persistToDisk(): Promise<void> {
     if (!this.storePath) return;
-
-    let entries = Array.from(this.vectors.values());
-    if (entries.length > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
-      entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      entries = entries.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES);
+    if (this.isPersisting) {
+      // 已有 persist 在进行；本次 dirty 已标记，当前 persist 完成后会检查 dirty 并再次落盘
+      return;
     }
+    this.isPersisting = true;
+    try {
+      // 循环处理在落盘期间产生的新修改
+      while (this.dirty) {
+        this.dirty = false;
 
-    const serialized = {
-      version: 1,
-      dimension: this.dimension,
-      count: entries.length,
-      entries: entries.map((e) => ({
-        id: e.id,
-        vector: e.vector,
-        metadata: e.metadata,
-        createdAt: e.createdAt.toISOString(),
-      })),
-    };
+        let entries = Array.from(this.vectors.values());
+        if (entries.length > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
+          entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+          entries = entries.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES);
+        }
 
-    const json = JSON.stringify(serialized);
-    const dir = path.dirname(this.storePath);
-    try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
+        const serialized = {
+          version: 1,
+          dimension: this.dimension,
+          count: entries.length,
+          entries: entries.map((e) => ({
+            id: e.id,
+            vector: e.vector,
+            metadata: e.metadata,
+            createdAt: e.createdAt.toISOString(),
+          })),
+        };
 
-    const tmp = `${this.storePath}.tmp`;
-    await fs.promises.writeFile(tmp, json, "utf8");
-    await fs.promises.rename(tmp, this.storePath);
+        const json = JSON.stringify(serialized);
+        const dir = path.dirname(this.storePath);
+        try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
+
+        const tmp = `${this.storePath}.tmp`;
+        await fs.promises.writeFile(tmp, json, "utf8");
+        await fs.promises.rename(tmp, this.storePath);
+      }
+    } finally {
+      this.isPersisting = false;
+    }
   }
 
   /**

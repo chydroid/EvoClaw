@@ -377,16 +377,21 @@ export class ModelFailoverManager {
 
     this.circuitTimers.set(
       providerId,
-      setTimeout(() => {
-        const health = this.health.get(providerId);
-        if (health?.circuitState === "open") {
-          health.circuitState = "half-open";
-          health.halfOpenProbeCount = 0;
-          process.stdout.write(
-            `[ModelFailover] Circuit HALF-OPEN for "${providerId}"\n`
-          );
-        }
-      }, this.config.resetTimeoutMs)
+      (() => {
+        const h = setTimeout(() => {
+          const health = this.health.get(providerId);
+          if (health?.circuitState === "open") {
+            health.circuitState = "half-open";
+            health.halfOpenProbeCount = 0;
+            process.stdout.write(
+              `[ModelFailover] Circuit HALF-OPEN for "${providerId}"\n`
+            );
+          }
+        }, this.config.resetTimeoutMs);
+        // unref 防止熔断器长周期 timer（30s~数分钟）阻止进程优雅退出
+        h.unref?.();
+        return h;
+      })()
     );
   }
 

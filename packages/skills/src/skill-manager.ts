@@ -1612,7 +1612,16 @@ export class SkillManager {
           persistable[key] = value;
         }
       }
-      fs.writeFileSync(configPath, JSON.stringify(persistable, null, 2), "utf-8");
+      // 原子写入（temp + fsync + rename），避免进程崩溃时 _config.json 被截断损坏
+      const tmpPath = `${configPath}.${process.pid}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(persistable, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmpPath, configPath);
       return true;
     } catch (err) {
       process.stderr.write(`[SkillManager] Failed to save config for ${skillId}:` + " " + err + "\n");

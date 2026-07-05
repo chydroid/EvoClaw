@@ -205,10 +205,8 @@ export function dispatchCommand(
 ): CommandResult {
   const ctx: CommandContext = {
     agentId: "default",
-    sessionId: (executor as any).currentSessionId as string | undefined,
-    currentThinkingLevel: (executor as any).thinkingLevel as string | undefined,
-    currentVerbose: (executor as any).verbose as boolean | undefined,
-    currentUsageMode: (executor as any).usageMode as string | undefined,
+    sessionId: executor.currentSessionId,
+    currentThinkingLevel: (executor as unknown as { thinkingLevel?: string }).thinkingLevel,
   };
 
   const result = handleChatCommand(message, ctx);
@@ -219,23 +217,30 @@ export function dispatchCommand(
       case "new_session": {
         const newId = `sess_${Date.now()}`;
         sessionManager.createSession("default", { sessionId: newId });
-        (executor as any).currentSessionId = newId;
+        // 通过公开 setter 设置当前 sessionId，后续 chat() 调用会使用此 sessionId
+        (executor as { currentSessionId?: string }).currentSessionId = newId;
         break;
       }
       case "reset_session": {
         const resetId = `sess_${Date.now()}`;
         sessionManager.createSession("default", { sessionId: resetId });
-        (executor as any).currentSessionId = resetId;
-        (executor as any).conversationHistory = [];
+        (executor as { currentSessionId?: string }).currentSessionId = resetId;
+        // 使用公开方法清理会话历史，避免直接赋值数组破坏 Map 类型契约
+        if (typeof (executor as { clearChatHistory?: (sessionId?: string) => void }).clearChatHistory === "function") {
+          (executor as { clearChatHistory: (sessionId?: string) => void }).clearChatHistory();
+        }
         break;
       }
       case "compact": {
         if (compactionManager) {
-          const history = (executor as any).conversationHistory as
-            | Array<{ role: string; content: string }>
-            | undefined;
-          if (history && history.length > 4) {
-            compactionManager.buildSummary(ctx.sessionId || "", history);
+          // 使用公开方法获取历史，避免直接访问内部 Map
+          const executorWithHistory = executor as { getChatHistory?: (sessionId: string) => Array<{ role: string; content: string | null }> };
+          if (typeof executorWithHistory.getChatHistory === "function") {
+            const sid = ctx.sessionId || "";
+            const history = executorWithHistory.getChatHistory(sid);
+            if (history && history.length > 4) {
+              compactionManager.buildSummary(sid, history as Array<{ role: string; content: string }>);
+            }
           }
         }
         break;
@@ -245,8 +250,10 @@ export function dispatchCommand(
         // 与 reset_session 行为一致，但语义上是完整重启。
         const restartId = `sess_${Date.now()}`;
         sessionManager.createSession("default", { sessionId: restartId });
-        (executor as any).currentSessionId = restartId;
-        (executor as any).conversationHistory = [];
+        (executor as { currentSessionId?: string }).currentSessionId = restartId;
+        if (typeof (executor as { clearChatHistory?: (sessionId?: string) => void }).clearChatHistory === "function") {
+          (executor as { clearChatHistory: (sessionId?: string) => void }).clearChatHistory();
+        }
         break;
       }
     }

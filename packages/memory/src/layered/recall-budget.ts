@@ -29,7 +29,7 @@ const DEFAULT_OPTIONS: Required<RecallBudgetOptions> = {
 /** 召回预算应用结果。 */
 export interface BudgetResult<T> {
   /** 通过预算的条目列表（可能被截断）。 */
-  items: Array<T & { _truncated?: boolean; _originalLength?: number }>;
+  items: Array<T & { _truncated?: boolean; _originalLength?: number; _truncatedText?: string }>;
   /** 实际使用的总字符数。 */
   totalChars: number;
   /** 因预算被丢弃的条目数。 */
@@ -96,7 +96,8 @@ export function applyRecallBudget<T>(
           ...item,
           _truncated: truncated,
           _originalLength: text.length,
-        } as T & { _truncated?: boolean; _originalLength?: number });
+          _truncatedText: truncatedText,
+        } as T & { _truncated?: boolean; _originalLength?: number; _truncatedText?: string });
         result.totalChars += truncatedText.length;
         remaining = 0;
         result.budgetExhausted = true;
@@ -115,7 +116,8 @@ export function applyRecallBudget<T>(
       ...item,
       _truncated: truncated,
       _originalLength: text.length,
-    } as T & { _truncated?: boolean; _originalLength?: number });
+      _truncatedText: truncatedText,
+    } as T & { _truncated?: boolean; _originalLength?: number; _truncatedText?: string });
     result.totalChars += truncatedText.length;
     remaining -= truncatedText.length;
   }

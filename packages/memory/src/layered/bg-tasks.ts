@@ -118,6 +118,7 @@ export class BackgroundTaskRegistry {
     const errors: Array<{ description: string; error: unknown }> = [];
     const initialCount = this.tasks.size;
     const timeout = this.opts.drainTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     // 用 Promise.race 实现超时
     const allSettled = Promise.all(
@@ -132,10 +133,15 @@ export class BackgroundTaskRegistry {
     );
 
     const timeoutPromise = new Promise<never>((resolve) => {
-      setTimeout(() => resolve(undefined as never), timeout);
+      // 保存 timer 句柄，race 结束后清理，避免 timer 残留占用资源
+      timer = setTimeout(() => resolve(undefined as never), timeout);
     });
 
-    await Promise.race([allSettled, timeoutPromise]);
+    try {
+      await Promise.race([allSettled, timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
 
     this.destroyed = true;
     const completed = initialCount - this.tasks.size;
