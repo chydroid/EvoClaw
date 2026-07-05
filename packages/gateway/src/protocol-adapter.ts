@@ -7413,8 +7413,8 @@ export class ProtocolAdapter {
     app.get("/api/agent/apply-patch-stats", (_req: Request, res: Response) => {
       try {
         // applyPatch 通过工具注册，无独立 service 实例
-        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
-        const registered = !!executor?.hasTool?.("apply_patch") || !!executor;
+        const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "apply_patch");
         res.json({
           available: registered,
           serviceName: "ApplyPatch",
@@ -7462,8 +7462,8 @@ export class ProtocolAdapter {
     app.get("/api/agent/batch-stats", (_req: Request, res: Response) => {
       try {
         // BatchExecutor 通过 vision-batch-tools 按需实例化，无独立 service 注册
-        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
-        const registered = !!executor?.hasTool?.("batch_execute") || !!executor;
+        const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "batch_execute");
         res.json({
           available: registered,
           serviceName: "BatchExecutor",
@@ -7488,8 +7488,8 @@ export class ProtocolAdapter {
     app.get("/api/agent/workflow-stats", (_req: Request, res: Response) => {
       try {
         // WorkflowEngine 通过 vision-batch-tools 按需实例化，无独立 service 注册
-        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
-        const registered = !!executor?.hasTool?.("workflow_execute") || !!executor;
+        const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "workflow_execute");
         res.json({
           available: registered,
           serviceName: "WorkflowEngine",
@@ -7512,9 +7512,9 @@ export class ProtocolAdapter {
     app.get("/api/agent/checkpoint-stats", (_req: Request, res: Response) => {
       try {
         // SessionCheckpointManager / DLQBatchRetry 通过 vision-batch-tools 按需实例化，无独立 service 注册
-        const executor = this.registry.resolveService<{ hasTool?: (name: string) => boolean }>("agentModelExecutor");
+        const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
         const dlq = this.registry.resolveService<unknown>("deadLetterQueue");
-        const registered = !!executor?.hasTool?.("checkpoint_save") || !!executor;
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "checkpoint_save");
         res.json({
           available: registered,
           serviceName: "SessionCheckpointManager+DLQBatchRetry",

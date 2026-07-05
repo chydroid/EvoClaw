@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/agent",
-  "version": "0.70.2",
+  "version": "0.70.3",
   "private": true,
   "description": "EvoClaw Agent 调度层 - 任务编排、多代理协同、状态机驱动",
   "main": "./dist/index.js",

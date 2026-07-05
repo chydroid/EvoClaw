@@ -5,6 +5,29 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.70.2 (2026-07-05)
+
+- **工程优化**: 4 处重复的 atomicWriteFile 实现统一替换为 `@evoclaw/infrastructure` 的共享版本（apply-patch-tool / code-intelligence / workflow-engine / session-checkpoint），净减 35 行代码，统一获得 mkdir recursive + fsync + 权限保留 + EXDEV/EBUSY + symlink 解析处理
+- **版本同步**: 15 个子包 version 从 0.1.0/0.1.1 同步到 0.70.2，消除版本号语义混乱
+- **DoS 防护**: code-intelligence.ts 的 levenshtein 函数加长度截断（>200 直接返回长度差），避免超长字符串 O(m*n) 时间+内存 DoS
+- **正则正确性**: code-intelligence.ts 的 findBlockEnd 新增 stripStringsAndComments 辅助函数，统计花括号深度前先剥离字符串字面量与注释，避免字符串内的 `{` 影响代码块结束行判定
+- **i18n 完善**: EnhancementHubPage 卡片 description 根据 lang 切换中文/英文（英文模式 fallback 到 descriptionEn，缺失时回退中文 description）
+
+## v0.70.1 (2026-07-05)
+
+- **安全修复（Critical）**: 修复 4 个 Critical 安全漏洞
+  - session-checkpoint.ts: 新增 safeSegment 清洗 sessionId/id，拒绝 `/`、`\`、`..`、null byte，防路径注入读写删任意 .json 文件
+  - git-operations.ts: diff 加 `--` 分隔符；push/pull/checkout/merge/rebase 用 assertNotOption 拒绝以 `-` 开头的参数；assertSafe 覆盖 `--force`/`--delete`/`--hard` 长形式绕过
+  - code-intelligence.ts: 新增 assertWithinWorkspace，parseSymbols/findReferences/planRename/applyRename 全部校验工作区边界
+  - batch-executor.ts: SlidingWindowRateLimiter 新增原子 acquire() 方法，消除 waitMs+record 并发竞态
+- **工程修复（Major）**: 修复 3 个 Major 工程问题
+  - workflow-engine.ts: condition 抛错隔离到单节点（不再拖垮整个 workflow）；checkpoint 持久化 runtime inputs；resume 调 validate；定时器 unref
+  - apply-patch-tool.ts: Phase 2 写盘 try/catch + 多文件失败整体返回 false；atomicWriteFile 加 mkdir recursive；tmp 名加随机后缀
+  - vision-analyzer.ts: 缓存 key 加入 maxTokens/mimeType 避免错误命中；新增 in-flight dedup map 避免并发重复调 VLM
+  - code-intelligence.ts: symbolCache 改实例字段 + 500 LRU 上限；rename 用字符串字面量正则避免污染字符串内容
+- **测试补齐**: 新增 5 个关键安全/并发场景回归测试（git 失败 stderr 透传 / symlink 逃逸拦截 / 并行 failFast 信号量不泄漏 / 节点超时+resume 损坏 checkpoint / sessionId 路径注入被拒）
+- **WebUI/API**: EnhancementHubPage 追加 7 张 v0.70 一线 AI Agent 能力卡片；protocol-adapter.ts 新增 7 个 stats 端点
+
 ## v0.70.0 (2026-07-05)
 
 ### 对齐一线 AI Agent 能力上限 — 8 大模块 + 25 工具 + 64 测试

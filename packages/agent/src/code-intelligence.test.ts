@@ -282,6 +282,22 @@ describe("CodeIntelligence", () => {
     expect(newContent).toContain("x = bar()");
     expect(newContent).not.toContain("foo");
   });
+
+  it("parseSymbols 应拒绝工作区外的路径（防路径越界）", async () => {
+    // ../../etc/passwd 或绝对路径都应被拒绝
+    const ci = new CodeIntelligence(tmpDir);
+    await expect(ci.parseSymbols("../../etc/passwd")).rejects.toThrow(/Path escapes workspace/i);
+    await expect(
+      ci.parseSymbols("../../../windows/system32/config/sam"),
+    ).rejects.toThrow(/Path escapes workspace/i);
+  });
+
+  it("findReferences 应拒绝工作区外的路径", async () => {
+    const ci = new CodeIntelligence(tmpDir);
+    await expect(ci.findReferences("foo", "../../etc/passwd")).rejects.toThrow(
+      /Path escapes workspace/i,
+    );
+  });
 });
 
 // ── applyPatch ───────────────────────────────────────────────

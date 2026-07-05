@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/skills",
-  "version": "0.70.2",
+  "version": "0.70.3",
   "private": true,
   "description": "EvoClaw Skills 能力层 - 技能市场、运行沙箱、执行引擎、SKILL.md解析",
   "main": "./dist/index.js",

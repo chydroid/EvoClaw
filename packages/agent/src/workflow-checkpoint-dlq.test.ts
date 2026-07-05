@@ -251,6 +251,62 @@ describe("WorkflowEngine > execute", () => {
       fs.rmSync(corruptTmpDir, { recursive: true, force: true });
     }
   });
+
+  it("resume 旧格式 checkpoint（无 inputs 字段）应向后兼容", async () => {
+    // 模拟旧 checkpoint：只有 workflowId/name/status/nodeResults/savedAt，没有 inputs 字段
+    const oldTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-old-cp-"));
+    try {
+      // nodeResults 在 checkpoint 中序列化为 [[nodeId, result], ...] 元组数组
+      const oldCheckpoint = {
+        workflowId: "wf-old",
+        workflowName: "old-workflow",
+        status: "partial",
+        nodeResults: [
+          [
+            "A",
+            { nodeId: "A", status: "succeeded", output: "done-A", startedAt: 1000, endedAt: 1100 },
+          ],
+        ],
+        totalDurationMs: 100,
+        savedAt: Date.now(),
+        // 注意：没有 inputs 字段
+      };
+      const checkpointPath = path.join(oldTmpDir, "old.json");
+      fs.writeFileSync(checkpointPath, JSON.stringify(oldCheckpoint));
+
+      // 用 params 函数捕获 inputs：验证旧 checkpoint 无 inputs 时 fallback 到 workflow.inputs
+      let capturedInputs: Record<string, unknown> | undefined;
+      const executor: WorkflowExecutorFn = async () => "ok";
+      const engine = new WorkflowEngine(executor);
+      const wf: WorkflowDefinition = {
+        id: "wf-old",
+        name: "old-workflow",
+        inputs: { initial: "value" },
+        nodes: [
+          { id: "A", toolName: "t", params: {}, dependsOn: [] },
+          {
+            id: "B",
+            toolName: "t",
+            params: (inputs) => {
+              capturedInputs = inputs;
+              return {};
+            },
+            dependsOn: ["A"],
+          },
+        ],
+      };
+
+      const result = await engine.resume(wf, checkpointPath);
+      // A 已 succeeded（从 checkpoint 恢复），B 应执行
+      expect(result.nodeResults.get("A")?.status).toBe("succeeded");
+      expect(result.nodeResults.get("B")?.status).toBe("succeeded");
+      // 验证 inputs 不是 undefined（旧 checkpoint 应 fallback 到 workflow.inputs）
+      expect(capturedInputs).toBeDefined();
+      expect(capturedInputs?.initial).toBe("value");
+    } finally {
+      fs.rmSync(oldTmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
