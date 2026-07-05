@@ -1,0 +1,106 @@
+/**
+ * 原子写入工具：temp + fsync + rename，防止崩溃时文件被截断。
+ *
+ * 借鉴 TencentDB-Agent-Memory 的 StorageContext 写入策略 + EvoClaw 已有的
+ * `packages/infrastructure/src/filesystem-manager.ts` 与 `packages/gateway/src/atomic-write.ts`
+ * 实现。本包不依赖 infrastructure/gateway（避免引入 playwright/bullmq 等重依赖），
+ * 故在 memory 包内本地实现一份精简版。
+ *
+ * 跨设备（EXDEV/EBUSY）时回退到 目标侧 temp + fsync + rename。
+ * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
+ */
+
+import * as fs from "fs";
+import * as path from "path";
+
+/**
+ * 同步原子写入：temp + fsync + rename。
+ *
+ * 适用于小文件（< 10MB）的整文件写入，例如 L2 Markdown / L3 persona.md。
+ * 不适用于大文件追加（请用 appendJsonlAtomic）。
+ */
+export function atomicWriteFileSync(targetPath: string, content: string): void {
+  const dir = path.dirname(targetPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+  fs.closeSync(fd);
+  try {
+    if (fs.existsSync(targetPath)) {
+      const st = fs.statSync(targetPath);
+      fs.chmodSync(tmpPath, st.mode);
+    }
+  } catch { /* ignore */ }
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EXDEV" || code === "EBUSY") {
+      // 跨设备回退：在目标侧写临时文件后 rename
+      const dstTmp = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+      const fd2 = fs.openSync(dstTmp, "w");
+      try {
+        fs.writeFileSync(fd2, content, "utf-8");
+        fs.fsyncSync(fd2);
+      } catch (w2err) {
+        try { fs.closeSync(fd2); } catch { /* ignore */ }
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw w2err;
+      }
+      fs.closeSync(fd2);
+      try { fs.renameSync(dstTmp, targetPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    } else {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
+  }
+}
+
+/**
+ * 原子追加 JSONL 行：使用 fs.appendFileSync 在大多数 POSIX 系统上是原子的
+ * （单次 write 调用 <= PIPE_BUF 时），但 Windows 大文本不保证。
+ *
+ * 借鉴 TencentDB-Agent-Memory 的四层 JSONL 防御：
+ *   1. sanitizeText — 清理源文本（控制字符、UNSAFE_CHAR_RE）
+ *   2. sanitizeJsonLine — 写入时清理 + roundtrip 验证
+ *   3. validateEntry — schema 验证（必填字段）
+ *   4. parseJsonlSafe — 容忍解析 + 损坏统计
+ *
+ * 对于 JSONL 追加场景，采用 "写入前 sanitize + 单行 append" 策略：
+ * - 单行 JSON.stringify 后 <= 64KB 时直接 append（POSIX 原子保证）
+ * - 单行 > 64KB 时降级到 "读全部 + 追加 + 原子写整文件"（避免 Windows 截断）
+ */
+export function appendJsonlAtomic(filePath: string, entry: unknown): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const line = JSON.stringify(entry) + "\n";
+  // 单行 <= 64KB：直接 append（POSIX 原子）
+  if (Buffer.byteLength(line, "utf-8") <= 64 * 1024) {
+    try {
+      fs.appendFileSync(filePath, line, { encoding: "utf-8" });
+      return;
+    } catch {
+      // 失败则降级到全量写
+    }
+  }
+  // 降级：读全部 + 追加 + 原子写整文件
+  let existing = "";
+  try {
+    existing = fs.readFileSync(filePath, "utf-8");
+  } catch { /* file not exist */ }
+  atomicWriteFileSync(filePath, existing + line);
+}

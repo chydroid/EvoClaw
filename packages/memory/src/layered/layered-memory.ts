@@ -22,6 +22,7 @@
  * - MemoryHub.recall() 会同时调用 LayeredMemory.recall() 注入分层结果
  */
 
+import * as fs from "fs";
 import * as path from "path";
 import { ConversationRecorder, type ConversationMessage } from "./conversation-recorder";
 import { AtomicMemoryExtractor, type AtomicMemory } from "./atomic-memory-extractor";
@@ -29,6 +30,15 @@ import { SceneBlockAggregator, type SceneBlock } from "./scene-block-aggregator"
 import { PersonaProfileGenerator, type PersonaProfile } from "./persona-profile";
 import { SymbolicMemoryCanvas, type MemoryCanvas } from "./symbolic-memory-canvas";
 import { applyCanvasAgentOps, type CanvasAgentOp } from "./canvas-agent-ops";
+import { appendJsonlAtomic, atomicWriteFileSync } from "./atomic-write";
+import { parseJsonlSafe } from "./jsonl-defense";
+import { L1Dedupifier, applyDedupDecisions, type DedupDecision, type EmbedFn } from "./l1-dedup";
+import { applyRecallBudget, type RecallBudgetOptions } from "./recall-budget";
+import { wrapRelevantMemories, wrapTaskCanvas } from "./relevant-memories-tag";
+import { TaskBoundaryJudge, shouldEndCanvas, type TaskBoundaryDecision } from "./task-boundary";
+import { L2Trigger, type L2TriggerState } from "./l2-trigger";
+import { BackgroundTaskRegistry } from "./bg-tasks";
+import { quickTokenEstimate } from "./token-estimate";
 
 /** 单轮对话输入。 */
 export interface TurnInput {
@@ -54,10 +64,26 @@ export interface LayeredRecallResult {
   appendSystemContext: string;
   /** 召回的 L1 记忆列表。 */
   l1Memories: AtomicMemory[];
+  /** 召回的 L2 场景块列表（若有）。 */
+  l2Scenes?: SceneBlock[];
   /** L3 画像（如有）。 */
   personaProfile: PersonaProfile | null;
+  /** 任务画布 Mermaid 文本（若有）。 */
+  canvasMermaid?: string;
+  /** 任务边界判定结果。 */
+  taskBoundary?: TaskBoundaryDecision;
   /** 召回策略名。 */
   strategy: string;
+  /** 召回统计。 */
+  stats?: {
+    l1Hits: number;
+    l2Hits: number;
+    l3Injected: boolean;
+    canvasInjected: boolean;
+    budgetUsed: number;
+    budgetExhausted: boolean;
+    dedupSkipped: number;
+  };
 }
 
 /** LayeredMemory 配置。 */
@@ -72,6 +98,22 @@ export interface LayeredMemoryConfig {
   l1MinPriority?: number;
   /** 是否启用符号记忆画布注入。默认 true。 */
   enableSymbolicCanvas?: boolean;
+  /** L1 最大记忆数（防止无限增长，超出后按 LRU+优先级淘汰）。默认 1000。 */
+  l1MaxMemories?: number;
+  /** 是否启用 L1 智能去重。默认 true。 */
+  enableL1Dedup?: boolean;
+  /** 是否启用 L1 持久化到 JSONL。默认 true。 */
+  enableL1Persistence?: boolean;
+  /** 是否启用 L2 场景块召回（recall 时同时搜 L2）。默认 true。 */
+  enableL2Recall?: boolean;
+  /** 是否启用画布自动启动（根据任务边界判定）。默认 true。 */
+  enableCanvasAutoStart?: boolean;
+  /** 是否启用召回预算控制。默认 true。 */
+  enableRecallBudget?: boolean;
+  /** 召回预算配置。 */
+  recallBudgetOptions?: RecallBudgetOptions;
+  /** Embedding 函数（可选，用于 L1 向量去重）。 */
+  embedFn?: EmbedFn;
 }
 
 const DEFAULT_CONFIG: Required<LayeredMemoryConfig> = {
@@ -80,6 +122,14 @@ const DEFAULT_CONFIG: Required<LayeredMemoryConfig> = {
   l1RecallLimit: 5,
   l1MinPriority: 50,
   enableSymbolicCanvas: true,
+  l1MaxMemories: 1000,
+  enableL1Dedup: true,
+  enableL1Persistence: true,
+  enableL2Recall: true,
+  enableCanvasAutoStart: true,
+  enableRecallBudget: true,
+  recallBudgetOptions: {},
+  embedFn: undefined as unknown as EmbedFn,
 };
 
 /**
@@ -98,11 +148,23 @@ export class LayeredMemory {
   private canvas: SymbolicMemoryCanvas;
   private cfg: Required<LayeredMemoryConfig>;
 
+  // 新增子模块（借鉴 TencentDB-Agent-Memory）
+  private dedupifier: L1Dedupifier;
+  private taskBoundaryJudge: TaskBoundaryJudge;
+  private l2Trigger: L2Trigger;
+  private l2TriggerState: L2TriggerState;
+  private bgTasks: BackgroundTaskRegistry;
+
+  // L1 持久化文件路径
+  private l1File: string;
+
   // 累积的 L1 记忆（用于 L2 聚合触发）
   private pendingL1Memories: AtomicMemory[] = [];
-  // 已聚合到 L2 的全部 L1 记忆（用于 L3 画像刷新）
+  // 已聚合到 L2 的全部 L1 记忆（用于 L3 画像刷新 + 召回）
   private allL1Memories: AtomicMemory[] = [];
   private turnCount = 0;
+  // L1 去重累计跳过数（统计用）
+  private dedupSkippedTotal = 0;
 
   constructor(private dataDir: string, config?: LayeredMemoryConfig) {
     this.cfg = { ...DEFAULT_CONFIG, ...config };
@@ -111,12 +173,37 @@ export class LayeredMemory {
     this.aggregator = new SceneBlockAggregator(dataDir);
     this.personaGen = new PersonaProfileGenerator(dataDir);
     this.canvas = new SymbolicMemoryCanvas();
+
+    // 初始化新模块
+    this.dedupifier = new L1Dedupifier([], {}, this.cfg.embedFn);
+    this.taskBoundaryJudge = new TaskBoundaryJudge();
+    this.l2Trigger = new L2Trigger();
+    this.l2TriggerState = this.l2Trigger.createInitialState();
+    this.bgTasks = new BackgroundTaskRegistry({ drainTimeoutMs: 5000 });
+
+    // L1 持久化文件
+    const layeredDir = path.join(dataDir, "memory", "layered");
+    if (!fs.existsSync(layeredDir)) {
+      fs.mkdirSync(layeredDir, { recursive: true });
+    }
+    this.l1File = path.join(layeredDir, "l1.jsonl");
+
+    // 启动时从磁盘加载已有 L1 记忆
+    if (this.cfg.enableL1Persistence) {
+      this.loadL1FromDisk();
+    }
   }
 
   // ── 写链路 ──
 
   /**
    * 捕获一轮对话：写入 L0 → 提取 L1 → 周期聚合 L2/L3。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 TdaiCore.commit_turn 设计，加入：
+   *   - L1 智能去重（store/update/merge/skip 4 种 action）
+   *   - L1 持久化到 JSONL（崩溃恢复）
+   *   - L1 LRU 上限淘汰（防止 Map 无限增长）
+   *   - L2 独立触发（null 阈值 + 超时双触发，不再由 L1 直接驱动）
    */
   async captureTurn(turn: TurnInput): Promise<{
     l0Messages: ConversationMessage[];
@@ -145,17 +232,79 @@ export class LayeredMemory {
     });
 
     // 2. L1：提取原子记忆（只从 user 消息提取）
-    const l1Memories = this.extractor.extract([l0User]);
-    this.pendingL1Memories.push(...l1Memories);
-    this.allL1Memories.push(...l1Memories);
+    const rawL1 = this.extractor.extract([l0User]);
 
-    // 3. L2：周期聚合
+    // 2a. L1 智能去重（借鉴 TencentDB-Agent-Memory l1-dedup.ts）
+    let l1Memories: AtomicMemory[] = rawL1;
+    let dedupSkipped = 0;
+    if (this.cfg.enableL1Dedup && rawL1.length > 0 && this.allL1Memories.length > 0) {
+      const decisions = await this.dedupifier.checkBatch(rawL1);
+      const applied = applyDedupDecisions(this.allL1Memories, rawL1, decisions);
+      this.allL1Memories = applied.merged;
+      // 只把 store/update 的新记忆加入 pending（merge/skip 不算新）
+      l1Memories = decisions
+        .filter((d) => d.decision.action === "store" || d.decision.action === "update")
+        .map((d) => d.memory);
+      dedupSkipped = applied.stats.skipped;
+      this.dedupSkippedTotal += dedupSkipped;
+      // 更新去重器的已有记忆视图
+      this.dedupifier.updateExisting(this.allL1Memories);
+    } else {
+      // 无去重或首次写入：直接追加
+      this.allL1Memories.push(...rawL1);
+      // 同步到去重器的已有记忆视图，确保后续 captureTurn 能正确去重
+      this.dedupifier.updateExisting(this.allL1Memories);
+    }
+
+    this.pendingL1Memories.push(...l1Memories);
+
+    // 2b. L1 持久化到 JSONL（借鉴 TencentDB-Agent-Memory StorageContext）
+    if (this.cfg.enableL1Persistence && l1Memories.length > 0) {
+      const persistFn = (async () => {
+        for (const mem of l1Memories) {
+          appendJsonlAtomic(this.l1File, mem);
+        }
+      })();
+      this.bgTasks.register("persist L1 memories", persistFn);
+    }
+
+    // 2c. L1 LRU 上限淘汰（防止 Map 无限增长）
+    if (this.allL1Memories.length > this.cfg.l1MaxMemories) {
+      const overflow = this.allL1Memories.length - this.cfg.l1MaxMemories;
+      // 淘汰优先级最低的最旧记忆（保持稳定性：稳定先入先出 + 优先级排序）
+      this.allL1Memories.sort((a, b) => {
+        // 优先级低的先淘汰；同优先级的先入先出
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        return a.extractedAt - b.extractedAt;
+      });
+      this.allL1Memories = this.allL1Memories.slice(overflow);
+      this.dedupifier.updateExisting(this.allL1Memories);
+    }
+
+    // 3. L2 独立触发（借鉴 TencentDB-Agent-Memory l2-mermaid 双触发）
     this.turnCount++;
+    this.l2Trigger.incrementMessages(this.l2TriggerState);
+    if (rawL1.length === 0) {
+      // null entry：未提取到任何 L1 记忆
+      this.l2Trigger.incrementNullEntries(this.l2TriggerState);
+    }
+
     let l2Scenes: SceneBlock[] | undefined;
-    if (this.turnCount % this.cfg.l2AggregateEveryNTurns === 0 && this.pendingL1Memories.length > 0) {
+    const l2Decision = this.l2Trigger.evaluate(this.l2TriggerState);
+    if (l2Decision.shouldTrigger && this.pendingL1Memories.length > 0) {
       l2Scenes = this.aggregator.aggregate(this.pendingL1Memories);
       this.aggregator.writeSceneFiles(l2Scenes);
       this.pendingL1Memories = [];
+      this.l2Trigger.markTriggered(this.l2TriggerState);
+    } else if (
+      // 兜底：周期触发（保留原有 l2AggregateEveryNTurns 语义，便于测试兼容）
+      this.turnCount % this.cfg.l2AggregateEveryNTurns === 0 &&
+      this.pendingL1Memories.length > 0
+    ) {
+      l2Scenes = this.aggregator.aggregate(this.pendingL1Memories);
+      this.aggregator.writeSceneFiles(l2Scenes);
+      this.pendingL1Memories = [];
+      this.l2Trigger.markTriggered(this.l2TriggerState);
     }
 
     // 4. L3：周期刷新画像
@@ -172,39 +321,148 @@ export class LayeredMemory {
     };
   }
 
+  /**
+   * 从磁盘加载已有 L1 记忆（构造时自动调用）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 StorageContext 启动加载逻辑：
+   * - 用 parseJsonlSafe 容忍解析损坏行
+   * - 校验必填字段
+   * - 加载后同步到 dedupifier 的已有记忆视图
+   */
+  private loadL1FromDisk(): void {
+    if (!fs.existsSync(this.l1File)) return;
+    let text: string;
+    try {
+      text = fs.readFileSync(this.l1File, "utf-8");
+    } catch {
+      return;
+    }
+    const result = parseJsonlSafe<AtomicMemory>(text, {
+      requiredFields: ["id", "type", "content", "priority", "sessionKey", "extractedAt"],
+    });
+    if (result.entries.length > 0) {
+      this.allL1Memories = result.entries;
+      this.dedupifier.updateExisting(this.allL1Memories);
+    }
+  }
+
   // ── 读链路 ──
 
   /**
-   * 召回：从 L1 + L3 检索相关记忆，返回可注入的上下文。
+   * 召回：从 L1 + L2 + L3 检索相关记忆，返回可注入的上下文。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 auto-recall hook：
+   *   1. L1 关键词检索（可选 hybrid search）
+   *   2. L2 场景块搜索（若 enableL2Recall）
+   *   3. L3 用户画像
+   *   4. 任务画布注入（若存在活跃画布）
+   *   5. 双重预算控制（maxCharsPerMemory + maxTotalRecallChars）
+   *   6. <relevant-memories> 标签包裹（防止污染历史）
+   *
    * @param query 用户当前消息（用于关键词匹配）
    */
   recall(query: string): LayeredRecallResult {
+    // 0. 任务边界判定（L1.5）—— 用于决定是否注入画布
+    const canvasSnapshot = this.canvas.getCanvas();
+    const taskBoundary = this.taskBoundaryJudge.judge({
+      userMessage: query,
+      historyLength: this.turnCount * 2, // 粗略估算（user+assistant = 2 条/turn）
+      hasActiveCanvas: canvasSnapshot !== null,
+    });
+
     // 1. L1 关键词检索
-    const l1Memories = this.searchL1(query, this.cfg.l1RecallLimit, this.cfg.l1MinPriority);
+    let l1Memories = this.searchL1(query, this.cfg.l1RecallLimit, this.cfg.l1MinPriority);
 
-    // 2. L3 画像
-    const personaProfile = this.personaGen.getCurrent();
-
-    // 3. 构造 prependContext
-    let prependContext = "";
-    if (l1Memories.length > 0) {
-      const lines = l1Memories.map((m, i) => `  ${i + 1}. [${m.type}] ${m.content} (优先级 ${m.priority})`);
-      prependContext = `\n[相关历史记忆]\n${lines.join("\n")}\n`;
+    // 2. L2 场景块搜索（借鉴 TencentDB-Agent-Memory 的 L2 召回）
+    let l2Scenes: SceneBlock[] | undefined;
+    if (this.cfg.enableL2Recall && query.trim()) {
+      l2Scenes = this.aggregator.search(query, 3);
     }
 
-    // 4. 构造 appendSystemContext（画像）
+    // 3. L3 画像
+    const personaProfile = this.personaGen.getCurrent();
+
+    // 4. 任务画布 Mermaid（若启用且活跃）
+    let canvasMermaid: string | undefined;
+    if (this.cfg.enableSymbolicCanvas && this.cfg.enableCanvasAutoStart && taskBoundary.shouldUseCanvas && canvasSnapshot) {
+      canvasMermaid = this.canvas.render();
+    }
+
+    // 5. 双重预算控制（借鉴 TencentDB-Agent-Memory applyRecallBudget）
+    let budgetUsed = 0;
+    let budgetExhausted = false;
+    if (this.cfg.enableRecallBudget) {
+      const budget = applyRecallBudget(l1Memories, (m) => `[${m.type}] ${m.content}`, this.cfg.recallBudgetOptions);
+      l1Memories = budget.items as AtomicMemory[];
+      budgetUsed = budget.totalChars;
+      budgetExhausted = budget.budgetExhausted;
+    }
+
+    // 6. 构造 prependContext（用 <relevant-memories> 标签包裹，防止污染历史）
+    const memoryLines: string[] = [];
+    if (l1Memories.length > 0) {
+      memoryLines.push("[相关历史记忆]");
+      l1Memories.forEach((m, i) => {
+        memoryLines.push(`  ${i + 1}. [${m.type}] ${m.content} (优先级 ${m.priority})`);
+      });
+    }
+    if (l2Scenes && l2Scenes.length > 0) {
+      memoryLines.push("[相关场景块]");
+      l2Scenes.forEach((s, i) => {
+        memoryLines.push(`  ${i + 1}. ${s.sceneName} (${s.memories.length} 条记忆)`);
+      });
+    }
+
+    let prependContext = "";
+    if (memoryLines.length > 0) {
+      const plainBody = memoryLines.join("\n");
+      prependContext = `\n${wrapRelevantMemories([plainBody])}\n`;
+    }
+
+    // 7. 任务画布注入（用 <task-canvas> 标签包裹）
+    if (canvasMermaid) {
+      prependContext += `\n${wrapTaskCanvas(canvasMermaid)}\n`;
+    }
+
+    // 8. 构造 appendSystemContext（画像，稳定上下文）
     let appendSystemContext = "";
     if (personaProfile && personaProfile.entries.length > 0) {
       appendSystemContext = "\n[用户画像]\n" + this.personaGen.renderMarkdown();
     }
 
+    const stats = {
+      l1Hits: l1Memories.length,
+      l2Hits: l2Scenes?.length ?? 0,
+      l3Injected: !!personaProfile && personaProfile.entries.length > 0,
+      canvasInjected: !!canvasMermaid,
+      budgetUsed,
+      budgetExhausted,
+      dedupSkipped: this.dedupSkippedTotal,
+    };
+
+    const strategy = this.buildStrategyName(l1Memories.length, l2Scenes?.length ?? 0, !!canvasMermaid);
+
     return {
       prependContext,
       appendSystemContext,
       l1Memories,
+      l2Scenes,
       personaProfile,
-      strategy: l1Memories.length > 0 ? "l1-keyword+l3-persona" : "l3-persona-only",
+      canvasMermaid,
+      taskBoundary,
+      strategy,
+      stats,
     };
+  }
+
+  /** 根据召回命中的层级生成策略名（便于观测）。 */
+  private buildStrategyName(l1Hits: number, l2Hits: number, canvasHit: boolean): string {
+    const parts: string[] = [];
+    if (l1Hits > 0) parts.push("l1-keyword");
+    if (l2Hits > 0) parts.push("l2-scene");
+    parts.push("l3-persona");
+    if (canvasHit) parts.push("canvas");
+    return parts.join("+");
   }
 
   // ── 符号记忆画布 ──
@@ -333,6 +591,41 @@ export class LayeredMemory {
     this.pendingL1Memories = [];
     this.allL1Memories = [];
     this.turnCount = 0;
+    // 同步清理新模块状态
+    this.dedupifier.updateExisting([]);
+    this.l2TriggerState = this.l2Trigger.createInitialState();
+    this.dedupSkippedTotal = 0;
+    // 清理 L1 持久化文件（测试隔离用）
+    if (this.cfg.enableL1Persistence && fs.existsSync(this.l1File)) {
+      try { fs.unlinkSync(this.l1File); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * 等待所有后台任务完成（进程关闭前调用）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 destroy() drain 模式：
+   * - 5 秒超时保护
+   * - 超时后强制返回，未完成任务继续在后台跑（不杀）
+   *
+   * @returns drain 统计信息
+   */
+  async drain(): Promise<{
+    completed: number;
+    timedOut: number;
+    errors: Array<{ description: string; error: unknown }>;
+  }> {
+    return this.bgTasks.drain();
+  }
+
+  /** 获取累计去重跳过数（用于观测/调试）。 */
+  getDedupSkippedTotal(): number {
+    return this.dedupSkippedTotal;
+  }
+
+  /** 获取当前 L2 触发器状态快照（用于观测/调试）。 */
+  getL2TriggerState(): L2TriggerState {
+    return { ...this.l2TriggerState };
   }
 
   // ── 私有辅助 ──

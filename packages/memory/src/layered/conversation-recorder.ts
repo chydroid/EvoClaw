@@ -17,6 +17,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { appendJsonlAtomic, atomicWriteFileSync } from "./atomic-write";
+import { parseJsonlSafe, sanitizeText } from "./jsonl-defense";
 
 /** L0 单条消息。 */
 export interface ConversationMessage {
@@ -54,6 +56,9 @@ export class ConversationRecorder {
 
   /**
    * 记录一条对话消息。原子追加到对应会话 JSONL 文件。
+   *
+   * 使用 appendJsonlAtomic 保证写入原子性（temp+fsync+rename 或 POSIX 原子 append）。
+   * 写入前 sanitizeText 清理控制字符，防止 JSONL 损坏。
    * @returns 生成的消息 ID
    */
   record(msg: Omit<ConversationMessage, "id" | "timestamp"> & { timestamp?: number }): ConversationMessage {
@@ -62,31 +67,31 @@ export class ConversationRecorder {
       timestamp: msg.timestamp ?? Date.now(),
       ...msg,
     };
+    // sanitize content 防止控制字符破坏 JSONL
+    if (full.content) {
+      full.content = sanitizeText(full.content);
+    }
     const file = this.sessionFile(full.sessionKey);
-    const line = JSON.stringify(full) + "\n";
-    fs.appendFileSync(file, line, { encoding: "utf-8" });
+    appendJsonlAtomic(file, full);
     return full;
   }
 
   /**
    * 加载某会话最近 N 条消息（默认 50）。
    * 若会话文件不存在，返回空数组。
+   *
+   * 使用 parseJsonlSafe 容忍式解析，损坏行自动跳过。
    */
   loadRecent(sessionKey: string, limit = 50): ConversationMessage[] {
     const file = this.sessionFile(sessionKey);
     if (!fs.existsSync(file)) return [];
     const text = fs.readFileSync(file, "utf-8");
-    const lines = text.split("\n").filter(Boolean);
-    const tail = lines.slice(-limit);
-    const msgs: ConversationMessage[] = [];
-    for (const line of tail) {
-      try {
-        msgs.push(JSON.parse(line) as ConversationMessage);
-      } catch {
-        /* skip malformed line */
-      }
-    }
-    return msgs;
+    // 用四层 JSONL 防御解析，requiredFields 校验必填字段
+    const result = parseJsonlSafe<ConversationMessage>(text, {
+      requiredFields: ["id", "role", "content", "timestamp", "sessionKey"],
+    });
+    // 取最后 N 条
+    return result.entries.slice(-limit);
   }
 
   /** 列出所有会话键（按最近修改时间倒序）。 */

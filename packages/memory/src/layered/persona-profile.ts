@@ -33,6 +33,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { AtomicMemory } from "./atomic-memory-extractor";
+import { atomicWriteFileSync } from "./atomic-write";
 
 /** L3 用户画像主题分组。 */
 export type PersonaTopic = "tech_stack" | "identity" | "preference" | "instruction";
@@ -275,7 +276,8 @@ export class PersonaProfileGenerator {
   private writeToDisk(): void {
     if (!this.current) return;
     const md = this.renderFile();
-    fs.writeFileSync(this.personaFile, md, "utf-8");
+    // 使用原子写保证崩溃时不产生截断文件
+    atomicWriteFileSync(this.personaFile, md);
     this.current.filePath = this.personaFile;
   }
 

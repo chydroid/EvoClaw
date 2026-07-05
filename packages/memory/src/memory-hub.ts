@@ -334,6 +334,93 @@ export class MemoryHub {
     }
   }
 
+  /**
+   * 剥离消息历史中的召回标签（<relevant-memories> / <task-canvas>）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 before_message_write hook：
+   * 写入 L0 / LongTermMemory 前调用此方法，防止召回内容污染历史。
+   * 失败不抛错（best-effort）。
+   */
+  stripRecallTagsFromHistory(messages: Array<{ role?: string; content?: string | unknown }>): void {
+    try {
+      const { stripRecallTagsFromMessages } = require("./layered");
+      stripRecallTagsFromMessages(messages);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] stripRecallTagsFromHistory failed: ${err}\n`);
+    }
+  }
+
+  /**
+   * 等待所有后台任务完成（进程关闭前调用）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 destroy() drain 模式：
+   * - 5 秒超时保护
+   * - 超时后强制返回，未完成任务继续在后台跑（不杀）
+   *
+   * @returns drain 统计信息（completed/timedOut/errors）
+   */
+  async drainLayeredMemory(): Promise<{
+    completed: number;
+    timedOut: number;
+    errors: Array<{ description: string; error: unknown }>;
+  }> {
+    if (!this.layeredMemory) {
+      return { completed: 0, timedOut: 0, errors: [] };
+    }
+    try {
+      return await this.layeredMemory.drain();
+    } catch (err) {
+      process.stderr.write(`[memory-hub] drainLayeredMemory failed: ${err}\n`);
+      return { completed: 0, timedOut: 0, errors: [{ description: "drain", error: err }] };
+    }
+  }
+
+  /**
+   * 检查场景数量三级预警（red/orange/yellow/green）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 scene-extractor 三级预警：
+   * - red：必须先 MERGE，不允许 CREATE
+   * - orange：只能 UPDATE
+   * - yellow：优先 UPDATE 或 MERGE
+   * - green：可自由 CREATE
+   *
+   * @returns 预警级别 + 当前场景数 + 推荐操作
+   */
+  checkSceneWarning(): {
+    level: "green" | "yellow" | "orange" | "red";
+    currentCount: number;
+    maxScenes: number;
+    recommendation: string;
+  } | null {
+    if (!this.layeredMemory) return null;
+    try {
+      return this.layeredMemory.getAggregator().checkSceneWarning();
+    } catch (err) {
+      process.stderr.write(`[memory-hub] checkSceneWarning failed: ${err}\n`);
+      return null;
+    }
+  }
+
+  /**
+   * 扫描所有场景，提取 Persona Update Signal（[PERSONA_UPDATE_REQUEST] 标签）。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 parsePersonaUpdateSignal：
+   * - 检测场景内容中的 [PERSONA_UPDATE_REQUEST] 标签
+   * - 提取标签后的指令文本
+   * - 用于触发 L3 画像刷新
+   *
+   * @returns 所有场景中检测到的画像更新指令
+   */
+  collectPersonaUpdateSignals(): string[] {
+    if (!this.layeredMemory) return [];
+    try {
+      return this.layeredMemory.getAggregator().collectPersonaUpdateSignals();
+    } catch (err) {
+      process.stderr.write(`[memory-hub] collectPersonaUpdateSignals failed: ${err}\n`);
+      return [];
+    }
+  }
+
   /** Get the vector store. Returns null when no embedding backend is wired. */
   getVectorStore(): VectorMemoryStore | null {
     return this.vectorStore;

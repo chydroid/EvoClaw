@@ -31,6 +31,16 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { AtomicMemory } from "./atomic-memory-extractor";
+import { atomicWriteFileSync } from "./atomic-write";
+
+/** 场景数量三级预警级别（借鉴 TencentDB-Agent-Memory scene-extractor）。 */
+export type SceneWarningLevel = "green" | "yellow" | "orange" | "red";
+
+/** Persona Update Signal 标签（借鉴 TencentDB-Agent-Memory）。 */
+export const PERSONA_UPDATE_SIGNAL = "[PERSONA_UPDATE_REQUEST]";
+
+/** 默认最大场景数（三级预警用）。 */
+const DEFAULT_MAX_SCENES = 50;
 
 /** L2 情境块。 */
 export interface SceneBlock {
@@ -135,17 +145,105 @@ export class SceneBlockAggregator {
     return scenes;
   }
 
-  /** 把情境块写入 Markdown 文件。 */
+  /** 把情境块写入 Markdown 文件。使用 atomicWriteFileSync 保证原子性。 */
   writeSceneFiles(scenes: SceneBlock[]): string[] {
     const paths: string[] = [];
     for (const scene of scenes) {
       const md = this.renderMarkdown(scene);
       const file = path.join(this.scenesDir, `${scene.sceneId}.md`);
-      fs.writeFileSync(file, md, "utf-8");
+      atomicWriteFileSync(file, md);
       scene.filePath = file;
       paths.push(file);
     }
     return paths;
+  }
+
+  /**
+   * 检查场景数量三级预警（借鉴 TencentDB-Agent-Memory scene-extractor）。
+   *
+   * - red：场景数 >= maxScenes，必须先 MERGE
+   * - orange：场景数 = maxScenes - 1，只能 UPDATE
+   * - yellow：场景数 >= maxScenes * 0.8，优先 UPDATE 或 MERGE
+   * - green：场景数 < maxScenes * 0.8，可自由 CREATE
+   */
+  checkSceneWarning(maxScenes: number = DEFAULT_MAX_SCENES): {
+    level: SceneWarningLevel;
+    currentCount: number;
+    maxScenes: number;
+    recommendation: string;
+  } {
+    const current = this.listScenes().length;
+    if (current >= maxScenes) {
+      return {
+        level: "red",
+        currentCount: current,
+        maxScenes,
+        recommendation: "场景数已达上限，必须先 MERGE 已有场景，不允许 CREATE",
+      };
+    }
+    if (current >= maxScenes - 1) {
+      return {
+        level: "orange",
+        currentCount: current,
+        maxScenes,
+        recommendation: "场景数接近上限，只能 UPDATE 已有场景",
+      };
+    }
+    if (current >= maxScenes * 0.8) {
+      return {
+        level: "yellow",
+        currentCount: current,
+        maxScenes,
+        recommendation: "场景数偏多，优先 UPDATE 或 MERGE",
+      };
+    }
+    return {
+      level: "green",
+      currentCount: current,
+      maxScenes,
+      recommendation: "场景数正常，可自由 CREATE",
+    };
+  }
+
+  /**
+   * 解析场景 Markdown 中的 Persona Update Signal。
+   *
+   * 借鉴 TencentDB-Agent-Memory 的 parsePersonaUpdateSignal：
+   * - 检测场景内容中的 [PERSONA_UPDATE_REQUEST] 标签
+   * - 提取标签后的指令文本
+   * - 用于触发 L3 画像刷新
+   *
+   * @returns 提取到的指令数组（若无返回空数组）
+   */
+  parsePersonaUpdateSignal(sceneMarkdown: string): string[] {
+    const signals: string[] = [];
+    const re = new RegExp(
+      PERSONA_UPDATE_SIGNAL.replace(/[[\]]/g, "\\$&") + "\\s*([^\\n\\[\\]]+)",
+      "g"
+    );
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sceneMarkdown)) !== null) {
+      const instruction = m[1].trim();
+      if (instruction) signals.push(instruction);
+    }
+    return signals;
+  }
+
+  /**
+   * 扫描所有场景文件，提取所有 Persona Update Signal。
+   *
+   * @returns 所有场景中检测到的画像更新指令
+   */
+  collectPersonaUpdateSignals(): string[] {
+    const allSignals: string[] = [];
+    for (const sceneId of this.listScenes()) {
+      const scene = this.loadScene(sceneId);
+      if (!scene) continue;
+      const md = this.renderMarkdown(scene);
+      const signals = this.parsePersonaUpdateSignal(md);
+      allSignals.push(...signals);
+    }
+    return allSignals;
   }
 
   /** 加载已存在的情境块（用于召回/查询）。 */

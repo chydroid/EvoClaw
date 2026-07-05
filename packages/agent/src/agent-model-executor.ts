@@ -132,6 +132,24 @@ export class AgentModelExecutor {
     }): { nodeId: string; mermaid: string } | null;
     getCanvasSnapshot?(): { nodes: unknown[]; edges: unknown[]; sessionKey: string; createdAt: number } | null;
     getCanvasMermaid?(): string;
+    /** 第二轮借鉴（v0.68.0）—— 工程鲁棒性 + 召回质量 */
+    /** 剥离消息历史中的召回标签（防止污染历史）。 */
+    stripRecallTagsFromHistory?(messages: Array<{ role?: string; content?: string | unknown }>): void;
+    /** 等待所有后台任务完成（进程关闭前调用）。 */
+    drainLayeredMemory?(): Promise<{
+      completed: number;
+      timedOut: number;
+      errors: Array<{ description: string; error: unknown }>;
+    }>;
+    /** 检查场景数量三级预警。 */
+    checkSceneWarning?(): {
+      level: "green" | "yellow" | "orange" | "red";
+      currentCount: number;
+      maxScenes: number;
+      recommendation: string;
+    } | null;
+    /** 扫描场景中的 Persona Update Signal。 */
+    collectPersonaUpdateSignals?(): string[];
   } | null = null;
   private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
   private compactionManager: import("./compaction-manager").CompactionManager | null = null;
@@ -2274,7 +2292,26 @@ export class AgentModelExecutor {
       return;
     }
     try {
-      const content = `User: ${userMsg}\nAgent: ${agentReply}`;
+      // 借鉴 TencentDB-Agent-Memory 的 before_message_write hook：
+      // 写入 L0 / LongTermMemory 前剥离召回标签，防止召回内容污染历史。
+      // 召回时注入的 <relevant-memories> 和 <task-canvas> 只对当前轮次可见，
+      // 不应进入长期记忆（否则后续召回会"召回召回"，形成正反馈噪音）。
+      const cleanUserMsg = this.memoryHub.stripRecallTagsFromHistory
+        ? (() => {
+            const tmp: Array<{ content?: string }> = [{ content: userMsg }];
+            this.memoryHub!.stripRecallTagsFromHistory!(tmp);
+            return (tmp[0].content as string) ?? userMsg;
+          })()
+        : userMsg;
+      const cleanAgentReply = this.memoryHub.stripRecallTagsFromHistory
+        ? (() => {
+            const tmp: Array<{ content?: string }> = [{ content: agentReply }];
+            this.memoryHub!.stripRecallTagsFromHistory!(tmp);
+            return (tmp[0].content as string) ?? agentReply;
+          })()
+        : agentReply;
+
+      const content = `User: ${cleanUserMsg}\nAgent: ${cleanAgentReply}`;
       const entry: Omit<import("@evoclaw/core").MemoryEntry, "id" | "createdAt" | "accessedAt"> = {
         content,
         type: "conversation",
@@ -2314,8 +2351,8 @@ export class AgentModelExecutor {
       // 失败 best-effort，不影响主流程。
       if (this.memoryHub.captureTurnToLayeredMemory) {
         this.memoryHub.captureTurnToLayeredMemory({
-          userText: userMsg,
-          assistantText: agentReply,
+          userText: cleanUserMsg,
+          assistantText: cleanAgentReply,
           sessionKey: sessionId,
         }).catch(err => {
           process.stderr.write(`[AgentModelExecutor] LayeredMemory captureTurn failed: ${err}\n`);
