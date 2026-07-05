@@ -187,3 +187,152 @@ export function describeEvolutionTypeEn(type: EvolutionType): string {
   };
   return descriptions[type] ?? type;
 }
+
+// ── EvolutionType ↔ SkillOrigin 双向映射（借鉴 OpenSpace types.py line 58-66） ───
+
+const EVOLUTION_TO_ORIGIN: Record<EvolutionType, SkillOrigin> = {
+  fix: "fixed",
+  derived: "derived",
+  captured: "captured",
+  extraction: "captured",
+  improvement: "derived",
+  deprecation: "imported",
+  manual: "imported",
+};
+
+const ORIGIN_TO_EVOLUTION: Record<SkillOrigin, EvolutionType> = {
+  imported: "manual",
+  captured: "captured",
+  derived: "derived",
+  fixed: "fix",
+};
+
+/**
+ * EvolutionType → SkillOrigin 转换。
+ */
+export function toSkillOrigin(type: EvolutionType): SkillOrigin {
+  return EVOLUTION_TO_ORIGIN[type] ?? "imported";
+}
+
+/**
+ * SkillOrigin → EvolutionType 转换。
+ */
+export function fromSkillOrigin(origin: SkillOrigin): EvolutionType {
+  return ORIGIN_TO_EVOLUTION[origin] ?? "manual";
+}
+
+// ── 技能指标 + 派生率属性（借鉴 OpenSpace types.py line 380-398） ───
+
+/**
+ * 技能应用指标。
+ *
+ * 派生率属性（applied_rate/completion_rate/effective_rate/fallback_rate）
+ * 不存储，由 @property 实时计算 — 避免反序列化时漂移、写入时同步问题。
+ */
+export class SkillMetricsRecord {
+  /** 被选中次数 */
+  totalSelections: number = 0;
+  /** 被应用次数 */
+  totalApplied: number = 0;
+  /** 完成次数（成功执行到底） */
+  totalCompleted: number = 0;
+  /** 回退次数（执行中切换到其他技能） */
+  totalFallbacks: number = 0;
+  /** 失败次数 */
+  totalFailures: number = 0;
+  /** 最近更新时间 */
+  lastUpdated: number = 0;
+
+  /** 应用率 = applied / selections */
+  get appliedRate(): number {
+    return this.totalSelections > 0 ? this.totalApplied / this.totalSelections : 0;
+  }
+
+  /** 完成率 = completed / applied */
+  get completionRate(): number {
+    return this.totalApplied > 0 ? this.totalCompleted / this.totalApplied : 1.0;
+  }
+
+  /** 有效率 = completed / selections */
+  get effectiveRate(): number {
+    return this.totalSelections > 0 ? this.totalCompleted / this.totalSelections : 0;
+  }
+
+  /** 回退率 = fallbacks / applied */
+  get fallbackRate(): number {
+    return this.totalApplied > 0 ? this.totalFallbacks / this.totalApplied : 0;
+  }
+
+  /** 失败率 = failures / applied */
+  get failureRate(): number {
+    return this.totalApplied > 0 ? this.totalFailures / this.totalApplied : 0;
+  }
+
+  toJSON(): Record<string, unknown> {
+    return {
+      totalSelections: this.totalSelections,
+      totalApplied: this.totalApplied,
+      totalCompleted: this.totalCompleted,
+      totalFallbacks: this.totalFallbacks,
+      totalFailures: this.totalFailures,
+      lastUpdated: this.lastUpdated,
+    };
+  }
+
+  static fromJSON(data: Record<string, unknown>): SkillMetricsRecord {
+    const record = new SkillMetricsRecord();
+    // 使用 Number() 做运行时转换，避免字符串数字导致后续算术产生 NaN 或字符串拼接
+    record.totalSelections = Number(data.totalSelections) || 0;
+    record.totalApplied = Number(data.totalApplied) || 0;
+    record.totalCompleted = Number(data.totalCompleted) || 0;
+    record.totalFallbacks = Number(data.totalFallbacks) || 0;
+    record.totalFailures = Number(data.totalFailures) || 0;
+    record.lastUpdated = Number(data.lastUpdated) || 0;
+    return record;
+  }
+}
+
+// ── ExecutionAnalysis + suggestions_by_type（借鉴 OpenSpace types.py line 291-293） ───
+
+/**
+ * 执行分析结果（借鉴 OpenSpace ExecutionAnalysis）。
+ *
+ * 由 LLM 分析录制数据后产出，包含：
+ *   - 演化建议列表
+ *   - 工具质量反馈
+ *   - 任务级总结
+ */
+export interface ExecutionAnalysis {
+  /** 任务 ID */
+  taskId: string;
+  /** LLM 生成的演化建议 */
+  suggestions: EvolutionSuggestion[];
+  /** LLM 反馈的工具问题 */
+  toolIssues: Array<{
+    toolKey: string;
+    toolName: string;
+    description: string;
+  }>;
+  /** 任务级总结 */
+  summary?: string;
+  /** 分析时间 */
+  analyzedAt: number;
+}
+
+/**
+ * 从 ExecutionAnalysis 中按类型过滤 suggestions（借鉴 OpenSpace suggestions_by_type）。
+ */
+export function suggestionsByType(
+  analysis: ExecutionAnalysis,
+  type: EvolutionType,
+): EvolutionSuggestion[] {
+  return analysis.suggestions.filter((s) => s.type === type);
+}
+
+// ── 滚动窗口常量（借鉴 OpenSpace types.py MAX_RECENT ClassVar） ───
+
+/**
+ * recent_analyses / recent_suggestions 滚动窗口上限。
+ */
+export const MAX_RECENT_ANALYSES = 50;
+export const MAX_RECENT_SUGGESTIONS = 200;

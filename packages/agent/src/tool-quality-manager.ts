@@ -86,6 +86,8 @@ export interface ToolQualityReport {
 export interface ToolQualityManagerOptions {
   /** 滚动窗口大小（默认 100） */
   maxRecentExecutions?: number;
+  /** records Map 最大条数（默认 5000，防止无限增长） */
+  maxRecords?: number;
   /** 触发惩罚的成功率阈值（默认 0.4） */
   penaltyThreshold?: number;
   /** 最小惩罚因子（默认 0.2） */
@@ -106,6 +108,7 @@ export interface ToolQualityManagerOptions {
 
 const DEFAULT_OPTIONS: Required<ToolQualityManagerOptions> = {
   maxRecentExecutions: 100,
+  maxRecords: 5000,
   penaltyThreshold: 0.4,
   minPenalty: 0.2,
   maxPenalty: 1.0,
@@ -159,6 +162,14 @@ export class ToolQualityManager extends EventEmitter {
     error?: string,
     source: "rule" | "llm" = "rule",
   ): void {
+    // LRU 上限保护：records Map 超过上限时淘汰最久未访问的记录
+    if (this.records.size >= this.opts.maxRecords && !this.records.has(toolKey)) {
+      const oldestKey = this.findOldestRecordKey();
+      if (oldestKey) {
+        this.records.delete(oldestKey);
+      }
+    }
+
     let record = this.records.get(toolKey);
     if (!record) {
       record = {
@@ -226,6 +237,22 @@ export class ToolQualityManager extends EventEmitter {
     if (penalty < this.opts.maxPenalty) {
       this.emit("tool:penalty", { toolKey, toolName, penalty, successRate: this.computeSuccessRate(record) });
     }
+  }
+
+  /**
+   * 找出 lastExecutionAt 最早（或 null）的记录键，用于 LRU 淘汰。
+   */
+  private findOldestRecordKey(): string | null {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    for (const [key, record] of this.records) {
+      const time = record.lastExecutionAt ?? 0;
+      if (time < oldestTime) {
+        oldestTime = time;
+        oldestKey = key;
+      }
+    }
+    return oldestKey;
   }
 
   /**

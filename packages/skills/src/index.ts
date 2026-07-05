@@ -83,6 +83,7 @@ export type {
 //   EvolutionType: FIX/DERIVED/CAPTURED 三态语义化演化分类
 //   LineageStore: 多父 DAG + 环检测 + 祖先/后代查询
 //   .skill_id sidecar: 技能目录可移植身份
+//   双向映射 + 派生率属性 + suggestions_by_type（v0.69.3 增强）
 export type {
   EvolutionType,
   SkillOrigin as EvolutionSkillOrigin,
@@ -90,6 +91,7 @@ export type {
   LineageTreeNode,
   LineageQueryResult,
   EvolutionSuggestion,
+  ExecutionAnalysis,
 } from "./evolution-types";
 export {
   requiresParent,
@@ -97,6 +99,12 @@ export {
   shouldDeactivateParent,
   describeEvolutionType,
   describeEvolutionTypeEn,
+  toSkillOrigin,
+  fromSkillOrigin,
+  SkillMetricsRecord,
+  suggestionsByType,
+  MAX_RECENT_ANALYSES,
+  MAX_RECENT_SUGGESTIONS,
 } from "./evolution-types";
 export {
   LineageStore,
@@ -105,3 +113,69 @@ export {
   ensureSkillIdSidecar,
   generateSkillId,
 } from "./lineage-store";
+
+// PatchApplier — 技能内容补丁应用器（借鉴 OpenSpace patch.py）
+//   4 pass seek_sequence + 块锚定匹配 + 类似行建议 + 两阶段原子应用
+export {
+  seekSequence,
+  blockAnchorMatch,
+  findSimilarLines,
+  isPathSafe,
+  applyPatch,
+  applySearchReplaceBlocks,
+  PatchError,
+} from "./patch-applier";
+export type {
+  SearchReplaceBlock,
+  PatchHunk,
+  PatchResult,
+} from "./patch-applier";
+
+// SkillIdCorrector — LLM 幻觉 skill_id 自适应纠错（借鉴 OpenSpace analyzer.py）
+//   候选数驱动阈值 + 歧义保护
+export {
+  correctSkillId,
+  correctSkillIds,
+  extractNamePrefix,
+} from "./skill-id-corrector";
+export type {
+  SkillIdCandidate,
+  CorrectionResult,
+} from "./skill-id-corrector";
+
+// SkillNameSanitizer — 技能名规范化（借鉴 OpenSpace evolver.py）
+//   lowercase + 折叠 + 单词边界截断 + 派生名生成
+export {
+  sanitizeSkillName,
+  isSanitizedName,
+  deriveSkillName,
+} from "./skill-name-sanitizer";
+
+// SkillContentUtils — 技能内容工具函数（借鉴 OpenSpace skill_utils.py）
+//   两级安全规则 + YAML 自动引号 + CHANGE_SUMMARY 提取 + 非阻塞验证
+export {
+  checkSafety,
+  isSkillSafe,
+  needsYamlQuote,
+  yamlQuote,
+  setFrontmatterField,
+  extractChangeSummary,
+  validateSkillDir,
+} from "./skill-content-utils";
+export type {
+  SafetyLevel,
+  SafetyCheckResult,
+  ValidationResult,
+} from "./skill-content-utils";
+
+// EmbeddingCache — 内容寻址 embedding 缓存（借鉴 OpenSpace skill_ranker.py）
+//   sha256 内容寻址 + 自动失效 + 主动清理 + 缓存版本 pinning
+export {
+  EmbeddingCache,
+  textHash,
+  buildCacheKey,
+} from "./embedding-cache";
+export type {
+  CacheEntry,
+  EmbeddingCacheOptions,
+} from "./embedding-cache";

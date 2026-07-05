@@ -14,6 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import type { SkillLineage, LineageTreeNode, LineageQueryResult, EvolutionType } from "./evolution-types";
 import { shouldDeactivateParent } from "./evolution-types";
 
@@ -61,29 +62,37 @@ export class LineageStore {
     this.loaded = true;
     try {
       const content = fs.readFileSync(this.storePath, "utf-8");
-      const data = JSON.parse(content) as { lineages: SkillLineage[]; nameIndex: Array<[string, string]> };
-      for (const lineage of data.lineages ?? []) {
-        this.lineages.set(lineage.skillId, lineage);
+      const data = JSON.parse(content) as { lineages?: SkillLineage[]; nameIndex?: Array<[string, string]> };
+      // 运行时校验：避免损坏数据导致后续 parentIds 等访问崩溃
+      const lineages = Array.isArray(data?.lineages) ? data.lineages : [];
+      const nameIndex = Array.isArray(data?.nameIndex) ? data.nameIndex : [];
+      for (const lineage of lineages) {
+        if (lineage && typeof lineage.skillId === "string" && Array.isArray(lineage.parentIds)) {
+          this.lineages.set(lineage.skillId, lineage);
+        }
       }
-      for (const [name, id] of data.nameIndex ?? []) {
-        this.nameIndex.set(name, id);
+      for (const entry of nameIndex) {
+        if (Array.isArray(entry) && typeof entry[0] === "string" && typeof entry[1] === "string") {
+          this.nameIndex.set(entry[0], entry[1]);
+        }
       }
-    } catch {
-      // 文件不存在或解析失败：空状态启动
+    } catch (err) {
+      // 文件不存在或解析失败：空状态启动（记录原因便于排查）
+      process.stderr.write(`[LineageStore] load failed: ${err}\n`);
     }
   }
 
+  /**
+   * 持久化到磁盘。
+   * @throws 写入失败时抛出错误（持久化层不静默吞错）
+   */
   private persist(): void {
-    try {
-      fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
-      const data = {
-        lineages: Array.from(this.lineages.values()),
-        nameIndex: Array.from(this.nameIndex.entries()),
-      };
-      atomicWriteFileSync(this.storePath, JSON.stringify(data, null, 2));
-    } catch (err) {
-      process.stderr.write(`[LineageStore] persist failed: ${err}\n`);
-    }
+    fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
+    const data = {
+      lineages: Array.from(this.lineages.values()),
+      nameIndex: Array.from(this.nameIndex.entries()),
+    };
+    atomicWriteFileSync(this.storePath, JSON.stringify(data, null, 2));
   }
 
   // ── 写入 ────────────────────────────────────────────────
@@ -356,14 +365,11 @@ const SKILL_ID_FILENAME = ".skill_id";
 
 /**
  * 为技能目录写入 .skill_id sidecar。
+ * @throws 写入失败时抛出错误（调用方应处理，避免身份丢失）
  */
 export function writeSkillIdSidecar(skillDir: string, skillId: string): void {
-  try {
-    const sidecarPath = path.join(skillDir, SKILL_ID_FILENAME);
-    atomicWriteFileSync(sidecarPath, skillId);
-  } catch (err) {
-    process.stderr.write(`[SkillIdSidecar] write failed: ${err}\n`);
-  }
+  const sidecarPath = path.join(skillDir, SKILL_ID_FILENAME);
+  atomicWriteFileSync(sidecarPath, skillId);
 }
 
 /**
@@ -393,11 +399,12 @@ export function ensureSkillIdSidecar(skillDir: string, existingId?: string): str
 }
 
 /**
- * 生成技能 ID（uuid8 格式）。
+ * 生成技能 ID（8 位 base36 格式）。
+ *
+ * 使用 crypto.randomBytes 保证足够的随机性，避免 Math.random() 短随机分量导致的碰撞。
  */
 export function generateSkillId(): string {
-  // 使用时间戳 + 随机数生成 8 位 ID
-  const timestamp = Date.now().toString(36).slice(-4);
-  const random = Math.random().toString(36).slice(2, 6);
-  return `${timestamp}${random}`;
+  // 4 字节随机数 → base36，取 8 位
+  const random = crypto.randomBytes(4).readUInt32BE(0);
+  return random.toString(36).padStart(8, "0").slice(0, 8);
 }

@@ -165,6 +165,11 @@ export class EvolutionTriggers extends EventEmitter {
   /**
    * 检测工具退化，对成功率跌破阈值的工具触发演化。
    *
+   * 借鉴 OpenSpace evolver.py 的"已处理集合 + 恢复时清理"：
+   *   - 当某工具恢复（不再在 problematic 列表），自动清理其 addressed set
+   *   - 下次再退化时所有依赖技能被重新评估
+   *   - 这是状态驱动的反循环，比时间冷却更精确
+   *
    * @param report ToolQualityManager 的质量报告
    * @returns 已确认的演化建议列表
    */
@@ -172,6 +177,9 @@ export class EvolutionTriggers extends EventEmitter {
     if (this.evolutionIterations >= this.config.maxEvolutionIterations) {
       return [];
     }
+
+    // 状态驱动反循环：清理已恢复工具的 addressed 记录
+    this.cleanupRecoveredTools(report);
 
     const confirmed: EvolutionSuggestion[] = [];
     const now = Date.now();
@@ -220,6 +228,28 @@ export class EvolutionTriggers extends EventEmitter {
     return confirmed;
   }
 
+  /**
+   * 清理已恢复工具的 addressed 记录（借鉴 OpenSpace evolver.py line 336-343）。
+   *
+   * 当某工具不再出现在 problematicTools 中，说明已恢复，
+   * 自动清理其 addressed set，下次再退化时所有依赖技能被重新评估。
+   */
+  private cleanupRecoveredTools(report: ToolQualityReport): void {
+    const problematicKeys = new Set(report.problematicTools.map((t) => t.toolKey));
+    const recovered: string[] = [];
+
+    for (const key of this.addressedDegradations.keys()) {
+      if (!problematicKeys.has(key)) {
+        recovered.push(key);
+      }
+    }
+
+    for (const key of recovered) {
+      this.addressedDegradations.delete(key);
+      this.emit("evolution:tool-recovered", { toolKey: key });
+    }
+  }
+
   // ── Trigger 3: metric-monitor ─────────────────────────
 
   /**
@@ -232,6 +262,9 @@ export class EvolutionTriggers extends EventEmitter {
     if (this.evolutionIterations >= this.config.maxEvolutionIterations) {
       return [];
     }
+
+    // 状态驱动反循环：清理已恢复技能的 addressed 记录
+    this.cleanupRecoveredMetrics(metrics);
 
     const confirmed: EvolutionSuggestion[] = [];
     const now = Date.now();
@@ -287,6 +320,36 @@ export class EvolutionTriggers extends EventEmitter {
     return confirmed;
   }
 
+  /**
+   * 清理已恢复技能的 addressed 记录（与 cleanupRecoveredTools 对称）。
+   *
+   * 当技能指标恢复良好（完成率 ≥ threshold 或应用次数不足触发条件），
+   * 自动清理其 addressed set，下次再退化时重新评估。
+   */
+  private cleanupRecoveredMetrics(metrics: SkillMetrics[]): void {
+    const stillProblematic = new Set(
+      metrics
+        .filter((m) => {
+          if (m.applied < this.config.metricMonitorMinSelections) return false;
+          const rate = m.applied > 0 ? m.completions / m.applied : 1.0;
+          return rate < this.config.metricMonitorLowCompletionThreshold;
+        })
+        .map((m) => m.skillId),
+    );
+
+    const recovered: string[] = [];
+    for (const key of this.addressedMetrics.keys()) {
+      if (!stillProblematic.has(key)) {
+        recovered.push(key);
+      }
+    }
+
+    for (const key of recovered) {
+      this.addressedMetrics.delete(key);
+      this.emit("evolution:metric-recovered", { skillId: key });
+    }
+  }
+
   // ── 统计 ────────────────────────────────────────────────
 
   getStats(): {
@@ -333,8 +396,11 @@ export class EvolutionTriggers extends EventEmitter {
         return false;
       }
     } else {
-      // 无 LLM 确认函数：标记为未确认但不阻塞（用于测试）
+      // 无 LLM 确认函数：不 emit "evolution:confirmed"（避免绕过 LLM 二次确认）
+      // 仅 emit "evolution:needs-confirmation" 让上层决定是否手动确认
       suggestion.llmConfirmed = false;
+      this.emit("evolution:needs-confirmation", suggestion);
+      return false;
     }
 
     this.evolutionIterations++;

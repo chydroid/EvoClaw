@@ -400,7 +400,8 @@ export class RecordingManager {
     if (!active) return;
 
     const metadataPath = path.join(active.dir, "metadata.json");
-    const tmpPath = metadataPath + ".tmp";
+    // 使用进程 ID + 时间戳避免多进程并发时 tmp 文件互相覆盖
+    const tmpPath = `${metadataPath}.${process.pid}.${Date.now()}.tmp`;
     try {
       const fd = fs.openSync(tmpPath, "w");
       try {

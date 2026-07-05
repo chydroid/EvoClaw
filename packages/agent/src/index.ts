@@ -541,3 +541,15 @@ export type {
 //   第 2 轮起 cap 单条消息；第 5 轮起 truncate 历史；首轮后剥离技能上下文
 export { IterationContextPolicy } from "./iteration-context-policy";
 export type { IterationPolicyConfig, PolicyMessage, PolicyResult } from "./iteration-context-policy";
+
+// MessageUtils — 消息工具函数（借鉴 OpenSpace message_utils.py）
+//   cap_message_content 头尾保留 + 截断通知注入 + 分节截断常量
+export {
+  capMessageContent,
+  injectTruncationNotice,
+  capMessages,
+  extractErrorFirstLine,
+  SECTION_MAX_CHARS,
+  getMaxLenForMessage,
+} from "./message-utils";
+export type { AgentMessage } from "./message-utils";

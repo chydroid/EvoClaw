@@ -110,7 +110,8 @@ export class ConversationFormatter {
 
     // 步骤 1：单条截断
     const cappedMessages = messages.map((msg) => {
-      if (msg.content.length > opts.maxMessageLength) {
+      const contentLen = msg.content?.length ?? 0;
+      if (contentLen > opts.maxMessageLength) {
         return {
           ...msg,
           content: msg.content.slice(0, opts.maxMessageLength) + "\n... [truncated]",

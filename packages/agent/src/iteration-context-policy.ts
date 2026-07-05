@@ -125,7 +125,8 @@ export class IterationContextPolicy {
     if (iteration >= this.config.capStartIteration) {
       let capCount = 0;
       working = working.map((msg) => {
-        if (msg.content.length > this.config.capMaxMessageLength) {
+        const contentLen = msg.content?.length ?? 0;
+        if (contentLen > this.config.capMaxMessageLength) {
           capCount++;
           return {
             ...msg,
