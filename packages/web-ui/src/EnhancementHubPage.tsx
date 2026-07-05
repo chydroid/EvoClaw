@@ -467,7 +467,7 @@ async function fetchCapabilityMetrics(path?: string): Promise<Record<string, unk
 }
 
 export function EnhancementHubPage(): React.ReactElement {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [serviceMap, setServiceMap] = useState<Record<string, boolean>>({});
   const [metricsMap, setMetricsMap] = useState<Record<string, Record<string, unknown> | null>>({});
   const [loading, setLoading] = useState(true);
@@ -559,7 +559,7 @@ export function EnhancementHubPage(): React.ReactElement {
                   <div style={s.subtitle}>{cap.nameEn} · {cap.version} · {cap.module}</div>
                 </div>
               </div>
-              <div style={s.desc}>{cap.description}</div>
+              <div style={s.desc}>{lang === "zh" ? cap.description : (cap.descriptionEn || cap.description)}</div>
               <div style={s.tags}>
                 {cap.tags.map((tag) => (
                   <span key={tag} style={s.tag}>{tag}</span>

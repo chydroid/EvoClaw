@@ -15,6 +15,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { atomicWriteFile } from "@evoclaw/infrastructure";
 
 export interface PatchHunk {
   relativePath: string;
@@ -382,29 +383,4 @@ function isPathSafe(workspaceRoot: string, absPath: string): boolean {
   }
 }
 
-// ── 原子写入 ─────────────────────────────────────────────────
 
-async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-  try {
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, { encoding: "utf-8" });
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      /* ignore */
-    }
-    throw err;
-  }
-}

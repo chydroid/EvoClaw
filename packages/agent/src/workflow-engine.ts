@@ -18,6 +18,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFile } from "@evoclaw/infrastructure";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -101,34 +102,6 @@ const DEFAULT_CONFIG: ResolvedConfig = {
   defaultTimeoutMs: 30_000,
   defaultRetries: 0,
 };
-
-/**
- * 原子写入文件：temp + fsync + rename。
- * 临时文件名加 `.pid.timestamp.tmp` 后缀，遵循 AGENTS.md 规则。
- */
-function atomicWriteFile(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-}
 
 /** 休眠工具 */
 function sleep(ms: number): Promise<void> {
@@ -384,8 +357,7 @@ export class WorkflowEngine {
       savedAt: Date.now(),
     };
     const content = JSON.stringify(payload, null, 2);
-    // 原子写入在同步函数中实现，这里包一层 await 让接口对调用方异步
-    await Promise.resolve(atomicWriteFile(checkpointPath, content));
+    await atomicWriteFile(checkpointPath, content);
   }
 
   // ── 私有：执行细节 ────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { atomicWriteFile } from "@evoclaw/infrastructure";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -56,36 +57,6 @@ export interface CheckpointStore {
   load(id: string): Promise<SessionCheckpoint | null>;
   list(sessionId?: string): Promise<CheckpointMeta[]>;
   delete(id: string): Promise<void>;
-}
-
-// ── 原子写入工具 ────────────────────────────────────────────────────────────
-
-/**
- * 原子写入：temp + fsync + rename。
- * 临时文件名加 `.pid.timestamp.tmp` 后缀，遵循 AGENTS.md 规则。
- */
-function atomicWriteFile(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
 }
 
 /** 校验 checkpoint 必需字段 */
@@ -145,7 +116,7 @@ export class FileCheckpointStore implements CheckpointStore {
   async save(checkpoint: SessionCheckpoint): Promise<void> {
     const filePath = this.checkpointPath(checkpoint.sessionId, checkpoint.id);
     const content = JSON.stringify(checkpoint, null, 2);
-    await Promise.resolve(atomicWriteFile(filePath, content));
+    await atomicWriteFile(filePath, content);
   }
 
   async load(id: string): Promise<SessionCheckpoint | null> {

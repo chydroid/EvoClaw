@@ -14,6 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { atomicWriteFile } from "@evoclaw/infrastructure";
 
 export interface CodeSymbol {
   name: string;
@@ -333,6 +334,64 @@ function extractSymbols(content: string, filePath: string, language: string): Co
   return symbols;
 }
 
+/** 剥离字符串字面量与行注释，保留长度（替换为空格），避免字符串/注释内的花括号被误统计 */
+function stripStringsAndComments(line: string, language: string): string {
+  let result = "";
+  let i = 0;
+  let inString: '"' | "'" | "`" | null = null;
+  let escape = false;
+  while (i < line.length) {
+    const ch = line[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        result += " ";
+      } else if (ch === "\\") {
+        escape = true;
+        result += " ";
+      } else if (ch === inString) {
+        inString = null;
+        result += " ";
+      } else {
+        result += " ";
+      }
+    } else {
+      // 行注释：JS/TS/Rust/Go/C/C++/Java 等使用 //
+      if (
+        (language === "javascript" ||
+          language === "typescript" ||
+          language === "rust" ||
+          language === "go" ||
+          language === "c" ||
+          language === "c++" ||
+          language === "java" ||
+          language === "csharp" ||
+          language === "kotlin" ||
+          language === "swift") &&
+        ch === "/" &&
+        line[i + 1] === "/"
+      ) {
+        result += " ".repeat(line.length - i);
+        break;
+      }
+      // Python/Shell/Ruby 行注释
+      if (ch === "#") {
+        result += " ".repeat(line.length - i);
+        break;
+      }
+      // 字符串开始
+      if (ch === '"' || ch === "'" || ch === "`") {
+        inString = ch;
+        result += " ";
+      } else {
+        result += ch;
+      }
+    }
+    i++;
+  }
+  return result;
+}
+
 function findBlockEnd(lines: string[], startLine: number, language: string): number {
   const bracedLangs = new Set([
     "typescript", "javascript", "java", "csharp", "c++", "c",
@@ -342,7 +401,8 @@ function findBlockEnd(lines: string[], startLine: number, language: string): num
     let depth = 0;
     let foundOpen = false;
     for (let i = startLine; i < lines.length; i++) {
-      for (const ch of lines[i]) {
+      const stripped = stripStringsAndComments(lines[i], language);
+      for (const ch of stripped) {
         if (ch === "{") {
           depth++;
           foundOpen = true;
@@ -381,6 +441,11 @@ function scoreMatch(name: string, query: string): number {
 
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
+  // 长度截断：超长字符串避免 O(m*n) 时间+内存 DoS
+  const MAX_LEN = 200;
+  if (a.length > MAX_LEN || b.length > MAX_LEN) {
+    return Math.abs(a.length - b.length);
+  }
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
@@ -481,23 +546,4 @@ function shouldSkipForRename(line: string, lang: string, oldName: string): boole
   return false;
 }
 
-async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, { encoding: "utf-8" });
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      /* ignore */
-    }
-    throw err;
-  }
-}
+
