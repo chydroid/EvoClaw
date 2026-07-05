@@ -11,3 +11,8 @@ export { registerXlsxTools } from "./xlsx-tools";
 export { registerPptxTools } from "./pptx-tools";
 export { registerVideoTools } from "./video-tools";
 export { registerImageTools } from "./image-tools";
+// v0.70: 一线 AI Agent 能力对齐工具集
+export { registerCodeIntelTools } from "./code-intelligence-tools";
+export type { CodeIntelToolDeps } from "./code-intelligence-tools";
+export { registerVisionBatchTools } from "./vision-batch-tools";
+export type { VisionBatchToolDeps } from "./vision-batch-tools";

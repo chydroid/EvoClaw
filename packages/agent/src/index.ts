@@ -553,3 +553,89 @@ export {
   getMaxLenForMessage,
 } from "./message-utils";
 export type { AgentMessage } from "./message-utils";
+
+// ────────────────────────────────────────────────────────────────────────────
+// v0.70: 一线 AI Agent 能力对齐模块
+// 对标 Claude Code / Cursor / Devin / Manus 的核心能力域
+// ────────────────────────────────────────────────────────────────────────────
+
+// GitOperations — Git 一等公民工具集（对标 Claude Code git 工具）
+//   status/diff/log/blame/show/branch/add/commit/push/pull/checkout/merge/rebase
+export { GitOperations } from "./git-operations";
+export type {
+  GitOptions,
+  GitDiffResult,
+  GitLogEntry,
+  GitBlameLine,
+  GitStatusEntry,
+} from "./git-operations";
+
+// CodeIntelligence — 代码智能（对标 Cursor 代码库语义索引）
+//   parseSymbols/searchSymbols/findReferences/planRename/applyRename
+export { CodeIntelligence } from "./code-intelligence";
+export type {
+  CodeSymbol,
+  CodeSearchResult,
+  ReferenceResult,
+  RenamePlan,
+} from "./code-intelligence";
+
+// apply-patch-tool — 通用 SEARCH/REPLACE patch 应用工具（对标 Claude Code Edit/MultiEdit）
+//   4-pass 匹配 + 路径逃逸检查 + 两阶段原子应用
+export { parsePatch, applyPatch } from "./apply-patch-tool";
+export type { PatchHunk, PatchResult } from "./apply-patch-tool";
+
+// VisionAnalyzer — VLM 视觉分析（对标 Claude Computer Use / Manus）
+//   analyze/describeScreen/findElements/detectUIIssues/compareImages
+export { VisionAnalyzer } from "./vision-analyzer";
+export type {
+  VisionAnalysisRequest,
+  BoundingBox,
+  UIElement,
+  VisionAnalysisResult,
+  VisionAnalyzerConfig,
+  VisionChatFn,
+} from "./vision-analyzer";
+
+// BatchExecutor — 批量并发执行（对标 Devin 多步并行）
+//   executeParallel/executeSequential/executeDAG + 限速 + 重试 + 失败隔离
+export { BatchExecutor } from "./batch-executor";
+export type {
+  BatchTask,
+  BatchTaskResult,
+  BatchResult,
+  BatchExecutorConfig,
+  BatchToolExecutorFn,
+} from "./batch-executor";
+
+// WorkflowEngine — DAG 工作流引擎（对标 Manus 长程任务编排）
+//   validate/execute/resume/saveCheckpoint + 条件分支 + 并行节点 + 状态持久化
+export { WorkflowEngine } from "./workflow-engine";
+export type {
+  WorkflowNode,
+  WorkflowEdge,
+  WorkflowDefinition,
+  WorkflowNodeResult,
+  WorkflowExecutionResult,
+  WorkflowExecutorFn,
+  WorkflowEngineConfig,
+} from "./workflow-engine";
+
+// SessionCheckpointManager — 会话检查点（对标 Devin session resume）
+//   save/restore/list/delete/diff + FileCheckpointStore
+export { SessionCheckpointManager, FileCheckpointStore } from "./session-checkpoint";
+export type {
+  SessionCheckpoint,
+  CheckpointStore,
+  CheckpointMeta,
+} from "./session-checkpoint";
+
+// DLQBatchRetry — 死信队列批量重试（对标生产级 MQ 治理）
+//   retryAll/retryByTopic/retryWithFilter + 指数退避 + 失败隔离
+export { DLQBatchRetry } from "./dlq-batch-utils";
+export type {
+  DLQEntry,
+  DLQBatchRetryResult,
+  DLQRetryHandler,
+  DLQBatchConfig,
+} from "./dlq-batch-utils";

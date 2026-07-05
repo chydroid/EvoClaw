@@ -35,6 +35,8 @@ const SERVER_VERSION = getServerVersion();
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
+import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
+import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
@@ -62,6 +64,8 @@ import {
   registerPptxTools,
   registerVideoTools,
   registerImageTools,
+  registerCodeIntelTools,
+  registerVisionBatchTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -139,6 +143,11 @@ export class EvoClawServer {
   private featureFlagStore: FeatureFlagStore;
   private evalRunner: EvalRunner;
 
+  // ── v0.70: 一线 AI Agent 能力对齐模块 ──
+  private gitOperations: GitOperations;
+  private codeIntelligence: CodeIntelligence;
+  private visionAnalyzer: VisionAnalyzer;
+
   constructor() {
     this.registry = new ServiceRegistry();
     this.eventBus = new EventBus();
@@ -185,6 +194,15 @@ export class EvoClawServer {
 
     this.skillIndex = new SkillIndex();
     this.registry.registerService("skillIndex", this.skillIndex);
+
+    // ── v0.70: 一线 AI Agent 能力对齐模块初始化 ──
+    const projectRoot = path.resolve(__dirname, "..", "..", "..");
+    this.gitOperations = new GitOperations({ cwd: projectRoot });
+    this.codeIntelligence = new CodeIntelligence(projectRoot);
+    this.visionAnalyzer = new VisionAnalyzer(this.createVisionChatFn());
+    this.registry.registerService("gitOperations", this.gitOperations);
+    this.registry.registerService("codeIntelligence", this.codeIntelligence);
+    this.registry.registerService("visionAnalyzer", this.visionAnalyzer);
 
     // ── Feature Flag Store (runtime feature toggles) ──
     this.featureFlagStore = new FeatureFlagStore({
@@ -852,6 +870,9 @@ export class EvoClawServer {
     this.registerBootstrapTool();
     this.registerPermissionTools();
     this.registerBrowserTools();
+    // v0.70: 注册代码智能 + VLM + 批量执行 + 工作流 + 检查点 + DLQ 工具
+    this.registerCodeIntelToolsV70();
+    this.registerVisionBatchToolsV70();
 
     await this.emailClient.initialize();
     await this.scheduleManager.initialize();
@@ -1751,6 +1772,146 @@ export class EvoClawServer {
     registerImageTools(
       this.agentModelExecutor
     );
+  }
+
+  // ── v0.70: 一线 AI Agent 能力对齐工具注册 ──
+
+  /** 注册代码智能工具（git + code search + apply_patch） */
+  private registerCodeIntelToolsV70(): void {
+    registerCodeIntelTools({
+      executor: this.agentModelExecutor,
+      permissionManager: this.permissionManager,
+      gitOps: this.gitOperations,
+      codeIntel: this.codeIntelligence,
+    });
+  }
+
+  /** 注册 VLM + 批量执行 + 工作流 + 检查点 + DLQ 工具 */
+  private registerVisionBatchToolsV70(): void {
+    registerVisionBatchTools({
+      executor: this.agentModelExecutor,
+      visionAnalyzer: this.visionAnalyzer,
+      toolExecutorFn: this.createToolExecutorFn(),
+      checkpointBaseDir: path.resolve(__dirname, "..", "..", "..", "data", "checkpoints"),
+      dlqHandler: this.createDlqHandler(),
+    });
+  }
+
+  /**
+   * 创建 VisionChatFn — VLM 调用入口
+   *
+   * 优先使用 OpenAI 兼容 API（OPENAI_API_KEY + OPENAI_BASE_URL）。
+   * 如果未配置 OPENAI_API_KEY，返回一个抛错的 chatFn，让 vision_analyze 工具优雅失败。
+   */
+  private createVisionChatFn(): VisionChatFn {
+    return async (messages: Array<{ role: string; content: unknown }>, options?: { image?: { base64: string; mimeType: string }; maxTokens?: number }) => {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        throw new Error("Vision analysis requires OPENAI_API_KEY environment variable. Configure it to enable vision_analyze / vision_describe_screen / vision_find_elements / vision_detect_issues / vision_compare_images tools.");
+      }
+      const baseURL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+      const model = process.env.OPENAI_VISION_MODEL || "gpt-4o";
+      const maxTokens = options?.maxTokens ?? 1000;
+
+      // 构建 OpenAI 兼容的消息格式（content 支持 text + image_url 数组）
+      const formattedMessages = messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      // 如果提供了 image，将其附加到第一条 user 消息
+      if (options?.image) {
+        const userMsg = formattedMessages.find((m) => m.role === "user");
+        if (userMsg && typeof userMsg.content === "string") {
+          userMsg.content = [
+            { type: "text", text: userMsg.content },
+            { type: "image_url", image_url: { url: `data:${options.image!.mimeType};base64,${options.image!.base64}` } },
+          ];
+        }
+      }
+
+      const response = await fetch(`${baseURL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: formattedMessages,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(`Vision API error ${response.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error("Vision API returned empty content");
+      }
+      return content;
+    };
+  }
+
+  /**
+   * 创建 ToolExecutorFn — 用于 batch_execute 和 workflow_execute
+   *
+   * 委托给 AgentModelExecutor 的工具执行机制。
+   * 通过动态查找 executor 内部注册的工具 handler 来执行。
+   */
+  private createToolExecutorFn(): BatchToolExecutorFn {
+    return async (toolName: string, params: Record<string, unknown>) => {
+      // 使用 executor 的内部工具执行接口
+      // AgentModelExecutor 暴露 executeTool 方法（或类似）
+      const executor = this.agentModelExecutor as unknown as {
+        executeTool?: (name: string, params: Record<string, unknown>) => Promise<unknown>;
+        tools?: Map<string, { handler: (params: Record<string, unknown>) => Promise<unknown> }>;
+      };
+      // 路径 1：标准 executeTool 方法
+      if (typeof executor.executeTool === "function") {
+        return await executor.executeTool(toolName, params);
+      }
+      // 路径 2：从 tools Map 中查找 handler
+      if (executor.tools && executor.tools.has(toolName)) {
+        const tool = executor.tools.get(toolName);
+        if (tool && typeof tool.handler === "function") {
+          return await tool.handler(params);
+        }
+      }
+      throw new Error(`Tool not found or not executable: ${toolName}`);
+    };
+  }
+
+  /**
+   * 创建 DLQRetryHandler — 用于 dlq_retry_batch
+   *
+   * 委托给 GatewayServer 的 DeadLetterQueue.requeue 或类似方法。
+   * 如果 DLQ 未配置或不可用，返回 undefined（dlq_retry_batch 工具会优雅失败）。
+   */
+  private createDlqHandler(): DLQRetryHandler | undefined {
+    return async (entry) => {
+      // 通过 registry 获取 DeadLetterQueue 服务
+      const dlq = this.registry.resolveService("deadLetterQueue") as unknown as {
+        requeue?: (entry: { id: string; topic: string; payload: unknown }) => Promise<void>;
+        retry?: (entry: { id: string; topic: string; payload: unknown }) => Promise<void>;
+      } | null;
+      if (!dlq) {
+        throw new Error("DeadLetterQueue service not available in registry");
+      }
+      if (typeof dlq.requeue === "function") {
+        await dlq.requeue({ id: entry.id, topic: entry.topic, payload: entry.payload });
+        return;
+      }
+      if (typeof dlq.retry === "function") {
+        await dlq.retry({ id: entry.id, topic: entry.topic, payload: entry.payload });
+        return;
+      }
+      throw new Error("DeadLetterQueue does not expose requeue/retry method");
+    };
   }
 
   getRegistry(): ServiceRegistry {
