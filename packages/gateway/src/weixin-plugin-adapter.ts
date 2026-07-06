@@ -781,6 +781,12 @@ export class WeixinPluginAdapter {
     try {
       const baseUrl = (account.baseUrl || WEIXIN_API_BASE).replace(/\/+$/, "");
       const url = `${baseUrl}/ilink/bot/getupdates`;
+      // fetch 超时：120 秒（微信 long polling 可能较久，但网络中断时应快速失败）
+      // 使用 AbortSignal.any 组合外部 abort 和超时（Node 18+ 支持）
+      const timeoutSignal = AbortSignal.timeout(120_000);
+      const combinedSignal = abortSignal
+        ? AbortSignal.any([abortSignal, timeoutSignal])
+        : timeoutSignal;
       const response = await fetch(url, {
         method: "POST",
         headers: buildHeaders(account.token),
@@ -791,7 +797,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
-        signal: abortSignal,
+        signal: combinedSignal,
       });
 
       if (!response.ok) {
@@ -828,7 +834,19 @@ export class WeixinPluginAdapter {
       return data;
     } catch (err: any) {
       if (err?.name === "AbortError") return null;
-      process.stderr.write("[Weixin] getupdates error:" + " " + err + "\n");
+      // 网络错误（fetch failed / TimeoutError）打印简洁提示，避免刷屏
+      const isTimeout = err?.name === "TimeoutError";
+      const isNetworkError = err instanceof TypeError && err.message?.includes("fetch failed");
+      if (isTimeout) {
+        process.stderr.write("[Weixin] getupdates timeout (120s), will retry with backoff\n");
+      } else if (isNetworkError) {
+        const cause = (err.cause as { code?: string; message?: string })?.code
+          || (err.cause as { code?: string; message?: string })?.message
+          || "network error";
+        process.stderr.write(`[Weixin] getupdates network error: ${cause}, will retry with backoff\n`);
+      } else {
+        process.stderr.write("[Weixin] getupdates error:" + " " + err + "\n");
+      }
       return null;
     }
   }
@@ -1662,7 +1680,22 @@ export class WeixinPluginAdapter {
       while (!abortController.signal.aborted) {
         try {
           const updates = await this.getUpdates(account, getUpdatesBuf, abortController.signal);
-          consecutiveErrors = 0;
+
+          // 只有成功获取响应（非 null）才重置错误计数。
+          // null 表示 HTTP 错误 / 业务错误 / 网络错误，应触发退避避免无限快速重试。
+          if (updates !== null) {
+            consecutiveErrors = 0;
+          } else {
+            consecutiveErrors++;
+            process.stderr.write(`[Weixin] getupdates returned null (${consecutiveErrors} consecutive)\n`);
+            if (consecutiveErrors >= 3) {
+              process.stderr.write("[Weixin] 3 consecutive null responses, backing off 30s...\n");
+              await this.backoffSleep(abortController.signal, 30000);
+            } else {
+              await this.backoffSleep(abortController.signal, 2000);
+            }
+            continue;
+          }
 
           // Session 过期，停止监听
           if (updates && "expired" in updates) {
