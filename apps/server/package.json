@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/server",
-  "version": "0.70.3",
+  "version": "0.70.5",
   "private": true,
   "description": "EvoClaw 主服务入口 - 组装各层并启动系统",
   "main": "./dist/index.js",

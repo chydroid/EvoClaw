@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/core",
-  "version": "0.70.3",
+  "version": "0.70.5",
   "private": true,
   "description": "EvoClaw 核心领域模型与公共接口定义",
   "main": "./dist/index.js",

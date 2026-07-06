@@ -5,6 +5,28 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.70.5 (2026-07-06)
+
+- **新增工具**: 3 个开发体验工具对齐主流 AI Agent 编码能力
+  - `run_tests`: 自动检测测试框架（vitest/jest/pytest），运行测试并解析 pass/fail/skip 计数 + 失败详情，支持 Claude Code 式"运行测试→修复→重跑"闭环
+  - `lint`: 自动检测 eslint/prettier，运行代码检查并返回结构化错误/警告详情，支持 `--fix` 自动修复
+  - `codebase_search`: 轻量级语义代码搜索（TF 归一化打分 + 文件名加分 + 代码片段提取），对齐 Cursor codebase search 能力，不依赖嵌入模型
+- **文档**: AGENTS.md 补充"项目记忆 (Project Memory)"约定段，规范 project_memory.md 文件位置、格式和使用原则
+
+## v0.70.4 (2026-07-05)
+
+- **Bug修复**: 修复 Weixin getupdates 网络错误无限快速重试刷屏 bug
+  - pollLoop 中 `consecutiveErrors = 0` 在 getUpdates 返回 null 时仍执行，导致无限快速重试
+  - 修复：null 时递增计数 + 退避（首次 2s，3 次后 30s）
+  - fetch 加 120s 超时（AbortSignal.timeout + AbortSignal.any）
+  - 错误日志区分 TimeoutError / fetch failed / 其他，打印简洁提示
+
+## v0.70.3 (2026-07-05)
+
+- **测试补齐**: 新增 3 个回归测试（assertWithinWorkspace 路径越界被拒 + resume 旧 checkpoint 向后兼容）
+- **Bug修复**: 修复 4 个 stats 端点 `|| !!executor` 兜底导致 registered 恒为 true 的 bug，改用 `getRegisteredTools().some(t => t.name === ...)`
+- **文档**: History.md 补写 v0.70.1 / v0.70.2 版本记录
+
 ## v0.70.2 (2026-07-05)
 
 - **工程优化**: 4 处重复的 atomicWriteFile 实现统一替换为 `@evoclaw/infrastructure` 的共享版本（apply-patch-tool / code-intelligence / workflow-engine / session-checkpoint），净减 35 行代码，统一获得 mkdir recursive + fsync + 权限保留 + EXDEV/EBUSY + symlink 解析处理

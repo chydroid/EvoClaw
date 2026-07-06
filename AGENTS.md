@@ -109,6 +109,45 @@ Tool registration lives in `apps/server/src/tools/` (file-tools, browser-tools, 
 - Prefer injection and narrow mocks over broad barrels.
 - Do not edit baseline/snapshot files to silence checks without approval.
 
+## 项目记忆 (Project Memory)
+
+EvoClaw 使用分层记忆系统维护项目知识。Agent 在工作过程中应遵循以下约定：
+
+### 记忆文件位置
+
+- `project_memory.md` — 项目级规则、约束、约定（每个仓库根目录）
+- `.trae-cn/memory/projects/<project-hash>/` — 会话级记忆（自动生成）
+- `user_profile.md` — 跨项目用户偏好（自动维护）
+
+### project_memory.md 约定
+
+Agent 在以下场景应主动更新 `project_memory.md`：
+- 发现项目特有约定（命名规范、架构模式、测试习惯）
+- 遇到重复出现的约束或限制
+- 学到重要的经验教训（如"某模块不能改动"）
+- 用户明确要求记住某项规则
+
+格式约定：
+```markdown
+# Project Memory
+
+## 约定
+- [约定描述]
+
+## 约束
+- [约束描述]
+
+## 经验教训
+- [教训描述]
+```
+
+### 记忆使用原则
+
+1. **先查后做**：开始新任务前，先检查 project_memory.md 是否有相关约定
+2. **增量更新**：发现新约定时追加，不覆盖已有内容
+3. **用户确认**：重要约定变更需用户确认后写入
+4. **不过度记忆**：只记录非显而易见的项目特有知识，不记录通用编程常识
+
 ## Gotchas
 
 - `pnpm build` must complete before `pnpm typecheck` or `pnpm test` — packages reference each other's built output.

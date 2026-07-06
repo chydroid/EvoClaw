@@ -66,6 +66,7 @@ import {
   registerImageTools,
   registerCodeIntelTools,
   registerVisionBatchTools,
+  registerDevTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -1772,6 +1773,7 @@ export class EvoClawServer {
     registerImageTools(
       this.agentModelExecutor
     );
+    registerDevTools(this.agentModelExecutor);
   }
 
   // ── v0.70: 一线 AI Agent 能力对齐工具注册 ──

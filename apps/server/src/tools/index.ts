@@ -16,3 +16,5 @@ export { registerCodeIntelTools } from "./code-intelligence-tools";
 export type { CodeIntelToolDeps } from "./code-intelligence-tools";
 export { registerVisionBatchTools } from "./vision-batch-tools";
 export type { VisionBatchToolDeps } from "./vision-batch-tools";
+// v0.70: 开发体验工具集
+export { registerDevTools } from "./dev-tools";
