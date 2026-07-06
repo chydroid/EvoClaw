@@ -5,6 +5,22 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.70.6 (2026-07-06)
+
+- **IDE 集成**: 新增 `apps/mcp-server` — MCP Server 桥接应用，让任何 MCP 兼容 IDE（VS Code/Cursor/Claude Desktop/Windsurf/Zed）一键接入 EvoClaw 的 100+ 工具
+  - stdio→HTTP 桥接架构：IDE → stdio → MCP Server → HTTP → EvoClaw Gateway → 工具执行
+  - 轻量进程（~10MB），纯 JS 无 native 依赖，秒级启动
+  - 工具列表从 Gateway 动态获取，新增工具自动暴露
+  - 支持 EVOCLAW_GATEWAY_URL / EVOCLAW_API_KEY / EVOCLAW_MCP_DEBUG 环境变量
+- **安装优化**: 重型依赖 optional 化 + Dockerfile 分层缓存 + 快速启动指南
+  - playwright / @huggingface/transformers / @tencent-weixin/openclaw-weixin 移到 optionalDependencies
+  - onlyBuiltDependencies 精简（移除 sharp / tree-sitter-bash / koffi，全代码库无直接 import）
+  - pnpm-workspace.yaml 清理异常 allowBuilds 字段
+  - Dockerfile 依赖分层缓存（package.json 不变时跳过 install）+ pnpm prune --prod（生产镜像减 100-200MB）
+  - playwright-browser.ts 改为动态 import + try/catch fallback
+  - 新增 QUICKSTART.md（Docker / 源码最小安装 / 完整安装 / IDE 集成三路径）
+- **IDE 配置**: 新增 .vscode/launch.json（3 个调试配置）+ tasks.json + settings.json
+
 ## v0.70.5 (2026-07-06)
 
 - **新增工具**: 3 个开发体验工具对齐主流 AI Agent 编码能力

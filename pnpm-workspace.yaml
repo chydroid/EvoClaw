@@ -1,15 +1,3 @@
 packages:
   - "packages/*"
   - "apps/*"
-allowBuilds:
-  '-': true
-  d: true
-  e: true
-  i: true
-  m: true
-  n: true
-  o: true
-  r: true
-  t: true
-  u: true
-  x: true

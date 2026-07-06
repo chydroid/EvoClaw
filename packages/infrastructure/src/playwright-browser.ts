@@ -1,4 +1,4 @@
-import { chromium, Browser, BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
@@ -89,7 +89,16 @@ export class PlaywrightBrowser {
   async launch(): Promise<void> {
     if (this.launched) return;
 
-    this.browser = await chromium.launch({
+    let playwright: typeof import("playwright");
+    try {
+      playwright = await import("playwright");
+    } catch {
+      throw new Error(
+        "Playwright is not installed. Install with: pnpm add playwright (optional dependency)"
+      );
+    }
+
+    this.browser = await playwright.chromium.launch({
       headless: this.headless,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });

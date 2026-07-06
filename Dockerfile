@@ -11,27 +11,43 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 
 WORKDIR /app
 
-# Copy workspace config
+# Step 1: Copy only package.json files for dependency caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+COPY packages/core/package.json packages/core/
+COPY packages/agent/package.json packages/agent/
+COPY packages/gateway/package.json packages/gateway/
+COPY packages/skills/package.json packages/skills/
+COPY packages/memory/package.json packages/memory/
+COPY packages/security/package.json packages/security/
+COPY packages/evolution/package.json packages/evolution/
+COPY packages/infrastructure/package.json packages/infrastructure/
+COPY packages/scheduler/package.json packages/scheduler/
+COPY packages/reporting/package.json packages/reporting/
+COPY packages/intelligence/package.json packages/intelligence/
+COPY packages/plugin-sdk/package.json packages/plugin-sdk/
+COPY packages/email/package.json packages/email/
+COPY packages/web-ui/package.json packages/web-ui/
+COPY apps/server/package.json apps/server/
+COPY apps/cli/package.json apps/cli/
+COPY apps/mcp-server/package.json apps/mcp-server/
 
-# Copy all packages and apps
-COPY packages/ packages/
-COPY apps/ apps/
-
-# Install dependencies
+# Step 2: Install dependencies (cached unless package.json changes)
 RUN pnpm install --frozen-lockfile
 
-# Build everything
+# Step 3: Copy source code and build
+COPY packages/ packages/
+COPY apps/ apps/
 RUN pnpm build
+
+# Step 4: Prune dev dependencies for production
+RUN pnpm prune --prod
 
 # ─── Stage 2: Production ──────────────────────────────────
 FROM node:24-alpine AS production
 
-RUN corepack enable && corepack prepare pnpm@10 --activate
-
 WORKDIR /app
 
-# Copy only production deps from builder
+# Copy pruned node_modules from builder
 COPY --from=builder /app/node_modules /app/node_modules
 
 # Copy built packages
@@ -43,8 +59,6 @@ COPY pnpm-workspace.yaml package.json ./
 
 # Create data directory
 RUN mkdir -p /app/data/workspace /app/data/sessions /app/logs
-
-# Note: packages/web-ui/dist/ is already copied from builder stage in line 39
 
 # Environment
 ENV NODE_ENV=production
