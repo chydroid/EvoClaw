@@ -46,6 +46,8 @@ COPY apps/ apps/
 RUN pnpm build
 
 # Step 4: Prune dev dependencies for production
+# CI=true 避免 pnpm prune 因缺少 TTY 而交互式确认失败
+ENV CI=true
 RUN pnpm prune --prod
 
 # ─── Stage 2: Production ──────────────────────────────────
