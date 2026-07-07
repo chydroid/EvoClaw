@@ -31,6 +31,7 @@ COPY packages/reporting/package.json packages/reporting/
 COPY packages/intelligence/package.json packages/intelligence/
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/email/package.json packages/email/
+COPY packages/claude-code-tools/package.json packages/claude-code-tools/
 COPY packages/web-ui/package.json packages/web-ui/
 COPY apps/server/package.json apps/server/
 COPY apps/cli/package.json apps/cli/
