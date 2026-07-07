@@ -5,6 +5,30 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.4 (2026-07-07)
+
+**MCP 桥接流式响应支持（SSE）：长时工具调用的进度反馈与客户端取消**
+
+完成 v0.72.3 对标分析中识别的中优先级差距 — MCP 流式响应。新增 `/api/mcp/stream` SSE 端点，MCP server 桥接为 MCP logging notifications，让 IDE 客户端在长时工具调用期间看到实时进度并支持取消。验证全绿：4927 passed / 74 skipped / 0 failed（新增 17 个测试）。
+
+### 新增功能
+
+- **Gateway `/api/mcp/stream` SSE 端点** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 为 `tools/call` 提供 Server-Sent Events 流式响应。事件类型：`tool_call_start` → `tool_progress`（5s 心跳）→ `tool_result` / `tool_error` → `done`。客户端断开时通过 `AbortController` 取消工具执行，避免后台僵尸进程
+- **MCP server 流式桥接** ([apps/mcp-server/src/index.ts](file:///d:/abc/EvoClaw/apps/mcp-server/src/index.ts)): `tools/call` 优先走流式端点，将 SSE 事件转换为 MCP `logging` notifications 推送给 IDE 客户端（Cursor/Claude Desktop/VS Code 等），失败自动回退到同步 `/api/mcp` 端点保持兼容
+- **SSE 解析器模块** ([apps/mcp-server/src/sse-parser.ts](file:///d:/abc/EvoClaw/apps/mcp-server/src/sse-parser.ts)): 独立可测的 SSE 协议解析器，支持流式分片、多行 data 拼接、JSON 解析失败回退、注释行忽略
+- **`EVOCLAW_MCP_DISABLE_STREAM` 环境变量**: 设为 `true` 时禁用流式路径，纯同步调用（兼容旧版 Gateway 或调试场景）
+
+### 测试
+
+- **SSE 解析器单元测试** ([apps/mcp-server/tests/sse-parser.test.ts](file:///d:/abc/EvoClaw/apps/mcp-server/tests/sse-parser.test.ts)): 12 个测试覆盖单事件/多事件/不完整尾部/流式分片/JSON 解析失败/注释行/空数据等场景
+- **Gateway SSE 端点集成测试** ([packages/gateway/src/mcp-stream.test.ts](file:///d:/abc/EvoClaw/packages/gateway/src/mcp-stream.test.ts)): 5 个测试覆盖成功路径/工具不存在/工具抛错/非 tools/call 方法/长时运行工具
+
+### 设计决策
+
+- **流式端点独立于 MCPProtocolHandler**: `/api/mcp/stream` 直接通过 `registry` 查找工具，即使 `MCPProtocolHandler` 初始化失败（如 require 失败）仍可用，提高健壮性
+- **`res.on("close")` 而非 `req.on("close")`**: SSE 必须监听 response close（连接断开）而非 request close（请求体接收完毕），否则会在工具执行前误取消
+- **回退而非硬失败**: 流式失败时自动回退到同步端点，保证旧版 Gateway 兼容性
+
 ## v0.72.3 (2026-07-07)
 
 **与主流 AI Agent 对标后的差距收敛：5 项改进（安全/正确性/国际化/可观测性）**

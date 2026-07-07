@@ -1056,9 +1056,134 @@ export class GatewayServer {
           res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
         }
       });
+
     } catch (err) {
       process.stderr.write(`[Gateway] Failed to initialize MCP protocol handler: ${err instanceof Error ? err.message : String(err)}\n`);
     }
+
+    // MCP 流式端点（SSE）— 为长时间运行的工具调用提供进度反馈
+    // 事件类型: tool_call_start / tool_progress / tool_result / tool_error / done
+    // 客户端断开连接时通过 AbortController 取消工具执行
+    // 独立于 MCPProtocolHandler：直接通过 registry 查找工具，
+    // 即使 /api/mcp 同步端点初始化失败，流式端点仍可用
+    this.app.post("/api/mcp/stream", async (req: Request, res: Response) => {
+      const { method, params } = req.body || {};
+      if (method !== "tools/call") {
+        res.status(400).json({ error: "Only tools/call is supported on /api/mcp/stream" });
+        return;
+      }
+
+      // 设置 SSE 响应头
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no", // 禁用 nginx 缓冲
+      });
+      res.flushHeaders?.();
+
+      const callId = `mcp-stream-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+      const abortController = new AbortController();
+      const startTime = Date.now();
+
+      // 客户端断开时取消工具执行
+      // 注意：必须监听 res 的 close 事件（连接断开），而不是 req 的 close 事件
+      // （req close 在请求体接收完毕后立即触发，对 SSE 会误取消工具执行）
+      const onClose = () => {
+        // 如果响应已正常结束，则忽略 close 事件
+        if (res.writableEnded) return;
+        abortController.abort();
+      };
+      res.on("close", onClose);
+
+      const sendEvent = (eventType: string, data: Record<string, unknown>): void => {
+        try {
+          res.write(`event: ${eventType}\n`);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          // 连接已断开，忽略写入错误
+        }
+      };
+
+      try {
+        const toolName = params?.name as string;
+        const toolArgs = (params?.arguments as Record<string, unknown>) || {};
+
+        sendEvent("tool_call_start", {
+          callId,
+          toolName,
+          timestamp: Date.now(),
+        });
+
+        // 通过 registry 直接查找工具（独立于 MCPProtocolHandler）
+        const executor = this.registry.resolveService<any>("agentModelExecutor");
+        if (!executor?.registeredTools || !executor.registeredTools.has(toolName)) {
+          sendEvent("tool_error", {
+            callId,
+            error: `Tool "${toolName}" not found`,
+            timestamp: Date.now(),
+          });
+          sendEvent("done", { callId, success: false, durationMs: Date.now() - startTime });
+          res.end();
+          return;
+        }
+
+        const entry = executor.registeredTools.get(toolName);
+
+        // 发送进度心跳（每 5 秒，直到工具完成）
+        // 长时间运行的工具（browser/shell/fetch）执行期间无中间事件，
+        // 通过心跳让客户端知道调用仍在进行
+        const heartbeat = setInterval(() => {
+          sendEvent("tool_progress", {
+            callId,
+            toolName,
+            elapsedMs: Date.now() - startTime,
+            timestamp: Date.now(),
+          });
+        }, 5000);
+
+        // 包装工具调用以支持取消
+        const toolPromise = entry.handler(toolArgs);
+        const abortPromise = new Promise<never>((_, reject) => {
+          abortController.signal.addEventListener("abort", () => {
+            reject(new Error("Tool execution cancelled by client"));
+          });
+        });
+
+        const result = await Promise.race([toolPromise, abortPromise]);
+        clearInterval(heartbeat);
+
+        const resultStr = typeof result === "string" ? result : JSON.stringify(result);
+        sendEvent("tool_result", {
+          callId,
+          toolName,
+          result: resultStr,
+          timestamp: Date.now(),
+        });
+        sendEvent("done", {
+          callId,
+          success: true,
+          durationMs: Date.now() - startTime,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        const cancelled = abortController.signal.aborted;
+        sendEvent("tool_error", {
+          callId,
+          error: errorMsg,
+          cancelled,
+          timestamp: Date.now(),
+        });
+        sendEvent("done", {
+          callId,
+          success: false,
+          durationMs: Date.now() - startTime,
+        });
+      } finally {
+        res.off("close", onClose);
+        try { res.end(); } catch { /* 已关闭 */ }
+      }
+    });
 
     this.setupWebUI();
 

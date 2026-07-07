@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/mcp-server",
-  "version": "0.72.2",
+  "version": "0.72.4",
   "private": true,
   "description": "EvoClaw MCP Server — 桥接 IDE 与 EvoClaw Gateway",
   "type": "module",
