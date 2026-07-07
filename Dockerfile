@@ -7,6 +7,11 @@
 # ─── Stage 1: Builder ─────────────────────────────────────
 FROM node:24-alpine AS builder
 
+# better-sqlite3 v12.10.0 仅提供 Electron prebuilt，Node.js 运行时需从源码编译。
+# alpine 默认无 python3/make/g++，安装原生编译工具链以支持 node-gyp。
+# 多阶段构建，最终镜像不包含这些工具。
+RUN apk add --no-cache python3 make g++
+
 RUN corepack enable && corepack prepare pnpm@10 --activate
 
 WORKDIR /app

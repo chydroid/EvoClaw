@@ -7,6 +7,10 @@
 
 ## v0.71.1 (2026-07-07)
 
+- **修复 Docker CI/CD 构建失败**: Dockerfile 使用 `node:24-alpine`，alpine 默认无 python3/make/g++，导致 `pnpm install` 时 better-sqlite3 node-gyp 编译失败
+  - better-sqlite3 v12.10.0 仅提供 Electron prebuilt，Node.js 运行时需从源码编译
+  - 修复：builder stage 添加 `RUN apk add --no-cache python3 make g++`
+  - 多阶段构建，最终镜像不包含编译工具（无体积增加）
 - **修复长期误判为 better-sqlite3 的测试失败**: `packages/skills/src/embedding-cache.ts` 持久化测试此前数轮一直被误判为 better-sqlite3 native binding 不可用导致，根因实为 `ensureLoaded()` 运行时类型校验 bug
   - `CacheEntry.cacheVersion` 类型声明为 `number`，但校验代码误用 `typeof entry.cacheVersion !== "string"`
   - 所有合法 entry（cacheVersion=1，number 类型）均被 `continue` 跳过，导致 cache 永远为空 → `get()` 返回 null
