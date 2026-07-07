@@ -1010,21 +1010,34 @@ export class ProtocolAdapter {
 
     const configs = providers
       .filter((p) => p.enabled)
-      .map((p) => ({
-        id: (p.id as string) || "",
-        name: (p.name as string) || "",
-        enabled: true,
-        order: (p.order as number) ?? 1,
-        provider: (p.id as string) || "custom",
-        model: (p.selectedModel as string) || (Array.isArray(p.models) ? (p.models as string[])[0] : "") || "",
-        apiKey: (p.apiKey as string) || "",
-        baseURL: (p.baseURL as string) || "",
-        maxTokens: (p.config as Record<string, unknown>)?.maxTokens as number ?? 4096,
-        temperature: (p.config as Record<string, unknown>)?.temperature as number ?? 0.3,
-        timeout: (p.config as Record<string, unknown>)?.timeout as number ?? 60000,
-        topP: (p.config as Record<string, unknown>)?.topP as number ?? 1,
-        models: (p.models as string[]) || [],
-      }));
+      .map((p) => {
+        const cfg = p.config as Record<string, unknown> | undefined;
+        const maxTokensRaw = cfg?.maxTokens;
+        const maxTokens = typeof maxTokensRaw === "number" && Number.isFinite(maxTokensRaw) ? maxTokensRaw : 4096;
+        const temperatureRaw = cfg?.temperature;
+        const temperature = typeof temperatureRaw === "number" && Number.isFinite(temperatureRaw) ? temperatureRaw : 0.3;
+        const timeoutRaw = cfg?.timeout;
+        const timeout = typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) ? timeoutRaw : 60000;
+        const topPRaw = cfg?.topP;
+        const topP = typeof topPRaw === "number" && Number.isFinite(topPRaw) ? topPRaw : 1;
+        const orderRaw = p.order;
+        const order = typeof orderRaw === "number" && Number.isFinite(orderRaw) ? orderRaw : 1;
+        return {
+          id: (p.id as string) || "",
+          name: (p.name as string) || "",
+          enabled: true,
+          order,
+          provider: (p.id as string) || "custom",
+          model: (p.selectedModel as string) || (Array.isArray(p.models) ? (p.models as string[])[0] : "") || "",
+          apiKey: (p.apiKey as string) || "",
+          baseURL: (p.baseURL as string) || "",
+          maxTokens,
+          temperature,
+          timeout,
+          topP,
+          models: (p.models as string[]) || [],
+        };
+      });
 
     if (configs.length > 0) {
       executor.configureProviders(configs);
@@ -1036,14 +1049,18 @@ export class ProtocolAdapter {
     }>("copilotRouter");
     if (copilotRouter) {
       copilotRouter.updateUserProviders(
-        providers.map((p) => ({
-          id: (p.id as string) || "",
-          name: (p.name as string) || "",
-          enabled: (p.enabled as boolean) ?? false,
-          order: (p.order as number) ?? 1,
-          selectedModel: (p.selectedModel as string) || "",
-          baseURL: (p.baseURL as string) || "",
-        }))
+        providers.map((p) => {
+          const orderRaw = p.order;
+          const order = typeof orderRaw === "number" && Number.isFinite(orderRaw) ? orderRaw : 1;
+          return {
+            id: (p.id as string) || "",
+            name: (p.name as string) || "",
+            enabled: (p.enabled as boolean) ?? false,
+            order,
+            selectedModel: (p.selectedModel as string) || "",
+            baseURL: (p.baseURL as string) || "",
+          };
+        })
       );
     }
   }
@@ -1155,6 +1172,14 @@ export class ProtocolAdapter {
   private migrationVersion: number = 0;
   private migrationDataDir: string = "";
   private doctorIssues: Array<any> = [];
+
+  /** 添加审计日志条目，并保持日志不超过 1000 条上限。 */
+  private addSecretsAuditEntry(entry: any): void {
+    this.secretsAuditLog.push(entry);
+    while (this.secretsAuditLog.length > 1000) {
+      this.secretsAuditLog.shift();
+    }
+  }
 
   /**
    * Initialize migration system: load persisted records and detect version changes.
@@ -2915,10 +2940,13 @@ export class ProtocolAdapter {
             // unref 防止 keepAlive 定时器阻止进程优雅退出（请求挂起期间会一直 tick）
             keepAliveHandle.unref();
 
+            const chatPromise = agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress);
+            chatPromise.catch(() => {}); // 防止超时后 unhandledRejection
             const result = await Promise.race([
-              agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
+              chatPromise,
               new Promise<never>((_, reject) => {
                 chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+                if (chatTimeoutHandle.unref) chatTimeoutHandle.unref();
               }),
             ]);
 
@@ -2954,8 +2982,9 @@ export class ProtocolAdapter {
             try {
               const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
               if (contextEngine) {
-                const cfgMax = contextEngine.getConfig().maxContextTokens as number;
-                if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
+                const cfgMaxRaw = contextEngine.getConfig().maxContextTokens;
+                const cfgMax = typeof cfgMaxRaw === "number" && Number.isFinite(cfgMaxRaw) ? cfgMaxRaw : 0;
+                if (cfgMax > 0) contextLimit = cfgMax;
               }
             } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             try {
@@ -3008,11 +3037,13 @@ export class ProtocolAdapter {
         });
 
         let result;
+        chatPromise.catch(() => {}); // 防止超时后 unhandledRejection
         try {
           result = await Promise.race([
             chatPromise,
             new Promise<never>((_, reject) => {
               chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+              if (chatTimeoutHandle.unref) chatTimeoutHandle.unref();
             }),
           ]);
         } catch (raceErr) {
@@ -3055,8 +3086,9 @@ export class ProtocolAdapter {
             getConfig(): Record<string, unknown>;
           } | undefined;
           if (contextEngine) {
-            const cfgMax = contextEngine.getConfig().maxContextTokens as number;
-            if (cfgMax && cfgMax > 0) contextLimit = cfgMax;
+            const cfgMaxRaw = contextEngine.getConfig().maxContextTokens;
+            const cfgMax = typeof cfgMaxRaw === "number" && Number.isFinite(cfgMaxRaw) ? cfgMaxRaw : 0;
+            if (cfgMax > 0) contextLimit = cfgMax;
           }
         } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
         try {
@@ -3183,10 +3215,13 @@ export class ProtocolAdapter {
 
         const CHAT_TIMEOUT = complexity.timeoutMs;
         try {
+          const resumeChatPromise = agentExecutor.chat(message, { sessionId, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress);
+          resumeChatPromise.catch(() => {}); // 防止超时后 unhandledRejection
           const result = await Promise.race([
-            agentExecutor.chat(message, { sessionId, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress),
+            resumeChatPromise,
             new Promise<never>((_, reject) => {
               resumeTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
+              if (resumeTimeoutHandle.unref) resumeTimeoutHandle.unref();
             }),
           ]);
           sendSSE("done", { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, sessionId, resumed: true });
@@ -3634,19 +3669,29 @@ export class ProtocolAdapter {
         }));
 
         // Map cycles to frontend-expected format
-        const mappedCycles = cycleList.map((c) => ({
-          id: String(c.id || ""),
-          source: String(c.source || c.trigger || ""),
-          status: String(c.status || "unknown"),
-          startedAt: c.startedAt ? new Date(c.startedAt as string | number).toISOString() : "",
-          completedAt: c.completedAt ? new Date(c.completedAt as string | number).toISOString() : null,
-          duration: c.startedAt && c.completedAt
-            ? new Date(c.completedAt as string | number).getTime() - new Date(c.startedAt as string | number).getTime()
-            : 0,
-          candidatesGenerated: Array.isArray(c.candidates) ? c.candidates.length : (c.candidatesGenerated as number || 0),
-          candidatesPassed: Array.isArray(c.candidates) ? (c.candidates as unknown[]).filter((x) => (x as Record<string, unknown>)?.passed).length : (c.candidatesPassed as number || 0),
-          evaluationScore: (c.evaluation as Record<string, unknown>)?.score as number || (c.evaluationScore as number || 0),
-        }));
+        const mappedCycles = cycleList.map((c) => {
+          const candidatesGeneratedRaw = c.candidatesGenerated;
+          const candidatesGenerated = Array.isArray(c.candidates) ? c.candidates.length : (typeof candidatesGeneratedRaw === "number" && Number.isFinite(candidatesGeneratedRaw) ? candidatesGeneratedRaw : 0);
+          const candidatesPassedRaw = c.candidatesPassed;
+          const candidatesPassed = Array.isArray(c.candidates) ? (c.candidates as unknown[]).filter((x) => (x as Record<string, unknown>)?.passed).length : (typeof candidatesPassedRaw === "number" && Number.isFinite(candidatesPassedRaw) ? candidatesPassedRaw : 0);
+          const scoreRaw = (c.evaluation as Record<string, unknown>)?.score;
+          const evalScoreRaw = c.evaluationScore;
+          const score = typeof scoreRaw === "number" && Number.isFinite(scoreRaw) ? scoreRaw : 0;
+          const evalScore = typeof evalScoreRaw === "number" && Number.isFinite(evalScoreRaw) ? evalScoreRaw : 0;
+          return {
+            id: String(c.id || ""),
+            source: String(c.source || c.trigger || ""),
+            status: String(c.status || "unknown"),
+            startedAt: c.startedAt ? new Date(c.startedAt as string | number).toISOString() : "",
+            completedAt: c.completedAt ? new Date(c.completedAt as string | number).toISOString() : null,
+            duration: c.startedAt && c.completedAt
+              ? new Date(c.completedAt as string | number).getTime() - new Date(c.startedAt as string | number).getTime()
+              : 0,
+            candidatesGenerated,
+            candidatesPassed,
+            evaluationScore: score || evalScore,
+          };
+        });
 
         res.json({
           cycles: mappedCycles,
@@ -6212,7 +6257,7 @@ export class ProtocolAdapter {
           lastRotatedAt: undefined,
         };
         this.secretsStore.set(name, entry);
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "register",
           accessedBy: "api",
@@ -6260,7 +6305,7 @@ export class ProtocolAdapter {
           revoked: false,
           rotationVersion: 0,
         });
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "generate-apikey",
           accessedBy: "api",
@@ -6287,7 +6332,7 @@ export class ProtocolAdapter {
           res.status(403).json({ error: "Secret has been revoked" });
           return;
         }
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "get",
           accessedBy: requester || "api",
@@ -6317,7 +6362,7 @@ export class ProtocolAdapter {
         // Generate a new random value instead of appending version suffix
         const crypto = await import("crypto");
         entry.value = crypto.randomBytes(32).toString("hex");
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "rotate",
           accessedBy: "api",
@@ -6348,7 +6393,7 @@ export class ProtocolAdapter {
           return;
         }
         entry.revoked = true;
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "revoke",
           accessedBy: "api",
@@ -6370,7 +6415,7 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Secret not found" });
           return;
         }
-        this.secretsAuditLog.push({
+        this.addSecretsAuditEntry({
           secretName: name,
           operation: "delete",
           accessedBy: "api",
@@ -6884,6 +6929,12 @@ export class ProtocolAdapter {
         const currentConfig = config?.get ? (config.get("") || {}) : {};
         const snapshotId = `pre-migration-${id}`;
         this.configSnapshots.set(snapshotId, { config: JSON.parse(JSON.stringify(currentConfig)), timestamp: now });
+        // 上限保护：保留最近 50 条快照，避免无界增长
+        while (this.configSnapshots.size > 50) {
+          const oldest = this.configSnapshots.keys().next().value;
+          if (oldest) this.configSnapshots.delete(oldest);
+          else break;
+        }
         const migration = {
           id,
           fromVersion: String(this.migrationVersion),

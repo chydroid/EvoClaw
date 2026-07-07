@@ -2,6 +2,8 @@
 // OpenClaw 6.6 引入: transcripts需要redaction, 防止敏感信息泄露
 // 自动遮蔽: API keys, tokens, emails, phones, credit cards, private keys等
 
+import { isUnsafeRegex } from "./safe-regex.js";
+
 /** 遮蔽模式定义 */
 export interface RedactionPattern {
   name: string;
@@ -197,6 +199,10 @@ export class TranscriptRedactor {
     for (const rule of this.config.customRules) {
       if (rule.enabled === false) continue;
       if (rule.pattern) {
+        if (isUnsafeRegex(rule.pattern)) {
+          process.stderr.write(`[Security] Skipping unsafe regex pattern in transcript redactor: ${rule.pattern}\n`);
+          continue;
+        }
         try {
           this.patterns.push({
             name: rule.name,
@@ -341,6 +347,10 @@ export class TranscriptRedactor {
   addRule(rule: CustomRedaction): void {
     if (rule.enabled === false) return;
     if (rule.pattern) {
+      if (isUnsafeRegex(rule.pattern)) {
+        process.stderr.write(`[Security] Skipping unsafe regex pattern in transcript redactor: ${rule.pattern}\n`);
+        return;
+      }
       try {
         this.patterns.push({
           name: rule.name,

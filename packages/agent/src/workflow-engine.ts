@@ -597,9 +597,11 @@ export class WorkflowEngine {
       );
       if (timer.unref) timer.unref();
     });
+    const execPromise = this.executorFn(toolName, params);
+    execPromise.catch(() => {}); // 防止超时后 unhandledRejection
     try {
       return await Promise.race([
-        this.executorFn(toolName, params),
+        execPromise,
         timeoutPromise,
       ]);
     } finally {

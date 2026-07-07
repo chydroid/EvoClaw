@@ -557,6 +557,7 @@ export class ConfigManager {
   }
 
   private setPath(path: string, value: unknown): void {
+    if (!path) throw new Error("path cannot be empty");
     const parts = path.split(".");
     let current = this.config as unknown as Record<string, unknown>;
     for (let i = 0; i < parts.length - 1; i++) {

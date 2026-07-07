@@ -15,6 +15,7 @@
 
 import { ExecAllowlist } from "./exec-allowlist.js";
 import { ExecSafeBinNormalizer } from "./exec-safe-bin.js";
+import { isUnsafeRegex } from "./safe-regex.js";
 
 // ── 类型定义 ──────────────────────────────────────────────
 
@@ -201,8 +202,17 @@ export class ExecApprovalPolicy {
   private matchesRule(command: string, rule: ExecApprovalRule): boolean {
     if (!command) return false;
     switch (rule.patternType) {
-      case "regex":
-        return new RegExp(rule.pattern, "i").test(command);
+      case "regex": {
+        if (isUnsafeRegex(rule.pattern)) {
+          process.stderr.write(`[Security] Skipping unsafe regex pattern in exec approval: ${rule.pattern}\n`);
+          return false;
+        }
+        try {
+          return new RegExp(rule.pattern, "i").test(command);
+        } catch {
+          return false;
+        }
+      }
       case "glob":
         return minimatchLike(command, rule.pattern);
       case "prefix":

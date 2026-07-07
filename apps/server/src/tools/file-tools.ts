@@ -137,7 +137,9 @@ export function registerFileTools(
       name: "file_read",
       description: "Read the contents of a file",
       parameters: {
-        path: { type: "string", description: "Relative file path to read" },
+        path: { type: "string", description: "File path to read", required: true },
+        offset: { type: "string", description: "Line number to start reading from (1-based, default: 1)" },
+        limit: { type: "string", description: "Number of lines to read (default: all)" },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -146,7 +148,15 @@ export function registerFileTools(
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
       return await errRecovery.executeWithRetry("file_read", filePath, async () => {
-        const content = await fsMgr.readFile(filePath);
+        let content = await fsMgr.readFile(filePath);
+        const offset = params.offset ? parseInt(String(params.offset), 10) : 1;
+        const limit = params.limit ? parseInt(String(params.limit), 10) : undefined;
+        if (offset > 1 || limit) {
+          const allLines = content.split("\n");
+          const start = Math.max(0, offset - 1);
+          const end = limit ? start + limit : allLines.length;
+          content = allLines.slice(start, end).join("\n");
+        }
         return { path: filePath, content };
       });
     }

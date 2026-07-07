@@ -180,6 +180,9 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       if (permReq.status === "denied") {
         return { success: false, error: `Permission denied for git_commit. Request ID: ${permReq.id}` };
       }
+      if (permReq.status === "pending") {
+        return { success: false, error: `Permission pending for git_commit. Request ID: ${permReq.id}`, requiresPermission: true, requestId: permReq.id };
+      }
       try {
         const hash = await gitOps.commit(message, amend);
         return { success: true, hash, message, amend };
@@ -208,6 +211,9 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       const permReq = permissionManager.requestPermission("git_push", `${remote}/${branch ?? "current"}${force ? " (FORCE)" : ""}`, { force }, "tool");
       if (permReq.status === "denied") {
         return { success: false, error: `Permission denied for git_push. Request ID: ${permReq.id}` };
+      }
+      if (permReq.status === "pending") {
+        return { success: false, error: `Permission pending for git_push. Request ID: ${permReq.id}`, requiresPermission: true, requestId: permReq.id };
       }
       try {
         await gitOps.push(remote, branch, force);

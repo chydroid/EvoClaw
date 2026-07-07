@@ -204,17 +204,25 @@ export class NetPolicy {
     try {
       // 带超时的 DNS 解析
       const resolver = new dns.Resolver();
+      let dnsTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<string[]>((_, reject) => {
-        setTimeout(() => reject(new Error("DNS timeout")), this.config.dnsTimeoutMs);
+        dnsTimer = setTimeout(() => reject(new Error("DNS timeout")), this.config.dnsTimeoutMs);
+        if (dnsTimer.unref) dnsTimer.unref();
       });
-      const addresses = await Promise.race([
-        resolver.resolve4(host),
-        timeoutPromise,
-      ]);
-      if (addresses.length === 0) {
-        return { allowed: false, reason: `DNS resolved no addresses for ${host}` };
+      const resolvePromise = resolver.resolve4(host);
+      resolvePromise.catch(() => {}); // 防止超时后 unhandledRejection
+      try {
+        const addresses = await Promise.race([
+          resolvePromise,
+          timeoutPromise,
+        ]);
+        if (addresses.length === 0) {
+          return { allowed: false, reason: `DNS resolved no addresses for ${host}` };
+        }
+        resolvedIp = addresses[0];
+      } finally {
+        if (dnsTimer) clearTimeout(dnsTimer);
       }
-      resolvedIp = addresses[0];
     } catch (err) {
       // IPv6 fallback
       try {

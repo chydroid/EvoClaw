@@ -107,11 +107,11 @@ export interface EnvelopeOptions {
 const DEFAULT_OPTIONS: Required<EnvelopeOptions> = {
   intent: "chat",
   priority: "normal",
-  replyRef: undefined as unknown as string,
+  replyRef: "",
   retryCount: 0,
   origin: "direct",
-  agentId: undefined as unknown as string,
-  sessionKey: undefined as unknown as string,
+  agentId: "",
+  sessionKey: "",
   tags: [] as string[],
   causalityChain: [] as string[],
 };

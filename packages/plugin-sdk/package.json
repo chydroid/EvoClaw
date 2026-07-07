@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/plugin-sdk",
-  "version": "0.70.6",
+  "version": "0.71.0",
   "private": true,
   "description": "EvoClaw Plugin SDK — Type-safe extension framework for channels, providers, and tools",
   "main": "./dist/index.js",

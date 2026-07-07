@@ -155,13 +155,15 @@ export function createHookRunner(
     timeoutMs: number
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
-    
+
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         reject(new Error(`Hook timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      if (timer.unref) timer.unref();
     });
-    
+    promise.catch(() => {}); // 防止超时后 unhandledRejection
+
     try {
       return await Promise.race([promise, timeout]);
     } finally {

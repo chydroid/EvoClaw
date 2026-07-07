@@ -445,6 +445,18 @@ export class FileSystemManager {
     if (!normalizedFull.startsWith(normalizedBase + path.sep) && normalizedFull !== normalizedBase) {
       throw new Error(`Access denied: path outside base directory`);
     }
+
+    // 防符号链接逃逸：realpath 解析后再次校验
+    try {
+      const real = await fsSync.promises.realpath(normalizedFull);
+      if (!real.startsWith(normalizedBase + path.sep) && real !== normalizedBase) {
+        throw new Error(`Access denied: symlink escapes base directory`);
+      }
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") return; // 目标不存在，允许 create
+      throw err;
+    }
   }
 
   private async writeContent(fullPath: string, content: string): Promise<void> {

@@ -65,6 +65,12 @@ export class MCPProtocolHandler {
     | ((name: string, args: Record<string, string>) => Array<{ role: string; content: { type: string; text: string } }>)
     | null;
 
+  /** 危险工具黑名单：禁止通过 MCP 暴露/调用 */
+  private static readonly MCP_BLOCKED_TOOLS = new Set([
+    "shell_exec", "execute_code", "file_delete", "file_modify",
+    "video_download",
+  ]);
+
   constructor(options: {
     serverName?: string;
     serverVersion?: string;
@@ -126,13 +132,22 @@ export class MCPProtocolHandler {
     if (!this.toolRegistry) {
       return [];
     }
-    return this.toolRegistry.listTools();
+    const tools = this.toolRegistry.listTools();
+    return tools.filter(t => !MCPProtocolHandler.MCP_BLOCKED_TOOLS.has(t.name));
   }
 
   async handleToolCall(
     name: string,
     args: Record<string, unknown>,
   ): Promise<{ content: Array<{ type: string; text: string }> }> {
+    if (MCPProtocolHandler.MCP_BLOCKED_TOOLS.has(name)) {
+      return {
+        content: [
+          { type: "text", text: `Tool "${name}" is blocked over MCP for security` },
+        ],
+      };
+    }
+
     if (!this.toolRegistry) {
       return {
         content: [

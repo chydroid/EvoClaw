@@ -188,8 +188,9 @@ export class DAGExecutor {
       // Keep the timer from keeping the process alive
       if (timer.unref) timer.unref();
     });
-
-    return Promise.race([this.executeNode(node, context), timeoutPromise]).finally(() => {
+    const nodePromise = this.executeNode(node, context);
+    nodePromise.catch(() => {}); // 防止超时后 unhandledRejection
+    return Promise.race([nodePromise, timeoutPromise]).finally(() => {
       if (timer) clearTimeout(timer);
     });
   }

@@ -1990,12 +1990,13 @@ Have a specific URL?
         }
         // Audio: parse format from MIME (e.g. "audio/wav" → "wav").
         // OpenAI GPT-4o supports wav/mp3/flac/ogg as input_audio content parts.
+        const ALLOWED_AUDIO = new Set(["wav", "mp3", "flac", "ogg"]);
         for (const aud of audioAtts) {
-          const fmt = aud.type.split("/")[1] as "wav" | "mp3" | "flac" | "ogg" | undefined;
-          if (!fmt) continue;
+          const fmt = aud.type.split("/")[1];
+          if (!fmt || !ALLOWED_AUDIO.has(fmt)) continue;
           const base64 = stripDataUriPrefix(aud.data!);
           if (!base64) continue;
-          contentParts.push({ type: "input_audio", input_audio: { data: base64, format: fmt } });
+          contentParts.push({ type: "input_audio", input_audio: { data: base64, format: fmt as "wav" | "mp3" | "flac" | "ogg" } });
         }
         // PDF / documents: Anthropic accepts `document` content parts with
         // base64 source. OpenAI accepts file_id (we'd need to upload first —
@@ -2565,10 +2566,13 @@ Have a specific URL?
                 return toolSem.withPermit(async () => {
                   let timer: ReturnType<typeof setTimeout> | undefined;
                   try {
+                    const toolPromise = toolEntry.handler(args);
+                    toolPromise.catch(() => {}); // 防止超时后 unhandledRejection
                     return await Promise.race([
-                      toolEntry.handler(args),
+                      toolPromise,
                       new Promise<never>((_, reject) => {
                         timer = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout);
+                        if (timer.unref) timer.unref();
                       }),
                     ]);
                   } finally {

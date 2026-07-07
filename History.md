@@ -5,6 +5,23 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.71.0 (2026-07-07)
+
+- **6 轮全量代码审查**: 修复 6 Critical + 30 Major + 30 Minor bug
+  - **安全**: dev-tools 路径遍历+命令注入修复、MCP 工具白名单（shell_exec 等危险工具屏蔽）、weixin accountId 路径校验、FileSystemManager 符号链接逃逸防护、matchGlob ReDoS 防护、transcript-redactor/exec-approval 用户正则 ReDoS 接入 safe-regex、shell_exec cwd 校验+危险命令黑名单增强（rm -rf . / rmdir /s /q / Remove-Item 等）
+  - **事件总线**: agent_end 事件从未发布修复（agent-model-executor chat 完成后 publish）、memory_stored 事件名拼写错误修复（下划线→点分）
+  - **Promise.race 泄漏**: 12 个文件 16 处统一修复（.catch 兜底 + clearTimeout + unref）
+  - **内存泄漏**: configSnapshots 50 条上限、secretsAuditLog 1000 条上限、ProcessRegistry 5 分钟自动 prune
+  - **逻辑 bug**: as number 类型欺骗修复、NaN 经 ?? 逃逸修复、cron split 截断修复、空路径写入防护、音频格式白名单校验、parseInt NaN 端口防护
+  - **同步锁**: session-manager sleepSync 标记 Critical TODO（100ms 轮询已缓解）
+- **30 任务模拟验证**: 发现并修复 2 Critical + 3 High + 3 Medium
+  - git_commit/git_push 权限绕过修复（pending 状态未检查）
+  - shell_exec 危险命令模式完善（rm -rf . / rm -fr / rmdir /s /q / Remove-Item 等变体）
+  - 新增 memory_search + memory_stats 工具（LLM 可查询历史记忆）
+  - file_read 添加 offset/limit 行范围读取 + path required
+  - codebase_search 错误响应统一（success: false）
+  - web_fetch URL 验证增强（new URL 解析 + 协议白名单）
+
 ## v0.70.6 (2026-07-06)
 
 - **IDE 集成**: 新增 `apps/mcp-server` — MCP Server 桥接应用，让任何 MCP 兼容 IDE（VS Code/Cursor/Claude Desktop/Windsurf/Zed）一键接入 EvoClaw 的 100+ 工具

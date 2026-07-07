@@ -119,7 +119,9 @@ class CronExpression {
 
     for (const seg of segments) {
       if (seg.includes("-")) {
-        const [lo, hi] = seg.split("-", 2);
+        const parts = seg.split("-");
+        if (parts.length !== 2) throw new Error(`Invalid range "${seg}" in field "${fieldName}"`);
+        const [lo, hi] = parts;
         const loNum = parseInt(lo, 10);
         const hiNum = parseInt(hi, 10);
         if (isNaN(loNum) || isNaN(hiNum)) {

@@ -318,6 +318,7 @@ export class ConfigRPC extends EventEmitter {
     path: string[],
     value: unknown,
   ): void {
+    if (path.length === 0) throw new Error("path cannot be empty");
     let current = obj;
     for (let i = 0; i < path.length - 1; i++) {
       const key = path[i];

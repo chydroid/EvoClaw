@@ -463,6 +463,7 @@ export class BatchExecutor {
     taskId: string,
   ): Promise<T> {
     if (timeoutMs <= 0) return promise;
+    promise.catch(() => {}); // 防止超时后 unhandledRejection
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {

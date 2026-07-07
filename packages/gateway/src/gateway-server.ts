@@ -169,12 +169,20 @@ export class GatewayServer {
     try {
       const channelManager = this.registry.resolveService<{ stop?: () => Promise<void> | void }>("channelManager");
       if (channelManager && typeof channelManager.stop === "function") {
-        await Promise.race([
-          channelManager.stop(),
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error("channelManager stop timed out")), shutdownTimeoutMs)
-          ),
-        ]);
+        let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+        const stopPromise: Promise<void> = Promise.resolve(channelManager.stop());
+        stopPromise.catch(() => {}); // 防止超时后 unhandledRejection
+        try {
+          await Promise.race([
+            stopPromise,
+            new Promise<void>((_, reject) => {
+              shutdownTimer = setTimeout(() => reject(new Error("channelManager stop timed out")), shutdownTimeoutMs);
+              if (shutdownTimer.unref) shutdownTimer.unref();
+            }),
+          ]);
+        } finally {
+          if (shutdownTimer) clearTimeout(shutdownTimer);
+        }
       }
     } catch (err) {
       process.stderr.write(`[Gateway] Error stopping channel manager: ${err instanceof Error ? err.message : String(err)}\n`);

@@ -183,6 +183,11 @@ export function registerShellMediaTools(
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
       // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
       let cwd = params.cwd ? String(params.cwd) : workspaceDir;
+      // 安全校验：cwd 必须在工作区内，防止路径逃逸
+      const resolvedCwd = path.resolve(cwd);
+      if (!resolvedCwd.startsWith(workspaceDir + path.sep) && resolvedCwd !== workspaceDir) {
+        return { success: false, error: `cwd must be within workspace` };
+      }
       if (!fs.existsSync(cwd)) {
         // Fallback: try project root data/workspace, then project root
         const projectWorkspace = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
@@ -249,11 +254,20 @@ export function registerShellMediaTools(
       // ── 安全校验：阻止危险命令 ──
       const DANGEROUS_PATTERNS = [
         /rm\s+-rf\s+\//, /rm\s+-rf\s+\~/, /del\s+\/S\s+\/Q\s+C:\\/i,
+        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*]|\$HOME|~)/i,
+        /rm\s+-rf\s+\./i,
+        /rm\s+-rf\s+\*/i,
+        /rm\s+-fr\s+/i,
+        /rmdir\s+\/[sS]\s+\/[qQ]/i,
+        /Remove-Item\s+-Recurse\s+-Force/i,
         /shutdown/, /reboot/, /format\s+[a-z]:/i,
         /dd\s+if=/, /mkfs/, /fdisk/, /:\(\)\s*\{/, /fork\s*bomb/,
         />\s*\/dev\/sda/, />\s*\/dev\/nvme/,
         /chmod\s+777\s+\//, /chown\s+-R\s+\//,
         /eval\s/, /\.\$\(/, /\$\(.*rm\s+-rf/,
+        /\b(curl|wget)\b[^|]*\|\s*(sh|bash|python)/i,  // curl|sh
+        /`[^`]*`/,  // 反引号命令替换
+        /\r|\n/,    // 换行注入
       ];
       for (const pattern of DANGEROUS_PATTERNS) {
         if (pattern.test(command)) {

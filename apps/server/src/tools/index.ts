@@ -18,3 +18,4 @@ export { registerVisionBatchTools } from "./vision-batch-tools";
 export type { VisionBatchToolDeps } from "./vision-batch-tools";
 // v0.70: 开发体验工具集
 export { registerDevTools } from "./dev-tools";
+export { registerMemoryTools } from "./memory-tools";

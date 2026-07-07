@@ -2270,6 +2270,14 @@ export class AgentModelExecutor {
       this.runAgentEndHook(sessionId, agentId, channel, finalResult);
     }
 
+    // ── Publish agent_end to EventBus (enables memory curation & other subscribers) ──
+    this.eventBus.publish("agent_end", {
+      userMessage: message,
+      agentResponse: reply,
+      sessionId,
+      context: { agentId, channel },
+    }, "agent-model-executor").catch(err => process.stderr.write(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
+
     return finalResult;
     } finally {
       // Mark session as idle so heartbeat can resume

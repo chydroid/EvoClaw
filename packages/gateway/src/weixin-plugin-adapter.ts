@@ -726,6 +726,18 @@ export class WeixinPluginAdapter {
   }
 
   /**
+   * 校验 accountId：阻止空值、路径遍历、路径分隔符、null 字节
+   */
+  private validateAccountId(accountId: string): void {
+    if (typeof accountId !== "string" || accountId.length === 0) {
+      throw new Error("Invalid accountId: empty");
+    }
+    if (accountId.includes("..") || accountId.includes("/") || accountId.includes("\\") || accountId.includes("\0")) {
+      throw new Error(`Invalid accountId (path traversal): ${accountId}`);
+    }
+  }
+
+  /**
    * 查找已配置的微信账户
    */
   findConfiguredAccounts(): string[] {
@@ -751,7 +763,9 @@ export class WeixinPluginAdapter {
    * 加载微信账户配置
    */
   loadAccount(accountId: string): WeixinAccount | null {
-    if (accountId.includes("..") || accountId.includes("/") || accountId.includes("\\")) {
+    try {
+      this.validateAccountId(accountId);
+    } catch (err) {
       process.stderr.write(`[Weixin] Invalid accountId (path traversal detected): ${accountId}\n`);
       return null;
     }
@@ -1241,11 +1255,14 @@ export class WeixinPluginAdapter {
       const WEIXIN_CHAT_TIMEOUT = weixinChatTimeoutMs;
       let weixinTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       let result: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
+      const weixinChatPromise = this.agentExecutor.chat(text, chatContext, onProgress);
+      weixinChatPromise.catch(() => {}); // 防止超时后 unhandledRejection
       try {
         result = await Promise.race([
-          this.agentExecutor.chat(text, chatContext, onProgress),
+          weixinChatPromise,
           new Promise<never>((_, reject) => {
             weixinTimeoutHandle = setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT);
+            if (weixinTimeoutHandle.unref) weixinTimeoutHandle.unref();
           }),
         ]);
       } finally {
@@ -1308,11 +1325,14 @@ export class WeixinPluginAdapter {
             // 否则 LLM 提供商卡死时用户在微信端会无限等待（违反 channel 消息处理硬约束）。
             let retryTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
             let retryResult: Awaited<ReturnType<typeof this.agentExecutor.chat>>;
+            const retryChatPromise = this.agentExecutor.chat(text, retryContext);
+            retryChatPromise.catch(() => {}); // 防止超时后 unhandledRejection
             try {
               retryResult = await Promise.race([
-                this.agentExecutor.chat(text, retryContext),
+                retryChatPromise,
                 new Promise<never>((_, reject) => {
                   retryTimeoutHandle = setTimeout(() => reject(new Error("WEIXIN_CHAT_TIMEOUT")), WEIXIN_CHAT_TIMEOUT);
+                  if (retryTimeoutHandle.unref) retryTimeoutHandle.unref();
                 }),
               ]);
             } finally {
@@ -1769,6 +1789,7 @@ export class WeixinPluginAdapter {
    * 获取同步文件路径
    */
   private getSyncPath(accountId: string): string {
+    this.validateAccountId(accountId);
     const tmpDir = path.join(os.tmpdir(), "evoclaw-weixin");
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
@@ -1832,6 +1853,7 @@ export class WeixinPluginAdapter {
    */
   removeAccount(accountId: string): void {
     try {
+      this.validateAccountId(accountId);
       const stateDir = process.env.EVOCLAW_STATE_DIR || path.join(os.homedir(), ".evoclaw");
       const accountsDir = path.join(stateDir, "evoclaw-weixin", "accounts");
       const accountFile = path.join(accountsDir, `${accountId}.json`);

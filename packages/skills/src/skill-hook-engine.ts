@@ -42,10 +42,13 @@ export class SkillHookEngine {
             )
           );
         }, DEFAULT_HOOK_TIMEOUT);
+        if (timeoutId.unref) timeoutId.unref();
       });
+      const sandboxPromise = this.sandbox.execute(hookSkill, params);
+      sandboxPromise.catch(() => {}); // 防止超时后 unhandledRejection
 
       const result = await Promise.race([
-        this.sandbox.execute(hookSkill, params),
+        sandboxPromise,
         timeoutPromise,
       ]);
 

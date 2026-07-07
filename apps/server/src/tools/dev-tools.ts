@@ -24,7 +24,9 @@ function escapeRegex(s: string): string {
 
 /** 简化 glob 匹配：支持 * 和 ? */
 function matchGlob(filename: string, pattern: string): boolean {
-  const regex = "^" + pattern.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  // 先转义正则元字符（除 * 和 ?），再替换 glob 通配符
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regex = "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
   return new RegExp(regex, "i").test(filename);
 }
 
@@ -69,7 +71,7 @@ function runCommand(
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     let stdout = "";
@@ -194,7 +196,14 @@ export function registerDevTools(
       const watch = params.watch === true;
       const timeoutSec = Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200);
 
-      const targetAbs = target ? path.resolve(workspaceRoot, target) : workspaceRoot;
+      // 路径校验：阻止 path traversal 逃逸工作区
+      let targetAbs = workspaceRoot;
+      if (target) {
+        targetAbs = path.resolve(workspaceRoot, target);
+        if (!targetAbs.startsWith(workspaceRoot + path.sep) && targetAbs !== workspaceRoot) {
+          return { success: false, error: `Path traversal blocked: ${target}` };
+        }
+      }
       const detectDir = fs.existsSync(targetAbs) && fs.statSync(targetAbs).isDirectory()
         ? targetAbs
         : workspaceRoot;
@@ -347,7 +356,11 @@ export function registerDevTools(
       const fix = params.fix === true;
       const forcedLinter = params.linter ? String(params.linter).toLowerCase() : "auto";
 
+      // 路径校验：阻止 path traversal 逃逸工作区
       const targetAbs = path.resolve(workspaceRoot, target);
+      if (!targetAbs.startsWith(workspaceRoot + path.sep) && targetAbs !== workspaceRoot) {
+        return { success: false, error: `Path traversal blocked: ${target}` };
+      }
       const detectDir = fs.existsSync(targetAbs) && fs.statSync(targetAbs).isDirectory()
         ? targetAbs
         : workspaceRoot;
@@ -529,14 +542,14 @@ export function registerDevTools(
       const maxResults = parseInt(String(params.maxResults || "20"), 10) || 20;
       const filePattern = params.filePattern ? String(params.filePattern) : null;
 
-      if (!query) return { error: "Query is required" };
+      if (!query) return { success: false, error: "Query is required" };
 
       const queryTerms = query
         .toLowerCase()
         .split(/\s+/)
         .filter((t) => t.length > 2);
       if (queryTerms.length === 0) {
-        return { error: "Query must contain at least one term longer than 2 characters" };
+        return { success: false, error: "Query must contain at least one term longer than 2 characters" };
       }
 
       const results: Array<{ file: string; score: number; snippet: string; lines: string }> = [];

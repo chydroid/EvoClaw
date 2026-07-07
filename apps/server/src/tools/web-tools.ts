@@ -297,8 +297,14 @@ export function registerWebTools(
     async (params: Record<string, unknown>) => {
       const url = String(params.url || "");
       const format = String(params.format || "text");
-      if (!url || !url.startsWith("http")) {
-        return { error: "Valid HTTP/HTTPS URL is required" };
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        return { success: false, error: "Invalid URL format" };
+      }
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        return { success: false, error: "Only http and https URLs are allowed" };
       }
       // SSRF 防护：校验 URL 不指向内网/元数据端点
       const ssrfReason = await checkSsrf(url);

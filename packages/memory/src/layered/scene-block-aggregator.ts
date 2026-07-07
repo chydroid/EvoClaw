@@ -413,7 +413,8 @@ export class SceneBlockAggregator {
     const sessionKeys = sessionKeysRaw.split(",").map((s) => s.trim().replace(/"/g, "")).filter(Boolean);
     const timeRangeRaw = fm.match(/time_range:\s*\[([^\]]*)\]/)?.[1] ?? "";
     const timeParts = timeRangeRaw.split(",").map((s) => parseInt(s.trim(), 10));
-    const timeRange: [number, number] = [timeParts[0] ?? 0, timeParts[1] ?? 0];
+    const safeNum = (v: number | undefined) => (v !== undefined && Number.isFinite(v)) ? v : 0;
+    const timeRange: [number, number] = [safeNum(timeParts[0]), safeNum(timeParts[1])];
 
     // 从 markdown 列表项粗略恢复 memories（信息不全，主要用于召回查看）
     const memories: AtomicMemory[] = [];

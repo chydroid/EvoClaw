@@ -503,9 +503,11 @@ export async function executeSubtasksFromCheckpoint(
         subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
         startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
       );
+      resultPromise.catch(() => {}); // 防止超时后 unhandledRejection
       let subtaskTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<null>((resolve) => {
         subtaskTimeoutHandle = setTimeout(() => resolve(null), SUBTASK_TIMEOUT);
+        if (subtaskTimeoutHandle.unref) subtaskTimeoutHandle.unref();
       });
       try {
         const result = await Promise.race([resultPromise, timeoutPromise]);
@@ -537,9 +539,11 @@ export async function executeSubtasksFromCheckpoint(
             subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
             startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
           );
+          retryPromise.catch(() => {}); // 防止超时后 unhandledRejection
           let retryTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
           const retryTimeoutPromise = new Promise<null>((resolve) => {
             retryTimeoutHandle = setTimeout(() => resolve(null), SUBTASK_TIMEOUT);
+            if (retryTimeoutHandle.unref) retryTimeoutHandle.unref();
           });
           try {
             const retryResult = await Promise.race([retryPromise, retryTimeoutPromise]);

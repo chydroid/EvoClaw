@@ -143,6 +143,13 @@ export class ProcessRegistry {
   private globalSuppressedDuringTrip = 0;
 
   private static instance: ProcessRegistry | null = null;
+  private pruneTimer: NodeJS.Timeout | null = null;
+
+  /** 定时清理过期会话（每 5 分钟）。unref 避免阻止进程退出。 */
+  constructor() {
+    this.pruneTimer = setInterval(() => this.pruneExpired(), 5 * 60 * 1000);
+    this.pruneTimer.unref?.();
+  }
 
   /** 单例访问 */
   static getInstance(): ProcessRegistry {
@@ -150,6 +157,14 @@ export class ProcessRegistry {
       ProcessRegistry.instance = new ProcessRegistry();
     }
     return ProcessRegistry.instance;
+  }
+
+  /** 停止定时清理（用于关闭/测试） */
+  dispose(): void {
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
   }
 
   /**

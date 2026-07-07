@@ -11,7 +11,7 @@ function loadVersion(): string {
       if (pkg.version) return pkg.version;
     }
   } catch {}
-  return "0.9.5";
+  return "0.0.0-unknown";
 }
 export const VERSION = loadVersion();
 /** OpenClaw-compatible version for WeChat plugin compatibility */
@@ -21,7 +21,10 @@ export const OPENCLAW_COMPAT_VERSION = "2026.3.22";
 export function detectPort(): number {
   // 1. From environment variable
   const envPort = process.env.EvoClaw_PORT;
-  if (envPort) return parseInt(envPort, 10);
+  if (envPort) {
+    const p = parseInt(envPort, 10);
+    if (Number.isFinite(p) && p > 0 && p < 65536) return p;
+  }
 
   // 2. From .env file in CWD or project root
   const envPaths = [

@@ -309,20 +309,26 @@ export class PluginHost {
         data,
       };
 
+      let hookTimer: ReturnType<typeof setTimeout> | undefined;
+      const hookPromise = entry.plugin.onHook(context);
+      hookPromise.catch(() => {}); // 防止超时后 unhandledRejection
       try {
         await Promise.race([
-          entry.plugin.onHook(context),
-          new Promise<void>((_, reject) =>
-            setTimeout(
+          hookPromise,
+          new Promise<void>((_, reject) => {
+            hookTimer = setTimeout(
               () => reject(new Error(`Hook timeout for "${pluginId}" on "${hookName}"`)),
               this.config.hookTimeoutMs
-            )
-          ),
+            );
+            if (hookTimer.unref) hookTimer.unref();
+          }),
         ]);
       } catch (err) {
         process.stderr.write(
           `[PluginHost] Hook error for "${pluginId}" on "${hookName}":` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
         );
+      } finally {
+        if (hookTimer) clearTimeout(hookTimer);
       }
     }
   }

@@ -67,6 +67,7 @@ import {
   registerCodeIntelTools,
   registerVisionBatchTools,
   registerDevTools,
+  registerMemoryTools,
 } from "./tools";
 
 export class EvoClawServer {
@@ -938,7 +939,7 @@ export class EvoClawServer {
       } catch { /* non-critical */ }
     });
 
-    this.eventBus.subscribe("memory_stored", async () => {
+    this.eventBus.subscribe(SystemEvents.MEMORY_STORED, async () => {
       try {
         this.memoryHub.freezeMemorySnapshot();
         if (this.contextEngine) {
@@ -1774,6 +1775,7 @@ export class EvoClawServer {
       this.agentModelExecutor
     );
     registerDevTools(this.agentModelExecutor);
+    registerMemoryTools(this.agentModelExecutor);
   }
 
   // ── v0.70: 一线 AI Agent 能力对齐工具注册 ──
