@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/cli",
-  "version": "0.71.0",
+  "version": "0.71.1",
   "private": true,
   "description": "EvoClaw CLI - EvoClaw 命令行工具",
   "main": "./dist/index.js",

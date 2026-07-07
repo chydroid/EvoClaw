@@ -106,7 +106,7 @@ export class EmbeddingCache {
           !entry ||
           typeof entry.skillId !== "string" ||
           typeof entry.textHash !== "string" ||
-          typeof entry.cacheVersion !== "string" ||
+          typeof entry.cacheVersion !== "number" ||
           typeof entry.model !== "string"
         ) {
           continue;

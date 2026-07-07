@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/gateway",
-  "version": "0.71.0",
+  "version": "0.71.1",
   "private": true,
   "description": "EvoClaw Gateway 接入层 - 认证鉴权、负载均衡、协议适配",
   "main": "./dist/index.js",

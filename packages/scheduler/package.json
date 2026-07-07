@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/scheduler",
-  "version": "0.71.0",
+  "version": "0.71.1",
   "private": true,
   "description": "EvoClaw 定时任务调度模块 - cron任务管理/持久化/重试",
   "main": "./dist/index.js",

@@ -5,6 +5,21 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.71.1 (2026-07-07)
+
+- **修复长期误判为 better-sqlite3 的测试失败**: `packages/skills/src/embedding-cache.ts` 持久化测试此前数轮一直被误判为 better-sqlite3 native binding 不可用导致，根因实为 `ensureLoaded()` 运行时类型校验 bug
+  - `CacheEntry.cacheVersion` 类型声明为 `number`，但校验代码误用 `typeof entry.cacheVersion !== "string"`
+  - 所有合法 entry（cacheVersion=1，number 类型）均被 `continue` 跳过，导致 cache 永远为空 → `get()` 返回 null
+  - 修复：`typeof entry.cacheVersion !== "number"`
+  - 验证：`pnpm build` + `pnpm test` 全绿，4908 passed / 73 skipped (4981)，包含 `持久化到磁盘 + 重新加载` 用例
+- **better-sqlite3 配置回顾**: 已确认 better-sqlite3 在本项目所有使用点均具备优雅降级（无需"再修一次"）
+  - 根 package.json + infrastructure package.json 均在 `optionalDependencies` 中（不阻断 pnpm install）
+  - `.npmrc` 配置 `better-sqlite3_binary_host_mirror=https://registry.npmmirror.com/-/binary/better-sqlite3`
+  - `onlyBuiltDependencies` 白名单已包含 better-sqlite3
+  - `fts5-search.ts` / `long-term-memory.ts`：`require("better-sqlite3")` 失败时回退到内存模式/JSON 持久化
+  - `sqlite-checkpointer.ts` / `run-log-store.ts`：依赖注入模式，调用方管理连接生命周期
+  - 所有 sqlite 相关测试 (`sqlite-pragma` / `sqlite-transaction` / `sqlite-wal` / `run-log-store`)：`loadDatabase()` 探测 native binding 不可用时 `describe.skipIf` 优雅跳过
+
 ## v0.71.0 (2026-07-07)
 
 - **6 轮全量代码审查**: 修复 6 Critical + 30 Major + 30 Minor bug
