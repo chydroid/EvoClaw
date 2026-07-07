@@ -365,7 +365,13 @@ export class DeadLetterQueue {
 
   /** 单条消息文件路径（每条消息独立文件，原子写入） */
   private messageFile(id: string): string {
-    return path.join(this.config.storageDir, `${id}.json`);
+    // 安全：校验 id 格式，防止路径穿越攻击（如 id="../../config/settings"）
+    // DLQ id 格式为 dl_<timestamp>_<random>_<hash>
+    if (!/^dl_\d+_[0-9a-z]+_[0-9a-f]{6,}$/.test(id) && !/^[\w-]{1,128}$/.test(id)) {
+      throw new Error(`Invalid DLQ id format: ${id}`);
+    }
+    const safeName = path.basename(id);
+    return path.join(this.config.storageDir, `${safeName}.json`);
   }
 
   /** 旧版 JSONL 文件路径（向后兼容读取） */

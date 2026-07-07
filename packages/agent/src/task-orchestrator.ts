@@ -32,6 +32,8 @@ interface TracingLike {
 export class TaskOrchestrator implements ITaskExecutor {
   private taskQueue: TaskQueue;
   private activeTasks = new Map<string, Task>();
+  /** activeTasks Map 最大条目数，超过后清理最旧的终态任务 */
+  private static readonly MAX_ACTIVE_TASKS = 500;
   private dagExecutor: DAGExecutor;
   private agentPool: AgentPoolManager;
 
@@ -142,6 +144,9 @@ export class TaskOrchestrator implements ITaskExecutor {
         task.updatedAt = new Date();
 
         await this.eventBus.publish(SystemEvents.TASK_COMPLETED, task, LOG);
+        // 清理过量的终态任务，防止 activeTasks Map 无限增长导致内存泄漏
+        // 保留最近 MAX_ACTIVE_TASKS 条记录，允许 getTaskStatus 查询最近完成的任务
+        this.pruneActiveTasks();
       } catch (err) {
         task.status = "failed";
         task.updatedAt = new Date();
@@ -154,6 +159,9 @@ export class TaskOrchestrator implements ITaskExecutor {
           task.status = "queued";
           await this.taskQueue.enqueue(task);
           await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, LOG);
+        } else {
+          // 重试耗尽，清理过量终态任务
+          this.pruneActiveTasks();
         }
       }
     };
@@ -190,6 +198,8 @@ export class TaskOrchestrator implements ITaskExecutor {
       task.updatedAt = new Date();
       await this.taskQueue.remove(taskId);
       await this.eventBus.publish(SystemEvents.TASK_CANCELLED, task, LOG);
+      // 清理过量的终态任务
+      this.pruneActiveTasks();
     }
   }
 
@@ -227,6 +237,22 @@ export class TaskOrchestrator implements ITaskExecutor {
 
   getTaskStatus(taskId: string): Task | undefined {
     return this.activeTasks.get(taskId);
+  }
+
+  /**
+   * 清理过量的终态任务，防止 activeTasks Map 无限增长导致内存泄漏。
+   * 保留最近 MAX_ACTIVE_TASKS 条记录（优先保留非终态任务）。
+   */
+  private pruneActiveTasks(): void {
+    if (this.activeTasks.size <= TaskOrchestrator.MAX_ACTIVE_TASKS) return;
+    const terminalStates = new Set(["completed", "failed", "cancelled"]);
+    // 按插入顺序遍历，删除最旧的终态任务
+    for (const [id, task] of this.activeTasks) {
+      if (terminalStates.has(task.status)) {
+        this.activeTasks.delete(id);
+        if (this.activeTasks.size <= TaskOrchestrator.MAX_ACTIVE_TASKS) break;
+      }
+    }
   }
 
   async healthCheck(): Promise<boolean> {

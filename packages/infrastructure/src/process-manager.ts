@@ -103,9 +103,12 @@ export class ProcessManager {
     const proc = this.processes.get(processId);
     if (proc && proc.childProcess) {
       const child = proc.childProcess;
+      // 安全：若进程已退出，立即返回而非等满 5s SIGKILL 定时器
+      if (child.exitCode !== null || child.signalCode !== null) {
+        proc.status = "stopped";
+        return;
+      }
       // 先 SIGTERM，等待最多 5s，若未退出则 SIGKILL 强制终止。
-      // 仅发 SIGTERM 不等待 exit 会导致调用方误认为进程已终止，
-      // 而忽略 SIGTERM 的子进程会继续占用端口/文件。
       try { child.kill("SIGTERM"); } catch { /* already dead */ }
       await new Promise<void>((resolve) => {
         const sigkillTimer = setTimeout(() => {

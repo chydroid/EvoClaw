@@ -27,6 +27,16 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .command("set <key> <value>")
     .description("Set a secret value (appended to .env)")
     .action((key: string, value: string) => {
+      // 安全：校验 key 格式，防止 .env 注入（key 含 = 或换行符可注入任意环境变量）
+      if (!/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
+        console.log(c("red", `❌ Invalid key: "${key}". Key must match /^[A-Z_][A-Z0-9_]*$/i`));
+        return;
+      }
+      // 安全：拒绝 value 含换行符，防止注入新的环境变量行
+      if (value.includes("\n") || value.includes("\r")) {
+        console.log(c("red", `❌ Invalid value: value must not contain newlines`));
+        return;
+      }
       fs.appendFileSync(path.join(process.cwd(), ".env"), `\n${key}=${value}\n`);
       console.log(c("green", `✅ Set ${key} (value hidden)`));
       console.log(c("gray", "  Written to .env"));

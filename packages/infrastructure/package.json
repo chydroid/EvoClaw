@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/infrastructure",
-  "version": "0.72.1",
+  "version": "0.72.2",
   "private": true,
   "description": "EvoClaw 基础设施层 - 消息队列、事件总线、文件系统、进程管理",
   "main": "./dist/index.js",

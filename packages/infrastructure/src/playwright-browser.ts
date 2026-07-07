@@ -100,7 +100,11 @@ export class PlaywrightBrowser {
 
     this.browser = await playwright.chromium.launch({
       headless: this.headless,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      // 安全：仅在以 root 运行时才禁用沙箱（兼容容器环境），
+      // 非 root 环境保留 Chromium 沙箱防止浏览器漏洞逃逸至宿主。
+      args: process.getuid?.() === 0
+        ? ["--no-sandbox", "--disable-setuid-sandbox"]
+        : [],
     });
 
     const contextOptions: Record<string, unknown> = {
@@ -639,8 +643,12 @@ export class PlaywrightBrowser {
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
+        // 安全：cookie 文件含会话凭据，必须设置 0o600 权限防止同机其他用户读取
         const tmp = `${this.cookieFile}.tmp.${process.pid}`;
-        fs.writeFileSync(tmp, JSON.stringify(cookies, null, 2), "utf-8");
+        const tmpFd = fs.openSync(tmp, "w", 0o600);
+        fs.writeFileSync(tmpFd, JSON.stringify(cookies, null, 2), "utf-8");
+        fs.fsyncSync(tmpFd);
+        fs.closeSync(tmpFd);
         let fd: number | null = null;
         try {
           fd = fs.openSync(tmp, "r");
@@ -648,6 +656,8 @@ export class PlaywrightBrowser {
           fs.closeSync(fd);
           fd = null;
           fs.renameSync(tmp, this.cookieFile);
+          // 确保 rename 后的文件也保持 0o600
+          try { fs.chmodSync(this.cookieFile, 0o600); } catch { /* ignore */ }
         } finally {
           if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
           try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }

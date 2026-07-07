@@ -554,33 +554,41 @@ export class VectorMemoryStore {
     try {
       // 循环处理在落盘期间产生的新修改
       while (this.dirty) {
-        this.dirty = false;
+        // 安全：先暂存 dirty，仅在成功写入后才清除。
+        // 旧实现在写入前就 dirty=false，写入失败时向量数据永久丢失。
+        try {
+          let entries = Array.from(this.vectors.values());
+          if (entries.length > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
+            entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+            entries = entries.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES);
+          }
 
-        let entries = Array.from(this.vectors.values());
-        if (entries.length > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
-          entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-          entries = entries.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES);
+          const serialized = {
+            version: 1,
+            dimension: this.dimension,
+            count: entries.length,
+            entries: entries.map((e) => ({
+              id: e.id,
+              vector: e.vector,
+              metadata: e.metadata,
+              createdAt: e.createdAt.toISOString(),
+            })),
+          };
+
+          const json = JSON.stringify(serialized);
+          const dir = path.dirname(this.storePath);
+          try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
+
+          const tmp = `${this.storePath}.tmp`;
+          await fs.promises.writeFile(tmp, json, "utf8");
+          await fs.promises.rename(tmp, this.storePath);
+          // 仅在成功写入后才清除 dirty
+          this.dirty = false;
+        } catch (persistErr) {
+          // 写入失败：保持 dirty=true，退出循环避免无限重试
+          process.stderr.write(`[VectorMemoryStore] Failed to persist (will retry next schedule): ${persistErr instanceof Error ? persistErr.message : String(persistErr)}\n`);
+          break;
         }
-
-        const serialized = {
-          version: 1,
-          dimension: this.dimension,
-          count: entries.length,
-          entries: entries.map((e) => ({
-            id: e.id,
-            vector: e.vector,
-            metadata: e.metadata,
-            createdAt: e.createdAt.toISOString(),
-          })),
-        };
-
-        const json = JSON.stringify(serialized);
-        const dir = path.dirname(this.storePath);
-        try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
-
-        const tmp = `${this.storePath}.tmp`;
-        await fs.promises.writeFile(tmp, json, "utf8");
-        await fs.promises.rename(tmp, this.storePath);
       }
     } finally {
       this.isPersisting = false;

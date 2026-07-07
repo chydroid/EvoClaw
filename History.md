@@ -5,6 +5,45 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.2 (2026-07-07)
+
+**40 任务模拟检验（第三轮）：发现并修复 7 Critical + 17 High 级别安全/可靠性 bug**
+
+本轮 40 个任务与前两轮完全不同，覆盖 agent 编排、网关/安全、记忆/进化/调度、基础设施/技能、CLI/MCP 等模块。5 个并行审计子代理共发现 10 Critical + 34 High + 54 Medium + 15 Low，本轮修复全部 Critical 和 17 个最关键的 High。
+
+### Critical 修复
+- **auth-provider .json 正则认证绕过**: `auth-provider.ts` 的静态资源正则匹配 `.json` 后缀，`/api/foo.json` 等动态路由可绕过 JWT 认证。修复：移除 `.json` 从正则，且排除 `/api/` 前缀
+- **/metrics 端点未认证**: `gateway-server.ts` 的 `/metrics` 注册在认证中间件之前，公开暴露 Prometheus 指标。修复：移到认证中间件之后
+- **DeadLetterQueue 路径穿越**: `dead-letter-queue.ts` 的 `messageFile(id)` 未校验 id 格式，`id="../../config"` 可删除任意 `.json` 文件。修复：校验 id 格式 + `path.basename()`
+- **LongTermMemory dirty 标志提前清除**: `long-term-memory.ts` 的 `saveToDisk` 在 try 之前就 `dirty=false`，写入失败时数据永久丢失。修复：仅在成功写入后才清除 dirty，EXDEV 回退 rename 失败也抛出
+- **VectorMemoryStore dirty 标志提前清除**: `vector-memory.ts` 的 `persistToDisk` 同样在写入前清 dirty。修复：try/catch 包裹，成功后才清 dirty，失败时 break 退出循环
+- **Playwright Chromium 沙箱禁用**: `playwright-browser.ts` 无条件使用 `--no-sandbox`，浏览器漏洞可逃逸至宿主。修复：仅在 root 运行时禁用沙箱
+- **Playwright cookie 文件权限宽松**: `playwright-browser.ts` 的 cookie 文件默认 0o644，同机其他用户可读取会话凭据。修复：`fs.openSync(tmp, "w", 0o600)` + rename 后 `chmod 0o600`
+- **scheduler shell handler 无危险命令过滤**: `scheduler-tools.ts` 的 shell handler 直接执行 `config.command`，可创建定时 `rm -rf /` 任务。修复：复用 `DANGEROUS_PATTERNS` 黑名单 + cwd 默认为 `data/workspace`
+
+### High 修复
+- **TaskOrchestrator activeTasks Map 内存泄漏**: `task-orchestrator.ts` 的 `activeTasks` 只增不删，长期运行 OOM。修复：添加 `pruneActiveTasks()` 方法，超过 500 条时清理最旧终态任务
+- **Logger 数组未脱敏**: `logger.ts` 的 `redactSensitive` 排除数组，`[{ apiKey: "xxx" }]` 泄漏到日志。修复：递归脱敏数组元素
+- **Logger error/stack 未脱敏**: `logger.ts` 的 `error.message` 和 `stack` 可能含连接字符串（密码），直接输出。修复：经过 `redactValue()` 脱敏
+- **Cron 步进值静默吞掉**: `cron-scheduler.ts` 的 `parseField` 不解析 `/step`，`0-30/2` 被当作 `0-30`。修复：支持 `*/step`、`range/step`、`value/step` 语法
+- **Cron setTimeout delay 溢出**: `cron-scheduler.ts` 的 `setTimeout` delay 超过 2^31-1 ms 被截断为 1ms，导致 CPU 忙循环。修复：拆分为多个最多 23 天的 setTimeout
+- **report_generate 路径穿越**: `report-generator.ts` 的 `outputPath` 未校验，可写入任意路径。修复：校验在 `data/reports/` 目录内
+- **readTemplateFile 路径穿越**: `report-generator.ts` 的模板路径未限制在 `templateDir` 内。修复：`path.resolve` 后校验前缀
+- **CLI secrets .env 注入**: `secrets.ts` 的 `secrets set` 命令未校验 key/value，key 含 `=` 或换行符可注入环境变量。修复：key 白名单 `/^[A-Z_][A-Z0-9_]*$/i` + 拒绝 value 含换行
+- **CLI channels 路径穿越**: `channels.ts` 的 `saveWeixinCredentials` 未过滤 `../`，accountId 可逃逸目录。修复：白名单 `/^[a-zA-Z0-9_-]+$/`
+- **filesystem listDir/exists/ensureDir 绕过 validatePath**: `filesystem-manager.ts` 的 `listDir`/`listAll`/`exists`/`ensureDir` 仅用 `resolvePath`（词法校验），不解析符号链接。修复：增加 `validatePath()` 调用
+- **browser submitForm/fetchJSON 缺 SSRF**: `browser-controller.ts` 的 `submitForm` 和 `fetchJSON` 不校验 URL。修复：复用 `SSRFProtection.checkURL()`
+- **fetch_node_page SSRF 重定向**: `web-tools.ts` 的 `fetch_node_page` 使用 `redirect: "follow"` 不校验重定向目标。修复：改为 `redirect: "manual"` + 每次重定向重新 SSRF 校验
+- **skill-orchestrator 依赖失败误判死锁**: `skill-orchestrator.ts` 依赖步骤失败后，dependent 永不执行且报"Deadlock detected"。修复：`getReadySteps` 级联标记依赖失败步骤 + 清理 remaining
+- **process-manager kill 等满 5s**: `process-manager.ts` 的 `kill` 在进程已退出时仍等满 5s SIGKILL 定时器。修复：检查 `exitCode !== null` 立即返回
+- **transcript-redactor 循环引用栈溢出**: `transcript-redactor.ts` 的 `redactObject` 无环检测，循环引用导致栈溢出。修复：使用 `WeakSet<object>` 检测循环
+- **memory-hub close() 不 await drain/flush**: `memory-hub.ts` 的 `close()` 用 `void` 丢弃异步 drain/flush，进程退出时数据丢失。修复：改为 `async close()` + `await` drain/flush
+
+### 验证
+- `pnpm build` 全绿
+- `pnpm typecheck` 全绿
+- `pnpm test` 全绿：4911 passed / 73 skipped (4984)
+
 ## v0.72.1 (2026-07-07)
 
 **50 任务模拟检验：发现并修复 12 Critical + 8 High 级别安全/可靠性 bug**

@@ -204,8 +204,10 @@ export class Logger {
       subsystem,
       message,
       data: data ? this.redactSensitive(data) : undefined,
-      error: errorMsg,
-      stack,
+      // 安全：error message 和 stack 可能含连接字符串（含密码）、
+      // SQL 语句、文件路径等敏感信息，必须经过脱敏
+      error: errorMsg ? this.redactValue(errorMsg) : undefined,
+      stack: stack ? this.redactValue(stack) : undefined,
     };
 
     const output = this.config.prettyPrint
@@ -245,7 +247,15 @@ export class Logger {
         redacted[key] = "[REDACTED]";
       } else if (typeof value === "string") {
         redacted[key] = this.redactValue(value);
-      } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      } else if (Array.isArray(value)) {
+        // 安全：递归脱敏数组元素，防止 [{ apiKey: "xxx" }] 等嵌套敏感数据泄漏
+        redacted[key] = value.map((v) =>
+          typeof v === "string" ? this.redactValue(v) :
+          (typeof v === "object" && v !== null && !Array.isArray(v))
+            ? this.redactSensitive(v as Record<string, unknown>)
+            : v
+        );
+      } else if (typeof value === "object" && value !== null) {
         redacted[key] = this.redactSensitive(value as Record<string, unknown>);
       } else {
         redacted[key] = value;

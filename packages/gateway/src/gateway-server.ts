@@ -311,6 +311,12 @@ export class GatewayServer {
       next(err);
     });
 
+    this.app.use(this.requestLogger.bind(this));
+    this.app.use(this.rateLimiter.bind(this));
+    this.app.use(this.authProvider.authenticate.bind(this.authProvider));
+
+    // 安全：/metrics 端点移到认证中间件之后，避免公开暴露 Prometheus 指标
+    // （含请求延迟、错误率、内部服务名、连接数等侦察信息）。
     this.app.get("/metrics", (_req: Request, res: Response) => {
       const observability = this.registry.resolveService<Observability>("observability");
       if (!observability) {
@@ -325,10 +331,6 @@ export class GatewayServer {
       }
       res.status(200).set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").send(output);
     });
-
-    this.app.use(this.requestLogger.bind(this));
-    this.app.use(this.rateLimiter.bind(this));
-    this.app.use(this.authProvider.authenticate.bind(this.authProvider));
   }
 
   private rateLimiter(req: Request, res: Response, next: NextFunction): void {

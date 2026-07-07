@@ -118,21 +118,46 @@ class CronExpression {
     const segments = trimmed.split(",");
 
     for (const seg of segments) {
-      if (seg.includes("-")) {
-        const parts = seg.split("-");
-        if (parts.length !== 2) throw new Error(`Invalid range "${seg}" in field "${fieldName}"`);
+      // 安全：处理步进值语法（如 */5、0-30/2、5/10）
+      // 旧实现不解析 /step，导致 0-30/2 被当作 0-30（每分钟都触发）
+      let step = 1;
+      let rangePart = seg;
+      if (seg.includes("/")) {
+        const slashParts = seg.split("/");
+        if (slashParts.length !== 2) {
+          throw new Error(`Invalid step expression "${seg}" in field "${fieldName}"`);
+        }
+        rangePart = slashParts[0];
+        step = parseInt(slashParts[1], 10);
+        if (isNaN(step) || step < 1) {
+          throw new Error(`Invalid step value "${slashParts[1]}" in field "${fieldName}"`);
+        }
+      }
+
+      if (rangePart === "*") {
+        // */step 语法：从 min 到 max，按 step 递增
+        for (let v = min; v <= max; v += step) {
+          if (fieldName === "dayOfWeek" && v === 7) {
+            values.add(0);
+          } else {
+            values.add(v);
+          }
+        }
+      } else if (rangePart.includes("-")) {
+        const parts = rangePart.split("-");
+        if (parts.length !== 2) throw new Error(`Invalid range "${rangePart}" in field "${fieldName}"`);
         const [lo, hi] = parts;
         const loNum = parseInt(lo, 10);
         const hiNum = parseInt(hi, 10);
         if (isNaN(loNum) || isNaN(hiNum)) {
-          throw new Error(`Invalid range "${seg}" in field "${fieldName}"`);
+          throw new Error(`Invalid range "${rangePart}" in field "${fieldName}"`);
         }
         if (loNum < min || hiNum > max || loNum > hiNum) {
           throw new Error(
             `Range ${loNum}-${hiNum} out of bounds [${min},${max}] in field "${fieldName}"`,
           );
         }
-        for (let v = loNum; v <= hiNum; v++) {
+        for (let v = loNum; v <= hiNum; v += step) {
           // BUG 9.1 fix: cron 标准中 dayOfWeek=7 等价于 0（周日）。
           // Date.getDay() 返回 0-6，7 永不匹配。归一化为 0。
           if (fieldName === "dayOfWeek" && v === 7) {
@@ -142,17 +167,20 @@ class CronExpression {
           }
         }
       } else {
-        const num = parseInt(seg, 10);
+        const num = parseInt(rangePart, 10);
         if (isNaN(num) || num < min || num > max) {
           throw new Error(
-            `Value "${seg}" out of bounds [${min},${max}] in field "${fieldName}"`,
+            `Value "${rangePart}" out of bounds [${min},${max}] in field "${fieldName}"`,
           );
         }
         // BUG 9.1 fix: 同上，dayOfWeek=7 归一化为 0
-        if (fieldName === "dayOfWeek" && num === 7) {
-          values.add(0);
-        } else {
-          values.add(num);
+        // 支持 num/step 语法：从 num 到 max 按 step 递增
+        for (let v = num; v <= max; v += step) {
+          if (fieldName === "dayOfWeek" && v === 7) {
+            values.add(0);
+          } else {
+            values.add(v);
+          }
         }
       }
     }
@@ -400,13 +428,25 @@ export class CronScheduler extends EventEmitter {
     job.updatedAt = new Date();
 
     const delay = Math.max(0, next.getTime() - Date.now());
-    const timer = setTimeout(() => {
-      void this.executeJob(job.id).catch((err) => {
-        process.stderr.write(`[CronScheduler] executeJob failed for "${job.id}":` + " " + err + "\n");
-      });
-    }, delay);
-    timer.unref();
-    this.timers.set(job.id, timer);
+    // 安全：setTimeout delay 超过 2^31-1 ms（约 24.8 天）会被截断为 1ms，
+    // 导致 CPU 忙循环。将长 delay 拆分为多个最多 24 天的 setTimeout。
+    const MAX_TIMER_DELAY = 2_000_000_000; // ~23 天，安全低于 2^31-1
+    const scheduleWithCap = (remaining: number): void => {
+      const cappedDelay = Math.min(remaining, MAX_TIMER_DELAY);
+      const timer = setTimeout(() => {
+        if (remaining > MAX_TIMER_DELAY) {
+          // 继续等待剩余时间
+          scheduleWithCap(remaining - cappedDelay);
+        } else {
+          void this.executeJob(job.id).catch((err) => {
+            process.stderr.write(`[CronScheduler] executeJob failed for "${job.id}":` + " " + err + "\n");
+          });
+        }
+      }, cappedDelay);
+      timer.unref();
+      this.timers.set(job.id, timer);
+    };
+    scheduleWithCap(delay);
   }
 
   private clearTimer(jobId: string): void {

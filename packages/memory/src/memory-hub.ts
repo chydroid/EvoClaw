@@ -704,12 +704,13 @@ export class MemoryHub {
   }
 
   /** 释放底层 SQLite 句柄、定时器与未落盘的脏数据，防止文件描述符泄漏和数据丢失 */
-  close(): void {
+  async close(): Promise<void> {
     // 1. 先 drain 分层记忆的后台任务（L1 持久化等），防止未落盘的 JSONL 行丢失
+    // 安全：await drain/flush 完成后再关闭底层句柄，旧实现用 void 丢弃导致数据丢失
     try {
       const lm = this.layeredMemory as unknown as { drain?: () => Promise<unknown> };
       if (typeof lm?.drain === "function") {
-        void lm.drain().catch(() => { /* ignore */ });
+        await lm.drain().catch(() => { /* ignore */ });
       }
     } catch { /* ignore */ }
 
@@ -717,7 +718,7 @@ export class MemoryHub {
     try {
       const vs = this.vectorStore as unknown as { flush?: () => Promise<unknown> };
       if (typeof vs?.flush === "function") {
-        void vs.flush().catch(() => { /* ignore */ });
+        await vs.flush().catch(() => { /* ignore */ });
       }
     } catch { /* ignore */ }
 
@@ -741,7 +742,7 @@ export class MemoryHub {
       const lt = this.longTerm as unknown as { close?: () => void | Promise<void> };
       if (typeof lt?.close === "function") {
         const r = lt.close();
-        if (r instanceof Promise) r.catch(() => { /* ignore */ });
+        if (r instanceof Promise) await r.catch(() => { /* ignore */ });
       }
     } catch { /* ignore */ }
   }

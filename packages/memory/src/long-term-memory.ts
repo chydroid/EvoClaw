@@ -144,7 +144,8 @@ export class LongTermMemoryStore implements LongTermMemory {
 
   private saveToDisk(): void {
     if (!this.dirty) return;
-    this.dirty = false;
+    // 安全：仅在成功写入后才清除 dirty 标志。
+    // 旧实现在 try 之前就 dirty=false，写入失败时数据永久丢失且不重试。
     try {
       const dir = path.dirname(MEMORY_FILE);
       if (!fs.existsSync(dir)) {
@@ -192,15 +193,25 @@ export class LongTermMemoryStore implements LongTermMemory {
             throw w2err;
           }
           fs.closeSync(fd2);
-          try { fs.renameSync(dstTmp, MEMORY_FILE); } catch { /* ignore */ }
+          // 安全：EXDEV 回退的 rename 失败必须抛出，否则数据丢失且 dirty 已清
+          try {
+            fs.renameSync(dstTmp, MEMORY_FILE);
+          } catch (renameErr) {
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw renameErr;
+          }
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
         } else {
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           throw err;
         }
       }
+      // 仅在成功写入后才清除 dirty
+      this.dirty = false;
     } catch (err) {
-      process.stderr.write(`[LongTermMemory] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
+      // 写入失败：保持 dirty=true，下次 scheduleSave 会重试
+      process.stderr.write(`[LongTermMemory] Failed to save (will retry): ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

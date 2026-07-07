@@ -315,11 +315,17 @@ export class ReportGenerator {
       : html;
 
     if (options.outputPath) {
-      const dir = path.dirname(options.outputPath);
+      // 安全：校验 outputPath 在 data/reports/ 目录内，防止路径穿越
+      const allowedBase = path.resolve(process.cwd(), "data", "reports");
+      const resolved = path.resolve(options.outputPath);
+      if (resolved !== allowedBase && !resolved.startsWith(allowedBase + path.sep)) {
+        throw new Error(`Output path must be within ${allowedBase}`);
+      }
+      const dir = path.dirname(resolved);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(options.outputPath, output, "utf-8");
+      fs.writeFileSync(resolved, output, "utf-8");
     }
 
     this.eventBus.publish(
@@ -485,7 +491,13 @@ export class ReportGenerator {
 
   private readTemplateFile(filePath: string): string {
     const resolved = path.isAbsolute(filePath) ? filePath : path.join(this.templateDir, filePath);
-    if (!fs.existsSync(resolved)) {
+    // 安全：校验 resolved 在 templateDir 内，防止路径穿越读取任意文件
+    const resolvedAbs = path.resolve(resolved);
+    const templateDirAbs = path.resolve(this.templateDir);
+    if (resolvedAbs !== templateDirAbs && !resolvedAbs.startsWith(templateDirAbs + path.sep)) {
+      throw new Error(`Template path outside template directory: ${filePath}`);
+    }
+    if (!fs.existsSync(resolvedAbs)) {
       throw new Error(`Template file not found: ${resolved}`);
     }
     return fs.readFileSync(resolved, "utf-8");

@@ -82,7 +82,11 @@ export class AuthProvider {
     }
 
     // ── Static assets and UI pages ──
-    if (req.path === "/" || req.path.startsWith("/ui") || req.path.startsWith("/assets/") || req.path.match(/\.(html|js|css|png|ico|svg|json)$/)) {
+    // 安全：仅允许 /assets/ 前缀和 /ui 前缀的静态资源免认证。
+    // 不再使用宽泛的扩展名正则（含 .json），否则 /api/foo.json 等
+    // 动态路由会绕过认证。
+    if (req.path === "/" || req.path.startsWith("/ui") || req.path.startsWith("/assets/") ||
+        (req.path.match(/\.(html|js|css|png|ico|svg)$/) && !req.path.startsWith("/api/"))) {
       return next();
     }
 

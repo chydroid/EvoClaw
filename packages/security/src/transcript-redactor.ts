@@ -298,18 +298,28 @@ export class TranscriptRedactor {
   /** 遮蔽对象(递归) */
   redactObject<T = unknown>(obj: T): T {
     if (!this.config.enabled) return obj;
+    // 安全：使用 visited Set 检测循环引用，防止栈溢出 DoS
+    return this.redactObjectInternal(obj, new WeakSet<object>()) as T;
+  }
+
+  private redactObjectInternal(obj: unknown, visited: WeakSet<object>): unknown {
     if (typeof obj === "string") {
-      return this.redact(obj).text as unknown as T;
+      return this.redact(obj).text;
     }
     if (Array.isArray(obj)) {
-      return obj.map((item) => this.redactObject(item)) as unknown as T;
+      // 数组不放入 visited（数组循环引用罕见且 WeakSet 键须为 object）
+      return obj.map((item) => this.redactObjectInternal(item, visited));
     }
     if (obj && typeof obj === "object") {
+      if (visited.has(obj as object)) {
+        return "[Circular]";
+      }
+      visited.add(obj as object);
       const result: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(obj)) {
-        result[k] = this.redactObject(v);
+        result[k] = this.redactObjectInternal(v, visited);
       }
-      return result as T;
+      return result;
     }
     return obj;
   }

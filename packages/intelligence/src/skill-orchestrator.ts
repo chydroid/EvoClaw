@@ -143,6 +143,13 @@ export class SkillOrchestrator {
     while (remaining.size > 0) {
       const ready = this.getReadySteps(plan.steps, completed, failed);
 
+      // 安全：清理因依赖失败而级联标记为 failed 的步骤
+      for (const step of plan.steps) {
+        if (failed.has(step.id) && remaining.has(step.id)) {
+          remaining.delete(step.id);
+        }
+      }
+
       if (ready.length === 0) {
         if (remaining.size > 0) {
           const unresolved = [...remaining].join(", ");
@@ -393,6 +400,13 @@ export class SkillOrchestrator {
     completed: Set<string>,
     failed: Set<string>
   ): OrchestrationStep[] {
+    // 安全：依赖失败级联 — 若任一依赖在 failed 集合中，该步骤也标记为 failed
+    for (const s of steps) {
+      if (completed.has(s.id) || failed.has(s.id)) continue;
+      if (s.dependsOn.some((depId) => failed.has(depId))) {
+        failed.add(s.id);
+      }
+    }
     return steps.filter((s) => {
       if (completed.has(s.id) || failed.has(s.id)) return false;
       return s.dependsOn.every((depId) => completed.has(depId));

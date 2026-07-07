@@ -431,17 +431,41 @@ export function registerWebTools(
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
-        const response = await fetch(url, {
+        // 安全：使用 redirect: "manual" 并对每个重定向目标重新 SSRF 校验，
+        // 防止 302 重定向到内网/元数据端点绕过初始 SSRF 检查
+        let currentUrl = url;
+        let response = await fetch(currentUrl, {
           headers: {
             "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
             "Accept": "text/html,text/plain,*/*",
           },
           signal: controller.signal,
-          redirect: "follow",
+          redirect: "manual",
         });
+        // 跟随重定向（最多 5 次），每次重新校验 SSRF
+        let redirectCount = 0;
+        while ([301, 302, 303, 307, 308].includes(response.status) && redirectCount < 5) {
+          const location = response.headers.get("location");
+          if (!location) break;
+          currentUrl = new URL(location, currentUrl).href;
+          const redirectSsrfReason = await checkSsrf(currentUrl);
+          if (redirectSsrfReason) {
+            clearTimeout(timeout);
+            return { error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: currentUrl };
+          }
+          response = await fetch(currentUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
+              "Accept": "text/html,text/plain,*/*",
+            },
+            signal: controller.signal,
+            redirect: "manual",
+          });
+          redirectCount++;
+        }
         if (!response.ok) {
           clearTimeout(timeout);
-          return { error: `HTTP ${response.status}`, url };
+          return { error: `HTTP ${response.status}`, url: currentUrl };
         }
         const text = await response.text();
         clearTimeout(timeout);

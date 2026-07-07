@@ -7,6 +7,7 @@ import type { ScheduledTask } from "@evoclaw/scheduler";
 import type { PlaywrightBrowser } from "@evoclaw/infrastructure";
 import type { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData } from "@evoclaw/reporting";
+import path from "path";
 
 export function registerSchedulerTools(
   executor: AgentModelExecutor,
@@ -66,16 +67,44 @@ export function registerSchedulerTools(
   });
 
   // shell handler：执行 shell 命令（带超时和危险命令拦截）
+  // 安全：复用 shell_exec 的危险命令黑名单，防止定时任务执行 rm -rf / 等破坏性命令
+  const SCHED_DANGEROUS_PATTERNS = [
+    /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*~]|\$HOME|--no-preserve-root)/i,
+    /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r)\s+\/(\s|$)/i,
+    /rm\s+-r\s+\//i, /rm\s+-rf\s+\//i, /rm\s+-rf\s+\~/i, /rm\s+-rf\s+\./i, /rm\s+-rf\s+\*/i,
+    /del\s+\/S\s+\/Q\s+C:\\/i, /rmdir\s+\/[sS]\s+\/[qQ]/i,
+    /Remove-Item\s+[^|;]*(-Recurse|-Force)[^|;]*(-Recurse|-Force)/i,
+    /\bpowershell\b.*\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex|Start-Process|Remove-Item)\b/i,
+    /\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex)\b/i,
+    /shutdown/, /reboot/, /format\s+[a-z]:/i, /dd\s+if=/, /mkfs/, /fdisk/,
+    /:\(\)\s*\{/, /fork\s*bomb/, />\s*\/dev\/sda/, />\s*\/dev\/nvme/,
+    /chmod\s+777\s+\//, /chown\s+-R\s+\//,
+    /\b(curl|wget)\b[^|&;]*\|\s*(sh|bash|python)/i,
+    /\b(curl|wget)\b[^|&;]*&&\s*(sh|bash|python)/i,
+    /\b(curl|wget)\b[^|&;]*>\s*\/[^\s|&;]+\s*&&\s*(sh|bash|python)/i,
+    /`[^`]*`/, /\r|\n/,
+  ];
+
   sched.registerHandler("shell", async (task: ScheduledTask) => {
     const config = task.handlerConfig as { command?: string; cwd?: string; timeout?: number };
     if (!config.command) {
       eventBus.publish("scheduler.shell_error", { taskId: task.id, error: "No command specified" }, "scheduler");
       return;
     }
+    // 安全：危险命令过滤，防止定时任务执行破坏性命令
+    for (const pattern of SCHED_DANGEROUS_PATTERNS) {
+      if (pattern.test(config.command)) {
+        eventBus.publish("scheduler.shell_error", {
+          taskId: task.id, error: "Command blocked by safety filter: matched dangerous pattern",
+        }, "scheduler");
+        return;
+      }
+    }
     const { execFile } = await import("child_process");
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const shellArgs = process.platform === "win32" ? ["/c", config.command] : ["-c", config.command];
-    const cwd = config.cwd || process.cwd();
+    // 安全：cwd 默认为 data/workspace 而非项目根目录，防止破坏项目文件
+    const cwd = config.cwd || path.resolve(process.cwd(), "data", "workspace");
     const timeout = Math.min(config.timeout || 60000, 300000); // 最长 5 分钟
     try {
       const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {

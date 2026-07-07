@@ -98,8 +98,11 @@ function saveWeixinCredentials(accountId: string, token: string, baseUrl: string
     fs.renameSync(tmp, filePath);
   };
 
-  // Normalize accountId: replace @ with - for filesystem safety
+  // 安全：校验 accountId 格式，防止路径穿越（如 accountId="../../config"）
   const normalizedId = accountId.replace(/@/g, "-");
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedId)) {
+    throw new Error(`Invalid accountId: "${accountId}". Must match /^[a-zA-Z0-9_-]+$/`);
+  }
 
   // State directory: ~/.openclaw/openclaw-weixin/accounts/
   const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");

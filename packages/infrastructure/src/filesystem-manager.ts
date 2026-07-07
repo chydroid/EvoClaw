@@ -299,7 +299,14 @@ export class FileSystemManager {
 
   async exists(relativePath: string): Promise<boolean> {
     try {
-      await access(this.resolvePath(relativePath), constants.F_OK);
+      // 安全：使用 validatePath 防止符号链接逃逸（resolvePath 仅做词法校验）
+      const fullPath = this.resolvePath(relativePath);
+      try {
+        await this.validatePath(fullPath);
+      } catch {
+        return false;
+      }
+      await access(fullPath, constants.F_OK);
       return true;
     } catch {
       return false;
@@ -313,22 +320,20 @@ export class FileSystemManager {
     if (!dirs) return;
 
     const fullDir = this.resolvePath(dirs);
-    // Verify the resolved path is still within basePath to prevent traversal
-    const resolved = path.resolve(fullDir);
-    const baseResolved = path.resolve(this.basePath);
-    if (resolved !== baseResolved && !resolved.startsWith(baseResolved + path.sep)) {
-      throw new Error(`Directory outside base path: ${fullDir}`);
-    }
+    // 安全：使用 validatePath 防止符号链接逃逸（path.resolve 不解析 symlink）
+    await this.validatePath(fullDir);
 
     try {
-      await mkdir(resolved, { recursive: true });
+      await mkdir(fullDir, { recursive: true });
     } catch {
-      throw new Error(`Unable to create directory: ${resolved}`);
+      throw new Error(`Unable to create directory: ${fullDir}`);
     }
   }
 
   async listDir(relativePath: string): Promise<FileInfo[]> {
     const fullPath = this.resolvePath(relativePath);
+    // 安全：使用 validatePath 防止符号链接逃逸
+    await this.validatePath(fullPath);
     const entries = await readdir(fullPath, { withFileTypes: true });
 
     const files: FileInfo[] = [];
@@ -358,6 +363,8 @@ export class FileSystemManager {
     relativePath: string
   ): Promise<{ files: FileInfo[]; dirs: string[] }> {
     const fullPath = this.resolvePath(relativePath);
+    // 安全：使用 validatePath 防止符号链接逃逸
+    await this.validatePath(fullPath);
     const entries = await readdir(fullPath, { withFileTypes: true });
 
     const files: FileInfo[] = [];

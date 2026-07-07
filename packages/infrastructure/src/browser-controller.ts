@@ -224,6 +224,12 @@ export class BrowserController {
           ? new URL(formData.action, this.currentPage.url).href
           : formData.action;
 
+      // 安全：SSRF 校验，防止表单提交到内网/元数据端点
+      const ssrfCheck = await this.ssrfProtection.checkURL(url);
+      if (!ssrfCheck.allowed) {
+        return { success: false, url, title: "", status: 0, bodyPreview: "", links: [], forms: [], error: `Blocked by SSRF protection: ${ssrfCheck.reason}` };
+      }
+
       const headers: Record<string, string> = {
         "User-Agent": this.userAgent,
         "Content-Type": formData.method === "post" ? "application/x-www-form-urlencoded" : "text/plain",
@@ -329,6 +335,11 @@ export class BrowserController {
   async fetchJSON(url: string): Promise<unknown> {
     try {
       const normalizedUrl = url.startsWith("http") ? url : `https://${url}`;
+      // 安全：SSRF 校验，防止 JSON 请求到内网/元数据端点
+      const ssrfCheck = await this.ssrfProtection.checkURL(normalizedUrl);
+      if (!ssrfCheck.allowed) {
+        return { error: `Blocked by SSRF protection: ${ssrfCheck.reason}`, url: normalizedUrl };
+      }
       const headers: Record<string, string> = {
         "User-Agent": this.userAgent,
         "Accept": "application/json",
