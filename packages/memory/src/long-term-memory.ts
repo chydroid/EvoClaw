@@ -19,16 +19,33 @@ const DATA_DIR = process.env.EVOCLAW_DATA_DIR || path.join(process.cwd(), "data"
 const MEMORY_FILE = path.join(DATA_DIR, "memory", "long-term.json");
 const SQLITE_FILE = path.join(DATA_DIR, "memory", "long-term.db");
 const SAVE_DEBOUNCE_MS = 2000;
+// TTL 过期扫描间隔：每 10 分钟扫描一次，清理过期记忆。
+// 此前 expire() 仅在外部显式调用时执行，导致 TTL 字段被静默忽略，
+// 过期记忆永远残留。
+const EXPIRE_SCAN_INTERVAL_MS = 10 * 60 * 1000;
 
 export class LongTermMemoryStore implements LongTermMemory {
   private entries = new Map<string, MemoryEntry>();
   private saveTimer: NodeJS.Timeout | null = null;
+  private expireTimer: NodeJS.Timeout | null = null;
   private dirty = false;
   private sqliteDb: SqliteDatabase | null = null;
 
   constructor() {
     this.initSqlite();
     this.loadFromDisk();
+    this.startExpireTimer();
+  }
+
+  /** 启动周期性 TTL 过期扫描定时器 */
+  private startExpireTimer(): void {
+    // 立即执行一次过期清理（加载后即清理），然后周期性扫描
+    void this.expire().catch(() => { /* best-effort */ });
+    this.expireTimer = setInterval(() => {
+      void this.expire().catch(() => { /* best-effort */ });
+    }, EXPIRE_SCAN_INTERVAL_MS);
+    // unref 防止定时器阻止进程优雅退出
+    this.expireTimer.unref();
   }
 
   private initSqlite(): void {
@@ -406,7 +423,7 @@ export class LongTermMemoryStore implements LongTermMemory {
   }
 
   /**
-   * 释放资源：落盘 dirty 数据，清理 saveTimer，关闭 SQLite 连接。
+   * 释放资源：落盘 dirty 数据，清理 saveTimer/expireTimer，关闭 SQLite 连接。
    * 长期运行服务在销毁实例时应调用，否则 SQLite 文件句柄与 WAL 锁会泄漏。
    */
   async close(): Promise<void> {
@@ -416,6 +433,10 @@ export class LongTermMemoryStore implements LongTermMemory {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
+    }
+    if (this.expireTimer) {
+      clearInterval(this.expireTimer);
+      this.expireTimer = null;
     }
     if (this.sqliteDb) {
       try {

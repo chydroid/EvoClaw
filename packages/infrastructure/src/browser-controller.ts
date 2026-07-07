@@ -1,4 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { SSRFProtection } from "@evoclaw/security";
 
 export interface BrowserPage {
   url: string;
@@ -39,6 +40,8 @@ export class BrowserController {
   private currentPage: NavigationResult | null = null;
   private tabs: Map<string, NavigationResult> = new Map();
   private activeTabId: string = "default";
+  /** SSRF 防护：阻止浏览器导航到内网 IP / 元数据端点 */
+  private ssrfProtection = new SSRFProtection();
 
   constructor(
     private registry: ServiceRegistry,
@@ -62,6 +65,21 @@ export class BrowserController {
   async navigate(url: string): Promise<NavigationResult> {
     try {
       const normalizedUrl = url.startsWith("http") ? url : `https://${url}`;
+
+      // SSRF 防护：阻止导航到内网 IP / 元数据端点（如 169.254.169.254）
+      const ssrfCheck = await this.ssrfProtection.checkURL(normalizedUrl);
+      if (!ssrfCheck.allowed) {
+        return {
+          success: false,
+          url: normalizedUrl,
+          title: "",
+          status: 0,
+          bodyPreview: "",
+          links: [],
+          forms: [],
+          error: `Blocked by SSRF protection: ${ssrfCheck.reason}`,
+        };
+      }
 
       const headers: Record<string, string> = {
         "User-Agent": this.userAgent,

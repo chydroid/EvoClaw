@@ -92,7 +92,11 @@ const TIMEOUT_PATTERNS = [
 // 借鉴 openclaw 的双 jitter 模式：symmetric 用于普通退避，
 // positive 用于 Retry-After 场景（保证不低于下限）。
 const JITTER_FACTOR = 0.3;
-const MAX_BACKOFF_MS = 30_000;
+// 上限提升至 5 分钟：当 provider 通过 Retry-After 显式要求更长等待时，
+// 30s 上限会违反契约导致反复 429。普通退避仍由各分支的 baseBackoff 控制。
+const MAX_BACKOFF_MS = 300_000;
+// 普通退避（无 Retry-After 契约）仍使用 30s 上限，避免无谓的长等待。
+const MAX_ORDINARY_BACKOFF_MS = 30_000;
 
 /**
  * 对 backoffMs 应用 jitter。
@@ -101,7 +105,10 @@ const MAX_BACKOFF_MS = 30_000;
  */
 function applyBackoffJitter(backoffMs: number, hasRetryAfter = false): number {
   const jittered = applyJitter(backoffMs, JITTER_FACTOR, hasRetryAfter ? "positive" : "symmetric");
-  return Math.min(Math.max(0, jittered), MAX_BACKOFF_MS);
+  // Retry-After 契约场景尊重 provider 要求，使用 MAX_BACKOFF_MS（5min）；
+  // 普通退避使用更短的 MAX_ORDINARY_BACKOFF_MS（30s）避免长等待。
+  const cap = hasRetryAfter ? MAX_BACKOFF_MS : MAX_ORDINARY_BACKOFF_MS;
+  return Math.min(Math.max(0, jittered), cap);
 }
 
 export function classifyLLMError(
@@ -240,6 +247,22 @@ export function classifyLLMError(
         isTransient,
       };
     }
+  }
+
+  // 5xx 服务端错误：provider 内部错误，可重试。
+  // 此前 5xx 落入 UNKNOWN 分支，被 llm-caller 当作成功空响应处理，
+  // 导致 recordProviderSuccess 被错误调用、循环空转消耗 budget。
+  if (typeof statusCode === "number" && statusCode >= 500 && statusCode < 600) {
+    return {
+      type: LLMErrorType.PROVIDER_ERROR,
+      retryable: true,
+      shouldCompact: false,
+      shouldRotateAuth: false,
+      backoffMs: applyBackoffJitter(2000),
+      message: `Provider server error (HTTP ${statusCode}). Retrying.`,
+      reason,
+      isTransient: true,
+    };
   }
 
   return {

@@ -45,10 +45,13 @@ export class AuthProvider {
 
   async authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
     // ── Public paths that never require authentication ──
+    // 安全：/api/chat 不再公开。未认证调用者可借此消耗 LLM 额度、
+    // 触发工具执行（潜在 RCE）并读取内部数据。WebUI 必须先通过
+    // /api/auth/login 获取 JWT 或配置 WEB_UI_TOKEN cookie 后再调用。
     const publicExactPaths = new Set([
       "/health", "/healthz", "/live", "/ready", "/readyz",
       "/api/health", "/api/auth/login", "/api/auth/register", "/api/auth/refresh",
-      "/api/status", "/api/bootstrap", "/api/skills", "/api/chat",
+      "/api/status", "/api/bootstrap", "/api/skills",
       // 技能市场只读端点：search/trending/categories 仅返回 catalog 元数据，
       // 不触及本地技能安装或状态变更，安全可公开。安装端点 /api/marketplace/install
       // 仍需认证，防止未认证攻击者通过安装恶意技能实现 RCE。

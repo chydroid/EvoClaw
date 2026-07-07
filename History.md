@@ -5,6 +5,37 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.1 (2026-07-07)
+
+**50 任务模拟检验：发现并修复 12 Critical + 8 High 级别安全/可靠性 bug**
+
+本轮 50 个任务与上轮 40 个完全不同，覆盖 agent 编排、网关/插件、邮件/浏览器/报告、安全/审计、记忆/进化/工作流等模块。
+
+### Critical 修复
+- **跨会话上下文泄漏**: `agent-model-executor.ts` 的 `_currentContextEngineResult` 为单一实例字段，并发 `chatInner` 调用会互相覆盖，导致 A 会话使用 B 会话的上下文。修复：改为 `Map<sessionId, LayeredContextResult>` 按会话隔离
+- **500 错误被当作成功**: `error-classifier.ts` 未分类 5xx 错误，落入 UNKNOWN 分支后被 `llm-caller.ts` 当作成功空响应，导致 `recordProviderSuccess` 错误调用、循环空转。修复：添加 5xx → PROVIDER_ERROR 分支（可重试 + backoff）
+- **`/api/chat` 未认证**: `auth-provider.ts` 将 `/api/chat` 列为公开路径，未认证调用者可消耗 LLM 额度、触发工具执行（潜在 RCE）。修复：从 `publicExactPaths` 移除
+- **ToolPolicyManager 全绕过**: `tool-policy-manager.ts` 对 agentId 为 "main"/"default" 的请求直接返回 `allowed: true`，跳过所有策略检查。修复：移除豁免，统一走 sandbox 策略
+- **DM 配对码暴力枚举**: `dm-pairing-manager.ts` 的 `approve()` 无速率限制，6 位配对码空间仅 10^6，可被暴力枚举。修复：添加 per-source 失败计数（10 分钟窗口 5 次上限，超出锁定 5 分钟）
+- **Retry-After 契约被截断**: `error-classifier.ts` 的 `MAX_BACKOFF_MS = 30_000` 将 Retry-After 截断至 30s，provider 要求 60s 等待时反复 429。修复：Retry-After 场景上限提升至 5 分钟，普通退避仍 30s
+- **审计日志未脱敏**: `audit-center.ts` 的 `record()` 直接写入原始 description 和 metadata，API key/token 等敏感信息可经审计日志二次泄漏。修复：集成 `TranscriptRedactor` 在入库前脱敏
+- **LongTermMemory TTL 静默忽略**: `long-term-memory.ts` 的 `expire()` 仅在外部显式调用时执行，TTL 字段形同虚设。修复：构造时启动 10 分钟周期性过期扫描定时器
+- **Memory 内容无大小限制**: `memory-hub.ts` 的 `remember()` 不检查 content 长度，超大文本可导致 OOM 或 embedding 超时。修复：32KB 上限 + 截断
+
+### High 修复
+- **DAG 超时后后台继续执行**: `dag-executor.ts` 的 `executeWithTimeout` 超时后 nodePromise 继续在后台运行。修复：使用 AbortController + `Promise.race` 在超时时取消执行
+- **SMTP 无超时**: `email-client.ts` 的 `createTransport` 未设置任何超时，SMTP 服务器无响应时 `sendMail` 永久挂起。修复：添加 connectionTimeout(30s)/greetingTimeout(15s)/socketTimeout(60s)
+- **browser_navigate SSRF**: `browser-controller.ts` 的 `navigate()` 不校验 URL，可被用于访问内网 IP 或元数据端点。修复：集成 `SSRFProtection.checkURL()` 预校验
+- **report_generate 路径穿越**: `index.ts` 的 report_generate/report_weekly/report_email_digest 的 `outputPath` 直接传给 `fs.writeFileSync`，可写入任意路径。修复：校验 outputPath 在 `data/reports/` 目录内
+- **config setPath 原型污染**: `config.ts` 的 `setPath("__proto__.polluted", true)` 可污染 `Object.prototype`。修复：拒绝 `__proto__`/`constructor`/`prototype` 键
+- **subagent 无循环检测**: `subagent-registry.ts` 的 `spawn()` 不检测父链循环，A→B→A 会导致无限递归 spawn。修复：遍历祖先链检测循环
+- **WeChat 超时不取消 chat**: `weixin-plugin-adapter.ts` 超时后 `chat()` promise 继续在后台运行消耗资源。修复：超时时调用 `abortSession(sessionId)` 取消
+
+### 验证
+- `pnpm build` 全绿
+- `pnpm typecheck` 全绿
+- `pnpm test` 全绿：4911 passed / 73 skipped (4984)，199/200 test files passed
+
 ## v0.72.0 (2026-07-07)
 
 **40 任务模拟检验：发现并修复 10 Critical + 8 High 级别安全/功能 bug**

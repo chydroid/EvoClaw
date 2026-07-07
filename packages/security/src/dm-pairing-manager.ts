@@ -78,6 +78,12 @@ export class DMPairingManager {
   private approvedPeers = new Map<string, Set<string>>(); // channel → Set<peerId>
   private pairingStorePath: string;
   private cleanupTimer?: ReturnType<typeof setInterval>;
+  /** approve() 调用次数追踪：防止 6 位配对码被暴力枚举。
+   *  key = "channel:peerId"（per-source 限流），value = { count, firstAttemptAt, lockedUntil } */
+  private approveAttempts = new Map<string, { count: number; firstAttemptAt: Date; lockedUntil: Date | null }>();
+  private static MAX_APPROVE_ATTEMPTS = 5;
+  private static APPROVE_LOCKOUT_MS = 5 * 60 * 1000; // 5 分钟锁定
+  private static APPROVE_WINDOW_MS = 10 * 60 * 1000; // 10 分钟窗口
 
   constructor(
     private eventBus: EventBus,
@@ -227,13 +233,35 @@ export class DMPairingManager {
   /**
    * Approve a pairing request by code.
    * Returns the peer info if successful, or null if code not found/expired.
+   * 包含速率限制：6 位配对码空间仅 10^6，无限尝试可被暴力枚举。
+   * 每个 source（channel:peerId）在 10 分钟窗口内最多 5 次失败尝试，
+   * 超出后锁定 5 分钟。
    */
   approve(code: string, approvedBy?: string): { channel: string; peerId: string; peerName?: string } | null {
+    // 速率限制检查（approvedBy 作为 source 标识）
+    const sourceKey = approvedBy || "anonymous";
+    const now = new Date();
+    const attempt = this.approveAttempts.get(sourceKey);
+
+    if (attempt?.lockedUntil && now < attempt.lockedUntil) {
+      this.eventBus.publish(SystemEvents.SECURITY_ALERT, {
+        type: "dm_pairing_locked",
+        source: sourceKey,
+        lockedUntil: attempt.lockedUntil,
+      }, "dm-pairing-manager").catch(() => {});
+      return null; // 锁定中，直接拒绝
+    }
+
     const request = this.pendingPairings.get(code);
-    if (!request) return null;
+    if (!request) {
+      // 记录失败尝试
+      this.recordApproveFailure(sourceKey, now);
+      return null;
+    }
 
     if (new Date() > request.expiresAt) {
       this.pendingPairings.delete(code);
+      this.recordApproveFailure(sourceKey, now);
       return null;
     }
 
@@ -248,6 +276,9 @@ export class DMPairingManager {
 
     // Remove from pending
     this.pendingPairings.delete(code);
+
+    // 成功后清除失败计数
+    this.approveAttempts.delete(sourceKey);
 
     // Persist
     this.persistApprovedPeers();
@@ -265,6 +296,34 @@ export class DMPairingManager {
       peerId: request.peerId,
       peerName: request.peerName,
     };
+  }
+
+  /** 记录 approve 失败并在超限时锁定 */
+  private recordApproveFailure(sourceKey: string, now: Date): void {
+    let attempt = this.approveAttempts.get(sourceKey);
+    if (!attempt) {
+      attempt = { count: 0, firstAttemptAt: now, lockedUntil: null };
+      this.approveAttempts.set(sourceKey, attempt);
+    }
+
+    // 窗口过期则重置
+    if (now.getTime() - attempt.firstAttemptAt.getTime() > DMPairingManager.APPROVE_WINDOW_MS) {
+      attempt.count = 0;
+      attempt.firstAttemptAt = now;
+      attempt.lockedUntil = null;
+    }
+
+    attempt.count++;
+
+    if (attempt.count >= DMPairingManager.MAX_APPROVE_ATTEMPTS) {
+      attempt.lockedUntil = new Date(now.getTime() + DMPairingManager.APPROVE_LOCKOUT_MS);
+      this.eventBus.publish(SystemEvents.SECURITY_ALERT, {
+        type: "dm_pairing_rate_limit_exceeded",
+        source: sourceKey,
+        attempts: attempt.count,
+        lockedUntil: attempt.lockedUntil,
+      }, "dm-pairing-manager").catch(() => {});
+    }
   }
 
   /** Deny/revoke a pairing request */

@@ -517,6 +517,15 @@ export class MemoryHub {
   }
 
   async remember(entry: Omit<MemoryEntry, "id" | "createdAt" | "accessedAt">): Promise<MemoryEntry> {
+    // 内容大小限制：防止超大文本（如整个文件内容被误存）导致 OOM 或
+    // embedding 接口超时。32KB 足以容纳典型对话片段和摘要。
+    const MAX_MEMORY_CONTENT_LEN = 32_000;
+    if (entry.content && entry.content.length > MAX_MEMORY_CONTENT_LEN) {
+      const truncated = entry.content.slice(0, MAX_MEMORY_CONTENT_LEN) +
+        `\n\n[系统提示：原始记忆内容过长（${entry.content.length} 字符），已截断至 ${MAX_MEMORY_CONTENT_LEN} 字符]`;
+      entry = { ...entry, content: truncated };
+      process.stderr.write(`[MemoryHub] Memory entry content truncated from ${entry.content.length} to ${MAX_MEMORY_CONTENT_LEN} chars\n`);
+    }
     const fullEntry: MemoryEntry = {
       ...entry,
       id: "",

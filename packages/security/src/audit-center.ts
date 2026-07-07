@@ -14,6 +14,7 @@ import {
   auditGatewayExposure,
   type GatewayExposureAuditInput,
 } from "./audit-gateway-exposure";
+import { TranscriptRedactor } from "./transcript-redactor";
 
 export interface AuditQuery {
   startTime?: Date;
@@ -121,6 +122,9 @@ export class AuditCenter {
   private maxRecords = 10000;
   private maxAlerts = 1000;
   private alertThrottles = new Map<string, number>();
+  /** 脱敏器：审计记录入库前自动遮蔽 API key/token/邮箱等敏感信息，
+   *  防止审计日志本身成为敏感数据泄漏源。 */
+  private redactor = new TranscriptRedactor();
 
   constructor(
     private registry: ServiceRegistry,
@@ -142,8 +146,15 @@ export class AuditCenter {
   }
 
   record(entry: Omit<AuditRecord, "timestamp">): void {
+    // 脱敏：对 description 和 metadata 中的字符串值进行敏感信息遮蔽，
+    // 防止 API key、token、邮箱等写入审计日志后被二次泄漏。
+    const redactedDescription = this.redactor.redact(entry.description || "").text;
+    const redactedMetadata = this.redactor.redactObject(entry.metadata || {});
+
     const record: AuditRecord = {
       ...entry,
+      description: redactedDescription,
+      metadata: redactedMetadata as Record<string, unknown>,
       timestamp: new Date(),
     };
 

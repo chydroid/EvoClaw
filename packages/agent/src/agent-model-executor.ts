@@ -224,8 +224,10 @@ export class AgentModelExecutor {
   /** Current observability trace ID for the active chat session */
   private _currentTraceId: string | undefined;
 
-  /** Current ContextEngine result for the active chat session (set by chatInner) */
-  private _currentContextEngineResult: import("./context-engine").LayeredContextResult | null = null;
+  /** Current ContextEngine result keyed by sessionId (set by chatInner).
+   *  此前为单一实例字段，并发 chatInner 调用会互相覆盖，导致跨会话上下文泄漏。
+   *  改为 Map 后每个会话拥有独立的上下文引擎结果。 */
+  private _contextEngineResults = new Map<string, import("./context-engine").LayeredContextResult | null>();
 
   /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
@@ -1967,8 +1969,8 @@ export class AgentModelExecutor {
           process.stdout.write(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"\n`);
         }
         process.stdout.write(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...\n`);
-        // Store for use by tryCallLLM
-        this._currentContextEngineResult = contextEngineResult;
+        // Store for use by tryCallLLM (per-session to avoid cross-session leak)
+        this._contextEngineResults.set(sessionId, contextEngineResult);
       } catch (err) {
         process.stderr.write(`[AgentModelExecutor] ContextEngine assembly failed, falling back to manual assembly:` + " " + (err instanceof Error ? err.message : String(err)) + "\n");
         contextEngineResult = null;
@@ -2284,7 +2286,7 @@ export class AgentModelExecutor {
       this.markSessionIdle(sessionId);
       this._currentTraceId = undefined;
       // 清除会话级上下文引擎结果，避免跨会话泄漏
-      this._currentContextEngineResult = null;
+      this._contextEngineResults.delete(sessionId);
       // Clean up the per-session abort controller so a subsequent chat() in
       // the same session starts with a fresh (non-aborted) signal.
       this.clearSessionAbortController(sessionId);
@@ -2845,7 +2847,7 @@ export class AgentModelExecutor {
     const deps = this.getLLMCallerDeps();
     // Inject iteration budget and context engine result for this session
     deps.iterationBudget = this.getIterationBudget(sessionId);
-    deps.contextEngineResult = this._currentContextEngineResult ?? undefined;
+    deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;
     // Wire per-session abort signal (set by abortSession) so callLLMOnce and
     // the tryCallLLM main loop can react to cancellation.
     const sessionController = this.sessionAbortControllers.get(sessionId);

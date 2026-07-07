@@ -2147,6 +2147,11 @@ Have a specific URL?
             await new Promise((resolve) => setTimeout(resolve, classified.backoffMs));
           }
 
+          // 5xx / provider 错误也按 backoffMs 等待，避免立即重试加剧服务端压力
+          if (classified.type === LLMErrorType.PROVIDER_ERROR && classified.backoffMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, classified.backoffMs));
+          }
+
           if (classified.type === LLMErrorType.AUTH || classified.type === LLMErrorType.BILLING) {
             process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type}\n`);
             break;

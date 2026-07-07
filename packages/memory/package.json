@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/memory",
-  "version": "0.72.0",
+  "version": "0.72.1",
   "private": true,
   "description": "EvoClaw Memory 记忆层 - 短期/长期存储、语义搜索、知识图谱",
   "main": "./dist/index.js",

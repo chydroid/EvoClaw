@@ -559,6 +559,12 @@ export class ConfigManager {
   private setPath(path: string, value: unknown): void {
     if (!path) throw new Error("path cannot be empty");
     const parts = path.split(".");
+    // 防止原型污染：拒绝危险键
+    for (const part of parts) {
+      if (part === "__proto__" || part === "constructor" || part === "prototype") {
+        throw new Error(`Config path contains forbidden key: "${part}"`);
+      }
+    }
     let current = this.config as unknown as Record<string, unknown>;
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];

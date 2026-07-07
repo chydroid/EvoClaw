@@ -163,15 +163,14 @@ export class ToolPolicyManager {
       }
     }
 
-    // 3. Default: allow all for main agent, deny for unknown
-    if (request.agentId === "default" || request.agentId === "main") {
-      return { allowed: true };
-    }
-
-    // 4. Fall back to sandbox policy
+    // 3. Default: fall back to sandbox policy for ALL agents (including
+    //    "main"/"default"). Previously these IDs bypassed all policy checks,
+    //    which meant a compromised or misconfigured main agent could call any
+    //    tool without restriction. The sandbox policy is permissive enough for
+    //    normal operation while still blocking explicitly denied tools.
     const sandbox = this.policies.get(DEFAULT_SANDBOX_POLICY.name);
     if (sandbox) {
-      return this.evaluatePolicy(request.toolName, sandbox);
+      return this.evaluatePolicy(request.toolName, sandbox, request.parameters);
     }
 
     return { allowed: false, reason: "No policy assigned" };

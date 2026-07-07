@@ -84,7 +84,13 @@ describe("classifyLLMError", () => {
     it("should parse retry-after header", () => {
       const result = classifyLLMError(undefined, "retry after 30 seconds");
       expect(result.type).toBe(LLMErrorType.RATE_LIMIT);
-      expect(result.backoffMs).toBe(30000);
+      // Retry-After 契约场景下 backoff 不再被 30s 上限截断，
+      // 上限提升至 5 分钟以尊重 provider 的 Retry-After 要求。
+      // positive jitter 模式会在 base 上增加最多 30%，因此
+      // 30s * 1.0 ~ 30s * 1.3 = 30000 ~ 39000
+      expect(result.backoffMs).toBeGreaterThanOrEqual(29000);
+      expect(result.backoffMs).toBeLessThanOrEqual(40000);
+      expect(result.hasRetryAfterContract).toBe(true);
     });
   });
 
@@ -136,9 +142,17 @@ describe("classifyLLMError", () => {
 
   describe("Unknown error", () => {
     it("should classify unrecognizable errors as unknown", () => {
-      const result = classifyLLMError(500, "something went wrong");
+      // 5xx 现在归类为 PROVIDER_ERROR（可重试），不再落入 UNKNOWN
+      // 使用无 status code 的不可识别错误测试 UNKNOWN 分支
+      const result = classifyLLMError(undefined, "something went wrong");
       expect(result.type).toBe(LLMErrorType.UNKNOWN);
       expect(result.retryable).toBe(false);
+    });
+
+    it("should classify 5xx errors as provider_error (retryable)", () => {
+      const result = classifyLLMError(500, "internal server error");
+      expect(result.type).toBe(LLMErrorType.PROVIDER_ERROR);
+      expect(result.retryable).toBe(true);
     });
 
     it("should classify empty error as unknown", () => {

@@ -114,7 +114,8 @@ export class SubagentRegistry {
 
   /**
    * Spawn a new subagent with its own session, workspace, and tool policy.
-   * Fails if the concurrent subagent limit has been reached.
+   * Fails if the concurrent subagent limit has been reached or if spawning
+   * would create a parent-child cycle (A spawns B, B spawns A).
    */
   spawn(config: SubagentConfig): SubagentInfo {
     const runningCount = Array.from(this.subagents.values()).filter((s) => s.status === "running").length;
@@ -122,6 +123,17 @@ export class SubagentRegistry {
       throw new Error(
         `Subagent limit reached (${this.maxConcurrent}). Kill or wait for existing subagents before spawning more.`,
       );
+    }
+
+    // 循环检测：遍历 config.parentAgentId 的祖先链，若发现 config.parentAgentId
+    // 本身就是当前要创建的 subagent 的后代（即 parent 的祖先链中已有该 parent），
+    // 则会形成 A→B→A 循环，导致无限递归 spawn。
+    if (config.parentAgentId) {
+      if (this.wouldCreateCycle(config.parentAgentId, config.parentAgentId)) {
+        throw new Error(
+          `Cycle detected: parent agent "${config.parentAgentId}" is already a descendant. Spawning would create an infinite loop.`,
+        );
+      }
     }
 
     const now = new Date().toISOString();
@@ -146,6 +158,24 @@ export class SubagentRegistry {
     );
 
     return info;
+  }
+
+  /**
+   * 检测从 agentId 向上遍历祖先链是否会回到 agentId 自身（形成环）。
+   * agentId 是即将被 spawn 的 subagent 的 parentAgentId。
+   * 如果 agentId 本身是某个 subagent 的 id，我们检查它的祖先链是否已包含 agentId。
+   */
+  private wouldCreateCycle(agentId: string, _originalAgentId: string, visited?: Set<string>): boolean {
+    const seen = visited ?? new Set<string>();
+    if (seen.has(agentId)) return true;
+    seen.add(agentId);
+
+    // 查找 agentId 是否是某个 subagent（即它有自己的 parentAgentId）
+    const subagent = this.subagents.get(agentId);
+    if (!subagent || !subagent.parentAgentId) return false;
+
+    // 递归向上遍历父链
+    return this.wouldCreateCycle(subagent.parentAgentId, _originalAgentId, seen);
   }
 
   // ─── Status ────────────────────────────────────────────────────────────────

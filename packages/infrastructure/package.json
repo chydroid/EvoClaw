@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/infrastructure",
-  "version": "0.72.0",
+  "version": "0.72.1",
   "private": true,
   "description": "EvoClaw 基础设施层 - 消息队列、事件总线、文件系统、进程管理",
   "main": "./dist/index.js",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@evoclaw/core": "workspace:*",
+    "@evoclaw/security": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "adm-zip": "^0.5.17",
     "bullmq": "^5.0.0",

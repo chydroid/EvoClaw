@@ -402,6 +402,9 @@ importers:
       '@evoclaw/core':
         specifier: workspace:*
         version: link:../core
+      '@evoclaw/security':
+        specifier: workspace:*
+        version: link:../security
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1

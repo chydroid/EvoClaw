@@ -89,12 +89,13 @@ describe("AuthProvider", () => {
 
   it("should allow public API paths without auth", async () => {
     const auth = new AuthProvider(jwtSecret, registry);
+    // 安全修复：/api/chat 不再公开，需要认证才能调用以防止
+    // 未认证用户消耗 LLM 额度或触发工具执行
     const publicPaths = [
       "/api/health",
       "/api/auth/login",
       "/api/auth/register",
       "/api/status",
-      "/api/chat",
       "/api/skills",
     ];
     for (const path of publicPaths) {
@@ -104,6 +105,17 @@ describe("AuthProvider", () => {
       expect(mockNext).toHaveBeenCalled();
       mockNext.mockClear();
     }
+  });
+
+  it("should require auth for /api/chat (RCE/abuse protection)", async () => {
+    // 安全修复：/api/chat 必须认证，否则未认证调用者可消耗 LLM 额度、
+    // 触发工具执行（潜在 RCE）并读取内部数据
+    const auth = new AuthProvider(jwtSecret, registry);
+    const req = mockRequest({ path: "/api/chat" });
+    const res = mockResponse();
+    await auth.authenticate(req, res, mockNext);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(mockNext).not.toHaveBeenCalled();
   });
 
   it("should require auth for skills sub-paths (RCE protection)", async () => {

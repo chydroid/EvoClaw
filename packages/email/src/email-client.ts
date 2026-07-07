@@ -209,6 +209,10 @@ export class EmailClient {
         user: account.email,
         pass: password,
       },
+      // 超时保护：此前无任何超时，SMTP 服务器无响应时 sendMail 会永久挂起
+      connectionTimeout: 30_000, // 30s 连接超时
+      greetingTimeout: 15_000,   // 15s greeting 超时
+      socketTimeout: 60_000,     // 60s socket 空闲超时
     });
 
     this.transporters.set(accountId, transporter);

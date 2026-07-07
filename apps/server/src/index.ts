@@ -1261,6 +1261,19 @@ export class EvoClawServer {
   private registerReportingTools(): void {
     const reportGen = this.reportGenerator;
 
+    /** 验证报告输出路径在允许的目录内，防止路径穿越写入任意文件。
+     *  允许目录：data/reports/ 或其子目录。 */
+    const validateOutputPath = (outputPath: string): string | null => {
+      if (!outputPath) return null;
+      const allowedBase = path.resolve(process.cwd(), "data", "reports");
+      const resolved = path.resolve(outputPath);
+      // 必须在 allowedBase 内（normalizedBase + sep 或完全相等）
+      if (resolved !== allowedBase && !resolved.startsWith(allowedBase + path.sep)) {
+        return `Output path must be within ${allowedBase}`;
+      }
+      return null;
+    };
+
     this.agentModelExecutor.registerTool(
       "report_generate",
       {
@@ -1292,6 +1305,11 @@ export class EvoClawServer {
           return { error: "summary must be valid JSON" };
         }
         const outputPath = String(params.outputPath || "");
+        // 路径穿越防护
+        const pathError = validateOutputPath(outputPath);
+        if (pathError) {
+          return { success: false, error: pathError };
+        }
         try {
           const html = reportGen.generateReport(
             { title, generatedAt: new Date().toLocaleString("zh-CN"), sections, summary },
@@ -1344,6 +1362,11 @@ export class EvoClawServer {
         }
         const dateRange = String(params.dateRange || "");
         const outputPath = String(params.outputPath || "");
+        // 路径穿越防护
+        const pathError = validateOutputPath(outputPath);
+        if (pathError) {
+          return { success: false, error: pathError };
+        }
 
         const categoriesBreakdown: Record<string, number> = {};
         for (const e of emails as Array<{ categories?: string[] }>) {
@@ -1431,6 +1454,11 @@ export class EvoClawServer {
           return { error: "sections must be valid JSON array" };
         }
         const outputPath = String(params.outputPath || "");
+        // 路径穿越防护
+        const pathError = validateOutputPath(outputPath);
+        if (pathError) {
+          return { success: false, error: pathError };
+        }
 
         try {
           const html = reportGen.generateReport(

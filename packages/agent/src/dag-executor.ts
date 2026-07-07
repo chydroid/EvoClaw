@@ -174,22 +174,35 @@ export class DAGExecutor {
 
   /**
    * Execute a node with a timeout using Promise.race + AbortSignal.
+   * 超时后通过 AbortController 标记取消，executeNode 中的后续操作可检测信号
+   * 提前终止，避免 timed-out 执行在后台继续消耗资源。
    */
   private async executeWithTimeout(
     node: DAGNode,
     context: Task["context"],
     timeoutMs: number
   ): Promise<unknown> {
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
         reject(new Error(`Node "${node.id}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       // Keep the timer from keeping the process alive
       if (timer.unref) timer.unref();
     });
-    const nodePromise = this.executeNode(node, context);
-    nodePromise.catch(() => {}); // 防止超时后 unhandledRejection
+    const nodePromise = this.executeNode(node, context, controller.signal);
+    // 超时后仍捕获 rejection 防止 unhandledRejection；同时记录最终结果用于诊断
+    nodePromise
+      .then(() => {
+        if (timedOut) {
+          process.stderr.write(`[DAGExecutor] Node "${node.id}" completed after timeout (result discarded)\n`);
+        }
+      })
+      .catch(() => {});
     return Promise.race([nodePromise, timeoutPromise]).finally(() => {
       if (timer) clearTimeout(timer);
     });
@@ -226,14 +239,28 @@ export class DAGExecutor {
     }
   }
 
-  private async executeNode(node: DAGNode, _context: Task["context"]): Promise<unknown> {
+  private async executeNode(node: DAGNode, _context: Task["context"], abortSignal?: AbortSignal): Promise<unknown> {
+    // 超时后提前终止，避免后台执行继续消耗资源
+    if (abortSignal?.aborted) {
+      throw new Error(`Node "${node.id}" execution aborted before start`);
+    }
     if (node.skill) {
       const skillManager = this.registry.resolveService<{
         executeSkill(name: string, params: Record<string, unknown>): Promise<unknown>;
       }>("skillManager");
 
       if (skillManager) {
-        return skillManager.executeSkill(node.skill, node.params);
+        const resultPromise = skillManager.executeSkill(node.skill, node.params);
+        // 如果支持 abort 信号，在超时时将 promise 标记为已取消
+        if (abortSignal) {
+          const abortPromise = new Promise<never>((_resolve, reject) => {
+            abortSignal.addEventListener("abort", () => {
+              reject(new Error(`Node "${node.id}" aborted during skill execution`));
+            }, { once: true });
+          });
+          return Promise.race([resultPromise, abortPromise]);
+        }
+        return resultPromise;
       }
     }
 

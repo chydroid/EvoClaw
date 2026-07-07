@@ -1265,6 +1265,14 @@ export class WeixinPluginAdapter {
             if (weixinTimeoutHandle.unref) weixinTimeoutHandle.unref();
           }),
         ]);
+      } catch (err) {
+        // 超时后取消后台 chat promise，避免 LLM 调用和工具执行继续消耗资源
+        if (err instanceof Error && err.message === "WEIXIN_CHAT_TIMEOUT") {
+          try {
+            this.agentExecutor.abortSession(`weixin-${fromUserId}`);
+          } catch { /* best-effort */ }
+        }
+        throw err;
       } finally {
         if (weixinTimeoutHandle) clearTimeout(weixinTimeoutHandle);
       }
