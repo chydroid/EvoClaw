@@ -70,9 +70,34 @@ class BM25Index {
   private readonly k1 = 1.5;
   private readonly b = 0.75;
 
-  /** 分词：小写 + 按非字母数字分割 */
+  /** 分词：小写 + 按非字母数字分割 + CJK 字符逐字分词 */
   private tokenize(text: string): string[] {
-    return text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+    // CJK 统一表意文字范围（含扩展A）逐字分词，支持中文工具描述索引
+    // \u4e00-\u9fff CJK 基本区, \u3400-\u4dbf 扩展A, \u3040-\u30ff 日文假名, \uac00-\ud7af 韩文
+    const cjkRegex = /[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]/;
+    const tokens: string[] = [];
+    // 先按非字母数字+CJK边界分割
+    const parts = text.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]+/);
+    for (const part of parts) {
+      if (part.length === 0) continue;
+      // 对含 CJK 的片段逐字拆分（中文无空格分词）
+      if (cjkRegex.test(part)) {
+        let buf = "";
+        for (const ch of part) {
+          if (cjkRegex.test(ch)) {
+            // CJK 字符：先 flush 拉丁缓冲区，再单独成词
+            if (buf) { tokens.push(buf); buf = ""; }
+            tokens.push(ch);
+          } else {
+            buf += ch;
+          }
+        }
+        if (buf) tokens.push(buf);
+      } else {
+        tokens.push(part);
+      }
+    }
+    return tokens.filter((t) => t.length > 0);
   }
 
   /** 添加文档 */

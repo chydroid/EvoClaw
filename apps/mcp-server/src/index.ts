@@ -6,10 +6,31 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 
 const GATEWAY_URL = process.env.EVOCLAW_GATEWAY_URL || "http://localhost:27788";
 const API_KEY = process.env.EVOCLAW_API_KEY;
 const DEBUG = process.env.EVOCLAW_MCP_DEBUG === "true";
+
+// 从根 package.json 动态读取版本号，避免硬编码漂移
+function readVersion(): string {
+  const candidates = [
+    resolve(__dirname, "../../../package.json"),
+    resolve(__dirname, "../../package.json"),
+    resolve(process.cwd(), "package.json"),
+  ];
+  for (const p of candidates) {
+    try {
+      const pkg = JSON.parse(readFileSync(p, "utf-8"));
+      if (pkg.version) return pkg.version;
+    } catch {
+      // 尝试下一个候选路径
+    }
+  }
+  return "0.0.0";
+}
+const SERVER_VERSION = readVersion();
 
 function log(msg: string): void {
   if (DEBUG) process.stderr.write(`[EvoClaw MCP] ${msg}\n`);
@@ -59,7 +80,7 @@ async function getTools(): Promise<GatewayTool[]> {
 
 // ── MCP Server ──
 const server = new Server(
-  { name: "evoclaw-mcp-server", version: "0.70.5" },
+  { name: "evoclaw-mcp-server", version: SERVER_VERSION },
   { capabilities: { tools: {} } },
 );
 

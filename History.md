@@ -5,6 +5,27 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.3 (2026-07-07)
+
+**与主流 AI Agent 对标后的差距收敛：5 项改进（安全/正确性/国际化/可观测性）**
+
+将 EvoClaw 与 OpenClaw / Hermes / Codex / Claude Code / WorkBuddy 进行能力对标后，识别并修复 5 项真实差距。验证全绿：4911 passed / 73 skipped。
+
+### 安全
+- **tool-chain 条件表达式代码注入**: `tool-chain.ts` 的 `step.condition` 使用 `new Function('prev', ...)` 等价 eval，恶意 chain 配置可注入任意代码。修复：替换为受限递归下降表达式求值器（仅支持 `prev.xxx` 属性访问 + 比较 + 逻辑组合 + 字面量，拒绝 `require`/`process`/`eval`/`Function`/`new` 等关键字）
+
+### 正确性
+- **MCP server 版本硬编码漂移**: `apps/mcp-server/src/index.ts` 硬编码 `version: "0.70.5"`，与根 `package.json` 漂移。修复：改为从根 `package.json` 动态读取（多候选路径，与 `apps/server` 约定一致）
+
+### 国际化
+- **tool-search BM25 不支持中文分词**: `tool-search.ts` 的 `tokenize` 仅按非字母数字分割，中文工具描述整体被当作单个 token，BM25 检索失效。修复：CJK 统一表意文字（含扩展A/日文假名/韩文）逐字分词，拉丁文按词分割
+
+### 可观测性
+- **缺少配套 Grafana 仪表板**: Prometheus metrics 已暴露但无开箱即用仪表板。新增 `docs/grafana/evoclaw-dashboard.json`（16 面板：任务总量/成功率/P50/P99 延迟、吞吐量、工具调用频率/错误率、安全拦截/DLQ、Token 用量/成本/Cache 命中率、内存/CPU）
+
+### 对标分析结论
+EvoClaw 在核心能力（plugin-sdk/skill marketplace/layered memory/evolution loop/security governor/observability）上对标主流 AI Agent，差距集中在：MCP 流式响应（中优先级，未实施）、CJK 国际化（已修复）、配套仪表板（已补齐）。
+
 ## v0.72.2 (2026-07-07)
 
 **40 任务模拟检验（第三轮）：发现并修复 7 Critical + 17 High 级别安全/可靠性 bug**

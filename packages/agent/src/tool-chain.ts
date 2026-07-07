@@ -69,10 +69,11 @@ export class ToolChainExecutor {
       }
 
       // Check condition — skip if false
+      // 安全：使用受限表达式求值器替代 new Function，防止代码注入。
+      // 仅支持 prev.xxx / prev.xxx.yyy 属性访问 + ==/!=/&&/||/!</>/>=/<= 比较 + 字面量。
       if (step.condition != null) {
         try {
-          const condFn = new Function('prev', `return (${step.condition});`);
-          const condResult = condFn(previousResult) as boolean;
+          const condResult = this.evaluateCondition(step.condition, previousResult);
           if (!condResult) {
             stepResults.push({
               tool: step.tool,
@@ -217,5 +218,154 @@ export class ToolChainExecutor {
           reject(err);
         });
     });
+  }
+
+  /**
+   * 受限条件表达式求值器（替代 new Function / eval，防止代码注入）。
+   *
+   * 支持的语法子集：
+   * - prev  → 前一步结果
+   * - prev.xxx / prev.xxx.yyy → 属性访问
+   * - prev.xxx == value / != / > / < / >= / <= → 比较
+   * - expr && expr / expr || expr / !expr → 逻辑组合
+   * - 字面量: 数字 / 字符串(单引号) / true / false / null
+   *
+   * 不支持: 函数调用、new、赋值、require、process 等。
+   * 遇到不支持的语法抛 Error（被外层 catch 捕获）。
+   */
+  private evaluateCondition(expr: string, prev: unknown): boolean {
+    const trimmed = expr.trim();
+    if (trimmed.length === 0) return true;
+    // 安全：拒绝任何危险关键字
+    if (/\b(require|process|global|globalThis|eval|Function|constructor|prototype|__proto__|window|document|import|export|new\s+)\b/.test(trimmed)) {
+      throw new Error(`Condition contains forbidden keyword: ${expr}`);
+    }
+    // 递归处理 || 和 && 和 !
+    return this.evalOrExpr(trimmed, prev);
+  }
+
+  private evalOrExpr(expr: string, prev: unknown): boolean {
+    const parts = this.splitTopLevel(expr, "||");
+    if (parts.length > 1) {
+      return parts.some((p) => this.evalAndExpr(p.trim(), prev));
+    }
+    return this.evalAndExpr(expr, prev);
+  }
+
+  private evalAndExpr(expr: string, prev: unknown): boolean {
+    const parts = this.splitTopLevel(expr, "&&");
+    if (parts.length > 1) {
+      return parts.every((p) => this.evalNotExpr(p.trim(), prev));
+    }
+    return this.evalNotExpr(expr, prev);
+  }
+
+  private evalNotExpr(expr: string, prev: unknown): boolean {
+    const trimmed = expr.trim();
+    if (trimmed.startsWith("!")) {
+      return !this.evalNotExpr(trimmed.slice(1), prev);
+    }
+    return this.evalComparison(trimmed, prev);
+  }
+
+  private evalComparison(expr: string, prev: unknown): boolean {
+    const trimmed = expr.trim();
+    // 括号包裹
+    if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+      return this.evalOrExpr(trimmed.slice(1, -1), prev);
+    }
+    // 比较操作符
+    const ops = ["===", "!==", "==", "!=", ">=", "<=", ">", "<"];
+    for (const op of ops) {
+      const idx = this.findTopLevelOp(trimmed, op);
+      if (idx !== -1) {
+        const left = this.evalValue(trimmed.slice(0, idx).trim(), prev);
+        const right = this.evalValue(trimmed.slice(idx + op.length).trim(), prev);
+        switch (op) {
+          case "===": return left === right;
+          case "!==": return left !== right;
+          case "==": return left == right; // eslint-disable-line eqeqeq
+          case "!=": return left != right; // eslint-disable-line eqeqeq
+          case ">=": return (left as number) >= (right as number);
+          case "<=": return (left as number) <= (right as number);
+          case ">": return (left as number) > (right as number);
+          case "<": return (left as number) < (right as number);
+        }
+      }
+    }
+    // 无操作符：取真值
+    const val = this.evalValue(trimmed, prev);
+    return !!val;
+  }
+
+  /** 求值单个值（prev.xxx 路径或字面量） */
+  private evalValue(expr: string, prev: unknown): unknown {
+    const trimmed = expr.trim();
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (trimmed === "null") return null;
+    if (trimmed === "undefined") return undefined;
+    // 数字
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+    // 字符串字面量（单引号或双引号）
+    if (/^['"].*['"]$/.test(trimmed)) return trimmed.slice(1, -1);
+    // prev.xxx.yyy 路径访问
+    if (trimmed === "prev") return prev;
+    if (trimmed.startsWith("prev.")) {
+      const path = trimmed.slice(5).split(".");
+      let current: unknown = prev;
+      for (const key of path) {
+        if (current == null || typeof current !== "object") return undefined;
+        current = (current as Record<string, unknown>)[key];
+      }
+      return current;
+    }
+    throw new Error(`Unsupported value expression: ${expr}`);
+  }
+
+  /** 在顶层（不在括号或引号内）查找操作符位置 */
+  private findTopLevelOp(expr: string, op: string): number {
+    let depth = 0;
+    let inStr: string | null = null;
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (inStr) {
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { inStr = ch; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (depth === 0 && expr.substring(i, i + op.length) === op) {
+        // 避免 == 匹配到 === 的前缀
+        if ((op === "==" || op === "!=") && expr[i + 2] === "=") continue;
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /** 在顶层（不在括号或引号内）按分隔符拆分 */
+  private splitTopLevel(expr: string, sep: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let inStr: string | null = null;
+    let start = 0;
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (inStr) {
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { inStr = ch; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (depth === 0 && expr.substring(i, i + sep.length) === sep) {
+        parts.push(expr.slice(start, i));
+        start = i + sep.length;
+      }
+    }
+    parts.push(expr.slice(start));
+    return parts;
   }
 }
