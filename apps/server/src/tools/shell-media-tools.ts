@@ -198,7 +198,7 @@ export function registerShellMediaTools(
         }
         console.log(`[shell_exec] cwd "${workspaceDir}" does not exist, falling back to "${cwd}"`);
       }
-      const timeoutSec = Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200);
+      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout || "120"), 10) || 120, 1), 1200);
 
       // On Windows, replace python3 with python (python3 doesn't exist on Windows)
       let effectiveCommand = command;
@@ -253,19 +253,29 @@ export function registerShellMediaTools(
 
       // ── 安全校验：阻止危险命令 ──
       const DANGEROUS_PATTERNS = [
-        /rm\s+-rf\s+\//, /rm\s+-rf\s+\~/, /del\s+\/S\s+\/Q\s+C:\\/i,
-        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*]|\$HOME|~)/i,
+        // rm -rf 变体：-rf/-fr 单 token 或 -r -f 分割 token，后跟危险目标（/ ~ . * $HOME --no-preserve-root）
+        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*~]|\$HOME|--no-preserve-root)/i,
+        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r)\s+\/(\s|$)/i, // rm -rf / 或 rm -r -f /
+        /rm\s+-r\s+\//i, // rm -r / 无 -f
+        /rm\s+-rf\s+\//i, /rm\s+-rf\s+\~/i, /del\s+\/S\s+\/Q\s+C:\\/i,
         /rm\s+-rf\s+\./i,
         /rm\s+-rf\s+\*/i,
         /rm\s+-fr\s+/i,
         /rmdir\s+\/[sS]\s+\/[qQ]/i,
-        /Remove-Item\s+-Recurse\s+-Force/i,
+        // Remove-Item：-Recurse 和 -Force 任意顺序
+        /Remove-Item\s+[^|;]*(-Recurse|-Force)[^|;]*(-Recurse|-Force)/i,
+        // PowerShell 危险 cmdlet
+        /\bpowershell\b.*\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex|Start-Process|Remove-Item)\b/i,
+        /\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex)\b/i,
         /shutdown/, /reboot/, /format\s+[a-z]:/i,
         /dd\s+if=/, /mkfs/, /fdisk/, /:\(\)\s*\{/, /fork\s*bomb/,
         />\s*\/dev\/sda/, />\s*\/dev\/nvme/,
         /chmod\s+777\s+\//, /chown\s+-R\s+\//,
         /eval\s/, /\.\$\(/, /\$\(.*rm\s+-rf/,
-        /\b(curl|wget)\b[^|]*\|\s*(sh|bash|python)/i,  // curl|sh
+        // curl|sh 和 curl&&sh 变体（管道、&&、输出重定向）
+        /\b(curl|wget)\b[^|&;]*\|\s*(sh|bash|python)/i,  // curl|sh
+        /\b(curl|wget)\b[^|&;]*&&\s*(sh|bash|python)/i,  // curl&&sh
+        /\b(curl|wget)\b[^|&;]*>\s*\/[^\s|&;]+\s*&&\s*(sh|bash|python)/i,  // curl>file&&sh
         /`[^`]*`/,  // 反引号命令替换
         /\r|\n/,    // 换行注入
       ];

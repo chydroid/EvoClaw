@@ -378,8 +378,16 @@ function isPathSafe(workspaceRoot: string, absPath: string): boolean {
     const realRoot = fs.realpathSync(normalizedRoot);
     return realAbs.startsWith(realRoot + path.sep) || realAbs === realRoot;
   } catch {
-    // 文件不存在时 realpath 失败，保留前缀检查结果
-    return true;
+    // 文件不存在时（create 场景）：校验父目录 realpath，防止通过符号链接父目录逃逸
+    try {
+      const parentDir = path.dirname(absPath);
+      const realParent = fs.realpathSync(parentDir);
+      const realRoot = fs.realpathSync(normalizedRoot);
+      return realParent.startsWith(realRoot + path.sep) || realParent === realRoot;
+    } catch {
+      // 父目录也不存在，保留前缀检查结果（后续 ensureDir 会创建）
+      return true;
+    }
   }
 }
 

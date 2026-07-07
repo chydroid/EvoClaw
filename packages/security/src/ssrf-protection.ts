@@ -144,10 +144,19 @@ export class SSRFProtection {
       if (ip === "::1") {
         return { allowed: false, reason: `IPv6 loopback blocked: ${ip}` };
       }
-      // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+      // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x 点分十进制形式)
       const v4MappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
       if (v4MappedMatch) {
         return this.checkIP(v4MappedMatch[1]); // Recursively check the embedded IPv4
+      }
+      // Check IPv4-mapped IPv6 addresses (::ffff:xxxx:xxxx 十六进制形式)
+      // 如 ::ffff:7f00:1 = 127.0.0.1，::ffff:a00:1 = 10.0.0.1
+      const v4MappedHexMatch = ip.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+      if (v4MappedHexMatch) {
+        const hi = parseInt(v4MappedHexMatch[1], 16);
+        const lo = parseInt(v4MappedHexMatch[2], 16);
+        const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+        return this.checkIP(ipv4);
       }
       // Block IPv6 private/link-local ranges
       // link-local 为 fe80::/10, 覆盖 fe80:: 至 febf:: (前缀 fe8/fe9/fea/feb)

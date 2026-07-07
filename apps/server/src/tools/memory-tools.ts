@@ -48,7 +48,14 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
 
       try {
         const stats = await memoryHub.getLayeredStats?.() || {};
-        const shortTermCount = memoryHub.getShortTerm?.()?.size || 0;
+        // ShortTermMemory 接口没有 .size 属性，使用 keys() 方法获取条目数
+        let shortTermCount = 0;
+        try {
+          const keys = await memoryHub.getShortTerm?.()?.keys("*");
+          shortTermCount = Array.isArray(keys) ? keys.length : 0;
+        } catch {
+          // keys() 可能不支持，回退为 0
+        }
         return {
           success: true,
           shortTermEntries: shortTermCount,

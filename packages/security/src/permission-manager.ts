@@ -152,6 +152,20 @@ export class PermissionManager {
       requireExplicitConsent: true,
       description: "发送邮件",
     });
+
+    this.rules.set("git_commit", {
+      operation: "git_commit",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "提交代码到本地仓库",
+    });
+
+    this.rules.set("git_push", {
+      operation: "git_push",
+      autoApprove: false,
+      requireExplicitConsent: true,
+      description: "推送代码到远程仓库",
+    });
   }
 
   addToWhitelist(operation: string, target: string): WhitelistEntry {

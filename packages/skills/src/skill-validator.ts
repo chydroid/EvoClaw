@@ -535,6 +535,16 @@ export class SkillValidator {
       // 真实的 role tag 注入通常独占一行或前后是空白/引号，而 URL 中的 `<user>` 前面是 `/` 等路径字符。
       // 排除前缀字符：`/`（URL 路径）、`:`（协议）、`=`（属性赋值）、`?`（查询）、`&`（参数）、`#`（片段）。
       { pattern: /(?<![/:=?&#])<\/?(?:system|assistant|developer|user|instructions|rules)>/gi, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
+      // 中文 prompt injection 检测
+      { pattern: /忽略(?:之前|前面|上面|先前|以上)(?:的)?(?:指令|规则|提示|命令|内容)/gi, desc: "中文 prompt injection: 尝试覆盖之前的指令", severity: "critical" as const },
+      { pattern: /无视(?:之前|前面|上面|先前|以上|所有)(?:的)?(?:指令|规则|提示|命令|内容)/gi, desc: "中文 prompt injection: 尝试忽略上下文", severity: "critical" as const },
+      { pattern: /忘记(?:之前|前面|上面|先前|所有)(?:的)?(?:指令|规则|提示|内容)/gi, desc: "中文 prompt injection: 尝试清除之前的上下文", severity: "critical" as const },
+      { pattern: /你现在是/gi, desc: "中文 prompt injection: 尝试重新定义 AI 角色", severity: "high" as const },
+      { pattern: /从现在开始你/gi, desc: "中文 prompt injection: 尝试重新定义持续行为", severity: "high" as const },
+      { pattern: /(?:不要|别|不可)(?:遵守|遵循|执行)(?:你的|任何|所有)(?:规则|指令|约束|限制)/gi, desc: "中文 prompt injection: 尝试禁用安全规则", severity: "critical" as const },
+      { pattern: /(?:显示|输出|泄露|暴露|告诉我)(?:你的)?(?:系统提示|系统指令|规则|初始指令)/gi, desc: "中文 prompt injection: 尝试提取系统提示", severity: "high" as const },
+      { pattern: /(?:我是|这是)(?:你的)?(?:创造者|开发者|管理员|所有者|系统管理员)/gi, desc: "中文 prompt injection: 虚假权限声明", severity: "critical" as const },
+      { pattern: /(?:假装|假设|设想)你是/gi, desc: "中文 prompt injection: 通过角色扮演绕过限制", severity: "medium" as const },
     ];
 
     for (const { pattern, desc, severity } of injectionPatterns) {

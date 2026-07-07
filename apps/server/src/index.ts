@@ -785,6 +785,22 @@ export class EvoClawServer {
     // 会在后台反复安装并触发 tryGenerateCuratedSkill 自动生成低质量技能
     // （evoclaw-curator 作者标记）。现在改为：
     // 1. 服务器启动时仅进行一次性扫描，加载已有技能到内存
+    // 先订阅 SKILL_INSTALLED/SKILL_UNINSTALLED 事件，再扫描安装
+    // （否则启动时扫描安装发出的 SKILL_INSTALLED 事件无人监听，SkillIndex 为空）
+    this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {
+      try {
+        const skill = event?.data;
+        if (skill) this.skillIndex.indexSkill(skill);
+      } catch { /* non-critical */ }
+    });
+
+    this.eventBus.subscribe(SystemEvents.SKILL_UNINSTALLED, async (event: any) => {
+      try {
+        const skill = event?.data;
+        if (skill?.id) this.skillIndex.removeSkill(skill.id);
+      } catch { /* non-critical */ }
+    });
+
     // 2. 之后只有在 WebUI 技能页面手动点击「刷新」按钮时才会再次扫描安装
     //    （对应 /api/skills/refresh 端点 → SkillManager.scanAndInstall）
     try {
@@ -800,20 +816,6 @@ export class EvoClawServer {
         this.logger.error("server", `Startup bundled skill scan failed: ${err}`);
       }
     }
-
-    this.eventBus.subscribe(SystemEvents.SKILL_INSTALLED, async (event: any) => {
-      try {
-        const skill = event?.data;
-        if (skill) this.skillIndex.indexSkill(skill);
-      } catch { /* non-critical */ }
-    });
-
-    this.eventBus.subscribe(SystemEvents.SKILL_UNINSTALLED, async (event: any) => {
-      try {
-        const skill = event?.data;
-        if (skill?.id) this.skillIndex.removeSkill(skill.id);
-      } catch { /* non-critical */ }
-    });
 
     this.eventBus.subscribe(SystemEvents.SKILL_EXECUTED, async (event: any) => {
       try {
@@ -1787,6 +1789,7 @@ export class EvoClawServer {
       permissionManager: this.permissionManager,
       gitOps: this.gitOperations,
       codeIntel: this.codeIntelligence,
+      fsBase: path.resolve(__dirname, "..", "..", ".."),
     });
   }
 

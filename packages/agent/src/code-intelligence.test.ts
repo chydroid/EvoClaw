@@ -130,12 +130,19 @@ describe("GitOperations", () => {
     setGitMock("");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const git = new GitOperations({ cwd: tmpDir });
-    await git.push("origin", "main", true);
+    // 使用非保护分支 feature/test，避免触发 main/master 分支保护
+    await git.push("origin", "feature/test", true);
     const callArgs = vi.mocked(execFile).mock.calls.at(-1);
     const args = (callArgs?.[1] as string[]) ?? [];
     expect(args).toContain("--force");
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it("push --force 到 main/master 应被拦截", async () => {
+    const git = new GitOperations({ cwd: tmpDir });
+    await expect(git.push("origin", "main", true)).rejects.toThrow("protected branch");
+    await expect(git.push("origin", "master", true)).rejects.toThrow("protected branch");
   });
 
   it("应拦截 reset --hard 命令", async () => {

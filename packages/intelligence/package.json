@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/intelligence",
-  "version": "0.71.1",
+  "version": "0.72.0",
   "private": true,
   "description": "EvoClaw 智能层 - 任务分类/技能编排/项目规划",
   "main": "./dist/index.js",

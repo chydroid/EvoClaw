@@ -5,6 +5,36 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.0 (2026-07-07)
+
+**40 任务模拟检验：发现并修复 10 Critical + 8 High 级别安全/功能 bug**
+
+### Critical 修复
+- **Symlink 逃逸漏洞**: `filesystem-manager.ts` 和 `apply-patch-tool.ts` 的 `validatePath`/`isPathSafe` 在目标文件不存在时（ENOENT）跳过 realpath 检查，允许通过符号链接父目录写入工作区外。修复：ENOENT 时校验父目录 realpath
+- **apply_patch workspaceRoot 注入**: `code-intelligence-tools.ts` 的 `apply_patch` 工具暴露 `workspaceRoot` 为用户可控参数，LLM/攻击者可传入 `/` 或 `C:\` 读写任意文件。修复：移除参数，固定为服务器 fsBase
+- **SSRF 重定向绕过**: `web-tools.ts` 的 `web_fetch` 使用 `redirect: "follow"` 但只校验原始 URL，攻击者可通过 302 重定向到内网。修复：改为 `redirect: "manual"`，对每个重定向目标重新 SSRF 校验（最多 5 次）
+- **rm 黑名单绕过**: `shell-media-tools.ts` 的 DANGEROUS_PATTERNS 未覆盖 `rm -rf --no-preserve-root /`、`rm -r -f /`（分割 flag）、`rm -r /`（无 -f）。修复：增强正则覆盖所有变体
+- **PowerShell 黑名单绕过**: 无 `powershell -c`、`Stop-Process`、`Invoke-Expression`/`iex`、`Set-ExecutionPolicy` 等危险 cmdlet 检测。修复：添加 PowerShell cmdlet 黑名单
+- **Remove-Item 顺序绕过**: 正则要求 `-Recurse` 在 `-Force` 之前，`-Force -Recurse` 可绕过。修复：匹配任意顺序
+- **curl&&sh 绕过**: 只检测管道 `curl|sh`，未检测 `curl&&sh`、`curl>file&&sh`。修复：添加 && 和重定向变体
+- **技能卸载硬删除**: `skill-manager.ts` 的 `uninstallSkill` 使用 `fs.rmSync` 硬删除技能目录，违反 AGENTS.md "Never delete; archive" 原则。修复：改为 `fs.renameSync` 归档到 `data/skills-archive/`
+- **调度器无 shell handler**: `scheduler-tools.ts` 只有 `custom` handler 发事件不执行命令，用户"每天 9 点跑 pnpm test"无法实现。修复：新增 `shell` handlerType，支持 command/cwd/timeout
+- **git_commit/git_push 永远 denied**: `permission-manager.ts` 未注册 git_commit/git_push 权限规则，导致 `requestPermission` 返回"未知操作类型"。修复：注册规则
+
+### High 修复
+- **IPv6 hex-form SSRF 绕过**: `ssrf-protection.ts` 的 `::ffff:` 正则只匹配点分十进制 `::ffff:127.0.0.1`，不匹配十六进制 `::ffff:7f00:1`。修复：添加 hex-form 正则 + 递归校验
+- **scheduler_update 假成功**: `scheduler-tools.ts` 的 `scheduler_update` 在任务不存在时返回 `success: true`。修复：null 检查返回 `success: false`
+- **SkillIndex 事件订阅时序竞争**: `index.ts` 中 `scanAndInstall` 在 `subscribe(SKILL_INSTALLED)` 之前执行，首次启动时 SkillIndex 为空。修复：先订阅再扫描
+- **memory_stats 永远 0**: `memory-tools.ts` 调用 `getShortTerm()?.size` 但 `ShortTermMemory` 接口没有 `.size` 属性。修复：改用 `keys("*")` 获取条目数
+- **负数 timeout 立即杀进程**: `shell-media-tools.ts` 的 `Math.min(-5, 1200) = -5`，`setTimeout(cb, -5000)` 立即触发。修复：`Math.max(..., 1)` 下限钳制
+- **git_show ref 选项注入**: `git-operations.ts` 的 `show(ref)` 未调用 `assertNotOption`，`ref="--output=/etc/passwd"` 可注入。修复：添加 assertNotOption
+- **git push --force 无分支保护**: `git-operations.ts` 的 `push` 允许 force push 到 main/master。修复：添加分支保护 throw
+- **中文 prompt injection 未检测**: `skill-validator.ts` 的注入检测仅英文。修复：添加 9 条中文注入模式
+
+### 验证
+- `pnpm build` 全绿
+- `pnpm test` 全绿：4909 passed / 73 skipped (4982)，199/200 test files passed
+
 ## v0.71.1 (2026-07-07)
 
 - **修复 Docker CI/CD 构建失败**: Dockerfile 使用 `node:24-alpine`，alpine 默认无 python3/make/g++，导致 `pnpm install` 时 better-sqlite3 node-gyp 编译失败

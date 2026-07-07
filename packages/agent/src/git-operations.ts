@@ -133,6 +133,8 @@ export class GitOperations {
   }
 
   async show(ref: string, filePath?: string): Promise<string> {
+    // 防止 ref 以 - 开头被当作 git 选项注入（如 --output=/etc/passwd）
+    assertNotOption("ref", ref);
     const args = ["show", ref];
     if (filePath) args.push("--", filePath);
     return this.run(args);
@@ -172,6 +174,10 @@ export class GitOperations {
   }
 
   async push(remote?: string, branch?: string, force?: boolean): Promise<void> {
+    // 分支保护：禁止 force push 到 main/master
+    if (force && branch && (branch === "main" || branch === "master")) {
+      throw new Error(`Force push to protected branch '${branch}' is not allowed`);
+    }
     const args = ["push"];
     if (force) {
       console.warn(`[GitOperations] push --force 即将执行（cwd=${this.cwd}）`);

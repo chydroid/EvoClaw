@@ -22,10 +22,11 @@ export interface CodeIntelToolDeps {
   permissionManager: PermissionManager;
   gitOps: GitOperations;
   codeIntel: CodeIntelligence;
+  fsBase: string;
 }
 
 export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
-  const { executor, permissionManager, gitOps, codeIntel } = deps;
+  const { executor, permissionManager, gitOps, codeIntel, fsBase } = deps;
 
   // ── git_status ──────────────────────────────────────────────
   executor.registerTool(
@@ -338,7 +339,6 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       description: "Apply a SEARCH/REPLACE patch to one or more files. Supports multi-hunk patches with multiple files. Each hunk has: relativePath, search (exact content to find), replace (new content). Uses 4-pass matching (exact → rstrip → strip → unicode-normalize) for fuzzy matching. Atomic writes (temp+fsync+rename).",
       parameters: {
         patch: { type: "string", description: "Patch text in SEARCH/REPLACE format. Format:\n<<<<<<< SEARCH path/to/file\n...search content...\n=======\n...replace content...\n>>>>>>> REPLACE", required: true },
-        workspaceRoot: { type: "string", description: "Optional workspace root (defaults to server fsBase)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -347,7 +347,8 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
         if (!patchText) return { success: false, error: "patch is required" };
         const hunks = parsePatch(patchText);
         if (hunks.length === 0) return { success: false, error: "No valid hunks parsed from patch text" };
-        const workspaceRoot = params.workspaceRoot ? String(params.workspaceRoot) : process.cwd();
+        // workspaceRoot 固定为服务器 fsBase，不接受用户传入（防止路径遍历）
+        const workspaceRoot = fsBase;
         const result = await applyPatchFn(workspaceRoot, hunks);
         return result;
       } catch (err) {

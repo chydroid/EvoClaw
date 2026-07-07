@@ -321,23 +321,51 @@ export function registerWebTools(
             "Accept": format === "json" ? "application/json" : "text/html,text/plain,*/*",
           },
           signal: controller.signal,
-          redirect: "follow",
+          redirect: "manual",
         });
-        if (!response.ok) {
+        // 处理重定向：对每个 Location 都重新做 SSRF 校验，防止重定向绕过
+        let finalResponse = response;
+        let redirectUrl = url;
+        let redirectCount = 0;
+        while ([301, 302, 303, 307, 308].includes(finalResponse.status) && redirectCount < 5) {
+          const location = finalResponse.headers.get("location");
+          if (!location) break;
+          redirectUrl = new URL(location, redirectUrl).href;
+          // 重定向目标必须 http/https
+          let parsedRedirect: URL;
+          try { parsedRedirect = new URL(redirectUrl); } catch { break; }
+          if (parsedRedirect.protocol !== "http:" && parsedRedirect.protocol !== "https:") break;
+          // 重新 SSRF 校验重定向目标
+          const redirectSsrfReason = await checkSsrf(redirectUrl);
+          if (redirectSsrfReason) {
+            clearTimeout(timeout);
+            return { error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: redirectUrl };
+          }
+          finalResponse = await fetch(redirectUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0)",
+              "Accept": format === "json" ? "application/json" : "text/html,text/plain,*/*",
+            },
+            signal: controller.signal,
+            redirect: "manual",
+          });
+          redirectCount++;
+        }
+        if (!finalResponse.ok) {
           clearTimeout(timeout);
-          return { error: `HTTP ${response.status}`, url };
+          return { error: `HTTP ${finalResponse.status}`, url: redirectUrl };
         }
 
         if (format === "json") {
-          const data = await response.json();
+          const data = await finalResponse.json();
           clearTimeout(timeout);
-          return { url, status: response.status, data };
+          return { url: redirectUrl, status: finalResponse.status, data };
         }
 
-        const text = await response.text();
+        const text = await finalResponse.text();
         clearTimeout(timeout);
         if (format === "html") {
-          return { url, status: response.status, html: text.slice(0, 8000), length: text.length };
+          return { url: redirectUrl, status: finalResponse.status, html: text.slice(0, 8000), length: text.length };
         }
 
         // Extract readable text from HTML with full entity decoding

@@ -8,7 +8,7 @@ export interface ScheduledTask {
   name: string;
   cronExpression: string;
   description: string;
-  handlerType: "email_check" | "report_generate" | "browser_action" | "system_cleanup" | "custom";
+  handlerType: "email_check" | "report_generate" | "browser_action" | "system_cleanup" | "custom" | "shell";
   handlerConfig: Record<string, unknown>;
   enabled: boolean;
   lastRun?: Date;

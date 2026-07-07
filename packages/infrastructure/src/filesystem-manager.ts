@@ -454,7 +454,21 @@ export class FileSystemManager {
       }
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT") return; // 目标不存在，允许 create
+      if (code === "ENOENT") {
+        // 目标文件不存在（create 场景）：校验父目录 realpath，防止通过符号链接父目录逃逸
+        try {
+          const parentDir = path.dirname(normalizedFull);
+          const realParent = await fsSync.promises.realpath(parentDir);
+          if (!realParent.startsWith(normalizedBase + path.sep) && realParent !== normalizedBase) {
+            throw new Error(`Access denied: parent symlink escapes base directory`);
+          }
+        } catch (parentErr: unknown) {
+          const parentCode = (parentErr as NodeJS.ErrnoException)?.code;
+          if (parentCode === "ENOENT") return; // 父目录也不存在，允许后续 ensureDir 创建
+          throw parentErr;
+        }
+        return;
+      }
       throw err;
     }
   }

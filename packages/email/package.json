@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/email",
-  "version": "0.71.1",
+  "version": "0.72.0",
   "private": true,
   "description": "EvoClaw Email 邮件模块 - IMAP收信/SMTP发信/邮件分析",
   "main": "./dist/index.js",

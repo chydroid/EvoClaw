@@ -65,6 +65,35 @@ export function registerSchedulerTools(
     }, "scheduler");
   });
 
+  // shell handler：执行 shell 命令（带超时和危险命令拦截）
+  sched.registerHandler("shell", async (task: ScheduledTask) => {
+    const config = task.handlerConfig as { command?: string; cwd?: string; timeout?: number };
+    if (!config.command) {
+      eventBus.publish("scheduler.shell_error", { taskId: task.id, error: "No command specified" }, "scheduler");
+      return;
+    }
+    const { execFile } = await import("child_process");
+    const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
+    const shellArgs = process.platform === "win32" ? ["/c", config.command] : ["-c", config.command];
+    const cwd = config.cwd || process.cwd();
+    const timeout = Math.min(config.timeout || 60000, 300000); // 最长 5 分钟
+    try {
+      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(shell, shellArgs, { cwd, timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+          if (err) reject(err);
+          else resolve({ stdout: String(stdout), stderr: String(stderr) });
+        });
+      });
+      eventBus.publish("scheduler.shell_completed", {
+        taskId: task.id, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 1024),
+      }, "scheduler");
+    } catch (err) {
+      eventBus.publish("scheduler.shell_error", {
+        taskId: task.id, error: err instanceof Error ? err.message : String(err),
+      }, "scheduler");
+    }
+  });
+
   executor.registerTool(
     "scheduler_create",
     {
@@ -74,7 +103,7 @@ export function registerSchedulerTools(
         name: { type: "string", description: "Task name" },
         cronExpression: { type: "string", description: "Cron expression (e.g. '0 9 * * *')" },
         description: { type: "string", description: "Task description" },
-        handlerType: { type: "string", description: "Handler type: email_check, report_generate, browser_action, system_cleanup, custom" },
+        handlerType: { type: "string", description: "Handler type: email_check, report_generate, browser_action, system_cleanup, custom, shell. For shell handler, handlerConfig should be {\"command\":\"pnpm test\",\"cwd\":\"/path\",\"timeout\":60000}" },
         handlerConfig: { type: "string", description: "JSON config for handler" },
       },
     },
@@ -153,6 +182,9 @@ export function registerSchedulerTools(
       }
       try {
         const updated = sched.updateTask(taskId, updates as Parameters<typeof sched.updateTask>[1]);
+        if (!updated) {
+          return { success: false, error: `Task not found: ${taskId}` };
+        }
         return { success: true, task: updated };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };

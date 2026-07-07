@@ -967,15 +967,21 @@ export class SkillManager {
       this.registry.unregisterSkill(skillId);
       this.skills.delete(skillId);
 
-      // Delete skill files from disk to prevent auto-scan from reinstalling
+      // Archive skill files to data/skills-archive/ (遵循 AGENTS.md "Never delete; archive" 原则)
       try {
         const skillDir = path.dirname(skill.installPath);
         if (fs.existsSync(skillDir)) {
-          fs.rmSync(skillDir, { recursive: true, force: true });
-          process.stdout.write(`[SkillManager] Deleted skill directory: ${skillDir}\n`);
+          const archiveBase = path.resolve(skillDir, "..", "..", "skills-archive");
+          if (!fs.existsSync(archiveBase)) {
+            fs.mkdirSync(archiveBase, { recursive: true });
+          }
+          const archiveName = `${path.basename(skillDir)}-${Date.now()}`;
+          const archivePath = path.join(archiveBase, archiveName);
+          fs.renameSync(skillDir, archivePath);
+          process.stdout.write(`[SkillManager] Archived skill directory: ${skillDir} -> ${archivePath}\n`);
         }
       } catch (err) {
-        process.stderr.write(`[SkillManager] Failed to delete skill directory: ${err instanceof Error ? err.message : err}\n`);
+        process.stderr.write(`[SkillManager] Failed to archive skill directory: ${err instanceof Error ? err.message : err}\n`);
       }
 
       // Clean up processedItems cache
