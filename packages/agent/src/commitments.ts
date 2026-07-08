@@ -112,8 +112,27 @@ export class CommitmentManager {
           this.commitments = parsed as CommitmentStore;
         }
       }
-    } catch {
-      // Silent — start with empty store
+    } catch (err) {
+      // 不再静默吞掉错误：记录错误类型、文件路径与堆栈，便于排查
+      const error = err as Error;
+      process.stderr.write(
+        `[CommitmentManager] Failed to load commitments from ${this.storePath}: ` +
+        `${error.name}: ${error.message}\n${error.stack ?? ""}\n`
+      );
+      // JSON 解析失败时备份原文件为 .corrupt-<timestamp>，便于事后恢复，而非直接覆盖
+      if (error instanceof SyntaxError && fs.existsSync(this.storePath)) {
+        const backupPath = `${this.storePath}.corrupt-${Date.now()}`;
+        try {
+          fs.copyFileSync(this.storePath, backupPath);
+          process.stderr.write(
+            `[CommitmentManager] Backed up corrupt store to ${backupPath}\n`
+          );
+        } catch (backupErr) {
+          process.stderr.write(
+            `[CommitmentManager] Failed to back up corrupt store: ${(backupErr as Error).message}\n`
+          );
+        }
+      }
     }
   }
 

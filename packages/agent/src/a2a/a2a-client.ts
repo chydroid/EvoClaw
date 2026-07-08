@@ -1,5 +1,62 @@
 import type { A2AAgentCard, A2ATask, A2ATaskResult, A2AClientConfig } from "./types";
 
+// ── SSRF 防护 ───────────────────────────────────────────────
+
+/** 判断 IPv4 字符串是否属于私网/回环/链路本地等黑名单段 */
+function isBlockedIpv4(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = parseInt(m[1], 10);
+  const b = parseInt(m[2], 10);
+  return (
+    a === 127 || // 127.0.0.0/8 loopback
+    a === 10 || // 10.0.0.0/8 private
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+    (a === 192 && b === 168) || // 192.168.0.0/16 private
+    (a === 169 && b === 254) || // 169.254.0.0/16 link-local
+    a === 0 // 0.0.0.0/8 "this network"
+  );
+}
+
+/** 校验 agent URL，拒绝非法协议与私网/回环地址（SSRF 防护） */
+function assertSafeAgentUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid agent URL: ${url}`);
+  }
+
+  // 协议白名单：仅允许 http/https
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Disallowed protocol: ${parsed.protocol}`);
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  // localhost
+  if (hostname === "localhost" || isBlockedIpv4(hostname)) {
+    throw new Error(`Blocked host (SSRF protection): ${hostname}`);
+  }
+
+  // IPv6 黑名单
+  if (hostname.includes(":")) {
+    // ::1 loopback
+    if (hostname === "::1") {
+      throw new Error(`Blocked host (SSRF protection): ${hostname}`);
+    }
+    // fc00::/7 ULA（含 fd00::/8）
+    if (/^f[cd]/i.test(hostname)) {
+      throw new Error(`Blocked host (SSRF protection): ${hostname}`);
+    }
+    // IPv4-mapped IPv6，如 ::ffff:127.0.0.1
+    const v4Mapped = hostname.match(/:ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+    if (v4Mapped && isBlockedIpv4(v4Mapped[1])) {
+      throw new Error(`Blocked host (SSRF protection): ${hostname}`);
+    }
+  }
+}
+
 export class A2AClient {
   private config: A2AClientConfig;
   private knownAgents = new Map<string, A2AAgentCard>();
@@ -19,10 +76,15 @@ export class A2AClient {
 
   /** Discover an agent's capabilities by fetching its agent card */
   async discoverAgent(url: string): Promise<A2AAgentCard> {
+    // SSRF 防护：校验协议白名单与私网/回环 IP 黑名单
+    assertSafeAgentUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await fetch(`${url.replace(/\/+$/, "")}/a2a/card`, { signal: controller.signal });
+      const response = await fetch(`${url.replace(/\/+$/, "")}/a2a/card`, {
+        signal: controller.signal,
+        redirect: "error",
+      });
       if (!response.ok) throw new Error(`Failed to discover agent at ${url}: ${response.statusText}`);
       const card = await response.json() as A2AAgentCard;
       this.knownAgents.set(card.name, card);

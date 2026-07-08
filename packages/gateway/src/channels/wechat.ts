@@ -54,6 +54,7 @@ export class WeChatAdapter implements ChannelAdapter {
   private baseURL: string;
   private accessToken: string | null = null;
   private tokenExpiry = 0;
+  private tokenRefreshPromise: Promise<void> | null = null;
   private messageHandler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
 
@@ -157,7 +158,14 @@ export class WeChatAdapter implements ChannelAdapter {
    * Handle incoming XML message from WeChat Official Account.
    * Parse and convert to internal ChannelMessage format.
    */
-  async handleOfficialMessage(xmlBody: string): Promise<string> {
+  async handleOfficialMessage(
+    xmlBody: string,
+    signatureParams: { timestamp: string; nonce: string; signature: string },
+  ): Promise<string> {
+    // 签名验证 (fail-closed)：未配置 token 或签名不通过均拒绝请求
+    if (!this.verifySignature(signatureParams.timestamp, signatureParams.nonce, signatureParams.signature)) {
+      return "";
+    }
     if (!this.messageHandler) return "success";
 
     const parsed = this.parseWeChatXML(xmlBody);
@@ -207,7 +215,14 @@ export class WeChatAdapter implements ChannelAdapter {
   /**
    * Handle incoming WeCom bot webhook message (JSON format).
    */
-  async handleWeComWebhook(body: Record<string, unknown>): Promise<void> {
+  async handleWeComWebhook(
+    body: Record<string, unknown>,
+    signatureParams: { timestamp: string; nonce: string; signature: string },
+  ): Promise<void> {
+    // 签名验证 (fail-closed)：未配置 token 或签名不通过均拒绝请求
+    if (!this.verifySignature(signatureParams.timestamp, signatureParams.nonce, signatureParams.signature)) {
+      return;
+    }
     if (!this.messageHandler) return;
 
     const msg: ChannelMessage = {
@@ -264,10 +279,19 @@ export class WeChatAdapter implements ChannelAdapter {
 
   private async ensureToken(): Promise<void> {
     if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-      if (this.config.mode === "official") {
-        await this.refreshOfficialToken();
-      } else {
-        await this.refreshWeComToken();
+      // 并发保护：共享同一个刷新 Promise，避免并发调用重复刷新 / 触发限流
+      if (this.tokenRefreshPromise) {
+        await this.tokenRefreshPromise;
+        return;
+      }
+      this.tokenRefreshPromise =
+        this.config.mode === "official"
+          ? this.refreshOfficialToken()
+          : this.refreshWeComToken();
+      try {
+        await this.tokenRefreshPromise;
+      } finally {
+        this.tokenRefreshPromise = null;
       }
     }
   }

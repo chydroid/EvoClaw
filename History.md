@@ -5,6 +5,37 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.72.5 (2026-07-08)
+
+**100 任务模拟测试驱动的全面 Bug 修复与 API 补全**
+
+基于 100 个模拟用户 WebUI 输入的端到端测试任务，发现并修复 2 个 Critical + 6 个 High + 3 个 Medium 问题。新增 5 个缺失的 REST API 端点（skill-index / reporting / intelligence / metrics），补齐安全防护与输入校验。验证全绿：5001 passed / 74 skipped / 0 failed。
+
+### Critical 修复
+
+- **`/api/skills` 泄露 API Key** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): `listSkills()` 返回的 `config` 字段包含真实凭证（如 `OPENAI_API_KEY=sk-...`），通过 `/api/skills` 与 `/api/skills/:id` 直接暴露。新增 `maskSkillConfig()` 函数，对匹配 `ENV_VAR` 模式（大写+下划线）或包含 `KEY/TOKEN/SECRET/PASSWORD` 等关键词的键值掩码为 `"****"`，与 `/api/config/llm` 的安全实践一致
+- **MCP 扫描器无法检测 `rm -rf /`** ([mcp-poisoning-scanner.ts](file:///d:/abc/EvoClaw/packages/security/src/mcp-poisoning-scanner.ts)): 原有危险命令检测模式要求反引号包裹（`` `rm -rf ``），攻击者通过省略反引号即可绕过。新增不带反引号的破坏性系统命令模式：`rm -rf /`、`rm -rf ~`、`sudo rm`、`chmod 777 /`、`mkfs`、`dd if=/dev/zero of=/`、fork bomb 等
+
+### High 修复
+
+- **`/api/files/list` 路径验证逻辑错误** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): `path.resolve(dirPath) !== path.normalize(dirPath)` 对任何相对路径恒为 true（resolve 返回绝对路径，normalize 保留相对形式），导致默认值 `.` 及合法相对路径（如 `packages`）均返回 400。移除该错误检查，仅保留 `..` 检查 + workspace `startsWith` 边界校验
+- **`/api/chat` 无输入长度限制** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): 100KB 消息导致请求超时（>30s），存在 DoS 风险。新增 32KB 消息长度上限，超限返回 `413 Payload Too Large`
+- **`/api/skill-index` 端点缺失** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): SkillIndex 服务已注册但无 HTTP 端点。新增 `GET /api/skill-index/search?q=&limit=` 与 `GET /api/skill-index/stats`
+- **`/api/reporting` 端点缺失** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): ReportGenerator 服务已注册但无 HTTP 端点。新增 `GET /api/reporting/templates` 列出所有可用模板
+- **`/api/intelligence/classify` 端点缺失** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): TaskClassifier 服务已注册但无 HTTP 端点。新增 `GET /api/intelligence/classify?text=` 暴露任务分类能力
+- **`/api/metrics` Prometheus 端点缺失** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): Observability 服务运行中但未暴露标准 Prometheus 抓取端点。新增 `GET /api/metrics` 输出基础指标（服务数、运行时长、内存使用）符合 Prometheus exposition format
+
+### Medium 修复
+
+- **MCP tool not found 返回 HTTP 200** ([mcp-protocol-handler.ts](file:///d:/abc/EvoClaw/packages/gateway/src/mcp-protocol-handler.ts)): 调用不存在的工具时返回 HTTP 200 + `result.content` 内嵌 error 文本，违反 JSON-RPC 2.0 / MCP 规范。改为检测 `executeTool` 返回的 `{ error: "Tool ... not found" }` 并抛出 `TOOL_NOT_FOUND`，由 `routeMessage` catch 块返回顶层 `error: { code: -32601, message: "Tool not found: ..." }`
+- **`/api/memory/search` 参数兼容** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 仅接受 `query` 参数，常见简写 `q` 返回 400。改为同时接受 `query` 和 `q`，错误提示更新为 `query parameter is required (use 'query' or 'q')`
+- **Feishu webhook 空 body 校验** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): 空 body `{}` 被静默接受返回 200，可能掩盖异常调用。新增最小 payload 结构校验，空或非对象 body 返回 `400 Empty or invalid webhook payload`
+
+### 测试
+
+- 100 任务模拟测试覆盖：基础对话/会话管理、技能管理、配置管理、安全认证、工具调用/MCP 协议、文件操作、记忆系统、进化引擎、调度器、通道适配器、WebSocket、报表、边界异常场景
+- 验证结果：5001 passed / 74 skipped / 0 failed（较 v0.72.4 的 4927 passed 新增 74 个测试）
+
 ## v0.72.4 (2026-07-07)
 
 **MCP 桥接流式响应支持（SSE）：长时工具调用的进度反馈与客户端取消**

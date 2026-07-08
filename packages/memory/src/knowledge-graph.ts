@@ -88,7 +88,8 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
 
   private save(): void {
     if (!this.dirty) return;
-    this.dirty = false;
+    // 安全：仅在成功写入后才清除 dirty 标志。
+    // 旧实现在 try 之前就 dirty=false，写入失败时数据永久丢失且不重试。
     try {
       const dir = path.dirname(this.filePath);
       if (!fs.existsSync(dir)) {
@@ -134,15 +135,25 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
             throw w2err;
           }
           fs.closeSync(fd2);
-          try { fs.renameSync(dstTmp, this.filePath); } catch { /* ignore */ }
+          // 安全：EXDEV 回退的 rename 失败必须抛出，否则数据丢失且 dirty 已清
+          try {
+            fs.renameSync(dstTmp, this.filePath);
+          } catch (renameErr) {
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+            throw renameErr;
+          }
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
         } else {
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           throw err;
         }
       }
+      // 仅在成功写入后才清除 dirty
+      this.dirty = false;
     } catch (err) {
-      process.stderr.write(`[KnowledgeGraph] Failed to save: ${err instanceof Error ? err.message : String(err)}\n`);
+      // 写入失败：保持 dirty=true，下次 scheduleSave 会重试
+      process.stderr.write(`[KnowledgeGraph] Failed to save (will retry): ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

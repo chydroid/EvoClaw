@@ -142,6 +142,14 @@ const POISONING_PATTERNS: Array<{
     severity: "critical",
     description: "包含危险命令示例",
   },
+  // 不带反引号的危险命令（rm -rf /、sudo rm、chmod 777 等）— 之前仅在反引号包裹时检测，
+  // 现扩展到普通文本，避免攻击者通过省略反引号绕过检测
+  {
+    type: "code_execution",
+    pattern: /\b(?:rm\s+-rf\s+\/|rm\s+-rf\s+~|rm\s+-rf\s+\*|sudo\s+rm|chmod\s+777\s+\/|mkfs(?:\.\w+)?\s+\/|dd\s+if=\/dev\/(?:zero|random)\s+of=\/|:\(\)\{.*?:\|:&\};:)/gi,
+    severity: "critical",
+    description: "包含破坏性系统命令",
+  },
   // 钓鱼链接
   {
     type: "phishing_link",

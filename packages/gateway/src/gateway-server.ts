@@ -1647,9 +1647,10 @@ export class GatewayServer {
         return;
       }
 
-      const query = String(req.query.query ?? "").trim();
+      // 同时接受 query 和 q 作为查询参数（q 为常见简写别名），提升 API 兼容性
+      const query = String(req.query.query ?? req.query.q ?? "").trim();
       if (!query) {
-        res.status(400).json({ error: "query parameter is required" });
+        res.status(400).json({ error: "query parameter is required (use 'query' or 'q')" });
         return;
       }
 

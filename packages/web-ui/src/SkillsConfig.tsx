@@ -2,6 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { renderMarkdown } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
 
+// 校验 URL 协议，只允许 http/https，防止 javascript: 等协议注入 XSS
+function isSafeUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url.trim());
+}
+
 interface EnvMeta {
   required?: boolean;
   description?: string;
@@ -684,9 +689,13 @@ function MarketplaceSkillDetail({
         {detailPageURL && (
           <div style={{ display: "flex", padding: "3px 0" }}>
             <span style={{ color: "var(--text-muted)", minWidth: "80px" }}>{t("skills.detail_source", "来源")}</span>
-            <a href={detailPageURL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>
-              {detailPageURL}
-            </a>
+            {isSafeUrl(detailPageURL) ? (
+              <a href={detailPageURL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>
+                {detailPageURL}
+              </a>
+            ) : (
+              <span style={{ color: "var(--text-primary)", wordBreak: "break-all" }}>{detailPageURL}</span>
+            )}
           </div>
         )}
         {skill.keywords && skill.keywords.length > 0 && (
@@ -2137,7 +2146,11 @@ export default function SkillsConfig() {
           <div style={styles.infoRow}>
             <span style={styles.infoLabel}>{t("skills.homepage", "主页")}</span>
             <span style={styles.infoValue}>{selectedSkill.homepage ? (
-              <a href={selectedSkill.homepage} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>{selectedSkill.homepage}</a>
+              isSafeUrl(selectedSkill.homepage) ? (
+                <a href={selectedSkill.homepage} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>{selectedSkill.homepage}</a>
+              ) : (
+                <span style={{ color: "var(--text-muted)" }}>{selectedSkill.homepage}</span>
+              )
             ) : "-"}</span>
           </div>
           {selectedSkill.license && (

@@ -109,9 +109,12 @@ export class GoogleProvider implements ProviderPlugin {
     const apiKey = this.resolveApiKey();
     if (apiKey) {
       try {
-        const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+        const url = `${this.baseURL}/v1beta/models`;
         const res = await fetch(url, {
-          headers: this.config.headers ?? {},
+          headers: {
+            "x-goog-api-key": apiKey,
+            ...(this.config.headers ?? {}),
+          },
           signal: AbortSignal.timeout(10000),
         });
         if (res.ok) {
@@ -176,11 +179,12 @@ export class GoogleProvider implements ProviderPlugin {
     let lastKey = this.resolveApiKey();
 
     for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
-      const url = this.buildURL(request.model, false, lastKey);
+      const url = this.buildURL(request.model, false);
       const response = await this.fetchWithRetry(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-goog-api-key": lastKey,
           ...(this.config.headers ?? {}),
         },
         body: JSON.stringify(body),
@@ -222,11 +226,12 @@ export class GoogleProvider implements ProviderPlugin {
     let lastKey = this.resolveApiKey();
 
     for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
-      const url = this.buildURL(request.model, true, lastKey);
+      const url = this.buildURL(request.model, true);
       const response = await this.fetchWithRetry(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-goog-api-key": lastKey,
           ...(this.config.headers ?? {}),
         },
         body: JSON.stringify(body),
@@ -393,12 +398,8 @@ export class GoogleProvider implements ProviderPlugin {
     return this.config.apiKey ?? "";
   }
 
-  private buildURL(model: string, stream: boolean, key?: string): string {
-    const apiKey = key ?? this.resolveApiKey();
+  private buildURL(model: string, stream: boolean): string {
     const params = new URLSearchParams();
-    if (apiKey) {
-      params.set("key", apiKey);
-    }
     if (stream) {
       params.set("alt", "sse");
     }

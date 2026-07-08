@@ -479,7 +479,8 @@ export default function App() {
   async function submitToken() {
     if (!tokenInput.trim()) return;
     try {
-      document.cookie = `web_ui_token=${tokenInput.trim()}; path=/; max-age=86400; SameSite=Lax`;
+      const secureFlag = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
+      document.cookie = `web_ui_token=${encodeURIComponent(tokenInput.trim())}; path=/; max-age=86400; SameSite=Lax${secureFlag}`;
       const res = await fetch("/api/auth/check");
       if (res.ok) {
         setAuthenticated(true); setStatus("online"); setTokenInput("");

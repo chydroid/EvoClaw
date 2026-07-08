@@ -310,7 +310,24 @@ export class AuditCenter {
     return [...this.rules];
   }
 
-  clearRecords(): void {
+  /**
+   * 清空审计记录。需要管理员鉴权：调用方必须提供包含 "admin" 角色的 caller，
+   * 否则拒绝执行。清空操作会记录警告日志，防止审计日志被无声抹除。
+   */
+  clearRecords(caller?: { userId?: string; roles?: string[] }): void {
+    const userId = caller?.userId ?? "unknown";
+    const roles = caller?.roles ?? [];
+    if (!roles.includes("admin")) {
+      process.stderr.write(
+        `[AuditCenter] clearRecords DENIED for caller=${userId} roles=${JSON.stringify(roles)}\n`
+      );
+      throw new Error(
+        `Access denied: clearing audit records requires admin role (caller: ${userId})`,
+      );
+    }
+    process.stderr.write(
+      `[AuditCenter] clearRecords by admin=${userId}, clearing ${this.records.length} records\n`
+    );
     this.records = [];
   }
 

@@ -429,6 +429,12 @@ export class FileSystemManager {
   }
 
   private resolvePath(relativePath: string): string {
+    // 安全：拒绝 UNC 路径（如 \\server\share、\\?\C:\、\\.\COM1），
+    // 防止通过 UNC 路径绕过 basePath 限制访问任意网络/设备资源。
+    if (relativePath.startsWith("\\\\")) {
+      throw new Error(`Access denied: UNC paths are not allowed. Use relative paths within the workspace.`);
+    }
+
     const normalized = relativePath.replace(/\\/g, "/");
 
     // Block absolute paths - all paths must be relative to basePath

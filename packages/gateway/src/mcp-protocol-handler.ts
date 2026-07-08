@@ -156,17 +156,9 @@ export class MCPProtocolHandler {
       };
     }
 
+    let result: unknown;
     try {
-      const result = await this.toolRegistry.executeTool(name, args);
-      const sanitized = this.sanitizeToolResult(result);
-      return {
-        content: [
-          {
-            type: "text",
-            text: typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized, null, 2),
-          },
-        ],
-      };
+      result = await this.toolRegistry.executeTool(name, args);
     } catch (err) {
       return {
         content: [
@@ -177,6 +169,27 @@ export class MCPProtocolHandler {
         ],
       };
     }
+
+    // 检测 "tool not found" 错误并抛出，让 routeMessage 返回 JSON-RPC 顶层 error（code: -32601），
+    // 而非以 HTTP 200 + result.content 内嵌 error 文本的形式返回（违反 JSON-RPC 2.0 / MCP 规范）。
+    if (result && typeof result === "object" && "error" in result) {
+      const errMsg = String((result as Record<string, unknown>).error);
+      if (/not found/i.test(errMsg)) {
+        const notFoundErr = new Error(`Tool not found: ${name}`);
+        (notFoundErr as Error & { code?: string }).code = "TOOL_NOT_FOUND";
+        throw notFoundErr;
+      }
+    }
+
+    const sanitized = this.sanitizeToolResult(result);
+    return {
+      content: [
+        {
+          type: "text",
+          text: typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized, null, 2),
+        },
+      ],
+    };
   }
 
   /**
@@ -506,11 +519,16 @@ export class MCPProtocolHandler {
           };
       }
     } catch (err) {
+      // handleToolCall 抛出的 "tool not found" 错误返回 -32601 (METHOD_NOT_FOUND)，
+      // 符合 JSON-RPC 2.0 / MCP 规范；其余错误返回 -32603 (INTERNAL_ERROR)。
+      const isNotFound = err instanceof Error && (err as Error & { code?: string }).code === "TOOL_NOT_FOUND";
       return {
         jsonrpc: "2.0",
         error: {
-          code: JSONRPC_ERROR.INTERNAL_ERROR,
-          message: `Internal error: ${err instanceof Error ? err.message : String(err)}`,
+          code: isNotFound ? JSONRPC_ERROR.METHOD_NOT_FOUND : JSONRPC_ERROR.INTERNAL_ERROR,
+          message: isNotFound
+            ? (err instanceof Error ? err.message : String(err))
+            : `Internal error: ${err instanceof Error ? err.message : String(err)}`,
         },
         id,
       };

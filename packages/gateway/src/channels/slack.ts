@@ -80,6 +80,8 @@ export class SlackAdapter implements ChannelAdapter {
   private statusHandlers: Array<
     (status: "connected" | "disconnected" | "reconnecting" | "error") => void
   > = [];
+  private processedEvents = new Set<string>();
+  private static MAX_PROCESSED_EVENTS = 1000;
 
   constructor(config: SlackConfig) {
     this.token = config.botToken;
@@ -402,6 +404,17 @@ export class SlackAdapter implements ChannelAdapter {
     if (!event.user || !event.channel || !event.text) return;
     if (event.user === this.botUserId) return;
 
+    // 事件去重，防止 Socket Mode / Events API 重复投递
+    const eventId = event.ts;
+    if (eventId) {
+      if (this.processedEvents.has(eventId)) return;
+      this.processedEvents.add(eventId);
+      if (this.processedEvents.size > SlackAdapter.MAX_PROCESSED_EVENTS) {
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
+      }
+    }
+
     // Access control
     if (this.allowedChannels.size > 0) {
       if (!this.allowedChannels.has(event.channel)) return;
@@ -457,6 +470,7 @@ export class SlackAdapter implements ChannelAdapter {
         "Content-Type": "application/json; charset=utf-8",
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {

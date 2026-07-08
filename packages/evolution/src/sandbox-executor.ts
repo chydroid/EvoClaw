@@ -113,6 +113,36 @@ export class SandboxExecutor {
       // 创建临时目录
       const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), this.config.tmpDirPrefix));
 
+      // 安全：预加载白名单模块并递归冻结后注入沙箱。
+      // 旧实现在沙箱中暴露宿主 require，可被
+      // require.constructor.constructor('return process')() 利用逃逸 vm 上下文。
+      const deepFreeze = <T>(obj: T): T => {
+        if (obj === null || (typeof obj !== "object" && typeof obj !== "function")) {
+          return obj;
+        }
+        if (Object.isFrozen(obj)) {
+          return obj;
+        }
+        Object.freeze(obj);
+        for (const key of Object.getOwnPropertyNames(obj)) {
+          const val = (obj as Record<string, unknown>)[key];
+          if (val !== null && typeof val === "object") {
+            deepFreeze(val);
+          }
+        }
+        return obj;
+      };
+      const safeModules: Record<string, unknown> = {
+        assert: deepFreeze(await import("node:assert")),
+        buffer: deepFreeze(await import("node:buffer")),
+        crypto: deepFreeze(await import("node:crypto")),
+        path: deepFreeze(await import("node:path")),
+        url: deepFreeze(await import("node:url")),
+        util: deepFreeze(await import("node:util")),
+        querystring: deepFreeze(await import("node:querystring")),
+        string_decoder: deepFreeze(await import("node:string_decoder")),
+      };
+
       // Track timers created by sandbox for cleanup (declared outside try for finally access)
       const sandboxTimers: ReturnType<typeof setTimeout>[] = [];
 
@@ -163,17 +193,8 @@ export class SandboxExecutor {
             env: {},
             cwd: () => tmpDir,
           },
-          require: (moduleName: string) => {
-            // 只允许安全的内置模块
-            const allowedModules = new Set([
-              "assert", "buffer", "crypto", "path", "url",
-              "util", "querystring", "string_decoder",
-            ]);
-            if (!allowedModules.has(moduleName)) {
-              throw new Error(`Module "${moduleName}" is not allowed in sandbox`);
-            }
-            return require(moduleName);
-          },
+          // 安全：不暴露宿主 require，改为直接注入白名单模块的冻结副本
+          ...safeModules,
           __dirname: tmpDir,
           __filename: path.join(tmpDir, "sandbox.js"),
         };

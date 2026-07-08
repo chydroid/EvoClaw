@@ -365,7 +365,12 @@ export class TelegramAdapter implements ChannelAdapter {
 
         if (updates.ok && updates.result) {
           for (const update of updates.result) {
-            await this.processUpdate(update);
+            try {
+              await this.processUpdate(update);
+            } catch (err) {
+              // 毒丸消息：处理抛异常时仍推进 lastUpdateId，跳过该消息，避免无限重处理
+              console.error(`[Telegram] Failed to process update ${update.update_id}, skipping:`, err);
+            }
             this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
           }
         }

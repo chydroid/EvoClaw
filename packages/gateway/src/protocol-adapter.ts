@@ -1471,6 +1471,29 @@ export class ProtocolAdapter {
       }
     });
 
+    // 掩码 skill.config 中的敏感值（API Key / Token / Secret 等），
+    // 防止通过 /api/skills 与 /api/skills/:id 泄露真实凭证。
+    // 规则：键名匹配 ENV_VAR 模式（大写+下划线，3 字符以上）或包含敏感关键词；
+    // 值非空且非掩码占位符时，替换为 "****"。
+    const maskSkillConfig = (skill: any): any => {
+      if (!skill || typeof skill !== "object") return skill;
+      const cfg = skill.config;
+      if (!cfg || typeof cfg !== "object") return skill;
+      const SENSITIVE_KEY = /(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|AUTH)/i;
+      const ENV_VAR = /^[A-Z][A-Z0-9_]{2,}$/;
+      const masked: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(cfg)) {
+        if (v === undefined || v === null || v === "") { masked[k] = v; continue; }
+        const isSensitive = ENV_VAR.test(k) || SENSITIVE_KEY.test(k);
+        if (isSensitive && typeof v === "string") {
+          masked[k] = v.includes("****") ? v : "****";
+        } else {
+          masked[k] = v;
+        }
+      }
+      return { ...skill, config: masked };
+    };
+
     app.get("/api/skills", async (req: Request, res: Response) => {
       try {
         const skillManager = this.registry.resolveService<{
@@ -1482,27 +1505,27 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "Skill manager not available" });
           return;
         }
-        
+
         // If keyword parameter is provided, perform search
         const keyword = req.query.keyword as string;
         if (keyword) {
           const query = { keyword, limit: parseInt(String(req.query.limit), 10) || 20 };
           const localResults = await skillManager.searchLocalSkills(query);
           const remoteResults = await skillManager.searchRemoteSkills(query);
-          res.json({ 
-            success: true, 
+          res.json({
+            success: true,
             keyword,
             local: localResults,
             remote: remoteResults
           });
           return;
         }
-        
+
         // Otherwise list all installed skills with optional sorting
         const skills = await skillManager.listSkills();
         const sortBy = req.query.sortBy as string;
         const sortOrder = req.query.sortOrder as string;
-        
+
         if (sortBy && Array.isArray(skills)) {
           const sorted = [...skills].sort((a: any, b: any) => {
             let valA: any, valB: any;
@@ -1537,11 +1560,11 @@ export class ProtocolAdapter {
             const cmp = valA < valB ? -1 : valA > valB ? 1 : 0;
             return sortOrder === "desc" ? -cmp : cmp;
           });
-          res.json(sorted);
+          res.json(sorted.map((s: any) => maskSkillConfig(s)));
           return;
         }
-        
-        res.json(skills);
+
+        res.json(Array.isArray(skills) ? skills.map((s: any) => maskSkillConfig(s)) : skills);
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1579,7 +1602,7 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Skill not found" });
           return;
         }
-        res.json(skill);
+        res.json(maskSkillConfig(skill));
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -2837,6 +2860,13 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Message or attachment is required" });
           return;
         }
+        // 消息长度上限：防止超长输入长时间占用 LLM 处理链路（DoS 风险）。
+        // 限制为 32KB（约 3.2 万字符），覆盖正常对话与代码片段场景。
+        const MAX_MESSAGE_LENGTH = 32 * 1024;
+        if (message.length > MAX_MESSAGE_LENGTH) {
+          res.status(413).json({ error: `Message too large: ${message.length} bytes exceeds limit of ${MAX_MESSAGE_LENGTH} bytes` });
+          return;
+        }
 
         const rm = this.getReplyReferenceManager();
         if (rm && (req.body.replyTo || req.body.parentId || req.body.inReplyTo)) {
@@ -3244,6 +3274,132 @@ export class ProtocolAdapter {
     app.get("/api/system/services", (_req: Request, res: Response) => {
       const infos = this.registry.getAllServiceInfos?.() || [];
       res.json(infos);
+    });
+
+    // ─── Skill Index API ────────────────────────────────────────────────
+    // 暴露 SkillIndex 服务的搜索与统计能力，供 WebUI 与外部客户端使用
+
+    app.get("/api/skill-index/search", (req: Request, res: Response) => {
+      try {
+        const skillIndex = this.registry.resolveService<{
+          search(query: string, limit?: number): unknown[];
+          getSize(): number;
+          getAll(): unknown[];
+        }>("skillIndex");
+        if (!skillIndex) {
+          res.status(503).json({ error: "SkillIndex not available" });
+          return;
+        }
+        const query = String(req.query.q ?? req.query.query ?? "").trim();
+        if (!query) {
+          res.status(400).json({ error: "Query parameter 'q' is required" });
+          return;
+        }
+        const limit = Math.min(parseInt(String(req.query.limit), 10) || 10, 100);
+        const results = skillIndex.search(query, limit);
+        res.json({ query, results, count: results.length });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/skill-index/stats", (_req: Request, res: Response) => {
+      try {
+        const skillIndex = this.registry.resolveService<{
+          getSize(): number;
+          getAll(): unknown[];
+        }>("skillIndex");
+        if (!skillIndex) {
+          res.status(503).json({ error: "SkillIndex not available" });
+          return;
+        }
+        res.json({ totalIndexed: skillIndex.getSize() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Reporting API ──────────────────────────────────────────────────
+    // 暴露 ReportGenerator 服务的模板列表能力，供 WebUI 与外部客户端使用
+
+    app.get("/api/reporting/templates", (_req: Request, res: Response) => {
+      try {
+        const reportGenerator = this.registry.resolveService<{
+          getTemplateNames(): string[];
+          getTemplate(name: string): unknown;
+        }>("reportGenerator");
+        if (!reportGenerator) {
+          res.status(503).json({ error: "ReportGenerator not available" });
+          return;
+        }
+        const names = reportGenerator.getTemplateNames();
+        const templates = names.map((name) => ({ name, template: reportGenerator.getTemplate(name) }));
+        res.json({ templates, count: templates.length });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Intelligence API ───────────────────────────────────────────────
+    // 暴露 TaskClassifier 服务的分类能力，供 WebUI 与外部客户端使用
+
+    app.get("/api/intelligence/classify", (req: Request, res: Response) => {
+      try {
+        const taskClassifier = this.registry.resolveService<{
+          classify(task: string): unknown;
+        }>("taskClassifier");
+        if (!taskClassifier) {
+          res.status(503).json({ error: "TaskClassifier not available" });
+          return;
+        }
+        const text = String(req.query.text ?? req.query.q ?? "").trim();
+        if (!text) {
+          res.status(400).json({ error: "Query parameter 'text' is required" });
+          return;
+        }
+        const result = taskClassifier.classify(text);
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Prometheus Metrics Endpoint ────────────────────────────────────
+    // 暴露基础运行时指标（服务数、内存使用、运行时长）供 Prometheus/Grafana 抓取。
+    // 完整指标由 Observability 服务收集，此处提供最小可用端点。
+
+    app.get("/api/metrics", (_req: Request, res: Response) => {
+      try {
+        const mem = process.memoryUsage();
+        const uptime = process.uptime();
+        const services = this.registry.getAllServiceInfos?.() || [];
+        const running = services.filter((s: any) => s?.status === "running").length;
+        res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+        const lines: string[] = [
+          "# HELP evoclaw_services_total Total registered services",
+          "# TYPE evoclaw_services_total gauge",
+          `evoclaw_services_total ${services.length}`,
+          "# HELP evoclaw_services_running Running services count",
+          "# TYPE evoclaw_services_running gauge",
+          `evoclaw_services_running ${running}`,
+          "# HELP evoclaw_process_uptime_seconds Process uptime in seconds",
+          "# TYPE evoclaw_process_uptime_seconds gauge",
+          `evoclaw_process_uptime_seconds ${uptime.toFixed(2)}`,
+          "# HELP evoclaw_process_memory_rss_bytes Resident set size in bytes",
+          "# TYPE evoclaw_process_memory_rss_bytes gauge",
+          `evoclaw_process_memory_rss_bytes ${mem.rss}`,
+          "# HELP evoclaw_process_memory_heap_used_bytes Heap used in bytes",
+          "# TYPE evoclaw_process_memory_heap_used_bytes gauge",
+          `evoclaw_process_memory_heap_used_bytes ${mem.heapUsed}`,
+          "# HELP evoclaw_process_memory_heap_total_bytes Heap total in bytes",
+          "# TYPE evoclaw_process_memory_heap_total_bytes gauge",
+          `evoclaw_process_memory_heap_total_bytes ${mem.heapTotal}`,
+          "",
+        ];
+        res.send(lines.join("\n"));
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
     });
 
     // ─── System info endpoints for Dashboard ────────────────────────────
@@ -4893,14 +5049,219 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Feishu adapter not found" });
           return;
         }
+        // 校验最小 payload 结构：飞书 webhook 事件至少包含 "event" 或 "type" 或 "challenge" 字段，
+        // 空 body 或非对象 body 直接返回 400，避免无效请求被静默接受。
+        const body = req.body as Record<string, unknown>;
+        if (!body || typeof body !== "object" || Object.keys(body).length === 0) {
+          res.status(400).json({ error: "Empty or invalid webhook payload" });
+          return;
+        }
         const headers: Record<string, string> = {};
         for (const [key, value] of Object.entries(req.headers)) {
           if (typeof value === "string") headers[key] = value;
         }
         // Pass raw body for signature verification
         const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body);
-        const result = await adapter.handleWebhookEvent(req.body as Record<string, unknown>, headers, rawBody);
+        const result = await adapter.handleWebhookEvent(body, headers, rawBody);
         res.json(result.challenge ? { challenge: result.challenge } : {});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── DingTalk Webhook ───────────────────────────────────────────────
+
+    app.post("/api/channels/dingtalk/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>): Promise<{ challenge?: string }> } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("dingtalk");
+        if (!adapter) {
+          res.status(404).json({ error: "DingTalk adapter not found" });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        const result = await adapter.handleWebhookEvent(req.body as Record<string, unknown>, headers);
+        res.json(result.challenge ? { challenge: result.challenge } : {});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── WhatsApp Webhook ───────────────────────────────────────────────
+
+    // GET 用于 Meta webhook 验证（hub.challenge）
+    app.get("/api/channels/whatsapp/webhook", (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { verifyWebhook(mode: string, token: string, challenge: string): string | null } | undefined;
+        } | undefined;
+        const adapter = channelManager?.getAdapter("whatsapp");
+        if (!adapter) {
+          res.status(404).json({ error: "WhatsApp adapter not found" });
+          return;
+        }
+        const mode = (req.query["hub.mode"] as string) ?? "";
+        const token = (req.query["hub.verify_token"] as string) ?? "";
+        const challenge = (req.query["hub.challenge"] as string) ?? "";
+        const result = adapter.verifyWebhook(mode, token, challenge);
+        if (result !== null) {
+          res.type("text/plain").send(result);
+        } else {
+          res.status(403).send("Forbidden");
+        }
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/channels/whatsapp/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { handleWebhook(body: unknown, headers?: Record<string, string>, rawBody?: string): Promise<void> } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("whatsapp");
+        if (!adapter) {
+          res.status(404).json({ error: "WhatsApp adapter not found" });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body);
+        await adapter.handleWebhook(req.body, headers, rawBody);
+        res.json({});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Slack Webhook ──────────────────────────────────────────────────
+
+    app.post("/api/channels/slack/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { handleEvent(body: Record<string, unknown>, headers?: Record<string, string>, rawBody?: string): Promise<{ challenge?: string }> } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("slack");
+        if (!adapter) {
+          res.status(404).json({ error: "Slack adapter not found" });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body);
+        const result = await adapter.handleEvent(req.body as Record<string, unknown>, headers, rawBody);
+        res.json(result.challenge ? { challenge: result.challenge } : {});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Telegram Webhook ───────────────────────────────────────────────
+
+    app.post("/api/channels/telegram/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { handleWebhook(body: unknown, headers?: Record<string, string>): Promise<void> } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("telegram");
+        if (!adapter) {
+          res.status(404).json({ error: "Telegram adapter not found" });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        await adapter.handleWebhook(req.body, headers);
+        res.json({});
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── WeChat Webhook ─────────────────────────────────────────────────
+
+    // GET 用于公众号 URL 验证（返回 echostr）
+    app.get("/api/channels/wechat/webhook", (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): { verifySignature(timestamp: string, nonce: string, signature: string): boolean } | undefined;
+        } | undefined;
+        const adapter = channelManager?.getAdapter("wechat");
+        if (!adapter) {
+          res.status(404).json({ error: "WeChat adapter not found" });
+          return;
+        }
+        const signature = (req.query.signature as string) ?? "";
+        const timestamp = (req.query.timestamp as string) ?? "";
+        const nonce = (req.query.nonce as string) ?? "";
+        const echostr = (req.query.echostr as string) ?? "";
+        if (adapter.verifySignature(timestamp, nonce, signature)) {
+          res.type("text/plain").send(echostr);
+        } else {
+          res.status(403).send("Forbidden");
+        }
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/channels/wechat/webhook", async (req: Request, res: Response) => {
+      try {
+        const channelManager = this.registry.resolveService("channelManager") as {
+          getAdapter(type: string): {
+            handleOfficialMessage(xmlBody: string, signatureParams: { timestamp: string; nonce: string; signature: string }): Promise<string>;
+            handleWeComWebhook(body: Record<string, unknown>, signatureParams: { timestamp: string; nonce: string; signature: string }): Promise<void>;
+          } | undefined;
+        } | undefined;
+        if (!channelManager) {
+          res.status(503).json({ error: "Channel manager not available" });
+          return;
+        }
+        const adapter = channelManager.getAdapter("wechat");
+        if (!adapter) {
+          res.status(404).json({ error: "WeChat adapter not found" });
+          return;
+        }
+        const signatureParams = {
+          timestamp: (req.query.timestamp as string) ?? "",
+          nonce: (req.query.nonce as string) ?? "",
+          signature: (req.query.signature as string) ?? "",
+        };
+        // 企业微信 bot webhook 发送 JSON，公众号发送 XML
+        if (req.is("application/json")) {
+          await adapter.handleWeComWebhook(req.body as Record<string, unknown>, signatureParams);
+          res.json({});
+        } else {
+          const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : String(req.body ?? "");
+          const result = await adapter.handleOfficialMessage(rawBody, signatureParams);
+          res.type("text/plain").send(result);
+        }
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -5830,7 +6191,11 @@ export class ProtocolAdapter {
     app.get("/api/files/list", (req: Request, res: Response) => {
       try {
         const dirPath = (req.query.path as string) || ".";
-        if (dirPath.includes("..") || path.resolve(dirPath) !== path.normalize(dirPath)) {
+        // 拒绝包含 ".." 的相对路径穿越尝试；后续通过 workspace 边界校验确保安全。
+        // 注意：之前 `path.resolve(dirPath) !== path.normalize(dirPath)` 对所有相对路径恒为 true
+        // （resolve 返回绝对路径，normalize 保留相对形式），导致合法相对路径（如 "packages"、"."）
+        // 被误拒。已移除该错误检查，仅保留 ".." 检查 + workspace startsWith 边界校验。
+        if (dirPath.includes("..")) {
           res.status(400).json({ error: "Invalid path" });
           return;
         }

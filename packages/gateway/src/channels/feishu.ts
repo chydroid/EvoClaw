@@ -46,6 +46,7 @@ export class FeishuAdapter implements ChannelAdapter {
   private baseURL: string;
   private accessToken: string | null = null;
   private tokenExpiry = 0;
+  private tokenRefreshPromise: Promise<void> | null = null;
   private messageHandler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
   private polling = false;
@@ -163,7 +164,10 @@ export class FeishuAdapter implements ChannelAdapter {
         body.root_id = options.replyTo;
       }
 
-      const res = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=open_id`, {
+      // 根据 target 前缀动态判断 receive_id_type：
+      // oc_ 前缀为群聊 chat_id，其余视为 open_id（保持向后兼容）
+      const receiveIdType = target.startsWith("oc_") ? "chat_id" : "open_id";
+      const res = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -424,8 +428,12 @@ export class FeishuAdapter implements ChannelAdapter {
    * Call this from your HTTP server's webhook route.
    */
   async handleWebhookEvent(body: Record<string, unknown>, headers?: Record<string, string>, rawBody?: string): Promise<{ challenge?: string }> {
-    // Verify event signature using raw body if available
-    if (rawBody && headers?.["x-lark-signature"]) {
+    // 签名验证 (fail-closed)：配置了 encryptKey 时必须验证
+    // 仅当 encryptKey 未配置时才跳过验证（开发环境兼容）
+    if (this.config.encryptKey) {
+      if (!rawBody || !headers?.["x-lark-signature"]) {
+        return {};
+      }
       const timestamp = headers["x-lark-request-timestamp"] ?? "";
       const nonce = headers["x-lark-request-nonce"] ?? "";
       if (!this.verifySignature(rawBody, headers["x-lark-signature"], timestamp, nonce)) {
@@ -600,19 +608,31 @@ export class FeishuAdapter implements ChannelAdapter {
 
   private async ensureToken(): Promise<void> {
     if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-      let lastError: Error | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await this.refreshToken();
-          return;
-        } catch (err) {
-          lastError = err as Error;
-          if (attempt < 2) {
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      // 并发保护：共享同一个刷新 Promise，避免并发调用重复刷新 / 触发限流
+      if (this.tokenRefreshPromise) {
+        await this.tokenRefreshPromise;
+        return;
+      }
+      this.tokenRefreshPromise = (async () => {
+        let lastError: Error | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await this.refreshToken();
+            return;
+          } catch (err) {
+            lastError = err as Error;
+            if (attempt < 2) {
+              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            }
           }
         }
+        throw lastError;
+      })();
+      try {
+        await this.tokenRefreshPromise;
+      } finally {
+        this.tokenRefreshPromise = null;
       }
-      throw lastError;
     }
   }
 
@@ -665,6 +685,17 @@ export class FeishuAdapter implements ChannelAdapter {
 
   private async processMessageRecord(record: FeishuMessageRecord): Promise<void> {
     if (!this.messageHandler) return;
+
+    // 消息去重 (与 processEvent / handleWSMessage 一致)，防止轮询模式重复处理
+    const messageId = record.message_id;
+    if (messageId) {
+      if (this.processedEvents.has(messageId)) return;
+      this.processedEvents.add(messageId);
+      if (this.processedEvents.size > FeishuAdapter.MAX_PROCESSED_EVENTS) {
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
+      }
+    }
 
     const content = this.parseContent(record.body?.content ?? "");
     if (!content.text.trim()) return;

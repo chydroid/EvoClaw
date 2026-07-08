@@ -45,6 +45,59 @@ export const DEFAULT_LLM_CONFIG: LLMDispatchConfig = {
   timeoutMs: 120000,
 };
 
+// ── SSRF 防护 ───────────────────────────────────────────────
+// 借鉴 agent 模块 a2a-client.ts 的 assertSafeAgentUrl：拒绝非法协议与
+// 私网/回环/链路本地地址，防止通过配置 baseURL 将 LLM 请求导向内网。
+
+/** 判断 IPv4 字符串是否属于私网/回环/链路本地等黑名单段 */
+function isBlockedIpv4(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = parseInt(m[1], 10);
+  const b = parseInt(m[2], 10);
+  return (
+    a === 127 || // 127.0.0.0/8 loopback
+    a === 10 || // 10.0.0.0/8 private
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+    (a === 192 && b === 168) || // 192.168.0.0/16 private
+    (a === 169 && b === 254) || // 169.254.0.0/16 link-local
+    a === 0 // 0.0.0.0/8 "this network"
+  );
+}
+
+/** 校验 LLM API URL，拒绝非法协议与私网/回环地址（SSRF 防护） */
+function assertSafeLlmUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid LLM API URL: ${url}`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Disallowed LLM API protocol: ${parsed.protocol}`);
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  if (hostname === "localhost" || isBlockedIpv4(hostname)) {
+    throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
+  }
+
+  if (hostname.includes(":")) {
+    if (hostname === "::1") {
+      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
+    }
+    if (/^f[cd]/i.test(hostname)) {
+      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
+    }
+    const v4Mapped = hostname.match(/:ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+    if (v4Mapped && isBlockedIpv4(v4Mapped[1])) {
+      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
+    }
+  }
+}
+
 // ── System Prompt Templates ────────────────────────────────
 
 const SYSTEM_PROMPTS: Record<string, string> = {
@@ -540,6 +593,9 @@ export class LLMDispatcher {
     const timeout = provider.timeout || 120000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    // SSRF 防护：校验 LLM API URL，拒绝私网/回环地址
+    assertSafeLlmUrl(apiURL);
 
     try {
       const response = await fetch(apiURL, {

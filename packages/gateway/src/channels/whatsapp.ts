@@ -95,6 +95,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private statusHandlers: Array<
     (status: "connected" | "disconnected" | "reconnecting" | "error") => void
   > = [];
+  private processedEvents = new Set<string>();
+  private static MAX_PROCESSED_EVENTS = 1000;
 
   private running = false;
   private connected = false;
@@ -313,6 +315,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
       if (!this.allowedNumbers.has(msg.from)) return;
     }
 
+    // 消息去重，防止 webhook 重复投递导致重复处理
+    const eventId = msg.id;
+    if (eventId) {
+      if (this.processedEvents.has(eventId)) return;
+      this.processedEvents.add(eventId);
+      if (this.processedEvents.size > WhatsAppAdapter.MAX_PROCESSED_EVENTS) {
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
+      }
+    }
+
     let text = "";
     if (msg.text) {
       text = msg.text.body;
@@ -396,6 +409,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {

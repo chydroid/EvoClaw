@@ -234,6 +234,23 @@ export class PlaywrightBrowser {
     const page = this.activePage;
     if (!page) throw new Error("No active page");
 
+    // 安全：阻止任意 JS 执行中可能逃逸浏览器沙箱的危险全局对象/构造器。
+    // 虽然页面上下文本身无 Node.js 的 require/process，但保留校验作为纵深防御，
+    // 防止通过注入片段访问页面中可能被 polyfill 的这些标识符。
+    const FORBIDDEN_JS_PATTERNS = [/\brequire\s*\(/, /\bprocess\b/, /\beval\s*\(/, /\bFunction\s*\(/];
+    for (const pattern of FORBIDDEN_JS_PATTERNS) {
+      if (pattern.test(expression)) {
+        process.stderr.write(
+          `[PlaywrightBrowser] evaluateJS rejected expression containing forbidden token: ${pattern.source}\n`
+        );
+        throw new Error(`evaluateJS blocked: expression contains forbidden token (${pattern.source})`);
+      }
+    }
+
+    process.stderr.write(
+      `[PlaywrightBrowser] evaluateJS executing user-provided expression (len=${expression.length})\n`
+    );
+
     const result = await page.evaluate(expression);
     return result as T;
   }

@@ -130,6 +130,10 @@ export class EmailClient {
     if (ENCRYPTION_KEY.length < 32) {
       throw new Error("Cannot add email account: EvoClaw_EMAIL_KEY environment variable must be set (32+ bytes) for credential encryption");
     }
+    // 校验 displayName，防止 SMTP 头注入（引号 / 换行可破坏 RFC 5322 编码）
+    if (displayName && /["\r\n]/.test(displayName)) {
+      throw new Error("Invalid displayName: must not contain double quotes or newline characters");
+    }
     const id = `acct-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv("aes-256-cbc", ENCRYPTION_KEY, iv);
@@ -237,7 +241,7 @@ export class EmailClient {
     }));
 
     const info = await transporter.sendMail({
-      from: `"${account.displayName}" <${account.email}>`,
+      from: { name: account.displayName, address: account.email },
       to: Array.isArray(options.to) ? options.to.join(", ") : options.to,
       cc: options.cc ? (Array.isArray(options.cc) ? options.cc.join(", ") : options.cc) : undefined,
       bcc: options.bcc ? (Array.isArray(options.bcc) ? options.bcc.join(", ") : options.bcc) : undefined,

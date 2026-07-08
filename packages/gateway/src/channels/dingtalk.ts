@@ -46,8 +46,11 @@ export class DingtalkAdapter implements ChannelAdapter {
   private baseURL: string;
   private accessToken: string | null = null;
   private tokenExpiry = 0;
+  private tokenRefreshPromise: Promise<void> | null = null;
   private messageHandler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
+  private processedEvents = new Set<string>();
+  private static MAX_PROCESSED_EVENTS = 1000;
 
   constructor(channelConfig: ChannelConfig) {
     this.channelConfig = channelConfig;
@@ -129,9 +132,18 @@ export class DingtalkAdapter implements ChannelAdapter {
     body: Record<string, unknown>,
     headers?: Record<string, string>,
   ): Promise<{ challenge?: string }> {
-    // URL verification challenge
+    // URL 验证 challenge — 钉钉首次配置 webhook 时不带签名，需直接返回 challenge
     if (body.type === "url_verification" && body.challenge) {
       return { challenge: body.challenge as string };
+    }
+
+    // 签名验证 (fail-closed)：在解密之前执行，防止伪造请求绕过验证。
+    // verifySignature 内部未配置 aesKey/verificationToken 时返回 false（拒绝）。
+    const timestamp = headers?.["timestamp"] ?? "";
+    const sign = headers?.["sign"] ?? "";
+    if (!this.verifySignature(timestamp, sign)) {
+      console.error("[DingTalk] Invalid signature or missing credentials");
+      return {};
     }
 
     // Handle encrypted event
@@ -142,16 +154,6 @@ export class DingtalkAdapter implements ChannelAdapter {
         eventData = JSON.parse(decrypted);
       } catch (err) {
         console.error(`[DingTalk] Failed to decrypt event: ${err}`);
-        return {};
-      }
-    }
-
-    // Validate signature if verificationToken is provided
-    if (this.config.verificationToken && headers) {
-      const timestamp = headers["timestamp"] ?? "";
-      const sign = headers["sign"] ?? "";
-      if (!this.verifySignature(timestamp, sign)) {
-        console.error("[DingTalk] Invalid signature");
         return {};
       }
     }
@@ -191,7 +193,17 @@ export class DingtalkAdapter implements ChannelAdapter {
 
   private async ensureToken(): Promise<void> {
     if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-      await this.refreshToken();
+      // 并发保护：共享同一个刷新 Promise，避免并发调用重复刷新 / 触发限流
+      if (this.tokenRefreshPromise) {
+        await this.tokenRefreshPromise;
+        return;
+      }
+      this.tokenRefreshPromise = this.refreshToken();
+      try {
+        await this.tokenRefreshPromise;
+      } finally {
+        this.tokenRefreshPromise = null;
+      }
     }
   }
 
@@ -353,6 +365,17 @@ export class DingtalkAdapter implements ChannelAdapter {
 
     const msgBody = event.message;
     if (!msgBody) return;
+
+    // 消息去重，防止 webhook 重复投递导致重复处理
+    const eventId = msgBody.messageId;
+    if (eventId) {
+      if (this.processedEvents.has(eventId)) return;
+      this.processedEvents.add(eventId);
+      if (this.processedEvents.size > DingtalkAdapter.MAX_PROCESSED_EVENTS) {
+        const first = this.processedEvents.values().next().value;
+        if (first !== undefined) this.processedEvents.delete(first);
+      }
+    }
 
     const content = this.parseContent(msgBody.messageType ?? msgBody.msgtype ?? "text", msgBody.content ?? msgBody.text ?? "");
 

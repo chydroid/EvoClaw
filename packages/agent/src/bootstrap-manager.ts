@@ -221,13 +221,17 @@ export class BootstrapManager {
 
   /** Write a bootstrap file */
   writeBootstrapFile(filename: string, content: string): void {
-    const filePath = path.join(this.workspacePath, filename);
+    // 防止路径穿越：仅取 basename
+    const safeName = path.basename(filename);
+    const filePath = path.join(this.workspacePath, safeName);
     this.writeFile(filePath, content);
   }
 
   /** Delete a bootstrap file */
   deleteBootstrapFile(filename: string): void {
-    const filePath = path.join(this.workspacePath, filename);
+    // 防止路径穿越：仅取 basename
+    const safeName = path.basename(filename);
+    const filePath = path.join(this.workspacePath, safeName);
     if (fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);

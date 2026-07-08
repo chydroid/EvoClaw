@@ -339,7 +339,7 @@ export class DiscordAdapter implements ChannelAdapter {
   private handleGatewayPayload(payload: DiscordGatewayMessage): void {
     const { op, d, t, s } = payload;
 
-    if (s) this.sequence = s;
+    if (s !== undefined && s !== null) this.sequence = s;
 
     switch (op) {
       case 10: { // Hello

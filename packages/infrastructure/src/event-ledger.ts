@@ -92,6 +92,10 @@ export class EventLedger {
       opts?.storePath ||
       path.resolve(process.cwd(), "data", "event-ledger.jsonl");
     this.load();
+    // 安全：scheduleSave 使用 1s 延迟 + unref()，进程退出时若窗口内还有
+    // 未落盘事件会丢失。注册 beforeExit 钩子确保进程退出前 flush 所有待写事件。
+    // flush() 全程同步 IO（writeFileSync/fsyncSync/renameSync），可在退出钩子中安全执行。
+    process.on("beforeExit", () => this.flush());
   }
 
   // ── Write ──

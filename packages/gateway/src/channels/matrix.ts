@@ -364,6 +364,7 @@ export class MatrixAdapter implements ChannelAdapter {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.accessToken}`,
       },
+      signal: AbortSignal.timeout(15000),
     };
 
     if (body && method !== "GET") {
