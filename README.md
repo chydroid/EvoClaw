@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/version-0.73.0-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.74.0-orange?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/tests-5446-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
@@ -77,7 +77,7 @@ pnpm test         # Run tests
 | Category | Capabilities |
 |----------|-------------|
 | Conversation | Multi-model, multi-provider, streaming, context compression, MoA (Mixture of Agents) |
-| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation |
+| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation, 31 built-in + optional skills (dev tools, productivity, writing, analysis) |
 | Tools | File ops, browser automation, web search, Office docs, Computer Use desktop control, Tool Search |
 | Channels | WeChat, Feishu, DingTalk, Telegram, WhatsApp, Discord, Slack, Matrix, QQ, REST API, WebSocket, A2A, ACP IDE |
 | Memory | Short/long-term, RAG retrieval, semantic search, L0-L3 layered memory, Memory Provider plugins |

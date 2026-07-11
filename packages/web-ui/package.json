@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/web-ui",
-  "version": "0.73.0",
+  "version": "0.74.0",
   "private": true,
   "description": "EvoClaw Web UI - 聊天窗口与控制面板",
   "scripts": {

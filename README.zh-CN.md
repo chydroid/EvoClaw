@@ -75,7 +75,7 @@ pnpm test         # 运行测试
 | 类别 | 能力 |
 |------|------|
 | 智能对话 | 多模型、多提供商、流式响应、上下文压缩、MoA 多模型混合推理 |
-| 技能系统 | 本地 + 远程注册表、自动安装、安全扫描、Skill Curator 生命周期管理、optional-skills 分离 |
+| 技能系统 | 本地 + 远程注册表、自动安装、安全扫描、Skill Curator 生命周期管理、optional-skills 分离、31 个内置 + 可选技能（开发工具、生产力、写作、分析） |
 | 工具生态 | 文件操作、浏览器自动化、网络搜索、Office 文档生成、Computer Use 桌面控制、Tool Search 工具搜索 |
 | 多渠道 | 微信、飞书、钉钉、Telegram、WhatsApp、Discord、Slack、Matrix、QQ、REST API、WebSocket、A2A、ACP IDE |
 | 记忆系统 | 长短期记忆、RAG 检索、语义搜索、L0-L3 分层记忆、Memory Provider 插件系统 |
