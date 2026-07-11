@@ -77,7 +77,7 @@ pnpm test         # Run tests
 | Category | Capabilities |
 |----------|-------------|
 | Conversation | Multi-model, multi-provider, streaming, context compression, MoA (Mixture of Agents) |
-| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation, 31 built-in + optional skills (dev tools, productivity, writing, analysis) |
+| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation, 37 built-in + optional skills (dev tools, productivity, writing, analysis, design, generation), TF-IDF semantic matching with Chinese-English bilingual keywords |
 | Tools | File ops, browser automation, web search, Office docs, Computer Use desktop control, Tool Search |
 | Channels | WeChat, Feishu, DingTalk, Telegram, WhatsApp, Discord, Slack, Matrix, QQ, REST API, WebSocket, A2A, ACP IDE |
 | Memory | Short/long-term, RAG retrieval, semantic search, L0-L3 layered memory, Memory Provider plugins |

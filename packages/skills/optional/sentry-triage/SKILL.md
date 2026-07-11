@@ -1,8 +1,27 @@
 ---
 name: sentry-triage
-description: Diagnose Sentry issues without copy-pasting stack traces. Uses the Composio CLI to pull issue details, events, breadcrumbs, and suspect commits, then maps the frames to local source so the agent can propose a fix directly.
+version: 1.0.0
+description: "Sentry 错误分诊 — 获取错误事件、分析堆栈、定位根因、起草修复方案。"
+author: evoclaw-port
+category: analysis
+keywords:
+  - Sentry
+  - error
+  - triage
+  - bug
+  - exception
+  - 错误追踪
+  - 异常
+  - 堆栈
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "Sentry|error triage|异常追踪|错误分析"
+    description: 当用户分诊 Sentry 错误时触发
 metadata:
-  short-description: Sentry error diagnosis via the Composio CLI
+  openclaw:
+    emoji: "🐛"
 ---
 
 # Sentry Triage

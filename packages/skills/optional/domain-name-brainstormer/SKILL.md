@@ -1,6 +1,26 @@
 ---
 name: domain-name-brainstormer
-description: Generates creative domain name ideas for your project and checks availability across multiple TLDs (.com, .io, .dev, .ai, etc.). Saves hours of brainstorming and manual checking.
+version: 1.0.0
+description: "域名头脑风暴 — 为项目生成创意域名，检查多 TLD 可用性（.com/.io/.dev/.ai 等）。"
+author: evoclaw-port
+category: generation
+keywords:
+  - domain
+  - name
+  - brainstorm
+  - TLD
+  - 域名
+  - 起名
+  - 品牌
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "域名|domain name|brainstorm|域名推荐"
+    description: 当用户为项目头脑风暴域名时触发
+metadata:
+  openclaw:
+    emoji: "🌐"
 ---
 
 # Domain Name Brainstormer

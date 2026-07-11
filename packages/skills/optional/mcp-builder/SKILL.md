@@ -1,7 +1,26 @@
 ---
 name: mcp-builder
-description: Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. Use when building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).
-license: Complete terms in LICENSE.txt
+version: 1.0.0
+description: "MCP 服务器构建器 — 从零创建符合 Model Context Protocol 标准的服务器，含脚手架、测试、文档全流程。"
+author: evoclaw-port
+category: generation
+keywords:
+  - MCP
+  - server
+  - builder
+  - protocol
+  - MCP服务器
+  - 协议
+  - 模型上下文协议
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "MCP服务器|create mcp|mcp server|build mcp"
+    description: 当用户构建 MCP 服务器时触发
+metadata:
+  openclaw:
+    emoji: "🔌"
 ---
 
 # MCP Server Development Guide
@@ -57,7 +76,7 @@ Before diving into implementation, understand how to design tools for AI agents 
 
 **Fetch the latest MCP protocol documentation:**
 
-Use WebFetch to load: `https://modelcontextprotocol.io/llms-full.txt`
+Use 网页抓取工具 to load: `https://modelcontextprotocol.io/llms-full.txt`
 
 This comprehensive document contains the complete MCP specification and guidelines.
 
@@ -68,11 +87,11 @@ This comprehensive document contains the complete MCP specification and guidelin
 - **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines for all MCP servers
 
 **For Python implementations, also load:**
-- **Python SDK Documentation**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
+- **Python SDK Documentation**: Use 网页抓取工具 to load `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
 - [🐍 Python Implementation Guide](./reference/python_mcp_server.md) - Python-specific best practices and examples
 
 **For Node/TypeScript implementations, also load:**
-- **TypeScript SDK Documentation**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
+- **TypeScript SDK Documentation**: Use 网页抓取工具 to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
 - [⚡ TypeScript Implementation Guide](./reference/node_mcp_server.md) - Node/TypeScript-specific best practices and examples
 
 #### 1.5 Exhaustively Study API Documentation
@@ -85,7 +104,7 @@ To integrate a service, read through **ALL** available API documentation:
 - Available endpoints and their parameters
 - Data models and schemas
 
-**To gather comprehensive information, use web search and the WebFetch tool as needed.**
+**To gather comprehensive information, use web search and the 网页抓取工具 as needed.**
 
 #### 1.6 Create a Comprehensive Implementation Plan
 

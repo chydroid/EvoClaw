@@ -3,7 +3,7 @@ name: codebase-migrate
 version: 1.0.0
 description: Run large codebase migrations and multi-file refactors. Uses the Composio CLI to coordinate issue tracking, batched PRs, and CI verification while the agent executes the transforms locally across hundreds of files.
 author: ComposioHQ
-category: refactoring
+category: automation
 keywords:
   - migration
   - refactor
@@ -11,6 +11,10 @@ keywords:
   - codebase
   - batch
   - pr
+  - 迁移
+  - 重构
+  - 代码库
+  - 批量重构
 triggers:
   - type: intent
     pattern: "migrate|refactor|codemod|迁移|重构|rename across"

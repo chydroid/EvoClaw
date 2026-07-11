@@ -1,6 +1,26 @@
 ---
 name: tailored-resume-generator
-description: Analyzes job descriptions and generates tailored resumes that highlight relevant experience, skills, and achievements to maximize interview chances
+version: 1.0.0
+description: "定制简历生成器 — 根据职位描述定制简历，突出匹配技能、优化关键词、生成 ATS 友好格式。"
+author: evoclaw-port
+category: generation
+keywords:
+  - resume
+  - CV
+  - job
+  - tailor
+  - 简历
+  - 求职
+  - 定制
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "简历|resume|CV|求职信"
+    description: 当用户定制简历或求职材料时触发
+metadata:
+  openclaw:
+    emoji: "📋"
 ---
 
 # Tailored Resume Generator

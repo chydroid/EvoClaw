@@ -1,5 +1,6 @@
 ---
 name: brooks-sweep
+version: 1.4.0
 description: >
   Full-sweep mode: runs a unified analysis across all quality dimensions — code decay,
   architecture, tech debt, and test quality — then applies fixes directly to the
@@ -12,6 +13,28 @@ description: >
   findings without code changes; single-dimension reviews (use the focused skill
   instead: brooks-review / brooks-audit / brooks-debt / brooks-test); server health
   checks, HTTP /health endpoints, Kubernetes probes, database health, or application uptime.
+author: hyhmrright
+category: automation
+keywords:
+  - sweep
+  - auto-fix
+  - full-analysis
+  - codebase-cleanup
+  - 全量扫描
+  - 自动修复
+  - 代码清理
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "全量扫描|sweep codebase|auto fix|自动修复|代码清理"
+    description: 全量扫描并修复时触发
+  - type: intent
+    pattern: "fix everything|clean up project|一键修复"
+    description: 一键修复全部问题时触发
+metadata:
+  openclaw:
+    emoji: "🧹"
 ---
 # Brooks-Lint — Full Sweep & Auto-Fix
 ## Setup

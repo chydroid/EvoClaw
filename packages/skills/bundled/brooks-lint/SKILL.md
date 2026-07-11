@@ -1,9 +1,9 @@
 ---
 name: brooks-lint
 version: 1.4.0
-description: "AI code reviews grounded in twelve classic engineering books — decay risk diagnostics with book citations, severity labels, and six analysis modes (PR review, architecture audit, tech debt, test quality, health dashboard, full-sweep auto-fix). Triggers when: user asks to review code, audit architecture, assess tech debt, review test quality, run a health dashboard, or sweep/auto-fix the codebase. Also triggers on mentions of: code smells, refactoring, clean architecture, DDD, SOLID, Brooks's Law, Mythical Man-Month, decay risks. Do NOT trigger for: writing code from scratch, syntax/framework questions, or server/infra health checks."
+description: "代码质量评审工具 — 基于十二本经典工程著作，提供代码腐烂诊断、架构审计、技术债务评估、测试质量审查、健康度评分和全量扫描自动修复六种模式。当用户需要代码评审、架构审计、健康检查或代码清理时触发。AI code reviews grounded in twelve classic engineering books — decay risk diagnostics with book citations, severity labels, and six analysis modes."
 author: hyhmrright
-category: code-review
+category: analysis
 keywords:
   - brooks-lint
   - code-review
@@ -15,11 +15,26 @@ keywords:
   - code-smell
   - decay-risk
   - mythical-man-month
+  - 代码评审
+  - 代码质量
+  - 架构审计
+  - 技术债务
+  - 测试质量
+  - 代码坏味道
+  - 代码腐烂
+  - 全量扫描
+  - 自动修复
+  - 健康评分
+  - 健康度
+  - 健康检查
+  - 模块依赖
+  - 代码库健康
+  - 审计
 license: MIT
 homepage: https://github.com/hyhmrright/brooks-lint
 triggers:
   - type: keyword
-    pattern: "brooks|code review|code smell|tech debt|architecture audit|test quality|health dashboard|decay risk"
+    pattern: "brooks|code review|code smell|tech debt|architecture audit|test quality|health dashboard|decay risk|代码评审|架构审计|技术债务|测试质量|代码坏味道|全量扫描|自动修复|健康评分|健康度|模块依赖|审计"
     description: 当用户进行代码审查、架构审计、技术债务评估或测试质量审查时触发
   - type: intent
     pattern: "review this PR|audit architecture|assess debt|review tests|sweep codebase|fix findings"

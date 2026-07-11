@@ -25,6 +25,8 @@ export class TfidfMatcher {
     "自己", "这", "他", "她", "它", "们", "那", "些", "什么", "怎么", "如何",
     "可以", "能", "请", "帮", "让", "把", "被", "从", "对", "为", "以", "及",
     "但", "而", "与", "或", "如果", "因为", "所以", "虽然", "但是",
+    // Common Chinese request phrases (bigram artifacts that add noise to short queries)
+    "帮我", "请帮", "麻烦", "一下", "能否", "可否", "我要", "我想", "需要",
     // English stopwords
     "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
     "her", "was", "one", "our", "out", "has", "have", "from", "this",
@@ -174,8 +176,11 @@ export class TfidfMatcher {
       .filter(s => s.length >= 2);
     terms.push(...segments);
 
-    // Filter stopwords
-    return terms.filter(t => !TfidfMatcher.STOP_WORDS.has(t) && t.length >= 2);
+    // Filter stopwords and pure-digit tokens (e.g., "123", "456" from code examples
+    // create false matches across skills; digits carry no semantic skill-matching value)
+    return terms.filter(
+      t => !TfidfMatcher.STOP_WORDS.has(t) && t.length >= 2 && !/^\d+$/.test(t)
+    );
   }
 
   /**

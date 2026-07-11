@@ -3,7 +3,7 @@ name: pr-review-ci-fix
 version: 1.0.0
 description: Automated PR review and CI auto-fix for GitHub and GitLab using the Composio CLI. Pulls diffs, fetches failing job logs, posts review comments, and loops fix commits until checks go green.
 author: ComposioHQ
-category: code-review
+category: analysis
 keywords:
   - pr-review
   - ci

@@ -1,8 +1,27 @@
 ---
 name: deploy-pipeline
-description: Run end-to-end deploy pipelines across Stripe, Supabase, and Vercel using the Composio CLI. Promote Stripe products, push Supabase migrations, ship Vercel deployments, and verify with post-deploy checks — all from one script.
+version: 1.0.0
+description: "部署流水线配置 — 配置 Stripe/Supabase/Vercel 部署流水线，含环境变量、域名、监控设置。"
+author: evoclaw-port
+category: automation
+keywords:
+  - deploy
+  - pipeline
+  - CI/CD
+  - Vercel
+  - Supabase
+  - 部署
+  - 流水线
+  - 发布
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "部署|deploy|pipeline|发布流水线"
+    description: 当用户配置部署流水线时触发
 metadata:
-  short-description: Stripe/Supabase/Vercel deploy pipelines
+  openclaw:
+    emoji: "🚀"
 ---
 
 # Deploy Pipeline (Stripe / Supabase / Vercel)

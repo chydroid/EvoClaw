@@ -1,6 +1,26 @@
 ---
 name: meeting-insights-analyzer
-description: Analyzes meeting transcripts and recordings to uncover behavioral patterns, communication insights, and actionable feedback. Identifies when you avoid conflict, use filler words, dominate conversations, or miss opportunities to listen. Perfect for professionals seeking to improve their communication and leadership skills.
+version: 1.0.0
+description: "会议洞察分析 — 分析会议转录文本，提取关键洞察、参与者贡献、情感倾向、决策质量。"
+author: evoclaw-port
+category: analysis
+keywords:
+  - meeting
+  - transcript
+  - insights
+  - analysis
+  - 会议
+  - 分析
+  - 转录
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "会议分析|meeting insights|转录分析|meeting transcript"
+    description: 当用户分析会议洞察时触发
+metadata:
+  openclaw:
+    emoji: "📊"
 ---
 
 # Meeting Insights Analyzer
@@ -44,7 +64,7 @@ This skill transforms your meeting transcripts into actionable insights about yo
 ### Basic Setup
 
 1. Download your meeting transcripts to a folder (e.g., `~/meetings/`)
-2. Navigate to that folder in Codex
+2. 在终端中导航到该文件夹
 3. Ask for the analysis you want
 
 ### Quick Start Examples
@@ -279,7 +299,7 @@ today."
 **From Granola** (free with Lenny's newsletter subscription):
 - Granola auto-transcribes your meetings
 - Export transcripts to a folder: [Instructions on how]
-- Point Codex to that folder
+- 将工作目录指向该文件夹
 
 **From Zoom**:
 - Enable cloud recording with transcription
@@ -289,7 +309,7 @@ today."
 **From Google Meet**:
 - Use Google Docs auto-transcription
 - Save transcript docs to a folder
-- Download as .txt files or give Codex access
+- Download as .txt files or 授权访问
 
 **From Fireflies.ai, Otter.ai, etc.**:
 - Export transcripts in bulk

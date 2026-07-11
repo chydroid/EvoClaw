@@ -174,7 +174,7 @@ export class AutoSkillManager {
 
     // ── 1. TF-IDF semantic matching on local skills ──
     if (this.corpusBuilt && this.tfidfMatcher) {
-      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.05, maxResults);
+      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.03, maxResults);
       for (const r of tfidfResults) {
         // 从 skillSourceMap 恢复真实路径与来源（local / optional）
         const sourceInfo = this.skillSourceMap.get(r.target);

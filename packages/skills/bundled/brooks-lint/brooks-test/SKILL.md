@@ -1,5 +1,6 @@
 ---
 name: brooks-test
+version: 1.4.0
 description: >
   Test quality review drawing on twelve classic engineering books — with primary focus
   on xUnit Test Patterns, The Art of Unit Testing, How Google Tests Software, and
@@ -12,6 +13,29 @@ description: >
   Do NOT trigger for: writing new tests from scratch (use the regular test-writing
   workflow) or testing framework/syntax questions — this skill reviews an existing
   suite for structural quality problems, not individual test authoring.
+author: hyhmrright
+category: analysis
+keywords:
+  - test-quality
+  - test-review
+  - brittleness
+  - mock-abuse
+  - 测试质量
+  - 测试评审
+  - 脆弱测试
+  - mock滥用
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "测试质量|test quality|测试评审|test review|脆弱测试"
+    description: 评审测试质量时触发
+  - type: intent
+    pattern: "tests keep breaking|too many mocks|测试太慢"
+    description: 测试结构问题时触发
+metadata:
+  openclaw:
+    emoji: "🧪"
 ---
 # Brooks-Lint — Test Quality Review
 ## Setup

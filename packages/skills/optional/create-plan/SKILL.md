@@ -3,13 +3,17 @@ name: create-plan
 version: 1.0.0
 description: Create a concise plan. Use when a user explicitly asks for a plan related to a coding task.
 author: ComposioHQ
-category: planning
+category: automation
 keywords:
   - plan
   - planning
   - checklist
   - coding-task
   - roadmap
+  - 计划
+  - 执行计划
+  - 路线图
+  - 任务清单
 triggers:
   - type: intent
     pattern: "create a plan|draft a plan|make a plan|计划|规划"

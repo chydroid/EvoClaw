@@ -1,8 +1,26 @@
 ---
 name: email-draft-polish
-description: Draft, rewrite, or condense emails with target tone, length, and audience; use for cold outreach, replies, status updates, or escalations where clarity and brevity matter.
+version: 1.0.0
+description: "邮件起草与润色 — 根据要点生成专业邮件，调整语气、修正语法、优化表达。"
+author: evoclaw-port
+category: generation
+keywords:
+  - email
+  - draft
+  - polish
+  - write
+  - 邮件
+  - 撰写
+  - 润色
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "写邮件|email draft|polish email|邮件润色"
+    description: 当用户起草或润色邮件时触发
 metadata:
-  short-description: Draft or polish emails to fit tone/length
+  openclaw:
+    emoji: "✉️"
 ---
 
 # Email Draft & Polish

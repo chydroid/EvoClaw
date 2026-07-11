@@ -1,5 +1,6 @@
 ---
 name: brooks-health
+version: 1.4.0
 description: >
   Combined codebase health dashboard that scores a project across all four quality
   dimensions — PR quality, architecture, tech debt, and test quality — in a single
@@ -12,6 +13,28 @@ description: >
   trigger when the user specifically requests only one dimension — use the
   corresponding focused skill instead (brooks-review / brooks-audit /
   brooks-debt / brooks-test).
+author: hyhmrright
+category: analysis
+keywords:
+  - health
+  - dashboard
+  - quality-score
+  - codebase-health
+  - 健康检查
+  - 质量评分
+  - 代码健康
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "代码健康|codebase health|health dashboard|质量评分|quality score"
+    description: 代码库健康评估时触发
+  - type: intent
+    pattern: "run all checks|全面检查|release readiness"
+    description: 发布前全面检查时触发
+metadata:
+  openclaw:
+    emoji: "🏥"
 ---
 # Brooks-Lint — Health Dashboard
 ## Setup

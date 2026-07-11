@@ -1,6 +1,27 @@
 ---
 name: content-research-writer
-description: Assists in writing high-quality content by conducting research, adding citations, improving hooks, iterating on outlines, and providing real-time feedback on each section. Transforms your writing process from solo effort to collaborative partnership.
+version: 1.0.0
+description: "内容研究写作 — 研究主题、收集资料、撰写结构化文章，支持技术博客、白皮书、案例研究。"
+author: evoclaw-port
+category: generation
+keywords:
+  - content
+  - research
+  - write
+  - blog
+  - article
+  - 内容写作
+  - 研究
+  - 博客
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "写文章|content writing|blog post|research article"
+    description: 当用户撰写文章、博客或研究内容时触发
+metadata:
+  openclaw:
+    emoji: "✍️"
 ---
 
 # Content Research Writer
@@ -43,7 +64,7 @@ Create your draft file:
 touch article-draft.md
 ```
 
-Open Claude Code from this directory and start writing.
+在终端中从该目录启动 EvoClaw 并开始写作。
 
 ### Basic Workflow
 
@@ -481,7 +502,7 @@ Ready for the next section!
 
 ## Pro Tips
 
-1. **Work in VS Code**: Better than web Claude for long-form writing
+1. **Work in VS Code**: 优于网页版 AI 助手 for long-form writing
 2. **One section at a time**: Get feedback incrementally
 3. **Save research separately**: Keep a research.md file
 4. **Version your drafts**: article-v1.md, article-v2.md, etc.

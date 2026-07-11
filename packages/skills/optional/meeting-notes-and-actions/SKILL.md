@@ -1,8 +1,26 @@
 ---
 name: meeting-notes-and-actions
-description: Turn meeting transcripts or rough notes into crisp summaries with decisions, risks, and owner-tagged action items; use for Zoom/Meet/Teams transcripts, call notes, or long meeting chats to generate share-ready outputs.
+version: 1.0.0
+description: "会议纪要与行动项 — 从会议转录生成结构化纪要、行动项、决策记录、责任分配。"
+author: evoclaw-port
+category: generation
+keywords:
+  - meeting
+  - notes
+  - action
+  - agenda
+  - 会议纪要
+  - 行动项
+  - 议程
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "会议纪要|meeting notes|会议记录|action items"
+    description: 当用户生成会议纪要与行动项时触发
 metadata:
-  short-description: Meeting transcript to notes and actions
+  openclaw:
+    emoji: "📝"
 ---
 
 # Meeting Notes & Actions

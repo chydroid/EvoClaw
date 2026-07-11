@@ -1,5 +1,6 @@
 ---
 name: brooks-debt
+version: 1.4.0
 description: >
   Tech debt assessment that identifies, classifies, and prioritizes maintainability
   problems — helping teams build a refactoring roadmap — drawing on twelve classic
@@ -10,6 +11,27 @@ description: >
   Do NOT trigger for: server health checks, HTTP /health endpoints, Kubernetes probes,
   database health, or application uptime — "health" in those contexts is infrastructure,
   not code quality. Also not for single-function refactoring questions.
+author: hyhmrright
+category: analysis
+keywords:
+  - tech-debt
+  - refactoring
+  - maintainability
+  - 技术债务
+  - 重构优先级
+  - 可维护性
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "技术债务|tech debt|重构优先级|refactor priority|可维护性"
+    description: 评估技术债务时触发
+  - type: intent
+    pattern: "what to fix first|清理代码|refactoring roadmap"
+    description: 制定重构路线图时触发
+metadata:
+  openclaw:
+    emoji: "💳"
 ---
 # Brooks-Lint — Tech Debt Assessment
 ## Setup

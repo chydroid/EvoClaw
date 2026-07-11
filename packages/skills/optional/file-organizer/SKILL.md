@@ -1,6 +1,26 @@
 ---
 name: file-organizer
-description: Intelligently organizes your files and folders across your computer by understanding context, finding duplicates, suggesting better structures, and automating cleanup tasks. Reduces cognitive load and keeps your digital workspace tidy without manual effort.
+version: 1.0.0
+description: "文件整理器 — 按类型、日期、项目自动归类文件，清理冗余，生成整理报告。"
+author: evoclaw-port
+category: utility
+keywords:
+  - file
+  - organize
+  - cleanup
+  - sort
+  - 文件整理
+  - 归类
+  - 清理
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "整理文件|organize files|清理文件|file cleanup"
+    description: 当用户整理文件时触发
+metadata:
+  openclaw:
+    emoji: "📁"
 ---
 
 # File Organizer
@@ -34,7 +54,7 @@ This skill acts as your personal organization assistant, helping you maintain a 
 cd ~
 ```
 
-Then run Claude Code and ask for help:
+Then 启动 EvoClaw and ask for help:
 
 ```
 Help me organize my Downloads folder

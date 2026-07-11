@@ -1,8 +1,26 @@
 ---
 name: spreadsheet-formula-helper
-description: Write and debug spreadsheet formulas (Excel/Google Sheets), pivot tables, and array formulas; translate between dialects; use when users need working formulas with examples and edge-case checks.
+version: 1.0.0
+description: "表格公式助手 — 生成和解释 Excel/Google Sheets 公式，支持 VLOOKUP、数据透视、条件格式等。"
+author: evoclaw-port
+category: utility
+keywords:
+  - spreadsheet
+  - formula
+  - Excel
+  - sheet
+  - 表格
+  - 公式
+  - 函数
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "Excel公式|spreadsheet formula|表格公式|formula help"
+    description: 当用户编写或调试表格公式时触发
 metadata:
-  short-description: Build/debug Excel or Sheets formulas
+  openclaw:
+    emoji: "📊"
 ---
 
 # Spreadsheet Formula Helper

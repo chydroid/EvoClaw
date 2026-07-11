@@ -1,5 +1,6 @@
 ---
 name: brooks-audit
+version: 1.4.0
 description: >
   Architecture audit that maps module dependencies, checks layering integrity, and
   flags structural decay across a codebase, drawing on twelve classic engineering books.
@@ -10,6 +11,29 @@ description: >
   or "give me a codebase tour" (use onboarding mode).
   Do NOT trigger for: PR-level code review (use brooks-review) or line-level refactoring
   questions — this skill analyzes structural/module-level concerns, not individual functions.
+author: hyhmrright
+category: analysis
+keywords:
+  - architecture
+  - audit
+  - dependency
+  - layering
+  - 架构审计
+  - 模块依赖
+  - 分层
+  - 循环依赖
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "架构审计|architecture audit|模块依赖|circular import|分层结构"
+    description: 审计架构和模块依赖时触发
+  - type: intent
+    pattern: "代码库导览|codebase tour|clean architecture"
+    description: 了解代码库结构时触发
+metadata:
+  openclaw:
+    emoji: "🏛️"
 ---
 # Brooks-Lint — Architecture Audit
 ## Setup

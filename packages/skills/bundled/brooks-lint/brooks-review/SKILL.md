@@ -1,5 +1,6 @@
 ---
 name: brooks-review
+version: 1.4.0
 description: >
   PR code review that surfaces decay risks, design smells, and maintainability
   issues with concrete Symptom → Source → Consequence → Remedy findings, drawing
@@ -12,6 +13,29 @@ description: >
   conceptual integrity / Brooks's Law / Mythical Man-Month / second system effect.
   Do NOT trigger for: questions about how to write code from scratch, language syntax
   questions, or framework/tool questions where no existing code is shared.
+author: hyhmrright
+category: analysis
+keywords:
+  - code-review
+  - PR
+  - code-smell
+  - SOLID
+  - DDD
+  - 代码评审
+  - 代码坏味道
+  - PR审查
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "代码评审|code review|PR审查|code smell|SOLID|clean architecture"
+    description: PR 代码评审时触发
+  - type: intent
+    pattern: "ready to merge|any issues|代码异味|refactoring"
+    description: 检查代码质量时触发
+metadata:
+  openclaw:
+    emoji: "🔬"
 ---
 # Brooks-Lint — PR Review
 ## Setup

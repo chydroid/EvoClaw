@@ -1,7 +1,7 @@
 ---
 name: calculator
 version: 1.0.0
-description: "数学计算器 — 支持四则运算、幂运算、三角函数、对数、统计等数学计算。无外部依赖。"
+description: "数学计算器 — 数学计算、四则运算、求值、幂运算、三角函数、对数。"
 author: evoclaw-official
 category: utility
 keywords:

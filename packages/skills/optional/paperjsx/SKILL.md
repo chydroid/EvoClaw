@@ -1,6 +1,26 @@
 ---
 name: paperjsx
-description: Generate PPTX presentations, DOCX documents, XLSX spreadsheets, and PDF reports from structured JSON input using PaperJSX.
+version: 1.0.0
+description: "学术论文渲染器 — 使用 PaperJSX 将 Markdown 转换为专业学术 PDF，支持 LaTeX 公式、图表、参考文献。"
+author: evoclaw-port
+category: generation
+keywords:
+  - paper
+  - academic
+  - LaTeX
+  - paperjsx
+  - 论文
+  - 学术
+  - 渲染
+license: MIT
+homepage: https://github.com/chydroid/EvoClaw
+triggers:
+  - type: keyword
+    pattern: "论文|academic paper|paperjsx|学术论文"
+    description: 当用户渲染学术论文时触发
+metadata:
+  openclaw:
+    emoji: "📄"
 ---
 
 # PaperJSX Document Generation
