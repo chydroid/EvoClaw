@@ -217,9 +217,6 @@ importers:
         specifier: ^9.0.0
         version: 9.0.1
     devDependencies:
-      '@evoclaw/gateway':
-        specifier: workspace:*
-        version: link:../gateway
       '@types/node':
         specifier: ^22.19.19
         version: 22.19.19
@@ -6353,7 +6350,7 @@ snapshots:
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
       zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - supports-color
 
@@ -10833,6 +10830,11 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@3.25.76):
     dependencies:
       zod: 3.25.76
+    optional: true
+
+  zod-to-json-schema@3.25.2(zod@4.4.3):
+    dependencies:
+      zod: 4.4.3
 
   zod-validation-error@4.0.2(zod@3.25.76):
     dependencies:
