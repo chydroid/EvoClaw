@@ -143,6 +143,9 @@ export class SlackAdapter implements ChannelAdapter {
       this.socketModeWS = null;
     }
 
+    // 清理已处理事件去重集合，避免重启后误判重复消息
+    this.processedEvents.clear();
+
     this.notifyStatus("disconnected");
     console.log("[Slack] Stopped");
   }
@@ -422,13 +425,17 @@ export class SlackAdapter implements ChannelAdapter {
 
     const isDirect = event.channel.startsWith("D");
 
+    // 解析 Slack 时间戳（秒级浮点数）；ts="0" 会被 parseFloat 解析为 0 导致 epoch (1970-01-01)，需额外检查 > 0
+    const tsNum = parseFloat(event.ts ?? "");
+    const validTs = Number.isFinite(tsNum) && tsNum > 0;
+
     const channelMsg: ChannelMessage = {
       messageId: event.ts ?? String(Date.now()),
       channel: "slack",
       from: event.user,
       to: event.channel,
       text: event.text,
-      timestamp: (Number.isFinite(parseFloat(event.ts ?? "")) ? new Date(parseFloat(event.ts ?? "") * 1000) : new Date()).toISOString(),
+      timestamp: (validTs ? new Date(tsNum * 1000) : new Date()).toISOString(),
       isDirect,
       isGroup: !isDirect,
       groupId: !isDirect ? event.channel : undefined,

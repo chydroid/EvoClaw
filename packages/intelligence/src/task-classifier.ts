@@ -396,6 +396,15 @@ export class TaskClassifier {
       this.documentFrequency.set(term, Math.log(numDocs / (docCount + 1)));
     }
 
+    // 将 TF 转换为 TF-IDF (TF * IDF)，使缓存可直接用于相似度计算，避免 matchIntentByVector 重复计算
+    const fallbackIdf = Math.log(INTENT_VECTORS.length);
+    for (const [, tfidf] of this.tfidfCache) {
+      for (const [term, tfValue] of tfidf) {
+        const idf = this.documentFrequency.get(term) || fallbackIdf;
+        tfidf.set(term, tfValue * idf);
+      }
+    }
+
     this.isInitialized = true;
     process.stdout.write(`[TaskClassifier] TF-IDF 向量库初始化完成: ${INTENT_VECTORS.length} 个意图, ${numDocs} 个示例\n`);
   }
@@ -501,11 +510,12 @@ export class TaskClassifier {
       categoryVectors.set(intent.category, []);
     }
 
-    // 计算每个示例的 TF-IDF 向量
+    // 计算每个示例的 TF-IDF 向量（读取 initializeTfidf 中预计算的缓存，避免重复计算）
     for (const intent of INTENT_VECTORS) {
       for (const example of intent.examples) {
-        const exampleVector = this.computeTfidf(example);
-        categoryVectors.get(intent.category)!.push(exampleVector);
+        const docId = `${intent.category}_${example}`;
+        const exampleVector = this.tfidfCache.get(docId);
+        if (exampleVector) categoryVectors.get(intent.category)!.push(exampleVector);
       }
     }
 
@@ -594,7 +604,9 @@ export class TaskClassifier {
         vectorMatch: vectorPrimary,
       },
       "task-classifier"
-    );
+    ).catch((err) => {
+      process.stderr.write(`[TaskClassifier] Failed to publish task_classified event: ${err}\n`);
+    });
 
     const result: ClassificationResult = {
       categories,
@@ -621,8 +633,8 @@ export class TaskClassifier {
   /**
    * 判断是否需要网络搜索（基于向量匹配）
    */
-  needsWebSearch(task: string): { needed: boolean; confidence: number; reason: string } {
-    const result = this.classify(task);
+  needsWebSearch(task: string, preclassified?: ClassificationResult): { needed: boolean; confidence: number; reason: string } {
+    const result = preclassified ?? this.classify(task);
     
     // 需要排除的意图类别（这些操作不需要网络搜索）
     const excludedCategories: TaskCategory[] = [
@@ -650,8 +662,12 @@ export class TaskClassifier {
 
     if (maxSimilarity > 0.35) {
       // 再次确认不是排除的类别
-      const topCategory = Object.entries(result.intentSimilarity || {})
-        .sort(([, a], [, b]) => (b as number) - (a as number))[0];
+      const entries = Object.entries(result.intentSimilarity || {});
+      if (entries.length === 0) {
+        return { needed: false, confidence: 0, reason: "无意图相似度数据" };
+      }
+      const topCategory = entries
+        .sort(([, a], [, b]) => (typeof b === "number" ? b : 0) - (typeof a === "number" ? a : 0))[0];
       
       if (topCategory && excludedCategories.includes(topCategory[0] as TaskCategory)) {
         return { 
@@ -882,7 +898,7 @@ export class TaskClassifier {
   }
 
   private detectHasCode(text: string): boolean {
-    return /```|\{[\s\S]*\}|function\s+\w+\s*\(|class\s+\w+|import\s+|from\s+['"][\w@]|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|def\s+\w+\s*\(|public\s+(static\s+)?(void|class)/i.test(text);
+    return /```|\{[\s\S]*?(?:function|=>|return|const|let|var|if|for|while)[\s\S]*?\}|function\s+\w+\s*\(|class\s+\w+|import\s+|from\s+['"][\w@]|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|def\s+\w+\s*\(|public\s+(static\s+)?(void|class)/i.test(text);
   }
 
   private detectRequiresAuth(categories: TaskCategory[]): boolean {

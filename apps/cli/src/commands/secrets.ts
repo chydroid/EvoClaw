@@ -2,7 +2,24 @@
 import { Command } from "commander";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import { c } from "../utils/colors";
+
+/** 原子写入文件：写临时文件 + fsync + rename */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
 
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
   const secrets = program
@@ -37,7 +54,12 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         console.log(c("red", `❌ Invalid value: value must not contain newlines`));
         return;
       }
-      fs.appendFileSync(path.join(process.cwd(), ".env"), `\n${key}=${value}\n`);
+      // 安全：读取→追加→原子写入，避免 appendFileSync 非原子导致的部分写入
+      // 与服务器对齐：使用项目根目录的 .env（apps/cli/src/commands → 4 级向上）
+      const envPath = path.join(__dirname, "..", "..", "..", "..", ".env");
+      let existing = "";
+      try { existing = fs.readFileSync(envPath, "utf-8"); } catch { /* file may not exist yet */ }
+      atomicWriteFileSync(envPath, existing + `\n${key}=${value}\n`);
       console.log(c("green", `✅ Set ${key} (value hidden)`));
       console.log(c("gray", "  Written to .env"));
     });

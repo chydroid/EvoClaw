@@ -49,8 +49,10 @@ async function listSessions(opts: Record<string, unknown>): Promise<void> {
 
     if (opts.active) {
       const minutes = parseInt(opts.active as string, 10);
-      const cutoff = Date.now() - minutes * 60 * 1000;
-      sessions = sessions.filter(s => new Date(s.updatedAt).getTime() >= cutoff);
+      if (!isNaN(minutes) && minutes > 0) {
+        const cutoff = Date.now() - minutes * 60 * 1000;
+        sessions = sessions.filter(s => new Date(s.updatedAt).getTime() >= cutoff);
+      }
     }
 
     if (opts.json) { console.log(JSON.stringify(sessions, null, 2)); return; }
@@ -274,7 +276,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       if (!alive) { serverRequired(); return; }
       const agentId = (opts.agent as string) || "default";
       const n = parseInt(String(opts.n || "10"), 10);
-      const intervalSec = parseInt(String(opts.interval || "3"), 10);
+      const intervalSec = parseInt(String(opts.interval || "3"), 10) || 3;
       const once = Boolean(opts.once);
 
       let lastSig: string = "";
@@ -314,8 +316,6 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         console.log(c("gray", "\nStopped."));
         process.exit(0);
       });
-      // 防止 Node 退出
-      setInterval(() => {}, 1 << 30).unref?.();
     });
 
   // ── sessions export-trajectory ──────────────────────────────────

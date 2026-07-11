@@ -218,7 +218,8 @@ export class AgentPoolManager implements AgentPool {
       const toRemove = Math.min(Math.abs(delta), this.agents.size - this.poolConfig.minAgents);
       const idleAgents = Array.from(this.agents.values()).filter((a) => a.state.status === "idle");
       for (let i = 0; i < Math.min(toRemove, idleAgents.length); i++) {
-        this.agents.delete(idleAgents[i].id);
+        // 通过 terminate() 清理资源并发布终止事件，避免直接 delete 导致资源泄漏
+        await this.terminate(idleAgents[i].id);
       }
     }
   }
@@ -251,7 +252,13 @@ export class AgentPoolManager implements AgentPool {
       if (isUnusable || isStaleIdle) {
         if (this.agents.size <= this.poolConfig.minAgents + 2) {
           // Keep orchestrator + observer + min executors; just mark unusable agents.
-          if (isUnusable) continue;
+          if (isUnusable) {
+            // 不可用 agent（error/terminated）即使接近最小值也必须移除，
+            // 否则会占用名额但无法执行任务；后续 scale 逻辑会补充新 agent
+            this.agents.delete(agent.id);
+            removed++;
+            continue;
+          }
           // For stale idle agents within the minimum footprint, refresh heartbeat.
           agent.state.lastHeartbeat = new Date(now);
           continue;

@@ -127,6 +127,11 @@ export function minimatchLike(input: string, pattern: string): boolean {
     }
   }
   regex += "$";
+  // ReDoS 防护：检测转换后的正则是否存在指数级回溯风险
+  if (isUnsafeRegex(regex)) {
+    process.stderr.write(`[ExecApproval] Skipping unsafe glob pattern (ReDoS risk): ${pattern}\n`);
+    return false;
+  }
   return new RegExp(regex, "i").test(input);
 }
 

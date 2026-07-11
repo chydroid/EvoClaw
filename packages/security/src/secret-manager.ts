@@ -313,7 +313,8 @@ export class SecretManager {
    * Auto-generate a new value and rotate the secret.
    */
   rotateAuto(name: string, length = 64): SecretRotationResult {
-    const newValue = randomBytes(length).toString("hex").slice(0, length);
+    // 使用 base64url 编码（每字符 6bit）而非 hex（每字符 4bit），避免截断导致密钥熵减半
+    const newValue = randomBytes(length).toString("base64url").slice(0, length);
     return this.rotate(name, newValue);
   }
 

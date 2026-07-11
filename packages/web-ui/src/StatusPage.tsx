@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
+import { heartbeatApi, type HeartbeatStatus } from "./api-client";
 
 interface SystemStatus {
   online: boolean;
@@ -100,6 +101,8 @@ export function StatusPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [services, setServices] = useState<ServiceInfo[]>([]);
+  const [heartbeat, setHeartbeat] = useState<HeartbeatStatus | null>(null);
+  const [heartbeatBusy, setHeartbeatBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -114,6 +117,9 @@ export function StatusPage() {
       if (statusRes.ok) setStatus(await statusRes.json());
       if (svcRes.ok) setServices(await svcRes.json());
       setError("");
+      // Heartbeat — best-effort, don't fail the whole load
+      const hb = await heartbeatApi.status();
+      if (!signal?.aborted) setHeartbeat(hb);
     } catch (err) {
       if (signal?.aborted) return;
       setError(t("status.connection_error"));
@@ -132,6 +138,34 @@ export function StatusPage() {
       controller.abort();
     };
   }, [loadData]);
+
+  const handleToggleHeartbeat = useCallback(async () => {
+    if (!heartbeat) return;
+    setHeartbeatBusy(true);
+    try {
+      await heartbeatApi.configure({ enabled: !heartbeat.enabled });
+      const hb = await heartbeatApi.status();
+      setHeartbeat(hb);
+    } catch (err) {
+      console.error("[StatusPage] Toggle heartbeat failed:", err);
+    } finally {
+      setHeartbeatBusy(false);
+    }
+  }, [heartbeat]);
+
+  const handleHeartbeatIntervalChange = useCallback(async (intervalMs: number) => {
+    if (intervalMs < 60000) return;
+    setHeartbeatBusy(true);
+    try {
+      await heartbeatApi.configure({ intervalMs });
+      const hb = await heartbeatApi.status();
+      setHeartbeat(hb);
+    } catch (err) {
+      console.error("[StatusPage] Update heartbeat interval failed:", err);
+    } finally {
+      setHeartbeatBusy(false);
+    }
+  }, []);
 
   if (loading) return <div style={s.container}><div style={{ color: "var(--text-muted)" }}>{t("app.loading")}</div></div>;
   if (error && !status) return <div style={s.container}><div style={{ color: "var(--error)" }}>{error}</div></div>;
@@ -209,6 +243,85 @@ export function StatusPage() {
               </div>
             </div>
           ))
+        )}
+      </div>
+
+      {/* Agent Heartbeat Status */}
+      <div style={s.section}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+          <div style={s.sectionTitle}>{t("status.heartbeat_title", "Agent 心跳状态")}</div>
+          {heartbeat && (
+            <button
+              onClick={handleToggleHeartbeat}
+              disabled={heartbeatBusy}
+              style={{
+                padding: "4px 14px", borderRadius: "6px", border: "1px solid",
+                borderColor: heartbeat.enabled ? "var(--error)" : "var(--success)",
+                background: heartbeat.enabled ? "transparent" : "var(--success)",
+                color: heartbeat.enabled ? "var(--error)" : "#fff",
+                cursor: heartbeatBusy ? "not-allowed" : "pointer", fontSize: "12px",
+                opacity: heartbeatBusy ? 0.5 : 1,
+              }}
+            >
+              {heartbeatBusy ? t("status.updating", "更新中...") :
+                heartbeat.enabled ? t("status.disable_heartbeat", "停用心跳") : t("status.enable_heartbeat", "启用心跳")}
+            </button>
+          )}
+        </div>
+        {!heartbeat ? (
+          <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "16px" }}>
+            {t("status.heartbeat_unavailable", "心跳状态不可用")}
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
+            <div style={s.card}>
+              <div style={s.cardTitle}>{t("status.heartbeat_state", "状态")}</div>
+              <div style={{
+                ...s.cardValue, fontSize: "18px",
+                color: heartbeat.active ? "var(--success)" : "var(--text-muted)",
+              }}>
+                {heartbeat.enabled ? (heartbeat.state === "idle" ? t("status.hb_idle", "空闲") : t("status.hb_busy", "忙碌")) : t("status.hb_disabled", "已停用")}
+              </div>
+              <div style={s.cardSub}>
+                {heartbeat.active ? t("status.hb_active", "定时器运行中") : t("status.hb_inactive", "定时器未运行")}
+              </div>
+            </div>
+            <div style={s.card}>
+              <div style={s.cardTitle}>{t("status.heartbeat_interval", "间隔")}</div>
+              <div style={s.cardValue}>{Math.round(heartbeat.intervalMs / 60000)}{t("status.minutes", "分钟")}</div>
+              <select
+                value={heartbeat.intervalMs}
+                onChange={(e) => handleHeartbeatIntervalChange(Number(e.target.value))}
+                disabled={heartbeatBusy || !heartbeat.enabled}
+                style={{
+                  marginTop: "4px", padding: "4px 8px", borderRadius: "6px",
+                  border: "1px solid var(--border-light)", background: "var(--bg-card)",
+                  color: "var(--text-primary)", fontSize: "11px", cursor: "pointer",
+                  opacity: heartbeatBusy || !heartbeat.enabled ? 0.5 : 1,
+                }}
+              >
+                <option value={60000}>1{t("status.minutes", "分钟")}</option>
+                <option value={300000}>5{t("status.minutes", "分钟")}</option>
+                <option value={900000}>15{t("status.minutes", "分钟")}</option>
+                <option value={1800000}>30{t("status.minutes", "分钟")}</option>
+                <option value={3600000}>60{t("status.minutes", "分钟")}</option>
+              </select>
+            </div>
+            <div style={s.card}>
+              <div style={s.cardTitle}>{t("status.last_fire", "上次触发")}</div>
+              <div style={{ ...s.cardValue, fontSize: "14px", fontFamily: "monospace" }}>
+                {heartbeat.lastFireTime ? new Date(heartbeat.lastFireTime).toLocaleTimeString() : t("status.na", "N/A")}
+              </div>
+              <div style={s.cardSub}>
+                {t("status.next_fire", "下次")}: {heartbeat.nextFireTime ? new Date(heartbeat.nextFireTime).toLocaleTimeString() : t("status.na", "N/A")}
+              </div>
+            </div>
+            <div style={s.card}>
+              <div style={s.cardTitle}>{t("status.active_conversations", "活跃会话")}</div>
+              <div style={s.cardValue}>{heartbeat.activeConversations}</div>
+              <div style={s.cardSub}>{t("status.active_conv_desc", "正在处理的对话数")}</div>
+            </div>
+          </div>
         )}
       </div>
 

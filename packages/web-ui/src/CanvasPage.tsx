@@ -830,8 +830,8 @@ export function CanvasPage() {
   }
 
   function handleA2UIAction(action: string, elementId: string, value?: string) {
-    if ((window as any).openclawSendUserAction) {
-      (window as any).openclawSendUserAction({ action, elementId, value });
+    if (window.openclawSendUserAction) {
+      window.openclawSendUserAction({ action, elementId, value });
     }
     setStatusMsg(t("canvas.user_action", "用户操作: {0} on {1}").replace("{0}", action).replace("{1}", elementId));
   }

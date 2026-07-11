@@ -1,5 +1,7 @@
 import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD } from "@evoclaw/core";
+import { applyPragmas, DEFAULT_PRODUCTION_PRAGMAS } from "@evoclaw/infrastructure";
 import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -24,12 +26,24 @@ const SAVE_DEBOUNCE_MS = 2000;
 // 过期记忆永远残留。
 const EXPIRE_SCAN_INTERVAL_MS = 10 * 60 * 1000;
 
+/** 解析日期，无效时回退到 epoch 0，防止 Invalid Date 导致 toISOString() 抛 RangeError */
+function parseDateSafe(value: unknown): Date {
+  const d = new Date(value as string);
+  return Number.isFinite(d.getTime()) ? d : new Date(0);
+}
+
 export class LongTermMemoryStore implements LongTermMemory {
   private entries = new Map<string, MemoryEntry>();
   private saveTimer: NodeJS.Timeout | null = null;
   private expireTimer: NodeJS.Timeout | null = null;
   private dirty = false;
   private sqliteDb: SqliteDatabase | null = null;
+  /**
+   * SQLite 降级标志：saveToSqlite 失败时置为 true。
+   * loadFromDisk 检测到此标志则合并 SQLite + JSON 而非二选一，
+   * 防止部分条目未入库 SQLite 导致重启后永久丢失。
+   */
+  private sqliteDegraded = false;
 
   constructor() {
     this.initSqlite();
@@ -65,6 +79,9 @@ export class LongTermMemoryStore implements LongTermMemory {
         fs.mkdirSync(dir, { recursive: true });
       }
       this.sqliteDb = new BetterSqlite3(SQLITE_FILE) as SqliteDatabase;
+      // 应用生产环境 PRAGMA（WAL/synchronous/busy_timeout 等），在 CREATE TABLE 之前生效。
+      // 旧实现未设 PRAGMA，导致性能差且无 busy_timeout，遇锁立即失败。
+      applyPragmas(this.sqliteDb, DEFAULT_PRODUCTION_PRAGMAS);
       this.sqliteDb.exec(
         "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, type TEXT, content TEXT, importance REAL, tags TEXT, createdAt TEXT, updatedAt TEXT, ttl INTEGER, data TEXT)"
       );
@@ -95,23 +112,28 @@ export class LongTermMemoryStore implements LongTermMemory {
               if (typeof item !== "object" || item === null || !item.id) continue;
               const entry: MemoryEntry = {
                 ...item,
-                createdAt: new Date(item.createdAt),
-                accessedAt: new Date(item.accessedAt),
+                createdAt: parseDateSafe(item.createdAt),
+                accessedAt: parseDateSafe(item.accessedAt),
               };
               this.entries.set(entry.id, entry);
             } catch {
               // skip malformed rows
             }
           }
-          process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from SQLite\n`);
-          return;
+          // sqliteDegraded 为 true 时，SQLite 可能缺失部分条目（saveToSqlite 曾失败），
+          // 不能直接 return：需 fall-through 到 JSON 分支合并条目（以 id 去重，JSON 优先因为可能更新）。
+          if (!this.sqliteDegraded) {
+            process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from SQLite\n`);
+            return;
+          }
+          process.stdout.write(`[LongTermMemory] SQLite degraded, merging with JSON (SQLite: ${this.entries.size} entries)\n`);
         }
       } catch (err) {
         process.stderr.write(`[LongTermMemory] Failed to load from SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
 
-    // Fallback to JSON file
+    // Fallback to JSON file（sqliteDegraded 时为合并路径：JSON 条目以 id 覆盖 SQLite 条目）
     try {
       if (fs.existsSync(MEMORY_FILE)) {
         const raw = fs.readFileSync(MEMORY_FILE, "utf-8");
@@ -120,12 +142,12 @@ export class LongTermMemoryStore implements LongTermMemory {
           for (const item of data) {
             const entry: MemoryEntry = {
               ...item,
-              createdAt: new Date(item.createdAt),
-              accessedAt: new Date(item.accessedAt),
+              createdAt: parseDateSafe(item.createdAt),
+              accessedAt: parseDateSafe(item.accessedAt),
             };
             this.entries.set(entry.id, entry);
           }
-          process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from disk\n`);
+          process.stdout.write(`[LongTermMemory] Loaded ${this.entries.size} entries from disk${this.sqliteDegraded ? " (merged with SQLite)" : ""}\n`);
         }
       }
     } catch (err) {
@@ -157,7 +179,7 @@ export class LongTermMemoryStore implements LongTermMemory {
         accessedAt: e.accessedAt.toISOString(),
       }));
       // 原子写入：temp + fsync + rename，防止崩溃时产生截断的记忆文件
-      const tmpPath = `${MEMORY_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const tmpPath = `${MEMORY_FILE}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
       const fd = fs.openSync(tmpPath, "w");
       try {
         fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
@@ -181,7 +203,7 @@ export class LongTermMemoryStore implements LongTermMemory {
         if (code === "EXDEV" || code === "EBUSY") {
           // 跨设备回退：目标侧 temp + rename
           const content = fs.readFileSync(tmpPath, "utf-8");
-          const dstTmp = `${MEMORY_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+          const dstTmp = `${MEMORY_FILE}.${process.pid}.${randomUUID().slice(0, 8)}.dst.tmp`;
           const fd2 = fs.openSync(dstTmp, "w");
           try {
             fs.writeFileSync(fd2, content, "utf-8");
@@ -237,7 +259,12 @@ export class LongTermMemoryStore implements LongTermMemory {
         entry.ttl,
         data
       );
+      // 成功写入：重置降级标志（SQLite 恢复可用）
+      this.sqliteDegraded = false;
     } catch (err) {
+      // 失败时设置降级标志：loadFromDisk 检测到此标志会合并 SQLite + JSON，
+      // 避免未入库条目在重启后永久丢失。
+      this.sqliteDegraded = true;
       process.stderr.write(`[LongTermMemory] Failed to save to SQLite: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
@@ -267,6 +294,16 @@ export class LongTermMemoryStore implements LongTermMemory {
         );
         const rows = stmt.all(`%${escaped}%`) as Array<{ id: string }>;
         const sqliteMatchIds = new Set(rows.map((r) => r.id));
+
+        // SQLite 可能缺失部分条目（saveToSqlite 曾失败导致未入库），
+        // 仅靠 sqliteMatchIds 会遗漏这些条目的 content 匹配。
+        // 遍历内存 entries，content 匹配查询的条目也加入 sqliteMatchIds。
+        const lowerQuery = query.query.toLowerCase();
+        for (const entry of this.entries.values()) {
+          if (entry.content.toLowerCase().includes(lowerQuery)) {
+            sqliteMatchIds.add(entry.id);
+          }
+        }
 
         for (const entry of this.entries.values()) {
           let score = 0;
@@ -306,6 +343,10 @@ export class LongTermMemoryStore implements LongTermMemory {
         results.sort((a, b) => b.score - a.score);
         return query.limit ? results.slice(0, query.limit) : results;
       } catch (err) {
+        // 清空可能的部分结果：SQLite 分支在 for 循环执行到一半时抛错，
+        // 已添加到 results 的条目会保留，随后内存分支会再次处理相同 entries 并追加，
+        // 导致重复结果。清空后由内存分支重新填充。
+        results.length = 0;
         process.stderr.write(`[LongTermMemory] SQLite search failed, falling back to in-memory: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
@@ -362,8 +403,8 @@ export class LongTermMemoryStore implements LongTermMemory {
           const item = JSON.parse(row.data);
           const sqliteEntry: MemoryEntry = {
             ...item,
-            createdAt: new Date(item.createdAt),
-            accessedAt: new Date(item.accessedAt),
+            createdAt: parseDateSafe(item.createdAt),
+            accessedAt: parseDateSafe(item.accessedAt),
           };
           this.entries.set(sqliteEntry.id, sqliteEntry);
           entry = sqliteEntry;
@@ -448,6 +489,11 @@ export class LongTermMemoryStore implements LongTermMemory {
     if (this.expireTimer) {
       clearInterval(this.expireTimer);
       this.expireTimer = null;
+    }
+    // saveToDisk 失败时 dirty 仍为 true：若继续关闭 SQLite，dirty 数据将永久丢失。
+    // 输出 stderr 警告使丢失不再静默（对齐"审计日志必须防止溢出和静默丢失"）。
+    if (this.dirty) {
+      process.stderr.write('[LongTermMemory] close() called with dirty=true: saveToDisk failed, unsaved data will be lost\n');
     }
     if (this.sqliteDb) {
       try {

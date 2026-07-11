@@ -206,7 +206,8 @@ export function CronPage() {
 
   const runTask = async (taskId: string) => {
     try {
-      await fetch(`/api/scheduler/tasks/${taskId}/run`, { method: "POST" });
+      const res = await fetch(`/api/scheduler/tasks/${taskId}/run`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to trigger task");
       setMessage(t("cron.triggered"));
       scheduleClearMessage();
       loadTasks();

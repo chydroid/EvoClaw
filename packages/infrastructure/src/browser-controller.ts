@@ -134,7 +134,7 @@ export class BrowserController {
         "browser.navigated",
         { url: normalizedUrl, status: response.status, title },
         "browser-controller"
-      );
+      )?.catch((err) => process.stderr.write('[BrowserController] event publish failed: ' + err + '\n'));
 
       return result;
     } catch (err) {
@@ -272,7 +272,7 @@ export class BrowserController {
         "browser.form_submitted",
         { url, method, status: response.status },
         "browser-controller"
-      );
+      )?.catch((err) => process.stderr.write('[BrowserController] event publish failed: ' + err + '\n'));
 
       return result;
     } catch (err) {

@@ -8,8 +8,8 @@
  * 生成路径: data/skills/auto-generated/
  */
 
-import { mkdir, writeFile } from "fs/promises";
-import { join } from "path";
+import { mkdir, open, rename, unlink } from "fs/promises";
+import { join, dirname } from "path";
 import { createHash } from "crypto";
 
 // ── Types ──────────────────────────────────────────────────
@@ -50,7 +50,7 @@ export class SkillAutoGenerator {
     await this.ensureOutputDir();
 
     const skillPath = join(this.outputDir, `${skillName}.md`);
-    await writeFile(skillPath, skillContent, "utf-8");
+    await this.atomicWriteFile(skillPath, skillContent);
 
     return { skillPath, skillName };
   }
@@ -106,6 +106,10 @@ export class SkillAutoGenerator {
       "---",
     ].join("\n");
 
+    // 简单脱敏：替换疑似 API key、token、密码的字符串，避免敏感信息写入 SKILL.md
+    const safeAfterCode = this.redactCode(result.afterCode);
+    const safeBeforeCode = this.redactCode(result.beforeCode);
+
     const body = [
       `# ${skillName}`,
       "",
@@ -118,18 +122,27 @@ export class SkillAutoGenerator {
       "## Solution",
       "",
       "```typescript",
-      result.afterCode,
+      safeAfterCode,
       "```",
       "",
       "## Before (original code)",
       "",
       "```typescript",
-      result.beforeCode,
+      safeBeforeCode,
       "```",
       "",
     ].join("\n");
 
     return frontmatter + "\n" + body;
+  }
+
+  private redactCode(code: string): string {
+    return code
+      .replace(/(sk-|pk-|api[_-]?key|token|secret|password|passwd|access_token|refresh_token|client_secret)\s*[:=]\s*['"`][^'"`]{8,}['"`]/gi, '$1: "REDACTED"')
+      .replace(/(?:Bearer)\s+[A-Za-z0-9_\-\.]{20,}/gi, 'Bearer REDACTED')
+      .replace(/(AKIA[0-9A-Z]{16})/g, 'REDACTED')
+      .replace(/(ghp_[A-Za-z0-9]{36})/g, 'REDACTED')
+      .replace(/(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g, 'REDACTED');
   }
 
   /**
@@ -195,6 +208,43 @@ export class SkillAutoGenerator {
     }
 
     return Array.from(tools).sort();
+  }
+
+  /**
+   * 原子写入：temp + fsync + rename，跨设备（EXDEV/EBUSY）时回退到目标侧写。
+   */
+  private async atomicWriteFile(targetPath: string, content: string): Promise<void> {
+    const dir = dirname(targetPath);
+    await mkdir(dir, { recursive: true });
+    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    const handle = await open(tmpPath, "w");
+    try {
+      await handle.writeFile(content, "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await rename(tmpPath, targetPath);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EXDEV" || code === "EBUSY") {
+        // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
+        const dstTmp = `${targetPath}.${process.pid}.dst.tmp`;
+        const handle2 = await open(dstTmp, "w");
+        try {
+          await handle2.writeFile(content, "utf-8");
+          await handle2.sync();
+        } finally {
+          await handle2.close();
+        }
+        await rename(dstTmp, targetPath);
+        try { await unlink(tmpPath); } catch { /* ignore */ }
+      } else {
+        try { await unlink(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
+    }
   }
 
   /**

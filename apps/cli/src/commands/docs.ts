@@ -25,16 +25,23 @@ function findProjectRoot(): string {
 
 function openBrowser(url: string): void {
   const platform = process.platform;
-  let command: string;
+  let cmd: string;
+  let args: string[];
   if (platform === "win32") {
-    command = `start "" "${url}"`;
+    cmd = "cmd.exe";
+    args = ["/c", "start", "", url];
   } else if (platform === "darwin") {
-    command = `open "${url}"`;
+    cmd = "open";
+    args = [url];
   } else {
-    command = `xdg-open "${url}"`;
+    cmd = "xdg-open";
+    args = [url];
   }
   try {
-    child_process.exec(command);
+    // 安全：使用 spawn(shell:false) 避免 URL 进入 shell 造成命令注入
+    const child = child_process.spawn(cmd, args, { shell: false, detached: true, stdio: "ignore" });
+    child.on("error", () => { /* ignore */ });
+    child.unref();
   } catch { /* ignore */ }
 }
 

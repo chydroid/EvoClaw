@@ -85,7 +85,7 @@ export class AuthProvider {
     // 安全：仅允许 /assets/ 前缀和 /ui 前缀的静态资源免认证。
     // 不再使用宽泛的扩展名正则（含 .json），否则 /api/foo.json 等
     // 动态路由会绕过认证。
-    if (req.path === "/" || req.path.startsWith("/ui") || req.path.startsWith("/assets/") ||
+    if (req.path === "/" || req.path === "/ui" || req.path.startsWith("/ui/") || req.path.startsWith("/assets/") ||
         (req.path.match(/\.(html|js|css|png|ico|svg)$/) && !req.path.startsWith("/api/"))) {
       return next();
     }
@@ -128,7 +128,9 @@ export class AuthProvider {
 
     // Allow the SPA HTML page and static assets to load without auth
     // so the React app can render its own login form
-    if (req.path === "/" || req.path === "/index.html" || req.path.startsWith("/assets/") || /\.(png|ico|svg|js|css|json|txt|map|woff2?)$/.test(req.path)) {
+    if (req.path === "/" || req.path === "/index.html" || req.path === "/manifest.json" ||
+        req.path.startsWith("/assets/") ||
+        /\.(png|ico|svg|js|css|txt|map|woff2?)$/.test(req.path)) {
       return next();
     }
 

@@ -2,7 +2,7 @@ export { MessageQueue } from "./message-queue";
 export { ProcessManager } from "./process-manager";
 export { FileSystemManager, atomicWriteFile, atomicReplace, CrossProcessLock } from "./filesystem-manager";
 export { Logger } from "./logger";
-export type { LogLevel } from "./logger";
+export type { LogLevel, FileLoggingOptions } from "./logger";
 export { RotatingFileAppender, pruneOldRollingLogs } from "./rotating-file-appender";
 export type { RotatingFileAppenderConfig } from "./rotating-file-appender";
 export {
@@ -230,3 +230,19 @@ export type {
   TerminationSource,
   PidScope,
 } from "./process-registry";
+
+// ProcessSupervisor — 轻量级进程监督器，自动重启（指数退避 + 滑动窗口限流）
+// 借鉴 hermes-agent s6-overlay 的进程监督思路，在应用层实现等效的崩溃自动恢复
+export { ProcessSupervisor } from "./process-supervisor";
+export type {
+  SpawnResult,
+  SpawnFn,
+  RestartPolicy,
+  RegisterOptions,
+  SupervisedProcess,
+} from "./process-supervisor";
+
+// ShutdownForensics — 关闭取证快照（SIGTERM/SIGINT 上下文 + 诊断命令）
+// 借鉴 hermes-agent 的 shutdown_forensics.py
+export { ShutdownForensics } from "./shutdown-forensics";
+export type { ShutdownSnapshot } from "./shutdown-forensics";

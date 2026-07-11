@@ -9,6 +9,9 @@ export default defineConfig({
     // Environment
     environment: "node",
 
+    // 全局测试隔离 setup：清理凭证环境变量、固定 TZ/LANG
+    setupFiles: ["./vitest.setup.ts"],
+
     // Pool: 显式使用 forks，避免 threads 与 native 模块的兼容性问题
     pool: "forks",
     poolOptions: {

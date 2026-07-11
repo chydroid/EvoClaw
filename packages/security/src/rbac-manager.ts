@@ -36,6 +36,8 @@ export class RBACManager {
   private roles = new Map<string, Role>();
   private users = new Map<string, RBACUser>();
   private apiKeys = new Map<string, ApiKeyInfo>();
+  /** HMAC 密钥：用于 API key 哈希的密钥哈希，防止彩虹表攻击 */
+  private readonly hmacKey: Buffer = crypto.randomBytes(32);
 
   constructor(
     private registry: ServiceRegistry,
@@ -237,7 +239,7 @@ export class RBACManager {
   }
 
   private hashKey(key: string): string {
-    return crypto.createHash("sha256").update(key).digest("hex");
+    return crypto.createHmac("sha256", this.hmacKey).update(key).digest("hex");
   }
 
   getUser(userId: string): RBACUser | undefined {

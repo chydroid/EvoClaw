@@ -33,10 +33,10 @@
  * ```
  */
 
-import { exec as execCallback } from "child_process";
+import { execFile as execFileCallback } from "child_process";
 import { promisify } from "util";
 
-const execAsync = promisify(execCallback);
+const execFileAsync = promisify(execFileCallback);
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -364,13 +364,29 @@ export class GoalContract {
     }
   }
 
-  /** 默认命令执行器 —— 使用 child_process exec */
+  /** 默认命令执行器 —— 使用 child_process execFile（非 shell，避免命令注入） */
   private async defaultExecutor(
     command: string,
     options: { cwd?: string; timeoutMs: number },
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    // 拒绝含 shell 元字符的 command，防止命令注入。
+    // execFile 不经过 shell，管道、&&、变量展开等均无法工作；
+    // 若需复杂 shell 命令，调用方应通过 config.executor 提供可信的自定义执行器。
+    if (/[;&|`$<>(){}\r\n]/.test(command)) {
+      throw new Error(
+        `defaultExecutor 拒绝含 shell 元字符的 command: "${command}". 请拆分为简单命令或提供自定义 executor.`
+      );
+    }
+
+    // 拆分为可执行文件 + 参数数组，避免 shell 解析
+    const parts = command.trim().split(/\s+/);
+    const [file, ...args] = parts;
+    if (!file) {
+      throw new Error("defaultExecutor: command 不能为空");
+    }
+
     try {
-      const { stdout, stderr } = await execAsync(command, {
+      const { stdout, stderr } = await execFileAsync(file, args, {
         cwd: options.cwd,
         timeout: options.timeoutMs,
         maxBuffer: 1024 * 1024 * 10, // 10MB

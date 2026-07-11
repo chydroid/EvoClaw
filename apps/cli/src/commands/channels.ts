@@ -145,15 +145,34 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .option("--json", "Output as JSON")
     .action(async (opts: Record<string, unknown>) => {
       const serverAlive = await checkServer();
-      if (serverAlive) {
-        try {
-          const r = await apiRequest<Record<string, unknown>>("GET", "/api/config/channels");
+      if (!serverAlive) {
+        console.log(c("yellow", "⚠ Server not running. Start with: EvoClaw gateway start"));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ channels?: Record<string, unknown>; count?: number }>("GET", "/api/channels");
+        if (opts.json) {
           console.log(JSON.stringify(r.data, null, 2));
-        } catch {
-          console.log(c("gray", "Channel management via Web UI → Channels tab"));
+          return;
         }
-      } else {
-        console.log(c("gray", "Channel management via Web UI → Channels tab"));
+        console.log(`\n${c("bold", "=== Channels ===\n")}`);
+        const channels = r.data.channels || {};
+        const count = r.data.count || 0;
+        if (count === 0) {
+          console.log(`  ${c("gray", "No channels configured")}`);
+        } else {
+          for (const [name, status] of Object.entries(channels)) {
+            const s = status as Record<string, unknown>;
+            const connected = s.connected !== false && s.status !== "disconnected";
+            const icon = connected ? "●" : "○";
+            const statusStr = connected ? c("green", "connected") : c("yellow", "disconnected");
+            console.log(`  ${icon} ${name}  [${statusStr}]`);
+          }
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("yellow", `⚠ Could not fetch channels: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(c("gray", "  Channel management via Web UI → Channels tab"));
       }
     });
 
@@ -165,11 +184,23 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .action(async (opts: Record<string, unknown>) => {
       const serverAlive = await checkServer();
       if (!serverAlive) { console.log(c("yellow", "⚠ Server not running")); return; }
-      if (opts.deep) console.log(`  Channel status: ${c("green", "deep probe running...")}`);
-      else if (opts.probe) console.log(`  Channel status: ${c("green", "probe completed")}`);
-      else {
-        console.log(`  Channel status: ${c("green", "operational")}`);
-        console.log(`  ${c("gray", "Use --probe for live checks or --deep for full diagnostics")}`);
+      try {
+        const r = await apiRequest<{ channels?: Record<string, unknown>; count?: number; activeChannels?: string[] }>("GET", "/api/channels");
+        const channels = r.data.channels || {};
+        const active = r.data.activeChannels || [];
+        const count = r.data.count || 0;
+        console.log(`  Channels: ${count} registered, ${active.length} active`);
+        if (opts.deep || opts.probe) {
+          for (const [name, status] of Object.entries(channels)) {
+            const s = status as Record<string, unknown>;
+            const connected = s.connected !== false && s.status !== "disconnected";
+            const icon = connected ? "●" : "○";
+            const statusStr = connected ? c("green", "connected") : c("yellow", "disconnected");
+            console.log(`  ${icon} ${name}  [${statusStr}]`);
+          }
+        }
+      } catch (err) {
+        console.log(c("yellow", `⚠ Could not fetch channel status: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
 
@@ -189,8 +220,13 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .description("Add a new channel")
     .option("-c, --channel <name>", "Channel name")
     .action((opts: Record<string, unknown>) => {
-      if (opts.channel) console.log(c("green", `✅ Channel "${opts.channel}" added`));
-      else console.log(c("green", "✅ Use Web UI → Channels tab to add channels"));
+      console.log(c("cyan", `ℹ Channel configuration is managed via the Web UI → Channels tab.`));
+      if (opts.channel) {
+        console.log(c("gray", `  To add channel "${opts.channel}", open the Web UI and follow the channel setup wizard.`));
+      } else {
+        console.log(c("gray", `  Open the Web UI and follow the channel setup wizard to add a new channel.`));
+      }
+      console.log(c("gray", `  CLI channel creation is not supported.`));
     });
 
   channels
@@ -198,8 +234,13 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .description("Remove a channel")
     .option("--delete", "Also delete channel config")
     .action((channel: string, opts: Record<string, unknown>) => {
-      if (channel) console.log(c("green", `✅ Channel "${channel}" ${opts.delete ? "removed" : "disabled"}`));
-      else console.log(c("yellow", "Usage: EvoClaw channels remove <channel> [--delete]"));
+      if (!channel) {
+        console.log(c("yellow", "Usage: EvoClaw channels remove <channel> [--delete]"));
+        return;
+      }
+      console.log(c("cyan", `ℹ Channel removal is managed via the Web UI → Channels tab.`));
+      console.log(c("gray", `  To remove channel "${channel}"${opts.delete ? " and delete its config" : ""}, open the Web UI.`));
+      console.log(c("gray", `  CLI channel removal is not supported.`));
     });
 
   channels
@@ -319,7 +360,13 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .command("logout [channel]")
     .description("Logout from a channel")
     .action((channel: string) => {
-      console.log(c("green", `✅ Logged out of ${channel || "all channels"}`));
+      if (!channel) {
+        console.log(c("yellow", "Usage: EvoClaw channels logout <channel>"));
+        return;
+      }
+      console.log(c("cyan", `ℹ Channel logout is managed via the Web UI → Channels tab.`));
+      console.log(c("gray", `  To logout from "${channel}", open the Web UI and revoke the channel session.`));
+      console.log(c("gray", `  CLI channel logout is not supported.`));
     });
 
   channels

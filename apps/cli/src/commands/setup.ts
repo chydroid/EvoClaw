@@ -6,6 +6,22 @@ import * as crypto from "crypto";
 import { c, ICONS } from "../utils/colors";
 import { VERSION, DEFAULT_PORT } from "../utils/api";
 
+/** 原子写入文件：写临时文件 + fsync + rename */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
   program
     .command("setup")
@@ -18,7 +34,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const envPath = path.join(process.cwd(), ".env");
       if (!fs.existsSync(envPath)) {
         const secret = crypto.randomBytes(32).toString("hex");
-        fs.writeFileSync(envPath, `EvoClaw_PORT=${DEFAULT_PORT}\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
+        atomicWriteFileSync(envPath, `EvoClaw_PORT=${DEFAULT_PORT}\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
         console.log(c("green", `✅ Created .env with random JWT_SECRET (${secret.length} chars)`));
       } else {
         console.log(c("gray", "  .env already exists — skipped"));

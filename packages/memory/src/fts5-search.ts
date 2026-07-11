@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { applyPragmas, DEFAULT_PRODUCTION_PRAGMAS, withTransaction } from "@evoclaw/infrastructure";
 
 interface SqliteStatement {
   run(...params: unknown[]): void;
@@ -38,6 +39,9 @@ interface FallbackEntry {
   createdAt: string;
 }
 
+/** fallback Map 最大条目数，防止无界内存增长。 */
+const FALLBACK_MAX_ENTRIES = 10000;
+
 export class FTS5SearchEngine {
   private db: SqliteDatabase | null = null;
   private fallback: Map<string, FallbackEntry> = new Map();
@@ -66,6 +70,8 @@ export class FTS5SearchEngine {
     }
     try {
       this.db = new BetterSqlite3(this.dbPath) as SqliteDatabase;
+      // 应用生产环境 PRAGMA（WAL/synchronous/busy_timeout 等），在 CREATE TABLE 之前生效
+      applyPragmas(this.db, DEFAULT_PRODUCTION_PRAGMAS);
       this.useFallback = false;
       if (this.dbPath !== ":memory:") {
         process.stdout.write(`[FTS5Search] Using persistent database at ${this.dbPath}\n`);
@@ -103,12 +109,21 @@ export class FTS5SearchEngine {
         type: metadata.type ?? "",
         createdAt: metadata.createdAt.toISOString(),
       });
+      this.pruneFallback();
       return;
     }
-    const stmt = this.db.prepare(
-      "INSERT OR REPLACE INTO memory_fts (id, content, session_id, type, created_at) VALUES (?, ?, ?, ?, ?)"
-    );
-    stmt.run(id, content, metadata.sessionId ?? "", metadata.type ?? "", metadata.createdAt.toISOString());
+    // FTS5 表无 PRIMARY KEY/UNIQUE 约束，INSERT OR REPLACE 无法实现幂等更新，
+    // 每次 REPLACE 都会插入新行导致索引重复膨胀。先 DELETE 再 INSERT 保证幂等。
+    // 用 withTransaction 包裹 DELETE+INSERT：进程在 DELETE 后 INSERT 前崩溃会回滚，
+    // 避免条目永久丢失（与 indexBatch 保持一致）。
+    withTransaction(this.db, () => {
+      const deleteStmt = this.db!.prepare("DELETE FROM memory_fts WHERE id = ?");
+      deleteStmt.run(id);
+      const stmt = this.db!.prepare(
+        "INSERT INTO memory_fts (id, content, session_id, type, created_at) VALUES (?, ?, ?, ?, ?)"
+      );
+      stmt.run(id, content, metadata.sessionId ?? "", metadata.type ?? "", metadata.createdAt.toISOString());
+    });
   }
 
   /**
@@ -139,15 +154,19 @@ export class FTS5SearchEngine {
           createdAt: entry.metadata.createdAt.toISOString(),
         });
       }
+      this.pruneFallback();
       return;
     }
     // 在单个事务中批量写入 —— FTS5 写锁只在 BEGIN 时获取一次
-    this.db.exec("BEGIN");
-    try {
-      const stmt = this.db.prepare(
-        "INSERT OR REPLACE INTO memory_fts (id, content, session_id, type, created_at) VALUES (?, ?, ?, ?, ?)"
+    // 复用 withTransaction：自动处理嵌套事务（savepoint）和 ROLLBACK，比手动 BEGIN/COMMIT 更稳健
+    withTransaction(this.db, () => {
+      const deleteStmt = this.db!.prepare("DELETE FROM memory_fts WHERE id = ?");
+      const stmt = this.db!.prepare(
+        "INSERT INTO memory_fts (id, content, session_id, type, created_at) VALUES (?, ?, ?, ?, ?)"
       );
       for (const entry of entries) {
+        // FTS5 表无 UNIQUE 约束，INSERT OR REPLACE 无法幂等：先 DELETE 再 INSERT 防止索引重复膨胀
+        deleteStmt.run(entry.id);
         stmt.run(
           entry.id,
           entry.content,
@@ -156,12 +175,7 @@ export class FTS5SearchEngine {
           entry.metadata.createdAt.toISOString(),
         );
       }
-      this.db.exec("COMMIT");
-    } catch (err) {
-      // 事务失败时回滚，避免部分写入
-      try { this.db.exec("ROLLBACK"); } catch { /* ignore rollback errors */ }
-      throw err;
-    }
+    });
   }
 
   search(options: FTS5SearchOptions): FTS5SearchResult[] {
@@ -171,7 +185,10 @@ export class FTS5SearchEngine {
     const limit = options.limit ?? 10;
     const offset = options.offset ?? 0;
     const conditions: string[] = ["memory_fts MATCH ?"];
-    const params: unknown[] = [options.query];
+    // FTS5 安全转义：用双引号包裹强制短语匹配，内部双引号转义为两个双引号
+    // 防止 * " OR ) 等特殊字符被解释为 FTS5 查询语法而非字面文本
+    const safeQuery = `"${options.query.replace(/"/g, '""')}"`;
+    const params: unknown[] = [safeQuery];
     if (options.sessionId) {
       conditions.push("session_id = ?");
       params.push(options.sessionId);
@@ -189,28 +206,35 @@ export class FTS5SearchEngine {
     const whereClause = conditions.join(" AND ");
     const sql = `SELECT rowid, id, content, session_id, type, created_at, bm25(memory_fts) as rank FROM memory_fts WHERE ${whereClause} ORDER BY rank LIMIT ? OFFSET ?`;
     params.push(limit, offset);
-    const stmt = this.db.prepare(sql);
-    const rows = stmt.all(...params) as Array<{
-      rowid: number;
-      id: string;
-      content: string;
-      session_id: string;
-      type: string;
-      created_at: string;
-      rank: number;
-    }>;
-    return rows.map((row) => ({
-      rowid: row.rowid,
-      content: row.content,
-      rank: row.rank,
-      snippet: this.generateSnippet(row.content, options.query),
-      metadata: {
-        id: row.id,
-        sessionId: row.session_id,
-        type: row.type,
-        createdAt: row.created_at,
-      },
-    }));
+    try {
+      const stmt = this.db.prepare(sql);
+      const rows = stmt.all(...params) as Array<{
+        rowid: number;
+        id: string;
+        content: string;
+        session_id: string;
+        type: string;
+        created_at: string;
+        rank: number;
+      }>;
+      return rows.map((row) => ({
+        rowid: row.rowid,
+        content: row.content,
+        rank: row.rank,
+        snippet: this.generateSnippet(row.content, options.query),
+        metadata: {
+          id: row.id,
+          sessionId: row.session_id,
+          type: row.type,
+          createdAt: row.created_at,
+        },
+      }));
+    } catch (err) {
+      // FTS5 查询失败时重新抛出，让调用方决定降级策略。
+      // 旧实现回退到 this.fallback Map，但正常模式下 fallback 为空，返回空数组会掩盖真实错误。
+      process.stderr.write('[FTS5Search] query failed: ' + err + '\n');
+      throw err;
+    }
   }
 
   deleteEntry(id: string): void {
@@ -237,6 +261,20 @@ export class FTS5SearchEngine {
       this.db = null;
     }
     this.fallback.clear();
+  }
+
+  /**
+   * 限制 fallback Map 大小，超限时淘汰 createdAt 最旧的条目，防止无界内存增长。
+   * ISO 8601 字符串按字典序排序即为时间顺序，无需解析为 Date。
+   */
+  private pruneFallback(maxEntries: number = FALLBACK_MAX_ENTRIES): void {
+    if (this.fallback.size <= maxEntries) return;
+    const sorted = Array.from(this.fallback.entries())
+      .sort((a, b) => (a[1].createdAt < b[1].createdAt ? -1 : a[1].createdAt > b[1].createdAt ? 1 : 0));
+    const toRemove = sorted.length - maxEntries;
+    for (let i = 0; i < toRemove; i++) {
+      this.fallback.delete(sorted[i][0]);
+    }
   }
 
   private generateSnippet(content: string, query: string): string {

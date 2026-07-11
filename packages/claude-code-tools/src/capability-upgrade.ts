@@ -42,6 +42,9 @@ export interface CapabilityProfile {
 
 // ── Capability Upgrader ────────────────────────────────────
 
+/** 保留的最大升级历史数，防止 upgradeHistory 无限增长 */
+const MAX_UPGRADE_HISTORY = 500;
+
 export class CapabilityUpgrader {
   private profile: CapabilityProfile;
   private pendingActions: UpgradeAction[] = [];
@@ -217,6 +220,10 @@ export class CapabilityUpgrader {
     };
 
     this.profile.upgradeHistory.push(result);
+    // 限制历史数量，保留最近 MAX_UPGRADE_HISTORY 条
+    if (this.profile.upgradeHistory.length > MAX_UPGRADE_HISTORY) {
+      this.profile.upgradeHistory = this.profile.upgradeHistory.slice(-MAX_UPGRADE_HISTORY);
+    }
     this.profile.lastUpgradeAt = new Date();
 
     this.eventBus?.publish("claude-code-tools:capability-upgraded", {
@@ -288,8 +295,14 @@ export class CapabilityUpgrader {
     
     const successCount = result.completedTasks.length;
     const failCount = result.failedTasks.length;
-    this.profile.totalSuccesses += successCount;
-    this.profile.totalFailures += failCount;
+    // 统一为执行级别计数：成功/失败执行数而非任务数，与 totalExecutions 粒度一致，
+    // 避免 successRate = totalSuccesses / totalExecutions 混用两种粒度。
+    // 互斥计数：含失败任务的执行计为失败，否则计为成功。
+    if (failCount > 0) {
+      this.profile.totalFailures++;
+    } else if (successCount > 0) {
+      this.profile.totalSuccesses++;
+    }
 
     // Update average duration
     const totalTasks = successCount + failCount;
@@ -300,18 +313,31 @@ export class CapabilityUpgrader {
       );
     }
 
-    // Update task type success rates
+    // 按任务类型聚合本次执行的成功/失败数，再对每个类型应用一次 EMA 更新，
+    // 避免逐任务连续应用 EMA 导致失真（如一次执行 10 个同类成功任务会被拉到接近 1.0）
+    const typeStats = new Map<string, { success: number; fail: number }>();
     for (const completed of result.completedTasks) {
       const type = completed.taskType;
       if (!type) continue;
-      const current = this.profile.taskTypeSuccessRates.get(type) ?? 0.5;
-      this.profile.taskTypeSuccessRates.set(type, current * 0.8 + 1 * 0.2);
+      const stats = typeStats.get(type) ?? { success: 0, fail: 0 };
+      stats.success++;
+      typeStats.set(type, stats);
     }
     for (const failed of result.failedTasks) {
       const type = failed.task.type;
-      const current = this.profile.taskTypeSuccessRates.get(type) ?? 1;
+      const stats = typeStats.get(type) ?? { success: 0, fail: 0 };
+      stats.fail++;
+      typeStats.set(type, stats);
+    }
+
+    // 对每个任务类型基于本次批次的成功率应用一次 EMA
+    for (const [type, stats] of typeStats) {
+      const total = stats.success + stats.fail;
+      if (total <= 0) continue;
+      const batchSuccessRate = stats.success / total;
+      const current = this.profile.taskTypeSuccessRates.get(type) ?? 0.5;
       // Exponential moving average
-      this.profile.taskTypeSuccessRates.set(type, current * 0.8 + 0 * 0.2);
+      this.profile.taskTypeSuccessRates.set(type, current * 0.8 + batchSuccessRate * 0.2);
     }
 
     // Update trend
@@ -421,8 +447,14 @@ export class CapabilityUpgrader {
     if (skillManager && action.target) {
       try {
         const results = await skillManager.searchSkills({ keyword: action.target });
-        // In a real implementation, we'd install the best matching skill
-        return true;
+        // 使用搜索结果：仅当找到匹配技能时才声明成功，
+        // 避免未找到技能时仍返回 true（原实现结果未使用且总是返回 true）
+        if (Array.isArray(results) && results.length > 0) {
+          // TODO: 完整实现应调用 installSkill 安装最佳匹配技能，
+          // 但需搜索结果提供可用的安装路径，当前仅确认技能存在。
+          return true;
+        }
+        return false;
       } catch {
         return false;
       }

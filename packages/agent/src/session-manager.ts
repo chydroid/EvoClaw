@@ -13,6 +13,24 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 
+/** 原子写入文件（temp + fsync + rename），防止崩溃时产生截断的 session 元数据。 */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface SessionConfig {
@@ -444,6 +462,99 @@ export class SessionManager {
     return null;
   }
 
+  /**
+   * acquireLock 的异步版本：用 await this.sleepAsync 替代同步 sleepSync，
+   * 等待期间不阻塞事件循环。新代码应优先使用此版本（配合 withLockAsync）。
+   * 保留同步 acquireLock 仅为不破坏既有同步调用方（见下方 sleepSync 的 TODO）。
+   */
+  async acquireLockAsync(agentId: string, sessionId: string, options?: {
+    allowReentrant?: boolean;
+    timeoutMs?: number;
+  }): Promise<SessionLock | null> {
+    const timeoutMs = options?.timeoutMs ?? this.config.writeLockTimeoutMs ?? 60000;
+    const allowReentrant = options?.allowReentrant ?? false;
+
+    // Check if already held by this process
+    const existing = this.activeLocks.get(sessionId);
+    if (existing) {
+      if (allowReentrant) {
+        existing.reentrant = true;
+        existing.reentrantCount++;
+        return existing;
+      }
+      return null; // Non-reentrant by default
+    }
+
+    const lockDir = this.getLockDir();
+    if (!fs.existsSync(lockDir)) {
+      fs.mkdirSync(lockDir, { recursive: true });
+    }
+
+    const lockPath = path.join(lockDir, `${sessionId}.lock`);
+    const pid = process.pid;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        // Try to create lock file directly (atomic operation with wx flag)
+        try {
+          fs.writeFileSync(lockPath, String(pid), { flag: "wx" });
+          const lock: SessionLock = {
+            sessionId,
+            lockPath,
+            acquiredAt: Date.now(),
+            processId: pid,
+            reentrant: false,
+            reentrantCount: 1,
+          };
+          this.activeLocks.set(sessionId, lock);
+          return lock;
+        } catch (writeErr: any) {
+          if (writeErr.code !== "EEXIST") throw writeErr;
+          // Lock file already exists, check for stale lock below
+        }
+
+        // Check for stale lock (process no longer exists)
+        try {
+          const lockPid = parseInt(fs.readFileSync(lockPath, "utf-8"), 10);
+          // parseInt 返回 NaN 时（lock 文件损坏/篡改），视为 stale 让重试流程接管
+          if (!Number.isFinite(lockPid) || !this.isProcessAlive(lockPid)) {
+            // Stale lock — 原子地 rename 到唯一临时名后删除，避免 TOCTOU 竞态。
+            const staleTmp = `${lockPath}.${process.pid}.${Date.now()}.stale`;
+            try {
+              fs.renameSync(lockPath, staleTmp);
+              try { fs.unlinkSync(staleTmp); } catch { /* ignore */ }
+            } catch (renameErr: unknown) {
+              const code = (renameErr as NodeJS.ErrnoException)?.code;
+              if (code === "ENOENT") {
+                // 另一个进程已经处理了 stale lock，直接重试创建
+              } else {
+                throw renameErr;
+              }
+            }
+            continue;
+          }
+        } catch {
+          // If we can't read the lock file, just remove it
+          try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+          continue;
+        }
+
+        // Wait and retry — 异步等待，不阻塞事件循环
+        const waitMs = Math.min(100, timeoutMs - (Date.now() - startedAt));
+        await this.sleepAsync(waitMs);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("EEXIST") && !msg.includes("ENOENT")) {
+          process.stderr.write(`[SessionManager] Lock error for ${sessionId}:` + " " + err + "\n");
+        }
+      }
+    }
+
+    process.stderr.write(`[SessionManager] Failed to acquire lock for ${sessionId} after ${timeoutMs}ms\n`);
+    return null;
+  }
+
   /** Release a write lock. Reentrant locks must be released as many times as they were acquired. */
   releaseLock(lock: SessionLock): void {
     lock.reentrantCount--;
@@ -471,6 +582,23 @@ export class SessionManager {
     }
     try {
       return fn();
+    } finally {
+      this.releaseLock(lock);
+    }
+  }
+
+  /**
+   * withLock 的异步版本：通过 acquireLockAsync 获取锁（等待期间不阻塞事件循环），
+   * 并支持返回 Promise 的回调。新代码应优先使用此版本以避免 sleepSync 阻塞。
+   */
+  async withLockAsync<T>(agentId: string, sessionId: string, fn: () => T | Promise<T>): Promise<T | null> {
+    const lock = await this.acquireLockAsync(agentId, sessionId, { allowReentrant: true });
+    if (!lock) {
+      process.stderr.write(`[SessionManager] Could not acquire lock for ${sessionId}\n`);
+      return null;
+    }
+    try {
+      return await fn();
     } finally {
       this.releaseLock(lock);
     }
@@ -736,7 +864,7 @@ export class SessionManager {
     }
 
     const metaPath = path.join(dir, "session.json");
-    fs.writeFileSync(metaPath, JSON.stringify(session, null, 2), "utf-8");
+    atomicWriteFileSync(metaPath, JSON.stringify(session, null, 2));
   }
 
   private generateSessionId(): string {

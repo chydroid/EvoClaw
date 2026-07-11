@@ -381,10 +381,14 @@ export class DMPairingManager {
   // ── Internal ──
 
   private generatePairingCode(): string {
-    // 6-digit numeric code
-    const buf = crypto.randomBytes(4);
-    const num = buf.readUInt32BE(0) % 1_000_000;
-    return String(num).padStart(6, "0");
+    // 6-digit numeric code — 使用 rejection sampling 消除模运算偏差
+    const max = 1_000_000;
+    const limit = Math.floor(0xFFFFFFFF / max) * max;
+    let num: number;
+    do {
+      num = crypto.randomBytes(4).readUInt32BE(0);
+    } while (num >= limit);
+    return String(num % max).padStart(6, "0");
   }
 
   private cleanupExpired(): void {
@@ -392,6 +396,16 @@ export class DMPairingManager {
     for (const [code, request] of this.pendingPairings) {
       if (now > request.expiresAt) {
         this.pendingPairings.delete(code);
+      }
+    }
+    // 清理 approveAttempts：窗口已过期且锁定期已过的条目
+    for (const [sourceKey, attempt] of this.approveAttempts) {
+      const windowExpired =
+        now.getTime() - attempt.firstAttemptAt.getTime() > DMPairingManager.APPROVE_WINDOW_MS;
+      const lockoutPassed =
+        attempt.lockedUntil === null || now > attempt.lockedUntil;
+      if (windowExpired && lockoutPassed) {
+        this.approveAttempts.delete(sourceKey);
       }
     }
   }
@@ -445,8 +459,10 @@ export class DMPairingManager {
           this.approvedPeers.set(channel, new Set(peers));
         }
       }
-    } catch {
-      // Start fresh on load error
+    } catch (err) {
+      // 记录错误而非静默吞噬：攻击者破坏文件后不应从空状态静默启动，
+      // 否则所有已批准配对会无声丢失。保留现有内存状态（如果有）。
+      process.stderr.write(`[DMPairingManager] Failed to load approved peers: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 }

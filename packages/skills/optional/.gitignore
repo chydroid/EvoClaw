@@ -1,0 +1,40 @@
+# 可选技能目录安全策略：禁止提交任何可能包含敏感信息的文件
+# Security policy for optional skills: never commit secrets or live configs.
+# Optional skills are NOT loaded by default — install via `evoclaw skills install-optional <name>`.
+
+# Environment / secrets
+.env
+.env.*
+secrets.json
+secrets.*
+*secret*
+*apikey*
+*api-key*
+*api_key*
+
+# Live configs (use config.example.json for templates)
+config.json
+_config.json
+*.config.json
+
+# Certificates / keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Skill package artifacts
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Runtime / cache
+__pycache__/
+*.pyc
+*.log
+
+# Keep SKILL.md and examples tracked
+!SKILL.md
+!*.example.*
+!README.md

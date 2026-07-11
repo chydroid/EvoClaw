@@ -74,14 +74,16 @@ pnpm test         # 运行测试
 
 | 类别 | 能力 |
 |------|------|
-| 智能对话 | 多模型、多提供商、流式响应、上下文压缩 |
-| 技能系统 | 本地 + 远程注册表、自动安装、安全扫描 |
-| 工具生态 | 文件操作、浏览器自动化、网络搜索、Office 文档生成 |
-| 多渠道 | 微信、飞书、钉钉、Telegram、WhatsApp、REST API、WebSocket |
-| 记忆系统 | 长短期记忆、RAG 检索、语义搜索 |
-| 自进化 | 经验学习、强化反馈、自动优化 |
-| 安全 | 命令审批、路径防护、SSRF 防护、密钥管理、审计日志 |
-| 插件 | Plugin SDK 扩展、MCP 协议支持 |
+| 智能对话 | 多模型、多提供商、流式响应、上下文压缩、MoA 多模型混合推理 |
+| 技能系统 | 本地 + 远程注册表、自动安装、安全扫描、Skill Curator 生命周期管理、optional-skills 分离 |
+| 工具生态 | 文件操作、浏览器自动化、网络搜索、Office 文档生成、Computer Use 桌面控制、Tool Search 工具搜索 |
+| 多渠道 | 微信、飞书、钉钉、Telegram、WhatsApp、Discord、Slack、Matrix、QQ、REST API、WebSocket、A2A、ACP IDE |
+| 记忆系统 | 长短期记忆、RAG 检索、语义搜索、L0-L3 分层记忆、Memory Provider 插件系统 |
+| 自进化 | 经验学习、强化反馈、自动优化、遗传算法、A/B 测试 |
+| 安全 | 命令审批、路径防护、SSRF 防护、密钥管理、审计日志、启动安全审计、OSV 供应链安全、advisory catalog |
+| 插件 | Plugin SDK 扩展、MCP 协议支持、Profile 多实例隔离 |
+| 协作 | Kanban 多 Agent 工作队列、Actor 模型、Swarm 群体编排、DAG 任务编排 |
+| 可靠性 | 进程监督、关闭取证、排空控制、日志轮转、凭证池持久化 |
 
 ## 架构
 
@@ -163,8 +165,8 @@ evoclaw channels list            # 渠道管理
 | `EvoClaw_PORT` | `27788` | 服务端口 |
 | `EvoClaw_HOST` | `0.0.0.0` | 绑定地址 |
 | `JWT_SECRET` | — | JWT 签名密钥（**生产环境务必修改**） |
-| `EVOCLAW_EVOLUTION_ENABLED` | `true` | 启用自进化引擎 |
-| `EVOCLAW_MCP_ENABLED` | `true` | 启用 MCP 协议 |
+| `EvoClaw_EVOLUTION_ENABLED` | `true` | 启用自进化引擎 |
+| `EvoClaw_MCP_ENABLED` | `true` | 启用 MCP 协议 |
 | `CORS_ORIGINS` | — | 允许的跨域来源 |
 | `RATE_LIMIT_MAX` | — | 最大请求速率限制 |
 

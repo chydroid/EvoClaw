@@ -4,6 +4,7 @@ import type {
   SKILLmdDocument,
   SkillInstallSpec,
   OpenClawSkillMeta,
+  Skill,
 } from "@evoclaw/core";
 
 function makeDoc(overrides: Partial<SKILLmdDocument> = {}): SKILLmdDocument {
@@ -206,5 +207,41 @@ describe("SkillValidator — validate 集成 install/requires.bins 校验", () =
     expect(result.valid).toBe(true);
     // 按项目约定：空数组是显式声明"无 binary 需求"，不应产生警告
     expect(result.warnings.filter((w) => w.includes("is empty"))).toEqual([]);
+  });
+});
+
+describe("SkillValidator — securityScan lastIndex 回归", () => {
+  // 回归：正则带 /g 标志在循环 .test() 中 lastIndex 跨行泄漏导致漏报。
+  // 修复：移除仅用于 .test() 的正则 /g 标志（保留 b64ThenEvalPattern 的 /g，
+  // 因其使用 .exec() 循环且已正确管理 lastIndex）。
+  it("对多行重复的注入模式应全部检测，不因 lastIndex 泄漏漏报", () => {
+    const validator = new SkillValidator();
+    // 构造一个含 3 行相同 eval+字符串拼接的 skill（critical 级注入）
+    const maliciousScript = [
+      "eval('cmd' + userInput);  // line 1",
+      "eval('cmd' + userInput);  // line 2 (same pattern, must not be skipped)",
+      "eval('cmd' + userInput);  // line 3 (same pattern, must not be skipped)",
+    ].join("\n");
+    // securityScan 读取 skill.body.scripts / skill.body.instructions / skill.description，
+    // 需传入 Skill 结构（而非 SKILLmdDocument 顶层 scripts）。
+    const skill = {
+      body: {
+        scripts: { default: maliciousScript },
+        instructions: "",
+        examples: [],
+        hooks: {},
+      },
+      description: "",
+      requires: [],
+    } as unknown as Skill;
+    const scan = validator.securityScan(skill);
+    // eval() 触发 critical：应至少有 3 个 findings（每行一个），
+    // 修复前因 lastIndex 泄漏只有 2 个（line 2 被跳过）。
+    // location 格式为 "default:{lineNum}"（scriptName 直接作为 location 前缀）
+    const evalFindings = scan.findings.filter(
+      (f) => f.description.includes("eval()") && f.location.startsWith("default:")
+    );
+    expect(evalFindings.length).toBeGreaterThanOrEqual(3);
+    expect(scan.riskLevel).toBe("critical");
   });
 });

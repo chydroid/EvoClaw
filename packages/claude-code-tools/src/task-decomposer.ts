@@ -7,6 +7,7 @@
 
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { v4 as uuid } from "uuid";
+import { assertSafeLlmUrl } from "./llm-dispatcher";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -666,6 +667,10 @@ export class TaskDecomposer {
       };
     }
 
+    // SSRF 防护：校验 LLM API URL，拒绝私网/回环地址（须在启动定时器前完成，
+    // 否则不安全的 URL 会先触发 abort 定时器）
+    assertSafeLlmUrl(apiURL);
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
@@ -732,11 +737,22 @@ ${contextInfo}
 
   private parseLlmDecomposition(content: string, rootId: string, ctx?: DecompositionContext): SubTask[] | null {
     try {
-      // Extract JSON from response
-      const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/) || content.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-      if (!jsonMatch) return null;
+      // 提取 JSON：优先使用 ```json 代码块，否则用 indexOf/lastIndexOf 提取最完整的 JSON 数组
+      // 非贪婪正则会在嵌套 ]} 处提前截断，indexOf/lastIndexOf 可拿到最外层数组
+      const codeBlockMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+      let jsonStr: string | null = null;
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1] || codeBlockMatch[0];
+      } else {
+        const start = content.indexOf("[");
+        const end = content.lastIndexOf("]");
+        if (start !== -1 && end > start) {
+          jsonStr = content.slice(start, end + 1);
+        }
+      }
+      if (!jsonStr) return null;
 
-      const items = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+      const items = JSON.parse(jsonStr);
       if (!Array.isArray(items)) return null;
 
       const taskIds = items.map(() => uuid());

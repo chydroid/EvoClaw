@@ -104,7 +104,7 @@ export class Crestodian {
   private operations: OperationResult[] = [];
   private maxOps: number;
   private checkTimer: ReturnType<typeof setInterval> | null = null;
-  private checkCallbacks: Array<(svc: string) => ServiceDiagnostic> = [];
+  private checkCallbacks: Array<{ name: string; fn: () => ServiceDiagnostic }> = [];
 
   constructor(
     config: CrestodianConfig = {},
@@ -131,10 +131,7 @@ export class Crestodian {
     name: string,
     checkFn: () => ServiceDiagnostic,
   ): void {
-    this.checkCallbacks.push((svc) => {
-      if (svc === name) return checkFn();
-      return { name: svc, status: "unknown", lastChecked: new Date().toISOString() };
-    });
+    this.checkCallbacks.push({ name, fn: checkFn });
   }
 
   /**
@@ -366,27 +363,20 @@ export class Crestodian {
   }
 
   private runAllChecks(): void {
-    const allNames = new Set([
-      ...this.services.keys(),
-      ...this.checkCallbacks.map((_fn, i) => `check-${i}`),
-    ]);
-
-    for (const name of allNames) {
-      for (const cb of this.checkCallbacks) {
-        try {
-          const diag = cb(name);
-          // 不用 "unknown" 覆盖真实状态
-          if (diag.status !== "unknown") {
-            this.services.set(name, diag);
-          }
-        } catch {
-          this.services.set(name, {
-            name,
-            status: "error",
-            lastChecked: new Date().toISOString(),
-            error: "Check threw exception",
-          });
-        }
+    // 直接遍历 registerCheck 注册的回调并执行，用回调绑定的原始 name 作为服务名。
+    // 旧实现用 __internal_check_${i} 合成名触发回调，但回调闭包检查 svc === name
+    // （注册时的原始 name），合成名永远无法匹配，导致注册的检查从不执行。
+    for (const { name, fn } of this.checkCallbacks) {
+      try {
+        const diag = fn();
+        this.services.set(name, diag);
+      } catch {
+        this.services.set(name, {
+          name,
+          status: "error",
+          lastChecked: new Date().toISOString(),
+          error: "Check threw exception",
+        });
       }
     }
   }

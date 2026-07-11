@@ -304,7 +304,7 @@ export class PersonaProfileGenerator {
   }
 
   private parseFile(md: string): PersonaProfile | null {
-    const fmMatch = md.match(/^---\n([\s\S]*?)\n---/);
+    const fmMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!fmMatch) return null;
     const fm = fmMatch[1];
     const version = parseInt(fm.match(/persona_version:\s*(\d+)/)?.[1] ?? "1", 10);
@@ -314,7 +314,7 @@ export class PersonaProfileGenerator {
     const entries: PersonaEntry[] = [];
     let currentTopic: PersonaTopic | null = null;
     for (const line of md.split("\n")) {
-      const topicMatch = line.match(/^## (身份|技术栈|偏好|长期指令)$/);
+      const topicMatch = line.match(/^## (身份|技术栈|偏好|长期指令)\r?$/);
       if (topicMatch) {
         const label = topicMatch[1];
         currentTopic = (

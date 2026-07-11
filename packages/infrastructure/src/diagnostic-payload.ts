@@ -235,6 +235,8 @@ export class DiagnosticPayloadCollector {
       return true;
     });
     const limit = opts.limit;
+    // slice(-0) 会返回整个数组，limit 为 0 时应返回空数组
+    if (limit === 0) return [];
     return limit !== undefined && limit >= 0
       ? matched.slice(-limit)
       : matched;

@@ -59,6 +59,9 @@ export interface ApprovalAuditEntry {
   metadata?: Record<string, unknown>;
 }
 
+/** 审计日志最大保留条数（防止 auditLog 无界增长） */
+const MAX_AUDIT_LOG = 1000;
+
 /** 审批等待Promise解析器 */
 interface PendingApproval {
   request: ApprovalRequest;
@@ -202,7 +205,9 @@ export class ApprovalTimeoutManager {
     };
     this.history.push(decision);
     if (this.onDenied) {
-      try { await this.onDenied(pending.request, reason); } catch { /* swallow */ }
+      try { await this.onDenied(pending.request, reason); } catch (err) {
+        process.stderr.write(`[ApprovalTimeout] onDenied callback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     pending.resolve(decision);
     return true;
@@ -294,6 +299,11 @@ export class ApprovalTimeoutManager {
     // 清理超过1小时的历史
     const cutoff = now - 3600000;
     this.history = this.history.filter((d) => (d.decidedAt ?? 0) > cutoff);
+    // 清理过期的审计日志（基于 timestamp），并限制最大长度防止无界增长
+    this.auditLog = this.auditLog.filter((e) => e.timestamp > cutoff);
+    if (this.auditLog.length > MAX_AUDIT_LOG) {
+      this.auditLog = this.auditLog.slice(-MAX_AUDIT_LOG);
+    }
   }
 
   /** 关闭管理器 */

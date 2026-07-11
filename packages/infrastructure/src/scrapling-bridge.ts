@@ -8,7 +8,7 @@
  *   - 内容提取: css()/xpath() + text_content() + 相似元素发现
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 /** Python 解释器路径 */
 const PYTHON = "python";
@@ -16,7 +16,7 @@ const PYTHON = "python";
 /** 检查 Scrapling 是否已安装 */
 export function isScraplingAvailable(): boolean {
   try {
-    execSync(`${PYTHON} -c "import scrapling; print(scrapling.__version__)"`, {
+    execFileSync(PYTHON, ["-c", "import scrapling; print(scrapling.__version__)"], {
       encoding: "utf-8",
       timeout: 5000,
     });
@@ -213,8 +213,9 @@ ${options?.extractLinks ? 'links = page.css("a[href]"); print(f"Links: {len(link
  */
 export function getScraplingInfo(): string {
   try {
-    return execSync(
-      `${PYTHON} -c "import scrapling; print(f'Scrapling v{scrapling.__version__}')"`,
+    return execFileSync(
+      PYTHON,
+      ["-c", "import scrapling; print(f'Scrapling v{scrapling.__version__}')"],
       { encoding: "utf-8", timeout: 3000 }
     ).trim();
   } catch {

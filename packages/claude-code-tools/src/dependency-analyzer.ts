@@ -63,7 +63,7 @@ export class DependencyAnalyzer {
    */
   async buildGraph(): Promise<DepGraph> {
     const nodes = new Map<string, DepNode>();
-    const rootPkg = this.readPackageJson(this.baseDir);
+    const rootPkg = await this.readPackageJson(this.baseDir);
 
     if (!rootPkg) {
       return { nodes, circularDeps: [], orphans: [], totalPackages: 0 };
@@ -72,7 +72,7 @@ export class DependencyAnalyzer {
     // Parse workspace packages
     const workspacePaths = await this.discoverWorkspaces();
     for (const wsPath of workspacePaths) {
-      const pkg = this.readPackageJson(wsPath);
+      const pkg = await this.readPackageJson(wsPath);
       if (!pkg) continue;
 
       const deps = [
@@ -260,14 +260,14 @@ export class DependencyAnalyzer {
    * Check for known vulnerabilities (basic heuristic).
    * Production use should integrate with npm audit or Snyk API.
    */
-  checkVulnerabilities(): VulnerabilityCheck[] {
+  async checkVulnerabilities(): Promise<VulnerabilityCheck[]> {
     const results: VulnerabilityCheck[] = [];
 
     // Basic heuristics for well-known vulnerable patterns
     const pkgPath = path.join(this.baseDir, "package.json");
     if (!fs.existsSync(pkgPath)) return results;
 
-    const rootPkg = this.readPackageJson(this.baseDir);
+    const rootPkg = await this.readPackageJson(this.baseDir);
     if (!rootPkg) return results;
 
     const allDeps = {
@@ -295,11 +295,11 @@ export class DependencyAnalyzer {
 
   // ── Helpers ──
 
-  private readPackageJson(pkgDir: string): Record<string, any> | null {
+  private async readPackageJson(pkgDir: string): Promise<Record<string, any> | null> {
     try {
       const pkgPath = path.join(pkgDir, "package.json");
       if (!fs.existsSync(pkgPath)) return null;
-      return JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      return JSON.parse(await fs.promises.readFile(pkgPath, "utf-8"));
     } catch {
       return null;
     }

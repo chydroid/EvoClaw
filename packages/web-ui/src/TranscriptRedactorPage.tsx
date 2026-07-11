@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 type Severity = "critical" | "high" | "medium" | "low";
 type TabId = "overview" | "rules" | "test" | "audit";
@@ -106,9 +106,9 @@ export default function TranscriptRedactorPage() {
     setLoading(true);
     try {
       const [rulesRes, statsRes, auditRes] = await Promise.all([
-        fetch(`${API}/api/transcript-redactor/rules`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/transcript-redactor/stats`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/transcript-redactor/audit?limit=50`).then(r => r.json()).catch(() => null),
+        fetch(`${API}/api/transcript-redactor/rules`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/transcript-redactor/stats`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/transcript-redactor/audit?limit=50`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const list: RedactionRule[] = (rulesRes?.rules || rulesRes || []) as any[];

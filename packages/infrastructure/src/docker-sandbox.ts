@@ -291,6 +291,7 @@ export class DockerSandbox {
       let stderr = "";
       let resolved = false;
       let timedOut = false;
+      let innerTimeout: NodeJS.Timeout | null = null;
 
       const timeout = setTimeout(() => {
         if (!resolved) {
@@ -308,11 +309,13 @@ export class DockerSandbox {
           } else {
             child.kill("SIGKILL");
           }
-          setTimeout(() => {
+          innerTimeout = setTimeout(() => {
             if (!resolved) {
               child.kill("SIGKILL");
             }
           }, 3000);
+          // unref 防止内部强制终止定时器阻止进程退出
+          innerTimeout.unref();
         }
       }, timeoutMs);
 
@@ -328,11 +331,22 @@ export class DockerSandbox {
         stderr += data.toString("utf-8");
         if (maxOutputBytes && stderr.length > maxOutputBytes) {
           stderr = stderr.slice(0, maxOutputBytes) + "\n[output truncated]";
+          // 与 stdout 超限行为一致：终止进程避免继续产生输出
+          child.kill("SIGTERM");
         }
+      });
+
+      child.stdout?.on("error", (err: Error) => {
+        process.stderr.write(`[DockerSandbox] stdout error: ${err.message}\n`);
+      });
+
+      child.stderr?.on("error", (err: Error) => {
+        process.stderr.write(`[DockerSandbox] stderr error: ${err.message}\n`);
       });
 
       child.on("close", (code) => {
         clearTimeout(timeout);
+        if (innerTimeout) clearTimeout(innerTimeout);
         if (!resolved) {
           resolved = true;
           resolve({
@@ -346,6 +360,7 @@ export class DockerSandbox {
 
       child.on("error", (err) => {
         clearTimeout(timeout);
+        if (innerTimeout) clearTimeout(innerTimeout);
         if (!resolved) {
           resolved = true;
           reject(err);

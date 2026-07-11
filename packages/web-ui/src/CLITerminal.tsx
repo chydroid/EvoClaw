@@ -154,10 +154,13 @@ function getCommonInfix(completions: string[], prefix: string): string {
 
 function ansiToHtml(text: string): string {
   if (!text) return "";
+  // 先对原始文本做完整 HTML 转义，再做 ANSI 颜色码转换，防止注入
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
     .replace(/\x1b\[0m/g, "</span>")
     .replace(/\x1b\[1m/g, '<span style="font-weight:bold">')
     .replace(/\x1b\[4m/g, '<span style="text-decoration:underline">')

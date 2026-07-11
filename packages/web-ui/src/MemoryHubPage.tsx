@@ -11,7 +11,7 @@
  *
  * 同时展示工具结果缓存（ToolResultCache）与 Token 预算（TokenBudgetOptimizer）状态。
  */
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { PageHeader, Card, Badge, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
 
@@ -77,6 +77,44 @@ interface SemanticSearchResult {
   metadata?: Record<string, unknown>;
 }
 
+interface MemoryStatus {
+  embeddingBackend: string;
+  ready: boolean;
+  model: { name: string; dimension: number } | null;
+  vectorIndexSize: number;
+  loadError?: string;
+}
+
+interface DreamFact {
+  content: string;
+  source: string;
+  confidence: number;
+  category: "preference" | "fact" | "pattern" | "procedure";
+  timestamp: number;
+}
+
+interface DreamSession {
+  id: string;
+  startedAt: number;
+  completedAt?: number;
+  phase: string;
+  sourceEntries: number;
+  extractedFacts: DreamFact[];
+  status: "running" | "completed" | "failed";
+}
+
+interface DreamDiary {
+  sessions: DreamSession[];
+  totalFactsExtracted: number;
+  lastDreamAt?: number;
+}
+
+interface DreamingState {
+  enabled: boolean;
+  diary?: DreamDiary | null;
+  shouldDream?: boolean;
+}
+
 // ── 样式 ──────────────────────────────────────────────────────
 
 const s = {
@@ -140,6 +178,23 @@ const s = {
     padding: "5px 12px", borderRadius: "6px", border: "1px solid var(--accent)",
     background: "transparent", color: "var(--accent)", cursor: "pointer",
     fontSize: "11px", opacity: 1,
+  } as React.CSSProperties,
+  triggerBtn: {
+    padding: "5px 12px", borderRadius: "6px", border: "1px solid var(--success)",
+    background: "var(--success)", color: "#fff", cursor: "pointer",
+    fontSize: "11px", fontWeight: 600,
+  } as React.CSSProperties,
+  phaseSelect: {
+    padding: "5px 10px", borderRadius: "6px", border: "1px solid var(--input-border)",
+    background: "var(--bg-input)", color: "var(--text-primary)", fontSize: "11px", outline: "none",
+  } as React.CSSProperties,
+  dreamItem: {
+    background: "var(--bg-card)", border: "1px solid var(--border)",
+    borderRadius: "6px", padding: "8px 10px",
+  } as React.CSSProperties,
+  dreamFact: {
+    fontSize: "11px", color: "var(--text-secondary)", padding: "4px 8px",
+    background: "var(--bg-hover)", borderRadius: "4px", lineHeight: 1.4,
   } as React.CSSProperties,
 };
 
@@ -210,6 +265,9 @@ export function MemoryHubPage(): React.ReactElement {
   const [stats, setStats] = useState<LayeredStats | null>(null);
   const [toolCache, setToolCache] = useState<ToolCacheStats | null>(null);
   const [budgetReport, setBudgetReport] = useState<TokenBudgetReport | null>(null);
+  const [dreaming, setDreaming] = useState<DreamingState | null>(null);
+  const [dreamPhase, setDreamPhase] = useState<string>("light");
+  const [triggeringDream, setTriggeringDream] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -217,19 +275,34 @@ export function MemoryHubPage(): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SemanticSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const searchAbortRef = useRef<AbortController | null>(null);
+
+  // 记忆状态 & 关键词搜索
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
+  const [keywordQuery, setKeywordQuery] = useState("");
+  const [keywordResults, setKeywordResults] = useState<SemanticSearchResult[] | null>(null);
+  const [keywordSearching, setKeywordSearching] = useState(false);
+  const keywordAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [statsRes, cacheRes, budgetRes] = await Promise.all([
-        fetch("/api/memory/layered-stats").then((r) => r.ok ? r.json() : null).catch(() => null),
-        fetch("/api/agent/tool-cache-stats").then((r) => r.ok ? r.json() : null).catch(() => null),
-        fetch("/api/agent/token-budget-report").then((r) => r.ok ? r.json() : null).catch(() => null),
+      const [statsRes, cacheRes, budgetRes, dreamRes, statusRes] = await Promise.all([
+        fetch("/api/memory/layered-stats").then((r) => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch("/api/agent/tool-cache-stats").then((r) => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch("/api/agent/token-budget-report").then((r) => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch("/api/memory/dreaming").then((r) => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch("/api/memory/status").then((r) => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
       setStats(statsRes);
       setToolCache(cacheRes);
       setBudgetReport(budgetRes);
+      setDreaming(dreamRes);
+      setMemoryStatus(statusRes);
+      if (!statsRes && !cacheRes && !budgetRes && !dreamRes) {
+        setError("无法连接服务器，请检查服务是否运行");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -241,21 +314,71 @@ export function MemoryHubPage(): React.ReactElement {
 
   const runSearch = useCallback(async () => {
     if (!searchQuery.trim()) return;
+    // 中止前一次搜索请求，防止旧结果覆盖新结果（竞态条件）
+    if (searchAbortRef.current) searchAbortRef.current.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
     setSearching(true);
     try {
-      const res = await fetch(`/api/memory/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=10`);
+      const res = await fetch(`/api/memory/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=10`, { signal: controller.signal });
       if (res.ok) {
         const data = await res.json();
         setSearchResults(Array.isArray(data?.results) ? data.results : []);
       } else {
         setSearchResults([]);
       }
-    } catch {
+    } catch (err) {
+      // AbortError 时不更新状态（请求已被新请求取代）
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setSearchResults([]);
     } finally {
-      setSearching(false);
+      if (!controller.signal.aborted) setSearching(false);
     }
   }, [searchQuery]);
+
+  const runKeywordSearch = useCallback(async () => {
+    if (!keywordQuery.trim()) return;
+    // 中止前一次搜索请求，防止旧结果覆盖新结果（竞态条件）
+    if (keywordAbortRef.current) keywordAbortRef.current.abort();
+    const controller = new AbortController();
+    keywordAbortRef.current = controller;
+    setKeywordSearching(true);
+    try {
+      const res = await fetch(`/api/memory/search?q=${encodeURIComponent(keywordQuery)}&limit=20`, { signal: controller.signal });
+      if (res.ok) {
+        const data = await res.json();
+        setKeywordResults(Array.isArray(data?.results) ? data.results : []);
+      } else {
+        setKeywordResults([]);
+      }
+    } catch (err) {
+      // AbortError 时不更新状态（请求已被新请求取代）
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setKeywordResults([]);
+    } finally {
+      if (!controller.signal.aborted) setKeywordSearching(false);
+    }
+  }, [keywordQuery]);
+
+  const triggerDreaming = useCallback(async () => {
+    setTriggeringDream(true);
+    try {
+      const res = await fetch("/api/memory/dreaming/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase: dreamPhase }),
+      });
+      if (res.ok) {
+        // 重新加载做梦状态以展示最新结果
+        const dreamRes = await fetch("/api/memory/dreaming");
+        if (dreamRes.ok) setDreaming(await dreamRes.json());
+      }
+    } catch {
+      // 静默处理：trigger 失败不阻断页面
+    } finally {
+      setTriggeringDream(false);
+    }
+  }, [dreamPhase]);
 
   // ── 渲染辅助 ──
 
@@ -569,6 +692,113 @@ export function MemoryHubPage(): React.ReactElement {
     );
   }
 
+  function renderDreamingCard() {
+    const enabled = !!dreaming?.enabled;
+    const diary = dreaming?.diary;
+    const shouldDream = dreaming?.shouldDream;
+    const sessions = diary?.sessions ?? [];
+    const recentSessions = sessions.slice(-3).reverse(); // 最近 3 次倒序
+    return (
+      <div style={s.layerCard}>
+        <div style={s.layerHeader}>
+          <span style={s.layerIcon}>🌙</span>
+          <div>
+            <div style={s.layerTitle}>{t("memory.dreaming.title", "记忆做梦")}</div>
+            <div style={s.layerSubtitle}>{t("memory.dreaming.desc", "空闲时回放对话，提炼持久事实")}</div>
+          </div>
+          <span style={s.badge(enabled)}>
+            {enabled ? t("memory.enabled", "已启用") : t("memory.disabled", "未启用")}
+          </span>
+        </div>
+        {diary && (
+          <>
+            <div style={s.metricRow}>
+              <span style={s.metricLabel}>{t("memory.dreaming.total_facts", "累计提取事实")}</span>
+              <span style={{ ...s.metricValue, color: "var(--success)" }}>{diary.totalFactsExtracted}</span>
+            </div>
+            <div style={s.metricRow}>
+              <span style={s.metricLabel}>{t("memory.dreaming.session_count", "做梦次数")}</span>
+              <span style={s.metricValue}>{sessions.length}</span>
+            </div>
+            <div style={s.metricRow}>
+              <span style={s.metricLabel}>{t("memory.dreaming.should_dream", "建议触发")}</span>
+              <span style={{ ...s.metricValue, color: shouldDream ? "var(--warning)" : "var(--text-muted)" }}>
+                {shouldDream ? t("memory.dreaming.yes", "是") : t("memory.dreaming.no", "否")}
+              </span>
+            </div>
+            {diary.lastDreamAt && (
+              <div style={s.metricRow}>
+                <span style={s.metricLabel}>{t("memory.dreaming.last_dream", "上次做梦")}</span>
+                <span style={{ ...s.metricValue, fontSize: "11px" }}>
+                  {new Date(diary.lastDreamAt).toLocaleString()}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        {/* 触发整理 */}
+        <div style={{ ...s.searchBox, marginBottom: "0" }}>
+          <select
+            style={s.phaseSelect}
+            value={dreamPhase}
+            onChange={(e) => setDreamPhase(e.target.value)}
+            disabled={!enabled || triggeringDream}
+          >
+            <option value="light">{t("memory.dreaming.phase_light", "浅梦（近期）")}</option>
+            <option value="deep">{t("memory.dreaming.phase_deep", "深梦（全部）")}</option>
+            <option value="rem">{t("memory.dreaming.phase_rem", "REM（固化）")}</option>
+          </select>
+          <button
+            style={{ ...s.triggerBtn, opacity: triggeringDream || !enabled ? 0.6 : 1 }}
+            onClick={triggerDreaming}
+            disabled={triggeringDream || !enabled}
+          >
+            {triggeringDream ? t("memory.dreaming.triggering", "整理中...") : t("memory.dreaming.trigger", "触发整理")}
+          </button>
+        </div>
+        {/* 最近的做梦会话 */}
+        {recentSessions.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <div style={{ ...s.metricLabel, fontSize: "10px" }}>
+              {t("memory.dreaming.recent_sessions", "最近做梦")}
+            </div>
+            {recentSessions.map((sess) => (
+              <div key={sess.id} style={s.dreamItem}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px" }}>
+                  <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+                    {t(`memory.dreaming.phase_${sess.phase}`, sess.phase)}
+                  </span>
+                  <span style={{
+                    color: sess.status === "completed" ? "var(--success)" :
+                           sess.status === "failed" ? "var(--error)" : "var(--accent)",
+                  }}>
+                    {sess.status}
+                  </span>
+                </div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>
+                  {t("memory.dreaming.source_entries", "源条目")}: {sess.sourceEntries} ·
+                  {" "}{t("memory.dreaming.facts", "事实")}: {sess.extractedFacts?.length ?? 0}
+                </div>
+                {sess.extractedFacts && sess.extractedFacts.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
+                    {sess.extractedFacts.slice(0, 2).map((f, i) => (
+                      <div key={i} style={s.dreamFact}>
+                        {f.content}
+                        <span style={{ color: "var(--text-muted)", marginLeft: "4px" }}>
+                          ({(f.confidence * 100).toFixed(0)}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div style={s.container}>
       <PageHeader
@@ -596,6 +826,43 @@ export function MemoryHubPage(): React.ReactElement {
       {error && <ErrorBanner message={error} onRetry={load} />}
       {loading && <Loading />}
 
+      {/* 记忆系统状态 */}
+      {memoryStatus && (
+        <div style={{ ...s.layerCard, marginBottom: "16px" }}>
+          <div style={s.layerHeader}>
+            <span style={s.layerIcon}>📊</span>
+            <div>
+              <div style={s.layerTitle}>{t("memory.status_title", "记忆系统状态")}</div>
+              <div style={s.layerSubtitle}>{t("memory.status_desc", "嵌入后端与向量索引状态")}</div>
+            </div>
+            <span style={s.badge(memoryStatus.ready)}>
+              {memoryStatus.ready ? t("memory.ready", "就绪") : t("memory.not_ready", "未就绪")}
+            </span>
+          </div>
+          <div style={s.metricRow}>
+            <span style={s.metricLabel}>{t("memory.embedding_backend", "嵌入后端")}</span>
+            <span style={s.metricValue}>{memoryStatus.embeddingBackend}</span>
+          </div>
+          <div style={s.metricRow}>
+            <span style={s.metricLabel}>{t("memory.vector_index_size", "向量索引大小")}</span>
+            <span style={s.metricValue}>{memoryStatus.vectorIndexSize}</span>
+          </div>
+          {memoryStatus.model && (
+            <div style={s.metricRow}>
+              <span style={s.metricLabel}>{t("memory.model", "模型")}</span>
+              <span style={{ ...s.metricValue, fontSize: "11px" }}>
+                {memoryStatus.model.name} ({memoryStatus.model.dimension}d)
+              </span>
+            </div>
+          )}
+          {memoryStatus.loadError && (
+            <div style={{ fontSize: "11px", color: "var(--error)", padding: "4px 8px", background: "var(--error-bg)", borderRadius: "4px" }}>
+              {memoryStatus.loadError}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* L0 → L3 + Canvas 分层卡片 */}
       <div style={s.grid}>
         {renderL0Card()}
@@ -605,6 +872,7 @@ export function MemoryHubPage(): React.ReactElement {
         {renderCanvasCard()}
         {renderToolCacheCard()}
         {renderTokenBudgetCard()}
+        {renderDreamingCard()}
       </div>
 
       {/* 语义搜索 */}
@@ -632,6 +900,43 @@ export function MemoryHubPage(): React.ReactElement {
               </div>
             ) : (
               searchResults.map((r) => (
+                <div key={r.id} style={s.searchItem}>
+                  <div style={s.searchScore}>
+                    score: {r.score.toFixed(4)} · id: {r.id}
+                  </div>
+                  <div style={s.searchText}>{r.text}</div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 关键词搜索 */}
+      <div style={{ marginTop: "20px" }}>
+        <h3 style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "10px" }}>
+          {t("memory.keyword_search", "关键词搜索")}
+        </h3>
+        <div style={s.searchBox}>
+          <input
+            style={s.searchInput}
+            value={keywordQuery}
+            onChange={(e) => setKeywordQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") runKeywordSearch(); }}
+            placeholder={t("memory.keyword_search_placeholder", "输入关键词，回车搜索...")}
+          />
+          <button style={{ ...s.searchBtn, opacity: keywordSearching ? 0.6 : 1 }} onClick={runKeywordSearch} disabled={keywordSearching}>
+            {keywordSearching ? t("memory.searching", "搜索中...") : t("memory.search_btn", "搜索")}
+          </button>
+        </div>
+        {keywordResults && (
+          <div style={s.searchResults}>
+            {keywordResults.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "var(--text-muted)", padding: "12px" }}>
+                {t("memory.no_results", "无匹配结果")}
+              </div>
+            ) : (
+              keywordResults.map((r) => (
                 <div key={r.id} style={s.searchItem}>
                   <div style={s.searchScore}>
                     score: {r.score.toFixed(4)} · id: {r.id}

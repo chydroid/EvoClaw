@@ -154,6 +154,10 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
     if (!cached) {
       cached = this.loadPipeline();
       TransformersEmbeddingProvider.pipelineCache.set(this.modelName, cached);
+      // 加载失败时清除缓存，允许后续重试，避免 rejected promise 被永久缓存
+      cached.catch(() => {
+        TransformersEmbeddingProvider.pipelineCache.delete(this.modelName);
+      });
     }
     return cached;
   }

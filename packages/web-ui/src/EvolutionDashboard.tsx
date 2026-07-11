@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "./i18n";
+import { learningApi, compactionsApi } from "./api-client";
 
 interface EvolutionData {
   cycles: EvolutionCycleInfo[];
@@ -145,23 +146,39 @@ export default function EvolutionDashboard() {
   const [error, setError] = useState<string | null>(null);
   const loadingRef = useRef(true);
   useEffect(() => { loadingRef.current = loading; }, [loading]);
-  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress" | "help">("overview");
+  const abortRef = useRef<AbortController | null>(null);
+  const [activeSubTab, setActiveSubTab] = useState<"overview" | "cycles" | "feedback" | "patterns" | "learning" | "progress" | "help" | "record">("overview");
   const [triggering, setTriggering] = useState(false);
   const [triggerDesc, setTriggerDesc] = useState("");
   const [showTrigger, setShowTrigger] = useState(false);
+  const [triggeringSkill, setTriggeringSkill] = useState(false);
+  const [skillIdInput, setSkillIdInput] = useState("");
+  const [skillNameInput, setSkillNameInput] = useState("");
+  const [showTriggerSkill, setShowTriggerSkill] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  // Learning record form state
+  const [recordType, setRecordType] = useState<"correction" | "gap" | "failure" | "improvement">("correction");
+  const [recordSubmitting, setRecordSubmitting] = useState(false);
+  const [recordForm, setRecordForm] = useState<Record<string, string>>({});
+  const [recordTriggerEvo, setRecordTriggerEvo] = useState(false);
+  // Compaction chain by sessionId viewer state
+  const [compactionSessionInput, setCompactionSessionInput] = useState("");
+  const [customCompactions, setCustomCompactions] = useState<CompactionSummary[]>([]);
+  const [compactionLoading, setCompactionLoading] = useState(false);
+  const [compactionError, setCompactionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadEvolutionData();
-    const interval = setInterval(loadEvolutionData, 15000);
-    return () => clearInterval(interval);
-  }, []);
-
-  async function loadEvolutionData() {
+  const loadEvolutionData = useCallback(async () => {
+    // 中止前一次请求，防止组件卸载或新请求时旧请求覆盖状态
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const [res, compactionsRes] = await Promise.all([
-        fetch("/api/evolution/dashboard"),
-        fetch("/api/compactions/web-ui").catch(() => null),
+        fetch("/api/evolution/dashboard", { signal: controller.signal }),
+        fetch("/api/compactions/web-ui", { signal: controller.signal }).catch((e) => {
+          if (e instanceof DOMException && e.name === "AbortError") throw e;
+          return null;
+        }),
       ]);
       if (res.ok) {
         const json = await res.json();
@@ -174,18 +191,34 @@ export default function EvolutionDashboard() {
         setError(null);
       } else {
         setData(DEFAULT_DATA);
+        if (loadingRef.current) setError(t("evo.server_unavailable", "Server not available - showing empty dashboard"));
       }
       if (compactionsRes && compactionsRes.ok) {
         const c = await compactionsRes.json();
         setCompactions(c.compactions || []);
       }
-    } catch {
+    } catch (err) {
+      // AbortError 时不更新状态（组件卸载或新请求取代）
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setData(DEFAULT_DATA);
       if (loadingRef.current) setError(t("evo.server_unavailable", "Server not available - showing empty dashboard"));
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }
+  }, [t]);
+
+  // 使用 ref 存最新函数，避免 setInterval 调用 stale closure
+  const loadEvolutionRef = useRef(loadEvolutionData);
+  loadEvolutionRef.current = loadEvolutionData;
+
+  useEffect(() => {
+    loadEvolutionData();
+    const interval = setInterval(() => loadEvolutionRef.current(), 15000);
+    return () => {
+      clearInterval(interval);
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, [loadEvolutionData]);
 
   useEffect(() => {
     if (activeSubTab === "learning") {
@@ -261,6 +294,100 @@ export default function EvolutionDashboard() {
       }
     } catch {
       setFeedbackMsg(t("evo.feedback_network_error"));
+    }
+  }
+
+  async function handleTriggerSkillEvolution() {
+    const skillId = skillIdInput.trim();
+    const skillName = skillNameInput.trim() || skillId;
+    if (!skillId) return;
+    setTriggeringSkill(true);
+    try {
+      const res = await fetch("/api/evolution/trigger-skill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skillId, skillName }),
+      });
+      if (res.ok) {
+        setFeedbackMsg(t("evo.trigger_skill_success", "技能进化已触发"));
+        setSkillIdInput("");
+        setSkillNameInput("");
+        setShowTriggerSkill(false);
+        loadEvolutionData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setFeedbackMsg(t("evo.trigger_fail", "触发失败").replace("{0}", (err as any).error || res.statusText));
+      }
+    } catch {
+      setFeedbackMsg(t("evo.trigger_network_error"));
+    } finally {
+      setTriggeringSkill(false);
+    }
+  }
+
+  async function handleRecordLearning() {
+    setRecordSubmitting(true);
+    try {
+      const f = recordForm;
+      const tags = f.tags ? f.tags.split(",").map(s => s.trim()).filter(Boolean) : [];
+      const triggerEvolution = recordTriggerEvo;
+      let result;
+      switch (recordType) {
+        case "correction":
+          result = await learningApi.correction({
+            title: f.title, context: f.context, originalError: f.originalError,
+            correction: f.correction, preferredApproach: f.preferredApproach,
+            source: f.source || "web-ui", tags, triggerEvolution,
+          });
+          break;
+        case "gap":
+          result = await learningApi.gap({
+            capability: f.capability, title: f.title, context: f.context,
+            suggestedSolution: f.suggestedSolution,
+            source: f.source || "web-ui", tags, triggerEvolution,
+          });
+          break;
+        case "failure":
+          result = await learningApi.failure({
+            service: f.service, endpoint: f.endpoint, error: f.error,
+            context: f.context, rootCause: f.rootCause, fallback: f.fallback,
+            fallbackCode: f.fallbackCode, source: f.source || "web-ui",
+            severity: f.severity, tags, triggerEvolution,
+          });
+          break;
+        case "improvement":
+          result = await learningApi.improvement({
+            title: f.title, description: f.description, context: f.context,
+            isOutdated: f.isOutdated === "true", newApproach: f.newApproach,
+            recommendedAction: f.recommendedAction, improvedCode: f.improvedCode,
+            source: f.source || "web-ui", tags, triggerEvolution,
+          });
+          break;
+      }
+      setFeedbackMsg(t("evo.record_submitted", "学习记录已提交: {0}").replace("{0}", result?.message || ""));
+      setRecordForm({});
+    } catch {
+      setFeedbackMsg(t("evo.record_submit_fail", "学习记录提交失败"));
+    } finally {
+      setRecordSubmitting(false);
+    }
+  }
+
+  async function loadCustomCompactions(sessionId: string) {
+    if (!sessionId.trim()) return;
+    setCompactionLoading(true);
+    setCompactionError(null);
+    try {
+      const data = await compactionsApi.get(sessionId.trim());
+      setCustomCompactions((data.compactions || []) as CompactionSummary[]);
+      if ((data.compactions || []).length === 0) {
+        setCompactionError(t("evo.no_compactions_for_session", "该会话无压缩记录"));
+      }
+    } catch {
+      setCustomCompactions([]);
+      setCompactionError(t("evo.compaction_load_fail", "加载压缩链失败"));
+    } finally {
+      setCompactionLoading(false);
     }
   }
 
@@ -352,6 +479,21 @@ export default function EvolutionDashboard() {
             {t("evo.trigger_evolution")}
           </button>
           <button
+            onClick={() => { setShowTriggerSkill(!showTriggerSkill); setShowTrigger(false); }}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "6px",
+              border: "1px solid var(--success)",
+              background: showTriggerSkill ? "var(--success)" : "transparent",
+              color: showTriggerSkill ? "#fff" : "var(--success)",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            {t("evo.trigger_skill_evolution", "触发技能进化")}
+          </button>
+          <button
             onClick={loadEvolutionData}
             style={{
               padding: "6px 10px",
@@ -429,6 +571,87 @@ export default function EvolutionDashboard() {
         </div>
       )}
 
+      {showTriggerSkill && (
+        <div style={{
+          padding: "12px 16px",
+          background: "var(--bg-sidebar)",
+          border: "1px solid var(--success)",
+          borderRadius: "8px",
+          marginBottom: "12px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+        }}>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+            {t("evo.trigger_skill_desc", "输入技能 ID 和名称，触发该技能的自进化流程")}
+          </div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <input
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: "var(--bg-secondary)",
+                color: "var(--text-primary)",
+                fontSize: "13px",
+                outline: "none",
+              }}
+              placeholder={t("evo.skill_id_placeholder", "技能 ID（必填）")}
+              value={skillIdInput}
+              onChange={(e) => setSkillIdInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleTriggerSkillEvolution()}
+            />
+            <input
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: "var(--bg-secondary)",
+                color: "var(--text-primary)",
+                fontSize: "13px",
+                outline: "none",
+              }}
+              placeholder={t("evo.skill_name_placeholder", "技能名称（可选，默认同 ID）")}
+              value={skillNameInput}
+              onChange={(e) => setSkillNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleTriggerSkillEvolution()}
+            />
+            <button
+              onClick={handleTriggerSkillEvolution}
+              disabled={triggeringSkill || !skillIdInput.trim()}
+              style={{
+                padding: "8px 16px",
+                borderRadius: "6px",
+                border: "none",
+                background: triggeringSkill ? "var(--text-muted)" : "var(--success)",
+                color: "#fff",
+                cursor: triggeringSkill ? "not-allowed" : "pointer",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              {triggeringSkill ? t("evo.executing") : t("evo.execute")}
+            </button>
+            <button
+              onClick={() => setShowTriggerSkill(false)}
+              style={{
+                padding: "8px 12px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: "transparent",
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+                fontSize: "12px",
+              }}
+            >
+              {t("evo.cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {feedbackMsg && (
         <div style={{
           padding: "8px 14px",
@@ -470,6 +693,7 @@ export default function EvolutionDashboard() {
         <button style={subTabStyle(activeSubTab === "cycles")} onClick={() => setActiveSubTab("cycles")}>{t("evo.tab_cycles")} ({data.cycles.length})</button>
         <button style={subTabStyle(activeSubTab === "feedback")} onClick={() => setActiveSubTab("feedback")}>{t("evo.tab_feedback")} ({data.feedback.length})</button>
         <button style={subTabStyle(activeSubTab === "learning")} onClick={() => setActiveSubTab("learning")}>{t("evo.tab_learning")}</button>
+        <button style={subTabStyle(activeSubTab === "record")} onClick={() => setActiveSubTab("record")}>{t("evo.tab_record", "记录学习")}</button>
         <button style={subTabStyle(activeSubTab === "progress")} onClick={() => setActiveSubTab("progress")}>{t("evo.tab_progress")}</button>
         <button style={subTabStyle(activeSubTab === "patterns")} onClick={() => setActiveSubTab("patterns")}>{t("evo.tab_patterns")}</button>
         <button style={subTabStyle(activeSubTab === "help")} onClick={() => setActiveSubTab("help")}>{t("evo.tab_help")}</button>
@@ -480,12 +704,245 @@ export default function EvolutionDashboard() {
         {activeSubTab === "cycles" && renderCycles()}
         {activeSubTab === "feedback" && renderFeedback()}
         {activeSubTab === "learning" && renderLearning()}
+        {activeSubTab === "record" && renderRecord()}
         {activeSubTab === "progress" && renderProgress()}
         {activeSubTab === "patterns" && renderPatterns()}
         {activeSubTab === "help" && renderHelp()}
       </div>
     </div>
   );
+
+  function renderRecord() {
+    const recordTypes: Array<{ key: typeof recordType; label: string }> = [
+      { key: "correction", label: t("evo.record_correction", "用户纠正") },
+      { key: "gap", label: t("evo.record_gap", "能力缺口") },
+      { key: "failure", label: t("evo.record_failure", "外部失败") },
+      { key: "improvement", label: t("evo.record_improvement", "知识改进") },
+    ];
+    const fieldsByType: Record<typeof recordType, Array<{ key: string; label: string; placeholder?: string; area?: boolean }>> = {
+      correction: [
+        { key: "title", label: t("evo.field_title", "标题"), placeholder: t("evo.field_title_ph", "简要描述纠正内容") },
+        { key: "context", label: t("evo.field_context", "上下文"), placeholder: t("evo.field_context_ph", "发生场景的上下文"), area: true },
+        { key: "originalError", label: t("evo.field_original_error", "原始错误"), placeholder: t("evo.field_original_error_ph", "遇到的错误信息"), area: true },
+        { key: "correction", label: t("evo.field_correction", "纠正内容"), placeholder: t("evo.field_correction_ph", "正确的做法/答案"), area: true },
+        { key: "preferredApproach", label: t("evo.field_preferred_approach", "推荐方案"), placeholder: t("evo.field_preferred_approach_ph", "推荐的解决方案"), area: true },
+      ],
+      gap: [
+        { key: "capability", label: t("evo.field_capability", "能力名称"), placeholder: t("evo.field_capability_ph", "缺失的能力") },
+        { key: "title", label: t("evo.field_title", "标题"), placeholder: t("evo.field_title_ph", "简要描述") },
+        { key: "context", label: t("evo.field_context", "上下文"), placeholder: t("evo.field_context_ph", "何时需要此能力"), area: true },
+        { key: "suggestedSolution", label: t("evo.field_suggested_solution", "建议方案"), placeholder: t("evo.field_suggested_solution_ph", "建议的解决方式"), area: true },
+      ],
+      failure: [
+        { key: "service", label: t("evo.field_service", "服务名"), placeholder: t("evo.field_service_ph", "如 openai-api") },
+        { key: "endpoint", label: t("evo.field_endpoint", "端点"), placeholder: t("evo.field_endpoint_ph", "API 端点") },
+        { key: "error", label: t("evo.field_error", "错误信息"), placeholder: t("evo.field_error_ph", "错误内容"), area: true },
+        { key: "context", label: t("evo.field_context", "上下文"), placeholder: t("evo.field_context_ph", "调用上下文"), area: true },
+        { key: "rootCause", label: t("evo.field_root_cause", "根本原因"), placeholder: t("evo.field_root_cause_ph", "失败的根本原因"), area: true },
+        { key: "fallback", label: t("evo.field_fallback", "降级方案"), placeholder: t("evo.field_fallback_ph", "降级处理方式"), area: true },
+        { key: "severity", label: t("evo.field_severity", "严重级别"), placeholder: t("evo.field_severity_ph", "critical/high/medium/low") },
+      ],
+      improvement: [
+        { key: "title", label: t("evo.field_title", "标题"), placeholder: t("evo.field_title_ph", "改进标题") },
+        { key: "description", label: t("evo.field_description", "描述"), placeholder: t("evo.field_description_ph", "改进描述"), area: true },
+        { key: "context", label: t("evo.field_context", "上下文"), placeholder: t("evo.field_context_ph", "适用场景"), area: true },
+        { key: "newApproach", label: t("evo.field_new_approach", "新方案"), placeholder: t("evo.field_new_approach_ph", "推荐的新做法"), area: true },
+        { key: "recommendedAction", label: t("evo.field_recommended_action", "建议动作"), placeholder: t("evo.field_recommended_action_ph", "建议执行的动作"), area: true },
+      ],
+    };
+    const fields = fieldsByType[recordType];
+    const inputStyle: React.CSSProperties = {
+      width: "100%", padding: "8px 12px", borderRadius: "6px",
+      border: "1px solid var(--border)", background: "var(--bg-secondary)",
+      color: "var(--text-primary)", fontSize: "13px", outline: "none",
+      boxSizing: "border-box",
+    };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={s.chartSection}>
+          <h3 style={s.sectionTitle}>{t("evo.record_learning_title", "记录学习")}</h3>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "12px" }}>
+            {t("evo.record_learning_desc", "手动向进化引擎写入学习记录，触发自适应改进。选择记录类型后填写对应字段。")}
+          </div>
+          {/* Record type selector */}
+          <div style={{ display: "flex", gap: "6px", marginBottom: "12px", flexWrap: "wrap" }}>
+            {recordTypes.map(rt => (
+              <button
+                key={rt.key}
+                onClick={() => { setRecordType(rt.key); setRecordForm({}); }}
+                style={{
+                  padding: "6px 14px", borderRadius: "6px", border: "1px solid",
+                  borderColor: recordType === rt.key ? "var(--accent)" : "var(--border)",
+                  background: recordType === rt.key ? "var(--accent-bg)" : "var(--bg-hover)",
+                  color: recordType === rt.key ? "var(--accent)" : "var(--text-secondary)",
+                  cursor: "pointer", fontSize: "12px", fontWeight: 600,
+                }}
+              >
+                {rt.label}
+              </button>
+            ))}
+          </div>
+          {/* Dynamic fields */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {fields.map(field => (
+              <div key={field.key}>
+                <label style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px", display: "block" }}>
+                  {field.label}
+                </label>
+                {field.area ? (
+                  <textarea
+                    value={recordForm[field.key] || ""}
+                    onChange={(e) => setRecordForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    rows={3}
+                    style={{ ...inputStyle, resize: "vertical", minHeight: "60px", fontFamily: "inherit" }}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={recordForm[field.key] || ""}
+                    onChange={(e) => setRecordForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    style={inputStyle}
+                  />
+                )}
+              </div>
+            ))}
+            {/* Common: tags & source */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+              <div>
+                <label style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px", display: "block" }}>
+                  {t("evo.field_tags", "标签")}
+                </label>
+                <input
+                  type="text"
+                  value={recordForm.tags || ""}
+                  onChange={(e) => setRecordForm(prev => ({ ...prev, tags: e.target.value }))}
+                  placeholder={t("evo.field_tags_ph", "逗号分隔的标签")}
+                  style={inputStyle}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px", display: "block" }}>
+                  {t("evo.field_source", "来源")}
+                </label>
+                <input
+                  type="text"
+                  value={recordForm.source || ""}
+                  onChange={(e) => setRecordForm(prev => ({ ...prev, source: e.target.value }))}
+                  placeholder={t("evo.field_source_ph", "默认 web-ui")}
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+            {/* Trigger evolution toggle */}
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--text-secondary)", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={recordTriggerEvo}
+                onChange={(e) => setRecordTriggerEvo(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              {t("evo.trigger_evolution_flag", "提交后触发进化流程")}
+            </label>
+          </div>
+          {/* Submit button */}
+          <div style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
+            <button
+              onClick={handleRecordLearning}
+              disabled={recordSubmitting}
+              style={{
+                padding: "8px 20px", borderRadius: "6px", border: "none",
+                background: recordSubmitting ? "var(--text-muted)" : "var(--accent)",
+                color: "#fff", cursor: recordSubmitting ? "not-allowed" : "pointer",
+                fontSize: "13px", fontWeight: 600, opacity: recordSubmitting ? 0.5 : 1,
+              }}
+            >
+              {recordSubmitting ? t("evo.submitting", "提交中...") : t("evo.submit_record", "提交记录")}
+            </button>
+            <button
+              onClick={() => setRecordForm({})}
+              style={{
+                padding: "8px 16px", borderRadius: "6px",
+                border: "1px solid var(--border)", background: "var(--bg-hover)",
+                color: "var(--text-secondary)", cursor: "pointer", fontSize: "13px",
+              }}
+            >
+              {t("evo.clear_form", "清空")}
+            </button>
+          </div>
+        </div>
+
+        {/* Compaction chain viewer by sessionId */}
+        <div style={s.chartSection}>
+          <h3 style={s.sectionTitle}>{t("evo.compaction_viewer_title", "压缩链查看器")}</h3>
+          <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "12px" }}>
+            {t("evo.compaction_viewer_desc", "输入任意会话 ID 查看其压缩链历史。")}
+          </div>
+          <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+            <input
+              type="text"
+              value={compactionSessionInput}
+              onChange={(e) => setCompactionSessionInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && loadCustomCompactions(compactionSessionInput)}
+              placeholder={t("evo.session_id_placeholder", "会话 ID（如 web-ui 或自定义会话 ID）")}
+              style={inputStyle}
+            />
+            <button
+              onClick={() => loadCustomCompactions(compactionSessionInput)}
+              disabled={compactionLoading || !compactionSessionInput.trim()}
+              style={{
+                padding: "8px 16px", borderRadius: "6px", border: "none",
+                background: compactionLoading || !compactionSessionInput.trim() ? "var(--text-muted)" : "var(--accent)",
+                color: "#fff", cursor: compactionLoading || !compactionSessionInput.trim() ? "not-allowed" : "pointer",
+                fontSize: "13px", fontWeight: 600, opacity: compactionLoading ? 0.5 : 1,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {compactionLoading ? t("evo.loading", "加载中...") : t("evo.view_compactions", "查看")}
+            </button>
+          </div>
+          {compactionError && (
+            <div style={{ padding: "10px 12px", borderRadius: "6px", background: "var(--warning-bg)", color: "var(--warning)", fontSize: "12px" }}>
+              {compactionError}
+            </div>
+          )}
+          {customCompactions.length > 0 && (
+            <div style={s.compactionTimeline}>
+              {customCompactions.map((comp, i) => (
+                <div key={comp.id || i} style={s.compactionTimelineItem}>
+                  <div style={s.compactionTimelineDot} />
+                  <div>
+                    <div style={s.compactionTimelineTitle}>
+                      {t("evo.compaction_entry").replace("{0}", String(i + 1)).replace("{1}", comp.parentSessionId).replace("{2}", comp.successorSessionId)}
+                    </div>
+                    <div style={s.compactionTimelineDesc}>{comp.summary.slice(0, 200)}</div>
+                    <div style={s.compactionTimelineTime}>
+                      {new Date(comp.timestamp).toLocaleString(locale)} · {t("evo.compacted_turns").replace("{0}", String(comp.compactedTurnCount))}
+                    </div>
+                    {comp.keyFacts.length > 0 && (
+                      <div style={{ marginTop: "6px" }}>
+                        {comp.keyFacts.slice(0, 5).map((fact, fi) => (
+                          <span key={fi} style={s.factTag}>{fact.slice(0, 40)}</span>
+                        ))}
+                      </div>
+                    )}
+                    {comp.decisions.length > 0 && (
+                      <div style={{ marginTop: "4px" }}>
+                        {comp.decisions.slice(0, 3).map((d, di) => (
+                          <span key={di} style={s.decisionTag}>{d.slice(0, 40)}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   function renderOverview() {
     return (

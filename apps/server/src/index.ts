@@ -41,7 +41,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
@@ -100,6 +100,7 @@ export class EvoClawServer {
   private errorRecoveryManager: ErrorRecoveryManager;
   private browserController: BrowserController;
   private playwrightBrowser: PlaywrightBrowser;
+  private browserToolsCleanup: (() => void) | null = null;
   private emailClient: EmailClient;
   private scheduleManager: ScheduleManager;
   private bootstrapManager: BootstrapManager;
@@ -149,6 +150,7 @@ export class EvoClawServer {
   private gitOperations: GitOperations;
   private codeIntelligence: CodeIntelligence;
   private visionAnalyzer: VisionAnalyzer;
+  private shutdownForensics: ShutdownForensics;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -167,6 +169,10 @@ export class EvoClawServer {
       prettyPrint: process.env.NODE_ENV !== "production",
     });
     this.registry.registerService("logger", this.logger);
+
+    // ── ShutdownForensics — 关闭取证快照 ──
+    this.shutdownForensics = new ShutdownForensics();
+    this.registry.registerService("shutdownForensics", this.shutdownForensics);
 
     this.observability = new Observability({ metricsPrefix: "evoclaw" });
     this.observability.registerMetric({ name: "evoclaw_llm_calls_total", type: "counter", help: "Total LLM API calls", labels: ["provider", "model", "status"] });
@@ -545,7 +551,7 @@ export class EvoClawServer {
     this.registry.registerService("channelManager", this.channelManager);
 
     // ── Dead Letter Queue ──
-    const dlq = new DeadLetterQueue({ storageDir: path.resolve("data", "dlq") });
+    const dlq = new DeadLetterQueue({ storageDir: path.resolve(__dirname, "..", "..", "..", "data", "dlq") });
     this.registry.registerService("deadLetterQueue", dlq);
     this.channelManager.onSendFailure((channel, target, text, error) => {
       try {
@@ -578,11 +584,18 @@ export class EvoClawServer {
     const a2aClient = new A2AClient();
     this.registry.registerService("a2aClient", a2aClient);
 
+    const a2aAuthType = (process.env.EVOCLAW_A2A_AUTH as "none" | "api_key") || "api_key";
+    const a2aValidApiKeys = process.env.EVOCLAW_A2A_API_KEYS?.split(",").map(k => k.trim()).filter(Boolean);
+    let a2aEnabled = this.featureFlagStore.isEnabled("a2a");
+    if (a2aEnabled && a2aAuthType === "api_key" && (!a2aValidApiKeys || a2aValidApiKeys.length === 0)) {
+      process.stderr.write("[Server] A2A authType is api_key but no API keys configured, disabling A2A\n");
+      a2aEnabled = false;
+    }
     const a2aServer = new A2AServer({
       publicUrl: process.env.EVOCLAW_A2A_URL || `http://localhost:${process.env.EvoClaw_PORT || "27788"}`,
-      enabled: this.featureFlagStore.isEnabled("a2a"),
-      authType: (process.env.EVOCLAW_A2A_AUTH as "none" | "api_key") || "api_key",
-      validApiKeys: process.env.EVOCLAW_A2A_API_KEYS?.split(",").map(k => k.trim()).filter(Boolean),
+      enabled: a2aEnabled,
+      authType: a2aAuthType,
+      validApiKeys: a2aValidApiKeys,
     });
     a2aServer.setTaskHandler(async (task) => {
       const input = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
@@ -713,7 +726,11 @@ export class EvoClawServer {
             peerId: msg.from,
           }),
           new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error("CHANNEL_CHAT_TIMEOUT")), CHANNEL_TIMEOUT);
+            timeoutHandle = setTimeout(() => {
+              // 超时后取消后台 chat，避免 agentModelExecutor.chat 继续消耗资源
+              this.agentModelExecutor.abortSession(sessionId);
+              reject(new Error("CHANNEL_CHAT_TIMEOUT"));
+            }, CHANNEL_TIMEOUT);
           }),
         ]);
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -852,15 +869,12 @@ export class EvoClawServer {
     this.agentModelExecutor.setWorkspacePath(workspaceDir);
     this.logger.info("server", `Workspace initialized at ${workspaceDir}`);
 
-    // Whitelist workspace and skills directories — file operations within
-    // these paths are auto-approved without user confirmation.
+    // 仅白名单 workspace 和 skills 目录 — file operations within these paths
+    // are auto-approved without user confirmation.
+    // 安全注意：不白名单整个 project root，否则 agent 可修改源码、.env 等任意项目文件。
     this.permissionManager.addDirectoryWhitelist(workspaceDir, ["file_create", "file_modify", "file_delete"]);
     this.permissionManager.addDirectoryWhitelist(skillsDir, ["file_create", "file_modify", "file_delete"]);
-    // Also whitelist project root — bare filenames (like "notes.txt") resolve here
-    // because FileSystemManager.setBasePath restricts everything to the project root.
-    const projectRoot = path.resolve(__dirname, "..", "..", "..");
-    this.permissionManager.addDirectoryWhitelist(projectRoot, ["file_create", "file_modify", "file_delete"]);
-    this.logger.info("server", `File operations whitelisted for workspace, skills & project root directories`);
+    this.logger.info("server", `File operations whitelisted for workspace & skills directories`);
 
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
@@ -990,6 +1004,8 @@ export class EvoClawServer {
     process.on("SIGINT", async () => {
       sigintCount++;
       this.logger.info("server", `Received SIGINT (count: ${sigintCount})`);
+      // 关闭取证：同步快照上下文
+      try { this.shutdownForensics.snapshotShutdownContext("SIGINT"); } catch { /* best-effort */ }
       // Second SIGINT force-exits immediately — useful when shutdown is hung
       if (sigintCount >= 2) {
         this.logger.warn("server", "Force-exiting immediately on second SIGINT");
@@ -1010,6 +1026,8 @@ export class EvoClawServer {
     process.on("SIGTERM", async () => {
       sigtermCount++;
       this.logger.info("server", `Received SIGTERM (count: ${sigtermCount})`);
+      // 关闭取证：同步快照上下文
+      try { this.shutdownForensics.snapshotShutdownContext("SIGTERM"); } catch { /* best-effort */ }
       // Second SIGTERM force-exits immediately
       if (sigtermCount >= 2) {
         this.logger.warn("server", "Force-exiting immediately on second SIGTERM");
@@ -1026,8 +1044,14 @@ export class EvoClawServer {
       process.exit(0);
     });
 
-    process.on("uncaughtException", (err) => {
+    process.on("uncaughtException", async (err) => {
       this.logger.fatal("server", "Uncaught exception", err);
+      try {
+        await Promise.race([
+          this.shutdown(),
+          new Promise(resolve => setTimeout(resolve, 5000)),
+        ]);
+      } catch { /* best-effort */ }
       process.exit(1);
     });
 
@@ -1044,6 +1068,8 @@ export class EvoClawServer {
     this.logger.info("server", "Shutting down...");
     this.selfHealing.stop();
     this.scheduleManager.stop();
+    // 清理浏览器健康检查 interval，避免定时器泄漏
+    try { this.browserToolsCleanup?.(); this.browserToolsCleanup = null; } catch { /* ignore */ }
     this.configWatcher.stopAll();
     // Stop Weixin plugin adapter
     this.weixinPluginAdapter.stopAllMonitors();
@@ -1056,10 +1082,20 @@ export class EvoClawServer {
     } catch (e) { this.logger.error("server", `SkillIndex persist failed: ${e}`); }
     this.logger.info("server", "Stopping subsystems...");
     try { await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server"); } catch (e) { this.logger.error("server", `Shutdown publish failed: ${e}`); }
-    try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }
+    // 先停止 gateway（HTTP 监听 + 通道清理），再 kill 子进程，最后停止注册服务。
+    // 若先 killAll 会关闭子进程依赖的句柄，导致 gateway.stop() 清理失败。
     try { await this.gateway.stop(); } catch (e) { this.logger.error("server", `gateway stop failed: ${e}`); }
+    try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }
+    // 清理插件：在 registry.stopAll() 之前调用插件的 unregisterPlugin/shutdown，避免资源泄漏
+    try {
+      const plugins = this.pluginManager.getPlugins();
+      for (const p of plugins) {
+        try { await this.pluginManager.unregisterPlugin(p.manifest.name); }
+        catch (e) { this.logger.error("server", `Plugin shutdown failed: ${e}`); }
+      }
+    } catch (e) { /* ignore if pluginManager not initialized */ }
     try { await this.registry.stopAll(); } catch (e) { this.logger.error("server", `registry stopAll failed: ${e}`); }
-    try { this.memoryHub.close(); } catch { /* ignore */ }
+    try { await this.memoryHub.close(); } catch { /* ignore */ }
     try { await shutdownTracing(); } catch (e) { this.logger.error("server", `shutdownTracing failed: ${e}`); }
     this.logger.info("server", "Goodbye!");
   }
@@ -1228,7 +1264,7 @@ export class EvoClawServer {
   }
 
   private registerBrowserTools(): void {
-    registerBrowserTools(
+    this.browserToolsCleanup = registerBrowserTools(
       this.agentModelExecutor,
       this.browserController,
       this.playwrightBrowser,
@@ -1255,7 +1291,8 @@ export class EvoClawServer {
       this.emailClient,
       this.eventBus,
       this.reportGenerator,
-      this.playwrightBrowser
+      this.playwrightBrowser,
+      this.registry
     );
   }
   private registerReportingTools(): void {
@@ -1529,7 +1566,8 @@ export class EvoClawServer {
         const args = [...baseArgs, inputPath];
         const { stdout } = await execFileAsync(cmd, args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: "utf-8", env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } });
         return stdout || null;
-      } catch (err: any) {
+      } catch (err: unknown) {
+        process.stderr.write(`[MarkItDown] conversion error: ${err instanceof Error ? err.message : String(err)}\n`);
         return null;
       }
     };
@@ -1560,13 +1598,15 @@ export class EvoClawServer {
         const isUrl = source.startsWith("http://") || source.startsWith("https://");
 
         if (isUrl) {
-          // SSRF protection: validate URL before fetching
+          // SSRF protection: validate URL before fetching (fail-closed).
+          // ssrfProtection 未注册时拒绝请求，避免绕过安全检查。
           const ssrfProtection = this.registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
-          if (ssrfProtection) {
-            const ssrfResult = await ssrfProtection.checkURL(source);
-            if (!ssrfResult.allowed) {
-              return { error: `URL blocked by security policy: ${ssrfResult.reason}`, source };
-            }
+          if (!ssrfProtection) {
+            return { error: "SSRF protection service unavailable", source };
+          }
+          const ssrfResult = await ssrfProtection.checkURL(source);
+          if (!ssrfResult.allowed) {
+            return { error: `URL blocked by security policy: ${ssrfResult.reason}`, source };
           }
 
           const tmpDir = os.tmpdir();
@@ -1576,11 +1616,39 @@ export class EvoClawServer {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 15000);
             try {
-              const response = await fetch(source, {
+              // 使用 redirect: "manual" 手动跟随重定向，对每个 Location 重新做 SSRF 校验，
+              // 防止攻击者通过 302 重定向到内网地址绕过初始 SSRF 检查。
+              const MAX_REDIRECTS = 5;
+              let currentUrl = source;
+              let response = await fetch(currentUrl, {
                 headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
                 signal: controller.signal,
-                redirect: "follow",
+                redirect: "manual",
               });
+              let redirects = 0;
+              while ([301, 302, 303, 307, 308].includes(response.status) && redirects < MAX_REDIRECTS) {
+                const locationHeader = response.headers.get("location");
+                if (!locationHeader) {
+                  return { error: "Redirect response missing Location header", source };
+                }
+                // 相对重定向需基于当前 URL 解析为绝对地址
+                const nextUrl = new URL(locationHeader, currentUrl).toString();
+                // 对重定向目标重新校验 SSRF
+                const redirectSsrf = await ssrfProtection.checkURL(nextUrl);
+                if (!redirectSsrf.allowed) {
+                  return { error: `Redirect URL blocked by security policy: ${redirectSsrf.reason}`, source };
+                }
+                currentUrl = nextUrl;
+                response = await fetch(currentUrl, {
+                  headers: { "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)" },
+                  signal: controller.signal,
+                  redirect: "manual",
+                });
+                redirects++;
+              }
+              if ([301, 302, 303, 307, 308].includes(response.status)) {
+                return { error: `Too many redirects (max ${MAX_REDIRECTS})`, source };
+              }
               if (!response.ok) {
                 return { error: `HTTP ${response.status} fetching URL`, source };
               }
@@ -1599,11 +1667,18 @@ export class EvoClawServer {
             } finally {
               clearTimeout(timeout);
             }
-          } catch (err: any) {
-            return { error: err.message || String(err), source };
+          } catch (err: unknown) {
+            return { error: err instanceof Error ? err.message : String(err), source };
           } finally {
             try { fs.unlinkSync(tmpFile); } catch { /* temp file cleanup failure is non-critical */ }
           }
+        }
+
+        // 路径穿越防护：本地文件必须在项目根目录内，防止访问 /etc/passwd 等敏感文件
+        const mdAllowedBase = path.resolve(__dirname, "..", "..", "..");
+        const mdResolved = path.resolve(source);
+        if (mdResolved !== mdAllowedBase && !mdResolved.startsWith(mdAllowedBase + path.sep)) {
+          return { error: `Path traversal blocked: "${source}" is outside the allowed project directory.` };
         }
 
         if (!fs.existsSync(source)) {
@@ -1895,57 +1970,36 @@ export class EvoClawServer {
   /**
    * 创建 ToolExecutorFn — 用于 batch_execute 和 workflow_execute
    *
-   * 委托给 AgentModelExecutor 的工具执行机制。
-   * 通过动态查找 executor 内部注册的工具 handler 来执行。
+   * 委托给 AgentModelExecutor.executeToolByName()，从 registeredTools 中
+   * 查找工具并调用其 handler。
    */
   private createToolExecutorFn(): BatchToolExecutorFn {
     return async (toolName: string, params: Record<string, unknown>) => {
-      // 使用 executor 的内部工具执行接口
-      // AgentModelExecutor 暴露 executeTool 方法（或类似）
-      const executor = this.agentModelExecutor as unknown as {
-        executeTool?: (name: string, params: Record<string, unknown>) => Promise<unknown>;
-        tools?: Map<string, { handler: (params: Record<string, unknown>) => Promise<unknown> }>;
-      };
-      // 路径 1：标准 executeTool 方法
-      if (typeof executor.executeTool === "function") {
-        return await executor.executeTool(toolName, params);
-      }
-      // 路径 2：从 tools Map 中查找 handler
-      if (executor.tools && executor.tools.has(toolName)) {
-        const tool = executor.tools.get(toolName);
-        if (tool && typeof tool.handler === "function") {
-          return await tool.handler(params);
-        }
-      }
-      throw new Error(`Tool not found or not executable: ${toolName}`);
+      return await this.agentModelExecutor.executeToolByName(toolName, params);
     };
   }
 
   /**
    * 创建 DLQRetryHandler — 用于 dlq_retry_batch
    *
-   * 委托给 GatewayServer 的 DeadLetterQueue.requeue 或类似方法。
+   * 委托给 registry 中的 DeadLetterQueue，通过 markReplayed(id, false) 标记条目
+   * 为未重放（递增 retryCount），让 DLQ 的重试机制处理后续投递。
    * 如果 DLQ 未配置或不可用，返回 undefined（dlq_retry_batch 工具会优雅失败）。
    */
   private createDlqHandler(): DLQRetryHandler | undefined {
     return async (entry) => {
       // 通过 registry 获取 DeadLetterQueue 服务
-      const dlq = this.registry.resolveService("deadLetterQueue") as unknown as {
-        requeue?: (entry: { id: string; topic: string; payload: unknown }) => Promise<void>;
-        retry?: (entry: { id: string; topic: string; payload: unknown }) => Promise<void>;
-      } | null;
+      const dlq = this.registry.resolveService("deadLetterQueue") as DeadLetterQueue | null;
       if (!dlq) {
         throw new Error("DeadLetterQueue service not available in registry");
       }
-      if (typeof dlq.requeue === "function") {
-        await dlq.requeue({ id: entry.id, topic: entry.topic, payload: entry.payload });
-        return;
+      // DeadLetterQueue 未暴露 requeue/retry 方法。
+      // 使用 markReplayed(id, false) 标记条目为未重放（递增 retryCount 并更新时间戳），
+      // 让 DLQ 的重试机制处理后续投递。
+      const ok = dlq.markReplayed(entry.id, false);
+      if (!ok) {
+        throw new Error(`Failed to mark DLQ entry ${entry.id} for retry (not found or concurrent operation in progress)`);
       }
-      if (typeof dlq.retry === "function") {
-        await dlq.retry({ id: entry.id, topic: entry.topic, payload: entry.payload });
-        return;
-      }
-      throw new Error("DeadLetterQueue does not expose requeue/retry method");
     };
   }
 

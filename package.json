@@ -1,6 +1,6 @@
 {
   "name": "evoclaw",
-  "version": "0.72.5",
+  "version": "0.73.0",
   "private": true,
   "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
@@ -15,7 +15,10 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "pnpm -r typecheck",
-    "clean": "pnpm -r clean"
+    "clean": "pnpm -r clean",
+    "osv-check": "npx --yes tsx scripts/osv-check.ts",
+    "lock-deps": "npx --yes tsx scripts/lock-deps.ts",
+    "lock-deps:fix": "npx --yes tsx scripts/lock-deps.ts --fix"
   },
   "engines": {
     "node": ">=20.0.0",

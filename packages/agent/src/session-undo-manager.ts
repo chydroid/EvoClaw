@@ -102,7 +102,7 @@ export class SessionUndoManager {
    */
   async undo(sessionId: string, count = 1): Promise<UndoUnit[]> {
     const stack = this.undoStacks.get(sessionId) ?? [];
-    if (stack.length === 0) return [];
+    if (stack.length === 0 || count <= 0) return [];
     const toRevert = stack.splice(-count);
     const reverted: UndoUnit[] = [];
     const allTurnIds: string[] = [];

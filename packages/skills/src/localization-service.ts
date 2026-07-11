@@ -1,6 +1,7 @@
 import { ServiceRegistry, type SkillI18n } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 
 interface TranslationCache {
   [key: string]: string;
@@ -105,11 +106,21 @@ export class LocalizationService {
 
   saveI18nFile(skillDir: string, i18n: SkillI18n): void {
     const i18nPath = path.join(skillDir, "_i18n.json");
+    // 安全：原子写入（tmp + fsync + rename），避免进程崩溃时 _i18n.json 被截断损坏
+    const tmpPath = `${i18nPath}.tmp.${process.pid}`;
     try {
       const existing = this.loadI18nFile(skillDir);
       const merged = { ...existing, ...i18n };
-      fs.writeFileSync(i18nPath, JSON.stringify(merged, null, 2), "utf-8");
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(merged, null, 2), "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmpPath, i18nPath);
     } catch (err) {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       process.stderr.write(`[LocalizationService] Failed to save i18n file: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
@@ -325,12 +336,8 @@ export class LocalizationService {
   }
 
   private getCacheKey(text: string): string {
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-      const char = text.charCodeAt(i);
-      hash = ((hash << 5) - hash + char) | 0;
-    }
-    return `tr_${Math.abs(hash).toString(36)}`;
+    // 项目约定要求 SHA256；DJB2 变体哈希碰撞率高，不符合约定。
+    return `tr_${crypto.createHash("sha256").update(text, "utf-8").digest("hex").slice(0, 16)}`;
   }
 
   private getFromCache(key: string): string | undefined {

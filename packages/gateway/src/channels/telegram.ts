@@ -200,7 +200,8 @@ export class TelegramAdapter implements ChannelAdapter {
       };
 
       if (options?.replyTo) {
-        body.reply_to_message_id = parseInt(options.replyTo, 10);
+        const replyToId = parseInt(options.replyTo, 10);
+        if (!Number.isNaN(replyToId)) body.reply_to_message_id = replyToId;
       }
 
       // Handle single photo attachment
@@ -383,6 +384,8 @@ export class TelegramAdapter implements ChannelAdapter {
 
       if (this.running) {
         this.pollingTimer = setTimeout(poll, 1000);
+        // unref 避免长轮询定时器阻止进程退出
+        this.pollingTimer.unref?.();
       }
     };
 

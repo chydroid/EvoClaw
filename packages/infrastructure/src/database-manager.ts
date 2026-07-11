@@ -88,7 +88,22 @@ export class DatabaseManager {
         const filtered = this.applyWhere(allRows, operation.where, params);
         // Apply SET clause (basic: col = value pairs)
         if (operation.setClause) {
-          const setPairs = operation.setClause.split(/,\s*/);
+          // 支持引号内包含逗号的 SET 子句解析（状态机）
+          const setPairs: string[] = [];
+          let current = "";
+          let inQuote = false;
+          for (const ch of operation.setClause) {
+            if (ch === "'") {
+              inQuote = !inQuote;
+              current += ch;
+            } else if (ch === "," && !inQuote) {
+              setPairs.push(current.trim());
+              current = "";
+            } else {
+              current += ch;
+            }
+          }
+          if (current.trim()) setPairs.push(current.trim());
           for (const row of filtered) {
             const r = row as Record<string, unknown>;
             for (const pair of setPairs) {

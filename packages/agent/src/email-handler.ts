@@ -101,7 +101,8 @@ export async function detectAndConfigureEmailAccount(
     return "163"; // Default to 163 for Chinese email
   };
 
-  process.stdout.write(`[EmailHandler] Detected email account configuration: ${email.replace(/(.{2}).*(@.*)/, "$1****$2")}, password length: ${password.length}\n`);
+  const maskedEmail = email.replace(/^([^@]).*(@.*)$/, (m, first, domain) => `${first}***${domain}`);
+  process.stdout.write(`[EmailHandler] Detected email account configuration: ${maskedEmail}, password length: ${password.length}\n`);
 
   const provider = detectProvider(message);
   const displayName = email.split("@")[0];

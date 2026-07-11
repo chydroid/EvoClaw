@@ -358,9 +358,13 @@ export class ProcessRegistry {
    * 杀死所有运行中的进程（用于 session reset）。
    */
   killAll(sessionKey?: string): number {
+    // 先快照待杀死的 id，避免迭代 Map 时 kill()->markCompleted()->running.delete
+    // 修改 Map 导致迭代器跳过条目。
+    const ids = Array.from(this.running.entries())
+      .filter(([, session]) => !sessionKey || session.sessionKey === sessionKey)
+      .map(([id]) => id);
     let killed = 0;
-    for (const [id, session] of this.running.entries()) {
-      if (sessionKey && session.sessionKey !== sessionKey) continue;
+    for (const id of ids) {
       if (this.kill(id)) killed++;
     }
     return killed;
@@ -530,8 +534,13 @@ export class ProcessRegistry {
     if (oldestId) {
       const session = this.running.get(oldestId);
       if (session) {
-        this.kill(oldestId);
-        this.running.delete(oldestId);
+        // kill() 成功时内部会通过 markCompleted() 同步删除 running 条目；
+        // 失败时（信号发送异常）从此处删除，确保调用方 size 检查正确，
+        // 不让 MAX_PROCESSES 被新会话暂时突破。
+        const ok = this.kill(oldestId);
+        if (!ok) {
+          this.running.delete(oldestId);
+        }
       }
     }
   }

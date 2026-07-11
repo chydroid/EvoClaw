@@ -264,16 +264,31 @@ export class GeneticEvolutionEngine {
       const seed = candidates[0];
       this.initializePopulation(seed);
 
-      // 使用简单的评估函数
-      const dummyEvaluator = async (c: EvolutionCandidate): Promise<FitnessScore> => ({
-        candidateId: c.id,
-        testPassRate: 0.5,
-        securityScore: 0.7,
-        performanceScore: 0.5,
-        codeQualityScore: 0.6,
-        overallFitness: 0.5 + Math.random() * 0.3,
-        details: ["genetic_optimization"],
-      });
+      // 使用确定性启发式评估函数（基于候选体特征），避免随机适应度导致结果不可复现
+      const dummyEvaluator = async (c: EvolutionCandidate): Promise<FitnessScore> => {
+        const hasCode = c.codeArtifacts.length > 0;
+        const hasTests = c.codeArtifacts.some(a => a.tests && a.tests.length > 0);
+        const lowRisk = c.risk.level === "low";
+        const mediumRisk = c.risk.level === "medium";
+        const hasProposedChanges = (c.proposedChanges?.codeChanges?.length ?? 0) > 0;
+
+        // 确定性加权：代码 +0.35 / 测试 +0.25 / 提议变更 +0.15 / 风险分级 0~0.2
+        const riskScore = lowRisk ? 0.2 : mediumRisk ? 0.1 : 0.0;
+        const overallFitness = Math.min(
+          1.0,
+          (hasCode ? 0.35 : 0) + (hasTests ? 0.25 : 0) + (hasProposedChanges ? 0.15 : 0) + riskScore,
+        );
+
+        return {
+          candidateId: c.id,
+          testPassRate: hasTests ? 0.5 : 0,
+          securityScore: 0.7,
+          performanceScore: 0.5,
+          codeQualityScore: 0.6,
+          overallFitness,
+          details: ["genetic_optimization"],
+        };
+      };
 
       const scores = await this.evaluatePopulation(dummyEvaluator);
 

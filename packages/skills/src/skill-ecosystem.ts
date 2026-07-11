@@ -373,18 +373,57 @@ export class SkillEcosystem {
   // ─── Helpers ────────────────────────────────────────────────────────────
 
   private parseFrontmatter(content: string): Record<string, unknown> {
-    const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!match) return {};
 
     const yaml = match[1];
     const result: Record<string, unknown> = {};
 
-    // Simple YAML parser for flat key-value pairs and arrays
+    // Simple YAML parser for flat key-value pairs and arrays.
+    // 支持 block scalar（`|` 和 `>`）：当值是 `|` 或 `>` 时，
+    // 收集后续缩进行作为多行字符串值，避免把 description 等多行字段误设为空数组。
     const lines = yaml.split("\n");
     let currentKey = "";
     let currentArray: unknown[] = [];
+    let blockScalarKey: string | null = null;
+    let blockScalarLines: string[] = [];
+    let blockScalarMinIndent = -1;
 
-    for (const line of lines) {
+    const flushBlockScalar = () => {
+      if (blockScalarKey !== null) {
+        // 去除每行首部多余的缩进（按最小缩进裁剪）
+        const trimmed = blockScalarLines
+          .map((l) => l.slice(blockScalarMinIndent))
+          .join("\n")
+          .replace(/\n+$/, ""); // 去除尾部空行（block scalar 语义）
+        result[blockScalarKey] = trimmed;
+        blockScalarKey = null;
+        blockScalarLines = [];
+        blockScalarMinIndent = -1;
+      }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // 正在收集 block scalar：检查当前行是否仍属于该 block（有缩进或空行）
+      if (blockScalarKey !== null) {
+        if (line.trim() === "") {
+          blockScalarLines.push(line);
+          continue;
+        }
+        const indent = line.length - line.trimStart().length;
+        if (indent > 0) {
+          if (blockScalarMinIndent < 0 || indent < blockScalarMinIndent) {
+            blockScalarMinIndent = indent;
+          }
+          blockScalarLines.push(line);
+          continue;
+        }
+        // 当前行无缩进 → block scalar 结束，先 flush 再按普通行处理
+        flushBlockScalar();
+      }
+
       const trimmed = line.trim();
 
       // Array item
@@ -405,7 +444,12 @@ export class SkillEcosystem {
         currentKey = kvMatch[1];
         const value = kvMatch[2].trim();
 
-        if (value === "" || value === "|" || value === ">") {
+        if (value === "|" || value === ">") {
+          // block scalar：后续缩进行作为多行字符串
+          blockScalarKey = currentKey;
+          blockScalarLines = [];
+          blockScalarMinIndent = -1;
+        } else if (value === "") {
           currentArray = [];
           result[currentKey] = currentArray;
         } else if (value.startsWith("[") && value.endsWith("]")) {
@@ -423,6 +467,9 @@ export class SkillEcosystem {
         }
       }
     }
+
+    // 文件结束时如果仍在收集 block scalar，flush 它
+    flushBlockScalar();
 
     return result;
   }

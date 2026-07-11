@@ -108,6 +108,11 @@ export class EvolutionThreshold {
   recordFailure(skillId: string | null, source: string): void {
     const key = skillId || source;
     this.failureCounts.set(key, (this.failureCounts.get(key) || 0) + 1);
+    // 限制 Map 大小，防止无限制增长；淘汰最旧条目（Map 保留插入顺序）
+    if (this.failureCounts.size > 500) {
+      const oldestKey = this.failureCounts.keys().next().value;
+      if (oldestKey !== undefined) this.failureCounts.delete(oldestKey);
+    }
   }
 
   /**
@@ -133,7 +138,7 @@ export class EvolutionThreshold {
    */
   resetFailures(skillId: string | null, source: string): void {
     const key = skillId || source;
-    this.failureCounts.set(key, 0);
+    this.failureCounts.delete(key);
   }
 
   /**

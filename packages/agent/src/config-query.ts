@@ -93,7 +93,7 @@ export function handleSystemConfigQuery(
   if (allSkills.length > 0) {
     const statusMap = new Map<string, "installed" | "available">();
     for (const s of allSkills) {
-      const name = s.name || (s as Record<string, unknown>).id as string || "unknown";
+      const name = s.name || String((s as Record<string, unknown>).id ?? "") || "unknown";
       statusMap.set(name,
         (s as Record<string, unknown>).installed === false || (s as Record<string, unknown>).installed === "false"
           ? "available" : "installed"

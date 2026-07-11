@@ -110,12 +110,15 @@ export class StaggerCoordinator {
         const scheduledTime = entry.scheduledTime.getTime();
 
         if (overCapacity && i >= this.maxConcurrent) {
-          // 超出并发上限，延迟到下一个窗口
-          const executeAt = new Date(scheduledTime + this.windowMs);
+          // 超出并发上限，延迟到下一个窗口，并叠加随机 jitter
+          // 避免所有被推迟的任务在下一窗口同时触发（thundering herd）
+          const jitter = Math.random() * this.windowMs * 0.5;
+          const delayMs = this.windowMs + jitter;
+          const executeAt = new Date(scheduledTime + delayMs);
           decisions.push({
             jobId: entry.jobId,
             executeAt,
-            delayMs: this.windowMs,
+            delayMs,
             reason: `over-capacity (pos ${i + 1}/${groupSize}, deferred to next window)`,
             queuePosition: i,
           });

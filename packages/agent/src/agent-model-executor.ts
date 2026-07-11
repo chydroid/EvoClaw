@@ -1038,6 +1038,18 @@ export class AgentModelExecutor {
     this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides });
   }
 
+  /**
+   * 按名称执行已注册的工具。供 batch_execute / workflow_execute 等外部调用方使用，
+   * 避免直接访问内部 registeredTools Map。
+   */
+  async executeToolByName(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const entry = this.registeredTools.get(name);
+    if (!entry) {
+      throw new Error(`Tool not found or not executable: ${name}`);
+    }
+    return await entry.handler(params);
+  }
+
   unregisterTool(name: string): void {
     const entry = this.registeredTools.get(name);
     if (entry?.checkFn) {
@@ -1234,6 +1246,9 @@ export class AgentModelExecutor {
       for (const [key, val] of this.pendingOperations) {
         if (val.sessionId === sessionId) this.pendingOperations.delete(key);
       }
+      // 清理会话级上下文引擎缓存与 abort 控制器，避免跨会话泄漏
+      this._contextEngineResults.delete(sessionId);
+      this.sessionAbortControllers.delete(sessionId);
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
@@ -1244,6 +1259,9 @@ export class AgentModelExecutor {
       this.pendingOperations.clear();
       this.reflectionHistory.clear();
       this.activityStreams.clear();
+      // 全局清理：上下文引擎缓存与 abort 控制器一并清空
+      this._contextEngineResults.clear();
+      this.sessionAbortControllers.clear();
     }
   }
 
@@ -1842,7 +1860,7 @@ export class AgentModelExecutor {
     const autoSplitConfig: AutoSplitConfig = {
       complexity: (context?.complexity as AutoSplitConfig["complexity"]) || "simple",
       shouldAutoSplit: (context?.shouldAutoSplit as boolean) || false,
-      maxSubtasks: (context?.maxSubtasks as number) || 3,
+      maxSubtasks: (context?.maxSubtasks as number) ?? 3,
     };
 
     if (autoSplitConfig.shouldAutoSplit && autoSplitConfig.complexity !== "simple") {

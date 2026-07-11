@@ -2,6 +2,7 @@ import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import * as cron from "node-cron";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 
 export interface ScheduledTask {
   id: string;
@@ -84,7 +85,7 @@ export class ScheduleManager {
       throw new Error(`Invalid cron expression: ${options.cronExpression}`);
     }
 
-    const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `task-${crypto.randomUUID()}`;
     const nextDate = this.calculateNextRun(options.cronExpression);
 
     const task: ScheduledTask = {
@@ -237,10 +238,17 @@ export class ScheduleManager {
     );
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.started = false;
+    // 停止所有 cron job，阻止新任务触发
     for (const [id] of this.tasks) {
       this.stopTask(id);
+    }
+    // 等待运行中任务完成（带超时，避免永久阻塞关闭流程）
+    const STOP_TIMEOUT_MS = 5000;
+    const deadline = Date.now() + STOP_TIMEOUT_MS;
+    while (this.runningTasks.size > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
     this.eventBus.publish("scheduler.stopped", {}, "schedule-manager");
   }

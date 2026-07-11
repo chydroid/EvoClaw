@@ -151,12 +151,18 @@ function computeDelay(
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
+  controller?: AbortController,
 ): Promise<T> {
   if (timeoutMs <= 0) return promise;
 
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`Operation timed out after ${timeoutMs}ms`)),
+      () => {
+        // 超时后中止底层操作（若调用方传入 controller 并将 signal 透传给 fn），
+        // 避免 promise 继续运行占用资源
+        controller?.abort();
+        reject(new Error(`Operation timed out after ${timeoutMs}ms`));
+      },
       timeoutMs,
     );
 
@@ -187,9 +193,11 @@ export class RetryPolicy {
 
   /**
    * Execute an async function with retry logic.
+   * fn 可选地接收 AbortSignal：超时时 execute 会 abort 该 signal，
+   * 以便 fn 内部能取消底层操作（如 fetch、子进程）。
    */
   async execute<T>(
-    fn: (attempt: number) => Promise<T>,
+    fn: (attempt: number, signal?: AbortSignal) => Promise<T>,
     callbacks?: RetryCallbacks<T>,
   ): Promise<RetryResult<T>> {
     const startTime = Date.now();
@@ -209,7 +217,9 @@ export class RetryPolicy {
       callbacks?.onAttempt?.(retryAttempt);
 
       try {
-        const result = await withTimeout(fn(attempt), this.config.attemptTimeoutMs);
+        // 每次 attempt 创建独立 AbortController，超时后 abort 以取消 fn 底层操作
+        const controller = new AbortController();
+        const result = await withTimeout(fn(attempt, controller.signal), this.config.attemptTimeoutMs, controller);
 
         const totalTimeMs = Date.now() - startTime;
         callbacks?.onSuccess?.(result, attempt + 1);

@@ -299,6 +299,8 @@ export class SwarmOrchestrator {
     const timeoutTimer = setTimeout(() => {
       this.failDelegation(delegation.id, new Error(`Delegation timed out after ${timeoutMs}ms`));
     }, timeoutMs);
+    // unref 让定时器不阻止进程退出
+    timeoutTimer.unref?.();
     this.delegationTimers.set(delegation.id, timeoutTimer);
 
     this.eventBus.publish("swarm:delegation-started", { delegation }, "swarm-orchestrator");
@@ -853,7 +855,27 @@ export class SwarmOrchestrator {
       delegation.toAgentId = best.id;
       best.status = "busy";
       best.currentTask = delegation.task;
-      this.delegationStartTimes.set(delegation.id, Date.now());
+
+      // 清理旧定时器，避免泄漏（旧定时器仍指向 failDelegation 会在到期后误触发）
+      const oldTimer = this.delegationTimers.get(delegation.id);
+      if (oldTimer) {
+        clearTimeout(oldTimer);
+        this.delegationTimers.delete(delegation.id);
+      }
+
+      // 设置新的超时定时器（参照 delegate / processPending 的模式）
+      // 注意：不重置 delegationStartTimes，保留原始起始时间，让总超时预算不变；
+      // 新定时器按剩余时间触发，与 checkHeartbeats 的总预算校验保持一致
+      const startTime = this.delegationStartTimes.get(delegation.id) ?? Date.now();
+      const timeoutMs = delegation.timeoutMs || this.config.defaultTimeoutMs;
+      const remaining = Math.max(0, timeoutMs - (Date.now() - startTime));
+      const timeoutTimer = setTimeout(() => {
+        this.failDelegation(delegation.id, new Error(`Delegation timed out after ${timeoutMs}ms`));
+      }, remaining);
+      // 避免定时器阻止进程退出
+      timeoutTimer.unref?.();
+      this.delegationTimers.set(delegation.id, timeoutTimer);
+
       this.eventBus.publish("swarm:delegation-reassigned", { delegation, newAgent: best.id }, "swarm-orchestrator");
     }
   }
@@ -876,6 +898,8 @@ export class SwarmOrchestrator {
         const timeoutTimer = setTimeout(() => {
           this.failDelegation(delegation.id, new Error(`Delegation timed out after ${timeoutMs}ms`));
         }, timeoutMs);
+        // unref 让定时器不阻止进程退出
+        timeoutTimer.unref?.();
         this.delegationTimers.set(delegation.id, timeoutTimer);
         break;
       }
@@ -890,18 +914,12 @@ export class SwarmOrchestrator {
       if (agent.status !== "offline" && now - agent.lastHeartbeat > timeout) {
         agent.status = "offline";
 
-        // Reassign active tasks
+        // Reassign active tasks（委托 reassignDelegation 处理：清理旧定时器、
+        // 设置新定时器、更新 best.currentTask，避免内联重分配遗漏）
         if (this.config.autoReassign) {
           for (const [, delegation] of this.activeDelegations) {
             if (delegation.toAgentId === agent.id) {
-              const best = this.findBestAgent(delegation.requiredCapabilities, delegation.priority);
-              if (best) {
-                delegation.toAgentId = best.id;
-                best.status = "busy";
-                this.eventBus.publish("swarm:delegation-reassigned",
-                  { delegation, oldAgent: agent.id, newAgent: best.id },
-                  "swarm-orchestrator");
-              }
+              this.reassignDelegation(delegation);
             }
           }
         }

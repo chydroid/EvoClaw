@@ -56,7 +56,11 @@ async function chatREPL(opts: Record<string, unknown>): Promise<void> {
 
   rl.prompt();
 
-  rl.on("line", async (input: string) => {
+  // 串行化消息发送：readline 的 "line" 事件处理器是 async 但 readline 不会 await，
+  // 快速输入多条消息时响应可能乱序。用链式 Promise 保证按序执行。
+  let processingChain: Promise<void> = Promise.resolve();
+
+  const handleLine = async (input: string) => {
     const line = input.trim();
     if (!line) { rl.prompt(); return; }
 
@@ -114,6 +118,15 @@ async function chatREPL(opts: Record<string, unknown>): Promise<void> {
     }
     console.log();
     rl.prompt();
+  };
+
+  rl.on("line", (input: string) => {
+    processingChain = processingChain
+      .then(() => handleLine(input))
+      .catch((err) => {
+        process.stderr.write(c("red", `  ${ICONS.error()} Chat error: ${err instanceof Error ? err.message : String(err)}\n`));
+        rl.prompt();
+      });
   });
 
   rl.on("close", () => {

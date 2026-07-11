@@ -88,6 +88,14 @@ export type { AgentSpeaker, ChatTurn, ChatResult, ChatFn, SelectorFn, StopCondit
 export { MoaCommittee, MoaPresetRegistry, parseMoaMember, formatMoaResult } from "./moa-committee";
 export type { MoaMember, MoaPreset, MoaReferenceResult, MoaResult, MoaChatFn, MoaAggregatorChunkCallback } from "./moa-committee";
 
+// MoA Engine — 增强的多阶段 Mixture-of-Agents 推理引擎（对标 hermes-agent moa_loop.py）
+// 4 阶段流水线：Proposal → Aggregation → Verification → Synthesis
+//   多 proposer 并行 + 4 种聚合策略（concat/best/vote/weighted）+ 验证回路 + AbortController 超时
+// 注：MoaResult / VerificationResult 已由 moa-committee / formal-verification 显式导出，
+//     此处以别名导出 moa-engine 的同名类型避免覆盖。
+export * from "./moa-engine";
+export type { MoaResult as MoaEngineResult, VerificationResult as MoaVerificationResult } from "./moa-engine";
+
 // Goal Contract — 目标合约验证系统
 // 对标 Hermes v0.18.0 "Goal Contract"：从"我觉得修好了"到"测试通过了，这是证据"
 export { GoalContract, GoalRegistry } from "./goal-contract";
@@ -124,6 +132,8 @@ export type { CopilotRouteRule, CopilotRouterConfig, RoutingDecision, UserLLMPro
 
 export { CredentialPool } from "./credential-pool";
 export type { CredentialEntry, CredentialPoolOptions, CredentialPoolLegacyConfig, CredentialState, RotationStrategy } from "./credential-pool";
+
+export { persistCredentialPool, loadCredentialPool, getCredentialPoolPath } from "./credential-persistence";
 
 // Text processing utilities
 export { stripWebNoise, collapseNewlines, summarizeToolResult, stripHtml, compactJson, compactJsonValue, smartTruncateString, filterPlainText, normalizeUrls, groupSimilarLines, extractCodeSignatures, deduplicateLines, smartTruncate } from "./text-processor";
@@ -177,8 +187,8 @@ export { FileStateRegistry, assertNotStale } from "./file-state-registry";
 export type { StaleResult } from "./file-state-registry";
 
 // ToolSearch — 渐进式工具披露 BM25（对标 Hermes tools/tool_search.py）
-export { ToolSearchEngine, estimateTokens, estimateToolTokens, estimateTotalTokens } from "./tool-search";
-export type { ToolMeta, ToolSearchConfig, ToolSearchResult } from "./tool-search";
+export { ToolSearchEngine, ToolSearchIndex, estimateTokens, estimateToolTokens, estimateTotalTokens } from "./tool-search";
+export type { ToolMeta, ToolSearchConfig, ToolSearchResult, IndexedTool } from "./tool-search";
 
 // Observability system
 export { AgentObservability } from "./agent-observability";
@@ -224,6 +234,12 @@ export type { SteerInstruction, SteerResult } from "./steer-command";
 // Workboard multi-agent orchestration
 export { Workboard } from "./workboard";
 export type { BoardTask, BoardComment, BoardRun, BoardColumn } from "./workboard";
+
+// KanbanBoard — 持久化 SQLite 多 Agent 工作队列看板（借鉴 hermes-agent Kanban 插件）
+//   Board 硬边界 / Tenant 软命名空间 / Dispatcher 长期循环回收 stale claims + 推进 ready
+//   注：TaskStatus/TaskPriority 与 ./types、./task-scheduler 同名类型冲突，故用别名导出
+export { KanbanBoard } from "./kanban-board";
+export type { Task, TaskInput, TaskStatus as KanbanTaskStatus, TaskPriority as KanbanTaskPriority, BoardStats, DispatchResult } from "./kanban-board";
 
 // Computed Status system
 export { ComputedStatusEngine } from "./computed-status";

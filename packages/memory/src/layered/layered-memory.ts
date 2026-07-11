@@ -237,6 +237,9 @@ export class LayeredMemory {
     // 2a. L1 智能去重（借鉴 TencentDB-Agent-Memory l1-dedup.ts）
     let l1Memories: AtomicMemory[] = rawL1;
     let dedupSkipped = 0;
+    // 已知限制（Low）：以下 checkBatch 为 await，期间并发的 consolidate 可能读到
+    // L1 的部分写入（push 发生在 await 之后）。captureTurn 与 consolidate 不应并发
+    // 调用；若需严格串行，应在调用方加互斥。此处不重构以避免改变去重时序。
     if (this.cfg.enableL1Dedup && rawL1.length > 0 && this.allL1Memories.length > 0) {
       const decisions = await this.dedupifier.checkBatch(rawL1);
       const applied = applyDedupDecisions(this.allL1Memories, rawL1, decisions);

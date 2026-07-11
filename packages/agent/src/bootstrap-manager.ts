@@ -140,6 +140,12 @@ export class BootstrapManager {
   async initialize(): Promise<BootstrapContext> {
     this.ensureDir(this.workspacePath);
 
+    // Handle BOOTSTRAP.md — only create for brand new workspace
+    // 检查必须在创建文件之前，否则文件刚被创建，hasAnyBootstrap 恒为 true
+    const hasAnyBootstrap = BOOTSTRAP_FILES.slice(0, 3).some((f) =>
+      fs.existsSync(path.join(this.workspacePath, f.name))
+    );
+
     // Check which files exist and create defaults for missing ones
     let createdAny = false;
     for (const file of BOOTSTRAP_FILES) {
@@ -153,10 +159,6 @@ export class BootstrapManager {
       }
     }
 
-    // Handle BOOTSTRAP.md — only create for brand new workspace
-    const hasAnyBootstrap = BOOTSTRAP_FILES.slice(0, 3).some((f) =>
-      fs.existsSync(path.join(this.workspacePath, f.name))
-    );
     const bootstrapPath = path.join(this.workspacePath, "BOOTSTRAP.md");
     if (!hasAnyBootstrap && !fs.existsSync(bootstrapPath)) {
       const bootstrapTemplate = DEFAULT_TEMPLATES["BOOTSTRAP.md"];

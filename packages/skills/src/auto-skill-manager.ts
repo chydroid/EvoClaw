@@ -8,7 +8,7 @@ export interface SkillMatch {
   skillName: string;
   relevance: number;
   reason: string;
-  source: "local" | "remote";
+  source: "local" | "remote" | "optional";
   skillId?: string;
   description?: string;
   keywords?: string[];
@@ -39,6 +39,12 @@ export class AutoSkillManager {
   private corpusBuilt = false;
   private remoteSkills: SkillMatch[] = [];
   private fileContentCache = new Map<string, { content: string; mtime: number }>();
+  /**
+   * 跟踪每个技能的路径与来源类型（local / optional）。
+   * buildCorpus 扫描 bundled + optional + data/skills 三个目录时填充，
+   * findAllMatches / scanFileSystem 用它恢复技能的真实路径与来源。
+   */
+  private skillSourceMap = new Map<string, { path: string; source: "local" | "optional" }>();
 
   constructor(
     private registry: ServiceRegistry,
@@ -51,37 +57,89 @@ export class AutoSkillManager {
   }
 
   /**
+   * 解析 bundled 技能目录路径（官方内置技能）。
+   * 生产环境（dist）：packages/skills/dist → ../bundled = packages/skills/bundled
+   * 测试环境（src）：packages/skills/src → ../bundled = packages/skills/bundled
+   */
+  private resolveBundledDir(): string {
+    return path.resolve(__dirname, "..", "bundled");
+  }
+
+  /**
+   * 解析 optional 技能目录路径（不默认启用的较重/小众技能）。
+   * 生产环境（dist）：packages/skills/dist → ../optional = packages/skills/optional
+   * 测试环境（src）：packages/skills/src → ../optional = packages/skills/optional
+   */
+  private resolveOptionalDir(): string {
+    return path.resolve(__dirname, "..", "optional");
+  }
+
+  /**
    * Build the TF-IDF corpus from all available SKILL.md files locally.
    * Call this on startup and after any skill installation.
+   *
+   * 扫描三个目录（优先级从高到低）：
+   * 1. data/skills（用户安装的技能）— source: "local"
+   * 2. packages/skills/bundled（官方内置技能）— source: "local"
+   * 3. packages/skills/optional（不默认启用的较重/小众技能）— source: "optional"
+   *
+   * 同名技能以高优先级目录为准（先扫到者胜），避免重复入语料库。
    */
   buildCorpus(): void {
     const documents: Array<{ id: string; text: string; metadata: Record<string, string> }> = [];
+    this.skillSourceMap.clear();
+    const seen = new Set<string>();
 
-    if (fs.existsSync(this.skillsDir)) {
-      const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory() && !entry.name.startsWith(".")) {
-          const skillMdPath = path.join(this.skillsDir, entry.name, "SKILL.md");
-          if (!fs.existsSync(skillMdPath)) continue;
-
-          try {
-            const content = fs.readFileSync(skillMdPath, "utf-8");
-            const metadata = this.extractMetadata(skillMdPath, content, entry.name);
-            documents.push({
-              id: entry.name,
-              text: this.buildDocumentText(entry.name, content, metadata),
-              metadata,
-            });
-          } catch {
-            continue;
-          }
-        }
-      }
-    }
+    // 1. data/skills（用户安装的技能）— 最高优先级
+    this.scanDirForCorpus(this.skillsDir, "local", documents, seen);
+    // 2. bundled skills（官方内置）
+    this.scanDirForCorpus(this.resolveBundledDir(), "local", documents, seen);
+    // 3. optional skills（较重/小众，不默认启用）
+    this.scanDirForCorpus(this.resolveOptionalDir(), "optional", documents, seen);
 
     this.tfidfMatcher.initialize(documents);
     this.corpusBuilt = true;
-    process.stdout.write(`[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills\n`);
+    const optionalCount = Array.from(this.skillSourceMap.values()).filter(v => v.source === "optional").length;
+    process.stdout.write(
+      `[AutoSkillManager] TF-IDF corpus built with ${documents.length} skills (optional: ${optionalCount})\n`
+    );
+  }
+
+  /**
+   * 扫描单个目录的技能，加入 TF-IDF 文档集合与 skillSourceMap。
+   * 同名技能以先扫到者为准（seen 去重）。
+   */
+  private scanDirForCorpus(
+    dir: string,
+    source: "local" | "optional",
+    documents: Array<{ id: string; text: string; metadata: Record<string, string> }>,
+    seen: Set<string>
+  ): void {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (seen.has(entry.name)) continue;
+
+      const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+      if (!fs.existsSync(skillMdPath)) continue;
+
+      try {
+        const content = fs.readFileSync(skillMdPath, "utf-8");
+        const metadata = this.extractMetadata(skillMdPath, content, entry.name);
+        // 标记来源：optional 技能单独标记，便于后续 installOptionalSkill 激活
+        metadata.source = source === "optional" ? `optional:${entry.name}` : `local:${entry.name}`;
+        documents.push({
+          id: entry.name,
+          text: this.buildDocumentText(entry.name, content, metadata),
+          metadata,
+        });
+        this.skillSourceMap.set(entry.name, { path: skillMdPath, source });
+        seen.add(entry.name);
+      } catch {
+        continue;
+      }
+    }
   }
 
   /**
@@ -116,15 +174,18 @@ export class AutoSkillManager {
 
     // ── 1. TF-IDF semantic matching on local skills ──
     if (this.corpusBuilt && this.tfidfMatcher) {
-      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.1, maxResults);
+      const tfidfResults = this.tfidfMatcher.search(taskDescription, 0.05, maxResults);
       for (const r of tfidfResults) {
-        const skillMdPath = path.join(this.skillsDir, r.target, "SKILL.md");
+        // 从 skillSourceMap 恢复真实路径与来源（local / optional）
+        const sourceInfo = this.skillSourceMap.get(r.target);
+        const skillMdPath = sourceInfo?.path || path.join(this.skillsDir, r.target, "SKILL.md");
+        const source: SkillMatch["source"] = sourceInfo?.source || "local";
         allMatches.push({
           skillPath: skillMdPath,
           skillName: r.target,
           relevance: r.score,
           reason: `语义匹配: ${r.matchedTerms.slice(0, 5).join(", ")}${r.source ? ` — ${r.source}` : ""}`,
-          source: "local",
+          source,
           description: r.source,
           keywords: r.matchedTerms,
         });
@@ -222,6 +283,7 @@ export class AutoSkillManager {
     // Resolve skill manager
     const skillManager = this.registry.resolveService<{
       installSkill(skillPath: string): Promise<{ id: string; name: string }>;
+      installOptionalSkill(skillName: string): Promise<{ id: string; name: string }>;
     }>("skillManager");
 
     if (!skillManager) {
@@ -229,7 +291,11 @@ export class AutoSkillManager {
     }
 
     try {
-      const skill = await skillManager.installSkill(bestMatch.skillPath);
+      // optional 技能需先从 optional/ 复制到 data/skills/ 激活；
+      // local 技能直接 installSkill 即可。
+      const skill = bestMatch.source === "optional"
+        ? await skillManager.installOptionalSkill(bestMatch.skillName)
+        : await skillManager.installSkill(bestMatch.skillPath);
 
       onProgress?.({
         phase: "complete",
@@ -314,6 +380,7 @@ export class AutoSkillManager {
 
       const skillManager = this.registry.resolveService<{
         installSkill(path: string): Promise<{ id: string; name: string }>;
+        installOptionalSkill(skillName: string): Promise<{ id: string; name: string }>;
       }>("skillManager");
 
       if (!skillManager) {
@@ -322,13 +389,19 @@ export class AutoSkillManager {
       }
 
       try {
-        const skill = await skillManager.installSkill(skillPath);
+        // 若技能位于 optional/ 目录，使用 installOptionalSkill 复制激活；
+        // 否则直接 installSkill。
+        const optionalDir = this.resolveOptionalDir();
+        const isOptional = skillPath.startsWith(optionalDir + path.sep) || skillPath === optionalDir;
+        const skill = isOptional
+          ? await skillManager.installOptionalSkill(name)
+          : await skillManager.installSkill(skillPath);
         success.push({
           skillPath,
           skillName: skill.name,
           relevance: 1,
           reason: "用户手动安装",
-          source: "local",
+          source: isOptional ? "optional" : "local",
           skillId: skill.id,
         });
 
@@ -376,29 +449,40 @@ export class AutoSkillManager {
 
   /**
    * List all locally discoverable skills with metadata.
+   * 包含 data/skills + bundled + optional 三个目录的技能（去重，高优先级目录优先）。
    */
   listDiscoverableSkills(): Array<{ name: string; path: string; description: string; version: string }> {
     const skills: Array<{ name: string; path: string; description: string; version: string }> = [];
+    const seen = new Set<string>();
 
-    if (!fs.existsSync(this.skillsDir)) return skills;
+    const scanDirs = [
+      this.skillsDir,
+      this.resolveBundledDir(),
+      this.resolveOptionalDir(),
+    ];
 
-    const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith(".")) {
-        const skillMdPath = path.join(this.skillsDir, entry.name, "SKILL.md");
-        if (!fs.existsSync(skillMdPath)) continue;
+    for (const dir of scanDirs) {
+      if (!fs.existsSync(dir)) continue;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith(".")) {
+          if (seen.has(entry.name)) continue;
+          const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+          if (!fs.existsSync(skillMdPath)) continue;
 
-        try {
-          const content = fs.readFileSync(skillMdPath, "utf-8");
-          const meta = this.extractMetadata(skillMdPath, content, entry.name);
-          skills.push({
-            name: entry.name,
-            path: skillMdPath,
-            description: meta.description || "",
-            version: meta.version || "0.1.0",
-          });
-        } catch {
-          continue;
+          try {
+            const content = fs.readFileSync(skillMdPath, "utf-8");
+            const meta = this.extractMetadata(skillMdPath, content, entry.name);
+            seen.add(entry.name);
+            skills.push({
+              name: entry.name,
+              path: skillMdPath,
+              description: meta.description || "",
+              version: meta.version || "0.1.0",
+            });
+          } catch {
+            continue;
+          }
         }
       }
     }
@@ -417,39 +501,51 @@ export class AutoSkillManager {
       this.fileContentCache.clear();
     }
 
-    if (!fs.existsSync(this.skillsDir)) return matches;
+    // 扫描三个目录：data/skills + bundled + optional
+    // 同名技能以高优先级目录为准（先扫到者胜）
+    const scanDirs: Array<{ dir: string; source: "local" | "optional" }> = [
+      { dir: this.skillsDir, source: "local" },
+      { dir: this.resolveBundledDir(), source: "local" },
+      { dir: this.resolveOptionalDir(), source: "optional" },
+    ];
 
-    const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith(".")) {
-        const skillMdPath = path.join(this.skillsDir, entry.name, "SKILL.md");
-        if (!fs.existsSync(skillMdPath)) continue;
+    const seen = new Set<string>();
+    for (const { dir, source } of scanDirs) {
+      if (!fs.existsSync(dir)) continue;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith(".")) {
+          if (seen.has(entry.name)) continue;
+          const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+          if (!fs.existsSync(skillMdPath)) continue;
 
-        let content: string;
-        try {
-          const stat = fs.statSync(skillMdPath);
-          const cached = this.fileContentCache.get(skillMdPath);
-          if (cached && cached.mtime === stat.mtimeMs) {
-            content = cached.content;
-          } else {
-            content = fs.readFileSync(skillMdPath, "utf-8");
-            this.fileContentCache.set(skillMdPath, { content, mtime: stat.mtimeMs });
+          let content: string;
+          try {
+            const stat = fs.statSync(skillMdPath);
+            const cached = this.fileContentCache.get(skillMdPath);
+            if (cached && cached.mtime === stat.mtimeMs) {
+              content = cached.content;
+            } else {
+              content = fs.readFileSync(skillMdPath, "utf-8");
+              this.fileContentCache.set(skillMdPath, { content, mtime: stat.mtimeMs });
+            }
+          } catch {
+            continue;
           }
-        } catch {
-          continue;
-        }
 
-        const relevance = this.computeKeywordRelevance(lowerTask, content, entry.name);
-        if (relevance > 0.05) {
-          const metadata = this.extractMetadata(skillMdPath, content, entry.name);
-          matches.push({
-            skillPath: skillMdPath,
-            skillName: entry.name,
-            relevance,
-            reason: `关键词匹配: ${this.getKeywordMatchReason(lowerTask, content, entry.name)}`,
-            source: "local",
-            description: metadata.description,
-          });
+          const relevance = this.computeKeywordRelevance(lowerTask, content, entry.name);
+          if (relevance > 0.05) {
+            const metadata = this.extractMetadata(skillMdPath, content, entry.name);
+            seen.add(entry.name);
+            matches.push({
+              skillPath: skillMdPath,
+              skillName: entry.name,
+              relevance,
+              reason: `关键词匹配: ${this.getKeywordMatchReason(lowerTask, content, entry.name)}`,
+              source,
+              description: metadata.description,
+            });
+          }
         }
       }
     }
@@ -499,10 +595,21 @@ export class AutoSkillManager {
       if (desc.includes(task)) score += 4;
     }
 
-    // Keywords match
-    const kwMatch = skillMdContent.match(/keywords?:?\s*\[(.+?)\]/i);
-    if (kwMatch) {
-      const kws = kwMatch[1].match(/[\w\u4e00-\u9fff-]+/g);
+    // Keywords match (supports inline array and YAML block list format)
+    const kwInline = skillMdContent.match(/keywords?:?\s*\[(.+?)\]/i);
+    let kwString = kwInline ? kwInline[1] : "";
+    if (!kwString) {
+      const kwBlock = skillMdContent.match(/keywords?:\s*\n((?:\s+-\s+.+\n?)+)/i);
+      if (kwBlock) {
+        kwString = kwBlock[1]
+          .split("\n")
+          .map((l) => l.replace(/^\s*-\s*/, "").trim())
+          .filter(Boolean)
+          .join(" ");
+      }
+    }
+    if (kwString) {
+      const kws = kwString.match(/[\w\u4e00-\u9fff-]+/g);
       if (kws) {
         for (const kw of kws) {
           if (task.includes(kw.toLowerCase())) score += 2;
@@ -573,8 +680,20 @@ export class AutoSkillManager {
     const authorMatch = content.match(/author:\s*(.+)/i);
     if (authorMatch) meta.author = authorMatch[1].trim();
 
-    const kwMatch = content.match(/keywords?:?\s*\[(.+?)\]/i);
-    if (kwMatch) meta.keywords = kwMatch[1];
+    // Parse keywords: supports inline array [a, b] and YAML block list format
+    const kwInline = content.match(/keywords?:?\s*\[(.+?)\]/i);
+    if (kwInline) {
+      meta.keywords = kwInline[1];
+    } else {
+      const kwBlock = content.match(/keywords?:\s*\n((?:\s+-\s+.+\n?)+)/i);
+      if (kwBlock) {
+        const items = kwBlock[1]
+          .split("\n")
+          .map((l) => l.replace(/^\s*-\s*/, "").trim())
+          .filter(Boolean);
+        meta.keywords = items.join(", ");
+      }
+    }
 
     meta.source = `local:${dirName}`;
 
@@ -588,8 +707,20 @@ export class AutoSkillManager {
     const descMatch = content.match(/description:\s*(.+)/i);
     if (descMatch) parts.push(descMatch[1]);
 
-    const kwMatch = content.match(/keywords?:?\s*\[(.+?)\]/i);
-    if (kwMatch) parts.push(kwMatch[1]);
+    // Parse keywords: supports inline array [a, b] and YAML block list format
+    const kwInline = content.match(/keywords?:?\s*\[(.+?)\]/i);
+    if (kwInline) {
+      parts.push(kwInline[1]);
+    } else {
+      const kwBlock = content.match(/keywords?:\s*\n((?:\s+-\s+.+\n?)+)/i);
+      if (kwBlock) {
+        const items = kwBlock[1]
+          .split("\n")
+          .map((l) => l.replace(/^\s*-\s*/, "").trim())
+          .filter(Boolean);
+        parts.push(items.join(" "));
+      }
+    }
 
     // Extract first few lines of instructions body for context
     const bodyMatch = content.match(/##\s*Instructions?\s*\n+([\s\S]*?)(?=\n##|\n---|$)/i);
@@ -601,17 +732,28 @@ export class AutoSkillManager {
   }
 
   private async resolveSkillPath(skillName: string): Promise<string | null> {
-    // Check local filesystem first
+    // Check local filesystem first (data/skills)
     const localPath = path.join(this.skillsDir, skillName, "SKILL.md");
     if (fs.existsSync(localPath)) return localPath;
 
-    // Check case-insensitive
-    if (fs.existsSync(this.skillsDir)) {
-      const entries = fs.readdirSync(this.skillsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory() && entry.name.toLowerCase() === skillName.toLowerCase()) {
-          const p = path.join(this.skillsDir, entry.name, "SKILL.md");
-          if (fs.existsSync(p)) return p;
+    // Check bundled dir (官方内置技能)
+    const bundledPath = path.join(this.resolveBundledDir(), skillName, "SKILL.md");
+    if (fs.existsSync(bundledPath)) return bundledPath;
+
+    // Check optional dir (不默认启用的较重/小众技能)
+    const optionalPath = path.join(this.resolveOptionalDir(), skillName, "SKILL.md");
+    if (fs.existsSync(optionalPath)) return optionalPath;
+
+    // Check case-insensitive across all three dirs
+    const searchDirs = [this.skillsDir, this.resolveBundledDir(), this.resolveOptionalDir()];
+    for (const dir of searchDirs) {
+      if (fs.existsSync(dir)) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name.toLowerCase() === skillName.toLowerCase()) {
+            const p = path.join(dir, entry.name, "SKILL.md");
+            if (fs.existsSync(p)) return p;
+          }
         }
       }
     }
@@ -696,7 +838,35 @@ export class AutoSkillManager {
     } finally {
       fs.closeSync(fd);
     }
-    fs.renameSync(tmpPath, targetPath);
+    try {
+      fs.renameSync(tmpPath, targetPath);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EXDEV" || code === "EBUSY") {
+        // 跨设备：rename 不可用，在目标侧写临时文件后 rename，保持原子性
+        const dstTmp = `${targetPath}.dst.${process.pid}.tmp`;
+        const fd2 = fs.openSync(dstTmp, "w");
+        try {
+          fs.writeFileSync(fd2, content, "utf-8");
+          fs.fsyncSync(fd2);
+        } finally {
+          fs.closeSync(fd2);
+        }
+        // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
+        try {
+          fs.renameSync(dstTmp, targetPath);
+        } catch (renameErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw renameErr;
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } else {
+        // 非 EXDEV：清理临时文件并重新抛出
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
+    }
   }
 
   /**

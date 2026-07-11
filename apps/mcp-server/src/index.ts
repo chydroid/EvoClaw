@@ -39,33 +39,46 @@ function log(msg: string): void {
   if (DEBUG) process.stderr.write(`[EvoClaw MCP] ${msg}\n`);
 }
 
+// JSON-RPC 请求 ID 自增计数器，避免 Date.now() 同毫秒碰撞
+let rpcId = 0;
+
 // ── HTTP 调用 Gateway 的 /api/mcp 端点（同步） ──
 async function callGateway(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
 
-  const body = JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params });
+  const body = JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params });
 
   log(`→ ${method}: ${JSON.stringify(params).substring(0, 200)}`);
 
-  const response = await fetch(`${GATEWAY_URL}/api/mcp`, {
-    method: "POST",
-    headers,
-    body,
-  });
+  // 超时保护：30s 无响应则取消请求，避免永久挂起
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  timer.unref?.();
 
-  if (!response.ok) {
-    throw new Error(`Gateway returned ${response.status}: ${await response.text()}`);
+  try {
+    const response = await fetch(`${GATEWAY_URL}/api/mcp`, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Gateway returned ${response.status}: ${await response.text()}`);
+    }
+
+    const data = await response.json() as { result?: unknown; error?: { message: string } };
+
+    if (data.error) {
+      throw new Error(data.error.message || "Gateway error");
+    }
+
+    log(`← ${method} OK`);
+    return data.result;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const data = await response.json() as { result?: unknown; error?: { message: string } };
-
-  if (data.error) {
-    throw new Error(data.error.message || "Gateway error");
-  }
-
-  log(`← ${method} OK`);
-  return data.result;
 }
 
 // ── SSE 流式调用 Gateway 的 /api/mcp/stream 端点 ──
@@ -83,15 +96,26 @@ async function callGatewayStream(
   const headers: Record<string, string> = { "Content-Type": "application/json", "Accept": "text/event-stream" };
   if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
 
-  const body = JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params });
+  const body = JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params });
 
   log(`→ stream ${method}: ${JSON.stringify(params).substring(0, 200)}`);
 
-  const response = await fetch(`${GATEWAY_URL}/api/mcp/stream`, {
-    method: "POST",
-    headers,
-    body,
-  });
+  // 超时保护：30s 初始连接超时；连接建立后清除以避免中断 SSE 流读取
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  timer.unref?.();
+
+  let response: Response;
+  try {
+    response = await fetch(`${GATEWAY_URL}/api/mcp/stream`, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     throw new Error(`Gateway stream returned ${response.status}: ${await response.text()}`);
@@ -140,17 +164,22 @@ async function callGatewayStream(
   return { result: finalResult, durationMs };
 }
 
-// ── 工具列表缓存 ──
+// ── 工具列表缓存（5 分钟 TTL） ──
 type GatewayTool = { name: string; description: string; inputSchema: unknown };
-let cachedTools: GatewayTool[] | null = null;
+let cachedTools: { tools: GatewayTool[]; loadedAt: number } | null = null;
+const TOOLS_CACHE_TTL_MS = 300000; // 5 分钟
 
 async function getTools(): Promise<GatewayTool[]> {
-  if (cachedTools) return cachedTools;
+  // 缓存有效期内直接复用
+  if (cachedTools && Date.now() - cachedTools.loadedAt < TOOLS_CACHE_TTL_MS) {
+    return cachedTools.tools;
+  }
 
   const result = await callGateway("tools/list") as { tools?: Array<{ name: string; description: string; inputSchema: unknown }> };
-  cachedTools = result?.tools || [];
-  log(`Loaded ${cachedTools.length} tools from gateway`);
-  return cachedTools;
+  const tools = result?.tools || [];
+  cachedTools = { tools, loadedAt: Date.now() };
+  log(`Loaded ${tools.length} tools from gateway`);
+  return tools;
 }
 
 // ── MCP Server ──

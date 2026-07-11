@@ -110,12 +110,23 @@ export class FeishuAdapter implements ChannelAdapter {
     this.pollAbort.abort();
     this.polling = false;
 
-    // Stop WebSocket client if running
+    // Stop WebSocket client if running — 尝试关闭底层连接，避免连接泄漏
+    // close() 通常返回 void/undefined（falsy），|| 会同时执行 disconnect，导致双重关闭。
+    // 改为条件调用：优先 close，无 close 时才 disconnect。
     if (this.wsClient) {
-      // WSClient doesn't have a stop method, just release reference
+      try {
+        if (typeof (this.wsClient as any).close === 'function') {
+          (this.wsClient as any).close();
+        } else if (typeof (this.wsClient as any).disconnect === 'function') {
+          (this.wsClient as any).disconnect();
+        }
+      } catch { /* ignore */ }
       this.wsClient = null;
       this.larkClient = null;
     }
+
+    // 清理已处理事件去重集合，避免重启后误判重复消息
+    this.processedEvents.clear();
 
     this.statusHandler?.("disconnected");
   }
@@ -589,6 +600,7 @@ export class FeishuAdapter implements ChannelAdapter {
         app_id: this.config.appId,
         app_secret: this.config.appSecret,
       }),
+      signal: AbortSignal.timeout(10_000),
     });
 
     const data = await res.json() as {

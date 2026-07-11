@@ -17,8 +17,26 @@
 
 import * as path from "path";
 import * as fs from "fs";
-import { execSync, spawn } from "child_process";
+import * as crypto from "crypto";
+import { execFileSync, spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import { validateDownloadUrl } from "./image-tools";
+
+/** 原子写入文件：写临时文件 + fsync + rename */
+function atomicWriteFileSync(filePath: string, data: Buffer): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
 
 /** 视频生成提供商配置（与 protocol-adapter.ts 中结构一致） */
 interface VideoGenProvider {
@@ -70,14 +88,19 @@ function getEnabledVideoProvider(): { provider: VideoGenProvider; apiKey: string
   return null;
 }
 
+/** FFmpeg 可用性缓存：首次调用后缓存结果，避免每次调用都 execFileSync 阻塞事件循环 */
+let ffmpegAvailable: boolean | null = null;
+
 /** 检查 FFmpeg 是否可用 */
 function isFfmpegAvailable(): boolean {
+  if (ffmpegAvailable !== null) return ffmpegAvailable;
   try {
-    execSync("ffmpeg -version", { stdio: "pipe", timeout: 5000 });
-    return true;
+    execFileSync("ffmpeg", ["-version"], { stdio: "pipe", timeout: 5000 });
+    ffmpegAvailable = true;
   } catch {
-    return false;
+    ffmpegAvailable = false;
   }
+  return ffmpegAvailable;
 }
 
 /** 检查是否有可用的视频生成 API（配置文件或环境变量） */
@@ -106,7 +129,7 @@ function ensureDir(dir: string): void {
 /** 生成唯一文件名 */
 function generateFilename(prefix: string, ext: string): string {
   const ts = Date.now();
-  const rand = Math.random().toString(36).slice(2, 8);
+  const rand = crypto.randomUUID().slice(0, 8);
   return `${prefix}_${ts}_${rand}.${ext}`;
 }
 
@@ -267,11 +290,16 @@ async function generateLocalSlideshow(
   if (currentLine) lines.push(currentLine);
 
   // 生成 FFmpeg 滤镜
-  const escapedPrompt = prompt.replace(/'/g, "\\'").replace(/:/g, "\\:");
+  // 跨平台字体选择：避免在非 Windows 上硬编码 Windows 字体路径导致 FFmpeg drawtext 失败
+  const fontPath = process.platform === "win32"
+    ? "C\\:/Windows/Fonts/arial.ttf"
+    : process.platform === "darwin"
+    ? "/Library/Fonts/Arial.ttf"
+    : "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
   const textLines = lines.map((line, i) => {
-    const escaped = line.replace(/'/g, "\\'").replace(/:/g, "\\:");
+    const escaped = line.replace(/[':,\\;%'\\]/g, (m) => `\\${m}`);
     const y = 360 + i * 40 - (lines.length * 20);
-    return `drawtext=text='${escaped}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${y}:fontfile='C\\:/Windows/Fonts/arial.ttf'`;
+    return `drawtext=text='${escaped}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=${y}:fontfile='${fontPath}'`;
   }).join(",");
 
   const filter = `${textLines},format=yuv420p`;
@@ -297,10 +325,11 @@ async function generateLocalSlideshow(
 
     // 60s 超时：先 SIGTERM，2s 后仍未退出则 SIGKILL
     let killed = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
     const killTimer = setTimeout(() => {
       killed = true;
       try { ffmpeg.kill("SIGTERM"); } catch { /* ignore */ }
-      const forceTimer = setTimeout(() => {
+      forceTimer = setTimeout(() => {
         try { ffmpeg.kill("SIGKILL"); } catch { /* ignore */ }
       }, 2000);
       forceTimer.unref?.();
@@ -309,6 +338,7 @@ async function generateLocalSlideshow(
 
     ffmpeg.on("close", (code) => {
       clearTimeout(killTimer);
+      if (forceTimer) clearTimeout(forceTimer);
       if (killed) {
         reject(new Error("FFmpeg timed out after 60s"));
         return;
@@ -335,6 +365,7 @@ async function generateLocalSlideshow(
 
     ffmpeg.on("error", (err) => {
       clearTimeout(killTimer);
+      if (forceTimer) clearTimeout(forceTimer);
       reject(new Error(`FFmpeg spawn error: ${err.message}`));
     });
   });
@@ -349,13 +380,16 @@ async function downloadVideoToWorkspace(url: string, prefix: string): Promise<Vi
   const filename = generateFilename(prefix, "mp4");
   const outputPath = path.join(videoDir, filename);
 
+  // SSRF 防护：下载前校验 URL，拒绝内网/回环/链路本地地址
+  validateDownloadUrl(url);
+
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) {
     throw new Error(`Failed to download video: ${response.status}`);
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  fs.writeFileSync(outputPath, buffer);
+  atomicWriteFileSync(outputPath, buffer);
 
   const stat = fs.statSync(outputPath);
   return {

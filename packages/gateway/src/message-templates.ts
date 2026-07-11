@@ -295,10 +295,12 @@ export class MessageTemplateEngine {
 
       return arr
         .map((item: unknown) => {
-          const itemVars = { ...variables, [varName]: item };
+          const itemVars = { ...variables };
           if (item && typeof item === "object") {
             Object.assign(itemVars, item as Record<string, unknown>);
           }
+          // 循环变量优先，避免迭代项覆盖
+          itemVars[varName] = item;
           return this.renderTemplate(body, itemVars, format, depth + 1);
         })
         .join("");
@@ -310,6 +312,10 @@ export class MessageTemplateEngine {
     let current: unknown = variables;
 
     for (const part of parts) {
+      // 阻止原型链访问（__proto__ / constructor / prototype）
+      if (part === "__proto__" || part === "constructor" || part === "prototype") {
+        return undefined;
+      }
       if (current === null || current === undefined) return undefined;
       if (typeof current !== "object") return undefined;
       current = (current as Record<string, unknown>)[part];

@@ -119,6 +119,10 @@ export type { IdentityConfig, AuthConfig, GatewayConfig, LLMConfig, DataConfig, 
 export { ConfigMigrationManager } from "./config-migration";
 export type { MigrationStep, MigrationResult, ConfigMigrationConfig, SemVer } from "./config-migration";
 
+// Profile Manager — 多实例隔离系统（借鉴 hermes-agent Profile 设计）
+export { ProfileManager } from "./profile-manager";
+export type { ProfileConfig, ProfileManagerOptions } from "./profile-manager";
+
 // Env Loader — .env 文件加载与净化（借鉴 hermes-agent env_loader.py）
 export {
   parseEnvContent,

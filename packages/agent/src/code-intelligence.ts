@@ -282,7 +282,8 @@ export class CodeIntelligence {
         const matches = line.match(pattern);
         if (matches && matches.length > 0) {
           fileOcc += matches.length;
-          newLines.push(line.replace(pattern, plan.newName));
+          // 使用函数形式替换，避免 plan.newName 中的 $ 字符被 String.replace 解释为反向引用
+          newLines.push(line.replace(pattern, () => plan.newName));
         } else {
           newLines.push(line);
         }

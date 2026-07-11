@@ -427,8 +427,33 @@ export class DeadLetterQueue {
       }
     } else {
       // 读取所有旧版 JSONL 文件
+      // 注意：不能递归调用 readAll(ch)，否则会重新读取 .json 文件导致与上方条目重复
+      // 只读 .jsonl 文件并按 id 去重
+      const seenIds = new Set(entries.map((e) => e.id));
       for (const ch of this.listChannelsLegacy()) {
-        entries.push(...this.readAll(ch));
+        // 只读 .jsonl 文件，跳过已在 entries 中的 id
+        const p = this.channelFile(ch);
+        if (fs.existsSync(p)) {
+          try {
+            const raw = fs.readFileSync(p, "utf-8");
+            const lines = raw.split("\n").filter((l) => l.trim());
+            for (const line of lines) {
+              try {
+                const entry = JSON.parse(line) as DeadLetter;
+                if (!seenIds.has(entry.id)) {
+                  entries.push(entry);
+                  seenIds.add(entry.id);
+                }
+              } catch (err) {
+                // 跳过损坏行
+                process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
+              }
+            }
+          } catch (err) {
+            // 读取失败
+            process.stderr.write('[DeadLetterQueue] skipped corrupt entry: ' + err + '\n');
+          }
+        }
       }
     }
 

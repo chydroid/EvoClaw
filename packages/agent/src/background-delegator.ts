@@ -227,7 +227,7 @@ export class BackgroundDelegator {
   cancel(id: string): boolean {
     const task = this.tasks.get(id);
     if (!task) return false;
-    if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") return false;
+    if (task.status === "completed" || task.status === "failed" || task.status === "cancelled" || task.status === "timeout") return false;
     task.abortController.abort(new Error(`Task ${id} cancelled by user`));
     task.status = "cancelled";
     task.completedAt = Date.now();

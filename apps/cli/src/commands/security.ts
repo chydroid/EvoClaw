@@ -1,8 +1,6 @@
 /** security — Security audit and management */
 import { Command } from "commander";
-import * as path from "path";
-import * as fs from "fs";
-import { c, ICONS, divider } from "../utils/colors";
+import { c, ICONS } from "../utils/colors";
 import { apiRequest, checkServer } from "../utils/api";
 
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
@@ -23,18 +21,67 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const serverAlive = await checkServer();
 
       if (isJson) {
-        const audit = { serverOnline: serverAlive, deepScan: isDeep, fixesApplied: isFix, alerts: [] };
+        const audit: Record<string, unknown> = { serverOnline: serverAlive, deepScan: isDeep, fixesApplied: isFix, alerts: [] };
+        if (serverAlive) {
+          try {
+            const r = await apiRequest<Record<string, unknown>>("GET", "/api/system/audit");
+            audit.alerts = r.data.alerts || [];
+            audit.stats = r.data.stats;
+          } catch { /* ignore */ }
+        }
         console.log(JSON.stringify(audit, null, 2));
         return;
       }
 
       console.log(`\n${c("bold", "=== Security Audit ===\n")}`);
 
-      if (isDeep) {
-        console.log(`  ${ICONS.ok()} Config scan: no hardcoded secrets`);
-        console.log(`  ${ICONS.ok()} File permissions: .env readable`);
-        console.log(`  ${ICONS.ok()} Gateway probe: ${serverAlive ? c("gray", "responding") : c("yellow", "not reachable")}`);
-        console.log(`  ${ICONS.ok()} Token strength: JWT_SECRET meets minimum`);
+      if (isDeep && serverAlive) {
+        // Guardrails status
+        try {
+          const r = await apiRequest<Record<string, unknown>>("GET", "/api/guardrails/stats");
+          const enabled = r.data.enabled;
+          console.log(`  ${enabled ? ICONS.ok() : ICONS.warn()} Guardrails: ${enabled ? c("green", "enabled") : c("yellow", "disabled")}`);
+        } catch {
+          console.log(`  ${ICONS.warn()} Guardrails: ${c("yellow", "unavailable")}`);
+        }
+
+        // Config doctor issues
+        try {
+          const r = await apiRequest<{ issues: Array<Record<string, unknown>>; healthy: boolean }>("GET", "/api/config/doctor");
+          const issues = r.data.issues || [];
+          const healthy = r.data.healthy;
+          console.log(`  ${healthy ? ICONS.ok() : ICONS.warn()} Config doctor: ${healthy ? c("green", "no issues") : c("yellow", `${issues.length} issues found`)}`);
+          for (const issue of issues) {
+            if (issue.severity === "error") {
+              console.log(`    ${ICONS.error()} ${issue.path}: ${issue.message}`);
+            }
+          }
+        } catch {
+          console.log(`  ${ICONS.warn()} Config doctor: ${c("yellow", "unavailable")}`);
+        }
+
+        // MCP poisoning scanner audit
+        try {
+          const r = await apiRequest<{ count?: number }>("GET", "/api/mcp-scanner/audit");
+          const scanned = r.data.count ?? 0;
+          console.log(`  ${ICONS.ok()} MCP scanner: ${c("gray", `${scanned} tools scanned`)}`);
+        } catch {
+          console.log(`  ${ICONS.warn()} MCP scanner: ${c("yellow", "unavailable")}`);
+        }
+
+        // Install policy audit
+        try {
+          const r = await apiRequest<{ count?: number }>("GET", "/api/install-policy/audit");
+          const count = r.data.count ?? 0;
+          console.log(`  ${ICONS.ok()} Install policy: ${c("gray", `${count} evaluations logged`)}`);
+        } catch {
+          console.log(`  ${ICONS.warn()} Install policy: ${c("yellow", "unavailable")}`);
+        }
+
+        // Gateway probe
+        console.log(`  ${ICONS.ok()} Gateway probe: ${c("gray", "responding")}`);
+      } else if (isDeep) {
+        console.log(`  ${ICONS.warn()} Server offline — cannot run deep scan. Start with: EvoClaw gateway start`);
       }
 
       if (serverAlive) {
@@ -53,11 +100,29 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         } catch { /* */ }
       }
 
-      if (isFix) {
-        console.log(`\n${c("green", "✅ Fixes applied:")}`);
-        console.log(`  ${c("gray", "- Verified .env permissions")}`);
-        console.log(`  ${c("gray", "- JWT_SECRET meets strength requirements")}`);
-        console.log(`  ${c("gray", "- No plaintext credentials in config")}`);
+      if (isFix && serverAlive) {
+        let fixesApplied = 0;
+        try {
+          const r = await apiRequest<{ fixed?: number; remaining?: number }>("POST", "/api/config/doctor/fix-all");
+          if (r.status >= 200 && r.status < 300 && r.data.fixed) {
+            fixesApplied += r.data.fixed;
+            console.log(`\n${c("green", `${ICONS.ok()} Fixes applied (${fixesApplied} config issues):`)}`);
+            console.log(`  ${c("gray", `- Fixed ${r.data.fixed} config issues via /api/config/doctor/fix-all`)}`);
+            if (r.data.remaining) console.log(`  ${c("gray", `- ${r.data.remaining} issues remain (manual review needed)`)}`);
+          } else {
+            console.log(`\n${c("green", `${ICONS.ok()} No config issues to fix`)}`);
+          }
+        } catch (err) {
+          console.log(`\n${c("yellow", `${ICONS.warn()} Config doctor fix failed: ${err instanceof Error ? err.message : String(err)}`)}`);
+        }
+        try {
+          const r = await apiRequest<{ success?: boolean }>("POST", "/api/guardrails/reset-stats");
+          if (r.status >= 200 && r.status < 300 && r.data.success) {
+            console.log(`  ${c("gray", `- Reset guardrails stats via /api/guardrails/reset-stats`)}`);
+          }
+        } catch { /* non-critical */ }
+      } else if (isFix) {
+        console.log(`\n${c("yellow", `${ICONS.warn()} Server offline — cannot apply fixes. Start with: EvoClaw gateway start`)}`);
       }
 
       if (!isDeep && !isFix && !serverAlive) {

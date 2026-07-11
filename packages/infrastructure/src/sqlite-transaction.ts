@@ -282,6 +282,10 @@ export function withSavepoint<T>(
 ): T {
   const depth = getDepth(db);
   const spName = name ?? nextSavepointName("evoclaw_sp");
+  // 校验 savepoint 名称，防止 SQL 注入（名称直接拼入 SAVEPOINT 语句）
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(spName)) {
+    throw new Error(`Invalid savepoint name: ${spName}`);
+  }
 
   // 若不在事务中，先开一个外层事务
   if (depth === 0) {

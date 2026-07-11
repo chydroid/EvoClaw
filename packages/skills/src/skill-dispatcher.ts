@@ -49,6 +49,16 @@ export class SkillDispatcher {
   private skillRegistry: SkillRegistry | null = null;
   private circuitBreaker: SkillCircuitBreaker | null = null;
   private capabilityEvaluator: SkillCapabilityEvaluator | null = null;
+  /**
+   * initialize() 启动的远端技能抓取 Promise（fire-and-forget）。
+   * dispatch() 在使用远端技能前会 await 它，避免远端技能未就绪的竞态。
+   */
+  private remoteSkillsInitPromise: Promise<void> | null = null;
+  /**
+   * 自动安装串行锁。两个 dispatch 并发执行时可能重复安装同一技能，
+   * 用全局 Promise 锁将安装操作串行化，避免重复安装。
+   */
+  private installLock: Promise<void> = Promise.resolve();
 
   constructor(
     private registry: ServiceRegistry,
@@ -67,7 +77,9 @@ export class SkillDispatcher {
     this.autoSkillManager?.buildCorpus();
     
     // Fetch remote skills to populate fusion matching
-    this.fetchRemoteSkills().catch(err => {
+    // 保留 fire-and-forget 以避免破坏同步调用方，但保存 Promise
+    // 以便 dispatch() 在使用远端技能前可以等待其完成。
+    this.remoteSkillsInitPromise = this.fetchRemoteSkills().catch(err => {
       console.debug("[SkillDispatcher] Initial remote skill fetch failed:", err instanceof Error ? err.message : String(err));
     });
 
@@ -84,6 +96,12 @@ export class SkillDispatcher {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const startTime = Date.now();
     const reasoning: string[] = [];
+
+    // 等待 initialize() 启动的远端技能抓取完成，避免远端技能未就绪的竞态。
+    if (this.remoteSkillsInitPromise) {
+      await this.remoteSkillsInitPromise;
+      this.remoteSkillsInitPromise = null;
+    }
 
     reasoning.push(`任务分析: "${context.task.slice(0, 100)}"`);
 
@@ -126,7 +144,15 @@ export class SkillDispatcher {
               if (opts.autoInstall && !autoInstallAttempted) {
                 autoInstallAttempted = true;
                 reasoning.push(`技能 "${match.skillName}" 未安装，自动安装中...`);
-                const installResult = await this.autoSkillManager.autoInstallForTask(context.task);
+                // 串行化安装：获取锁后重新检查是否已被并发 dispatch 安装，避免重复安装
+                const installResult = await this.serializedInstall(async () => {
+                  const refreshed = await skillManager.listSkills();
+                  const alreadyInstalled = refreshed.find(s => s.name === match.skillName);
+                  if (alreadyInstalled) {
+                    return { installed: true, skillId: alreadyInstalled.id, skillName: match.skillName, reason: "already installed by concurrent dispatch" };
+                  }
+                  return this.autoSkillManager!.autoInstallForTask(context.task);
+                });
 
                 if (installResult.installed && installResult.skillId) {
                   reasoning.push(`安装成功，检查配置...`);
@@ -560,6 +586,22 @@ export class SkillDispatcher {
   }
 
   // ── Private ──
+
+  /**
+   * 串行化自动安装操作：使用全局 Promise 锁确保同一时刻只有一个 dispatch
+   * 在执行 autoInstallForTask，避免并发重复安装同一技能。
+   */
+  private async serializedInstall<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.installLock;
+    let release!: () => void;
+    this.installLock = new Promise<void>((resolve) => { release = resolve; });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 
   private async rerankWithEvaluator(matches: SkillMatch[], taskDescription: string): Promise<SkillMatch[]> {
     if (!this.capabilityEvaluator || matches.length === 0) return matches;

@@ -278,4 +278,55 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
         console.log(c("red", `${ICONS.error()} Failed to fetch trending: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
+
+  // skills list-optional — list optional (not default-enabled) skills
+  skills
+    .command("list-optional")
+    .description("List optional skills (not enabled by default, heavier/niche)")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const r = await apiRequest<{ optionalSkills: Array<{ name: string; description: string; version: string; installed: boolean }> }>("GET", "/api/skills/optional");
+        const list = r.data?.optionalSkills || [];
+        if (opts.json) { console.log(JSON.stringify(list, null, 2)); return; }
+        console.log(section("Optional Skills"));
+        if (list.length === 0) {
+          console.log(c("gray", "  No optional skills available."));
+          return;
+        }
+        for (const s of list) {
+          const statusIcon = s.installed ? ICONS.ok() : ICONS.bullet();
+          const statusLabel = s.installed ? c("green", "installed") : c("gray", "not installed");
+          console.log(`  ${statusIcon} ${c("cyan", s.name)} ${c("gray", `v${s.version}`)}  [${statusLabel}]`);
+          if (s.description) console.log(c("gray", `       ${s.description.slice(0, 80)}`));
+        }
+        console.log(c("gray", `\n  Total: ${list.length} optional skill(s). Install with: EvoClaw skills install-optional <name>`));
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Failed to list optional skills: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // skills install-optional — install an optional skill by name
+  skills
+    .command("install-optional <name>")
+    .description("Install an optional skill (copies from optional/ to data/skills/ and activates it)")
+    .option("--json", "Output as JSON")
+    .action(async (name: string, opts: Record<string, unknown>) => {
+      const alive = await checkServer();
+      if (!alive) { serverRequired(); return; }
+      try {
+        const r = await apiRequest<any>("POST", "/api/skills/install-optional", { name });
+        const skill = r.data?.skill;
+        if (opts.json) { console.log(JSON.stringify(skill, null, 2)); return; }
+        console.log(c("green", `${ICONS.ok()} Optional skill "${c("cyan", name)}" installed successfully`));
+        if (skill?.version) console.log(c("gray", `  Version: ${skill.version}`));
+        if (skill?.description) console.log(c("gray", `  ${skill.description.slice(0, 80)}`));
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Install failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(c("gray", `  Try: EvoClaw skills list-optional`));
+      }
+    });
 }

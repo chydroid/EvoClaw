@@ -39,6 +39,10 @@ export class ClaudeCodePlugin {
   private upgrader!: CapabilityUpgrader;
   private initialized = false;
   private activeTasks = new Map<string, { status: string; result?: ExecutionResult; progress: ProgressEvent[] }>();
+  /** activeTasks Map 最大条目数，防止已完成但未被查询的任务导致 Map 无限增长 */
+  private static readonly MAX_ACTIVE_TASKS = 100;
+  /** 事件订阅 ID，供 dispose() 取消订阅 */
+  private subscriptionIds: string[] = [];
 
   constructor(
     private registry: ServiceRegistry,
@@ -65,13 +69,23 @@ export class ClaudeCodePlugin {
     this.registerTools();
 
     // Listen for capability upgrade events
-    this.eventBus.subscribe("claude-code-tools:capability-upgrade-needed", async (event) => {
+    const sub = this.eventBus.subscribe("claude-code-tools:capability-upgrade-needed", async (event) => {
       const data = event.data as { planId: string; assessment: CapabilityAssessment };
       this.handleCapabilityUpgradeNeeded(data.assessment);
     });
+    this.subscriptionIds.push(sub.id);
 
     this.initialized = true;
     process.stdout.write(`[ClaudeCodePlugin] Initialized — ${CLAUDE_CODE_PLUGIN_INFO.name} v${CLAUDE_CODE_PLUGIN_INFO.version}\n`);
+  }
+
+  /** 取消所有事件订阅，释放资源 */
+  dispose(): void {
+    for (const id of this.subscriptionIds) {
+      this.eventBus.unsubscribe(id);
+    }
+    this.subscriptionIds = [];
+    this.initialized = false;
   }
 
   /**
@@ -184,8 +198,25 @@ export class ClaudeCodePlugin {
           framework: params.framework as string | undefined,
         };
 
-        const taskId = `cct_${Date.now()}`;
+        // 使用 crypto.randomUUID() 避免同毫秒内调用产生 ID 碰撞
+        const taskId = `cct_${crypto.randomUUID()}`;
         this.activeTasks.set(taskId, { status: "running", progress: [] });
+        // 限制 activeTasks 大小，防止 Map 无限增长。淘汰时跳过仍在运行的任务，
+        // 只从已完成/出错的条目中删除最旧的；若全部都在运行则不淘汰（避免误删进行中任务）。
+        if (this.activeTasks.size > ClaudeCodePlugin.MAX_ACTIVE_TASKS) {
+          let evicted = false;
+          for (const [id, t] of this.activeTasks) {
+            if (t.status !== "running") {
+              this.activeTasks.delete(id);
+              evicted = true;
+              break;
+            }
+          }
+          if (!evicted) {
+            // 极端情况：所有任务都在运行，无法淘汰
+            console.warn(`[ClaudeCodePlugin] activeTasks 已达上限 ${ClaudeCodePlugin.MAX_ACTIVE_TASKS} 且全部正在运行，跳过淘汰`);
+          }
+        }
 
         // Execute in background — do NOT await
         this.executeTaskInBackground(taskId, params.task_description as string, strategy, context);
@@ -232,6 +263,8 @@ export class ClaudeCodePlugin {
           };
         }
         const result = task.result!;
+        // 任务已完成/出错，清理后避免 activeTasks 无限增长
+        this.activeTasks.delete(taskId);
         return {
           taskId,
           status: "completed",

@@ -1,7 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { SkillCurator, type SkillEvolutionEntry } from "../src/skill-curator";
+import { SkillCurator, type SkillEvolutionEntry, type SkillUsageStats } from "../src/skill-curator";
 import { v4 as uuid } from "uuid";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 // Minimum solution length to pass the 300-char instruction quality gate.
 // The derived instructions include a heading and task prefix (~50 chars), so the
@@ -483,6 +486,334 @@ describe("SkillCurator", () => {
       const { curator } = createCurator();
       const healthy = await curator.healthCheck();
       expect(healthy).toBe(true);
+    });
+  });
+
+  // ── 技能生命周期：使用跟踪、自动归档、恢复 ──
+  // 以下测试验证任务新增的功能：
+  //   - recordUsage / getUsageStats：使用统计
+  //   - recordEvolution / getEvolutionHistory：进化记录
+  //   - archiveSkill / restoreSkill：归档与恢复
+  //   - runCycle：过期自动归档（mock 时间）
+  //   - start/stop：定时扫描
+  //   - 并发安全（CrossProcessLock 可重入）
+  describe("lifecycle: usage tracking + archive + restore", () => {
+    let tmpRoot: string;
+    let skillsDir: string;
+    let archiveDir: string;
+    let dataDir: string;
+
+    beforeEach(() => {
+      tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "skill-curator-lifecycle-"));
+      skillsDir = path.join(tmpRoot, "skills");
+      archiveDir = path.join(tmpRoot, "skills-archive");
+      dataDir = path.join(tmpRoot, "skill-curator");
+      fs.mkdirSync(skillsDir, { recursive: true });
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.mkdirSync(dataDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    });
+
+    function createCuratorWithDirs() {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      registry.registerService("eventBus", eventBus);
+      const curator = new SkillCurator(registry, eventBus, skillsDir, archiveDir, dataDir);
+      return { curator, registry, eventBus };
+    }
+
+    /** 在 skillsDir 下创建一个技能目录（含 SKILL.md）。 */
+    function seedSkillDir(name: string): string {
+      const dir = path.join(skillsDir, name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "SKILL.md"),
+        `---\nname: ${name}\nversion: 1.0.0\n---\n# ${name}\nInstructions here.\n`
+      );
+      return dir;
+    }
+
+    it("基本生命周期：创建 → 记录使用 → 归档 → 恢复", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "web-fetcher";
+      const skillDir = seedSkillDir(skillName);
+
+      // 记录使用
+      curator.recordUsage(skillName);
+      // 等待异步 persistUsage 完成
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const stats = curator.getUsageStats().get(skillName);
+      expect(stats).toBeDefined();
+      expect(stats!.useCount).toBe(1);
+      expect(stats!.status).toBe("active");
+
+      // 归档
+      await curator.archiveSkill(skillName);
+
+      // 原目录应不存在；归档目录应存在
+      expect(fs.existsSync(skillDir)).toBe(false);
+      const archiveEntries = fs.readdirSync(archiveDir);
+      expect(archiveEntries.length).toBeGreaterThan(0);
+      expect(archiveEntries[0]).toContain(skillName);
+
+      // 使用统计状态应更新为 archived
+      const archivedStats = curator.getUsageStats().get(skillName);
+      expect(archivedStats!.status).toBe("archived");
+
+      // 恢复
+      await curator.restoreSkill(skillName);
+
+      // 原目录应恢复
+      expect(fs.existsSync(skillDir)).toBe(true);
+      expect(fs.existsSync(path.join(skillDir, "SKILL.md"))).toBe(true);
+
+      // 使用统计状态应恢复为 active
+      const restoredStats = curator.getUsageStats().get(skillName);
+      expect(restoredStats!.status).toBe("active");
+
+      curator.dispose();
+    });
+
+    it("使用统计查询：多次 recordUsage 累加 useCount", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "stats-skill";
+      seedSkillDir(skillName);
+
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const stats = curator.getUsageStats().get(skillName);
+      expect(stats).toBeDefined();
+      expect(stats!.useCount).toBe(3);
+      expect(stats!.lastUsedAt).not.toBeNull();
+
+      // getUsageStats 返回副本，修改不影响内部状态
+      const snapshot = curator.getUsageStats();
+      snapshot.delete(skillName);
+      expect(curator.getUsageStats().has(skillName)).toBe(true);
+
+      curator.dispose();
+    });
+
+    it("进化记录：recordEvolution 追加到历史并支持按技能过滤", () => {
+      const { curator } = createCuratorWithDirs();
+
+      curator.recordEvolution("skill-a", {
+        type: "improvement",
+        description: "改进了触发器",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      });
+      curator.recordEvolution("skill-a", {
+        type: "archive",
+        description: "已归档",
+        timestamp: "2026-01-02T00:00:00.000Z",
+      });
+      curator.recordEvolution("skill-b", {
+        type: "restore",
+        description: "已恢复",
+        timestamp: "2026-01-03T00:00:00.000Z",
+      });
+
+      const all = curator.getEvolutionHistory();
+      expect(all.length).toBe(3);
+
+      const skillAHistory = curator.getEvolutionHistory("skill-a");
+      expect(skillAHistory.length).toBe(2);
+      expect(skillAHistory[0].type).toBe("improvement");
+      expect(skillAHistory[1].type).toBe("archive");
+
+      const skillBHistory = curator.getEvolutionHistory("skill-b");
+      expect(skillBHistory.length).toBe(1);
+      expect(skillBHistory[0].type).toBe("restore");
+
+      curator.dispose();
+    });
+
+    it("过期技能自动归档（mock 时间）", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "expired-skill";
+      const skillDir = seedSkillDir(skillName);
+
+      // 记录一次使用（设置 lastUsedAt）
+      curator.recordUsage(skillName);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // 推进时间 31 天（超过默认 30 天阈值）
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000));
+
+      const result = await curator.runCycle();
+
+      expect(result.expired).toContain(skillName);
+      expect(result.archived).toContain(skillName);
+      expect(fs.existsSync(skillDir)).toBe(false);
+
+      // 归档目录应有内容
+      const archiveEntries = fs.readdirSync(archiveDir);
+      expect(archiveEntries.length).toBeGreaterThan(0);
+
+      curator.dispose();
+    });
+
+    it("未过期技能不被归档（mock 时间）", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "fresh-skill";
+      const skillDir = seedSkillDir(skillName);
+
+      curator.recordUsage(skillName);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // 仅推进 5 天（未超过 30 天阈值）
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+
+      const result = await curator.runCycle();
+
+      expect(result.archived).not.toContain(skillName);
+      expect(fs.existsSync(skillDir)).toBe(true);
+
+      curator.dispose();
+    });
+
+    it("从未使用过的技能视为过期候选", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "never-used-skill";
+      seedSkillDir(skillName);
+
+      // 不调用 recordUsage，直接 runCycle
+      const result = await curator.runCycle();
+
+      expect(result.expired).toContain(skillName);
+      expect(result.archived).toContain(skillName);
+
+      curator.dispose();
+    });
+
+    it("并发安全：多次并行 recordUsage 不损坏 usage.json", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "concurrent-skill";
+      seedSkillDir(skillName);
+
+      // 并行调用 5 次 recordUsage（每次触发 persistUsage）
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+      curator.recordUsage(skillName);
+
+      // 等待所有异步 persistUsage 完成
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // useCount 应为 5（每次 recordUsage 同步累加）
+      const stats = curator.getUsageStats().get(skillName);
+      expect(stats).toBeDefined();
+      expect(stats!.useCount).toBe(5);
+
+      // usage.json 应可正确解析（未被并发写入损坏）
+      const usagePath = path.join(dataDir, "usage.json");
+      expect(fs.existsSync(usagePath)).toBe(true);
+      const raw = fs.readFileSync(usagePath, "utf-8");
+      const data = JSON.parse(raw) as { usage: SkillUsageStats[] };
+      const entry = data.usage.find(u => u.skillName === skillName);
+      expect(entry).toBeDefined();
+      expect(entry!.useCount).toBe(5);
+
+      curator.dispose();
+    });
+
+    it("start/stop 定时器：start 后 stop 不抛错且可重复调用", () => {
+      const { curator } = createCuratorWithDirs();
+
+      // start 应该设置定时器（不抛错）
+      expect(() => curator.start()).not.toThrow();
+      // 重复 start 应为 no-op（不重复创建定时器）
+      expect(() => curator.start()).not.toThrow();
+      // stop 应该清除定时器
+      expect(() => curator.stop()).not.toThrow();
+      // 重复 stop 应为 no-op
+      expect(() => curator.stop()).not.toThrow();
+
+      curator.dispose();
+    });
+
+    it("不存在的技能归档失败：抛出错误", async () => {
+      const { curator } = createCuratorWithDirs();
+
+      await expect(curator.archiveSkill("non-existent-skill")).rejects.toThrow(
+        /Skill directory not found/
+      );
+
+      curator.dispose();
+    });
+
+    it("空 skillName 归档失败：抛出错误", async () => {
+      const { curator } = createCuratorWithDirs();
+
+      await expect(curator.archiveSkill("")).rejects.toThrow(/skillName is required/);
+
+      curator.dispose();
+    });
+
+    it("恢复不存在的归档失败：抛出错误", async () => {
+      const { curator } = createCuratorWithDirs();
+
+      await expect(curator.restoreSkill("non-existent-archive")).rejects.toThrow(
+        /No archive found for skill/
+      );
+
+      curator.dispose();
+    });
+
+    it("恢复时空 archiveDir 失败：抛出错误", async () => {
+      const { curator } = createCuratorWithDirs();
+      // 删除 archiveDir 模拟不存在场景
+      fs.rmSync(archiveDir, { recursive: true, force: true });
+
+      await expect(curator.restoreSkill("any-skill")).rejects.toThrow(
+        /Archive directory not found/
+      );
+
+      curator.dispose();
+    });
+
+    it("listArchivedSkills 列出已归档技能", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "listable-skill";
+      seedSkillDir(skillName);
+
+      await curator.archiveSkill(skillName);
+
+      const archived = curator.listArchivedSkills();
+      expect(archived.length).toBe(1);
+      expect(archived[0].skillName).toBe(skillName);
+      expect(archived[0].reason).toBe("archive");
+
+      curator.dispose();
+    });
+
+    it("Pinned 技能豁免自动归档", async () => {
+      const { curator } = createCuratorWithDirs();
+      const skillName = "pinned-skill";
+      const skillDir = seedSkillDir(skillName);
+
+      // 注入一条 pinned 演化记录（使用 seedEvolutionEntry 辅助函数）
+      seedEvolutionEntry(curator, skillName, { pinned: true, pinnedAt: new Date() });
+
+      // runCycle 应跳过 pinned 技能
+      const result = await curator.runCycle();
+
+      expect(result.expired).toContain(skillName);
+      expect(result.archived).not.toContain(skillName);
+      expect(fs.existsSync(skillDir)).toBe(true);
+
+      curator.dispose();
     });
   });
 });

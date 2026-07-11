@@ -88,9 +88,12 @@ describe("StaggerCoordinator", () => {
       expect(deferred).toHaveLength(2);
       // 延迟任务的 reason 应包含 over-capacity
       expect(deferred.every((d) => d.reason.includes("over-capacity"))).toBe(true);
-      // 延迟任务的 executeAt 应为 t + windowMs
+      // 延迟任务的 executeAt 应为 t + windowMs + jitter（jitter ∈ [0, windowMs*0.5)）
+      // BUG-5：推迟任务叠加随机 jitter，避免下一窗口 thundering herd
       for (const d of deferred) {
-        expect(d.executeAt.getTime()).toBe(t.getTime() + 60_000);
+        const execAt = d.executeAt.getTime();
+        expect(execAt).toBeGreaterThanOrEqual(t.getTime() + 60_000);
+        expect(execAt).toBeLessThan(t.getTime() + 60_000 + 30_000);
       }
     });
 

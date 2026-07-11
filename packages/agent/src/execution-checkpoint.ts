@@ -8,6 +8,24 @@
 import * as fs from "fs";
 import * as path from "path";
 
+/** 原子写入文件（temp + fsync + rename），防止崩溃时产生截断文件。 */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeFileSync(fd, content, "utf-8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 /** Snapshot of execution state at a given point */
 export interface ExecutionSnapshot {
   sessionId: string;
@@ -222,7 +240,7 @@ export class ExecutionCheckpointStore {
       if (!path.resolve(filePath).startsWith(path.resolve(this.storeDir))) {
         throw new Error("Invalid session ID: path traversal detected");
       }
-      fs.writeFileSync(filePath, JSON.stringify(state), "utf-8");
+      atomicWriteFileSync(filePath, JSON.stringify(state));
     } catch (err) {
       process.stderr.write(`[ExecutionCheckpointStore] Failed to persist execution ${sessionId}:` + " " + err + "\n");
     }

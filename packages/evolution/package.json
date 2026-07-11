@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/evolution",
-  "version": "0.72.2",
+  "version": "0.73.0",
   "private": true,
   "description": "EvoClaw Evolution 进化层 - 经验学习、需求挖掘、代码生成、性能反馈",
   "main": "./dist/index.js",

@@ -53,6 +53,18 @@ interface SkillInstallReport {
   errors: string[];
 }
 
+// ── Optional Skills 类型 ──
+// 借鉴 hermes-agent optional-skills 设计：optional/ 目录的技能不随启动加载，
+// 需通过 installOptionalSkill() 显式复制到 data/skills/ 激活。
+
+export interface OptionalSkillInfo {
+  name: string;
+  path: string;
+  description: string;
+  version: string;
+  installed: boolean;
+}
+
 export class SkillManager {
   private skills = new Map<string, Skill>();
   private parser: SKILLmdParser;
@@ -99,17 +111,23 @@ export class SkillManager {
     try {
       const { SkillEcosystem } = require("./skill-ecosystem");
       this.skillEcosystem = new SkillEcosystem();
-    } catch {}
+    } catch (err) {
+      console.debug(`[SkillManager] SkillEcosystem not available: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     try {
       const { SkillWorkshop } = require("./skill-workshop");
       this.skillWorkshop = new SkillWorkshop();
-    } catch { /* skill workshop not available */ }
+    } catch (err) {
+      console.debug(`[SkillManager] SkillWorkshop not available: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     try {
       const { InstallPolicyManager } = require("./install-policy");
       this.installPolicyManager = new InstallPolicyManager();
-    } catch { /* install policy not available */ }
+    } catch (err) {
+      console.debug(`[SkillManager] InstallPolicyManager not available: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     svcRegistry.registerService("skillManager", this);
   }
@@ -707,7 +725,9 @@ export class SkillManager {
     // 读取技能声明的安装步骤（SkillInstallSpec[]）
     const installSpecs: import("@evoclaw/core").SkillInstallSpec[] =
       Array.isArray(skill.openclawMeta?.install) ? skill.openclawMeta!.install as import("@evoclaw/core").SkillInstallSpec[] : [];
-    const skillDir = skill.installPath;
+    // skill.installPath 指向 SKILL.md 文件（非目录），需取 dirname。
+    // 不取 dirname 会导致 executeStructuredInstall 的 cwd 指向文件，execFileSync 抛 ENOTDIR。
+    const skillDir = path.dirname(skill.installPath);
 
     const results: Array<{ binary: string; installed: boolean; message: string; error?: string }> = [];
 
@@ -1206,7 +1226,7 @@ export class SkillManager {
               fs.rmSync(extractDir, { recursive: true, force: true });
             }
 
-            this.extractZip(fullPath, skillsDir);
+            await this.extractZip(fullPath, skillsDir);
 
             const skill = await this.installFolderSkill(extractDir);
             if (skill) {
@@ -1274,13 +1294,155 @@ export class SkillManager {
     return await this.installSkill(skillMdPath);
   }
 
-  private extractZip(zipPath: string, destDir: string): void {
-    try {
-      if (process.platform === "win32") {
-        execFileSync("powershell", ["-Command", "Expand-Archive", "-Path", zipPath, "-DestinationPath", destDir, "-Force"], { stdio: "pipe" });
-      } else {
-        execFileSync("unzip", ["-o", zipPath, "-d", destDir], { stdio: "pipe" });
+  // ── Optional skills（不默认启用的较重/小众技能）──
+  // 借鉴 hermes-agent optional-skills 设计：optional/ 目录的技能不随启动加载，
+  // 需通过 installOptionalSkill() 显式复制到 data/skills/ 激活。
+
+  /**
+   * 解析 optional 技能目录路径。
+   * 生产环境（dist）：packages/skills/dist → ../optional = packages/skills/optional
+   * 测试环境（src）：packages/skills/src → ../optional = packages/skills/optional
+   */
+  private resolveOptionalDir(): string {
+    return path.resolve(__dirname, "..", "optional");
+  }
+
+  /**
+   * 解析 data/skills 目录路径（用户安装的可选技能的默认目标目录）。
+   * 可通过环境变量 EvoClaw_DATA_DIR 覆盖 data 目录位置。
+   */
+  private resolveDataSkillsDir(): string {
+    const dataDir = process.env.EvoClaw_DATA_DIR
+      ? path.resolve(process.env.EvoClaw_DATA_DIR)
+      : path.resolve(__dirname, "..", "..", "..", "data");
+    return path.join(dataDir, "skills");
+  }
+
+  /**
+   * 扫描 optional/ 目录下的可选技能（不安装，仅列出）。
+   * 可选技能较重或小众，不默认启用，需通过 installOptionalSkill() 显式激活。
+   */
+  async scanOptionalSkills(optionalDir?: string): Promise<OptionalSkillInfo[]> {
+    const dir = optionalDir || this.resolveOptionalDir();
+    const result: OptionalSkillInfo[] = [];
+
+    if (!fs.existsSync(dir)) return result;
+
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+      if (!fs.existsSync(skillMdPath)) continue;
+
+      try {
+        const content = fs.readFileSync(skillMdPath, "utf-8");
+        const descMatch = content.match(/description:\s*(.+)/i);
+        const verMatch = content.match(/version:\s*(.+)/i);
+        const alreadyInstalled = Array.from(this.skills.values()).some(
+          s => s.name === entry.name
+        );
+        result.push({
+          name: entry.name,
+          path: skillMdPath,
+          description: descMatch ? descMatch[1].trim() : "",
+          version: verMatch ? verMatch[1].trim() : "0.1.0",
+          installed: alreadyInstalled,
+        });
+      } catch {
+        continue;
       }
+    }
+
+    return result;
+  }
+
+  /**
+   * 列出所有可选技能（scanOptionalSkills 的简写视图，不含 path 字段）。
+   */
+  async listOptionalSkills(optionalDir?: string): Promise<Array<{
+    name: string;
+    description: string;
+    version: string;
+    installed: boolean;
+  }>> {
+    const skills = await this.scanOptionalSkills(optionalDir);
+    return skills.map(s => ({
+      name: s.name,
+      description: s.description,
+      version: s.version,
+      installed: s.installed,
+    }));
+  }
+
+  /**
+   * 安装一个可选技能：从 optional/ 复制到 data/skills/ 并激活。
+   * 遵循 AGENTS.md "Never delete; archive" 原则——若 data/skills 中已存在同名技能则先归档。
+   */
+  async installOptionalSkill(skillName: string, optionalDir?: string, destDir?: string): Promise<Skill> {
+    const srcDir = optionalDir || this.resolveOptionalDir();
+    const srcSkillDir = path.join(srcDir, skillName);
+    const srcSkillMd = path.join(srcSkillDir, "SKILL.md");
+
+    if (!fs.existsSync(srcSkillMd)) {
+      throw new Error(`Optional skill "${skillName}" not found at ${srcSkillMd}`);
+    }
+
+    // 若目标已安装，直接返回现有技能
+    const existing = Array.from(this.skills.values()).find(s => s.name === skillName);
+    if (existing) {
+      process.stdout.write(`[SkillManager] Optional skill "${skillName}" already installed, returning existing\n`);
+      return existing;
+    }
+
+    const dstDir = destDir || this.resolveDataSkillsDir();
+    const dstSkillDir = path.join(dstDir, skillName);
+
+    // 创建目标目录
+    if (!fs.existsSync(dstDir)) {
+      fs.mkdirSync(dstDir, { recursive: true });
+    }
+
+    // 若目标目录已存在（残留），先归档（遵循 "Never delete; archive"）
+    if (fs.existsSync(dstSkillDir)) {
+      this.archiveOptionalSkillDir(dstSkillDir);
+    }
+
+    // 递归复制源目录到目标目录（fs.cpSync 在 Node 16.7+ 可用）
+    fs.cpSync(srcSkillDir, dstSkillDir, { recursive: true });
+
+    const dstSkillMd = path.join(dstSkillDir, "SKILL.md");
+    process.stdout.write(`[SkillManager] Activating optional skill "${skillName}" at ${dstSkillDir}\n`);
+
+    // 通过 installSkill 激活
+    return await this.installSkill(dstSkillMd);
+  }
+
+  /**
+   * 归档已存在的技能目录到 skills-archive/（遵循 "Never delete; archive" 原则）。
+   */
+  private archiveOptionalSkillDir(skillDir: string): void {
+    try {
+      if (!fs.existsSync(skillDir)) return;
+      const archiveBase = path.resolve(skillDir, "..", "..", "skills-archive");
+      if (!fs.existsSync(archiveBase)) {
+        fs.mkdirSync(archiveBase, { recursive: true });
+      }
+      const archiveName = `${path.basename(skillDir)}-${Date.now()}`;
+      const archivePath = path.join(archiveBase, archiveName);
+      fs.renameSync(skillDir, archivePath);
+      process.stdout.write(`[SkillManager] Archived existing skill directory: ${skillDir} -> ${archivePath}\n`);
+    } catch (err) {
+      process.stderr.write(`[SkillManager] Failed to archive skill directory: ${err instanceof Error ? err.message : err}\n`);
+    }
+  }
+
+  private async extractZip(zipPath: string, destDir: string): Promise<void> {
+    // 统一使用 adm-zip 解压，与 executeDownloadInstall 保持一致，
+    // 避免 PowerShell Expand-Archive / unzip 外部命令的平台依赖与潜在注入风险。
+    try {
+      const AdmZip = (await import("adm-zip")).default;
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(destDir, true);
     } catch (err) {
       throw new Error(`ZIP extraction failed: ${err}`);
     }
@@ -1624,9 +1786,13 @@ export class SkillManager {
       try {
         fs.writeFileSync(fd, JSON.stringify(persistable, null, 2), "utf-8");
         fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
+      } catch (writeErr) {
+        // 写入/fsync 失败时清理临时文件，避免泄漏残留
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw writeErr;
       }
+      fs.closeSync(fd);
       fs.renameSync(tmpPath, configPath);
       return true;
     } catch (err) {
@@ -1784,7 +1950,11 @@ export class SkillManager {
   }
 
   private compareVersions(a: string, b: string): number {
-    const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
+    // 非数字段（如 "0-beta"）视为 0，避免 NaN 使比较短路返回 0（误判相等）
+    const parse = (v: string) => v.replace(/^v/, "").split(".").map((s) => {
+      const n = Number(s);
+      return Number.isNaN(n) ? 0 : n;
+    });
     const partsA = parse(a);
     const partsB = parse(b);
     for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
@@ -2167,7 +2337,10 @@ export class SkillManager {
 
       if (spec.kind === "download") {
         // download 种类：HTTPS-only 校验 + 大小上限 + 解压 + stripComponents
-        this.executeDownloadInstall(spec, skillDir, step);
+        // 必须 await：executeDownloadInstall 内部异步下载并通过引用修改 step 对象，
+        // 不 await 会导致调用方拿到未完成的状态（status 仍为初始值 "success"），
+        // 且下载错误变成 unhandled promise rejection 被静默吞掉。
+        await this.executeDownloadInstall(spec, skillDir, step);
         return step;
       }
 
@@ -2360,24 +2533,28 @@ export class SkillManager {
         const reader = response.body?.getReader();
         if (!reader) throw new Error("Response has no body");
         const fileStream = fs.createWriteStream(archivePath);
-        let received = 0;
-        const pump = async (): Promise<void> => {
-          // eslint-disable-next-line no-constant-condition
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            received += value.byteLength;
-            if (received > MAX_DOWNLOAD_BYTES) {
-              controller.abort();
-              throw new Error(`Download exceeded ${MAX_DOWNLOAD_BYTES} bytes (possible zip bomb)`);
+        try {
+          let received = 0;
+          const pump = async (): Promise<void> => {
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              received += value.byteLength;
+              if (received > MAX_DOWNLOAD_BYTES) {
+                controller.abort();
+                throw new Error(`Download exceeded ${MAX_DOWNLOAD_BYTES} bytes (possible zip bomb)`);
+              }
+              fileStream.write(Buffer.from(value));
             }
-            fileStream.write(Buffer.from(value));
-          }
-          fileStream.end();
-          await new Promise<void>((resolve) => fileStream.on("close", resolve));
-        };
-        await pump();
-        process.stdout.write(`[SkillManager] Downloaded ${received} bytes\n`);
+            fileStream.end();
+            await new Promise<void>((resolve) => fileStream.on("close", resolve));
+          };
+          await pump();
+          process.stdout.write(`[SkillManager] Downloaded ${received} bytes\n`);
+        } finally {
+          try { fileStream.destroy(); } catch { /* ignore */ }
+        }
       } finally {
         clearTimeout(timeout);
       }
@@ -2399,15 +2576,14 @@ export class SkillManager {
           step.warnings.push("stripComponents not supported for zip archives");
         }
         fs.mkdirSync(targetDir, { recursive: true });
-        // 使用 PowerShell 的 Expand-Archive（Windows）或 unzip（Unix）
-        if (process.platform === "win32") {
-          execFileSync("powershell.exe", [
-            "-NoProfile", "-NonInteractive", "-Command",
-            `Expand-Archive -Path '${archivePath}' -DestinationPath '${targetDir}' -Force`,
-          ], { stdio: "pipe", shell: false, timeout: 60_000 });
-        } else {
-          execFileSync("unzip", ["-o", "-q", archivePath, "-d", targetDir], { stdio: "pipe", shell: false, timeout: 60_000 });
-        }
+        // 使用 adm-zip 原生解压，避免调用 PowerShell（Windows）或 unzip（Unix）。
+        // 安全：此前用 `Expand-Archive -Path '${archivePath}'` 字符串插值调用 PowerShell，
+        // archivePath 中的单引号（来自 spec.archive，frontmatter 可控）可注入 PowerShell 命令。
+        // adm-zip 纯 JS 实现，无 shell 调用，彻底消除命令注入风险。
+        // 与 marketplace.ts 的解压方式保持一致（动态 import adm-zip）。
+        const AdmZip = (await import("adm-zip")).default;
+        const zip = new AdmZip(archivePath);
+        zip.extractAllTo(targetDir, true);
         step.message = `Extracted zip to ${path.relative(skillDir, targetDir)}`;
       } else if (isTar) {
         fs.mkdirSync(targetDir, { recursive: true });

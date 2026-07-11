@@ -209,34 +209,164 @@ export class DAGExecutor {
   }
 
   /**
-   * Evaluate a condition expression against the task context.
-   * The expression is a simple JS expression evaluated with context variables in scope.
+   * 受限条件表达式求值器（替代 new Function / eval，防止代码注入）。
+   *
+   * 支持的语法子集：
+   * - context 字段直接访问：sessionId / userId / workspace / variables / tags / traceId
+   *   及嵌套属性：variables.foo / tags.length
+   * - 字面量：true / false / null / undefined / 数字 / 单/双引号字符串
+   * - 比较：=== / !== / == / != / >= / <= / > / <
+   * - 逻辑：&& / || / ! 以及括号分组
+   *
+   * 不支持：函数调用、new、赋值、require、process 等。
+   * 解析失败或包含不支持的语法时返回 false（fail-closed）。
    */
   private evaluateCondition(condition: string, context: Task["context"]): boolean {
     try {
-      // Safe evaluation: only allow simple comparison and logical expressions
-      // Block dangerous patterns that could lead to code injection
-      const sanitized = condition.trim();
-      const dangerousPatterns = [
-        /constructor/i, /__proto__/i, /process\b/i, /require\b/i,
-        /import\b/i, /eval\b/i, /Function\b/i, /this\b/i,
-        /window\b/i, /global\b/i, /document\b/i,
-      ];
-      for (const pat of dangerousPatterns) {
-        if (pat.test(sanitized)) {
-          process.stderr.write(`[DAGExecutor] Condition blocked: contains dangerous pattern\n`);
-          return false;
-        }
+      const trimmed = condition.trim();
+      if (trimmed.length === 0) return true;
+      // 安全：拒绝任何危险关键字
+      if (/\b(require|process|global|globalThis|eval|Function|constructor|prototype|__proto__|window|document|import|export|new\s+|this\b)\b/.test(trimmed)) {
+        process.stderr.write(`[DAGExecutor] Condition blocked: contains forbidden keyword\n`);
+        return false;
       }
-
-      // Simple safe evaluation using only context variables
-      const fn = new Function("context", `with(context) { return (${sanitized}); }`);
-      const result = fn(context);
-      return Boolean(result);
+      return this.evalOrExpr(trimmed, context);
     } catch {
-      // If condition evaluation fails, treat as false
+      // 解析失败视为 false，保证 fail-closed
       return false;
     }
+  }
+
+  private evalOrExpr(expr: string, context: Task["context"]): boolean {
+    const parts = this.splitTopLevel(expr, "||");
+    if (parts.length > 1) {
+      return parts.some((p) => this.evalAndExpr(p.trim(), context));
+    }
+    return this.evalAndExpr(expr, context);
+  }
+
+  private evalAndExpr(expr: string, context: Task["context"]): boolean {
+    const parts = this.splitTopLevel(expr, "&&");
+    if (parts.length > 1) {
+      return parts.every((p) => this.evalNotExpr(p.trim(), context));
+    }
+    return this.evalNotExpr(expr, context);
+  }
+
+  private evalNotExpr(expr: string, context: Task["context"]): boolean {
+    const trimmed = expr.trim();
+    if (trimmed.startsWith("!")) {
+      return !this.evalNotExpr(trimmed.slice(1), context);
+    }
+    return this.evalComparison(trimmed, context);
+  }
+
+  private evalComparison(expr: string, context: Task["context"]): boolean {
+    const trimmed = expr.trim();
+    // 括号包裹
+    if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+      return this.evalOrExpr(trimmed.slice(1, -1), context);
+    }
+    // 比较操作符（注意顺序：长操作符优先）
+    const ops = ["===", "!==", "==", "!=", ">=", "<=", ">", "<"];
+    for (const op of ops) {
+      const idx = this.findTopLevelOp(trimmed, op);
+      if (idx !== -1) {
+        const left = this.evalValue(trimmed.slice(0, idx).trim(), context);
+        const right = this.evalValue(trimmed.slice(idx + op.length).trim(), context);
+        switch (op) {
+          case "===": return left === right;
+          case "!==": return left !== right;
+          case "==": return left == right; // eslint-disable-line eqeqeq
+          case "!=": return left != right; // eslint-disable-line eqeqeq
+          case ">=": return (left as number) >= (right as number);
+          case "<=": return (left as number) <= (right as number);
+          case ">": return (left as number) > (right as number);
+          case "<": return (left as number) < (right as number);
+        }
+      }
+    }
+    // 无操作符：取真值
+    const val = this.evalValue(trimmed, context);
+    return !!val;
+  }
+
+  /** 求值单个值：字面量或 context 字段路径访问 */
+  private evalValue(expr: string, context: Task["context"]): unknown {
+    const trimmed = expr.trim();
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (trimmed === "null") return null;
+    if (trimmed === "undefined") return undefined;
+    // 数字字面量
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+    // 字符串字面量（单引号或双引号）
+    if (/^['"].*['"]$/.test(trimmed) && trimmed.length >= 2) {
+      return trimmed.slice(1, -1);
+    }
+    // 标识符或属性路径：sessionId / userId / variables.foo / tags.length 等
+    if (/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(trimmed)) {
+      const path = trimmed.split(".");
+      const root = path[0];
+      // 仅允许 context 已知字段作为根标识符
+      const allowedRoots = new Set(["sessionId", "userId", "workspace", "variables", "tags", "traceId"]);
+      if (!allowedRoots.has(root)) {
+        throw new Error(`Unknown identifier: ${root}`);
+      }
+      let current: unknown = (context as unknown as Record<string, unknown>)[root];
+      for (let i = 1; i < path.length; i++) {
+        if (current == null || typeof current !== "object") return undefined;
+        current = (current as Record<string, unknown>)[path[i]];
+      }
+      return current;
+    }
+    throw new Error(`Unsupported value expression: ${expr}`);
+  }
+
+  /** 在顶层（不在括号或引号内）查找操作符位置 */
+  private findTopLevelOp(expr: string, op: string): number {
+    let depth = 0;
+    let inStr: string | null = null;
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (inStr) {
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { inStr = ch; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (depth === 0 && expr.substring(i, i + op.length) === op) {
+        // 避免 == 匹配到 === 的前缀
+        if ((op === "==" || op === "!=") && expr[i + 2] === "=") continue;
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /** 在顶层（不在括号或引号内）按分隔符拆分 */
+  private splitTopLevel(expr: string, sep: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let inStr: string | null = null;
+    let start = 0;
+    for (let i = 0; i < expr.length; i++) {
+      const ch = expr[i];
+      if (inStr) {
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { inStr = ch; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (depth === 0 && expr.substring(i, i + sep.length) === sep) {
+        parts.push(expr.slice(start, i));
+        start = i + sep.length;
+      }
+    }
+    parts.push(expr.slice(start));
+    return parts;
   }
 
   private async executeNode(node: DAGNode, _context: Task["context"], abortSignal?: AbortSignal): Promise<unknown> {
@@ -308,7 +438,7 @@ export class DAGExecutor {
       const nextLevel: string[] = [];
       for (const nodeId of currentLevel) {
         for (const neighbor of adjacency.get(nodeId) || []) {
-          const newDegree = (inDegree.get(neighbor) || 1) - 1;
+          const newDegree = (inDegree.get(neighbor) ?? 1) - 1;
           inDegree.set(neighbor, newDegree);
           if (newDegree === 0) nextLevel.push(neighbor);
         }

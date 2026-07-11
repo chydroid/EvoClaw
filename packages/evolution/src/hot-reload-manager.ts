@@ -16,6 +16,12 @@ export class HotReloadManager {
   ) {}
 
   async publish(candidate: EvolutionCandidate): Promise<void> {
+    // 清理可能挂起的延迟处理定时器，避免与新事件重复处理
+    if (this.scheduledTimeout) {
+      clearTimeout(this.scheduledTimeout);
+      this.scheduledTimeout = null;
+    }
+
     const event: HotReloadEvent = {
       skillId: candidate.id,
       action: candidate.type === "new_skill" ? "install" : "update",
@@ -55,6 +61,12 @@ export class HotReloadManager {
   }
 
   async rollback(skillId: string, oldVersion: string): Promise<void> {
+    // 清理可能挂起的延迟处理定时器，回滚需立即处理
+    if (this.scheduledTimeout) {
+      clearTimeout(this.scheduledTimeout);
+      this.scheduledTimeout = null;
+    }
+
     const event: HotReloadEvent = {
       skillId,
       action: "rollback",
@@ -64,6 +76,16 @@ export class HotReloadManager {
 
     this.reloadQueue.push(event);
     await this.processQueue();
+  }
+
+  /** 停止管理器，清理挂起的定时器和待处理队列 */
+  stop(): void {
+    if (this.scheduledTimeout) {
+      clearTimeout(this.scheduledTimeout);
+      this.scheduledTimeout = null;
+    }
+    this.reloadQueue = [];
+    this.isReloading = false;
   }
 
   private async processQueue(): Promise<void> {

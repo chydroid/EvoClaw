@@ -78,9 +78,13 @@ export class RAGPipeline {
     // 串行化同一文档的索引操作：若并发调用 indexDocument(docA)，两个调用都会
     // 通过 documentChunks.has 检查并进入 removeDocument，导致 vector store 产生
     // 重复 chunk 且 _chunkCount 被双重累加。通过 in-flight Promise 去重避免竞态。
-    const existing = this.inflightIndex.get(document.id);
-    if (existing) {
+    // 使用 while 循环：await 完成后需重新检查 inflightIndex，因为在此期间可能有
+    // 新的并发调用设置了新的 in-flight Promise。直接进入 doIndexDocument 会与新
+    // 的 in-flight 再次并发执行，导致同样的去重失效。
+    let existing = this.inflightIndex.get(document.id);
+    while (existing) {
       await existing;
+      existing = this.inflightIndex.get(document.id);
     }
     const promise = this.doIndexDocument(document).finally(() => {
       this.inflightIndex.delete(document.id);

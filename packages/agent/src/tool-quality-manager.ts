@@ -359,18 +359,16 @@ export class ToolQualityManager extends EventEmitter {
       const reasons: string[] = [];
       if (successRate < this.opts.penaltyThreshold) {
         reasons.push(`success_rate=${successRate.toFixed(2)} < ${this.opts.penaltyThreshold}`);
-        problemCount++;
       }
       if (record.llmFlaggedCount >= this.opts.llmFlagThreshold) {
         reasons.push(`llm_flagged=${record.llmFlaggedCount} >= ${this.opts.llmFlagThreshold}`);
-        problemCount++;
       }
       if (record.consecutiveFailures >= 5) {
         reasons.push(`consecutive_failures=${record.consecutiveFailures}`);
-        problemCount++;
       }
 
       if (reasons.length > 0) {
+        problemCount++;
         problematic.push({
           toolKey: record.toolKey,
           penalty,

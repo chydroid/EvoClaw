@@ -142,6 +142,7 @@ export async function nativeFetch(
               } catch (err) {
                 throw new Error(
                   `Response body is not valid JSON: ${err instanceof Error ? err.message : String(err)} (body preview: ${text.slice(0, 200)})`,
+                  { cause: err },
                 );
               }
             },
@@ -1578,7 +1579,7 @@ export async function callLLMOnce(
       signal: controller.signal,
       // Enforce a connection-level timeout as well so nativeFetch aborts even
       // when the TCP handshake or TLS negotiation hangs.
-      timeout: Math.max(timeout + 5000, timeout),
+      timeout: timeout + 5000,
     });
 
     clearTimeout(timeoutId);
@@ -1651,8 +1652,8 @@ export async function callLLMOnce(
         content: msg.content ?? null,
         tool_calls: msg.tool_calls,
       },
-      tokensUsed: (data.usage as Record<string, unknown>)?.total_tokens as number || 0,
-      promptTokens: (data.usage as Record<string, unknown>)?.prompt_tokens as number || 0,
+      tokensUsed: Number((data.usage as Record<string, unknown>)?.total_tokens ?? 0) || 0,
+      promptTokens: Number((data.usage as Record<string, unknown>)?.prompt_tokens ?? 0) || 0,
       responseMs,
     };
   } catch (err: unknown) {
@@ -1743,11 +1744,9 @@ export async function tryCallLLM(
   } = options;
 
   // Wire end-to-end cancellation signal into deps so callLLMOnce picks it up.
-  // This mutates the local `deps` reference only for the duration of this call;
-  // callers that share deps across concurrent sessions should clone or pass a
-  // per-session signal through deps directly.
+  // 创建 deps 浅拷贝再设置 abortSignal，避免修改调用方共享的 deps 对象。
   if (abortSignal && !deps.abortSignal) {
-    (deps as { abortSignal?: AbortSignal }).abortSignal = abortSignal;
+    deps = { ...deps, abortSignal };
   }
 
   const BASE_MAX_TOOL_ROUNDS = 20;
@@ -2321,7 +2320,7 @@ Have a specific URL?
           }
           // Fallback to keyword matching if semantic classifier is unavailable
           if (!shouldTriggerSkillSearch && !classifier) {
-            const lowerMsg = (conversationMessages[conversationMessages.length - 1]?.content as string || "").toLowerCase();
+            const lowerMsg = String(conversationMessages[conversationMessages.length - 1]?.content ?? "").toLowerCase();
             const skillIntentKeywords = ["install", "安装", "装一个", "装个", "技能", "skill"];
             shouldTriggerSkillSearch = skillIntentKeywords.some(kw => lowerMsg.includes(kw));
           }
@@ -2866,7 +2865,7 @@ Have a specific URL?
                 // Execute the first relevant command
                 const cmd = commands[0];
                 if (cmd && skillDir) {
-                  const resolvedCmd = cmd.replace(/\{baseDir\}/g, skillDir);
+                  const resolvedCmd = cmd.replace(/\{baseDir\}/g, () => skillDir);
                   process.stdout.write(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}\n`);
                   const shellExecTool = deps.registeredTools.get("shell_exec");
                   if (shellExecTool) {

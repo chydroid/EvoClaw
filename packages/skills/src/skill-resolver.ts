@@ -33,6 +33,7 @@ export interface DependencySuggestion {
 
 export class SkillResolver {
   private resolutionCache = new Map<string, DependencyCheckResult>();
+  private static readonly CACHE_MAX = 1000;
 
   constructor(
     private registry: ServiceRegistry,
@@ -51,6 +52,13 @@ export class SkillResolver {
 
     const result = await this.resolveDependencies(skill);
     this.resolutionCache.set(cacheKey, result);
+    // 上限淘汰：超过容量时丢弃最旧条目（Map 保持插入顺序）
+    if (this.resolutionCache.size > SkillResolver.CACHE_MAX) {
+      const oldestKey = this.resolutionCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.resolutionCache.delete(oldestKey);
+      }
+    }
 
     return result;
   }

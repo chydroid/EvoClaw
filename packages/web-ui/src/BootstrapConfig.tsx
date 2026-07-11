@@ -57,13 +57,19 @@ export function BootstrapConfig() {
   const [originalContent, setOriginalContent] = useState("");
   const [message, setMessage] = useState("");
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); }; }, []);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => { return () => { if (messageTimerRef.current) clearTimeout(messageTimerRef.current); abortControllerRef.current?.abort(); }; }, []);
   const [loading, setLoading] = useState(true);
 
   const loadFiles = useCallback(async () => {
+    // 切换文件时取消上一次未完成的请求，防止旧响应覆盖新状态（竞态）
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
-      const res = await fetch("/api/bootstrap");
+      const res = await fetch("/api/bootstrap", { signal: controller.signal });
       const json = await res.json();
+      if (controller.signal.aborted) return;
       setData(json);
       if (json.files?.length > 0) {
         const current = json.files.find((f: BootstrapFile) => f.name === selectedFile);
@@ -73,9 +79,12 @@ export function BootstrapConfig() {
         }
       }
     } catch (err) {
+      if (controller.signal.aborted) return; // 取消导致的 AbortError，忽略
       console.error("Failed to load bootstrap files:", err);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [selectedFile]);
 

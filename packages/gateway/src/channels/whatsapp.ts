@@ -104,7 +104,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   constructor(config: WhatsAppConfig) {
     this.phoneNumberId = config.phoneNumberId;
     this.accessToken = config.accessToken;
-    this.verifyToken = config.verifyToken ?? "evoclaw-whatsapp";
+    this.verifyToken = config.verifyToken ?? "";
     this.appSecret = config.appSecret;
     this.apiVersion = config.apiVersion ?? "v22.0";
     this.allowedNumbers = new Set(config.allowedNumbers ?? []);
@@ -139,6 +139,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     this.running = false;
     this.connected = false;
+    // 清理已处理事件去重集合，避免重启后误判重复消息
+    this.processedEvents.clear();
     this.notifyStatus("disconnected");
     console.log("[WhatsApp] Stopped");
   }
@@ -234,6 +236,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
     challenge: string
   ): string | null {
     if (mode !== "subscribe") return null;
+    // 未配置 verifyToken 时拒绝验证（防止空值被 timingSafeEqual 视为匹配）
+    if (this.verifyToken.length === 0) return null;
     const tokenBuf = Buffer.from(token);
     const expectedBuf = Buffer.from(this.verifyToken);
     if (tokenBuf.length !== expectedBuf.length) return null;
@@ -242,14 +246,20 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   /**
    * Handle incoming webhook event from WhatsApp Cloud API.
-   * 若配置了 appSecret，则验证 X-Hub-Signature-256 签名（HMAC-SHA256 of rawBody）。
-   * 如果 appSecret 未配置则跳过验证（向后兼容）。
+   * 验证 X-Hub-Signature-256 签名（HMAC-SHA256 of rawBody）。
+   * appSecret 未配置时 fail-closed 拒绝所有请求。
    */
   async handleWebhook(body: unknown, headers?: Record<string, string>, rawBody?: string): Promise<void> {
     if (typeof body !== "object" || body === null) return;
 
-    // 验证 Meta 签名（如果配置了 appSecret）
-    if (this.appSecret && rawBody !== undefined) {
+    // Fail-closed：appSecret 未配置时拒绝所有 webhook 请求，避免绕过签名验证
+    if (!this.appSecret) {
+      console.error("[WhatsApp] Webhook rejected: appSecret not configured");
+      return;
+    }
+
+    // 验证 Meta 签名（appSecret 已配置）
+    if (rawBody !== undefined) {
       const sigHeader = headers?.["x-hub-signature-256"];
       if (!sigHeader || !sigHeader.startsWith("sha256=")) {
         console.warn("[WhatsApp] Webhook rejected: missing or invalid X-Hub-Signature-256 header");

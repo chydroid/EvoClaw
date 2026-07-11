@@ -134,7 +134,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const serverAlive = await checkServer();
       if (serverAlive) {
         try {
-          await apiRequest("POST", `/api/plugins/${encodeURIComponent(name)}/toggle`, { status: "active" });
+          await apiRequest("POST", `/api/plugins/${encodeURIComponent(name)}/toggle`, { status: "enabled" });
           console.log(c("green", `✅ Plugin "${name}" enabled`));
         } catch {
           console.log(c("yellow", `⚠ Could not toggle plugin`));

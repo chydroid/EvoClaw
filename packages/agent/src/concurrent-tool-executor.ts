@@ -379,6 +379,8 @@ export class ConcurrentToolExecutor {
 
     const startTime = Date.now();
     this.activeExecutions.set(tool.id, { startTime, lastHeartbeat: startTime });
+    // AbortController：超时后标记取消，executor 若支持 signal 可据此提前终止
+    const abortController = new AbortController();
 
     // 心跳监控
     const heartbeatTimer = setInterval(() => {
@@ -387,6 +389,7 @@ export class ConcurrentToolExecutor {
         const now = Date.now();
         if (now - exec.lastHeartbeat > this.config.heartbeatTimeoutMs) {
           logger_warn(`tool ${tool.name} heartbeat timeout`, { toolId: tool.id, toolName: tool.name });
+          abortController.abort();
         }
       }
     }, this.config.pollIntervalMs);
@@ -395,8 +398,13 @@ export class ConcurrentToolExecutor {
 
     // 超时控制
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     const timeoutPromise = new Promise<ToolExecutionResult>((resolve) => {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        // 标记取消：executor 若支持 signal 会据此终止后台执行
+        abortController.abort();
+        logger_warn(`tool ${tool.name} timed out, aborted`, { toolId: tool.id, toolName: tool.name, timeoutMs: this.config.toolTimeoutMs });
         resolve({
           id: tool.id,
           success: false,
@@ -425,6 +433,16 @@ export class ConcurrentToolExecutor {
         } as ToolExecutionResult;
       }
     })();
+
+    // 超时后 execPromise 仍在后台运行：捕获其 rejection 防止 unhandledRejection，
+    // 并在它最终完成/失败后记录诊断信息（结果已被丢弃）
+    execPromise
+      .then((result) => {
+        if (timedOut) {
+          logger_warn(`tool ${tool.name} completed after timeout (result discarded)`, { toolId: tool.id, success: result.success });
+        }
+      })
+      .catch(() => {});
 
     try {
       const result = await Promise.race([execPromise, timeoutPromise]);

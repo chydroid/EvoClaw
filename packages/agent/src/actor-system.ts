@@ -11,6 +11,9 @@ export class ActorSystem {
   private actors = new Map<string, Actor>();
   private mailboxes = new Map<string, ActorMessage[]>();
   private processing = new Set<string>();
+  /** ask() 入队消息的响应回调，按 ActorMessage 对象关联。
+   *  processMessages 处理完该消息后 resolve；失败则 reject，避免调用方永久挂起。 */
+  private askResolvers = new WeakMap<ActorMessage, { resolve: (msg: ActorMessage) => void; reject: (err: unknown) => void }>();
 
   spawn<T>(
     id: string,
@@ -53,23 +56,47 @@ export class ActorSystem {
       ask: async (message: ActorMessage): Promise<ActorMessage> => {
         const actor = this.actors.get(id);
         if (!actor) throw new Error(`Actor "${id}" not found`);
+        const mailbox = this.mailboxes.get(id);
+        if (!mailbox) throw new Error(`Mailbox for "${id}" not found`);
 
-        const result = await actor.behavior(message, actor.state);
-        const { newState, response } = result;
+        // 将消息入队邮箱并通过 processMessages 统一处理，复用 processing 守卫，
+        // 避免与 processMessages 并发执行 behavior 导致状态丢失（原实现直接调用
+        // behavior 并 set 新 actor 对象，会覆盖 processMessages 正在进行的 state 变更）。
+        const responsePromise = new Promise<ActorMessage>((resolve, reject) => {
+          this.askResolvers.set(message, { resolve, reject });
+        });
 
-        this.actors.set(id, { ...actor, state: newState });
+        mailbox.push(message);
+        // 非阻塞触发消息处理；若 processMessages 整体失败（非单条 behavior 失败），
+        // reject 对应的 ask 调用方，避免永久挂起。
+        void this.processMessages(id).catch((err) => {
+          const resolver = this.askResolvers.get(message);
+          if (resolver) {
+            this.askResolvers.delete(message);
+            resolver.reject(err);
+          }
+        });
 
-        return {
-          type: "response",
-          sender: id,
-          recipient: message.sender,
-          payload: response,
-          correlationId: message.correlationId || "",
-          timestamp: new Date(),
-        };
+        return responsePromise;
       },
 
       stop: async () => {
+        // 在删除 actor 和 mailbox 之前，reject 所有 pending 的 askResolvers，
+        // 避免 ask() 调用方在 actor 被 stop() 后永久挂起：
+        // stop() 删除 actor 和 mailbox 后，processMessages 会因 !actor || !mailbox
+        // 提前返回，不触发 reject，askResolvers 中的 resolver 永远不会被 resolve/reject。
+        // askResolvers 是 WeakMap<ActorMessage, {resolve, reject}>，按 message 关联，
+        // 因此遍历 mailbox 中尚未处理的消息并 reject 对应 resolver。
+        const mailbox = this.mailboxes.get(id);
+        if (mailbox) {
+          for (const message of mailbox) {
+            const resolver = this.askResolvers.get(message);
+            if (resolver) {
+              this.askResolvers.delete(message);
+              resolver.reject(new Error(`Actor ${id} stopped`));
+            }
+          }
+        }
         this.actors.delete(id);
         this.mailboxes.delete(id);
       },
@@ -90,8 +117,27 @@ export class ActorSystem {
         try {
           const result = await actor.behavior(message, actor.state);
           actor.state = result.newState;
+          // 若是 ask() 入队的消息，将响应回传给等待的调用方
+          const resolver = this.askResolvers.get(message);
+          if (resolver) {
+            this.askResolvers.delete(message);
+            resolver.resolve({
+              type: "response",
+              sender: actorId,
+              recipient: message.sender,
+              payload: result.response,
+              correlationId: message.correlationId || "",
+              timestamp: new Date(),
+            });
+          }
         } catch (err) {
           process.stderr.write(`[ActorSystem] Error processing message for "${actorId}":` + " " + err + "\n");
+          // ask() 消息处理失败时 reject，避免调用方永久挂起
+          const resolver = this.askResolvers.get(message);
+          if (resolver) {
+            this.askResolvers.delete(message);
+            resolver.reject(err);
+          }
         }
       }
     } finally {

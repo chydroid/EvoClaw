@@ -397,7 +397,7 @@ const PRIORITY_ORDER: Record<HookPriority, number> = {
 
 interface LoadedPlugin {
   plugin: Plugin;
-  status: "active" | "disabled" | "error";
+  status: "initializing" | "active" | "disabled" | "error";
   error?: string;
 }
 
@@ -428,16 +428,21 @@ export class PluginManager {
       throw new Error(`Plugin "${name}" is already registered`);
     }
 
-    const loaded: LoadedPlugin = { plugin, status: "active" };
+    // 初始化期间设为 "initializing"，runHooks 会跳过非 active 插件，避免暴露未就绪的 hooks
+    const loaded: LoadedPlugin = { plugin, status: "initializing" };
     this.plugins.set(name, loaded);
 
     // Register hooks
+    // 先记录本次注册的 (hookType, plugin) 对，init 失败时回滚以免遗留死 hooks
+    const registeredHooks: Array<{ hookType: PluginHook["type"]; handler: PluginHookRegistration["handler"] }> = [];
     for (const hookReg of plugin.hooks) {
       if (!this.hookRegistry.has(hookReg.hookType)) {
         this.hookRegistry.set(hookReg.hookType, []);
       }
       const handlers = this.hookRegistry.get(hookReg.hookType)!;
-      handlers.push({ plugin: name, handler: hookReg.handler, priority: hookReg.priority });
+      const entry = { plugin: name, handler: hookReg.handler, priority: hookReg.priority };
+      handlers.push(entry);
+      registeredHooks.push({ hookType: hookReg.hookType, handler: entry.handler });
       // Sort by priority
       handlers.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
     }
@@ -457,11 +462,24 @@ export class PluginManager {
           dataDir: this.pluginDataDir,
         };
         await plugin.init(ctx);
+        // 初始化成功后才激活，使 hooks 可被 runHooks 调用
+        loaded.status = "active";
       } catch (err) {
         loaded.status = "error";
         loaded.error = String(err);
+        // init 失败：回滚已注册的 hooks，避免插件已不可用但其 handler 仍残留在 hookRegistry 中
+        for (const { hookType, handler } of registeredHooks) {
+          const arr = this.hookRegistry.get(hookType);
+          if (!arr) continue;
+          const idx = arr.findIndex(e => e.plugin === name && e.handler === handler);
+          if (idx !== -1) arr.splice(idx, 1);
+          if (arr.length === 0) this.hookRegistry.delete(hookType);
+        }
         process.stderr.write(`[PluginManager] Plugin "${name}" init failed:` + " " + err + "\n");
       }
+    } else {
+      // 无 init 钩子的插件直接激活
+      loaded.status = "active";
     }
 
     process.stdout.write(`[PluginManager] Plugin "${name}" v${plugin.manifest.version} registered\n`);
@@ -513,7 +531,8 @@ export class PluginManager {
   async runHooks<T extends PluginHook, R extends PluginHookResult>(
     hook: T,
   ): Promise<{ blocked: boolean; blockReason?: string; cancelled: boolean; results: R[] }> {
-    const handlers = this.hookRegistry.get(hook.type) ?? [];
+    // 快照 handlers 数组，避免 await 期间 registerPlugin 的 push 修改同一数组
+    const handlers = [...(this.hookRegistry.get(hook.type) ?? [])];
     const results: R[] = [];
     let blocked = false;
     let blockReason: string | undefined;
@@ -526,8 +545,15 @@ export class PluginManager {
         continue;
       }
 
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
-        const result = await Promise.resolve(handler(hook)) as R | undefined;
+        // 超时保护：单个 handler 最多执行 30 秒，避免恶意/卡死插件阻塞整个 hook 链
+        const result = await Promise.race([
+          Promise.resolve(handler(hook)) as Promise<R | undefined>,
+          new Promise<R | undefined>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error(`Hook handler timeout after 30000ms`)), 30_000);
+          }),
+        ]) as R | undefined;
         if (result) {
           results.push(result);
 
@@ -550,6 +576,9 @@ export class PluginManager {
         }
       } catch (err) {
         process.stderr.write(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed:` + " " + err + "\n");
+      } finally {
+        // handler 快速完成时也要清理超时定时器，避免其残留占用 30 秒
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     }
 
@@ -577,10 +606,17 @@ export class PluginManager {
 
   /** Run hooks with a mixed handler — collect results from non-blocking hooks */
   async runHooksRaw(hookType: PluginHook["type"], hook: PluginHook): Promise<PluginHookResult[]> {
-    const handlers = this.hookRegistry.get(hookType) ?? [];
+    // 快照 handlers 数组，避免 await 期间 registerPlugin 的 push 修改同一数组
+    const handlers = [...(this.hookRegistry.get(hookType) ?? [])];
     const results: PluginHookResult[] = [];
 
     for (const { plugin, handler } of handlers) {
+      // 与 runHooks 一致：跳过非 active 插件，避免暴露未就绪或已失败插件的 hooks
+      const loaded = this.plugins.get(plugin);
+      if (!loaded || loaded.status !== "active") {
+        continue;
+      }
+
       try {
         const result = await Promise.resolve(handler(hook));
         if (result) {

@@ -71,6 +71,7 @@ export class L1Dedupifier {
   private opts: Required<L1DedupOptions>;
   private existingMemories: AtomicMemory[];
   private embedFn?: EmbedFn;
+  private vecCache = new Map<string, number[] | null>();
 
   constructor(
     existingMemories: AtomicMemory[],
@@ -85,6 +86,7 @@ export class L1Dedupifier {
   /** 更新已有记忆列表（写入后调用）。 */
   updateExisting(memories: AtomicMemory[]): void {
     this.existingMemories = memories;
+    this.vecCache.clear();
   }
 
   /**
@@ -138,7 +140,11 @@ export class L1Dedupifier {
     let bestSim = 0;
     let bestId: string | undefined;
     for (const existing of this.existingMemories) {
-      const existingVec = await this.embedFn(existing.content);
+      let existingVec = this.vecCache.get(existing.content);
+      if (existingVec === undefined) {
+        existingVec = await this.embedFn(existing.content);
+        this.vecCache.set(existing.content, existingVec);
+      }
       if (!existingVec) continue;
       const sim = cosineSimilarity(newVec, existingVec);
       if (sim > bestSim) {

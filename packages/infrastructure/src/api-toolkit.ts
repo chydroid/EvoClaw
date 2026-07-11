@@ -12,6 +12,8 @@
  *  - URL preview / scraping with metadata extraction
  */
 
+import { createHmac } from "crypto";
+
 // ── Types ─────────────────────────────────────────────────
 
 export interface ApiClientConfig {
@@ -424,13 +426,12 @@ export class WebhookSender {
 
   /** Generate HMAC-SHA256 signature for webhook payload */
   static generateSignature(type: "hmac-sha256" | "sha256", body: string, secret: string): string {
-    const { createHmac, createHash } = require("crypto");
-
     if (type === "hmac-sha256") {
       return createHmac("sha256", secret).update(body).digest("hex");
     }
 
-    return createHash("sha256").update(body + secret).digest("hex");
+    // 使用 HMAC 而非将 secret 简单拼接到消息末尾，防止长度扩展攻击
+    return createHmac("sha256", secret).update(body).digest("hex");
   }
 }
 

@@ -7,7 +7,7 @@
  * - 启用/禁用语音输入
  * - 状态反馈与错误展示
  */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "./i18n";
 import { voiceApi, type VoiceConfigData, type VoiceStatusData } from "./api-client";
 import { isSpeechRecognitionSupported } from "./useVoice";
@@ -63,9 +63,10 @@ export function VoiceConfigPage() {
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const browserSupported = isSpeechRecognitionSupported();
 
-  const fetchState = async () => {
+  const fetchState = useCallback(async () => {
     try {
       const data = await voiceApi.get();
       setConfig(data.config);
@@ -75,15 +76,19 @@ export function VoiceConfigPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchState();
-  }, []);
+    return () => {
+      if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
+    };
+  }, [fetchState]);
 
   const showMessage = (type: "success" | "error", text: string) => {
+    if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
     setMessage({ type, text });
-    setTimeout(() => setMessage(null), 5000);
+    messageTimerRef.current = setTimeout(() => setMessage(null), 5000);
   };
 
   const handleChange = (patch: Partial<VoiceConfigData>) => {

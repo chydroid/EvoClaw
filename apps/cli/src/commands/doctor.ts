@@ -7,6 +7,22 @@ import * as crypto from "crypto";
 import { c, ICONS, divider, section } from "../utils/colors";
 import { VERSION, DEFAULT_PORT, apiRequest, checkServer } from "../utils/api";
 
+/** 原子写入文件：写临时文件 + fsync + rename */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 interface CheckResult {
   name: string;
   ok: boolean;
@@ -264,7 +280,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           console.log(`\n${c("green", isForce ? "🔧 Applying fixes (--force mode)..." : "🔧 Applying safe fixes...")}\n`);
           if (!dotEnvExists) {
             const secret = crypto.randomBytes(32).toString("hex");
-            fs.writeFileSync(dotEnvPath, `EvoClaw_PORT=${DEFAULT_PORT}\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
+            atomicWriteFileSync(dotEnvPath, `EvoClaw_PORT=${DEFAULT_PORT}\nJWT_SECRET=${secret}\nEvoClaw_EVOLUTION_ENABLED=true\n`);
             fixesApplied.push("Created .env config file");
           }
           for (const dir of ["skills", "data", "logs"]) {

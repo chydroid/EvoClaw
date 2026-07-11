@@ -235,24 +235,27 @@ export class WebhookChannelAdapter extends ChannelAdapterBase {
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      // unref 避免定时器阻止进程退出
+      timeout.unref?.();
+      try {
+        const response = await fetch(this.webhookUrl, {
+          method: "POST",
+          headers,
+          body,
+          signal: controller.signal,
+        });
 
-      const response = await fetch(this.webhookUrl, {
-        method: "POST",
-        headers,
-        body,
-        signal: controller.signal,
-      });
+        if (!response.ok) {
+          process.stderr.write(
+            `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}\n`
+          );
+          return { success: false, error: `HTTP ${response.status}`, channel: this.type };
+        }
 
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        process.stderr.write(
-          `[WebhookChannel:${this.config.channelId}] Send failed — HTTP ${response.status}\n`
-        );
-        return { success: false, error: `HTTP ${response.status}`, channel: this.type };
+        return { success: true, channel: this.type };
+      } finally {
+        clearTimeout(timeout);
       }
-
-      return { success: true, channel: this.type };
     } catch (err) {
       process.stderr.write(
         `[WebhookChannel:${this.config.channelId}] Send error:` + " " + (err instanceof Error ? err.message : String(err)) + "\n"
@@ -508,6 +511,7 @@ export class TelegramChannelAdapter extends ChannelAdapterBase {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: params ? JSON.stringify(params) : undefined,
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {

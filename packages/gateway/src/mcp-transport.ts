@@ -8,10 +8,14 @@ import {
   type MCPContent,
 } from "@evoclaw/core";
 import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
 
 function generateId(): string {
-  return Math.random().toString(36).slice(2, 10);
+  return randomUUID();
 }
+
+/** buffer 最大字节数（防止恶意客户端发送超大无换行数据导致内存耗尽） */
+const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
 
 declare function setTimeout(
   callback: (...args: unknown[]) => void,
@@ -66,6 +70,9 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
     private capabilities: MCPCapabilities
   ) {
     super();
+    this.on("error", (err) => {
+      process.stderr.write(`[MCPTransport] error: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
   }
 
   getType(): "sse" {
@@ -377,6 +384,9 @@ export class MCPStdioTransport extends EventEmitter implements MCPTransportImpl 
     private stdout: NodeJS.WritableStream = process.stdout
   ) {
     super();
+    this.on("error", (err) => {
+      process.stderr.write(`[MCPTransport] error: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
   }
 
   getType(): "stdio" {
@@ -461,6 +471,16 @@ export class MCPStdioTransport extends EventEmitter implements MCPTransportImpl 
       const data = Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : chunk;
       this.buffer += data;
 
+      // 超过 buffer 上限时按 newline 边界清理，保留最后一条未完成消息，避免整段清空丢消息
+      if (this.buffer.length > MAX_BUFFER_SIZE) {
+        const lastNewline = this.buffer.lastIndexOf("\n");
+        if (lastNewline >= 0) {
+          this.buffer = this.buffer.slice(lastNewline + 1);
+        } else {
+          this.buffer = "";
+        }
+      }
+
       const lines = this.buffer.split("\n");
       this.buffer = lines.pop() || "";
 
@@ -528,22 +548,58 @@ export class MCPStdioTransport extends EventEmitter implements MCPTransportImpl 
         };
       } else if (msg.method === "tools/call") {
         const params = msg.params as unknown as MCPToolCallRequest;
-        try {
-          const content: MCPContent[] = [{
-            type: "text",
-            text: JSON.stringify(params),
-          }];
+        if (!params || !params.name) {
           response = {
             jsonrpc: "2.0",
             id: msg.id,
-            result: { content } as unknown as Record<string, unknown>,
+            error: { code: -32602, message: "Missing tool name" },
           };
-        } catch (err) {
+        } else if (this.capabilities.tools && !(params.name in this.capabilities.tools)) {
           response = {
             jsonrpc: "2.0",
             id: msg.id,
-            error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+            error: { code: -32602, message: `Tool not found: ${params.name}` },
           };
+        } else {
+          try {
+            const content: MCPContent[] = [];
+            if (this.requestHandler) {
+              const result = await this.requestHandler("tools/call", {
+                toolName: params.name,
+                arguments: params.arguments,
+              });
+              content.push({
+                type: "text",
+                text: JSON.stringify(result),
+              });
+            } else {
+              content.push({
+                type: "text",
+                text: `Tool "${params.name}" executed (no handler registered)`,
+              });
+            }
+            const toolResult: MCPToolCallResult = { content };
+            response = {
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: toolResult as unknown as Record<string, unknown>,
+            };
+          } catch (err) {
+            const errorResult: MCPToolCallResult = {
+              content: [
+                {
+                  type: "text",
+                  text: err instanceof Error ? err.message : String(err),
+                },
+              ],
+              isError: true,
+            };
+            response = {
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: errorResult as unknown as Record<string, unknown>,
+            };
+          }
         }
       } else if (this.requestHandler) {
         try {

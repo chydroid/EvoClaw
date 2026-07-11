@@ -109,7 +109,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
   hooks
     .command("enable <name>")
-    .description("Enable a hook")
+    .description("Enable a hook (treats it as a plugin toggle)")
     .action(async (name: string) => {
       const serverAlive = await checkServer();
       if (!serverAlive) {
@@ -117,9 +117,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         return;
       }
       try {
-        const r = await apiRequest<Record<string, unknown>>("PUT", "/api/config/llm", {
-          key: `hooks.${name}.enabled`,
-          value: true,
+        const r = await apiRequest<Record<string, unknown>>("POST", `/api/plugins/${encodeURIComponent(name)}/toggle`, {
+          status: "enabled",
         });
         if (r.status >= 200 && r.status < 300) {
           console.log(c("green", `${ICONS.ok()} Hook "${name}" enabled`));
@@ -133,7 +132,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
   hooks
     .command("disable <name>")
-    .description("Disable a hook")
+    .description("Disable a hook (treats it as a plugin toggle)")
     .action(async (name: string) => {
       const serverAlive = await checkServer();
       if (!serverAlive) {
@@ -141,9 +140,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         return;
       }
       try {
-        const r = await apiRequest<Record<string, unknown>>("PUT", "/api/config/llm", {
-          key: `hooks.${name}.enabled`,
-          value: false,
+        const r = await apiRequest<Record<string, unknown>>("POST", `/api/plugins/${encodeURIComponent(name)}/toggle`, {
+          status: "disabled",
         });
         if (r.status >= 200 && r.status < 300) {
           console.log(c("green", `${ICONS.ok()} Hook "${name}" disabled`));
@@ -157,21 +155,21 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
   hooks
     .command("install <name>")
-    .description("Install a hook")
+    .description("Install a hook (no-op: hooks are built-in)")
     .action((name: string) => {
-      console.log(c("cyan", `${ICONS.info()} Hooks are built into EvoClaw and installed automatically with the system.`));
+      console.log(c("cyan", `${ICONS.info()} No install action taken — hooks are built into EvoClaw.`));
+      console.log(c("gray", `  Hook "${name}" is part of the system. Check availability with: EvoClaw hooks list`));
       console.log(c("gray", `  To add custom hooks, create a plugin with event handlers in the plugins/ directory.`));
       console.log(c("gray", `  See: https://docs.evoclaw.ai/hooks for the hook development guide.`));
-      console.log(c("gray", `  Hook "${name}" — check if it's available in your current version with: EvoClaw hooks list`));
     });
 
   hooks
     .command("update [name]")
-    .description("Update hook(s)")
+    .description("Update hook(s) (no-op: updated with system)")
     .action((name: string | undefined) => {
-      console.log(c("cyan", `${ICONS.info()} Hooks are updated together with EvoClaw system updates.`));
+      console.log(c("cyan", `${ICONS.info()} No update action taken — hooks are updated with EvoClaw system updates.`));
       if (name) {
-        console.log(c("gray", `  To update hook "${name}", run: EvoClaw update`));
+        console.log(c("gray", `  Hook "${name}" updates when you run: EvoClaw update`));
       } else {
         console.log(c("gray", `  To update all hooks, run: EvoClaw update`));
       }

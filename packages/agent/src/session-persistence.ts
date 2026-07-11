@@ -44,7 +44,12 @@ export function sessionFilePath(deps: SessionPersistenceDeps, sessionId: string)
   if (!fs.existsSync(deps.sessionDataDir)) {
     fs.mkdirSync(deps.sessionDataDir, { recursive: true });
   }
-  return path.join(deps.sessionDataDir, `${sessionId}.jsonl`);
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filePath = path.join(deps.sessionDataDir, `${safeId}.jsonl`);
+  if (!path.resolve(filePath).startsWith(path.resolve(deps.sessionDataDir))) {
+    throw new Error("Invalid session ID: path traversal detected");
+  }
+  return filePath;
 }
 
 /** Persist a single conversation turn to the session file */

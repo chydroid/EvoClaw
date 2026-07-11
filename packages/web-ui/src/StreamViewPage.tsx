@@ -15,7 +15,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

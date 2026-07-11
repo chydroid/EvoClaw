@@ -107,6 +107,8 @@ export class AutoReplyEngine {
     const idx = this.rules.findIndex((r) => r.id === id);
     if (idx === -1) return false;
     this.rules.splice(idx, 1);
+    // 清理对应的冷却记录，防止 ruleCooldowns Map 无限增长
+    this.ruleCooldowns.delete(id);
     return true;
   }
 
@@ -220,10 +222,10 @@ export class AutoReplyEngine {
     ctx: AutoReplyContext,
   ): string {
     return template
-      .replace(/\{\{sender\}\}/g, ctx.senderName || ctx.senderId)
-      .replace(/\{\{message\}\}/g, ctx.message)
-      .replace(/\{\{channel\}\}/g, ctx.channel)
-      .replace(/\{\{time\}\}/g, new Date(ctx.timestamp ?? Date.now()).toLocaleString());
+      .replace(/\{\{sender\}\}/g, () => ctx.senderName || ctx.senderId)
+      .replace(/\{\{message\}\}/g, () => ctx.message)
+      .replace(/\{\{channel\}\}/g, () => ctx.channel)
+      .replace(/\{\{time\}\}/g, () => new Date(ctx.timestamp ?? Date.now()).toLocaleString());
   }
 }
 

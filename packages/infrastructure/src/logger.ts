@@ -7,7 +7,12 @@
  * - Sensitive data redaction (API keys, tokens, passwords)
  * - Subsystem tagging for filtering
  * - Optional pretty-print for development
+ * - File logging with rotating appender (agent.log / errors.log / gateway.log)
+ * - Session context injection (session_id in log line)
  */
+
+import path from "path";
+import { RotatingFileAppender } from "./rotating-file-appender";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +33,16 @@ export interface LoggerConfig {
   prettyPrint: boolean;
   enableRedaction: boolean;
   outputStream?: (entry: string) => void;
+}
+
+/** setupFileLogging 的参数 */
+export interface FileLoggingOptions {
+  /** 日志根目录 */
+  logDir: string;
+  /** 会话 ID，注入到每行日志 */
+  sessionId?: string;
+  /** profile 名，logDir 路径包含 profile 子目录 */
+  profile?: string;
 }
 
 // ─── Sensitive key patterns for redaction ─────────────────────────────────────
@@ -129,6 +144,14 @@ const RESET = "\x1b[0m";
 export class Logger {
   private config: LoggerConfig;
   private static instance: Logger | null = null;
+  /** 文件 Appender 集合（setupFileLogging 后启用） */
+  private fileAppenders: {
+    agent: RotatingFileAppender | null;
+    errors: RotatingFileAppender | null;
+    gateway: RotatingFileAppender | null;
+  } = { agent: null, errors: null, gateway: null };
+  /** 会话上下文（注入到日志行） */
+  private sessionContext: string | null = null;
 
   constructor(config?: Partial<LoggerConfig>) {
     this.config = {
@@ -154,6 +177,59 @@ export class Logger {
 
   configure(config: Partial<LoggerConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  // ── File logging ──
+
+  /**
+   * 启用文件日志：创建 3 个 RotatingFileAppender
+   * - agent.log（INFO+，所有子系统）
+   * - errors.log（WARN+，仅错误）
+   * - gateway.log（INFO+，仅 gateway 子系统）
+   *
+   * profile 感知：若提供 profile，则日志写到 logDir/profile/ 子目录。
+   */
+  setupFileLogging(options: FileLoggingOptions): void {
+    this.closeFileAppenders();
+
+    const effectiveLogDir = options.profile
+      ? path.join(options.logDir, options.profile)
+      : options.logDir;
+
+    if (options.sessionId) {
+      this.sessionContext = options.sessionId;
+    }
+
+    this.fileAppenders.agent = new RotatingFileAppender({
+      filePath: path.join(effectiveLogDir, "agent.log"),
+      sync: true,
+    });
+    this.fileAppenders.errors = new RotatingFileAppender({
+      filePath: path.join(effectiveLogDir, "errors.log"),
+      sync: true,
+    });
+    this.fileAppenders.gateway = new RotatingFileAppender({
+      filePath: path.join(effectiveLogDir, "gateway.log"),
+      sync: true,
+    });
+  }
+
+  /** 设置会话上下文，注入到后续日志行 */
+  setSessionContext(sessionId: string): void {
+    this.sessionContext = sessionId;
+  }
+
+  /** 清除会话上下文 */
+  clearSessionContext(): void {
+    this.sessionContext = null;
+  }
+
+  /** 关闭所有文件 Appender（优雅关闭时调用） */
+  closeFileAppenders(): void {
+    for (const key of ["agent", "errors", "gateway"] as const) {
+      this.fileAppenders[key]?.close();
+      this.fileAppenders[key] = null;
+    }
   }
 
   // ── Public log methods ──
@@ -220,6 +296,54 @@ export class Logger {
       const dest = level === "error" || level === "fatal" ? process.stderr : process.stdout;
       dest.write(output + "\n");
     }
+
+    // 文件日志：根据级别和子系统分发到对应 Appender
+    this.writeToFiles(level, subsystem, entry);
+  }
+
+  /** 将日志行写入文件 Appender（agent.log / errors.log / gateway.log） */
+  private writeToFiles(level: LogLevel, subsystem: string, entry: LogEntry): void {
+    if (!this.fileAppenders.agent && !this.fileAppenders.errors && !this.fileAppenders.gateway) {
+      return;
+    }
+    const line = this.formatFileLine(entry) + "\n";
+    const levelOrd = LEVEL_ORDER[level];
+
+    // agent.log: INFO+，所有子系统
+    if (this.fileAppenders.agent && levelOrd >= LEVEL_ORDER["info"]) {
+      this.fileAppenders.agent.append(line);
+    }
+    // errors.log: WARN+，仅错误
+    if (this.fileAppenders.errors && levelOrd >= LEVEL_ORDER["warn"]) {
+      this.fileAppenders.errors.append(line);
+    }
+    // gateway.log: INFO+，仅 gateway 子系统
+    if (
+      this.fileAppenders.gateway &&
+      levelOrd >= LEVEL_ORDER["info"] &&
+      this.isGatewaySubsystem(subsystem)
+    ) {
+      this.fileAppenders.gateway.append(line);
+    }
+  }
+
+  /** 格式化文件日志行：[timestamp] [LEVEL] [session_id] [subsystem] message */
+  private formatFileLine(entry: LogEntry): string {
+    const level = entry.level.toUpperCase();
+    const sessionPart = this.sessionContext ? ` [${this.sessionContext}]` : "";
+    let line = `[${entry.timestamp}] [${level}]${sessionPart} [${entry.subsystem}] ${entry.message}`;
+    if (entry.error) {
+      line += ` | error=${entry.error}`;
+    }
+    if (entry.data && Object.keys(entry.data).length > 0) {
+      line += ` | ${JSON.stringify(entry.data)}`;
+    }
+    return line;
+  }
+
+  /** 判断是否为 gateway 子系统（"gateway" 或 "gateway:*"） */
+  private isGatewaySubsystem(subsystem: string): boolean {
+    return subsystem === "gateway" || subsystem.startsWith("gateway:");
   }
 
   private formatPretty(entry: LogEntry): string {
@@ -227,7 +351,8 @@ export class Logger {
     const levelPad = entry.level.toUpperCase().padEnd(5);
     const time = entry.timestamp.split("T")[1]?.slice(0, 12) || entry.timestamp;
 
-    let line = `${color}[${time}] ${levelPad}${RESET} [${entry.subsystem}] ${entry.message}`;
+    const sessionPart = this.sessionContext ? ` [${this.sessionContext}]` : "";
+    let line = `${color}[${time}] ${levelPad}${RESET}${sessionPart} [${entry.subsystem}] ${entry.message}`;
     if (entry.error) {
       line += ` | error=${entry.error}`;
     }
@@ -248,12 +373,30 @@ export class Logger {
       } else if (typeof value === "string") {
         redacted[key] = this.redactValue(value);
       } else if (Array.isArray(value)) {
-        // 安全：递归脱敏数组元素，防止 [{ apiKey: "xxx" }] 等嵌套敏感数据泄漏
-        redacted[key] = value.map((v) =>
-          typeof v === "string" ? this.redactValue(v) :
-          (typeof v === "object" && v !== null && !Array.isArray(v))
-            ? this.redactSensitive(v as Record<string, unknown>)
-            : v
+        // 安全：递归脱敏数组元素（含嵌套数组），防止 [{ apiKey: "xxx" }] 等嵌套敏感数据泄漏
+        redacted[key] = value.map((v) => this.redactUnknown(v));
+      } else if (value instanceof Map) {
+        // 安全：递归脱敏 Map 的值（键假定非敏感），防止 { config: Map([["token","xxx"]]) } 泄漏
+        redacted[key] = new Map(
+          [...value].map(([k, v]) => [
+            k,
+            typeof v === "string"
+              ? this.redactValue(v)
+              : typeof v === "object" && v !== null
+                ? this.redactSensitive(v as Record<string, unknown>)
+                : v,
+          ]),
+        );
+      } else if (value instanceof Set) {
+        // 安全：递归脱敏 Set 元素
+        redacted[key] = new Set(
+          [...value].map((v) =>
+            typeof v === "string"
+              ? this.redactValue(v)
+              : typeof v === "object" && v !== null
+                ? this.redactSensitive(v as Record<string, unknown>)
+                : v
+          ),
         );
       } else if (typeof value === "object" && value !== null) {
         redacted[key] = this.redactSensitive(value as Record<string, unknown>);
@@ -270,6 +413,22 @@ export class Logger {
       result = result.replace(pattern, "[REDACTED]");
     }
     return result;
+  }
+
+  /** 脱敏任意类型的值，支持嵌套数组/对象/Map/Set 的递归处理。 */
+  private redactUnknown(value: unknown): unknown {
+    if (typeof value === "string") return this.redactValue(value);
+    if (Array.isArray(value)) return value.map((v) => this.redactUnknown(v));
+    if (value instanceof Map) {
+      return new Map([...value].map(([k, v]) => [k, this.redactUnknown(v)]));
+    }
+    if (value instanceof Set) {
+      return new Set([...value].map((v) => this.redactUnknown(v)));
+    }
+    if (typeof value === "object" && value !== null) {
+      return this.redactSensitive(value as Record<string, unknown>);
+    }
+    return value;
   }
 }
 

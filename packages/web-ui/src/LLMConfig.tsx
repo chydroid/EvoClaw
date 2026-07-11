@@ -385,6 +385,8 @@ function LLMConfigPanel() {
   const [statusIsSuccess, setStatusIsSuccess] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [customCount, setCustomCount] = useState(0);
+  const [testing, setTesting] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const dragging = useRef(false);
   const dragHandlersRef = useRef<{ move: ((ev: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null });
   // 组件卸载时清理可能残留的拖拽监听器
@@ -401,6 +403,67 @@ function LLMConfigPanel() {
 
   // 卸载时清理 statusMsg 定时器，避免设置已卸载组件的状态
   useEffect(() => { return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current); }; }, []);
+
+  function showStatus(msg: string, success: boolean) {
+    setStatusMsg(msg);
+    setStatusIsSuccess(success);
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setStatusMsg(null), 3000);
+  }
+
+  async function testCurrentModel() {
+    const provider = providers.find((p) => p.id === activeProvider);
+    const model = provider?.selectedModel;
+    if (!model) {
+      showStatus(t("llm.no_model", "未选择模型"), false);
+      return;
+    }
+    setTesting(true);
+    try {
+      const res = await fetch("/api/models/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: model }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        showStatus(t("llm.test_ok", "连接成功") + ` (${data.latencyMs ?? 0}ms)`, true);
+      } else {
+        showStatus(t("llm.test_fail", "连接失败") + ": " + (data.error || res.statusText), false);
+      }
+    } catch {
+      showStatus(t("llm.test_network_error", "测试请求失败"), false);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function switchCurrentModel() {
+    const provider = providers.find((p) => p.id === activeProvider);
+    const model = provider?.selectedModel;
+    if (!model) {
+      showStatus(t("llm.no_model", "未选择模型"), false);
+      return;
+    }
+    setSwitching(true);
+    try {
+      const res = await fetch("/api/models/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: model }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showStatus(t("llm.switch_ok", "已切换模型") + `: ${data.current || model}`, true);
+      } else {
+        showStatus(t("llm.switch_fail", "切换失败") + ": " + (data.error || res.statusText), false);
+      }
+    } catch {
+      showStatus(t("llm.switch_network_error", "切换请求失败"), false);
+    } finally {
+      setSwitching(false);
+    }
+  }
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -823,6 +886,26 @@ function LLMConfigPanel() {
               </div>
 
               <div style={s.divider} />
+
+              <div style={s.formGroup}>
+                <label style={s.label}>{t("llm.model_actions", "模型操作")}</label>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    style={{ ...s.saveBtn, opacity: testing ? 0.6 : 1 }}
+                    onClick={testCurrentModel}
+                    disabled={testing || !currentProvider?.selectedModel}
+                  >
+                    {testing ? t("llm.testing", "测试中...") : t("llm.test_connection", "测试连接")}
+                  </button>
+                  <button
+                    style={{ ...s.saveBtn, background: "var(--success)", opacity: switching ? 0.6 : 1 }}
+                    onClick={switchCurrentModel}
+                    disabled={switching || !currentProvider?.selectedModel}
+                  >
+                    {switching ? t("llm.switching", "切换中...") : t("llm.switch_model", "切换模型")}
+                  </button>
+                </div>
+              </div>
 
               <div style={s.formGroup}>
                 <label style={s.label}>

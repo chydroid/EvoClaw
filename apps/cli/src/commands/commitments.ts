@@ -252,37 +252,30 @@ export function register(
         }
       }
 
-      const body = { ids: uniqueIds, reason: opts.reason ? String(opts.reason) : undefined };
-      const endpoints = [
-        { path: "/api/commitments/dismiss", method: "POST" },
-        { path: "/api/commitment/dismiss", method: "POST" },
-        { path: "/api/commitment/cancel", method: "POST" },
-      ];
+      const reason = opts.reason ? String(opts.reason) : undefined;
+      const dismissed: string[] = [];
+      const failed: Array<{ id: string; reason?: string }> = [];
 
-      let resp: { status: number; data: DismissResponse | null } | null = null;
-      for (const ep of endpoints) {
+      // 逐个调用 POST /api/commitments/:id/dismiss（后端由 CommitmentManager.cancel 支撑）
+      for (const id of uniqueIds) {
         try {
-          const r = await apiRequest<DismissResponse>(ep.method, ep.path, body);
-          if (r.status >= 200 && r.status < 300) {
-            resp = { status: r.status, data: r.data };
-            break;
+          const r = await apiRequest<DismissResponse>(
+            "POST",
+            `/api/commitments/${encodeURIComponent(id)}/dismiss`,
+            { reason },
+          );
+          if (r.status >= 200 && r.status < 300 && r.data?.success !== false) {
+            const rDismissed = r.data?.dismissed ?? [];
+            dismissed.push(...(rDismissed.length > 0 ? rDismissed : [id]));
+            failed.push(...(r.data?.failed ?? []));
+          } else {
+            const fr = r.data?.failed?.[0]?.reason || `HTTP ${r.status}`;
+            failed.push({ id, reason: fr });
           }
-        } catch {
-          // 尝试下一个端点
+        } catch (err) {
+          failed.push({ id, reason: err instanceof Error ? err.message : String(err) });
         }
       }
-
-      if (!resp) {
-        printError(
-          "Failed to dismiss commitments",
-          "Gateway has no /api/commitments/dismiss endpoint. Verify server version supports commitments dismissal.",
-        );
-        return;
-      }
-
-      const data = resp.data || {};
-      const dismissed = data.dismissed || [];
-      const failed = data.failed || [];
 
       if (opts.json) {
         printJson({ success: true, dismissed, failed });

@@ -5,7 +5,7 @@
  * backed by the SecretManager backend.
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState,
   Section, PrimaryButton, SecondaryButton, GhostButton, DataTable,
@@ -23,10 +23,11 @@ export default function SecretsManagerPage() {
 
   const [showRegister, setShowRegister] = useState(false);
   const [showGenerateKey, setShowGenerateKey] = useState(false);
-  const [showReveal, setShowReveal] = useState<string | null>(null);
+  const [showReveal, setShowReveal] = useState(false);
+  const revealValueRef = useRef<string>("");
 
   const [regName, setRegName] = useState("");
-  const [regValue, setRegValue] = useState("");
+  const regValueRef = useRef<HTMLInputElement>(null);
   const [regTtl, setRegTtl] = useState("");
   const [genPrefix, setGenPrefix] = useState("");
 
@@ -57,12 +58,13 @@ export default function SecretsManagerPage() {
   useEffect(() => { load(); }, [load]);
 
   const handleRegister = async () => {
+    const regValue = regValueRef.current?.value ?? "";
     if (!regName || !regValue) return showToast(t("secrets.name_value_required", "名称和值为必填项"), "error");
     try {
       await secretsApi.register(regName, regValue, regTtl ? Number(regTtl) : undefined);
       showToast(t("secrets.registered_ok", "密钥 \"{0}\" 已注册").replace("{0}", regName), "success");
       setShowRegister(false);
-      setRegName(""); setRegValue(""); setRegTtl("");
+      setRegName(""); if (regValueRef.current) regValueRef.current.value = ""; setRegTtl("");
       load();
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : t("secrets.register_fail", "注册失败"), "error");
@@ -114,7 +116,8 @@ export default function SecretsManagerPage() {
   const handleReveal = async (name: string) => {
     try {
       const res = await secretsApi.get(name);
-      setShowReveal(res.value);
+      revealValueRef.current = res.value;
+      setShowReveal(true);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : t("secrets.get_fail", "获取密钥失败"), "error");
     }
@@ -260,7 +263,19 @@ export default function SecretsManagerPage() {
             </div>
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("secrets.secret_value")} *</label>
-              <TextInput value={regValue} onChange={setRegValue} placeholder="Secret value" type="password" />
+              <input
+                ref={regValueRef}
+                type="password"
+                defaultValue=""
+                placeholder="Secret value"
+                style={{
+                  padding: "8px 12px", borderRadius: "8px",
+                  border: "1px solid var(--input-border)", background: "var(--bg-input)",
+                  color: "var(--text-primary)", fontSize: "13px",
+                  outline: "none", width: "100%", boxSizing: "border-box",
+                  transition: "border-color 0.15s",
+                }}
+              />
             </div>
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>{t("secrets.ttl")}</label>
@@ -290,11 +305,11 @@ export default function SecretsManagerPage() {
         </Modal>
       )}
 
-      {showReveal !== null && (
+      {showReveal && (
         <Modal
           title={t("secrets.secret_value")}
-          onClose={() => setShowReveal(null)}
-          footer={<SecondaryButton onClick={() => setShowReveal(null)}>{t("secrets.close", "关闭")}</SecondaryButton>}
+          onClose={() => { setShowReveal(false); revealValueRef.current = ""; }}
+          footer={<SecondaryButton onClick={() => { setShowReveal(false); revealValueRef.current = ""; }}>{t("secrets.close", "关闭")}</SecondaryButton>}
         >
           <pre style={{
             margin: 0, padding: "12px", borderRadius: "8px",
@@ -302,7 +317,7 @@ export default function SecretsManagerPage() {
             fontSize: "13px", wordBreak: "break-all", whiteSpace: "pre-wrap",
             border: "1px solid var(--border)",
           }}>
-            {showReveal}
+            {revealValueRef.current}
           </pre>
         </Modal>
       )}

@@ -2,11 +2,24 @@
 import { Command } from "commander";
 import * as path from "path";
 import * as fs from "fs";
+import * as http from "http";
 import * as child_process from "child_process";
 import { c, ICONS } from "../utils/colors";
 import { checkServer, DEFAULT_PORT, apiRequest, VERSION, getPort, setPort, detectPort } from "../utils/api";
 
 const SERVER_SCRIPT = path.resolve(__dirname, "..", "..", "..", "..", "apps", "server", "dist", "index.js");
+
+// 探测端口是否仍有进程监听（用于 restart 时等待旧进程退出）
+function probePort(targetPort: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request(`http://localhost:${targetPort}/health`, { method: "GET", timeout: 2000 }, (res) => {
+      resolve(res.statusCode !== undefined);
+    });
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+    req.end();
+  });
+}
 
 // PID file: use project root (where .env lives) so it's findable from any CWD
 function findProjectRoot(): string {
@@ -155,8 +168,15 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .action(async (opts: Record<string, unknown>) => {
       console.log(c("cyan", "Restarting Gateway..."));
       stopGateway(opts);
-      // Small delay to let the old process clean up
-      setTimeout(() => startGateway(opts), 1000);
+      // 等待旧进程释放端口（最多 10 秒），避免 startGateway 时端口仍被占用
+      const targetPort = opts.port ? parseInt(String(opts.port), 10) : getPort();
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const stillUp = await probePort(targetPort);
+        if (!stillUp) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      startGateway(opts);
     });
 
   gw
@@ -227,13 +247,54 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .description("Install Gateway as system service (platform-dependent)")
     .action(() => {
       const platform = process.platform;
-      console.log(c("green", "✅ Gateway service registration"));
+      const serverScript = path.resolve(__dirname, "..", "..", "..", "..", "apps", "server", "dist", "index.js");
+      console.log(c("cyan", `${ICONS.info()} Service configuration reference (NOT registered automatically).`));
+      console.log(c("gray", `  This command only prints a config template. You must install it manually.\n`));
       if (platform === "linux") {
-        console.log(c("gray", "  Use systemd: create /etc/systemd/system/evoclaw-gateway.service"));
+        console.log(c("bold", "systemd unit file (save as /etc/systemd/system/evoclaw-gateway.service):"));
+        console.log(c("gray", `[Unit]
+Description=EvoClaw Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${PROJECT_ROOT}
+ExecStart=node ${serverScript}
+Restart=on-failure
+Environment=EvoClaw_PORT=${getPort()}
+
+[Install]
+WantedBy=multi-user.target`));
+        console.log(c("gray", `\n  Then: sudo systemctl enable --now evoclaw-gateway`));
       } else if (platform === "darwin") {
-        console.log(c("gray", "  Use launchd: create ~/Library/LaunchAgents/com.evoclaw.gateway.plist"));
+        console.log(c("bold", "launchd plist (save as ~/Library/LaunchAgents/com.evoclaw.gateway.plist):"));
+        console.log(c("gray", `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.evoclaw.gateway</string>
+  <key>WorkingDirectory</key><string>${PROJECT_ROOT}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>node</string>
+    <string>${serverScript}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>EvoClaw_PORT</key><string>${String(getPort())}</string>
+  </dict>
+</dict>
+</plist>`));
+        console.log(c("gray", `\n  Then: launchctl load ~/Library/LaunchAgents/com.evoclaw.gateway.plist`));
       } else if (platform === "win32") {
-        console.log(c("gray", "  Use Task Scheduler or nssm to register as Windows service"));
+        console.log(c("bold", "Windows service registration options:"));
+        console.log(c("gray", `  1. Use nssm (recommended):`));
+        console.log(c("gray", `     nssm install evoclaw-gateway node "${serverScript}"`));
+        console.log(c("gray", `     nssm set evoclaw-gateway AppDirectory "${PROJECT_ROOT}"`));
+        console.log(c("gray", `     nssm set evoclaw-gateway AppEnvironmentExtra EvoClaw_PORT=${getPort()}`));
+        console.log(c("gray", `  2. Or use Task Scheduler to run at logon.`));
       }
     });
 
@@ -241,52 +302,38 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .command("uninstall")
     .description("Remove Gateway system service registration")
     .action(() => {
-      console.log(c("green", "✅ Gateway service registration removed"));
+      const platform = process.platform;
+      console.log(c("cyan", `${ICONS.info()} Service removal reference (NOT unregistered automatically).`));
+      console.log(c("gray", `  This command only clears the local PID file. Remove the system service manually.\n`));
+      if (platform === "linux") {
+        console.log(c("gray", `  sudo systemctl stop evoclaw-gateway && sudo systemctl disable evoclaw-gateway`));
+        console.log(c("gray", `  sudo rm /etc/systemd/system/evoclaw-gateway.service`));
+      } else if (platform === "darwin") {
+        console.log(c("gray", `  launchctl unload ~/Library/LaunchAgents/com.evoclaw.gateway.plist`));
+        console.log(c("gray", `  rm ~/Library/LaunchAgents/com.evoclaw.gateway.plist`));
+      } else if (platform === "win32") {
+        console.log(c("gray", `  nssm remove evoclaw-gateway confirm`));
+      }
       clearPid();
+      console.log(c("green", `${ICONS.ok()} Local PID file cleared`));
     });
 
   // ── gateway call ─────────────────────────────────────────────────
   // 直接调用 Gateway RPC 方法（openclaw 兼容：通用 RPC 入口）
+  // 注：POST/GET /api/rpc/<method> 尚未实现
   gw
     .command("call <method>")
     .description("Invoke a Gateway RPC method (POST /api/rpc/<method>)")
     .option("--params <json>", "JSON-encoded params", "{}")
     .option("--get", "Use GET instead of POST (read-only methods)")
     .option("--json", "Output raw JSON response")
-    .action(async (method: string, opts: Record<string, unknown>) => {
-      const alive = await checkServer();
-      if (!alive) {
-        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
-        return;
-      }
-      let params: unknown = {};
-      if (opts.params) {
-        try {
-          params = JSON.parse(String(opts.params));
-        } catch (err) {
-          process.stderr.write(c("red", `❌ Invalid --params JSON: ${err instanceof Error ? err.message : String(err)}\n`));
-          process.exitCode = 1;
-          return;
-        }
-      }
-      try {
-        const httpMethod = opts.get ? "GET" : "POST";
-        const url = `/api/rpc/${encodeURIComponent(method)}`;
-        const r = await apiRequest<unknown>(httpMethod, url, opts.get ? undefined : params);
-        if (opts.json) {
-          console.log(JSON.stringify(r.data, null, 2));
-          return;
-        }
-        console.log(c("cyan", `◆ ${method}`));
-        console.log(JSON.stringify(r.data, null, 2));
-      } catch (err) {
-        process.stderr.write(c("red", `❌ RPC call failed: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exitCode = 1;
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Gateway RPC invocation is not yet available via CLI."));
     });
 
   // ── gateway usage-cost ──────────────────────────────────────────
   // 显示 token 用量与成本统计（openclaw 兼容）
+  // 注：GET /api/usage/cost 尚未实现
   gw
     .command("usage-cost")
     .description("Show token usage and cost summary")
@@ -294,97 +341,20 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .option("--by-model", "Group by model")
     .option("--by-agent", "Group by agent")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      const alive = await checkServer();
-      if (!alive) {
-        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
-        return;
-      }
-      try {
-        const query = `?since=${encodeURIComponent(String(opts.since || "24h"))}`;
-        const r = await apiRequest<{
-          totalTokens?: number;
-          totalCost?: number;
-          promptTokens?: number;
-          completionTokens?: number;
-          byModel?: Array<{ model: string; tokens: number; cost: number }>;
-          byAgent?: Array<{ agent: string; tokens: number; cost: number }>;
-        }>("GET", `/api/usage/cost${query}`);
-        if (opts.json) {
-          console.log(JSON.stringify(r.data, null, 2));
-          return;
-        }
-        console.log(c("cyan", "═".repeat(50)));
-        console.log(c("bold", `  ${ICONS.rock}  Usage & Cost (${opts.since || "24h"})`));
-        console.log(c("cyan", "═".repeat(50)));
-        console.log(`  Total tokens:   ${r.data?.totalTokens ?? 0}`);
-        console.log(`  Prompt:        ${r.data?.promptTokens ?? 0}`);
-        console.log(`  Completion:    ${r.data?.completionTokens ?? 0}`);
-        console.log(`  Total cost:    $${(r.data?.totalCost ?? 0).toFixed(4)}`);
-        if (opts.byModel && r.data?.byModel && r.data.byModel.length > 0) {
-          console.log(c("bold", "\n  By Model:"));
-          for (const m of r.data.byModel) {
-            console.log(`    ${c("cyan", m.model.padEnd(28))} ${String(m.tokens).padStart(10)}  $${m.cost.toFixed(4)}`);
-          }
-        }
-        if (opts.byAgent && r.data?.byAgent && r.data.byAgent.length > 0) {
-          console.log(c("bold", "\n  By Agent:"));
-          for (const a of r.data.byAgent) {
-            console.log(`    ${c("cyan", a.agent.padEnd(28))} ${String(a.tokens).padStart(10)}  $${a.cost.toFixed(4)}`);
-          }
-        }
-        console.log();
-      } catch (err) {
-        process.stderr.write(c("red", `❌ Failed to fetch usage: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exitCode = 1;
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Usage and cost reporting is not yet available via CLI."));
     });
 
   // ── gateway stability ───────────────────────────────────────────
   // 显示 Gateway 稳定性指标（错误率、P99 延迟、最近重启）
+  // 注：GET /api/stability 尚未实现
   gw
     .command("stability")
     .description("Show Gateway stability metrics (error rate, p99 latency, restarts)")
     .option("--window <dur>", "Time window (e.g. 1h, 24h)", "1h")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      const alive = await checkServer();
-      if (!alive) {
-        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
-        return;
-      }
-      try {
-        const query = `?window=${encodeURIComponent(String(opts.window || "1h"))}`;
-        const r = await apiRequest<{
-          uptimeSeconds?: number;
-          requestCount?: number;
-          errorCount?: number;
-          errorRate?: number;
-          p50LatencyMs?: number;
-          p99LatencyMs?: number;
-          restartCount?: number;
-          lastRestart?: string;
-        }>("GET", `/api/stability${query}`);
-        if (opts.json) {
-          console.log(JSON.stringify(r.data, null, 2));
-          return;
-        }
-        console.log(c("cyan", "═".repeat(50)));
-        console.log(c("bold", `  ${ICONS.rock}  Gateway Stability (${opts.window || "1h"})`));
-        console.log(c("cyan", "═".repeat(50)));
-        console.log(`  Uptime:          ${(r.data?.uptimeSeconds ?? 0).toFixed(0)}s`);
-        console.log(`  Requests:        ${r.data?.requestCount ?? 0}`);
-        console.log(`  Errors:           ${r.data?.errorCount ?? 0}`);
-        console.log(`  Error rate:      ${((r.data?.errorRate ?? 0) * 100).toFixed(2)}%`);
-        console.log(`  p50 latency:     ${r.data?.p50LatencyMs ?? "—"}ms`);
-        console.log(`  p99 latency:     ${r.data?.p99LatencyMs ?? "—"}ms`);
-        console.log(`  Restarts:         ${r.data?.restartCount ?? 0}`);
-        if (r.data?.lastRestart) console.log(`  Last restart:    ${r.data.lastRestart}`);
-        console.log();
-      } catch (err) {
-        process.stderr.write(c("red", `❌ Failed to fetch stability: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exitCode = 1;
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Stability metrics are not yet available via CLI."));
     });
 
   // ── gateway diagnostics ────────────────────────────────────────
@@ -400,33 +370,9 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .option("--include-logs", "Include recent log lines")
     .option("--include-config", "Include sanitized config dump")
     .option("--log-lines <n>", "Max log lines to include", "200")
-    .action(async (opts: Record<string, unknown>) => {
-      const alive = await checkServer();
-      if (!alive) {
-        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
-        return;
-      }
-      try {
-        const body: Record<string, unknown> = {
-          includeLogs: Boolean(opts.includeLogs),
-          includeConfig: Boolean(opts.includeConfig),
-          logLines: parseInt(String(opts.logLines || "200"), 10),
-        };
-        const r = await apiRequest<Record<string, unknown>>("POST", "/api/diagnostics/export", body);
-        const json = JSON.stringify(r.data, null, 2);
-        if (opts.output) {
-          const outPath = path.resolve(String(opts.output));
-          const tmp = `${outPath}.tmp.${process.pid}`;
-          fs.writeFileSync(tmp, json, "utf-8");
-          fs.renameSync(tmp, outPath);
-          console.log(c("green", `✅ Diagnostics bundle exported to ${outPath} (${json.length} bytes)`));
-        } else {
-          console.log(json);
-        }
-      } catch (err) {
-        process.stderr.write(c("red", `❌ Diagnostics export failed: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exitCode = 1;
-      }
+    .action(async () => {
+      // POST /api/diagnostics/export 尚未实现
+      console.log(c("yellow", "⚠ Diagnostics export is not yet available via CLI."));
     });
 
   diagnostics
@@ -504,59 +450,12 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
   // ── gateway discover ────────────────────────────────────────────
   // 发现 Gateway 上注册的所有服务与工具
+  // 注：GET /api/discover 尚未实现
   gw
     .command("discover")
     .description("Discover services and tools registered on the Gateway")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      const alive = await checkServer();
-      if (!alive) {
-        process.stderr.write(c("red", "❌ Gateway not reachable\n"));
-        return;
-      }
-      try {
-        const r = await apiRequest<{
-          services?: Array<{ name: string; version?: string; healthy?: boolean }>;
-          tools?: Array<{ name: string; category?: string }>;
-          channels?: Array<{ name: string; type?: string; connected?: boolean }>;
-        }>("GET", "/api/discover");
-        if (opts.json) {
-          console.log(JSON.stringify(r.data, null, 2));
-          return;
-        }
-        console.log(c("cyan", "═".repeat(50)));
-        console.log(c("bold", `  ${ICONS.rock}  Gateway Discovery`));
-        console.log(c("cyan", "═".repeat(50)));
-        const services = r.data?.services || [];
-        const tools = r.data?.tools || [];
-        const channels = r.data?.channels || [];
-        if (services.length > 0) {
-          console.log(c("bold", `\n  Services (${services.length}):`));
-          for (const s of services) {
-            const icon = s.healthy === false ? c("red", "✗") : c("green", "●");
-            console.log(`    ${icon} ${c("cyan", s.name)} ${s.version ? c("gray", `v${s.version}`) : ""}`);
-          }
-        }
-        if (tools.length > 0) {
-          console.log(c("bold", `\n  Tools (${tools.length}):`));
-          for (const t of tools) {
-            console.log(`    ${ICONS.bullet()} ${c("cyan", t.name)} ${t.category ? c("gray", `[${t.category}]`) : ""}`);
-          }
-        }
-        if (channels.length > 0) {
-          console.log(c("bold", `\n  Channels (${channels.length}):`));
-          for (const ch of channels) {
-            const icon = ch.connected === false ? c("red", "✗") : c("green", "●");
-            console.log(`    ${icon} ${c("cyan", ch.name)} ${ch.type ? c("gray", ch.type) : ""}`);
-          }
-        }
-        if (services.length === 0 && tools.length === 0 && channels.length === 0) {
-          console.log(c("gray", "  No services/tools/channels registered."));
-        }
-        console.log();
-      } catch (err) {
-        process.stderr.write(c("red", `❌ Discovery failed: ${err instanceof Error ? err.message : String(err)}\n`));
-        process.exitCode = 1;
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Service discovery is not yet available via CLI."));
     });
 }

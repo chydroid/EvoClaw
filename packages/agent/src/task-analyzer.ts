@@ -533,6 +533,10 @@ export async function executeSubtasksFromCheckpoint(
       let retrySucceeded = false;
       while (retryCount < 2) {
         retryCount++;
+        // 非最后一次重试时添加指数退避延迟，避免立即重试加重上游负担
+        if (retryCount < 2) {
+          await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, retryCount), 30000)));
+        }
         process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})\n`);
         try {
           const retryPromise = deps.tryCallLLM(

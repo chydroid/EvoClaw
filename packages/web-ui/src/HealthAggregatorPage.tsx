@@ -6,12 +6,29 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
-import { Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState, Section, StatusDot, PrimaryButton, showToast } from "./shared";
+import { Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState, Section, StatusDot, PrimaryButton, SecondaryButton, Modal, showToast } from "./shared";
 import { healthApi } from "./api-client";
 import type { ComponentHealth } from "./api-client";
 import { useTranslation } from "./i18n";
 
 type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+
+interface HealthReportMetrics {
+  totalRequests: number;
+  errorRate: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p90LatencyMs: number;
+  p99LatencyMs: number;
+  activeSessions: number;
+}
+
+interface HealthReport {
+  status: string;
+  uptimeMs: number;
+  metrics?: HealthReportMetrics;
+  components?: Array<{ name: string; status: string; message?: string; lastCheck: string }>;
+}
 
 const STATUS_CONFIG: Record<HealthStatus, { color: string; bg: string; icon: string; labelKey: string }> = {
   healthy:   { color: "var(--success)", bg: "var(--success-bg)", icon: "\u2705", labelKey: "health_aggregator.healthy" },
@@ -68,6 +85,18 @@ const s: Record<string, React.CSSProperties> = {
   legendItem: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)" },
   legendDot: { width: 10, height: 10, borderRadius: "50%", flexShrink: 0 },
   footer: { color: "var(--text-muted)", fontSize: "10px", textAlign: "center", marginTop: "16px" },
+  metricGrid: {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "10px", marginBottom: "16px",
+  } as React.CSSProperties,
+  metricBox: {
+    background: "var(--bg-hover)", borderRadius: "8px", padding: "12px", textAlign: "center",
+  } as React.CSSProperties,
+  metricBoxLabel: { fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" } as React.CSSProperties,
+  metricBoxValue: { fontSize: "20px", fontWeight: 700, color: "var(--text-primary)" } as React.CSSProperties,
+  reportRow: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    padding: "8px 0", borderBottom: "1px solid var(--border-light)", fontSize: "13px",
+  } as React.CSSProperties,
 };
 
 export default function HealthAggregatorPage() {
@@ -78,6 +107,9 @@ export default function HealthAggregatorPage() {
   const [timestamp, setTimestamp] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [exporting, setExporting] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
 
   const loadHealth = useCallback(async () => {
     try {
@@ -109,6 +141,37 @@ export default function HealthAggregatorPage() {
     }
   }, [t]);
 
+  const handleExportReport = useCallback(async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/health/report");
+      if (!res.ok) {
+        showToast(t("health_aggregator.export_fail", "导出失败"), "error");
+        return;
+      }
+      const report = await res.json() as HealthReport;
+      setHealthReport(report);
+      setReportModalOpen(true);
+      showToast(t("health_aggregator.export_done", "报告已生成"), "success");
+    } catch {
+      showToast(t("health_aggregator.export_fail", "导出失败"), "error");
+    } finally {
+      setExporting(false);
+    }
+  }, [t]);
+
+  const formatUptime = (ms: number): string => {
+    const seconds = Math.floor(ms / 1000);
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+  };
+
   const healthyCount = components.filter((c) => c.status === "healthy").length;
   const degradedCount = components.filter((c) => c.status === "degraded").length;
   const unhealthyCount = components.filter((c) => c.status === "unhealthy").length;
@@ -120,7 +183,15 @@ export default function HealthAggregatorPage() {
 
   return (
     <div style={s.container}>
-      <PageHeader title={t("health_aggregator.title")} subtitle={t("health_aggregator.subtitle")} />
+      <PageHeader
+        title={t("health_aggregator.title")}
+        subtitle={t("health_aggregator.subtitle")}
+        actions={
+          <PrimaryButton small onClick={handleExportReport} disabled={exporting}>
+            {exporting ? t("health_aggregator.exporting", "导出中...") : t("health_aggregator.export_report", "导出报告")}
+          </PrimaryButton>
+        }
+      />
 
       <div style={s.legend}>
         {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
@@ -193,6 +264,122 @@ export default function HealthAggregatorPage() {
       <div style={s.footer}>
         {t("health_aggregator.auto_refresh")} &middot; {t("health_aggregator.last_update_label")} {formatTime(timestamp, locale)}
       </div>
+
+      {/* 健康报告 Modal */}
+      {reportModalOpen && healthReport && (
+        <Modal
+          title={t("health_aggregator.report_title", "健康报告")}
+          onClose={() => setReportModalOpen(false)}
+          footer={
+            <>
+              <SecondaryButton onClick={() => setReportModalOpen(false)}>
+                {t("app.close", "关闭")}
+              </SecondaryButton>
+              <PrimaryButton
+                small
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(healthReport, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `health-report-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                {t("health_aggregator.download_json", "下载 JSON")}
+              </PrimaryButton>
+            </>
+          }
+        >
+          {/* 总览 */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={s.reportRow}>
+              <span style={{ color: "var(--text-muted)" }}>{t("health_aggregator.report_status", "整体状态")}</span>
+              <span style={{
+                fontWeight: 700,
+                color: healthReport.status === "healthy" ? "var(--success)" :
+                        healthReport.status === "degraded" ? "var(--warning)" : "var(--error)",
+              }}>
+                {healthReport.status}
+              </span>
+            </div>
+            <div style={s.reportRow}>
+              <span style={{ color: "var(--text-muted)" }}>{t("health_aggregator.report_uptime", "运行时长")}</span>
+              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+                {formatUptime(healthReport.uptimeMs ?? 0)}
+              </span>
+            </div>
+          </div>
+
+          {/* 延迟与请求指标 */}
+          {healthReport.metrics && (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "var(--text-primary)" }}>
+                {t("health_aggregator.report_metrics", "性能指标")}
+              </div>
+              <div style={s.metricGrid}>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>{t("health_aggregator.report_total_requests", "总请求数")}</div>
+                  <div style={s.metricBoxValue}>{(healthReport.metrics.totalRequests ?? 0).toLocaleString(locale)}</div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>{t("health_aggregator.report_error_rate", "错误率")}</div>
+                  <div style={{ ...s.metricBoxValue, color: "var(--error)" }}>
+                    {((healthReport.metrics.errorRate ?? 0) * 100).toFixed(2)}%
+                  </div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>{t("health_aggregator.report_avg_latency", "平均延迟")}</div>
+                  <div style={s.metricBoxValue}>{healthReport.metrics.avgLatencyMs ?? 0}ms</div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>P50</div>
+                  <div style={s.metricBoxValue}>{healthReport.metrics.p50LatencyMs ?? 0}ms</div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>P90</div>
+                  <div style={s.metricBoxValue}>{healthReport.metrics.p90LatencyMs ?? 0}ms</div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>P99</div>
+                  <div style={{ ...s.metricBoxValue, color: "var(--warning)" }}>
+                    {healthReport.metrics.p99LatencyMs ?? 0}ms
+                  </div>
+                </div>
+                <div style={s.metricBox}>
+                  <div style={s.metricBoxLabel}>{t("health_aggregator.report_active_sessions", "活跃会话")}</div>
+                  <div style={{ ...s.metricBoxValue, color: "var(--accent)" }}>
+                    {healthReport.metrics.activeSessions ?? 0}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 组件列表 */}
+          {healthReport.components && healthReport.components.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "var(--text-primary)" }}>
+                {t("health_aggregator.report_components", "组件状态")}
+              </div>
+              {healthReport.components.map((comp, i) => (
+                <div key={i} style={s.reportRow}>
+                  <span style={{ fontWeight: 500, color: "var(--text-primary)" }}>{comp.name}</span>
+                  <span style={{
+                    fontWeight: 600,
+                    color: comp.status === "healthy" ? "var(--success)" :
+                           comp.status === "degraded" ? "var(--warning)" :
+                           comp.status === "down" || comp.status === "unhealthy" ? "var(--error)" : "var(--text-muted)",
+                  }}>
+                    {comp.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

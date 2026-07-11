@@ -175,9 +175,13 @@ export class SandboxExecutor {
             },
           },
           setTimeout: (fn: () => void, ms: number) => {
-            // 限制最长超时，并追踪定时器以便清理
+            // 限制最长超时，并追踪定时器以便清理；回调错误不得逃逸到宿主
             const limitedMs = Math.min(ms, this.config.timeoutMs);
-            const id = globalThis.setTimeout(fn, limitedMs);
+            const id = globalThis.setTimeout(() => {
+              try { fn(); } catch (err) {
+                steps.push({ action: "error", result: `setTimeout callback error: ${err}`, success: false, timestamp: Date.now() });
+              }
+            }, limitedMs);
             sandboxTimers.push(id);
             return id;
           },
@@ -188,6 +192,13 @@ export class SandboxExecutor {
           },
           setInterval: () => {
             throw new Error("setInterval is not allowed in sandbox");
+          },
+          queueMicrotask: (fn: () => void) => {
+            globalThis.queueMicrotask(() => {
+              try { fn(); } catch (err) {
+                steps.push({ action: "error", result: `queueMicrotask callback error: ${err}`, success: false, timestamp: Date.now() });
+              }
+            });
           },
           process: {
             env: {},

@@ -381,15 +381,19 @@ export class WorkflowEngine {
     const dependents = new Map<string, string[]>();
 
     for (const node of workflow.nodes) {
-      inDegree.set(node.id, node.dependsOn.length);
-      for (const dep of node.dependsOn) {
+      // 过滤掉不存在于 workflow.nodes 中的依赖项，避免 inDegree 永远无法递减到 0 导致节点被静默跳过
+      // （参照 dag-executor.ts 的 computeLevels 实现）
+      const validDeps = node.dependsOn.filter((dep) => nodeMap.has(dep));
+      inDegree.set(node.id, validDeps.length);
+      for (const dep of validDeps) {
         if (!dependents.has(dep)) dependents.set(dep, []);
         dependents.get(dep)!.push(node.id);
       }
     }
 
     const levels: WorkflowNode[][] = [];
-    let current = workflow.nodes.filter((n) => n.dependsOn.length === 0);
+    // 初始层：使用过滤后的 inDegree 判断（依赖项全部不存在的节点 inDegree 为 0，应进入初始层）
+    let current = workflow.nodes.filter((n) => (inDegree.get(n.id) ?? 0) === 0);
 
     while (current.length > 0) {
       levels.push(current);

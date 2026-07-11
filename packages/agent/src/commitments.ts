@@ -92,7 +92,7 @@ export class CommitmentManager {
       if (fs.existsSync(this.storePath)) {
         const raw = fs.readFileSync(this.storePath, "utf-8");
         const parsed = JSON.parse(raw);
-        if (typeof parsed === "object" && parsed !== null) {
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
           // Ensure numbers are parsed correctly
           for (const [k, v] of Object.entries(parsed)) {
             const c = v as Commitment;
@@ -351,6 +351,10 @@ export class CommitmentManager {
     if (!this.commitments[id]) return false;
     delete this.commitments[id];
     this.scheduleSave();
+
+    // 与 create() 一致，发布删除事件供下游订阅
+    this.eventBus?.publish("commitment.deleted", { commitmentId: id }, "commitment-manager");
+
     return true;
   }
 

@@ -6,6 +6,9 @@ export type { ComplexityEstimate, TaskComplexity } from "./protocol-adapter";
 export { MCPGateway } from "./mcp-gateway";
 export { MCPSSETransport, MCPStdioTransport } from "./mcp-transport";
 export type { MCPTransportImpl } from "./mcp-transport";
+export { MCPClientTransport } from "./mcp-client-transport";
+export type { ExternalMCPServerConfig, DiscoveredTool } from "./mcp-client-transport";
+export { MCPClientManager } from "./mcp-client-manager";
 export { ChannelManager } from "./channel-manager";
 export type { ChannelConfig, ChannelType, ChannelMessage, ChannelSendResult, ChannelAdapter, ChannelStatus, DirectMessagePolicy } from "./channel-manager";
 export { ProtocolHandler } from "./ws-protocol";
@@ -127,3 +130,25 @@ export type {
   TurnContext,
   GuardrailMessage,
 } from "./message-turn-guardrails";
+
+// v0.70: ACP（Agent Client Protocol）IDE 集成 —— 支持 VS Code / Zed / JetBrains 编辑器内使用 EvoClaw
+export { AcpServer } from "./acp/acp-server";
+export type {
+  AcpCapabilities,
+  AcpSession,
+  AcpMessage,
+  AcpNotification,
+  ToolActivity,
+  FileDiff,
+  TerminalCommand,
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcError,
+  SendMessageHandler,
+} from "./acp/acp-server";
+export { AcpAdapter } from "./acp/acp-adapter";
+export type {
+  SessionManagerLike,
+  AgentExecutorLike,
+  EventBusLike,
+} from "./acp/acp-adapter";

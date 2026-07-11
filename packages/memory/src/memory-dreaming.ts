@@ -12,6 +12,8 @@
  * - REM: consolidation — deduplicate, merge, and write to long-term memory
  */
 
+import { randomUUID } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -90,6 +92,9 @@ const DEFAULT_CONFIG: DreamingConfig = {
   remPhaseIntervalMs: 24 * 60 * 60 * 1000,
 };
 
+/** diary.sessions 最大保留条数，防止无界增长。 */
+const MAX_SESSIONS = 100;
+
 // ---------------------------------------------------------------------------
 // Heuristic patterns
 // ---------------------------------------------------------------------------
@@ -155,9 +160,9 @@ const PROCEDURE_PATTERNS: ReadonlyArray<{ regex: RegExp; confidence: number }> =
 
 /** Generate a simple unique id (no external deps). */
 function generateId(): string {
-  const hex = () => Math.floor(Math.random() * 0xffff).toString(16).padStart(4, "0");
+  // 使用 crypto.randomUUID 替代 Math.random，避免可预测的 ID
   const time = Date.now().toString(36);
-  return `dream-${time}-${hex()}${hex()}`;
+  return `dream-${time}-${randomUUID()}`;
 }
 
 /**
@@ -253,6 +258,9 @@ export class MemoryDreaming {
   /** Track how many new memories have been stored since the last dream. */
   private newMemoriesSinceLastDream: number;
 
+  /** pendingFacts 上限，防止在 REM 清空前无限增长导致 OOM。 */
+  private static readonly MAX_PENDING_FACTS = 10_000;
+
   /** Pending (un-consolidated) facts accumulated across light/deep phases. */
   private pendingFacts: DreamFact[] = [];
 
@@ -262,6 +270,13 @@ export class MemoryDreaming {
     this.diary = { sessions: [], totalFactsExtracted: 0 };
     this.lastActivityAt = Date.now();
     this.newMemoriesSinceLastDream = 0;
+  }
+
+  /** 截断 pendingFacts 到上限，丢弃最旧条目，防止 OOM。 */
+  private capPendingFacts(): void {
+    if (this.pendingFacts.length > MemoryDreaming.MAX_PENDING_FACTS) {
+      this.pendingFacts = this.pendingFacts.slice(-MemoryDreaming.MAX_PENDING_FACTS);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -311,6 +326,10 @@ export class MemoryDreaming {
 
     session.completedAt = Date.now();
     this.diary.sessions.push(session);
+    // 限制 sessions 数组大小，超出则丢弃最旧的条目
+    if (this.diary.sessions.length > MAX_SESSIONS) {
+      this.diary.sessions.shift();
+    }
     if (session.status === "completed") {
       this.diary.totalFactsExtracted += session.extractedFacts.length;
       this.newMemoriesSinceLastDream = 0;
@@ -322,7 +341,8 @@ export class MemoryDreaming {
 
   /** Get the dream diary. */
   getDiary(): DreamDiary {
-    return { ...this.diary };
+    // 拷贝 sessions 数组避免外部修改影响内部状态
+    return { ...this.diary, sessions: [...this.diary.sessions] };
   }
 
   /**
@@ -620,11 +640,14 @@ export class MemoryDreaming {
 
     // Accumulate into pending for later REM consolidation
     this.pendingFacts.push(...session.extractedFacts);
+    this.capPendingFacts();
   }
 
   /** Deep phase: scan all memories, extract patterns and preferences. */
   private async dreamDeep(session: DreamSession): Promise<void> {
-    const allEntries = await this.memoryHub.getLongTerm().getAll();
+    // 限制加载量，避免长期记忆膨胀时 OOM（与 dreamREM 一致使用 search）
+    const results = await this.memoryHub.getLongTerm().search({ query: "", limit: 500 });
+    const allEntries = results.map((r) => r.entry);
 
     session.sourceEntries = allEntries.length;
 
@@ -644,6 +667,7 @@ export class MemoryDreaming {
 
     // Accumulate into pending for later REM consolidation
     this.pendingFacts.push(...session.extractedFacts);
+    this.capPendingFacts();
   }
 
   /** REM phase: consolidate extracted facts, deduplicate, merge, write. */

@@ -308,6 +308,8 @@ export class DiscordAdapter implements ChannelAdapter {
         clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = null;
       }
+      // 重置连接状态，避免重连期间误报 connected
+      this.connected = false;
       if (this.running) {
         this.notifyStatus("reconnecting");
         // Reconnect after a delay — 存储句柄以便 stop() 能清理，并 unref 避免阻止进程退出

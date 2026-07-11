@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "./i18n";
+import { systemApi, type AuditAlert, type FailoverStatus } from "./api-client";
 
 interface SystemHealth {
   status: "ok" | "degraded" | "down";
@@ -64,6 +65,10 @@ export function OpsPage() {
   const { t } = useTranslation();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [auditAlerts, setAuditAlerts] = useState<AuditAlert[]>([]);
+  const [auditStats, setAuditStats] = useState<Record<string, unknown>>({});
+  const [failover, setFailover] = useState<FailoverStatus | null>(null);
+  const [resettingProvider, setResettingProvider] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -77,6 +82,15 @@ export function OpsPage() {
       if (signal?.aborted) return;
       if (healthRes.ok) setHealth(await healthRes.json());
       if (diagRes.ok) setDiagnostics(await diagRes.json());
+      // Audit & failover — best-effort, don't block main load
+      const [auditRes, failoverRes] = await Promise.all([
+        systemApi.audit(),
+        systemApi.failoverStatus(),
+      ]);
+      if (signal?.aborted) return;
+      setAuditAlerts(auditRes.alerts || []);
+      setAuditStats(auditRes.stats || {});
+      setFailover(failoverRes);
     } catch (err) {
       if (signal?.aborted) return;
       console.error("[OpsPage] Load data failed:", err);
@@ -124,6 +138,19 @@ export function OpsPage() {
         latencyMs: info?.latencyMs || 0,
       }))
     : [];
+
+  const handleResetFailover = useCallback(async (providerId?: string) => {
+    const key = providerId || "__all__";
+    setResettingProvider(key);
+    try {
+      await systemApi.resetFailover(providerId);
+      await loadData(true);
+    } catch (err) {
+      console.error("[OpsPage] Reset failover failed:", err);
+    } finally {
+      setResettingProvider(null);
+    }
+  }, [loadData]);
 
   return (
     <div style={s.container}>
@@ -224,6 +251,153 @@ export function OpsPage() {
             <div style={s.empty}>{t("ops.no_diag_data", "暂无诊断数据")}</div>
           )}
         </div>
+      </div>
+
+      {/* Failover Status */}
+      <div style={s.panel}>
+        <div style={s.panelHeader}>
+          <span style={s.panelTitle}>{t("ops.failover_status", "故障转移状态")}</span>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {failover && (
+              <span style={{
+                padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: "bold",
+                background: failover.status === "active" ? "var(--success-bg)" : "var(--error-bg)",
+                color: failover.status === "active" ? "var(--success)" : "var(--error)",
+              }}>
+                {failover.status === "active" ? t("ops.active", "活跃") : t("ops.unavailable", "不可用")}
+              </span>
+            )}
+            <button
+              onClick={() => handleResetFailover()}
+              disabled={resettingProvider === "__all__" || !failover || failover.status !== "active"}
+              style={{
+                ...s.refreshBtn, opacity: (resettingProvider === "__all__" || !failover || failover.status !== "active") ? 0.5 : 1,
+                cursor: (resettingProvider === "__all__" || !failover || failover.status !== "active") ? "not-allowed" : "pointer",
+              }}
+            >
+              {resettingProvider === "__all__" ? t("ops.resetting", "重置中...") : t("ops.reset_all_circuits", "重置全部熔断器")}
+            </button>
+          </div>
+        </div>
+        {failover && failover.status === "active" && failover.providers && failover.providers.length > 0 ? (
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>{t("ops.provider", "Provider")}</th>
+                <th style={s.th}>{t("ops.circuit_state", "熔断状态")}</th>
+                <th style={s.th}>{t("ops.success_rate", "成功率")}</th>
+                <th style={s.th}>{t("ops.priority", "优先级")}</th>
+                <th style={s.th}>{t("ops.errors", "操作")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {failover.providers.map((p, i) => {
+                const pid = p.id || p.name || `provider-${i}`;
+                const circuitState = String(p.circuitState || "closed");
+                const isResetting = resettingProvider === pid;
+                return (
+                  <tr key={pid}>
+                    <td style={s.td}>{p.name || p.id || "-"}</td>
+                    <td style={s.td}>
+                      <span style={{
+                        padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: "bold",
+                        background: circuitState === "closed" ? "var(--success-bg)" : circuitState === "open" ? "var(--error-bg)" : "var(--warning-bg)",
+                        color: circuitState === "closed" ? "var(--success)" : circuitState === "open" ? "var(--error)" : "var(--warning)",
+                      }}>
+                        {t(`ops.circuit.${circuitState}`, circuitState)}
+                      </span>
+                    </td>
+                    <td style={s.td}>
+                      {typeof p.successRateEma === "number" ? `${Math.round(p.successRateEma * 100)}%` : "-"}
+                    </td>
+                    <td style={s.td}>{p.dynamicPriority ?? "-"}</td>
+                    <td style={s.td}>
+                      <button
+                        onClick={() => handleResetFailover(p.id)}
+                        disabled={isResetting}
+                        style={{
+                          padding: "3px 10px", borderRadius: "6px",
+                          border: "1px solid var(--border)", background: "var(--bg-hover)",
+                          color: "var(--text-secondary)", cursor: isResetting ? "not-allowed" : "pointer",
+                          fontSize: "11px", opacity: isResetting ? 0.5 : 1,
+                        }}
+                      >
+                        {isResetting ? t("ops.resetting", "重置中...") : t("ops.reset_circuit", "重置")}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <div style={s.empty}>
+            {failover?.status === "unavailable" ? t("ops.failover_unavailable", "故障转移管理器未注册") : t("ops.no_failover_data", "无故障转移数据")}
+          </div>
+        )}
+      </div>
+
+      {/* Audit Logs */}
+      <div style={s.panel}>
+        <div style={s.panelHeader}>
+          <span style={s.panelTitle}>{t("ops.audit_logs", "系统审计日志")}</span>
+          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+            {t("ops.alert_count", "{0} 条告警").replace("{0}", String(auditAlerts.length))}
+          </span>
+        </div>
+        {auditAlerts.length === 0 ? (
+          <div style={s.empty}>
+            {Object.keys(auditStats).length > 0 ? t("ops.no_alerts", "无未确认告警") : t("ops.no_audit_data", "无审计数据")}
+          </div>
+        ) : (
+          <div style={{ maxHeight: "320px", overflow: "auto" }}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>{t("ops.severity", "级别")}</th>
+                  <th style={s.th}>{t("ops.message", "消息")}</th>
+                  <th style={s.th}>{t("ops.timestamp", "时间")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditAlerts.slice(0, 50).map((alert, i) => {
+                  const severity = String(alert.severity || "info");
+                  return (
+                    <tr key={alert.id || i}>
+                      <td style={s.td}>
+                        <span style={{
+                          padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: "bold",
+                          background: severity === "critical" || severity === "high" ? "var(--error-bg)" : severity === "medium" ? "var(--warning-bg)" : "var(--accent-bg)",
+                          color: severity === "critical" || severity === "high" ? "var(--error)" : severity === "medium" ? "var(--warning)" : "var(--accent)",
+                        }}>
+                          {severity}
+                        </span>
+                      </td>
+                      <td style={s.td}>{alert.message || JSON.stringify(alert)}</td>
+                      <td style={s.td}>
+                        {alert.timestamp ? new Date(alert.timestamp).toLocaleString() : "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {Object.keys(auditStats).length > 0 && (
+          <div style={{ padding: "10px 16px", borderTop: "1px solid var(--border-light)" }}>
+            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
+              {t("ops.audit_stats", "审计统计")}
+            </div>
+            <pre style={{
+              margin: 0, fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.6",
+              whiteSpace: "pre-wrap", wordBreak: "break-all",
+              maxHeight: "150px", overflow: "auto",
+            }}>
+              {JSON.stringify(auditStats, null, 2)}
+            </pre>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -146,6 +146,45 @@ function toLowerString(value: unknown): string {
   return value.toLowerCase();
 }
 
+/** synchronous 数字码到字符串名的映射（部分 SQLite 版本返回数字）。 */
+const SYNCHRONOUS_CODE_TO_NAME: Record<number, string> = {
+  0: "off",
+  1: "normal",
+  2: "full",
+  3: "extra",
+};
+
+/** temp_store 数字码到字符串名的映射（部分 SQLite 版本返回数字）。 */
+const TEMP_STORE_CODE_TO_NAME: Record<number, string> = {
+  0: "default",
+  1: "file",
+  2: "memory",
+};
+
+/**
+ * 将 synchronous 的查询值统一为小写字符串名。
+ * SQLite 各版本/编译选项可能返回字符串名（"normal"）或数字码（1）。
+ */
+function normalizeSynchronous(value: unknown): string {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isNaN(num) && num in SYNCHRONOUS_CODE_TO_NAME) {
+    return SYNCHRONOUS_CODE_TO_NAME[num];
+  }
+  return toLowerString(value);
+}
+
+/**
+ * 将 temp_store 的查询值统一为小写字符串名。
+ * SQLite 各版本/编译选项可能返回字符串名（"memory"）或数字码（2）。
+ */
+function normalizeTempStore(value: unknown): string {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isNaN(num) && num in TEMP_STORE_CODE_TO_NAME) {
+    return TEMP_STORE_CODE_TO_NAME[num];
+  }
+  return toLowerString(value);
+}
+
 /**
  * 应用 PRAGMA 配置到数据库。
  *
@@ -205,11 +244,11 @@ export function applyPragmas(db: SqliteDb, config: PragmaConfig): AppliedPragmas
  */
 export function readPragmas(db: SqliteDb): AppliedPragmas {
   const journalMode = toLowerString(readPragmaValue(db, "journal_mode"));
-  const synchronous = toLowerString(readPragmaValue(db, "synchronous"));
+  const synchronous = normalizeSynchronous(readPragmaValue(db, "synchronous"));
   const foreignKeys = toNumber(readPragmaValue(db, "foreign_keys"));
   const busyTimeout = toNumber(readPragmaValue(db, "busy_timeout"));
   const cacheSize = toNumber(readPragmaValue(db, "cache_size"));
-  const tempStore = toLowerString(readPragmaValue(db, "temp_store"));
+  const tempStore = normalizeTempStore(readPragmaValue(db, "temp_store"));
   const mmapSize = toNumber(readPragmaValue(db, "mmap_size"));
   const walAutocheckpoint = toNumber(readPragmaValue(db, "wal_autocheckpoint"));
   const secureDeleteRaw = readPragmaValue(db, "secure_delete");

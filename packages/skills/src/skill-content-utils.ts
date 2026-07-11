@@ -245,7 +245,8 @@ export function validateSkillDir(
   }
 
   // 硬错误 4: frontmatter 缺 name
-  const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(content);
+  // 兼容 CRLF（Windows）和 LF（Unix）行尾
+  const frontmatterMatch = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
   if (!frontmatterMatch) {
     warnings.push("SKILL.md missing frontmatter");
   } else {

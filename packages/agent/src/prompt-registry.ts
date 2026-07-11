@@ -187,22 +187,66 @@ export class PromptRegistry {
     // tags: [tag1, tag2]
     // ---
     // Template content here
-    const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(content);
-    if (!match) {
-      return { name: defaultName, template: content };
+    // 正则支持 CRLF 行尾
+    const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(content);
+    if (match) {
+      const frontmatter = match[1];
+      const template = match[2];
+      const versionMatch = /^version:\s*(.+)$/m.exec(frontmatter);
+      const descMatch = /^description:\s*(.+)$/m.exec(frontmatter);
+      const tagsMatch = /^tags:\s*\[(.+)\]$/m.exec(frontmatter);
+      return {
+        name: defaultName,
+        template,
+        version: versionMatch?.[1]?.trim(),
+        description: descMatch?.[1]?.trim(),
+        tags: tagsMatch?.[1]?.split(",").map((t) => t.trim()).filter(Boolean),
+      };
     }
-    const frontmatter = match[1];
-    const template = match[2];
-    const versionMatch = /^version:\s*(.+)$/m.exec(frontmatter);
-    const descMatch = /^description:\s*(.+)$/m.exec(frontmatter);
-    const tagsMatch = /^tags:\s*\[(.+)\]$/m.exec(frontmatter);
-    return {
-      name: defaultName,
-      template,
-      version: versionMatch?.[1]?.trim(),
-      description: descMatch?.[1]?.trim(),
-      tags: tagsMatch?.[1]?.split(",").map((t) => t.trim()).filter(Boolean),
-    };
+    // 容错降级：正则不匹配（如缺尾部换行、frontmatter 边界含尾随空白等）时，
+    // 逐行扫描提取 version/description/tags 字段。
+    const lines = content.split(/\r?\n/);
+    let fmStart = -1;
+    let fmEnd = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^---\s*$/.test(lines[i])) {
+        if (fmStart === -1) {
+          fmStart = i;
+        } else if (fmEnd === -1) {
+          fmEnd = i;
+          break;
+        }
+      }
+    }
+    if (fmStart !== -1 && fmEnd !== -1) {
+      const fmLines = lines.slice(fmStart + 1, fmEnd);
+      const template = lines.slice(fmEnd + 1).join("\n");
+      let version: string | undefined;
+      let description: string | undefined;
+      let tags: string[] | undefined;
+      for (const line of fmLines) {
+        if (version === undefined) {
+          const m = /^version:\s*(.+)$/.exec(line);
+          if (m) { version = m[1].trim(); continue; }
+        }
+        if (description === undefined) {
+          const m = /^description:\s*(.+)$/.exec(line);
+          if (m) { description = m[1].trim(); continue; }
+        }
+        if (tags === undefined) {
+          const m = /^tags:\s*\[(.+)\]$/.exec(line);
+          if (m) { tags = m[1].split(",").map((t) => t.trim()).filter(Boolean); continue; }
+        }
+      }
+      return {
+        name: defaultName,
+        template,
+        version,
+        description,
+        tags,
+      };
+    }
+    return { name: defaultName, template: content };
   }
 
   private ensureLoaded(): void {

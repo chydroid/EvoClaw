@@ -160,7 +160,7 @@ export class ErrorRecoveryManager {
       "error.recorded",
       { errorId: record.id, operation, target, errorType, message },
       "error-recovery-manager"
-    );
+    ).catch((err) => process.stderr.write('[ErrorRecoveryManager] event publish failed: ' + err + '\n'));
 
     return record;
   }

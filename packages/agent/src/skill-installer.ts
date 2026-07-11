@@ -988,9 +988,15 @@ export function downloadFile(url: string, destPath: string): Promise<void> {
         res.on("error", (err: Error) => cleanup(new Error(`响应流错误: ${err.message}`)));
         res.pipe(file);
         file.on("finish", () => {
-          file.close();
-          settled = true;
-          resolve();
+          // 通过 close 回调处理关闭错误，避免异步失败被静默吞没
+          file.close((err) => {
+            if (err) {
+              cleanup(new Error(`文件关闭错误: ${err.message}`));
+            } else if (!settled) {
+              settled = true;
+              resolve();
+            }
+          });
         });
         file.on("error", (err: Error) => cleanup(new Error(`文件写入错误: ${err.message}`)));
       }).on("error", (err: Error) => {
@@ -1009,7 +1015,7 @@ export function downloadFile(url: string, destPath: string): Promise<void> {
 /**
  * Extract a zip file to a target directory.
  * Uses `tar` (available on Windows 10+ and all Unix) as primary method,
- * falls back to PowerShell Expand-Archive, then adm-zip.
+ * falls back to unzip (Unix) and adm-zip (Node.js).
  */
 export async function extractZip(zipPath: string, targetDir: string): Promise<void> {
   if (!fs.existsSync(targetDir)) {
@@ -1024,17 +1030,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
     process.stderr.write(`[AgentModelExecutor] tar extraction failed: ${(err as Error).message}\n`);
   }
 
-  // Method 2: PowerShell Expand-Archive (Windows only)
-  if (process.platform === "win32") {
-    try {
-      await execCommand("powershell", ["-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force`], 30000);
-      return;
-    } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] PowerShell Expand-Archive failed: ${(err as Error).message}\n`);
-    }
-  }
-
-  // Method 3: unzip (Unix)
+  // Method 2: unzip (Unix)
   if (process.platform !== "win32") {
     try {
       await execCommand("unzip", ["-o", zipPath, "-d", targetDir], 30000);
@@ -1044,7 +1040,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
     }
   }
 
-  // Method 4: adm-zip (Node.js package)
+  // Method 3: adm-zip (Node.js package)
   try {
     const AdmZip = require("adm-zip");
     const zip = new AdmZip(zipPath);
@@ -1054,7 +1050,7 @@ export async function extractZip(zipPath: string, targetDir: string): Promise<vo
     process.stderr.write(`[AgentModelExecutor] adm-zip not available\n`);
   }
 
-  throw new Error("无法解压 ZIP 文件：tar、Expand-Archive、unzip 和 adm-zip 均不可用。");
+  throw new Error("无法解压 ZIP 文件：tar、unzip 和 adm-zip 均不可用。");
 }
 
 // ─── Execute child process command ────────────────────────────────────────────

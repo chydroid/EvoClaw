@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { randomBytes } from "crypto";
 
 export interface SkillIndexEntry {
   id: string;
@@ -54,7 +55,7 @@ export class SkillIndex {
     const desc = skill.description || "";
     const instr = skill.body?.instructions || "";
 
-    const level0 = `${skill.name}: ${desc.slice(0, 80)}`.trim();
+    const level0 = `${skill.name}: ${Array.from(desc).slice(0, 80).join("")}`.trim();
     const level1 = `${desc}\n\n${instr.slice(0, 500)}`.trim();
     const level2 = instr;
 
@@ -241,7 +242,7 @@ export class SkillIndex {
     } catch {
       // 目录可能已被并发创建，忽略
     }
-    const tmpPath = filePath + ".tmp." + process.pid;
+    const tmpPath = filePath + ".tmp." + process.pid + "." + randomBytes(4).toString("hex");
     const fd = fs.openSync(tmpPath, "w");
     try {
       fs.writeFileSync(fd, json, { encoding: "utf-8" });
@@ -251,9 +252,32 @@ export class SkillIndex {
     }
     try {
       fs.renameSync(tmpPath, filePath);
-    } catch (err) {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EXDEV" || code === "EBUSY") {
+        // 跨设备：rename 不可用，在目标侧写临时文件后 rename，保持原子性
+        const dstTmp = `${filePath}.dst.${process.pid}.tmp`;
+        const fd2 = fs.openSync(dstTmp, "w");
+        try {
+          fs.writeFileSync(fd2, json, { encoding: "utf-8" });
+          fs.fsyncSync(fd2);
+        } finally {
+          fs.closeSync(fd2);
+        }
+        // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
+        try {
+          fs.renameSync(dstTmp, filePath);
+        } catch (renameErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw renameErr;
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } else {
+        // 非 EXDEV：清理临时文件并重新抛出
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
     }
     this.dirty = false;
     this.lastFlushAt = Date.now();

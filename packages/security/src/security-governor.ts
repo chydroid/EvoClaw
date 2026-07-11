@@ -84,7 +84,7 @@ export class SecurityGovernor {
   }
 
   evaluatePolicy(context: Record<string, unknown>): "allow" | "deny" {
-    const sorted = this.policies.sort((a, b) => b.priority - a.priority);
+    const sorted = [...this.policies].sort((a, b) => b.priority - a.priority);
     for (const policy of sorted) {
       for (const rule of policy.rules) {
         const fieldValue = context[rule.condition.field];

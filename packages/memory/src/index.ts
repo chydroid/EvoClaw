@@ -24,6 +24,17 @@ export type { DreamSession, DreamFact, DreamDiary, DreamingConfig } from "./memo
 export { chunkDocument, RAGPipeline, SimpleReranker } from "./rag";
 export type { ChunkOptions, DocumentChunk, RAGPipelineConfig, RAGDocument, RAGRetrievalResult, RerankInput, RerankResult } from "./rag";
 
+// ── Memory Provider 插件系统 ──
+// 借鉴 hermes-agent 的 MemoryProvider ABC 设计，提供声明式记忆 provider 接口
+export { MemoryProviderManager } from "./memory-provider";
+export type {
+  MemoryProvider,
+  MemoryProviderContext,
+  TurnData,
+  ToolSchema,
+} from "./memory-provider";
+export { BuiltinMemoryProvider } from "./providers/builtin-provider";
+
 // ── Layered Memory (L0→L1→L2→L3 + Symbolic Canvas) ──
 // 借鉴 TencentDB-Agent-Memory 的语义金字塔设计
 export {

@@ -406,6 +406,13 @@ export class BotLoopProtection {
     const nb = this.normalizeText(b);
     if (na === nb) return 1;
     if (na.length === 0 || nb.length === 0) return 0;
+    // DoS 防护：超长输入跳过 O(m*n) Levenshtein，按长度差异估算相似度
+    // 若长度差异大则相似度趋近 0，长度相近时给出保守估计
+    const MAX_LEVENSHTEIN_LEN = 500;
+    if (na.length > MAX_LEVENSHTEIN_LEN || nb.length > MAX_LEVENSHTEIN_LEN) {
+      const maxLen = Math.max(na.length, nb.length);
+      return 1 - Math.abs(na.length - nb.length) / maxLen;
+    }
     const dist = this.levenshtein(na, nb);
     const maxLen = Math.max(na.length, nb.length);
     return 1 - dist / maxLen;

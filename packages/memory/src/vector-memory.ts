@@ -64,6 +64,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         input: texts,
         dimensions: this.dimensions,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -580,10 +581,36 @@ export class VectorMemoryStore {
           try { await fs.promises.mkdir(dir, { recursive: true }); } catch { /* best-effort */ }
 
           const tmp = `${this.storePath}.tmp`;
-          await fs.promises.writeFile(tmp, json, "utf8");
-          await fs.promises.rename(tmp, this.storePath);
+          // 使用文件句柄写入以便 fsync，确保数据落盘后再 rename
+          const fh = await fs.promises.open(tmp, "w");
+          try {
+            await fh.writeFile(json, "utf8");
+            await fh.sync();
+          } finally {
+            await fh.close();
+          }
+          try {
+            await fs.promises.rename(tmp, this.storePath);
+          } catch (renameErr) {
+            // rename 失败时清理临时文件，避免残留泄漏
+            try { await fs.promises.unlink(tmp); } catch { /* ignore */ }
+            throw renameErr;
+          }
           // 仅在成功写入后才清除 dirty
           this.dirty = false;
+
+          // 同步裁剪内存中的 vectors Map：磁盘已按 createdAt 排序保留最近
+          // MAX_PERSIST_ENTRIES 条，但内存 Map 此前从不裁剪，会持续增长。
+          // 在落盘成功后裁剪一次，保持内存与磁盘一致，避免无界增长。
+          if (this.vectors.size > VectorMemoryStore.MAX_PERSIST_ENTRIES) {
+            const all = Array.from(this.vectors.values()).sort(
+              (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+            );
+            const kept = new Set(all.slice(0, VectorMemoryStore.MAX_PERSIST_ENTRIES).map((e) => e.id));
+            for (const id of this.vectors.keys()) {
+              if (!kept.has(id)) this.vectors.delete(id);
+            }
+          }
         } catch (persistErr) {
           // 写入失败：保持 dirty=true，退出循环避免无限重试
           process.stderr.write(`[VectorMemoryStore] Failed to persist (will retry next schedule): ${persistErr instanceof Error ? persistErr.message : String(persistErr)}\n`);

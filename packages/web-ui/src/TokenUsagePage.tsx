@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 // ── Types ──
 
@@ -49,6 +49,15 @@ interface ProviderCost {
   outputTokens: number;
   calls: number;
   percentage: number;
+}
+
+interface PromptCacheStats {
+  enabled?: boolean;
+  entries?: number;
+  hitRate?: number;
+  totalHits?: number;
+  totalMisses?: number;
+  savedTokens?: number;
 }
 
 type TabId = "overview" | "by-model" | "by-session" | "cost";
@@ -88,27 +97,29 @@ export default function TokenUsagePage() {
   const [sessionUsage, setSessionUsage] = useState<SessionUsage[]>([]);
   const [providerCosts, setProviderCosts] = useState<ProviderCost[]>([]);
   const [recentUsage, setRecentUsage] = useState<{ id: string; model: string; tokens: number; cost: number; timestamp: string }[]>([]);
+  const [promptCacheStats, setPromptCacheStats] = useState<PromptCacheStats | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [overviewRes, modelRes, sessionRes, costRes] = await Promise.all([
+      const [overviewRes, modelRes, sessionRes, costRes, cacheRes] = await Promise.all([
         fetch(`${API}/api/token-usage/overview`).then(async r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
-        }).catch(() => null),
+        }).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/token-usage/by-model`).then(async r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
-        }).catch(() => null),
+        }).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/token-usage/by-session`).then(async r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
-        }).catch(() => null),
+        }).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/token-usage/cost`).then(async r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
-        }).catch(() => null),
+        }).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/prompt-cache/stats`).then(r => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
       if (overviewRes && typeof overviewRes === "object") {
         setOverview({
@@ -125,6 +136,7 @@ export default function TokenUsagePage() {
       else if (Array.isArray(sessionRes)) setSessionUsage(sessionRes);
       if (costRes && Array.isArray(costRes.providers)) setProviderCosts(costRes.providers);
       else if (Array.isArray(costRes)) setProviderCosts(costRes);
+      if (cacheRes && typeof cacheRes === "object") setPromptCacheStats(cacheRes);
     } catch {
       // Network error — keep empty state
     }
@@ -208,6 +220,64 @@ export default function TokenUsagePage() {
             { label: t("tokenUsage.stats.avgPerSession"), value: formatTokens(overview.avgTokensPerSession), color: "var(--success)" },
             { label: t("tokenUsage.stats.totalCalls"), value: overview.totalCalls.toLocaleString(locale), color: "var(--text-primary)" },
           ]} />
+
+          {/* Prompt 缓存命中率 */}
+          {promptCacheStats && (
+            <Section title={t("tokenUsage.promptCache.title", "Prompt 缓存命中率")} style={{ marginTop: 20 }}>
+              <Card>
+                {promptCacheStats.enabled === false ? (
+                  <EmptyState title={t("tokenUsage.promptCache.disabled", "Prompt 缓存未启用")} />
+                ) : (
+                  <div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 16 }}>
+                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.hitRate", "命中率")}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
+                          {((promptCacheStats.hitRate ?? 0) * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.hits", "命中")}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
+                          {(promptCacheStats.totalHits ?? 0).toLocaleString(locale)}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.misses", "未命中")}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-muted)" }}>
+                          {(promptCacheStats.totalMisses ?? 0).toLocaleString(locale)}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.entries", "条目数")}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>
+                          {promptCacheStats.entries ?? 0}
+                        </div>
+                      </div>
+                    </div>
+                    {/* 节省 Token */}
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "12px 16px", borderRadius: 8,
+                      background: "var(--success-bg)", border: "1px solid var(--success)",
+                    }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
+                          {t("tokenUsage.promptCache.savedTokens", "节省 Token")}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                          {t("tokenUsage.promptCache.savedDesc", "通过缓存命中避免重复计算的 Token")}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 26, fontWeight: 700, color: "var(--success)" }}>
+                        {formatTokens(promptCacheStats.savedTokens ?? 0)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </Card>
+            </Section>
+          )}
 
           <Section title={t("tokenUsage.recentUsage")} style={{ marginTop: 24 }}>
             <Card>

@@ -204,7 +204,7 @@ function splitSentences(
     const remaining = text.slice(lastEnd).trim();
     if (remaining.length > 0) {
       segments.push({
-        text: text.slice(lastEnd),
+        text: remaining,
         startOffset: lastEnd,
         endOffset: text.length,
       });

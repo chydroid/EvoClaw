@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/memory",
-  "version": "0.72.2",
+  "version": "0.73.0",
   "private": true,
   "description": "EvoClaw Memory 记忆层 - 短期/长期存储、语义搜索、知识图谱",
   "main": "./dist/index.js",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@evoclaw/core": "workspace:*",
+    "@evoclaw/infrastructure": "workspace:*",
     "uuid": "^9.0.0"
   },
   "optionalDependencies": {

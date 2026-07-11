@@ -158,11 +158,12 @@ export class MCPGateway {
     pending.timeoutHandle.unref?.();
 
     // 外部信号联动
+    const onAbort = () => controller.abort();
     if (request.signal) {
       if (request.signal.aborted) {
         controller.abort();
       } else {
-        request.signal.addEventListener("abort", () => controller.abort(), { once: true });
+        request.signal.addEventListener("abort", onAbort, { once: true });
       }
     }
 
@@ -205,6 +206,11 @@ export class MCPGateway {
       // 清理 pending
       if (pending.timeoutHandle) {
         clearTimeout(pending.timeoutHandle);
+      }
+      // 移除 abort 监听器：即使使用 { once: true }，正常完成时 signal 未 abort，
+      // 监听器及其闭包仍会附着在 request.signal 上，需显式移除以避免泄漏
+      if (request.signal) {
+        request.signal.removeEventListener("abort", onAbort);
       }
       this.pendingCalls.delete(callId);
       const callerSet = this.callerIndex.get(callerId);

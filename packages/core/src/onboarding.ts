@@ -168,7 +168,8 @@ export class OnboardingWizard {
     this.wizConfig = { ...DEFAULT_WIZARD_CONFIG, ...config };
     this.inputFn = io?.input ?? (async (_, d) => d ?? "");
     this.selectFn = io?.select ?? (async (_, __, i) => __[i ?? 0] ?? "");
-    this.confirmFn = io?.confirm ?? (async () => false);
+    // 默认 confirm 匹配 "(Y/n)" 提示：空输入（未提供 handler）视为 yes。
+    this.confirmFn = io?.confirm ?? (async () => true);
 
     this.progress = {
       currentStep: "identity",
@@ -338,8 +339,8 @@ export class OnboardingWizard {
     );
 
     const host = await this.inputFn("Host address", DEFAULT_GATEWAY.host);
-    const enableREST = await this.confirmFn("Enable REST API? (Y/n)") ?? true;
-    const enableMCP = await this.confirmFn("Enable MCP protocol? (Y/n)") ?? true;
+    const enableREST = await this.confirmFn("Enable REST API? (Y/n)");
+    const enableMCP = await this.confirmFn("Enable MCP protocol? (Y/n)");
     const cors = await this.inputFn("CORS origins (comma-separated)", DEFAULT_GATEWAY.corsOrigins.join(","));
 
     this.progress.config.gateway = {

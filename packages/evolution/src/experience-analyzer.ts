@@ -6,6 +6,7 @@ import {
   type MemoryEntry,
   type MemorySearchQuery,
 } from "@evoclaw/core";
+import * as crypto from "crypto";
 import { SemanticEmbedder } from "./semantic-embedder";
 
 export interface ExperiencePattern {
@@ -246,7 +247,7 @@ export class ExperienceAnalyzer {
       else if (errorLower.includes("type") || errorLower.includes("undefined")) category = "type_error";
 
       const pattern: ExperiencePattern & { embedding?: number[] } = {
-        id: `pat_${Date.now()}_${index}`,
+        id: `pat_${crypto.randomUUID()}`,
         type: "failure",
         category,
         description: failure.error,

@@ -1,9 +1,10 @@
 import * as path from "path";
 import * as fs from "fs";
+import * as crypto from "crypto";
 import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
-import { LocalSandboxBackend } from "@evoclaw/infrastructure";
+import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
 import type { SandboxPolicy } from "@evoclaw/core";
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
@@ -116,6 +117,14 @@ function runPythonScriptAsync(
       }
     });
 
+    child.stdout?.on("error", (err: Error) => {
+      process.stderr.write(`[shell-media-tools] stdout error: ${err.message}\n`);
+    });
+
+    child.stderr?.on("error", (err: Error) => {
+      process.stderr.write(`[shell-media-tools] stderr error: ${err.message}\n`);
+    });
+
     child.on("close", (code) => {
       if (!settled) {
         settled = true;
@@ -152,14 +161,14 @@ export function registerShellMediaTools(
   // ── SSRF 防护：解析服务注册表中的 ssrfProtection，对工具传入的 URL 做内网/元数据端点过滤 ──
   const ssrfProtection = registry?.resolveService<{ checkURL(url: string): Promise<{ allowed: boolean; reason?: string }> }>("ssrfProtection");
   const checkSsrf = async (url: string): Promise<string | null> => {
-    if (!ssrfProtection) return null;
+    if (!ssrfProtection) return "SSRF protection service unavailable";
     try {
       const result = await ssrfProtection.checkURL(url);
       if (!result.allowed) return result.reason ?? "blocked by SSRF policy";
+      return null;
     } catch {
-      return null; // SSRF 检查失败时不阻塞（best-effort）
+      return "SSRF check failed";
     }
-    return null;
   };
 
   // ── shell_exec: 在安全前提下在沙箱外执行 shell 命令（支持 Python/Node.js） ──
@@ -180,7 +189,7 @@ export function registerShellMediaTools(
       const command = String(params.command || "");
       if (!command) return { error: "Command is required" };
 
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
       let cwd = params.cwd ? String(params.cwd) : workspaceDir;
       // 安全校验：cwd 必须在工作区内，防止路径逃逸
@@ -189,14 +198,13 @@ export function registerShellMediaTools(
         return { success: false, error: `cwd must be within workspace` };
       }
       if (!fs.existsSync(cwd)) {
-        // Fallback: try project root data/workspace, then project root
-        const projectWorkspace = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
-        if (fs.existsSync(projectWorkspace)) {
-          cwd = projectWorkspace;
+        // 安全：cwd 不存在时仅回退到 workspaceDir，禁止回退到项目父目录（防止路径逃逸）
+        if (fs.existsSync(workspaceDir)) {
+          cwd = workspaceDir;
+          console.log(`[shell_exec] cwd does not exist, falling back to workspace`);
         } else {
-          cwd = path.resolve(__dirname, "..", "..", "..", "..");
+          return { success: false, error: "cwd does not exist and workspace fallback unavailable" };
         }
-        console.log(`[shell_exec] cwd "${workspaceDir}" does not exist, falling back to "${cwd}"`);
       }
       const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout || "120"), 10) || 120, 1), 1200);
 
@@ -245,7 +253,7 @@ export function registerShellMediaTools(
           const found = findFileRecursive(skillsDir, scriptBasename);
           if (found) {
             const foundForward = found.replace(/\\/g, "/");
-            effectiveCommand = effectiveCommand.replace(scriptPath, foundForward);
+            effectiveCommand = effectiveCommand.replace(scriptPath, () => foundForward);
             console.log(`[shell_exec] Resolved short script path: ${scriptPath} -> ${foundForward}`);
           }
         }
@@ -382,6 +390,14 @@ export function registerShellMediaTools(
           }
         });
 
+        child.stdout?.on("error", (err: Error) => {
+          process.stderr.write(`[shell-media-tools] stdout error: ${err.message}\n`);
+        });
+
+        child.stderr?.on("error", (err: Error) => {
+          process.stderr.write(`[shell-media-tools] stderr error: ${err.message}\n`);
+        });
+
         // 超时计时器
         let resolved = false;
         let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
@@ -474,7 +490,7 @@ export function registerShellMediaTools(
         return { error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
 
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       const pythonPaths = findPythonPaths();
       const existingPath = process.env.PATH || process.env.Path || "";
       const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
@@ -500,7 +516,7 @@ except Exception as e:
 
       try {
         // Write script to temp file instead of using python -c (which fails with multiline scripts)
-        const scriptPath = path.join(workspaceDir, `_scrapling_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
+        const scriptPath = path.join(workspaceDir, `_scrapling_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
         fs.writeFileSync(scriptPath, script, "utf-8");
         try {
           const result = await runPythonScriptAsync(
@@ -548,14 +564,13 @@ except Exception as e:
         return { error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
 
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       const outputDir = path.join(workspaceDir, "downloads");
       const pythonPaths = findPythonPaths();
       const existingPath = process.env.PATH || process.env.Path || "";
       const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
 
       // Generate download script using media-downloader bridge
-      const { generateVideoDownloadScript } = require("@evoclaw/infrastructure");
       const script = generateVideoDownloadScript({
         url,
         outputDir,
@@ -563,7 +578,7 @@ except Exception as e:
         noWatermark,
       });
 
-      const scriptPath = path.join(workspaceDir, `_video_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
+      const scriptPath = path.join(workspaceDir, `_video_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
       fs.writeFileSync(scriptPath, script, "utf-8");
 
       try {
@@ -643,7 +658,7 @@ except Exception as e:
       const audioFormat = String(params.audioFormat || "mp3");
       const quality = String(params.quality || "320");
 
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       const outputDir = path.join(workspaceDir, "downloads");
       const pythonPaths = findPythonPaths();
       const existingPath = process.env.PATH || process.env.Path || "";
@@ -662,14 +677,13 @@ except Exception as e:
 
       if (isUrl) {
         // Use video download script with extractAudio=true
-        const { generateVideoDownloadScript } = require("@evoclaw/infrastructure");
         const script = generateVideoDownloadScript({
           url: query,
           outputDir,
           extractAudio: true,
           audioFormat,
         });
-        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
+        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
         fs.writeFileSync(scriptPath, script, "utf-8");
 
         try {
@@ -693,14 +707,13 @@ except Exception as e:
         }
       } else {
         // Search and download music
-        const { generateMusicDownloadScript } = require("@evoclaw/infrastructure");
         const script = generateMusicDownloadScript({
           query,
           outputDir,
           audioFormat,
           quality,
         });
-        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
+        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
         fs.writeFileSync(scriptPath, script, "utf-8");
 
         try {
@@ -747,6 +760,8 @@ except Exception as e:
   let sandboxSessionId: string | null = null;
   let sandboxSessionCreatedAt = 0;
   const SANDBOX_SESSION_TTL_MS = 10 * 60 * 1000; // 10 分钟空闲后销毁
+  // 会话创建互斥锁：串行化会话创建，防止并发调用各自创建会话产生孤儿
+  let sessionCreatePromise: Promise<void> | null = null;
 
   executor.registerTool(
     "execute_code",
@@ -789,7 +804,7 @@ except Exception as e:
         return { error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
       }
 
-      const timeoutSec = Math.min(parseInt(String(params.timeout || "30"), 10) || 30, 120);
+      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout || "30"), 10) || 30, 1), 120);
 
       try {
         // 检查 Docker 后端是否可用
@@ -811,12 +826,34 @@ except Exception as e:
           sandboxSessionId = null;
         }
         if (!sandboxSessionId) {
-          const session = await sandboxManager.createSession({
-            backend: "docker",
-            timeoutMs: timeoutSec * 1000,
-          });
-          sandboxSessionId = session.id;
-          sandboxSessionCreatedAt = now;
+          // 并发竞态防护：串行化会话创建，防止并发调用各自创建会话产生孤儿。
+          // 若已有调用正在创建会话，等待其完成；失败也忽略，由下方二次检查决定是否重试。
+          if (sessionCreatePromise) {
+            try { await sessionCreatePromise; } catch { /* 创建失败则忽略，下方会重试 */ }
+          }
+          // 二次检查：等待期间可能已被其他调用设置，避免重复创建
+          if (!sandboxSessionId) {
+            sessionCreatePromise = (async () => {
+              const session = await sandboxManager.createSession({
+                backend: "docker",
+                timeoutMs: timeoutSec * 1000,
+              });
+              sandboxSessionId = session.id;
+              sandboxSessionCreatedAt = Date.now();
+            })();
+            try {
+              await sessionCreatePromise;
+            } finally {
+              sessionCreatePromise = null;
+            }
+          }
+        }
+
+        if (!sandboxSessionId) {
+          return {
+            success: false,
+            error: "Failed to create sandbox session. Docker backend may be unavailable.",
+          };
         }
 
         const result = await sandboxManager.executeScript(sandboxSessionId, code, {

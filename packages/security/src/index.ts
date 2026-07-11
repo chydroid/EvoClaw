@@ -237,3 +237,15 @@ export type {
   TrustLevel as SkillTrustLevel,
   TrustPolicy as SkillTrustPolicy,
 } from "./skill-scanner";
+
+// Advisory Catalog — 已知安全公告目录 + 受影响包检测
+export { ADVISORIES, detectCompromised } from "./advisory-catalog";
+export type { Advisory, AdvisorySeverity } from "./advisory-catalog";
+
+// Startup Security Audit — 启动时安全审计（root 检测 / gateway 暴露 / Docker 环境）
+export { runStartupSecurityAudit, resetAuditSentinel } from "./startup-security-audit";
+export type {
+  SecurityWarning,
+  SecurityWarningSeverity,
+  StartupAuditOptions,
+} from "./startup-security-audit";

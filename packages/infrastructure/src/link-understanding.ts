@@ -13,6 +13,7 @@
  */
 import * as https from "https";
 import * as http from "http";
+import { SSRFProtection } from "@evoclaw/security";
 
 // ──────────────────────────────────────────────────────────────
 // Types
@@ -66,11 +67,13 @@ export class LinkPreviewer {
   private config: Required<Omit<LinkUnderstandingConfig, "allowedDomains" | "blockedDomains">>;
   private allowedDomains: string[];
   private blockedDomains: string[];
+  private ssrfProtection: SSRFProtection;
 
   constructor(config: LinkUnderstandingConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.allowedDomains = config.allowedDomains ?? [];
     this.blockedDomains = config.blockedDomains ?? [];
+    this.ssrfProtection = new SSRFProtection();
   }
 
   /**
@@ -103,6 +106,20 @@ export class LinkPreviewer {
         statusCode: 0,
         fetchDurationMs: Date.now() - start,
         error: "Domain not allowed",
+      };
+    }
+
+    // IP 级 SSRF 检查：拦截内网 IP / 元数据端点 / DNS rebinding
+    const ssrfResult = await this.ssrfProtection.checkURL(url);
+    if (!ssrfResult.allowed) {
+      return {
+        url,
+        title: "",
+        description: "",
+        contentType: "",
+        statusCode: 0,
+        fetchDurationMs: Date.now() - start,
+        error: `SSRF blocked: ${ssrfResult.reason}`,
       };
     }
 
@@ -154,7 +171,7 @@ export class LinkPreviewer {
           headers: { "User-Agent": this.config.userAgent },
           timeout: this.config.timeoutMs,
         },
-        (res) => {
+        async (res) => {
           // Handle redirect
           if (
             this.config.followRedirects &&
@@ -182,7 +199,21 @@ export class LinkPreviewer {
               });
               return;
             }
-            if (!this.isDomainAllowed(new URL(redirectUrl).hostname)) {
+            // 校验重定向协议白名单，阻止 file:///、gopher:// 等危险 scheme 被跟随
+            const parsedRedirect = new URL(redirectUrl);
+            if (parsedRedirect.protocol !== "http:" && parsedRedirect.protocol !== "https:") {
+              resolve({
+                url: redirectUrl,
+                title: "",
+                description: "",
+                contentType: "",
+                statusCode: res.statusCode || 0,
+                fetchDurationMs: Date.now() - start,
+                error: "Disallowed redirect scheme",
+              });
+              return;
+            }
+            if (!this.isDomainAllowed(parsedRedirect.hostname)) {
               resolve({
                 url: redirectUrl,
                 title: "",
@@ -194,6 +225,22 @@ export class LinkPreviewer {
               });
               return;
             }
+            // IP 级 SSRF 二次检查：重定向目标可能解析到内网 IP
+            const redirectSsrf = await this.ssrfProtection.checkURL(redirectUrl);
+            if (!redirectSsrf.allowed) {
+              resolve({
+                url: redirectUrl,
+                title: "",
+                description: "",
+                contentType: "",
+                statusCode: res.statusCode || 0,
+                fetchDurationMs: Date.now() - start,
+                error: `SSRF blocked on redirect: ${redirectSsrf.reason}`,
+              });
+              return;
+            }
+            // 销毁原始响应流，避免未消费的 IncomingMessage 继续占用底层 socket
+            res.destroy();
             resolve(this.fetchWithRedirects(redirectUrl, depth + 1, start));
             return;
           }

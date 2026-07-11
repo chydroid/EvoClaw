@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
 type Status = "clean" | "flagged" | "blacklisted";
@@ -83,8 +83,10 @@ const THREAT_PATTERNS: { type: string; pattern: RegExp; severity: RiskLevel }[] 
 
 function detectThreats(text: string): { riskLevel: RiskLevel; threats: ScanThreat[] } {
   const threats: ScanThreat[] = [];
+  // 限制输入长度，防止超长输入导致 ReDoS
+  const limitedText = text.length > 10000 ? text.slice(0, 10000) : text;
   for (const tp of THREAT_PATTERNS) {
-    if (tp.pattern.test(text)) {
+    if (tp.pattern.test(limitedText)) {
       threats.push({ type: tp.type, description: `Matched pattern: ${tp.type}`, severity: tp.severity });
     }
   }
@@ -120,9 +122,9 @@ export default function MCPScannerPage() {
     setLoading(true);
     try {
       const [toolsRes, blacklistRes, auditRes] = await Promise.all([
-        fetch(`${API}/api/mcp-scanner/tools`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/mcp-scanner/blacklist`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/mcp-scanner/audit?limit=50`).then(r => r.json()).catch(() => null),
+        fetch(`${API}/api/mcp-scanner/tools`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/mcp-scanner/blacklist`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/mcp-scanner/audit?limit=50`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const toolList: MCPTool[] = (toolsRes?.tools || toolsRes || []) as any[];
@@ -216,7 +218,8 @@ export default function MCPScannerPage() {
   const handleScanAll = async () => {
     setScanningAll(true);
     try {
-      await fetch(`${API}/api/mcp-scanner/scan-all`, { method: "POST" });
+      const res = await fetch(`${API}/api/mcp-scanner/scan-all`, { method: "POST" });
+      if (!res.ok) throw new Error(`scan-all failed: ${res.status}`);
       showToast(t("mcpScanner.scanAllDone"), "success");
       loadData();
     } catch {

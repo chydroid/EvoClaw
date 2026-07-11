@@ -27,6 +27,7 @@
  * ```
  */
 
+import { withTransaction } from "@evoclaw/infrastructure";
 import type { Checkpointer, Checkpoint, CheckpointMetadata } from "./state-graph";
 
 // ── SQLite 接口（仅声明使用的方法子集，与 scheduler/run-log-store 保持一致） ──
@@ -149,30 +150,34 @@ export class SqliteCheckpointer<TState> implements Checkpointer<TState> {
     nodeId: string,
     writes: Partial<TState>,
   ): Promise<void> {
-    // 读取当前 writes 数组
-    const selectStmt = this.db.prepare(
-      `SELECT writes FROM agent_checkpoints
-       WHERE thread_id = ? AND checkpoint_id = ?`,
-    );
-    const row = selectStmt.get(threadId, checkpointId) as { writes: string } | undefined;
-    if (!row) return; // checkpoint 不存在，忽略
+    // 用 withTransaction 包裹 read-modify-write，避免竞态条件：
+    // 旧实现先 SELECT 再 UPDATE，两个操作之间可能被其他写入插入/覆盖。
+    withTransaction(this.db, () => {
+      // 读取当前 writes 数组
+      const selectStmt = this.db.prepare(
+        `SELECT writes FROM agent_checkpoints
+         WHERE thread_id = ? AND checkpoint_id = ?`,
+      );
+      const row = selectStmt.get(threadId, checkpointId) as { writes: string } | undefined;
+      if (!row) return; // checkpoint 不存在，忽略
 
-    let writesArr: Array<{ nodeId: string; writes: Partial<TState> }> = [];
-    try {
-      writesArr = JSON.parse(row.writes) as Array<{ nodeId: string; writes: Partial<TState> }>;
-      if (!Array.isArray(writesArr)) writesArr = [];
-    } catch {
-      writesArr = [];
-    }
+      let writesArr: Array<{ nodeId: string; writes: Partial<TState> }> = [];
+      try {
+        writesArr = JSON.parse(row.writes) as Array<{ nodeId: string; writes: Partial<TState> }>;
+        if (!Array.isArray(writesArr)) writesArr = [];
+      } catch {
+        writesArr = [];
+      }
 
-    writesArr.push({ nodeId, writes });
+      writesArr.push({ nodeId, writes });
 
-    const updateStmt = this.db.prepare(
-      `UPDATE agent_checkpoints
-       SET writes = ?
-       WHERE thread_id = ? AND checkpoint_id = ?`,
-    );
-    updateStmt.run(JSON.stringify(writesArr), threadId, checkpointId);
+      const updateStmt = this.db.prepare(
+        `UPDATE agent_checkpoints
+         SET writes = ?
+         WHERE thread_id = ? AND checkpoint_id = ?`,
+      );
+      updateStmt.run(JSON.stringify(writesArr), threadId, checkpointId);
+    });
   }
 
   /** 删除指定 thread 的所有 checkpoint */

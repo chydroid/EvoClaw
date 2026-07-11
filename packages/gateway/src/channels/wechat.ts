@@ -83,6 +83,10 @@ export class WeChatAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    // 清理凭证，避免重启时使用过期 token / 残留的刷新 Promise
+    this.accessToken = null;
+    this.tokenExpiry = 0;
+    this.tokenRefreshPromise = null;
     this.statusHandler?.("disconnected");
   }
 
@@ -255,26 +259,50 @@ export class WeChatAdapter implements ChannelAdapter {
   // ── Internal: Token Management ──────────────────────────
 
   private async refreshOfficialToken(): Promise<void> {
-    const res = await fetch(
-      `${this.baseURL}/cgi-bin/token?grant_type=client_credential&appid=${this.config.appId}&secret=${this.config.appSecret}`
-    );
-    const data = await res.json() as { access_token: string; expires_in: number };
-    if (!data.access_token) throw new Error("WeChat token fetch failed");
+    // NOTE: appSecret 目前通过 URL query 传递，存在泄露到日志/错误消息的风险。
+    // TODO: 应改用 POST body 传递 secret，避免出现在 URL 中。
+    try {
+      const res = await fetch(
+        `${this.baseURL}/cgi-bin/token?grant_type=client_credential&appid=${this.config.appId}&secret=${this.config.appSecret}`,
+        { signal: AbortSignal.timeout(10_000) }
+      );
+      const data = await res.json() as { access_token: string; expires_in: number };
+      if (!data.access_token) throw new Error("WeChat token fetch failed");
 
-    this.accessToken = data.access_token;
-    // Expire 5 min early
-    this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
+      this.accessToken = data.access_token;
+      // Expire 5 min early
+      this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
+    } catch (err) {
+      // 脱敏：fetch 网络错误可能包含完整 URL（含 secret），需从消息中移除后重新抛出
+      const raw = err instanceof Error ? err.message : String(err);
+      if (this.config.appSecret && raw.includes(this.config.appSecret)) {
+        throw new Error(`WeChat token refresh failed: ${raw.split(this.config.appSecret).join("***")}`);
+      }
+      throw err;
+    }
   }
 
   private async refreshWeComToken(): Promise<void> {
-    const res = await fetch(
-      `${this.baseURL}/cgi-bin/gettoken?corpid=${this.config.corpId}&corpsecret=${this.config.corpSecret}`
-    );
-    const data = await res.json() as { access_token: string; expires_in: number };
-    if (!data.access_token) throw new Error("WeCom token fetch failed");
+    // NOTE: corpsecret 目前通过 URL query 传递，存在泄露到日志/错误消息的风险。
+    // TODO: 应改用 POST body 传递 secret，避免出现在 URL 中。
+    try {
+      const res = await fetch(
+        `${this.baseURL}/cgi-bin/gettoken?corpid=${this.config.corpId}&corpsecret=${this.config.corpSecret}`,
+        { signal: AbortSignal.timeout(10_000) }
+      );
+      const data = await res.json() as { access_token: string; expires_in: number };
+      if (!data.access_token) throw new Error("WeCom token fetch failed");
 
-    this.accessToken = data.access_token;
-    this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
+      this.accessToken = data.access_token;
+      this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
+    } catch (err) {
+      // 脱敏：fetch 网络错误可能包含完整 URL（含 secret），需从消息中移除后重新抛出
+      const raw = err instanceof Error ? err.message : String(err);
+      if (this.config.corpSecret && raw.includes(this.config.corpSecret)) {
+        throw new Error(`WeCom token refresh failed: ${raw.split(this.config.corpSecret).join("***")}`);
+      }
+      throw err;
+    }
   }
 
   private async ensureToken(): Promise<void> {
@@ -311,6 +339,7 @@ export class WeChatAdapter implements ChannelAdapter {
         msgtype: "text",
         text: { content: text },
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     const data = await res.json() as { errcode: number; errmsg: string };
@@ -335,6 +364,7 @@ export class WeChatAdapter implements ChannelAdapter {
         agentid: this.config.agentId ?? 0,
         text: { content: text },
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     const data = await res.json() as { errcode: number; errmsg: string };
@@ -359,6 +389,7 @@ export class WeChatAdapter implements ChannelAdapter {
           msgtype: "text",
           text: { content: text },
         }),
+        signal: AbortSignal.timeout(15_000),
       }
     );
 

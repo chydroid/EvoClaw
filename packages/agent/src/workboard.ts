@@ -103,8 +103,8 @@ export class Workboard {
     }
     // Delete subtasks recursively
     if (task) {
-      for (const subId of task.subtaskIds) {
-        this.tasks.delete(subId);
+      for (const subId of [...task.subtaskIds]) {
+        this.deleteTask(subId);
       }
     }
     return this.tasks.delete(taskId);

@@ -15,6 +15,7 @@
 
 import * as path from "path";
 import type { EventBus } from "@evoclaw/core";
+import * as crypto from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -610,9 +611,13 @@ export class SkillMarketplace {
       try {
         fs.writeFileSync(archiveFd, zipBuf);
         fs.fsyncSync(archiveFd);
-      } finally {
-        fs.closeSync(archiveFd);
+      } catch (writeErr) {
+        // 写入/fsync 失败时清理临时文件，避免泄漏残留
+        try { fs.closeSync(archiveFd); } catch { /* ignore */ }
+        try { fs.unlinkSync(archiveTmp); } catch { /* ignore */ }
+        throw writeErr;
       }
+      fs.closeSync(archiveFd);
       fs.renameSync(archiveTmp, archivePath);
 
       // 解压 ZIP 到安装目录
@@ -758,7 +763,7 @@ export class SkillMarketplace {
     review: Omit<SkillReview, "id" | "createdAt" | "helpful">
   ): Promise<SkillReview> {
     const fullReview: SkillReview = {
-      id: `rev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `rev_${crypto.randomUUID()}`,
       ...review,
       createdAt: new Date().toISOString(),
       helpful: 0,
@@ -875,8 +880,13 @@ export class SkillMarketplace {
 
   /** Semantic version comparison: returns >0 if v1 > v2 */
   compareVersions(v1: string, v2: string): number {
-    const parts1 = v1.split(".").map(Number);
-    const parts2 = v2.split(".").map(Number);
+    // 非数字段（如 "0-beta"）视为 0，避免 NaN 使 > / < 比较均为 false 而误判相等
+    const toParts = (v: string) => v.split(".").map((s) => {
+      const n = Number(s);
+      return Number.isNaN(n) ? 0 : n;
+    });
+    const parts1 = toParts(v1);
+    const parts2 = toParts(v2);
 
     for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
       const a = parts1[i] ?? 0;

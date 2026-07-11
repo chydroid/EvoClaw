@@ -232,12 +232,14 @@ export class MemoryCuratorV2 {
    * - remove punctuation
    */
   private normalizeForDuplicateCheck(content: string): string {
+    // 对全文做归一化（不再截断到前 500 字符）。归一化的正则已遍历全文，
+    // 截断仅省下 sha256 哈希成本（可忽略），却会导致前 500 字符相同但后续不同的
+    // 记忆被误判为重复。simpleHash 使用 sha256，全文哈希开销可接受。
     return content
       .toLowerCase()
       .replace(/[^\w\s\u4e00-\u9fff]/g, "")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 500); // Only compare first 500 chars for efficiency
+      .trim();
   }
 
   /**

@@ -3,6 +3,7 @@ import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/pr
 import { constants } from "fs";
 import * as fsSync from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 interface FileInfo {
   path: string;
@@ -35,7 +36,7 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
     fsSync.mkdirSync(dir, { recursive: true });
   }
   // 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突
-  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const tmpPath = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   // 写入临时文件；异常时清理临时文件，避免泄漏
   const fd = fsSync.openSync(tmpPath, "w");
   try {
@@ -87,7 +88,7 @@ export async function atomicReplace(src: string, dst: string): Promise<void> {
     if (code === "EXDEV" || code === "EBUSY") {
       // 跨设备：在目标侧写临时文件后 rename，保持原子性
       const dstDir = path.dirname(realDst);
-      const dstTmp = path.join(dstDir, `.${path.basename(realDst)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
+      const dstTmp = path.join(dstDir, `.${path.basename(realDst)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
       const content = fsSync.readFileSync(src, "utf-8");
       const fd = fsSync.openSync(dstTmp, "w");
       try {
@@ -176,8 +177,21 @@ export class CrossProcessLock {
           const raw = fsSync.readFileSync(this.lockPath, "utf-8");
           const data = JSON.parse(raw) as { pid: number; acquiredAt: number };
           if (!this.isProcessAlive(data.pid)) {
-            // 死进程的锁，清理后重试
-            fsSync.unlinkSync(this.lockPath);
+            // Stale lock — 原子地 rename 到唯一临时名后删除，避免 TOCTOU 竞态。
+            // 两个进程可能同时判断 lock 为 stale，rename 是原子的，只有一个会成功，
+            // 另一个会因 ENOENT 失败（被 catch 后 continue），避免误删另一进程刚创建的新锁文件。
+            const staleTmp = `${this.lockPath}.${process.pid}.${Date.now()}.stale`;
+            try {
+              fsSync.renameSync(this.lockPath, staleTmp);
+              try { fsSync.unlinkSync(staleTmp); } catch { /* ignore */ }
+            } catch (renameErr: unknown) {
+              const code = (renameErr as NodeJS.ErrnoException)?.code;
+              if (code === "ENOENT") {
+                // 另一个进程已经处理了 stale lock，直接重试创建
+              } else {
+                throw renameErr;
+              }
+            }
             continue;
           }
         } catch {

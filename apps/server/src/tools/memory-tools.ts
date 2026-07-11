@@ -15,9 +15,11 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
       if (!query) return { success: false, error: "Query is required" };
-      const limit = parseInt(String(params.limit || "10"), 10) || 10;
+      const limit = Math.max(1, Math.min(parseInt(String(params.limit || "10"), 10) || 10, 100));
 
       // 通过 registry 获取 memoryHub
+      // AgentModelExecutor 接口未公开 registry 属性，此处用 as any 访问其内部字段。
+      // 修改 AgentModelExecutor 接口需同步调整所有实现与调用方，风险较高，暂保持现状。
       const registry = (executor as any).registry;
       if (!registry) return { success: false, error: "Service registry not available" };
       const memoryHub = registry.resolveService("memoryHub");
@@ -41,6 +43,7 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
       parameters: {},
     },
     async (_params: Record<string, unknown>) => {
+      // 同 memory_search：AgentModelExecutor 未公开 registry，用 as any 访问
       const registry = (executor as any).registry;
       if (!registry) return { success: false, error: "Service registry not available" };
       const memoryHub = registry.resolveService("memoryHub");

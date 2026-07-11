@@ -111,21 +111,29 @@ export class ProgressReporter {
     const task = this.activeTasks.get(reportId);
     if (!task) return null;
 
-    const nextPhase = task.phases[task.currentPhaseIndex];
+    // 先计算下一阶段索引并校验边界，再更新状态（与 skipPhase 保持一致）
+    const nextIndex = task.currentPhaseIndex + 1;
+    const nextPhase = task.phases[nextIndex];
     if (!nextPhase) return null;
+
+    // 递增阶段索引并重置步骤计数，避免停留在当前阶段
+    task.currentPhaseIndex = nextIndex;
+    task.currentStep = 0;
+
+    const totalSteps = task.phases.reduce((sum, p) => sum + p.totalSteps, 0);
 
     return this.report(reportId, {
       sessionId: task.sessionId,
       taskId: task.taskId,
       phase: nextPhase.name,
       step: 0,
-      totalSteps: task.phases.reduce((sum, p) => sum + p.totalSteps, 0),
-      progress: task.currentPhaseIndex > 0
+      totalSteps,
+      progress: totalSteps > 0
         ? Math.round(
             (task.phases
               .slice(0, task.currentPhaseIndex)
               .reduce((sum, p) => sum + p.totalSteps, 0) /
-              task.phases.reduce((sum, p) => sum + p.totalSteps, 0)) *
+              totalSteps) *
               100
           )
         : 0,
@@ -189,7 +197,7 @@ export class ProgressReporter {
       phase: phaseName,
       step: phase.totalSteps,
       totalSteps,
-      progress: Math.round(((completedSteps + phase.totalSteps) / totalSteps) * 100),
+      progress: totalSteps > 0 ? Math.round(((completedSteps + phase.totalSteps) / totalSteps) * 100) : 0,
       message: `⏭️ 跳过阶段 "${phaseName}": ${reason}`,
       details: null,
     });

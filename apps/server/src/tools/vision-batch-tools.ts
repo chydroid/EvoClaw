@@ -247,6 +247,10 @@ export function registerVisionBatchTools(deps: VisionBatchToolDeps): void {
         if (!workflow || !Array.isArray(workflow.nodes)) {
           return { success: false, error: "workflow.nodes must be an array" };
         }
+        // 路径穿越防护：workflow.id 拼接到持久化路径，必须限定为安全字符
+        if (!workflow.id || !/^[A-Za-z0-9_\-]+$/.test(workflow.id)) {
+          return { success: false, error: `Invalid workflow.id: ${workflow.id}. Only alphanumeric, underscore and hyphen are allowed.` };
+        }
         const inputs = (params.inputs as Record<string, unknown>) ?? workflow.inputs ?? {};
         const engine = new WorkflowEngineClass(toolExecutorFn, {
           persistPath: path.join(checkpointBaseDir, "workflows", `${workflow.id}.json`),

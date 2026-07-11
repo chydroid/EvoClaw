@@ -158,24 +158,8 @@ export class SkillLifecycleManager {
         }
       }
 
-      // stale → archived: no usage for archiveAfterDays since becoming stale
-      if (currentStatus === "stale") {
-        const staleDate = this.staleSince.get(skillId);
-        if (staleDate) {
-          const daysStale = (now.getTime() - staleDate.getTime()) / (1000 * 60 * 60 * 24);
-          if (daysStale >= this.archiveAfterDays) {
-            transitions.push({
-              skillId,
-              from: currentStatus,
-              to: "archived",
-              reason: `Stale for ${Math.round(daysStale)} days (threshold: ${this.archiveAfterDays} days)`,
-            });
-            continue;
-          }
-        }
-      }
-
-      // stale → active: used successfully
+      // stale → active: used successfully (check before archive so a recent
+      // successful use reactivates the skill even if it has been stale long)
       if (currentStatus === "stale") {
         const lastRecordedUse = record.lastUsedAt;
         const staleDate = this.staleSince.get(skillId);
@@ -189,6 +173,23 @@ export class SkillLifecycleManager {
               from: currentStatus,
               to: "active",
               reason: "Successfully used after becoming stale",
+            });
+            continue;
+          }
+        }
+      }
+
+      // stale → archived: no usage for archiveAfterDays since becoming stale
+      if (currentStatus === "stale") {
+        const staleDate = this.staleSince.get(skillId);
+        if (staleDate) {
+          const daysStale = (now.getTime() - staleDate.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysStale >= this.archiveAfterDays) {
+            transitions.push({
+              skillId,
+              from: currentStatus,
+              to: "archived",
+              reason: `Stale for ${Math.round(daysStale)} days (threshold: ${this.archiveAfterDays} days)`,
             });
             continue;
           }

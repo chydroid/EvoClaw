@@ -368,13 +368,13 @@ export async function distilledHandler(params: Record<string, unknown>): Promise
       backoffMs: 1000,
     });
 
-    return { success: true, data: result, strategy: "${failurePattern}" };
+    return { success: true, data: result, strategy: ${JSON.stringify(failurePattern)} };
   } catch (err) {
     // Learn from this failure for future distillation
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),
-      strategy: "${failurePattern}",
+      strategy: ${JSON.stringify(failurePattern)},
       recorded: true,
     };
   }

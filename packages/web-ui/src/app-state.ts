@@ -16,8 +16,11 @@ export type TabId =
   | "channel-messages"
   | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
   | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner"
+  | "mcp-external"
   | "session-retention" | "voice-settings" | "enhancement-hub"
-  | "memory-hub";
+  | "memory-hub" | "skill-workshop" | "webhooks"
+  | "sandbox-manager" | "eval-runner"
+  | "moa-dashboard" | "a2a" | "acp" | "kanban-board" | "computer-use" | "tool-search";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 

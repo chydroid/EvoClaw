@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { EventEmitter } from "events";
+import { atomicWriteFileSync } from "./atomic-write";
 
 export interface CanvasFile {
   filename: string;
@@ -20,7 +21,6 @@ export interface CanvasProject {
 export class CanvasHost extends EventEmitter {
   private rootDir: string;
   private projects: Map<string, CanvasProject> = new Map();
-  private watchers: Map<string, fs.FSWatcher> = new Map();
 
   constructor(rootDir?: string) {
     super();
@@ -105,7 +105,7 @@ export class CanvasHost extends EventEmitter {
     if (safeName !== filename || filename.includes("..")) return false;
     const filePath = path.join(projectDir, safeName);
     try {
-      fs.writeFileSync(filePath, content, "utf-8");
+      atomicWriteFileSync(filePath, content);
       this.loadProject(projectId, projectDir);
       this.emit("file-changed", { projectId, filename });
       return true;
@@ -129,6 +129,9 @@ export class CanvasHost extends EventEmitter {
   }
 
   deleteProject(id: string): boolean {
+    // 校验 id 不含路径分隔符和 ..，防止路径穿越导致递归删除任意目录
+    const safeId = path.basename(id);
+    if (safeId !== id || id.includes("..")) return false;
     const projectDir = path.join(this.rootDir, id);
     try {
       fs.rmSync(projectDir, { recursive: true, force: true });
@@ -176,10 +179,6 @@ export class CanvasHost extends EventEmitter {
   }
 
   close(): void {
-    for (const [_, watcher] of this.watchers) {
-      watcher.close();
-    }
-    this.watchers.clear();
     this.removeAllListeners();
   }
 }

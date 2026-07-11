@@ -12,6 +12,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 /**
  * 同步原子写入：temp + fsync + rename。
@@ -24,7 +25,7 @@ export function atomicWriteFileSync(targetPath: string, content: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const tmpPath = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   const fd = fs.openSync(tmpPath, "w");
   try {
     fs.writeFileSync(fd, content, "utf-8");
@@ -47,7 +48,7 @@ export function atomicWriteFileSync(targetPath: string, content: string): void {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "EXDEV" || code === "EBUSY") {
       // 跨设备回退：在目标侧写临时文件后 rename
-      const dstTmp = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+      const dstTmp = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.dst.tmp`;
       const fd2 = fs.openSync(dstTmp, "w");
       try {
         fs.writeFileSync(fd2, content, "utf-8");
@@ -59,7 +60,14 @@ export function atomicWriteFileSync(targetPath: string, content: string): void {
         throw w2err;
       }
       fs.closeSync(fd2);
-      try { fs.renameSync(dstTmp, targetPath); } catch { /* ignore */ }
+      // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
+      try {
+        fs.renameSync(dstTmp, targetPath);
+      } catch (renameErr) {
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw renameErr;
+      }
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     } else {
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
@@ -93,8 +101,8 @@ export function appendJsonlAtomic(filePath: string, entry: unknown): void {
     try {
       fs.appendFileSync(filePath, line, { encoding: "utf-8" });
       return;
-    } catch {
-      // 失败则降级到全量写
+    } catch (err) {
+      process.stderr.write(`[atomic-write] appendFileSync failed, falling back to full write: ${err}\n`);
     }
   }
   // 降级：读全部 + 追加 + 原子写整文件

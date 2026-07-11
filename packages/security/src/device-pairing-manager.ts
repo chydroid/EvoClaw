@@ -42,6 +42,8 @@ export class DevicePairingManager {
   private trustedDevices = new Map<string, DeviceIdentity>();
   private pendingSessions = new Map<string, PairingSession>();
   private eventBus: EventBus;
+  /** HMAC 密钥：用于设备指纹的密钥哈希，防止彩虹表攻击 */
+  private readonly hmacKey: Buffer = crypto.randomBytes(32);
 
   constructor(eventBus: EventBus, config?: DevicePairingConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -237,7 +239,7 @@ export class DevicePairingManager {
 
   private computeFingerprint(publicKeyPem: string): string {
     return crypto
-      .createHash("sha256")
+      .createHmac("sha256", this.hmacKey)
       .update(publicKeyPem)
       .digest("hex")
       .slice(0, 16);
@@ -248,9 +250,14 @@ export class DevicePairingManager {
   }
 
   private generatePairingCode(): string {
-    const buf = crypto.randomBytes(4);
-    const num = buf.readUInt32BE(0) % Math.pow(10, this.config.pairingCodeLength);
-    return String(num).padStart(this.config.pairingCodeLength, "0");
+    // 使用 rejection sampling 消除模运算偏差
+    const max = Math.pow(10, this.config.pairingCodeLength);
+    const limit = Math.floor(0xFFFFFFFF / max) * max;
+    let num: number;
+    do {
+      num = crypto.randomBytes(4).readUInt32BE(0);
+    } while (num >= limit);
+    return String(num % max).padStart(this.config.pairingCodeLength, "0");
   }
 
   private cleanupExpiredSessions(): void {

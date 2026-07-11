@@ -102,8 +102,8 @@ export function applyRecallBudget<T>(
         remaining = 0;
         result.budgetExhausted = true;
       } else {
-        // 剩余空间太小，放弃这条
-        result.droppedCount++;
+        // 剩余空间太小，放弃这条；后续未处理条目也一并计入 droppedCount
+        result.droppedCount = items.length - result.items.length;
         result.budgetExhausted = true;
       }
       break;

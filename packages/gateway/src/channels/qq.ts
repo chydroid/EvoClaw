@@ -61,6 +61,7 @@ export class QQAdapter implements ChannelAdapter {
   private maxReconnectAttempts = 10;
   private reconnecting = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private invalidSessionTimer: ReturnType<typeof setTimeout> | null = null;
   private messageHandler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private statusHandler: ((status: "connected" | "disconnected" | "reconnecting" | "error") => void) | null = null;
 
@@ -86,6 +87,9 @@ export class QQAdapter implements ChannelAdapter {
     // 重置重连计数器，确保 stop() 后可以重新启动
     this.reconnectAttempt = 0;
     this.reconnecting = false;
+    // 重置会话状态，避免重启时误走 RESUME 路径使用已失效的 sessionId/seq
+    this.sessionId = null;
+    this.seqNumber = 0;
 
     await this.connect();
   }
@@ -95,6 +99,10 @@ export class QQAdapter implements ChannelAdapter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.invalidSessionTimer) {
+      clearTimeout(this.invalidSessionTimer);
+      this.invalidSessionTimer = null;
     }
     this.clearHeartbeat();
     if (this.ws) {
@@ -296,7 +304,12 @@ export class QQAdapter implements ChannelAdapter {
 
       case QQ_OP.INVALID_SESSION:
         this.sessionId = null;
-        setTimeout(() => this.identify(), 1000);
+        // 存储定时器句柄，便于 stop() 清理，避免泄漏；unref 不阻止进程退出
+        this.invalidSessionTimer = setTimeout(() => {
+          this.invalidSessionTimer = null;
+          this.identify();
+        }, 1000);
+        this.invalidSessionTimer.unref?.();
         break;
     }
   }

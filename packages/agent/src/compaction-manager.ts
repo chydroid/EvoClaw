@@ -47,6 +47,28 @@ export interface CompactionConfig {
   dataDir: string;
 }
 
+/**
+ * 手动压缩效果反馈。
+ *
+ * 借鉴 hermes-agent manual_compression_feedback.py：
+ *   将压缩前后的差异转化为用户可读的结构化反馈，
+ *   而非仅做内部记录。
+ */
+export interface CompressionEffectSummary {
+  /** 是否为无变化压缩（after.length === before.length） */
+  noop: boolean;
+  /** 用户可读的标题行 */
+  headline: string;
+  /** token 估算变化行 */
+  tokenLine: string;
+  /**
+   * 当 messages 减少但 tokens 增加时的提示。
+ * 压缩将 transcript 改写为更密集的摘要时，
+ *   即便消息变少，token 估算也可能上升。
+   */
+  note?: string;
+}
+
 const DEFAULT_CONFIG: CompactionConfig = {
   tokenThreshold: 3000,
   keepRecentTurns: 4,
@@ -124,6 +146,7 @@ function atomicWriteFileLocal(targetPath: string, content: string): void {
       }
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     } else {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       throw err;
     }
   }
@@ -180,7 +203,10 @@ export class CompactionManager {
   private ensureDataDir(): void {
     try {
       fs.mkdirSync(this.config.dataDir, { recursive: true });
-    } catch {}
+    } catch (err) {
+      // 写入 stderr 以便排查；不抛出，保持与原行为一致的容错性
+      process.stderr.write("[CompactionManager] ensureDataDir failed: " + err + "\n");
+    }
   }
 
   // ── 反抖动与失败冷却公共 API ──────────────────────────────
@@ -221,6 +247,43 @@ export class CompactionManager {
       // 有效压缩 → 重置计数器
       this.ineffectiveCompressionCount = 0;
     }
+  }
+
+  /**
+   * 将手动压缩前后差异转换为用户可读的结构化反馈。
+   *
+   * 借鉴 hermes-agent manual_compression_feedback.py：
+   *   - noop: after.length === before.length
+   *   - headline: noop 时 "No changes from compression: N messages"，
+   *                否则 "Compressed: M → N messages"
+   *   - tokenLine: "Approx request size: ~M → ~N tokens"
+   *   - note: messages 减少但 tokens 增加时附加说明
+   *
+   * @param before 压缩前消息列表（仅取长度，不解析内容）
+   * @param after 压缩后消息列表（仅取长度，不解析内容）
+   * @param beforeTokens 压缩前 token 估算
+   * @param afterTokens 压缩后 token 估算
+   */
+  summarizeManualCompression(
+    before: unknown[],
+    after: unknown[],
+    beforeTokens: number,
+    afterTokens: number,
+  ): CompressionEffectSummary {
+    const noop = after.length === before.length;
+    const headline = noop
+      ? `No changes from compression: ${after.length} messages`
+      : `Compressed: ${before.length} → ${after.length} messages`;
+    const tokenLine = `Approx request size: ~${beforeTokens} → ~${afterTokens} tokens`;
+
+    let note: string | undefined;
+    // messages 减少但 tokens 增加：压缩改写为更密集的摘要
+    if (!noop && after.length < before.length && afterTokens > beforeTokens) {
+      note =
+        "fewer messages can still raise this estimate when compression rewrites the transcript into denser summaries.";
+    }
+
+    return { noop, headline, tokenLine, note };
   }
 
   /**
@@ -641,7 +704,9 @@ export class CompactionManager {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[CompactionManager] Failed to clear compaction file: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   // ─── 工具调用/结果配对完整性清洗 ─────────────────────────────────────────
@@ -724,7 +789,7 @@ export class CompactionManager {
           // 最后一条 user 消息在压缩区，移到尾部
           const userMsg = messages.splice(i, 1)[0];
           messages.push(userMsg);
-          return tailStartIdx; // 尾部起始位置不变
+          return tailStartIdx - 1; // splice 移除一个元素后尾部起始位置前移一位
         }
         break;
       }

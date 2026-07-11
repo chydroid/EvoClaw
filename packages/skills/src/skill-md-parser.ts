@@ -11,7 +11,26 @@ import { readFile } from "fs/promises";
 
 export class SKILLmdParser {
   async parse(content: string): Promise<SKILLmdDocument> {
-    const { data, content: body } = matter(content);
+    // gray-matter 的 data 属性类型为 { [key: string]: any }；保留宽松类型以兼容下游解构。
+    // YAML 解析失败时用 lenient 回退填充同一对象。
+    let data: Record<string, any> = {};
+    let body = content;
+    try {
+      const parsed = matter(content);
+      data = parsed.data as Record<string, any>;
+      body = parsed.content;
+    } catch (e) {
+      // gray-matter 在 frontmatter 为无效 YAML 时抛异常（如 block scalar 中夹杂顶格文本）。
+      // 用行级扫描抢救 name/version/description 等字段，避免技能因远端 SKILL.md 格式缺陷安装失败。
+      const lenient = this.parseFrontmatterLenient(content);
+      data = lenient.data;
+      body = lenient.body;
+      process.stderr.write(
+        `[SkillMdParser] ⚠ YAML frontmatter parse failed, used lenient fallback: ${
+          e instanceof Error ? e.message : String(e)
+        }\n`
+      );
+    }
 
     const openClawMeta = this.parseOpenClawMetadata(data);
 
@@ -66,6 +85,63 @@ export class SKILLmdParser {
   async parseFromFile(filePath: string): Promise<SKILLmdDocument> {
     const content = await readFile(filePath, "utf-8");
     return this.parse(content);
+  }
+
+  /**
+   * YAML frontmatter 损坏时的容错解析器。
+   *
+   * 触发场景：远端 ClawHub 技能的 SKILL.md frontmatter 可能存在无效 YAML，
+   * 典型如 `description: |` block scalar 中夹杂了顶格的非缩进行（中文段落、
+   * "重要：..." 说明等），导致 js-yaml 抛出 "can not read a block mapping entry"。
+   *
+   * 该方法用行级扫描抢救关键字段：
+   * - 单行 `key: value` 直接提取
+   * - `key: |` / `key: >` block scalar 收集后续行直到遇到下一个顶格 key 或 frontmatter 结束
+   * - 顶格的非 key 行（如中文段落，含中文冒号）会被纳入最近的 block scalar
+   *
+   * 这不是完整 YAML 解析器，仅用于抢救安装失败的场景。正常技能仍走 gray-matter。
+   */
+  private parseFrontmatterLenient(content: string): {
+    data: Record<string, unknown>;
+    body: string;
+  } {
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (!fmMatch) return { data: {}, body: content };
+
+    const fmText = fmMatch[1];
+    const body = content.slice(fmMatch[0].length);
+    const data: Record<string, unknown> = {};
+    const lines = fmText.split("\n");
+    // 顶格 key:value 模式：英文冒号 + 空格，或冒号在行尾（block/flow scalar 标记）
+    const topLevelKeyRe = /^([a-zA-Z_][\w-]*)\s*:\s*(.*)$/;
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const kv = line.match(topLevelKeyRe);
+      if (!kv) {
+        i++;
+        continue;
+      }
+      const key = kv[1];
+      const val = kv[2].trim();
+      if (val === "|" || val === ">") {
+        // block scalar：收集后续行直到遇到下一个顶格 key 或 frontmatter 结束。
+        // 顶格的非 key 行（如中文段落，含中文冒号）会被纳入 block，符合作者意图。
+        const blockLines: string[] = [];
+        i++;
+        while (i < lines.length && !topLevelKeyRe.test(lines[i])) {
+          // 去掉一层缩进（2 空格），保留内容
+          blockLines.push(lines[i].replace(/^  /, ""));
+          i++;
+        }
+        data[key] = blockLines.join("\n").trim();
+        continue;
+      }
+      // 单行值：去除两端引号
+      data[key] = val.replace(/^["']|["']$/g, "");
+      i++;
+    }
+    return { data, body };
   }
 
   private parseOpenClawMetadata(data: Record<string, unknown>): OpenClawSkillMeta | null {

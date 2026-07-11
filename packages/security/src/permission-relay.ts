@@ -64,6 +64,8 @@ export class PermissionRelay {
   private maxPending: number;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private globCache = new Map<string, RegExp>();
+  /** globCache 最大条目数，防止无限增长 */
+  private static MAX_GLOB_CACHE_SIZE = 1000;
 
   constructor(
     config: PermissionRelayConfig = {},
@@ -333,6 +335,11 @@ export class PermissionRelay {
           "$",
         "i",
       );
+      // LRU 限制：超过上限时删除最早的条目（Map 按插入顺序迭代）
+      if (this.globCache.size >= PermissionRelay.MAX_GLOB_CACHE_SIZE) {
+        const firstKey = this.globCache.keys().next().value;
+        if (firstKey !== undefined) this.globCache.delete(firstKey);
+      }
       this.globCache.set(pattern, regex);
     }
     return regex.test(value);

@@ -310,6 +310,10 @@ export class TokenUsageTracker {
 
   /** 清空 */
   clear(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
     this.records = [];
     this.persistToDisk();
   }

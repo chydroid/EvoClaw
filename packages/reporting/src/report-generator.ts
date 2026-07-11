@@ -80,6 +80,13 @@ const CHART_COLORS = [
   "#00BCD4", "#FF5722", "#607D8B", "#795548", "#3F51B5",
 ];
 
+// XSS 防护：对插入 SVG 文本的变量做 XML 实体转义
+function escapeXml(s: unknown): string {
+  return String(s ?? "").replace(/[<>&"']/g, c =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c]!)
+  );
+}
+
 const DEFAULT_TEMPLATE = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -169,7 +176,7 @@ const DEFAULT_TEMPLATE = `<!DOCTYPE html>
         {{/if}}
 
         {{#if (eq type "html")}}
-          {{content}}
+          {{{sanitizeHtml content}}}
         {{/if}}
 
         {{#if (eq type "metrics")}}
@@ -325,7 +332,21 @@ export class ReportGenerator {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(resolved, output, "utf-8");
+      // 安全：原子写入（tmp + fsync + rename），避免进程崩溃时报告文件被截断损坏
+      const tmpPath = `${resolved}.${process.pid}.tmp`;
+      const fd = fs.openSync(tmpPath, "w");
+      try {
+        fs.writeFileSync(fd, output, "utf-8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        fs.renameSync(tmpPath, resolved);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
     }
 
     this.eventBus.publish(
@@ -357,14 +378,14 @@ export class ReportGenerator {
       : CHART_COLORS;
 
     const values = dataset.data;
-    const maxVal = Math.max(...values, 1);
+    const maxVal = values.reduce((max, v) => Math.max(max, v), 1);
     const margin = { top: 40, right: 30, bottom: 50, left: 60 };
     const chartW = width - margin.left - margin.right;
     const chartH = height - margin.top - margin.bottom;
     const barWidth = Math.min(chartW / values.length * 0.7, 40);
 
     let svgParts = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" style="background:#fff;border-radius:6px;">`;
-    svgParts += `<text x="${width / 2}" y="25" text-anchor="middle" font-size="14" fill="#333" font-weight="600">${title || ""}</text>`;
+    svgParts += `<text x="${width / 2}" y="25" text-anchor="middle" font-size="14" fill="#333" font-weight="600">${escapeXml(title)}</text>`;
 
     for (let i = 0; i <= 4; i++) {
       const y = margin.top + (chartH * i / 4);
@@ -380,10 +401,10 @@ export class ReportGenerator {
         const y = margin.top + chartH - barH;
         const color = colors[i % colors.length];
         svgParts += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barH}" fill="${color}" rx="3" opacity="0.9"/>`;
-        svgParts += `<text x="${x + barWidth / 2}" y="${y - 6}" text-anchor="middle" font-size="11" fill="#555">${values[i]}</text>`;
+        svgParts += `<text x="${x + barWidth / 2}" y="${y - 6}" text-anchor="middle" font-size="11" fill="#555">${escapeXml(values[i])}</text>`;
 
         const lblX = margin.left + (chartW / values.length) * i + chartW / values.length / 2;
-        svgParts += `<text x="${lblX}" y="${height - 10}" text-anchor="middle" font-size="11" fill="#888">${labels[i] || ""}</text>`;
+        svgParts += `<text x="${lblX}" y="${height - 10}" text-anchor="middle" font-size="11" fill="#888">${escapeXml(labels[i])}</text>`;
       }
     } else if (type === "line") {
       let pathD = "";
@@ -402,9 +423,9 @@ export class ReportGenerator {
       }
 
       for (let i = 0; i < values.length; i++) {
-        svgParts += `<text x="${points[i].x}" y="${points[i].y - 10}" text-anchor="middle" font-size="11" fill="#555">${values[i]}</text>`;
+        svgParts += `<text x="${points[i].x}" y="${points[i].y - 10}" text-anchor="middle" font-size="11" fill="#555">${escapeXml(values[i])}</text>`;
         const lblX = margin.left + (chartW / (values.length - 1 || 1)) * i;
-        svgParts += `<text x="${lblX}" y="${height - 10}" text-anchor="middle" font-size="11" fill="#888">${labels[i] || ""}</text>`;
+        svgParts += `<text x="${lblX}" y="${height - 10}" text-anchor="middle" font-size="11" fill="#888">${escapeXml(labels[i])}</text>`;
       }
     } else {
       const cx = width / 2;
@@ -428,7 +449,7 @@ export class ReportGenerator {
         const lx = cx + (r * 0.7) * Math.cos(midAngle);
         const ly = cy + (r * 0.7) * Math.sin(midAngle);
         const pct = Math.round((values[i] / total) * 100);
-        svgParts += `<text x="${lx}" y="${ly}" text-anchor="middle" font-size="12" fill="#fff" font-weight="600">${pct > 3 ? pct + "%" : ""}</text>`;
+        svgParts += `<text x="${lx}" y="${ly}" text-anchor="middle" font-size="12" fill="#fff" font-weight="600">${pct > 3 ? escapeXml(pct + "%") : ""}</text>`;
 
         angleOffset += sliceAngle;
       }
@@ -437,7 +458,7 @@ export class ReportGenerator {
       for (let i = 0; i < labels.length; i++) {
         const lx = margin.left + 15;
         svgParts += `<rect x="${lx}" y="${legendY}" width="12" height="12" fill="${colors[i % colors.length]}" rx="2"/>`;
-        svgParts += `<text x="${lx + 18}" y="${legendY + 10}" font-size="12" fill="#555">${labels[i]} (${values[i]})</text>`;
+        svgParts += `<text x="${lx + 18}" y="${legendY + 10}" font-size="12" fill="#555">${escapeXml(labels[i])} (${escapeXml(values[i])})</text>`;
         legendY += 20;
       }
     }
@@ -486,6 +507,21 @@ export class ReportGenerator {
       const s = String(str || "");
       const l = Number(len) || 100;
       return s.length > l ? s.substring(0, l) + "..." : s;
+    });
+
+    // XSS 防护：对 HTML 类型内容进行净化，移除 <script> 标签和事件处理器属性
+    Handlebars.registerHelper("sanitizeHtml", function (this: unknown, html: unknown) {
+      if (!html) return new Handlebars.SafeString("");
+      let s = String(html);
+      // 移除 <script>...</script> 块（非贪婪匹配，避免灾难性回溯）
+      s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
+      // 移除事件处理器属性 (onclick, onerror, onload, etc.)
+      s = s.replace(/\s+on\w+\s*=\s*"[^"]*"/gi, "");
+      s = s.replace(/\s+on\w+\s*=\s*'[^']*'/gi, "");
+      s = s.replace(/\s+on\w+\s*=\s*[^\s>]+/gi, "");
+      // 移除危险协议的 href/src：javascript:、vbscript:、data:text/html
+      s = s.replace(/(href|src)\s*=\s*["'](?:javascript|vbscript|data:text\/html):[^"']*["']/gi, "");
+      return new Handlebars.SafeString(s);
     });
   }
 

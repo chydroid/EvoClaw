@@ -12,6 +12,8 @@
  *  - Topic clustering for better retrieval
  */
 
+import { randomUUID } from "node:crypto";
+
 // ── Types ─────────────────────────────────────────────────
 
 export interface MemoryFragment {
@@ -87,6 +89,9 @@ export interface MemoryWeaverConfig {
 
 // ── Memory Weaver ─────────────────────────────────────────
 
+/** consolidated 数组最大保留条数，防止无界增长。 */
+const MAX_CONSOLIDATED = 200;
+
 export class MemoryWeaver {
   private fragments: MemoryFragment[] = [];
   private consolidated: ConsolidatedMemory[] = [];
@@ -111,7 +116,7 @@ export class MemoryWeaver {
   addFragment(fragment: Omit<MemoryFragment, "id" | "relatedMemories">): MemoryFragment {
     const full: MemoryFragment = {
       ...fragment,
-      id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `mem_${Date.now()}_${randomUUID()}`,
       relatedMemories: [],
     };
 
@@ -272,6 +277,10 @@ export class MemoryWeaver {
       };
 
       this.consolidated.push(consolidated);
+      // 限制 consolidated 数组大小，超出则丢弃最旧的条目
+      if (this.consolidated.length > MAX_CONSOLIDATED) {
+        this.consolidated.shift();
+      }
       newConsolidations.push(consolidated);
     }
 
@@ -291,8 +300,8 @@ export class MemoryWeaver {
 
   /** Force consolidate all fragments (e.g., on shutdown) */
   consolidateAll(): ConsolidatedMemory[] {
-    // Mark all fragments as "old enough" then consolidate
-    const result = this.consolidate();
+    // 强制合并所有片段，包括活跃会话
+    const result = this.consolidate(true);
     return result;
   }
 
@@ -328,7 +337,7 @@ export class MemoryWeaver {
       return true;
     });
 
-    const allTimes = [...frags.map((f) => f.timestamp), ...this.consolidated.flatMap((c) => [c.timeRange.start, c.timeRange.end])];
+    const allTimes = [...frags.map((f) => f.timestamp), ...relevantConsolidated.flatMap((c) => [c.timeRange.start, c.timeRange.end])];
     const start = allTimes.length > 0 ? Math.min(...allTimes) : Date.now();
     const end = allTimes.length > 0 ? Math.max(...allTimes) : Date.now();
     const durationHours = (end - start) / 3600_000;
@@ -366,7 +375,7 @@ export class MemoryWeaver {
         bestCluster.summary = this.regenerateClusterSummary(bestCluster);
       } else if (this.clusters.length < this.config.maxClusters) {
         const cluster: MemoryCluster = {
-          id: `cluster_${Date.now()}_${Math.random().toString(36).slice(2, 4)}`,
+          id: `cluster_${Date.now()}_${randomUUID()}`,
           topic: this.extractTopic(fragment.content),
           fragments: [fragment],
           summary: fragment.content.slice(0, 200),
@@ -429,6 +438,14 @@ export class MemoryWeaver {
   /**
    * Detect conflicting memories (contradictory facts).
    * Returns pairs of fragments that appear to conflict.
+   *
+   * 已知性能限制：本方法使用双重循环对所有 fact 类型 fragment 两两比较，
+   * 时间复杂度为 O(n²)。当 fragments 数量较大（接近 maxFragmentsPerSession 上限）
+   * 时可能成为瓶颈。
+   * 可行的优化方向（未实现以避免改变行为）：
+   *  - 按 type==="fact" 预过滤，并按“是否含否定词”分两组，仅跨组比较（满足 XOR 条件）
+   *  - 对 content 去否定词后做 hash 分桶，仅在桶内做相似度计算
+   * TODO: 若未来 fragments 规模增长导致 detectConflicts 成为热点，再实施上述优化。
    */
   detectConflicts(): Array<{ a: MemoryFragment; b: MemoryFragment; reason: string }> {
     const conflicts: Array<{ a: MemoryFragment; b: MemoryFragment; reason: string }> = [];
@@ -465,7 +482,7 @@ export class MemoryWeaver {
       totalFragments: this.fragments.length,
       totalConsolidated: this.consolidated.length,
       totalClusters: this.clusters.length,
-      totalSourceFrgaments: this.consolidated.reduce((s, c) => s + c.sourceFragments.length, 0),
+      totalSourceFragments: this.consolidated.reduce((s, c) => s + c.sourceFragments.length, 0),
       memorySpanMs: this.fragments.length > 0
         ? Date.now() - Math.min(...this.fragments.map((f) => f.timestamp))
         : 0,

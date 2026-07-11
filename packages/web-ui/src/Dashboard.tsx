@@ -116,10 +116,10 @@ export default function Dashboard() {
     try {
       const [healthRes, sessionsRes, providersRes, skillsRes, bsRes] = await Promise.allSettled([
         fetch("/api/health", { signal }),
-        fetch("/api/system/sessions", { signal }).catch(() => null),
-        fetch("/api/system/providers", { signal }).catch(() => null),
+        fetch("/api/system/sessions", { signal }).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch("/api/system/providers", { signal }).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch("/api/skills", { signal }),
-        fetch("/api/system/bootstrap-files", { signal }).catch(() => null),
+        fetch("/api/system/bootstrap-files", { signal }).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
       if (signal?.aborted) return;
 

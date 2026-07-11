@@ -2,6 +2,8 @@
 // OpenClaw 6.6 引入: 检测MCP tool description中的prompt injection
 // 防御Invariant Labs/OWASP演示的"tool description poisoning"攻击
 
+import { randomBytes } from "crypto";
+
 /** MCP Tool 描述 */
 export interface MCPToolDescription {
   name: string;
@@ -287,7 +289,9 @@ export class MCPToolPoisoningScanner {
       timestamp: Date.now(),
     });
     if (this.scanAuditLog.length > 1000) {
-      this.scanAuditLog.shift();
+      const dropped = this.scanAuditLog.length - 1000;
+      process.stderr.write(`[MCPToolPoisoningScanner] scanAuditLog overflow: dropped ${dropped} oldest entries\n`);
+      this.scanAuditLog = this.scanAuditLog.slice(-1000);
     }
 
     return {
@@ -372,7 +376,7 @@ export class MCPToolPoisoningScanner {
 
   /** 添加黑名单模式 */
   addBlacklistPattern(entry: { pattern: string; reason: string; severity: string }): { id: string; pattern: string; reason: string; severity: string; createdAt: number } {
-    const id = `bl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `bl-${Date.now()}-${randomBytes(4).toString("hex")}`;
     const record = { id, pattern: entry.pattern, reason: entry.reason, severity: entry.severity, createdAt: Date.now() };
     this.blacklist.push(record);
     return record;

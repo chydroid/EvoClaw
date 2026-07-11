@@ -37,6 +37,8 @@ export class InMemorySpanCollector {
   /** Returns the most recent spans in reverse chronological order. */
   recent(filter?: { sessionId?: string; limit?: number; nameContains?: string; traceId?: string; sinceMs?: number }): RecordedSpan[] {
     const limit = filter?.limit ?? 50;
+    // slice(-0) 会返回整个数组，limit 为 0 时应返回空数组
+    if (limit === 0) return [];
     const sinceMs = filter?.sinceMs ?? 0;
     const sessionId = filter?.sessionId;
     const nameContains = filter?.nameContains;

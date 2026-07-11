@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus, FeatureFlagStore } from "@evoclaw/core";
-import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager } from "@evoclaw/agent";
+import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware } from "@evoclaw/agent";
 import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
@@ -450,8 +450,14 @@ class EnvSecretManager {
             throw w2err;
           }
           fs.closeSync(fd2);
-          try { fs.renameSync(dstTmp, ENV_FILE); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          try {
+            fs.renameSync(dstTmp, ENV_FILE);
+          } catch (renameErr) {
+            try { fs.unlinkSync(dstTmp); } catch { /* ignore cleanup */ }
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
+            throw renameErr;
+          }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
         } else {
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           throw err;
@@ -1509,7 +1515,7 @@ export class ProtocolAdapter {
         // If keyword parameter is provided, perform search
         const keyword = req.query.keyword as string;
         if (keyword) {
-          const query = { keyword, limit: parseInt(String(req.query.limit), 10) || 20 };
+          const query = { keyword, limit: Math.max(1, Math.min(parseInt(String(req.query.limit), 10) || 20, 1000)) };
           const localResults = await skillManager.searchLocalSkills(query);
           const remoteResults = await skillManager.searchRemoteSkills(query);
           res.json({
@@ -1581,6 +1587,24 @@ export class ProtocolAdapter {
         }
         const updatesAvailable = await skillManager.checkUpdates();
         res.json({ updatesAvailable });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ── Optional skills：列出不默认启用的较重/小众技能 ──
+    // 必须定义在 /api/skills/:id 之前，否则 "optional" 会被当作 :id 参数
+    app.get("/api/skills/optional", async (_req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          listOptionalSkills(): Promise<Array<{ name: string; description: string; version: string; installed: boolean }>>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const optionalSkills = await skillManager.listOptionalSkills();
+        res.json({ optionalSkills });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -1681,6 +1705,29 @@ export class ProtocolAdapter {
           skipped: totalSkipped,
           details,
         });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ── Optional skills：安装一个不默认启用的较重/小众技能 ──
+    // 从 packages/skills/optional/ 复制到 data/skills/ 并激活
+    app.post("/api/skills/install-optional", async (req: Request, res: Response) => {
+      try {
+        const skillManager = this.registry.resolveService<{
+          installOptionalSkill(skillName: string): Promise<unknown>;
+        }>("skillManager");
+        if (!skillManager) {
+          res.status(503).json({ error: "Skill manager not available" });
+          return;
+        }
+        const skillName = (req.body.name as string) || (req.body.skillName as string) || "";
+        if (!skillName) {
+          res.status(400).json({ error: "Skill name is required (body.name or body.skillName)" });
+          return;
+        }
+        const installed = await skillManager.installOptionalSkill(skillName);
+        res.json({ success: true, skill: installed });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -3295,7 +3342,7 @@ export class ProtocolAdapter {
           res.status(400).json({ error: "Query parameter 'q' is required" });
           return;
         }
-        const limit = Math.min(parseInt(String(req.query.limit), 10) || 10, 100);
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit), 10) || 10, 100));
         const results = skillIndex.search(query, limit);
         res.json({ query, results, count: results.length });
       } catch (err) {
@@ -3898,8 +3945,8 @@ export class ProtocolAdapter {
         if (req.query.severity) filter.severity = String(req.query.severity);
         if (req.query.source) filter.source = String(req.query.source);
         if (req.query.tags) filter.tags = String(req.query.tags).split(",");
-        if (req.query.limit) filter.limit = parseInt(String(req.query.limit), 10) || 50;
-        if (req.query.offset) filter.offset = parseInt(String(req.query.offset), 10) || 0;
+        if (req.query.limit) filter.limit = Math.max(1, Math.min(parseInt(String(req.query.limit), 10) || 50, 1000));
+        if (req.query.offset) filter.offset = Math.max(0, parseInt(String(req.query.offset), 10) || 0);
         res.json(evolutionEngine.getLearningEntries(filter));
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -4251,6 +4298,54 @@ export class ProtocolAdapter {
 
         const removed = permMgr.removeFromWhitelist(String(operation), String(target));
         res.json({ success: removed });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // 新增白名单条目。支持两种负载：
+    //   1. { path, permissions } —— allowlist add 单条（CLI 兼容）
+    //   2. { entries: [{ operation, target }] } 或顶层数组 —— 批量导入（policy 文件）
+    app.post("/api/permission/whitelist", async (req: Request, res: Response) => {
+      try {
+        const permMgr = this.registry.resolveService<{
+          addToWhitelist(operation: string, target: string): unknown;
+        }>("permissionManager");
+
+        if (!permMgr) {
+          res.status(503).json({ error: "Permission manager not available" });
+          return;
+        }
+
+        const body = req.body || {};
+        const entries: Array<{ operation: string; target: string }> = [];
+        if (typeof body.path === "string" && typeof body.permissions === "string") {
+          entries.push({ operation: body.permissions, target: body.path });
+        } else if (Array.isArray(body)) {
+          for (const e of body) {
+            if (e && typeof e.operation === "string" && typeof e.target === "string") {
+              entries.push({ operation: e.operation, target: e.target });
+            }
+          }
+        } else if (Array.isArray(body.entries)) {
+          for (const e of body.entries) {
+            if (e && typeof e.operation === "string" && typeof e.target === "string") {
+              entries.push({ operation: e.operation, target: e.target });
+            }
+          }
+        }
+
+        if (entries.length === 0) {
+          res.status(400).json({ error: "path and permissions (or entries[]) are required" });
+          return;
+        }
+
+        let added = 0;
+        for (const e of entries) {
+          permMgr.addToWhitelist(e.operation, e.target);
+          added++;
+        }
+        res.json({ success: true, added });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -4969,6 +5064,33 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/queue/clear", (req: Request, res: Response) => {
+      try {
+        const { sessionId } = req.body || {};
+        if (!sessionId) {
+          res.status(400).json({ success: false, error: "sessionId is required" });
+          return;
+        }
+
+        const queueManager = this.registry.resolveService("queueManager") as {
+          getQueue(sessionId: string): Array<Record<string, unknown>>;
+          clearQueue(sessionId: string): void;
+        } | undefined;
+
+        if (!queueManager) {
+          res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        // 清空前先获取数量，用于返回 cleared 计数
+        const cleared = queueManager.getQueue(sessionId).length;
+        queueManager.clearQueue(sessionId);
+        res.json({ success: true, cleared });
+      } catch (err) {
+        this.handleError(err, res, "Failed to clear queue");
+      }
+    });
+
     // ─── Channel API routes ──────────────────────────────────────────────────
 
     app.get("/api/channels/status", (_req: Request, res: Response) => {
@@ -5030,6 +5152,111 @@ export class ProtocolAdapter {
         res.json({ success: result, message: result ? "Pairing approved" : "Invalid pairing code" });
       } catch (err) {
         this.handleError(err, res, "Failed to approve pairing");
+      }
+    });
+
+    // 拒绝（丢弃）待审批的配对码。路径参数：:channel :code
+    app.delete("/api/channels/pairing/:channel/:code", (req: Request, res: Response) => {
+      try {
+        const { channel, code } = req.params || {};
+        if (!channel || !code) {
+          res.status(400).json({ error: "channel and code are required" });
+          return;
+        }
+        const channelManager = this.registry.resolveService("channelManager") as {
+          rejectPairing(code: string, channel?: string): boolean;
+        } | undefined;
+
+        const result = channelManager?.rejectPairing(String(code), String(channel)) ?? false;
+        res.json({ success: result, message: result ? "Pairing rejected" : "Invalid or expired pairing code" });
+      } catch (err) {
+        this.handleError(err, res, "Failed to reject pairing");
+      }
+    });
+
+    // ─── Commitments (OpenClaw 兼容) ─────────────────────────────────────
+    // 由 packages/agent 的 CommitmentManager 支撑，已注册为 "commitmentManager" 服务。
+    // 端点：GET /api/commitments, GET /api/commitments/summary,
+    //       GET /api/commitments/:id, POST /api/commitments/:id/dismiss
+    app.get("/api/commitments", async (_req: Request, res: Response) => {
+      try {
+        const mgr = this.registry.resolveService<{
+          list(filter?: unknown): unknown[];
+        }>("commitmentManager");
+        if (!mgr) {
+          res.json({ commitments: [] });
+          return;
+        }
+        res.json({ commitments: mgr.list() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // summary 必须在 :id 之前注册，避免 "summary" 被当作 id
+    app.get("/api/commitments/summary", async (req: Request, res: Response) => {
+      try {
+        const mgr = this.registry.resolveService<{
+          list(filter?: unknown): unknown[];
+        }>("commitmentManager");
+        if (!mgr) {
+          res.json({ total: 0, pending: 0, inProgress: 0, overdue: 0 });
+          return;
+        }
+        const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+        // CommitmentFilter.status 接受数组；用 any 绕过字面量联合类型限制
+        const filter: { status: string[]; sessionId?: string } = { status: ["pending", "in_progress"] };
+        if (sessionId) filter.sessionId = sessionId;
+        const all = mgr.list(filter) as Array<{ status?: string; deadline?: number }>;
+        const pending = all.filter((c) => c.status === "pending").length;
+        const inProgress = all.filter((c) => c.status === "in_progress").length;
+        const now = Date.now();
+        const overdue = all.filter((c) => c.deadline && c.deadline < now).length;
+        res.json({ total: all.length, pending, inProgress, overdue });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/commitments/:id", async (req: Request, res: Response) => {
+      try {
+        const mgr = this.registry.resolveService<{
+          get(id: string): unknown;
+        }>("commitmentManager");
+        if (!mgr) {
+          res.status(503).json({ error: "Commitment manager not available" });
+          return;
+        }
+        const found = mgr.get(String(req.params.id));
+        if (!found) {
+          res.status(404).json({ error: "Commitment not found" });
+          return;
+        }
+        res.json({ commitment: found });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/commitments/:id/dismiss", async (req: Request, res: Response) => {
+      try {
+        const mgr = this.registry.resolveService<{
+          cancel(id: string, reason?: string): unknown;
+        }>("commitmentManager");
+        if (!mgr) {
+          res.status(503).json({ error: "Commitment manager not available" });
+          return;
+        }
+        const id = String(req.params.id);
+        const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+        const result = mgr.cancel(id, reason);
+        if (!result) {
+          res.json({ success: false, dismissed: [], failed: [{ id, reason: "not found or invalid transition" }] });
+          return;
+        }
+        res.json({ success: true, dismissed: [id], failed: [] });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
       }
     });
 
@@ -5284,6 +5511,7 @@ export class ProtocolAdapter {
             "iLink-App-ClientVersion": "0",
           },
           body: JSON.stringify({ local_token_list: [] }),
+          signal: AbortSignal.timeout(15_000),
         });
         if (!apiRes.ok) {
           res.status(502).json({ success: false, error: `WeChat API returned ${apiRes.status}` });
@@ -5320,6 +5548,7 @@ export class ProtocolAdapter {
             "iLink-App-Id": "bot",
             "iLink-App-ClientVersion": "0",
           },
+          signal: AbortSignal.timeout(15_000),
         });
         if (!apiRes.ok) {
           res.status(502).json({ error: `WeChat API returned ${apiRes.status}` });
@@ -5452,7 +5681,7 @@ export class ProtocolAdapter {
     app.get("/api/events", (req: Request, res: Response) => {
       try {
         const eventLedger = this.registry.resolveService("eventLedger") as {
-          query(query: { sessionId?: string; agentId?: string; type?: string; fromTime?: number; toTime?: number; limit?: number }): Array<Record<string, unknown>>;
+          query(query: { sessionId?: string; agentId?: string; types?: string[]; from?: string; to?: string; limit?: number }): Array<Record<string, unknown>>;
           snapshot(): Record<string, unknown>;
         } | undefined;
 
@@ -5464,10 +5693,26 @@ export class ProtocolAdapter {
         const query: Record<string, unknown> = {};
         if (req.query.sessionId) query.sessionId = String(req.query.sessionId);
         if (req.query.agentId) query.agentId = String(req.query.agentId);
-        if (req.query.type) query.type = String(req.query.type);
-        if (req.query.fromTime) query.fromTime = parseInt(String(req.query.fromTime), 10);
-        if (req.query.toTime) query.toTime = parseInt(String(req.query.toTime), 10);
-        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10) || 50;
+        // EventLedger.query 期望 types (string[]) / from / to (ISO string)，
+        // 而非 type (string) / fromTime / toTime (number)。
+        if (req.query.type) query.types = [String(req.query.type)];
+        if (req.query.fromTime) {
+          const ts = parseInt(String(req.query.fromTime), 10);
+          if (!Number.isFinite(ts)) {
+            res.status(400).json({ error: "Invalid fromTime" });
+            return;
+          }
+          query.from = new Date(ts).toISOString();
+        }
+        if (req.query.toTime) {
+          const ts = parseInt(String(req.query.toTime), 10);
+          if (!Number.isFinite(ts)) {
+            res.status(400).json({ error: "Invalid toTime" });
+            return;
+          }
+          query.to = new Date(ts).toISOString();
+        }
+        if (req.query.limit) query.limit = Math.max(1, Math.min(parseInt(String(req.query.limit), 10) || 50, 1000));
 
         const events = eventLedger.query(query as any);
         res.json({ events, total: events.length });
@@ -5483,7 +5728,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!eventLedger) {
-          res.json({ entries: 0, firstSeq: 0, lastSeq: 0 });
+          res.json({ nextSeq: 0, entryCount: 0, types: {} });
           return;
         }
 
@@ -6244,7 +6489,7 @@ export class ProtocolAdapter {
         // Frontend sends: "pending" (unreplayed), "dead" (replayed), "retrying" (replayed with retries)
         const statusParam = String(req.query.status || "").toLowerCase();
         if (statusParam === "pending") query.unreplayed = true;
-        if (req.query.limit) query.limit = parseInt(String(req.query.limit), 10) || 50;
+        if (req.query.limit) query.limit = Math.max(1, Math.min(parseInt(String(req.query.limit), 10) || 50, 1000));
         const messages = dlq.query(query as any);
         const stats = dlq.getStats();
         // Map backend DeadLetter to frontend-compatible format
@@ -6659,7 +6904,7 @@ export class ProtocolAdapter {
     app.post("/api/secrets/generate-apikey", (req: Request, res: Response) => {
       try {
         const { prefix } = req.body || {};
-        const key = `${prefix || "evc"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        const key = `${prefix || "evc"}_${Date.now().toString(36)}_${crypto.randomBytes(8).toString("hex")}`;
         const name = `apikey_${prefix || "default"}_${Date.now()}`;
         const now = new Date().toISOString();
         this.secretsStore.set(name, {
@@ -6895,7 +7140,7 @@ export class ProtocolAdapter {
     app.post("/api/config-rpc/:path/watch", (req: Request, res: Response) => {
       try {
         const dotPath = String(req.params.path);
-        const subscriptionId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        const subscriptionId = `sub_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
         if (!this.configRpcWatchers.has(dotPath)) {
           this.configRpcWatchers.set(dotPath, []);
         }
@@ -7951,6 +8196,228 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── v0.56/v0.57 能力模块 stats 端点 ──
+    // 这些模块以单例/纯函数形式存在于 @evoclaw/agent，未注册为 Service，
+    // 端点返回模块可用性 + 占位 stats，供 WebUI EnhancementHubPage 卡片确认服务可达。
+
+    // GET /api/agent/pruner-stats — ToolOutputPruner 3-pass 裁剪统计
+    app.get("/api/agent/pruner-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "ToolOutputPruner",
+          version: "v0.56",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            deduplicated: 0,
+            summarized: 0,
+            argsTruncated: 0,
+            originalChars: 0,
+            prunedChars: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/error-recovery-stats — ErrorRecoveryExecutor 统计
+    app.get("/api/agent/error-recovery-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "ErrorRecoveryExecutor",
+          version: "v0.56",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            recovered: 0,
+            failovered: 0,
+            retried: 0,
+            byAction: {},
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/concurrent-stats — ConcurrentToolExecutor 统计
+    app.get("/api/agent/concurrent-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "ConcurrentToolExecutor",
+          version: "v0.56",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            executed: 0,
+            parallelized: 0,
+            sequential: 0,
+            timeouts: 0,
+            averageConcurrency: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/iteration-budget — IterationBudget 统计
+    app.get("/api/agent/iteration-budget", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "IterationBudget",
+          version: "v0.56",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            used: 0,
+            remaining: 0,
+            max: 90,
+            exhausted: false,
+            executeCodeRefunds: 0,
+            runtimeErrorRefunds: 0,
+            compactionRefunds: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/persistence-stats — ToolResultPersistenceManager 统计
+    app.get("/api/agent/persistence-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "ToolResultPersistenceManager",
+          version: "v0.57",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            persisted: 0,
+            spilled: 0,
+            totalChars: 0,
+            turnBudgetChars: 200000,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/schema-sanitizer-stats — SchemaSanitizer 统计
+    app.get("/api/agent/schema-sanitizer-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "SchemaSanitizer",
+          version: "v0.57",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            sanitized: 0,
+            byBackend: {},
+            strippedKeys: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/coercer-stats — ToolArgumentCoercer 统计
+    app.get("/api/agent/coercer-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "ToolArgumentCoercer",
+          version: "v0.57",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            coerced: 0,
+            byType: { stringToInt: 0, stringToNumber: 0, stringToBool: 0, jsonToObject: 0, bareToArray: 0 },
+            failed: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/rate-guard-stats — CrossSessionRateGuard 统计
+    app.get("/api/agent/rate-guard-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "CrossSessionRateGuard",
+          version: "v0.57",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            breakerTripped: 0,
+            genuineRateLimits: 0,
+            transientLimits: 0,
+            activeProviders: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/streaming-recovery-stats — StreamingRecoveryManager 统计
+    app.get("/api/agent/streaming-recovery-stats", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          available: true,
+          serviceName: "StreamingRecoveryManager",
+          version: "v0.57",
+          registered: false,
+          note: "module available; stats counters not yet instrumented",
+          stats: {
+            recovered: 0,
+            byStrategy: {
+              partialStreamRecovery: 0,
+              truncatedToolCallRetries: 0,
+              lengthContinueRetries: 0,
+              thinkingPrefillRetries: 0,
+              postToolEmptyRetried: 0,
+              housekeepingFallback: 0,
+            },
+            usedPartialContent: 0,
+          },
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/middleware-stats — ToolResultMiddleware 统计
+    app.get("/api/agent/middleware-stats", (_req: Request, res: Response) => {
+      try {
+        const mw = getToolResultMiddleware();
+        const stats = mw.getStats();
+        const config = mw.getConfig();
+        res.json({
+          available: true,
+          serviceName: "ToolResultMiddleware",
+          version: "v0.57",
+          registered: false,
+          note: "singleton stats via getStats()",
+          stats,
+          config,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     // ── Heartbeat API ──
 
     // GET /api/agent/heartbeat-status — Returns current heartbeat state
@@ -8038,6 +8505,494 @@ export class ProtocolAdapter {
         });
       } catch (err) {
         this.handleError(err, res, "Failed to configure heartbeat");
+      }
+    });
+
+    // ── MoA (Mixture-of-Agents) 推理引擎 ──────────────────
+
+    // GET /api/moa/status — 获取 MoA 配置与统计
+    app.get("/api/moa/status", (_req: Request, res: Response) => {
+      try {
+        const moa = this.registry.resolveService<{
+          getConfig(): unknown;
+          getStats(): {
+            totalRuns: number; successfulRuns: number; failedRuns: number;
+            totalLatencyMs: number; totalTokens: number; totalCost: number;
+            averageLatencyMs: number;
+          };
+        }>("moaEngine");
+        if (!moa) {
+          res.json({
+            config: null,
+            stats: {
+              totalRuns: 0, successfulRuns: 0, failedRuns: 0,
+              totalLatencyMs: 0, totalTokens: 0, totalCost: 0, averageLatencyMs: 0,
+            },
+            available: false,
+          });
+          return;
+        }
+        res.json({
+          config: moa.getConfig(),
+          stats: moa.getStats(),
+          available: true,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get MoA status");
+      }
+    });
+
+    // POST /api/moa/run — 执行 MoA 推理流水线
+    app.post("/api/moa/run", async (req: Request, res: Response) => {
+      try {
+        const moa = this.registry.resolveService<{
+          execute(prompt: string, context?: unknown): Promise<{
+            finalAnswer: string;
+            proposals: Array<{ model: string; content: string; latency: number }>;
+            aggregation: { strategy: string; aggregatedContent: string };
+            verification?: { passed: boolean; conflicts: unknown[] };
+            totalLatency: number;
+            totalTokens: number;
+            totalCost: number;
+          }>;
+        }>("moaEngine");
+        if (!moa) {
+          res.status(503).json({ error: "MoA engine not available" });
+          return;
+        }
+        const { prompt, context } = req.body as { prompt?: string; context?: unknown };
+        if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+          res.status(400).json({ error: "prompt is required and must be a non-empty string" });
+          return;
+        }
+        const result = await moa.execute(prompt, context);
+        res.json({
+          prompt,
+          proposals: result.proposals.map((p) => ({
+            model: p.model, content: p.content, latency: p.latency,
+            tokens: 0, success: true,
+          })),
+          aggregation: result.aggregation,
+          ...(result.verification ? { verification: result.verification } : {}),
+          finalAnswer: result.finalAnswer,
+          stats: {
+            totalLatencyMs: result.totalLatency,
+            totalTokens: result.totalTokens,
+            totalCost: result.totalCost,
+          },
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to run MoA inference");
+      }
+    });
+
+    // GET /api/moa/history — 获取 MoA 执行历史（服务未追踪时返回空）
+    app.get("/api/moa/history", (_req: Request, res: Response) => {
+      try {
+        const moa = this.registry.resolveService<{
+          getHistory?: () => unknown;
+        }>("moaEngine");
+        if (!moa || typeof moa.getHistory !== "function") {
+          res.json({ history: [], total: 0 });
+          return;
+        }
+        const history = moa.getHistory();
+        const arr = Array.isArray(history) ? history : [];
+        res.json({ history: arr, total: arr.length });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get MoA history");
+      }
+    });
+
+    // ── Kanban 多 Agent 工作队列 ──────────────────────────
+
+    // GET /api/kanban/boards — 列出所有看板
+    app.get("/api/kanban/boards", (_req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          listBoards(): Array<{ boardId: string; tenant: string | null; createdAt: string }>;
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const boards = kanban.listBoards();
+        res.json({ boards });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list kanban boards");
+      }
+    });
+
+    // POST /api/kanban/boards — 创建看板
+    app.post("/api/kanban/boards", async (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          createBoard(boardId: string, options?: { tenant?: string }): Promise<void>;
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const { boardId, tenant } = req.body as { boardId?: string; tenant?: string };
+        if (!boardId || typeof boardId !== "string" || boardId.trim().length === 0) {
+          res.status(400).json({ error: "boardId is required" });
+          return;
+        }
+        await kanban.createBoard(boardId, tenant ? { tenant } : undefined);
+        res.json({ success: true, boardId });
+      } catch (err) {
+        this.handleError(err, res, "Failed to create kanban board");
+      }
+    });
+
+    // GET /api/kanban/boards/:id/tasks — 列出看板任务
+    app.get("/api/kanban/boards/:id/tasks", (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          listTasks(boardId: string, status?: string, tenant?: string | null): unknown[];
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const boardId = String(req.params.id);
+        const status = typeof req.query.status === "string" ? req.query.status : undefined;
+        const tenant = typeof req.query.tenant === "string" ? req.query.tenant : undefined;
+        const tasks = kanban.listTasks(
+          boardId,
+          status,
+          tenant === undefined ? undefined : tenant === "" ? null : tenant,
+        );
+        res.json({ tasks });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list kanban tasks");
+      }
+    });
+
+    // POST /api/kanban/boards/:id/tasks — 添加任务到看板
+    app.post("/api/kanban/boards/:id/tasks", async (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          addTask(boardId: string, task: {
+            title: string; description?: string; priority?: string;
+            dependencies?: string[]; tenant?: string;
+          }): Promise<unknown>;
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const boardId = String(req.params.id);
+        const body = req.body as {
+          title?: string; description?: string; priority?: string;
+          dependencies?: string[]; tenant?: string;
+        };
+        if (!body.title || typeof body.title !== "string" || body.title.trim().length === 0) {
+          res.status(400).json({ error: "title is required" });
+          return;
+        }
+        const task = await kanban.addTask(boardId, {
+          title: body.title,
+          description: body.description ?? "",
+          ...(body.priority ? { priority: body.priority } : {}),
+          ...(Array.isArray(body.dependencies) ? { dependencies: body.dependencies } : {}),
+          ...(body.tenant ? { tenant: body.tenant } : {}),
+        });
+        res.json(task);
+      } catch (err) {
+        this.handleError(err, res, "Failed to add kanban task");
+      }
+    });
+
+    // POST /api/kanban/tasks/:id/claim — 领取任务
+    app.post("/api/kanban/tasks/:id/claim", async (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          claimTask(agentId: string, taskId: string): Promise<unknown>;
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const taskId = String(req.params.id);
+        const { agentId } = req.body as { agentId?: string };
+        if (!agentId || typeof agentId !== "string" || agentId.trim().length === 0) {
+          res.status(400).json({ error: "agentId is required" });
+          return;
+        }
+        const task = await kanban.claimTask(agentId, taskId);
+        res.json(task);
+      } catch (err) {
+        this.handleError(err, res, "Failed to claim kanban task");
+      }
+    });
+
+    // POST /api/kanban/tasks/:id/complete — 完成任务
+    app.post("/api/kanban/tasks/:id/complete", async (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          completeTask(taskId: string, result: unknown): Promise<unknown>;
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const taskId = String(req.params.id);
+        const { result } = req.body as { result?: unknown };
+        const task = await kanban.completeTask(taskId, result);
+        res.json(task);
+      } catch (err) {
+        this.handleError(err, res, "Failed to complete kanban task");
+      }
+    });
+
+    // GET /api/kanban/boards/:id/stats — 获取看板统计
+    app.get("/api/kanban/boards/:id/stats", (req: Request, res: Response) => {
+      try {
+        const kanban = this.registry.resolveService<{
+          getStats(boardId: string): {
+            total: number;
+            byStatus: Record<string, number>;
+            byPriority: { high: number; medium: number; low: number };
+          };
+        }>("kanbanBoard");
+        if (!kanban) {
+          res.status(503).json({ error: "Kanban board service not available" });
+          return;
+        }
+        const boardId = String(req.params.id);
+        const stats = kanban.getStats(boardId);
+        res.json(stats);
+      } catch (err) {
+        this.handleError(err, res, "Failed to get kanban board stats");
+      }
+    });
+
+    // ── Computer Use 桌面控制 ─────────────────────────────
+
+    // GET /api/computer-use/status — 获取后端可用性与屏幕尺寸
+    app.get("/api/computer-use/status", async (_req: Request, res: Response) => {
+      try {
+        const backend = this.registry.resolveService<{
+          readonly name: string;
+          isAvailable(): boolean;
+          getScreenSize(): Promise<{ width: number; height: number }>;
+        }>("computerBackend");
+        if (!backend) {
+          res.json({ isAvailable: false });
+          return;
+        }
+        let isAvailable = false;
+        let screenSize: { width: number; height: number } | undefined;
+        try {
+          isAvailable = backend.isAvailable();
+          if (isAvailable) {
+            screenSize = await backend.getScreenSize();
+          }
+        } catch {
+          isAvailable = false;
+        }
+        res.json({
+          isAvailable,
+          ...(backend.name ? { backend: backend.name } : {}),
+          ...(screenSize ? { screenSize } : {}),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get computer-use status");
+      }
+    });
+
+    // POST /api/computer-use/screenshot — 截取屏幕
+    app.post("/api/computer-use/screenshot", async (_req: Request, res: Response) => {
+      try {
+        const backend = this.registry.resolveService<{
+          screenshot(): Promise<Buffer>;
+          getScreenSize(): Promise<{ width: number; height: number }>;
+          isAvailable(): boolean;
+        }>("computerBackend");
+        if (!backend || !backend.isAvailable()) {
+          res.status(503).json({ error: "Computer backend not available" });
+          return;
+        }
+        const buf = await backend.screenshot();
+        const size = await backend.getScreenSize();
+        res.json({
+          image: buf.toString("base64"),
+          width: size.width,
+          height: size.height,
+          takenAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to take screenshot");
+      }
+    });
+
+    // POST /api/computer-use/mouse-click — 鼠标点击
+    app.post("/api/computer-use/mouse-click", async (req: Request, res: Response) => {
+      try {
+        const backend = this.registry.resolveService<{
+          mouseClick(x: number, y: number, button: string, doubleClick: boolean): Promise<void>;
+          isAvailable(): boolean;
+        }>("computerBackend");
+        if (!backend || !backend.isAvailable()) {
+          res.status(503).json({ error: "Computer backend not available" });
+          return;
+        }
+        const { x, y, button, doubleClick } = req.body as {
+          x?: number; y?: number; button?: string; doubleClick?: boolean;
+        };
+        if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+          res.status(400).json({ error: "x and y must be finite numbers" });
+          return;
+        }
+        const btn = button === "right" ? "right" : button === "middle" ? "middle" : "left";
+        await backend.mouseClick(x, y, btn, doubleClick === true);
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to perform mouse click");
+      }
+    });
+
+    // POST /api/computer-use/key-type — 输入文本
+    app.post("/api/computer-use/key-type", async (req: Request, res: Response) => {
+      try {
+        const backend = this.registry.resolveService<{
+          keyType(text: string): Promise<void>;
+          isAvailable(): boolean;
+        }>("computerBackend");
+        if (!backend || !backend.isAvailable()) {
+          res.status(503).json({ error: "Computer backend not available" });
+          return;
+        }
+        const { text } = req.body as { text?: string };
+        if (typeof text !== "string") {
+          res.status(400).json({ error: "text must be a string" });
+          return;
+        }
+        await backend.keyType(text);
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to type text");
+      }
+    });
+
+    // POST /api/computer-use/key-press — 按组合键
+    app.post("/api/computer-use/key-press", async (req: Request, res: Response) => {
+      try {
+        const backend = this.registry.resolveService<{
+          keyPress(keys: string[]): Promise<void>;
+          isAvailable(): boolean;
+        }>("computerBackend");
+        if (!backend || !backend.isAvailable()) {
+          res.status(503).json({ error: "Computer backend not available" });
+          return;
+        }
+        const { keys } = req.body as { keys?: string[] };
+        if (!Array.isArray(keys) || keys.length === 0) {
+          res.status(400).json({ error: "keys must be a non-empty array of strings" });
+          return;
+        }
+        await backend.keyPress(keys);
+        res.json({
+          success: true,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to press keys");
+      }
+    });
+
+    // ── Tool Search 工具搜索 ──────────────────────────────
+
+    // GET /api/tool-search/stats — 获取搜索引擎统计
+    app.get("/api/tool-search/stats", (_req: Request, res: Response) => {
+      try {
+        const engine = this.registry.resolveService<{
+          isActivated(): boolean;
+          getVisibleTools(): Array<{ name: string; alwaysVisible?: boolean }>;
+        }>("toolSearchEngine");
+        if (!engine) {
+          res.json({
+            totalTools: 0, activated: false, mode: "auto",
+            visibleTools: 0, deferrableTools: 0,
+          });
+          return;
+        }
+        // 服务若暴露 tools/config 则使用；否则从 getVisibleTools 估算
+        const svc = engine as unknown as {
+          isActivated(): boolean;
+          tools?: Array<{ name: string; alwaysVisible?: boolean }>;
+          config?: { mode: string };
+          getVisibleTools(): Array<{ name: string; alwaysVisible?: boolean }>;
+        };
+        const allTools = Array.isArray(svc.tools) ? svc.tools : svc.getVisibleTools();
+        const visible = allTools.filter((t) => t.alwaysVisible);
+        const deferrable = allTools.filter((t) => !t.alwaysVisible);
+        res.json({
+          totalTools: allTools.length,
+          activated: svc.isActivated(),
+          mode: svc.config?.mode ?? "auto",
+          visibleTools: visible.length,
+          deferrableTools: deferrable.length,
+        });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get tool-search stats");
+      }
+    });
+
+    // POST /api/tool-search/search — 搜索工具
+    app.post("/api/tool-search/search", (req: Request, res: Response) => {
+      try {
+        const engine = this.registry.resolveService<{
+          search(query: string, maxResults?: number): Array<{
+            name: string; score: number; matchedTerms: string[]; reason: string;
+          }>;
+        }>("toolSearchEngine");
+        if (!engine) {
+          res.json({ results: [] });
+          return;
+        }
+        const { query, maxResults } = req.body as { query?: string; maxResults?: number };
+        if (!query || typeof query !== "string" || query.trim().length === 0) {
+          res.status(400).json({ error: "query is required and must be a non-empty string" });
+          return;
+        }
+        const limit = typeof maxResults === "number" && maxResults > 0 ? maxResults : undefined;
+        const results = engine.search(query, limit);
+        res.json({ results });
+      } catch (err) {
+        this.handleError(err, res, "Failed to search tools");
+      }
+    });
+
+    // GET /api/tool-search/tools — 列出已索引工具
+    app.get("/api/tool-search/tools", (_req: Request, res: Response) => {
+      try {
+        const engine = this.registry.resolveService<{
+          getVisibleTools(): Array<{ name: string; description: string; category?: string; alwaysVisible?: boolean }>;
+          isActivated(): boolean;
+        }>("toolSearchEngine");
+        if (!engine) {
+          res.json({ tools: [] });
+          return;
+        }
+        // 当引擎未激活时 getVisibleTools 返回全部；激活时返回 always-visible + 桥接工具
+        const svc = engine as unknown as {
+          tools?: Array<{ name: string; description: string; category?: string; alwaysVisible?: boolean }>;
+          getVisibleTools(): Array<{ name: string; description: string; category?: string; alwaysVisible?: boolean }>;
+          isActivated(): boolean;
+        };
+        // 优先使用 tools 数组（含全部已注册工具）
+        const tools = Array.isArray(svc.tools) ? svc.tools : svc.getVisibleTools();
+        res.json({ tools });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list indexed tools");
       }
     });
   }

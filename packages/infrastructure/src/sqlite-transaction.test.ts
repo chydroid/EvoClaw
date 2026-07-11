@@ -287,7 +287,9 @@ describe.skipIf(!DatabaseCtor)("withTransaction / withSavepoint (sqlite)", () =>
       expect(stats.rolledBack).toBe(1);
       expect(stats.committed).toBe(0);
       expect(stats.lastError).toBeDefined();
-      expect(stats.lastError!.phase).toBe("rollback-to");
+      // 顶层事务失败使用完整 ROLLBACK，phase 为 "rollback"；
+      // 仅 savepoint 回滚才使用 "rollback-to"。
+      expect(stats.lastError!.phase).toBe("rollback");
       expect(stats.lastError!.message).toBe("fail");
     });
 

@@ -17,6 +17,8 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/version-0.73.0-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/tests-5446-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
@@ -74,14 +76,16 @@ pnpm test         # Run tests
 
 | Category | Capabilities |
 |----------|-------------|
-| Conversation | Multi-model, multi-provider, streaming, context compression |
-| Skills | Local + remote registry, auto-install, security scanning |
-| Tools | File ops, browser automation, web search, Office docs |
-| Channels | WeChat, Feishu, DingTalk, Telegram, WhatsApp, REST API, WebSocket |
-| Memory | Short/long-term, RAG retrieval, semantic search |
-| Evolution | Experience learning, reinforcement feedback, auto-optimization |
-| Security | Command approval, path protection, SSRF guard, secrets, audit |
-| Plugins | Plugin SDK, MCP protocol support |
+| Conversation | Multi-model, multi-provider, streaming, context compression, MoA (Mixture of Agents) |
+| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation |
+| Tools | File ops, browser automation, web search, Office docs, Computer Use desktop control, Tool Search |
+| Channels | WeChat, Feishu, DingTalk, Telegram, WhatsApp, Discord, Slack, Matrix, QQ, REST API, WebSocket, A2A, ACP IDE |
+| Memory | Short/long-term, RAG retrieval, semantic search, L0-L3 layered memory, Memory Provider plugins |
+| Evolution | Experience learning, reinforcement feedback, auto-optimization, genetic algorithm, A/B testing |
+| Security | Command approval, path protection, SSRF guard, secrets, audit, startup security audit, OSV supply-chain, advisory catalog |
+| Plugins | Plugin SDK, MCP protocol support, Profile multi-instance |
+| Collaboration | Kanban multi-agent work queue, Actor model, Swarm orchestrator, DAG task orchestration |
+| Reliability | Process supervisor, shutdown forensics, drain control, log rotation, credential pool persistence |
 
 ## Architecture
 
@@ -163,8 +167,8 @@ Key environment variables in `.env`:
 | `EvoClaw_PORT` | `27788` | Server port |
 | `EvoClaw_HOST` | `0.0.0.0` | Bind address |
 | `JWT_SECRET` | — | JWT signing key (**must change in production**) |
-| `EVOCLAW_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
-| `EVOCLAW_MCP_ENABLED` | `true` | Enable MCP protocol |
+| `EvoClaw_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
+| `EvoClaw_MCP_ENABLED` | `true` | Enable MCP protocol |
 | `CORS_ORIGINS` | — | Allowed CORS origins |
 | `RATE_LIMIT_MAX` | — | Max rate limit requests |
 

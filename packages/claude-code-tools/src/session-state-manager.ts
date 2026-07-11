@@ -221,8 +221,10 @@ export async function forkSession(
   });
   newSession.decisions = [...source.decisions];
   newSession.touchedFiles = new Set(source.touchedFiles);
+  // 深拷贝 source.meta，避免 fork 与源会话共享嵌套对象引用
+  // 使用 structuredClone（Node 20+ 原生支持），避免 JSON 方式遇到循环引用时崩溃
   newSession.meta = {
-    ...source.meta,
+    ...structuredClone(source.meta),
     forkLabel: fork.label,
     forkSourceId: source.sessionId,
     forkIndex,

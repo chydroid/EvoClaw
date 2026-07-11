@@ -144,8 +144,12 @@ export class LazySkillLoader {
         .filter((e) => !e.skill.preloadCondition || e.skill.preloadCondition())
         .slice(0, this.config.maxPreload);
       for (const entry of highPriority) {
-        this.loadEntry(entry.skill.name, entry).catch(() => { /* 静默失败 */ });
-        this.stats.preloadCount++;
+        // 仅在 loadEntry 成功后才递增 preloadCount，失败不应计入
+        this.loadEntry(entry.skill.name, entry)
+          .then((loaded) => {
+            if (loaded !== undefined) this.stats.preloadCount++;
+          })
+          .catch(() => { /* 静默失败 */ });
       }
     };
     if (typeof setTimeout !== "undefined") {

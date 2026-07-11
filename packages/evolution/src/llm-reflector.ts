@@ -217,11 +217,11 @@ export class LLMReflector {
         : "无执行步骤记录";
 
     return REFLECTION_USER_PROMPT_TEMPLATE
-      .replace("{taskId}", trace.taskId)
-      .replace("{skillId}", trace.skillId || "unknown")
-      .replace("{error}", trace.error || "无错误信息")
-      .replace("{steps}", stepsText)
-      .replace("{context}", JSON.stringify(trace.context, null, 2).slice(0, 2000));
+      .replace("{taskId}", () => trace.taskId)
+      .replace("{skillId}", () => trace.skillId || "unknown")
+      .replace("{error}", () => trace.error || "无错误信息")
+      .replace("{steps}", () => stepsText)
+      .replace("{context}", () => JSON.stringify(trace.context, null, 2).slice(0, 2000));
   }
 
   private async callProviderDirectly(

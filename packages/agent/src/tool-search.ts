@@ -45,12 +45,12 @@ export interface ToolSearchConfig {
 export interface ToolSearchResult {
   /** 工具名 */
   name: string;
-  /** BM25 分数 */
+  /** 相关性分数（越高越相关） */
   score: number;
-  /** 工具描述 */
-  description: string;
-  /** 工具类别 */
-  category?: string;
+  /** 匹配到的查询词列表 */
+  matchedTerms: string[];
+  /** 命中原因（人类可读） */
+  reason: string;
 }
 
 /** 桥接工具名 */
@@ -255,8 +255,8 @@ export class ToolSearchEngine {
         .map((t) => ({
           name: t.name,
           score: 1.0,
-          description: t.description,
-          category: t.category,
+          matchedTerms: [],
+          reason: t.description,
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -272,8 +272,8 @@ export class ToolSearchEngine {
       out.push({
         name: tool.name,
         score,
-        description: tool.description,
-        category: tool.category,
+        matchedTerms: [],
+        reason: tool.description,
       });
     }
     return out;
@@ -378,4 +378,345 @@ export function estimateToolTokens(tool: ToolMeta): number {
  */
 export function estimateTotalTokens(tools: ToolMeta[]): number {
   return tools.reduce((sum, t) => sum + estimateToolTokens(t), 0);
+}
+
+// ── ToolSearchIndex（TF-IDF 动态工具发现） ──────────────────
+// 借鉴 hermes-agent Tool Search 设计：动态工具发现，避免工具 schema 膨胀。
+// 参考 packages/skills/src/tfidf-matcher.ts 的 TF-IDF 实现模式。
+
+/** 已索引工具 */
+export interface IndexedTool {
+  /** 工具名 */
+  name: string;
+  /** 工具描述 */
+  description: string;
+  /** 关键词列表（权重高于描述匹配） */
+  keywords: string[];
+  /** JSON schema 定义（用于动态注入到 LLM 请求） */
+  definition: unknown;
+}
+
+/** 中英文停用词 */
+const TOOL_SEARCH_STOP_WORDS = new Set<string>([
+  // 中文停用词
+  "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
+  "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
+  "自己", "这", "他", "她", "它", "们", "那", "些", "什么", "怎么", "如何",
+  "可以", "能", "请", "帮", "让", "把", "被", "从", "对", "为", "以", "及",
+  "但", "而", "与", "或", "如果", "因为", "所以", "虽然", "但是",
+  // 英文停用词
+  "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+  "her", "was", "one", "our", "out", "has", "have", "from", "this",
+  "that", "with", "will", "been", "they", "their", "which", "would",
+  "there", "could", "other", "into", "more", "some", "than", "its",
+  "over", "such", "after", "just", "also", "about", "want", "need",
+  "help", "please", "like", "does", "make", "when", "what", "how",
+  "where", "who", "why", "your", "them", "then", "only", "very",
+  "tool", "function", "use", "using",
+]);
+
+/**
+ * 分词：支持中英文混合。
+ * 中文采用 2-3 字符 n-gram；英文按单词分词。
+ */
+function tokenizeToolText(text: string): string[] {
+  const terms: string[] = [];
+  const lower = text.toLowerCase();
+
+  // 中文：提取连续 CJK 字符段，生成 bigram/trigram
+  const cjkSegments = lower.match(/[\u4e00-\u9fff\u3400-\u4dbf]+/g) || [];
+  for (const seg of cjkSegments) {
+    if (seg.length >= 2) terms.push(seg);
+    for (let i = 0; i <= seg.length - 2; i++) {
+      terms.push(seg.substring(i, i + 2));
+    }
+    for (let i = 0; i <= seg.length - 3; i++) {
+      terms.push(seg.substring(i, i + 3));
+    }
+  }
+
+  // 英文单词（2 字符以上）
+  const englishWords = lower.match(/[a-z][a-z0-9_]{1,}/g) || [];
+  terms.push(...englishWords);
+
+  // 按标点/空白分割的片段
+  const segments = lower
+    .split(/[\s,.;:!?()\[\]{}""''<>，。！？、；：（）【】《》""''\-]+/)
+    .filter((s) => s.length >= 2);
+  terms.push(...segments);
+
+  // 过滤停用词 + 去重
+  return terms.filter((t) => !TOOL_SEARCH_STOP_WORDS.has(t) && t.length >= 2);
+}
+
+/** 计算词频（归一化） */
+function computeTf(terms: string[]): Map<string, number> {
+  const tf = new Map<string, number>();
+  const total = terms.length || 1;
+  for (const term of terms) {
+    tf.set(term, (tf.get(term) ?? 0) + 1);
+  }
+  for (const [term, count] of tf) {
+    tf.set(term, count / total);
+  }
+  return tf;
+}
+
+/** 余弦相似度 */
+function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (const [term, valueA] of a) {
+    const valueB = b.get(term) ?? 0;
+    dotProduct += valueA * valueB;
+    normA += valueA * valueA;
+  }
+  for (const valueB of b.values()) {
+    normB += valueB * valueB;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/** 单字段 TF-IDF 倒排索引（内部使用） */
+class TfidfFieldIndex {
+  private docs = new Map<string, { tf: Map<string, number>; terms: Set<string> }>();
+  private documentFrequency = new Map<string, number>();
+  private idfCache = new Map<string, number>();
+  private built = false;
+
+  /** 添加文档 */
+  addDoc(id: string, text: string): void {
+    const tokens = tokenizeToolText(text);
+    const tf = computeTf(tokens);
+    const terms = new Set(tokens);
+    this.docs.set(id, { tf, terms });
+    this.built = false;
+  }
+
+  /** 移除文档 */
+  removeDoc(id: string): void {
+    this.docs.delete(id);
+    this.built = false;
+  }
+
+  /** 构建 IDF */
+  build(): void {
+    this.documentFrequency.clear();
+    this.idfCache.clear();
+    for (const { terms } of this.docs.values()) {
+      for (const term of terms) {
+        this.documentFrequency.set(term, (this.documentFrequency.get(term) ?? 0) + 1);
+      }
+    }
+    this.built = true;
+  }
+
+  /** 搜索：返回 id → { score, matchedTerms } */
+  search(query: string): Map<string, { score: number; matchedTerms: string[] }> {
+    if (!this.built) this.build();
+    const results = new Map<string, { score: number; matchedTerms: string[] }>();
+    if (this.docs.size === 0) return results;
+
+    const queryTerms = tokenizeToolText(query);
+    if (queryTerms.length === 0) return results;
+
+    const queryTf = computeTf(queryTerms);
+    const queryTfidf = new Map<string, number>();
+    const numDocs = this.docs.size;
+    for (const [term, tfValue] of queryTf) {
+      const df = this.documentFrequency.get(term) ?? 0;
+      // 平滑 IDF（sklearn 风格）：log((1+N)/(1+df)) + 1，始终为正，避免小语料 IDF=0
+      const idf = Math.log((numDocs + 1) / (df + 1)) + 1;
+      this.idfCache.set(term, idf);
+      queryTfidf.set(term, tfValue * idf);
+    }
+
+    for (const [id, { tf, terms }] of this.docs) {
+      const docTfidf = new Map<string, number>();
+      for (const [term, tfValue] of tf) {
+        const idf = this.idfCache.get(term) ?? (Math.log((numDocs + 1) / ((this.documentFrequency.get(term) ?? 0) + 1)) + 1);
+        docTfidf.set(term, tfValue * idf);
+      }
+      const score = cosineSimilarity(queryTfidf, docTfidf);
+      if (score > 0) {
+        const matchedTerms = queryTerms.filter((t) => terms.has(t));
+        results.set(id, { score, matchedTerms: [...new Set(matchedTerms)] });
+      }
+    }
+    return results;
+  }
+
+  /** 文档数 */
+  get size(): number {
+    return this.docs.size;
+  }
+}
+
+/**
+ * 工具搜索索引。
+ * 维护工具名称、描述、关键词的 TF-IDF 倒排索引，
+ * 根据查询文本返回最相关的工具列表，用于动态工具发现。
+ *
+ * 关键词权重高于描述匹配；空查询返回最常用工具或全部工具（截断到 maxTools）。
+ */
+export class ToolSearchIndex {
+  private tools = new Map<string, IndexedTool>();
+  private keywordIndex = new TfidfFieldIndex();
+  private descIndex = new TfidfFieldIndex();
+  private usageCounts = new Map<string, number>();
+  private dirty = false;
+
+  constructor(private maxTools: number = 20) {}
+
+  /** 索引单个工具 */
+  indexTool(name: string, description: string, keywords: string[], definition?: unknown): void {
+    this.removeToolInternal(name);
+    const tool: IndexedTool = { name, description, keywords, definition: definition ?? undefined };
+    this.tools.set(name, tool);
+    this.keywordIndex.addDoc(name, keywords.join(" "));
+    this.descIndex.addDoc(name, `${name} ${description}`);
+    this.dirty = true;
+  }
+
+  /** 批量索引 */
+  indexBatch(tools: IndexedTool[]): void {
+    for (const t of tools) {
+      this.indexTool(t.name, t.description, t.keywords, t.definition);
+    }
+  }
+
+  /** 移除索引 */
+  removeTool(name: string): boolean {
+    return this.removeToolInternal(name);
+  }
+
+  /** 获取所有已索引工具 */
+  getAllTools(): IndexedTool[] {
+    return Array.from(this.tools.values());
+  }
+
+  /**
+   * 搜索工具：根据查询文本返回最相关的工具列表。
+   * 关键词权重高于描述匹配；结果按 score 降序排列。
+   *
+   * @param query 查询文本（自然语言，支持中英文混合）
+   * @param maxResults 最大结果数（默认 maxTools）
+   */
+  searchTools(query: string, maxResults?: number): ToolSearchResult[] {
+    if (this.tools.size === 0) return [];
+
+    const trimmed = (query ?? "").trim();
+    if (trimmed === "") {
+      return this.defaultToolset(maxResults);
+    }
+
+    this.rebuildIfDirty();
+
+    const keywordResults = this.keywordIndex.search(trimmed);
+    const descResults = this.descIndex.search(trimmed);
+
+    // 关键词权重 > 描述权重
+    const KEYWORD_WEIGHT = 2.0;
+    const DESC_WEIGHT = 1.0;
+
+    const combined = new Map<string, { score: number; matchedTerms: Set<string> }>();
+    for (const [name, { score, matchedTerms }] of keywordResults) {
+      const entry = combined.get(name) ?? { score: 0, matchedTerms: new Set<string>() };
+      entry.score += score * KEYWORD_WEIGHT;
+      for (const t of matchedTerms) entry.matchedTerms.add(t);
+      combined.set(name, entry);
+    }
+    for (const [name, { score, matchedTerms }] of descResults) {
+      const entry = combined.get(name) ?? { score: 0, matchedTerms: new Set<string>() };
+      entry.score += score * DESC_WEIGHT;
+      for (const t of matchedTerms) entry.matchedTerms.add(t);
+      combined.set(name, entry);
+    }
+
+    const results: ToolSearchResult[] = [];
+    for (const [name, { score, matchedTerms }] of combined) {
+      const tool = this.tools.get(name);
+      if (!tool) continue;
+      results.push({
+        name,
+        score,
+        matchedTerms: Array.from(matchedTerms),
+        reason: tool.description,
+      });
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    const limit = maxResults ?? this.maxTools;
+    return results.slice(0, limit);
+  }
+
+  /**
+   * 获取工具集：返回匹配的工具定义（schema），用于动态注入到 LLM 请求。
+   * 仅返回有 definition 的工具。
+   *
+   * @param query 查询文本（自然语言）
+   * @param maxResults 最大结果数（默认 maxTools）
+   */
+  getToolset(query: string, maxResults?: number): unknown[] {
+    const results = this.searchTools(query, maxResults);
+    const out: unknown[] = [];
+    for (const r of results) {
+      const tool = this.tools.get(r.name);
+      if (tool && tool.definition !== undefined) {
+        out.push(tool.definition);
+      }
+    }
+    return out;
+  }
+
+  /** 记录工具使用（用于空查询时返回最常用工具） */
+  recordUsage(name: string): void {
+    if (this.tools.has(name)) {
+      this.usageCounts.set(name, (this.usageCounts.get(name) ?? 0) + 1);
+    }
+  }
+
+  /** 获取已索引工具数 */
+  get size(): number {
+    return this.tools.size;
+  }
+
+  // ── 内部方法 ──
+
+  private removeToolInternal(name: string): boolean {
+    if (!this.tools.has(name)) return false;
+    this.tools.delete(name);
+    this.keywordIndex.removeDoc(name);
+    this.descIndex.removeDoc(name);
+    this.usageCounts.delete(name);
+    this.dirty = true;
+    return true;
+  }
+
+  private rebuildIfDirty(): void {
+    if (!this.dirty) return;
+    this.keywordIndex.build();
+    this.descIndex.build();
+    this.dirty = false;
+  }
+
+  /** 空查询：返回最常用工具（有使用统计时）或所有工具（截断到 maxTools） */
+  private defaultToolset(maxResults?: number): ToolSearchResult[] {
+    const limit = maxResults ?? this.maxTools;
+    const all = Array.from(this.tools.values());
+
+    if (this.usageCounts.size > 0) {
+      all.sort((a, b) => (this.usageCounts.get(b.name) ?? 0) - (this.usageCounts.get(a.name) ?? 0));
+    }
+
+    return all.slice(0, limit).map((t) => ({
+      name: t.name,
+      score: 1.0,
+      matchedTerms: [],
+      reason: t.description,
+    }));
+  }
 }

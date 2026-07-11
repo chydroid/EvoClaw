@@ -1,5 +1,4 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
 
 interface AuditEntry {
   timestamp: Date;
@@ -25,6 +24,8 @@ export class AuditLogger {
   async log(entry: AuditEntry): Promise<void> {
     this.logs.push(entry);
     if (this.logs.length > this.maxLogs) {
+      const dropped = this.logs.length - this.maxLogs;
+      process.stderr.write(`[AuditLogger] log overflow: dropped ${dropped} oldest entries\n`);
       this.logs = this.logs.slice(-this.maxLogs);
     }
   }
@@ -52,7 +53,18 @@ export class AuditLogger {
     return [...this.logs];
   }
 
-  async clear(): Promise<void> {
+  /**
+   * 清空审计日志。需要管理员鉴权：调用方必须提供包含 "admin" 角色的 caller，
+   * 否则拒绝执行。清空操作会记录警告日志，防止审计日志被无声抹除。
+   */
+  async clear(caller?: { userId?: string; roles?: string[] }): Promise<void> {
+    const userId = caller?.userId ?? "unknown";
+    const roles = caller?.roles ?? [];
+    if (!roles.includes("admin")) {
+      process.stderr.write(`[AuditLogger] clear denied for caller=${userId} roles=${JSON.stringify(roles)}\n`);
+      throw new Error(`Access denied: clearing audit logs requires admin role (caller: ${userId})`);
+    }
+    process.stderr.write(`[AuditLogger] Audit logs cleared by admin=${userId} at ${new Date().toISOString()}\n`);
     this.logs = [];
   }
 }

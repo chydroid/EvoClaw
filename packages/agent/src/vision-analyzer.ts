@@ -229,7 +229,7 @@ export class VisionAnalyzer {
     elementType?: string,
   ): Promise<UIElement[]> {
     const type = elementType ?? "UI";
-    const prompt = PROMPT_FIND_ELEMENTS.replace("{type}", type);
+    const prompt = PROMPT_FIND_ELEMENTS.replace("{type}", () => type);
     const result = await this.analyze({ imageBase64, prompt });
     return result.elements;
   }

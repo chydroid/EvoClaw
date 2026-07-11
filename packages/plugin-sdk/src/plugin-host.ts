@@ -154,6 +154,9 @@ export class PluginHost {
     // Delegate to PluginManager when available
     if (this.pluginManager) {
       const corePlugin = convertToCorePlugin(plugin);
+      // 已知限制：registerPlugin 以 fire-and-forget 方式调用且不 await，失败时仅记录日志，
+      // 本地 plugins 状态可能短暂与 PluginManager 不一致（本地仍标记为 Active）。
+      // 改为 await 需将 registerPlugin 改为 async，影响面较大，暂保持现状。
       this.pluginManager.registerPlugin(corePlugin).catch((err) => {
         process.stderr.write(`[PluginHost] Delegated registerPlugin failed for "${manifest.id}": ${err instanceof Error ? err.message : String(err)}\n`);
       });
@@ -283,10 +286,11 @@ export class PluginHost {
     if (this.pluginManager) {
       const coreHookType = SDK_TO_CORE_HOOK_MAP[hookName];
       if (coreHookType) {
+        // 先展开 data 再设置 type，避免用户传入的 data.type 覆盖核心钩子类型
         const hook: PluginHook = {
-          type: coreHookType,
           context: {},
           ...(data instanceof Object ? data : {}),
+          type: coreHookType,
         } as PluginHook;
         await this.pluginManager.runHooks(hook);
       }

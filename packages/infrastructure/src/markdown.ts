@@ -203,6 +203,11 @@ export function chunkMarkdown(
       if (preserveBlocks && inCodeBlock) {
         // Don't split inside a code block — keep accumulating
         current += para + "\n\n";
+        // 安全：代码块无界累积会导致 chunk 远超 maxChars，达到上限时强制 flush
+        if (current.length > maxChars) {
+          chunks.push(current.trimEnd());
+          current = "";
+        }
       } else {
         chunks.push(current.trimEnd());
         // Overlap: keep last N chars of previous chunk

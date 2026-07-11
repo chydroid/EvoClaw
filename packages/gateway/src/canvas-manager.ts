@@ -360,7 +360,8 @@ export class CanvasManager {
       }
 
       if (canvas.html.includes("</body>")) {
-        canvas.html = canvas.html.replace("</body>", `${updates.appendHTML}\n</body>`);
+        // 使用函数形式避免 appendHTML 中含 $ 时触发特殊替换序列
+        canvas.html = canvas.html.replace("</body>", () => `${updates.appendHTML}\n</body>`);
       } else {
         canvas.html = newContent;
       }
@@ -411,15 +412,15 @@ export class CanvasManager {
     replacements: Record<string, string> = {}
   ): { canvas: CanvasFile; url: string } {
     let html = CANVAS_TEMPLATE;
-    html = html.replace("{{title}}", this.escapeHTML(title));
+    html = html.replace("{{title}}", () => this.escapeHTML(title));
     html = html.replace(
       "{{timestamp}}",
-      replacements.timestamp ?? new Date().toLocaleString()
+      () => replacements.timestamp ?? new Date().toLocaleString()
     );
 
     for (const [key, value] of Object.entries(replacements)) {
       if (key === "title" || key === "timestamp") continue;
-      html = html.replace(`{{${key}}}`, this.escapeHTML(value));
+      html = html.replace(`{{${key}}}`, () => this.escapeHTML(value));
     }
 
     return this.createCanvas(title, html);
@@ -488,6 +489,7 @@ export class CanvasManager {
     // Inject CSP meta tag if not present
     if (!html.includes("Content-Security-Policy") && !html.includes("http-equiv")) {
       const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${this.getCSPHeader()}">`;
+      // 合法 HTML 仅有一个 <head>，首匹配替换即可；使用 /g 可能误注入到 <pre>/<code> 等文本内容中
       if (html.includes("<head>")) {
         html = html.replace("<head>", `<head>\n  ${cspMeta}`);
       } else if (html.includes("<html>")) {

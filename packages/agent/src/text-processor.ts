@@ -286,7 +286,7 @@ export function stripHtml(input: string): string {
   });
 
   text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, content) => {
-    const prefix = "#".repeat(parseInt(level));
+    const prefix = "#".repeat(parseInt(level, 10));
     return `\n${prefix} ${content.trim()}\n`;
   });
   text = text.replace(/<a[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, content) => {

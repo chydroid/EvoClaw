@@ -165,7 +165,10 @@ export class TaskOrchestrator {
       const pendingTasks = new Map(plan.subTasks.map(t => [t.id, t]));
       const runningTasks = new Set<string>();
 
-      while (pendingTasks.size > 0 && !cancelled) {
+      // 总超时上限：1 小时，防止主循环死循环
+      const deadline = Date.now() + 3600000;
+
+      while (pendingTasks.size > 0 && !cancelled && Date.now() < deadline) {
         // Find tasks ready to execute (all dependencies met)
         const readyTasks = this.findReadyTasks(pendingTasks, taskResultMap, runningTasks);
 
@@ -184,6 +187,9 @@ export class TaskOrchestrator {
         }
 
         // Execute ready tasks (up to max concurrency)
+        // 已知限制：批处理模式下使用 Promise.all，先完成的任务必须等待同批最慢的任务
+        // 完成后才会进入下一次循环补充新任务，并发槽位无法即时回收。
+        // 改为逐个 dispatch + 即时补充模式可提升利用率，但会显著增加状态机复杂度与回归风险，暂保持现状。
         const tasksToRun = readyTasks.slice(0, this.config.maxConcurrentTasks - runningTasks.size);
 
         const dispatchPromises = tasksToRun.map(async (task) => {
@@ -213,7 +219,19 @@ export class TaskOrchestrator {
               task.retryCount++;
               
               if (task.retryCount < task.maxRetries) {
-                // Retry
+                // Retry — 重试前发射进度事件，避免重试时进度回调丢失
+                try {
+                  this.emitProgress(options?.onProgress, {
+                    planId: plan.id,
+                    phase: "dispatching",
+                    currentTask: task.name,
+                    completedTasks: completedResults.length,
+                    totalTasks: plan.subTasks.length,
+                    percentComplete: Math.round((completedResults.length / plan.subTasks.length) * 100),
+                    message: `重试: ${task.name} (第 ${task.retryCount}/${task.maxRetries} 次)`,
+                    timestamp: new Date(),
+                  });
+                } catch { /* 进度发射失败不应阻断重试 */ }
                 task.status = "pending" as TaskStatus;
                 runningTasks.delete(task.id);
                 pendingTasks.set(task.id, task);
@@ -279,6 +297,16 @@ export class TaskOrchestrator {
         });
 
         await Promise.all(dispatchPromises);
+      }
+
+      // 总超时检查：deadline 到期后仍有未完成任务则记录警告
+      if (Date.now() >= deadline && pendingTasks.size > 0 && !cancelled) {
+        process.stderr.write(`[TaskOrchestrator] Execution timed out after 1 hour; ${pendingTasks.size} tasks remaining\n`);
+        // 将剩余 pending 任务加入 failedTasks，确保 ExecutionResult.success 为 false
+        for (const [, task] of pendingTasks) {
+          failedTasks.push({ task, error: "Execution timed out (1 hour deadline exceeded)" });
+        }
+        pendingTasks.clear();
       }
 
       // ── Phase 3: Verify results ──

@@ -13,6 +13,9 @@
  */
 
 import * as crypto from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+import { atomicWriteFileSync } from "./atomic-write";
 
 /**
  * 常量时间字符串比较，防止时序攻击。
@@ -80,6 +83,214 @@ export interface WebhookEndpoint {
   createdAt: string;
   lastTriggeredAt?: string;
   triggerCount: number;
+  /**
+   * 路由级声明式过滤器（借鉴 hermes-agent webhook_filters.py）。
+   * 当 filter 存在时，trigger 会在 dispatch 前调用 matchFilter；
+   * 不匹配时返回 202 Accepted 但不调用 actionHandler。
+   */
+  filter?: WebhookFilter;
+}
+
+/**
+ * 复合过滤上下文。trigger 时由 headers/body/eventType 装配而来。
+ */
+export interface WebhookFilterContext {
+  payload: unknown;
+  headers: Record<string, string>;
+  eventType: string;
+}
+
+/**
+ * 路由级声明式过滤器。
+ *
+ * 借鉴 hermes-agent webhook_filters.py：以声明式结构表达复合过滤条件，
+ * 而非仅靠 events?: string[] 做单一事件名匹配。
+ *
+ * - op="all"：所有 conditions 必须满足
+ * - op="any"：任一 conditions 满足即可
+ * - op="not"：conditions 取反（通常只含 1 个子条件）
+ * - 叶子节点：field + operator + value
+ */
+export interface WebhookFilter {
+  op: "all" | "any" | "not";
+  conditions?: WebhookFilter[];
+  field?: string;
+  operator?: "exists" | "missing" | "equals" | "not_equals" | "contains" | "in" | "regex";
+  value?: unknown;
+}
+
+/**
+ * 沿 dotted path 解析 context 中的字段值。
+ *
+ * 支持三种根命名空间：
+ *  - "payload.xxx.yyy" → 从 body 中按点分路径取值
+ *  - "headers.xxx" → 从 headers 中取值（大小写不敏感）
+ *  - "event_type" → 当前事件类型字符串
+ *
+ * 解析失败（路径不存在或类型不匹配）时返回 undefined，
+ * 由调用方决定 exists/missing 操作符如何处理。
+ */
+export function resolveField(
+  dottedPath: string,
+  context: WebhookFilterContext,
+): unknown {
+  if (typeof dottedPath !== "string" || dottedPath.length === 0) return undefined;
+  const parts = dottedPath.split(".");
+  const root = parts[0];
+  if (parts.length === 1) {
+    if (root === "event_type") return context.eventType;
+    // 单段路径不指定命名空间时默认从 payload 取
+    return getFieldFromObject(context.payload, [root]);
+  }
+  const rest = parts.slice(1);
+  if (root === "payload") {
+    return getFieldFromObject(context.payload, rest);
+  }
+  if (root === "headers") {
+    // headers 大小写不敏感：组合剩余段为单一 header 名
+    const headerName = rest.join(".").toLowerCase();
+    for (const [k, v] of Object.entries(context.headers)) {
+      if (k.toLowerCase() === headerName) return v;
+    }
+    return undefined;
+  }
+  if (root === "event_type") {
+    // 兼容 "event_type.xxx" 误用：event_type 本身是字符串
+    return context.eventType;
+  }
+  // 未知根命名空间：默认从 payload 取整条路径
+  return getFieldFromObject(context.payload, parts);
+}
+
+/**
+ * 从 unknown 对象中沿路径取值。
+ * 任一段不存在或类型非 plain object 时返回 undefined。
+ */
+function getFieldFromObject(obj: unknown, parts: string[]): unknown {
+  let cur: unknown = obj;
+  for (const part of parts) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    if (Array.isArray(cur)) {
+      // 数组按数字索引取值
+      const idx = Number(part);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return undefined;
+      cur = cur[idx];
+      continue;
+    }
+    const record = cur as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(record, part)) return undefined;
+    cur = record[part];
+  }
+  return cur;
+}
+
+/**
+ * 评估单个叶子条件（field+operator+value）。
+ */
+function matchLeaf(
+  filter: WebhookFilter,
+  context: WebhookFilterContext,
+): boolean {
+  if (!filter.field || !filter.operator) return false;
+  const value = resolveField(filter.field, context);
+  switch (filter.operator) {
+    case "exists":
+      return value !== undefined && value !== null;
+    case "missing":
+      return value === undefined || value === null;
+    case "equals":
+      return deepEqual(value, filter.value);
+    case "not_equals":
+      return !deepEqual(value, filter.value);
+    case "contains":
+      return containsValue(value, filter.value);
+    case "in":
+      if (!Array.isArray(filter.value)) return false;
+      return filter.value.some((v) => deepEqual(value, v));
+    case "regex": {
+      if (typeof value !== "string") return false;
+      const pattern = typeof filter.value === "string" ? filter.value : "";
+      if (pattern.length === 0) return false;
+      try {
+        return new RegExp(pattern).test(value);
+      } catch {
+        return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (typeof a !== "object") return a === b;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqual(v, b[i]));
+  }
+  if (Array.isArray(b)) return false;
+  const aRec = a as Record<string, unknown>;
+  const bRec = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRec);
+  const bKeys = Object.keys(bRec);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every(
+    (k) => Object.prototype.hasOwnProperty.call(bRec, k) && deepEqual(aRec[k], bRec[k]),
+  );
+}
+
+function containsValue(haystack: unknown, needle: unknown): boolean {
+  if (haystack === undefined || haystack === null) return false;
+  if (typeof haystack === "string") {
+    return typeof needle === "string" && haystack.includes(needle);
+  }
+  if (Array.isArray(haystack)) {
+    return haystack.some((v) => deepEqual(v, needle));
+  }
+  if (typeof haystack === "object") {
+    const rec = haystack as Record<string, unknown>;
+    return Object.values(rec).some((v) => deepEqual(v, needle));
+  }
+  return false;
+}
+
+/**
+ * 递归评估 WebhookFilter。
+ *
+ * - op="all"：所有 conditions 必须满足；空 conditions 视为通过（vacuous truth）
+ * - op="any"：任一 conditions 满足即通过；空 conditions 视为不通过
+ * - op="not"：对所有 conditions 取反（AND）；多个 conditions 时全取反；
+ *             空 conditions 视为不通过
+ *
+ * 叶子节点（无 conditions，仅有 field+operator）按 matchLeaf 评估。
+ * filter 为 null/undefined 时返回 true（无过滤）。
+ */
+export function matchFilter(
+  filter: WebhookFilter | undefined,
+  context: WebhookFilterContext,
+): boolean {
+  if (!filter) return true;
+  // 显式处理空 conditions：all 视为通过（vacuous truth），any/not 视为不通过
+  if (filter.conditions && filter.conditions.length === 0) {
+    return filter.op === "all";
+  }
+  if (filter.conditions && filter.conditions.length > 0) {
+    if (filter.op === "all") {
+      return filter.conditions.every((c) => matchFilter(c, context));
+    }
+    if (filter.op === "any") {
+      return filter.conditions.some((c) => matchFilter(c, context));
+    }
+    if (filter.op === "not") {
+      return !filter.conditions.every((c) => matchFilter(c, context));
+    }
+    return false;
+  }
+  // 叶子节点
+  return matchLeaf(filter, context);
 }
 
 export interface WebhookEventLog {
@@ -102,6 +313,15 @@ export class IncomingWebhookManager {
   private eventLogs: WebhookEventLog[] = [];
   private maxEventLogs = 500;
   private actionHandler: WebhookActionHandler | null = null;
+  /** 持久化文件路径（undefined 时禁用持久化，便于测试） */
+  private persistencePath: string | undefined;
+
+  constructor(options?: { persistencePath?: string }) {
+    this.persistencePath = options?.persistencePath;
+    if (this.persistencePath) {
+      this.loadPersisted();
+    }
+  }
 
   setActionHandler(handler: WebhookActionHandler): void {
     this.actionHandler = handler;
@@ -119,6 +339,7 @@ export class IncomingWebhookManager {
     };
 
     this.endpoints.set(data.id, endpoint);
+    this.persist();
     process.stdout.write(`[IncomingWebhookManager] Registered endpoint "${data.id}" at ${data.path} (${data.method})\n`);
     return endpoint;
   }
@@ -137,11 +358,16 @@ export class IncomingWebhookManager {
 
     Object.assign(endpoint, updates);
     this.endpoints.set(id, endpoint);
+    this.persist();
     return endpoint;
   }
 
   delete(id: string): boolean {
-    return this.endpoints.delete(id);
+    const removed = this.endpoints.delete(id);
+    if (removed) {
+      this.persist();
+    }
+    return removed;
   }
 
   matchEndpoint(requestPath: string, requestMethod: string): WebhookEndpoint | undefined {
@@ -228,6 +454,26 @@ export class IncomingWebhookManager {
       return { statusCode: 401, eventLog: log };
     }
 
+    // 路由级过滤器：声明式复合过滤（借鉴 hermes-agent webhook_filters.py）。
+    // 不匹配时返回 202 Accepted 但不调用 actionHandler，
+    // 这样上游调用方看到成功响应，但下游不会被不相关的事件触发。
+    if (endpoint.filter) {
+      const filterContext: WebhookFilterContext = {
+        payload: body,
+        headers,
+        eventType: this.deriveEventType(headers, endpoint.action),
+      };
+      if (!matchFilter(endpoint.filter, filterContext)) {
+        const log: WebhookEventLog = {
+          ...baseLog,
+          statusCode: 202,
+          error: "Filter did not match",
+        };
+        this.recordLog(log);
+        return { statusCode: 202, eventLog: log };
+      }
+    }
+
     endpoint.lastTriggeredAt = timestamp;
     endpoint.triggerCount++;
 
@@ -254,6 +500,29 @@ export class IncomingWebhookManager {
       this.recordLog(log);
       return { statusCode: 500, eventLog: log };
     }
+  }
+
+  /**
+   * 从常见事件头派生 eventType。
+   * 支持 x-evoclaw-event / x-github-event / x-gitlab-event / x-event-type，
+   * 全部缺失时回退到 endpoint.action。
+   */
+  private deriveEventType(headers: Record<string, string>, fallback: string): string {
+    const candidates = [
+      "x-evoclaw-event",
+      "x-github-event",
+      "x-gitlab-event",
+      "x-event-type",
+      "event-type",
+    ];
+    for (const name of candidates) {
+      for (const [k, v] of Object.entries(headers)) {
+        if (k.toLowerCase() === name && typeof v === "string" && v.length > 0) {
+          return v;
+        }
+      }
+    }
+    return fallback;
   }
 
   private sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
@@ -311,6 +580,53 @@ export class IncomingWebhookManager {
     this.endpoints.clear();
     this.eventLogs = [];
     this.actionHandler = null;
+    this.persistencePath = undefined;
+  }
+
+  /**
+   * 将当前所有 endpoints 持久化到 data/webhook-subscriptions.json。
+   * 使用原子写入（temp + fsync + rename），防止崩溃时文件被截断。
+   * 写入失败仅记录到 stderr，不阻断主流程。
+   */
+  private persist(): void {
+    if (!this.persistencePath) return;
+    try {
+      const endpoints = Array.from(this.endpoints.values());
+      const dir = path.dirname(this.persistencePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      atomicWriteFileSync(this.persistencePath, JSON.stringify(endpoints, null, 2));
+    } catch (err) {
+      process.stderr.write(
+        `[IncomingWebhookManager] Failed to persist webhook subscriptions: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  /**
+   * 从持久化文件加载 endpoints。
+   * 文件不存在或解析失败时静默跳过；加载的 endpoint 不再写入文件
+   * （register/unregister 时再写入）。
+   */
+  private loadPersisted(): void {
+    if (!this.persistencePath) return;
+    try {
+      if (!fs.existsSync(this.persistencePath)) return;
+      const content = fs.readFileSync(this.persistencePath, "utf-8");
+      const parsed = JSON.parse(content);
+      if (!Array.isArray(parsed)) return;
+      for (const ep of parsed) {
+        if (!ep || typeof ep !== "object") continue;
+        const endpoint = ep as WebhookEndpoint;
+        if (typeof endpoint.id !== "string" || typeof endpoint.path !== "string") continue;
+        this.endpoints.set(endpoint.id, endpoint);
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[IncomingWebhookManager] Failed to load persisted webhook subscriptions: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 }
 
@@ -341,9 +657,70 @@ export class WebhookManager {
 
   // ── Registration ─────────────────────────────────────────────────────
 
+  /**
+   * 校验 webhook URL，防止 SSRF。
+   * - 仅允许 http/https 协议
+   * - 禁止指向内网/私有/回环地址
+   * 返回 null 表示通过，否则返回错误信息。
+   */
+  private validateWebhookUrl(url: string): string | null {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return "Webhook URL must use http or https";
+      }
+      const host = parsed.hostname;
+      // IPv4 私有/内网/回环地址检查
+      if (
+        host === "localhost" ||
+        host.startsWith("127.") ||
+        host.startsWith("0.") ||
+        host.startsWith("169.254.") ||
+        host.startsWith("10.") ||
+        host.startsWith("192.168.") ||
+        /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host)
+      ) {
+        return "Webhook URL must not point to private/internal network";
+      }
+      // IPv6 检查：URL 中 IPv6 用方括号 [...] 包裹，hostname 可能含或不含方括号
+      const v6Raw = host.startsWith("[") && host.endsWith("]")
+        ? host.slice(1, -1)
+        : (host.includes(":") ? host : null);
+      if (v6Raw) {
+        const v6 = v6Raw.toLowerCase();
+        // 回环 ::1 与未指定 ::
+        if (v6 === "::1" || v6 === "::" || v6 === "0:0:0:0:0:0:0:1" || v6 === "0:0:0:0:0:0:0:0") {
+          return "Webhook URL must not point to private/internal network";
+        }
+        // 唯一本地地址 ULA (fc00::/7, 即 fc/fd 开头)
+        if (v6.startsWith("fc") || v6.startsWith("fd")) {
+          return "Webhook URL must not point to private/internal network";
+        }
+        // 链路本地 (fe80::/10, 即 fe8/fe9/fea/feb 开头)
+        if (v6.startsWith("fe8") || v6.startsWith("fe9") || v6.startsWith("fea") || v6.startsWith("feb")) {
+          return "Webhook URL must not point to private/internal network";
+        }
+        // 多播 (ff00::/8, 即 ff 开头)
+        if (v6.startsWith("ff")) {
+          return "Webhook URL must not point to private/internal network";
+        }
+      }
+      return null;
+    } catch {
+      return "Invalid webhook URL";
+    }
+  }
+
   register(config: WebhookConfig): boolean {
     if (this.webhooks.has(config.id)) {
       process.stderr.write(`[WebhookManager] Webhook "${config.id}" already registered\n`);
+      return false;
+    }
+
+    // SSRF 防护：校验 URL 协议与目标地址
+    const urlError = this.validateWebhookUrl(config.url);
+    if (urlError) {
+      process.stderr.write(`[WebhookManager] Rejected webhook "${config.id}": ${urlError}\n`);
       return false;
     }
 

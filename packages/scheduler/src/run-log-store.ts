@@ -182,10 +182,11 @@ function decodeRow(row: RunLogRow): RunLogEntry {
   return entry;
 }
 
-/** 安全截断字符串，避免半个多字节字符。 */
+/** 安全截断字符串，避免半个代理对（emoji 等由两个 UTF-16 码元组成的字符）。 */
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max);
+  // 按码点截断，避免把代理对切成两半产生 U+FFFD
+  return [...s].slice(0, max).join("");
 }
 
 // ── RunLogStore ──────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import type { AgentModelExecutor } from "@evoclaw/agent";
-import type { EventBus } from "@evoclaw/core";
+import type { EventBus, ServiceRegistry } from "@evoclaw/core";
 import type { EmailClient } from "@evoclaw/email";
 import type { ParsedEmail } from "@evoclaw/email";
 import type { ScheduleManager } from "@evoclaw/scheduler";
@@ -15,7 +15,8 @@ export function registerSchedulerTools(
   emailClient: EmailClient,
   eventBus: EventBus,
   reportGenerator: ReportGenerator,
-  playwrightBrowser: PlaywrightBrowser
+  playwrightBrowser: PlaywrightBrowser,
+  registry: ServiceRegistry
 ): void {
   const sched = scheduleManager;
 
@@ -38,10 +39,15 @@ export function registerSchedulerTools(
   sched.registerHandler("report_generate", async (task: ScheduledTask) => {
     const config = task.handlerConfig as { templateName?: string; reportData?: ReportData; outputPath?: string };
     if (config.reportData) {
-      reportGenerator.generateReport(config.reportData, {
-        templateName: config.templateName || "default-report",
-        outputPath: config.outputPath,
-      });
+      try {
+        const result = reportGenerator.generateReport(config.reportData, {
+          templateName: config.templateName || "default-report",
+          outputPath: config.outputPath,
+        });
+        eventBus.publish("scheduler.report_generated", { taskId: task.id, outputPath: config.outputPath, length: result.length }, "scheduler");
+      } catch (err) {
+        eventBus.publish("scheduler.report_error", { taskId: task.id, error: err instanceof Error ? err.message : String(err) }, "scheduler");
+      }
     }
   });
 
@@ -49,9 +55,36 @@ export function registerSchedulerTools(
     eventBus.publish("scheduler.cleanup_run", { taskId: task.id }, "scheduler");
   });
 
+  // SSRF 校验：与 browser-tools.validateUrlSsrf 一致，优先 ssrfProtection 服务，退化为协议白名单
+  async function validateUrlSsrf(url: string): Promise<{ ok: boolean; error?: string }> {
+    const ssrfProtection = registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
+    if (!ssrfProtection) {
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return { ok: false, error: "Invalid URL format" };
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { ok: false, error: `Unsupported protocol: ${parsed.protocol}. Only http/https allowed.` };
+      }
+      return { ok: true };
+    }
+    const result = await ssrfProtection.checkURL(url);
+    if (!result.allowed) {
+      return { ok: false, error: `URL blocked by security policy: ${result.reason}` };
+    }
+    return { ok: true };
+  }
+
   sched.registerHandler("browser_action", async (task: ScheduledTask) => {
     const config = task.handlerConfig as { action?: string; url?: string };
     if (config.action === "screenshot" && config.url) {
+      const ssrfCheck = await validateUrlSsrf(config.url);
+      if (!ssrfCheck.ok) {
+        eventBus.publish("scheduler.browser_error", { taskId: task.id, error: ssrfCheck.error, url: config.url }, "scheduler");
+        return;
+      }
       await playwrightBrowser.navigate(config.url);
       const buf = await playwrightBrowser.screenshot({ fullPage: true, type: "png" });
       eventBus.publish("scheduler.browser_screenshot", {
@@ -103,18 +136,29 @@ export function registerSchedulerTools(
     const { execFile } = await import("child_process");
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const shellArgs = process.platform === "win32" ? ["/c", config.command] : ["-c", config.command];
-    // 安全：cwd 默认为 data/workspace 而非项目根目录，防止破坏项目文件
-    const cwd = config.cwd || path.resolve(process.cwd(), "data", "workspace");
-    const timeout = Math.min(config.timeout || 60000, 300000); // 最长 5 分钟
+    // 安全：cwd 默认为 data/workspace 而非项目根目录，且必须校验 cwd 在 workspace 内，防止路径逃逸
+    const workspaceDir = path.resolve(process.cwd(), "data", "workspace");
+    const cwd = config.cwd ? path.resolve(config.cwd) : workspaceDir;
+    // 校验 cwd 必须在 workspace 内
+    if (cwd !== workspaceDir && !cwd.startsWith(workspaceDir + path.sep)) {
+      eventBus.publish("scheduler.shell_error", { taskId: task.id, error: "cwd must be within workspace" }, "scheduler");
+      return;
+    }
+    const timeout = Math.min(Math.max(config.timeout || 60000, 1000), 300000); // 1s~5min
     try {
-      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        execFile(shell, shellArgs, { cwd, timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-          if (err) reject(err);
-          else resolve({ stdout: String(stdout), stderr: String(stderr) });
+      const { stdout, stderr, timedOut } = await new Promise<{ stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
+        execFile(shell, shellArgs, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+          // 超时时 Node 仍会回传已收集的 stdout/stderr，不丢弃
+          const isTimeout = !!(err && (err as NodeJS.ErrnoException & { timedOut?: boolean }).timedOut);
+          if (err && !isTimeout) {
+            resolve({ stdout: String(stdout), stderr: String(stderr || err.message), timedOut: false });
+          } else {
+            resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: isTimeout });
+          }
         });
       });
-      eventBus.publish("scheduler.shell_completed", {
-        taskId: task.id, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 1024),
+      eventBus.publish(timedOut ? "scheduler.shell_timeout" : "scheduler.shell_completed", {
+        taskId: task.id, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 1024), timedOut,
       }, "scheduler");
     } catch (err) {
       eventBus.publish("scheduler.shell_error", {
@@ -149,6 +193,15 @@ export function registerSchedulerTools(
       }
       if (!name || !cronExpression) {
         return { error: "name and cronExpression are required" };
+      }
+      // 安全：shell 类型任务需审批告警并阻止明显危险命令（registerSchedulerTools 无 permissionManager，故仅告警+黑名单拦截）
+      if (handlerType === "shell") {
+        const command = typeof handlerConfig.command === "string" ? handlerConfig.command : "";
+        if (command && SCHED_DANGEROUS_PATTERNS.some((p) => p.test(command))) {
+          return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
+        }
+        process.stderr.write(`[scheduler_create] WARNING: creating shell scheduled task "${name}" — ensure command is trusted\n`);
+        eventBus.publish("scheduler.shell_task_created", { name, command }, "scheduler");
       }
       try {
         const task = sched.createTask({ name, cronExpression, description, handlerType, handlerConfig });
@@ -207,6 +260,15 @@ export function registerSchedulerTools(
           updates.handlerConfig = JSON.parse(String(params.handlerConfig));
         } catch {
           return { error: "Invalid handlerConfig JSON" };
+        }
+        // 安全：shell 任务更新 handlerConfig 时重新检查危险命令（与 scheduler_create 一致）
+        const existingTask = sched.getTask(taskId);
+        if (existingTask?.handlerType === "shell") {
+          const newConfig = updates.handlerConfig as Record<string, unknown>;
+          const command = typeof newConfig.command === "string" ? newConfig.command : "";
+          if (command && SCHED_DANGEROUS_PATTERNS.some((p) => p.test(command))) {
+            return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
+          }
         }
       }
       try {
@@ -269,7 +331,7 @@ export function registerSchedulerTools(
     },
     async (params: Record<string, unknown>) => {
       const taskId = String(params.taskId || "");
-      const limit = parseInt(String(params.limit || "20"), 10) || 20;
+      const limit = Math.max(1, Math.min(parseInt(String(params.limit || "20"), 10) || 20, 100));
       const history = sched.getRunHistory(taskId || undefined, limit);
       return { success: true, history, count: history.length };
     }

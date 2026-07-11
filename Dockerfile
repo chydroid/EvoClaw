@@ -18,6 +18,7 @@ WORKDIR /app
 
 # Step 1: Copy only package.json files for dependency caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+COPY .npmrc ./
 COPY packages/core/package.json packages/core/
 COPY packages/agent/package.json packages/agent/
 COPY packages/gateway/package.json packages/gateway/
@@ -75,13 +76,14 @@ ENV EvoClaw_PORT=27788
 
 EXPOSE 27788
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Health check — start-period=30s 给启动足够时间，retries=5 增强恢复能力
+HEALTHCHECK --start-period=30s --interval=30s --timeout=10s --retries=5 \
   CMD node -e "const http=require('http');http.get('http://localhost:'+(process.env.EvoClaw_PORT||27788)+'/health',r=>{process.exit(r.statusCode===200?0:1)})"
 
 # Run as non-root user for security
 RUN addgroup -S evoclaw && adduser -S evoclaw -G evoclaw
 RUN chown -R evoclaw:evoclaw /app
+COPY --chown=evoclaw:evoclaw assets ./assets
 USER evoclaw
 
-CMD ["node", "--env-file=.env", "apps/server/dist/index.js"]
+CMD ["node", "--max-old-space-size=4096", "--env-file-if-exists=.env", "apps/server/dist/index.js"]

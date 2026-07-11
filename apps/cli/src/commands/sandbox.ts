@@ -146,26 +146,9 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .description("Recreate sandbox containers via gateway restart")
     .option("--all", "Recreate all sandbox containers")
     .option("--session <id>", "Recreate for a specific session")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const body: Record<string, unknown> = { action: "recreate" };
-        if (opts.all) body.scope = "all";
-        if (opts.session) body.sessionId = opts.session;
-
-        const r = await apiRequest<{ success: boolean; message?: string }>("POST", "/api/system/services", body);
-        if (r.data?.success || r.status === 200) {
-          const scope = opts.all ? "all containers" : opts.session ? `session "${opts.session}"` : "default sandbox";
-          console.log(c("green", `✅ Sandbox recreated (${scope})`));
-          if (r.data?.message) {
-            console.log(c("gray", `  ${r.data.message}`));
-          }
-        } else {
-          console.log(c("yellow", "⚠ Sandbox recreation may not have succeeded. Check gateway logs."));
-        }
-      } catch (err) {
-        console.log(c("red", `❌ Failed to recreate sandbox: ${err instanceof Error ? err.message : String(err)}`));
-      }
+    .action(async () => {
+      // POST /api/system/services 尚未实现（仅 GET 存在）
+      console.log(c("yellow", "⚠ Sandbox recreation is not yet available via CLI. Use WebUI → Sandbox tab."));
     });
 
   sandbox

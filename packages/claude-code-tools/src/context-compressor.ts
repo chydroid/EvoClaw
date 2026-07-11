@@ -303,7 +303,7 @@ export class ContextCompressor {
       level: CompactionLevel.Deep,
       messagesBefore: messages.length,
       messagesAfter: 3, // summary + continuation
-      tokensSaved: tokensBefore - estimatedOutputTokens,
+      tokensSaved: Math.max(0, tokensBefore - estimatedOutputTokens),
       compacted: true,
     };
   }

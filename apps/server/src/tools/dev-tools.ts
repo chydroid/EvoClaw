@@ -105,6 +105,14 @@ function runCommand(
       }
     });
 
+    child.stdout?.on("error", (err: Error) => {
+      process.stderr.write(`[dev-tools] stdout error: ${err.message}\n`);
+    });
+
+    child.stderr?.on("error", (err: Error) => {
+      process.stderr.write(`[dev-tools] stderr error: ${err.message}\n`);
+    });
+
     child.on("close", (code) => {
       if (!settled) {
         settled = true;
@@ -194,11 +202,14 @@ export function registerDevTools(
       const target = params.target ? String(params.target) : "";
       const forcedFramework = params.framework ? String(params.framework).toLowerCase() : "auto";
       const watch = params.watch === true;
-      const timeoutSec = Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200);
+      const timeoutSec = Math.max(1, Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200));
 
       // 路径校验：阻止 path traversal 逃逸工作区
       let targetAbs = workspaceRoot;
       if (target) {
+        if (target.startsWith("-")) {
+          return { success: false, error: "target cannot start with '-'" };
+        }
         targetAbs = path.resolve(workspaceRoot, target);
         if (!targetAbs.startsWith(workspaceRoot + path.sep) && targetAbs !== workspaceRoot) {
           return { success: false, error: `Path traversal blocked: ${target}` };
@@ -357,6 +368,9 @@ export function registerDevTools(
       const forcedLinter = params.linter ? String(params.linter).toLowerCase() : "auto";
 
       // 路径校验：阻止 path traversal 逃逸工作区
+      if (target.startsWith("-")) {
+        return { success: false, error: "target cannot start with '-'" };
+      }
       const targetAbs = path.resolve(workspaceRoot, target);
       if (!targetAbs.startsWith(workspaceRoot + path.sep) && targetAbs !== workspaceRoot) {
         return { success: false, error: `Path traversal blocked: ${target}` };
@@ -572,9 +586,12 @@ export function registerDevTools(
       ]);
       const maxFileSize = 100 * 1024; // 100KB
       const MAX_RESULTS_WALK = maxResults * 3;
+      const maxDepth = 20;
+      const maxFiles = 10000;
+      let filesScanned = 0;
 
       const walkDir = (dir: string, depth: number): void => {
-        if (depth > 5 || results.length >= MAX_RESULTS_WALK) return;
+        if (depth > maxDepth || results.length >= MAX_RESULTS_WALK) return;
         let entries: fs.Dirent[];
         try {
           entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -582,13 +599,14 @@ export function registerDevTools(
           return;
         }
         for (const entry of entries) {
-          if (results.length >= MAX_RESULTS_WALK) return;
+          if (results.length >= MAX_RESULTS_WALK || filesScanned >= maxFiles) return;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             if (!excludeDirs.has(entry.name)) {
               walkDir(fullPath, depth + 1);
             }
           } else if (entry.isFile()) {
+            filesScanned++;
             const ext = path.extname(entry.name).toLowerCase();
             if (excludeExts.has(ext)) continue;
 

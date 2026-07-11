@@ -57,6 +57,9 @@ export class DispatchDedupeStore {
   private entries = new Map<string, DispatchDedupeEntry>();
   private config: Required<DispatchDedupeConfig>;
   private cleanupTimer?: NodeJS.Timeout;
+  /** 防抖持久化定时器：合并短时间内的多次写入为一次落盘 */
+  private persistTimer?: NodeJS.Timeout;
+  private static readonly PERSIST_DEBOUNCE_MS = 5000;
 
   // 统计
   private stats = {
@@ -131,7 +134,7 @@ export class DispatchDedupeStore {
         };
     this.entries.set(dedupeKey, entry);
     this.stats.records++;
-    if (this.config.persistEnabled) this.persistToDisk();
+    this.schedulePersist();
     this.evictIfNeeded();
     return entry;
   }
@@ -152,7 +155,7 @@ export class DispatchDedupeStore {
   delete(key: DispatchDedupeKey): boolean {
     const dedupeKey = DispatchDedupeStore.generateKey(key);
     const result = this.entries.delete(dedupeKey);
-    if (this.config.persistEnabled) this.persistToDisk();
+    this.schedulePersist();
     return result;
   }
 
@@ -197,6 +200,17 @@ export class DispatchDedupeStore {
     }
   }
 
+  /** 调度防抖持久化：5 秒内多次写入合并为一次落盘 */
+  private schedulePersist(): void {
+    if (!this.config.persistEnabled) return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      this.persistToDisk();
+    }, DispatchDedupeStore.PERSIST_DEBOUNCE_MS);
+    this.persistTimer.unref?.();
+  }
+
   /** 持久化 */
   private persistToDisk(): void {
     if (!this.config.persistPath) return;
@@ -210,6 +224,7 @@ export class DispatchDedupeStore {
       // 使用原子写入，符合 AGENTS.md 规则
       atomicWriteFileSync(this.config.persistPath, JSON.stringify(data));
       this.stats.persistWrites++;
+      // 本模块未注入结构化 Logger，使用 stderr 记录持久化失败，便于运维排查
     } catch (err) { process.stderr.write('[DispatchDedupeStore] persistToDisk failed: ' + err + '\n'); }
   }
 
@@ -232,6 +247,12 @@ export class DispatchDedupeStore {
   /** 关闭 */
   shutdown(): void {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    // 关闭时刷新待写入的持久化，避免丢数据
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+      this.persistToDisk();
+    }
   }
 
   /** 统计 */
@@ -246,6 +267,6 @@ export class DispatchDedupeStore {
   /** 清空 */
   clear(): void {
     this.entries.clear();
-    if (this.config.persistEnabled) this.persistToDisk();
+    this.schedulePersist();
   }
 }

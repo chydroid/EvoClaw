@@ -27,10 +27,16 @@ interface InternalState {
   stream: fs.WriteStream | null;
   currentSize: number;
   rotating: boolean;
+  /** 滚动期间缓存的日志，滚动完成后批量写入 */
+  pendingBuffer: string[];
+  /** 上次 rename 当前文件失败的时间戳；冷却期内不再触发 rotate，避免无限失败循环 */
+  rotateFailureTime: number | null;
 }
 
 const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 const DEFAULT_MAX_FILES = 5;
+/** rotate 失败后的冷却期：在此期间 append 跳过 rotate 直接写入，避免无限触发失败的 rename */
+const ROTATE_FAILURE_COOLDOWN_MS = 60_000;
 
 /**
  * 滚动文件 Appender。
@@ -47,6 +53,8 @@ export class RotatingFileAppender {
     stream: null,
     currentSize: 0,
     rotating: false,
+    pendingBuffer: [],
+    rotateFailureTime: null,
   };
 
   constructor(config: RotatingFileAppenderConfig) {
@@ -90,13 +98,19 @@ export class RotatingFileAppender {
   /** 追加一行日志。若超出大小上限，先滚动再写入。 */
   append(line: string): void {
     if (this.state.rotating) {
-      // 滚动中：直接丢弃避免递归（理论上不应发生）
+      // 滚动中：缓存日志，滚动完成后批量写入，避免丢失
+      this.state.pendingBuffer.push(line);
       return;
     }
     const byteLength = Buffer.byteLength(line, "utf8");
 
-    // 检查是否需要滚动（提前判断，避免写入后再滚动）
-    if (this.state.currentSize + byteLength > this.config.maxFileSize) {
+    // 检查是否需要滚动（提前判断，避免写入后再滚动）。
+    // 若上次 rotate 失败且仍在冷却期内，则跳过 rotate 直接写入，
+    // 防止 rename 持续失败时每次 append 都触发失败的 rotate。
+    const inCooldown =
+      this.state.rotateFailureTime !== null &&
+      Date.now() - this.state.rotateFailureTime < ROTATE_FAILURE_COOLDOWN_MS;
+    if (!inCooldown && this.state.currentSize + byteLength > this.config.maxFileSize) {
       this.rotate();
     }
 
@@ -170,11 +184,16 @@ export class RotatingFileAppender {
         }
       }
       // 当前文件 → .1
+      // 这是滚动的关键步骤：若失败（如目标文件被占用、权限不足），
+      // 记录失败时间戳，使后续 append 在冷却期内跳过 rotate，避免无限触发失败的 rename。
       try {
         if (fs.existsSync(basePath)) {
           fs.renameSync(basePath, `${basePath}.1`);
         }
+        // 关键 rename 成功：清除失败标记，恢复正常滚动
+        this.state.rotateFailureTime = null;
       } catch (err) {
+        this.state.rotateFailureTime = Date.now();
         process.stderr.write(`[RotatingFileAppender] Rename current → .1 failed: ${err}\n`);
       }
 
@@ -183,6 +202,15 @@ export class RotatingFileAppender {
       this.openStream();
     } finally {
       this.state.rotating = false;
+    }
+    // 滚动完成后写入缓存的日志（此时 rotating=false，append 可正常写入；
+    // 若缓存内容再次触发滚动，rotate() 会串行处理，无重入风险）
+    if (this.state.pendingBuffer.length > 0) {
+      const buffered = this.state.pendingBuffer;
+      this.state.pendingBuffer = [];
+      for (const line of buffered) {
+        this.append(line);
+      }
     }
   }
 

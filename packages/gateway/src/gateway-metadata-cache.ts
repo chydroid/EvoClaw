@@ -91,6 +91,9 @@ export class GatewayMetadataCache {
     persistReads: 0,
   };
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  /** 防抖持久化定时器：合并短时间内的多次写入为一次落盘 */
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly PERSIST_DEBOUNCE_MS = 5000;
 
   constructor(config: Partial<GatewayMetadataCacheConfig> = {}) {
     this.config = {
@@ -129,6 +132,12 @@ export class GatewayMetadataCache {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    // 关闭时刷新待写入的持久化，避免丢数据
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+      this.persistToDisk();
+    }
   }
 
   // ─── 稳定元数据 ───
@@ -160,7 +169,7 @@ export class GatewayMetadataCache {
       createdAt: Date.now(),
       hits: 0,
     });
-    if (this.config.persistEnabled) this.persistToDisk();
+    if (this.config.persistEnabled) this.schedulePersist();
   }
 
   /** 获取缓存 */
@@ -219,7 +228,7 @@ export class GatewayMetadataCache {
       createdAt: Date.now(),
       hits: 0,
     });
-    if (this.config.persistEnabled) this.persistToDisk();
+    if (this.config.persistEnabled) this.schedulePersist();
   }
 
   /** 批量设置model cost */
@@ -305,6 +314,17 @@ export class GatewayMetadataCache {
 
   // ─── 持久化 ───
 
+  /** 调度防抖持久化：5 秒内多次写入合并为一次落盘 */
+  private schedulePersist(): void {
+    if (!this.config.persistEnabled) return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.persistToDisk();
+    }, GatewayMetadataCache.PERSIST_DEBOUNCE_MS);
+    this.persistTimer.unref?.();
+  }
+
   private persistToDisk(): void {
     if (!this.config.persistPath) return;
     try {
@@ -314,9 +334,10 @@ export class GatewayMetadataCache {
         modelCosts: Array.from(this.modelCostIndex.entries()).map(([k, v]) => [k, v.value]),
         savedAt: Date.now(),
       };
-      fs.writeFileSync(this.config.persistPath, JSON.stringify(data), "utf-8");
+      // 改用原子写入，符合 AGENTS.md 规则（temp + fsync + rename）
+      atomicWriteFileSync(this.config.persistPath, JSON.stringify(data));
       this.stats.persistWrites++;
-    } catch { /* 静默失败 */ }
+    } catch (err) { process.stderr.write('[GatewayMetadataCache] persistToDisk failed: ' + err + '\n'); }
   }
 
   private loadFromDisk(): void {

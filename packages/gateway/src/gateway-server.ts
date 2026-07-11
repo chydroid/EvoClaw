@@ -22,6 +22,7 @@ import type {
 import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
+import { MCPClientManager } from "./mcp-client-manager";
 import { ProtocolHandler } from "./ws-protocol";
 import { WSServerTransport } from "./ws-server-transport";
 import type { ChannelManager } from "./channel-manager";
@@ -52,6 +53,7 @@ export class GatewayServer {
   private authProvider: AuthProvider;
   private protocolAdapter: ProtocolAdapter;
   private mcpGateway: MCPGateway;
+  private mcpClientManager: MCPClientManager | null = null;
   private protocolHandler: ProtocolHandler;
   private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
@@ -119,6 +121,31 @@ export class GatewayServer {
 
   initMigrations(dataDir: string, currentVersion: string): void {
     this.protocolAdapter.initMigrations(dataDir, currentVersion);
+    // Initialize external MCP client manager with the same data dir
+    this.mcpClientManager = new MCPClientManager(dataDir);
+  }
+
+  /** Initialize and connect external MCP servers from config */
+  private async initializeExternalMCPServers(): Promise<void> {
+    if (!this.mcpClientManager) return;
+    const agentExecutor = this.registry.resolveService<{
+      registerTool: (
+        name: string,
+        definition: { name: string; description: string; parameters: Record<string, unknown> },
+        handler: (params: Record<string, unknown>) => Promise<unknown>,
+        checkFn?: () => boolean,
+      ) => void;
+      unregisterTool: (name: string) => void;
+      registeredTools: Map<string, unknown>;
+    }>("agentModelExecutor");
+    this.mcpClientManager.setDependencies(this.mcpGateway, agentExecutor);
+    try {
+      await this.mcpClientManager.connectAll();
+    } catch (err) {
+      process.stderr.write(
+        `[Gateway] Error initializing external MCP servers: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 
   async start(): Promise<void> {
@@ -127,6 +154,7 @@ export class GatewayServer {
 
     if (this.config.enableMCP) {
       this.mcpGateway.initialize();
+      await this.initializeExternalMCPServers();
     }
 
     const { port, host } = this.config;
@@ -188,14 +216,21 @@ export class GatewayServer {
       process.stderr.write(`[Gateway] Error stopping channel manager: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
-    // 2. Tear down MCP gateway.
+    // 2. Tear down external MCP servers.
+    try {
+      await this.mcpClientManager?.disconnectAll();
+    } catch (err) {
+      process.stderr.write(`[Gateway] Error disconnecting external MCP servers: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+
+    // 3. Tear down MCP gateway.
     try {
       this.mcpGateway?.dispose?.();
     } catch (err) {
       process.stderr.write(`[Gateway] Error disposing MCP gateway: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
-    // 3. Detach WebSocket transport and stop protocol handler.
+    // 4. Detach WebSocket transport and stop protocol handler.
     if (this.wsTransport) {
       this.wsTransport.detach();
       this.wsTransport = null;
@@ -206,7 +241,7 @@ export class GatewayServer {
       process.stderr.write(`[Gateway] Error stopping protocol handler: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
-    // 4. Close HTTP server.
+    // 5. Close HTTP server.
     if (this.server) {
       await new Promise<void>((resolve) => {
         const server = this.server!;
@@ -516,7 +551,7 @@ export class GatewayServer {
       const aggregated = this.getAggregatedHealth();
       res.status(aggregated.status === "unhealthy" ? 503 : 200).json({
         status: unhealthy.length > 0 ? "degraded" : aggregated.status,
-        version: process.env.npm_package_version || "0.0.0",
+        version: (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ ?? process.env.npm_package_version ?? "0.0.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         node: process.version,
@@ -635,7 +670,7 @@ export class GatewayServer {
       const serviceInfos = this.registry.getAllServiceInfos?.() || [];
       res.json({
         status: "ok",
-        version: "0.4.0",
+        version: (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ ?? "unknown",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         serviceCount: serviceInfos.length,
@@ -749,7 +784,7 @@ export class GatewayServer {
           result = gm.checkInput(content);
         }
         res.json({ result, layer: layer || "input" });
-      } catch (err: any) { res.status(500).json({ error: err.message }); }
+      } catch (err) { this.handleError(res, err); }
     });
 
     // Guardrails toggle layer
@@ -764,7 +799,7 @@ export class GatewayServer {
         else if (layer === "tool") config.toolEnabled = enabled;
         else if (layer === "all") { config.enabled = enabled; }
         res.json({ success: true, layer, enabled });
-      } catch (err: any) { res.status(500).json({ error: err.message }); }
+      } catch (err) { this.handleError(res, err); }
     });
 
     // Guardrails reset stats
@@ -774,7 +809,7 @@ export class GatewayServer {
         if (!executor?.guardrailsManager) { res.json({ success: false }); return; }
         executor.guardrailsManager.resetStats();
         res.json({ success: true });
-      } catch (err: any) { res.status(500).json({ error: err.message }); }
+      } catch (err) { this.handleError(res, err); }
     });
 
     // Prompt Cache stats
@@ -825,7 +860,7 @@ export class GatewayServer {
         const result = executor.steer?.(sessionId, instruction, priority);
         res.json(result || { accepted: false, message: "Steer not available" });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -862,7 +897,7 @@ export class GatewayServer {
         if (!voice) { res.status(503).json({ error: "Voice service unavailable" }); return; }
         res.json({ config: voice.getConfig(), status: voice.getStatus() });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -873,7 +908,7 @@ export class GatewayServer {
         const result = await voice.updateConfig(req.body || {});
         res.json({ status: result });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -884,7 +919,7 @@ export class GatewayServer {
         const result = await voice.verify();
         res.json(result);
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -899,7 +934,7 @@ export class GatewayServer {
         const result = await voice.toggle(enabled);
         res.json({ status: result });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -910,7 +945,7 @@ export class GatewayServer {
         const result = await voice.reset();
         res.json({ status: result });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -934,7 +969,7 @@ export class GatewayServer {
         const task = board.createTask(req.body);
         res.json(task);
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        this.handleError(res, err);
       }
     });
 
@@ -1105,6 +1140,9 @@ export class GatewayServer {
         }
       };
 
+      // 心跳 interval 在 try 内赋值，在 finally 中清理（声明在外层以便 finally 访问）
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+
       try {
         const toolName = params?.name as string;
         const toolArgs = (params?.arguments as Record<string, unknown>) || {};
@@ -1133,7 +1171,7 @@ export class GatewayServer {
         // 发送进度心跳（每 5 秒，直到工具完成）
         // 长时间运行的工具（browser/shell/fetch）执行期间无中间事件，
         // 通过心跳让客户端知道调用仍在进行
-        const heartbeat = setInterval(() => {
+        heartbeat = setInterval(() => {
           sendEvent("tool_progress", {
             callId,
             toolName,
@@ -1141,6 +1179,8 @@ export class GatewayServer {
             timestamp: Date.now(),
           });
         }, 5000);
+        // unref 防止 interval 阻止进程退出
+        heartbeat.unref();
 
         // 包装工具调用以支持取消
         const toolPromise = entry.handler(toolArgs);
@@ -1151,7 +1191,6 @@ export class GatewayServer {
         });
 
         const result = await Promise.race([toolPromise, abortPromise]);
-        clearInterval(heartbeat);
 
         const resultStr = typeof result === "string" ? result : JSON.stringify(result);
         sendEvent("tool_result", {
@@ -1180,8 +1219,97 @@ export class GatewayServer {
           durationMs: Date.now() - startTime,
         });
       } finally {
+        // 所有路径均清理 heartbeat interval，避免泄漏
+        if (heartbeat) clearInterval(heartbeat);
         res.off("close", onClose);
         try { res.end(); } catch { /* 已关闭 */ }
+      }
+    });
+
+    // ── External MCP Server Management ──────────────────────────
+    // 管理 EvoClaw 消费的外部 MCP server（如 firecrawl、github 等）
+
+    // GET /api/mcp-external/list — 列出所有外部 MCP server 及其状态
+    this.app.get("/api/mcp-external/list", (_req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.json({ servers: [], configPath: null });
+        return;
+      }
+      res.json({
+        servers: this.mcpClientManager.listServers(),
+        configPath: this.mcpClientManager.getConfigPath(),
+      });
+    });
+
+    // POST /api/mcp-external/add — 添加并连接外部 MCP server
+    this.app.post("/api/mcp-external/add", async (req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.status(503).json({ error: "MCP client manager not initialized" });
+        return;
+      }
+      const { name, config } = req.body as {
+        name: string;
+        config: {
+          type: "stdio" | "sse";
+          command?: string;
+          args?: string[];
+          env?: Record<string, string>;
+          cwd?: string;
+          url?: string;
+          enabled?: boolean;
+        };
+      };
+      if (!name || !config || !config.type) {
+        res.status(400).json({ error: "name and config.type are required" });
+        return;
+      }
+      try {
+        const state = await this.mcpClientManager.addServer(name, config);
+        res.json({
+          success: true,
+          name: state.name,
+          connected: state.connected,
+          toolCount: state.tools.length,
+          tools: state.tools.map((t) => t.name),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // DELETE /api/mcp-external/:name — 移除外部 MCP server
+    this.app.delete("/api/mcp-external/:name", async (req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.status(503).json({ error: "MCP client manager not initialized" });
+        return;
+      }
+      const { name } = req.params as { name: string };
+      const removed = await this.mcpClientManager.removeServer(name);
+      res.json({ success: removed });
+    });
+
+    // POST /api/mcp-external/:name/reconnect — 重新连接外部 MCP server
+    this.app.post("/api/mcp-external/:name/reconnect", async (req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.status(503).json({ error: "MCP client manager not initialized" });
+        return;
+      }
+      const { name } = req.params as { name: string };
+      try {
+        const state = await this.mcpClientManager.reconnectServer(name);
+        if (!state) {
+          res.status(404).json({ error: `MCP server "${name}" not found in config` });
+          return;
+        }
+        res.json({
+          success: true,
+          name: state.name,
+          connected: state.connected,
+          toolCount: state.tools.length,
+          tools: state.tools.map((t) => t.name),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
 
@@ -2102,6 +2230,26 @@ export class GatewayServer {
       res.json(result);
     });
 
+    // POST /api/mcp-scanner/scan-all — scan all registered MCP tools
+    this.app.post("/api/mcp-scanner/scan-all", (_req: Request, res: Response) => {
+      const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+      if (!scanner) {
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
+        return;
+      }
+      // 从 agent executor 获取所有已注册工具，逐一扫描
+      const executor = this.registry.resolveService<any>("agentModelExecutor");
+      const tools: Array<{ name: string; description: string; riskAssessment?: PoisoningScanResult }> = [];
+      if (executor?.registeredTools) {
+        for (const [name, entry] of executor.registeredTools) {
+          const desc = entry.definition?.description || name;
+          const risk = scanner.scan({ name, description: desc });
+          tools.push({ name, description: desc, riskAssessment: risk });
+        }
+      }
+      res.json({ success: true, scanned: tools.length, tools });
+    });
+
     // GET /api/mcp-scanner/blacklist — return blacklisted patterns
     this.app.get("/api/mcp-scanner/blacklist", (_req: Request, res: Response) => {
       const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
@@ -2195,13 +2343,22 @@ export class GatewayServer {
     next();
   }
 
-  private errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
-    process.stderr.write(`[Gateway] Error: ${err.message}\n`);
+  /**
+   * 统一错误处理：生产环境返回通用消息，开发环境附加详细信息。
+   * 避免将内部错误堆栈/消息直接暴露给客户端。
+   */
+  private handleError(res: Response, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[Gateway] Error: ${message}\n`);
     const isProduction = process.env.NODE_ENV === "production";
     res.status(500).json({
       error: "Internal Server Error",
-      ...(isProduction ? {} : { message: err.message }),
+      ...(isProduction ? {} : { message }),
     });
+  }
+
+  private errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
+    this.handleError(res, err);
   }
 
   getApp(): Express {

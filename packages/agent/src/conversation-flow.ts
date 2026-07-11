@@ -273,6 +273,7 @@ export class ConversationFlow {
     }
 
     if (rule.action === "deny") {
+      ctx.state = rule.toState;
       ctx.intentHistory.push(intent);
       ctx.lastIntent = intent;
       ctx.updatedAt = Date.now();

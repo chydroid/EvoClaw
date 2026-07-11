@@ -397,7 +397,7 @@ export function checkSkillStructure(skillDir: string): StructuralIssue[] {
       if (stat.isSymbolicLink()) {
         const target = fs.readlinkSync(f);
         const resolved = path.resolve(path.dirname(f), target);
-        if (!resolved.startsWith(skillDir)) {
+        if (resolved !== skillDir && !resolved.startsWith(skillDir + path.sep)) {
           issues.push({
             issue: `Symlink escape: ${path.relative(skillDir, f)} → ${target}`,
             filePath: f,

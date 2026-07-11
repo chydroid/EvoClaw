@@ -108,6 +108,13 @@ describe("PermissionManager", () => {
     expect(pm.isWhitelisted("file_create", "/other/file.ts")).toBe(false);
   });
 
+  it("should reject path traversal in wildcard patterns", () => {
+    pm.addToWhitelist("file_create", "/safe/*");
+    expect(pm.isWhitelisted("file_create", "/safe/anything.txt")).toBe(true);
+    expect(pm.isWhitelisted("file_create", "/safe/../etc/passwd")).toBe(false);
+    expect(pm.isWhitelisted("file_create", "/safe/sub/../etc/passwd")).toBe(false);
+  });
+
   it("should match exact patterns", () => {
     pm.addToWhitelist("file_create", "/exact/path.ts");
     expect(pm.isWhitelisted("file_create", "/exact/path.ts")).toBe(true);

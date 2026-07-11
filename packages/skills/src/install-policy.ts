@@ -64,9 +64,11 @@ function createDefaultPolicy(): InstallPolicy {
         action: "block",
         reason: "Skills with shell access from untrusted sources pose a security risk",
         scope: "capability",
-        priority: 100,
-        // This rule is evaluated when hasShellAccess is true and source is not trusted
-        // We handle shell+source combination in evaluate()
+        // 优先级低于 clawhub/trusted authors，使可信来源/作者的 allow 规则
+        // 先于通用 capability "*" 阻断规则生效，避免可信技能被阻断而死代码。
+        // 原值为 100，高于 clawhub(70)/trusted authors(60)，导致任何带能力的
+        // 可信技能都会在此被阻断，clawhub 与 trusted authors 规则永不触发。
+        priority: 50,
       },
       {
         id: uuid(),
@@ -74,7 +76,7 @@ function createDefaultPolicy(): InstallPolicy {
         action: "block",
         reason: "Skills with network access from CLI source are not allowed",
         scope: "capability",
-        priority: 90,
+        priority: 40,
       },
       {
         id: uuid(),
@@ -82,7 +84,7 @@ function createDefaultPolicy(): InstallPolicy {
         action: "review",
         reason: "Skills with file access from archive source require manual review",
         scope: "capability",
-        priority: 80,
+        priority: 30,
       },
       {
         id: uuid(),
@@ -110,6 +112,7 @@ function createDefaultPolicy(): InstallPolicy {
 export class InstallPolicyManager {
   private policies = new Map<string, InstallPolicy>();
   private auditLog: InstallDecision[] = [];
+  private static readonly AUDIT_LOG_MAX = 10000;
   private stats = {
     totalEvaluations: 0,
     allowed: 0,
@@ -305,6 +308,10 @@ export class InstallPolicyManager {
 
   private recordDecision(decision: InstallDecision): void {
     this.auditLog.push(decision);
+    // FIFO 淘汰：超过上限时丢弃最旧条目，防止无界增长
+    if (this.auditLog.length > InstallPolicyManager.AUDIT_LOG_MAX) {
+      this.auditLog.splice(0, this.auditLog.length - InstallPolicyManager.AUDIT_LOG_MAX);
+    }
 
     switch (decision.action) {
       case "allow":

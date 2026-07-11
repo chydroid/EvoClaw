@@ -173,7 +173,8 @@ export class SkillOrchestrator {
         ready.map((step) => this.executeStep(step, aggregatedOutput, context))
       );
 
-      for (const entry of settled) {
+      for (let idx = 0; idx < settled.length; idx++) {
+        const entry = settled[idx];
         if (entry.status === "fulfilled") {
           const result = entry.value;
           stepResults.push(result);
@@ -188,8 +189,10 @@ export class SkillOrchestrator {
           }
         } else {
           // executeStep 直接 reject 的兜底：构造失败 result 防止死锁检测误判
+          // settled 数组顺序与 ready 一致，用 idx 精确匹配实际抛出异常的 step，
+          // 而非按 stepResults 缺口猜测（多 step 同时 reject 时会归因错误）
           const reason = entry.reason;
-          const failedStep = ready.find((s) => !stepResults.some((r) => r.stepId === s.id));
+          const failedStep = ready[idx];
           if (failedStep) {
             const result: StepResult = {
               stepId: failedStep.id,
@@ -268,7 +271,7 @@ export class SkillOrchestrator {
           : step.skillName;
 
         if (attempt > 0) {
-          await this.sleep(2000 * attempt);
+          await this.sleep(Math.min(30000, 1000 * Math.pow(2, attempt)));
         }
 
         if (skillExecutor) {
@@ -276,9 +279,14 @@ export class SkillOrchestrator {
           const matchedSkill = skills.find((s) => s.name === skillToUse);
 
           if (matchedSkill) {
-            const execResult = await this.executeWithTimeout(step.timeout, () =>
-              skillExecutor.executeSkill(matchedSkill.id, mergedParams)
-            );
+            const execResult = await this.executeWithTimeout(step.timeout, async (signal) => {
+              const result = await skillExecutor.executeSkill(matchedSkill.id, mergedParams);
+              // executeSkill 不原生支持 AbortSignal，至少在完成后检查是否已超时
+              if (signal.aborted) {
+                throw new Error(`Step timed out after ${step.timeout}ms`);
+              }
+              return result;
+            });
 
             if (execResult.success) {
               return {
@@ -357,10 +365,14 @@ export class SkillOrchestrator {
     };
   }
 
-  private async executeWithTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  private async executeWithTimeout<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Step timed out after ${timeoutMs}ms`)), timeoutMs);
-      fn()
+      const timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Step timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      fn(controller.signal)
         .then((result) => { clearTimeout(timer); resolve(result); })
         .catch((err) => { clearTimeout(timer); reject(err); });
     });
@@ -386,7 +398,7 @@ export class SkillOrchestrator {
       for (const [key, value] of Object.entries(obj)) {
         if (strategy === "append" && Array.isArray(accumulated[key]) && Array.isArray(value)) {
           (accumulated[key] as unknown[]).push(...(value as unknown[]));
-        } else if (typeof accumulated[key] === "object" && typeof value === "object" && !Array.isArray(value)) {
+        } else if (accumulated[key] !== null && typeof accumulated[key] === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) {
           Object.assign(accumulated[key] as Record<string, unknown>, value as Record<string, unknown>);
         } else {
           accumulated[key] = value;

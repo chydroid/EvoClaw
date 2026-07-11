@@ -8,6 +8,42 @@
 import { htmlEscape } from "./highlight";
 
 /**
+ * 简单 HTML 清洗函数（DOMPurify 不可用时的替代方案）。
+ * 使用浏览器 DOMParser 安全解析 HTML，移除危险标签和属性，防止 XSS。
+ * 保留安全的格式化标签（b/strong/i/em/code/pre/a/h1-6/ul/ol/li/table 等）。
+ */
+export function sanitizeHtml(html: string): string {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  // 移除危险标签及其内容
+  const dangerousTags = doc.querySelectorAll("script, iframe, object, embed, svg, math, link, meta, base, form, input, button, textarea, select");
+  dangerousTags.forEach((el) => el.remove());
+  // 移除所有元素的危险属性
+  doc.querySelectorAll("*").forEach((el) => {
+    const attrs = Array.from(el.attributes);
+    for (const attr of attrs) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value;
+      // 移除事件处理器属性（on*）
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      // 移除 href/src/xlink:href 中的 javascript:/vbscript: URL
+      if ((name === "href" || name === "src" || name === "xlink:href") && /^\s*(javascript|vbscript):/i.test(value)) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      // 移除包含 expression()/javascript:/@import 的 style 属性
+      if (name === "style" && /(expression|javascript|@import|url\s*\(\s*['"]?\s*(javascript|vbscript|data:text\/html))/i.test(value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return doc.body.innerHTML;
+}
+
+/**
  * Simple inline format for text that shouldn't go through the full markdown pipeline.
  * Handles bold, italic, code, and emoji - but not links or auto-linking.
  */
@@ -27,8 +63,16 @@ function inlineFormatSimple(s: string): string {
 
 export function renderMarkdown(text: string): string {
   const decoded = text
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = parseInt(n, 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10FFFF
+        ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
+      const code = parseInt(n, 16);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10FFFF
+        ? String.fromCodePoint(code) : "";
+    })
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")

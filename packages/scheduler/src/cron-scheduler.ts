@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import * as crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -121,8 +122,10 @@ class CronExpression {
       // 安全：处理步进值语法（如 */5、0-30/2、5/10）
       // 旧实现不解析 /step，导致 0-30/2 被当作 0-30（每分钟都触发）
       let step = 1;
+      let hasStep = false;
       let rangePart = seg;
       if (seg.includes("/")) {
+        hasStep = true;
         const slashParts = seg.split("/");
         if (slashParts.length !== 2) {
           throw new Error(`Invalid step expression "${seg}" in field "${fieldName}"`);
@@ -174,12 +177,21 @@ class CronExpression {
           );
         }
         // BUG 9.1 fix: 同上，dayOfWeek=7 归一化为 0
-        // 支持 num/step 语法：从 num 到 max 按 step 递增
-        for (let v = num; v <= max; v += step) {
-          if (fieldName === "dayOfWeek" && v === 7) {
+        if (hasStep) {
+          // num/step 语法：从 num 到 max 按 step 递增
+          for (let v = num; v <= max; v += step) {
+            if (fieldName === "dayOfWeek" && v === 7) {
+              values.add(0);
+            } else {
+              values.add(v);
+            }
+          }
+        } else {
+          // 纯数字：仅此单一值，不应扩展为范围
+          if (fieldName === "dayOfWeek" && num === 7) {
             values.add(0);
           } else {
-            values.add(v);
+            values.add(num);
           }
         }
       }
@@ -273,9 +285,9 @@ class CronExpression {
 
 // ─── CronScheduler ──────────────────────────────────────────────────────────
 
-/** Generate a short unique id (no external dependency). */
+/** Generate a unique id using crypto.randomUUID() (replaces Math.random-based short id). */
 function uid(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return crypto.randomUUID();
 }
 
 export declare interface CronScheduler {
@@ -412,6 +424,26 @@ export class CronScheduler extends EventEmitter {
   /** Return all execution history (exposed for introspection / testing). */
   get fullHistory(): CronExecutionRecord[] {
     return [...this.executionHistory];
+  }
+
+  /**
+   * Shutdown the scheduler: cancel all pending timers, mark jobs as stopped,
+   * and clear execution history.  In-flight jobs are not forcibly killed — they
+   * are allowed to finish naturally (the `running` set tracks them).
+   */
+  shutdown(): void {
+    for (const [jobId, timer] of this.timers) {
+      clearTimeout(timer);
+      this.timers.delete(jobId);
+    }
+    for (const job of this.jobs.values()) {
+      if (job.status === "idle" || job.status === "running") {
+        job.status = "paused";
+      }
+      job.nextRun = undefined;
+    }
+    this.running.clear();
+    this.executionHistory = [];
   }
 
   // ── Internal scheduling ──────────────────────────────────────────────────
@@ -561,6 +593,10 @@ export class CronScheduler extends EventEmitter {
       throw raceErr;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      // 防止超时后任务仍 pending 并最终 reject 导致 unhandledRejection，并记录日志
+      taskPromise.catch((err) => {
+        process.stderr.write(`[CronScheduler] Job "${job.name}" rejected after timeout: ${err instanceof Error ? err.message : String(err)}\n`);
+      });
     }
   }
 }

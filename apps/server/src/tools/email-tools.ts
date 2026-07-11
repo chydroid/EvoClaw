@@ -72,10 +72,18 @@ export function registerEmailTools(
       if (!to) return { success: false, error: "Recipient (to) is required" };
       if (!subject) return { success: false, error: "Subject is required" };
       if (!body && !html) return { success: false, error: "Body or html is required" };
+      // 邮箱格式校验：防止畸形地址导致 SMTP 头注入
+      const emails = to.split(",").map((s) => s.trim()).filter(Boolean);
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      for (const email of emails) {
+        if (!emailRegex.test(email) || /[\r\n]/.test(email)) {
+          return { success: false, error: `Invalid email address: ${email}` };
+        }
+      }
       try {
         const result = await emailClient.sendEmail({
           accountId,
-          to: to.split(",").map((s) => s.trim()).filter(Boolean),
+          to: emails,
           subject,
           body,
           html: html || undefined,

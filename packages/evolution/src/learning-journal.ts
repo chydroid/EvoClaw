@@ -18,6 +18,7 @@ export interface JournalConfig {
   autoPersist: boolean;
   persistIntervalMs: number;
   maxEntries: number;
+  maxSessions: number;
 }
 
 const DEFAULT_JOURNAL_CONFIG: JournalConfig = {
@@ -25,6 +26,7 @@ const DEFAULT_JOURNAL_CONFIG: JournalConfig = {
   autoPersist: true,
   persistIntervalMs: 5000,
   maxEntries: 10000,
+  maxSessions: 1000,
 };
 
 export class LearningJournal {
@@ -188,6 +190,24 @@ export class LearningJournal {
 
     this.sessions.set(session.id, session);
 
+    // 限制 sessions Map 增长：优先淘汰已完成/失败的旧会话，直到回到上限以内
+    while (this.sessions.size > this.config.maxSessions) {
+      let oldestRemovable: { id: string; startedAt: number } | null = null;
+      for (const [id, s] of this.sessions) {
+        if (s.status === "active") continue; // 不淘汰进行中的会话
+        const t = s.startedAt instanceof Date && !Number.isNaN(s.startedAt.getTime())
+          ? s.startedAt.getTime() : 0;
+        if (!oldestRemovable || t < oldestRemovable.startedAt) {
+          oldestRemovable = { id, startedAt: t };
+        }
+      }
+      if (oldestRemovable) {
+        this.sessions.delete(oldestRemovable.id);
+      } else {
+        break; // 无可淘汰的已完成/失败会话，剩余均为 active
+      }
+    }
+
     this.eventBus.publish(
       SystemEvents.LEARNING_SESSION_STARTED,
       { sessionId: session.id, taskId, taskDescription },
@@ -343,7 +363,7 @@ export class LearningJournal {
       }
 
       const markdown = this.generateJournalMarkdown();
-      fs.writeFileSync(journalPath, markdown, "utf-8");
+      this.atomicWriteFileSync(journalPath, markdown);
 
       this.eventBus.publish(
         SystemEvents.LEARNING_JOURNAL_UPDATED,
@@ -352,6 +372,58 @@ export class LearningJournal {
       );
     } catch (err) {
       process.stderr.write("[LearningJournal] Failed to persist journal:" + " " + err + "\n");
+    }
+  }
+
+  /**
+   * 原子写入：temp + fsync + rename，跨设备（EXDEV/EBUSY）时回退到目标侧写。
+   */
+  private atomicWriteFileSync(targetPath: string, content: string): void {
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    const fd = fs.openSync(tmpPath, "w");
+    try {
+      fs.writeFileSync(fd, content, "utf-8");
+      fs.fsyncSync(fd);
+    } catch (err) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
+    fs.closeSync(fd);
+    try {
+      fs.renameSync(tmpPath, targetPath);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "EXDEV" || code === "EBUSY") {
+        // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
+        const dstTmp = `${targetPath}.${process.pid}.dst.tmp`;
+        const fd2 = fs.openSync(dstTmp, "w");
+        try {
+          fs.writeFileSync(fd2, content, "utf-8");
+          fs.fsyncSync(fd2);
+        } catch (w2err) {
+          try { fs.closeSync(fd2); } catch { /* ignore */ }
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw w2err;
+        }
+        fs.closeSync(fd2);
+        try {
+          fs.renameSync(dstTmp, targetPath);
+        } catch (renameErr) {
+          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          throw renameErr;
+        }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      } else {
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
     }
   }
 

@@ -404,7 +404,7 @@ export class SceneBlockAggregator {
 
   private parseMarkdown(md: string): SceneBlock | null {
     // 简单解析：从 YAML frontmatter 提取元信息
-    const fmMatch = md.match(/^---\n([\s\S]*?)\n---/);
+    const fmMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!fmMatch) return null;
     const fm = fmMatch[1];
     const sceneId = fm.match(/scene_id:\s*(\S+)/)?.[1] ?? "";

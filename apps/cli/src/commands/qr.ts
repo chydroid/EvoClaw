@@ -1,18 +1,6 @@
 import { Command } from "commander";
 import { c, ICONS } from "../utils/colors";
 
-const QR_MODULES: number[][] = [];
-const QR_MASKS: number[][] = [];
-
-function generateQRMatrix(data: string): { modules: number[][]; size: number } | null {
-  try {
-    const qrcode = require("qrcode-terminal");
-    return null;
-  } catch {}
-
-  return null;
-}
-
 function generateASCIIQR(text: string, compact: boolean): string {
   const full = "██";
   const half = compact ? "█" : "██";

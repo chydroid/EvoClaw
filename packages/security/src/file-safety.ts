@@ -104,6 +104,11 @@ const READ_BLOCKED_BASENAMES: ReadonlySet<string> = new Set([
   ".aws/credentials",
   ".kube/config",
   ".gnupg/secring.gpg",
+  // SSH 私钥（防止读取泄露）
+  "id_rsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "id_dsa",
 ]);
 
 /**

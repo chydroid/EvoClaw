@@ -16,6 +16,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import type { SandboxResult } from "./docker-sandbox";
@@ -130,7 +131,7 @@ export class LocalSandboxBackend implements ISandboxBackend {
     // 将脚本写入临时文件，通过解释器执行
     const tmpFile = path.join(
       options?.workdir ?? process.cwd(),
-      `.sandbox-script-${Date.now()}.${interpreter === "node" ? "mjs" : "py"}`,
+      `.sandbox-script-${randomUUID()}.${interpreter === "node" ? "mjs" : "py"}`,
     );
     try {
       fs.writeFileSync(tmpFile, script, { encoding: "utf-8" });
@@ -239,6 +240,14 @@ export class LocalSandboxBackend implements ISandboxBackend {
           return;
         }
         stderr += chunk.toString("utf-8");
+      });
+
+      child.stdout?.on("error", (err: Error) => {
+        process.stderr.write(`[SandboxBackend] stdout error: ${err.message}\n`);
+      });
+
+      child.stderr?.on("error", (err: Error) => {
+        process.stderr.write(`[SandboxBackend] stderr error: ${err.message}\n`);
       });
 
       const timer = setTimeout(() => {

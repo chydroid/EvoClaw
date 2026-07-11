@@ -362,6 +362,9 @@ export default function QueueManagerPage() {
     const [movedItem] = queue.splice(dragIndex, 1);
     queue.splice(dropIndex, 0, movedItem);
 
+    // 保存前一次状态，便于失败时回滚
+    const prevQueue = allQueues[sessionId] || [];
+
     // Update local state immediately
     setAllQueues((prev) => ({ ...prev, [sessionId]: queue }));
 
@@ -374,7 +377,8 @@ export default function QueueManagerPage() {
       });
     } catch {
       showMsg("error", t("queue.reorder_fail", "排序失败"));
-      fetchQueues(); // Revert
+      // 回滚到之前的状态
+      setAllQueues((prev) => ({ ...prev, [sessionId]: prevQueue }));
     }
 
     handleDragEnd();

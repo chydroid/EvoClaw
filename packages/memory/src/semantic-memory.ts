@@ -177,6 +177,14 @@ export class SemanticMemoryStore {
       }
     }
 
+    // 已知限制：vocabulary 数组与 wordToIndex 此处不同步收缩。
+    // 原因：vocabulary 是按索引定位的数组（index 即词的位置），删除某词会导致
+    // 后续所有词的索引前移，需同步重写 wordToIndex、所有 entryVectors 的键、
+    // 以及 docFreq 的键，复杂度高且易破坏索引一致性。
+    // 当前仅从 docFreq 中移除零频词，vocabulary 中保留陈旧条目（占少量内存，
+    // 不影响检索正确性：docFreq 已为 0，TF-IDF 权重自然为 0）。
+    // TODO: 如未来 vocabulary 增长成为内存瓶颈，可改为重建索引或改用稀疏结构。
+
     this.onDelete?.(id);
     return true;
   }

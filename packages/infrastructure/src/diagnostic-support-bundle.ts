@@ -233,7 +233,12 @@ function redactConfigRecord(
   sensitiveKeys: string[],
   pathPrefix: string,
   redactedFields: Set<string>,
+  maxDepth: number = 20,
 ): unknown {
+  // 安全：限制递归深度，防止循环引用或深度嵌套对象导致栈溢出
+  if (maxDepth <= 0) {
+    return "[max depth reached]";
+  }
   if (value === null || typeof value !== "object") {
     return value;
   }
@@ -244,6 +249,7 @@ function redactConfigRecord(
         sensitiveKeys,
         `${pathPrefix}[${i}]`,
         redactedFields,
+        maxDepth - 1,
       ),
     );
   }
@@ -256,7 +262,7 @@ function redactConfigRecord(
       out[key] = "***REDACTED***";
       redactedFields.add(fieldPath);
     } else if (val !== null && typeof val === "object") {
-      out[key] = redactConfigRecord(val, sensitiveKeys, fieldPath, redactedFields);
+      out[key] = redactConfigRecord(val, sensitiveKeys, fieldPath, redactedFields, maxDepth - 1);
     } else {
       out[key] = val;
     }

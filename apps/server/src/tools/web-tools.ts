@@ -5,9 +5,16 @@ import type { ServiceRegistry } from "@evoclaw/core";
 // ── HTML entity decoder ──
 function decodeHtmlEntities(text: string): string {
   return text
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-    .replace(/&amp;/g, "&")
+    .replace(/&#(\d+);/g, (match, n) => {
+      const code = Math.min(parseInt(n, 10), 0x10FFFF);
+      if (Number.isNaN(code) || code < 0 || code > 0x10FFFF) return match;
+      return String.fromCodePoint(code);
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match, n) => {
+      const code = Math.min(parseInt(n, 16), 0x10FFFF);
+      if (Number.isNaN(code) || code < 0 || code > 0x10FFFF) return match;
+      return String.fromCodePoint(code);
+    })
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
@@ -20,7 +27,8 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&lsquo;/g, "'")
     .replace(/&rsquo;/g, "'")
     .replace(/&ldquo;/g, '"')
-    .replace(/&rdquo;/g, '"');
+    .replace(/&rdquo;/g, '"')
+    .replace(/&amp;/g, "&");
 }
 
 // ── Clean snippet/title text ──
@@ -272,14 +280,14 @@ export function registerWebTools(
   // SSRF 防护：在 fetch 前校验 URL 是否为内网地址，防止 agent 被诱导访问元数据端点等
   const ssrfProtection = registry?.resolveService<{ checkURL(url: string): Promise<{ allowed: boolean; reason?: string }> }>("ssrfProtection");
   const checkSsrf = async (url: string): Promise<string | null> => {
-    if (!ssrfProtection) return null;
+    if (!ssrfProtection) return "SSRF protection service unavailable";
     try {
       const result = await ssrfProtection.checkURL(url);
       if (!result.allowed) return result.reason ?? "blocked by SSRF policy";
+      return null;
     } catch {
-      return null; // SSRF 检查失败时不阻塞（best-effort）
+      return "SSRF check failed";
     }
-    return null;
   };
   // ============ Web Search & Fetch Tools ============
   // Standalone web tools not requiring browser controller
@@ -369,33 +377,17 @@ export function registerWebTools(
         }
 
         // Extract readable text from HTML with full entity decoding
-        const plainText = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
-          .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&ensp;/g, " ")
-          .replace(/&emsp;/g, "  ")
-          .replace(/&nbsp;/g, " ")
-          .replace(/&thinsp;/g, " ")
-          .replace(/&mdash;/g, "—")
-          .replace(/&ndash;/g, "–")
-          .replace(/&lsquo;/g, "'")
-          .replace(/&rsquo;/g, "'")
-          .replace(/&ldquo;/g, '"')
-          .replace(/&rdquo;/g, '"')
-          .replace(/\s+/g, " ")
-          .trim();
+        const plainText = decodeHtmlEntities(
+          text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+        ).replace(/\s+/g, " ").trim();
 
         const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
         return {
-          url,
-          title: titleMatch ? titleMatch[1].trim() : url,
-          status: response.status,
+          url: redirectUrl,
+          title: titleMatch ? titleMatch[1].trim() : redirectUrl,
+          status: finalResponse.status,
           text: plainText.slice(0, 5000),
           length: plainText.length,
         };
@@ -470,27 +462,11 @@ export function registerWebTools(
         const text = await response.text();
         clearTimeout(timeout);
         // Full entity decode + strip tags
-        const content = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
-          .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&ensp;/g, " ")
-          .replace(/&emsp;/g, "  ")
-          .replace(/&nbsp;/g, " ")
-          .replace(/&thinsp;/g, " ")
-          .replace(/&mdash;/g, "—")
-          .replace(/&ndash;/g, "–")
-          .replace(/&lsquo;/g, "'")
-          .replace(/&rsquo;/g, "'")
-          .replace(/&ldquo;/g, '"')
-          .replace(/&rdquo;/g, '"')
-          .replace(/\s+/g, " ")
-          .trim();
+        const content = decodeHtmlEntities(
+          text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+        ).replace(/\s+/g, " ").trim();
         const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
         return {
           url,
@@ -566,10 +542,11 @@ export function registerWebTools(
 
       const trySearchTavilyAPI = async (searchQuery: string, maxResults: number): Promise<{ results: Array<{ title: string; url: string; snippet: string }> }> => {
         const tavilyKey = process.env.TAVILY_API_KEY;
-        if (!tavilyKey || tavilyKey === "your_api_key") return { results: [] };
+      if (!tavilyKey || tavilyKey === "your_api_key") return { results: [] };
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
         try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 12000);
           const resp = await fetch("https://api.tavily.com/search", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -582,7 +559,6 @@ export function registerWebTools(
             }),
             signal: controller.signal,
           });
-          clearTimeout(timeoutId);
           if (!resp.ok) return { results: [] };
           const data = await resp.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
           if (!data.results || !Array.isArray(data.results)) return { results: [] };
@@ -591,9 +567,12 @@ export function registerWebTools(
               .filter((r) => r.url)
               .map((r) => ({ title: r.title || "", url: r.url!, snippet: (r.content || "").slice(0, 300) })),
           };
-        } catch {
-          return { results: [] };
+        } finally {
+          clearTimeout(timeoutId);
         }
+      } catch {
+        return { results: [] };
+      }
       };
 
       for (const q of allQueries) {

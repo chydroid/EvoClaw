@@ -4,18 +4,26 @@
 # Checks for common issues before committing
 
 # Check for secrets in staged files
+# Skip source code, examples, templates, docs, lock files — these use API_KEY/TOKEN as
+# variable names or placeholders, not real secrets. Only inspect config-style files.
 echo "Checking for secrets..."
-if git diff --cached --name-only | xargs -r grep -lE '(API_KEY|SECRET|PASSWORD|TOKEN)[[:space:]]*[:=]' 2>/dev/null | head -1 | grep -q .; then
-    echo "ERROR: Potential secrets found in staged files!"
-    echo "Please remove secrets before committing."
-    exit 1
+STAGED_CONFIG_FILES=$(git diff --cached --name-only | grep -E '\.(env|yaml|yml|toml|ini|conf)$' | grep -v -E '\.(example|template|sample)$')
+if [ -n "$STAGED_CONFIG_FILES" ]; then
+    if echo "$STAGED_CONFIG_FILES" | xargs grep -lE '(API_KEY|SECRET|PASSWORD|TOKEN)[[:space:]]*[:=][[:space:]]*[^[:space:]]' 2>/dev/null | grep -q .; then
+        echo "ERROR: Potential secrets found in staged config files!"
+        echo "Please remove secrets before committing."
+        exit 1
+    fi
 fi
 
-# Check for console.log in production code
+# Check for console.log in production code (warning only)
 echo "Checking for console.log..."
-if git diff --cached --name-only | grep -E "\.(ts|js)$" | xargs -r grep -l "console\.log" 2>/dev/null | head -1 | grep -q .; then
-    echo "WARNING: console.log found in staged files."
-    echo "Consider using Logger instead."
+STAGED_CODE_FILES=$(git diff --cached --name-only | grep -E '\.(ts|js)$' | grep -v '\.test\.')
+if [ -n "$STAGED_CODE_FILES" ]; then
+    if echo "$STAGED_CODE_FILES" | xargs grep -l "console\.log" 2>/dev/null | head -1 | grep -q .; then
+        echo "WARNING: console.log found in staged files."
+        echo "Consider using Logger instead."
+    fi
 fi
 
 echo "Pre-commit checks passed!"

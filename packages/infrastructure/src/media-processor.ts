@@ -350,12 +350,20 @@ export function parseAudioTags(buffer: Buffer): AudioTags {
   if (buffer.length > 10 && buffer.slice(0, 3).toString() === "ID3") {
     // ID3v2 is complex — this is a minimal extraction
     const headerSize = 10;
+    // ID3v2.4+ 帧大小使用 syncsafe integer（每字节仅低 7 位有效）；
+    // ID3v2.3 使用普通 32-bit BE。版本号位于第 4 字节。
+    const id3Version = buffer[3];
     const scanLimit = Math.min(buffer.length, headerSize + 512);
     for (let i = headerSize; i + headerSize <= scanLimit;) {
       const frameId = buffer.slice(i, i + 4).toString();
       if (frameId === "\0\0\0\0" || frameId[0] === "\0") break;
 
-      const frameSize = buffer.readUInt32BE(i + 4);
+      const frameSize = id3Version >= 4
+        ? ((buffer[i + 4] & 0x7f) << 21)
+          | ((buffer[i + 5] & 0x7f) << 14)
+          | ((buffer[i + 6] & 0x7f) << 7)
+          | (buffer[i + 7] & 0x7f)
+        : buffer.readUInt32BE(i + 4);
       if (frameSize <= 0 || frameSize > 1024) break;
       if (i + 10 + frameSize > buffer.length) break;
 

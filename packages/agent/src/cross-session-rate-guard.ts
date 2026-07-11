@@ -19,7 +19,7 @@
  *   - 原子写入（遵循 AGENTS.md 的 atomicWriteFile 规则）
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
 
@@ -149,6 +149,9 @@ function atomicWriteFile(filePath: string, content: string): void {
     } catch (err) {
       // 最终失败，记录到 stderr 避免静默吞错
       process.stderr.write("[CrossSessionRateGuard] atomicWriteFile failed: " + err + "\n");
+    } finally {
+      // 无论回退写入成功与否，都尝试清理残留的临时文件
+      try { unlinkSync(tmpPath); } catch { /* ignore */ }
     }
   }
 }

@@ -612,7 +612,14 @@ export class SkillRegistry {
   }
 
   private compareVersion(a: string, b: string): number {
-    const parse = (v: string) => v.split(".").map(Number);
+    const parse = (v: string) => v.split(".").map((part) => {
+      const n = Number(part);
+      // 非数字段（如 "1.0.0-alpha" 中的 "0-alpha" / "alpha"）会产生 NaN，
+      // 此处统一视为 0 以避免 NaN 污染比较结果。
+      // 已知限制：此方案无法区分 1.0.0-alpha 与 1.0.0-beta 的先后顺序，
+      // 仅保证语义化版本号数值部分的正确比较。
+      return isNaN(n) ? 0 : n;
+    });
     const partsA = parse(a);
     const partsB = parse(b);
 

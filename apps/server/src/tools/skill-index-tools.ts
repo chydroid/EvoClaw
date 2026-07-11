@@ -20,7 +20,8 @@ export function registerSkillIndexTools(
     async (params: Record<string, unknown>) => {
       const skillName = String(params.skill || "");
       const parsedLevel = Number(params.level ?? 1);
-      const level = (Number.isFinite(parsedLevel) ? parsedLevel : 1) as 0 | 1 | 2;
+      // 值域校验：仅接受 0/1/2，其余回退为默认 1，避免任意值通过类型断言
+      const level: 0 | 1 | 2 = [0, 1, 2].includes(parsedLevel) ? (parsedLevel as 0 | 1 | 2) : 1;
       const allEntries = index.getAll();
       const entry = allEntries.find(e => e.name === skillName || e.id === skillName);
       if (!entry) return { error: `Skill "${skillName}" not found in index` };

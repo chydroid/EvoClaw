@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 const GATEWAY_RESTART_INTENT_FILENAME = "gateway-restart-intent.json";
 const GATEWAY_RESTART_INTENT_TTL_MS = 60_000;
@@ -112,7 +113,8 @@ export function writeGatewayRestartIntentSync(opts: {
     };
     const content = `${JSON.stringify(payload)}\n`;
     // 原子写入：temp 文件 → fsync → rename
-    const tmpPath = `${intentPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    // 临时文件名使用 crypto.randomUUID 而非 Math.random，避免可预测性
+    const tmpPath = `${intentPath}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
     const fd = fs.openSync(tmpPath, "w", 0o600);
     try {
       fs.writeFileSync(fd, content, "utf-8");

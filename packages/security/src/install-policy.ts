@@ -3,7 +3,7 @@
 // 替代传统的"代码扫描"模式，改为策略+上下文+来源+操作者决策的多元约束
 import * as fs from "fs";
 import * as path from "path";
-import { createHash } from "crypto";
+import { createHmac, randomBytes } from "crypto";
 
 /** 插件/技能来源类型 */
 export type InstallSource = "official" | "verified" | "community" | "local" | "url" | "unknown";
@@ -127,6 +127,8 @@ export class InstallPolicyManager {
   private auditPath?: string;
   private approvalTimeoutMs: number;
   private auditLog: InstallAuditEntry[] = [];
+  /** HMAC 密钥：用于 getPolicyHash 的密钥哈希，防止彩虹表攻击 */
+  private readonly hmacKey: Buffer = randomBytes(32);
   private pendingApprovals = new Map<string, {
     request: InstallRequest;
     evaluation: PolicyEvaluation;
@@ -253,13 +255,14 @@ export class InstallPolicyManager {
     request: InstallRequest,
     evaluation: PolicyEvaluation,
   ): Promise<PolicyAction> {
-    const id = `${request.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `${request.name}-${Date.now()}-${randomBytes(4).toString("hex")}`;
     return new Promise<PolicyAction>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingApprovals.delete(id);
         // fail-closed: 超时默认拒绝
         resolve("deny");
       }, this.approvalTimeoutMs);
+      timer.unref?.();
       this.pendingApprovals.set(id, { request, evaluation, resolve, timer });
     });
   }
@@ -280,6 +283,15 @@ export class InstallPolicyManager {
     });
     pending.resolve(decision);
     return true;
+  }
+
+  /** 清理所有 pending approvals（fail-closed: 全部拒绝） */
+  dispose(): void {
+    for (const pending of this.pendingApprovals.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.resolve("deny");
+    }
+    this.pendingApprovals.clear();
   }
 
   /** 完整流程: 评估 + (可选)等待approval + 审计 */
@@ -314,7 +326,7 @@ export class InstallPolicyManager {
 
   /** 记录审计 */
   private audit(entry: Omit<InstallAuditEntry, "id">): InstallAuditEntry {
-    const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `audit-${Date.now()}-${randomBytes(4).toString("hex")}`;
     const full: InstallAuditEntry = { id, ...entry };
     this.auditLog.push(full);
     // 限制内存中日志数量
@@ -378,7 +390,7 @@ export class InstallPolicyManager {
    * 灵感来自 @evoclaw/infrastructure 的 atomicWriteFile 与 gateway 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+    const tmpPath = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
     const fd = fs.openSync(tmpPath, "w");
     try {
       fs.writeFileSync(fd, content, "utf-8");
@@ -440,9 +452,9 @@ export class InstallPolicyManager {
     return "low";
   }
 
-  /** 计算策略hash */
+  /** 计算策略hash（使用HMAC防止彩虹表攻击） */
   getPolicyHash(): string {
-    return createHash("sha256").update(JSON.stringify(this.policy)).digest("hex").slice(0, 16);
+    return createHmac("sha256", this.hmacKey).update(JSON.stringify(this.policy)).digest("hex").slice(0, 16);
   }
 
   /** 获取当前策略 */

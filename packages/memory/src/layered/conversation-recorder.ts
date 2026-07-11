@@ -17,6 +17,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import { appendJsonlAtomic, atomicWriteFileSync } from "./atomic-write";
 import { parseJsonlSafe, sanitizeText } from "./jsonl-defense";
 
@@ -91,6 +92,8 @@ export class ConversationRecorder {
       requiredFields: ["id", "role", "content", "timestamp", "sessionKey"],
     });
     // 取最后 N 条
+    // slice(-0) 会返回整个数组，limit 为 0 时应返回空数组
+    if (limit === 0) return [];
     return result.entries.slice(-limit);
   }
 
@@ -117,8 +120,11 @@ export class ConversationRecorder {
     if (!query.trim()) return [];
     const lower = query.toLowerCase();
     const results: ConversationMessage[] = [];
-    for (const sessionKey of this.listSessions()) {
-      const msgs = this.loadRecent(sessionKey, 10000);
+    // 限制扫描的 session 数量与每个 session 加载的消息数，避免大量 session 时 OOM
+    const MAX_SCAN_SESSIONS = 50;
+    const scannedSessions = this.listSessions().slice(0, MAX_SCAN_SESSIONS);
+    for (const sessionKey of scannedSessions) {
+      const msgs = this.loadRecent(sessionKey, 1000);
       for (const m of msgs) {
         if (m.content.toLowerCase().includes(lower)) {
           results.push(m);
@@ -169,6 +175,6 @@ export class ConversationRecorder {
   }
 
   private genId(): string {
-    return `l0_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    return `l0_${Date.now().toString(36)}_${randomUUID()}`;
   }
 }

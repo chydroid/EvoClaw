@@ -104,7 +104,11 @@ const PROVIDER_DEFAULTS: Record<string, { smtpHost: string; smtpPort: number; im
   custom: { smtpHost: "", smtpPort: 587, imapHost: "", imapPort: 993 },
 };
 
-const ENCRYPTION_KEY = Buffer.from(process.env.EvoClaw_EMAIL_KEY || "", "utf-8").subarray(0, 32);
+// 延迟计算加密密钥：避免模块加载时 dotenv 未就绪导致密钥为空
+function getEncryptionKey(): Buffer {
+  const raw = process.env.EvoClaw_EMAIL_KEY || "";
+  return Buffer.from(raw, "utf-8").subarray(0, 32);
+}
 
 export class EmailClient {
   private accounts: Map<string, EmailAccount> = new Map();
@@ -127,6 +131,7 @@ export class EmailClient {
   }
 
   addAccount(email: string, password: string, provider: EmailAccount["provider"] = "custom", displayName?: string): EmailAccount {
+    const ENCRYPTION_KEY = getEncryptionKey();
     if (ENCRYPTION_KEY.length < 32) {
       throw new Error("Cannot add email account: EvoClaw_EMAIL_KEY environment variable must be set (32+ bytes) for credential encryption");
     }
@@ -189,6 +194,12 @@ export class EmailClient {
   }
 
   private decryptPassword(account: EmailAccount): string {
+    const ENCRYPTION_KEY = getEncryptionKey();
+    // 安全：ENCRYPTION_KEY 不足 32 字节时 createDecipheriv 会抛 ERR_OSSL_EVP_WRONG_FINAL_BLOCK_LENGTH 或静默失败，
+    // 在此提前抛出明确错误，避免误诊为数据损坏
+    if (ENCRYPTION_KEY.length < 32) {
+      throw new Error("Cannot decrypt email password: EvoClaw_EMAIL_KEY environment variable must be set (32+ bytes) for credential decryption");
+    }
     const iv = Buffer.from(account.iv, "hex");
     const decipher = crypto.createDecipheriv("aes-256-cbc", ENCRYPTION_KEY, iv);
     let decrypted = decipher.update(account.encryptedPassword, "hex", "utf-8");
@@ -444,6 +455,14 @@ export class EmailClient {
         wordCount[word] = (wordCount[word] || 0) + 1;
       }
 
+      // 防止 wordCount 在处理大量邮件时无限增长导致内存峰值过高：
+      // 超过 5000 个 key 时移除低频词（count <= 1）
+      if (Object.keys(wordCount).length > 5000) {
+        for (const [w, c] of Object.entries(wordCount)) {
+          if (c <= 1) delete wordCount[w];
+        }
+      }
+
       for (const pattern of actionPatterns) {
         const matches = email.text.match(pattern);
         if (matches) {
@@ -542,6 +561,8 @@ export class EmailClient {
       const status = await client.status(options.folder || "INBOX", { messages: true });
       const total = status.messages ?? 0;
       const start = Math.max(1, total - limit + 1);
+      // 空邮箱：total=0 时跳过 fetch，避免某些 IMAP 服务器对非法范围报错
+      if (total === 0) return [];
       let fetched = 0;
       for await (const message of client.fetch(`${start}:*`, {
         envelope: true,
@@ -555,6 +576,9 @@ export class EmailClient {
         const fromAddr = envelope.from?.[0];
         const toAddr = envelope.to?.[0];
         const flags = message.flags;
+        // 已知限制：\Attachment 不是标准 IMAP 系统标志，服务器不会自动设置，
+        // 因此 hasAttachments 永远为 false。准确判断附件需要拉取 BODYSTRUCTURE
+        // 并递归检查 disposition 为 attachment 的 MIME 部分，此处暂不实现。
         const hasAttachments = flags instanceof Set ? flags.has("\\Attachment") : false;
         const flagsArray = flags instanceof Set ? Array.from(flags) : [];
 
@@ -608,6 +632,7 @@ export class EmailClient {
       logger: false,
     });
 
+    let loggedOut = false;
     try {
       await client.connect();
       await client.mailboxOpen("INBOX");
@@ -629,6 +654,7 @@ export class EmailClient {
       }
 
       await client.logout();
+      loggedOut = true;
 
       if (!rawContent) {
         throw new Error("无法获取邮件内容");
@@ -636,7 +662,10 @@ export class EmailClient {
 
       return this.parseRawEmail(rawContent);
     } catch (err) {
-      await client.logout().catch(() => {});
+      // 防止重复 logout：仅当 try 块内未成功 logout 时才在 catch 中清理
+      if (!loggedOut) {
+        await client.logout().catch(() => {});
+      }
       throw err;
     }
   }
@@ -726,9 +755,9 @@ export class EmailClient {
       }
     }
 
-    // Classify emails
+    // Classify emails — snippet 是占位符，使用 subject + from 提供分类依据
     for (const email of recent) {
-      const cats = this.classifyEmail(email.subject, email.snippet);
+      const cats = this.classifyEmail(email.subject, email.subject + " " + (email.from || ""));
       for (const cat of cats) {
         if (categories[cat] !== undefined) {
           categories[cat]++;
@@ -739,5 +768,18 @@ export class EmailClient {
     }
 
     return { total, unread, recent, categories };
+  }
+
+  /** 关闭所有 SMTP transporter，释放连接资源 */
+  dispose(): void {
+    for (const transporter of this.transporters.values()) {
+      try {
+        transporter.close();
+      } catch {
+        // best-effort
+      }
+    }
+    this.transporters.clear();
+    process.stdout.write("[EmailClient] All SMTP transporters closed\n");
   }
 }

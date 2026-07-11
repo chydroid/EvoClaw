@@ -96,7 +96,10 @@ export class HookPipeline {
       return { decision: HookDecision.Allow };
     }
 
-    let context = { ...ctx };
+    // 深拷贝 meta，避免 handler 间共享嵌套对象引用导致意外修改
+    // 使用 structuredClone 原生支持循环引用，避免 JSON.stringify 在遇到
+    // 循环引用时抛出 TypeError（项目要求 Node >= 20，已内置该 API）
+    let context = { ...ctx, meta: ctx.meta ? structuredClone(ctx.meta) : ctx.meta };
     let finalDecision = HookDecision.Allow;
     let finalReason = "";
     const feedbacks: string[] = [];

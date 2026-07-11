@@ -141,8 +141,13 @@ export class SSRFProtection {
   checkIP(ip: string): SSRFCheckResult {
     // Handle IPv6 addresses before ipToInt (which returns null for IPv6)
     if (isIPv6(ip)) {
-      if (ip === "::1") {
-        return { allowed: false, reason: `IPv6 loopback blocked: ${ip}` };
+      // 阻止未指定地址和环回
+      if (ip === "::" || ip === "::1") {
+        return { allowed: false, reason: `IPv6 unspecified/loopback blocked: ${ip}` };
+      }
+      // 阻止多播 (ff00::/8)
+      if (ip.startsWith("ff")) {
+        return { allowed: false, reason: `IPv6 multicast blocked: ${ip}` };
       }
       // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x 点分十进制形式)
       const v4MappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);

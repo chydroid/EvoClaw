@@ -9,6 +9,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 // ──────────────────────────────────────────────────────────────
 // Types
@@ -92,7 +93,7 @@ export interface ObservabilityConfig {
 // ──────────────────────────────────────────────────────────────
 
 function generateId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${Date.now().toString(36)}-${randomUUID()}`;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -709,7 +710,7 @@ export class AgentObservability {
 
       if (completedTraces.length === 0) return;
 
-      const dir = path.join(process.cwd(), "data", "observability");
+      const dir = this.storeDir;
 
       // Ensure directory exists
       try { fs.mkdirSync(dir, { recursive: true }); } catch (err) {
@@ -727,7 +728,21 @@ export class AgentObservability {
       // Export metrics to file
       const metricsFile = path.join(dir, `metrics-${new Date().toISOString().slice(0, 10)}.txt`);
       const metricsText = this.exportMetrics();
-      fs.writeFileSync(metricsFile, metricsText, "utf-8");
+      // 原子写入：temp + fsync + rename，防止覆盖式写入在崩溃时丢失数据
+      const metricsTmp = `${metricsFile}.${process.pid}.${Date.now()}.tmp`;
+      const mfd = fs.openSync(metricsTmp, "w");
+      try {
+        fs.writeFileSync(mfd, metricsText, "utf-8");
+        fs.fsyncSync(mfd);
+      } finally {
+        fs.closeSync(mfd);
+      }
+      try {
+        fs.renameSync(metricsTmp, metricsFile);
+      } catch {
+        // rename 失败时清理临时文件，避免残留
+        try { fs.unlinkSync(metricsTmp); } catch { /* ignore */ }
+      }
 
       // Clean up old traces from memory (keep last 100)
       const toKeep = 100;
@@ -735,8 +750,11 @@ export class AgentObservability {
         const sorted = Array.from(this.traces.entries())
           .sort((a, b) => (b[1].endTime || 0) - (a[1].endTime || 0));
         this.traces.clear();
+        // 同步重建 traceOrder，避免与 traces 内容不一致导致后续驱逐逻辑错乱
+        this.traceOrder = [];
         for (let i = 0; i < Math.min(toKeep, sorted.length); i++) {
           this.traces.set(sorted[i][0], sorted[i][1]);
+          this.traceOrder.push(sorted[i][0]);
         }
       }
     } catch (err) {

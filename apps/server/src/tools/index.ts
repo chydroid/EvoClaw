@@ -19,3 +19,11 @@ export type { VisionBatchToolDeps } from "./vision-batch-tools";
 // v0.70: 开发体验工具集
 export { registerDevTools } from "./dev-tools";
 export { registerMemoryTools } from "./memory-tools";
+// Kanban 多 Agent 工作队列工具集
+export { registerKanbanTools } from "./kanban-tools";
+export type { KanbanToolDeps } from "./kanban-tools";
+// Computer Use 桌面控制工具集（截图/鼠标/键盘/窗口管理）
+export { registerComputerUseTools } from "./computer-use-tools";
+export type { ComputerUseToolDeps } from "./computer-use-tools";
+export type { ComputerBackend, MouseButton, ScrollDirection, ScreenSize, WindowInfo, WindowBounds } from "./computer-use/computer-backend";
+export { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./computer-use-tools";

@@ -369,7 +369,7 @@ export function createRedactionTransform(
     if (typeof ctx.result !== "string") return;
     let result = ctx.result;
     for (const { pattern, replacement } of patterns) {
-      result = result.replace(pattern, replacement);
+      result = result.replace(pattern, () => replacement);
     }
     return { ...ctx, result };
   };

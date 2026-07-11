@@ -12,6 +12,28 @@
 import * as fs from "fs";
 import * as path from "path";
 
+// ── Helpers ──
+
+/**
+ * 原子写入文件：写临时文件 + fsync + rename，失败时清理临时文件。
+ * 避免写入过程中断导致目标文件损坏。
+ */
+function atomicWriteFileSync(filePath: string, data: Buffer | string): void {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    // renameSync 纳入 try/catch：rename 失败时清理临时文件，避免残留 tmp 文件
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* 忽略关闭失败 */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* 忽略清理失败 */ }
+    throw err;
+  }
+}
+
 // ── Types ──
 
 export interface FileSnapshot {
@@ -52,6 +74,20 @@ export class FileCheckpointer {
   }
 
   /**
+   * 解析相对路径为绝对路径，并校验最终路径在 baseDir 内，防止路径穿越。
+   * 若 relPath 为绝对路径，path.resolve 会忽略 baseDir，因此必须显式校验。
+   */
+  private resolveSafe(relPath: string): string {
+    const fullPath = path.resolve(this.baseDir, relPath);
+    const normalizedBase = path.resolve(this.baseDir);
+    // 确保 fullPath 在 baseDir 内（含 baseDir 本身）
+    if (fullPath !== normalizedBase && !fullPath.startsWith(normalizedBase + path.sep)) {
+      throw new Error(`Path traversal detected: ${relPath} resolves outside baseDir`);
+    }
+    return fullPath;
+  }
+
+  /**
    * Create a checkpoint by snapshotting all files matching the given globs.
    * (Claude Code: file checkpoint before major writes)
    */
@@ -63,7 +99,13 @@ export class FileCheckpointer {
     const snapshots: FileSnapshot[] = [];
 
     for (const relPath of filePaths) {
-      const fullPath = path.resolve(this.baseDir, relPath);
+      let fullPath: string;
+      try {
+        fullPath = this.resolveSafe(relPath);
+      } catch {
+        // Skip paths that traverse outside baseDir
+        continue;
+      }
       if (!fs.existsSync(fullPath)) continue;
 
       try {
@@ -120,15 +162,15 @@ export class FileCheckpointer {
     const failed: string[] = [];
 
     for (const snapshot of checkpoint.snapshots) {
-      const fullPath = path.resolve(this.baseDir, snapshot.filePath);
       try {
+        const fullPath = this.resolveSafe(snapshot.filePath);
         // Ensure parent directory exists
         const dir = path.dirname(fullPath);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
 
-        fs.writeFileSync(fullPath, Buffer.from(snapshot.content, "base64"));
+        atomicWriteFileSync(fullPath, Buffer.from(snapshot.content, "base64"));
         restored.push(snapshot.filePath);
       } catch (err) {
         failed.push(`${snapshot.filePath}: ${err instanceof Error ? err.message : String(err)}`);
@@ -178,9 +220,9 @@ export class FileCheckpointer {
     const failed: string[] = [];
 
     for (const snapshot of checkpoint.snapshots) {
-      const fullPath = path.resolve(this.baseDir, snapshot.filePath);
-
       try {
+        const fullPath = this.resolveSafe(snapshot.filePath);
+
         if (fs.existsSync(fullPath)) {
           const currentContent = fs.readFileSync(fullPath);
           const snapshotContent = Buffer.from(snapshot.content, "base64");
@@ -195,7 +237,7 @@ export class FileCheckpointer {
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(fullPath, Buffer.from(snapshot.content, "base64"));
+        atomicWriteFileSync(fullPath, Buffer.from(snapshot.content, "base64"));
         restored.push(snapshot.filePath);
       } catch (err) {
         failed.push(`${snapshot.filePath}: ${err instanceof Error ? err.message : String(err)}`);
@@ -228,7 +270,13 @@ export class FileCheckpointer {
 
     // Check snapshot files against current
     for (const snapshot of checkpoint.snapshots) {
-      const fullPath = path.resolve(this.baseDir, snapshot.filePath);
+      let fullPath: string;
+      try {
+        fullPath = this.resolveSafe(snapshot.filePath);
+      } catch {
+        // Skip paths that traverse outside baseDir
+        continue;
+      }
       if (!fs.existsSync(fullPath)) {
         removed.push(snapshot.filePath);
       } else {

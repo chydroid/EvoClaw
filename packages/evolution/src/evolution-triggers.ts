@@ -222,6 +222,7 @@ export class EvolutionTriggers extends EventEmitter {
           count: (addressed?.count ?? 0) + 1,
           lastAt: now,
         });
+        this.enforceMapCap(this.addressedDegradations);
       }
     }
 
@@ -247,6 +248,24 @@ export class EvolutionTriggers extends EventEmitter {
     for (const key of recovered) {
       this.addressedDegradations.delete(key);
       this.emit("evolution:tool-recovered", { toolKey: key });
+    }
+  }
+
+  /**
+   * 限制 Map 大小，防止无限制增长；淘汰 lastAt 最旧的条目。
+   */
+  private enforceMapCap(map: Map<string, { count: number; lastAt: number }>, cap = 1000): void {
+    while (map.size > cap) {
+      let oldestKey: string | null = null;
+      let oldestAt = Infinity;
+      for (const [k, v] of map) {
+        if (v.lastAt < oldestAt) {
+          oldestAt = v.lastAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey === null) break;
+      map.delete(oldestKey);
     }
   }
 
@@ -314,6 +333,7 @@ export class EvolutionTriggers extends EventEmitter {
           count: (addressed?.count ?? 0) + 1,
           lastAt: now,
         });
+        this.enforceMapCap(this.addressedMetrics);
       }
     }
 

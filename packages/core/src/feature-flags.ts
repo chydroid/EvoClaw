@@ -205,61 +205,67 @@ export class FeatureFlagStore {
     }
     visited.add(key);
 
-    const flag = this.flags.get(key);
+    try {
+      const flag = this.flags.get(key);
 
-    if (!flag) {
-      this.recordEval(key, this.config.defaultEnabled, "Flag not registered", options?.context);
-      return this.config.defaultEnabled;
-    }
+      if (!flag) {
+        this.recordEval(key, this.config.defaultEnabled, "Flag not registered", options?.context);
+        return this.config.defaultEnabled;
+      }
 
-    // Check expiry
-    if (flag.expiresAt && Date.now() > flag.expiresAt) {
-      this.recordEval(key, false, "Flag expired", options?.context);
-      return false;
-    }
-
-    // Check environment
-    if (flag.environments && flag.environments.length > 0) {
-      if (!flag.environments.includes(this.config.environment)) {
-        this.recordEval(key, false, `Environment "${this.config.environment}" not in [${flag.environments}]`, options?.context);
+      // Check expiry
+      if (flag.expiresAt && Date.now() > flag.expiresAt) {
+        this.recordEval(key, false, "Flag expired", options?.context);
         return false;
       }
-    }
 
-    // Check dependencies
-    if (flag.dependsOn && flag.dependsOn.length > 0) {
-      for (const dep of flag.dependsOn) {
-        if (!this.evaluateInternal(dep, options, new Set(visited))) {
-          this.recordEval(key, false, `Dependency "${dep}" not met`, options?.context);
+      // Check environment
+      if (flag.environments && flag.environments.length > 0) {
+        if (!flag.environments.includes(this.config.environment)) {
+          this.recordEval(key, false, `Environment "${this.config.environment}" not in [${flag.environments}]`, options?.context);
           return false;
         }
       }
-    }
 
-    // Check blocklist
-    const id = options?.userId ?? options?.channel ?? "";
-    if (flag.blocklist?.includes(id)) {
-      this.recordEval(key, false, `User/channel "${id}" is blocklisted`, options?.context);
-      return false;
-    }
+      // Check dependencies — 共享同一 visited Set，兄弟依赖间共享已访问记录
+      // 从而正确检测跨兄弟的环；递归返回后由 finally 回溯
+      if (flag.dependsOn && flag.dependsOn.length > 0) {
+        for (const dep of flag.dependsOn) {
+          if (!this.evaluateInternal(dep, options, visited)) {
+            this.recordEval(key, false, `Dependency "${dep}" not met`, options?.context);
+            return false;
+          }
+        }
+      }
 
-    // Check allowlist (if specified, target must be in it)
-    if (flag.allowlist && flag.allowlist.length > 0) {
-      if (!id || !flag.allowlist.includes(id)) {
-        this.recordEval(key, false, `User/channel "${id}" not in allowlist`, options?.context);
+      // Check blocklist
+      const id = options?.userId ?? options?.channel ?? "";
+      if (flag.blocklist?.includes(id)) {
+        this.recordEval(key, false, `User/channel "${id}" is blocklisted`, options?.context);
         return false;
       }
-    }
 
-    // Rollout percentage (deterministic hash)
-    if (flag.rolloutPercent !== undefined && id) {
-      const result = rollPercentage(flag, id);
-      this.recordEval(key, result, `Rollout ${flag.rolloutPercent}% → hash=${hashString(`${flag.key}:${id}`) % 100}`, options?.context);
-      return result;
-    }
+      // Check allowlist (if specified, target must be in it)
+      if (flag.allowlist && flag.allowlist.length > 0) {
+        if (!id || !flag.allowlist.includes(id)) {
+          this.recordEval(key, false, `User/channel "${id}" not in allowlist`, options?.context);
+          return false;
+        }
+      }
 
-    this.recordEval(key, flag.enabled, `Flag enabled=${flag.enabled}`, options?.context);
-    return flag.enabled;
+      // Rollout percentage (deterministic hash)
+      if (flag.rolloutPercent !== undefined && id) {
+        const result = rollPercentage(flag, id);
+        this.recordEval(key, result, `Rollout ${flag.rolloutPercent}% → hash=${hashString(`${flag.key}:${id}`) % 100}`, options?.context);
+        return result;
+      }
+
+      this.recordEval(key, flag.enabled, `Flag enabled=${flag.enabled}`, options?.context);
+      return flag.enabled;
+    } finally {
+      // 回溯：让兄弟依赖能重新评估共享依赖而不误判为环
+      visited.delete(key);
+    }
   }
 
   /**

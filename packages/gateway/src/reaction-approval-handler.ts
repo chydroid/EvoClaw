@@ -136,7 +136,7 @@ export class ReactionApprovalHandler {
     if (!approvalId) return { handled: false };
     const request = this.pending.get(approvalId);
     if (!request) return { handled: false };
-    if (Date.now() > request.expiresAt) {
+    if (Date.now() >= request.expiresAt) {
       await this.expire(approvalId);
       return { handled: true, request, decision: "expired" };
     }
@@ -156,10 +156,14 @@ export class ReactionApprovalHandler {
     if (decision === "approved") this.stats.approved++;
     else this.stats.denied++;
     if (this.config.onReacted) {
-      try { await this.config.onReacted(request, decision); } catch { /* swallow */ }
+      try { await this.config.onReacted(request, decision); } catch (err) {
+        process.stderr.write(`[ReactionApproval] onReacted(${decision}) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     if (this.config.onDecision) {
-      try { await this.config.onDecision(request, decision); } catch { /* swallow */ }
+      try { await this.config.onDecision(request, decision); } catch (err) {
+        process.stderr.write(`[ReactionApproval] onDecision(${decision}) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     return { handled: true, request, decision };
   }
@@ -184,10 +188,14 @@ export class ReactionApprovalHandler {
     this.cleanup(id);
     this.stats.expired++;
     if (this.config.onReacted) {
-      try { await this.config.onReacted(request, "expired"); } catch { /* swallow */ }
+      try { await this.config.onReacted(request, "expired"); } catch (err) {
+        process.stderr.write(`[ReactionApproval] onReacted(expired) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     if (this.config.onDecision) {
-      try { await this.config.onDecision(request, "expired"); } catch { /* swallow */ }
+      try { await this.config.onDecision(request, "expired"); } catch (err) {
+        process.stderr.write(`[ReactionApproval] onDecision(expired) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
   }
 

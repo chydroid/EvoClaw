@@ -213,7 +213,13 @@ export class PermissionManager {
 
   private matchTarget(target: string, pattern: string): boolean {
     if (pattern.endsWith("*")) {
-      return target.startsWith(pattern.slice(0, -1));
+      const prefix = pattern.slice(0, -1);
+      if (!target.startsWith(prefix)) return false;
+      // 防止路径穿越：/safe/* 不应匹配 /safe/../etc/passwd。
+      // 检查剩余路径中是否包含 ".." 段（同时处理 / 和 \ 分隔符）。
+      const remaining = target.slice(prefix.length).replace(/\\/g, "/");
+      if (remaining.split("/").some((seg) => seg === "..")) return false;
+      return true;
     }
     return target === pattern;
   }
@@ -420,10 +426,9 @@ export class PermissionManager {
       if (elapsed > ttlMs) {
         if (req.status === "pending") {
           req.status = "expired";
-        } else {
-          this.requests.delete(key);
-          removed++;
         }
+        this.requests.delete(key);
+        removed++;
       }
     }
 

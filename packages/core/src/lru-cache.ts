@@ -71,9 +71,9 @@ export class LRUCache<V> {
     hitRate: 0,
   };
 
-  private onEvict?: (key: string, value: V) => void;
+  private onEvict?: (key: string, value: V, expired?: boolean) => void;
 
-  constructor(config?: Partial<LRUCacheConfig>, onEvict?: (key: string, value: V) => void) {
+  constructor(config?: Partial<LRUCacheConfig>, onEvict?: (key: string, value: V, expired?: boolean) => void) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.onEvict = onEvict;
   }
@@ -181,16 +181,28 @@ export class LRUCache<V> {
     const inflight = this.inflight.get(key);
     if (inflight) return inflight as Promise<V>;
 
-    const p = (async () => {
+    // 先 set 占位 Promise 再执行 factory，避免 factory 同步抛出时
+    // try/finally 在 inflight.set 之前运行导致该条目永久残留
+    let resolveFn!: (v: V) => void;
+    let rejectFn!: (e: unknown) => void;
+    const p = new Promise<V>((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    this.inflight.set(key, p);
+
+    (async () => {
       try {
         const value = await factory();
         this.set(key, value, ttlMs);
-        return value;
+        resolveFn(value);
+      } catch (err) {
+        rejectFn(err);
       } finally {
         this.inflight.delete(key);
       }
     })();
-    this.inflight.set(key, p);
+
     return p;
   }
 
@@ -209,6 +221,10 @@ export class LRUCache<V> {
 
   /**
    * Delete a key.
+   *
+   * @param expired 标记本次删除是否因 TTL 过期触发。无论哪种场景都会调用 onEvict
+   *               （回调可自行判断是否忽略 expired 触发的驱逐），避免 sweep 与
+   *               get/has 中的过期清理路径绕过资源回收回调造成泄漏。
    */
   delete(key: string, expired = false): boolean {
     const node = this.map.get(key);
@@ -217,8 +233,8 @@ export class LRUCache<V> {
     this.unlink(node);
     this.map.delete(key);
 
-    if (!expired && this.onEvict) {
-      this.onEvict(key, node.entry.value);
+    if (this.onEvict) {
+      this.onEvict(key, node.entry.value, expired);
     }
 
     this.stats.size = this.map.size;
@@ -274,6 +290,10 @@ export class LRUCache<V> {
 
   /**
    * Get number of entries (non-expired).
+   *
+   * 已知性能限制：本 getter 为 O(n)——需遍历全部条目过滤已过期项以保证计数准确
+   * （过期是惰性的，无独立计数器维护）。在条目数极大且频繁读取 size 的场景下，
+   * 可先调用 purgeExpired() 再用 this.map.size 近似，或引入显式计数器。
    */
   get size(): number {
     return this.keys().length;

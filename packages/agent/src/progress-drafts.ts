@@ -299,7 +299,13 @@ export class ProgressDraftsManager extends EventEmitter {
     );
   }
 
-  /** Run a step with automatic progress tracking */
+  /**
+   * Run a step with automatic progress tracking.
+   *
+   * 注意：当 fn() 抛出异常时，本方法会先调用 failDraft() 将 draft 标记为 failed 并移入历史，
+   * 然后才重新抛出该异常。因此调用方在 catch 块中不应再对该 draftId 调用 updateDraft()/
+   * completeDraft()——此时 draft 已不在活跃 drafts 表中，这两个方法会静默返回 null。
+   */
   async runStep<T>(
     draftId: string,
     stepIndex: number,
@@ -399,14 +405,18 @@ export class ProgressDraftsManager extends EventEmitter {
 
     // Auto-complete stuck drafts
     const stuckMs = this.config.autoCompleteStuckMs;
+    const stuckIds: string[] = [];
     for (const [id, draft] of this.drafts) {
       if (
         draft.status === "running" &&
         draft.progress >= 100 &&
         now - draft.updatedAt > stuckMs
       ) {
-        this.completeDraft(id, "Auto-completed (stuck)");
+        stuckIds.push(id);
       }
+    }
+    for (const id of stuckIds) {
+      this.completeDraft(id, "Auto-completed (stuck)");
     }
   }
 

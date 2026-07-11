@@ -70,6 +70,10 @@ export class AnomalyDetector {
 
       this.alerts.push(alert);
       if (this.alerts.length > 1000) {
+        // 超限时丢弃最旧 500 条告警，写 stderr 以便运维感知证据丢失
+        process.stderr.write(
+          `[AnomalyDetector] alerts 超过 1000 上限，丢弃最旧 500 条告警\n`
+        );
         this.alerts = this.alerts.slice(-500);
       }
 

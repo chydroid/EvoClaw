@@ -120,6 +120,10 @@ export class ResourcePool<T> extends EventEmitter {
     this.destroyer = destroyer;
     this.validator = validator ?? (() => true);
 
+    this.on("error", (err) => {
+      process.stderr.write(`[ResourcePool] error: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
+
     if (this.config.prefill) {
       this.prefillPool();
     }

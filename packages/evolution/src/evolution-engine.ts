@@ -2,6 +2,7 @@ import {
   ServiceRegistry,
   EventBus,
   SystemEvents,
+  type EventHandler,
   type EvolutionCycle,
   type ReinforcementFeedback,
   type LearningEntry,
@@ -53,9 +54,13 @@ export class EvolutionEngine {
   private cycles = new Map<string, EvolutionCycle>();
   private feedbackStore: ReinforcementFeedback[] = [];
   private maxFeedbackStoreEntries = 500;
+  // 内存中 cycles 条目上限，与磁盘持久化的 slice(-500) 对齐，防止无界增长
+  private readonly maxCyclesEntries = 500;
   private storeDir: string;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  // 保存 EventBus 订阅 ID，stop() 时逐一取消订阅
+  private subscriptionIds: string[] = [];
 
   constructor(
     private registry: ServiceRegistry,
@@ -121,7 +126,27 @@ export class EvolutionEngine {
       const fd = fs.openSync(tmpPath, "r");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
-      fs.renameSync(tmpPath, statePath);
+      try {
+        fs.renameSync(tmpPath, statePath);
+      } catch (renameErr: unknown) {
+        const code = (renameErr as NodeJS.ErrnoException)?.code;
+        if (code === "EXDEV" || code === "EBUSY") {
+          // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
+          const dstTmp = `${statePath}.${process.pid}.dst.tmp`;
+          const content = fs.readFileSync(tmpPath, "utf-8");
+          const fd2 = fs.openSync(dstTmp, "w");
+          try {
+            fs.writeFileSync(fd2, content, "utf-8");
+            fs.fsyncSync(fd2);
+          } finally {
+            fs.closeSync(fd2);
+          }
+          fs.renameSync(dstTmp, statePath);
+          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        } else {
+          throw renameErr;
+        }
+      }
     } catch (err) {
       process.stderr.write(`[EvolutionEngine] Failed to persist: ${err}\n`);
     }
@@ -144,7 +169,14 @@ export class EvolutionEngine {
         }
       }
       if (Array.isArray(data.feedback)) {
-        this.feedbackStore = data.feedback.map((f: any) => ({ ...f, collectedAt: toDate(f.collectedAt) }));
+        // data 来自磁盘 JSON.parse(any)；逐项做类型守卫，避免直接 trust any
+        const feedbackList = data.feedback as unknown[];
+        this.feedbackStore = feedbackList
+          .filter((f: unknown): f is Record<string, unknown> => f !== null && typeof f === "object")
+          .map((f): ReinforcementFeedback => ({
+            ...(f as unknown as ReinforcementFeedback),
+            collectedAt: toDate(f.collectedAt) ?? new Date(),
+          }));
       }
     } catch (err) {
       process.stderr.write(`[EvolutionEngine] Failed to load from disk: ${err}\n`);
@@ -157,12 +189,23 @@ export class EvolutionEngine {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+    // 取消所有 EventBus 订阅，避免停止后仍接收事件
+    for (const id of this.subscriptionIds) {
+      this.eventBus.unsubscribe(id);
+    }
+    this.subscriptionIds = [];
     this.persistToDisk();
     this.learningJournal.stop();
   }
 
   private subscribeToEvents(): void {
-    this.eventBus.subscribe(SystemEvents.TASK_FAILED, async (event) => {
+    // 订阅辅助：subscribe 后记录 ID，便于 stop() 时取消订阅
+    const track = (eventType: string, handler: EventHandler) => {
+      const sub = this.eventBus.subscribe(eventType, handler);
+      this.subscriptionIds.push(sub.id);
+    };
+
+    track(SystemEvents.TASK_FAILED, async (event) => {
       if (this.stopped) return;
       const taskData = event.data as Record<string, unknown>;
       if (taskData?.error) {
@@ -247,7 +290,7 @@ export class EvolutionEngine {
       }
     });
 
-    this.eventBus.subscribe(SystemEvents.USER_CORRECTION_RECEIVED, async (event) => {
+    track(SystemEvents.USER_CORRECTION_RECEIVED, async (event) => {
       if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
@@ -282,7 +325,7 @@ export class EvolutionEngine {
       }
     });
 
-    this.eventBus.subscribe(SystemEvents.CAPABILITY_GAP_DETECTED, async (event) => {
+    track(SystemEvents.CAPABILITY_GAP_DETECTED, async (event) => {
       if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
@@ -330,7 +373,7 @@ export class EvolutionEngine {
       }
     });
 
-    this.eventBus.subscribe(SystemEvents.EXTERNAL_FAILURE_DETECTED, async (event) => {
+    track(SystemEvents.EXTERNAL_FAILURE_DETECTED, async (event) => {
       if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
@@ -380,7 +423,7 @@ export class EvolutionEngine {
       }
     });
 
-    this.eventBus.subscribe(SystemEvents.KNOWLEDGE_IMPROVEMENT_FOUND, async (event) => {
+    track(SystemEvents.KNOWLEDGE_IMPROVEMENT_FOUND, async (event) => {
       if (this.stopped) return;
       const data = event.data as Record<string, unknown>;
 
@@ -454,6 +497,15 @@ export class EvolutionEngine {
     };
 
     this.cycles.set(cycle.id, cycle);
+    // 裁剪内存中过期的 cycles，保留最近 maxCyclesEntries 条，防止无界增长
+    if (this.cycles.size > this.maxCyclesEntries) {
+      const overflow = this.cycles.size - this.maxCyclesEntries;
+      // cycles 为插入顺序 Map，删除最早插入的条目
+      const keysToRemove = Array.from(this.cycles.keys()).slice(0, overflow);
+      for (const key of keysToRemove) {
+        this.cycles.delete(key);
+      }
+    }
     this.schedulePersist();
     await this.eventBus.publish(SystemEvents.EVOLUTION_STARTED, cycle, "evolution-engine");
 

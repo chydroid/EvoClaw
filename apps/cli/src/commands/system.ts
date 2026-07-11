@@ -5,7 +5,6 @@ import { apiRequest } from "../utils/api";
 import {
   ensureServer,
   printError,
-  printSuccess,
   printJson,
   printTable,
   formatTimestamp,
@@ -19,22 +18,6 @@ interface AuditEntry {
   action?: string;
   message?: string;
   [key: string]: unknown;
-}
-
-interface HeartbeatInfo {
-  enabled?: boolean;
-  lastBeat?: string | number;
-  intervalMs?: number;
-  pid?: number;
-  uptime?: number;
-}
-
-interface PresenceInfo {
-  status?: string;
-  lastActivity?: string | number;
-  pid?: number;
-  sessions?: number;
-  agents?: number;
 }
 
 export function register(program: Command, _shared: (cmd: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
@@ -112,6 +95,7 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
     });
 
   // ── system heartbeat (sub-subcommands) ────────────────────────
+  // 注：/api/system/heartbeat 端点尚未实现
   const heartbeat = sys
     .command("heartbeat")
     .description("Manage system heartbeat (last | enable | disable | status)");
@@ -120,19 +104,8 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
     .command("last")
     .description("Show the last heartbeat timestamp")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const r = await apiRequest<HeartbeatInfo>("GET", "/api/system/heartbeat");
-        if (opts.json) { printJson(r.data); return; }
-        console.log(section("Heartbeat"));
-        console.log(`  Last beat:   ${formatTimestamp(r.data?.lastBeat)}`);
-        console.log(`  Interval:   ${r.data?.intervalMs ?? "—"}ms`);
-        console.log(`  Enabled:    ${r.data?.enabled ? c("green", "yes") : c("gray", "no")}`);
-        console.log();
-      } catch (err) {
-        printError("Failed to fetch heartbeat", err instanceof Error ? err.message : String(err));
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Heartbeat management is not yet available via CLI."));
     });
 
   heartbeat
@@ -140,75 +113,33 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
     .description("Enable system heartbeat")
     .option("--interval <ms>", "Heartbeat interval in ms", "30000")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const body: Record<string, unknown> = { enabled: true };
-        const interval = parseInt(String(opts.interval || "30000"), 10);
-        if (!isNaN(interval) && interval > 0) body.intervalMs = interval;
-        const r = await apiRequest<HeartbeatInfo>("POST", "/api/system/heartbeat", body);
-        if (opts.json) { printJson(r.data); return; }
-        printSuccess("Heartbeat enabled");
-        console.log(c("gray", `  Interval: ${r.data?.intervalMs ?? interval}ms`));
-      } catch (err) {
-        printError("Failed to enable heartbeat", err instanceof Error ? err.message : String(err));
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Heartbeat management is not yet available via CLI."));
     });
 
   heartbeat
     .command("disable")
     .description("Disable system heartbeat")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const r = await apiRequest<HeartbeatInfo>("POST", "/api/system/heartbeat", { enabled: false });
-        if (opts.json) { printJson(r.data); return; }
-        printSuccess("Heartbeat disabled");
-      } catch (err) {
-        printError("Failed to disable heartbeat", err instanceof Error ? err.message : String(err));
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Heartbeat management is not yet available via CLI."));
     });
 
   heartbeat
     .command("status")
     .description("Show heartbeat status (alias for `last`)")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const r = await apiRequest<HeartbeatInfo>("GET", "/api/system/heartbeat");
-        if (opts.json) { printJson(r.data); return; }
-        console.log(section("Heartbeat Status"));
-        console.log(`  Enabled:    ${r.data?.enabled ? c("green", "yes") : c("gray", "no")}`);
-        console.log(`  Last beat:  ${formatTimestamp(r.data?.lastBeat)}`);
-        console.log(`  Interval:   ${r.data?.intervalMs ?? "—"}ms`);
-        console.log(`  PID:        ${r.data?.pid ?? "—"}`);
-        console.log();
-      } catch (err) {
-        printError("Failed to fetch heartbeat", err instanceof Error ? err.message : String(err));
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ Heartbeat management is not yet available via CLI."));
     });
 
   // ── system presence ───────────────────────────────────────────
+  // 注：/api/system/presence 端点尚未实现
   sys
     .command("presence")
     .description("Show system presence (active agents / sessions)")
     .option("--json", "Output as JSON")
-    .action(async (opts: Record<string, unknown>) => {
-      if (!(await ensureServer())) return;
-      try {
-        const r = await apiRequest<PresenceInfo>("GET", "/api/system/presence");
-        if (opts.json) { printJson(r.data); return; }
-        console.log(section("System Presence"));
-        console.log(`  Status:        ${c("green", r.data?.status || "active")}`);
-        console.log(`  Last activity: ${formatTimestamp(r.data?.lastActivity)}`);
-        if (r.data?.pid) console.log(`  PID:           ${r.data.pid}`);
-        if (r.data?.sessions != null) console.log(`  Sessions:      ${r.data.sessions}`);
-        if (r.data?.agents != null) console.log(`  Agents:        ${r.data.agents}`);
-        console.log();
-      } catch (err) {
-        printError("Failed to fetch presence", err instanceof Error ? err.message : String(err));
-      }
+    .action(async () => {
+      console.log(c("yellow", "⚠ System presence is not yet available via CLI."));
     });
 }

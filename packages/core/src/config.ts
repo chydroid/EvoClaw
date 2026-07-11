@@ -352,9 +352,20 @@ export class ConfigManager {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      const temp = `${target}.tmp`;
-      fs.writeFileSync(temp, JSON.stringify(this.config, null, 2), "utf-8");
-      fs.renameSync(temp, target);
+      const temp = `${target}.${process.pid}.tmp`;
+      try {
+        const fd = fs.openSync(temp, "w");
+        try {
+          fs.writeFileSync(fd, JSON.stringify(this.config, null, 2), "utf-8");
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        fs.renameSync(temp, target);
+      } catch (err) {
+        try { fs.unlinkSync(temp); } catch { /* ignore */ }
+        throw err;
+      }
     });
     return target;
   }
@@ -487,6 +498,10 @@ export class ConfigManager {
     }
   }
 
+  // 已知限制：withLock 基于链式 Promise 实现串行化，未设置超时。
+  // 若某个被锁保护的异步操作长时间挂起（既不 resolve 也不 reject），
+  // 后续所有排队操作将永久等待。当前风险可控（调用方均为短时本地 IO），
+  // 若未来引入不可控的外部异步操作，需在此增加超时机制。
   private withLock<T>(fn: () => Promise<T>): Promise<T> {
     const execute = this.pending.then(fn).catch((err) => {
       throw err;
@@ -568,7 +583,8 @@ export class ConfigManager {
     let current = this.config as unknown as Record<string, unknown>;
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
-      if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+      // 数组也是对象，可继续穿越（按索引/键访问），故不替换为数组为空对象
+      if (!current[part] || typeof current[part] !== "object") {
         current[part] = {};
       }
       current = current[part] as Record<string, unknown>;

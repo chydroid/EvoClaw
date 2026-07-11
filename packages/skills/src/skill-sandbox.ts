@@ -24,7 +24,10 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 type ScriptLang = "javascript" | "python" | "bash" | "shell" | "unknown";
 
 export class SkillSandbox {
-  private activeExecutions = new Map<string, NodeJS.Timeout>();
+  // 安全：命令白名单，防止黑名单被绕过（如 dd、mkfs、chmod 等未在黑名单的危险命令）
+  private static readonly ALLOWED_COMMANDS = new Set([
+    "npm", "node", "tsc", "vitest", "git", "ls", "cat", "echo", "mkdir", "cp", "mv",
+  ]);
 
   private static preprocessCode(code: string): string {
     return code
@@ -149,23 +152,23 @@ export class SkillSandbox {
 
   /** Resolve the Python binary name, preferring python3 over python */
   private resolvePythonBin(): string {
-    const { execSync } = require("child_process");
-
+    const { execFileSync } = require("child_process");
     // Check python3 first (common on Linux/macOS)
     try {
-      execSync("python3 --version", { stdio: "pipe", timeout: 3000 });
+      execFileSync("python3", ["--version"], { stdio: "pipe", timeout: 3000 });
       return "python3";
     } catch {
       // Fall back to python
       try {
-        execSync("python --version", { stdio: "pipe", timeout: 3000 });
+        execFileSync("python", ["--version"], { stdio: "pipe", timeout: 3000 });
         return "python";
       } catch {
         // Search common installation locations
         const candidates = this.findPythonCandidates();
         for (const candidate of candidates) {
           try {
-            execSync(`"${candidate}" --version`, { stdio: "pipe", timeout: 5000 });
+            // 不经 shell 执行：candidate 可能含空格/特殊字符，execFileSync 直接传程序路径更安全
+            execFileSync(candidate, ["--version"], { stdio: "pipe", timeout: 5000 });
             process.stdout.write(`[SkillSandbox] Python auto-discovered at: ${candidate}\n`);
             return candidate;
           } catch {
@@ -357,14 +360,13 @@ export class SkillSandbox {
 
     // Replace template placeholders with proper shell escaping
     const jsonPayload = JSON.stringify({ query: queryParams });
-    // Escape single quotes for safe insertion into single-quoted shell argument
-    const escapedJson = jsonPayload.replace(/'/g, "'\\''");
-    // Escape shell-special characters in QUERY value
-    const escapedQuery = queryParams.replace(/'/g, "'\\''").replace(/\\/g, "\\\\");
+    // 先转义反斜杠再转义单引号：若先转义单引号，其产生的反斜杠会被后续反斜杠转义破坏
+    const escapedJson = jsonPayload.replace(/\\/g, "\\\\").replace(/'/g, "'\\''");
+    const escapedQuery = queryParams.replace(/\\/g, "\\\\").replace(/'/g, "'\\''");
 
     let cmd = code
-      .replace(/'<JSON>'|"<JSON>"/g, `'${escapedJson}'`)
-      .replace(/<QUERY>/g, `'${escapedQuery}'`);
+      .replace(/'<JSON>'|"<JSON>"/g, () => `'${escapedJson}'`)
+      .replace(/<QUERY>/g, () => `'${escapedQuery}'`);
 
     const dangerousPatterns = [
       /\$\(/,           // Command substitution $()
@@ -384,6 +386,15 @@ export class SkillSandbox {
       if (pat.test(cmd)) {
         throw new Error(`[SkillSandbox] Command blocked by security policy: contains potentially dangerous pattern`);
       }
+    }
+
+    // 安全：命令白名单校验，防止黑名单被绕过（如 dd、mkfs、chmod 等未在黑名单的危险命令）
+    const trimmedCmd = cmd.trim();
+    const firstToken = trimmedCmd.split(/\s+/)[0] || "";
+    // 处理可能的路径前缀（如 /usr/bin/node 或 .\bin\tsc）
+    const cmdName = firstToken.split(/[\\/]/).pop() || firstToken;
+    if (cmdName && !SkillSandbox.ALLOWED_COMMANDS.has(cmdName)) {
+      throw new Error(`[SkillSandbox] Command blocked by security policy: "${cmdName}" is not in the allowed command list`);
     }
 
     return this.execCommand(cmd, skill, policy);
@@ -445,7 +456,7 @@ export class SkillSandbox {
     // Pass skill config as environment variables
     if (skill.config && typeof skill.config === "object") {
       for (const [k, v] of Object.entries(skill.config as Record<string, unknown>)) {
-        if (typeof v === "string") {
+        if (typeof v === "string" && !k.startsWith("_")) {
           env[k] = v;
         }
       }
@@ -849,8 +860,8 @@ export class SkillSandbox {
         const cmdWithParams = this.injectParamsToCommand(finalCmd, params);
 
         // Use async execFile to avoid blocking the event loop
-        // Split command into program and args to avoid shell injection with shell:true
-        const cmdParts = cmdWithParams.split(/\s+/);
+        // 按引号感知拆分，避免含空格的引号参数被切断（如 python -c "print('a b')"）
+        const cmdParts = this.splitCommandParts(cmdWithParams);
         const program = cmdParts[0];
         const cmdArgs = cmdParts.slice(1);
         const result = await new Promise<string>((resolve, reject) => {
@@ -1005,7 +1016,7 @@ export class SkillSandbox {
         const paramRegex = new RegExp(`--${escapedKey}(?:\\s+|=)(\\S*)`);
         if (paramRegex.test(result)) {
           // 替换已有参数值
-          result = result.replace(paramRegex, `--${key} ${strValue}`);
+          result = result.replace(paramRegex, () => `--${key} ${strValue}`);
         } else {
           // 追加新参数（在 action 子命令之后）
           if (action && typeof action === "string") {
@@ -1032,5 +1043,36 @@ export class SkillSandbox {
       }
     }
     return result;
+  }
+
+  /**
+   * 将命令行字符串拆分为 token 列表，支持双引号/单引号包裹的含空格参数。
+   * 不做完整 shell 解析（不处理反斜杠转义、变量展开等），仅满足 SKILL.md 命令模板的常见需求。
+   */
+  private splitCommandParts(cmd: string): string[] {
+    const parts: string[] = [];
+    let current = "";
+    let quote: '"' | "'" | null = null;
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (quote) {
+        if (ch === quote) {
+          quote = null; // 闭合引号，不把引号本身加入 token
+        } else {
+          current += ch;
+        }
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (/\s/.test(ch)) {
+        if (current.length > 0) {
+          parts.push(current);
+          current = "";
+        }
+      } else {
+        current += ch;
+      }
+    }
+    if (current.length > 0) parts.push(current);
+    return parts;
   }
 }

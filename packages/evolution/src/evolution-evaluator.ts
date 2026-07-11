@@ -283,11 +283,26 @@ export class EvolutionEvaluator {
     return testMatches?.length ?? 0;
   }
 
+  /**
+   * 非测试代码中需拦截的危险调用模式。
+   * isValidCode 对非测试代码原本无条件返回 true，导致任意 >= 10 字符代码都被视为有效。
+   * 此处补充安全检查：命中即视为无效代码。
+   */
+  private static readonly NON_TEST_DANGEROUS_PATTERNS: RegExp[] = [
+    /require\s*\(\s*['"]child_process['"]\s*\)/,
+    /\bchild_process\b/,
+    /\bexec\s*\(/,
+    /\bexecSync\s*\(/,
+    /\beval\s*\(/,
+    /\bFunction\s*\(/,
+  ];
+
   private isValidCode(code: string): boolean {
     try {
       if (code.length < 10) return false;
       if (!code.includes("describe") && !code.includes("test(") && !code.includes("it(")) {
-        return true;
+        // 非测试代码：检查是否包含危险调用（child_process、exec、eval、Function 等）
+        return !EvolutionEvaluator.NON_TEST_DANGEROUS_PATTERNS.some(p => p.test(code));
       }
       return !code.includes("<<<ERROR>>>") && code.includes("expect");
     } catch {

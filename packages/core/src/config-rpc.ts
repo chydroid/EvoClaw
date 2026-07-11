@@ -121,6 +121,24 @@ export class ConfigRPC extends EventEmitter {
       }
     }
 
+    // 如果 path 已注册为 schema 键（扁平键），即使包含点号也按扁平存储，
+    // 避免与 get() 的 "先查扁平" 逻辑产生不一致（get 中 has(path) 命中扁平后直接返回）
+    if (schema) {
+      const oldValue = this.values.get(path) ?? null;
+      const newValue = value;
+
+      this.values.set(path, newValue);
+
+      // Record history
+      this.recordChange(path, oldValue, newValue);
+
+      // Emit event
+      this.emit("change", { path, oldValue, newValue, timestamp: Date.now(), source: this.config.source });
+      this.emit(`change:${path}`, newValue, oldValue);
+
+      return newValue;
+    }
+
     // Handle nested path
     if (path.includes(".")) {
       return this.setNested(path, value);
@@ -204,7 +222,9 @@ export class ConfigRPC extends EventEmitter {
       for (let i = 1; i < parts.length; i++) {
         if (!(parts[i] in current)) return false;
         const val = current[parts[i]];
-        if (i < parts.length - 1 && typeof val === "object" && val !== null) {
+        // 中间组件必须是对象才能继续穿越；若为 primitive 则路径不可能存在
+        if (i < parts.length - 1) {
+          if (typeof val !== "object" || val === null) return false;
           current = val as Record<string, unknown>;
         }
       }
@@ -239,7 +259,10 @@ export class ConfigRPC extends EventEmitter {
           break;
         }
       }
-      this.values.set(change.path, change.oldValue);
+      // setNested() stores values under rootKey (parts[0]), not the full path.
+      // Restore under the same key to avoid creating a spurious full-path entry.
+      const restoreKey = change.path.includes(".") ? change.path.split(".")[0] : change.path;
+      this.values.set(restoreKey, change.oldValue);
       this.emit("change", { ...change, oldValue: change.newValue, newValue: change.oldValue, timestamp: Date.now(), source: "undo" });
       undone++;
     }
@@ -289,6 +312,12 @@ export class ConfigRPC extends EventEmitter {
 
   private setNested(path: string, value: ConfigValue): ConfigValue {
     const parts = path.split(".");
+    // 原型污染防护：拒绝危险键名
+    for (const part of parts) {
+      if (part === "__proto__" || part === "constructor" || part === "prototype") {
+        throw new Error(`Unsafe config path key: "${part}"`);
+      }
+    }
     const rootKey = parts[0];
 
     const current = this.values.get(rootKey);

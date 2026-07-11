@@ -28,8 +28,8 @@ export type ShutdownPhase = "idle" | "draining" | "shutting-down" | "complete";
 export interface ShutdownTask {
   /** Component name for logging */
   name: string;
-  /** Shutdown handler (return true = done, false = retry) */
-  handler: () => Promise<boolean>;
+  /** Shutdown handler (return true = done, false = retry). Optional AbortSignal for cancellation. */
+  handler: (signal?: AbortSignal) => Promise<boolean>;
   /** Priority: lower = shut down earlier */
   priority: number;
   /** Timeout in ms for this task */
@@ -247,21 +247,49 @@ export class GracefulShutdownManager extends EventEmitter {
 
   private async executeWithTimeout(task: ShutdownTask): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
+      // 通过 AbortController 让 handler 有机会在超时后取消后台工作
+      const controller = new AbortController();
+      const settled = { done: false };
+
       const timer = setTimeout(() => {
+        settled.done = true;
+        controller.abort();
         this.emit("shutdown:task:timeout", task.name, task.timeoutMs);
+        process.stderr.write(
+          `[GracefulShutdown] Task "${task.name}" timed out but continues running\n`,
+        );
         resolve(false);
       }, task.timeoutMs);
 
-      const taskPromise = task.handler();
+      // 用 try-catch 包裹 handler 调用：handler 可能同步抛出（例如内部断言或类型错误），
+      // 此时 taskPromise 永不会被赋值，下面的 .then/.catch 链不会触发，timer 也不会被清理，
+      // 进程会等到 timeout 才退出。同步抛出时手动清理 timer 并 resolve(false)。
+      let taskPromise: Promise<boolean>;
+      try {
+        taskPromise = task.handler(controller.signal);
+      } catch (err) {
+        if (!settled.done) {
+          clearTimeout(timer);
+        }
+        process.stderr.write(
+          `[GracefulShutdown] Task "${task.name}" handler threw synchronously:` + " " + err + "\n",
+        );
+        resolve(false);
+        return;
+      }
       taskPromise.catch(() => {});
       taskPromise
         .then((result) => {
-          clearTimeout(timer);
-          resolve(result);
+          if (!settled.done) {
+            clearTimeout(timer);
+            resolve(result);
+          }
         })
         .catch(() => {
-          clearTimeout(timer);
-          resolve(false);
+          if (!settled.done) {
+            clearTimeout(timer);
+            resolve(false);
+          }
         });
     });
   }

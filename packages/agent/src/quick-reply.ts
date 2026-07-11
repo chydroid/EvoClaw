@@ -625,9 +625,9 @@ function pickByHash(replies: string[], text: string): string {
 /** Substitute persona placeholders (${MT}/${ME}/${TITLE}) in a reply. */
 function applyPersona(deps: QuickReplyDeps, reply: string): string {
   return reply
-    .replace(/MT/g, mt(deps))
-    .replace(/ME/g, me(deps))
-    .replace(/TITLE/g, title(deps));
+    .replace(/MT/g, () => mt(deps))
+    .replace(/ME/g, () => me(deps))
+    .replace(/TITLE/g, () => title(deps));
 }
 
 /**
@@ -882,6 +882,12 @@ function astronomyHttpsGetJson(url: string): Promise<unknown> {
         } catch (e) {
           reject(e instanceof Error ? e : new Error(String(e)));
         }
+      });
+      res.on("error", (err: Error) => {
+        if (settled) return;
+        settled = true;
+        process.stderr.write(`[quick-reply] response stream error: ${err.message}\n`);
+        reject(err);
       });
     });
     // 连接/响应超时：服务器建立 TCP 后不发数据（半开连接）会导致永久挂起，必须显式销毁

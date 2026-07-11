@@ -76,6 +76,8 @@ export class DingtalkAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     this.accessToken = null;
     this.tokenExpiry = 0;
+    // 清理已处理事件去重集合，避免重启后误判重复消息
+    this.processedEvents.clear();
     this.statusHandler?.("disconnected");
   }
 
@@ -172,7 +174,7 @@ export class DingtalkAdapter implements ChannelAdapter {
   private async refreshToken(): Promise<void> {
     const res = await fetch(
       `${this.baseURL}/gettoken?appkey=${encodeURIComponent(this.config.appKey)}&appsecret=${encodeURIComponent(this.config.appSecret)}`,
-      { method: "POST" },
+      { method: "POST", signal: AbortSignal.timeout(10_000) },
     );
 
     const data = await res.json() as {
@@ -235,6 +237,7 @@ export class DingtalkAdapter implements ChannelAdapter {
         "x-acs-dingtalk-access-token": this.accessToken!,
       },
       body: JSON.stringify(msgBody),
+      signal: AbortSignal.timeout(15_000),
     });
 
     const data = await res.json() as {
@@ -309,6 +312,7 @@ export class DingtalkAdapter implements ChannelAdapter {
           "x-acs-dingtalk-access-token": this.accessToken!,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const data = await res.json() as {

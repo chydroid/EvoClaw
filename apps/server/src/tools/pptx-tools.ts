@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import PptxGenJS from "pptxgenjs";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 
@@ -10,6 +11,22 @@ function validatePathWithinBase(resolvedPath: string, baseDir: string): string |
     return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}".`;
   }
   return null;
+}
+
+/** 原子写入文件：写临时文件 + fsync + rename，失败时清理临时文件 */
+function atomicWriteFileSync(filePath: string, data: Buffer): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 interface SlideItem {
@@ -158,7 +175,7 @@ export function registerPptxTools(executor: AgentModelExecutor, fsBase: string):
 
         const buffer = await pres.write({ outputType: "nodebuffer" });
         fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-        fs.writeFileSync(resolvedPath, Buffer.from(buffer as ArrayBuffer));
+        atomicWriteFileSync(resolvedPath, Buffer.from(buffer as ArrayBuffer));
 
         return {
           success: true,

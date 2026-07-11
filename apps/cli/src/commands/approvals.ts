@@ -151,7 +151,6 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         }
       } catch (err) {
         console.log(c("red", `❌ Failed to add allowlist entry: ${err instanceof Error ? err.message : String(err)}`));
-        console.log(c("yellow", "  Note: whitelist add requires server-side POST /api/permission/whitelist route"));
       }
     });
 
@@ -196,7 +195,6 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           console.log(c("red", `❌ File not found: ${file}`));
         } else {
           console.log(c("red", `❌ Failed to load policy: ${err instanceof Error ? err.message : String(err)}`));
-          console.log(c("yellow", "  Note: whitelist add requires server-side POST /api/permission/whitelist route"));
         }
       }
     });

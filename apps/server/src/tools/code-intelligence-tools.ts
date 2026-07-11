@@ -13,9 +13,20 @@
  *   - 所有命令在 fsBase 限定的工作区内执行，路径逃逸直接拒绝
  */
 
+import * as path from "path";
 import type { AgentModelExecutor, GitOperations, CodeIntelligence } from "@evoclaw/agent";
 import type { PermissionManager } from "@evoclaw/security";
 import { applyPatch as applyPatchFn, parsePatch } from "@evoclaw/agent";
+
+/** 校验解析后的路径不超出允许的基目录，防止路径遍历攻击。 */
+function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
+  const normalizedBase = path.resolve(baseDir);
+  const normalizedTarget = path.resolve(resolvedPath);
+  if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
+    return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}".`;
+  }
+  return null;
+}
 
 export interface CodeIntelToolDeps {
   executor: AgentModelExecutor;
@@ -106,6 +117,8 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       try {
         const filePath = String(params.path || "");
         if (!filePath) return { success: false, error: "path is required" };
+        const pathError = validatePathWithinBase(path.resolve(fsBase, filePath), fsBase);
+        if (pathError) return { success: false, error: pathError };
         const startLine = params.startLine ? Number(params.startLine) : undefined;
         const endLine = params.endLine ? Number(params.endLine) : undefined;
         const blame = await gitOps.blame(filePath, startLine, endLine);
@@ -132,6 +145,10 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
         const ref = String(params.ref || "");
         if (!ref) return { success: false, error: "ref is required" };
         const filePath = params.path ? String(params.path) : undefined;
+        if (filePath) {
+          const pathError = validatePathWithinBase(path.resolve(fsBase, filePath), fsBase);
+          if (pathError) return { success: false, error: pathError };
+        }
         const content = await gitOps.show(ref, filePath);
         return { success: true, content, length: content.length };
       } catch (err) {
@@ -154,6 +171,10 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       try {
         const paths = Array.isArray(params.paths) ? params.paths.map(String) : [];
         if (paths.length === 0) return { success: false, error: "paths array is required" };
+        for (const p of paths) {
+          const pathError = validatePathWithinBase(path.resolve(fsBase, p), fsBase);
+          if (pathError) return { success: false, error: pathError };
+        }
         await gitOps.add(paths);
         return { success: true, staged: paths.length };
       } catch (err) {

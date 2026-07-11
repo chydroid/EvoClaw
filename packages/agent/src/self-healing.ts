@@ -15,6 +15,7 @@
  */
 
 import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -126,7 +127,7 @@ export class SelfHealingEngine extends EventEmitter {
   private anomalies: AnomalyRecord[] = [];
   private healthScore: HealthScore;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
-  private circuitState = new Map<string, { open: boolean; failures: number; lastFailure: number; resetTimer?: ReturnType<typeof setTimeout> }>();
+  private circuitState = new Map<string, { open: boolean; failures: number; lastFailure: number; resetTimer?: ReturnType<typeof setTimeout>; halfOpen?: boolean; halfOpenProbeCount?: number }>();
   private recoveryStats = new Map<string, { attempts: number; successes: number }>();
 
   constructor(config: Partial<ResilienceConfig> = {}) {
@@ -185,6 +186,11 @@ export class SelfHealingEngine extends EventEmitter {
         resolved: false,
       };
       this.errorPatterns.push(pattern);
+      // 设置上限 500，超限时淘汰最旧的条目，避免无界增长导致内存泄漏
+      const MAX_ERROR_PATTERNS = 500;
+      while (this.errorPatterns.length > MAX_ERROR_PATTERNS) {
+        this.errorPatterns.shift();
+      }
     }
 
     this.emit("error-recorded", { pattern, context });
@@ -264,9 +270,15 @@ export class SelfHealingEngine extends EventEmitter {
         if (circuit?.open) {
           const elapsed = Date.now() - circuit.lastFailure;
           if (elapsed > this.config.circuitResetTimeoutMs) {
-            // Half-open: allow one probe
+            // reset 超时到期：进入 half-open 中间态，仅允许 1 个探测请求通过
+            // （原实现直接跳回 closed，所有并发请求同时通过）
             circuit.open = false;
-            circuit.failures = 0;
+            circuit.halfOpen = true;
+            circuit.halfOpenProbeCount = 0;
+            if (circuit.resetTimer) {
+              clearTimeout(circuit.resetTimer);
+              circuit.resetTimer = undefined;
+            }
           } else if (options?.recoveryHints?.fallback) {
             try {
               const fallbackResult = await options.recoveryHints.fallback();
@@ -285,6 +297,27 @@ export class SelfHealingEngine extends EventEmitter {
               error: new Error(`Circuit open for ${circuitKey}`),
             };
           }
+        }
+
+        // half-open 探针限流：仅允许 1 个探测请求通过，其余走 fallback 或拒绝
+        if (circuit?.halfOpen && !this.consumeProbe(circuitKey)) {
+          if (options?.recoveryHints?.fallback) {
+            try {
+              const fallbackResult = await options.recoveryHints.fallback();
+              return { result: fallbackResult, recovered: true, strategy: "fallback", attempts: attempt + 1 };
+            } catch (fbErr) {
+              lastError = fbErr as Error;
+              this.recordCircuitFailure(circuitKey);
+              continue;
+            }
+          }
+          return {
+            result: null,
+            recovered: false,
+            strategy: "circuit_breaker",
+            attempts: attempt,
+            error: new Error(`Circuit half-open probe limit reached for ${circuitKey}`),
+          };
         }
 
         // Execute
@@ -745,6 +778,25 @@ export class SelfHealingEngine extends EventEmitter {
       this.circuitState.set(key, circuit);
     }
 
+    // half-open 探测失败：立即重新打开熔断器并重启 reset 计时
+    if (circuit.halfOpen) {
+      circuit.halfOpen = false;
+      circuit.halfOpenProbeCount = 0;
+      circuit.open = true;
+      circuit.lastFailure = Date.now();
+      this.emit("circuit-opened", { key, failures: circuit.failures });
+      if (circuit.resetTimer) clearTimeout(circuit.resetTimer);
+      circuit.resetTimer = setTimeout(() => {
+        // reset 超时到期：进入 half-open 中间态，仅允许 1 个探测请求通过
+        circuit.open = false;
+        circuit.halfOpen = true;
+        circuit.halfOpenProbeCount = 0;
+        this.emit("circuit-reset", { key });
+      }, this.config.circuitResetTimeoutMs);
+      circuit.resetTimer.unref?.();
+      return;
+    }
+
     circuit.failures++;
     circuit.lastFailure = Date.now();
 
@@ -755,16 +807,47 @@ export class SelfHealingEngine extends EventEmitter {
       // Auto-reset after timeout
       if (circuit.resetTimer) clearTimeout(circuit.resetTimer);
       circuit.resetTimer = setTimeout(() => {
+        // reset 超时到期：进入 half-open 中间态，仅允许 1 个探测请求通过
         circuit.open = false;
-        circuit.failures = 0;
+        circuit.halfOpen = true;
+        circuit.halfOpenProbeCount = 0;
         this.emit("circuit-reset", { key });
       }, this.config.circuitResetTimeoutMs);
+      circuit.resetTimer.unref?.();
     }
+  }
+
+  /**
+   * 消费一个 half-open 探针槽位。在发起真实请求前调用。
+   * 仅在 half-open 状态下递增计数器，其他状态无操作。
+   * 参照 model-failover.ts 的 consumeProbe() 实现。
+   * @returns true 表示可以发起请求，false 表示探针限额已耗尽
+   */
+  private consumeProbe(key: string): boolean {
+    const circuit = this.circuitState.get(key);
+    if (!circuit || !circuit.halfOpen) {
+      return true; // 非 half-open 状态不限制
+    }
+    const count = circuit.halfOpenProbeCount ?? 0;
+    if (count >= 1) {
+      return false; // 仅允许 1 个探测请求通过
+    }
+    circuit.halfOpenProbeCount = count + 1;
+    return true;
   }
 
   private recordCircuitSuccess(key: string): void {
     const circuit = this.circuitState.get(key);
     if (circuit) {
+      // half-open 探测成功：完全关闭熔断器，清理 reset 计时与探针计数
+      if (circuit.halfOpen) {
+        circuit.halfOpen = false;
+        circuit.halfOpenProbeCount = 0;
+        if (circuit.resetTimer) {
+          clearTimeout(circuit.resetTimer);
+          circuit.resetTimer = undefined;
+        }
+      }
       circuit.failures = 0;
       circuit.open = false;
     }
@@ -776,7 +859,7 @@ export class SelfHealingEngine extends EventEmitter {
     description: string
   ): AnomalyRecord {
     return {
-      id: `anom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `anom_${Date.now()}_${randomUUID()}`,
       type,
       severity,
       description,

@@ -58,17 +58,20 @@ describe("StabilityMonitor", () => {
 
   describe("error-spike 检测", () => {
     it("错误率超阈值应触发 error-spike", () => {
-      // 阈值 0.5；单次错误即触发（1/(1+1)=0.5 不超过，需 2 次）
+      // 阈值 0.8；errorRate = n/(n+1)，需 5 次错误（5/6≈0.833 > 0.8）才触发
+      monitor.recordError("session-1", "error");
+      monitor.recordError("session-1", "error");
+      monitor.recordError("session-1", "error");
       monitor.recordError("session-1", "error");
       monitor.recordError("session-1", "error");
       const result = monitor.assess("session-1");
       expect(result.issue).toBe("error-spike");
       expect(result.severity).toBe("error");
-      expect(result.evidence.errorCount).toBe(2);
-      expect(result.evidence.errorRate).toBeGreaterThan(0.5);
+      expect(result.evidence.errorCount).toBe(5);
+      expect(result.evidence.errorRate).toBeGreaterThan(0.8);
     });
 
-    it("单次错误不应触发 error-spike（0.5 不大于 0.5）", () => {
+    it("单次错误不应触发 error-spike（1/2=0.5 不大于 0.8）", () => {
       monitor.recordError("session-1", "warning");
       const result = monitor.assess("session-1");
       expect(result.issue).toBe("none");
@@ -124,8 +127,10 @@ describe("StabilityMonitor", () => {
       monitor.recordRetry("session-1");
       monitor.recordRetry("session-1");
       monitor.recordRetry("session-1");
-      monitor.recordError("session-2", "error");
-      monitor.recordError("session-2", "error");
+      // 阈值 0.8；需 5 次错误才触发 error-spike
+      for (let i = 0; i < 5; i++) {
+        monitor.recordError("session-2", "error");
+      }
 
       const results = monitor.assessAll();
       expect(results).toHaveLength(2);
@@ -184,11 +189,18 @@ describe("StabilityMonitor", () => {
       monitor.recordError("session-1", "warning");
       monitor.recordError("session-1", "error");
       monitor.recordError("session-1", "critical");
-      // 三次错误均触发 error-spike
+      // 阈值 0.8；需 5 次错误才触发 error-spike，补充 2 次
+      monitor.recordError("session-1", "error");
+      monitor.recordError("session-1", "error");
+      // 五次错误均触发 error-spike
       const result = monitor.assess("session-1");
       expect(result.issue).toBe("error-spike");
       const severities = result.evidence.severities as string[];
-      expect(severities).toEqual(["warning", "error", "critical"]);
+      // 验证三种严重度均被记录
+      expect(severities).toContain("warning");
+      expect(severities).toContain("error");
+      expect(severities).toContain("critical");
+      expect(severities).toHaveLength(5);
     });
   });
 
@@ -197,7 +209,7 @@ describe("StabilityMonitor", () => {
       expect(DEFAULT_STABILITY_CONFIG.retryWindowMs).toBe(60_000);
       expect(DEFAULT_STABILITY_CONFIG.retryThreshold).toBe(3);
       expect(DEFAULT_STABILITY_CONFIG.phaseFlapCount).toBe(4);
-      expect(DEFAULT_STABILITY_CONFIG.errorRateThreshold).toBe(0.5);
+      expect(DEFAULT_STABILITY_CONFIG.errorRateThreshold).toBe(0.8);
       expect(DEFAULT_STABILITY_CONFIG.stalledThresholdMs).toBe(30 * 60_000);
       expect(DEFAULT_STABILITY_CONFIG.resourceSpikeRatio).toBe(2.0);
     });

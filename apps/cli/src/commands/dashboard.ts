@@ -5,21 +5,26 @@ import { DEFAULT_PORT, checkServer } from "../utils/api";
 
 function openBrowser(url: string): void {
   const platform = process.platform;
-  let command: string;
+  let cmd: string;
+  let args: string[];
   if (platform === "win32") {
-    command = `start "" "${url}"`;
+    cmd = "cmd.exe";
+    args = ["/c", "start", "", url];
   } else if (platform === "darwin") {
-    command = `open "${url}"`;
+    cmd = "open";
+    args = [url];
   } else {
-    command = `xdg-open "${url}"`;
+    cmd = "xdg-open";
+    args = [url];
   }
   try {
-    child_process.exec(command, (err) => {
-      if (err) {
-        console.log(c("yellow", `${ICONS.warn()} Could not open browser automatically`));
-        console.log(c("gray", `  Open this URL manually: ${url}`));
-      }
+    // 安全：使用 spawn(shell:false) 避免 URL 进入 shell 造成命令注入
+    const child = child_process.spawn(cmd, args, { shell: false, detached: true, stdio: "ignore" });
+    child.on("error", () => {
+      console.log(c("yellow", `${ICONS.warn()} Could not open browser automatically`));
+      console.log(c("gray", `  Open this URL manually: ${url}`));
     });
+    child.unref();
   } catch {
     console.log(c("yellow", `${ICONS.warn()} Could not open browser`));
     console.log(c("gray", `  Open this URL manually: ${url}`));

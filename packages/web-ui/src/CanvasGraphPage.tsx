@@ -391,13 +391,14 @@ export function CanvasGraphPage() {
     if (!selectedNodeId || !snapshot) return;
     pushUndoSnapshot();
     try {
-      await fetch("/api/canvas-graph/apply-ops", {
+      const res = await fetch("/api/canvas-graph/apply-ops", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ops: [{ type: "delete_node", id: selectedNodeId }],
         }),
       });
+      if (!res.ok) throw new Error("Failed to delete node");
       setSelectedNodeId(null);
       await fetchSnapshot();
     } catch (err) {

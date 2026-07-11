@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 // ── Types ──
 
@@ -31,7 +31,7 @@ interface SteerResult {
 }
 
 interface HistoryEntry {
-  id: number;
+  id: number | string;
   timestamp: string;
   sessionId: string;
   instruction: string;
@@ -332,6 +332,36 @@ export default function SteerPage() {
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
+  // Load steer instruction history from backend for the selected session
+  const fetchHistory = useCallback(async (sid: string) => {
+    if (!sid) { setHistory([]); return; }
+    try {
+      const res = await fetch(`${API}/api/steer/instructions?sessionId=${encodeURIComponent(sid)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const instructions: any[] = data?.instructions || [];
+      const mapped: HistoryEntry[] = instructions.map((instr: any) => ({
+        id: instr.id,
+        timestamp: new Date(instr.createdAt).toISOString(),
+        sessionId: instr.sessionId || sid,
+        instruction: instr.instruction || "",
+        priority: instr.priority || "normal",
+        result: { accepted: true, message: instr.consumed ? "✓" : "…" },
+      }));
+      setHistory(mapped);
+    } catch {
+      // Keep existing history on error
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessionId) {
+      fetchHistory(sessionId);
+    } else {
+      setHistory([]);
+    }
+  }, [sessionId, fetchHistory]);
+
   // Find selected session
   const selectedSession = sessions.find(s => s.id === sessionId) || null;
 
@@ -371,6 +401,8 @@ export default function SteerPage() {
       if (data.accepted) {
         showToast(t("steer.inject_success"), "success");
         setInstruction("");
+        // Refresh history from backend to include the newly injected instruction
+        fetchHistory(sessionId);
       } else {
         showToast(t("steer.inject_fail"), "error");
       }

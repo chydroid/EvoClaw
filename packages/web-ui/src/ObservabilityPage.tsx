@@ -12,6 +12,7 @@ import {
   TextInput,
 } from "./shared";
 import { useTranslation } from "./i18n";
+import { tracingApi, type TracingSpan } from "./api-client";
 
 // ═══════════════════════════════════════════════
 // Types
@@ -48,7 +49,7 @@ interface Execution {
 // Helpers
 // ═══════════════════════════════════════════════
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 function calcDuration(start: string, end?: string): number | null {
   if (!end) return null;
@@ -79,9 +80,9 @@ function kindBadgeVariant(kind: string): "info" | "warning" | "default" {
 // Tab definitions
 // ═══════════════════════════════════════════════
 
-type TabKey = "overview" | "traces" | "executions";
+type TabKey = "overview" | "traces" | "executions" | "spans";
 
-const TAB_KEYS: TabKey[] = ["overview", "traces", "executions"];
+const TAB_KEYS: TabKey[] = ["overview", "traces", "executions", "spans"];
 
 // ═══════════════════════════════════════════════
 // Overview Tab
@@ -449,6 +450,211 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 }
 
 // ═══════════════════════════════════════════════
+// Spans Tab (OTel Span 追踪)
+// ═══════════════════════════════════════════════
+
+function formatSpanTime(ts: number | string, locale: string): string {
+  const d = typeof ts === "number" ? new Date(ts) : new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString(locale);
+}
+
+function SpanRowTracing({ span, t, locale }: { span: TracingSpan; t: (k: string, fb?: string) => string; locale: string }) {
+  const duration = span.duration ?? (span.endTime && span.startTime
+    ? (typeof span.endTime === "number" && typeof span.startTime === "number"
+      ? span.endTime - span.startTime
+      : new Date(span.endTime).getTime() - new Date(span.startTime).getTime())
+    : null);
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+      padding: "8px 12px", borderRadius: "6px",
+      background: "var(--bg-hover)", fontSize: "12px",
+    }}>
+      <Badge variant={kindBadgeVariant(span.kind)} style={{ fontSize: "10px", padding: "2px 7px" }}>
+        {t(`observability.kind.${span.kind}`, span.kind)}
+      </Badge>
+      <span style={{ color: "var(--text-primary)", fontWeight: 500, flex: 1, minWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {span.name}
+      </span>
+      {span.status && (
+        <Badge variant={statusBadgeVariant(span.status)} style={{ fontSize: "10px", padding: "2px 7px" }}>
+          {t(`observability.status.${span.status}`, span.status)}
+        </Badge>
+      )}
+      <span style={{ color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
+        {formatDuration(duration, t)}
+      </span>
+      <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>
+        {formatSpanTime(span.startTime, locale)}
+      </span>
+    </div>
+  );
+}
+
+function SpansTab({ t, locale }: { t: (k: string, fb?: string) => string; locale: string }) {
+  const [spans, setSpans] = useState<TracingSpan[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [searchName, setSearchName] = useState("");
+  const [searchTraceId, setSearchTraceId] = useState("");
+  const [kindFilter, setKindFilter] = useState<string>("all");
+  const [selectedTrace, setSelectedTrace] = useState<TracingSpan[] | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  const loadSpans = useCallback(async () => {
+    setLoading(true);
+    try {
+      const opts: { nameContains?: string; traceId?: string; limit?: number } = {};
+      if (searchName.trim()) opts.nameContains = searchName.trim();
+      if (searchTraceId.trim()) opts.traceId = searchTraceId.trim();
+      opts.limit = 100;
+      const data = await tracingApi.spans(opts);
+      setSpans(data.spans);
+      setTotal(data.total);
+    } catch {
+      setSpans([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [searchName, searchTraceId]);
+
+  useEffect(() => { loadSpans(); }, [loadSpans]);
+
+  const kinds = Array.from(new Set(spans.map(s => s.kind).filter(Boolean)));
+  const filteredSpans = kindFilter === "all"
+    ? spans
+    : spans.filter(s => s.kind === kindFilter);
+
+  const handleViewTrace = useCallback(async (traceId: string) => {
+    if (!traceId) return;
+    setTraceLoading(true);
+    setSelectedTrace(null);
+    try {
+      const data = await tracingApi.trace(traceId);
+      setSelectedTrace(data.spans);
+    } catch {
+      setSelectedTrace([]);
+    } finally {
+      setTraceLoading(false);
+    }
+  }, []);
+
+  const handleClear = useCallback(async () => {
+    setClearing(true);
+    try {
+      await tracingApi.clear();
+      showToast(t("observability.spans_cleared", "Span 缓冲区已清空"), "success");
+      await loadSpans();
+    } catch {
+      showToast(t("observability.clear_fail", "清空失败"), "error");
+    } finally {
+      setClearing(false);
+    }
+  }, [loadSpans, t]);
+
+  const uniqueTraceIds = Array.from(new Set(spans.map(s => s.traceId).filter(Boolean)));
+
+  return (
+    <div>
+      <StatsGrid items={[
+        { label: t("observability.total_spans", "Span 总数"), value: total, color: "var(--accent)" },
+        { label: t("observability.shown_spans", "当前展示"), value: filteredSpans.length, color: "var(--success)" },
+        { label: t("observability.trace_count", "Trace 数"), value: uniqueTraceIds.length, color: "var(--text-primary)" },
+      ]} />
+
+      <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ width: "200px" }}>
+          <TextInput
+            value={searchName}
+            onChange={setSearchName}
+            placeholder={t("observability.search_name_placeholder", "按 span 名称搜索...")}
+          />
+        </div>
+        <div style={{ width: "220px" }}>
+          <TextInput
+            value={searchTraceId}
+            onChange={(v) => { setSearchTraceId(v); setSelectedTrace(null); }}
+            placeholder={t("observability.search_traceid_placeholder", "按 trace ID 搜索...")}
+          />
+        </div>
+        {kinds.length > 0 && (
+          <select
+            value={kindFilter}
+            onChange={(e) => setKindFilter(e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: "6px",
+              border: "1px solid var(--border)", background: "var(--bg-hover)",
+              color: "var(--text-primary)", fontSize: "12px", cursor: "pointer",
+            }}
+          >
+            <option value="all">{t("observability.filter.all", "全部")}</option>
+            {kinds.map(k => (
+              <option key={k} value={k}>{t(`observability.kind.${k}`, k)}</option>
+            ))}
+          </select>
+        )}
+        <SecondaryButton small onClick={loadSpans}>{t("observability.refresh", "刷新")}</SecondaryButton>
+        <PrimaryButton small danger onClick={handleClear} disabled={clearing || total === 0}>
+          {clearing ? t("observability.clearing", "清空中...") : t("observability.clear_spans", "清空 Span")}
+        </PrimaryButton>
+      </div>
+
+      {loading ? (
+        <Loading text={t("observability.loading", "加载中...")} />
+      ) : (
+        <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {filteredSpans.length === 0 ? (
+              <EmptyState
+                icon="🔍"
+                title={t("observability.no_spans", "无 Span 数据")}
+                description={t("observability.no_spans_desc", "后端 Span 收集器暂无数据或未启用")}
+              />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                {filteredSpans.map((span, i) => (
+                  <div key={span.spanId || i} style={{ cursor: span.traceId ? "pointer" : "default" }}
+                    onClick={() => span.traceId && handleViewTrace(span.traceId)}>
+                    <SpanRowTracing span={span} t={t} locale={locale} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {(selectedTrace || traceLoading) && (
+            <Card
+              title={t("observability.trace_detail", "Trace 详情")}
+              style={{ width: "340px", flexShrink: 0 }}
+              actions={
+                <SecondaryButton small onClick={() => setSelectedTrace(null)}>✕</SecondaryButton>
+              }
+            >
+              {traceLoading ? (
+                <Loading text={t("observability.loading", "加载中...")} />
+              ) : selectedTrace && selectedTrace.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {selectedTrace.map((span, i) => (
+                    <SpanRowTracing key={span.spanId || i} span={span} t={t} locale={locale} />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "var(--text-muted)", fontSize: "13px", padding: "12px 0" }}>
+                  {t("observability.no_trace_spans", "该 Trace 无 Span 数据")}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
 // Main Page
 // ═══════════════════════════════════════════════
 
@@ -565,7 +771,9 @@ export default function ObservabilityPage() {
       </div>
 
       {/* Tab content */}
-      {loading ? (
+      {activeTab === "spans" ? (
+        <SpansTab t={t} locale={locale} />
+      ) : loading ? (
         <Loading text={t("observability.loading")} />
       ) : (
         <>

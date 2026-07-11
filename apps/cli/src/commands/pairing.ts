@@ -79,17 +79,15 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       }
       try {
         const r = await apiRequest<Record<string, unknown>>("DELETE", `/api/channels/pairing/${encodeURIComponent(channel)}/${encodeURIComponent(code)}`);
-        if (r.status >= 200 && r.status < 300) {
+        if (r.status >= 200 && r.status < 300 && r.data?.success !== false) {
           console.log(c("green", `${ICONS.ok()} Pairing "${code}" rejected for ${channel}`));
         } else {
-          console.log(c("yellow", `${ICONS.warn()} No dedicated reject endpoint available.`));
-          console.log(c("gray", `  To reject, use the Web UI → Pairing tab or remove the contact after approval.`));
-          console.log(c("gray", `  Alternatively, simply do not approve the request — it will expire automatically.`));
+          const msg = (r.data as Record<string, unknown>)?.message || (r.data as Record<string, unknown>)?.error || `HTTP ${r.status}`;
+          console.log(c("yellow", `${ICONS.warn()} Could not reject pairing: ${msg}`));
+          console.log(c("gray", `  The pairing code may be invalid, already expired, or already handled.`));
         }
-      } catch {
-        console.log(c("yellow", `${ICONS.warn()} No dedicated reject endpoint available.`));
-        console.log(c("gray", `  To reject, use the Web UI → Pairing tab or simply do not approve the request.`));
-        console.log(c("gray", `  Unapproved requests expire automatically.`));
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Rejection failed: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
 

@@ -1,4 +1,5 @@
 import { v4 as uuid } from "uuid";
+import * as crypto from "crypto";
 
 export interface SkillProposalFile {
   path: string;
@@ -46,7 +47,6 @@ const DEFAULT_CONFIG: SkillWorkshopConfig = {
 interface InstalledSkillRecord {
   proposalId: string;
   installedAt: number;
-  previousFiles: Map<string, string>;
 }
 
 export class SkillWorkshop {
@@ -241,17 +241,13 @@ export class SkillWorkshop {
       }
     }
 
-    // Record installation with previous file state for rollback
-    let previousFiles = new Map<string, string>();
-    const existingRecord = this.installedSkills.get(proposal.name);
-    if (existingRecord) {
-      previousFiles = existingRecord.previousFiles;
-    }
-
+    // Record installation metadata.
+    // 已知限制：本安装仅记录内存元数据，不写文件到磁盘，故无 previousFiles 需要回滚；
+    // rollback() 也只回退状态，不还原文件内容。若未来引入真实文件写入，需在此捕获
+    // 旧文件内容并在 rollback 中还原。
     this.installedSkills.set(proposal.name, {
       proposalId,
       installedAt: Date.now(),
-      previousFiles,
     });
 
     proposal.status = "approved"; // remains approved after install
@@ -306,12 +302,7 @@ export class SkillWorkshop {
   }
 
   private computeHash(content: string): string {
-    let hash = 0;
-    for (let i = 0; i < content.length; i++) {
-      const char = content.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
-    }
-    return Math.abs(hash).toString(16).padStart(8, "0");
+    // 安全：改用 sha256 替代 DJB2，避免哈希碰撞导致完整性校验失效
+    return crypto.createHash("sha256").update(content, "utf-8").digest("hex");
   }
 }

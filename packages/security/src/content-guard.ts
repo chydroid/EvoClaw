@@ -460,11 +460,15 @@ export class ContentGuard {
     const lowerContent = content.toLowerCase();
 
     for (const term of this.config.blockedTerms) {
-      if (lowerContent.includes(term.toLowerCase())) {
-        // Check if term is whitelisted
-        const isAllowed = this.config.allowedTerms.some(
-          (allowed) => lowerContent.includes(allowed.toLowerCase())
-        );
+      const lowerTerm = term.toLowerCase();
+      if (lowerContent.includes(lowerTerm)) {
+        // 白名单检查应针对当前 blocked term 做局部检查：
+        // 仅当该 blocked term 是某个出现在内容中的 allowed term 的子串时才跳过，
+        // 而非只要内容任意位置出现 allowed term 就跳过所有 blocked term
+        const isAllowed = this.config.allowedTerms.some((allowed) => {
+          const lowerAllowed = allowed.toLowerCase();
+          return lowerAllowed.includes(lowerTerm) && lowerContent.includes(lowerAllowed);
+        });
         if (!isAllowed) {
           matches.push(term);
         }
@@ -488,13 +492,13 @@ export class ContentGuard {
     const blocks: string[] = [];
     let filtered = output;
 
-    // Check for system prompt leakage
+    // Check for system prompt leakage (g flag 确保替换全部匹配，而非仅首个)
     const systemPromptIndicators = [
-      /system prompt/i,
-      /your instructions are/i,
-      /I am an AI assistant (?:created|developed|built)/i,
-      /my system message says/i,
-      /according to my instructions/i,
+      /system prompt/gi,
+      /your instructions are/gi,
+      /I am an AI assistant (?:created|developed|built)/gi,
+      /my system message says/gi,
+      /according to my instructions/gi,
     ];
 
     for (const indicator of systemPromptIndicators) {

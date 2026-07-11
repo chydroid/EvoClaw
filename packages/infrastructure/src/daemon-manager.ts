@@ -270,12 +270,35 @@ export class DaemonManager {
   }
 
   private generateSystemdUnit(): string {
-    const envLines = Object.entries({
+    // 校验所有 config 字段，防止 systemd 指令注入
+    this.validateNoNewline(this.config.description, "description");
+    this.validateNoNewline(this.config.executablePath, "executablePath");
+    this.validateNoNewline(this.config.workingDirectory, "workingDirectory");
+    this.validateNoNewline(this.config.logPath, "logPath");
+    this.config.args.forEach((a, i) =>
+      this.validateNoNewline(a, `args[${i}]`)
+    );
+
+    // runAsUser 必须只含字母、数字、下划线、连字符
+    if (!/^[a-zA-Z0-9_-]+$/.test(this.config.runAsUser)) {
+      throw new Error(
+        `Invalid runAsUser: "${this.config.runAsUser}" must match /^[a-zA-Z0-9_-]+$/`
+      );
+    }
+
+    const envEntries = Object.entries({
       NODE_ENV: "production",
       ...this.config.env,
-    })
-      .map(([k, v]) => `Environment="${k}=${v}"`)
-      .join("\n");
+    }).map(([k, v]) => {
+      // env key 必须是合法的 POSIX 环境变量名
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k)) {
+        throw new Error(`Invalid env key: ${k}`);
+      }
+      // env value 不得含换行符（防止注入 systemd 指令）
+      this.validateNoNewline(String(v), `env[${k}]`);
+      return `Environment="${k}=${v}"`;
+    });
+    const envLines = envEntries.join("\n");
 
     return `[Unit]
 Description=${this.config.description}
@@ -305,6 +328,28 @@ WantedBy=default.target
 `;
   }
 
+  /** 校验字符串字段不得含换行符（防止 systemd/launchd 指令注入） */
+  private validateNoNewline(value: string, fieldName: string): void {
+    if (typeof value === "string" && /[\r\n]/.test(value)) {
+      throw new Error(
+        `Invalid ${fieldName}: must not contain newline characters`
+      );
+    }
+  }
+
+  /**
+   * XML 实体转义：对插入 XML plist / WinSW 配置的用户值进行转义，
+   * 防止 & < > " 等字符破坏 XML 结构或注入新的标签节点。
+   * 注意：& 必须最先替换，避免二次转义。
+   */
+  private xmlEscape(value: string): string {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   // ── Platform: launchd (macOS) ──────────────────────────────────────
 
   private installLaunchd(): { success: boolean; message: string; platform: string } {
@@ -314,7 +359,7 @@ WantedBy=default.target
         NODE_ENV: "production",
         ...this.config.env,
       })
-        .map(([k, v]) => `    <key>${k}</key>\n    <string>${v}</string>`)
+        .map(([k, v]) => `    <key>${this.xmlEscape(k)}</key>\n    <string>${this.xmlEscape(v)}</string>`)
         .join("\n");
 
       const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
@@ -322,16 +367,16 @@ WantedBy=default.target
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${this.config.serviceName}</string>
+  <string>${this.xmlEscape(this.config.serviceName)}</string>
 
   <key>ProgramArguments</key>
   <array>
-    <string>${this.config.executablePath}</string>
-    ${this.config.args.map((a) => `<string>${a}</string>`).join("\n    ")}
+    <string>${this.xmlEscape(this.config.executablePath)}</string>
+    ${this.config.args.map((a) => `<string>${this.xmlEscape(a)}</string>`).join("\n    ")}
   </array>
 
   <key>WorkingDirectory</key>
-  <string>${this.config.workingDirectory}</string>
+  <string>${this.xmlEscape(this.config.workingDirectory)}</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -345,13 +390,13 @@ ${envDict}
   <${this.config.restartOnCrash}/>
 
   <key>StandardOutPath</key>
-  <string>${this.config.logPath}</string>
+  <string>${this.xmlEscape(this.config.logPath)}</string>
 
   <key>StandardErrorPath</key>
-  <string>${this.config.logPath}</string>
+  <string>${this.xmlEscape(this.config.logPath)}</string>
 
   <key>UserName</key>
-  <string>${this.config.runAsUser}</string>
+  <string>${this.xmlEscape(this.config.runAsUser)}</string>
 
   <key>ProcessType</key>
   <string>Background</string>
@@ -486,17 +531,17 @@ ${envDict}
       );
 
       const envEntries = Object.entries({ NODE_ENV: "production", ...this.config.env })
-        .map(([k, v]) => `    <env name="${k}" value="${v}"/>`)
+        .map(([k, v]) => `    <env name="${this.xmlEscape(k)}" value="${this.xmlEscape(v)}"/>`)
         .join("\n");
 
       const xml = `<service>
-  <id>${this.config.serviceName}</id>
-  <name>${this.config.displayName}</name>
-  <description>${this.config.description}</description>
-  <executable>${this.config.executablePath}</executable>
-  <arguments>${this.config.args.join(" ")}</arguments>
-  <workingdirectory>${this.config.workingDirectory}</workingdirectory>
-  <logpath>${path.dirname(this.config.logPath)}</logpath>
+  <id>${this.xmlEscape(this.config.serviceName)}</id>
+  <name>${this.xmlEscape(this.config.displayName)}</name>
+  <description>${this.xmlEscape(this.config.description)}</description>
+  <executable>${this.xmlEscape(this.config.executablePath)}</executable>
+  <arguments>${this.config.args.map((a) => this.xmlEscape(a)).join(" ")}</arguments>
+  <workingdirectory>${this.xmlEscape(this.config.workingDirectory)}</workingdirectory>
+  <logpath>${this.xmlEscape(path.dirname(this.config.logPath))}</logpath>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
     <keepFiles>5</keepFiles>
@@ -532,14 +577,29 @@ ${envEntries}
       const binPath = `"${this.config.executablePath}" ${this.config.args.join(" ")}`;
       const startMode = this.config.autoStart ? "auto" : "demand";
 
-      execSync(
-        `sc create ${this.config.serviceName} binPath= "${binPath}" start= ${startMode} DisplayName= "${this.config.displayName}"`
+      // 使用 spawnSync 数组形式避免 shell 解析 binPath/displayName 中的特殊字符
+      const createResult = spawnSync(
+        "sc",
+        ["create", this.config.serviceName, "binPath=", binPath, "start=", startMode, "DisplayName=", this.config.displayName],
+        { shell: false, stdio: "ignore" }
       );
+      if (createResult.status !== 0) {
+        throw new Error(
+          `sc create failed with exit code ${createResult.status}: ${createResult.stderr?.toString() ?? ""}`
+        );
+      }
 
       if (this.config.restartOnCrash) {
-        execSync(
-          `sc failure ${this.config.serviceName} reset= 86400 actions= restart/${this.config.restartDelaySec * 1000}`
+        const failureResult = spawnSync(
+          "sc",
+          ["failure", this.config.serviceName, "reset=", "86400", "actions=", `restart/${this.config.restartDelaySec * 1000}`],
+          { shell: false, stdio: "ignore" }
         );
+        if (failureResult.status !== 0) {
+          throw new Error(
+            `sc failure failed with exit code ${failureResult.status}: ${failureResult.stderr?.toString() ?? ""}`
+          );
+        }
       }
 
       process.stdout.write(`[DaemonManager] Windows Service installed via sc\n`);
@@ -592,13 +652,17 @@ ${envEntries}
   }
 
   private checkCommand(cmd: string): boolean {
+    // 校验 cmd 格式，拒绝含 shell 元字符的输入（防止 where/which 命令注入）
+    if (!/^[a-zA-Z0-9_\-\/.]+$/.test(cmd)) {
+      return false;
+    }
     try {
-      if (os.platform() === "win32") {
-        execSync(`where ${cmd}`, { stdio: "ignore" });
-      } else {
-        execSync(`which ${cmd}`, { stdio: "ignore" });
-      }
-      return true;
+      // spawnSync 不会在非零退出码时抛异常，需显式检查 status
+      const result = os.platform() === "win32"
+        ? spawnSync("where", [cmd], { shell: false, stdio: "ignore" })
+        : spawnSync("which", [cmd], { shell: false, stdio: "ignore" });
+      // status === 0 表示命令存在；null 表示 where/which 自身启动失败
+      return result.status === 0;
     } catch {
       return false;
     }

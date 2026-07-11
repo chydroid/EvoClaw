@@ -59,6 +59,12 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
+    // 从配置重新加载 token，支持 stop() 后重启：
+    // stop() 会清空 this.accessToken 以避免使用过期 token，此处从 config 重新读取。
+    if (!this.accessToken && this.config.accessToken) {
+      this.accessToken = this.config.accessToken;
+    }
+
     if (!this.config.homeserver) {
       this.statusHandler?.("error");
       return;
@@ -103,6 +109,10 @@ export class MatrixAdapter implements ChannelAdapter {
         await this.apiCall("POST", "/_matrix/client/v3/logout");
       } catch { /* ignore */ }
     }
+
+    // 清空 token 和 since，避免重启时跳过 login 使用过期 token / 过期 sync 游标
+    this.accessToken = null;
+    this.since = null;
 
     this.statusHandler?.("disconnected");
   }

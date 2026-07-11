@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/gateway",
-  "version": "0.72.2",
+  "version": "0.73.0",
   "private": true,
   "description": "EvoClaw Gateway 接入层 - 认证鉴权、负载均衡、协议适配",
   "main": "./dist/index.js",
@@ -24,6 +24,7 @@
     "@evoclaw/infrastructure": "workspace:*",
     "@evoclaw/security": "workspace:*",
     "@larksuiteoapi/node-sdk": "^1.66.1",
+    "@modelcontextprotocol/sdk": "^1.12.0",
     "@opentelemetry/api": "^1.9.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",

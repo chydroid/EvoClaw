@@ -1,4 +1,5 @@
 export { SkillManager } from "./skill-manager";
+export type { OptionalSkillInfo } from "./skill-manager";
 export { SkillValidator } from "./skill-validator";
 export { SkillHookEngine } from "./skill-hook-engine";
 export { SKILLmdParser } from "./skill-md-parser";
@@ -15,7 +16,6 @@ export { SkillCircuitBreaker } from "./skill-circuit-breaker";
 export type { CircuitState, CircuitStats, CircuitBreakerConfig } from "./skill-circuit-breaker";
 export { SkillCapabilityEvaluator } from "./skill-capability-evaluator";
 export type { CapabilityScore } from "./skill-capability-evaluator";
-export { SkillCurator } from "./skill-curator";
 export { SkillIndex } from "./skill-index";
 export type { SkillIndexEntry, SkillSearchResult } from "./skill-index";
 export type { SkillRegistryEntry, RegistrySearchQuery, RegistrySearchResult, RemoteRegistryConfig } from "./skill-registry";
@@ -24,7 +24,12 @@ export type { HealthMonitorConfig, HealthHistory, SkillHealthReport, SkillUsageR
 export type { SkillMatch, AutoInstallResult, BatchInstallProgress, ProgressCallback } from "./auto-skill-manager";
 export type { DispatchContext, DispatchResult, DispatchOptions } from "./skill-dispatcher";
 export type { TfidfMatchResult } from "./tfidf-matcher";
-export type { SkillVersion, SkillEvolutionEntry, ExtractionInput, ImprovementInput } from "./skill-curator";
+// SkillCurator：技能生命周期管理器（使用跟踪、自动归档、进化记录、恢复）
+//   - SkillUsageStats / EvolutionRecord：使用统计与进化记录的持久化结构
+//   - 借鉴 hermes-agent Curator 设计，TypeScript 实现
+//   - 永不删除技能，仅归档到 data/skills-archive/（遵循 AGENTS.md "Never delete; archive"）
+//   - Pinned 技能豁免自动归档；CrossProcessLock + atomicWriteFile 保护并发
+export * from "./skill-curator";
 export { SkillMarketplace } from "./marketplace";
 export type { SkillPackage, SkillReview, SearchQuery, SearchResult, InstallResult, MarketplaceConfig } from "./marketplace";
 export { SkillEcosystem } from "./skill-ecosystem";

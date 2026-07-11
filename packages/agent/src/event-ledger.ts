@@ -86,6 +86,8 @@ export class EventLedger {
   private maxLoadedEntries: number;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  // flush 进程级互斥：防止 read-then-write 序列在并发调用时交错写入
+  private flushing = false;
 
   constructor(config: EventLedgerConfig = {}) {
     this.storeDir =
@@ -308,6 +310,8 @@ export class EventLedger {
           }
         }
       }
+      // 文件按最新优先加载，跨文件间是逆时间序的；加载完成后按 seq 升序排序
+      this.entries.sort((a, b) => a.seq - b.seq);
     } catch {
       // Silent — start fresh
     }
@@ -325,6 +329,9 @@ export class EventLedger {
       this.flushTimer = null;
     }
     if (!this.dirty) return;
+    // 进程级互斥：防止并发 flush 在 read-then-write 之间交错导致重复写入
+    if (this.flushing) return;
+    this.flushing = true;
     try {
       if (!fs.existsSync(this.storeDir)) {
         fs.mkdirSync(this.storeDir, { recursive: true });
@@ -373,6 +380,8 @@ export class EventLedger {
     } catch (err) {
       // Best-effort，但记录错误以便排查
       process.stderr.write("[EventLedger] flush failed: " + err + "\n");
+    } finally {
+      this.flushing = false;
     }
   }
 

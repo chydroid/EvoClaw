@@ -26,10 +26,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { promisify } from "util";
-import { exec as execCallback } from "child_process";
-
-const execAsync = promisify(execCallback);
+import { randomBytes } from "crypto";
+import { isIP } from "net";
+import { yamlQuote } from "./skill-content-utils";
 
 /**
  * 原子写入文件（temp + fsync + rename）。
@@ -41,7 +40,7 @@ function atomicWriteFile(targetPath: string, content: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const tmpPath = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = fs.openSync(tmpPath, "w");
   try {
     fs.writeFileSync(fd, content, "utf-8");
@@ -67,7 +66,7 @@ function atomicWriteFile(targetPath: string, content: string): void {
     if (code === "EXDEV" || code === "EBUSY") {
       // 跨设备：在目标侧写临时文件后 rename，保持原子性
       const dstDir = path.dirname(targetPath);
-      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
+      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
       const c = fs.readFileSync(tmpPath, "utf-8");
       const fd2 = fs.openSync(dstTmp, "w");
       try {
@@ -211,6 +210,8 @@ export class SkillLearner {
     try {
       // GitHub URL 特殊处理：raw README
       const rawUrl = this.githubToRawUrl(url);
+      // SSRF 防护：拦截内网 IP / 元数据端点 / 非公网主机名
+      this.assertSafeFetchUrl(rawUrl);
       const response = await fetch(rawUrl, {
         signal: AbortSignal.timeout(timeoutMs),
         headers: { "User-Agent": "EvoClaw-SkillLearner/1.0" },
@@ -486,9 +487,9 @@ export class SkillLearner {
     const lines: string[] = [];
     // Frontmatter
     lines.push("---");
-    lines.push(`name: ${meta.name}`);
+    lines.push(`name: ${yamlQuote(meta.name)}`);
     lines.push(`version: ${meta.version}`);
-    lines.push(`description: ${meta.description}`);
+    lines.push(`description: ${yamlQuote(meta.description)}`);
     lines.push(`author: ${meta.author}`);
     lines.push(`license: ${meta.license}`);
     lines.push(`category: ${meta.category}`);
@@ -621,5 +622,87 @@ export class SkillLearner {
       return `https://raw.githubusercontent.com/${blobMatch[1]}/${blobMatch[2]}/${blobMatch[3]}`;
     }
     return url;
+  }
+
+  /**
+   * SSRF 防护：在 fetch 前校验 URL，拦截内网 IP / 元数据端点 / 非公网主机名。
+   * 简化版（不做 DNS 解析），仅针对 URL 中的字面主机名/IP 做检查。
+   * @throws 如果 URL 不安全
+   */
+  private assertSafeFetchUrl(urlString: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(urlString);
+    } catch {
+      throw new Error(`Invalid URL: ${urlString}`);
+    }
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(`Unsupported protocol: ${parsed.protocol}`);
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+
+    // 拦截云元数据端点主机名
+    const METADATA_HOSTS = [
+      "169.254.169.254", // AWS / GCP / Azure
+      "metadata.google.internal", // GCP
+      "100.100.100.200", // Alibaba Cloud
+    ];
+    if (METADATA_HOSTS.includes(hostname)) {
+      throw new Error(`SSRF blocked: metadata endpoint ${hostname}`);
+    }
+
+    // 拦截 localhost / 内网域名后缀
+    const INTERNAL_HOSTSuffixES = [".internal", ".local", ".localhost", "localhost"];
+    if (INTERNAL_HOSTSuffixES.some((s) => hostname === s || hostname.endsWith(`.${s}`))) {
+      throw new Error(`SSRF blocked: internal hostname ${hostname}`);
+    }
+
+    // 若主机名为 IP 字面量，校验是否属于内网/环回/链路本地地址
+    if (isIP(hostname)) {
+      if (this.isPrivateOrLoopbackIp(hostname)) {
+        throw new Error(`SSRF blocked: private/loopback/link-local IP ${hostname}`);
+      }
+    }
+  }
+
+  /**
+   * 判断 IPv4/IPv6 字面量是否为内网/环回/链路本地地址。
+   * 仅做字面量检查，不解析 DNS。
+   */
+  private isPrivateOrLoopbackIp(ip: string): boolean {
+    // IPv6 简单判断
+    if (ip.includes(":")) {
+      const lower = ip.toLowerCase();
+      if (lower === "::1" || lower === "::") return true; // 环回 / 未指定
+      if (lower.startsWith("ff")) return true; // 多播 ff00::/8
+      if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA fc00::/7
+      if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
+        return true; // 链路本地 fe80::/10
+      }
+      // IPv4-mapped IPv6: ::ffff:x.x.x.x
+      const v4Mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+      if (v4Mapped) return this.isPrivateOrLoopbackIp(v4Mapped[1]);
+      return false;
+    }
+
+    // IPv4
+    const parts = ip.split(".").map((p) => parseInt(p, 10));
+    if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) return false;
+    const [a, b] = parts;
+    // 10.0.0.0/8
+    if (a === 10) return true;
+    // 172.16.0.0/12
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    // 192.168.0.0/16
+    if (a === 192 && b === 168) return true;
+    // 127.0.0.0/8 环回
+    if (a === 127) return true;
+    // 169.254.0.0/16 链路本地（含 169.254.169.254 元数据端点）
+    if (a === 169 && b === 254) return true;
+    // 0.0.0.0/8 当前网络
+    if (a === 0) return true;
+    return false;
   }
 }

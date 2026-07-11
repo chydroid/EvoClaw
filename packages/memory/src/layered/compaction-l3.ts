@@ -102,7 +102,7 @@ export class L3Compactor {
     const ratio = beforeTokens / this.opts.maxTokens;
 
     const baseResult: CompactionResult = {
-      messages: [...messages],
+      messages: messages.map(m => ({ ...m })),
       level: "none",
       beforeTokens,
       afterTokens: beforeTokens,
@@ -270,19 +270,30 @@ export class L3Compactor {
     toDelete: CompactionMessage[],
     currentCount: number
   ): number {
-    // 检查删除后是否有孤立的 tool_use（assistant 调用但 tool_result 被删）
+    // 检查删除后是否有孤立的 tool 调用对（双向）
     const deleteSet = new Set(toDelete);
     let adjusted = currentCount;
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      if (msg.role === "assistant" && msg.tool_call_id && !deleteSet.has(msg)) {
-        // 找对应的 tool result
+      if (!msg.tool_call_id) continue;
+      if (msg.role === "assistant" && !deleteSet.has(msg)) {
+        // tool_use 保留 → 检查对应 tool_result 是否被删
         const pairIdx = messages.findIndex(
           (m) => m.role === "tool" && m.tool_call_id === msg.tool_call_id
         );
         if (pairIdx >= 0 && deleteSet.has(messages[pairIdx])) {
-          // tool_result 被删但 tool_use 保留 → 孤立
-          // 把 tool_use 也加入删除
+          // tool_result 被删但 tool_use 保留 → 孤立，把 tool_use 也加入删除
+          toDelete.push(msg);
+          deleteSet.add(msg);
+          adjusted++;
+        }
+      } else if (msg.role === "tool" && !deleteSet.has(msg)) {
+        // tool_result 保留 → 检查对应 tool_use 是否被删
+        const pairIdx = messages.findIndex(
+          (m) => m.role === "assistant" && m.tool_call_id === msg.tool_call_id
+        );
+        if (pairIdx >= 0 && deleteSet.has(messages[pairIdx])) {
+          // tool_use 被删但 tool_result 保留 → 孤立，把 tool_result 也加入删除
           toDelete.push(msg);
           deleteSet.add(msg);
           adjusted++;

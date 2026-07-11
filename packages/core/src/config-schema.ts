@@ -366,6 +366,8 @@ export class ConfigWatcher {
   private currentConfigs = new Map<string, Record<string, unknown>>();
   private reloadCount = 0;
   private lastReloadAt: Date | null = null;
+  // 防抖计时器（按文件维度），避免 fs.watch 高频回调造成多次重载
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Watch a config file for changes */
   watch(filePath: string): void {
@@ -378,12 +380,18 @@ export class ConfigWatcher {
 
     const watcher = fs.watch(dir, (eventType, filename) => {
       if (filename === basename && eventType === "change") {
-        setTimeout(() => {
+        // 防抖：清除该文件上一次未触发的 timer，重置计时
+        const prev = this.debounceTimers.get(filePath);
+        if (prev) clearTimeout(prev);
+        const timer = setTimeout(() => {
+          this.debounceTimers.delete(filePath);
           this.handleFileChange(filePath);
           for (const cb of this.callbacks) {
             try { cb(filePath); } catch { /* swallow */ }
           }
         }, 200);
+        timer.unref();
+        this.debounceTimers.set(filePath, timer);
       }
     });
 
@@ -441,6 +449,11 @@ export class ConfigWatcher {
       watcher.close();
       this.watchers.delete(filePath);
     }
+    const timer = this.debounceTimers.get(filePath);
+    if (timer) {
+      clearTimeout(timer);
+      this.debounceTimers.delete(filePath);
+    }
     this.currentConfigs.delete(filePath);
   }
 
@@ -450,6 +463,10 @@ export class ConfigWatcher {
       watcher.close();
       this.watchers.delete(filePath);
     }
+    for (const [, timer] of this.debounceTimers) {
+      clearTimeout(timer);
+    }
+    this.debounceTimers.clear();
     this.callbacks = [];
     this.changeHandlers = [];
     this.currentConfigs.clear();

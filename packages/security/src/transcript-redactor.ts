@@ -256,8 +256,12 @@ export class TranscriptRedactor {
         result = result.replace(p.pattern, (match, ...args) => {
           if (total >= this.config.maxRedactionsPerText) return match;
           total++;
-          // args: [group1, group2, ..., offset, string, groups]
-          const groups = [match, ...args.slice(0, -2)];
+          // args: [group1, group2, ..., offset, string] 或
+          //       [group1, group2, ..., offset, string, namedGroups]
+          // 当存在命名捕获组时，最后一个元素是 groups 对象，需要多切一个。
+          const hasNamedGroups = typeof args[args.length - 1] === "object" && args[args.length - 1] !== null;
+          const cutCount = hasNamedGroups ? 3 : 2;
+          const groups = [match, ...args.slice(0, -cutCount)];
           return this.applyReplacement(p, match, groups);
         });
         const actualCount = total - before;
@@ -283,7 +287,9 @@ export class TranscriptRedactor {
         timestamp: Date.now(),
       });
       if (this.auditLog.length > 1000) {
-        this.auditLog.shift();
+        const dropped = this.auditLog.length - 1000;
+        process.stderr.write(`[TranscriptRedactor] auditLog overflow: dropped ${dropped} oldest entries\n`);
+        this.auditLog = this.auditLog.slice(-1000);
       }
     }
     return {

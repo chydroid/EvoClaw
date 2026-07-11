@@ -145,6 +145,8 @@ export class MemoryHost {
   private storePath: string;
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** dispose() 调用后置为 true，阻止 flush 失败时再次 scheduleSave 创建新定时器 */
+  private disposed = false;
 
   constructor(
     config: MemoryHostConfig = {},
@@ -398,6 +400,8 @@ export class MemoryHost {
   }
 
   private scheduleSave(): void {
+    // dispose() 后不再创建新定时器，避免 flush 失败引发无限重试
+    if (this.disposed) return;
     this.dirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 500);
@@ -406,6 +410,8 @@ export class MemoryHost {
 
   /**
    * 释放资源：落盘 dirty 数据并清理 saveTimer。
+   * disposed 标志在 flush 之后才置位，保证本次 dispose 触发的落盘正常执行，
+   * 同时阻止 flush 失败时 catch 块里的 scheduleSave 创建新定时器。
    */
   dispose(): void {
     if (this.dirty) {
@@ -414,19 +420,27 @@ export class MemoryHost {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
+    this.disposed = true;
+    // 清理 flush 失败路径可能新创建的定时器
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
   }
 
   flush(): void {
+    // dispose() 后不再执行落盘（避免遗留定时器在退出阶段再次触发写入）
+    if (this.disposed) return;
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     if (!this.dirty) return;
+    const tmp = `${this.storePath}.tmp.${process.pid}`;
     try {
       const dir = path.dirname(this.storePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const arr = [...this.entries.values()];
-      const tmp = `${this.storePath}.tmp.${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), "utf-8");
       // fsync the temp file so the data is durable before the atomic rename
       const fd = fs.openSync(tmp, "r");
@@ -438,6 +452,8 @@ export class MemoryHost {
       fs.renameSync(tmp, this.storePath);
       this.dirty = false;
     } catch (err) {
+      // 清理残留的临时文件，避免泄漏
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
       console.error(`[MemoryHost] Failed to flush store to ${this.storePath}: ${err instanceof Error ? err.message : String(err)}`);
       // Keep dirty = true and reschedule so we retry on the next tick
       this.scheduleSave();

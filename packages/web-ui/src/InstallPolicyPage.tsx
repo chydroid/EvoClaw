@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 // ── Types ──
 
@@ -113,8 +113,8 @@ export default function InstallPolicyPage() {
     setLoading(true);
     try {
       const [rulesRes, auditRes] = await Promise.all([
-        fetch(`${API}/api/install-policy/rules`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/install-policy/audit?limit=50`).then(r => r.json()).catch(() => null),
+        fetch(`${API}/api/install-policy/rules`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/install-policy/audit?limit=50`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const allRules: any[] = (rulesRes?.rules || rulesRes || []) as any[];

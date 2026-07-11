@@ -149,8 +149,10 @@ export function registerFileTools(
       if (pathError) return { success: false, error: pathError };
       return await errRecovery.executeWithRetry("file_read", filePath, async () => {
         let content = await fsMgr.readFile(filePath);
-        const offset = params.offset ? parseInt(String(params.offset), 10) : 1;
-        const limit = params.limit ? parseInt(String(params.limit), 10) : undefined;
+        const parsedOffset = params.offset ? parseInt(String(params.offset), 10) : 1;
+        const offset = Number.isFinite(parsedOffset) ? Math.max(1, parsedOffset) : 1;
+        const parsedLimit = params.limit ? parseInt(String(params.limit), 10) : undefined;
+        const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) ? Math.max(1, parsedLimit) : undefined;
         if (offset > 1 || limit) {
           const allLines = content.split("\n");
           const start = Math.max(0, offset - 1);

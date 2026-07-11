@@ -95,10 +95,10 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
           if (key.startsWith("plugins.entries.")) {
             const pluginName = key.split(".")[2];
             if (value === "true") {
-              await apiRequest("POST", `/api/plugins/${encodeURIComponent(pluginName)}/toggle`, { status: "active" });
+              await apiRequest("POST", `/api/plugins/${encodeURIComponent(pluginName)}/toggle`, { status: "enabled" });
               console.log(c("green", `${ICONS.ok()} Plugin "${pluginName}" enabled`));
             } else {
-              await apiRequest("POST", `/api/plugins/${encodeURIComponent(pluginName)}/toggle`, { status: "inactive" });
+              await apiRequest("POST", `/api/plugins/${encodeURIComponent(pluginName)}/toggle`, { status: "disabled" });
               console.log(c("green", `${ICONS.ok()} Plugin "${pluginName}" disabled`));
             }
             return;

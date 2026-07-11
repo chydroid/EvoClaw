@@ -11,6 +11,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -138,6 +139,7 @@ export class HumanApprovalManager {
   /** 防抖持久化定时器 */
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = false;
+  private destroyed = false;
 
   constructor(config?: Partial<ApprovalConfig>) {
     this.config = {
@@ -190,7 +192,7 @@ export class HumanApprovalManager {
       return { decision: "rejected" }; // Too many pending
     }
 
-    const id = `approval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `approval-${Date.now()}-${randomUUID()}`;
     const riskLevel = this.getRiskLevel(toolName);
 
     const pending: PendingApproval = {
@@ -262,6 +264,10 @@ export class HumanApprovalManager {
 
     pending.decidedBy = decidedBy;
     pending.trustFutureOperations = trustFuture;
+    // 显式设置状态与决定时间，确保即使没有 resolver（如 loadState 恢复的 pending）状态机也能正确流转
+    pending.status = modifiedArgs ? "modified" : "approved";
+    pending.decidedAt = Date.now();
+    if (modifiedArgs) pending.modifiedArgs = modifiedArgs;
 
     // Add trust rule if requested
     if (trustFuture) {
@@ -273,14 +279,20 @@ export class HumanApprovalManager {
       });
     }
 
+    // 清理超时定时器并删除 resolver 条目（防止泄漏与重复处理）
+    this.clearPendingTimeout(approvalId);
     const resolver = this.approvalResolvers.get(approvalId);
     if (resolver) {
+      this.approvalResolvers.delete(approvalId);
+      // 通知等待的 Promise（resolver 内部会冗余设置状态，幂等无副作用）
       if (modifiedArgs) {
         resolver.resolve("modified", modifiedArgs);
       } else {
         resolver.resolve("approved");
       }
     }
+
+    this.markDirty();
     return true;
   }
 
@@ -291,11 +303,20 @@ export class HumanApprovalManager {
 
     pending.decidedBy = decidedBy;
     pending.rejectionReason = reason;
+    // 显式设置状态与决定时间，确保状态机正确流转
+    pending.status = "rejected";
+    pending.decidedAt = Date.now();
 
+    // 清理超时定时器并删除 resolver 条目（防止泄漏与重复处理）
+    this.clearPendingTimeout(approvalId);
     const resolver = this.approvalResolvers.get(approvalId);
     if (resolver) {
+      this.approvalResolvers.delete(approvalId);
+      // 通知等待的 Promise
       resolver.resolve("rejected");
     }
+
+    this.markDirty();
     return true;
   }
 
@@ -338,7 +359,11 @@ export class HumanApprovalManager {
       if (rule.argPattern) {
         return Object.entries(rule.argPattern).every(([key, pattern]) => {
           const val = String(args[key] ?? "");
-          if (pattern instanceof RegExp) return pattern.test(val);
+          if (pattern instanceof RegExp) {
+            // 带 g 标志的 RegExp 共享同一实例时 lastIndex 会累积，需重置否则会间歇性失配
+            pattern.lastIndex = 0;
+            return pattern.test(val);
+          }
           return val === pattern;
         });
       }
@@ -400,6 +425,7 @@ export class HumanApprovalManager {
 
   /** Stop the cleanup timer and reject all pending approvals */
   destroy(): void {
+    this.destroyed = true;
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
@@ -420,6 +446,7 @@ export class HumanApprovalManager {
 
   /** 标记状态已变更，防抖写入 */
   private markDirty(): void {
+    if (this.destroyed) return;
     if (!this.config.storePath) return;
     this.dirty = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);

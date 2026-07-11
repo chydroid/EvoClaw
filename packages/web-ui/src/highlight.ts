@@ -194,7 +194,8 @@ export function htmlEscape(text: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function highlightCode(escaped: string, lang: string): string {
@@ -212,31 +213,39 @@ export function highlightCode(escaped: string, lang: string): string {
 
   const isMarkup = langLower === "html" || langLower === "css" || langLower === "xml" || langLower === "svg";
 
+  // 使用占位符保护字符串和注释内容，避免后续正则在已包裹的 span 内部重复匹配（嵌套替换问题）
+  const placeholders: string[] = [];
+  const protect = (html: string): string => {
+    const idx = placeholders.length;
+    placeholders.push(html);
+    return `\x00PH${idx}\x00`;
+  };
+
   if (!isMarkup && stringQuote) {
     result = result.replace(
       /(["'`])(?:(?!\1|\\).|\\.)*\1/g,
-      (match) => `<span class="code-string">${match}</span>`
+      (match) => protect(`<span class="code-string">${match}</span>`)
     );
   }
 
   if (commentStyle === "slash") {
     result = result.replace(
       /\/\*[\s\S]*?\*\//g,
-      (match) => `<span class="code-comment">${match}</span>`
+      (match) => protect(`<span class="code-comment">${match}</span>`)
     );
     result = result.replace(
       /\/\/.*$/gm,
-      (match) => `<span class="code-comment">${match}</span>`
+      (match) => protect(`<span class="code-comment">${match}</span>`)
     );
   } else if (commentStyle === "hash") {
     result = result.replace(
       /#.*$/gm,
-      (match) => `<span class="code-comment">${match}</span>`
+      (match) => protect(`<span class="code-comment">${match}</span>`)
     );
   } else if (commentStyle === "dash") {
     result = result.replace(
       /--.*$/gm,
-      (match) => `<span class="code-comment">${match}</span>`
+      (match) => protect(`<span class="code-comment">${match}</span>`)
     );
   }
 
@@ -244,13 +253,13 @@ export function highlightCode(escaped: string, lang: string): string {
     if (langLower === "css") {
       result = result.replace(
         /\/\*[\s\S]*?\*\//g,
-        (match) => `<span class="code-comment">${match}</span>`
+        (match) => protect(`<span class="code-comment">${match}</span>`)
       );
     }
     if (langLower === "html" || langLower === "xml" || langLower === "svg") {
       result = result.replace(
         /&lt;!--[\s\S]*?--&gt;/g,
-        (match) => `<span class="code-comment">${match}</span>`
+        (match) => protect(`<span class="code-comment">${match}</span>`)
       );
       result = result.replace(
         /(class|id|style|src|href|alt|type|name|rel|lang|charset|content|viewport|width|height|onclick|onload|onerror|onsubmit|onchange|oninput)\s*=/gi,
@@ -285,6 +294,7 @@ export function highlightCode(escaped: string, lang: string): string {
     }
   } else {
     const allKeywords = new Set([...kwSet, ...biSet, ...tySet]);
+    if (allKeywords.size === 0) return result;
     const keywordPattern = new RegExp(
       `\\b(${[...allKeywords].join("|")})\\b`,
       "g"
@@ -309,6 +319,11 @@ export function highlightCode(escaped: string, lang: string): string {
     /\b([A-Z][a-zA-Z0-9_]*)\b/g,
     (match) => `<span class="code-type">${match}</span>`
   );
+
+  // 恢复占位符（字符串和注释内容）
+  for (let i = placeholders.length - 1; i >= 0; i--) {
+    result = result.replace(`\x00PH${i}\x00`, () => placeholders[i]);
+  }
 
   return result;
 }

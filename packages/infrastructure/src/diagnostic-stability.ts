@@ -45,7 +45,7 @@ export interface StabilityConfig {
   retryThreshold: number;
   /** 触发 phase-flapping 的最小切换次数（默认 4） */
   phaseFlapCount: number;
-  /** 触发 error-spike 的错误率阈值（0-1，默认 0.5） */
+  /** 触发 error-spike 的错误率阈值（0-1，默认 0.8） */
   errorRateThreshold: number;
   /** 错误率检测窗口（默认 5 分钟） */
   errorRateWindowMs: number;
@@ -60,7 +60,9 @@ export const DEFAULT_STABILITY_CONFIG: StabilityConfig = {
   retryWindowMs: 60_000,
   retryThreshold: 3,
   phaseFlapCount: 4,
-  errorRateThreshold: 0.5,
+  // 安全：原先 0.5 阈值过低，2 个错误即触发（errorRate=2/3≈0.667）；
+  // 提升至 0.8，需 5+ 错误（5/6≈0.833）才触发，避免误报。
+  errorRateThreshold: 0.8,
   errorRateWindowMs: 5 * 60_000,
   stalledThresholdMs: 30 * 60_000,
   resourceSpikeRatio: 2.0,

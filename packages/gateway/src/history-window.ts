@@ -73,9 +73,10 @@ export class HistoryWindow {
    */
   add(entry: HistoryEntry): void {
     this.entries.push(entry);
-    // 超过 maxSize 时从头部移除最旧的
-    while (this.entries.length > this.maxSize) {
-      this.entries.shift();
+    // 超过 maxSize 时从头部批量移除最旧的（splice O(n) 优于循环 shift O(n²)）
+    if (this.entries.length > this.maxSize) {
+      const excess = this.entries.length - this.maxSize;
+      this.entries.splice(0, excess);
     }
     // 清理超过 maxAgeMs 的旧消息
     this.prune(entry.timestamp);

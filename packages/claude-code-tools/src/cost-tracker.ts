@@ -57,6 +57,8 @@ export const MODEL_PRICING: Record<string, { input: number; output: number; cach
 // ── Cost Calculator ──
 
 export class CostTracker {
+  /** 保留的最大记录数，防止 records 数组无限增长 */
+  private static readonly MAX_RECORDS = 10000;
   private records: CostRecord[] = [];
   private budgetLimit: number | null;
   private budgetUsed: number = 0;
@@ -105,6 +107,13 @@ export class CostTracker {
 
     this.records.push(record);
     this.budgetUsed += cost;
+    // 限制记录数量，保留最近 MAX_RECORDS 条，裁剪时同步扣除 budgetUsed 保持一致
+    if (this.records.length > CostTracker.MAX_RECORDS) {
+      const removed = this.records.splice(0, this.records.length - CostTracker.MAX_RECORDS);
+      for (const r of removed) {
+        this.budgetUsed -= r.costUsd;
+      }
+    }
 
     return {
       cost,
@@ -116,7 +125,11 @@ export class CostTracker {
    * Get total cost for all sessions.
    */
   get totalCost(): number {
-    return Math.round(this.budgetUsed * 10000) / 10000;
+    // 从 records 数组求和，保持与 getBySession()/getByModel() 一致的口径。
+    // records 超过 MAX_RECORDS 会被裁剪，而 budgetUsed 是累计值不受影响，
+    // 若直接返回 budgetUsed 会与裁剪后的 records 求和结果不一致。
+    const sum = this.records.reduce((acc, r) => acc + r.costUsd, 0);
+    return Math.round(sum * 10000) / 10000;
   }
 
   /**

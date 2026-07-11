@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 type TabId = "pending" | "history" | "settings" | "reactions";
 
@@ -105,11 +105,11 @@ export default function ApprovalCenterPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [pendingRes, configRes, reactionRes, approvalConfigRes] = await Promise.all([
-        fetch(`${API}/api/approvals/pending`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/approval-timeout/config`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/reaction-approvals`).then(r => r.json()).catch(() => null),
-        fetch(`${API}/api/approvals/config`).then(r => r.json()).catch(() => null),
+      const [pendingRes, configRes, reactionRes, historyRes] = await Promise.all([
+        fetch(`${API}/api/approvals/pending`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approval-timeout/config`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/reaction-approvals`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approvals/history`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const pendList: PendingRequest[] = (pendingRes?.pending || pendingRes?.requests || pendingRes || []) as any[];
@@ -127,8 +127,8 @@ export default function ApprovalCenterPage() {
         });
       }
 
-      // History not in a dedicated endpoint, derive from /api/approvals/config if available
-      const hist: HistoryEntry[] = (approvalConfigRes?.history || approvalConfigRes?.recent || []) as any[];
+      // History from dedicated /api/approvals/history endpoint
+      const hist: HistoryEntry[] = (historyRes?.history || []) as any[];
       setHistory(hist);
 
       // Reactions endpoint returns {history, pending, stats}

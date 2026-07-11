@@ -29,6 +29,7 @@ const CATEGORY_KEYWORDS: Record<SkillCategory, string[]> = {
 export class SkillCapabilityEvaluator {
   private tfidfMatcher: TfidfMatcher;
   private corpusBuilt = false;
+  private indexedSkillIds: Set<string> | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -45,6 +46,7 @@ export class SkillCapabilityEvaluator {
       metadata: { description: skill.description, category: skill.category },
     }));
     this.tfidfMatcher.initialize(documents);
+    this.indexedSkillIds = new Set(skills.map(s => s.id));
     this.corpusBuilt = true;
   }
 
@@ -88,10 +90,11 @@ export class SkillCapabilityEvaluator {
     if (!this.corpusBuilt) {
       this.buildCorpus(skills);
     } else {
-      const existingIds = new Set<string>();
-      const searchResults = this.tfidfMatcher.search(taskDescription, 0, 1);
-      for (const r of searchResults) existingIds.add(r.target);
-      const needsRebuild = skills.some(s => !existingIds.has(s.id));
+      // 直接比较技能 ID 集合，避免依赖 search 结果间接判断（后者逻辑错误）
+      const currentIds = new Set(skills.map(s => s.id));
+      const indexedIds = this.indexedSkillIds ?? new Set<string>();
+      const needsRebuild = currentIds.size !== indexedIds.size ||
+        [...currentIds].some(id => !indexedIds.has(id));
       if (needsRebuild) this.buildCorpus(skills);
     }
 
@@ -143,27 +146,38 @@ export class SkillCapabilityEvaluator {
     const triggers = skill.triggers;
     if (!triggers || triggers.length === 0) return 0;
 
-    const lowerTask = taskDescription.toLowerCase();
+    // 限制输入文本长度，防止 ReDoS 在超长输入上放大
+    const lowerTask = taskDescription.toLowerCase().substring(0, 10000);
 
     for (const trigger of triggers) {
       if (trigger.type === "keyword") {
-        try {
-          const regex = new RegExp(trigger.pattern, "i");
-          if (regex.test(lowerTask)) return 1.0;
-        } catch {
-          if (lowerTask.includes(trigger.pattern.toLowerCase())) return 1.0;
-        }
+        const regex = this.buildSafeTriggerRegex(trigger.pattern);
+        if (regex && regex.test(lowerTask)) return 1.0;
+        // pattern 不安全或无效时退化为 includes 匹配
+        if (lowerTask.includes(trigger.pattern.toLowerCase())) return 1.0;
       } else if (trigger.type === "intent") {
-        try {
-          const regex = new RegExp(trigger.pattern, "i");
-          if (regex.test(lowerTask)) return 0.8;
-        } catch {
-          if (lowerTask.includes(trigger.pattern.toLowerCase())) return 0.8;
-        }
+        const regex = this.buildSafeTriggerRegex(trigger.pattern);
+        if (regex && regex.test(lowerTask)) return 0.8;
+        if (lowerTask.includes(trigger.pattern.toLowerCase())) return 0.8;
       }
     }
 
     return 0;
+  }
+
+  /**
+   * 安全地构建 trigger 正则：限制 pattern 长度（< 100）并拒绝嵌套量词
+   * （如 (a+)+ ）以防 ReDoS。返回 null 表示 pattern 不安全或无效。
+   */
+  private buildSafeTriggerRegex(pattern: string): RegExp | null {
+    if (!pattern || pattern.length >= 100) return null;
+    // 检测嵌套量词：分组内含量词且分组后紧跟量词
+    if (/(?:\([^)]*[+*?][^)]*\)[+*?])/.test(pattern)) return null;
+    try {
+      return new RegExp(pattern, "i");
+    } catch {
+      return null;
+    }
   }
 
   private computeUsageScore(stats: SkillStats): number {

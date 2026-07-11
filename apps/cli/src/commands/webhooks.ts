@@ -55,10 +55,17 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const serverAlive = await checkServer();
       if (!serverAlive) { serverRequired(); return; }
 
+      // 路径注入防护：account 用于构造 webhook path/id，禁止路径穿越字符
+      const account = String(opts.account);
+      if (account.includes("..") || account.includes("/") || account.includes("\\") || account.includes("\n") || account.includes("\r")) {
+        console.log(c("red", `${ICONS.error()} Invalid account: must not contain "..", path separators, or newlines`));
+        return;
+      }
+
       try {
         const { data, status } = await apiRequest<Record<string, unknown>>("POST", "/api/webhooks", {
-          id: `gmail-${String(opts.account).replace(/@/g, "-")}`,
-          path: `/hooks/gmail/${String(opts.account).replace(/@/g, "-")}`,
+          id: `gmail-${account.replace(/@/g, "-")}`,
+          path: `/hooks/gmail/${account.replace(/@/g, "-")}`,
           method: "POST",
           action: "gmail_pubsub",
           description: `Gmail Pub/Sub for ${opts.account}`,
@@ -67,8 +74,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
         if (status === 201 || data?.success) {
           console.log(c("green", `${ICONS.ok()} Gmail webhook configured for ${opts.account}`));
-          console.log(c("gray", `  Webhook ID: gmail-${String(opts.account).replace(/@/g, "-")}`));
-          console.log(c("gray", `  Endpoint: /hooks/gmail/${String(opts.account).replace(/@/g, "-")}`));
+          console.log(c("gray", `  Webhook ID: gmail-${account.replace(/@/g, "-")}`));
+          console.log(c("gray", `  Endpoint: /hooks/gmail/${account.replace(/@/g, "-")}`));
         } else {
           console.log(c("yellow", `${ICONS.warn()} Setup response: ${JSON.stringify(data)}`));
         }

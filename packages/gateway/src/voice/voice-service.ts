@@ -11,6 +11,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "../atomic-write";
 
 export type VoiceEngine = "browser" | "vosk" | "none";
 
@@ -261,7 +262,7 @@ export class VoiceService {
       if (!fs.existsSync(this.dataDir)) {
         fs.mkdirSync(this.dataDir, { recursive: true });
       }
-      fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), "utf-8");
+      atomicWriteFileSync(this.configPath, JSON.stringify(this.config, null, 2));
     } catch (err) {
       this.log("error", `Failed to persist voice config: ${err instanceof Error ? err.message : String(err)}`);
     }

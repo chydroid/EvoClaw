@@ -1,5 +1,6 @@
 import type { Browser, BrowserContext, Page } from "playwright";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -160,8 +161,37 @@ export class PlaywrightBrowser {
     return tab?.page || null;
   }
 
+  /**
+   * SSRF 校验：在 page.goto 前拦截内网 IP / 元数据端点 / 危险协议。
+   * 优先使用注册表中的 ssrfProtection 服务；未注册时退化为协议白名单。
+   */
+  private async assertSafeUrl(url: string): Promise<void> {
+    const ssrfProtection = this.registry.resolveService<{
+      checkURL(url: string): Promise<{ allowed: boolean; reason?: string }>;
+    }>("ssrfProtection");
+    if (!ssrfProtection) {
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new Error(`Invalid URL format: ${url}`);
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`Unsupported protocol: ${parsed.protocol}. Only http/https allowed.`);
+      }
+      return;
+    }
+    const result = await ssrfProtection.checkURL(url);
+    if (!result.allowed) {
+      throw new Error(`URL blocked by security policy: ${result.reason}`);
+    }
+  }
+
   async navigate(url: string): Promise<{ url: string; title: string; status: number; content: string }> {
     await this.ensureLaunched();
+
+    // SSRF 检查：在发起请求前拦截内网/元数据端点
+    await this.assertSafeUrl(url);
 
     let page = this.activePage;
     if (!page) {
@@ -237,8 +267,14 @@ export class PlaywrightBrowser {
     // 安全：阻止任意 JS 执行中可能逃逸浏览器沙箱的危险全局对象/构造器。
     // 虽然页面上下文本身无 Node.js 的 require/process，但保留校验作为纵深防御，
     // 防止通过注入片段访问页面中可能被 polyfill 的这些标识符。
+    // 注意：正则黑名单无法可靠阻止所有绕过方式（如字符串拼接 window["req"+"ire"]）。
+    // 此检查仅作为第一道防线，真正的隔离应依赖页面沙箱/CSP。
     const FORBIDDEN_JS_PATTERNS = [/\brequire\s*\(/, /\bprocess\b/, /\beval\s*\(/, /\bFunction\s*\(/];
-    for (const pattern of FORBIDDEN_JS_PATTERNS) {
+    // 基本的字符串拼接检测，作为黑名单的补充（仍无法覆盖所有变体）。
+    const CONCAT_PATTERNS = [
+      /\[[\s"'+]*['"][a-z_]+['"][\s"'+]*\+[\s"'+]*['"][a-z_]+['"]/i,
+    ];
+    for (const pattern of [...FORBIDDEN_JS_PATTERNS, ...CONCAT_PATTERNS]) {
       if (pattern.test(expression)) {
         process.stderr.write(
           `[PlaywrightBrowser] evaluateJS rejected expression containing forbidden token: ${pattern.source}\n`
@@ -663,9 +699,16 @@ export class PlaywrightBrowser {
         // 安全：cookie 文件含会话凭据，必须设置 0o600 权限防止同机其他用户读取
         const tmp = `${this.cookieFile}.tmp.${process.pid}`;
         const tmpFd = fs.openSync(tmp, "w", 0o600);
-        fs.writeFileSync(tmpFd, JSON.stringify(cookies, null, 2), "utf-8");
-        fs.fsyncSync(tmpFd);
-        fs.closeSync(tmpFd);
+        try {
+          fs.writeFileSync(tmpFd, JSON.stringify(cookies, null, 2), "utf-8");
+          fs.fsyncSync(tmpFd);
+        } catch (err) {
+          // 写入或同步失败时清理残留的临时文件，避免 fd 泄漏与文件残留
+          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+          throw err;
+        } finally {
+          try { fs.closeSync(tmpFd); } catch { /* already closed */ }
+        }
         let fd: number | null = null;
         try {
           fd = fs.openSync(tmp, "r");
@@ -689,7 +732,7 @@ export class PlaywrightBrowser {
     await this.ensureLaunched();
 
     const page = await this.context!.newPage();
-    const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const tabId = `tab-${randomUUID()}`;
 
     this.tabs.set(tabId, {
       id: tabId,

@@ -84,7 +84,10 @@ export class HeartbeatManager {
 
     this.nextFireTime = new Date(Date.now() + this.intervalMs);
     this.timer = setInterval(() => {
-      if (this.heartbeatRunning) return; // 防止上一次心跳未完成时重叠执行
+      if (this.heartbeatRunning) {
+        this.nextFireTime = new Date(Date.now() + this.intervalMs);
+        return; // 防止上一次心跳未完成时重叠执行
+      }
       this.heartbeatRunning = true;
       this.onHeartbeat()
         .catch((err) => {

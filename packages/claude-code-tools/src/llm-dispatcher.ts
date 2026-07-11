@@ -27,6 +27,22 @@ export interface LLMDispatchResponse {
   finishReason: string;
 }
 
+/** LLM API 原始响应结构（兼容 Anthropic 与 OpenAI 风格，替换 as any） */
+interface LLMResponseJson {
+  content?: Array<{ text?: string }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
+  stop_reason?: string;
+  choices?: Array<{
+    message?: { content?: string };
+    finish_reason?: string;
+  }>;
+}
+
 export interface LLMDispatchConfig {
   maxRetries: number;
   retryBaseDelayMs: number;
@@ -66,7 +82,7 @@ function isBlockedIpv4(host: string): boolean {
 }
 
 /** 校验 LLM API URL，拒绝非法协议与私网/回环地址（SSRF 防护） */
-function assertSafeLlmUrl(url: string): void {
+export function assertSafeLlmUrl(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -84,17 +100,14 @@ function assertSafeLlmUrl(url: string): void {
     throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
   }
 
+  // 拒绝十进制/十六进制形式的 IPv4（可绕过点分十进制 isBlockedIpv4 检查）
+  if (/^\d+$/.test(hostname) || /^0x[0-9a-f]+$/i.test(hostname)) {
+    throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
+  }
+
+  // 拒绝所有 IPv6 地址（含完整形式、link-local fe80::、未指定地址 :: 等）
   if (hostname.includes(":")) {
-    if (hostname === "::1") {
-      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
-    }
-    if (/^f[cd]/i.test(hostname)) {
-      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
-    }
-    const v4Mapped = hostname.match(/:ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
-    if (v4Mapped && isBlockedIpv4(v4Mapped[1])) {
-      throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
-    }
+    throw new Error(`Blocked LLM API host (SSRF protection): ${hostname}`);
   }
 }
 
@@ -407,29 +420,34 @@ export class LLMDispatcher {
 
   /**
    * Dispatch multiple tasks in parallel with concurrency control.
+   * Results are returned in the same order as `requests` (FIFO), so callers can
+   * match each result to its corresponding request by index.
    */
   async dispatchParallel(
     requests: LLMDispatchRequest[],
     maxConcurrency: number = 3,
   ): Promise<SubTaskResult[]> {
-    const results: SubTaskResult[] = [];
+    // 按请求顺序预分配槽位，保证返回顺序与 requests 一致（FIFO）而非完成顺序
+    const results: SubTaskResult[] = new Array(requests.length);
     const executing: Promise<void>[] = [];
     const completed = new Set<Promise<void>>();
 
-    for (const request of requests) {
+    for (let i = 0; i < requests.length; i++) {
+      const index = i;
+      const request = requests[index];
       const promise = this.dispatch(request).then(
-        (result) => { results.push(result); },
+        (result) => { results[index] = result; },
         (err) => {
           // dispatch 失败时必须填充对应的失败结果，否则 results 长度与
           // requests 不一致，调用方无法定位哪个任务失败，错误被静默丢弃。
-          results.push({
+          results[index] = {
             success: false,
             output: null,
             artifacts: [],
             issues: [err instanceof Error ? err.message : String(err)],
             suggestions: [],
             durationMs: 0,
-          });
+          };
         },
       );
 
@@ -442,9 +460,9 @@ export class LLMDispatcher {
       if (executing.length >= maxConcurrency) {
         await Promise.race(executing);
         // Remove settled promises
-        for (let i = executing.length - 1; i >= 0; i--) {
-          if (completed.has(executing[i])) {
-            executing.splice(i, 1);
+        for (let j = executing.length - 1; j >= 0; j--) {
+          if (completed.has(executing[j])) {
+            executing.splice(j, 1);
           }
         }
       }
@@ -591,11 +609,12 @@ export class LLMDispatcher {
     }
 
     const timeout = provider.timeout || 120000;
+    // SSRF 防护：校验 LLM API URL，拒绝私网/回环地址（须在启动定时器前完成，
+    // 否则不安全的 URL 会先触发 abort 定时器）
+    assertSafeLlmUrl(apiURL);
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-    // SSRF 防护：校验 LLM API URL，拒绝私网/回环地址
-    assertSafeLlmUrl(apiURL);
 
     try {
       const response = await fetch(apiURL, {
@@ -612,7 +631,7 @@ export class LLMDispatcher {
         throw new Error(`LLM API HTTP ${response.status}: ${errorText.slice(0, 300)}`);
       }
 
-      const data = await response.json() as any;
+      const data = await response.json() as LLMResponseJson;
       let content: string;
       let inputTokens: number;
       let outputTokens: number;

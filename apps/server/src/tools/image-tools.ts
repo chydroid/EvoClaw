@@ -13,7 +13,24 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import * as crypto from "crypto";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+
+/** 原子写入文件：写临时文件 + fsync + rename */
+function atomicWriteFileSync(filePath: string, data: Buffer): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
 
 /** 图片生成提供商配置（与 protocol-adapter.ts 中结构一致） */
 interface ImageGenProvider {
@@ -60,7 +77,7 @@ function ensureDir(dir: string): void {
 /** 生成唯一文件名 */
 function generateFilename(prefix: string, ext: string): string {
   const ts = Date.now();
-  const rand = Math.random().toString(36).slice(2, 8);
+  const rand = crypto.randomBytes(4).toString("hex");
   return `${prefix}_${ts}_${rand}.${ext}`;
 }
 
@@ -71,6 +88,66 @@ function resolveEnvVar(value: string): string {
     return process.env[match[1]] || "";
   }
   return value;
+}
+
+/**
+ * 校验下载 URL，拒绝非法协议与内网/回环/链路本地地址（SSRF 防护）。
+ * Fal.ai/Replicate 返回的 imageUrl/outputUrl 由外部提供，直接 fetch 可能让服务端
+ * 请求内网地址，因此下载前必须校验。图片与视频下载共用此校验。
+ */
+export function validateDownloadUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid image URL: ${url}`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Disallowed image URL protocol: ${parsed.protocol}`);
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  // 拒绝 localhost；IPv6 仅拒绝回环 (::1)、链路本地 (fe80::/10)、唯一本地 (fc00::/7)，允许公网 IPv6
+  if (hostname === "localhost") {
+    throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+  }
+  if (hostname.includes(":")) {
+    // IPv6 地址：仅阻断私有/回环段，允许公网 IPv6
+    if (hostname === "::1" || hostname === "::") {
+      throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+    }
+    const firstSeg = hostname.split(":")[0] ?? "";
+    const firstSegInt = parseInt(firstSeg, 16);
+    if (!Number.isNaN(firstSegInt)) {
+      // fe80::/10 链路本地 → 首段 fe80..febf
+      if (firstSegInt >= 0xfe80 && firstSegInt <= 0xfebf) {
+        throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+      }
+      // fc00::/7 唯一本地 → 首段 fc00..fdff
+      if (firstSegInt >= 0xfc00 && firstSegInt <= 0xfdff) {
+        throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+      }
+    }
+  }
+
+  // 校验 IPv4 点分十进制是否属于私网/回环/链路本地段
+  const m = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = parseInt(m[1], 10);
+    const b = parseInt(m[2], 10);
+    if (
+      a === 127 || // 127.0.0.0/8 loopback
+      a === 10 || // 10.0.0.0/8 private
+      (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+      (a === 192 && b === 168) || // 192.168.0.0/16 private
+      (a === 169 && b === 254) || // 169.254.0.0/16 link-local
+      a === 0 // 0.0.0.0/8 "this network"
+    ) {
+      throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+    }
+  }
 }
 
 /** 从 data/config/image-gen-providers.json 读取提供商配置 */
@@ -119,7 +196,7 @@ function saveImageToWorkspace(buffer: Buffer, prefix: string, ext: string): { fi
   const filename = generateFilename(prefix, ext);
   const outputPath = path.join(imageDir, filename);
   try {
-    fs.writeFileSync(outputPath, buffer);
+    atomicWriteFileSync(outputPath, buffer);
   } catch (err) {
     process.stderr.write('[image-tools] Failed to write file ' + outputPath + ': ' + err + '\n');
     throw new Error('Failed to write output file');
@@ -214,6 +291,9 @@ async function generateViaFal(
     throw new Error("Fal.ai returned no image URL");
   }
 
+  // SSRF 防护：下载前校验 imageUrl 拒绝内网/回环地址
+  validateDownloadUrl(imageUrl);
+
   // 下载图片到本地
   const imgResponse = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000) });
   if (!imgResponse.ok) {
@@ -302,6 +382,8 @@ async function generateViaReplicate(
     if (status.status === "succeeded") {
       const outputUrl = Array.isArray(status.output) ? status.output[0] : status.output;
       if (!outputUrl) throw new Error("Replicate returned no output");
+      // SSRF 防护：下载前校验 outputUrl 拒绝内网/回环地址
+      validateDownloadUrl(outputUrl);
       // 下载图片到本地
       const imgResponse = await fetch(outputUrl, { signal: AbortSignal.timeout(60_000) });
       if (!imgResponse.ok) {
@@ -476,7 +558,7 @@ export function registerImageTools(executor: AgentModelExecutor): void {
       }
     },
     // checkFn: 至少有一个可用的提供商（pollinations 始终可用）
-    () => hasImageGenConfigured() || true
+    () => hasImageGenConfigured()
   );
 
   // 工具 2：image_info — 查询图片生成能力

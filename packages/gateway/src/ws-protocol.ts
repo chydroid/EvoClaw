@@ -227,6 +227,8 @@ export class ProtocolHandler {
   private methodHandlers = new Map<string, (params: Record<string, unknown>, client: WSClient) => Promise<unknown>>();
   private eventSeq = 0;
   private idempotencyCache = new Map<string, { result: ResponseFrame; at: number }>();
+  /** idempotencyCache 大小上限，防止内存无限增长（仅 TTL 清理不足时兜底） */
+  private static MAX_IDEMPOTENCY_CACHE_SIZE = 10_000;
   private options: Required<ProtocolHandlerOptions>;
   private eventBus: EventBus | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -428,6 +430,13 @@ export class ProtocolHandler {
 
       // Cache idempotent response
       if (idempotencyKey) {
+        // 超过大小上限时驱逐最旧条目（Map 按插入序遍历，首个即为最旧）
+        if (this.idempotencyCache.size >= ProtocolHandler.MAX_IDEMPOTENCY_CACHE_SIZE) {
+          const oldestKey = this.idempotencyCache.keys().next().value;
+          if (oldestKey !== undefined) {
+            this.idempotencyCache.delete(oldestKey);
+          }
+        }
         this.idempotencyCache.set(idempotencyKey, { result: response, at: Date.now() });
       }
 

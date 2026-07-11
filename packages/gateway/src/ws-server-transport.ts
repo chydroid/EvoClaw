@@ -60,18 +60,6 @@ export class WSServerTransport {
         });
       });
 
-      ws.on("close", (code: number, reason: Buffer) => {
-        this.wsToClientId.delete(ws);
-        this.protocolHandler.handleDisconnect(clientId);
-        process.stdout.write(`[WSServerTransport] Client ${clientId} disconnected (code=${code})\n`);
-      });
-
-      ws.on("error", (err: Error) => {
-        process.stderr.write(`[WSServerTransport] WebSocket error for ${clientId}:` + " " + err.message + "\n");
-        this.wsToClientId.delete(ws);
-        this.protocolHandler.handleDisconnect(clientId);
-      });
-
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.ping();
@@ -81,8 +69,20 @@ export class WSServerTransport {
       }, 30000);
       pingInterval.unref?.();
 
-      ws.on("close", () => {
+      // 合并为单个 close 监听器：同时清理 wsToClientId、handleDisconnect 和 pingInterval
+      ws.on("close", (code: number, reason: Buffer) => {
         clearInterval(pingInterval);
+        this.wsToClientId.delete(ws);
+        this.protocolHandler.handleDisconnect(clientId);
+        process.stdout.write(`[WSServerTransport] Client ${clientId} disconnected (code=${code})\n`);
+      });
+
+      // error 事件也需清理 pingInterval 和连接状态，避免泄漏
+      ws.on("error", (err: Error) => {
+        process.stderr.write(`[WSServerTransport] WebSocket error for ${clientId}:` + " " + err.message + "\n");
+        clearInterval(pingInterval);
+        this.wsToClientId.delete(ws);
+        this.protocolHandler.handleDisconnect(clientId);
       });
 
       process.stdout.write(`[WSServerTransport] New WebSocket connection: ${clientId} from ${remoteAddress}\n`);

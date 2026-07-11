@@ -82,7 +82,7 @@ export class SteerManager {
     if (pending.length === 0) return null;
 
     const lines = pending.map(i => {
-      const prefix = i.category as string === "cancel" ? "⛔" : i.category as string === "critical" ? "🔴" : i.category as string === "constraint" ? "⚠️" : "🔵";
+      const prefix = i.category === "cancel" ? "⛔" : i.priority === "critical" ? "🔴" : i.category === "constraint" ? "⚠️" : "🔵";
       return `${prefix} [${i.category.toUpperCase()}] ${i.instruction}`;
     });
 

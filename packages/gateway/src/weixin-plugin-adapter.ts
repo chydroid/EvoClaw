@@ -1783,7 +1783,11 @@ export class WeixinPluginAdapter {
   private backoffSleep(signal: AbortSignal, ms: number): Promise<void> {
     if (signal.aborted) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms);
+      const timer = setTimeout(() => {
+        // 定时器正常触发时移除 abort 监听器，避免内存泄漏
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
       timer.unref();
       const onAbort = () => {
         clearTimeout(timer);

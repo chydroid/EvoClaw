@@ -18,6 +18,7 @@
  */
 
 import type { ConversationMessage } from "./conversation-recorder";
+import { randomUUID } from "crypto";
 
 /** L1 原子记忆类型。 */
 export type AtomicMemoryType = "persona" | "episodic" | "instruction";
@@ -59,36 +60,36 @@ interface ExtractionRule {
 // ── Persona 规则：用户偏好/属性/习惯 ──
 const PERSONA_RULES: ExtractionRule[] = [
   // 中文
-  { pattern: /我\s*(?:喜欢|偏好|习惯|经常|常常|总是|从来不|不喜欢|讨厌|擅长|爱|恨)/g, type: "persona", basePriority: 70, desc: "中文偏好陈述" },
-  { pattern: /我\s*(?:是|在|有|住|工作|学习)/g, type: "persona", basePriority: 60, desc: "中文身份陈述" },
-  { pattern: /我的\s*(?:名字|职业|专业|工作|爱好|兴趣|生日|年龄|地址|城市|国家|公司|学校)/g, type: "persona", basePriority: 80, desc: "中文身份属性" },
-  { pattern: /我\s*(?:用|不用)\s*(?:Python|TypeScript|JavaScript|Rust|Go|Java|C\+\+|React|Vue|Angular|Node)/gi, type: "persona", basePriority: 65, desc: "技术栈偏好" },
+  { pattern: /我\s*(?:喜欢|偏好|习惯|经常|常常|总是|从来不|不喜欢|讨厌|擅长|爱|恨)/, type: "persona", basePriority: 70, desc: "中文偏好陈述" },
+  { pattern: /我\s*(?:是|在|有|住|工作|学习)/, type: "persona", basePriority: 60, desc: "中文身份陈述" },
+  { pattern: /我的\s*(?:名字|职业|专业|工作|爱好|兴趣|生日|年龄|地址|城市|国家|公司|学校)/, type: "persona", basePriority: 80, desc: "中文身份属性" },
+  { pattern: /我\s*(?:用|不用)\s*(?:Python|TypeScript|JavaScript|Rust|Go|Java|C\+\+|React|Vue|Angular|Node)/i, type: "persona", basePriority: 65, desc: "技术栈偏好" },
   // 英文
-  { pattern: /I\s+(?:prefer|like|always|never|usually|often|love|hate|dislike)/gi, type: "persona", basePriority: 70, desc: "EN preference" },
-  { pattern: /I\s+am\s+(?:a|an)\s+\w+/gi, type: "persona", basePriority: 60, desc: "EN identity" },
-  { pattern: /my\s+(?:name|job|role|profession|hobby|interest|birthday|age|address|city|country|company|school)\s+(?:is|are)/gi, type: "persona", basePriority: 80, desc: "EN identity attribute" },
-  { pattern: /I\s+(?:use|don'?t\s+use)\s+(?:Python|TypeScript|JavaScript|Rust|Go|Java|React|Vue|Angular|Node)/gi, type: "persona", basePriority: 65, desc: "EN tech stack" },
+  { pattern: /I\s+(?:prefer|like|always|never|usually|often|love|hate|dislike)/i, type: "persona", basePriority: 70, desc: "EN preference" },
+  { pattern: /I\s+am\s+(?:a|an)\s+\w+/i, type: "persona", basePriority: 60, desc: "EN identity" },
+  { pattern: /my\s+(?:name|job|role|profession|hobby|interest|birthday|age|address|city|country|company|school)\s+(?:is|are)/i, type: "persona", basePriority: 80, desc: "EN identity attribute" },
+  { pattern: /I\s+(?:use|don'?t\s+use)\s+(?:Python|TypeScript|JavaScript|Rust|Go|Java|React|Vue|Angular|Node)/i, type: "persona", basePriority: 65, desc: "EN tech stack" },
 ];
 
 // ── Episodic 规则：客观事件/动作 ──
 const EPISODIC_RULES: ExtractionRule[] = [
   // 中文
-  { pattern: /我\s*(?:昨天|今天|明天|上周|下周|刚才|刚刚|已经|正在|准备|计划|决定)/g, type: "episodic", basePriority: 70, desc: "中文事件时态" },
-  { pattern: /(?:完成|做完|做完|搞定|启动|部署|发布|升级|修复|重构|删除|添加|创建)/g, type: "episodic", basePriority: 60, desc: "中文动作" },
+  { pattern: /我\s*(?:昨天|今天|明天|上周|下周|刚才|刚刚|已经|正在|准备|计划|决定)/, type: "episodic", basePriority: 70, desc: "中文事件时态" },
+  { pattern: /(?:完成|做完|做完|搞定|启动|部署|发布|升级|修复|重构|删除|添加|创建)/, type: "episodic", basePriority: 60, desc: "中文动作" },
   // 英文
-  { pattern: /I\s+(?:did|finished|completed|started|deployed|shipped|fixed|refactored|deleted|created|built|wrote|ran)/gi, type: "episodic", basePriority: 70, desc: "EN past action" },
-  { pattern: /I\s+(?:am\s+(?:going\s+to|planning\s+to)|will|plan\s+to|decided\s+to)/gi, type: "episodic", basePriority: 70, desc: "EN future plan" },
-  { pattern: /(?:yesterday|today|tomorrow|last\s+week|next\s+week|just\s+now)/gi, type: "episodic", basePriority: 65, desc: "EN time anchor" },
+  { pattern: /I\s+(?:did|finished|completed|started|deployed|shipped|fixed|refactored|deleted|created|built|wrote|ran)/i, type: "episodic", basePriority: 70, desc: "EN past action" },
+  { pattern: /I\s+(?:am\s+(?:going\s+to|planning\s+to)|will|plan\s+to|decided\s+to)/i, type: "episodic", basePriority: 70, desc: "EN future plan" },
+  { pattern: /(?:yesterday|today|tomorrow|last\s+week|next\s+week|just\s+now)/i, type: "episodic", basePriority: 65, desc: "EN time anchor" },
 ];
 
 // ── Instruction 规则：长期行为指令 ──
 const INSTRUCTION_RULES: ExtractionRule[] = [
   // 中文
-  { pattern: /(?:以后|从现在开始|记住|必须|请(?:始终|永远|总是|每次)|永远(?:不要|别)|务必)/g, type: "instruction", basePriority: 90, desc: "中文长期指令" },
-  { pattern: /(?:回答时|回复时|输出时|生成时)\s*(?:要|不要|必须|应该)/g, type: "instruction", basePriority: 85, desc: "中文格式指令" },
+  { pattern: /(?:以后|从现在开始|记住|必须|请(?:始终|永远|总是|每次)|永远(?:不要|别)|务必)/, type: "instruction", basePriority: 90, desc: "中文长期指令" },
+  { pattern: /(?:回答时|回复时|输出时|生成时)\s*(?:要|不要|必须|应该)/, type: "instruction", basePriority: 85, desc: "中文格式指令" },
   // 英文
-  { pattern: /(?:from\s+now\s+on|always|never|remember\s+to|make\s+sure\s+to|you\s+must|you\s+should\s+always)/gi, type: "instruction", basePriority: 90, desc: "EN long-term instruction" },
-  { pattern: /(?:when\s+answering|when\s+responding|when\s+outputting|in\s+your\s+replies)\s+(?:always|never|make\s+sure)/gi, type: "instruction", basePriority: 85, desc: "EN format instruction" },
+  { pattern: /(?:from\s+now\s+on|always|never|remember\s+to|make\s+sure\s+to|you\s+must|you\s+should\s+always)/i, type: "instruction", basePriority: 90, desc: "EN long-term instruction" },
+  { pattern: /(?:when\s+answering|when\s+responding|when\s+outputting|in\s+your\s+replies)\s+(?:always|never|make\s+sure)/i, type: "instruction", basePriority: 85, desc: "EN format instruction" },
 ];
 
 const ALL_RULES = [...PERSONA_RULES, ...EPISODIC_RULES, ...INSTRUCTION_RULES];
@@ -207,6 +208,6 @@ export class AtomicMemoryExtractor {
   }
 
   private genId(): string {
-    return `l1_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    return `l1_${Date.now().toString(36)}_${randomUUID()}`;
   }
 }

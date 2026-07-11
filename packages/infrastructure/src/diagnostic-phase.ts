@@ -71,6 +71,11 @@ export class DiagnosticPhaseTracker {
     };
     list.push(phase);
     this.phases.set(entityId, list);
+    // 限制 phases Map 大小，超限时淘汰最旧条目
+    if (this.phases.size > 1000) {
+      const oldestKey = this.phases.keys().next().value;
+      if (oldestKey !== undefined) this.phases.delete(oldestKey);
+    }
     return phase;
   }
 

@@ -75,6 +75,11 @@ program
 
 sharedFlags(program);
 
+// 在每个命令 action 执行前应用共享选项（--no-color / --dev / --profile / --log-level）
+program.hook("preAction", () => {
+  applySharedOptions(program.opts());
+});
+
 // ── Auto-register all command modules ──────────────────────────────
 const commandModules = [
   "setup", "onboard", "config", "doctor", "dashboard", "completion",
@@ -99,13 +104,17 @@ for (const mod of commandModules) {
     const { register } = require(`./commands/${mod}`);
     if (typeof register === "function") register(program, sharedFlags, applySharedOptions);
   } catch (err) {
-    if (process.env.EvoClaw_DEV) {
-      process.stderr.write(`[CLI] Warning: failed to load command "${mod}": ${err instanceof Error ? err.message : String(err)}\n`);
-    }
+    process.stderr.write(`[CLI] Warning: failed to load command "${mod}": ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
 
 // ── Parse & run ────────────────────────────────────────────────────
+process.on("unhandledRejection", (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  process.stderr.write(c("red", `Unhandled rejection: ${msg}\n`));
+  process.exitCode = 1;
+});
+
 program.parseAsync(process.argv).catch((err: Error) => {
   process.stderr.write(c("red", `Error: ${err.message}\n`));
   process.exitCode = 1;

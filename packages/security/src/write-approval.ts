@@ -31,6 +31,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { isUnsafeRegex } from "./safe-regex.js";
 
 /** 门决策类型 */
 export type GateDecisionType = "allow" | "deny" | "needs_confirm";
@@ -301,10 +302,9 @@ export class WriteApprovalGate {
       }
       atomicWriteFile(staged.targetPath, content);
 
-      // 更新暂存状态
-      staged.approvalStatus = "approved";
+      // 审批通过后删除暂存文件（内容已写入目标路径）
       const stagePath = path.join(this.config.pendingDir, `${stageId}.json`);
-      atomicWriteFile(stagePath, JSON.stringify(staged, null, 2));
+      try { fs.unlinkSync(stagePath); } catch { /* ignore */ }
 
       return { success: true, stageId, targetPath: staged.targetPath };
     } catch (err) {
@@ -395,8 +395,7 @@ export class WriteApprovalGate {
         const raw = fs.readFileSync(stagePath, "utf-8");
         const staged: StagedWrite = JSON.parse(raw);
         if (now - staged.createdAt > this.config.stageTtlMs) {
-          staged.approvalStatus = "expired";
-          atomicWriteFile(stagePath, JSON.stringify(staged, null, 2));
+          try { fs.unlinkSync(stagePath); } catch { /* ignore */ }
           cleaned++;
         }
       } catch {
@@ -424,14 +423,19 @@ export class WriteApprovalGate {
   private matchPattern(filePath: string, pattern: string): boolean {
     if (pattern.includes("*")) {
       // glob 匹配（简化版：* 匹配任意字符）
-      const regex = new RegExp(
+      const regexStr =
         "^" +
         pattern
           .replace(/[.+^${}()|[\]\\]/g, "\\$&")
           .replace(/\*/g, ".*")
           .replace(/\?/g, ".") +
-        "$",
-      );
+        "$";
+      // ReDoS 防护：检测转换后的正则是否存在指数级回溯风险
+      if (isUnsafeRegex(regexStr)) {
+        process.stderr.write(`[WriteApproval] Skipping unsafe glob pattern (ReDoS risk): ${pattern}\n`);
+        return false;
+      }
+      const regex = new RegExp(regexStr);
       return regex.test(filePath);
     }
     return filePath === pattern || filePath.startsWith(pattern + path.sep);

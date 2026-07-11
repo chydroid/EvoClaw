@@ -92,26 +92,39 @@ export function apiRequest<T = unknown>(
   });
 }
 
+/** 向指定端口发送 /health 探测，不修改全局 port */
+function probeHealth(targetPort: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      `http://localhost:${targetPort}/health`,
+      { method: "GET", timeout: 5000 },
+      (res) => { resolve(res.statusCode === 200); }
+    );
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+    req.end();
+  });
+}
+
 /** Check if the EvoClaw Gateway server is reachable. */
 export async function checkServer(): Promise<boolean> {
   try {
     const r = await apiRequest("GET", "/health");
     return r.status === 200;
   } catch {
-    // Try probing common ports if default fails
-    const portsToTry = [27788, 3000, 8080];
-    const currentPort = port;
-    for (const p of portsToTry) {
-      if (p === currentPort) continue;
-      try {
-        port = p;
-        const r = await apiRequest("GET", "/health");
-        if (r.status === 200) return true;
-      } catch { /* ignore */ }
-    }
-    port = currentPort;
-    return false;
+    // 当前端口不可达，探测其他常用端口（使用独立请求，不修改全局 port）
   }
+
+  const portsToTry = [27788, 3000, 8080].filter((p) => p !== port);
+  for (const p of portsToTry) {
+    if (await probeHealth(p)) {
+      // 已知限制：找到可用端口后仍会更新全局 port，因为后续 apiRequest 调用依赖正确的端口。
+      // 理想方案应通过返回值告知调用方由其决定，但现有调用方均依赖此副作用。
+      setPort(p);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Print server offline message. */

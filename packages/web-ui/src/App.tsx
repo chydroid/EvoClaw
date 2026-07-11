@@ -51,9 +51,20 @@ import InstallPolicyPage from "./InstallPolicyPage";
 import TranscriptRedactorPage from "./TranscriptRedactorPage";
 import ApprovalCenterPage from "./ApprovalCenterPage";
 import MCPScannerPage from "./MCPScannerPage";
+import MCPExternalPage from "./MCPExternalPage";
 import { VoiceConfigPage } from "./VoiceConfigPage";
 import EnhancementHubPage from "./EnhancementHubPage";
 import MemoryHubPage from "./MemoryHubPage";
+import { WebhooksPage } from "./WebhooksPage";
+import SandboxManagerPage from "./SandboxManagerPage";
+import EvalRunnerPage from "./EvalRunnerPage";
+import SkillWorkshopPage from "./SkillWorkshopPage";
+import MoaDashboardPage from "./MoaDashboardPage";
+import A2APage from "./A2APage";
+import ACPPage from "./ACPPage";
+import KanbanBoardPage from "./KanbanBoardPage";
+import ComputerUsePage from "./ComputerUsePage";
+import ToolSearchPage from "./ToolSearchPage";
 
 interface NavGroup {
   id: string;
@@ -96,6 +107,11 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
       { id: "enhancement-hub" as TabId, i18nKey: "nav.enhancement_hub", iconId: "enhancement" },
       { id: "memory-hub" as TabId, i18nKey: "nav.memory_hub", iconId: "monitoring" },
+      { id: "skill-workshop" as TabId, i18nKey: "nav.skill_workshop", iconId: "skills" },
+      { id: "eval-runner", i18nKey: "nav.eval_runner", iconId: "monitoring" },
+      { id: "acp" as TabId, i18nKey: "nav.acp", iconId: "plugins" },
+      { id: "kanban-board" as TabId, i18nKey: "nav.kanban_board", iconId: "workboard" },
+      { id: "tool-search" as TabId, i18nKey: "nav.tool_search", iconId: "monitoring" },
     ],
   },
   {
@@ -111,6 +127,8 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "evolution", i18nKey: "nav.evolution", iconId: "evolution" },
       { id: "workboard" as TabId, i18nKey: "nav.workboard", iconId: "workboard" },
       { id: "steer" as TabId, i18nKey: "nav.steer", iconId: "steer" },
+      { id: "moa-dashboard" as TabId, i18nKey: "nav.moa_dashboard", iconId: "llm" },
+      { id: "a2a" as TabId, i18nKey: "nav.a2a", iconId: "channels" },
     ],
   },
   {
@@ -126,6 +144,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "transcript-redactor" as TabId, i18nKey: "nav.transcript_redactor", iconId: "secrets" },
       { id: "approval-center" as TabId, i18nKey: "nav.approval_center", iconId: "permissions" },
       { id: "mcp-scanner" as TabId, i18nKey: "nav.mcp_scanner", iconId: "plugins" },
+      { id: "mcp-external" as TabId, i18nKey: "nav.mcp_external", iconId: "plugins" },
       { id: "voice-settings" as TabId, i18nKey: "nav.voice_settings", iconId: "voice" },
     ],
   },
@@ -139,6 +158,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "session-retention" as TabId, i18nKey: "nav.session_retention", iconId: "retention" },
       { id: "config-migration", i18nKey: "nav.config_migration", iconId: "config-migration" },
       { id: "config-doctor", i18nKey: "nav.config_doctor", iconId: "config-doctor" },
+      { id: "sandbox-manager", i18nKey: "nav.sandbox_manager", iconId: "monitoring" },
     ],
   },
   {
@@ -151,6 +171,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "message-templates", i18nKey: "nav.templates", iconId: "message-templates" },
       { id: "message-queue", i18nKey: "nav.message_queue", iconId: "message-queue" },
       { id: "channel-messages", i18nKey: "nav.channel_messages", iconId: "channels" },
+      { id: "webhooks" as TabId, i18nKey: "nav.webhooks", iconId: "channels" },
     ],
   },
   {
@@ -160,6 +181,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "ops", i18nKey: "nav.ops_page", iconId: "ops" },
       { id: "cli", i18nKey: "nav.cli", iconId: "cli" },
+      { id: "computer-use" as TabId, i18nKey: "nav.computer_use", iconId: "ops" },
     ],
   },
 ];
@@ -645,9 +667,20 @@ export default function App() {
       case "transcript-redactor": return <ErrorBoundary><TranscriptRedactorPage /></ErrorBoundary>;
       case "approval-center": return <ErrorBoundary><ApprovalCenterPage /></ErrorBoundary>;
       case "mcp-scanner": return <ErrorBoundary><MCPScannerPage /></ErrorBoundary>;
+      case "mcp-external": return <ErrorBoundary><MCPExternalPage /></ErrorBoundary>;
       case "voice-settings": return <ErrorBoundary><VoiceConfigPage /></ErrorBoundary>;
       case "enhancement-hub": return <ErrorBoundary><EnhancementHubPage /></ErrorBoundary>;
       case "memory-hub": return <ErrorBoundary><MemoryHubPage /></ErrorBoundary>;
+      case "skill-workshop": return <ErrorBoundary><SkillWorkshopPage /></ErrorBoundary>;
+      case "webhooks": return <ErrorBoundary><WebhooksPage /></ErrorBoundary>;
+      case "sandbox-manager": return <ErrorBoundary><SandboxManagerPage /></ErrorBoundary>;
+      case "eval-runner": return <ErrorBoundary><EvalRunnerPage /></ErrorBoundary>;
+      case "moa-dashboard": return <ErrorBoundary><MoaDashboardPage /></ErrorBoundary>;
+      case "a2a": return <ErrorBoundary><A2APage /></ErrorBoundary>;
+      case "acp": return <ErrorBoundary><ACPPage /></ErrorBoundary>;
+      case "kanban-board": return <ErrorBoundary><KanbanBoardPage /></ErrorBoundary>;
+      case "computer-use": return <ErrorBoundary><ComputerUsePage /></ErrorBoundary>;
+      case "tool-search": return <ErrorBoundary><ToolSearchPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }

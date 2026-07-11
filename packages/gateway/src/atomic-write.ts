@@ -49,7 +49,14 @@ export function atomicWriteFileSync(targetPath: string, content: string): void {
         throw w2err;
       }
       fs.closeSync(fd2);
-      try { fs.renameSync(dstTmp, targetPath); } catch { /* ignore */ }
+      // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
+      try {
+        fs.renameSync(dstTmp, targetPath);
+      } catch (renameErr) {
+        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw renameErr;
+      }
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     } else {
       try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }

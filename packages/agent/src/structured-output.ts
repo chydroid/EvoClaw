@@ -232,6 +232,38 @@ function checkType(value: unknown, expectedType: string): boolean {
 
 // ── JSON Repair ───────────────────────────────────────────────────────────────
 
+/**
+ * 统计字符串中某个字符在字符串字面量之外出现的次数。
+ * 跳过双引号和单引号包裹的字符串字面量内部的字符，并处理反斜杠转义。
+ * 用于 repairJson 的括号计数，避免把字符串值内部的 { } [ ] 误算为结构括号。
+ */
+function countCharOutsideStrings(str: string, ch: string): number {
+  let count = 0;
+  let inString: '"' | "'" | null = null;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (inString !== null) {
+      if (c === "\\") {
+        // 跳过转义字符的下一个字符
+        i++;
+        continue;
+      }
+      if (c === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = c;
+      continue;
+    }
+    if (c === ch) {
+      count++;
+    }
+  }
+  return count;
+}
+
 function repairJson(raw: string): string {
   let result = raw;
 
@@ -247,10 +279,11 @@ function repairJson(raw: string): string {
   result = result.replace(/,\s*([}\]])/g, "$1");
 
   // Fix missing closing braces/brackets
-  const openBraces = (result.match(/{/g) || []).length;
-  const closeBraces = (result.match(/}/g) || []).length;
-  const openBrackets = (result.match(/\[/g) || []).length;
-  const closeBrackets = (result.match(/]/g) || []).length;
+  // 注意：必须跳过字符串字面量内部的括号字符，否则字符串值中的 { } [ ] 会被误计入
+  const openBraces = countCharOutsideStrings(result, "{");
+  const closeBraces = countCharOutsideStrings(result, "}");
+  const openBrackets = countCharOutsideStrings(result, "[");
+  const closeBrackets = countCharOutsideStrings(result, "]");
 
   for (let i = 0; i < openBraces - closeBraces; i++) {
     result += "}";

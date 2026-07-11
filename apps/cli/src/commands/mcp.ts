@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import * as path from "path";
+import * as fs from "fs";
+import * as child_process from "child_process";
 import { c, ICONS } from "../utils/colors";
 import { apiRequest, checkServer } from "../utils/api";
 
@@ -129,7 +132,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
 
   mcp
     .command("unset <name>")
-    .description("Remove an MCP server")
+    .description("Remove an MCP server (uninstalls the underlying skill)")
     .action(async (name: string) => {
       const serverAlive = await checkServer();
       if (!serverAlive) {
@@ -137,7 +140,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         return;
       }
       try {
-        const r = await apiRequest<Record<string, unknown>>("DELETE", `/api/plugins/${encodeURIComponent(name)}`);
+        const r = await apiRequest<Record<string, unknown>>("DELETE", `/api/skills/${encodeURIComponent(name)}`);
         if (r.status >= 200 && r.status < 300) {
           console.log(c("green", `${ICONS.ok()} MCP server "${name}" removed`));
         } else if (r.status === 404) {
@@ -150,13 +153,154 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       }
     });
 
+  // ── External MCP server management ───────────────────────────
+  // 管理 EvoClaw 消费的外部 MCP server（如 firecrawl、github 等）
+
+  mcp
+    .command("external list")
+    .description("List external MCP servers consumed by EvoClaw")
+    .option("--json", "Output as JSON")
+    .action(async (opts: Record<string, unknown>) => {
+      const serverAlive = await checkServer();
+      if (!serverAlive) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: EvoClaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ servers: Array<{ name: string; type: string; connected: boolean; toolCount: number; tools: string[]; lastError?: string }>; configPath: string }>("GET", "/api/mcp-external/list");
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        console.log(`\n${c("bold", "=== External MCP Servers ===\n")}`);
+        if (!r.data.servers || r.data.servers.length === 0) {
+          console.log(`  ${c("gray", "No external MCP servers configured")}`);
+          console.log(`\n  ${c("gray", "Add one with: evoclaw mcp external add <name> '<json-config>'")}`);
+          console.log(`  ${c("gray", "Example config: config/mcp-servers.example.json")}`);
+          if (r.data.configPath) {
+            console.log(`  ${c("gray", `Config file: ${r.data.configPath}`)}`);
+          }
+        } else {
+          for (const s of r.data.servers) {
+            const status = s.connected ? c("green", "connected") : c("red", "disconnected");
+            console.log(`  ${ICONS.bullet()} ${s.name} [${s.type}] [${status}] — ${s.toolCount} tool(s)`);
+            if (s.tools.length > 0 && s.tools.length <= 10) {
+              console.log(`    ${c("gray", s.tools.join(", "))}`);
+            } else if (s.tools.length > 10) {
+              console.log(`    ${c("gray", s.tools.slice(0, 10).join(", ") + ` ... (+${s.tools.length - 10} more)`)}`);
+            }
+            if (s.lastError) {
+              console.log(`    ${c("red", `Error: ${s.lastError}`)}`);
+            }
+          }
+        }
+        console.log();
+      } catch (err) {
+        console.log(c("yellow", `${ICONS.warn()} Could not fetch external MCP servers: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  mcp
+    .command("external add <name> [config-json]")
+    .description("Add and connect an external MCP server")
+    .action(async (name: string, configJson: string | undefined) => {
+      const serverAlive = await checkServer();
+      if (!serverAlive) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: EvoClaw gateway start`));
+        return;
+      }
+      if (!configJson) {
+        console.log(c("yellow", `${ICONS.warn()} Usage: evoclaw mcp external add <name> '<json-config>'`));
+        console.log(c("gray", `  Example: evoclaw mcp external add firecrawl '{"type":"stdio","command":"npx","args":["-y","firecrawl-mcp"],"env":{"FIRECRAWL_API_KEY":"fc-xxx"}}'`));
+        return;
+      }
+      let config: Record<string, unknown>;
+      try {
+        config = JSON.parse(configJson);
+      } catch {
+        console.log(c("red", `${ICONS.error()} Invalid JSON config string`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ success: boolean; name: string; connected: boolean; toolCount: number; tools: string[]; error?: string }>("POST", "/api/mcp-external/add", { name, config });
+        if (r.data.success) {
+          console.log(c("green", `${ICONS.ok()} MCP server "${r.data.name}" connected with ${r.data.toolCount} tool(s)`));
+          if (r.data.tools.length > 0) {
+            console.log(c("gray", `  Tools: ${r.data.tools.join(", ")}`));
+          }
+        } else {
+          console.log(c("red", `${ICONS.error()} Failed: ${r.data.error || "unknown error"}`));
+        }
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  mcp
+    .command("external remove <name>")
+    .description("Remove an external MCP server")
+    .action(async (name: string) => {
+      const serverAlive = await checkServer();
+      if (!serverAlive) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: EvoClaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ success: boolean }>("DELETE", `/api/mcp-external/${encodeURIComponent(name)}`);
+        if (r.data.success) {
+          console.log(c("green", `${ICONS.ok()} MCP server "${name}" removed`));
+        } else {
+          console.log(c("yellow", `${ICONS.warn()} MCP server "${name}" not found`));
+        }
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  mcp
+    .command("external reconnect <name>")
+    .description("Reconnect an external MCP server")
+    .action(async (name: string) => {
+      const serverAlive = await checkServer();
+      if (!serverAlive) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: EvoClaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ success: boolean; name: string; toolCount: number; tools: string[]; error?: string }>("POST", `/api/mcp-external/${encodeURIComponent(name)}/reconnect`);
+        if (r.data.success) {
+          console.log(c("green", `${ICONS.ok()} MCP server "${r.data.name}" reconnected with ${r.data.toolCount} tool(s)`));
+        } else {
+          console.log(c("red", `${ICONS.error()} Failed: ${r.data.error || "unknown error"}`));
+        }
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
   mcp
     .command("serve")
-    .description("Start MCP stdio server")
+    .description("Start MCP stdio server (bridges IDE ↔ EvoClaw Gateway)")
     .action(() => {
-      console.log(c("cyan", `${ICONS.info()} MCP servers are managed automatically by the EvoClaw gateway.`));
-      console.log(c("gray", `  The gateway exposes MCP endpoints when MCP-type skills are configured.`));
-      console.log(c("gray", `  No manual serve action is needed.`));
-      console.log(c("gray", `  To add an MCP server: EvoClaw mcp set <name> '<json-config>'`));
+      const mcpScript = path.resolve(__dirname, "..", "..", "..", "..", "apps", "mcp-server", "dist", "index.js");
+      if (!fs.existsSync(mcpScript)) {
+        console.log(c("red", `${ICONS.error()} MCP server not built. Build it first: pnpm --filter @evoclaw/mcp-server build`));
+        console.log(c("gray", `  Expected at: ${mcpScript}`));
+        process.exitCode = 1;
+        return;
+      }
+      const env: Record<string, string | undefined> = { ...process.env };
+      if (!env.EVOCLAW_GATEWAY_URL) {
+        env.EVOCLAW_GATEWAY_URL = `http://localhost:${process.env.EvoClaw_PORT || "27788"}`;
+      }
+      const child = child_process.spawn("node", [mcpScript], {
+        stdio: "inherit",
+        env: env as Record<string, string>,
+      });
+      child.on("exit", (code) => { process.exitCode = code || 0; });
+      child.on("error", (err) => {
+        process.stderr.write(`${ICONS.error()} Failed to start MCP server: ${err.message}\n`);
+        process.exitCode = 1;
+      });
     });
 }

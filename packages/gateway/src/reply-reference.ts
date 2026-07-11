@@ -17,6 +17,18 @@
 import { createHash } from "crypto";
 import type { ChannelMessage } from "./channel-manager.js";
 
+/**
+ * 部分渠道适配器在 ChannelMessage 上附加额外的 metadata 字段
+ * （未在 ChannelMessage 类型中声明）。此处定义局部结构以便类型安全地访问，
+ * 避免使用 `as any` 跳过类型检查。
+ */
+interface ChannelMessageWithMetadata extends ChannelMessage {
+  metadata?: {
+    replyTo?: string;
+    [key: string]: unknown;
+  };
+}
+
 // ── Types ─────────────────────────────────────────────────
 
 export interface ReplyRef {
@@ -376,10 +388,11 @@ export class ReplyReferenceManager {
    */
   detectMentionFromMessage(msg: ChannelMessage): MentionInfo {
     // Check metadata field first
-    if ((msg as any).metadata?.replyTo) {
+    const meta = (msg as ChannelMessageWithMetadata).metadata;
+    if (meta?.replyTo) {
       return {
         type: "from_metadata",
-        referencedId: (msg as any).metadata.replyTo,
+        referencedId: meta.replyTo,
         confidence: 1.0,
       };
     }

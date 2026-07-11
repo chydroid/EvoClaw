@@ -99,7 +99,7 @@ function reindent(text: string, targetIndent: string): string {
       for (const ch of line) {
         if (consumed >= srcIndent) { stripped = line.slice(consumed); break; }
         const step = ch === "\t" ? 4 : 1;
-        if (consumed + step > srcIndent) break;
+        if (consumed + step > srcIndent) { stripped = line.slice(consumed); break; }
         consumed += step;
         stripped = line.slice(consumed);
       }
@@ -138,8 +138,8 @@ function strategyWhitespaceNormalized(content: string, oldStr: string): Match[] 
 
 /** 4. indentation_flexible — 忽略缩进差异 */
 function strategyIndentationFlexible(content: string, oldStr: string): Match[] {
-  const norm = (s: string) => s.replace(/^[ \t]+/gm, "");
-  return findViaStringMatch(norm(content), norm(oldStr), content);
+  const norm = (s: string) => s.replace(/^[ \t]+/, "");
+  return findViaLineNormalization(content, oldStr, norm);
 }
 
 /** 5. escape_normalized — `\n` 字面量转真换行 */

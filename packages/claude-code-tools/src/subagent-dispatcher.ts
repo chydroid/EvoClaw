@@ -79,14 +79,20 @@ export class SubAgentDispatcher {
     const startTime = Date.now();
     const timeout = task.timeoutMs ?? 30000;
     const timer = setTimeout(() => controller.abort(), timeout);
+    timer.unref?.();
 
     try {
       const result = await new Promise<SubAgentResult>((resolve, reject) => {
+        const executorPromise = this.executor(task, controller.signal);
         // Reject the pending promise when the signal aborts (timeout or cancel)
         controller.signal.addEventListener("abort", () => {
           reject(new Error(`Sub-agent task ${task.id} aborted`));
+          // 已知限制：executor 通常不支持取消，abort 后底层 Promise 仍处于 pending。
+          // 附加 .catch 防止 executor 最终 reject 时产生 unhandled rejection
+          // （此时 resolve/reject 对外层 Promise 已是 no-op）。
+          executorPromise.catch(() => {});
         });
-        this.executor(task, controller.signal).then(resolve, reject);
+        executorPromise.then(resolve, reject);
       });
       return result;
     } catch (err) {
@@ -137,16 +143,18 @@ export class SubAgentDispatcher {
     const results: SubAgentResult[] = [];
     for (const task of tasks) {
       // Inject prior results into Fresh-mode tasks
+      // 创建副本以避免修改入参 task 对象
+      let taskToRun = task;
       if (task.mode === DispatchMode.Fresh && results.length > 0) {
         const priorSummary = results
           .filter((r) => r.success)
           .map((r) => `[${r.taskId}]: ${r.output.substring(0, 200)}`)
           .join("\n");
         if (priorSummary) {
-          task.injectedContext = (task.injectedContext ?? "") + `\n[Prior results]\n${priorSummary}`;
+          taskToRun = { ...task, injectedContext: (task.injectedContext ?? "") + `\n[Prior results]\n${priorSummary}` };
         }
       }
-      const result = await this.dispatch(task);
+      const result = await this.dispatch(taskToRun);
       results.push(result);
     }
     return results;

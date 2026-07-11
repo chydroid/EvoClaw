@@ -51,6 +51,9 @@ interface DnsPinEntry {
   expiresAt: number;
 }
 
+/** DNS 缓存自动清理间隔（毫秒，5 分钟）。 */
+const DNS_CACHE_CLEANUP_INTERVAL_MS = 300_000;
+
 /**
  * 网络策略类。
  *
@@ -68,6 +71,7 @@ interface DnsPinEntry {
 export class NetPolicy {
   private config: Required<NetPolicyConfig>;
   private dnsCache = new Map<string, DnsPinEntry>();
+  private dnsCacheCleanupTimer?: NodeJS.Timeout;
 
   constructor(config: NetPolicyConfig = {}) {
     this.config = {
@@ -80,6 +84,14 @@ export class NetPolicy {
       enableDnsPinning: config.enableDnsPinning ?? true,
       dnsTimeoutMs: config.dnsTimeoutMs ?? 5_000,
     };
+    // 启动 DNS 缓存周期清理，防止缓存无界增长
+    this.dnsCacheCleanupTimer = setInterval(
+      () => this.pruneDnsCache(),
+      DNS_CACHE_CLEANUP_INTERVAL_MS
+    );
+    if (typeof this.dnsCacheCleanupTimer.unref === "function") {
+      this.dnsCacheCleanupTimer.unref();
+    }
   }
 
   /**
@@ -168,7 +180,7 @@ export class NetPolicy {
 
   /**
    * 匹配主机名到列表（支持通配符）。
-   * - "*.example.com" 匹配 "api.example.com" 但不匹配 "example.com"
+   * - "*.example.com" 仅匹配子域名 "api.example.com"，不匹配裸域名 "example.com"
    * - "example.com" 精确匹配
    */
   private matchHostList(host: string, list: string[]): boolean {
@@ -177,7 +189,8 @@ export class NetPolicy {
       if (p === host) return true;
       if (p.startsWith("*.")) {
         const suffix = p.slice(2); // 去掉 "*."
-        if (host.endsWith("." + suffix) || host === suffix) {
+        // 仅匹配子域名（host 必须以 ".suffix" 结尾），不匹配裸域名 suffix 本身
+        if (host.endsWith("." + suffix)) {
           return true;
         }
       }
@@ -224,9 +237,20 @@ export class NetPolicy {
         if (dnsTimer) clearTimeout(dnsTimer);
       }
     } catch (err) {
-      // IPv6 fallback
+      // IPv6 fallback（带超时，与 IPv4 解析保持一致）
+      let v6Timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const addresses = await dns.resolve6(host);
+        const v6Resolver = new dns.Resolver();
+        const v6TimeoutPromise = new Promise<string[]>((_, reject) => {
+          v6Timer = setTimeout(() => reject(new Error("DNS timeout")), this.config.dnsTimeoutMs);
+          if (v6Timer.unref) v6Timer.unref();
+        });
+        const v6ResolvePromise = v6Resolver.resolve6(host);
+        v6ResolvePromise.catch(() => {}); // 防止超时后 unhandledRejection
+        const addresses = await Promise.race([
+          v6ResolvePromise,
+          v6TimeoutPromise,
+        ]);
         if (addresses.length > 0) {
           resolvedIp = addresses[0];
         }
@@ -235,6 +259,8 @@ export class NetPolicy {
           allowed: false,
           reason: `DNS resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`,
         };
+      } finally {
+        if (v6Timer) clearTimeout(v6Timer);
       }
     }
 

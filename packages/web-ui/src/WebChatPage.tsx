@@ -673,6 +673,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    // 通知后端取消正在执行的任务，避免服务端继续跑完
+    const sid = effectiveSessionIdRef.current;
+    if (sid) {
+      fetch("/api/chat/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sid }),
+      }).catch(() => {
+        // 后端取消失败不阻断前端中断流程
+      });
+    }
     setIsStreaming(false);
     isStreamingRef.current = false;
     setStatusMessage(null);

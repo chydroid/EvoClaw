@@ -12,7 +12,7 @@ import {
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
 
-const API = (window as any).__EVOCLAW_API__ || "";
+const API = window.__EVOCLAW_API__ || "";
 
 // ── Types ──
 
@@ -99,11 +99,12 @@ export default function GuardrailsPage() {
 
   const handleToggle = async (layer: string, enabled: boolean) => {
     try {
-      await fetch(`${API}/api/guardrails/toggle`, {
+      const res = await fetch(`${API}/api/guardrails/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ layer, enabled }),
       });
+      if (!res.ok) throw new Error("Toggle failed");
       showToast(`${layer} guardrail ${enabled ? "enabled" : "disabled"}`, "success");
       loadData();
     } catch { showToast("Toggle failed", "error"); }
@@ -111,7 +112,8 @@ export default function GuardrailsPage() {
 
   const handleResetStats = async () => {
     try {
-      await fetch(`${API}/api/guardrails/reset-stats`, { method: "POST" });
+      const res = await fetch(`${API}/api/guardrails/reset-stats`, { method: "POST" });
+      if (!res.ok) throw new Error("Reset failed");
       showToast("Stats reset", "success");
       loadData();
     } catch { showToast("Reset failed", "error"); }

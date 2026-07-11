@@ -25,6 +25,17 @@ export class ServiceRegistry implements IPluginRegistry {
 
   /** Replace an already-registered service, or register if not present */
   replaceService<T>(name: string, service: T): void {
+    // 先停止旧服务（若存在且实现了 IService.stop）。replaceService 为同步方法，
+    // stop() 可能是 async，采用 fire-and-forget + catch 避免阻塞调用方。
+    const oldLifecycle = this.lifecycles.get(name);
+    if (oldLifecycle && typeof (oldLifecycle as { stop?: unknown }).stop === "function") {
+      Promise.resolve((oldLifecycle as IService).stop()).catch((err) => {
+        process.stderr.write(
+          `[ServiceRegistry] Old service "${name}" stop() error during replace: ${err}\n`,
+        );
+      });
+    }
+
     this.services.set(name, service);
     this.serviceInfos.set(name, {
       name,
@@ -35,6 +46,9 @@ export class ServiceRegistry implements IPluginRegistry {
 
     if (this.isIService(service)) {
       this.lifecycles.set(name, service);
+    } else {
+      // 新服务未实现 IService，移除旧生命周期条目避免悬挂引用
+      this.lifecycles.delete(name);
     }
   }
 
@@ -70,7 +84,13 @@ export class ServiceRegistry implements IPluginRegistry {
     const info = this.serviceInfos.get(name);
     if (info) {
       info.status = status;
-      if (error) info.error = error;
+      // 状态恢复到 running/stopped 时清除旧 error；传入 error 时覆盖；其它情况保留以供诊断
+      if (status === "running" || status === "stopped") {
+        info.error = undefined;
+      }
+      if (error !== undefined) {
+        info.error = error;
+      }
       if (status === "running") {
         info.startedAt = new Date();
       }
@@ -78,7 +98,9 @@ export class ServiceRegistry implements IPluginRegistry {
   }
 
   async startAll(): Promise<void> {
-    for (const [name] of this.services) {
+    // 快照 entries，防止 service.start() 在迭代过程中注册/注销其他 service 修改 Map
+    const entries = Array.from(this.services.entries());
+    for (const [name] of entries) {
       await this.startService(name);
     }
   }
@@ -133,7 +155,9 @@ export class ServiceRegistry implements IPluginRegistry {
 
   async healthCheckAll(): Promise<Map<string, boolean>> {
     const results = new Map<string, boolean>();
-    for (const [name] of this.services) {
+    // 快照 entries，避免 healthCheck() 在迭代过程中注册/注销 service 修改 Map 导致迭代错乱
+    const entries = Array.from(this.services.entries());
+    for (const [name] of entries) {
       const service = this.lifecycles.get(name);
       if (service) {
         try {

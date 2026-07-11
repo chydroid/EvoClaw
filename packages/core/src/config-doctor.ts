@@ -198,6 +198,14 @@ export class ConfigDoctor {
     return fixed;
   }
 
+  /**
+   * 根据已（可能被 autoFix 修改过的）diagnostics 重新构建报告。
+   * 用于 autoFix 后避免返回过期统计（healthy/errorCount 等仍是修复前的快照）。
+   */
+  rebuildReport(diagnostics: Diagnostic[]): DoctorReport {
+    return this.buildReport(diagnostics);
+  }
+
   // ── Checkers ─────────────────────────────────────────────
 
   private checkConfigFile(diagnostics: Diagnostic[]): void {
@@ -473,5 +481,6 @@ export function doctorAndFix(
   const report = doctor.diagnose(config);
   // doctorAndFix 始终执行自动修复，无需再次检查调用方传入的 autoFix
   doctor.autoFix(report.diagnostics);
-  return report;
+  // autoFix 修改了 diagnostics 的 severity/message，原 report 中的统计已过期，需重新计算
+  return doctor.rebuildReport(report.diagnostics);
 }

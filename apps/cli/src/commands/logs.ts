@@ -127,8 +127,12 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         };
         await poll();
         const interval = setInterval(poll, 3000);
+        interval.unref?.();
+        // stdin 保持进程存活，允许 timer.unref() 后仍持续轮询（与 sessions tail 一致）
+        process.stdin.resume();
         process.on("SIGINT", () => {
           clearInterval(interval);
+          process.stdin.pause();
           console.log(c("gray", "\nStopped following logs."));
           process.exit(0);
         });

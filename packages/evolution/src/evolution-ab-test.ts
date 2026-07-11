@@ -8,6 +8,8 @@
  *   - 超过 24 小时的测试自动结束
  */
 
+import { randomUUID } from "crypto";
+
 // ── Types ──────────────────────────────────────────────────
 
 interface TestRecord {
@@ -40,7 +42,6 @@ const ROLLBACK_THRESHOLD = 0.7; // B's success rate must be < A's * 0.7
 
 export class EvolutionABTest {
   private tests: Map<string, TestRecord> = new Map();
-  private idCounter = 0;
 
   /**
    * 启动一个 A/B 测试。
@@ -49,7 +50,7 @@ export class EvolutionABTest {
   startTest(evolutionId: string, _originalBehavior: string, _newBehavior: string): string {
     this.expireOldTests();
 
-    const testId = `abt-${Date.now()}-${++this.idCounter}`;
+    const testId = `abt-${randomUUID()}`;
 
     this.tests.set(testId, {
       testId,
@@ -69,6 +70,7 @@ export class EvolutionABTest {
    * 记录一次测试结果。
    */
   recordResult(testId: string, variant: "A" | "B", success: boolean, metrics?: Record<string, number>): void {
+    this.expireOldTests();
     const test = this.tests.get(testId);
     if (!test || test.concluded) return;
 
@@ -93,6 +95,7 @@ export class EvolutionABTest {
    * 获取当前测试状态。
    */
   getTestStatus(testId: string): TestStatus {
+    this.expireOldTests();
     const test = this.tests.get(testId);
 
     if (!test) {

@@ -49,6 +49,8 @@ export class MemoryHub {
   /** Tracked when transformers warmup fails — surfaced via status. */
   private embeddingLoadError: string | null = null;
   private memoryCuratorV2: import("./memory-curator-v2").MemoryCuratorV2 | null = null;
+  /** curateMemories 串行化链：避免并发调用产生重复压缩条目。 */
+  private curateChain: Promise<unknown> = Promise.resolve();
   private memoryDreaming: import("./memory-dreaming").MemoryDreaming | null = null;
   /**
    * 分层记忆系统（L0→L1→L2→L3 + 符号画布），借鉴 TencentDB-Agent-Memory。
@@ -523,8 +525,10 @@ export class MemoryHub {
     if (entry.content && entry.content.length > MAX_MEMORY_CONTENT_LEN) {
       const truncated = entry.content.slice(0, MAX_MEMORY_CONTENT_LEN) +
         `\n\n[系统提示：原始记忆内容过长（${entry.content.length} 字符），已截断至 ${MAX_MEMORY_CONTENT_LEN} 字符]`;
+      // 在 reassignment 前保存原始长度，否则日志会读到截断后的长度
+      const originalLen = entry.content.length;
       entry = { ...entry, content: truncated };
-      process.stderr.write(`[MemoryHub] Memory entry content truncated from ${entry.content.length} to ${MAX_MEMORY_CONTENT_LEN} chars\n`);
+      process.stderr.write(`[MemoryHub] Memory entry content truncated from ${originalLen} to ${MAX_MEMORY_CONTENT_LEN} chars\n`);
     }
     const fullEntry: MemoryEntry = {
       ...entry,
@@ -610,6 +614,17 @@ export class MemoryHub {
   }
 
   async curateMemories(): Promise<{ retained: number; decayed: number; compressed: number }> {
+    // 串行化：remember 与 delete 之间无事务保护，并发 curateMemories 会产生重复压缩条目。
+    // 用 Promise 链串行化，确保同一时刻只有一个 curate 在执行。
+    const run = this.curateChain.then(() => this.doCurateMemories());
+    this.curateChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async doCurateMemories(): Promise<{ retained: number; decayed: number; compressed: number }> {
     if (!this.memoryCuratorV2) return { retained: 0, decayed: 0, compressed: 0 };
     // Get all memories from long-term store
     const memories = await this.longTerm.search({ query: "", limit: 1000 });

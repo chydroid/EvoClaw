@@ -13,6 +13,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 /** 插件来源标签，决定 hardlink 策略。 */
 export type PluginOrigin = "bundled" | "managed" | "workspace" | "marketplace";
@@ -223,7 +224,6 @@ export class PluginProvenanceIndex {
           let sha256: string | undefined;
           if (computeHash) {
             try {
-              const crypto = require("crypto") as typeof import("crypto");
               const content = fs.readFileSync(fullPath);
               sha256 = crypto.createHash("sha256").update(content).digest("hex");
             } catch {
@@ -279,7 +279,6 @@ export class PluginProvenanceIndex {
       }
       if (entry.sha256) {
         try {
-          const crypto = require("crypto") as typeof import("crypto");
           const content = fs.readFileSync(fullPath);
           const currentHash = crypto.createHash("sha256").update(content).digest("hex");
           if (currentHash !== entry.sha256) {

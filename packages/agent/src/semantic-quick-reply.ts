@@ -167,7 +167,12 @@ export class SemanticQuickReply {
       await this.initPromise;
       return;
     }
-    this.initPromise = this._initialize();
+    // 初始化失败时清除 initPromise，使后续调用可重试，避免 rejected Promise
+    // 永久缓存导致后续 initialize() 永远抛出相同错误。
+    this.initPromise = this._initialize().catch((err) => {
+      this.initPromise = null;
+      throw err;
+    });
     await this.initPromise;
   }
 
@@ -279,7 +284,7 @@ export class SemanticQuickReply {
     const reply = __test.pickByHash(entry.replies, trimmed);
     const mt = persona.masterTerm || "主人";
     const me = persona.name || "EvoClaw";
-    return reply.replace(/MT/g, mt).replace(/ME/g, me);
+    return reply.replace(/MT/g, () => mt).replace(/ME/g, () => me);
   }
 
   /**

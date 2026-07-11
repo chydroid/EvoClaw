@@ -21,7 +21,7 @@ export function registerBrowserTools(
   registry: ServiceRegistry,
   eventBus: EventBus,
   fileSystemManager: FileSystemManager
-): void {
+): () => void {
   const browser = browserController;
   let pwBrowser = playwrightBrowser;
 
@@ -55,6 +55,30 @@ export function registerBrowserTools(
     if (info) info.lastActivityAt = Date.now();
   }
 
+  // SSRF 校验：对浏览器工具访问的 URL 做安全检查。
+  // 优先使用 ssrfProtection 服务（含协议白名单 + 内网地址 + metadata 端点检查）；
+  // 服务未注册时退化为协议白名单（仅允许 http/https），拒绝 file://、gopher://、ftp:// 等。
+  async function validateUrlSsrf(url: string): Promise<{ ok: boolean; error?: string }> {
+    const ssrfProtection = registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
+    if (!ssrfProtection) {
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return { ok: false, error: "Invalid URL format" };
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { ok: false, error: `Unsupported protocol: ${parsed.protocol}. Only http/https allowed.` };
+      }
+      return { ok: true };
+    }
+    const result = await ssrfProtection.checkURL(url);
+    if (!result.allowed) {
+      return { ok: false, error: `URL blocked by security policy: ${result.reason}` };
+    }
+    return { ok: true };
+  }
+
   executor.registerTool(
     "browser_navigate",
     {
@@ -67,6 +91,10 @@ export function registerBrowserTools(
     async (params: Record<string, unknown>) => {
       touchBrowserSession();
       const url = String(params.url || "");
+      const ssrfCheck = await validateUrlSsrf(url);
+      if (!ssrfCheck.ok) {
+        return { error: ssrfCheck.error, url };
+      }
       return await browser.navigate(url);
     }
   );
@@ -101,6 +129,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const selector = String(params.selector || "");
       if (!browser.getCurrentPage()) {
         return { error: "No page loaded. Use browser_navigate first." };
@@ -122,6 +151,7 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const action = String(params.action || "");
       const method = String(params.method || "get");
       let fields: Record<string, string> = {};
@@ -129,6 +159,12 @@ export function registerBrowserTools(
         fields = JSON.parse(String(params.fields || "{}"));
       } catch {
         return { error: "Invalid fields JSON" };
+      }
+      if (action) {
+        const ssrfCheck = await validateUrlSsrf(action);
+        if (!ssrfCheck.ok) {
+          return { error: ssrfCheck.error, action };
+        }
       }
       return await browser.submitForm({ action, method, fields });
     }
@@ -163,7 +199,12 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const url = String(params.url || "");
+      const ssrfCheck = await validateUrlSsrf(url);
+      if (!ssrfCheck.ok) {
+        return { error: ssrfCheck.error, url };
+      }
       return await browser.fetchJSON(url);
     }
   );
@@ -245,7 +286,7 @@ export function registerBrowserTools(
         return { success: true, headless, message: "Playwright browser launched" };
       } catch (err) {
         // Try to restore old browser
-        try { await oldBrowser.launch(); pwBrowser = oldBrowser; } catch { /* give up recovery */ }
+        try { await oldBrowser.launch(); pwBrowser = oldBrowser; registry.replaceService("playwrightBrowser", oldBrowser); } catch { /* give up recovery */ }
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     }
@@ -279,7 +320,10 @@ export function registerBrowserTools(
         const pathError = validatePathWithinBase(resolved, workspaceDir);
         if (pathError) return { success: false, error: pathError };
         await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
-        await fs.promises.writeFile(resolved, buf);
+        // 安全：原子写入（temp + rename），避免截断的截图文件
+        const tmpPath = `${resolved}.${process.pid}.tmp`;
+        await fs.promises.writeFile(tmpPath, buf);
+        await fs.promises.rename(tmpPath, resolved);
         return { success: true, file: filename, size: buf.length, format: "png" };
       }
       const base64 = buf.toString("base64");
@@ -315,6 +359,10 @@ export function registerBrowserTools(
       const password = String(params.password || "");
       const submitSelector = String(params.submitSelector || "");
       const successUrl = String(params.successUrl || "");
+      const ssrfCheck = await validateUrlSsrf(url);
+      if (!ssrfCheck.ok) {
+        return { success: false, error: ssrfCheck.error, url };
+      }
       const result = await pwBrowser.login(
         url, usernameSelector, passwordSelector, username, password, submitSelector,
         successUrl ? { urlContains: successUrl } : undefined
@@ -658,4 +706,9 @@ export function registerBrowserTools(
       }
     }
   );
+
+  // 返回清理函数，供宿主在 shutdown 时 clearInterval，避免 interval 泄漏
+  return () => {
+    clearInterval(browserHealthInterval);
+  };
 }

@@ -361,7 +361,8 @@ export class QueueManager {
 
     item.retryCount++;
 
-    if (item.retryCount >= item.maxRetries) {
+    // 修正 off-by-one：retryCount 递增后用 > 判断，确保 maxRetries=N 时允许 N 次重试
+    if (item.retryCount > item.maxRetries) {
       item.status = "failed";
       item.error = error;
       this.processing.delete(itemId);
@@ -464,7 +465,9 @@ export class QueueManager {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`[QueueManager] Failed to clear queue file: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
 
     this.eventBus.publish(
       "queue.cleared",
@@ -751,6 +754,13 @@ export class QueueManager {
             fs.readFileSync(path.join(this.config.dataDir, file), "utf-8"),
           );
           if (Array.isArray(data) && data.length > 0) {
+            // 重启后所有 processing 状态的项目都需要重新执行，重置为 pending
+            // 否则 dequeue() 只过滤 pending，processing 项目会被永久卡住
+            for (const item of data) {
+              if (item.status === "processing") {
+                item.status = "pending";
+              }
+            }
             this.queues.set(sessionId, data);
             process.stdout.write(
               `[QueueManager] Loaded queue for session "${sessionId}": ${data.length} items\n`
@@ -816,7 +826,12 @@ export class QueueManager {
       } catch {
         // 权限复制失败不阻断写入
       }
-      fs.renameSync(tmpPath, filePath);
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        throw err;
+      }
     } catch (err) {
       process.stderr.write(`[QueueManager] Failed to persist queue: ${err}\n`);
     }

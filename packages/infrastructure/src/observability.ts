@@ -126,6 +126,11 @@ export class Observability {
   // ── Metric Registration ─────────────────────────────────
 
   registerMetric(def: MetricDef): void {
+    // 限制外层 metric 数量，防止无限制增长
+    if (this.metricDefs.size >= 256) {
+      process.stderr.write(`[Observability] Metric count exceeded cap (256), rejecting new metric: ${def.name}\n`);
+      return;
+    }
     this.metricDefs.set(def.name, def);
   }
 
@@ -142,10 +147,13 @@ export class Observability {
 
   counterIncrement(name: string, labels: MetricLabel[] = [], inc = 1): void {
     const key = this.labelKey(name, labels);
-    const current = this.counters.get(name)?.get(key) ?? 0;
     if (!this.counters.has(name)) this.counters.set(name, new Map());
-    this.counters.get(name)!.set(key, current + inc);
-    this.trimLabelCardinality(this.counters.get(name)!, name);
+    const map = this.counters.get(name)!;
+    const current = map.get(key) ?? 0;
+    // delete + set 使该 label 移到 Map 末尾，实现真正 LRU（最近访问顺序）
+    map.delete(key);
+    map.set(key, current + inc);
+    this.trimLabelCardinality(map, name);
   }
 
   counterGet(name: string, labels: MetricLabel[] = []): number {
@@ -158,8 +166,11 @@ export class Observability {
   gaugeSet(name: string, value: number, labels: MetricLabel[] = []): void {
     const key = this.labelKey(name, labels);
     if (!this.gauges.has(name)) this.gauges.set(name, new Map());
-    this.gauges.get(name)!.set(key, value);
-    this.trimLabelCardinality(this.gauges.get(name)!, name);
+    const map = this.gauges.get(name)!;
+    // delete + set 使该 label 移到 Map 末尾，实现真正 LRU（最近访问顺序）
+    map.delete(key);
+    map.set(key, value);
+    this.trimLabelCardinality(map, name);
   }
 
   gaugeGet(name: string, labels: MetricLabel[] = []): number {
@@ -169,10 +180,13 @@ export class Observability {
 
   gaugeAdjust(name: string, delta: number, labels: MetricLabel[] = []): void {
     const key = this.labelKey(name, labels);
-    const current = this.gauges.get(name)?.get(key) ?? 0;
     if (!this.gauges.has(name)) this.gauges.set(name, new Map());
-    this.gauges.get(name)!.set(key, current + delta);
-    this.trimLabelCardinality(this.gauges.get(name)!, name);
+    const map = this.gauges.get(name)!;
+    const current = map.get(key) ?? 0;
+    // delete + set 使该 label 移到 Map 末尾，实现真正 LRU（最近访问顺序）
+    map.delete(key);
+    map.set(key, current + delta);
+    this.trimLabelCardinality(map, name);
   }
 
   // ── Histograms ──────────────────────────────────────────
@@ -180,13 +194,16 @@ export class Observability {
   histogramObserve(name: string, value: number, labels: MetricLabel[] = []): void {
     const key = this.labelKey(name, labels);
     if (!this.histograms.has(name)) this.histograms.set(name, new Map());
-    const values = this.histograms.get(name)!.get(key) ?? [];
+    const map = this.histograms.get(name)!;
+    const values = map.get(key) ?? [];
     values.push(value);
     // Keep last 10000 observations per (name, labels) to bound memory
     if (values.length > 10000) {
       values.splice(0, values.length - 10000);
     }
-    this.histograms.get(name)!.set(key, values);
+    // delete + set 使该 label 移到 Map 末尾，实现真正 LRU（最近访问顺序）
+    map.delete(key);
+    map.set(key, values);
   }
 
   histogramPercentile(name: string, percentile: number, labels: MetricLabel[] = []): number {
@@ -524,8 +541,10 @@ export class Observability {
 
   private calculateErrorRate(): number {
     const allLabels: MetricLabel[][] = [];
-    for (const [, labelMap] of this.counters) {
-      for (const key of labelMap.keys()) {
+    const reqName = `${this.config.metricsPrefix}_requests_total`;
+    const reqLabelMap = this.counters.get(reqName);
+    if (reqLabelMap) {
+      for (const key of reqLabelMap.keys()) {
         allLabels.push(this.parseLabelKey(key));
       }
     }

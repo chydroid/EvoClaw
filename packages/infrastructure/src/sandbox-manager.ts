@@ -84,6 +84,8 @@ export class SandboxManager {
       session.status = "ready";
     } catch (err) {
       session.status = "error";
+      // 创建失败：从 Map 移除，避免遗留不可用的 session
+      this.sessions.delete(id);
       throw err;
     }
 
@@ -122,7 +124,12 @@ export class SandboxManager {
           return this.errorResult("SSH sandbox not found for session");
         }
 
-        const shellCommand = command.join(" ");
+        // 安全：对每个参数做 shell quoting 后再拼接，避免命令注入。
+        // 单引号内的内容不会被 shell 解释，参数中的单引号通过 '\''
+        // 转义关闭再开启单引号段来实现字面量传递。
+        const shellCommand = command
+          .map((arg) => `'${arg.replace(/'/g, "'\\''")}'`)
+          .join(" ");
         const sshResult = await ssh.execute(shellCommand, {
           timeoutMs: options?.timeoutMs,
           env: options?.env,

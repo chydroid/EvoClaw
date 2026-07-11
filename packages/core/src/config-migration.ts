@@ -141,7 +141,8 @@ export class ConfigMigrationManager {
       skipped: 0,
       failed: 0,
       errors: [],
-      config: { ...inputConfig },
+      // 深拷贝，避免迁移步骤对返回的 config 的修改污染调用方传入的 inputConfig
+      config: JSON.parse(JSON.stringify(inputConfig)) as Record<string, unknown>,
       dryRun,
       warnings: [],
     };

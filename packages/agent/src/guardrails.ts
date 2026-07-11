@@ -614,17 +614,21 @@ export class ToolGuardrail {
 
     for (const rule of this.rules) {
       try {
+        // BUG 8.1 fix: 重置 lastIndex 防止 g flag 累积导致状态泄漏
+        rule.toolPattern.lastIndex = 0;
         if (!rule.toolPattern.test(toolName)) {
           continue;
         }
 
         // Check argPattern against both individual arg values and the serialized whole
         let argMatched = false;
+        rule.argPattern.lastIndex = 0;
         if (rule.argPattern.test(argsString)) {
           argMatched = true;
         }
         if (!argMatched) {
           for (const value of Object.values(args)) {
+            rule.argPattern.lastIndex = 0;
             if (typeof value === "string" && rule.argPattern.test(value)) {
               argMatched = true;
               break;

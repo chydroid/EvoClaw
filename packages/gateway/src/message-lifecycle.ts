@@ -43,8 +43,10 @@ export interface LifecycleRecord {
   messageId?: string;
   /** Channel this message is on */
   channel: ChannelType;
-  /** Message text */
+  /** Message text (truncated for storage) */
   text: string;
+  /** Original message text length (用于精确去重，避免截断后误判) */
+  textLength: number;
   /** Target recipient identifier */
   target: string;
   /** Current state */
@@ -95,7 +97,7 @@ export interface LifecycleConfig {
 // ── Valid Transitions ─────────────────────────────────────
 
 const VALID_TRANSITIONS: Record<MessageState, MessageState[]> = {
-  pending: ["queued", "failed"],
+  pending: ["queued", "failed", "sent"],
   queued: ["sending", "failed"],
   sending: ["sent", "failed"],
   sent: ["delivered", "failed"],
@@ -145,6 +147,7 @@ export class MessageLifecycleManager extends EventEmitter {
       messageId: options?.messageId,
       channel,
       text: truncatedText,
+      textLength: text.length,
       target,
       state: "pending",
       createdAt: now,
@@ -155,9 +158,13 @@ export class MessageLifecycleManager extends EventEmitter {
       acknowledged: false,
     };
 
-    // Replace existing record for same message
+    // Replace existing record for same message (使用 截断文本+原始长度 组合去重，避免前197字符相同但长度不同的消息被误判)
+    // 已知性能限制：此处为 O(n) 线性扫描 records 查找重复。未改为 O(1) 索引是因为
+    // records 有 5 处 delete 入口（register/transition/remove/cleanup 过期/cleanup TTL），
+    // 维护二级索引需在所有入口同步更新，遗漏会导致索引泄漏或误删。当前 records 有
+    // trimRecords 上限保护，n 不会无限增长，O(n) 在可控范围内。
     for (const [key, existing] of this.records) {
-      if (existing.channel === channel && existing.target === target && existing.text === truncatedText) {
+      if (existing.channel === channel && existing.target === target && existing.text === truncatedText && existing.textLength === text.length) {
         this.records.delete(key);
         break;
       }
@@ -378,10 +385,12 @@ export class MessageLifecycleManager extends EventEmitter {
           continue;
         }
       }
-      this.transition(record.id, "permanent_failure", {
+      const final = this.transition(record.id, "permanent_failure", {
         reason: `TTL expired (${record.ttlMs}ms)`,
       });
-      expired++;
+      if (final) {
+        expired++;
+      }
     }
     return expired;
   }

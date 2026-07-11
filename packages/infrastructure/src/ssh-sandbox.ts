@@ -81,14 +81,24 @@ export class SSHSandbox {
     args.push(`${this.user}@${this.host}`);
 
     if (options?.workdir) {
-      // Sanitize workdir to prevent command injection
-      const safeWorkdir = options.workdir.replace(/[;&|`$(){}!#]/g, "");
-      command = `cd '${safeWorkdir.replace(/'/g, "'\\''")}' 2>/dev/null; ${command}`;
+      // 白名单校验 workdir：只允许字母、数字、._/-，拒绝空路径和 ..
+      const workdir = options.workdir;
+      if (!workdir || !/^[A-Za-z0-9._/\-]+$/.test(workdir) || workdir.includes("..")) {
+        throw new Error(`Invalid workdir: ${workdir}`);
+      }
+      command = `cd '${workdir}' 2>/dev/null; ${command}`;
     }
 
     if (options?.env && Object.keys(options.env).length > 0) {
       const envExports = Object.entries(options.env)
-        .map(([k, v]) => `export ${k}='${v.replace(/'/g, "'\\''")}'`)
+        .map(([k, v]) => {
+          // 校验 env key 必须是合法的 POSIX 环境变量名，防止命令注入
+          // （如 key 含 ; 可注入额外命令）
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k)) {
+            throw new Error(`Invalid env key: ${k}`);
+          }
+          return `export ${k}='${v.replace(/'/g, "'\\''")}'`;
+        })
         .join(" && ");
       command = `${envExports} && ${command}`;
     }
@@ -175,6 +185,7 @@ export class SSHSandbox {
           child.kill("SIGKILL");
         }
       }, timeoutMs);
+      timeout.unref?.();
 
       child.stdout?.on("data", (data: Buffer) => {
         stdout += data.toString("utf-8");
@@ -188,7 +199,16 @@ export class SSHSandbox {
         stderr += data.toString("utf-8");
         if (stderr.length > maxOutputBytes) {
           stderr = stderr.slice(0, maxOutputBytes) + "\n[output truncated]";
+          child.kill("SIGTERM");
         }
+      });
+
+      child.stdout?.on("error", (err: Error) => {
+        process.stderr.write(`[SshSandbox] stdout error: ${err.message}\n`);
+      });
+
+      child.stderr?.on("error", (err: Error) => {
+        process.stderr.write(`[SshSandbox] stderr error: ${err.message}\n`);
       });
 
       child.on("close", (code) => {

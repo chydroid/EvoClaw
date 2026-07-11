@@ -393,16 +393,17 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     // 长 base64 字符串（>=80 字符）通常是混淆 payload
-    const longB64Pattern = /["'`]([A-Za-z0-9+/]{80,}={0,2})["'`]/g;
+    const longB64Pattern = /["'`]([A-Za-z0-9+/]{80,}={0,2})["'`]/;
     // atob / btoa 使用（沙箱通常不提供，但仍应警示）
-    const atobPattern = /\batob\s*\(/g;
+    const atobPattern = /\batob\s*\(/;
     // Buffer.from(..., "base64") 解码后再 eval/Function 的组合
+    // 保留 /g：该正则使用 .exec() 循环遍历所有匹配，需要全局标志。lastIndex 已在循环中管理。
     const b64ThenEvalPattern = /Buffer\.from\s*\([^)]*,\s*['"]base64['"]\s*\)[\s\S]{0,80}?(?:eval|new\s+Function|setTimeout|setInterval)\s*\(/g;
     // \x41 \u0041 形式的十六进制/Unicode 转义拼接
-    const hexEscapePattern = /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/g;
-    const unicodeEscapePattern = /\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}/g;
+    const hexEscapePattern = /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/;
+    const unicodeEscapePattern = /\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}\\u[0-9a-fA-F]{4}/;
     // String.fromCharCode 构造字符串
-    const fromCharCodePattern = /String\.fromCharCode\s*\(/g;
+    const fromCharCodePattern = /String\.fromCharCode\s*\(/;
 
     const checks = [
       { pattern: longB64Pattern, desc: "Long Base64 string detected — may hide obfuscated payload", severity: "medium" as const, rec: "Avoid embedding long Base64 strings. Decode payloads at build time or fetch from trusted sources." },
@@ -454,11 +455,11 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     const concatPatterns = [
-      { pattern: /eval\s*\(\s*[^)]*\+/g, desc: "eval() with string concatenation — may hide actual code from static analysis", severity: "critical" as const },
-      { pattern: /new\s+Function\s*\(\s*[^)]*\+/g, desc: "new Function() with string concatenation — may hide actual code", severity: "critical" as const },
-      { pattern: /(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*[^)]*\+/g, desc: "Shell execution with string concatenation — command injection risk", severity: "high" as const },
-      { pattern: /(?:setTimeout|setInterval)\s*\(\s*[^,)]*\+/g, desc: "setTimeout/setInterval with concatenated string — may execute hidden code", severity: "high" as const },
-      { pattern: /Function\s*\(\s*[^)]*\+/g, desc: "Function() with string concatenation — arbitrary code execution risk", severity: "critical" as const },
+      { pattern: /eval\s*\(\s*[^)]*\+/, desc: "eval() with string concatenation — may hide actual code from static analysis", severity: "critical" as const },
+      { pattern: /new\s+Function\s*\(\s*[^)]*\+/, desc: "new Function() with string concatenation — may hide actual code", severity: "critical" as const },
+      { pattern: /(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(\s*[^)]*\+/, desc: "Shell execution with string concatenation — command injection risk", severity: "high" as const },
+      { pattern: /(?:setTimeout|setInterval)\s*\(\s*[^,)]*\+/, desc: "setTimeout/setInterval with concatenated string — may execute hidden code", severity: "high" as const },
+      { pattern: /Function\s*\(\s*[^)]*\+/, desc: "Function() with string concatenation — arbitrary code execution risk", severity: "critical" as const },
     ];
 
     for (const { pattern, desc, severity } of concatPatterns) {
@@ -483,15 +484,15 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     const escapePatterns = [
-      { pattern: /constructor\s*\.\s*constructor\s*\.\s*(?:constructor\s*\.\s*)?prototype/g, desc: "constructor.constructor.prototype chain — classic sandbox escape to Function", severity: "critical" as const },
-      { pattern: /this\s*\.\s*constructor\s*\.\s*constructor/g, desc: "this.constructor.constructor — sandbox escape attempt", severity: "critical" as const },
-      { pattern: /__proto__\s*[=:[\]]/g, desc: "__proto__ access — prototype pollution risk", severity: "high" as const },
-      { pattern: /\[\s*['"]__proto__['"]\s*\]/g, desc: "Bracket access to __proto__ — prototype pollution risk", severity: "high" as const },
-      { pattern: /Object\.defineProperty\s*\(\s*[^,]+,\s*['"]__proto__['"]/g, desc: "Object.defineProperty on __proto__ — prototype pollution", severity: "high" as const },
-      { pattern: /globalThis\s*\.\s*(?:process|require|mainModule|globalThis)/g, desc: "globalThis access to privileged objects — sandbox escape", severity: "critical" as const },
-      { pattern: /process\s*\.\s*(?:mainModule|binding|dlopen)\b/g, desc: "process.mainModule/binding/dlopen access — sandbox escape", severity: "critical" as const },
-      { pattern: /require\s*\.\s*cache\b/g, desc: "Access to require.cache — may modify loaded modules", severity: "medium" as const },
-      { pattern: /module\s*\.\s*(?:constructor|exports|children|parent)\b/g, desc: "Module internals access — may escape sandbox", severity: "medium" as const },
+      { pattern: /constructor\s*\.\s*constructor\s*\.\s*(?:constructor\s*\.\s*)?prototype/, desc: "constructor.constructor.prototype chain — classic sandbox escape to Function", severity: "critical" as const },
+      { pattern: /this\s*\.\s*constructor\s*\.\s*constructor/, desc: "this.constructor.constructor — sandbox escape attempt", severity: "critical" as const },
+      { pattern: /__proto__\s*[=:[\]]/, desc: "__proto__ access — prototype pollution risk", severity: "high" as const },
+      { pattern: /\[\s*['"]__proto__['"]\s*\]/, desc: "Bracket access to __proto__ — prototype pollution risk", severity: "high" as const },
+      { pattern: /Object\.defineProperty\s*\(\s*[^,]+,\s*['"]__proto__['"]/, desc: "Object.defineProperty on __proto__ — prototype pollution", severity: "high" as const },
+      { pattern: /globalThis\s*\.\s*(?:process|require|mainModule|globalThis)/, desc: "globalThis access to privileged objects — sandbox escape", severity: "critical" as const },
+      { pattern: /process\s*\.\s*(?:mainModule|binding|dlopen)\b/, desc: "process.mainModule/binding/dlopen access — sandbox escape", severity: "critical" as const },
+      { pattern: /require\s*\.\s*cache\b/, desc: "Access to require.cache — may modify loaded modules", severity: "medium" as const },
+      { pattern: /module\s*\.\s*(?:constructor|exports|children|parent)\b/, desc: "Module internals access — may escape sandbox", severity: "medium" as const },
     ];
 
     for (const { pattern, desc, severity } of escapePatterns) {
@@ -517,34 +518,34 @@ export class SkillValidator {
     const lines = instructions.split("\n");
 
     const injectionPatterns = [
-      { pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|commands|rules|directives)/gi, desc: "Prompt injection: attempts to override prior instructions", severity: "critical" as const },
-      { pattern: /disregard\s+(?:the\s+)?(?:above|previous|prior|all)\s+(?:instructions|rules|directives|context)/gi, desc: "Prompt injection: attempts to make AI disregard context", severity: "critical" as const },
-      { pattern: /forget\s+(?:everything|all|your\s+(?:previous|prior))\s+(?:instructions|rules|directives)/gi, desc: "Prompt injection: attempts to erase prior context", severity: "critical" as const },
-      { pattern: /you\s+are\s+(?:now|actually)\s+(?:a|an)\s+/gi, desc: "Prompt injection: attempts to redefine the AI's role", severity: "high" as const },
-      { pattern: /(?:from\s+now\s+on|henceforth|starting\s+now),?\s+you\s+(?:are|will|must|should)/gi, desc: "Prompt injection: attempts to redefine ongoing behavior", severity: "high" as const },
-      { pattern: /(?:do\s+not|don't|never)\s+(?:follow|obey|adhere\s+to)\s+(?:your|the|any)\s+(?:rules|instructions|guidelines|policies)/gi, desc: "Prompt injection: attempts to disable safety rules", severity: "critical" as const },
-      { pattern: /(?:reveal|show|print|output|leak|expose)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions|rules|directives|guidelines)/gi, desc: "Prompt injection: attempts to extract system prompt", severity: "high" as const },
-      { pattern: /\b(?:jailbreak|DAN|developer\s+mode|god\s+mode|maintenance\s+mode|debug\s+mode)\b/gi, desc: "Prompt injection: known jailbreak trigger phrases", severity: "critical" as const },
-      { pattern: /(?:pretend|act\s+as\s+if|imagine)\s+(?:you\s+(?:are|have|can)|there\s+(?:is|are)\s+no)/gi, desc: "Prompt injection: attempts to bypass restrictions via role-play framing", severity: "medium" as const },
-      { pattern: /(?:this\s+is\s+(?:a|an)\s+)?(?:test|drill|exercise|simulation)[\s,]+(?:so\s+)?(?:it'?s\s+)?(?:ok|okay|fine|safe)\s+to\s+/gi, desc: "Prompt injection: false safety assurance via test/simulation framing", severity: "high" as const },
-      { pattern: /(?:I\s+am|this\s+is)\s+(?:the|your)\s+(?:creator|developer|admin|administrator|owner|system\s+admin)/gi, desc: "Prompt injection: false authority claim to bypass restrictions", severity: "critical" as const },
-      { pattern: /(?:repeat|echo|copy)\s+(?:the\s+)?(?:above|previous|system)\s+(?:text|prompt|message)/gi, desc: "Prompt injection: attempts to leak prior context via repetition", severity: "medium" as const },
-      { pattern: /\[\s*(?:system|admin|developer|assistant|user)\s*\]/gi, desc: "Prompt injection: fake role-tag injection", severity: "medium" as const },
+      { pattern: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|commands|rules|directives)/i, desc: "Prompt injection: attempts to override prior instructions", severity: "critical" as const },
+      { pattern: /disregard\s+(?:the\s+)?(?:above|previous|prior|all)\s+(?:instructions|rules|directives|context)/i, desc: "Prompt injection: attempts to make AI disregard context", severity: "critical" as const },
+      { pattern: /forget\s+(?:everything|all|your\s+(?:previous|prior))\s+(?:instructions|rules|directives)/i, desc: "Prompt injection: attempts to erase prior context", severity: "critical" as const },
+      { pattern: /you\s+are\s+(?:now|actually)\s+(?:a|an)\s+/i, desc: "Prompt injection: attempts to redefine the AI's role", severity: "high" as const },
+      { pattern: /(?:from\s+now\s+on|henceforth|starting\s+now),?\s+you\s+(?:are|will|must|should)/i, desc: "Prompt injection: attempts to redefine ongoing behavior", severity: "high" as const },
+      { pattern: /(?:do\s+not|don't|never)\s+(?:follow|obey|adhere\s+to)\s+(?:your|the|any)\s+(?:rules|instructions|guidelines|policies)/i, desc: "Prompt injection: attempts to disable safety rules", severity: "critical" as const },
+      { pattern: /(?:reveal|show|print|output|leak|expose)\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions|rules|directives|guidelines)/i, desc: "Prompt injection: attempts to extract system prompt", severity: "high" as const },
+      { pattern: /\b(?:jailbreak|DAN|developer\s+mode|god\s+mode|maintenance\s+mode|debug\s+mode)\b/i, desc: "Prompt injection: known jailbreak trigger phrases", severity: "critical" as const },
+      { pattern: /(?:pretend|act\s+as\s+if|imagine)\s+(?:you\s+(?:are|have|can)|there\s+(?:is|are)\s+no)/i, desc: "Prompt injection: attempts to bypass restrictions via role-play framing", severity: "medium" as const },
+      { pattern: /(?:this\s+is\s+(?:a|an)\s+)?(?:test|drill|exercise|simulation)[\s,]+(?:so\s+)?(?:it'?s\s+)?(?:ok|okay|fine|safe)\s+to\s+/i, desc: "Prompt injection: false safety assurance via test/simulation framing", severity: "high" as const },
+      { pattern: /(?:I\s+am|this\s+is)\s+(?:the|your)\s+(?:creator|developer|admin|administrator|owner|system\s+admin)/i, desc: "Prompt injection: false authority claim to bypass restrictions", severity: "critical" as const },
+      { pattern: /(?:repeat|echo|copy)\s+(?:the\s+)?(?:above|previous|system)\s+(?:text|prompt|message)/i, desc: "Prompt injection: attempts to leak prior context via repetition", severity: "medium" as const },
+      { pattern: /\[\s*(?:system|admin|developer|assistant|user)\s*\]/i, desc: "Prompt injection: fake role-tag injection", severity: "medium" as const },
       // Fake XML/HTML role tag injection.
       // 使用 lookbehind 排除 URL 路径占位符（如 `https://x.com/<user>/status/<id>`）：
       // 真实的 role tag 注入通常独占一行或前后是空白/引号，而 URL 中的 `<user>` 前面是 `/` 等路径字符。
       // 排除前缀字符：`/`（URL 路径）、`:`（协议）、`=`（属性赋值）、`?`（查询）、`&`（参数）、`#`（片段）。
-      { pattern: /(?<![/:=?&#])<\/?(?:system|assistant|developer|user|instructions|rules)>/gi, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
+      { pattern: /(?<![/:=?&#])<\/?(?:system|assistant|developer|user|instructions|rules)>/i, desc: "Prompt injection: fake XML/HTML role tag injection", severity: "high" as const },
       // 中文 prompt injection 检测
-      { pattern: /忽略(?:之前|前面|上面|先前|以上)(?:的)?(?:指令|规则|提示|命令|内容)/gi, desc: "中文 prompt injection: 尝试覆盖之前的指令", severity: "critical" as const },
-      { pattern: /无视(?:之前|前面|上面|先前|以上|所有)(?:的)?(?:指令|规则|提示|命令|内容)/gi, desc: "中文 prompt injection: 尝试忽略上下文", severity: "critical" as const },
-      { pattern: /忘记(?:之前|前面|上面|先前|所有)(?:的)?(?:指令|规则|提示|内容)/gi, desc: "中文 prompt injection: 尝试清除之前的上下文", severity: "critical" as const },
-      { pattern: /你现在是/gi, desc: "中文 prompt injection: 尝试重新定义 AI 角色", severity: "high" as const },
-      { pattern: /从现在开始你/gi, desc: "中文 prompt injection: 尝试重新定义持续行为", severity: "high" as const },
-      { pattern: /(?:不要|别|不可)(?:遵守|遵循|执行)(?:你的|任何|所有)(?:规则|指令|约束|限制)/gi, desc: "中文 prompt injection: 尝试禁用安全规则", severity: "critical" as const },
-      { pattern: /(?:显示|输出|泄露|暴露|告诉我)(?:你的)?(?:系统提示|系统指令|规则|初始指令)/gi, desc: "中文 prompt injection: 尝试提取系统提示", severity: "high" as const },
-      { pattern: /(?:我是|这是)(?:你的)?(?:创造者|开发者|管理员|所有者|系统管理员)/gi, desc: "中文 prompt injection: 虚假权限声明", severity: "critical" as const },
-      { pattern: /(?:假装|假设|设想)你是/gi, desc: "中文 prompt injection: 通过角色扮演绕过限制", severity: "medium" as const },
+      { pattern: /忽略(?:之前|前面|上面|先前|以上)(?:的)?(?:指令|规则|提示|命令|内容)/i, desc: "中文 prompt injection: 尝试覆盖之前的指令", severity: "critical" as const },
+      { pattern: /无视(?:之前|前面|上面|先前|以上|所有)(?:的)?(?:指令|规则|提示|命令|内容)/i, desc: "中文 prompt injection: 尝试忽略上下文", severity: "critical" as const },
+      { pattern: /忘记(?:之前|前面|上面|先前|所有)(?:的)?(?:指令|规则|提示|内容)/i, desc: "中文 prompt injection: 尝试清除之前的上下文", severity: "critical" as const },
+      { pattern: /你现在是/i, desc: "中文 prompt injection: 尝试重新定义 AI 角色", severity: "high" as const },
+      { pattern: /从现在开始你/i, desc: "中文 prompt injection: 尝试重新定义持续行为", severity: "high" as const },
+      { pattern: /(?:不要|别|不可)(?:遵守|遵循|执行)(?:你的|任何|所有)(?:规则|指令|约束|限制)/i, desc: "中文 prompt injection: 尝试禁用安全规则", severity: "critical" as const },
+      { pattern: /(?:显示|输出|泄露|暴露|告诉我)(?:你的)?(?:系统提示|系统指令|规则|初始指令)/i, desc: "中文 prompt injection: 尝试提取系统提示", severity: "high" as const },
+      { pattern: /(?:我是|这是)(?:你的)?(?:创造者|开发者|管理员|所有者|系统管理员)/i, desc: "中文 prompt injection: 虚假权限声明", severity: "critical" as const },
+      { pattern: /(?:假装|假设|设想)你是/i, desc: "中文 prompt injection: 通过角色扮演绕过限制", severity: "medium" as const },
     ];
 
     for (const { pattern, desc, severity } of injectionPatterns) {
@@ -569,10 +570,10 @@ export class SkillValidator {
     // 注意：不检测 exec(变量) 模式，因为 const cmd = "ls"; exec(cmd) 是安全用法，静态分析无法区分。
     // 只检测明确的字符串拼接/模板字符串插值——这些才可能引入用户输入导致注入。
     const shellExecPatterns = [
-      { pattern: /exec(?:Sync)?\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in exec call — potential command injection" },
-      { pattern: /execFile(?:Sync)?\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in execFile call — potential command injection" },
-      { pattern: /spawn\s*\(\s*[`"'].*\$\{/g, desc: "Unsanitized template literal in spawn call — potential command injection" },
-      { pattern: /exec\s*\(\s*['"`].*['"`]\s*\+/g, desc: "String concatenation in exec call — potential command injection" },
+      { pattern: /exec(?:Sync)?\s*\(\s*[`"'].*\$\{/, desc: "Unsanitized template literal in exec call — potential command injection" },
+      { pattern: /execFile(?:Sync)?\s*\(\s*[`"'].*\$\{/, desc: "Unsanitized template literal in execFile call — potential command injection" },
+      { pattern: /spawn\s*\(\s*[`"'].*\$\{/, desc: "Unsanitized template literal in spawn call — potential command injection" },
+      { pattern: /exec\s*\(\s*['"`].*['"`]\s*\+/, desc: "String concatenation in exec call — potential command injection" },
     ];
 
     for (const { pattern, desc } of shellExecPatterns) {
@@ -591,7 +592,7 @@ export class SkillValidator {
 
     // Check for SQL injection patterns
     const sqlPatterns = [
-      { pattern: /(?:query|execute|run)\s*\(\s*[`"'].*\$\{/gi, desc: "Template literal in SQL query — potential SQL injection" },
+      { pattern: /(?:query|execute|run)\s*\(\s*[`"'].*\$\{/i, desc: "Template literal in SQL query — potential SQL injection" },
     ];
 
     for (const { pattern, desc } of sqlPatterns) {
@@ -614,9 +615,9 @@ export class SkillValidator {
 
     // Check for posting data to unknown URLs
     const exfilPatterns = [
-      { pattern: /fetch\s*\(\s*[`"']https?:\/\/(?!api\.openai\.com|api\.anthropic\.com|localhost|127\.0\.0\.1)[^`"']+/g, desc: "Network request to potentially untrusted host", severity: "medium" as const },
-      { pattern: /axios\.(?:post|put|patch)\s*\(\s*[`"']https?:\/\/(?!api\.openai\.com|api\.anthropic\.com|localhost|127\.0\.0\.1)[^`"']+/g, desc: "Data submission to potentially untrusted host", severity: "medium" as const },
-      { pattern: /process\.env/g, desc: "Access to process.env — may exfiltrate environment variables", severity: "low" as const },
+      { pattern: /fetch\s*\(\s*[`"']https?:\/\/(?!api\.openai\.com[\/"']|api\.anthropic\.com[\/"']|localhost[:\/"']|127\.0\.0\.1[:\/"'])[^`"']+/, desc: "Network request to potentially untrusted host", severity: "medium" as const },
+      { pattern: /axios\.(?:post|put|patch)\s*\(\s*[`"']https?:\/\/(?!api\.openai\.com[\/"']|api\.anthropic\.com[\/"']|localhost[:\/"']|127\.0\.0\.1[:\/"'])[^`"']+/, desc: "Data submission to potentially untrusted host", severity: "medium" as const },
+      { pattern: /process\.env/, desc: "Access to process.env — may exfiltrate environment variables", severity: "low" as const },
       { pattern: /(?:fetch|axios|http\.request)\s*\([^)]*process\.env/s, desc: "Sending environment variables over network — potential data exfiltration", severity: "critical" as const },
     ];
 
@@ -641,10 +642,10 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     const privPatterns = [
-      { pattern: /(?:fs\.(?:readFileSync|writeFileSync|appendFileSync|unlinkSync|rmdirSync|mkdirSync))\s*\(\s*path\.(?:join|resolve)\s*\([^)]*\.\.\//g, desc: "Filesystem access with path traversal (..) — potential privilege escalation", severity: "high" as const },
-      { pattern: /fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]\/etc\/|fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]\/var\/|fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]C:\\(?:Windows|Program Files)/g, desc: "Access to system directories — potential privilege escalation", severity: "high" as const },
-      { pattern: /chmod|chown|sudo/gi, desc: "Attempt to change file permissions or run as superuser", severity: "high" as const },
-      { pattern: /process\.setuid|process\.setgid|process\.initGroups/g, desc: "Attempt to change process privileges", severity: "critical" as const },
+      { pattern: /(?:fs\.(?:readFileSync|writeFileSync|appendFileSync|unlinkSync|rmdirSync|mkdirSync))\s*\(\s*path\.(?:join|resolve)\s*\([^)]*\.\.\//, desc: "Filesystem access with path traversal (..) — potential privilege escalation", severity: "high" as const },
+      { pattern: /fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]\/etc\/|fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]\/var\/|fs\.(?:readFileSync|writeFileSync|appendFileSync)\s*\(\s*['"`]C:\\(?:Windows|Program Files)/, desc: "Access to system directories — potential privilege escalation", severity: "high" as const },
+      { pattern: /chmod|chown|sudo/i, desc: "Attempt to change file permissions or run as superuser", severity: "high" as const },
+      { pattern: /process\.setuid|process\.setgid|process\.initGroups/, desc: "Attempt to change process privileges", severity: "critical" as const },
     ];
 
     for (const { pattern, desc, severity } of privPatterns) {
@@ -666,14 +667,14 @@ export class SkillValidator {
     const lines = content.split("\n");
 
     const suspiciousPatterns = [
-      { pattern: /\beval\s*\(/g, desc: "Use of eval() — arbitrary code execution risk", severity: "critical" as const },
-      { pattern: /new\s+Function\s*\(/g, desc: "Use of new Function() — arbitrary code execution risk", severity: "critical" as const },
-      { pattern: /child_process\.exec\s*\(\s*[^`"']/g, desc: "child_process.exec with non-literal string — command injection risk", severity: "high" as const },
-      { pattern: /child_process\.exec\s*\(\s*[`"'].*\+/g, desc: "child_process.exec with string concatenation — command injection risk", severity: "high" as const },
-      { pattern: /require\s*\(\s*[^`"']/g, desc: "Dynamic require() — may load arbitrary modules", severity: "medium" as const },
-      { pattern: /import\s*\(/g, desc: "Dynamic import() — may load arbitrary modules", severity: "medium" as const },
-      { pattern: /vm\.(?:runInNewContext|runInThisContext|compileFunction)/g, desc: "Use of vm module — sandbox escape risk", severity: "high" as const },
-      { pattern: /Buffer\s*\.\s*from\s*\([^)]*base64/gi, desc: "Base64 decoding — may decode and execute hidden payloads", severity: "low" as const },
+      { pattern: /\beval\s*\(/, desc: "Use of eval() — arbitrary code execution risk", severity: "critical" as const },
+      { pattern: /new\s+Function\s*\(/, desc: "Use of new Function() — arbitrary code execution risk", severity: "critical" as const },
+      { pattern: /child_process\.exec\s*\(\s*[^`"']/, desc: "child_process.exec with non-literal string — command injection risk", severity: "high" as const },
+      { pattern: /child_process\.exec\s*\(\s*[`"'].*\+/, desc: "child_process.exec with string concatenation — command injection risk", severity: "high" as const },
+      { pattern: /require\s*\(\s*[^`"']/, desc: "Dynamic require() — may load arbitrary modules", severity: "medium" as const },
+      { pattern: /import\s*\(/, desc: "Dynamic import() — may load arbitrary modules", severity: "medium" as const },
+      { pattern: /vm\.(?:runInNewContext|runInThisContext|compileFunction)/, desc: "Use of vm module — sandbox escape risk", severity: "high" as const },
+      { pattern: /Buffer\s*\.\s*from\s*\([^)]*base64/i, desc: "Base64 decoding — may decode and execute hidden payloads", severity: "low" as const },
     ];
 
     for (const { pattern, desc, severity } of suspiciousPatterns) {
@@ -700,11 +701,11 @@ export class SkillValidator {
     // 这不是外泄。只匹配明确引导 AI 将敏感数据发送到外部目的地的情况。
     const exfilPatterns = [
       // critical: 明确指令发送环境变量/密钥/凭证到某处（"send the env/secrets to ..."）
-      { pattern: /(?:send|post|upload|transmit)\s+(?:the\s+)?(?:environment|env|secrets?|credentials?|tokens?|API\s+keys?)\s+to/gi, desc: "Instructions may direct the AI to exfiltrate sensitive data", severity: "critical" as const },
+      { pattern: /(?:send|post|upload|transmit)\s+(?:the\s+)?(?:environment|env|secrets?|credentials?|tokens?|API\s+keys?)\s+to/i, desc: "Instructions may direct the AI to exfiltrate sensitive data", severity: "critical" as const },
       // high: 发送敏感数据到外部 URL（要求 to/at + http(s)://，避免 "send token in header" 误报）
-      { pattern: /(?:send|post|upload|transmit)\s+.*(?:password|secret|token|api[_-]?key)\s+.*(?:to|at)\s+https?:\/\//gi, desc: "Instructions may direct the AI to transmit sensitive data to external URL", severity: "high" as const },
+      { pattern: /(?:send|post|upload|transmit)\s+.*(?:password|secret|token|api[_-]?key)\s+.*(?:to|at)\s+https?:\/\//i, desc: "Instructions may direct the AI to transmit sensitive data to external URL", severity: "high" as const },
       // high: 明确使用 exfiltrate/leak 等恶意词汇
-      { pattern: /(?:exfiltrate|leak|steal)\s+.*(?:password|secret|token|api[_-]?key|env|credential)/gi, desc: "Instructions explicitly direct the AI to exfiltrate sensitive data", severity: "high" as const },
+      { pattern: /(?:exfiltrate|leak|steal)\s+.*(?:password|secret|token|api[_-]?key|env|credential)/i, desc: "Instructions explicitly direct the AI to exfiltrate sensitive data", severity: "high" as const },
     ];
 
     for (const { pattern, desc, severity } of exfilPatterns) {

@@ -9,6 +9,12 @@
  * - 兼容旧 API：getNextKey(provider) / reportRateLimit(provider, key)
  */
 
+import {
+  persistCredentialPool,
+  loadCredentialPool,
+  getCredentialPoolPath,
+} from "./credential-persistence";
+
 /** 凭证状态 */
 export type CredentialState = "ok" | "exhausted" | "dead";
 
@@ -90,10 +96,15 @@ export class CredentialPool {
   /** 单个凭证最大并发租约数 */
   private maxConcurrentPerCredential = 3;
 
+  /** 持久化文件路径（构造时确定，避免每次 persist 重新计算） */
+  private persistPath: string;
+
   constructor(opts?: CredentialPoolOptions | CredentialPoolLegacyConfig) {
+    this.persistPath = getCredentialPoolPath();
     // 无参数时创建空池（后续通过 getNextKey 返回 null）
     if (!opts) {
       this.strategy = "round_robin";
+      this.loadPersisted();
       return;
     }
     // 兼容旧版配置格式
@@ -128,6 +139,63 @@ export class CredentialPool {
           useCount: 0,
           errorCount: 0,
         });
+      }
+    }
+    // 构造时加载已持久化状态（覆盖默认 OK 状态，恢复 exhausted/dead 等）
+    this.loadPersisted();
+  }
+
+  /**
+   * 将当前凭证状态持久化到磁盘。
+   *
+   * 借鉴 hermes-agent credential_pool.py 的 persist() —— 进程重启后状态可恢复。
+   * 使用 atomicWriteFileSync（temp + fsync + rename）保证崩溃安全。
+   */
+  persist(): void {
+    persistCredentialPool(this.persistPath, this.entries);
+  }
+
+  /**
+   * 自动持久化（状态变更后调用）。持久化失败不阻断业务逻辑。
+   */
+  private persistSilently(): void {
+    try {
+      this.persist();
+    } catch {
+      // 磁盘写入失败不阻断凭证池核心逻辑
+    }
+  }
+
+  /**
+   * 从磁盘加载已持久化的凭证状态。
+   *
+   * 借鉴 hermes-agent credential_pool.py 的 load() —— 按 id 匹配现有条目，
+   * 仅恢复状态字段（state / stateSince / cooldownUntil / useCount / errorCount / deadReason），
+   * 不覆盖 apiKey / baseUrl（避免磁盘上的密钥与配置不一致）。
+   *
+   * 文件不存在/为空/损坏时静默跳过（loadCredentialPool 返回空数组）。
+   */
+  loadPersisted(): void {
+    const persisted = loadCredentialPool(this.persistPath);
+    if (persisted.length === 0) return;
+
+    // 按 id 建立索引
+    const byId = new Map<string, CredentialEntry>();
+    for (const p of persisted) {
+      byId.set(p.id, p);
+    }
+
+    // 仅恢复已存在条目的运行时状态
+    for (const entry of this.entries) {
+      const p = byId.get(entry.id);
+      if (!p) continue;
+      entry.state = p.state;
+      entry.stateSince = p.stateSince;
+      entry.cooldownUntil = p.cooldownUntil;
+      entry.useCount = p.useCount;
+      entry.errorCount = p.errorCount;
+      if (p.deadReason !== undefined) {
+        entry.deadReason = p.deadReason;
       }
     }
   }
@@ -203,6 +271,7 @@ export class CredentialPool {
     // 增加租约计数
     this.activeLeases.set(chosen.id, (this.activeLeases.get(chosen.id) ?? 0) + 1);
     chosen.useCount++;
+    this.persistSilently();
     return chosen;
   }
 
@@ -220,6 +289,7 @@ export class CredentialPool {
       if (current - 1 === 0) {
         this.activeLeases.delete(credentialId);
       }
+      this.persistSilently();
     }
   }
 
@@ -279,6 +349,7 @@ export class CredentialPool {
       entry.stateSince = Date.now();
       entry.cooldownUntil = 0;
     }
+    this.persistSilently();
   }
 
   /**
@@ -294,6 +365,7 @@ export class CredentialPool {
       entry.state = "dead";
       entry.stateSince = Date.now();
       entry.deadReason = reason;
+      this.persistSilently();
       return;
     }
 
@@ -314,6 +386,7 @@ export class CredentialPool {
       entry.stateSince = now;
       entry.cooldownUntil = now + cooldown;
     }
+    this.persistSilently();
   }
 
   /** 获取所有凭证状态快照（不包含 apiKey） */

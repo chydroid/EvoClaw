@@ -341,13 +341,38 @@ export class EvolutionProposer {
       const extractCode = (block: string) => block.replace(/```\w*\n?/, "").replace(/```$/, "").trim();
       const improvement = extractCode(plainBlocks[0]);
       const tests = plainBlocks.length > 1 ? extractCode(plainBlocks[1]) : this.generateTestCode(req);
+      if (!this.isImprovementSafe(improvement)) return null;
       return { improvement, tests };
     }
 
     const extractCode = (block: string) => block.replace(/```typescript\s*\n?/, "").replace(/```$/, "").trim();
     const improvement = extractCode(codeBlocks[0]);
     const tests = codeBlocks.length > 1 ? extractCode(codeBlocks[1]) : this.generateTestCode(req);
+    if (!this.isImprovementSafe(improvement)) return null;
     return { improvement, tests };
+  }
+
+  // 安全扫描：拒绝包含危险 import/require 或动态执行（eval/Function）的 LLM 代码，防止 prompt injection 注入恶意代码
+  private isImprovementSafe(improvement: string): boolean {
+    const FORBIDDEN_IMPORTS = /(?:require|import)\s*\(?\s*['"](?:child_process|fs|net|http|https|dns|os|vm|cluster)['"]/;
+    const FORBIDDEN_PATTERNS = [
+      FORBIDDEN_IMPORTS,
+      /process\.(?:binding|mainModule)/,
+      /globalThis\s*\[\s*['"]require['"]\s*\]/,
+      /Reflect\.get\s*\(\s*this\s*,\s*['"]require['"]\s*\)/,
+      /import\s*\(/,
+    ];
+    for (const pattern of FORBIDDEN_PATTERNS) {
+      if (pattern.test(improvement)) {
+        process.stderr.write("[EvolutionProposer] LLM code contains forbidden imports/patterns, rejected\n");
+        return false;
+      }
+    }
+    if (/\beval\s*\(/.test(improvement) || /new\s+Function\s*\(/.test(improvement)) {
+      process.stderr.write("[EvolutionProposer] LLM code contains eval/Function, rejected\n");
+      return false;
+    }
+    return true;
   }
 
   private async generateNewSkillCode(req: AnalyzedRequirement): Promise<string | null> {
@@ -439,8 +464,8 @@ async function executeCore(params: Record<string, unknown>): Promise<unknown> {
 import { describe, it, expect } from "vitest";
 
 describe("improvedHandler", () => {
-  const pattern = "${req.failurePattern || "unknown"}";
-  const source = "${req.source}";
+  const pattern = ${JSON.stringify(req.failurePattern || "unknown")};
+  const source = ${JSON.stringify(req.source || "")};
 
   it("should handle the failure pattern: " + pattern, async () => {
     expect(true).toBe(true);

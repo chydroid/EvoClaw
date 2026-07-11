@@ -203,8 +203,10 @@ export class ToolChainExecutor {
     params: Record<string, unknown>,
     timeoutMs: number,
   ): Promise<unknown> {
+    const controller = new AbortController();
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
+        controller.abort();
         reject(new Error(`Tool execution timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 

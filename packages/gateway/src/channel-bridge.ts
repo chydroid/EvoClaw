@@ -453,8 +453,10 @@ export class ChannelBridgeManager {
   }
 
   private formatOriginPrefix(channel: string, text: string): string {
-    return this.config.originPrefixFormat
-      .replace("{channel}", channel)
-      .replace("{message}", text);
+    // 单次 replace 同时处理所有占位符，避免 channel 值包含 {message} 时被第二次 replace 错误替换
+    return this.config.originPrefixFormat.replace(
+      /\{(?:channel|message)\}/g,
+      (m) => (m === "{channel}" ? channel : text),
+    );
   }
 }

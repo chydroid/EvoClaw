@@ -5,6 +5,9 @@ import {
   type AuditEventType,
   type SecuritySeverity,
 } from "@evoclaw/core";
+import * as fs from "fs";
+import * as path from "path";
+import { randomUUID } from "crypto";
 import { v4 } from "uuid";
 import { auditConfig, type ConfigAuditInput } from "./audit-config";
 import { auditChannels, type ChannelAuditInput } from "./audit-channel";
@@ -161,6 +164,26 @@ export class AuditCenter {
     this.records.push(record);
 
     if (this.records.length > this.maxRecords) {
+      const overflow = this.records.slice(0, this.records.length - this.maxRecords);
+      // 归档到磁盘，防止攻击者通过冲刷记录量销毁审计证据
+      try {
+        const archiveDir = path.join(process.cwd(), "data", "audit-archives");
+        if (!fs.existsSync(archiveDir)) {
+          fs.mkdirSync(archiveDir, { recursive: true });
+        }
+        const archiveFile = path.join(archiveDir, `audit-archive-${Date.now()}.jsonl`);
+        // 使用 openSync("a") + writeSync + fsyncSync + closeSync 替代 appendFileSync，
+        // 确保溢出归档在 fsync 后落盘，避免进程崩溃导致审计证据丢失。
+        const fd = fs.openSync(archiveFile, "a");
+        try {
+          fs.writeSync(fd, overflow.map((r) => JSON.stringify(r)).join("\n") + "\n", null, "utf-8");
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch (err) {
+        process.stderr.write(`[AuditCenter] Failed to archive overflow records: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
       this.records = this.records.slice(-this.maxRecords);
     }
 
@@ -386,7 +409,7 @@ export class AuditCenter {
 
       if (rule.condition(relevantEvents)) {
         const alert: AuditAlert = {
-          id: `alert_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          id: `alert_${randomUUID()}`,
           rule: rule.name,
           severity: rule.severity,
           description: rule.description,
@@ -406,6 +429,21 @@ export class AuditCenter {
           { alert },
           "audit-center"
         ).catch((err) => process.stderr.write('[AuditCenter] event publish failed: ' + err + '\n'));
+      }
+    }
+
+    this.pruneAlertThrottles();
+  }
+
+  /**
+   * 清理超过1小时的告警节流记录，防止 alertThrottles Map 无界增长。
+   * 在 evaluateRules 末尾调用，确保每次规则评估后自动清理过期记录。
+   */
+  private pruneAlertThrottles(): void {
+    const oneHourAgo = Date.now() - 3_600_000;
+    for (const [ruleName, timestamp] of this.alertThrottles) {
+      if (timestamp < oneHourAgo) {
+        this.alertThrottles.delete(ruleName);
       }
     }
   }

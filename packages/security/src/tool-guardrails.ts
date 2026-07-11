@@ -7,6 +7,8 @@
  * - 护栏决策（allow/warn/block/halt）
  */
 
+import { createHash } from "crypto";
+
 /** 幂等工具：重复调用无副作用 */
 export const IDEMPOTENT_TOOL_NAMES = new Set([
   "file_read",
@@ -84,16 +86,25 @@ export const DEFAULT_GUARDRAIL_CONFIG: ToolGuardrailConfig = {
 };
 
 /**
+ * 递归深度排序对象的所有 key，确保嵌套对象的属性也能参与规范序列化
+ */
+function sortKeysDeep(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(sortKeysDeep);
+  if (obj && typeof obj === "object") {
+    return Object.keys(obj as Record<string, unknown>).sort().reduce((acc, k) => {
+      (acc as Record<string, unknown>)[k] = sortKeysDeep((obj as Record<string, unknown>)[k]);
+      return acc;
+    }, {} as Record<string, unknown>);
+  }
+  return obj;
+}
+
+/**
  * 计算参数的规范哈希（用于幂等性检测）
  */
 export function computeArgsHash(args: Record<string, unknown>): string {
-  const canonical = JSON.stringify(args, Object.keys(args).sort());
-  let hash = 0;
-  for (let i = 0; i < canonical.length; i++) {
-    const char = canonical.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  return `h${Math.abs(hash).toString(36)}`;
+  const canonical = JSON.stringify(sortKeysDeep(args));
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
 
 /**

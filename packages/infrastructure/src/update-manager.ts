@@ -19,7 +19,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { execSync, spawn, execFileSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 
 export interface UpdateConfig {
   /** GitHub owner/repo (e.g., "evoclaw/evoclaw") */
@@ -187,6 +187,7 @@ export class UpdateManager {
         process.stderr.write("[UpdateManager] Periodic check failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
       }
     }, this.config.checkIntervalMs);
+    this.checkTimer.unref?.();
 
     process.stdout.write(
       `[UpdateManager] Periodic checks started (every ${this.config.checkIntervalMs / 1000}s)\n`
@@ -271,7 +272,12 @@ export class UpdateManager {
           message: "Running post-update tasks...",
         });
         try {
-          execSync(this.config.postUpdateCommand, { stdio: "inherit" });
+          // 安全：将命令字符串拆分为命令 + 参数数组，避免 shell 注入
+          const parts = this.config.postUpdateCommand.split(/\s+/).filter(Boolean);
+          if (parts.length > 0) {
+            const [cmd, ...args] = parts;
+            execFileSync(cmd, args, { stdio: "inherit" });
+          }
         } catch {
           // Post-update failure is non-critical
         }
@@ -523,17 +529,7 @@ export class UpdateManager {
     const backupDir = path.join(this.config.cacheDir, "backup");
     fs.mkdirSync(backupDir, { recursive: true });
 
-    // Clean old backups (keep 3)
-    const existing = fs.readdirSync(backupDir)
-      .map((name) => ({ name, time: fs.statSync(path.join(backupDir, name)).mtimeMs }))
-      .sort((a, b) => b.time - a.time);
-
-    while (existing.length >= 3) {
-      const oldest = existing.pop()!;
-      fs.rmSync(path.join(backupDir, oldest.name), { recursive: true, force: true });
-    }
-
-    // Backup each path
+    // Backup each path first
     const timestamp = Date.now();
     for (const bp of this.config.backupPaths) {
       const srcPath = path.join(process.cwd(), bp);
@@ -541,6 +537,16 @@ export class UpdateManager {
         const destPath = path.join(backupDir, `${path.basename(bp)}.${timestamp}`);
         fs.cpSync(srcPath, destPath, { recursive: true });
       }
+    }
+
+    // Clean old backups (keep 3) — 先添加后删除，避免 off-by-one
+    const existing = fs.readdirSync(backupDir)
+      .map((name) => ({ name, time: fs.statSync(path.join(backupDir, name)).mtimeMs }))
+      .sort((a, b) => b.time - a.time);
+
+    while (existing.length > 3) {
+      const oldest = existing.pop()!;
+      fs.rmSync(path.join(backupDir, oldest.name), { recursive: true, force: true });
     }
   }
 
@@ -555,24 +561,30 @@ export class UpdateManager {
       const extractDir = path.join(this.config.cacheDir, "extracted");
       fs.mkdirSync(extractDir, { recursive: true });
 
-      if (assetName.endsWith(".zip")) {
-        // Use adm-zip for cross-platform ZIP extraction
-        const AdmZip = require("adm-zip");
-        const zip = new AdmZip(downloadPath);
-        zip.extractAllTo(extractDir, true);
-      } else {
-        execFileSync("tar", ["-xzf", downloadPath, "-C", extractDir], {
+      try {
+        if (assetName.endsWith(".zip")) {
+          // Use adm-zip for cross-platform ZIP extraction
+          const AdmZip = require("adm-zip");
+          const zip = new AdmZip(downloadPath);
+          zip.extractAllTo(extractDir, true);
+        } else {
+          execFileSync("tar", ["-xzf", downloadPath, "-C", extractDir], {
+            stdio: "inherit",
+          });
+        }
+
+        // Run install command (pnpm install etc.)
+        execFileSync("pnpm", ["install", "--frozen-lockfile"], {
+          cwd: extractDir,
           stdio: "inherit",
         });
+
+        process.stdout.write(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.\n`);
+      } finally {
+        // 清理临时解压目录和下载文件
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(downloadPath, { force: true }); } catch { /* ignore */ }
       }
-
-      // Run install command (pnpm install etc.)
-      execSync("pnpm install --frozen-lockfile", {
-        cwd: extractDir,
-        stdio: "inherit",
-      });
-
-      process.stdout.write(`[UpdateManager] Extracted to ${extractDir}. Manual swap required.\n`);
     } else if (assetName.endsWith(".exe") || assetName.endsWith(".AppImage")) {
       // Binary replacement
       const destPath = path.join(cwd, path.basename(downloadPath));
@@ -594,14 +606,31 @@ export class UpdateManager {
    * Returns: >0 if v1 > v2, <0 if v1 < v2, 0 if equal
    */
   compareVersions(v1: string, v2: string): number {
-    const parts1 = v1.replace(/^v/i, "").split(".").map(Number);
-    const parts2 = v2.replace(/^v/i, "").split(".").map(Number);
+    // 去除前缀 v，并先分割出预发布标签（如 "1.2.3-beta.1" → core "1.2.3"，pre "beta.1"）
+    const seg1 = v1.replace(/^v/i, "").split("-");
+    const seg2 = v2.replace(/^v/i, "").split("-");
+    const core1 = seg1[0];
+    const pre1 = seg1.length > 1 ? seg1.slice(1).join("-") : "";
+    const core2 = seg2[0];
+    const pre2 = seg2.length > 1 ? seg2.slice(1).join("-") : "";
 
-    for (let i = 0; i < 3; i++) {
+    const parts1 = core1.split(".").map(Number);
+    const parts2 = core2.split(".").map(Number);
+
+    const len = Math.max(parts1.length, parts2.length);
+    for (let i = 0; i < len; i++) {
       const a = parts1[i] || 0;
       const b = parts2[i] || 0;
       if (a > b) return 1;
       if (a < b) return -1;
+    }
+
+    // 核心版本相等时，有预发布标签的版本低于无预发布标签的版本
+    if (pre1 && !pre2) return -1;
+    if (!pre1 && pre2) return 1;
+    if (pre1 && pre2) {
+      if (pre1 > pre2) return 1;
+      if (pre1 < pre2) return -1;
     }
 
     return 0;

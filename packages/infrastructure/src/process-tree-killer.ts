@@ -162,8 +162,13 @@ async function getPidsViaPs(parentPid: number): Promise<number[]> {
  * 借鉴 hermes-agent _get_child_pids_windows：
  *   使用 wmic 或 PowerShell Get-CimInstance。
  */
-async function getChildPidsWindows(parentPid: number): Promise<number[]> {
+async function getChildPidsWindows(parentPid: number, maxDepth = 10): Promise<number[]> {
   return new Promise((resolve) => {
+    // 深度限制，防止深进程树导致栈溢出或大量 PowerShell 进程
+    if (maxDepth <= 0) {
+      resolve([]);
+      return;
+    }
     // 验证 parentPid 为纯数字，防止命令注入
     if (!/^\d+$/.test(String(parentPid))) {
       resolve([]);
@@ -191,7 +196,7 @@ async function getChildPidsWindows(parentPid: number): Promise<number[]> {
 
       // 递归获取子进程的子进程
       const allChildren = [...directChildren];
-      const promises = directChildren.map((pid) => getChildPidsWindows(pid));
+      const promises = directChildren.map((pid) => getChildPidsWindows(pid, maxDepth - 1));
       Promise.all(promises).then((nested) => {
         for (const children of nested) {
           allChildren.push(...children);

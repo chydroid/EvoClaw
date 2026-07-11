@@ -60,17 +60,27 @@ export class RequirementMiner {
   private llmEnabled = true;
   private maxObservedPatterns = 500;
   private cleanupCounter = 0;
+  private skillFailedSubscriptionId: string | null = null;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus
   ) {
-    this.eventBus.subscribe(SystemEvents.SKILL_FAILED, async (event) => {
+    const sub = this.eventBus.subscribe(SystemEvents.SKILL_FAILED, async (event) => {
       const data = event.data as Record<string, unknown>;
       if (data?.skillId) {
         this.observeFailure(String(data.skillId));
       }
     });
+    this.skillFailedSubscriptionId = sub.id;
+  }
+
+  /** 取消事件订阅，释放资源 */
+  dispose(): void {
+    if (this.skillFailedSubscriptionId !== null) {
+      this.eventBus.unsubscribe(this.skillFailedSubscriptionId);
+      this.skillFailedSubscriptionId = null;
+    }
   }
 
   async analyze(input: EvolutionInput): Promise<AnalyzedRequirement[]> {

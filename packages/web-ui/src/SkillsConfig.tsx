@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { renderMarkdown } from "./markdown-renderer";
+import { renderMarkdown, sanitizeHtml } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
+import { skillsIntegrityApi, type SkillIntegrityVerifyResponse, type LockVerifyResult } from "./api-client";
 
 // 校验 URL 协议，只允许 http/https，防止 javascript: 等协议注入 XSS
 function isSafeUrl(url: string): boolean {
@@ -755,7 +756,7 @@ function MarketplaceSkillDetail({
               background: "var(--bg-sidebar)", border: "1px solid var(--border-light)",
               borderRadius: "6px", padding: "14px 18px", fontSize: "13px", lineHeight: 1.7,
             }}
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(skillMdBody) }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(skillMdBody)) }}
           />
         </div>
       )}
@@ -785,6 +786,14 @@ export default function SkillsConfig() {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  // Skills integrity & translate state
+  const [integrityResult, setIntegrityResult] = useState<SkillIntegrityVerifyResponse | null>(null);
+  const [verifyingIntegrity, setVerifyingIntegrity] = useState(false);
+  const [lockResult, setLockResult] = useState<LockVerifyResult | null>(null);
+  const [verifyingLock, setVerifyingLock] = useState(false);
+  const [refreshingLock, setRefreshingLock] = useState(false);
+  const [translatingAll, setTranslatingAll] = useState(false);
+  const [translatingSkill, setTranslatingSkill] = useState<Record<string, boolean>>({});
   // Search, sort, and marketplace state
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "category" | "status" | "invocations" | "rating" | "updated">("name");
@@ -1252,6 +1261,72 @@ export default function SkillsConfig() {
     setBatchUpgrading(false);
   }, [selectedSkills, loadSkills, loadSkillDetail, selectedId]);
 
+  const handleVerifyIntegrity = useCallback(async () => {
+    setVerifyingIntegrity(true);
+    try {
+      const data = await skillsIntegrityApi.verifyAll();
+      setIntegrityResult(data);
+      if (data.success) {
+        const { total, ok, missingOrigin, failed } = data.summary;
+        const msg = failed > 0 || missingOrigin > 0
+          ? t("skills.integrity_issues", "完整性校验完成: {0} 总计, {1} 通过, {2} 缺失来源, {3} 失败").replace("{0}", String(total)).replace("{1}", String(ok)).replace("{2}", String(missingOrigin)).replace("{3}", String(failed))
+          : t("skills.integrity_ok", "完整性校验通过: {0} 个技能全部正常").replace("{0}", String(total));
+        setMessage({ type: failed > 0 ? "error" : missingOrigin > 0 ? "warning" : "success", text: msg });
+      }
+    } catch {
+      setMessage({ type: "error", text: t("skills.integrity_verify_fail", "完整性校验请求失败") });
+    }
+    setVerifyingIntegrity(false);
+  }, [t]);
+
+  const handleVerifyLock = useCallback(async () => {
+    setVerifyingLock(true);
+    try {
+      const data = await skillsIntegrityApi.verifyLock();
+      setLockResult(data.result);
+      setMessage({ type: data.result.ok ? "success" : "error", text: data.result.ok ? t("skills.lock_ok", "lock.json 校验通过") : t("skills.lock_fail", "lock.json 校验失败") });
+    } catch {
+      setMessage({ type: "error", text: t("skills.lock_verify_fail", "lock.json 校验请求失败") });
+    }
+    setVerifyingLock(false);
+  }, [t]);
+
+  const handleRefreshLock = useCallback(async () => {
+    setRefreshingLock(true);
+    try {
+      await skillsIntegrityApi.refreshLock();
+      setMessage({ type: "success", text: t("skills.lock_refreshed", "lock.json 已刷新") });
+    } catch {
+      setMessage({ type: "error", text: t("skills.lock_refresh_fail", "刷新 lock.json 失败") });
+    }
+    setRefreshingLock(false);
+  }, [t]);
+
+  const handleTranslateAll = useCallback(async () => {
+    setTranslatingAll(true);
+    try {
+      const data = await skillsIntegrityApi.translateAll();
+      setMessage({ type: "success", text: t("skills.translate_done", "翻译完成: 检查 {0}, 翻译 {1}").replace("{0}", String(data.checked)).replace("{1}", String(data.translated)) });
+    } catch {
+      setMessage({ type: "error", text: t("skills.translate_fail", "翻译请求失败") });
+    }
+    setTranslatingAll(false);
+  }, [t]);
+
+  const handleTranslateSkill = useCallback(async (skillId: string) => {
+    setTranslatingSkill((prev) => ({ ...prev, [skillId]: true }));
+    try {
+      await skillsIntegrityApi.translateOne(skillId);
+      setMessage({ type: "success", text: t("skills.skill_translated", "技能翻译完成") });
+      if (selectedId === skillId) {
+        await loadSkillDetail(skillId);
+      }
+    } catch {
+      setMessage({ type: "error", text: t("skills.skill_translate_fail", "技能翻译失败") });
+    }
+    setTranslatingSkill((prev) => ({ ...prev, [skillId]: false }));
+  }, [selectedId, loadSkillDetail, t]);
+
   const handleValidateConfig = useCallback(async (skillId: string) => {
     setValidating((prev) => ({ ...prev, [skillId]: true }));
     try {
@@ -1563,7 +1638,70 @@ export default function SkillsConfig() {
           >
             {checkingUpdates ? t("skills.checking", "检查中...") : t("skills.check_all_updates", "检查所有更新")}
           </button>
+          <button
+            style={{ ...styles.batchButton, opacity: verifyingIntegrity ? 0.5 : 1 }}
+            onClick={handleVerifyIntegrity}
+            disabled={verifyingIntegrity}
+            title={t("skills.integrity_verify_title", "校验所有已安装技能的完整性")}
+          >
+            {verifyingIntegrity ? t("skills.checking", "检查中...") : t("skills.verify_integrity", "完整性校验")}
+          </button>
+          <button
+            style={{ ...styles.batchButton, opacity: verifyingLock ? 0.5 : 1 }}
+            onClick={handleVerifyLock}
+            disabled={verifyingLock}
+            title={t("skills.lock_verify_title", "校验 lock.json 完整性")}
+          >
+            {verifyingLock ? t("skills.checking", "检查中...") : t("skills.verify_lock", "校验 Lock")}
+          </button>
+          <button
+            style={{ ...styles.batchButton, opacity: refreshingLock ? 0.5 : 1 }}
+            onClick={handleRefreshLock}
+            disabled={refreshingLock}
+            title={t("skills.lock_refresh_title", "刷新 lock.json")}
+          >
+            {refreshingLock ? t("skills.refreshing", "刷新中...") : t("skills.refresh_lock", "刷新 Lock")}
+          </button>
+          <button
+            style={{ ...styles.batchButton, opacity: translatingAll ? 0.5 : 1 }}
+            onClick={handleTranslateAll}
+            disabled={translatingAll}
+            title={t("skills.translate_title", "翻译所有已安装技能为中文")}
+          >
+            {translatingAll ? t("skills.translating", "翻译中...") : t("skills.translate_all", "翻译全部")}
+          </button>
         </div>
+        {integrityResult && integrityResult.success && (
+          <div style={{ padding: "8px 12px", background: "var(--bg-sidebar)", borderBottom: "1px solid var(--border)", fontSize: "11px", color: "var(--text-secondary)" }}>
+            <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+              {t("skills.integrity_summary", "完整性: {0} 总计 / {1} 通过 / {2} 缺失来源 / {3} 失败")
+                .replace("{0}", String(integrityResult.summary.total))
+                .replace("{1}", String(integrityResult.summary.ok))
+                .replace("{2}", String(integrityResult.summary.missingOrigin))
+                .replace("{3}", String(integrityResult.summary.failed))}
+            </span>
+            {integrityResult.results.filter(r => !r.result.ok).slice(0, 5).map((r, i) => (
+              <div key={i} style={{ marginTop: "2px", color: "var(--error)" }}>
+                {r.skillName || r.skillId}: {(r.result.errors[0]) || (r.result.missingFiles[0] ? `缺失文件: ${r.result.missingFiles[0]}` : "校验失败")}
+              </div>
+            ))}
+          </div>
+        )}
+        {lockResult && (
+          <div style={{ padding: "8px 12px", background: "var(--bg-sidebar)", borderBottom: "1px solid var(--border)", fontSize: "11px" }}>
+            <span style={{ color: lockResult.ok ? "var(--success)" : "var(--error)", fontWeight: 600 }}>
+              {lockResult.ok ? t("skills.lock_ok", "lock.json 校验通过") : t("skills.lock_fail", "lock.json 校验失败")}
+            </span>
+            {!lockResult.ok && lockResult.errors.length > 0 && (
+              <div style={{ color: "var(--error)", marginTop: "2px" }}>{lockResult.errors.slice(0, 3).join("; ")}</div>
+            )}
+            {!lockResult.ok && lockResult.missingFiles.length > 0 && (
+              <div style={{ color: "var(--warning)", marginTop: "2px" }}>
+                {t("skills.missing_files", "缺失文件")}: {lockResult.missingFiles.slice(0, 3).join(", ")}
+              </div>
+            )}
+          </div>
+        )}
         <div style={styles.sidebarList}>
           {marketplaceTab ? (
             // ── Marketplace Tab: 搜索结果/热门技能列表（单栏，点击选中后在右侧 contentPanel 显示详情） ──
@@ -2245,6 +2383,18 @@ export default function SkillsConfig() {
             >
               {healthChecking[selectedSkill.id] ? t("skills.checking", "检查中...") : t("skills.run_health_check", "执行健康检查")}
             </button>
+            <button
+              style={{
+                ...styles.batchButton,
+                opacity: translatingSkill[selectedSkill.id] ? 0.5 : 1,
+                marginLeft: "8px",
+              }}
+              onClick={() => handleTranslateSkill(selectedSkill.id)}
+              disabled={!!translatingSkill[selectedSkill.id]}
+              title={t("skills.translate_skill_title", "将此技能翻译为中文")}
+            >
+              {translatingSkill[selectedSkill.id] ? t("skills.translating", "翻译中...") : t("skills.translate_skill", "翻译技能")}
+            </button>
           </div>
 
           {(selectedSkill.lifecycle.healthCheck?.errors?.length ?? 0) > 0 && (
@@ -2343,11 +2493,11 @@ export default function SkillsConfig() {
           <div style={styles.sectionTitle}>{t("skills.usage", "使用方法")}</div>
           {selectedSkill.body.instructions ? (
             <div>
-              <div style={styles.instructionsBlock} dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.body.instructions) }} />
+              <div style={styles.instructionsBlock} dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(selectedSkill.body.instructions)) }} />
               {selectedSkill.i18n?.instructions_zh && selectedSkill.i18n.instructions_zh !== selectedSkill.body.instructions && (
                 <div style={{ ...styles.instructionsBlock, borderLeft: "3px solid var(--primary)", marginTop: "8px" }}>
                   <div style={{ fontSize: "10px", color: "var(--primary)", marginBottom: "6px", fontWeight: "bold" }}>{t("skills.zh_translation", "中文翻译")}</div>
-                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.i18n.instructions_zh) }} />
+                  <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(selectedSkill.i18n.instructions_zh)) }} />
                 </div>
               )}
             </div>
@@ -2363,10 +2513,10 @@ export default function SkillsConfig() {
               <div style={styles.examplesBlock}>
                 {selectedSkill.body.examples.map((ex, i) => (
                   <div key={i} style={styles.exampleItem}>
-                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(ex) }} />
+                    <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(ex)) }} />
                     {selectedSkill.i18n?.examples_zh?.[i] && selectedSkill.i18n.examples_zh[i] !== ex && (
                       <div style={{ color: "var(--primary)", marginTop: "4px", fontSize: "11px", borderLeft: "2px solid var(--primary)", paddingLeft: "6px" }}>
-                        <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.i18n.examples_zh[i]) }} />
+                        <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderMarkdown(selectedSkill.i18n.examples_zh[i])) }} />
                       </div>
                     )}
                   </div>

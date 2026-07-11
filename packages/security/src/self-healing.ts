@@ -281,6 +281,13 @@ export class SelfHealingManager {
           health.consecutiveFailures = 0;
           health.healthy = true;
           health.status = "running";
+          // 服务恢复健康时，重置与该服务关联的所有规则的失败重试计数，
+          // 否则已耗尽 maxRetries 的规则会被永久跳过
+          for (const rule of this.rules) {
+            if (rule.target === serviceName) {
+              this.ruleRetryCounts.delete(rule.name);
+            }
+          }
         } else {
           health.consecutiveFailures++;
           if (health.consecutiveFailures >= 3) {

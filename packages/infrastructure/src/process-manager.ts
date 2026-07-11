@@ -79,6 +79,14 @@ export class ProcessManager {
       process.stderr.write(`[${name}] ${data.toString().trim()}\n`);
     });
 
+    childProcess.stdout?.on("error", (err: Error) => {
+      process.stderr.write(`[ProcessManager] stdout error for "${name}": ${err.message}\n`);
+    });
+
+    childProcess.stderr?.on("error", (err: Error) => {
+      process.stderr.write(`[ProcessManager] stderr error for "${name}": ${err.message}\n`);
+    });
+
     this.processes.set(id, processInfo);
     return id;
   }

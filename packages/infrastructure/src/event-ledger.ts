@@ -83,6 +83,11 @@ export class EventLedger {
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private flushLock = false;
+  // 安全：限制 flush 重试次数，避免失败后无限每 5 秒重试
+  private flushRetryCount = 0;
+  private static readonly FLUSH_MAX_RETRIES = 10;
+  /** beforeExit 监听器引用，供 dispose() 移除，避免实例泄漏。 */
+  private beforeExitHandler: (() => void) | null = null;
 
   constructor(
     private eventBus?: EventBus,
@@ -95,7 +100,20 @@ export class EventLedger {
     // 安全：scheduleSave 使用 1s 延迟 + unref()，进程退出时若窗口内还有
     // 未落盘事件会丢失。注册 beforeExit 钩子确保进程退出前 flush 所有待写事件。
     // flush() 全程同步 IO（writeFileSync/fsyncSync/renameSync），可在退出钩子中安全执行。
-    process.on("beforeExit", () => this.flush());
+    this.beforeExitHandler = () => this.flush();
+    process.on("beforeExit", this.beforeExitHandler);
+  }
+
+  /**
+   * 释放资源：移除 beforeExit 监听器并 flush 剩余事件。
+   * 长生命周期实例或测试场景应显式调用，避免监听器泄漏。
+   */
+  dispose(): void {
+    if (this.beforeExitHandler) {
+      process.off("beforeExit", this.beforeExitHandler);
+      this.beforeExitHandler = null;
+    }
+    this.flush();
   }
 
   // ── Write ──
@@ -347,18 +365,26 @@ export class EventLedger {
       const jsonl = this.events
         .map((e) => JSON.stringify(e))
         .join("\n");
-      fs.writeFileSync(tmp, jsonl + "\n", "utf-8");
+      fs.writeFileSync(tmp, jsonl + "\n", { encoding: "utf-8", mode: 0o600 });
       fd = fs.openSync(tmp, "r");
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = null;
       fs.renameSync(tmp, this.storePath);
       this.dirty = false;
+      this.flushRetryCount = 0;
     } catch (err) {
-      process.stderr.write(`[EventLedger] Failed to flush: ${err instanceof Error ? err.message : String(err)}` + "\n");
-      // 限制重试频率避免无限快速重试
-      this.saveTimer = setTimeout(() => this.flush(), 5000);
-      this.saveTimer.unref?.();
+      this.flushRetryCount++;
+      process.stderr.write(`[EventLedger] Failed to flush (attempt ${this.flushRetryCount}/${EventLedger.FLUSH_MAX_RETRIES}): ${err instanceof Error ? err.message : String(err)}` + "\n");
+      // 安全：超过最大重试次数后降级为只写 stderr 警告，不再自动重试，避免无限重试循环。
+      // 严格小于：++在前，第 10 次失败时 flushRetryCount=10，10 < 10 为 false，正好重试 10 次。
+      if (this.flushRetryCount < EventLedger.FLUSH_MAX_RETRIES) {
+        // 限制重试频率避免无限快速重试
+        this.saveTimer = setTimeout(() => this.flush(), 5000);
+        this.saveTimer.unref?.();
+      } else {
+        process.stderr.write(`[EventLedger] Flush retry limit (${EventLedger.FLUSH_MAX_RETRIES}) reached, giving up auto-retry\n`);
+      }
     } finally {
       // 确保 fd 被关闭（fsyncSync 抛出时 fd 泄漏）
       if (fd !== null) {

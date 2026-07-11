@@ -163,7 +163,12 @@ export class LastKnownGoodConfig {
     } finally {
       fs.closeSync(fd);
     }
-    fs.renameSync(tmpPath, targetPath);
+    try {
+      fs.renameSync(tmpPath, targetPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   /**

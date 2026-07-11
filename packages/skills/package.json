@@ -1,6 +1,6 @@
 {
   "name": "@evoclaw/skills",
-  "version": "0.72.2",
+  "version": "0.73.0",
   "private": true,
   "description": "EvoClaw Skills 能力层 - 技能市场、运行沙箱、执行引擎、SKILL.md解析",
   "main": "./dist/index.js",
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@evoclaw/core": "workspace:*",
+    "@evoclaw/infrastructure": "workspace:*",
     "@types/uuid": "^9.0.0",
     "adm-zip": "^0.5.17",
     "gray-matter": "^4.0.0",
