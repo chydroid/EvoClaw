@@ -2191,6 +2191,8 @@ export class AgentModelExecutor {
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
+        // Record token usage for real-time tracking (TokenUsagePage WebUI)
+        this.recordTokenUsage(sessionId, primaryProvider.provider || "unknown", primaryProvider.model || "unknown", result.tokensUsed || 0, Math.max((result.tokensUsed || 0) - (result.contextTokens || 0), 0), result.duration, channel);
         const timestamp = new Date().toLocaleString("zh-CN", {
           year: "numeric",
           month: "2-digit",
@@ -2249,7 +2251,9 @@ export class AgentModelExecutor {
     }
     let reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
-    
+    // Record token usage for fallback skill-based execution
+    this.recordTokenUsage(sessionId, "local", "skill-fallback", tokensUsed, tokensUsed, Date.now() - startTime, channel);
+
     // Add timestamp prefix to the reply
     const timestamp = new Date().toLocaleString("zh-CN", {
       year: "numeric",

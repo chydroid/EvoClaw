@@ -499,8 +499,14 @@ export function EnhancementHubPage(): React.ReactElement {
   const activeCount = CAPABILITIES.filter((cap) => {
     const key = cap.statusKey || cap.id;
     if (serviceMap[key] !== undefined) return serviceMap[key];
-    return true; // 默认展示为可用，等待后端暴露服务状态
+    // Fail-closed: 未注册的服务显示为"未就绪"而非"已激活"，
+    // 避免向后端尚未实现的能力显示虚假的绿色勾选。
+    return false;
   }).length;
+
+  // Derive release rounds count from unique version values in CAPABILITIES,
+  // instead of hardcoding "2" which drifts as new versions are added.
+  const releaseRoundCount = new Set(CAPABILITIES.map((c) => c.version)).size;
 
   return (
     <div style={s.container}>
@@ -535,7 +541,7 @@ export function EnhancementHubPage(): React.ReactElement {
           <div style={s.summaryLabel}>{t("enhancement.active_capabilities", "已激活能力")}</div>
         </div>
         <div style={s.summaryBox}>
-          <div style={s.summaryNum}>2</div>
+          <div style={s.summaryNum}>{releaseRoundCount}</div>
           <div style={s.summaryLabel}>{t("enhancement.release_rounds", "发布轮次")}</div>
         </div>
       </div>
@@ -546,9 +552,13 @@ export function EnhancementHubPage(): React.ReactElement {
       <div style={s.grid}>
         {CAPABILITIES.map((cap) => {
           const key = cap.statusKey || cap.id;
-          const active = serviceMap[key] !== undefined ? serviceMap[key] : true;
+          // Fail-closed: 未在 /api/system/services 中报告的服务视为未就绪
+          const active = serviceMap[key] !== undefined ? serviceMap[key] : false;
           const metrics = metricsMap[cap.id];
-          const metricCount = metrics ? Object.keys(metrics).length : 0;
+          // 当 metrics 报告 enabled: false（占位响应）时，不显示指标数；
+          // 否则按字段数展示。
+          const metricsEnabled = metrics && metrics.enabled !== false;
+          const metricCount = metricsEnabled ? Object.keys(metrics).length : 0;
 
           return (
             <div key={cap.id} style={s.card}>
@@ -571,9 +581,11 @@ export function EnhancementHubPage(): React.ReactElement {
                   {active ? t("enhancement.status.active", "已激活") : t("enhancement.status.inactive", "未就绪")}
                 </div>
                 <div style={s.metrics}>
-                  {metrics && metricCount > 0
+                  {metricsEnabled && metricCount > 0
                     ? t("enhancement.metrics_count", "{0} 项指标").replace("{0}", String(metricCount))
-                    : t("enhancement.no_metrics", "无实时指标")}
+                    : active
+                      ? t("enhancement.no_metrics", "无实时指标")
+                      : t("enhancement.service_not_registered", "服务未注册")}
                 </div>
               </div>
             </div>

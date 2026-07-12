@@ -37,6 +37,8 @@ import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, Re
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler } from "@evoclaw/agent";
+import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
+import type { MoaConfig, ModelRef } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
@@ -69,6 +71,8 @@ import {
   registerDevTools,
   registerMemoryTools,
 } from "./tools";
+import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
+import type { ComputerBackend } from "./tools";
 
 export class EvoClawServer {
   private registry: ServiceRegistry;
@@ -151,6 +155,12 @@ export class EvoClawServer {
   private codeIntelligence: CodeIntelligence;
   private visionAnalyzer: VisionAnalyzer;
   private shutdownForensics: ShutdownForensics;
+
+  // ── v0.77.0: Previously-unregistered services exposed via WebUI ──
+  private kanbanBoard!: KanbanBoard;
+  private moaEngine?: MoaEngine;
+  private toolSearchEngine!: ToolSearchEngine;
+  private computerBackend?: ComputerBackend;
 
   constructor() {
     this.registry = new ServiceRegistry();
@@ -664,6 +674,73 @@ export class EvoClawServer {
     this.registry.registerService("evalRunner", this.evalRunner);
     this.agentModelExecutor.setEvalRunner(this.evalRunner);
 
+    // ── v0.77.0: Register previously-orphaned services exposed via WebUI ──
+    // These classes existed but were never instantiated, causing their WebUI
+    // pages to receive 503 / empty data from the protocol-adapter endpoints.
+
+    // KanbanBoard — persistent SQLite multi-agent work queue.
+    // init() is called in start(); here we just register the instance so
+    // /api/kanban/* endpoints can resolve the service immediately.
+    this.kanbanBoard = new KanbanBoard(
+      this.registry,
+      this.eventBus,
+      path.join(dataDir, "kanban.db"),
+    );
+    this.registry.registerService("kanbanBoard", this.kanbanBoard);
+
+    // ToolSearchEngine — progressive tool disclosure (BM25 catalog).
+    // Registered empty; tools can be added later via registerTools().
+    this.toolSearchEngine = new ToolSearchEngine({ mode: "auto" });
+    this.registry.registerService("toolSearchEngine", this.toolSearchEngine);
+
+    // MoaEngine — 4-stage Mixture-of-Agents inference pipeline.
+    // Only register when at least one LLM provider is configured, so the WebUI
+    // truthfully reports "available: true" only when MoA can actually run.
+    {
+      const enabledProviders = this.agentModelExecutor.getProviders().filter(p => p.enabled);
+      if (enabledProviders.length > 0) {
+        const primary = enabledProviders[0];
+        const modelRef: ModelRef = {
+          provider: primary.provider,
+          model: primary.model,
+        };
+        const moaConfig: MoaConfig = {
+          proposers: [modelRef],
+          synthesizer: modelRef,
+          aggregationStrategy: "concat",
+          verificationEnabled: false,
+        };
+        // MoaEngine self-registers as "moaEngine" when registry is provided.
+        this.moaEngine = new MoaEngine(moaConfig, { registry: this.registry });
+        this.logger.info("server", `MoA engine initialized with provider: ${primary.provider}/${primary.model}`);
+      } else {
+        this.logger.info("server", "MoA engine not registered (no LLM providers configured)");
+      }
+    }
+
+    // ComputerBackend — desktop automation. Try each candidate backend in
+    // priority order; register the first one that reports isAvailable().
+    {
+      const backends: ComputerBackend[] = [
+        new RobotJsComputerBackend(),
+        new NutJsComputerBackend(),
+        new NativeComputerBackend(),
+      ];
+      for (const backend of backends) {
+        try {
+          if (backend.isAvailable()) {
+            this.computerBackend = backend;
+            this.registry.registerService("computerBackend", backend);
+            this.logger.info("server", `ComputerBackend initialized: ${backend.name}`);
+            break;
+          }
+        } catch { /* try next backend */ }
+      }
+      if (!this.computerBackend) {
+        this.logger.info("server", "ComputerBackend: no available backend (robotjs/nut-js/native all unavailable)");
+      }
+    }
+
     // Initialize Weixin plugin adapter
     this.weixinPluginAdapter = new WeixinPluginAdapter(this.eventBus, this.agentModelExecutor);
   }
@@ -695,6 +772,14 @@ export class EvoClawServer {
 
     this.logger.info("server", "Gateway server starting...");
     await this.gateway.start();
+
+    // Initialize KanbanBoard SQLite database (schema + event subscriptions)
+    try {
+      await this.kanbanBoard.init();
+      this.logger.info("server", "KanbanBoard initialized");
+    } catch (e) {
+      this.logger.error("server", `KanbanBoard init failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     this.logger.info("server", "Starting Weixin plugin adapter...");
     this.weixinPluginAdapter.startAllConfiguredMonitors();
@@ -1102,6 +1187,8 @@ export class EvoClawServer {
         catch (e) { this.logger.error("server", `Plugin shutdown failed: ${e}`); }
       }
     } catch (e) { /* ignore if pluginManager not initialized */ }
+    // Close KanbanBoard SQLite handle before registry.stopAll() tears down services
+    try { this.kanbanBoard?.close(); } catch { /* ignore */ }
     try { await this.registry.stopAll(); } catch (e) { this.logger.error("server", `registry stopAll failed: ${e}`); }
     try { await this.memoryHub.close(); } catch { /* ignore */ }
     try { await shutdownTracing(); } catch (e) { this.logger.error("server", `shutdownTracing failed: ${e}`); }

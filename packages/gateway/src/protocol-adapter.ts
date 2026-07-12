@@ -7949,6 +7949,119 @@ export class ProtocolAdapter {
       }
     });
 
+    // GET /api/memory/dreaming — 记忆做梦（Memory Dreaming）累积日记
+    // 暴露 MemoryHub.getDreamDiary() 供 WebUI MemoryHubPage 展示做梦历史与提取的事实。
+    app.get("/api/memory/dreaming", (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          getDreamDiary?: () => unknown;
+        }>("memoryHub");
+        if (!hub || typeof hub.getDreamDiary !== "function") {
+          // MemoryHub 可用但未启用 dreaming — 返回空日记而非 503，前端据此显示"未启用"
+          res.json({ enabled: false, sessions: [], totalFactsExtracted: 0 });
+          return;
+        }
+        const diary = hub.getDreamDiary() as
+          | { sessions: unknown[]; totalFactsExtracted: number; lastDreamAt?: number }
+          | null;
+        if (!diary) {
+          res.json({ enabled: false, sessions: [], totalFactsExtracted: 0 });
+          return;
+        }
+        res.json({ enabled: true, ...diary });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // POST /api/memory/dreaming/trigger — 手动触发一次做梦会话
+    // body: { phase?: "light" | "deep" | "rem" }（默认 "light"）
+    app.post("/api/memory/dreaming/trigger", async (req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          dream?(phase?: string): Promise<unknown>;
+        }>("memoryHub");
+        if (!hub || typeof hub.dream !== "function") {
+          res.status(503).json({ error: "Memory dreaming not available" });
+          return;
+        }
+        const rawPhase = req.body?.phase;
+        const phase = rawPhase === "deep" || rawPhase === "rem" ? rawPhase : "light";
+        const session = await hub.dream(phase);
+        res.json({ success: true, session });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/memory/status — 嵌入后端 / 向量索引状态
+    // 暴露 MemoryHub 的 embedding provider 状态与向量索引规模。
+    app.get("/api/memory/status", (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          getEmbeddingProviderStatus?(): string;
+          getEmbeddingLoadError?(): string | null;
+          getVectorIndexSize?(): number;
+        }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const provider = hub.getEmbeddingProviderStatus?.() ?? "unavailable";
+        const loadError = hub.getEmbeddingLoadError?.() ?? null;
+        const vectorIndexSize = hub.getVectorIndexSize?.() ?? 0;
+        res.json({
+          embeddingProvider: provider,
+          embeddingLoadError: loadError,
+          vectorIndexSize,
+          vectorAvailable: provider === "transformers" || provider === "local-tfidf",
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/memory/search?q=... — 关键词记忆检索（recall）
+    // 与 /api/memory/semantic-search 不同，此端点使用 MemoryHub.recall() 进行
+    // 基于 FTS5 + 关键词的检索（不依赖向量嵌入），适合短关键词查询。
+    app.get("/api/memory/search", async (req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          recall(query: { query: string; limit?: number }): Promise<Array<{
+            entry: { id: string; content: string; type?: string; createdAt?: string; importance?: number };
+            score: number;
+            matchedFields: string[];
+          }>>;
+        }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const q = typeof req.query.q === "string" ? req.query.q : "";
+        if (!q.trim()) {
+          res.json({ query: q, results: [] });
+          return;
+        }
+        const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
+        const raw = await hub.recall({ query: q, limit });
+        // 投影为前端期望的 { id, score, text, metadata } 形状
+        const results = raw.map((r) => ({
+          id: r.entry?.id ?? "",
+          score: r.score,
+          text: r.entry?.content ?? "",
+          metadata: {
+            type: r.entry?.type,
+            createdAt: r.entry?.createdAt,
+            importance: r.entry?.importance,
+            matchedFields: r.matchedFields,
+          },
+        }));
+        res.json({ query: q, results });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     app.get("/api/memory/semantic-search", async (req: Request, res: Response) => {
       try {
         const hub = this.registry.resolveService<{ semanticSearch(q: string, limit?: number): Promise<unknown[]> }>("memoryHub");
@@ -7960,6 +8073,66 @@ export class ProtocolAdapter {
         const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit ?? "10"), 10) || 10));
         const results = await hub.semanticSearch(q, limit);
         res.json({ query: q, results });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // ── Execution Checkpoint Stats API ──
+    // 暴露 ExecutionCheckpointStore 的检查点统计，供 WebUI EnhancementHubPage 展示。
+
+    app.get("/api/execution/checkpoints", (req: Request, res: Response) => {
+      try {
+        const store = this.registry.resolveService<{
+          getRecent(options?: { limit?: number }): Array<{
+            sessionId: string;
+            originalMessage: string;
+            startTime: number;
+            lastCheckpointTime: number;
+            status: string;
+            snapshots: unknown[];
+            finalResult?: string;
+            error?: string;
+          }>;
+          getResumableExecutions(): unknown[];
+        }>("executionCheckpointStore");
+        if (!store) {
+          res.json({
+            enabled: false,
+            totalExecutions: 0,
+            resumableCount: 0,
+            byStatus: {},
+            recent: [],
+          });
+          return;
+        }
+        const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
+        const recent = store.getRecent({ limit });
+        const byStatus: Record<string, number> = {};
+        for (const exec of recent) {
+          const s = exec.status || "unknown";
+          byStatus[s] = (byStatus[s] ?? 0) + 1;
+        }
+        let resumableCount = 0;
+        try {
+          resumableCount = store.getResumableExecutions().length;
+        } catch { /* best-effort */ }
+        res.json({
+          enabled: true,
+          totalExecutions: recent.length,
+          resumableCount,
+          byStatus,
+          recent: recent.map((e) => ({
+            sessionId: e.sessionId,
+            originalMessage: e.originalMessage,
+            startTime: e.startTime,
+            lastCheckpointTime: e.lastCheckpointTime,
+            status: e.status,
+            snapshotCount: Array.isArray(e.snapshots) ? e.snapshots.length : 0,
+            hasFinalResult: !!e.finalResult,
+            error: e.error ?? null,
+          })),
+        });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }

@@ -89,7 +89,36 @@ export function LogsPage() {
       const res = await fetch("/api/queue", { signal });
       if (signal?.aborted) return;
       if (res.ok) {
-        setQueue(await res.json());
+        const data = await res.json();
+        // Backend returns { success, sessions: Record<string, QueueItem[]> }
+        // Flatten sessions map into a single queue list and compute stats
+        // client-side so this page works without a dedicated stats endpoint.
+        const sessionsMap: Record<string, QueueItem[]> = data.sessions || {};
+        const allItems: QueueItem[] = [];
+        for (const sid of Object.keys(sessionsMap)) {
+          const items = sessionsMap[sid] || [];
+          for (const item of items) {
+            // Backend may omit sessionId on per-session items; derive from key
+            if (!item.sessionId) item.sessionId = sid;
+            allItems.push(item);
+          }
+        }
+        // Newest first (matching previous behavior)
+        allItems.sort((a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+        const stats = {
+          total: allItems.length,
+          pending: allItems.filter(i => i.status === "pending").length,
+          processing: allItems.filter(i => i.status === "processing").length,
+          done: allItems.filter(i => i.status === "done").length,
+          failed: allItems.filter(i => i.status === "failed").length,
+        };
+        setQueue({
+          queue: allItems,
+          stats,
+          hasPending: stats.pending > 0,
+        });
       }
     } catch (err) {
       if (signal?.aborted) return;

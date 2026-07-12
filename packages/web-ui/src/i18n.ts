@@ -295,6 +295,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "enhancement.status.inactive": "未就绪",
     "enhancement.metrics_count": "{0} 项指标",
     "enhancement.no_metrics": "无实时指标",
+    "enhancement.service_not_registered": "服务未注册",
 
     // ─── Memory Hub Page ──────────────────────────────────────
     "memory.title": "分层记忆中心",
@@ -2754,6 +2755,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "enhancement.status.inactive": "Not Ready",
     "enhancement.metrics_count": "{0} metrics",
     "enhancement.no_metrics": "No live metrics",
+    "enhancement.service_not_registered": "Service not registered",
 
     // ─── Memory Hub Page ──────────────────────────────────────
     "memory.title": "Layered Memory Hub",
