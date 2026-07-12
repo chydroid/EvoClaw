@@ -683,7 +683,10 @@ export class GatewayServer {
 
     // GET /api/config — general configuration info
     this.app.get("/api/config", (_req: Request, res: Response) => {
-      const persona = this.registry.resolveService<{ name?: string; masterTerm?: string }>("personaConfig");
+      // persona 数据实际存储在 ConfigManager (注册名 "config") 的 "persona" 键下
+      const configManager = this.registry.resolveService<{ get?(key: string): unknown }>("config");
+      const personaRaw = configManager?.get ? configManager.get("persona") : undefined;
+      const persona = (personaRaw && typeof personaRaw === "object") ? personaRaw as { name?: string; masterTerm?: string } : undefined;
       const featureFlags = this.registry.resolveService<{ getAll?(): Record<string, unknown> }>("featureFlagStore");
       res.json({
         version: (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ ?? "unknown",
@@ -694,16 +697,22 @@ export class GatewayServer {
     });
 
     this.app.put("/api/config/avatars", (req: Request, res: Response) => {
-      const { avatars } = req.body as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
-      if (avatars && typeof avatars === "object") {
-        // 过滤原型污染危险键
-        const safe: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(avatars)) {
-          if (k !== "__proto__" && k !== "constructor" && k !== "prototype") safe[k] = v;
+      try {
+        const { avatars } = (req.body || {}) as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
+        if (avatars && typeof avatars === "object") {
+          // 过滤原型污染危险键 + 值类型校验
+          const safe: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(avatars)) {
+            if (k !== "__proto__" && k !== "constructor" && k !== "prototype" && typeof v === "string") {
+              safe[k] = v;
+            }
+          }
+          this.avatarConfig = { ...this.avatarConfig, ...safe };
         }
-        this.avatarConfig = { ...this.avatarConfig, ...safe };
+        res.json({ avatars: this.avatarConfig });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
-      res.json({ avatars: this.avatarConfig });
     });
 
     if (this.config.enableREST) {
@@ -1247,7 +1256,7 @@ export class GatewayServer {
         res.status(503).json({ error: "MCP client manager not initialized" });
         return;
       }
-      const { name, config } = req.body as {
+      const { name, config } = (req.body || {}) as {
         name: string;
         config: {
           type: "stdio" | "sse";
@@ -1344,63 +1353,67 @@ export class GatewayServer {
 
     // POST /api/approvals/:id/approve — approve an operation
     this.app.post("/api/approvals/:id/approve", (req: Request, res: Response) => {
-      const agentExecutor = this.registry.resolveService<{
-        approveOperation(approvalId: string, decidedBy: string, trustFuture?: boolean, modifiedArgs?: Record<string, unknown>): boolean;
-      }>("agentModelExecutor");
+      try {
+        const agentExecutor = this.registry.resolveService<{
+          approveOperation(approvalId: string, decidedBy: string, trustFuture?: boolean, modifiedArgs?: Record<string, unknown>): boolean;
+        }>("agentModelExecutor");
 
-      if (!agentExecutor) {
-        res.status(503).json({ error: "Agent executor not available" });
-        return;
-      }
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent executor not available" });
+          return;
+        }
 
-      const { id } = req.params as { id: string };
-      const { decidedBy, trustFuture, modifiedArgs } = req.body as {
-        decidedBy?: string;
-        trustFuture?: boolean;
-        modifiedArgs?: Record<string, unknown>;
-      };
+        const { id } = req.params as { id: string };
+        const body = req.body || {};
+        const decidedBy = typeof body.decidedBy === "string" ? body.decidedBy : "api-user";
+        const trustFuture = typeof body.trustFuture === "boolean" ? body.trustFuture : undefined;
+        // 过滤原型污染危险键
+        let modifiedArgs: Record<string, unknown> | undefined;
+        if (body.modifiedArgs && typeof body.modifiedArgs === "object" && !Array.isArray(body.modifiedArgs)) {
+          modifiedArgs = {};
+          for (const [k, v] of Object.entries(body.modifiedArgs)) {
+            if (k !== "__proto__" && k !== "constructor" && k !== "prototype") modifiedArgs[k] = v;
+          }
+        }
 
-      const success = agentExecutor.approveOperation(
-        id,
-        decidedBy || "api-user",
-        trustFuture,
-        modifiedArgs,
-      );
+        const success = agentExecutor.approveOperation(id, decidedBy, trustFuture, modifiedArgs);
 
-      if (success) {
-        res.json({ success: true, approvalId: id, decision: "approved" });
-      } else {
-        res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+        if (success) {
+          res.json({ success: true, approvalId: id, decision: "approved" });
+        } else {
+          res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+        }
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
 
     // POST /api/approvals/:id/reject — reject an operation
     this.app.post("/api/approvals/:id/reject", (req: Request, res: Response) => {
-      const agentExecutor = this.registry.resolveService<{
-        rejectOperation(approvalId: string, decidedBy: string, reason?: string): boolean;
-      }>("agentModelExecutor");
+      try {
+        const agentExecutor = this.registry.resolveService<{
+          rejectOperation(approvalId: string, decidedBy: string, reason?: string): boolean;
+        }>("agentModelExecutor");
 
-      if (!agentExecutor) {
-        res.status(503).json({ error: "Agent executor not available" });
-        return;
-      }
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent executor not available" });
+          return;
+        }
 
-      const { id } = req.params as { id: string };
-      const { decidedBy, reason } = req.body as {
-        decidedBy?: string;
-        reason?: string;
-      };
+        const { id } = req.params as { id: string };
+        const body = req.body || {};
+        const decidedBy = typeof body.decidedBy === "string" ? body.decidedBy : "api-user";
+        const reason = typeof body.reason === "string" ? body.reason : undefined;
 
-      const success = agentExecutor.rejectOperation(
-        id,
-        decidedBy || "api-user",
-        reason,
-      );
+        const success = agentExecutor.rejectOperation(id, decidedBy, reason);
 
-      if (success) {
-        res.json({ success: true, approvalId: id, decision: "rejected" });
-      } else {
-        res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+        if (success) {
+          res.json({ success: true, approvalId: id, decision: "rejected" });
+        } else {
+          res.status(404).json({ error: "Approval not found or already processed", approvalId: id });
+        }
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     });
 
@@ -1464,47 +1477,55 @@ export class GatewayServer {
 
     // PUT /api/approvals/config — update approval configuration
     this.app.put("/api/approvals/config", (req: Request, res: Response) => {
-      const agentExecutor = this.registry.resolveService<{
-        getHumanApprovalManager(): {
-          updateConfig(config: Record<string, unknown>): void;
-          addTrustRule(rule: { toolName: string; trustedBy: string; createdAt: number; expiresAt: number }): void;
-          removeTrustRule(toolName: string): void;
-        } | null;
-      }>("agentModelExecutor");
+      try {
+        const agentExecutor = this.registry.resolveService<{
+          getHumanApprovalManager(): {
+            updateConfig(config: Record<string, unknown>): void;
+            addTrustRule(rule: { toolName: string; trustedBy: string; createdAt: number; expiresAt: number }): void;
+            removeTrustRule(toolName: string): void;
+          } | null;
+        }>("agentModelExecutor");
 
-      if (!agentExecutor) {
-        res.status(503).json({ error: "Agent executor not available" });
-        return;
-      }
+        if (!agentExecutor) {
+          res.status(503).json({ error: "Agent executor not available" });
+          return;
+        }
 
-      const manager = agentExecutor.getHumanApprovalManager();
-      if (!manager) {
-        res.status(400).json({ error: "Human approval system is not enabled" });
-        return;
-      }
+        const manager = agentExecutor.getHumanApprovalManager();
+        if (!manager) {
+          res.status(400).json({ error: "Human approval system is not enabled" });
+          return;
+        }
 
-      const { config, addTrust, removeTrust } = req.body as {
-        config?: Record<string, unknown>;
-        addTrust?: { toolName: string; expiresAt?: number };
-        removeTrust?: string;
-      };
+        const body = req.body || {};
+        const config = (body.config && typeof body.config === "object" && !Array.isArray(body.config)) ? body.config as Record<string, unknown> : undefined;
+        const addTrust = (body.addTrust && typeof body.addTrust === "object" && typeof body.addTrust.toolName === "string") ? body.addTrust as { toolName: string; expiresAt?: number } : undefined;
+        const removeTrust = typeof body.removeTrust === "string" ? body.removeTrust : undefined;
 
-      if (config) {
-        manager.updateConfig(config);
-      }
-      if (addTrust) {
-        manager.addTrustRule({
-          toolName: addTrust.toolName,
-          trustedBy: "api-user",
-          createdAt: Date.now(),
-          expiresAt: addTrust.expiresAt ?? 0,
-        });
-      }
-      if (removeTrust) {
-        manager.removeTrustRule(removeTrust);
-      }
+        if (config) {
+          // 过滤原型污染危险键
+          const safeConfig: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(config)) {
+            if (k !== "__proto__" && k !== "constructor" && k !== "prototype") safeConfig[k] = v;
+          }
+          manager.updateConfig(safeConfig);
+        }
+        if (addTrust) {
+          manager.addTrustRule({
+            toolName: addTrust.toolName,
+            trustedBy: "api-user",
+            createdAt: Date.now(),
+            expiresAt: addTrust.expiresAt ?? 0,
+          });
+        }
+        if (removeTrust) {
+          manager.removeTrustRule(removeTrust);
+        }
 
-      res.json({ success: true });
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
     });
 
     // GET /api/approval-timeout/config — return timeout configuration
@@ -1519,20 +1540,24 @@ export class GatewayServer {
 
     // PUT /api/approval-timeout/config — update timeout configuration
     this.app.put("/api/approval-timeout/config", (req: Request, res: Response) => {
-      const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
-      if (!manager) {
-        res.status(503).json({ error: "ApprovalTimeoutManager not available" });
-        return;
+      try {
+        const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
+        if (!manager) {
+          res.status(503).json({ error: "ApprovalTimeoutManager not available" });
+          return;
+        }
+        const body = (req.body || {}) as {
+          timeoutSeconds?: number;
+          defaultAction?: "deny" | "allow" | "fail-closed";
+        };
+        manager.updateConfig({
+          timeoutSeconds: body.timeoutSeconds,
+          defaultAction: body.defaultAction,
+        });
+        res.json({ success: true, config: manager.getConfig() });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
-      const body = req.body as {
-        timeoutSeconds?: number;
-        defaultAction?: "deny" | "allow" | "fail-closed";
-      };
-      manager.updateConfig({
-        timeoutSeconds: body.timeoutSeconds,
-        defaultAction: body.defaultAction,
-      });
-      res.json({ success: true, config: manager.getConfig() });
     });
 
     // GET /api/reaction-approvals — return reaction approval log
@@ -1586,11 +1611,17 @@ export class GatewayServer {
         return;
       }
 
-      const task = req.body as { id?: string; capabilityId?: string; input?: unknown };
-      if (!task.id || !task.capabilityId) {
-        res.status(400).json({ error: "Missing required fields: id, capabilityId" });
-        return;
-      }
+      const body = req.body || {};
+      // 兼容前端 A2ATaskRequest {taskId?, agentId?, prompt, context?}
+      // 与原 A2A 协议 {id, capabilityId, input}
+      // agentId 可选（前端标注"留空则由本机 Agent 处理"），未提供时生成默认 ID
+      const rawId = body.id ?? body.taskId ?? body.agentId;
+      const task = {
+        id: rawId ? String(rawId) : `local-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+        capabilityId: String(body.capabilityId ?? "default"),
+        input: body.input ?? body.prompt ?? body.context ?? "",
+        metadata: body.metadata ?? (body.context ? { context: body.context } : undefined),
+      };
 
       try {
         const result = await a2aServer.handleTask(task as { id: string; capabilityId: string; input: unknown; metadata?: Record<string, unknown> });
@@ -2020,36 +2051,47 @@ export class GatewayServer {
 
     // POST /api/install-policy/rules — add a new rule
     this.app.post("/api/install-policy/rules", (req: Request, res: Response) => {
-      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
-      if (!manager) {
-        res.status(503).json({ error: "InstallPolicyManager not available" });
-        return;
-      }
-      const { type, rule } = req.body as { type?: string; rule?: Record<string, unknown> };
-      if (!type || !rule) {
-        res.status(400).json({ error: "type and rule are required" });
-        return;
-      }
-      const policy = manager.getPolicy();
-      switch (type) {
-        case "source":
-          policy.sourceRules.push(rule as any);
-          break;
-        case "permission":
-          policy.permissionRules.push(rule as any);
-          break;
-        case "risk":
-          policy.riskRules.push(rule as any);
-          break;
-        case "skill":
-          policy.skillRules.push(rule as any);
-          break;
-        default:
-          res.status(400).json({ error: `Unknown rule type: ${type}. Valid types: source, permission, risk, skill` });
+      try {
+        const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+        if (!manager) {
+          res.status(503).json({ error: "InstallPolicyManager not available" });
           return;
+        }
+        const body = req.body || {};
+        const type = typeof body.type === "string" ? body.type : "";
+        const rule = (body.rule && typeof body.rule === "object" && !Array.isArray(body.rule)) ? body.rule as Record<string, unknown> : undefined;
+        if (!type || !rule) {
+          res.status(400).json({ error: "type and rule are required" });
+          return;
+        }
+        // 过滤原型污染危险键，防止恶意 rule 对象污染安全策略
+        const safeRule: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(rule)) {
+          if (k !== "__proto__" && k !== "constructor" && k !== "prototype") safeRule[k] = v;
+        }
+        const policy = manager.getPolicy();
+        switch (type) {
+          case "source":
+            policy.sourceRules.push(safeRule as any);
+            break;
+          case "permission":
+            policy.permissionRules.push(safeRule as any);
+            break;
+          case "risk":
+            policy.riskRules.push(safeRule as any);
+            break;
+          case "skill":
+            policy.skillRules.push(safeRule as any);
+            break;
+          default:
+            res.status(400).json({ error: `Unknown rule type: ${type}. Valid types: source, permission, risk, skill` });
+            return;
+        }
+        manager.updatePolicy(policy);
+        res.json({ success: true, policy: manager.getPolicy() });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
-      manager.updatePolicy(policy);
-      res.json({ success: true, policy: manager.getPolicy() });
     });
 
     // DELETE /api/install-policy/rules/:id — remove a rule
@@ -2087,39 +2129,49 @@ export class GatewayServer {
 
     // PUT /api/install-policy/rules/:id — update an existing rule
     this.app.put("/api/install-policy/rules/:id", (req: Request, res: Response) => {
-      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
-      if (!manager) {
-        res.status(503).json({ error: "InstallPolicyManager not available" });
-        return;
-      }
-      const { id } = req.params as { id: string };
-      const { rule: newRule } = req.body as { rule?: Record<string, unknown> };
-      if (!newRule) {
-        res.status(400).json({ error: "rule is required" });
-        return;
-      }
-      const policy = manager.getPolicy();
-      const ruleArrays: Array<{ arr: any[]; name: string }> = [
-        { arr: policy.sourceRules, name: "sourceRules" },
-        { arr: policy.permissionRules, name: "permissionRules" },
-        { arr: policy.riskRules, name: "riskRules" },
-        { arr: policy.skillRules, name: "skillRules" },
-      ];
-      let updated = false;
-      for (const { arr } of ruleArrays) {
-        const idx = arr.findIndex((r: any) => (r.id === id || r.name === id));
-        if (idx !== -1) {
-          arr[idx] = { ...arr[idx], ...newRule, id };
-          updated = true;
-          break;
+      try {
+        const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+        if (!manager) {
+          res.status(503).json({ error: "InstallPolicyManager not available" });
+          return;
         }
+        const { id } = req.params as { id: string };
+        const body = req.body || {};
+        const newRule = (body.rule && typeof body.rule === "object" && !Array.isArray(body.rule)) ? body.rule as Record<string, unknown> : undefined;
+        if (!newRule) {
+          res.status(400).json({ error: "rule is required" });
+          return;
+        }
+        // 过滤原型污染危险键
+        const safeRule: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(newRule)) {
+          if (k !== "__proto__" && k !== "constructor" && k !== "prototype") safeRule[k] = v;
+        }
+        const policy = manager.getPolicy();
+        const ruleArrays: Array<{ arr: any[]; name: string }> = [
+          { arr: policy.sourceRules, name: "sourceRules" },
+          { arr: policy.permissionRules, name: "permissionRules" },
+          { arr: policy.riskRules, name: "riskRules" },
+          { arr: policy.skillRules, name: "skillRules" },
+        ];
+        let updated = false;
+        for (const { arr } of ruleArrays) {
+          const idx = arr.findIndex((r: any) => (r.id === id || r.name === id));
+          if (idx !== -1) {
+            arr[idx] = { ...arr[idx], ...safeRule, id };
+            updated = true;
+            break;
+          }
+        }
+        if (!updated) {
+          res.status(404).json({ error: `Rule not found: ${id}` });
+          return;
+        }
+        manager.updatePolicy(policy);
+        res.json({ success: true, policy: manager.getPolicy() });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
-      if (!updated) {
-        res.status(404).json({ error: `Rule not found: ${id}` });
-        return;
-      }
-      manager.updatePolicy(policy);
-      res.json({ success: true, policy: manager.getPolicy() });
     });
 
     // POST /api/install-policy/evaluate — evaluate a skill against current policy
@@ -2175,7 +2227,7 @@ export class GatewayServer {
         return;
       }
       const { name } = req.params as { name: string };
-      const { enabled } = req.body as { enabled?: boolean };
+      const { enabled } = (req.body || {}) as { enabled?: boolean };
       const success = redactor.toggleRule(name, enabled);
       if (!success) {
         res.status(404).json({ error: `Rule not found: ${name}` });
@@ -2191,7 +2243,7 @@ export class GatewayServer {
         res.status(503).json({ error: "TranscriptRedactor not available" });
         return;
       }
-      const { text } = req.body as { text?: string };
+      const { text } = (req.body || {}) as { text?: string };
       if (!text) {
         res.status(400).json({ error: "text is required" });
         return;
@@ -2286,7 +2338,7 @@ export class GatewayServer {
         res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
         return;
       }
-      const { name, description, inputSchema } = req.body as { name?: string; description?: string; inputSchema?: string };
+      const { name, description, inputSchema } = (req.body || {}) as { name?: string; description?: string; inputSchema?: string };
       if (!name || !description) {
         res.status(400).json({ error: "name and description are required" });
         return;
@@ -2339,7 +2391,7 @@ export class GatewayServer {
         res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
         return;
       }
-      const { pattern, reason, severity } = req.body as { pattern?: string; reason?: string; severity?: string };
+      const { pattern, reason, severity } = (req.body || {}) as { pattern?: string; reason?: string; severity?: string };
       if (!pattern) {
         res.status(400).json({ error: "pattern is required" });
         return;

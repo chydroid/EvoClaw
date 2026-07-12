@@ -164,6 +164,8 @@ export class SkillManager {
     try {
       const { InstallPolicyManager } = require("./install-policy");
       this.installPolicyManager = new InstallPolicyManager();
+      // 注册为独立服务，使 gateway 能直接 resolveService("installPolicyManager")
+      svcRegistry.registerService("installPolicyManager", this.installPolicyManager);
     } catch (err) {
       console.debug(`[SkillManager] InstallPolicyManager not available: ${err instanceof Error ? err.message : String(err)}`);
     }

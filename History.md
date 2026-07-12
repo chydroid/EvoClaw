@@ -5,6 +5,46 @@
 
 > **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.60.0 → 0.60.1 → 0.60.2`）；仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
 
+## v0.79.0 (2026-07-12)
+
+**三轮串行深度审计修复 — 服务注册一致性 + 原型污染防护 + 前后端契约对齐**
+
+承接 v0.78.0 的两轮审计成果，按用户要求执行**严格串行的三轮**（R3 → R4 → R5）更深入细致的检查与修复，每轮独立完成"审计 → 修复 → 构建 → 类型检查 → 测试"闭环后才进入下一轮。三轮共发现并修复 17 类问题，覆盖服务注册缺失、原型污染、竞态条件、未捕获异常、前后端契约不匹配五大风险类别。验证全绿：5490 passed / 2 skipped / 0 failed。
+
+### R3（第一轮）：服务注册 + 元数据完整性 + 原型污染防护
+
+- **`installPolicyManager` 服务未注册** ([skill-manager.ts](file:///d:/abc/EvoClaw/packages/skills/src/skill-manager.ts)): SkillManager 构造时创建 `InstallPolicyManager` 实例但仅保留为私有字段，从未注册到 ServiceRegistry，导致 6 个 `/api/install-policy/*` 端点全部返回 503。新增 `svcRegistry.registerService("installPolicyManager", this.installPolicyManager)` 将其暴露给 gateway
+- **`personaConfig` 服务未注册** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): `GET /api/config` 查找名为 `personaConfig` 的服务但实际 persona 数据存储在 ConfigManager（注册名 `config`）的 `persona` 键下，导致返回 null。改为从 `config` 服务读取 persona 数据
+- **A2A `sendTask` body 字段不匹配** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 后端期望 `{id, capabilityId, input}` 但前端 `A2ATaskRequest` 发送 `{taskId, agentId, prompt, context}`，导致 A2A 发送任务全部 400。重构 body 解析以兼容两种字段命名，`agentId` 可选时生成默认 ID
+- **MessageTemplates 完整元数据缺失** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): `MessageTemplateEngine` 仅存储 id→content 映射，前端 `MessageTemplate` 类型需要 `name/description/category/variables/createdAt/updatedAt` 等字段，6 个端点返回的模板对象形状与前端契约不一致。新增 `templateMetadata` Map 存储元数据，GET list/POST/PUT 端点重构以返回完整模板对象
+- **`PUT /api/config/avatars` 缺 try/catch + 值类型校验** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 非 JSON 请求体触发未捕获异常导致进程崩溃；avatars 对象未过滤原型污染危险键。新增 try/catch 包裹 + `__proto__`/`constructor`/`prototype` 键过滤 + 值类型校验
+- **`POST /api/approvals/:id/approve` 缺 try/catch + `modifiedArgs` 原型污染** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): `req.body as` 在非 JSON 请求时崩溃；`modifiedArgs` 直接合并用户输入可注入原型污染。新增 try/catch + `req.body || {}` + 原型污染过滤
+- **`POST /api/approvals/:id/reject` 缺 try/catch** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 同上模式修复
+- **`PUT /api/approvals/config` 缺 try/catch + config 原型污染 + addTrust/removeTrust 类型校验** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): config 对象直接合并可注入原型；addTrust/removeTrust 未校验为对象/字符串。新增完整防护
+- **EventsPage snapshot 字段名不匹配** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): `EventLedger.snapshot()` 返回 `nextSeq`/`entryCount` 但前端 EventsPage 读取 `firstSeq`/`lastSeq`/`entries`，导致统计栏始终显示 0。新增字段别名兼容
+
+### R4（第二轮）：契约字段补全 + 竞态条件 + 安全策略数组防护
+
+- **ConfigMigration changes 缺 `from`/`to` 字段** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): 前端 `ConfigMigrationPage` 读取 `change.path`/`from`/`to` 但 snapshot 变更项仅含 `action`/`path`/`description`，渲染为 undefined。为 snapshot 变更项补充 `from: null, to: snapshotId` 字段
+- **Secrets rotate 竞态条件** ([protocol-adapter.ts](file:///d:/abc/EvoClaw/packages/gateway/src/protocol-adapter.ts)): `POST /api/secrets/:name/rotate` 中 `crypto.randomBytes`（await import）位于 read-modify-write 序列中间，并发 rotate 请求可观察到不一致状态。重构为先生成新值再原子修改 entry 字段
+- **`POST /api/install-policy/rules` 未校验直接 push 到安全策略数组** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 用户提供的 `rule` 对象未校验类型/形状直接 push 到 `allowRules`/`denyRules` 等安全敏感数组，且未过滤原型污染危险键。新增类型校验（type 为字符串、rule 为非数组对象）+ 原型污染过滤 + try/catch
+
+### R5（第三轮）：未捕获异常扫尾 + agentId 可选契约对齐
+
+- **7 个 `req.body as` 缺 `|| {}` 防护** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway-server.ts)): 当 Content-Type 非 JSON 时 `req.body` 为 undefined，`const { x } = req.body as {...}` 解构会抛出未捕获异常导致进程崩溃。修复 7 处：mcp-external/add、approval-timeout/config PUT、transcript-redactor toggle/scan、mcp-scanner scan/blacklist。统一改为 `(req.body || {}) as {...}`
+- **A2A `agentId` 前端可选但后端必填** ([gateway-server.ts](file:///d:/abc/EvoClaw/packages/gateway/src/gateway/src/gateway-server.ts)): 前端 `A2APage` 标注"留空则由本机 Agent 处理"，但后端 sendTask 当 `agentId` 为空时返回 400。改为 `agentId` 可选，未提供时生成 `local-${Date.now()}-${randomUUID}` 默认 ID
+
+### 误报排除（不修复的可接受降级）
+
+- **DeadLetterQueue "retrying" 状态**: 确认为优雅降级，消息重试中返回该状态可接受
+- **Webhooks `/api/webhooks/events` 端点缺失**: `getSafe` 返回空数组是可接受的优雅降级
+
+### 验证
+
+- 三轮串行验证：每轮独立 `pnpm build → pnpm typecheck → pnpm test` 全绿
+- 最终验证：218 test files / 5490 passed / 2 skipped / 0 failed（85.48s）
+- 无新增测试（本轮聚焦契约一致性与安全防护，不改变行为契约）
+
 ## v0.72.5 (2026-07-08)
 
 **100 任务模拟测试驱动的全面 Bug 修复与 API 补全**

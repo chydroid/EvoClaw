@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/version-0.78.0-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.79.0-orange?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/tests-5490-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>

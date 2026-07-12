@@ -1190,6 +1190,11 @@ export class ProtocolAdapter {
   private healthAggregator: HealthAggregator | null = null;
   private replyReferenceManager: ReplyReferenceManager | null = null;
   private messageTemplateEngine: MessageTemplateEngine | null = null;
+  /** 消息模板的元数据（name/description/category/variables 等），与 MessageTemplateEngine 的 id→content 配对使用 */
+  private templateMetadata = new Map<string, {
+    name: string; description: string; category: string;
+    variables: string[]; createdAt: string; updatedAt: string;
+  }>();
 
   private secretsStore: Map<string, any> = new Map();
   private secretsAuditLog: Array<any> = [];
@@ -5804,11 +5809,23 @@ export class ProtocolAdapter {
           return;
         }
 
-        res.json(eventLedger.snapshot());
+        const snapshot = eventLedger.snapshot() as Record<string, unknown>;
+        // 前端 EventsPage 读取 firstSeq/lastSeq/entries，后端 snapshot() 返回 nextSeq/entryCount/types
+        // 添加别名字段以兼容前端
+        res.json({
+          ...snapshot,
+          firstSeq: (snapshot as any).firstSeq ?? 0,
+          lastSeq: (snapshot as any).lastSeq ?? (snapshot as any).nextSeq ?? 0,
+          entries: (snapshot as any).entries ?? (snapshot as any).entryCount ?? 0,
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to get event snapshot");
       }
     });
+
+    // GET /api/events/snapshot — 返回事件账本快照（带前端期望的别名字段）
+    // 前端 EventsPage 读取 firstSeq/lastSeq/entries，而后端 snapshot() 返回 nextSeq/entryCount/types。
+    // 上方端点已添加别名以兼容前端。
 
     // ─── Permission Relay ──────────────────────────────────────────────────
 
@@ -6821,10 +6838,20 @@ export class ProtocolAdapter {
       try {
         const engine = this.getMessageTemplateEngine();
         const names = engine.listTemplates();
-        const templates = names.map((name) => ({
-          id: name,
-          content: engine.getTemplate(name),
-        }));
+        const templates = names.map((name) => {
+          const content = engine.getTemplate(name) || "";
+          const meta = this.templateMetadata.get(name);
+          return {
+            id: name,
+            name: meta?.name ?? name,
+            description: meta?.description ?? "",
+            template: content,
+            variables: meta?.variables ?? [],
+            category: meta?.category ?? "general",
+            createdAt: meta?.createdAt ?? new Date().toISOString(),
+            updatedAt: meta?.updatedAt ?? new Date().toISOString(),
+          };
+        });
         res.json({ success: true, templates });
       } catch (err) {
         this.handleError(err, res, "Failed to list message templates");
@@ -6840,7 +6867,17 @@ export class ProtocolAdapter {
           res.status(404).json({ error: "Template not found" });
           return;
         }
-        res.json({ success: true, id, content });
+        const meta = this.templateMetadata.get(id);
+        res.json({
+          success: true, id,
+          name: meta?.name ?? id,
+          description: meta?.description ?? "",
+          template: content,
+          variables: meta?.variables ?? [],
+          category: meta?.category ?? "general",
+          createdAt: meta?.createdAt ?? new Date().toISOString(),
+          updatedAt: meta?.updatedAt ?? new Date().toISOString(),
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to get message template");
       }
@@ -6849,13 +6886,36 @@ export class ProtocolAdapter {
     app.post("/api/message-templates", (req: Request, res: Response) => {
       try {
         const engine = this.getMessageTemplateEngine();
-        const { id, content } = req.body || {};
+        const body = req.body || {};
+        // 兼容前端 {name, description, category, template, variables}
+        // 与原后端 {id, content} 两种形状
+        const id = String(body.id ?? body.name ?? "");
+        const content = String(body.content ?? body.template ?? "");
         if (!id || !content) {
-          res.status(400).json({ error: "id and content are required" });
+          res.status(400).json({ error: "id (or name) and content (or template) are required" });
           return;
         }
-        engine.register(String(id), String(content));
-        res.status(201).json({ success: true, id });
+        engine.register(id, content);
+        const now = new Date().toISOString();
+        const existing = this.templateMetadata.get(id);
+        this.templateMetadata.set(id, {
+          name: String(body.name ?? id),
+          description: String(body.description ?? ""),
+          category: String(body.category ?? "general"),
+          variables: Array.isArray(body.variables) ? body.variables.map(String) : [],
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
+        res.status(201).json({
+          success: true, id,
+          name: String(body.name ?? id),
+          description: String(body.description ?? ""),
+          template: content,
+          variables: Array.isArray(body.variables) ? body.variables : [],
+          category: String(body.category ?? "general"),
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to create message template");
       }
@@ -6865,12 +6925,23 @@ export class ProtocolAdapter {
       try {
         const engine = this.getMessageTemplateEngine();
         const id = String(req.params.id);
-        const { content } = req.body || {};
+        const body = req.body || {};
+        const content = String(body.content ?? body.template ?? "");
         if (!content) {
-          res.status(400).json({ error: "content is required" });
+          res.status(400).json({ error: "content (or template) is required" });
           return;
         }
-        engine.register(id, String(content));
+        engine.register(id, content);
+        const existing = this.templateMetadata.get(id);
+        const now = new Date().toISOString();
+        this.templateMetadata.set(id, {
+          name: String(body.name ?? existing?.name ?? id),
+          description: String(body.description ?? existing?.description ?? ""),
+          category: String(body.category ?? existing?.category ?? "general"),
+          variables: Array.isArray(body.variables) ? body.variables.map(String) : (existing?.variables ?? []),
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
         res.json({ success: true, id });
       } catch (err) {
         this.handleError(err, res, "Failed to update message template");
@@ -7042,11 +7113,13 @@ export class ProtocolAdapter {
           return;
         }
         const now = new Date().toISOString();
+        // 先生成新值（包含 await），再原子地修改 entry 字段，避免在
+        // rotationVersion 自增和 value 赋值之间被并发请求插入导致状态不一致。
+        const crypto = await import("crypto");
+        const newValue = crypto.randomBytes(32).toString("hex");
         entry.rotationVersion += 1;
         entry.lastRotatedAt = now;
-        // Generate a new random value instead of appending version suffix
-        const crypto = await import("crypto");
-        entry.value = crypto.randomBytes(32).toString("hex");
+        entry.value = newValue;
         this.addSecretsAuditEntry({
           secretName: name,
           operation: "rotate",
@@ -7629,7 +7702,7 @@ export class ProtocolAdapter {
           status: "completed",
           startedAt: now,
           completedAt: now,
-          changes: [{ action: "snapshot", path: "*", description: "配置快照已保存" }],
+          changes: [{ action: "snapshot", path: "*", description: "配置快照已保存", from: null, to: snapshotId }],
           snapshotId,
         };
         this.migrationVersion++;
