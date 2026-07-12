@@ -834,6 +834,14 @@ export class EvoClawServer {
       }
     }
 
+    // 启动监测：在所有技能扫描完成后，输出结构化启动报告（含可操作解决方案）
+    const startupWarnings = this.skillManager.getStartupWarnings();
+    if (startupWarnings.length > 0) {
+      const summary = this.skillManager.formatStartupSummary();
+      process.stdout.write(summary);
+      this.logger.info("server", `SkillManager startup scan complete with ${startupWarnings.length} warning(s) — see report above for solutions`);
+    }
+
     this.eventBus.subscribe(SystemEvents.SKILL_EXECUTED, async (event: any) => {
       try {
         const data = event?.data;

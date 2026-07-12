@@ -65,6 +65,41 @@ export interface OptionalSkillInfo {
   installed: boolean;
 }
 
+// ── Startup Monitoring Types ──
+// 启动监测：收集启动过程中的警告并给出可操作的解决方案。
+
+export type StartupWarningCategory =
+  | "ENV"          // 缺失环境变量
+  | "PRIMARYENV"   // 缺失主配置变量
+  | "BINARY"       // 缺失二进制依赖
+  | "OS"           // 操作系统不匹配
+  | "VALIDATION";  // 技能元数据验证警告
+
+export interface StartupWarning {
+  skillName: string;
+  category: StartupWarningCategory;
+  message: string;
+  envVar?: string;
+  binary?: string;
+  installHint?: string;
+  os?: string[];
+}
+
+export interface StartupWarningSolution {
+  warning: StartupWarning;
+  solution: string;
+  commands: string[];
+  docLink?: string;
+  severity: "info" | "warn" | "error";
+}
+
+export interface StartupReport {
+  totalWarnings: number;
+  byCategory: Record<StartupWarningCategory, number>;
+  solutions: StartupWarningSolution[];
+  summary: string;
+}
+
 export class SkillManager {
   private skills = new Map<string, Skill>();
   private parser: SKILLmdParser;
@@ -84,6 +119,10 @@ export class SkillManager {
   /** 跟踪 "Install requires review" 是否已打印，避免每次启动重复 40+ 行 */
   private reviewLogged = false;
   private reviewCount = 0;
+
+  /** 启动监测：收集启动过程中产生的结构化警告 */
+  private startupWarnings: StartupWarning[] = [];
+  private startupMonitoringEnabled = true;
 
   constructor(
     private svcRegistry: ServiceRegistry,
@@ -219,6 +258,11 @@ export class SkillManager {
     if (validation.warnings.length > 0) {
       for (const w of validation.warnings) {
         process.stderr.write(`[SkillManager] ⚠ ${w}\n`);
+        this.collectStartupWarning({
+          skillName: parsed.meta.name,
+          category: "VALIDATION",
+          message: w,
+        });
       }
     }
 
@@ -254,11 +298,27 @@ export class SkillManager {
     const warnings: string[] = [];
 
     if (parsed.meta.os && parsed.meta.os.length > 0) {
-      const currentOS = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
-      if (!parsed.meta.os.includes(currentOS)) {
+      // frontmatter os 字段使用 Node.js process.platform 值（win32/linux/darwin），
+      // 也兼容人类可读值（windows/macos/linux）。统一归一化后比较。
+      const normalizeOS = (v: string) => {
+        const lower = v.toLowerCase();
+        if (lower === "win32" || lower === "windows" || lower === "win") return "win32";
+        if (lower === "darwin" || lower === "macos" || lower === "mac") return "darwin";
+        if (lower === "linux" || lower === "unix") return "linux";
+        return lower;
+      };
+      const currentOS = normalizeOS(process.platform);
+      const supportedOS = parsed.meta.os.map(normalizeOS);
+      if (!supportedOS.includes(currentOS)) {
         warnings.push(
-          `Skill "${parsed.meta.name}" was designed for [${parsed.meta.os.join(", ")}] — may not work correctly on "${currentOS}"`
+          `Skill "${parsed.meta.name}" was designed for [${parsed.meta.os.join(", ")}] — may not work correctly on "${process.platform}"`
         );
+        this.collectStartupWarning({
+          skillName: parsed.meta.name,
+          category: "OS",
+          message: `Designed for [${parsed.meta.os.join(", ")}] — current OS is "${process.platform}"`,
+          os: parsed.meta.os,
+        });
       }
     }
 
@@ -278,6 +338,12 @@ export class SkillManager {
           warnings.push(
             `Missing required environment variable: ${envVar} — skill "${parsed.meta.name}" may not function correctly`
           );
+          this.collectStartupWarning({
+            skillName: parsed.meta.name,
+            category: "ENV",
+            message: `Missing environment variable: ${envVar}`,
+            envVar,
+          });
         }
       }
     }
@@ -302,6 +368,13 @@ export class SkillManager {
           warnings.push(
             `Missing required binary "${bin}" — please install it manually (brew/apt are user-managed)${hint}`
           );
+          this.collectStartupWarning({
+            skillName: parsed.meta.name,
+            category: "BINARY",
+            message: `Missing binary: ${bin}${hint}`,
+            binary: bin,
+            installHint: installHints,
+          });
         }
       }
     }
@@ -313,6 +386,12 @@ export class SkillManager {
       warnings.push(
         `Primary environment variable "${primaryEnv}" is not set — skill "${parsed.meta.name}" requires configuration`
       );
+      this.collectStartupWarning({
+        skillName: parsed.meta.name,
+        category: "PRIMARYENV",
+        message: `Primary env var not set: ${primaryEnv}`,
+        envVar: primaryEnv,
+      });
     }
 
     const savedConfig = this.loadSkillConfig(skillDir);
@@ -1459,6 +1538,290 @@ export class SkillManager {
     }
   }
 
+  // ── Startup Monitoring ──
+  // 启动监测：收集启动过程中的警告，生成可操作的解决方案。
+
+  /** 环境变量解决方案知识库 */
+  private static readonly ENV_VAR_SOLUTIONS: ReadonlyMap<string, { docLink: string; description: string }> = new Map([
+    ["BAIDU_API_KEY", { docLink: "https://console.bce.baidu.com/", description: "Baidu Cloud API Key — for baidu-web-search skill" }],
+    ["NOTION_API_TOKEN", { docLink: "https://www.notion.so/my-integrations", description: "Notion Internal Integration Token" }],
+    ["ELEVENLABS_API_KEY", { docLink: "https://elevenlabs.io/app/settings/api-keys", description: "ElevenLabs API Key — for TTS/audio" }],
+    ["SAG_API_KEY", { docLink: "", description: "SAG (Speech Audio Generator) API Key" }],
+    ["FIRECRAWL_API_KEY", { docLink: "https://www.firecrawl.dev/", description: "Firecrawl API Key — for web scraping" }],
+    ["APIFY_API_TOKEN", { docLink: "https://console.apify.com/account/integrations", description: "Apify API Token" }],
+    ["TAVILY_API_KEY", { docLink: "https://tavily.com/", description: "Tavily Search API Key" }],
+    ["TRELLO_API_KEY", { docLink: "https://trello.com/power-ups/admin", description: "Trello API Key" }],
+    ["TRELLO_TOKEN", { docLink: "https://trello.com/power-ups/admin", description: "Trello OAuth Token (requires TRELLO_API_KEY)" }],
+    ["OPENAI_API_KEY", { docLink: "https://platform.openai.com/api-keys", description: "OpenAI API Key" }],
+    ["GIPHY_API_KEY", { docLink: "https://developers.giphy.com/dashboard/", description: "Giphy API Key" }],
+    ["TENOR_API_KEY", { docLink: "https://developers.google.com/tenor/guides/quickstart", description: "Tenor API Key" }],
+    ["IMGFLIP_USER", { docLink: "https://imgflip.com/", description: "Imgflip username (for meme-maker)" }],
+    ["IMGFLIP_PASS", { docLink: "https://imgflip.com/", description: "Imgflip password (for meme-maker)" }],
+    ["GOG_ACCOUNT", { docLink: "", description: "Google OAuth account config (for gog skill)" }],
+    ["DATABASE_URL", { docLink: "", description: "Database connection URL (for database-query skill)" }],
+    ["DB_PATH", { docLink: "", description: "SQLite database path (for database-query skill)" }],
+    ["REDIS_URL", { docLink: "", description: "Redis connection URL (for database-query skill)" }],
+    ["COMPOSE_PROJECT_NAME", { docLink: "", description: "Docker Compose project name" }],
+    ["ORACLE_HOME_DIR", { docLink: "", description: "Oracle client home directory" }],
+  ]);
+
+  /** 二进制安装命令知识库 */
+  private static readonly BINARY_INSTALL_COMMANDS: ReadonlyMap<string, {
+    win32: string; darwin: string; linux: string; docLink?: string;
+  }> = new Map([
+    ["jq", { win32: "winget install jqlang.jq", darwin: "brew install jq", linux: "sudo apt install jq", docLink: "https://stedolan.github.io/jq/download/" }],
+    ["ffmpeg", { win32: "winget install Gyan.FFmpeg", darwin: "brew install ffmpeg", linux: "sudo apt install ffmpeg", docLink: "https://ffmpeg.org/download.html" }],
+    ["fd", { win32: "winget install sharkdp.fd", darwin: "brew install fd", linux: "sudo apt install fd-find", docLink: "https://github.com/sharkdp/fd#installation" }],
+    ["gh", { win32: "winget install GitHub.cli", darwin: "brew install gh", linux: "sudo apt install gh", docLink: "https://cli.github.com/" }],
+    ["himalaya", { win32: "winget install hyrious.himalaya", darwin: "brew install himalaya", linux: "cargo install himalaya", docLink: "https://github.com/pimalaya/himalaya" }],
+    ["whisper", { win32: "pip install openai-whisper", darwin: "pip install openai-whisper", linux: "pip install openai-whisper", docLink: "https://github.com/openai/whisper" }],
+    ["obsidian", { win32: "winget install Obsidian.Obsidian", darwin: "brew install --cask obsidian", linux: "Download from https://obsidian.md/", docLink: "https://obsidian.md/" }],
+    ["xurl", { win32: "go install rsc.io/xurl@latest", darwin: "go install rsc.io/xurl@latest", linux: "go install rsc.io/xurl@latest", docLink: "https://pkg.go.dev/rsc.io/xurl" }],
+  ]);
+
+  /**
+   * 收集启动过程中的结构化警告。
+   * 当 startupMonitoringEnabled 为 false 时不收集（例如手动安装时）。
+   */
+  private collectStartupWarning(warning: StartupWarning): void {
+    if (this.startupMonitoringEnabled) {
+      this.startupWarnings.push(warning);
+    }
+  }
+
+  /**
+   * 获取启动过程中收集的所有警告。
+   */
+  getStartupWarnings(): StartupWarning[] {
+    return [...this.startupWarnings];
+  }
+
+  /**
+   * 重置启动警告集合（用于重新扫描或测试）。
+   */
+  resetStartupWarnings(): void {
+    this.startupWarnings = [];
+  }
+
+  /**
+   * 设置启动监测启用/禁用。
+   */
+  setStartupMonitoringEnabled(enabled: boolean): void {
+    this.startupMonitoringEnabled = enabled;
+  }
+
+  /**
+   * 生成启动报告，包含每个警告的可操作解决方案。
+   */
+  generateStartupReport(): StartupReport {
+    const byCategory: Record<StartupWarningCategory, number> = {
+      ENV: 0, PRIMARYENV: 0, BINARY: 0, OS: 0, VALIDATION: 0,
+    };
+    for (const w of this.startupWarnings) {
+      byCategory[w.category]++;
+    }
+
+    const solutions: StartupWarningSolution[] = this.startupWarnings.map(w =>
+      this.resolveSolution(w)
+    );
+
+    const parts: string[] = [];
+    parts.push(`SkillManager startup scan found ${this.startupWarnings.length} warning(s):`);
+    const cats: StartupWarningCategory[] = ["ENV", "PRIMARYENV", "BINARY", "OS", "VALIDATION"];
+    for (const cat of cats) {
+      if (byCategory[cat] > 0) {
+        parts.push(`  ${cat}: ${byCategory[cat]}`);
+      }
+    }
+
+    return {
+      totalWarnings: this.startupWarnings.length,
+      byCategory,
+      solutions,
+      summary: parts.join("\n"),
+    };
+  }
+
+  /**
+   * 为单个警告生成解决方案。
+   */
+  private resolveSolution(warning: StartupWarning): StartupWarningSolution {
+    const plat = process.platform as "win32" | "darwin" | "linux";
+
+    switch (warning.category) {
+      case "ENV":
+      case "PRIMARYENV": {
+        const envVar = warning.envVar || "";
+        const kb = SkillManager.ENV_VAR_SOLUTIONS.get(envVar);
+        const desc = kb?.description || "environment variable";
+        const link = kb?.docLink || "";
+        return {
+          warning,
+          solution: `Add ${envVar} to your .env file. ${desc}.`,
+          commands: [`echo "${envVar}=" >> .env  # ${desc}`],
+          docLink: link || undefined,
+          severity: warning.category === "PRIMARYENV" ? "warn" : "info",
+        };
+      }
+      case "BINARY": {
+        const bin = warning.binary || "";
+        const kb = SkillManager.BINARY_INSTALL_COMMANDS.get(bin);
+        if (kb) {
+          const cmd = kb[plat] || kb.linux;
+          return {
+            warning,
+            solution: `Install "${bin}" binary using: ${cmd}`,
+            commands: [cmd],
+            docLink: kb.docLink,
+            severity: "warn",
+          };
+        }
+        // Unknown binary — check installHint from frontmatter
+        if (warning.installHint) {
+          return {
+            warning,
+            solution: `Install "${bin}" — hint from SKILL.md: ${warning.installHint}`,
+            commands: [],
+            severity: "warn",
+          };
+        }
+        return {
+          warning,
+          solution: `Binary "${bin}" is missing — install it manually or via your package manager.`,
+          commands: [],
+          severity: "warn",
+        };
+      }
+      case "OS": {
+        return {
+          warning,
+          solution: `Skill "${warning.skillName}" was designed for [${warning.os?.join(", ") || "?"}]. It may not work correctly on "${process.platform}". Consider skipping or adjusting the skill's os field in SKILL.md frontmatter.`,
+          commands: [],
+          severity: "warn",
+        };
+      }
+      case "VALIDATION": {
+        return {
+          warning,
+          solution: `Review SKILL.md frontmatter for "${warning.skillName}": ${warning.message}`,
+          commands: [],
+          severity: "info",
+        };
+      }
+      default:
+        return {
+          warning,
+          solution: warning.message,
+          commands: [],
+          severity: "info",
+        };
+    }
+  }
+
+  /**
+   * 格式化启动报告为人类可读的摘要字符串。
+   * 包含每个警告的解决方案和可执行命令。
+   */
+  formatStartupSummary(): string {
+    const report = this.generateStartupReport();
+    if (report.totalWarnings === 0) {
+      return "[SkillManager] Startup scan complete — no warnings.\n";
+    }
+
+    const plat = process.platform as "win32" | "darwin" | "linux";
+    const lines: string[] = [];
+    lines.push("");
+    lines.push("═══════════════════════════════════════════════════════════════");
+    lines.push(`  SkillManager Startup Report — ${report.totalWarnings} warning(s)`);
+    lines.push("═══════════════════════════════════════════════════════════════");
+    lines.push("");
+
+    // Group by category
+    const cats: StartupWarningCategory[] = ["ENV", "PRIMARYENV", "BINARY", "OS", "VALIDATION"];
+    const catLabels: Record<StartupWarningCategory, string> = {
+      ENV: "Missing Environment Variables",
+      PRIMARYENV: "Missing Primary Configuration",
+      BINARY: "Missing Binary Dependencies",
+      OS: "Operating System Mismatch",
+      VALIDATION: "Skill Metadata Warnings",
+    };
+
+    for (const cat of cats) {
+      const catSolutions = report.solutions.filter(s => s.warning.category === cat);
+      if (catSolutions.length === 0) continue;
+
+      lines.push(`── ${catLabels[cat]} (${catSolutions.length}) ──────────────────────────────`);
+      lines.push("");
+
+      // Deduplicate by envVar/binary
+      const seen = new Set<string>();
+      for (const sol of catSolutions) {
+        const key = sol.warning.envVar || sol.warning.binary || sol.warning.message;
+        if (seen.has(key)) {
+          // Show which skill needs it but don't repeat the solution
+          lines.push(`  [${sol.warning.skillName}] (same as above)`);
+          continue;
+        }
+        seen.add(key);
+
+        lines.push(`  [${sol.warning.skillName}] ${sol.warning.message}`);
+        lines.push(`    → ${sol.solution}`);
+        if (sol.commands.length > 0) {
+          for (const cmd of sol.commands) {
+            lines.push(`    $ ${cmd}`);
+          }
+        }
+        if (sol.docLink) {
+          lines.push(`    Doc: ${sol.docLink}`);
+        }
+        lines.push("");
+      }
+    }
+
+    // Quick-fix summary
+    const envVars = [...new Set(
+      report.solutions
+        .filter(s => s.warning.envVar)
+        .map(s => s.warning.envVar!)
+    )].sort();
+    const binaries = [...new Set(
+      report.solutions
+        .filter(s => s.warning.binary)
+        .map(s => s.warning.binary!)
+    )].sort();
+
+    if (envVars.length > 0 || binaries.length > 0) {
+      lines.push("── Quick Fix Summary ────────────────────────────────────────────");
+      lines.push("");
+      if (binaries.length > 0) {
+        lines.push("  Install missing binaries:");
+        for (const bin of binaries) {
+          const kb = SkillManager.BINARY_INSTALL_COMMANDS.get(bin);
+          if (kb) {
+            lines.push(`    ${kb[plat] || kb.linux}  # ${bin}`);
+          } else {
+            lines.push(`    # ${bin} — install manually (no known package)`);
+          }
+        }
+        lines.push("");
+      }
+      if (envVars.length > 0) {
+        lines.push("  Add to .env file:");
+        for (const envVar of envVars) {
+          const kb = SkillManager.ENV_VAR_SOLUTIONS.get(envVar);
+          const desc = kb?.description || "";
+          lines.push(`    ${envVar}=  # ${desc}`);
+        }
+        lines.push("");
+      }
+    }
+
+    lines.push("═══════════════════════════════════════════════════════════════");
+    lines.push("");
+
+    return lines.join("\n");
+  }
+
   /** Load .env file values by searching from skill dir upward to project root.
    *  Returns a flat key-value map of all variables found in .env files.
    *  Closer .env files take precedence (child overrides parent).
@@ -1513,6 +1876,122 @@ export class SkillManager {
    *  Scans sections like "Requirements", "Prerequisites", "Configuration" etc.
    *  for patterns like `SOME_API_KEY`, "environment variable: `VAR_NAME`", or `VAR_NAME=...`
    */
+  /**
+   * 常见英文大写词黑名单 — 这些词在 SKILL.md 正文中经常以全大写形式出现
+   * （代码示例、SQL 关键字、文件扩展名、HTTP 方法等），但不是环境变量。
+   * 用小写存储以便大小写不敏感匹配。
+   */
+  private static readonly COMMON_ENGLISH_UPPERWORDS: ReadonlySet<string> = new Set([
+    // SQL keywords
+    "select", "from", "where", "insert", "update", "delete", "drop", "create",
+    "table", "index", "view", "join", "left", "right", "inner", "outer",
+    "group", "order", "having", "limit", "offset", "asc", "desc", "distinct",
+    "union", "all", "as", "on", "and", "or", "not", "null", "is", "in", "like",
+    "between", "case", "when", "then", "else", "end", "begin", "commit",
+    "rollback", "transaction", "truncate", "grant", "revoke", "set", "values",
+    "into", "values", "default", "primary", "foreign", "key", "references",
+    "constraint", "unique", "check", "trigger", "procedure", "function",
+    "returns", "declare", "cursor", "fetch", "close", "open", "for",
+    // HTTP methods & status
+    "get", "post", "put", "patch", "head", "options", "connect", "trace",
+    "ok", "created", "accepted", "nocontent", "moved", "redirect", "found",
+    "not", "modified", "bad", "request", "unauthorized", "forbidden",
+    "notfound", "method", "notallowed", "conflict", "gone", "length",
+    "required", "precondition", "failed", "unsupported", "media", "type",
+    "range", "satisfiable", "expectation", "failed", "internal", "server",
+    "error", "implemented", "bad", "gateway", "service", "unavailable",
+    "gateway", "timeout", "http", "version", "supported",
+    // Common acronyms
+    "url", "uri", "urn", "ssl", "tls", "tcp", "udp", "dns", "dhcp",
+    "ip", "ipv", "mac", "cpu", "ram", "gpu", "io", "cli", "gui", "api",
+    "sdk", "ide", "json", "xml", "yaml", "html", "css", "sql", "csv",
+    "pdf", "png", "jpg", "jpeg", "gif", "svg", "bmp", "webp", "ico",
+    "mp3", "mp4", "avi", "mov", "wmv", "flv", "wav", "ogg", "flac",
+    "zip", "tar", "gz", "bz2", "xz", "rar", "7z",
+    "ssh", "ftp", "sftp", "scp", "rsync", "curl", "wget",
+    "mit", "bsd", "gpl", "apache", "mozilla", "wtfpl", "isc", "lgpl",
+    "agpl", "mpl", "epl", "cddl", "sisl", "unlicense",
+    // File extensions & doc references
+    "readme", "license", "changelog", "contributing", "authors",
+    "makefile", "dockerfile", "jenkinsfile", "gemfile", "rakefile",
+    "package", "module", "import", "export", "default", "class",
+    "interface", "type", "enum", "const", "var", "let", "func", "def",
+    "return", "yield", "async", "await", "promise", "future",
+    "public", "private", "protected", "static", "final", "abstract",
+    "extends", "implements", "super", "this", "self", "new", "delete",
+    "typeof", "instanceof", "void", "never", "unknown", "any",
+    // Misc common upperwords
+    "todo", "fixme", "note", "warning", "error", "info", "debug", "trace",
+    "true", "false", "none", "null", "nil", "undefined", "nan", "infinity",
+    "env", "path", "home", "shell", "bash", "zsh", "fish", "powershell",
+    "cmd", "exec", "exit", "status", "code", "line", "file", "dir",
+    "name", "value", "data", "text", "body", "head", "title", "header",
+    "stop", "start", "end", "begin", "next", "prev", "current", "last",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "step", "page", "line", "column", "row",
+    "cell", "table", "list", "map", "set", "queue", "stack", "tree",
+    "node", "leaf", "root", "branch", "child", "parent", "sibling",
+    "input", "output", "source", "target", "destination", "origin",
+    "form", "forms", "field", "fields", "label", "button", "link", "image",
+    "video", "audio", "canvas", "svg", "rect", "circle", "ellipse", "path",
+    "polygon", "polyline", "line", "point", "size", "width", "height",
+    "depth", "color", "background", "foreground", "border", "margin",
+    "padding", "font", "family", "weight", "style", "variant", "stretch",
+    "underline", "overline", "linethrough", "uppercase", "lowercase",
+    "capitalize", "none", "auto", "inherit", "initial", "unset", "revert",
+    "both", "left", "right", "center", "justify", "wrap", "nowrap",
+    "pre", "code", "kbd", "samp", "var", "sub", "sup", "small", "big",
+    "em", "strong", "b", "i", "u", "s", "strike", "abbr", "cite", "q",
+    "blockquote", "pre", "br", "hr", "wbr", "span", "div", "p", "h",
+    "section", "article", "aside", "nav", "main", "header", "footer",
+    "address", "figure", "figcaption", "picture", "source", "track",
+    "audio", "video", "media", "embed", "object", "param", "portal",
+    "slot", "template", "shadow", "content", "host",
+    // Composio/Slack tool slugs
+    "linear", "create", "issue", "comment", "list", "update", "delete",
+    "get", "send", "message", "team", "id", "slug", "project",
+    "stripe", "supabase", "vercel", "github", "gitlab", "sentry",
+    // Document sections
+    "doctype", "html", "head", "body", "title", "meta", "link", "style",
+    "script", "noscript", "template", "slot", "content", "host",
+    // Domain words
+    "exif", "yyyy", "mm", "dd", "hh", "ss", "uuid", "guid", "crc",
+    "sha", "md5", "sha1", "sha256", "sha512", "hmac", "aes", "rsa",
+    "pem", "crt", "cer", "der", "key", "cert", "ca", "csr",
+    // Misc
+    "read", "only", "write", "exec", "run", "build", "test", "lint",
+    "deploy", "release", "version", "tag", "branch", "merge", "commit",
+    "push", "pull", "fetch", "clone", "checkout", "rebase", "reset",
+    "revert", "stash", "diff", "log", "show", "status", "add", "rm",
+    "mv", "cp", "ls", "dir", "cd", "pwd", "echo", "printf", "cat",
+    "tee", "grep", "sed", "awk", "find", "locate", "which", "whereis",
+    "man", "help", "info", "more", "less", "head", "tail", "sort",
+    "uniq", "cut", "paste", "tr", "wc", "nl", "fold", "fmt", "pr",
+    "column", "expand", "unexpand", "rev", "tac", "shuf", "split",
+    "csplit", "fmt", "paste", "join", "comm", "cmp", "diff", "sdiff",
+    "patch", "apply", "git", "svn", "hg", "bzr", "cvs", "rcs",
+    // New additions from scan results
+    "expressed", "visually", "design", "philosophy", "creation",
+    "visual", "critical", "understanding", "expresses", "generate",
+    "guidelines", "repeatedly", "must", "examples", "essential",
+    "principles", "minimal", "spatial", "expression", "artistic",
+    "freedom", "pure", "objects", "expert", "craftsmanship", "deducing",
+    "subtle", "reference", "principle", "very", "important", "canvas",
+    "final", "already", "multi", "option", "post", "media", "app",
+    "name", "posts", "comments", "users", "admin", "user", "guest",
+    "john", "professional", "summary", "technical", "skills",
+    "experience", "hipaa", "education", "achievements", "docx", "xlsx",
+    "pptx", "ooxml", "test", "tutorial", "thoughts", "redlining",
+    "typography", "scale", "bonk", "goal", "iferror", "lambda",
+    "both", "window", "head", "first", "commit", "latest", "branches",
+    "owner", "repo", "skill", "risk", "level", "verdict", "safe",
+    "install", "with", "caution", "notes", "rest", "caption",
+    "architectures", "contributing", "architecture", "changelog",
+    "after", "installation", "guide", "quick", "reference", "forms",
+    "theory", "queued", "ready", "origins", "reasons", "source",
+    "license", "warranty", "redistribution", "conditions",
+  ]);
+
   private detectEnvVarsFromContent(instructions: string): string[] {
     const envVars: string[] = [];
     const seen = new Set<string>();
@@ -1538,28 +2017,56 @@ export class SkillManager {
       }
     }
 
-    // Also scan the full instructions for env var patterns (catches preamble mentions)
-    const scanText = relevantSections.length > 0 ? relevantSections.join("\n") : instructions;
+    // Only scan relevant sections — scanning full instructions body produces too many
+    // false positives (code samples, prose, doc references that happen to be uppercase).
+    // When no config section exists, the skill likely has no env-var requirements.
+    if (relevantSections.length === 0) return envVars;
+    const scanText = relevantSections.join("\n");
+
+    /**
+     * Check if a candidate looks like a real env var name rather than a common
+     * English upperword. Heuristics:
+     *  - length >= 4
+     *  - not in the COMMON_ENGLISH_UPPERWORDS blocklist (case-insensitive)
+     *  - contains at least one underscore OR ends with a known env suffix
+     *    (KEY/SECRET/TOKEN/API/URL/ID/HOST/PORT/USER/PASS/DSN)
+     * Single-word all-caps tokens (like README, SELECT, FROM, POST) are almost
+     * never real env vars and are filtered out.
+     */
+    const envSuffixes = /_(KEY|SECRET|TOKEN|API|URL|URI|ID|HOST|PORT|USER|PASS|PASSWORD|DSN|DIR|PATH|FILE|NAME|VERSION|MODE|TYPE|ENV|VAR|ENABLED|DISABLED|DEBUG|LOG|VERBOSE)$/i;
+    const looksLikeEnvVar = (name: string): boolean => {
+      if (name.length < 4) return false;
+      if (SkillManager.COMMON_ENGLISH_UPPERWORDS.has(name.toLowerCase())) return false;
+      // Must contain underscore OR match an env suffix
+      if (!name.includes("_") && !envSuffixes.test(name)) return false;
+      return true;
+    };
 
     // Pattern 1: environment variable: `VAR_NAME` or environment variable `VAR_NAME`
     const envLabelRegex = /environment\s+variable[:\s]+`?([A-Z][A-Z0-9_]{2,})`?/gi;
     while ((m = envLabelRegex.exec(scanText)) !== null) {
-      if (!seen.has(m[1])) { seen.add(m[1]); envVars.push(m[1]); }
+      if (looksLikeEnvVar(m[1]) && !seen.has(m[1])) {
+        seen.add(m[1]); envVars.push(m[1]);
+      }
     }
 
-    // Pattern 2: `VAR_NAME=...` (assignment in backticks)
+    // Pattern 2: `VAR_NAME=...` (assignment in backticks) — strict env-var shape only
     const assignRegex = /`([A-Z][A-Z0-9_]{2,})\s*=/g;
     while ((m = assignRegex.exec(scanText)) !== null) {
-      if (!seen.has(m[1])) { seen.add(m[1]); envVars.push(m[1]); }
+      if (looksLikeEnvVar(m[1]) && !seen.has(m[1])) {
+        seen.add(m[1]); envVars.push(m[1]);
+      }
     }
 
-    // Pattern 3: `VAR_NAME` in backticks that looks like an API key / config var
-    // Only match if the surrounding context mentions key/secret/token/config/env/api
+    // Pattern 3: `VAR_NAME` in backticks — only when the immediate context
+    // explicitly mentions env/key/secret/token/config AND the candidate passes
+    // the strict env-var shape check.
     const backtickVarRegex = /`([A-Z][A-Z0-9_]{2,})`/g;
-    const contextKeywords = ["key", "secret", "token", "config", "env", "api", "credential", "variable", "密钥", "凭证"];
+    const contextKeywords = ["key", "secret", "token", "config", "env", "api", "credential", "variable", "密钥", "凭证", "环境变量"];
     while ((m = backtickVarRegex.exec(scanText)) !== null) {
       const varName = m[1];
       if (seen.has(varName)) continue;
+      if (!looksLikeEnvVar(varName)) continue;
       // Check surrounding context (100 chars before and after)
       const ctxStart = Math.max(0, m.index - 100);
       const ctxEnd = Math.min(scanText.length, m.index + m[0].length + 100);

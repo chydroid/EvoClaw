@@ -1,5 +1,5 @@
 export { SkillManager } from "./skill-manager";
-export type { OptionalSkillInfo } from "./skill-manager";
+export type { OptionalSkillInfo, StartupWarning, StartupWarningCategory, StartupWarningSolution, StartupReport } from "./skill-manager";
 export { SkillValidator } from "./skill-validator";
 export { SkillHookEngine } from "./skill-hook-engine";
 export { SKILLmdParser } from "./skill-md-parser";
