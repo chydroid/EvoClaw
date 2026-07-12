@@ -4508,6 +4508,44 @@ export class ProtocolAdapter {
       }
     });
 
+    // List available built-in plugins (not yet installed)
+    // Derives from BUILTIN_PLUGIN_FACTORIES manifest, excluding already-installed ones.
+    app.get("/api/plugins/available", async (_req: Request, res: Response) => {
+      try {
+        const pluginManager = this.registry.resolveService("pluginManager") as {
+          getPlugins(): Array<{ manifest: { name: string; version: string; description: string; author?: string }; status: string; error?: string }>;
+        } | undefined;
+        const installedNames = new Set(
+          (pluginManager?.getPlugins() ?? []).map(p => p.manifest.name.toLowerCase())
+        );
+
+        // Load BUILTIN_PLUGIN_FACTORIES dynamically (avoids hard dependency in gateway)
+        let available: Array<{ id: string; name: string; version: string; description: string; author: string; installed: boolean }> = [];
+        try {
+          const mod = await import("@evoclaw/agent/plugins");
+          const factories: Array<() => { manifest: { name: string; version: string; description: string; author?: string } }> = mod.BUILTIN_PLUGIN_FACTORIES || [];
+          available = factories.map(factory => {
+            const plugin = factory();
+            const m = plugin.manifest;
+            return {
+              id: m.name.toLowerCase().replace(/\s+/g, "-"),
+              name: m.name,
+              version: m.version,
+              description: m.description,
+              author: m.author || "evoclaw",
+              installed: installedNames.has(m.name.toLowerCase()),
+            };
+          });
+        } catch {
+          // If agent package not available, return empty list
+        }
+
+        res.json({ success: true, available });
+      } catch (err) {
+        this.handleError(err, res, "Failed to list available plugins");
+      }
+    });
+
     app.delete("/api/plugins/:name", async (req: Request, res: Response) => {
       try {
         const name = String(req.params.name);

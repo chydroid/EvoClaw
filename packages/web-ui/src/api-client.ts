@@ -522,29 +522,6 @@ export const configDoctorApi = {
 };
 
 // ═══════════════════════════════════════════════
-// Config LKG (Last Known Good)
-// ═══════════════════════════════════════════════
-
-export interface LKGSnapshot {
-  id: string; version: string; timestamp: string;
-  configCount: number; sha256: string;
-}
-
-export const configLkgApi = {
-  list: () => getSafe<{ snapshots: LKGSnapshot[] }>("/api/config/lkg", { snapshots: [] }),
-  create: (label?: string) =>
-    post<LKGSnapshot>("/api/config/lkg", { label }),
-  restore: (snapshotId: string) =>
-    post<{ restored: number }>(`/api/config/lkg/${encodeURIComponent(snapshotId)}/restore`),
-  delete: (snapshotId: string) =>
-    del<void>(`/api/config/lkg/${encodeURIComponent(snapshotId)}`),
-  compare: (id1: string, id2: string) =>
-    get<{ diff: Array<{ path: string; from: unknown; to: unknown }> }>(
-      `/api/config/lkg/compare?id1=${encodeURIComponent(id1)}&id2=${encodeURIComponent(id2)}`,
-    ),
-};
-
-// ═══════════════════════════════════════════════
 // Reply Reference
 // ═══════════════════════════════════════════════
 
@@ -610,25 +587,6 @@ export const healthApi = {
     get<ComponentHealth>(`/api/health/component/${encodeURIComponent(name)}`),
   check: (name: string) =>
     post<ComponentHealth>(`/api/health/component/${encodeURIComponent(name)}/check`),
-};
-
-// ═══════════════════════════════════════════════
-// Onboarding Wizard
-// ═══════════════════════════════════════════════
-
-export interface OnboardingStep {
-  id: string; title: string; description: string;
-  status: "pending" | "completed" | "skipped";
-  required: boolean;
-}
-
-export const onboardingApi = {
-  status: () => get<{ completed: boolean; currentStep: string; steps: OnboardingStep[] }>("/api/onboarding/status"),
-  completeStep: (stepId: string) =>
-    post<{ steps: OnboardingStep[] }>(`/api/onboarding/step/${encodeURIComponent(stepId)}/complete`),
-  skipStep: (stepId: string) =>
-    post<{ steps: OnboardingStep[] }>(`/api/onboarding/step/${encodeURIComponent(stepId)}/skip`),
-  reset: () => post<void>("/api/onboarding/reset"),
 };
 
 // ═══════════════════════════════════════════════

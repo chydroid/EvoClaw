@@ -34,8 +34,7 @@ interface AvailablePlugin {
   version: string;
   description: string;
   author: string;
-  downloads: number;
-  rating: number;
+  installed: boolean;
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -175,20 +174,7 @@ const statCardStyle: CSSProperties = {
   textAlign: "center",
 };
 
-// ─── Available Plugins (built-in plugins not yet installed) ──────────────────
-
-const BUILTIN_AVAILABLE: AvailablePlugin[] = [
-  { id: "memory-enhancer", name: "Memory Enhancer", version: "2.0.0", description: "ECC-style memory persistence: auto-save insights on session end, restore context on start", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "code-analyzer", name: "Code Analyzer", version: "3.0.0", description: "Static code analysis: security, quality, type safety, performance, architecture scanning", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "web-browser", name: "Web Browser", version: "1.0.0", description: "URL safety detection and browser result formatting", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "system-logger", name: "System Logger", version: "1.0.0", description: "Operation activity logging for requests, responses, and tool calls", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "cost-tracker", name: "Cost Tracker", version: "1.0.0", description: "Token usage tracking and cost estimation across 13 model types", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "response-validator", name: "Response Validator", version: "2.0.0", description: "AI reply quality validation and auto-repair for empty/incomplete responses", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "conversation-summarizer", name: "Conversation Summarizer", version: "1.0.0", description: "Auto-summarize long conversations after 10 rounds, inject into system prompt", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "claude-code-tools", name: "Claude Code Tools", version: "1.0.0", description: "Programming task dispatch system adapter with code execution tools", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "markitdown", name: "MarkItDown", version: "1.0.0", description: "Document to Markdown conversion (requires: pip install 'markitdown[all]')", author: "evoclaw", downloads: 0, rating: 5.0 },
-  { id: "enhanced-browser", name: "Enhanced Browser", version: "2.0.0", description: "Enterprise browsing: session isolation, confirmation gates, network capture, parallel fetch", author: "evoclaw", downloads: 0, rating: 5.0 },
-];
+// ─── Available Plugins are fetched from /api/plugins/available ─────────────
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -196,6 +182,7 @@ export function PluginsPage() {
   const { t, lang } = useTranslation();
   const [activeTab, setActiveTab] = useState<"installed" | "available">("installed");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [availablePlugins, setAvailablePlugins] = useState<AvailablePlugin[]>([]);
   const [search, setSearch] = useState("");
   const [installId, setInstallId] = useState("");
   const [showInstall, setShowInstall] = useState(false);
@@ -235,15 +222,32 @@ export function PluginsPage() {
     }
   }, []);
 
+  const loadAvailablePlugins = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetch("/api/plugins/available", { signal });
+      if (signal?.aborted) return;
+      if (res.ok) {
+        const data = await res.json();
+        setAvailablePlugins(data.available || []);
+      }
+    } catch {
+      // API not available — available list stays empty
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     loadPlugins(controller.signal);
-    const interval = setInterval(() => loadPlugins(controller.signal), 15000);
+    loadAvailablePlugins(controller.signal);
+    const interval = setInterval(() => {
+      loadPlugins(controller.signal);
+      loadAvailablePlugins(controller.signal);
+    }, 15000);
     return () => {
       clearInterval(interval);
       controller.abort();
     };
-  }, [loadPlugins]);
+  }, [loadPlugins, loadAvailablePlugins]);
 
   const togglePlugin = async (id: string) => {
     const plugin = plugins.find((p) => p.id === id);
@@ -298,7 +302,7 @@ export function PluginsPage() {
   };
 
   const installAvailablePlugin = async (id: string) => {
-    const plugin = BUILTIN_AVAILABLE.find((p) => p.id === id);
+    const plugin = availablePlugins.find((p) => p.id === id);
     if (!plugin) return;
     try {
       const res = await fetch("/api/plugins/install", {
@@ -316,6 +320,7 @@ export function PluginsPage() {
       setMessage(t("plugins.install_fail"));
     }
     loadPlugins();
+    loadAvailablePlugins();
     scheduleClearMessage();
   };
 
@@ -325,9 +330,9 @@ export function PluginsPage() {
       p.description.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const filteredAvailable = BUILTIN_AVAILABLE.filter(
+  const filteredAvailable = availablePlugins.filter(
     (p) =>
-      !plugins.some((inst) => inst.name.toLowerCase() === p.name.toLowerCase() || inst.id === p.id) &&
+      !p.installed &&
       (p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.description.toLowerCase().includes(search.toLowerCase())),
   );
@@ -505,7 +510,7 @@ export function PluginsPage() {
       {activeTab === "available" && (
         <div style={cardGridStyle}>
           {filteredAvailable.map((plugin) => {
-            const isInstalled = plugins.some((p) => p.id === plugin.id);
+            const isInstalled = plugin.installed || plugins.some((p) => p.id === plugin.id);
             return (
             <div key={plugin.id} style={pluginCardStyle}>
               <div style={pluginHeaderStyle}>
@@ -515,17 +520,11 @@ export function PluginsPage() {
                     v{plugin.version} by {plugin.author}
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "4px", color: "#d29922", fontSize: "12px" }}>
-                  ★ {plugin.rating}
-                </div>
               </div>
               <div style={{ fontSize: "13px", color: "var(--text-secondary, #8b949e)", margin: "10px 0" }}>
                 {plugin.description}
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  {plugin.downloads.toLocaleString()} {t("plugins.downloads", "次下载")}
-                </span>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
                 <button
                   style={{
                     ...actionBtnStyle("primary"),
