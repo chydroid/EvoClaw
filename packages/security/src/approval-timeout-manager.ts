@@ -288,6 +288,40 @@ export class ApprovalTimeoutManager {
     return { ...this.stats, pendingCount: this.pending.size, askFallback: this.askFallback };
   }
 
+  /**
+   * 获取配置（映射为 WebUI ApprovalCenterPage 期望的字段名）。
+   * 仅 defaultTimeoutMs 与 askFallback 有真实后端语义；
+   * 其余字段返回默认值，前端据此渲染 Settings 表单。
+   */
+  getConfig() {
+    return {
+      timeoutSeconds: Math.round(this.defaultTimeoutMs / 1000),
+      defaultAction: this.askFallback,
+      behaviorMode: "immediate" as const,
+      debounceWindowMs: this.cleanupIntervalMs,
+      scheduleCron: "",
+      escalationEnabled: false,
+      escalationTimeout: 60,
+    };
+  }
+
+  /**
+   * 更新可运行时修改的配置字段。
+   * 仅 defaultTimeoutMs 与 askFallback 可热更新；
+   * 其余字段（behaviorMode / scheduleCron / escalation*）无后端实现，忽略。
+   */
+  updateConfig(partial: {
+    timeoutSeconds?: number;
+    defaultAction?: "deny" | "allow" | "fail-closed";
+  }): void {
+    if (typeof partial.timeoutSeconds === "number" && partial.timeoutSeconds > 0) {
+      this.defaultTimeoutMs = partial.timeoutSeconds * 1000;
+    }
+    if (partial.defaultAction === "deny" || partial.defaultAction === "allow" || partial.defaultAction === "fail-closed") {
+      this.askFallback = partial.defaultAction;
+    }
+  }
+
   /** 获取审计日志 */
   getAuditLog(limit = 100): ApprovalAuditEntry[] {
     return this.auditLog.slice(-limit);

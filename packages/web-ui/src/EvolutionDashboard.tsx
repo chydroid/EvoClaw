@@ -118,13 +118,7 @@ interface ProgressReport {
 const DEFAULT_DATA: EvolutionData = {
   cycles: [],
   feedback: [],
-  patterns: [
-    { name: "missing_dependency", count: 0, confidence: 0 },
-    { name: "execution_timeout", count: 0, confidence: 0 },
-    { name: "memory_exhaustion", count: 0, confidence: 0 },
-    { name: "insufficient_permissions", count: 0, confidence: 0 },
-    { name: "low_success_rate", count: 0, confidence: 0 },
-  ],
+  patterns: [],
   learning: null,
   summary: {
     totalCycles: 0,
@@ -185,8 +179,7 @@ export default function EvolutionDashboard() {
         setData({
           ...DEFAULT_DATA,
           ...json,
-          // Merge patterns: use API data if non-empty, otherwise keep defaults
-          patterns: json.patterns && json.patterns.length > 0 ? json.patterns : DEFAULT_DATA.patterns,
+          patterns: json.patterns || [],
         });
         setError(null);
       } else {

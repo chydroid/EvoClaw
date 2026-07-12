@@ -167,7 +167,7 @@ export default function InstallPolicyPage() {
       const res = await fetch(`${API}/api/install-policy/rules`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rule),
+        body: JSON.stringify({ type: "source", rule }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
@@ -229,7 +229,7 @@ export default function InstallPolicyPage() {
       const res = await fetch(`${API}/api/install-policy/evaluate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skillName: testSkill.trim(), source: testSource.trim() }),
+        body: JSON.stringify({ name: testSkill.trim(), source: testSource.trim(), permissions: [] }),
       });
       const data = await res.json();
       setTestResult(data.result || data);

@@ -224,14 +224,20 @@ export default function ChannelMessagesPage() {
       const res = await fetch("/api/channels/active");
       if (res.ok) {
         const data = await res.json();
-        const list: ChannelInfo[] = Array.isArray(data)
-          ? data.map((c: any) => ({
-              id: c.id || c.channelId || c.name,
-              name: c.name || c.id || c.channelId || "Unknown",
-              type: c.type || "feishu",
-              unreadCount: c.unreadCount || 0,
-            }))
-          : [];
+        // 后端返回 {success, activeChannels: string[]} 或裸数组
+        const rawChannels: any[] = Array.isArray(data)
+          ? data
+          : (data?.activeChannels ?? []);
+        const list: ChannelInfo[] = rawChannels.map((c: any) => {
+          const id = typeof c === "string" ? c : (c.id || c.channelId || c.name);
+          const name = typeof c === "string" ? c : (c.name || c.id || c.channelId || "Unknown");
+          return {
+            id,
+            name,
+            type: (typeof c === "object" ? c.type : undefined) || "feishu",
+            unreadCount: (typeof c === "object" ? c.unreadCount : undefined) || 0,
+          };
+        });
         setChannels(list);
         if (list.length > 0 && !selectedChannelId) {
           setSelectedChannelId(list[0].id);
@@ -281,16 +287,22 @@ export default function ChannelMessagesPage() {
       const res = await fetch(`/api/sessions/${encodeURIComponent(agentId)}/${sessionId}`);
       if (res.ok) {
         const data = await res.json();
-        const transcript: TranscriptMessage[] = Array.isArray(data?.transcript)
-          ? data.transcript.map((m: any) => ({
-              role: m.role || "unknown",
-              content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
-              timestamp: m.timestamp || m.createdAt,
-              toolCalls: m.toolCalls || m.tool_calls,
-              toolResults: m.toolResults || m.tool_results,
-            }))
-          : [];
-        setSessionDetail({ sessionId, transcript, updatedAt: data?.updatedAt });
+        // 后端返回 {session, turns, ...}；兼容旧 {transcript} 形状
+        const rawTurns: any[] = Array.isArray(data?.turns)
+          ? data.turns
+          : (Array.isArray(data?.transcript) ? data.transcript : []);
+        const transcript: TranscriptMessage[] = rawTurns.map((m: any) => ({
+          role: m.role || "unknown",
+          content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+          timestamp: m.timestamp || m.createdAt,
+          toolCalls: m.toolCalls || m.tool_calls,
+          toolResults: m.toolResults || m.tool_results,
+        }));
+        setSessionDetail({
+          sessionId,
+          transcript,
+          updatedAt: data?.updatedAt ?? data?.session?.updatedAt,
+        });
       }
     } catch (err) {
       console.warn("[ChannelMessages] Failed to fetch session detail:", err);

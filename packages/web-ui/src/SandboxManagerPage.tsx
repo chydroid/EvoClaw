@@ -198,8 +198,8 @@ export default function SandboxManagerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code,
-          language,
+          command: code,
+          interpreter: language,
           timeoutMs: parseInt(execTimeout, 10) || 10000,
         }),
       });

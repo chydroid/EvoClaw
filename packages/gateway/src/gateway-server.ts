@@ -654,7 +654,7 @@ export class GatewayServer {
     this.app.get("/api/channels", (_req: Request, res: Response) => {
       const channelMgr = this.registry.resolveService<ChannelManager>("channelManager");
       if (!channelMgr) {
-        res.json({ channels: [], count: 0 });
+        res.status(503).json({ error: "channelManager not available" });
         return;
       }
       try {
@@ -730,7 +730,7 @@ export class GatewayServer {
     this.app.get("/api/guardrails/stats", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json({ enabled: false }); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const status = executor.getGuardrailsStatus?.();
         res.json(status || { enabled: false });
       } catch { res.json({ enabled: false }); }
@@ -740,7 +740,7 @@ export class GatewayServer {
     this.app.get("/api/guardrails/config", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor?.guardrailsManager) { res.json({ enabled: false }); return; }
+        if (!executor?.guardrailsManager) { res.status(503).json({ error: "guardrailsManager not available" }); return; }
         const config = executor.guardrailsManager.getConfig();
         const rules = {
           input: (config.inputRules || []).map((r: any) => ({
@@ -771,7 +771,7 @@ export class GatewayServer {
         const { content, layer } = req.body || {};
         if (!content) { res.status(400).json({ error: "content is required" }); return; }
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor?.guardrailsManager) { res.json({ enabled: false }); return; }
+        if (!executor?.guardrailsManager) { res.status(503).json({ error: "guardrailsManager not available" }); return; }
         const gm = executor.guardrailsManager;
         let result: any;
         if (layer === "output") {
@@ -792,7 +792,7 @@ export class GatewayServer {
       try {
         const { layer, enabled } = req.body || {};
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor?.guardrailsManager) { res.json({ success: false }); return; }
+        if (!executor?.guardrailsManager) { res.status(503).json({ error: "guardrailsManager not available" }); return; }
         const config = executor.guardrailsManager.getConfig();
         if (layer === "input") config.inputEnabled = enabled;
         else if (layer === "output") config.outputEnabled = enabled;
@@ -806,7 +806,7 @@ export class GatewayServer {
     this.app.post("/api/guardrails/reset-stats", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor?.guardrailsManager) { res.json({ success: false }); return; }
+        if (!executor?.guardrailsManager) { res.status(503).json({ error: "guardrailsManager not available" }); return; }
         executor.guardrailsManager.resetStats();
         res.json({ success: true });
       } catch (err) { this.handleError(res, err); }
@@ -816,7 +816,7 @@ export class GatewayServer {
     this.app.get("/api/prompt-cache/stats", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json({ enabled: false }); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const stats = executor.getPromptCacheStats?.();
         res.json(stats || { enabled: false });
       } catch { res.json({ enabled: false }); }
@@ -826,7 +826,7 @@ export class GatewayServer {
     this.app.get("/api/acp/agents", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json([]); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const agents = executor.getACPAgents?.();
         res.json(agents || []);
       } catch { res.json([]); }
@@ -836,7 +836,7 @@ export class GatewayServer {
     this.app.get("/api/observability/traces", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json([]); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const observability = executor.getAgentObservability?.();
         if (observability && typeof observability.getRecentTraces === "function") {
           res.json(observability.getRecentTraces(100));
@@ -868,9 +868,9 @@ export class GatewayServer {
     this.app.get("/api/steer/instructions", async (req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json({ instructions: [] }); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const steerManager = executor.getSteerManager?.();
-        if (!steerManager) { res.json({ instructions: [] }); return; }
+        if (!steerManager) { res.status(503).json({ error: "steerManager not available" }); return; }
         const sessionId = req.query.sessionId as string | undefined;
         const instructions = sessionId
           ? steerManager.getInstructions?.(sessionId) || []
@@ -953,9 +953,9 @@ export class GatewayServer {
     this.app.get("/api/workboard", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json({ tasks: {}, stats: null }); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const board = executor.getWorkboard?.();
-        if (!board) { res.json({ tasks: {}, stats: null }); return; }
+        if (!board) { res.status(503).json({ error: "workboard not available" }); return; }
         res.json({ tasks: board.getBoardView(), stats: board.getStats() });
       } catch { res.json({ tasks: {}, stats: null }); }
     });
@@ -1009,7 +1009,7 @@ export class GatewayServer {
     this.app.get("/api/memory/dreaming", async (_req: any, res: any) => {
       try {
         const memoryHub = this.registry.resolveService("memoryHub") as any;
-        if (!memoryHub) { res.json({ enabled: false }); return; }
+        if (!memoryHub) { res.status(503).json({ error: "memoryHub not available" }); return; }
         const diary = memoryHub.getDreamDiary?.();
         const shouldDream = memoryHub.shouldDream?.();
         res.json({ enabled: true, diary, shouldDream });
@@ -1032,9 +1032,9 @@ export class GatewayServer {
     this.app.get("/api/computed-status", async (_req: any, res: any) => {
       try {
         const executor = this.registry.resolveService("agentModelExecutor") as any;
-        if (!executor) { res.json({ sources: [] }); return; }
+        if (!executor) { res.status(503).json({ error: "agentModelExecutor not available" }); return; }
         const engine = executor.getComputedStatus?.();
-        if (!engine) { res.json({ sources: [] }); return; }
+        if (!engine) { res.status(503).json({ error: "computedStatusEngine not available" }); return; }
         res.json({ sources: engine.getSources() });
       } catch { res.json({ sources: [] }); }
     });
@@ -1413,7 +1413,7 @@ export class GatewayServer {
         res.json({ history, stats });
         return;
       }
-      res.json({ history: [], stats: { total: 0, approved: 0, denied: 0, expired: 0 } });
+      res.status(503).json({ error: "approvalTimeoutManager not available" });
     });
 
     // GET /api/approvals/timeout-config — get timeout configuration
@@ -1424,7 +1424,7 @@ export class GatewayServer {
         res.json({ askFallback: stats.askFallback ?? "fail-closed", stats });
         return;
       }
-      res.json({ askFallback: "fail-closed", timeoutSeconds: 300, defaultAction: "deny" });
+      res.status(503).json({ error: "approvalTimeoutManager not available" });
     });
 
     // GET /api/approvals/config — get approval configuration
@@ -1511,17 +1511,10 @@ export class GatewayServer {
     this.app.get("/api/approval-timeout/config", (_req: Request, res: Response) => {
       const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
       if (!manager) {
-        res.json({
-          defaultTimeoutMs: 5000,
-          lowRiskTimeoutMs: 3000,
-          mediumRiskTimeoutMs: 5000,
-          highRiskTimeoutMs: 10000,
-          criticalRiskTimeoutMs: 15000,
-        });
+        res.status(503).json({ error: "approvalTimeoutManager not available" });
         return;
       }
-      const stats = manager.getStats();
-      res.json({ ...stats });
+      res.json(manager.getConfig());
     });
 
     // PUT /api/approval-timeout/config — update timeout configuration
@@ -1531,18 +1524,22 @@ export class GatewayServer {
         res.status(503).json({ error: "ApprovalTimeoutManager not available" });
         return;
       }
-      const config = req.body as Partial<ApprovalTimeoutConfig>;
-      // ApprovalTimeoutManager doesn't have a runtime updateConfig method,
-      // so we return the current config as read-only for now
-      const stats = manager.getStats();
-      res.json({ success: true, stats, note: "Timeout config requires restart to take effect" });
+      const body = req.body as {
+        timeoutSeconds?: number;
+        defaultAction?: "deny" | "allow" | "fail-closed";
+      };
+      manager.updateConfig({
+        timeoutSeconds: body.timeoutSeconds,
+        defaultAction: body.defaultAction,
+      });
+      res.json({ success: true, config: manager.getConfig() });
     });
 
     // GET /api/reaction-approvals — return reaction approval log
     this.app.get("/api/reaction-approvals", (_req: Request, res: Response) => {
       const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
       if (!manager) {
-        res.json({ history: [], pending: [], stats: null });
+        res.status(503).json({ error: "approvalTimeoutManager not available" });
         return;
       }
       const history = manager.getHistory();
@@ -1610,7 +1607,7 @@ export class GatewayServer {
       }>("a2aClient");
 
       if (!a2aClient) {
-        res.json({ agents: [] });
+        res.status(503).json({ error: "a2aClient not available" });
         return;
       }
 
@@ -1712,7 +1709,7 @@ export class GatewayServer {
     this.app.get("/api/evals/cases", (_req: Request, res: Response) => {
       const runner = this.registry.resolveService<{ getAllCases(): unknown[] }>("evalRunner");
       if (!runner) {
-        res.json({ cases: [], count: 0, note: "EvalRunner not registered" });
+        res.status(503).json({ error: "evalRunner not available" });
         return;
       }
       const cases = runner.getAllCases();
@@ -1736,7 +1733,7 @@ export class GatewayServer {
     this.app.get("/api/evals/runs", (_req: Request, res: Response) => {
       const runner = this.registry.resolveService<{ getRunHistory(): unknown[] }>("evalRunner");
       if (!runner) {
-        res.json({ runs: [], count: 0 });
+        res.status(503).json({ error: "evalRunner not available" });
         return;
       }
       const runs = runner.getRunHistory();
@@ -1849,7 +1846,7 @@ export class GatewayServer {
     this.app.get("/api/executions", (_req: Request, res: Response) => {
       const store = this.registry.resolveService<{ getRecent(opts?: { limit?: number }): unknown[] }>("executionCheckpointStore");
       if (!store) {
-        res.json({ executions: [], count: 0, note: "ExecutionCheckpointStore not registered" });
+        res.status(503).json({ error: "executionCheckpointStore not available" });
         return;
       }
       const limit = parseInt((_req.query.limit as string) || "50", 10) || 50;
@@ -1891,10 +1888,7 @@ export class GatewayServer {
     this.app.get("/api/token-usage/overview", (_req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({
-          totalTokens: 0, totalCost: 0, totalCalls: 0, avgTokensPerSession: 0,
-          recentUsage: [],
-        });
+        res.status(503).json({ error: "tokenUsageTracker not available" });
         return;
       }
       const summary = tracker.getSummary();
@@ -1923,7 +1917,7 @@ export class GatewayServer {
     this.app.get("/api/token-usage/by-model", (_req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ models: [] });
+        res.status(503).json({ error: "tokenUsageTracker not available" });
         return;
       }
       const recent = tracker.getRecent(1000);
@@ -1946,7 +1940,7 @@ export class GatewayServer {
     this.app.get("/api/token-usage/by-session", (req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ sessions: [] });
+        res.status(503).json({ error: "tokenUsageTracker not available" });
         return;
       }
       const sessionId = req.query.sessionId as string | undefined;
@@ -1994,7 +1988,7 @@ export class GatewayServer {
     this.app.get("/api/token-usage/cost", (_req: Request, res: Response) => {
       const tracker = this.registry.resolveService<TokenUsageTracker>("tokenUsageTracker");
       if (!tracker) {
-        res.json({ providers: [] });
+        res.status(503).json({ error: "tokenUsageTracker not available" });
         return;
       }
       const summary = tracker.getSummary();
@@ -2017,7 +2011,7 @@ export class GatewayServer {
     this.app.get("/api/install-policy/rules", (_req: Request, res: Response) => {
       const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
       if (!manager) {
-        res.json({ enabled: false, policy: null });
+        res.status(503).json({ error: "installPolicyManager not available" });
         return;
       }
       const policy = manager.getPolicy();
@@ -2091,6 +2085,43 @@ export class GatewayServer {
       res.json({ success: true, policy: manager.getPolicy() });
     });
 
+    // PUT /api/install-policy/rules/:id — update an existing rule
+    this.app.put("/api/install-policy/rules/:id", (req: Request, res: Response) => {
+      const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
+      if (!manager) {
+        res.status(503).json({ error: "InstallPolicyManager not available" });
+        return;
+      }
+      const { id } = req.params as { id: string };
+      const { rule: newRule } = req.body as { rule?: Record<string, unknown> };
+      if (!newRule) {
+        res.status(400).json({ error: "rule is required" });
+        return;
+      }
+      const policy = manager.getPolicy();
+      const ruleArrays: Array<{ arr: any[]; name: string }> = [
+        { arr: policy.sourceRules, name: "sourceRules" },
+        { arr: policy.permissionRules, name: "permissionRules" },
+        { arr: policy.riskRules, name: "riskRules" },
+        { arr: policy.skillRules, name: "skillRules" },
+      ];
+      let updated = false;
+      for (const { arr } of ruleArrays) {
+        const idx = arr.findIndex((r: any) => (r.id === id || r.name === id));
+        if (idx !== -1) {
+          arr[idx] = { ...arr[idx], ...newRule, id };
+          updated = true;
+          break;
+        }
+      }
+      if (!updated) {
+        res.status(404).json({ error: `Rule not found: ${id}` });
+        return;
+      }
+      manager.updatePolicy(policy);
+      res.json({ success: true, policy: manager.getPolicy() });
+    });
+
     // POST /api/install-policy/evaluate — evaluate a skill against current policy
     this.app.post("/api/install-policy/evaluate", async (req: Request, res: Response) => {
       const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
@@ -2115,7 +2146,7 @@ export class GatewayServer {
     this.app.get("/api/install-policy/audit", (_req: Request, res: Response) => {
       const manager = this.registry.resolveService<InstallPolicyManager>("installPolicyManager");
       if (!manager) {
-        res.json({ entries: [], count: 0 });
+        res.status(503).json({ error: "installPolicyManager not available" });
         return;
       }
       const auditLog = manager.getAuditLog();
@@ -2129,7 +2160,7 @@ export class GatewayServer {
     this.app.get("/api/transcript-redactor/rules", (_req: Request, res: Response) => {
       const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
       if (!redactor) {
-        res.json({ enabled: false, rules: [] });
+        res.status(503).json({ error: "transcriptRedactor not available" });
         return;
       }
       const rules = redactor.getRules();
@@ -2166,25 +2197,37 @@ export class GatewayServer {
         return;
       }
       const result = redactor.redact(text);
-      res.json(result);
+      // 添加前端期望的字段别名：redacted ← text, matches ← redactions
+      res.json({
+        ...result,
+        redacted: result.text,
+        matches: result.redactions,
+      });
     });
 
     // GET /api/transcript-redactor/stats — return redaction statistics
     this.app.get("/api/transcript-redactor/stats", (_req: Request, res: Response) => {
       const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
       if (!redactor) {
-        res.json({ totalRedactions: 0, byPattern: {}, bySeverity: {}, textsProcessed: 0 });
+        res.status(503).json({ error: "transcriptRedactor not available" });
         return;
       }
       const stats = redactor.getStats();
-      res.json(stats);
+      const textsProcessed = Number(stats.textsProcessed) || 0;
+      const totalRedactions = Number(stats.totalRedactions) || 0;
+      // 前端期望 severityBreakdown 与 bySeverity 同义，redactionRate = totalRedactions / textsProcessed
+      res.json({
+        ...stats,
+        severityBreakdown: stats.bySeverity ?? { critical: 0, high: 0, medium: 0, low: 0 },
+        redactionRate: textsProcessed > 0 ? totalRedactions / textsProcessed : 0,
+      });
     });
 
     // GET /api/transcript-redactor/audit — return recent redaction audit log
     this.app.get("/api/transcript-redactor/audit", (_req: Request, res: Response) => {
       const redactor = this.registry.resolveService<TranscriptRedactor>("transcriptRedactor");
       if (!redactor) {
-        res.json({ entries: [], count: 0 });
+        res.status(503).json({ error: "transcriptRedactor not available" });
         return;
       }
       const auditLog = redactor.getAuditLog();
@@ -2198,17 +2241,39 @@ export class GatewayServer {
     this.app.get("/api/mcp-scanner/tools", (_req: Request, res: Response) => {
       const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
       if (!scanner) {
-        res.json({ tools: [], count: 0 });
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
         return;
       }
       // Get tools from the MCP gateway or agent executor
       const executor = this.registry.resolveService<any>("agentModelExecutor");
-      const tools: Array<{ name: string; description: string; riskAssessment?: PoisoningScanResult }> = [];
+      const tools: Array<Record<string, unknown>> = [];
       if (executor?.registeredTools) {
         for (const [name, entry] of executor.registeredTools) {
           const desc = entry.definition?.description || name;
           const risk = scanner.scan({ name, description: desc });
-          tools.push({ name, description: desc, riskAssessment: risk });
+          const riskLevel = risk.riskScore >= 75 ? "critical"
+            : risk.riskScore >= 50 ? "high"
+            : risk.riskScore >= 25 ? "medium"
+            : risk.riskScore > 0 ? "low" : "none";
+          const status = risk.recommendation === "block" ? "blacklisted"
+            : risk.recommendation === "warn" ? "flagged" : "clean";
+          tools.push({
+            id: name,
+            name,
+            server: "local",
+            description: desc,
+            descriptionHash: crypto.createHash("sha256").update(desc).digest("hex").slice(0, 16),
+            riskLevel,
+            riskScore: risk.riskScore,
+            lastScanned: new Date().toISOString(),
+            status,
+            detectedPatterns: (risk.threats || []).map((t: any) => t.type || t.description || "unknown"),
+            threats: (risk.threats || []).map((t: any) => ({
+              type: t.type || "unknown",
+              severity: t.severity || "low",
+              evidence: t.evidence || "",
+            })),
+          });
         }
       }
       res.json({ tools, count: tools.length });
@@ -2254,11 +2319,17 @@ export class GatewayServer {
     this.app.get("/api/mcp-scanner/blacklist", (_req: Request, res: Response) => {
       const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
       if (!scanner) {
-        res.json({ patterns: [], count: 0 });
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
         return;
       }
       const blacklist = scanner.getBlacklist();
-      res.json({ patterns: blacklist, count: blacklist.length });
+      const entries = (blacklist || []).map((b: any, i: number) => ({
+        id: b.id ?? `bl-${i}`,
+        pattern: b.pattern ?? "",
+        reason: b.reason ?? "",
+        addedAt: b.addedAt ?? new Date().toISOString(),
+      }));
+      res.json({ entries, count: entries.length });
     });
 
     // POST /api/mcp-scanner/blacklist — add a blacklist pattern
@@ -2297,11 +2368,26 @@ export class GatewayServer {
     this.app.get("/api/mcp-scanner/audit", (_req: Request, res: Response) => {
       const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
       if (!scanner) {
-        res.json({ entries: [], count: 0 });
+        res.status(503).json({ error: "MCPToolPoisoningScanner not available" });
         return;
       }
-      const stats = scanner.getStats();
-      res.json({ entries: stats, count: stats.scanned ?? 0 });
+      const rawLog = scanner.getAuditLog();
+      const entries = rawLog.map((e: any, i: number) => {
+        const riskLevel = (e.riskScore ?? 0) >= 75 ? "critical"
+          : (e.riskScore ?? 0) >= 50 ? "high"
+          : (e.riskScore ?? 0) >= 25 ? "medium"
+          : (e.riskScore ?? 0) > 0 ? "low" : "none";
+        return {
+          id: `audit-${i}-${e.timestamp ?? Date.now()}`,
+          timestamp: new Date(e.timestamp ?? Date.now()).toISOString(),
+          toolName: e.toolName ?? "unknown",
+          server: "local",
+          riskLevel,
+          detectedPatterns: [],
+          action: e.recommendation ?? "allow",
+        };
+      });
+      res.json({ entries, count: entries.length });
     });
   }
 

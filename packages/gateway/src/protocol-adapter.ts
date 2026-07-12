@@ -862,6 +862,8 @@ export class ProtocolAdapter {
 
     // Load persisted secrets from data/secrets.json
     this.loadPersistedSecrets();
+    // Load persisted retention policy & stats from data/retention.json
+    this.loadRetention();
   }
 
   /** Sync .env secrets into the secretsStore for UI display */
@@ -902,6 +904,38 @@ export class ProtocolAdapter {
         }
       }
     } catch { /* start fresh */ }
+  }
+
+  /** Persist retention policy & stats to data/retention.json */
+  private persistRetention(): void {
+    try {
+      const retentionFile = path.join(DATA_DIR, "retention.json");
+      const data = {
+        policy: this.retentionPolicy,
+        stats: this.retentionStats,
+      };
+      atomicWriteFileSync(retentionFile, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Load retention policy & stats from data/retention.json */
+  private loadRetention(): void {
+    try {
+      const retentionFile = path.join(DATA_DIR, "retention.json");
+      if (fs.existsSync(retentionFile)) {
+        const data = JSON.parse(fs.readFileSync(retentionFile, "utf-8"));
+        if (data.policy) {
+          Object.assign(this.retentionPolicy, data.policy);
+        }
+        if (data.stats) {
+          Object.assign(this.retentionStats, data.stats);
+        }
+      }
+    } catch (err) {
+      console.debug("[ProtocolAdapter] Failed to load retention:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   /** Persist secrets to data/secrets.json */
@@ -2724,7 +2758,7 @@ export class ProtocolAdapter {
           getContext(): { bootstrapPending: boolean; missingFiles: string[] };
           getWorkspacePath(): string;
         }>("bootstrapManager");
-        if (!bm) return res.json({ files: [], pending: false, workspacePath: "" });
+        if (!bm) { res.status(503).json({ error: "bootstrapManager not available" }); return; }
         const files = bm.listFiles();
         const ctx = bm.getContext();
         res.json({ files, pending: ctx.bootstrapPending, missingFiles: ctx.missingFiles, workspacePath: bm.getWorkspacePath() });
@@ -2856,7 +2890,7 @@ export class ProtocolAdapter {
           getCompactionChain(sessionId: string): unknown[];
           loadCompactionChain(sessionId: string): unknown[];
         }>("compactionManager");
-        if (!cm) return res.json({ compactions: [] });
+        if (!cm) { res.status(503).json({ error: "compactionManager not available" }); return; }
         const chain = cm.getCompactionChain(String(req.params.sessionId));
         res.json({ compactions: chain });
       } catch (err) {
@@ -3852,7 +3886,7 @@ export class ProtocolAdapter {
           getActiveProgressReports(): unknown[];
         }>("evolutionEngine");
         if (!evolutionEngine) {
-          res.json({ cycles: [], feedback: [], patterns: [], learning: null, summary: { totalCycles: 0, successRate: 0, avgEvaluationScore: 0, totalCandidates: 0 } });
+          res.status(503).json({ error: "evolutionEngine not available" });
           return;
         }
         const cycles = await evolutionEngine.getCycleHistory();
@@ -3923,7 +3957,7 @@ export class ProtocolAdapter {
           getLearningStats(): unknown;
         }>("evolutionEngine");
         if (!evolutionEngine) {
-          res.json({ totalEntries: 0, resolvedEntries: 0, unresolvedEntries: 0, resolutionRate: 0 });
+          res.status(503).json({ error: "evolutionEngine not available" });
           return;
         }
         res.json(evolutionEngine.getLearningStats());
@@ -3937,7 +3971,7 @@ export class ProtocolAdapter {
         const evolutionEngine = this.registry.resolveService<{
           getLearningEntries(filter?: Record<string, unknown>): unknown[];
         }>("evolutionEngine");
-        if (!evolutionEngine) { res.json([]); return; }
+        if (!evolutionEngine) { res.status(503).json({ error: "evolutionEngine not available" }); return; }
         const filter: Record<string, unknown> = {};
         if (req.query.trigger) filter.trigger = String(req.query.trigger);
         if (req.query.category) filter.category = String(req.query.category);
@@ -3958,7 +3992,7 @@ export class ProtocolAdapter {
         const evolutionEngine = this.registry.resolveService<{
           getLearningSessions(): unknown[];
         }>("evolutionEngine");
-        if (!evolutionEngine) { res.json([]); return; }
+        if (!evolutionEngine) { res.status(503).json({ error: "evolutionEngine not available" }); return; }
         res.json(evolutionEngine.getLearningSessions());
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -3970,7 +4004,7 @@ export class ProtocolAdapter {
         const evolutionEngine = this.registry.resolveService<{
           getActiveProgressReports(): unknown[];
         }>("evolutionEngine");
-        if (!evolutionEngine) { res.json([]); return; }
+        if (!evolutionEngine) { res.status(503).json({ error: "evolutionEngine not available" }); return; }
         res.json(evolutionEngine.getActiveProgressReports());
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -4252,7 +4286,7 @@ export class ProtocolAdapter {
         }>("permissionManager");
 
         if (!permMgr) {
-          res.json({ requests: [] });
+          res.status(503).json({ error: "permissionManager not available" });
           return;
         }
 
@@ -4269,7 +4303,7 @@ export class ProtocolAdapter {
         }>("permissionManager");
 
         if (!permMgr) {
-          res.json({ whitelist: [] });
+          res.status(503).json({ error: "permissionManager not available" });
           return;
         }
 
@@ -4586,7 +4620,7 @@ export class ProtocolAdapter {
           getStats(): Record<string, unknown>;
         } | undefined;
         if (!scheduleManager) {
-          res.json({ tasks: [], stats: { totalTasks: 0, activeTasks: 0, totalRuns: 0, totalErrors: 0 } });
+          res.status(503).json({ error: "scheduleManager not available" });
           return;
         }
         const tasks = scheduleManager.listTasks();
@@ -4728,7 +4762,7 @@ export class ProtocolAdapter {
           getRunHistory(taskId?: string, limit?: number): Array<Record<string, unknown>>;
         } | undefined;
         if (!scheduleManager) {
-          res.json({ history: [] });
+          res.status(503).json({ error: "scheduleManager not available" });
           return;
         }
         const taskId = req.query.taskId as string | undefined;
@@ -4751,7 +4785,7 @@ export class ProtocolAdapter {
 
         if (!sessionManager) {
           res.setHeader("Content-Type", "application/json; charset=utf-8");
-          res.json({ success: true, sessions: [] });
+          res.status(503).json({ error: "sessionManager not available" });
           return;
         }
 
@@ -4903,7 +4937,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!queueManager) {
-          res.json({ success: true, sessions: [] });
+          res.status(503).json({ error: "queueManager not available" });
           return;
         }
 
@@ -5222,7 +5256,7 @@ export class ProtocolAdapter {
           list(filter?: unknown): unknown[];
         }>("commitmentManager");
         if (!mgr) {
-          res.json({ commitments: [] });
+          res.status(503).json({ error: "commitmentManager not available" });
           return;
         }
         res.json({ commitments: mgr.list() });
@@ -5238,7 +5272,7 @@ export class ProtocolAdapter {
           list(filter?: unknown): unknown[];
         }>("commitmentManager");
         if (!mgr) {
-          res.json({ total: 0, pending: 0, inProgress: 0, overdue: 0 });
+          res.status(503).json({ error: "commitmentManager not available" });
           return;
         }
         const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
@@ -5724,7 +5758,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!eventLedger) {
-          res.json({ events: [], total: 0 });
+          res.status(503).json({ error: "eventLedger not available" });
           return;
         }
 
@@ -5766,7 +5800,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!eventLedger) {
-          res.json({ nextSeq: 0, entryCount: 0, types: {} });
+          res.status(503).json({ error: "eventLedger not available" });
           return;
         }
 
@@ -5786,7 +5820,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!permissionRelay) {
-          res.json({ requests: [] });
+          res.status(503).json({ error: "permissionRelay not available" });
           return;
         }
 
@@ -5803,7 +5837,7 @@ export class ProtocolAdapter {
         } | undefined;
 
         if (!permissionRelay) {
-          res.json({ history: [] });
+          res.status(503).json({ error: "permissionRelay not available" });
           return;
         }
 
@@ -6129,7 +6163,7 @@ export class ProtocolAdapter {
         }>("sandboxManager");
 
         if (!sandboxManager) {
-          res.json({ backends: [] });
+          res.status(503).json({ error: "sandboxManager not available" });
           return;
         }
 
@@ -6171,7 +6205,7 @@ export class ProtocolAdapter {
         }>("sandboxManager");
 
         if (!sandboxManager) {
-          res.json({ sessions: [] });
+          res.status(503).json({ error: "sandboxManager not available" });
           return;
         }
 
@@ -6298,7 +6332,7 @@ export class ProtocolAdapter {
         }>("devicePairingManager");
 
         if (!devicePairingManager) {
-          res.json({ devices: [] });
+          res.status(503).json({ error: "devicePairingManager not available" });
           return;
         }
 
@@ -6355,7 +6389,10 @@ export class ProtocolAdapter {
         const failoverManager = this.registry.resolveService("failoverManager") as ModelFailoverManager | undefined;
 
         if (!failoverManager) {
-          res.json({ status: "unavailable", message: "Failover manager not registered" });
+          // 之前 fail-open 返回 200+{status:"unavailable"}，前端无法区分
+          // "服务正常但无数据"与"服务未注册"。改为 503 让前端 api-client
+          // 的 getSafe() 走 fallback 分支，仍能得到 {status:"unavailable"}。
+          res.status(503).json({ error: "failoverManager not registered" });
           return;
         }
 
@@ -6374,7 +6411,7 @@ export class ProtocolAdapter {
         const failoverManager = this.registry.resolveService("failoverManager") as ModelFailoverManager | undefined;
 
         if (!failoverManager) {
-          res.json({ status: "unavailable", message: "Failover manager not registered" });
+          res.status(503).json({ error: "failoverManager not registered" });
           return;
         }
 
@@ -7085,7 +7122,7 @@ export class ProtocolAdapter {
         const prefix = req.query.prefix as string | undefined;
         const configManager = this.registry.resolveService<{
           list(prefix?: string): Array<{ path: string; value: unknown; source: string }>;
-        }>("configManager");
+        }>("config");
         if (configManager) {
           const entries = configManager.list(prefix);
           res.json({ entries });
@@ -7114,7 +7151,7 @@ export class ProtocolAdapter {
         }
         const configManager = this.registry.resolveService<{
           batchGet(paths: string[]): Array<{ path: string; value: unknown }>;
-        }>("configManager");
+        }>("config");
         if (configManager) {
           const results = configManager.batchGet(paths);
           res.json({ results });
@@ -7136,7 +7173,7 @@ export class ProtocolAdapter {
         const dotPath = String(req.params.path);
         const configManager = this.registry.resolveService<{
           get(path: string): { path: string; value: unknown } | null;
-        }>("configManager");
+        }>("config");
         if (configManager) {
           const result = configManager.get(dotPath);
           if (!result) {
@@ -7162,7 +7199,7 @@ export class ProtocolAdapter {
         const { value } = req.body || {};
         const configManager = this.registry.resolveService<{
           set(path: string, value: unknown): { path: string; value: unknown };
-        }>("configManager");
+        }>("config");
         if (configManager) {
           const result = configManager.set(dotPath, value);
           res.json(result);
@@ -7353,6 +7390,7 @@ export class ProtocolAdapter {
         delete (safePolicy as any).constructor;
         delete (safePolicy as any).prototype;
         Object.assign(this.retentionPolicy, safePolicy);
+        this.persistRetention();
         res.json({ policy: this.retentionPolicy });
       } catch (err) {
         this.handleError(err, res, "Failed to update retention policy");
@@ -7430,6 +7468,7 @@ export class ProtocolAdapter {
         }
         this.retentionStats.cleanedUp = (this.retentionStats.cleanedUp || 0) + cleaned;
         this.retentionStats.lastRun = new Date().toISOString();
+        this.persistRetention();
         res.json({ cleaned });
       } catch (err) {
         this.handleError(err, res, "Failed to run retention cleanup");
@@ -7956,7 +7995,11 @@ export class ProtocolAdapter {
         const hub = this.registry.resolveService<{
           getDreamDiary?: () => unknown;
         }>("memoryHub");
-        if (!hub || typeof hub.getDreamDiary !== "function") {
+        if (!hub) {
+          res.status(503).json({ error: "memoryHub not available" });
+          return;
+        }
+        if (typeof hub.getDreamDiary !== "function") {
           // MemoryHub 可用但未启用 dreaming — 返回空日记而非 503，前端据此显示"未启用"
           res.json({ enabled: false, sessions: [], totalFactsExtracted: 0 });
           return;
@@ -8011,6 +8054,7 @@ export class ProtocolAdapter {
         const loadError = hub.getEmbeddingLoadError?.() ?? null;
         const vectorIndexSize = hub.getVectorIndexSize?.() ?? 0;
         res.json({
+          embeddingBackend: provider,
           embeddingProvider: provider,
           embeddingLoadError: loadError,
           vectorIndexSize,
@@ -8097,13 +8141,7 @@ export class ProtocolAdapter {
           getResumableExecutions(): unknown[];
         }>("executionCheckpointStore");
         if (!store) {
-          res.json({
-            enabled: false,
-            totalExecutions: 0,
-            resumableCount: 0,
-            byStatus: {},
-            recent: [],
-          });
+          res.status(503).json({ error: "executionCheckpointStore not available" });
           return;
         }
         const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
@@ -8145,7 +8183,7 @@ export class ProtocolAdapter {
       try {
         const executor = this.registry.resolveService<{ getToolResultCacheStats(): unknown }>("agentModelExecutor");
         if (!executor) {
-          res.json({ enabled: false, hits: 0, misses: 0, size: 0, hitRate: 0, byTool: {} });
+          res.status(503).json({ error: "agentModelExecutor not available" });
           return;
         }
         const stats = executor.getToolResultCacheStats();
@@ -8159,7 +8197,7 @@ export class ProtocolAdapter {
       try {
         const executor = this.registry.resolveService<{ getTokenBudgetReport(): unknown }>("agentModelExecutor");
         if (!executor) {
-          res.json({ enabled: false });
+          res.status(503).json({ error: "agentModelExecutor not available" });
           return;
         }
         const report = executor.getTokenBudgetReport();
@@ -8175,7 +8213,11 @@ export class ProtocolAdapter {
     app.get("/api/agent/tool-quality-stats", (_req: Request, res: Response) => {
       try {
         const executor = this.registry.resolveService<{ getToolQualityReport?: () => unknown }>("agentModelExecutor");
-        if (!executor?.getToolQualityReport) {
+        if (!executor) {
+          res.status(503).json({ error: "agentModelExecutor not available" });
+          return;
+        }
+        if (!executor.getToolQualityReport) {
           res.json({ enabled: false, summary: { totalTools: 0, problematicTools: 0 }, byTool: [], problematicTools: [], recommendations: [] });
           return;
         }
@@ -8190,7 +8232,11 @@ export class ProtocolAdapter {
     app.get("/api/agent/recording-stats", (_req: Request, res: Response) => {
       try {
         const executor = this.registry.resolveService<{ getRecordingStats?: () => unknown }>("agentModelExecutor");
-        if (!executor?.getRecordingStats) {
+        if (!executor) {
+          res.status(503).json({ error: "agentModelExecutor not available" });
+          return;
+        }
+        if (!executor.getRecordingStats) {
           res.json({ enabled: false, recordings: [] });
           return;
         }
@@ -8205,7 +8251,11 @@ export class ProtocolAdapter {
     app.get("/api/agent/evolution-trigger-stats", (_req: Request, res: Response) => {
       try {
         const executor = this.registry.resolveService<{ getEvolutionTriggerStats?: () => unknown }>("agentModelExecutor");
-        if (!executor?.getEvolutionTriggerStats) {
+        if (!executor) {
+          res.status(503).json({ error: "agentModelExecutor not available" });
+          return;
+        }
+        if (!executor.getEvolutionTriggerStats) {
           res.json({ enabled: false });
           return;
         }
@@ -8220,7 +8270,11 @@ export class ProtocolAdapter {
     app.get("/api/skills/lineage-stats", (_req: Request, res: Response) => {
       try {
         const skillMgr = this.registry.resolveService<{ getLineageStats?: () => unknown }>("skillManager");
-        if (!skillMgr?.getLineageStats) {
+        if (!skillMgr) {
+          res.status(503).json({ error: "skillManager not available" });
+          return;
+        }
+        if (!skillMgr.getLineageStats) {
           res.json({ enabled: false, totalLineages: 0, activeLineages: 0, roots: 0 });
           return;
         }
