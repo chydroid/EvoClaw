@@ -35,15 +35,27 @@ const ENV_VAR_DOCS: Map<string, { docLink: string; description: string }> = new 
   ["IMGFLIP_PASS", { docLink: "https://imgflip.com/", description: "Imgflip password" }],
 ]);
 
-const BINARY_INSTALL: Map<string, { win32: string; darwin: string; linux: string; docLink?: string }> = new Map([
+const BINARY_INSTALL: Map<string, {
+  win32: string; darwin: string; linux: string; docLink?: string;
+  requires?: string;
+}> = new Map([
   ["jq", { win32: "winget install jqlang.jq", darwin: "brew install jq", linux: "sudo apt install jq", docLink: "https://stedolan.github.io/jq/download/" }],
   ["ffmpeg", { win32: "winget install Gyan.FFmpeg", darwin: "brew install ffmpeg", linux: "sudo apt install ffmpeg", docLink: "https://ffmpeg.org/download.html" }],
   ["fd", { win32: "winget install sharkdp.fd", darwin: "brew install fd", linux: "sudo apt install fd-find", docLink: "https://github.com/sharkdp/fd#installation" }],
   ["gh", { win32: "winget install GitHub.cli", darwin: "brew install gh", linux: "sudo apt install gh", docLink: "https://cli.github.com/" }],
-  ["himalaya", { win32: "winget install hyrious.himalaya", darwin: "brew install himalaya", linux: "cargo install himalaya", docLink: "https://github.com/pimalaya/himalaya" }],
-  ["whisper", { win32: "pip install openai-whisper", darwin: "pip install openai-whisper", linux: "pip install openai-whisper", docLink: "https://github.com/openai/whisper" }],
+  ["himalaya", { win32: "cargo install himalaya", darwin: "brew install himalaya", linux: "cargo install himalaya", docLink: "https://github.com/pimalaya/himalaya", requires: "cargo" }],
+  ["whisper", { win32: "pip install openai-whisper", darwin: "pip install openai-whisper", linux: "pip install openai-whisper", docLink: "https://github.com/openai/whisper", requires: "pip" }],
   ["obsidian", { win32: "winget install Obsidian.Obsidian", darwin: "brew install --cask obsidian", linux: "# Download from https://obsidian.md/", docLink: "https://obsidian.md/" }],
-  ["xurl", { win32: "go install rsc.io/xurl@latest", darwin: "go install rsc.io/xurl@latest", linux: "go install rsc.io/xurl@latest", docLink: "https://pkg.go.dev/rsc.io/xurl" }],
+  ["xurl", { win32: "npm install -g @xdevplatform/xurl", darwin: "brew install xdevplatform/tap/xurl", linux: "npm install -g @xdevplatform/xurl", docLink: "https://www.npmjs.com/package/@xdevplatform/xurl", requires: "npm" }],
+  ["gifgrep", { win32: "go install github.com/steipete/gifgrep/cmd/gifgrep@latest", darwin: "brew install steipete/tap/gifgrep", linux: "go install github.com/steipete/gifgrep/cmd/gifgrep@latest", docLink: "https://gifgrep.com", requires: "go" }],
+  ["oracle", { win32: "npm install -g @steipete/oracle", darwin: "npm install -g @steipete/oracle", linux: "npm install -g @steipete/oracle", docLink: "https://askoracle.dev", requires: "npm" }],
+  ["nano-pdf", { win32: "pip install uv && uv tool install nano-pdf", darwin: "pip install uv && uv tool install nano-pdf", linux: "pip install uv && uv tool install nano-pdf", docLink: "https://pypi.org/project/nano-pdf/", requires: "pip" }],
+  ["gog", { win32: "# brew only — not available on Windows. See https://gogcli.sh", darwin: "brew install steipete/tap/gogcli", linux: "# brew only — not available on Linux", docLink: "https://gogcli.sh" }],
+  ["sag", { win32: "# brew only — not available on Windows. See https://sag.sh", darwin: "brew install steipete/tap/sag", linux: "# brew only — not available on Linux", docLink: "https://sag.sh" }],
+  ["summarize", { win32: "# brew only — not available on Windows. See https://github.com/steipete/summarize", darwin: "brew install steipete/tap/summarize", linux: "# brew only — not available on Linux", docLink: "https://github.com/steipete/summarize" }],
+  // Runtime prerequisites (used by `requires` field above)
+  ["go", { win32: "winget install GoLang.Go", darwin: "brew install go", linux: "sudo apt install golang", docLink: "https://go.dev/dl/" }],
+  ["cargo", { win32: "winget install Rustlang.Rustup", darwin: "brew install rustup", linux: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh", docLink: "https://rustup.rs/" }],
 ]);
 
 // ── 扫描逻辑 ──
@@ -190,11 +202,42 @@ function generateBinaryCommands(warnings: CollectedWarning[]): string[] {
       .map(w => w.binary!)
   )].sort();
   const plat = process.platform as "win32" | "darwin" | "linux";
-  return binaries.map(bin => {
+  const result: string[] = [];
+  const seenPrereqs = new Set<string>();
+
+  for (const bin of binaries) {
     const kb = BINARY_INSTALL.get(bin);
-    if (kb) return `${kb[plat] || kb.linux}  # ${bin}`;
-    return `# ${bin} — install manually (no known package)`;
-  });
+    if (!kb) {
+      result.push(`# ${bin} — install manually (no known package)`);
+      continue;
+    }
+    const cmd = kb[plat] || kb.linux;
+
+    // Check prerequisite runtime
+    if (kb.requires) {
+      const prereqOk = checkBinaryExists(kb.requires);
+      if (!prereqOk) {
+        // Add prereq install command first (only once)
+        if (!seenPrereqs.has(kb.requires)) {
+          seenPrereqs.add(kb.requires);
+          const prereqKb = BINARY_INSTALL.get(kb.requires);
+          if (prereqKb) {
+            const prereqCmd = prereqKb[plat] || prereqKb.linux;
+            if (!prereqCmd.startsWith("#")) {
+              result.push(`${prereqCmd}  # ${kb.requires} (prerequisite for ${bin})`);
+            }
+          } else {
+            result.push(`# Install ${kb.requires} first (required by ${bin}) — no known package`);
+          }
+        }
+        result.push(`# ${bin} — requires ${kb.requires} (install above first, then re-run)`);
+        continue;
+      }
+    }
+
+    result.push(`${cmd}  # ${bin}`);
+  }
+  return result;
 }
 
 function applyEnvFixes(warnings: CollectedWarning[]): void {
@@ -238,19 +281,39 @@ function applyBinaryFixes(warnings: CollectedWarning[]): void {
 
   const plat = process.platform as "win32" | "darwin" | "linux";
   for (const cmd of commands) {
+    // Skip comment-only lines (brew-only, missing prereq, etc.)
     if (cmd.startsWith("#")) {
       console.log(`SKIP: ${cmd}`);
       continue;
     }
-    // Extract just the command (before # comment)
+    // Extract the actual command (before the "  #" comment suffix)
     const actualCmd = cmd.split("  #")[0].trim();
+    if (!actualCmd || actualCmd.startsWith("#")) {
+      console.log(`SKIP: ${cmd}`);
+      continue;
+    }
     console.log(`Running: ${actualCmd}`);
     try {
-      execFileSync(actualCmd.split(" ")[0], actualCmd.split(" ").slice(1), {
-        stdio: "inherit",
-        timeout: 120000, // 2 min timeout per install
-        shell: plat === "win32",
-      });
+      // Handle compound commands with && (e.g., "pip install uv && uv tool install nano-pdf")
+      // On win32, use shell:true to let cmd.exe handle &&; on unix, split and run sequentially
+      if (actualCmd.includes("&&")) {
+        const parts = actualCmd.split("&&").map(p => p.trim());
+        for (const part of parts) {
+          const tokens = part.split(/\s+/);
+          execFileSync(tokens[0], tokens.slice(1), {
+            stdio: "inherit",
+            timeout: 120000,
+            shell: plat === "win32",
+          });
+        }
+      } else {
+        const tokens = actualCmd.split(/\s+/);
+        execFileSync(tokens[0], tokens.slice(1), {
+          stdio: "inherit",
+          timeout: 120000, // 2 min timeout per install
+          shell: plat === "win32",
+        });
+      }
       console.log("  OK");
     } catch (err) {
       console.error(`  FAILED: ${err instanceof Error ? err.message : String(err)}`);

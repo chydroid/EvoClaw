@@ -1568,15 +1568,26 @@ export class SkillManager {
   /** 二进制安装命令知识库 */
   private static readonly BINARY_INSTALL_COMMANDS: ReadonlyMap<string, {
     win32: string; darwin: string; linux: string; docLink?: string;
+    /** 前置依赖（如 go/cargo/pip），如果该依赖不在 PATH 中则提示先安装 */
+    requires?: string;
   }> = new Map([
     ["jq", { win32: "winget install jqlang.jq", darwin: "brew install jq", linux: "sudo apt install jq", docLink: "https://stedolan.github.io/jq/download/" }],
     ["ffmpeg", { win32: "winget install Gyan.FFmpeg", darwin: "brew install ffmpeg", linux: "sudo apt install ffmpeg", docLink: "https://ffmpeg.org/download.html" }],
     ["fd", { win32: "winget install sharkdp.fd", darwin: "brew install fd", linux: "sudo apt install fd-find", docLink: "https://github.com/sharkdp/fd#installation" }],
     ["gh", { win32: "winget install GitHub.cli", darwin: "brew install gh", linux: "sudo apt install gh", docLink: "https://cli.github.com/" }],
-    ["himalaya", { win32: "winget install hyrious.himalaya", darwin: "brew install himalaya", linux: "cargo install himalaya", docLink: "https://github.com/pimalaya/himalaya" }],
-    ["whisper", { win32: "pip install openai-whisper", darwin: "pip install openai-whisper", linux: "pip install openai-whisper", docLink: "https://github.com/openai/whisper" }],
-    ["obsidian", { win32: "winget install Obsidian.Obsidian", darwin: "brew install --cask obsidian", linux: "Download from https://obsidian.md/", docLink: "https://obsidian.md/" }],
-    ["xurl", { win32: "go install rsc.io/xurl@latest", darwin: "go install rsc.io/xurl@latest", linux: "go install rsc.io/xurl@latest", docLink: "https://pkg.go.dev/rsc.io/xurl" }],
+    ["himalaya", { win32: "cargo install himalaya", darwin: "brew install himalaya", linux: "cargo install himalaya", docLink: "https://github.com/pimalaya/himalaya", requires: "cargo" }],
+    ["whisper", { win32: "pip install openai-whisper", darwin: "pip install openai-whisper", linux: "pip install openai-whisper", docLink: "https://github.com/openai/whisper", requires: "pip" }],
+    ["obsidian", { win32: "winget install Obsidian.Obsidian", darwin: "brew install --cask obsidian", linux: "# Download from https://obsidian.md/", docLink: "https://obsidian.md/" }],
+    ["xurl", { win32: "npm install -g @xdevplatform/xurl", darwin: "brew install xdevplatform/tap/xurl", linux: "npm install -g @xdevplatform/xurl", docLink: "https://www.npmjs.com/package/@xdevplatform/xurl", requires: "npm" }],
+    ["gifgrep", { win32: "go install github.com/steipete/gifgrep/cmd/gifgrep@latest", darwin: "brew install steipete/tap/gifgrep", linux: "go install github.com/steipete/gifgrep/cmd/gifgrep@latest", docLink: "https://gifgrep.com", requires: "go" }],
+    ["oracle", { win32: "npm install -g @steipete/oracle", darwin: "npm install -g @steipete/oracle", linux: "npm install -g @steipete/oracle", docLink: "https://askoracle.dev", requires: "npm" }],
+    ["nano-pdf", { win32: "pip install uv && uv tool install nano-pdf", darwin: "pip install uv && uv tool install nano-pdf", linux: "pip install uv && uv tool install nano-pdf", docLink: "https://pypi.org/project/nano-pdf/", requires: "pip" }],
+    ["gog", { win32: "# brew only — not available on Windows. See https://gogcli.sh", darwin: "brew install steipete/tap/gogcli", linux: "# brew only — not available on Linux", docLink: "https://gogcli.sh" }],
+    ["sag", { win32: "# brew only — not available on Windows. See https://sag.sh", darwin: "brew install steipete/tap/sag", linux: "# brew only — not available on Linux", docLink: "https://sag.sh" }],
+    ["summarize", { win32: "# brew only — not available on Windows. See https://github.com/steipete/summarize", darwin: "brew install steipete/tap/summarize", linux: "# brew only — not available on Linux", docLink: "https://github.com/steipete/summarize" }],
+    // Runtime prerequisites (used by `requires` field above)
+    ["go", { win32: "winget install GoLang.Go", darwin: "brew install go", linux: "sudo apt install golang", docLink: "https://go.dev/dl/" }],
+    ["cargo", { win32: "winget install Rustlang.Rustup", darwin: "brew install rustup", linux: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh", docLink: "https://rustup.rs/" }],
   ]);
 
   /**
@@ -1668,6 +1679,31 @@ export class SkillManager {
         const kb = SkillManager.BINARY_INSTALL_COMMANDS.get(bin);
         if (kb) {
           const cmd = kb[plat] || kb.linux;
+          // Check if a prerequisite runtime is required and available
+          if (kb.requires) {
+            const prereqOk = this.checkBinaryExists(kb.requires);
+            if (!prereqOk) {
+              const prereqInstall = SkillManager.BINARY_INSTALL_COMMANDS.get(kb.requires);
+              const prereqCmd = prereqInstall ? (prereqInstall[plat] || prereqInstall.linux) : "";
+              return {
+                warning,
+                solution: `Install "${bin}" requires "${kb.requires}" which is not in PATH. Install ${kb.requires} first${prereqCmd ? `: ${prereqCmd}` : ""}, then run: ${cmd}`,
+                commands: prereqCmd ? [prereqCmd, cmd] : [cmd],
+                docLink: kb.docLink,
+                severity: "error",
+              };
+            }
+          }
+          // brew-only comment lines are not executable
+          if (cmd.startsWith("#")) {
+            return {
+              warning,
+              solution: `"${bin}" — ${cmd.replace(/^#\s*/, "")}`,
+              commands: [],
+              docLink: kb.docLink,
+              severity: "warn",
+            };
+          }
           return {
             warning,
             solution: `Install "${bin}" binary using: ${cmd}`,
