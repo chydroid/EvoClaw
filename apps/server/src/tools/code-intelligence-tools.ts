@@ -122,7 +122,8 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
     },
     async (params: Record<string, unknown>) => {
       try {
-        const maxCount = Number(params.maxCount) || 20;
+        const maxCountRaw = Number(params.maxCount);
+        const maxCount = Number.isFinite(maxCountRaw) && maxCountRaw > 0 ? maxCountRaw : 20;
         const log = await gitOps.log(maxCount);
         return { success: true, log, count: log.length };
       } catch (err) {
@@ -293,7 +294,8 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
         const query = String(params.query || "");
         if (!query) return { success: false, error: "query is required" };
         const language = params.language ? String(params.language) : undefined;
-        const maxResults = Number(params.maxResults) || 20;
+        const maxResultsRaw = Number(params.maxResults);
+        const maxResults = Number.isFinite(maxResultsRaw) && maxResultsRaw > 0 ? maxResultsRaw : 20;
         const results = await codeIntel.searchSymbols(query, language, maxResults);
         return { success: true, results, count: results.length };
       } catch (err) {

@@ -2147,7 +2147,8 @@ export class ProtocolAdapter {
           refreshError = err instanceof Error ? err.message : String(err);
           return -1;
         });
-        const limit = Math.max(1, Math.min(parseInt(req.query.limit as string, 10) || 10, 100));
+        const limitParsed = parseInt(req.query.limit as string, 10);
+        const limit = Math.max(1, Math.min(Number.isFinite(limitParsed) && limitParsed > 0 ? limitParsed : 10, 100));
         const trending = skillManager.getMarketplace().getTrending(limit);
         res.json({ success: true, skills: trending, partial: staleCount < 0, refreshError });
       } catch (err) {

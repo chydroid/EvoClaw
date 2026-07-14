@@ -10,6 +10,8 @@
  * - 优先使用用户配置的第一个已启用的Provider
  */
 
+import { isUnsafeRegex } from "@evoclaw/security";
+
 export interface CopilotRouteRule {
   pattern: RegExp | string;
   targetModel: string;
@@ -308,14 +310,22 @@ export class CopilotRouter {
   private matchRule(taskDescription: string): CopilotRouteRule | null {
     for (const rule of this.config.rules) {
       try {
-        const regex = typeof rule.pattern === "string"
-          ? new RegExp(rule.pattern, "i")
-          : rule.pattern;
+        let regex: RegExp;
+        if (typeof rule.pattern === "string") {
+          if (isUnsafeRegex(rule.pattern)) {
+            process.stderr.write(
+              "[CopilotRouter] unsafe regex pattern skipped (ReDoS risk): " + rule.pattern + "\n",
+            );
+            continue;
+          }
+          regex = new RegExp(rule.pattern, "i");
+        } else {
+          regex = rule.pattern;
+        }
         if (regex.test(taskDescription)) {
           return rule;
         }
       } catch (err) {
-        // 非法正则模式，记录到 stderr 并跳过该规则（视为不匹配）
         process.stderr.write(
           "[CopilotRouter] invalid rule pattern '" + String(rule.pattern) + "': " + err + "\n",
         );

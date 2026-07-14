@@ -628,7 +628,8 @@ except Exception as e:
     },
     async (params: Record<string, unknown>) => {
       const artist = String(params.artist || "");
-      const limit = Number(params.limit) || 10;
+      const limitRaw = Number(params.limit);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
       if (!artist) return { error: "Artist name is required" };
       // Return structured data that the LLM will format into a nice list
       return JSON.stringify({

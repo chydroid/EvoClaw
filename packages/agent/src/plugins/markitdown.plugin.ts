@@ -4,8 +4,11 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { lookup } from "dns";
+import { promisify as p } from "util";
 
 const execFileAsync = promisify(execFile);
+const lookupAsync = p(lookup);
 
 const MANIFEST = {
   name: "MarkItDown",
@@ -29,45 +32,79 @@ const SKIP_EXTENSIONS = [
   ".exe", ".dll", ".so", ".dylib", ".bin",
 ];
 
-let markitdownCmd: string | null = null;
+interface MarkItDownCommand {
+  cmd: string;
+  args: string[];
+}
+
+let markitdownCmd: MarkItDownCommand | null = null;
 let convertCount = 0;
 
+function isPrivateIPv4(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some(n => isNaN(n) || n < 0 || n > 255)) return true;
+  const [a, b] = parts;
+  return (
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a === 169 && b === 254 ||
+    a === 0
+  );
+}
+
+async function checkSsrf(url: string): Promise<string | null> {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "non-http protocol";
+    const hostname = u.hostname;
+    if (hostname === "localhost" || hostname === "[::1]" || hostname.endsWith(".local")) {
+      return `loopback/link-local hostname "${hostname}"`;
+    }
+    const { address } = await lookupAsync(hostname);
+    if (isPrivateIPv4(address)) return `resolves to private/loopback IP "${address}"`;
+    if (address.includes(":") && (address === "::1" || address.startsWith("fe80:") || address.startsWith("fc") || address.startsWith("fd"))) {
+      return `private/loopback IPv6 "${address}"`;
+    }
+    return null;
+  } catch {
+    return "DNS resolution failed";
+  }
+}
+
 async function checkMarkItDownAvailable(): Promise<boolean> {
-  if (markitdownCmd !== null) return markitdownCmd !== "";
+  if (markitdownCmd !== null) return markitdownCmd.cmd !== "";
   try {
     await execFileAsync("markitdown", ["--version"], { timeout: 5000 });
-    markitdownCmd = "markitdown";
+    markitdownCmd = { cmd: "markitdown", args: [] };
     console.log("[MarkItDown] markitdown CLI found and available");
   } catch {
     try {
       await execFileAsync("python", ["-m", "markitdown", "--version"], { timeout: 5000 });
-      markitdownCmd = "python -m markitdown";
+      markitdownCmd = { cmd: "python", args: ["-m", "markitdown"] };
       console.log("[MarkItDown] markitdown available via python -m markitdown");
     } catch {
       try {
         await execFileAsync("python3", ["-m", "markitdown", "--version"], { timeout: 5000 });
-        markitdownCmd = "python3 -m markitdown";
+        markitdownCmd = { cmd: "python3", args: ["-m", "markitdown"] };
         console.log("[MarkItDown] markitdown available via python3 -m markitdown");
       } catch {
-        markitdownCmd = "";
+        markitdownCmd = { cmd: "", args: [] };
         console.log("[MarkItDown] markitdown not found. Install with: pip install 'markitdown[all]'");
       }
     }
   }
-  return markitdownCmd !== "";
+  return markitdownCmd.cmd !== "";
 }
 
 async function convertWithMarkItDown(inputPath: string): Promise<string | null> {
   const available = await checkMarkItDownAvailable();
-  if (!available || !markitdownCmd) return null;
+  if (!available || !markitdownCmd || !markitdownCmd.cmd) return null;
 
   try {
-    const parts = markitdownCmd.split(" ");
-    const cmd = parts[0];
-    const baseArgs = parts.slice(1);
-    const args = [...baseArgs, inputPath];
-
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
+    const args = [...markitdownCmd.args, inputPath];
+    const { stdout, stderr } = await execFileAsync(markitdownCmd.cmd, args, {
       timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
       encoding: "utf-8",
@@ -89,8 +126,19 @@ async function convertUrlToMarkdown(url: string): Promise<string | null> {
   const available = await checkMarkItDownAvailable();
   if (!available) return null;
 
+  const ssrfReason = await checkSsrf(url);
+  if (ssrfReason) {
+    console.warn(`[MarkItDown] URL blocked by SSRF protection: ${ssrfReason}`);
+    return null;
+  }
+
   const tmpDir = os.tmpdir();
-  const urlPath = new URL(url).pathname;
+  let urlPath: string;
+  try {
+    urlPath = new URL(url).pathname;
+  } catch {
+    return null;
+  }
   const urlExt = path.extname(urlPath).toLowerCase();
   const ext = CONVERTIBLE_EXTENSIONS.includes(urlExt) ? urlExt : ".html";
   const tmpFile = path.join(tmpDir, `evoclaw-md-${Date.now()}${ext}`);
@@ -98,14 +146,37 @@ async function convertUrlToMarkdown(url: string): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-    const response = await fetch(url, {
+    timeout.unref?.();
+    let currentUrl = url;
+    let response = await fetch(currentUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)",
         "Accept": "text/html,application/xhtml+xml,*/*",
       },
       signal: controller.signal,
-      redirect: "follow",
+      redirect: "manual",
     });
+    let redirectCount = 0;
+    while ([301, 302, 303, 307, 308].includes(response.status) && redirectCount < 5) {
+      const location = response.headers.get("location");
+      if (!location) break;
+      currentUrl = new URL(location, currentUrl).href;
+      const redirectSsrfReason = await checkSsrf(currentUrl);
+      if (redirectSsrfReason) {
+        clearTimeout(timeout);
+        console.warn(`[MarkItDown] Redirect blocked by SSRF: ${redirectSsrfReason}`);
+        return null;
+      }
+      response = await fetch(currentUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; EvoClaw/1.0; +markitdown)",
+          "Accept": "text/html,application/xhtml+xml,*/*",
+        },
+        signal: controller.signal,
+        redirect: "manual",
+      });
+      redirectCount++;
+    }
     clearTimeout(timeout);
 
     if (!response.ok) return null;
@@ -136,7 +207,11 @@ async function convertFileToMarkdown(filePath: string): Promise<string | null> {
   if (SKIP_EXTENSIONS.includes(ext)) return null;
   if (!CONVERTIBLE_EXTENSIONS.includes(ext) && ext !== "") return null;
 
-  if (!fs.existsSync(filePath)) return null;
+  try {
+    await fs.promises.access(filePath, fs.constants.R_OK);
+  } catch {
+    return null;
+  }
 
   return convertWithMarkItDown(filePath);
 }

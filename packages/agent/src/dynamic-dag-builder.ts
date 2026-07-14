@@ -1,4 +1,5 @@
 import { ServiceRegistry, EventBus, type DAGNode, type TaskPriority } from "@evoclaw/core";
+import { isUnsafeRegex } from "@evoclaw/security";
 
 export interface DAGBuilderConfig {
   maxRetries: number;
@@ -205,6 +206,7 @@ export class DynamicDAGBuilder {
 
       for (const trigger of skill.triggers) {
         try {
+          if (isUnsafeRegex(trigger.pattern)) continue;
           const regex = new RegExp(trigger.pattern, "i");
           if (regex.test(description)) {
             score += 5;

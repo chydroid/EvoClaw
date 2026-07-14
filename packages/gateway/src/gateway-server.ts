@@ -1749,8 +1749,10 @@ export class GatewayServer {
       const { sessionId, limit, nameContains, traceId, sinceMs } = req.query as Record<string, string>;
       const filter: { sessionId?: string; limit?: number; nameContains?: string; traceId?: string; sinceMs?: number } = {};
       if (sessionId) filter.sessionId = sessionId;
-      if (limit) filter.limit = Math.min(parseInt(limit, 10) || 50, 500);
-      else filter.limit = 50;
+      if (limit) {
+        const parsed = parseInt(limit, 10);
+        filter.limit = Math.min(Number.isFinite(parsed) && parsed > 0 ? parsed : 50, 500);
+      } else filter.limit = 50;
       if (nameContains) filter.nameContains = nameContains;
       if (traceId) filter.traceId = traceId;
       if (sinceMs) {
@@ -1942,7 +1944,8 @@ export class GatewayServer {
         res.status(503).json({ error: "executionCheckpointStore not available" });
         return;
       }
-      const limit = parseInt((_req.query.limit as string) || "50", 10) || 50;
+      const limitParsed = parseInt((_req.query.limit as string) || "50", 10);
+      const limit = Number.isFinite(limitParsed) && limitParsed > 0 ? limitParsed : 50;
       const executions = store.getRecent({ limit: Math.min(limit, 200) });
       res.json({ executions, count: executions.length });
     });

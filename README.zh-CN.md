@@ -17,8 +17,8 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/version-0.80.0-orange?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-5491-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-0.81.0-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/tests-5492-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
@@ -28,8 +28,10 @@
 
 ### 环境要求
 
-- **Node.js** >= 20
+- **Node.js** >= 20（推荐 Node 24，与 pnpm 10 兼容性更好）
 - **pnpm** >= 9
+
+> **pnpm 版本兼容说明**：pnpm 10+ 需要 Node >= 22.13。如果你使用 Node 20，请使用 `npm install -g pnpm@9` 替代 `npm install -g pnpm`。
 
 ### 安装
 
@@ -40,6 +42,8 @@ cd EvoClaw
 
 # 2. 安装依赖
 pnpm install
+# 如果 pnpm 不可用，可使用 npm：
+# npm install
 
 # 3. 配置环境变量
 cp .env.example .env
@@ -47,9 +51,13 @@ cp .env.example .env
 
 # 4. 构建项目
 pnpm build
+# OR 使用 npm：
+# npm run build
 
 # 5. 启动服务
 pnpm start
+# OR 使用 npm：
+# npm start
 ```
 
 浏览器打开 **http://localhost:27788**。

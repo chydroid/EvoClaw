@@ -15,6 +15,7 @@
  */
 
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
+import { isUnsafeRegex } from "@evoclaw/security";
 
 // ── MITRE ATLAS Taxonomy ─────────────────────────────────
 
@@ -476,6 +477,7 @@ export class FormalVerifier {
         switch (pattern.type) {
           case "regex":
             try {
+              if (isUnsafeRegex(pattern.pattern)) break;
               const regex = new RegExp(pattern.pattern, "i");
               const match = regex.exec(text);
               if (match) {

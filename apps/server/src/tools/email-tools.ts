@@ -186,7 +186,8 @@ export function registerEmailTools(
     },
     async (params: Record<string, unknown>) => {
       const accountId = String(params.accountId || "");
-      const limit = Math.max(1, Math.min(Number(params.limit) || 50, 500));
+      const limitRaw = Number(params.limit);
+      const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 50, 500));
       const unreadOnly = Boolean(params.unreadOnly || false);
 
       const accounts = emailClient.listAccounts();

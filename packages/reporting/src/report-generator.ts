@@ -488,7 +488,8 @@ export class ReportGenerator {
 
     Handlebars.registerHelper("truncate", function (this: unknown, str: unknown, len: unknown) {
       const s = String(str || "");
-      const l = Number(len) || 100;
+      const lRaw = Number(len);
+      const l = Number.isFinite(lRaw) && lRaw >= 0 ? lRaw : 100;
       return s.length > l ? s.substring(0, l) + "..." : s;
     });
 

@@ -17,8 +17,8 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/version-0.80.0-orange?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-5491-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-0.81.0-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/tests-5492-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
@@ -28,8 +28,10 @@
 
 ### Prerequisites
 
-- **Node.js** >= 20
+- **Node.js** >= 20 (Node 24 recommended for better compatibility with pnpm 10)
 - **pnpm** >= 9
+
+> **pnpm Version Compatibility Note**: pnpm 10+ requires Node >= 22.13. If you have Node 20, use `npm install -g pnpm@9` instead of `npm install -g pnpm`.
 
 ### Installation
 
@@ -40,6 +42,8 @@ cd EvoClaw
 
 # 2. Install dependencies
 pnpm install
+# OR use npm if pnpm is not available:
+# npm install
 
 # 3. Configure environment
 cp .env.example .env
@@ -47,9 +51,13 @@ cp .env.example .env
 
 # 4. Build
 pnpm build
+# OR use npm:
+# npm run build
 
 # 5. Start
 pnpm start
+# OR use npm:
+# npm start
 ```
 
 Open **http://localhost:27788** in your browser.

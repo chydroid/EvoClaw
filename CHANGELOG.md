@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.81.0] - 2026-07-15
+
+### Security Fixes
+
+- **ReDoS**: Added `isUnsafeRegex` checks to prevent Regular Expression Denial of Service in three locations:
+  - `CopilotRouter.matchRule()`: User-configurable routing patterns now validated before RegExp compilation
+  - `DynamicDAGBuilder` skill trigger matching: Skill trigger patterns validated against ReDoS signatures
+  - `FormalVerification` threat detection: Defense-in-depth regex safety for MITRE ATLAS patterns
+
+### Bug Fixes
+
+- **Correctness**: Fixed `Number(x) || default` pattern incorrectly converting `0` to default value in 5 locations:
+  - Email tools `list_emails` limit parameter (0 → 50 bug)
+  - Web tools `web_extract` maxLength parameter (0 → 5000 bug)
+  - Gateway server trace listing `limit` query parameter (2 locations)
+  - Protocol adapter marketplace trending `limit` query parameter
+  - All affected code now uses `Number.isFinite() && > 0` guard for proper zero handling
+
+### Infrastructure
+
+- All fixes verified with build, typecheck, and full test suite (5492 tests passing)
+
 ## [0.80.0] - 2026-07-14
 
 ### Security Fixes

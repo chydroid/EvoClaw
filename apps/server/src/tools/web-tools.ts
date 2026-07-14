@@ -416,7 +416,8 @@ export function registerWebTools(
     },
     async (params: Record<string, unknown>) => {
       const url = String(params.url || "");
-      const maxLength = Math.max(1, Number(params.maxLength) || 5000);
+      const maxLengthRaw = Number(params.maxLength);
+      const maxLength = Math.max(1, Number.isFinite(maxLengthRaw) && maxLengthRaw > 0 ? maxLengthRaw : 5000);
       if (!url || !url.startsWith("http")) {
         return { error: "Valid HTTP/HTTPS URL is required", url };
       }
