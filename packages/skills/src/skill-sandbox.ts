@@ -873,7 +873,7 @@ export class SkillSandbox {
     ${code}
   } catch (err) {
     if (err instanceof Error && err.message.includes("timed out")) {
-      throw new Error("Skill execution timed out after ${policy.maxExecutionTime}ms");
+      throw new Error("Skill execution timed out after " + ${policy.maxExecutionTime} + "ms", { cause: err });
     }
     throw err;
   }

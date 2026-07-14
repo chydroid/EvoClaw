@@ -859,6 +859,33 @@ export class SkillManager {
   }
 
   /**
+   * Validate npm package name following npm naming conventions.
+   * Allows scoped packages (@scope/name), lowercase, hyphens, dots, underscores.
+   */
+  private isValidNpmPackageName(name: string): boolean {
+    if (!name || name.length > 214) return false;
+    // Scoped packages: @scope/name
+    if (name.startsWith("@")) {
+      const slashIdx = name.indexOf("/");
+      if (slashIdx < 2 || slashIdx === name.length - 1) return false;
+      const scope = name.slice(1, slashIdx);
+      const pkg = name.slice(slashIdx + 1);
+      return /^[a-z0-9][a-z0-9._-]*$/.test(scope) && /^[a-z0-9][a-z0-9._-]*$/.test(pkg);
+    }
+    return /^[a-z0-9][a-z0-9._-]*$/.test(name) && !name.startsWith(".") && !name.startsWith("_");
+  }
+
+  /**
+   * Validate pip package name following PEP 508 conventions.
+   * Allows lowercase letters, numbers, hyphens, dots, underscores.
+   * Must start and end with a letter or number.
+   */
+  private isValidPipPackageName(name: string): boolean {
+    if (!name || name.length > 214) return false;
+    return /^[a-z0-9][a-z0-9._-]*[a-z0-9]$/.test(name) || /^[a-z0-9]$/.test(name);
+  }
+
+  /**
    * 用系统包管理器安装 binary（winget/brew/apt）。
    * Windows → winget，macOS → brew，Linux → apt-get（需 sudo，可能失败）。
    * 使用 execFileSync(shell:false) 安全执行，白名单校验 binary 名防止注入。
@@ -1533,7 +1560,7 @@ export class SkillManager {
       const zip = new AdmZip(zipPath);
       zip.extractAllTo(destDir, true);
     } catch (err) {
-      throw new Error(`ZIP extraction failed: ${err}`);
+      throw new Error(`ZIP extraction failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
   }
 
@@ -2765,12 +2792,26 @@ export class SkillManager {
           }
         }
       } else if (name.startsWith("pip:")) {
-        pipPkgs.push(dep.version !== "*" ? `${name.slice(4)}==${dep.version}` : name.slice(4));
+        const pkgName = name.slice(4);
+        if (this.isValidPipPackageName(pkgName)) {
+          pipPkgs.push(dep.version !== "*" ? `${pkgName}==${dep.version}` : pkgName);
+        } else {
+          step.warnings.push(`Invalid pip package name "${pkgName}" — skipped`);
+        }
       } else if (name.startsWith("npm:")) {
-        npmPkgs.push(dep.version !== "*" ? `${name.slice(4)}@${dep.version}` : name.slice(4));
+        const pkgName = name.slice(4);
+        if (this.isValidNpmPackageName(pkgName)) {
+          npmPkgs.push(dep.version !== "*" ? `${pkgName}@${dep.version}` : pkgName);
+        } else {
+          step.warnings.push(`Invalid npm package name "${pkgName}" — skipped`);
+        }
       } else {
         // Default: treat as npm package
-        npmPkgs.push(dep.version !== "*" ? `${name}@${dep.version}` : name);
+        if (this.isValidNpmPackageName(name)) {
+          npmPkgs.push(dep.version !== "*" ? `${name}@${dep.version}` : name);
+        } else {
+          step.warnings.push(`Invalid npm package name "${name}" — skipped`);
+        }
       }
     }
 
@@ -3105,11 +3146,15 @@ export class SkillManager {
         const reader = response.body?.getReader();
         if (!reader) throw new Error("Response has no body");
         const fileStream = fs.createWriteStream(archivePath);
+        // 监听 stream 错误，防止未处理的 error 事件导致进程崩溃
+        let streamError: Error | null = null;
+        fileStream.on("error", (err) => { streamError = err; });
         try {
           let received = 0;
           const pump = async (): Promise<void> => {
             // eslint-disable-next-line no-constant-condition
             while (true) {
+              if (streamError) throw streamError;
               const { done, value } = await reader.read();
               if (done) break;
               received += value.byteLength;
@@ -3117,7 +3162,15 @@ export class SkillManager {
                 controller.abort();
                 throw new Error(`Download exceeded ${MAX_DOWNLOAD_BYTES} bytes (possible zip bomb)`);
               }
-              fileStream.write(Buffer.from(value));
+              const buf = Buffer.from(value);
+              // 处理背压：如果内部缓冲区已满，等待 drain 事件
+              if (!fileStream.write(buf)) {
+                await new Promise<void>((resolve, reject) => {
+                  fileStream.once("drain", resolve);
+                  fileStream.once("error", reject);
+                });
+                if (streamError) throw streamError;
+              }
             }
             fileStream.end();
             await new Promise<void>((resolve) => fileStream.on("close", resolve));

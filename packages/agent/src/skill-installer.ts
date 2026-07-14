@@ -7,8 +7,10 @@
 
 import type { ServiceRegistry } from "@evoclaw/core";
 import * as fs from "fs";
+import * as net from "net";
 import * as path from "path";
 import * as https from "https";
+import { URL } from "url";
 
 // ─── Result types ─────────────────────────────────────────────────────────────
 
@@ -962,6 +964,41 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
 // ─── HTTP/HTTPS file download ─────────────────────────────────────────────────
 
 /**
+ * Check if a hostname is a private/internal/loopback IP address.
+ * Prevents SSRF via redirect to internal networks.
+ */
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h.endsWith(".local")) return true;
+  const ipType = net.isIP(h);
+  if (ipType === 4) {
+    const parts = h.split(".").map((p) => parseInt(p, 10));
+    if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) return false;
+    const [a, b] = parts;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a >= 224) return true;
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+  if (ipType === 6) {
+    const normalized = h.replace(/^\[|\]$/g, "");
+    if (normalized === "::1" || normalized === "::") return true;
+    if (/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(normalized)) {
+      const v4 = normalized.replace("::ffff:", "");
+      return isPrivateHost(v4);
+    }
+    if (/^fe[89ab]/.test(normalized)) return true;
+    if (/^f[cdef]/.test(normalized)) return true;
+    return false;
+  }
+  return false;
+}
+
+/**
  * Download a file from URL to a local path.
  */
 export function downloadFile(url: string, destPath: string): Promise<void> {
@@ -980,6 +1017,19 @@ export function downloadFile(url: string, destPath: string): Promise<void> {
       if (redirectCount > 5) {
         cleanup(new Error(`重定向次数过多 (>${redirectCount})`));
         return;
+      }
+      // SSRF 防护：重定向目标需校验是否为私有/内网地址
+      if (redirectCount > 0) {
+        try {
+          const parsed = new URL(urlStr);
+          if (isPrivateHost(parsed.hostname)) {
+            cleanup(new Error(`SSRF blocked: redirect to internal host "${parsed.hostname}"`));
+            return;
+          }
+        } catch {
+          cleanup(new Error(`无效的重定向URL: ${urlStr}`));
+          return;
+        }
       }
       const mod = urlStr.startsWith("https") ? https : require("http");
       const req = mod.get(urlStr, { timeout: 30000 }, (res: any) => {

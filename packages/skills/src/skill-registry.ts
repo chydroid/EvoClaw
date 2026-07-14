@@ -455,7 +455,7 @@ export class SkillRegistry {
       return data;
     } catch (err) {
       if (err instanceof Error && err.name === "TimeoutError") {
-        throw new Error(`Registry "${remote.url}" timed out`);
+        throw new Error(`Registry "${remote.url}" timed out`, { cause: err });
       }
       throw err;
     }

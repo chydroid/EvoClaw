@@ -419,8 +419,8 @@ export class FileSystemManager {
   private async writeContent(fullPath: string, content: string): Promise<void> {
     try {
       await atomicWriteFile(fullPath, content);
-    } catch {
-      throw new Error(`Unable to write file: ${fullPath}`);
+    } catch (err) {
+      throw new Error(`Unable to write file: ${fullPath}`, { cause: err });
     }
   }
 

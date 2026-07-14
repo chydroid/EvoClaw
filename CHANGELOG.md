@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.82.0] - 2026-07-15
+
+### Security Fixes
+
+- **SSRF**: Fixed SSRF vulnerability in `skill-installer.ts` `downloadFile()` — HTTP redirects now validated per-hop to prevent redirect to internal/private IP addresses
+- **Process Crash**: Fixed missing error event handler on `createWriteStream` in `skill-manager.ts` download function — unhandled stream errors (e.g. disk full) no longer crash the process
+- **Memory**: Fixed backpressure not handled in `fileStream.write()` in `skill-manager.ts` download function — large file downloads now properly wait for `drain` event to prevent memory overflow
+
+### Bug Fixes
+
+- **Error Chain**: Fixed 4 locations where `catch { throw new Error(...) }` lost original error `cause` and stack trace:
+  - `filesystem-manager.ts` `writeContent()` — now passes `{ cause: err }`
+  - `skill-manager.ts` ZIP extraction error — now preserves original error as `cause`
+  - `skill-registry.ts` registry timeout — now preserves original error as `cause`
+  - `skill-sandbox.ts` skill execution timeout — now preserves original error as `cause` and fixes template literal
+
+### Defense
+
+- **Package Validation**: Added `isValidNpmPackageName()` and `isValidPipPackageName()` validation in `skill-manager.ts` to reject malformed package names from skill definitions before passing to npm/pip install
+
+### Infrastructure
+
+- All fixes verified with build, typecheck, and test suite (5484 tests passing, 2 skipped)
+
 ## [0.81.0] - 2026-07-15
 
 ### Security Fixes
