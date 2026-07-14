@@ -12,6 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -462,38 +463,12 @@ export class HumanApprovalManager {
     }
     if (!this.dirty || !this.config.storePath) return;
     try {
-      const dir = path.dirname(this.config.storePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
       const state = {
         trustRules: this.trustRules,
         pendingApprovals: Array.from(this.pendingApprovals.values()).filter(p => p.status === "pending"),
         savedAt: new Date().toISOString(),
       };
-      const tmpPath = `${this.config.storePath}.${process.pid}.${Date.now()}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(state, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fs.renameSync(tmpPath, this.config.storePath);
-      } catch {
-        // EXDEV/EBUSY 跨设备回退
-        const dstTmp = `${this.config.storePath}.${process.pid}.${Date.now()}.dst.tmp`;
-        try {
-          fs.copyFileSync(tmpPath, dstTmp);
-          fs.renameSync(dstTmp, this.config.storePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } catch (fallbackErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw fallbackErr;
-        }
-      }
+      atomicWriteFileSync(this.config.storePath, JSON.stringify(state, null, 2));
       this.dirty = false;
     } catch (err) {
       process.stderr.write("[HumanApproval] flush failed: " + err + "\n");

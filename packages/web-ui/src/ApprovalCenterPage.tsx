@@ -102,14 +102,14 @@ export default function ApprovalCenterPage() {
     return () => clearInterval(interval);
   }, [tab]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
       const [pendingRes, configRes, reactionRes, historyRes] = await Promise.all([
-        fetch(`${API}/api/approvals/pending`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
-        fetch(`${API}/api/approval-timeout/config`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
-        fetch(`${API}/api/reaction-approvals`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
-        fetch(`${API}/api/approvals/history`).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approvals/pending`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approval-timeout/config`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/reaction-approvals`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approvals/history`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const pendList: PendingRequest[] = (pendingRes?.pending || pendingRes?.requests || pendingRes || []) as any[];
@@ -140,12 +140,24 @@ export default function ApprovalCenterPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    loadData(controller.signal);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [loadData]);
 
   // Auto-refresh pending
   useEffect(() => {
     if (tab !== "pending") return;
-    const interval = setInterval(loadData, 10000);
+    const interval = setInterval(() => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      loadData(controller.signal).finally(() => clearTimeout(timeout));
+    }, 10000);
     return () => clearInterval(interval);
   }, [tab, loadData]);
 

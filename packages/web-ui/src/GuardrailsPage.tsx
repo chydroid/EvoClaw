@@ -53,12 +53,12 @@ export default function GuardrailsPage() {
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [expandedLayer, setExpandedLayer] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
       const [statsRes, configRes] = await Promise.all([
-        fetch(`${API}/api/guardrails/stats`).then(r => r.json()),
-        fetch(`${API}/api/guardrails/config`).then(r => r.json()),
+        fetch(`${API}/api/guardrails/stats`, { signal }).then(r => r.json()),
+        fetch(`${API}/api/guardrails/config`, { signal }).then(r => r.json()),
       ]);
       if (statsRes.stats) setStats(statsRes.stats);
       if (configRes.rules) setConfig(configRes as GuardrailConfig);
@@ -68,7 +68,15 @@ export default function GuardrailsPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    loadData(controller.signal);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [loadData]);
 
   const handleTest = async () => {
     if (!testContent.trim()) return;

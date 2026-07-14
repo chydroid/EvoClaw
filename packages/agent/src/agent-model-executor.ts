@@ -44,6 +44,7 @@ import { IterationBudget, type IterationBudgetConfig, type IterationBudgetStatus
 import { classifySkillError, isEmptySkillOutput, formatSkillReply, sanitizeSkillOutput } from "./skill-dispatch-error-handler";
 import { ToolResultCache, type CacheStats } from "./tool-result-cache";
 import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
+import * as crypto from "crypto";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -221,8 +222,10 @@ export class AgentModelExecutor {
   private steerManager: import("./steer-command").SteerManager | null = null;
   private workboard: import("./workboard").Workboard | null = null;
 
-  /** Current observability trace ID for the active chat session */
-  private _currentTraceId: string | undefined;
+  /** Per-session observability trace IDs (keyed by sessionId).
+   *  此前为单一实例字段 _currentTraceId，并发 chat() 调用会互相覆盖，
+   *  导致跨会话 trace ID 泄漏。改为 Map 后每个会话拥有独立的 trace ID。 */
+  private _currentTraceIds = new Map<string, string | undefined>();
 
   /** Current ContextEngine result keyed by sessionId (set by chatInner).
    *  此前为单一实例字段，并发 chatInner 调用会互相覆盖，导致跨会话上下文泄漏。
@@ -866,7 +869,7 @@ export class AgentModelExecutor {
   }
 
   /** Build the deps object for LLM caller module */
-  private getLLMCallerDeps(): LLMCallerDeps {
+  private getLLMCallerDeps(sessionId?: string): LLMCallerDeps {
     // 每次构建 deps 时清理过期缓存，避免内存泄漏
     this.cleanToolCache();
     return {
@@ -903,7 +906,7 @@ export class AgentModelExecutor {
       checkOutputGuardrail: this.guardrailsManager ? (output: string) => this.guardrailsManager!.checkOutput(output) : undefined,
       checkToolGuardrail: this.guardrailsManager ? (toolName: string, args: Record<string, unknown>) => this.guardrailsManager!.checkToolCall(toolName, args) : undefined,
       observability: this.observability ?? undefined,
-      currentTraceId: this._currentTraceId,
+      currentTraceId: sessionId ? this._currentTraceIds.get(sessionId) : undefined,
       recordStaleContext: this.staleContextManager ? (sessionId: string, toolName: string) => this.staleContextManager!.recordToolResult(sessionId, toolName) : undefined,
       getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
       semanticIntentClassifier: this.semanticQuickReply,
@@ -1035,6 +1038,13 @@ export class AgentModelExecutor {
     checkFn?: () => boolean,
     dynamicSchemaOverrides?: () => Partial<ToolDefinition>,
   ): void {
+    // 重复注册检测：防止插件或 MCP 工具意外覆盖已注册的同名工具，
+    // 导致原有 handler 被静默替换。覆盖时输出警告以辅助排查。
+    if (this.registeredTools.has(name)) {
+      process.stderr.write(
+        `[AgentModelExecutor] Warning: tool "${name}" is already registered and will be overwritten.\n`,
+      );
+    }
     this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides });
   }
 
@@ -1494,7 +1504,7 @@ export class AgentModelExecutor {
     if (this.observability) {
       const trace = this.observability.startTrace(sessionId, { userId: sessionId.split("-")[0] || "unknown" });
       currentTraceId = trace.traceId;
-      this._currentTraceId = currentTraceId;
+      this._currentTraceIds.set(sessionId, currentTraceId);
 
       // ── OTel ↔ AgentObservability 桥接 ──
       // 两套 trace 体系独立运行（OTel traceId 是 32 hex，自研 traceId 是 base36+连字符）。
@@ -1945,7 +1955,10 @@ export class AgentModelExecutor {
             ).join("\n") + "\n";
           }
         } catch (err) {
-          // Silent fallback - memory is optional
+          // memory is optional but errors should be diagnosable
+          process.stderr.write(
+            `[AgentModelExecutor] memory search failed: ${err instanceof Error ? err.message : String(err)}\n`
+          );
         }
       };
       if (tracing?.isEnabled()) {
@@ -2306,7 +2319,7 @@ export class AgentModelExecutor {
     } finally {
       // Mark session as idle so heartbeat can resume
       this.markSessionIdle(sessionId);
-      this._currentTraceId = undefined;
+      this._currentTraceIds.delete(sessionId);
       // 清除会话级上下文引擎结果，避免跨会话泄漏
       this._contextEngineResults.delete(sessionId);
       // Clean up the per-session abort controller so a subsequent chat() in
@@ -2388,7 +2401,7 @@ export class AgentModelExecutor {
         ? this.memoryHub.remember(entry)
         : this.memoryHub.getLongTerm().store({
             ...entry,
-            id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            id: `mem-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
             createdAt: new Date(),
             accessedAt: new Date(),
           } as import("@evoclaw/core").MemoryEntry);
@@ -2647,10 +2660,14 @@ export class AgentModelExecutor {
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const prevClose = Number(item.previous_close || 0);
-      const currentPrice = Number(item.current_price || 0);
+      // 安全：外部 API 可能返回非数字字符串（如 "N/A"），Number() 会产生 NaN 导致 toFixed() 输出 "NaN"
+      const prevCloseRaw = Number(item.previous_close ?? 0);
+      const prevClose = Number.isFinite(prevCloseRaw) ? prevCloseRaw : 0;
+      const currentPriceRaw = Number(item.current_price ?? 0);
+      const currentPrice = Number.isFinite(currentPriceRaw) ? currentPriceRaw : 0;
       const changePercent = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
-      const amount = Number(item.amount || 0);
+      const amountRaw = Number(item.amount ?? 0);
+      const amount = Number.isFinite(amountRaw) ? amountRaw : 0;
       const amountStr = amount >= 1e8 ? `${(amount / 1e8).toFixed(2)}亿` : amount >= 1e4 ? `${(amount / 1e4).toFixed(0)}万` : String(amount);
       // A股惯例：红涨绿跌
       const changeText = changePercent >= 0 ? `+${changePercent.toFixed(2)}%` : `${changePercent.toFixed(2)}%`;
@@ -2866,7 +2883,7 @@ export class AgentModelExecutor {
       }
     }
 
-    const deps = this.getLLMCallerDeps();
+    const deps = this.getLLMCallerDeps(sessionId);
     // Inject iteration budget and context engine result for this session
     deps.iterationBudget = this.getIterationBudget(sessionId);
     deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;

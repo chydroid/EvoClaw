@@ -20,7 +20,8 @@ export class WSServerTransport {
   }
 
   attach(httpServer: http.Server): void {
-    this.wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+    // maxPayload: 1MB 足够所有合法协议帧，防止大帧耗尽内存
+    this.wss = new WebSocketServer({ server: httpServer, path: "/ws", maxPayload: 1024 * 1024 });
 
     this.wss.on("connection", (ws, req) => {
       const clientId = crypto.randomUUID();
@@ -60,8 +61,16 @@ export class WSServerTransport {
         });
       });
 
+      // 心跳 + pong 超时检测：未响应 ping 的死连接会被 terminate
+      let isAlive = true;
+      ws.on("pong", () => { isAlive = true; });
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
+          if (!isAlive) {
+            ws.terminate();
+            return;
+          }
+          isAlive = false;
           ws.ping();
         } else {
           clearInterval(pingInterval);

@@ -14,6 +14,7 @@
  */
 
 import type { EventBus } from "@evoclaw/core";
+import * as crypto from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -119,6 +120,8 @@ export interface SchedulerConfig {
 // ── Scheduler Implementation ─────────────────────────────
 
 export class TaskScheduler {
+  private static readonly MAX_COMPLETED = 1000;
+
   private queue: ScheduledTask[] = [];
   private completed: ScheduledTask[] = [];
   private config: Required<SchedulerConfig>;
@@ -147,7 +150,7 @@ export class TaskScheduler {
   enqueue(task: Omit<ScheduledTask, "id" | "status" | "createdAt" | "retryCount">): ScheduledTask {
     const scheduled: ScheduledTask = {
       ...task,
-      id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `task_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
       status: "queued",
       createdAt: Date.now(),
       retryCount: 0,
@@ -169,7 +172,7 @@ export class TaskScheduler {
     const task = this.queue.find((t) => t.id === taskId);
     if (task) {
       task.status = "cancelled";
-      this.completed.push(task);
+      this.addToCompleted(task);
       this.queue = this.queue.filter((t) => t.id !== taskId);
       this.eventBus.publish("scheduler:task-cancelled", { taskId }, "task-scheduler");
       return true;
@@ -337,7 +340,7 @@ export class TaskScheduler {
       task.actualDuration = task.completedAt - (task.startedAt ?? task.createdAt);
       task.result = result;
 
-      this.completed.push(task);
+      this.addToCompleted(task);
       this.queue = this.queue.filter((t) => t.id !== taskId);
       this.eventBus.publish("scheduler:task-completed", { taskId, result, duration: task.actualDuration }, "task-scheduler");
     }
@@ -352,7 +355,7 @@ export class TaskScheduler {
       task.actualDuration = task.completedAt - (task.startedAt ?? task.createdAt);
       task.error = error;
 
-      this.completed.push(task);
+      this.addToCompleted(task);
       this.queue = this.queue.filter((t) => t.id !== taskId);
       this.eventBus.publish("scheduler:task-failed", { taskId, error }, "task-scheduler");
     }
@@ -444,6 +447,14 @@ export class TaskScheduler {
   }
 
   // ── Internal ────────────────────────────────────────────
+
+  /** 添加到 completed 列表，超限时淘汰最旧条目 */
+  private addToCompleted(task: ScheduledTask): void {
+    this.completed.push(task);
+    while (this.completed.length > TaskScheduler.MAX_COMPLETED) {
+      this.completed.shift();
+    }
+  }
 
   private calculateCriticalPath(tasks: ScheduledTask[]): number {
     // Build dependency graph and find longest path

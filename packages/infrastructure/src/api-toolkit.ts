@@ -12,7 +12,12 @@
  *  - URL preview / scraping with metadata extraction
  */
 
-import { createHmac } from "crypto";
+import * as crypto from "crypto";
+import { SSRFProtection } from "@evoclaw/security";
+
+function random01(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+}
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -115,8 +120,11 @@ export class ApiClient {
 
         // Retry on 5xx server errors
         if (response.status >= 500 && attempt < this.config.maxRetries) {
-          const delay = Math.min(500 * 2 ** attempt + Math.random() * 200, 5000);
-          await new Promise((r) => setTimeout(r, delay));
+          const delay = Math.min(500 * 2 ** attempt + random01() * 200, 5000);
+          await new Promise((r) => {
+            const t = setTimeout(r, delay);
+            if (t.unref) t.unref();
+          });
           continue;
         }
 
@@ -146,8 +154,11 @@ export class ApiClient {
         if (attempt >= this.config.maxRetries) {
           break;
         }
-        const delay = Math.min(500 * 2 ** attempt + Math.random() * 200, 5000);
-        await new Promise((r) => setTimeout(r, delay));
+        const delay = Math.min(500 * 2 ** attempt + random01() * 200, 5000);
+        await new Promise((r) => {
+          const t = setTimeout(r, delay);
+          if (t.unref) t.unref();
+        });
       }
     }
 
@@ -304,6 +315,8 @@ export class QueryBuilder {
         return this.buildUpdate(query, params);
       case "delete":
         return this.buildDelete(query, params);
+      default:
+        throw new Error(`Unsupported query operation: ${String(query.operation)}`);
     }
   }
 
@@ -427,11 +440,11 @@ export class WebhookSender {
   /** Generate HMAC-SHA256 signature for webhook payload */
   static generateSignature(type: "hmac-sha256" | "sha256", body: string, secret: string): string {
     if (type === "hmac-sha256") {
-      return createHmac("sha256", secret).update(body).digest("hex");
+      return crypto.createHmac("sha256", secret).update(body).digest("hex");
     }
 
     // 使用 HMAC 而非将 secret 简单拼接到消息末尾，防止长度扩展攻击
-    return createHmac("sha256", secret).update(body).digest("hex");
+    return crypto.createHmac("sha256", secret).update(body).digest("hex");
   }
 }
 
@@ -484,42 +497,90 @@ export interface PageMetadata {
 }
 
 export class PageScraper {
+  /**
+   * SSRF 防护：使用 SSRFProtection 校验 URL，包含 DNS 解析反绑定检查。
+   * 之前仅校验 hostname 字符串，无法防御指向内网 IP 的 DNS rebinding。
+   */
+  private static async assertSafeUrl(url: string): Promise<void> {
+    const ssrf = new SSRFProtection();
+    const result = await ssrf.checkURL(url);
+    if (!result.allowed) {
+      throw new Error(result.reason ?? `SSRF protection blocked URL: ${url}`);
+    }
+  }
+
   /** Fetch basic page metadata without full rendering */
   static async getMetadata(url: string): Promise<PageMetadata> {
-    const client = new ApiClient();
-
     try {
-      const response = await client.get<string>(url, undefined);
-      const html = typeof response.data === "string" ? response.data : "";
+      await PageScraper.assertSafeUrl(url);
 
-      const meta: PageMetadata = { url };
+      // SSRF 防护：禁用自动跟随重定向，手动处理并对每个跳转目标二次校验，
+      // 防止初始 URL 通过 SSRF 检查后跳转至内网地址。
+      const maxRedirects = 5;
+      let currentUrl = url;
+      const requestHeaders = {
+        "User-Agent": "EvoClaw-PageScraper/1.0",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      };
 
-      // Extract title
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      meta.title = titleMatch?.[1]?.trim();
+      for (let i = 0; i <= maxRedirects; i++) {
+        const response = await fetch(currentUrl, {
+          method: "GET",
+          headers: requestHeaders,
+          signal: AbortSignal.timeout(10_000),
+          redirect: "manual",
+        });
 
-      // Extract meta description
-      const descMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
-      meta.description = descMatch?.[1];
+        const status = response.status;
+        if (status === 301 || status === 302 || status === 303 || status === 307 || status === 308) {
+          const location = response.headers.get("location");
+          if (!location) {
+            throw new Error(`Redirect status ${status} without Location header`);
+          }
+          let nextUrl: string;
+          try {
+            nextUrl = new URL(location, currentUrl).toString();
+          } catch {
+            throw new Error(`Invalid redirect Location: ${location}`);
+          }
+          await PageScraper.assertSafeUrl(nextUrl);
+          currentUrl = nextUrl;
+          continue;
+        }
 
-      // OpenGraph tags
-      const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
-      meta.ogTitle = ogTitleMatch?.[1];
+        const html = await response.text();
+        const meta: PageMetadata = { url };
 
-      const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
-      meta.ogDescription = ogDescMatch?.[1];
+        // Extract title
+        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        meta.title = titleMatch?.[1]?.trim();
 
-      const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-      meta.ogImage = ogImageMatch?.[1];
+        // Extract meta description
+        const descMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+        meta.description = descMatch?.[1];
 
-      // Favicon
-      const faviconMatch = html.match(/<link[^>]+rel=["'](?:shortcut )?icon["'][^>]+href=["']([^"']+)["']/i);
-      meta.favicon = faviconMatch?.[1];
+        // OpenGraph tags
+        const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+        meta.ogTitle = ogTitleMatch?.[1];
 
-      meta.contentType = response.headers["content-type"];
-      meta.contentLength = response.headers["content-length"] ? Number(response.headers["content-length"]) : undefined;
+        const ogDescMatch = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i);
+        meta.ogDescription = ogDescMatch?.[1];
 
-      return meta;
+        const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+        meta.ogImage = ogImageMatch?.[1];
+
+        // Favicon
+        const faviconMatch = html.match(/<link[^>]+rel=["'](?:shortcut )?icon["'][^>]+href=["']([^"']+)["']/i);
+        meta.favicon = faviconMatch?.[1];
+
+        meta.contentType = response.headers.get("content-type") ?? undefined;
+        const contentLength = response.headers.get("content-length");
+        meta.contentLength = contentLength ? Number(contentLength) : undefined;
+
+        return meta;
+      }
+
+      throw new Error(`Too many redirects (>${maxRedirects})`);
     } catch {
       return { url };
     }

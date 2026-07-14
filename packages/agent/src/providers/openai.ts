@@ -26,6 +26,7 @@ import type {
   ToolCall,
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
+import * as crypto from "crypto";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -395,7 +396,7 @@ export class OpenAIProvider implements ProviderPlugin {
         },
       }));
 
-    this.recordUsage(usage.totalTokens, model);
+    this.recordUsage(usage.promptTokens, usage.completionTokens, model);
 
     return {
       id: `chatcmpl_${Date.now()}`,
@@ -459,7 +460,7 @@ export class OpenAIProvider implements ProviderPlugin {
       model: request.model,
       messages: request.messages.map((m) => this.convertMessage(m)),
       temperature: request.temperature ?? 0.3,
-      max_tokens: request.maxTokens ?? 40960,
+      max_tokens: Math.max(1, request.maxTokens ?? 40960),
       top_p: 1,
       stream,
     };
@@ -561,8 +562,9 @@ export class OpenAIProvider implements ProviderPlugin {
     const msg = choice?.message;
     const finishReason = (choice?.finish_reason ?? "stop") as ModelResponse["finishReason"];
 
-    const tokens = data.usage?.total_tokens ?? 0;
-    this.recordUsage(tokens, model);
+    const promptTokens = data.usage?.prompt_tokens ?? 0;
+    const completionTokens = data.usage?.completion_tokens ?? 0;
+    this.recordUsage(promptTokens, completionTokens, model);
 
     return {
       id: data.id ?? `chatcmpl_${Date.now()}`,
@@ -579,20 +581,21 @@ export class OpenAIProvider implements ProviderPlugin {
       usage: {
         promptTokens: data.usage?.prompt_tokens ?? 0,
         completionTokens: data.usage?.completion_tokens ?? 0,
-        totalTokens: tokens,
+        totalTokens: promptTokens + completionTokens,
       },
       finishReason,
     };
   }
 
-  private recordUsage(tokens: number, model: string): void {
+  private recordUsage(promptTokens: number, completionTokens: number, model: string): void {
+    const tokens = promptTokens + completionTokens;
     this.totalTokens += tokens;
     this.requestCount++;
     const info = OPENAI_MODELS.find((m) => m.id === model);
     if (info) {
       const inputCost = (info.costInputPerMillion ?? 0) / 1_000_000;
       const outputCost = (info.costOutputPerMillion ?? 0) / 1_000_000;
-      this.totalCost += tokens * ((inputCost + outputCost) / 2);
+      this.totalCost += promptTokens * inputCost + completionTokens * outputCost;
     }
   }
 
@@ -614,8 +617,9 @@ export class OpenAIProvider implements ProviderPlugin {
       }
 
       if (i < maxRetries) {
-        const delay = Math.min(1000 * 2 ** i + Math.random() * 500, 10000);
-        await new Promise((r) => setTimeout(r, delay));
+        const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+        const delay = Math.min(1000 * 2 ** i + fraction * 500, 10000);
+        await new Promise((r) => { const t = setTimeout(r, delay); t.unref?.(); });
       }
     }
 

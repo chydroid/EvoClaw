@@ -11,11 +11,13 @@ import {
   type SkillLoadConfig,
   type SkillTrigger,
   type SecurityScanResult,
+  atomicWriteFileSync,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";
+import { isIP } from "net";
 import { SKILLmdParser } from "./skill-md-parser";
 import { SkillSandbox } from "./skill-sandbox";
 import { SkillLifecycleManager } from "./skill-lifecycle";
@@ -455,7 +457,7 @@ export class SkillManager {
     const allowedPaths = [skillDir];
 
     const skill: Skill = {
-      id: uuid(),
+      id: randomUUID(),
       name: parsed.meta.name,
       version: parsed.meta.version,
       description: parsed.meta.description,
@@ -1086,10 +1088,16 @@ export class SkillManager {
       }
 
       // Clean up processedItems cache
+      // Bug 5 修复：原代码在 Map 迭代中 delete，会跳过后续条目。
+      // 改为先收集待删除 key，迭代结束后批量删除。
+      const keysToDelete: string[] = [];
       for (const [key] of this.processedItems) {
         if (key.includes(skill.name) || key.includes(skillId)) {
-          this.processedItems.delete(key);
+          keysToDelete.push(key);
         }
+      }
+      for (const key of keysToDelete) {
+        this.processedItems.delete(key);
       }
 
       await this.eventBus.publish(
@@ -2326,19 +2334,7 @@ export class SkillManager {
         }
       }
       // 原子写入（temp + fsync + rename），避免进程崩溃时 _config.json 被截断损坏
-      const tmpPath = `${configPath}.${process.pid}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(persistable, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } catch (writeErr) {
-        // 写入/fsync 失败时清理临时文件，避免泄漏残留
-        try { fs.closeSync(fd); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw writeErr;
-      }
-      fs.closeSync(fd);
-      fs.renameSync(tmpPath, configPath);
+      atomicWriteFileSync(configPath, JSON.stringify(persistable, null, 2), { encoding: "utf-8" });
       return true;
     } catch (err) {
       process.stderr.write(`[SkillManager] Failed to save config for ${skillId}:` + " " + err + "\n");
@@ -3022,19 +3018,11 @@ export class SkillManager {
     }
 
     // SSRF 防护：禁止指向 localhost / 内网地址
-    const host = parsedUrl.hostname.toLowerCase();
-    const isInternal =
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "::1" ||
-      host === "0.0.0.0" ||
-      host.endsWith(".local") ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host) ||
-      /^169\.254\./.test(host);
-    if (isInternal) {
-      step.errors.push(`Download URL refused: internal/loopback host "${host}"`);
+    // Bug 1 修复：原检查不完整，未覆盖 IPv4-mapped IPv6 (::ffff:127.0.0.1)、
+    // IPv6 私有/链路本地/多播地址、IPv4 短格式（如 127.1）、十进制/八进制/十六进制 IP。
+    const ssrfError = this.checkSSRF(parsedUrl);
+    if (ssrfError) {
+      step.errors.push(`Download URL refused: ${ssrfError}`);
       step.status = "failed";
       return;
     }
@@ -3062,12 +3050,51 @@ export class SkillManager {
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 60_000);
+      // Bug 2 修复：原用 redirect:"follow" 自动跟随 3xx 但不检查重定向目标，
+      // 攻击者可托管公网域名重定向到内网 IP 绕过 SSRF 检查。
+      // 改为 manual：手动跟随并对每个 Location URL 二次 SSRF 校验。
+      let currentUrl = spec.url;
+      let response: Response | undefined;
+      const MAX_REDIRECTS = 5;
       try {
-        const response = await fetch(spec.url, {
-          signal: controller.signal,
-          redirect: "follow",
-          headers: { "User-Agent": "EvoClaw-SkillInstaller/1.0" },
-        });
+        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          response = await fetch(currentUrl, {
+            signal: controller.signal,
+            redirect: "manual",
+            headers: { "User-Agent": "EvoClaw-SkillInstaller/1.0" },
+          });
+          // 3xx 视为重定向，需要校验 Location
+          if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get("location");
+            if (!location) {
+              throw new Error(`Redirect ${response.status} without Location header`);
+            }
+            // 解析相对/绝对 Location
+            const nextUrl = new URL(location, currentUrl).toString();
+            let nextParsed: URL;
+            try {
+              nextParsed = new URL(nextUrl);
+            } catch {
+              throw new Error(`Invalid redirect Location: ${nextUrl}`);
+            }
+            if (nextParsed.protocol !== "https:") {
+              throw new Error(`Redirect to non-HTTPS protocol: ${nextParsed.protocol}`);
+            }
+            // 对重定向目标二次 SSRF 校验
+            const redirectSsrfError = this.checkSSRF(nextParsed);
+            if (redirectSsrfError) {
+              throw new Error(`Redirect to internal host blocked: ${redirectSsrfError}`);
+            }
+            currentUrl = nextUrl;
+            continue;
+          }
+          // 非 3xx，正常响应
+          break;
+        }
+        if (!response) throw new Error("No response received");
+        if (response.status >= 300 && response.status < 400) {
+          throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`);
+        }
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} ${response.statusText}`);
         }
@@ -3172,6 +3199,150 @@ export class SkillManager {
         // ignore cleanup errors
       }
     }
+  }
+
+  /**
+   * 对 URL 执行 SSRF 校验。返回非空字符串表示拒绝原因；返回空字符串表示通过。
+   *
+   * Bug 1 修复：原 inline 检查仅匹配字符串前缀，遗漏：
+   * - IPv4-mapped IPv6（::ffff:127.0.0.1）及其完整形式
+   * - IPv6 不确定地址 ::、链路本地 fe80::/10、唯一本地 fc00::/7、多播 ff00::/8
+   * - IPv4 短格式（如 127.1）、十进制/八进制/十六进制（0x7f000001、0177.0.0.1）
+   *
+   * 改为：先标准化 hostname（去除 [] IPv6 包装），用 node:net.isIP 判断 IP 类型，
+   * 再按类型精确检查所有内网/回环/私有/链路本地/多播范围。
+   */
+  private checkSSRF(parsedUrl: URL): string {
+    const host = parsedUrl.hostname.toLowerCase();
+    // .local / localhost 主机名直接拒绝
+    if (host === "localhost" || host.endsWith(".local")) {
+      return `internal/loopback host "${host}"`;
+    }
+
+    // 用 node:net.isIP 判断 IP 类型（同时支持 IPv4/IPv6 文本表示）
+    // 注意：isIP 不解析 IPv4 短格式（127.1）和十进制/八进制/十六进制格式，
+    // 这些格式会被 fetch 内部解析为内网 IP，因此需单独检测。
+    const ipVersion = isIP(host);
+    if (ipVersion === 4) {
+      if (this.isPrivateIPv4(host)) return `private/loopback IPv4 "${host}"`;
+    } else if (ipVersion === 6) {
+      if (this.isPrivateIPv6(host)) return `private/loopback IPv6 "${host}"`;
+    } else {
+      // isIP 返回 0：可能是短格式/十进制/八进制/十六进制 IP，或域名
+      // 检测 IPv4 短格式（1-3 段，每段不含字母）
+      const shortIpMatch = host.match(/^(\d+)(\.\d+){0,2}$/);
+      if (shortIpMatch && /^\d+$/.test(host.replace(/\./g, ""))) {
+        // 尝试标准化为完整 IPv4 后检查
+        try {
+          const normalized = this.normalizeShortIPv4(host);
+          if (normalized && this.isPrivateIPv4(normalized)) {
+            return `private/loopback IPv4 (short format) "${host}" → ${normalized}`;
+          }
+        } catch {
+          // 解析失败，保守拒绝
+          return `unparseable IP-like hostname "${host}"`;
+        }
+      }
+    }
+    return "";
+  }
+
+  /** IPv4 私有/回环/链路本地/多播地址检查 */
+  private isPrivateIPv4(ip: string): boolean {
+    const parts = ip.split(".").map((p) => parseInt(p, 10));
+    if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) {
+      return false;
+    }
+    const [a, b] = parts;
+    // 0.0.0.0/8 — 当前网络
+    if (a === 0) return true;
+    // 10.0.0.0/8 — 私有
+    if (a === 10) return true;
+    // 127.0.0.0/8 — 回环
+    if (a === 127) return true;
+    // 169.254.0.0/16 — 链路本地
+    if (a === 169 && b === 254) return true;
+    // 172.16.0.0/12 — 私有
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    // 192.0.0.0/24 — IETF 协议
+    if (a === 192 && b === 0 && parts[2] === 0) return true;
+    // 192.0.2.0/24 — TEST-NET-1
+    if (a === 192 && b === 0 && parts[2] === 2) return true;
+    // 192.168.0.0/16 — 私有
+    if (a === 192 && b === 168) return true;
+    // 198.18.0.0/15 — 基准测试
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    // 198.51.100.0/24 — TEST-NET-2
+    if (a === 198 && b === 51 && parts[2] === 100) return true;
+    // 203.0.113.0/24 — TEST-NET-3
+    if (a === 203 && b === 0 && parts[2] === 113) return true;
+    // 224.0.0.0/4 — 多播
+    if (a >= 224 && a <= 239) return true;
+    // 240.0.0.0/4 — 保留
+    if (a >= 240) return true;
+    return false;
+  }
+
+  /** IPv6 私有/回环/链路本地/多播/不确定地址检查（含 IPv4-mapped） */
+  private isPrivateIPv6(ip: string): boolean {
+    // 标准化：去除 []、压缩 :: 为全零展开（用 : 分段）
+    // 注意：IPv6 文本表示复杂，这里用宽松匹配关键前缀
+    const h = ip.toLowerCase().replace(/^\[|\]$/g, "");
+    // ::1 回环、:: 不确定地址
+    if (h === "::1" || h === "::") return true;
+    // ::ffff:127.0.0.1 等 IPv4-mapped IPv6 形式
+    const v4MappedMatch = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4MappedMatch) {
+      return this.isPrivateIPv4(v4MappedMatch[1]);
+    }
+    // ::127.0.0.1 等兼容地址（已弃用但仍存在）
+    const v4CompatMatch = h.match(/^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (v4CompatMatch) {
+      return this.isPrivateIPv4(v4CompatMatch[1]);
+    }
+    // fe80::/10 — 链路本地
+    if (h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) return true;
+    // fc00::/7 — 唯一本地（fc 或 fd 开头）
+    if (h.startsWith("fc") || h.startsWith("fd")) return true;
+    // ff00::/8 — 多播
+    if (h.startsWith("ff")) return true;
+    // 64:ff9b::/96 — NAT64
+    if (h.startsWith("64:ff9b:")) return true;
+    // 100::/64 — 丢弃前缀
+    if (h.startsWith("100::")) return true;
+    // 2001:db8::/32 — 文档用途
+    if (h.startsWith("2001:db8:")) return true;
+    return false;
+  }
+
+  /**
+   * 将 IPv4 短格式（如 127.1、192.168.1）标准化为完整 IPv4。
+   * 算法与 POSIX inet_aton 一致：缺省段按末段处理。
+   * 127.1 → 127.0.0.1；192.168.1 → 192.168.0.1；10 → 0.0.0.10
+   */
+  private normalizeShortIPv4(input: string): string | null {
+    const parts = input.split(".");
+    if (parts.length === 0 || parts.length > 4) return null;
+    const nums = parts.map((p) => {
+      // 十进制解析（不处理 0x/0 前缀的十六进制/八进制，fetch 通常也不解析）
+      const n = parseInt(p, 10);
+      return Number.isFinite(n) && n >= 0 && n <= 255 ? n : null;
+    });
+    if (nums.some((n) => n === null)) return null;
+    const out: number[] = new Array(4).fill(0);
+    if (parts.length === 1) {
+      out[3] = nums[0] as number;
+    } else if (parts.length === 2) {
+      out[0] = nums[0] as number;
+      out[3] = nums[1] as number;
+    } else if (parts.length === 3) {
+      out[0] = nums[0] as number;
+      out[1] = nums[1] as number;
+      out[3] = nums[2] as number;
+    } else {
+      for (let i = 0; i < 4; i++) out[i] = nums[i] as number;
+    }
+    return out.join(".");
   }
 
   /**

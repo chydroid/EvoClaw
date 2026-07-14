@@ -19,24 +19,9 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import { execFileSync, spawn } from "child_process";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import { validateDownloadUrl } from "./image-tools";
-
-/** 原子写入文件：写临时文件 + fsync + rename */
-function atomicWriteFileSync(filePath: string, data: Buffer): void {
-  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-}
 
 /** 视频生成提供商配置（与 protocol-adapter.ts 中结构一致） */
 interface VideoGenProvider {
@@ -165,6 +150,7 @@ async function generateViaFal(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
   });
 
   if (!response.ok) {
@@ -212,6 +198,7 @@ async function generateViaReplicate(
         ...(options.imageUrl ? { image: options.imageUrl } : {}),
       },
     }),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!createResponse.ok) {
@@ -233,6 +220,7 @@ async function generateViaReplicate(
 
     const statusResponse = await fetch(prediction.urls.get, {
       headers: { "Authorization": `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!statusResponse.ok) continue;

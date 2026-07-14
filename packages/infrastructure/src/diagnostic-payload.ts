@@ -9,7 +9,7 @@
  *   便于 stability monitor / support bundle 后续消费。
  */
 
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import type { DiagnosticPhaseKind } from "./diagnostic-phase";
 
 /** 诊断严重度。 */
@@ -101,7 +101,7 @@ export class DiagnosticPayloadBuilder {
   /** 创建新载荷。 */
   static create(opts: DiagnosticPayloadCreateOptions): DiagnosticPayload {
     return {
-      id: uuidv4(),
+      id: randomUUID(),
       timestamp: new Date(),
       severity: opts.severity,
       category: opts.category,

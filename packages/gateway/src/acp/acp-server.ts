@@ -145,6 +145,8 @@ export type SendMessageHandler = (
  * - 通过 `setMessageHandler()` 注入真实实现（由 AcpAdapter 设置）
  */
 export class AcpServer extends EventEmitter {
+  private static readonly MAX_SESSIONS = 500;
+
   private sessions = new Map<string, AcpSession>();
   private buffer = "";
   private running = false;
@@ -220,6 +222,13 @@ export class AcpServer extends EventEmitter {
       status: "active",
       ...(metadata ? { metadata } : {}),
     };
+    // LRU 淘汰：超过最大会话数时删除最旧的
+    if (this.sessions.size >= AcpServer.MAX_SESSIONS) {
+      const oldestKey = this.sessions.keys().next().value;
+      if (oldestKey) {
+        this.sessions.delete(oldestKey);
+      }
+    }
     this.sessions.set(id, session);
     return session;
   }
@@ -236,6 +245,8 @@ export class AcpServer extends EventEmitter {
     // 取消进行中的消息
     this.cancelMessage(sessionId);
     session.status = "closed";
+    // 注意：不从 sessions Map 中删除，保留 closed 状态供 getSession 查询。
+    // 旧会话由 createSession 中的 LRU 淘汰机制自动清理。
   }
 
   // ─── 消息处理 ────────────────────────────────────────────────────────────

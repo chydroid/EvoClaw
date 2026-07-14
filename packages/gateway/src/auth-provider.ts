@@ -28,7 +28,12 @@ export class AuthProvider {
   private safeEqual(a: string, b: string): boolean {
     const bufA = Buffer.from(a);
     const bufB = Buffer.from(b);
-    if (bufA.length !== bufB.length) return false;
+    // 长度不同时仍执行一次 timingSafeEqual 消耗时间，避免基于长度差异的时序泄露。
+    // 对齐 ws-protocol.ts 的 constantTimeEqual 和 webhook-manager.ts 的 safeEqual。
+    if (bufA.length !== bufB.length) {
+      crypto.timingSafeEqual(bufA, bufA);
+      return false;
+    }
     return crypto.timingSafeEqual(bufA, bufB);
   }
 

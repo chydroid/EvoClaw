@@ -509,8 +509,11 @@ export class DingtalkAdapter implements ChannelAdapter {
     const msg = decrypted.subarray(20, 20 + msgLen).toString("utf8");
     const receivedToken = decrypted.subarray(20 + msgLen).toString("utf8");
 
-    // Validate the token suffix
-    if (receivedToken !== this.config.verificationToken) {
+    // 安全：使用恒定时间比较防止时序攻击
+    const expectedToken = this.config.verificationToken || "";
+    const receivedBuf = Buffer.from(receivedToken, "utf8");
+    const expectedBuf = Buffer.from(expectedToken, "utf8");
+    if (receivedBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(receivedBuf, expectedBuf)) {
       throw new Error("Verification token mismatch in decrypted event");
     }
 

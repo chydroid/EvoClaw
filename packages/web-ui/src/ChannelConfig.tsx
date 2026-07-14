@@ -117,8 +117,20 @@ const DEFAULT_CHANNEL_CONFIGS: ChannelConfig[] = [
 
 function generateQrToken(): string {
   const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).substring(2, 10);
+  const rand = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+    : generateCryptoFallback();
   return `${ts}${rand}`;
+}
+
+function generateCryptoFallback(): string {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const arr = new Uint32Array(4);
+    crypto.getRandomValues(arr);
+    return Array.from(arr, (n) => n.toString(36)).join("").slice(0, 8);
+  }
+  // 仅在最旧浏览器中回退，使用 Date.now + 性能计数器增加不可预测性
+  return Date.now().toString(36).slice(-8) + Math.floor(performance.now()).toString(36).slice(-2);
 }
 
 // ─── Component ───────────────────────────────────────────────

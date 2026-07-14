@@ -14,16 +14,46 @@
  */
 
 import * as path from "path";
+import * as fs from "fs";
 import type { AgentModelExecutor, GitOperations, CodeIntelligence } from "@evoclaw/agent";
 import type { PermissionManager } from "@evoclaw/security";
 import { applyPatch as applyPatchFn, parsePatch } from "@evoclaw/agent";
 
-/** 校验解析后的路径不超出允许的基目录，防止路径遍历攻击。 */
+/** 校验解析后的路径不超出允许的基目录，防止路径遍历攻击。
+ *  Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
+ *  再用 fs.realpathSync 解析符号链接，防止 workspace 内 symlink 指向外部目录。 */
 function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
   const normalizedBase = path.resolve(baseDir);
   const normalizedTarget = path.resolve(resolvedPath);
+
+  // 先做词法检查：若词法上已超出 base，直接拒绝（避免 realpath 浪费 IO）
   if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
     return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}".`;
+  }
+
+  // 词法检查通过后，再用 realpath 解析符号链接，防止 workspace 内 symlink 指向外部目录
+  try {
+    let realTarget: string;
+    if (fs.existsSync(normalizedTarget)) {
+      realTarget = fs.realpathSync(normalizedTarget);
+    } else {
+      // 路径不存在（如 file_create）：realpath 父目录后拼接 basename
+      const parentDir = path.dirname(normalizedTarget);
+      if (fs.existsSync(parentDir)) {
+        const realParent = fs.realpathSync(parentDir);
+        realTarget = path.join(realParent, path.basename(normalizedTarget));
+      } else {
+        // 父目录也不存在：信任词法检查结果
+        return null;
+      }
+    }
+    // 对 realpath 结果再做一次词法检查
+    if (!realTarget.startsWith(normalizedBase + path.sep) && realTarget !== normalizedBase) {
+      return `Path traversal blocked (symlink escape): "${resolvedPath}" resolves to "${realTarget}" which is outside the allowed workspace "${normalizedBase}".`;
+    }
+  } catch {
+    // realpath 失败（权限/IO 错误）：保守拒绝，避免误放行
+    return `Path validation failed (realpath error): "${resolvedPath}".`;
   }
   return null;
 }

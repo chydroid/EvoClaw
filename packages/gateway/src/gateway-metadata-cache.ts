@@ -64,6 +64,12 @@ export interface GatewayMetadataCacheConfig {
   persistPath?: string;
   /** 是否启用持久化 */
   persistEnabled?: boolean;
+  /** 通用元数据缓存最大条目数 */
+  maxMetadataEntries?: number;
+  /** 模型 cost 索引最大条目数 */
+  maxCostEntries?: number;
+  /** Channel resolution 缓存最大条目数 */
+  maxChannelEntries?: number;
 }
 
 /**
@@ -102,6 +108,9 @@ export class GatewayMetadataCache {
       channelResolutionTtlMs: config.channelResolutionTtlMs ?? 30 * 1000,
       persistPath: config.persistPath ?? "",
       persistEnabled: config.persistEnabled ?? false,
+      maxMetadataEntries: config.maxMetadataEntries ?? 1000,
+      maxCostEntries: config.maxCostEntries ?? 1000,
+      maxChannelEntries: config.maxChannelEntries ?? 1000,
     };
     if (this.config.persistEnabled && this.config.persistPath) {
       this.loadFromDisk();
@@ -123,6 +132,17 @@ export class GatewayMetadataCache {
     }
     for (const [key, entry] of this.channelResolutionCache.entries()) {
       if (now > entry.expiresAt) this.channelResolutionCache.delete(key);
+    }
+  }
+
+  /** 按创建时间驱逐最旧条目，防止缓存无限增长 */
+  private evictIfNeeded<K>(map: Map<K, CacheEntry<unknown>>, maxEntries: number): void {
+    if (map.size <= maxEntries) return;
+    const entries = Array.from(map.entries()).sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const toRemove = map.size - maxEntries;
+    for (let i = 0; i < toRemove; i++) {
+      map.delete(entries[i][0]);
+      this.stats.evictions++;
     }
   }
 
@@ -169,6 +189,7 @@ export class GatewayMetadataCache {
       createdAt: Date.now(),
       hits: 0,
     });
+    this.evictIfNeeded(this.metadataCache, this.config.maxMetadataEntries);
     if (this.config.persistEnabled) this.schedulePersist();
   }
 
@@ -228,6 +249,7 @@ export class GatewayMetadataCache {
       createdAt: Date.now(),
       hits: 0,
     });
+    this.evictIfNeeded(this.modelCostIndex, this.config.maxCostEntries);
     if (this.config.persistEnabled) this.schedulePersist();
   }
 
@@ -279,6 +301,7 @@ export class GatewayMetadataCache {
       createdAt: Date.now(),
       hits: 0,
     });
+    this.evictIfNeeded(this.channelResolutionCache, this.config.maxChannelEntries);
   }
 
   /** 获取channel resolution */
@@ -354,6 +377,7 @@ export class GatewayMetadataCache {
           });
         }
       }
+      this.evictIfNeeded(this.modelCostIndex, this.config.maxCostEntries);
       this.stats.persistReads++;
     } catch (err) { process.stderr.write('[GatewayMetadataCache] loadFromDisk failed: ' + err + '\n'); }
   }

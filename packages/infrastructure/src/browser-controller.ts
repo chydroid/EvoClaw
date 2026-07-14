@@ -35,6 +35,7 @@ export interface FormData {
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export class BrowserController {
+  private static readonly MAX_COOKIES = 1000;
   private cookies: Map<string, string> = new Map();
   private userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 EvoClaw/1.0";
   private currentPage: NavigationResult | null = null;
@@ -54,6 +55,15 @@ export class BrowserController {
 
   setCookie(name: string, value: string): void {
     this.cookies.set(name, value);
+    this.enforceCookieLimit();
+  }
+
+  private enforceCookieLimit(): void {
+    while (this.cookies.size > BrowserController.MAX_COOKIES) {
+      const firstKey = this.cookies.keys().next().value;
+      if (!firstKey) break;
+      this.cookies.delete(firstKey);
+    }
   }
 
   private getCookieHeader(): string {
@@ -95,19 +105,49 @@ export class BrowserController {
       const response = await fetch(normalizedUrl, {
         method: "GET",
         headers,
-        redirect: "follow",
+        // 手动处理重定向：对每个 3xx Location 执行 SSRF 二次检查，
+        // 防止外部服务器 302 到内网/元数据端点绕过初始 URL 校验。
+        redirect: "manual",
+        signal: AbortSignal.timeout(30_000),
       });
 
-      const body = await response.text();
+      // 手动跟随重定向链（最多 5 跳），每跳都做 SSRF 检查
+      let finalResponse = response;
+      let currentUrl = normalizedUrl;
+      let redirectCount = 0;
+      while ([301, 302, 303, 307, 308].includes(finalResponse.status) && redirectCount < 5) {
+        const location = finalResponse.headers.get("location");
+        if (!location) break;
+        const redirectUrl = new URL(location, currentUrl).toString();
+        const redirectSsrf = await this.ssrfProtection.checkURL(redirectUrl);
+        if (!redirectSsrf.allowed) {
+          return {
+            success: false,
+            url: redirectUrl,
+            title: "",
+            status: finalResponse.status,
+            bodyPreview: "",
+            links: [],
+            forms: [],
+            error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`,
+          };
+        }
+        currentUrl = redirectUrl;
+        finalResponse = await fetch(redirectUrl, { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+        redirectCount++;
+      }
+
+      const body = await finalResponse.text();
 
       const titleMatch = body.match(/<title[^>]*>([^<]*)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : normalizedUrl;
+      const title = titleMatch ? titleMatch[1].trim() : currentUrl;
 
-      const setCookie = response.headers.get("set-cookie");
+      const setCookie = finalResponse.headers.get("set-cookie");
       if (setCookie) {
         const match = setCookie.match(/^([^=]+)=([^;]+)/);
         if (match) {
           this.cookies.set(match[1], match[2]);
+          this.enforceCookieLimit();
         }
       }
 
@@ -118,10 +158,10 @@ export class BrowserController {
       const bodyPreview = bodyText.slice(0, 2000);
 
       const result: NavigationResult = {
-        success: response.ok,
-        url: normalizedUrl,
+        success: finalResponse.ok,
+        url: currentUrl,
         title,
-        status: response.status,
+        status: finalResponse.status,
         bodyPreview,
         links,
         forms,
@@ -132,7 +172,7 @@ export class BrowserController {
 
       this.eventBus?.publish(
         "browser.navigated",
-        { url: normalizedUrl, status: response.status, title },
+        { url: currentUrl, status: finalResponse.status, title },
         "browser-controller"
       )?.catch((err) => process.stderr.write('[BrowserController] event publish failed: ' + err + '\n'));
 
@@ -240,25 +280,54 @@ export class BrowserController {
       if (cookieHeader) headers["Cookie"] = cookieHeader;
 
       const method = formData.method || "get";
-      let response: Response;
 
+      // 手动处理重定向：对每个 3xx Location 执行 SSRF 二次检查，
+      // 防止外部服务器 302 到内网/元数据端点绕过初始 URL 校验。
+      // 与 navigate() 一致。
+      const fetchOpts: RequestInit = { method, headers, redirect: "manual", signal: AbortSignal.timeout(30_000) };
       if (method === "post") {
-        const body = new URLSearchParams(formData.fields).toString();
-        response = await fetch(url, { method: "POST", headers, body });
-      } else {
-        const params = new URLSearchParams(formData.fields).toString();
-        response = await fetch(`${url}?${params}`, { method: "GET", headers });
+        fetchOpts.body = new URLSearchParams(formData.fields).toString();
+      }
+
+      let response = await fetch(
+        method === "post" ? url : `${url}?${new URLSearchParams(formData.fields).toString()}`,
+        fetchOpts
+      );
+
+      // 手动跟随重定向链（最多 5 跳），每跳都做 SSRF 检查
+      let currentUrl = url;
+      let redirectCount = 0;
+      while ([301, 302, 303, 307, 308].includes(response.status) && redirectCount < 5) {
+        const location = response.headers.get("location");
+        if (!location) break;
+        const redirectUrl = new URL(location, currentUrl).toString();
+        const redirectSsrf = await this.ssrfProtection.checkURL(redirectUrl);
+        if (!redirectSsrf.allowed) {
+          return {
+            success: false,
+            url: redirectUrl,
+            title: "",
+            status: response.status,
+            bodyPreview: "",
+            links: [],
+            forms: [],
+            error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`,
+          };
+        }
+        currentUrl = redirectUrl;
+        response = await fetch(redirectUrl, { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+        redirectCount++;
       }
 
       const body = await response.text();
       const titleMatch = body.match(/<title[^>]*>([^<]*)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : url;
+      const title = titleMatch ? titleMatch[1].trim() : currentUrl;
       const bodyText = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       const bodyPreview = bodyText.slice(0, 2000);
 
       const result: NavigationResult = {
         success: response.ok,
-        url,
+        url: currentUrl,
         title,
         status: response.status,
         bodyPreview,
@@ -270,7 +339,7 @@ export class BrowserController {
 
       this.eventBus?.publish(
         "browser.form_submitted",
-        { url, method, status: response.status },
+        { url: currentUrl, method, status: response.status },
         "browser-controller"
       )?.catch((err) => process.stderr.write('[BrowserController] event publish failed: ' + err + '\n'));
 
@@ -347,11 +416,30 @@ export class BrowserController {
       const cookieHeader = this.getCookieHeader();
       if (cookieHeader) headers["Cookie"] = cookieHeader;
 
-      const response = await fetch(normalizedUrl, { headers });
-      if (!response.ok) {
-        return { error: `HTTP ${response.status}`, url: normalizedUrl };
+      const response = await fetch(normalizedUrl, { headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+
+      // 手动跟随重定向链（最多 5 跳），每跳都做 SSRF 检查
+      // 与 navigate()/submitForm() 一致，防止重定向到内网/元数据端点
+      let finalResponse = response;
+      let currentUrl = normalizedUrl;
+      let redirectCount = 0;
+      while ([301, 302, 303, 307, 308].includes(finalResponse.status) && redirectCount < 5) {
+        const location = finalResponse.headers.get("location");
+        if (!location) break;
+        const redirectUrl = new URL(location, currentUrl).toString();
+        const redirectSsrf = await this.ssrfProtection.checkURL(redirectUrl);
+        if (!redirectSsrf.allowed) {
+          return { error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`, url: redirectUrl };
+        }
+        currentUrl = redirectUrl;
+        finalResponse = await fetch(redirectUrl, { headers, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+        redirectCount++;
       }
-      return await response.json();
+
+      if (!finalResponse.ok) {
+        return { error: `HTTP ${finalResponse.status}`, url: currentUrl };
+      }
+      return await finalResponse.json();
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }

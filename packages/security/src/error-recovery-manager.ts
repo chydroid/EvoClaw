@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface ErrorRecord {
   id: string;
@@ -140,7 +140,7 @@ export class ErrorRecoveryManager {
     const message = err instanceof Error ? err.message : String(err);
 
     const record: ErrorRecord = {
-      id: uuid().slice(0, 8),
+      id: randomUUID().slice(0, 8),
       operation,
       target,
       error: message,
@@ -317,7 +317,10 @@ export class ErrorRecoveryManager {
   }
 
   private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 
   async healthCheck(): Promise<boolean> {

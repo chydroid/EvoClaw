@@ -612,21 +612,29 @@ export class SkillRegistry {
   }
 
   private compareVersion(a: string, b: string): number {
-    const parse = (v: string) => v.split(".").map((part) => {
-      const n = Number(part);
-      // 非数字段（如 "1.0.0-alpha" 中的 "0-alpha" / "alpha"）会产生 NaN，
-      // 此处统一视为 0 以避免 NaN 污染比较结果。
-      // 已知限制：此方案无法区分 1.0.0-alpha 与 1.0.0-beta 的先后顺序，
-      // 仅保证语义化版本号数值部分的正确比较。
-      return isNaN(n) ? 0 : n;
-    });
+    const parse = (v: string) => v.split(".");
     const partsA = parse(a);
     const partsB = parse(b);
 
     for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-      const pa = partsA[i] || 0;
-      const pb = partsB[i] || 0;
-      if (pa !== pb) return pa - pb;
+      const partA = partsA[i] ?? "0";
+      const partB = partsB[i] ?? "0";
+      const nA = Number(partA);
+      const nB = Number(partB);
+      const aIsNum = !isNaN(nA);
+      const bIsNum = !isNaN(nB);
+
+      if (aIsNum && bIsNum) {
+        if (nA !== nB) return nA - nB;
+      } else if (!aIsNum && !bIsNum) {
+        // 非数字段按字典序比较，区分 alpha/beta/rc 等预发布版本
+        if (partA !== partB) {
+          return partA < partB ? -1 : partA > partB ? 1 : 0;
+        }
+      } else {
+        // 一个为数字、一个为非数字：数字段视为更大（release > pre-release）
+        return aIsNum ? 1 : -1;
+      }
     }
 
     return 0;

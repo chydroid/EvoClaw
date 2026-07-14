@@ -18,6 +18,7 @@ import { mkdir, rename } from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import { randomUUID } from "crypto";
+import { atomicWriteFileSync } from "./atomic-write";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -362,39 +363,9 @@ export class ProfileManager {
   }
 
   /**
-   * 同步原子写入（temp + fsync + rename），保证 profiles.json 不被截断损坏。
-   * 借鉴 @evoclaw/infrastructure 的 atomicWriteFile 和 config-lkg.ts 的 atomicWriteFileSync。
+   * 同步原子写入：委托给 @evoclaw/core 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const tmpPath = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } catch (err) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-    fs.closeSync(fd);
-    // 保留原文件权限位
-    try {
-      if (fs.existsSync(targetPath)) {
-        const st = fs.statSync(targetPath);
-        fs.chmodSync(tmpPath, st.mode);
-      }
-    } catch {
-      // 权限复制失败不阻断写入
-    }
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err) {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
+    atomicWriteFileSync(targetPath, content);
   }
 }

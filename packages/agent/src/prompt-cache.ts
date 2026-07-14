@@ -1,3 +1,5 @@
+import * as crypto from "crypto";
+
 /**
  * PromptCache — Prompt prefix caching to reduce token costs.
  *
@@ -55,16 +57,13 @@ const DEFAULT_CONFIG: PromptCacheConfig = {
   maxPrefixLength: 10000,
 };
 
-// ─── Hash function (djb2 + length disambiguation) ─────────────────────
-// 使用 djb2 + 长度后缀降低碰撞概率（原 31 位 djb2 在 ~46k 条目后有 50% 碰撞）。
-// 注意：仍非加密安全，但作为内存缓存 key 足够（碰撞时仅返回错误 tokenCount）。
+// ─── Hash function (SHA256 + length disambiguation) ─────────────────────
+// 使用 SHA256 + 长度后缀降低碰撞概率，满足项目安全规范对哈希算法的要求。
+// 作为内存缓存 key 足够（碰撞时仅返回错误 tokenCount）。
 
-function djb2Hash(str: string): string {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0x7fffffff;
-  }
-  return `${hash.toString(36)}:${str.length.toString(36)}`;
+function promptCacheHash(str: string): string {
+  const hash = crypto.createHash("sha256").update(str, "utf-8").digest("hex").slice(0, 16);
+  return `${hash}:${str.length.toString(36)}`;
 }
 
 // ─── Anthropic cache_control 注入 ─────────────────────────────────────
@@ -186,7 +185,7 @@ export class PromptCache {
 
     // Try system prompt alone
     if (systemText.length >= this.config.minPrefixLength) {
-      const key = djb2Hash(systemText);
+      const key = promptCacheHash(systemText);
       const entry = this.cache.get(key);
       if (entry && !this.isExpired(entry)) {
         bestMatch = entry;
@@ -201,7 +200,7 @@ export class PromptCache {
       if (prefix.length < this.config.minPrefixLength) continue;
       if (prefix.length > this.config.maxPrefixLength) break;
 
-      const key = djb2Hash(prefix);
+      const key = promptCacheHash(prefix);
       const entry = this.cache.get(key);
       if (entry && !this.isExpired(entry)) {
         // Prefer longer matches
@@ -280,7 +279,7 @@ export class PromptCache {
       };
     }
 
-    const key = djb2Hash(promptPrefix);
+    const key = promptCacheHash(promptPrefix);
 
     // If already cached, update existing entry
     const existing = this.cache.get(key);

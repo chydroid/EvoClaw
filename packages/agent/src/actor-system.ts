@@ -11,6 +11,14 @@ export class ActorSystem {
   private actors = new Map<string, Actor>();
   private mailboxes = new Map<string, ActorMessage[]>();
   private processing = new Set<string>();
+  /** 已 stop 的 actor id 集合。Bug 2.2 修复：behavior 是 async，
+   *  stop() 后 behavior 仍可能在后台执行；用此集合让 processMessages
+   *  在 behavior 完成后跳过状态更新与 resolver resolve。 */
+  private stopped = new Set<string>();
+  /** 每个 actor 当前正在执行的 message（如有）。Bug 2.1 修复：原 stop()
+   *  仅遍历 mailbox，但 in-flight message 已被 shift 出 mailbox，其 resolver
+   *  永远不会被 reject，导致 ask() 调用方永久挂起。 */
+  private inflightMessages = new Map<string, ActorMessage>();
   /** ask() 入队消息的响应回调，按 ActorMessage 对象关联。
    *  processMessages 处理完该消息后 resolve；失败则 reject，避免调用方永久挂起。 */
   private askResolvers = new WeakMap<ActorMessage, { resolve: (msg: ActorMessage) => void; reject: (err: unknown) => void }>();
@@ -81,6 +89,10 @@ export class ActorSystem {
       },
 
       stop: async () => {
+        // 标记 actor 已停止，防止后续 processMessages 写入状态或 resolve resolver
+        // （Bug 2.2：behavior 在 stop 后仍可能在后台执行）
+        this.stopped.add(id);
+
         // 在删除 actor 和 mailbox 之前，reject 所有 pending 的 askResolvers，
         // 避免 ask() 调用方在 actor 被 stop() 后永久挂起：
         // stop() 删除 actor 和 mailbox 后，processMessages 会因 !actor || !mailbox
@@ -97,6 +109,18 @@ export class ActorSystem {
             }
           }
         }
+        // Bug 2.1 修复：reject in-flight 消息的 resolver。原代码仅遍历 mailbox，
+        // 但 in-flight 消息已被 shift 出 mailbox，其 resolver 永远不会被 reject，
+        // 导致 ask() 调用方永久挂起。
+        const inflight = this.inflightMessages.get(id);
+        if (inflight) {
+          const resolver = this.askResolvers.get(inflight);
+          if (resolver) {
+            this.askResolvers.delete(inflight);
+            resolver.reject(new Error(`Actor ${id} stopped`));
+          }
+          this.inflightMessages.delete(id);
+        }
         this.actors.delete(id);
         this.mailboxes.delete(id);
       },
@@ -105,6 +129,7 @@ export class ActorSystem {
 
   private async processMessages(actorId: string): Promise<void> {
     if (this.processing.has(actorId)) return;
+    if (this.stopped.has(actorId)) return;
     this.processing.add(actorId);
 
     try {
@@ -113,9 +138,19 @@ export class ActorSystem {
       if (!actor || !mailbox) return;
 
       while (mailbox.length > 0) {
+        // stop() 可能在此期间被调用；每次循环前检查
+        if (this.stopped.has(actorId)) return;
         const message = mailbox.shift()!;
+        // 跟踪当前 in-flight 消息，让 stop() 能 reject 其 resolver
+        this.inflightMessages.set(actorId, message);
         try {
           const result = await actor.behavior(message, actor.state);
+          // Bug 2.2 修复：behavior 完成后若 actor 已被 stop，跳过状态更新与
+          // resolver resolve（stop() 已 reject 了 resolver）
+          if (this.stopped.has(actorId)) {
+            this.inflightMessages.delete(actorId);
+            return;
+          }
           actor.state = result.newState;
           // 若是 ask() 入队的消息，将响应回传给等待的调用方
           const resolver = this.askResolvers.get(message);
@@ -132,12 +167,19 @@ export class ActorSystem {
           }
         } catch (err) {
           process.stderr.write(`[ActorSystem] Error processing message for "${actorId}":` + " " + err + "\n");
+          // stop 后 behavior 抛错时也跳过 resolver（已 reject 过）
+          if (this.stopped.has(actorId)) {
+            this.inflightMessages.delete(actorId);
+            return;
+          }
           // ask() 消息处理失败时 reject，避免调用方永久挂起
           const resolver = this.askResolvers.get(message);
           if (resolver) {
             this.askResolvers.delete(message);
             resolver.reject(err);
           }
+        } finally {
+          this.inflightMessages.delete(actorId);
         }
       }
     } finally {
@@ -145,6 +187,8 @@ export class ActorSystem {
       // 重新检查邮箱：在循环退出后、finally 执行前若有新消息到达，
       // 新的 processMessages 调用会因 processing.has 为 true 而提前返回，
       // 导致该消息永久滞留。此处重新触发处理以避免消息丢失。
+      // 已 stop 的 actor 不再处理新消息。
+      if (this.stopped.has(actorId)) return;
       const mailbox = this.mailboxes.get(actorId);
       if (mailbox && mailbox.length > 0) {
         // 避免吞掉错误，记录到 stderr 以便排查

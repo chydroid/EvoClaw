@@ -73,7 +73,11 @@ export function registerVisionBatchTools(deps: VisionBatchToolDeps): void {
           imageBase64,
           imageMimeType: (params.imageMimeType as "image/png" | "image/jpeg" | "image/webp") ?? "image/png",
           prompt,
-          maxTokens: params.maxTokens ? Number(params.maxTokens) : undefined,
+          maxTokens: (() => {
+            if (!params.maxTokens) return undefined;
+            const n = Number(params.maxTokens);
+            return Number.isFinite(n) ? n : undefined;
+          })(),
         });
         return { success: true, ...result };
       } catch (err) {
@@ -193,8 +197,16 @@ export function registerVisionBatchTools(deps: VisionBatchToolDeps): void {
         const tasks = Array.isArray(params.tasks) ? (params.tasks as BatchTask[]) : [];
         if (tasks.length === 0) return { success: false, error: "tasks array is required" };
         const batchExecutor = new BatchExecutorClass(toolExecutorFn, {
-          maxConcurrency: params.maxConcurrency ? Number(params.maxConcurrency) : undefined,
-          rateLimitPerSecond: params.rateLimitPerSecond ? Number(params.rateLimitPerSecond) : undefined,
+          maxConcurrency: (() => {
+            if (!params.maxConcurrency) return undefined;
+            const n = Number(params.maxConcurrency);
+            return Number.isFinite(n) ? n : undefined;
+          })(),
+          rateLimitPerSecond: (() => {
+            if (!params.rateLimitPerSecond) return undefined;
+            const n = Number(params.rateLimitPerSecond);
+            return Number.isFinite(n) ? n : undefined;
+          })(),
           failFast: params.failFast === true,
         });
         const result = await batchExecutor.execute(tasks);
@@ -366,8 +378,16 @@ export function registerVisionBatchTools(deps: VisionBatchToolDeps): void {
         const entries = Array.isArray(params.entries) ? (params.entries as DLQEntry[]) : [];
         if (entries.length === 0) return { success: false, error: "entries array is required" };
         const dlqRetry = new DLQClass(deps.dlqHandler, {
-          maxConcurrency: params.maxConcurrency ? Number(params.maxConcurrency) : undefined,
-          maxRetries: params.maxRetries ? Number(params.maxRetries) : undefined,
+          maxConcurrency: (() => {
+            if (!params.maxConcurrency) return undefined;
+            const n = Number(params.maxConcurrency);
+            return Number.isFinite(n) ? n : undefined;
+          })(),
+          maxRetries: (() => {
+            if (!params.maxRetries) return undefined;
+            const n = Number(params.maxRetries);
+            return Number.isFinite(n) ? n : undefined;
+          })(),
           failFast: params.failFast === true,
         });
         const result = await dlqRetry.retryAll(entries);

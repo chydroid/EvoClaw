@@ -15,6 +15,11 @@
  */
 
 import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import * as crypto from "crypto";
+
+function random01(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+}
 
 // ── Config ────────────────────────────────────────────────
 
@@ -236,7 +241,7 @@ export class QQAdapter implements ChannelAdapter {
         }
         if (this.reconnectAttempt < this.maxReconnectAttempts) {
           this.statusHandler?.("reconnecting");
-          const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
+          const delay = Math.min(1000 * 2 ** this.reconnectAttempt + random01() * 1000, 30000);
           this.reconnectAttempt++;
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
@@ -259,7 +264,7 @@ export class QQAdapter implements ChannelAdapter {
       // gateway URL 获取失败时调度重连，避免渠道永久死亡
       if (this.reconnectAttempt < this.maxReconnectAttempts) {
         this.statusHandler?.("reconnecting");
-        const delay = Math.min(1000 * 2 ** this.reconnectAttempt + Math.random() * 1000, 30000);
+        const delay = Math.min(1000 * 2 ** this.reconnectAttempt + random01() * 1000, 30000);
         this.reconnectAttempt++;
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;

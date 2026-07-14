@@ -476,6 +476,9 @@ export class ReplyReferenceManager {
       if (remaining.size === 0) {
         this.chains.delete(rootId);
       } else {
+        // 保留 rootId：即使根消息因 TTL 过期被从 refs 移除，
+        // rootId 作为链标识仍需保留在 chain 中，否则后续查询会丢失链的根。
+        remaining.add(rootId);
         this.chains.set(rootId, remaining);
       }
     }

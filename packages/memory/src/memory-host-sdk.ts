@@ -13,6 +13,7 @@
  * provides.
  */
 import { EventBus, SystemEvents } from "@evoclaw/core";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -164,7 +165,7 @@ export class MemoryHost {
 
   add(entry: Omit<MemoryHostEntry, "id" | "createdAt" | "updatedAt">): MemoryHostEntry {
     const now = Date.now();
-    const id = `mem_${now}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `mem_${now}_${randomUUID().slice(0, 8)}`;
     const full: MemoryHostEntry = {
       ...entry,
       id,

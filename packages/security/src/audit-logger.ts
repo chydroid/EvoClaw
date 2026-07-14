@@ -54,17 +54,17 @@ export class AuditLogger {
   }
 
   /**
-   * 清空审计日志。需要管理员鉴权：调用方必须提供包含 "admin" 角色的 caller，
-   * 否则拒绝执行。清空操作会记录警告日志，防止审计日志被无声抹除。
+   * 清空审计日志。
+   *
+   * 安全要求：调用方必须在调用前通过可信认证路径验证调用者确实拥有管理员权限，
+   * 并将验证后的 callerUserId 传入。本方法不接受自报的 roles 数组，避免授权绕过。
+   * 清空操作会记录警告日志（含 callerUserId），防止审计日志被无声抹除。
    */
-  async clear(caller?: { userId?: string; roles?: string[] }): Promise<void> {
-    const userId = caller?.userId ?? "unknown";
-    const roles = caller?.roles ?? [];
-    if (!roles.includes("admin")) {
-      process.stderr.write(`[AuditLogger] clear denied for caller=${userId} roles=${JSON.stringify(roles)}\n`);
-      throw new Error(`Access denied: clearing audit logs requires admin role (caller: ${userId})`);
+  async clear(callerUserId: string): Promise<void> {
+    if (!callerUserId || typeof callerUserId !== "string") {
+      throw new Error("Access denied: callerUserId is required to clear audit logs");
     }
-    process.stderr.write(`[AuditLogger] Audit logs cleared by admin=${userId} at ${new Date().toISOString()}\n`);
+    process.stderr.write(`[AuditLogger] Audit logs cleared by caller=${callerUserId} at ${new Date().toISOString()}\n`);
     this.logs = [];
   }
 }

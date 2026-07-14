@@ -185,6 +185,13 @@ function normalizeTempStore(value: unknown): string {
   return toLowerString(value);
 }
 
+/** 合法 journal_mode 值白名单 */
+const VALID_JOURNAL_MODES = new Set(["DELETE", "TRUNCATE", "PERSIST", "WAL", "MEMORY", "OFF"]);
+/** 合法 synchronous 值白名单 */
+const VALID_SYNCHRONOUS = new Set(["OFF", "NORMAL", "FULL", "EXTRA"]);
+/** 合法 temp_store 值白名单 */
+const VALID_TEMP_STORE = new Set(["DEFAULT", "FILE", "MEMORY"]);
+
 /**
  * 应用 PRAGMA 配置到数据库。
  *
@@ -197,6 +204,7 @@ function normalizeTempStore(value: unknown): string {
  * 6. application_id / user_version / secure_delete
  *
  * 返回 AppliedPragmas 快照（通过重新查询得到实际生效值）。
+ * 安全：字符串型 PRAGMA 值通过白名单校验，防止 SQL 注入。
  */
 export function applyPragmas(db: SqliteDb, config: PragmaConfig): AppliedPragmas {
   if (config.busyTimeout !== undefined) {
@@ -204,11 +212,18 @@ export function applyPragmas(db: SqliteDb, config: PragmaConfig): AppliedPragmas
     db.exec(`PRAGMA busy_timeout = ${ms};`);
   }
   if (config.journalMode) {
-    // journal_mode = WAL 需要单独执行并验证返回值（WAL 不可用时回退为 DELETE）
-    db.exec(`PRAGMA journal_mode = ${config.journalMode};`);
+    const mode = String(config.journalMode).toUpperCase();
+    if (!VALID_JOURNAL_MODES.has(mode)) {
+      throw new Error(`Invalid journal_mode: ${config.journalMode}`);
+    }
+    db.exec(`PRAGMA journal_mode = ${mode};`);
   }
   if (config.synchronous) {
-    db.exec(`PRAGMA synchronous = ${config.synchronous};`);
+    const mode = String(config.synchronous).toUpperCase();
+    if (!VALID_SYNCHRONOUS.has(mode)) {
+      throw new Error(`Invalid synchronous: ${config.synchronous}`);
+    }
+    db.exec(`PRAGMA synchronous = ${mode};`);
   }
   if (config.foreignKeys !== undefined) {
     db.exec(`PRAGMA foreign_keys = ${config.foreignKeys ? "ON" : "OFF"};`);
@@ -217,7 +232,11 @@ export function applyPragmas(db: SqliteDb, config: PragmaConfig): AppliedPragmas
     db.exec(`PRAGMA cache_size = ${Math.floor(config.cacheSize)};`);
   }
   if (config.tempStore) {
-    db.exec(`PRAGMA temp_store = ${config.tempStore};`);
+    const mode = String(config.tempStore).toUpperCase();
+    if (!VALID_TEMP_STORE.has(mode)) {
+      throw new Error(`Invalid temp_store: ${config.tempStore}`);
+    }
+    db.exec(`PRAGMA temp_store = ${mode};`);
   }
   if (config.mmapSize !== undefined) {
     const v = Math.max(0, Math.floor(config.mmapSize));

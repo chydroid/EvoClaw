@@ -64,8 +64,8 @@ export class SSHSandbox {
     const startTime = Date.now();
 
     const args: string[] = [
-      "-o", "StrictHostKeyChecking=no",
-      "-o", "UserKnownHostsFile=/dev/null",
+      "-o", "StrictHostKeyChecking=accept-new",
+      "-o", `UserKnownHostsFile=${this.getKnownHostsFile()}`,
       "-o", "ConnectTimeout=10",
       "-o", `ServerAliveInterval=${Math.floor(timeoutMs / 3000) || 10}`,
       "-o", "ServerAliveCountMax=3",
@@ -152,6 +152,23 @@ export class SSHSandbox {
 
   dispose(): void {
     this.available = null;
+  }
+
+  /**
+   * 返回受控的 known_hosts 文件路径（~/.evoclaw/known_hosts），
+   * 确保父目录存在。替代 /dev/null，使 accept-new 策略能持久化已信任的主机密钥。
+   */
+  private getKnownHostsFile(): string {
+    const os = require("os") as typeof import("os");
+    const fs = require("fs") as typeof import("fs");
+    const path = require("path") as typeof import("path");
+    const dir = path.join(os.homedir(), ".evoclaw");
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {
+      // best effort; ssh 会在目录缺失时报清晰错误
+    }
+    return path.join(dir, "known_hosts");
   }
 
   private writeKeyFile(privateKey: string): string {

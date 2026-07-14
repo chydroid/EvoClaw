@@ -114,6 +114,8 @@ interface RateBucket {
 
 const RATE_LIMIT_MAX_OPS = 60;          // 每窗口最大操作数
 const RATE_LIMIT_WINDOW_MS = 60_000;    // 1 分钟窗口
+/** sessionRateBuckets 最大容量，防止无界会话导致内存耗尽 */
+const MAX_RATE_BUCKETS = 1000;
 
 const sessionRateBuckets = new Map<string, RateBucket>();
 
@@ -125,6 +127,11 @@ function checkRateLimit(sessionId: string): { ok: boolean; error?: string } {
   if (!bucket) {
     bucket = { timestamps: [] };
     sessionRateBuckets.set(sid, bucket);
+    // LRU 式裁剪：超过容量时删除最早的桶，防止无界会话导致内存耗尽
+    if (sessionRateBuckets.size > MAX_RATE_BUCKETS) {
+      const oldestKey = sessionRateBuckets.keys().next().value;
+      if (oldestKey !== undefined) sessionRateBuckets.delete(oldestKey);
+    }
   }
   // 清除过期时间戳
   bucket.timestamps = bucket.timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
@@ -144,6 +151,8 @@ function checkRateLimit(sessionId: string): { ok: boolean; error?: string } {
 
 /** 屏幕尺寸缓存（每会话） */
 const screenSizeCache = new Map<string, ScreenSize>();
+/** screenSizeCache 最大容量，防止无界会话导致内存耗尽 */
+const MAX_SCREEN_SIZE_CACHE = 1000;
 
 async function getValidScreenSize(
   backend: ComputerBackend,
@@ -154,6 +163,11 @@ async function getValidScreenSize(
   if (cached) return cached;
   const size = await backend.getScreenSize();
   screenSizeCache.set(sid, size);
+  // LRU 式裁剪：超过容量时删除最早的条目
+  if (screenSizeCache.size > MAX_SCREEN_SIZE_CACHE) {
+    const oldestKey = screenSizeCache.keys().next().value;
+    if (oldestKey !== undefined) screenSizeCache.delete(oldestKey);
+  }
   return size;
 }
 
@@ -389,7 +403,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       const y = Number(params.y);
       const directionStr = String(params.direction || "down");
       const direction: ScrollDirection = directionStr === "up" ? "up" : "down";
-      const amount = Number(params.amount || 3);
+      // 安全：Number() 对非数字字符串返回 NaN，会传播到 PowerShell 导致异常行为。
+      // 使用 ?? 避免 0 被折叠为默认值，再用 Number.isFinite 防御 NaN/Infinity。
+      const amountRaw = Number(params.amount ?? 3);
+      const amount = Number.isFinite(amountRaw) ? amountRaw : 3;
       try {
         const size = await getValidScreenSize(backend, sessionId);
         const coordCheck = validateCoords(x, y, size);

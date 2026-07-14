@@ -16,6 +16,7 @@
 
 import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
+import * as crypto from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -376,8 +377,9 @@ export class SelfHealingEngine extends EventEmitter {
           }
         } else {
           // Wait before retrying (exponential backoff with jitter)
+          const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
           const delay = Math.min(
-            this.config.retryBaseDelayMs * (2 ** attempt) + Math.random() * 500,
+            this.config.retryBaseDelayMs * (2 ** attempt) + fraction * 500,
             this.config.retryMaxDelayMs
           );
           this.emit("recovery-retrying", { attempt: attempt + 1, delay, error: lastError.message });

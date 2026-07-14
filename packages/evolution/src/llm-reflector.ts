@@ -157,6 +157,7 @@ export class LLMReflector {
     const prompt = this.buildReflectionPrompt(trace);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.llmTimeoutMs);
+    if (timeout.unref) timeout.unref();
 
     try {
       let llmOutput: string;

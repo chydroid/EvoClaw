@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync } from "@evoclaw/core";
 import * as cron from "node-cron";
 import * as fs from "fs";
 import * as path from "path";
@@ -248,9 +248,13 @@ export class ScheduleManager {
     const STOP_TIMEOUT_MS = 5000;
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (this.runningTasks.size > 0 && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // unref 防止定时器阻止进程优雅退出
+      await new Promise(resolve => {
+        const t = setTimeout(resolve, 100);
+        t.unref();
+      });
     }
-    this.eventBus.publish("scheduler.stopped", {}, "schedule-manager");
+    await this.eventBus.publish("scheduler.stopped", {}, "schedule-manager");
   }
 
   async healthCheck(): Promise<boolean> {
@@ -338,7 +342,7 @@ export class ScheduleManager {
 
         this.recordResult(task, result);
 
-        this.eventBus.publish(
+        await this.eventBus.publish(
           "scheduler.task_completed",
           { taskId: task.id, name: task.name, duration: result.duration },
           "schedule-manager"
@@ -348,7 +352,7 @@ export class ScheduleManager {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
-        this.eventBus.publish(
+        await this.eventBus.publish(
           "scheduler.task_retry",
           {
             taskId: task.id,
@@ -372,7 +376,7 @@ export class ScheduleManager {
 
     this.recordResult(task, result);
 
-    this.eventBus.publish(
+    await this.eventBus.publish(
       "scheduler.task_failed",
       {
         taskId: task.id,
@@ -425,7 +429,10 @@ export class ScheduleManager {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 
   private async loadTasks(): Promise<void> {
@@ -453,31 +460,7 @@ export class ScheduleManager {
     try {
       const filePath = path.join(this.dataDir, "tasks.json");
       const data = [...this.tasks.values()];
-      // BUG 10.1 fix: 使用原子写入（temp + fsync + rename）替代 writeFileSync，
-      // 防止进程崩溃或并发写入导致 tasks.json 损坏（任务丢失或重复）。
-      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fs.renameSync(tmpPath, filePath);
-      } catch {
-        // EXDEV/EBUSY 跨设备回退
-        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
-        try {
-          fs.copyFileSync(tmpPath, dstTmp);
-          fs.renameSync(dstTmp, filePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } catch (fallbackErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw fallbackErr;
-        }
-      }
+      atomicWriteFileSync(filePath, JSON.stringify(data, null, 2));
     } catch (err) {
       process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err + "\n");
     }

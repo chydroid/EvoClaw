@@ -12,7 +12,7 @@
  * - logExcerpt：使用 redactString 移除常见密钥模式（JWT、Bearer token 等）
  */
 
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import type { DiagnosticPhase } from "./diagnostic-phase";
 import {
   DiagnosticPayloadBuilder,
@@ -170,7 +170,7 @@ export class SupportBundleBuilder {
     }
 
     return {
-      bundleId: input.bundleId ?? uuidv4(),
+      bundleId: input.bundleId ?? randomUUID(),
       createdAt: input.createdAt ?? new Date(),
       description: input.description,
       phases,

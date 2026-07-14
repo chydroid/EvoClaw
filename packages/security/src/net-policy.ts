@@ -94,6 +94,14 @@ export class NetPolicy {
     }
   }
 
+  /** 停止 DNS 缓存清理定时器，释放资源 */
+  destroy(): void {
+    if (this.dnsCacheCleanupTimer) {
+      clearInterval(this.dnsCacheCleanupTimer);
+      this.dnsCacheCleanupTimer = undefined;
+    }
+  }
+
   /**
    * 检查 URL 是否符合策略。
    * 若启用 DNS 钉制，会解析主机名并缓存 IP。

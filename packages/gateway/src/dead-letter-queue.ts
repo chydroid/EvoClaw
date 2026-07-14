@@ -16,6 +16,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -113,21 +115,7 @@ export class DeadLetterQueue {
 
     // 每条消息独立文件，原子写入，防止崩溃时 JSONL 损坏
     const msgFile = path.join(this.config.storageDir, `${dl.id}.json`);
-    const tmpPath = `${msgFile}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, JSON.stringify(dl), "utf-8");
-      fs.fsyncSync(fd);
-    } catch (werr) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw werr;
-    }
-    fs.closeSync(fd);
-    try { fs.renameSync(tmpPath, msgFile); } catch (err) {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
+    atomicWriteFileSync(msgFile, JSON.stringify(dl), { encoding: "utf-8" });
 
     return dl;
   }
@@ -203,19 +191,8 @@ export class DeadLetterQueue {
 
     // 原子写入更新后的消息
     const msgFile = this.messageFile(id);
-    const tmpPath = `${msgFile}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
     try {
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(dl), "utf-8");
-        fs.fsyncSync(fd);
-      } catch (werr) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw werr;
-      }
-      fs.closeSync(fd);
-      fs.renameSync(tmpPath, msgFile);
+      atomicWriteFileSync(msgFile, JSON.stringify(dl), { encoding: "utf-8" });
     } catch (err) {
       process.stderr.write(`[DeadLetterQueue] Failed to mark ${id} as replayed:` + " " + err + "\n");
       return false;

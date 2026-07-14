@@ -55,7 +55,8 @@ export default function ConfigRPCPage() {
       let parsed: unknown;
       try {
         parsed = JSON.parse(setValue);
-      } catch {
+      } catch (err) {
+        console.error("[ConfigRPC] Failed to parse set value as JSON:", err);
         parsed = setValue;
       }
       const res = await configRpcApi.set(dotPath, parsed);

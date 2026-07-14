@@ -97,6 +97,10 @@ export interface DurableInboundReceiveJournalOptions<TPayload, TMetadata, TCompl
   pendingTtlMs?: number;
   /** 已完成事件墓碑 TTL（毫秒）；到期后自动清理 */
   completedTtlMs?: number;
+  /** 内存中最大待处理记录数（默认 10000） */
+  maxPendingEntries?: number;
+  /** 内存中最大已完成墓碑数（默认 10000） */
+  maxCompletedEntries?: number;
   /** 自定义 now 函数（测试用） */
   now?: () => number;
 }
@@ -140,11 +144,15 @@ export class InMemoryDurableReceiveJournal<TPayload, TMetadata = unknown, TCompl
   private readonly now: () => number;
   private readonly pendingTtlMs?: number;
   private readonly completedTtlMs?: number;
+  private readonly maxPendingEntries: number;
+  private readonly maxCompletedEntries: number;
 
   constructor(options: DurableInboundReceiveJournalOptions<TPayload, TMetadata, TCompletedMetadata> = {}) {
     this.now = options.now ?? Date.now;
     this.pendingTtlMs = options.pendingTtlMs;
     this.completedTtlMs = options.completedTtlMs;
+    this.maxPendingEntries = options.maxPendingEntries ?? 10000;
+    this.maxCompletedEntries = options.maxCompletedEntries ?? 10000;
   }
 
   async accept(
@@ -179,6 +187,7 @@ export class InMemoryDurableReceiveJournal<TPayload, TMetadata = unknown, TCompl
       // 若旧 pending 已 TTL 过期，则视为僵尸事件，覆盖为新记录
       if (this.isPendingExpired(existing)) {
         this.pendingStore.set(key, record);
+        this.evictPendingIfNeeded();
         return { kind: "accepted", duplicate: false, record };
       }
       return { kind: "pending", duplicate: true, record: existing };
@@ -186,6 +195,7 @@ export class InMemoryDurableReceiveJournal<TPayload, TMetadata = unknown, TCompl
 
     // 3. 插入新 pending（处理 race：完成事件可能在两次检查之间写入）
     this.pendingStore.set(key, record);
+    this.evictPendingIfNeeded();
     const completedAfterInsert = this.completedStore.get(key);
     if (completedAfterInsert) {
       this.pendingStore.delete(key);
@@ -222,6 +232,7 @@ export class InMemoryDurableReceiveJournal<TPayload, TMetadata = unknown, TCompl
       record.metadata = completeOptions.metadata;
     }
     this.completedStore.set(key, record);
+    this.evictCompletedIfNeeded();
     this.pendingStore.delete(key);
   }
 
@@ -266,6 +277,28 @@ export class InMemoryDurableReceiveJournal<TPayload, TMetadata = unknown, TCompl
       if (now - record.completedAt > this.completedTtlMs) {
         this.completedStore.delete(key);
       }
+    }
+  }
+
+  /** 按 receivedAt 驱逐最旧的待处理记录，防止内存无限增长。 */
+  private evictPendingIfNeeded(): void {
+    if (this.pendingStore.size <= this.maxPendingEntries) return;
+    const sorted = Array.from(this.pendingStore.entries())
+      .sort((a, b) => a[1].receivedAt - b[1].receivedAt);
+    const toRemove = this.pendingStore.size - this.maxPendingEntries;
+    for (let i = 0; i < toRemove; i++) {
+      this.pendingStore.delete(sorted[i][0]);
+    }
+  }
+
+  /** 按 completedAt 驱逐最旧的已完成墓碑。 */
+  private evictCompletedIfNeeded(): void {
+    if (this.completedStore.size <= this.maxCompletedEntries) return;
+    const sorted = Array.from(this.completedStore.entries())
+      .sort((a, b) => a[1].completedAt - b[1].completedAt);
+    const toRemove = this.completedStore.size - this.maxCompletedEntries;
+    for (let i = 0; i < toRemove; i++) {
+      this.completedStore.delete(sorted[i][0]);
     }
   }
 

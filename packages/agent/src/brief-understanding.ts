@@ -54,6 +54,7 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
 
     const controller = new AbortController();
     timeoutId = setTimeout(() => controller.abort(), 10000);
+    timeoutId.unref?.();
 
     const response = await nativeFetch(apiURL, {
       method: "POST",

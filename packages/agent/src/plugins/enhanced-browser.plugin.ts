@@ -13,6 +13,11 @@
  */
 
 import type { PluginHookRegistration } from "@evoclaw/core";
+import { SSRFProtection } from "@evoclaw/security";
+import * as crypto from "crypto";
+
+/** 共享 SSRF 检查器：用于 lightweightExtract 的初始 URL 和重定向每跳检查 */
+const ssrfProtection = new SSRFProtection();
 
 const MANIFEST = {
   name: "Enhanced Browser",
@@ -298,12 +303,81 @@ async function lightweightExtract(
   const timeout = setTimeout(() => controller.abort(), options.timeout || 15000);
 
   try {
-    const response = await fetch(url, {
+    // 初始 URL SSRF 检查：防止请求内网/元数据端点
+    const initialSsrf = await ssrfProtection.checkURL(url);
+    if (!initialSsrf.allowed) {
+      return {
+        url,
+        title: "",
+        text: "",
+        html: "",
+        links: [],
+        forms: [],
+        meta: {},
+        status: 0,
+        duration: Date.now() - startTime,
+        strategy: "lightweight",
+        error: `Blocked by SSRF protection: ${initialSsrf.reason}`,
+      };
+    }
+
+    // 手动处理重定向：对每个 3xx Location 执行 SSRF 二次检查，
+    // 防止外部服务器 302 到内网/元数据端点绕过初始 URL 校验。
+    let response = await fetch(url, {
       method: "GET",
       headers,
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal,
     });
+
+    // 跟随重定向链（最多 5 跳），每跳都做 SSRF 检查
+    let currentUrl = url;
+    let redirectCount = 0;
+    while ([301, 302, 303, 307, 308].includes(response.status) && redirectCount < 5) {
+      const location = response.headers.get("location");
+      if (!location) break;
+      const redirectUrl = new URL(location, currentUrl).toString();
+      const redirectSsrf = await ssrfProtection.checkURL(redirectUrl);
+      if (!redirectSsrf.allowed) {
+        return {
+          url: redirectUrl,
+          title: "",
+          text: "",
+          html: "",
+          links: [],
+          forms: [],
+          meta: {},
+          status: response.status,
+          duration: Date.now() - startTime,
+          strategy: "lightweight",
+          error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`,
+        };
+      }
+      currentUrl = redirectUrl;
+      response = await fetch(redirectUrl, {
+        method: "GET",
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      redirectCount++;
+    }
+
+    if (!response.ok) {
+      return {
+        url: currentUrl,
+        title: "",
+        text: "",
+        html: "",
+        links: [],
+        forms: [],
+        meta: {},
+        status: response.status,
+        duration: Date.now() - startTime,
+        strategy: "lightweight",
+        error: `HTTP ${response.status} ${response.statusText}`.trim(),
+      };
+    }
 
     const html = await response.text();
     const bodyText = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -320,7 +394,7 @@ async function lightweightExtract(
     }
 
     const result: ExtractionResult = {
-      url: response.url,
+      url: currentUrl,
       title,
       text: options.extractText !== false ? bodyText.slice(0, options.maxLength || 10000) : "",
       html: html.slice(0, options.maxLength || 50000),
@@ -447,7 +521,7 @@ export function createEnhancedBrowserPlugin() {
 
   function createSession(name: string, options?: { proxy?: string; userAgent?: string }): BrowserSession {
     const session: BrowserSession = {
-      id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `session-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
       name,
       proxy: options?.proxy,
       userAgent: options?.userAgent,

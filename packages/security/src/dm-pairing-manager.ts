@@ -12,7 +12,7 @@
  * - "allowlist": only pre-approved senders are processed
  */
 
-import { EventBus, SystemEvents } from "@evoclaw/core";
+import { EventBus, SystemEvents, atomicWriteFileSync } from "@evoclaw/core";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -84,6 +84,10 @@ export class DMPairingManager {
   private static MAX_APPROVE_ATTEMPTS = 5;
   private static APPROVE_LOCKOUT_MS = 5 * 60 * 1000; // 5 分钟锁定
   private static APPROVE_WINDOW_MS = 10 * 60 * 1000; // 10 分钟窗口
+  /** pendingPairings Map 最大条目数。Bug P2-3 修复：原 Map 无上限，
+   *  攻击者可大量触发 pairing 请求（每个生成唯一 code）导致 OOM。
+   *  超限时拒绝新请求，需等待过期清理或现有请求被处理。 */
+  private static readonly MAX_PENDING_PAIRINGS = 1000;
 
   constructor(
     private eventBus: EventBus,
@@ -197,6 +201,16 @@ export class DMPairingManager {
         const code = this.generatePairingCode();
         const now = new Date();
         const expiryMinutes = policyConfig?.pairingExpiryMinutes || DEFAULT_EXPIRY_MINUTES;
+
+        // Bug P2-3 修复：pendingPairings 容量上限，防止攻击者大量触发
+        // pairing 请求导致 OOM。超限时拒绝并要求等待过期清理。
+        if (this.pendingPairings.size >= DMPairingManager.MAX_PENDING_PAIRINGS) {
+          return {
+            allowed: false,
+            reason: "pairing_capacity_exceeded",
+            pairingMessage: "Too many pending pairing requests. Please try again later.",
+          };
+        }
 
         const request: PairingRequest = {
           code,
@@ -414,37 +428,11 @@ export class DMPairingManager {
 
   private persistApprovedPeers(): void {
     try {
-      const dir = path.dirname(this.pairingStorePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
       const data: Record<string, string[]> = {};
       for (const [channel, peers] of this.approvedPeers) {
         data[channel] = [...peers];
       }
-      // BUG 20.3 fix: 使用原子写入（temp + fsync + rename）替代 writeFileSync，
-      // 防止进程崩溃或并发写入导致 pairing store 损坏。
-      const tmpPath = `${this.pairingStorePath}.${process.pid}.${Date.now()}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fs.renameSync(tmpPath, this.pairingStorePath);
-      } catch {
-        const dstTmp = `${this.pairingStorePath}.${process.pid}.${Date.now()}.dst.tmp`;
-        try {
-          fs.copyFileSync(tmpPath, dstTmp);
-          fs.renameSync(dstTmp, this.pairingStorePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } catch (fallbackErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          throw fallbackErr;
-        }
-      }
+      atomicWriteFileSync(this.pairingStorePath, JSON.stringify(data, null, 2));
     } catch (err) {
       process.stderr.write(`[DMPairingManager] Failed to persist approved peers: ${err instanceof Error ? err.message : String(err)}\n`);
     }

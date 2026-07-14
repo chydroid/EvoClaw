@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus, SystemEvents } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface SubTask {
   id: string;
@@ -125,7 +125,7 @@ export class TaskPlanner {
 
   decompose(task: string): TaskPlan {
     const plan: TaskPlan = {
-      id: uuid(),
+      id: randomUUID(),
       task,
       subtasks: [],
       createdAt: new Date(),
@@ -153,7 +153,7 @@ export class TaskPlanner {
 
   decomposeWithTemplate(task: string, templateName: string): TaskPlan {
     const plan: TaskPlan = {
-      id: uuid(),
+      id: randomUUID(),
       task,
       subtasks: [],
       createdAt: new Date(),
@@ -384,7 +384,7 @@ export class TaskPlanner {
     dependencies: string[]
   ): SubTask {
     return {
-      id: uuid().slice(0, 8),
+      id: randomUUID().slice(0, 8),
       description,
       tool,
       parameters,

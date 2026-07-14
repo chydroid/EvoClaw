@@ -64,7 +64,10 @@ const DEFAULT_CONFIG: ResolvedConfig = {
 };
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
 }
 
 // ── 主类 ────────────────────────────────────────────────────────────────────
@@ -197,8 +200,8 @@ export class DLQBatchRetry {
       } catch (err) {
         lastReason = err instanceof Error ? err.message : String(err);
         if (attempt < maxAttempts - 1) {
-          // 指数退避：retryDelayMs * 2^n
-          const delay = this.config.retryDelayMs * Math.pow(2, attempt);
+          // 指数退避：retryDelayMs * 2^n，上限 30 秒防止过长延迟
+          const delay = Math.min(30000, this.config.retryDelayMs * Math.pow(2, attempt));
           await sleep(delay);
         }
       }

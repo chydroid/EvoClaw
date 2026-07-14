@@ -11,6 +11,7 @@
  */
 
 import type { CacheProvider } from "./prompt-cache-stability";
+import * as crypto from "crypto";
 
 export interface CacheTraceEntry {
   /** uuid */
@@ -121,7 +122,7 @@ const PROVIDER_DEFAULT_COST: Record<CacheProvider, ModelCostEntry> = {
  */
 function generateId(): string {
   const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
+  const rand = crypto.randomBytes(4).toString("hex");
   return `${ts}-${rand}`;
 }
 

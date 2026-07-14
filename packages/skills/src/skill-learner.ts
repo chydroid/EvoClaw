@@ -26,65 +26,16 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { randomBytes } from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { isIP } from "net";
 import { yamlQuote } from "./skill-content-utils";
 
 /**
- * 原子写入文件（temp + fsync + rename）。
- * 遵循项目硬约束：禁止直接使用 fs.writeFileSync 写持久化状态。
- * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
+ * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
+ * 保持本地函数签名，避免调用方改动。
  */
 function atomicWriteFile(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    if (fs.existsSync(targetPath)) {
-      const st = fs.statSync(targetPath);
-      fs.chmodSync(tmpPath, st.mode);
-    }
-  } catch {
-    // 权限复制失败不阻断写入
-  }
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备：在目标侧写临时文件后 rename，保持原子性
-      const dstDir = path.dirname(targetPath);
-      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
-      const c = fs.readFileSync(tmpPath, "utf-8");
-      const fd2 = fs.openSync(dstTmp, "w");
-      try {
-        fs.writeFileSync(fd2, c, "utf-8");
-        fs.fsyncSync(fd2);
-      } catch (werr) {
-        try { fs.closeSync(fd2); } catch { /* ignore */ }
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        throw werr;
-      }
-      fs.closeSync(fd2);
-      fs.renameSync(dstTmp, targetPath);
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    } else {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-  }
+  atomicWriteFileSync(targetPath, content);
 }
 
 // ── Types ─────────────────────────────────────────────────
@@ -211,8 +162,10 @@ export class SkillLearner {
       // GitHub URL 特殊处理：raw README
       const rawUrl = this.githubToRawUrl(url);
       // SSRF 防护：拦截内网 IP / 元数据端点 / 非公网主机名
+      // 必须在 fetch 前校验初始 URL；同时禁用自动跟随重定向，
+      // 对每个重定向 Location 二次校验，防止 SSRF fail open。
       this.assertSafeFetchUrl(rawUrl);
-      const response = await fetch(rawUrl, {
+      const response = await this.safeFetchWithRedirectCheck(rawUrl, {
         signal: AbortSignal.timeout(timeoutMs),
         headers: { "User-Agent": "EvoClaw-SkillLearner/1.0" },
       });
@@ -622,6 +575,42 @@ export class SkillLearner {
       return `https://raw.githubusercontent.com/${blobMatch[1]}/${blobMatch[2]}/${blobMatch[3]}`;
     }
     return url;
+  }
+
+  /**
+   * 安全 fetch：禁用自动重定向，手动处理 301/302/303/307/308，
+   * 对每个重定向 Location 二次执行 SSRF 校验，防止 fail open。
+   * 最多跟随 5 次重定向，超过则抛错。
+   */
+  private async safeFetchWithRedirectCheck(
+    initialUrl: string,
+    init: RequestInit,
+    maxRedirects = 5,
+  ): Promise<Response> {
+    let currentUrl = initialUrl;
+    for (let i = 0; i <= maxRedirects; i++) {
+      const response = await fetch(currentUrl, { ...init, redirect: "manual" });
+      const status = response.status;
+      if (status === 301 || status === 302 || status === 303 || status === 307 || status === 308) {
+        const location = response.headers.get("location");
+        if (!location) {
+          throw new Error(`Redirect status ${status} without Location header`);
+        }
+        // 解析为完整 URL（Location 可能是相对路径）
+        let nextUrl: string;
+        try {
+          nextUrl = new URL(location, currentUrl).toString();
+        } catch {
+          throw new Error(`Invalid redirect Location: ${location}`);
+        }
+        // SSRF 二次校验：重定向后的 URL 也必须通过校验
+        this.assertSafeFetchUrl(nextUrl);
+        currentUrl = nextUrl;
+        continue;
+      }
+      return response;
+    }
+    throw new Error(`Too many redirects (>${maxRedirects})`);
   }
 
   /**

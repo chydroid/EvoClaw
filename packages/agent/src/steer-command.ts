@@ -5,6 +5,8 @@
  * Allows users to modify agent behavior mid-execution without stopping it.
  */
 
+import * as crypto from "crypto";
+
 export interface SteerInstruction {
   id: string;
   sessionId: string;
@@ -24,6 +26,7 @@ export interface SteerResult {
 }
 
 export class SteerManager {
+  private static readonly MAX_INSTRUCTIONS = 10000;
   private instructions: Map<string, SteerInstruction> = new Map();
   private sessionInstructions: Map<string, string[]> = new Map(); // sessionId -> instructionIds
 
@@ -34,7 +37,7 @@ export class SteerManager {
     priority?: SteerInstruction["priority"];
     category?: SteerInstruction["category"];
   }): SteerResult {
-    const id = `steer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `steer-${Date.now().toString(36)}-${crypto.randomBytes(2).toString("hex")}`;
     const steerInstruction: SteerInstruction = {
       id,
       sessionId,
@@ -46,6 +49,7 @@ export class SteerManager {
     };
 
     this.instructions.set(id, steerInstruction);
+    this.enforceInstructionLimit();
 
     const sessionIds = this.sessionInstructions.get(sessionId) || [];
     sessionIds.push(id);
@@ -57,6 +61,23 @@ export class SteerManager {
       message: `Instruction injected: "${instruction.slice(0, 50)}${instruction.length > 50 ? "..." : ""}"`,
       pendingCount: sessionIds.filter(sid => !this.instructions.get(sid)?.consumed).length,
     };
+  }
+
+  private enforceInstructionLimit(): void {
+    while (this.instructions.size > SteerManager.MAX_INSTRUCTIONS) {
+      const firstKey = this.instructions.keys().next().value;
+      if (!firstKey) break;
+      const instruction = this.instructions.get(firstKey);
+      this.instructions.delete(firstKey);
+      if (instruction) {
+        const ids = this.sessionInstructions.get(instruction.sessionId);
+        if (ids) {
+          const idx = ids.indexOf(firstKey);
+          if (idx >= 0) ids.splice(idx, 1);
+          if (ids.length === 0) this.sessionInstructions.delete(instruction.sessionId);
+        }
+      }
+    }
   }
 
   /**

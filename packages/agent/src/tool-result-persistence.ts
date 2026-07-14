@@ -24,27 +24,10 @@
  *   - 通过 stdin 写入避免 MAX_ARG_STRLEN 限制
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, openSync, closeSync, fsyncSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, openSync, closeSync, fsyncSync, renameSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
 import { homedir, tmpdir } from "os";
-
-/** 原子写入文件（temp + fsync + rename），防止崩溃时产生截断文件。 */
-function atomicWriteFileSync(filePath: string, content: string): void {
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  const fd = openSync(tmp, "w");
-  try {
-    writeFileSync(fd, content, "utf-8");
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
-    renameSync(tmp, filePath);
-  } catch (err) {
-    try { unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
-  }
-}
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 

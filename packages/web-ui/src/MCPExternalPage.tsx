@@ -85,7 +85,8 @@ export default function MCPExternalPage() {
     let config: Record<string, unknown>;
     try {
       config = JSON.parse(newConfig);
-    } catch {
+    } catch (err) {
+      console.error("[MCPExternal] Failed to parse config JSON:", err);
       showToast(t("mcp_external.invalid_json", "配置 JSON 格式无效"), "error");
       return;
     }

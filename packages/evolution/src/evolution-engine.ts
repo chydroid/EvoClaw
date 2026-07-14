@@ -2,6 +2,7 @@ import {
   ServiceRegistry,
   EventBus,
   SystemEvents,
+  atomicWriteFileSync,
   type EventHandler,
   type EvolutionCycle,
   type ReinforcementFeedback,
@@ -10,7 +11,7 @@ import {
   type LearningTrigger,
   type LearningCategory,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { RequirementMiner } from "./requirement-miner";
@@ -112,41 +113,13 @@ export class EvolutionEngine {
 
   private persistToDisk(): void {
     try {
-      if (!fs.existsSync(this.storeDir)) {
-        fs.mkdirSync(this.storeDir, { recursive: true });
-      }
       const state = {
         cycles: Array.from(this.cycles.values()).slice(-500),
         feedback: this.feedbackStore.slice(-500),
         savedAt: new Date().toISOString(),
       };
       const statePath = path.join(this.storeDir, "state.json");
-      const tmpPath = `${statePath}.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, JSON.stringify(state), "utf-8");
-      const fd = fs.openSync(tmpPath, "r");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      try {
-        fs.renameSync(tmpPath, statePath);
-      } catch (renameErr: unknown) {
-        const code = (renameErr as NodeJS.ErrnoException)?.code;
-        if (code === "EXDEV" || code === "EBUSY") {
-          // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
-          const dstTmp = `${statePath}.${process.pid}.dst.tmp`;
-          const content = fs.readFileSync(tmpPath, "utf-8");
-          const fd2 = fs.openSync(dstTmp, "w");
-          try {
-            fs.writeFileSync(fd2, content, "utf-8");
-            fs.fsyncSync(fd2);
-          } finally {
-            fs.closeSync(fd2);
-          }
-          fs.renameSync(dstTmp, statePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } else {
-          throw renameErr;
-        }
-      }
+      atomicWriteFileSync(statePath, JSON.stringify(state));
     } catch (err) {
       process.stderr.write(`[EvolutionEngine] Failed to persist: ${err}\n`);
     }
@@ -216,7 +189,7 @@ export class EvolutionEngine {
         this.evolutionThreshold.recordFailure(skillId, source);
 
         const session = this.learningJournal.startSession(
-          String(taskData.taskId || uuid()),
+          String(taskData.taskId || randomUUID()),
           String(taskData.description || "任务执行失败")
         );
 
@@ -295,7 +268,7 @@ export class EvolutionEngine {
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(
-        String(data.taskId || uuid()),
+        String(data.taskId || randomUUID()),
         String(data.description || "用户纠正")
       );
 
@@ -340,7 +313,7 @@ export class EvolutionEngine {
 
       if (!isDuplicate) {
         const session = this.learningJournal.startSession(
-          String(data.taskId || uuid()),
+          String(data.taskId || randomUUID()),
           String(data.description || "能力缺口检测")
         );
 
@@ -378,7 +351,7 @@ export class EvolutionEngine {
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(
-        String(data.taskId || uuid()),
+        String(data.taskId || randomUUID()),
         String(data.description || "外部依赖失败")
       );
 
@@ -428,7 +401,7 @@ export class EvolutionEngine {
       const data = event.data as Record<string, unknown>;
 
       const session = this.learningJournal.startSession(
-        String(data.taskId || uuid()),
+        String(data.taskId || randomUUID()),
         String(data.description || "知识改进发现")
       );
 
@@ -477,7 +450,7 @@ export class EvolutionEngine {
     input: Record<string, unknown>
   ): Promise<EvolutionCycle> {
     const cycle: EvolutionCycle = {
-      id: uuid(),
+      id: randomUUID(),
       status: "mining",
       source,
       targetSkill: null,

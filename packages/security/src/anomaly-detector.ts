@@ -5,7 +5,7 @@ import {
   type AnomalyIndicator,
   SystemEvents,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export class AnomalyDetector {
   private baseline = new Map<string, AnomalyIndicator>();
@@ -57,7 +57,7 @@ export class AnomalyDetector {
 
     if (baseline.deviation > baseline.threshold) {
       const alert: AnomalyDetection = {
-        id: uuid(),
+        id: randomUUID(),
         type: metric,
         severity: baseline.deviation > baseline.threshold * 2 ? "critical" : "warning",
         source: "anomaly-detector",
@@ -90,7 +90,8 @@ export class AnomalyDetector {
   }
 
   getAlerts(): AnomalyDetection[] {
-    return this.alerts;
+    // 返回副本而非内部引用，防止调用方意外修改内部状态
+    return [...this.alerts];
   }
 
   resolve(alertId: string): void {

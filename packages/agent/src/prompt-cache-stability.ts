@@ -287,7 +287,9 @@ export class PromptCacheStabilityManager {
   getHitRate(windowSize?: number): number {
     if (this.history.length === 0) return 0;
     const size = windowSize ?? this.history.length;
+    if (size <= 0) return 0;
     const slice = this.history.slice(-size);
+    if (slice.length === 0) return 0;
     const stableCount = slice.filter((h) => h.isStable).length;
     return stableCount / slice.length;
   }

@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 interface QueueMessage {
   id: string;
@@ -20,6 +20,7 @@ export class MessageQueue {
   private processingTopics = new Set<string>();
   private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly maxTopics = 1024;
+  private readonly maxMessagesPerTopic = 10000;
 
   constructor(
     private registry: ServiceRegistry,
@@ -30,7 +31,7 @@ export class MessageQueue {
 
   async publish(topic: string, payload: unknown): Promise<string> {
     const message: QueueMessage = {
-      id: uuid(),
+      id: randomUUID(),
       topic,
       payload,
       timestamp: new Date(),
@@ -44,7 +45,12 @@ export class MessageQueue {
       }
       this.topics.set(topic, []);
     }
-    this.topics.get(topic)!.push(message);
+    const queue = this.topics.get(topic)!;
+    queue.push(message);
+    if (queue.length > this.maxMessagesPerTopic) {
+      const dropped = queue.splice(0, queue.length - this.maxMessagesPerTopic);
+      process.stderr.write(`[MessageQueue] Topic "${topic}" exceeded ${this.maxMessagesPerTopic} messages, dropped ${dropped.length} oldest\n`);
+    }
 
     this.processTopic(topic);
 
@@ -78,7 +84,7 @@ export class MessageQueue {
         if (message.nextRetryAt && Date.now() < message.nextRetryAt) {
           messages.push(message);
           // 调度退避结束后重新处理该 topic，避免消息永久滞留
-          const delay = message.nextRetryAt - Date.now();
+          const delay = Math.max(0, message.nextRetryAt - Date.now());
           const timer = setTimeout(() => { this.pendingTimers.delete(timer); this.processTopic(topic); }, delay);
           this.pendingTimers.add(timer);
           if (timer.unref) timer.unref();

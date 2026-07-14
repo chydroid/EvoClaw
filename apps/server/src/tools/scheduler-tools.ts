@@ -20,6 +20,13 @@ export function registerSchedulerTools(
 ): void {
   const sched = scheduleManager;
 
+  // 防止 eventBus.publish 的 Promise rejection 成为 unhandled rejection
+  const publish = (eventType: string, data: unknown): void => {
+    eventBus.publish(eventType, data, "scheduler").catch((err) => {
+      process.stderr.write(`[scheduler-tools] publish ${eventType} failed: ${err}\n`);
+    });
+  };
+
   sched.registerHandler("email_check", async (task: ScheduledTask) => {
     const config = task.handlerConfig as { accountId?: string; rawEmails?: string[] };
     if (config.rawEmails && Array.isArray(config.rawEmails)) {
@@ -32,7 +39,7 @@ export function registerSchedulerTools(
         }
       }
       const analysis = emailClient.analyzeEmails(parsed);
-      eventBus.publish("scheduler.email_checked", { taskId: task.id, analysis }, "scheduler");
+      publish("scheduler.email_checked", { taskId: task.id, analysis });
     }
   });
 
@@ -44,31 +51,22 @@ export function registerSchedulerTools(
           templateName: config.templateName || "default-report",
           outputPath: config.outputPath,
         });
-        eventBus.publish("scheduler.report_generated", { taskId: task.id, outputPath: config.outputPath, length: result.length }, "scheduler");
+        publish("scheduler.report_generated", { taskId: task.id, outputPath: config.outputPath, length: result.length });
       } catch (err) {
-        eventBus.publish("scheduler.report_error", { taskId: task.id, error: err instanceof Error ? err.message : String(err) }, "scheduler");
+        publish("scheduler.report_error", { taskId: task.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
   });
 
   sched.registerHandler("system_cleanup", async (task: ScheduledTask) => {
-    eventBus.publish("scheduler.cleanup_run", { taskId: task.id }, "scheduler");
+    publish("scheduler.cleanup_run", { taskId: task.id });
   });
 
-  // SSRF 校验：与 browser-tools.validateUrlSsrf 一致，优先 ssrfProtection 服务，退化为协议白名单
+  // SSRF 校验：安全服务未注册时 fail-closed（拒绝请求），防止内网地址绕过
   async function validateUrlSsrf(url: string): Promise<{ ok: boolean; error?: string }> {
     const ssrfProtection = registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
     if (!ssrfProtection) {
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        return { ok: false, error: "Invalid URL format" };
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return { ok: false, error: `Unsupported protocol: ${parsed.protocol}. Only http/https allowed.` };
-      }
-      return { ok: true };
+      return { ok: false, error: "SSRF protection service unavailable" };
     }
     const result = await ssrfProtection.checkURL(url);
     if (!result.allowed) {
@@ -82,21 +80,21 @@ export function registerSchedulerTools(
     if (config.action === "screenshot" && config.url) {
       const ssrfCheck = await validateUrlSsrf(config.url);
       if (!ssrfCheck.ok) {
-        eventBus.publish("scheduler.browser_error", { taskId: task.id, error: ssrfCheck.error, url: config.url }, "scheduler");
+        publish("scheduler.browser_error", { taskId: task.id, error: ssrfCheck.error, url: config.url });
         return;
       }
       await playwrightBrowser.navigate(config.url);
       const buf = await playwrightBrowser.screenshot({ fullPage: true, type: "png" });
-      eventBus.publish("scheduler.browser_screenshot", {
+      publish("scheduler.browser_screenshot", {
         taskId: task.id, url: config.url, size: buf.length,
-      }, "scheduler");
+      });
     }
   });
 
   sched.registerHandler("custom", async (task: ScheduledTask) => {
-    eventBus.publish("scheduler.custom_task", {
+    publish("scheduler.custom_task", {
       taskId: task.id, name: task.name, config: task.handlerConfig,
-    }, "scheduler");
+    });
   });
 
   // shell handler：执行 shell 命令（带超时和危险命令拦截）
@@ -121,15 +119,15 @@ export function registerSchedulerTools(
   sched.registerHandler("shell", async (task: ScheduledTask) => {
     const config = task.handlerConfig as { command?: string; cwd?: string; timeout?: number };
     if (!config.command) {
-      eventBus.publish("scheduler.shell_error", { taskId: task.id, error: "No command specified" }, "scheduler");
+      publish("scheduler.shell_error", { taskId: task.id, error: "No command specified" });
       return;
     }
     // 安全：危险命令过滤，防止定时任务执行破坏性命令
     for (const pattern of SCHED_DANGEROUS_PATTERNS) {
       if (pattern.test(config.command)) {
-        eventBus.publish("scheduler.shell_error", {
+        publish("scheduler.shell_error", {
           taskId: task.id, error: "Command blocked by safety filter: matched dangerous pattern",
-        }, "scheduler");
+        });
         return;
       }
     }
@@ -141,7 +139,7 @@ export function registerSchedulerTools(
     const cwd = config.cwd ? path.resolve(config.cwd) : workspaceDir;
     // 校验 cwd 必须在 workspace 内
     if (cwd !== workspaceDir && !cwd.startsWith(workspaceDir + path.sep)) {
-      eventBus.publish("scheduler.shell_error", { taskId: task.id, error: "cwd must be within workspace" }, "scheduler");
+      publish("scheduler.shell_error", { taskId: task.id, error: "cwd must be within workspace" });
       return;
     }
     const timeout = Math.min(Math.max(config.timeout || 60000, 1000), 300000); // 1s~5min
@@ -157,13 +155,13 @@ export function registerSchedulerTools(
           }
         });
       });
-      eventBus.publish(timedOut ? "scheduler.shell_timeout" : "scheduler.shell_completed", {
+      publish(timedOut ? "scheduler.shell_timeout" : "scheduler.shell_completed", {
         taskId: task.id, stdout: stdout.slice(0, 4096), stderr: stderr.slice(0, 1024), timedOut,
-      }, "scheduler");
+      });
     } catch (err) {
-      eventBus.publish("scheduler.shell_error", {
+      publish("scheduler.shell_error", {
         taskId: task.id, error: err instanceof Error ? err.message : String(err),
-      }, "scheduler");
+      });
     }
   });
 
@@ -201,7 +199,7 @@ export function registerSchedulerTools(
           return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
         }
         process.stderr.write(`[scheduler_create] WARNING: creating shell scheduled task "${name}" — ensure command is trusted\n`);
-        eventBus.publish("scheduler.shell_task_created", { name, command }, "scheduler");
+        publish("scheduler.shell_task_created", { name, command });
       }
       try {
         const task = sched.createTask({ name, cronExpression, description, handlerType, handlerConfig });

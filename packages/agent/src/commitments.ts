@@ -17,6 +17,8 @@
  * reliability — it ensures the agent doesn't "forget" things it promised.
  */
 import type { EventBus } from "@evoclaw/core";
+import { atomicWriteFileSync } from "@evoclaw/core";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -153,34 +155,7 @@ export class CommitmentManager {
     }
     if (!this.dirty) return;
     try {
-      const dir = path.dirname(this.storePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      // 原子写入：temp + fsync + rename，防止崩溃导致 commitments.json 截断损坏
-      const tmpPath = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(this.commitments, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fs.renameSync(tmpPath, this.storePath);
-      } catch {
-        // EXDEV/EBUSY 跨设备回退：复制到目标侧临时文件后再 rename，并清理两侧临时文件
-        const dstTmp = `${this.storePath}.${process.pid}.${Date.now()}.dst.tmp`;
-        try {
-          fs.copyFileSync(tmpPath, dstTmp);
-          fs.renameSync(dstTmp, this.storePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } catch (fallbackErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw fallbackErr;
-        }
-      }
+      atomicWriteFileSync(this.storePath, JSON.stringify(this.commitments, null, 2));
       this.dirty = false;
     } catch (err) {
       // Best-effort persistence，但记录错误以便排查
@@ -214,7 +189,8 @@ export class CommitmentManager {
     tags?: string[];
   }): Commitment {
     const now = Date.now();
-    const id = `cmt_${now}_${Math.random().toString(36).slice(2, 8)}`;
+    // 使用 crypto 替代 Math.random 生成承诺 ID，满足项目安全约束。
+    const id = `cmt_${now}_${crypto.randomBytes(4).toString("hex")}`;
     const commitment: Commitment = {
       id,
       description: params.description,
@@ -230,7 +206,8 @@ export class CommitmentManager {
     this.commitments[id] = commitment;
     this.scheduleSave();
 
-    this.eventBus?.publish("commitment.created", commitment, "commitment-manager");
+    this.eventBus?.publish("commitment.created", commitment, "commitment-manager")
+      ?.catch((err) => process.stderr.write(`[CommitmentManager] publish commitment.created failed: ${err}\n`));
 
     return commitment;
   }
@@ -318,7 +295,8 @@ export class CommitmentManager {
 
     this.eventBus?.publish("commitment.transition", {
       commitmentId: id, from: oldStatus, to: newStatus,
-    }, "commitment-manager");
+    }, "commitment-manager")
+      ?.catch((err) => process.stderr.write(`[CommitmentManager] publish commitment.transition failed: ${err}\n`));
 
     return c;
   }
@@ -353,7 +331,8 @@ export class CommitmentManager {
     this.scheduleSave();
 
     // 与 create() 一致，发布删除事件供下游订阅
-    this.eventBus?.publish("commitment.deleted", { commitmentId: id }, "commitment-manager");
+    this.eventBus?.publish("commitment.deleted", { commitmentId: id }, "commitment-manager")
+      ?.catch((err) => process.stderr.write(`[CommitmentManager] publish commitment.deleted failed: ${err}\n`));
 
     return true;
   }

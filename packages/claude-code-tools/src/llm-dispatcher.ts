@@ -399,7 +399,8 @@ export class LLMDispatcher {
         }
 
         if (attempt <= this.config.maxRetries) {
-          const delay = this.config.retryBaseDelayMs * Math.pow(2, attempt - 1);
+          const MAX_BACKOFF_MS = 30_000;
+          const delay = Math.min(this.config.retryBaseDelayMs * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
           await this.sleep(delay);
         }
       }
@@ -615,6 +616,7 @@ export class LLMDispatcher {
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
+    if (timeoutId.unref) timeoutId.unref();
 
     try {
       const response = await fetch(apiURL, {
@@ -762,6 +764,9 @@ export class LLMDispatcher {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 }

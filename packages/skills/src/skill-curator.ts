@@ -2,6 +2,7 @@ import {
   ServiceRegistry,
   EventBus,
   SystemEvents,
+  atomicWriteFileSync,
   type Skill,
   type SkillExecutionResult,
   type SkillTrigger,
@@ -11,80 +12,17 @@ import {
   type EvoEvent,
 } from "@evoclaw/core";
 import { atomicWriteFile, CrossProcessLock } from "@evoclaw/infrastructure";
-import { v4 as uuid } from "uuid";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { SkillValidator } from "./skill-validator";
 
 /**
- * 原子写入文件（temp + fsync + rename）。
- * 防止崩溃时产生截断的 SKILL.md / _meta.json。
- * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
+ * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
+ * 保持本地函数签名，避免调用方改动。
  */
 function atomicWriteFileLocal(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    if (fs.existsSync(targetPath)) {
-      const st = fs.statSync(targetPath);
-      fs.chmodSync(tmpPath, st.mode);
-    }
-  } catch {
-    // 权限复制失败不阻断
-  }
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备：在目标侧写临时文件后 rename，保持原子性
-      const dstDir = path.dirname(targetPath);
-      const dstTmp = path.join(dstDir, `.${path.basename(targetPath)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
-      const c = fs.readFileSync(tmpPath, "utf-8");
-      const fd2 = fs.openSync(dstTmp, "w");
-      try {
-        fs.writeFileSync(fd2, c, "utf-8");
-        fs.fsyncSync(fd2);
-      } catch (werr) {
-        try { fs.closeSync(fd2); } catch { /* ignore */ }
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw werr;
-      }
-      fs.closeSync(fd2);
-      try {
-        if (fs.existsSync(targetPath)) {
-          const st = fs.statSync(targetPath);
-          fs.chmodSync(dstTmp, st.mode);
-        }
-      } catch { /* ignore */ }
-      try {
-        fs.renameSync(dstTmp, targetPath);
-      } catch (rerr) {
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw rerr;
-      }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    } else {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-  }
+  atomicWriteFileSync(targetPath, content);
 }
 
 /**
@@ -678,6 +616,8 @@ export class SkillCurator {
    */
   async archiveSkill(skillName: string): Promise<void> {
     if (!skillName) throw new Error("skillName is required");
+    // 路径穿越防护：skillName 不能包含路径分隔符或 .. 序列
+    this.validateSkillName(skillName);
 
     // 查找匹配的演化记录（用于 pinned 豁免与 skillId 元信息）
     const matchingEntry = Array.from(this.evolutions.values()).find(
@@ -760,6 +700,8 @@ export class SkillCurator {
    */
   async restoreSkill(skillName: string): Promise<void> {
     if (!skillName) throw new Error("skillName is required");
+    // 路径穿越防护：与 archiveSkill 一致
+    this.validateSkillName(skillName);
     if (!fs.existsSync(this.archiveDir)) {
       throw new Error(`Archive directory not found: ${this.archiveDir}`);
     }
@@ -1521,6 +1463,21 @@ export class SkillCurator {
     if (!name.includes("-")) return false;
 
     return true;
+  }
+
+  /**
+   * 路径穿越防护：验证 skillName 不含路径分隔符或 .. 序列。
+   * 防止 archiveSkill/restoreSkill 被恶意输入操纵到 skillsDir 之外的目录。
+   */
+  private validateSkillName(skillName: string): void {
+    if (
+      skillName.includes("/") ||
+      skillName.includes("\\") ||
+      skillName.includes("..") ||
+      skillName.includes("\0")
+    ) {
+      throw new Error(`Invalid skillName (path traversal detected): ${skillName}`);
+    }
   }
 
   /**

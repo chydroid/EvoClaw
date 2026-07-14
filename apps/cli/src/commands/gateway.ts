@@ -57,9 +57,16 @@ function writePid(pid: number, usedPort: number): void {
   try {
     const dir = path.dirname(PID_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Write PID and port so restart can use the same port (atomic: temp + rename)
+    // Write PID and port so restart can use the same port (atomic: temp + fsync + rename)
     const tmp = `${PID_FILE}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify({ pid, port: usedPort }));
+    const fd = fs.openSync(tmp, "w");
+    try {
+      const data = JSON.stringify({ pid, port: usedPort });
+      fs.writeSync(fd, data);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, PID_FILE);
   } catch { /* ignore */ }
 }
@@ -138,7 +145,8 @@ function stopGateway(opts: Record<string, unknown>): void {
   } catch (err) {
     console.log(c("yellow", `⚠ Could not stop Gateway: ${err instanceof Error ? err.message : String(err)}`));
   }
-  setTimeout(clearPid, 1000);
+  const pidCleanupTimer = setTimeout(clearPid, 1000);
+  pidCleanupTimer.unref();
 }
 
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {

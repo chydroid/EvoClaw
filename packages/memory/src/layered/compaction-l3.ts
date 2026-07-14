@@ -1,3 +1,5 @@
+import * as crypto from "crypto";
+
 /**
  * L3 三级压缩 — Mild / Aggressive / Emergency 渐进式压缩。
  *
@@ -338,12 +340,7 @@ export function computeFingerprint(msg: CompactionMessage): string {
   return `${msg.role}:${head.length}:${hashStr(head)}`;
 }
 
-/** 简单字符串 hash（djb2）。 */
-function hashStr(s: string): number {
-  let hash = 5381;
-  for (let i = 0; i < s.length; i++) {
-    hash = ((hash << 5) + hash) + s.charCodeAt(i);
-    hash = hash & 0xffffffff;
-  }
-  return hash >>> 0;
+/** 使用 SHA256 计算字符串 hash（替代 djb2，降低碰撞风险）。 */
+function hashStr(s: string): string {
+  return crypto.createHash("sha256").update(s, "utf-8").digest("hex").slice(0, 16);
 }

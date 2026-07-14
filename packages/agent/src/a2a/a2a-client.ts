@@ -1,4 +1,5 @@
 import type { A2AAgentCard, A2ATask, A2ATaskResult, A2AClientConfig } from "./types";
+import * as crypto from "crypto";
 
 // ── SSRF 防护 ───────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ export class A2AClient {
     const agent = this.knownAgents.get(agentName);
     if (!agent) throw new Error(`Unknown agent: ${agentName}`);
 
-    const fullTask: A2ATask = { ...task, id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
+    const fullTask: A2ATask = { ...task, id: `task-${Date.now()}-${crypto.randomBytes(3).toString("hex")}` };
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const apiKey = this.config.apiKeys[agentName];

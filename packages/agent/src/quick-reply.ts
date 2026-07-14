@@ -1245,8 +1245,15 @@ document.addEventListener('DOMContentLoaded', () => {
   ];
 
   greetBtn.addEventListener('click', () => {
-    const randomMsg = messages[Math.floor(Math.random() * messages.length)];
-    greeting.textContent = randomMsg;
+    let idx = 0;
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const buf = new Uint32Array(1);
+      crypto.getRandomValues(buf);
+      idx = buf[0] % messages.length;
+    } else {
+      idx = Math.floor(Math.random() * messages.length);
+    }
+    greeting.textContent = messages[idx];
     greeting.style.animation = 'none';
     greeting.offsetHeight;
     greeting.style.animation = 'fadeIn 0.5s ease';

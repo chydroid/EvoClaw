@@ -16,6 +16,7 @@
  */
 
 import type { ChannelAdapter, ChannelConfig, ChannelHealthResult, ChannelMessage, ChannelSendResult, ChannelType } from "../channel-manager.js";
+import * as crypto from "crypto";
 
 // ── Config ────────────────────────────────────────────────
 
@@ -128,7 +129,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
     try {
       const roomId = this.normalizeRoomId(target);
-      const txnId = `txn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const txnId = `txn_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 
       const body: Record<string, unknown> = {
         msgtype: "m.text",

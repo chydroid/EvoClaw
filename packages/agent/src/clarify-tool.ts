@@ -20,6 +20,8 @@
  */
 
 // ── Constants ─────────────────────────────────────────────────────────
+import * as crypto from "crypto";
+
 /** Maximum number of predefined choices the agent can offer. */
 export const MAX_CHOICES = 4;
 
@@ -262,7 +264,7 @@ function randomClarifyId(): string {
   if (g.crypto?.randomUUID) {
     return `clr_${g.crypto.randomUUID()}`;
   }
-  return `clr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return `clr_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
 }
 
 /**

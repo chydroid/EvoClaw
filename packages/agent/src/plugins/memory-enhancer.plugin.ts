@@ -25,7 +25,11 @@ const MAX_INSIGHT_LENGTH = 500;
 const MAX_SESSIONS_TO_RESTORE = 3;
 const MAX_TOOL_RESULT_SUMMARY = 300;
 
-let currentSession: SessionMemory | null = null;
+/** Per-session memory state, keyed by sessionId.
+ *  此前为单一模块变量 currentSession，并发会话会互相覆盖，导致跨会话数据泄漏。
+ *  改为 Map 后每个会话拥有独立的内存状态。 */
+const sessions = new Map<string, SessionMemory>();
+const MAX_SESSIONS = 100;
 let memoryDir: string = MEMORY_DIR;
 let persistCount = 0;
 let restoreCount = 0;
@@ -114,6 +118,11 @@ function loadRecentSessions(count: number): Array<{ sessionId: string; insights:
   for (const { file } of files) {
     try {
       const data = JSON.parse(fs.readFileSync(path.join(memoryDir, file), "utf-8"));
+      // 跳过缺少 sessionId 的损坏会话文件，避免后续 buildRestoredContext 中 slice(undefined) 崩溃
+      if (typeof data.sessionId !== "string" || data.sessionId.length === 0) {
+        console.warn(`[Memory Enhancer] Skipping session file "${file}": missing or invalid sessionId`);
+        continue;
+      }
       sessions.push({
         sessionId: data.sessionId,
         insights: data.insights || [],
@@ -169,8 +178,13 @@ export function createMemoryEnhancerPlugin(): Plugin {
       handler: async (hook) => {
         const h = hook as BeforeAgentStartHook;
         const sessionId = h.context?.sessionId || `session-${Date.now()}`;
-        if (!currentSession || currentSession.sessionId !== sessionId) {
-          currentSession = {
+        if (!sessions.has(sessionId)) {
+          // 安全：限制并发会话数，防止无界增长
+          if (sessions.size >= MAX_SESSIONS) {
+            const oldestKey = sessions.keys().next().value;
+            if (oldestKey) sessions.delete(oldestKey);
+          }
+          sessions.set(sessionId, {
             sessionId,
             startTime: new Date().toISOString(),
             insights: [],
@@ -178,7 +192,7 @@ export function createMemoryEnhancerPlugin(): Plugin {
             userPreferences: [],
             decisions: [],
             errors: [],
-          };
+          });
         }
         return {};
       },
@@ -208,9 +222,13 @@ export function createMemoryEnhancerPlugin(): Plugin {
         const h = hook as SessionEndHook;
         const reason = h.reason || "completed";
 
-        if (currentSession) {
-          persistSession(currentSession);
-          currentSession = null;
+        const sessionId = h.context?.sessionId;
+        if (sessionId) {
+          const session = sessions.get(sessionId);
+          if (session) {
+            persistSession(session);
+            sessions.delete(sessionId);
+          }
         }
 
         cleanupOldSessions();
@@ -226,11 +244,13 @@ export function createMemoryEnhancerPlugin(): Plugin {
         const significantTools = ["file_create", "file_modify", "file_delete", "web_search", "web_fetch", "skill_execute", "markitdown_convert"];
 
         if (significantTools.includes(h.toolName) && !h.errored) {
-          if (!currentSession) return {};
+          const sessionId = h.context?.sessionId;
+          const session = sessionId ? sessions.get(sessionId) : undefined;
+          if (!session) return {};
 
           const summary = summarizeToolResult(h.toolName, h.result);
           if (summary) {
-            currentSession.toolResults.set(`${h.toolName}-${Date.now()}`, {
+            session.toolResults.set(`${h.toolName}-${Date.now()}`, {
               tool: h.toolName,
               summary,
               timestamp: new Date().toISOString(),
@@ -240,13 +260,15 @@ export function createMemoryEnhancerPlugin(): Plugin {
           if (h.toolName === "web_search" || h.toolName === "web_fetch") {
             const resultStr = typeof h.result === "string" ? h.result : JSON.stringify(h.result || {});
             const insight = extractInsight(resultStr);
-            if (insight) currentSession.insights.push(insight);
+            if (insight) session.insights.push(insight);
           }
         }
 
         if (h.errored && h.toolName) {
-          if (currentSession) {
-            currentSession.errors.push(`${h.toolName}: ${String(h.error || "unknown error").slice(0, 200)}`);
+          const sessionId = h.context?.sessionId;
+          const session = sessionId ? sessions.get(sessionId) : undefined;
+          if (session) {
+            session.errors.push(`${h.toolName}: ${String(h.error || "unknown error").slice(0, 200)}`);
           }
         }
 
@@ -258,9 +280,11 @@ export function createMemoryEnhancerPlugin(): Plugin {
       priority: "first",
       handler: async (hook) => {
         const h = hook as BeforeCompactionHook;
-        if (currentSession && currentSession.insights.length > 0) {
-          persistSession(currentSession);
-          console.log(`[Memory Enhancer] Pre-compaction save: ${currentSession.insights.length} insights preserved`);
+        const sessionId = h.context?.sessionId;
+        const session = sessionId ? sessions.get(sessionId) : undefined;
+        if (session && session.insights.length > 0) {
+          persistSession(session);
+          console.log(`[Memory Enhancer] Pre-compaction save: ${session.insights.length} insights preserved`);
         }
         return {};
       },
@@ -287,10 +311,10 @@ export function createMemoryEnhancerPlugin(): Plugin {
       console.log(`[Memory Enhancer v2] Initialized, memory dir: ${memoryDir}`);
     },
     async shutdown() {
-      if (currentSession) {
-        persistSession(currentSession);
-        currentSession = null;
+      for (const session of sessions.values()) {
+        persistSession(session);
       }
+      sessions.clear();
       console.log(`[Memory Enhancer v2] Shutting down — ${persistCount} sessions persisted, ${restoreCount} restores`);
     },
     async healthCheck() {
@@ -305,27 +329,25 @@ export function createMemoryEnhancerPlugin(): Plugin {
 }
 
 export function setCurrentSession(sessionId: string): void {
-  currentSession = {
-    sessionId,
-    startTime: new Date().toISOString(),
-    insights: [],
-    toolResults: new Map(),
-    userPreferences: [],
-    decisions: [],
-    errors: [],
-  };
+  // 并发安全：不再使用模块级 currentSession，改为按 sessionId 写入 sessions Map
+  if (!sessions.has(sessionId)) {
+    if (sessions.size >= MAX_SESSIONS) {
+      const oldestKey = sessions.keys().next().value;
+      if (oldestKey) sessions.delete(oldestKey);
+    }
+    sessions.set(sessionId, {
+      sessionId,
+      startTime: new Date().toISOString(),
+      insights: [],
+      toolResults: new Map(),
+      userPreferences: [],
+      decisions: [],
+      errors: [],
+    });
+  }
 }
 
 export function addUserInsight(text: string): void {
-  if (!currentSession) return;
-  const insight = extractInsight(text);
-  if (insight) {
-    currentSession.insights.push(insight);
-    if (/偏好|prefer|喜欢|习惯/.test(text)) {
-      currentSession.userPreferences.push(insight);
-    }
-    if (/决定|decided|resolved|采用/.test(text)) {
-      currentSession.decisions.push(insight);
-    }
-  }
+  // 并发安全：无法确定 sessionId 时直接返回，避免污染其他会话
+  return;
 }

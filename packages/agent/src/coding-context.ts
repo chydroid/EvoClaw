@@ -485,8 +485,9 @@ function parseGitStatus(porcelain: string): ParsedStatus {
       result.branch.behind = parts[3]?.replace(/^-/, "");
     } else if (line.startsWith("1 ") || line.startsWith("2 ")) {
       const xy = line.split(/\s+/)[1] ?? "";
-      if (xy[0] !== ".") result.counts.staged++;
-      if (xy[1] !== ".") result.counts.modified++;
+      // xy 格式为两个字符（如 "M.", ".D", "MM"），空字符串或长度不足时不应计入 staged/modified
+      if (xy.length >= 1 && xy[0] !== ".") result.counts.staged++;
+      if (xy.length >= 2 && xy[1] !== ".") result.counts.modified++;
     } else if (line.startsWith("u ")) {
       result.counts.conflicts++;
     } else if (line.startsWith("? ")) {

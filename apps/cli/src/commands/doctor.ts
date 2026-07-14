@@ -4,24 +4,9 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { c, ICONS, divider, section } from "../utils/colors";
 import { VERSION, DEFAULT_PORT, apiRequest, checkServer } from "../utils/api";
-
-/** 原子写入文件：写临时文件 + fsync + rename */
-function atomicWriteFileSync(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-}
 
 interface CheckResult {
   name: string;

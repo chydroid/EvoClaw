@@ -48,7 +48,7 @@ export {
   removeOriginJson,
   removeLockJson,
   hashFile,
-  sha256,
+  hmacSha256,
   hashOriginJson,
   ORIGIN_FILENAME,
   LOCK_FILENAME,

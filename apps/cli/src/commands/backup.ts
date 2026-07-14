@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import * as path from "path";
 import * as fs from "fs";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { c, ICONS } from "../utils/colors";
 import { VERSION } from "../utils/api";
 
@@ -103,9 +104,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           items,
         };
         const manifestPath = path.join(backupRoot, "manifest.json");
-        const tmp = `${manifestPath}.tmp.${process.pid}`;
-        fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
-        fs.renameSync(tmp, manifestPath);
+        atomicWriteFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
         console.log(c("green", `${ICONS.ok()} Backup created: ${backupRoot}`));
         console.log(c("gray", `  ${items.length} files copied`));

@@ -193,6 +193,9 @@ const SEVERITY_WEIGHTS: Record<string, number> = {
  * 扫描MCP tool描述, 检测prompt injection攻击
  * 参考: OpenClaw 6.6 security boundaries
  */
+/** 黑名单数组最大容量，防止无界增长 */
+const MAX_BLACKLIST_SIZE = 1000;
+
 export class MCPToolPoisoningScanner {
   private config: Required<PoisoningScannerConfig>;
   private patterns: typeof POISONING_PATTERNS;
@@ -351,9 +354,21 @@ export class MCPToolPoisoningScanner {
         if (match.index === p.pattern.lastIndex) p.pattern.lastIndex++;
       }
     }
-    // 按 start 降序, 从后向前替换以避免位置偏移
-    positions.sort((a, b) => b.start - a.start);
+    // 合并重叠区间，防止从后向前替换时位置偏移导致输出损坏
+    positions.sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
     for (const pos of positions) {
+      const last = merged[merged.length - 1];
+      if (last && pos.start <= last.end) {
+        // 重叠或相邻：合并为一个区间
+        last.end = Math.max(last.end, pos.end);
+      } else {
+        merged.push({ start: pos.start, end: pos.end });
+      }
+    }
+    // 按 start 降序, 从后向前替换以避免位置偏移
+    merged.sort((a, b) => b.start - a.start);
+    for (const pos of merged) {
       sanitized = sanitized.slice(0, pos.start) + "***REDACTED***" + sanitized.slice(pos.end);
     }
     // 移除零宽字符
@@ -379,6 +394,10 @@ export class MCPToolPoisoningScanner {
     const id = `bl-${Date.now()}-${randomBytes(4).toString("hex")}`;
     const record = { id, pattern: entry.pattern, reason: entry.reason, severity: entry.severity, createdAt: Date.now() };
     this.blacklist.push(record);
+    // 限制 blacklist 数组大小防止无界增长（FIFO 淘汰最旧条目）
+    if (this.blacklist.length > MAX_BLACKLIST_SIZE) {
+      this.blacklist.shift();
+    }
     return record;
   }
 

@@ -5,7 +5,7 @@ import {
   type EvolutionCandidate,
   type EvolutionEvaluation,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface FitnessScore {
   candidateId: string;
@@ -93,7 +93,7 @@ export class GeneticEvolutionEngine {
 
     for (let i = 1; i < this.populationSize; i++) {
       const mutant = this.mutate(seed);
-      mutant.id = uuid();
+      mutant.id = randomUUID();
       this.population.push(mutant);
     }
   }
@@ -153,7 +153,7 @@ export class GeneticEvolutionEngine {
       const remaining = this.populationSize - newPopulation.length;
       for (let i = 0; i < remaining; i++) {
         const fresh = this.mutate(original);
-        fresh.id = uuid();
+        fresh.id = randomUUID();
         newPopulation.push(fresh);
       }
     }
@@ -176,7 +176,7 @@ export class GeneticEvolutionEngine {
   private crossover(parent1: EvolutionCandidate, parent2: EvolutionCandidate): EvolutionCandidate {
     const child: EvolutionCandidate = {
       ...parent1,
-      id: uuid(),
+      id: randomUUID(),
       codeArtifacts: [...parent1.codeArtifacts, ...parent2.codeArtifacts.slice(0, 1)],
       proposedChanges: {
         ...parent1.proposedChanges,
@@ -200,13 +200,13 @@ export class GeneticEvolutionEngine {
   private mutate(candidate: EvolutionCandidate): EvolutionCandidate {
     const mutant: EvolutionCandidate = {
       ...candidate,
-      id: uuid(),
+      id: randomUUID(),
       codeArtifacts: candidate.codeArtifacts.map((a) => {
         if (Math.random() < 0.3) {
           return {
             ...a,
             source: this.perturbCode(a.source),
-            name: `${a.name}_mut_${uuid().slice(0, 4)}`,
+            name: `${a.name}_mut_${randomUUID().slice(0, 4)}`,
           };
         }
         return a;

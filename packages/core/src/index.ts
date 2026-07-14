@@ -113,6 +113,10 @@ export type { SemaphoreConfig, SemaphoreStats } from "./concurrency";
 export { ConfigRPC } from "./config-rpc";
 export type { ConfigValue, ConfigChange, ConfigValidator as ConfigRPCValidator, ConfigSchemaEntry, ConfigRPCConfig } from "./config-rpc";
 
+// Atomic file writes — temp + fsync + rename with EXDEV fallback
+export { atomicWriteFileSync, atomicReplaceSync } from "./atomic-write";
+export type { AtomicWriteOptions } from "./atomic-write";
+
 export { OnboardingWizard } from "./onboarding";
 export type { IdentityConfig, AuthConfig, GatewayConfig, LLMConfig, DataConfig, OnboardingConfig, OnboardingProgress, OnboardingWizardConfig, OnboardingStep, InputHandler, SelectHandler } from "./onboarding";
 

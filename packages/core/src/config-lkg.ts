@@ -18,6 +18,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "./atomic-write";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ export interface ConfigSnapshot {
   label: string;
   /** Full config content as JSON */
   content: Record<string, unknown>;
-  /** SHA-256 checksum of the content */
+  /** HMAC-SHA256 checksum of the content */
   checksum: string;
   /** Whether this snapshot was validated successfully */
   validated: boolean;
@@ -47,6 +48,8 @@ export interface LKGConfig {
   autoSnapshot: boolean;
   /** Path to the current config file (for snapshot labeling) */
   configPath?: string;
+  /** Secret key for HMAC-SHA256 checksums (falls back to EVOCLAW_LKG_KEY env var) */
+  checksumKey?: string;
 }
 
 export interface DiffResult {
@@ -72,10 +75,12 @@ const DEFAULT_CONFIG: LKGConfig = {
 
 export class LastKnownGoodConfig {
   private config: LKGConfig;
+  private checksumKey: string;
   private counter = 0;
 
   constructor(config?: Partial<LKGConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.checksumKey = this.config.checksumKey ?? process.env.EVOCLAW_LKG_KEY ?? "";
   }
 
   /**
@@ -152,23 +157,10 @@ export class LastKnownGoodConfig {
   }
 
   /**
-   * 同步原子写入（temp + fsync + rename），保护 LKG 快照与配置回滚不被损坏。
+   * 同步原子写入：委托给 @evoclaw/core 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const tmpPath = `${targetPath}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err) {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
+    atomicWriteFileSync(targetPath, content);
   }
 
   /**
@@ -346,7 +338,7 @@ export class LastKnownGoodConfig {
 
   private computeChecksum(content: Record<string, unknown>): string {
     return crypto
-      .createHash("sha256")
+      .createHmac("sha256", this.checksumKey)
       .update(JSON.stringify(content))
       .digest("hex");
   }

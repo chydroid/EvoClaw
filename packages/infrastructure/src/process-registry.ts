@@ -20,6 +20,7 @@ import { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { randomUUID } from "node:crypto";
 
 // ── 常量 ────────────────────────────────────────────────────
 
@@ -184,7 +185,7 @@ export class ProcessRegistry {
     notifyOnComplete?: boolean;
     pidScope?: PidScope;
   }): ProcessSession {
-    const id = `proc_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const id = `proc_${randomUUID()}`;
     const session: ProcessSession = {
       id,
       command: opts.command,

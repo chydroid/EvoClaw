@@ -36,7 +36,7 @@ function applySharedOptions(opts: Record<string, unknown>): void {
     const profileName = String(opts.profile);
     if (profileName) {
       process.env.EvoClaw_PROFILE = profileName;
-      if (!opts.dev) setPort(parseInt(process.env.EvoClaw_PORT || "18789", 10));
+      if (!opts.dev) setPort(DEFAULT_PORT);
       const baseDir = path.join(process.cwd(), `.evoclaw-${profileName}`);
       if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
     }

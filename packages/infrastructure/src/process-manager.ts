@@ -1,6 +1,6 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { ChildProcess, spawn } from "child_process";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 interface ProcessInfo {
   id: string;
@@ -30,7 +30,7 @@ export class ProcessManager {
     command: string,
     args: string[] = []
   ): Promise<string> {
-    const id = uuid();
+    const id = randomUUID();
     const childProcess = spawn(command, args, {
       stdio: "pipe",
     });
@@ -134,9 +134,10 @@ export class ProcessManager {
   }
 
   async killAll(): Promise<void> {
-    for (const [id] of this.processes) {
-      await this.kill(id);
-    }
+    // 并行 kill 所有进程，避免 N 个进程串行等待 5s×N。
+    // 先快照 ID 列表，防止 kill() 修改 processes Map 导致迭代器失效。
+    const ids = Array.from(this.processes.keys());
+    await Promise.all(ids.map((id) => this.kill(id)));
   }
 
   list(): ProcessInfo[] {

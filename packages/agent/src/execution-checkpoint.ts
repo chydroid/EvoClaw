@@ -7,24 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-
-/** 原子写入文件（temp + fsync + rename），防止崩溃时产生截断文件。 */
-function atomicWriteFileSync(filePath: string, content: string): void {
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  const fd = fs.openSync(tmp, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
-  }
-}
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 /** Snapshot of execution state at a given point */
 export interface ExecutionSnapshot {

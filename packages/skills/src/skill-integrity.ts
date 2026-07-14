@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 /**
  * 技能完整性校验模块（Round 7：信任链建设）
@@ -13,10 +14,10 @@ import * as crypto from "crypto";
  *   安装时：写 origin.json → 更新 lock.json
  *   加载时：读 origin.json → 校验当前文件哈希 → 比对 lock.json
  *
- * 哈希算法：sha256（与 npm package-lock.json 一致）
+ * 哈希算法：HMAC-SHA256（比裸 sha256 更强的完整性校验）
  */
 
-/** origin.json 结构：记录单个技能的来源与文件哈希 */
+/** origin.json 结构：记录单个技能的来源与文件 HMAC 摘要 */
 export interface SkillOrigin {
   /** 文件格式版本 */
   format: 1;
@@ -34,7 +35,7 @@ export interface SkillOrigin {
   installedAt: string;
   /** 安装者（用户名或 'system'） */
   installedBy?: string;
-  /** 文件哈希清单：相对路径 → sha256 */
+  /** 文件 HMAC-SHA256 摘要清单：相对路径 → hmacSha256 */
   files: Record<string, string>;
   /** 整体签名（registry 提供时记录，可选） */
   signature?: string;
@@ -57,9 +58,9 @@ export interface SkillLockfile {
     version: string;
     /** 技能目录相对路径（相对于 skills root） */
     dir: string;
-    /** origin.json 的 sha256（用于双向校验） */
+    /** origin.json 的 HMAC-SHA256（用于双向校验） */
     originHash: string;
-    /** SKILL.md 的 sha256 */
+    /** SKILL.md 的 HMAC-SHA256 */
     skillMdHash: string;
     /** 来源 */
     source: SkillOrigin["source"];
@@ -96,72 +97,23 @@ export const ORIGIN_FILENAME = "origin.json";
 export const LOCK_FILENAME = "evoclaw-skill-lock.json";
 
 /**
- * 计算字符串的 sha256 哈希。
+ * 计算字符串的 HMAC-SHA256 摘要。
+ * 使用 secretKey（优先传入参数，否则回退到 EVOCLAW_SKILL_INTEGRITY_KEY 环境变量）。
  */
-export function sha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf-8").digest("hex");
+export function hmacSha256(content: string, secretKey?: string): string {
+  const key = secretKey ?? process.env.EVOCLAW_SKILL_INTEGRITY_KEY ?? "";
+  return crypto.createHmac("sha256", key).update(content, "utf-8").digest("hex");
 }
 
 /**
- * 计算文件的 sha256 哈希。文件不存在时返回 null。
+ * 计算文件的 HMAC-SHA256 摘要。文件不存在时返回 null。
  */
-export function hashFile(filePath: string): string | null {
+export function hashFile(filePath: string, secretKey?: string): string | null {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
-    return sha256(content);
+    return hmacSha256(content, secretKey);
   } catch {
     return null;
-  }
-}
-
-/**
- * 原子写入文件：temp + fsync + rename，遵循项目 atomicWriteFile 约定。
- */
-function atomicWriteFile(filePath: string, content: string): void {
-  const dir = path.dirname(filePath);
-  try {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  } catch {
-    // 目录可能已被并发创建
-  }
-  const tmpPath = filePath + ".tmp." + process.pid;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, { encoding: "utf-8" });
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmpPath, filePath);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备：rename 不可用，在目标侧写临时文件后 rename，保持原子性
-      const dstTmp = `${filePath}.dst.${process.pid}.tmp`;
-      const fd2 = fs.openSync(dstTmp, "w");
-      try {
-        fs.writeFileSync(fd2, content, { encoding: "utf-8" });
-        fs.fsyncSync(fd2);
-      } finally {
-        fs.closeSync(fd2);
-      }
-      // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
-      try {
-        fs.renameSync(dstTmp, filePath);
-      } catch (renameErr) {
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw renameErr;
-      }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    } else {
-      // 非 EXDEV：清理临时文件并重新抛出
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
   }
 }
 
@@ -214,7 +166,7 @@ export function writeOriginJson(
   };
 
   const originPath = path.join(skillDir, ORIGIN_FILENAME);
-  atomicWriteFile(originPath, JSON.stringify(full, null, 2) + "\n");
+  atomicWriteFileSync(originPath, JSON.stringify(full, null, 2) + "\n");
   return full;
 }
 
@@ -284,7 +236,7 @@ export function verifySkillOrigin(skillDir: string): IntegrityVerificationResult
 }
 
 /**
- * 计算 origin.json 自身的 sha256（用于 lock.json 的双向校验）。
+ * 计算 origin.json 自身的 HMAC-SHA256（用于 lock.json 的双向校验）。
  */
 export function hashOriginJson(skillDir: string): string | null {
   const originPath = path.join(skillDir, ORIGIN_FILENAME);
@@ -333,7 +285,7 @@ export function writeLockJson(
   };
 
   const lockPath = path.join(skillsRoot, LOCK_FILENAME);
-  atomicWriteFile(lockPath, JSON.stringify(lock, null, 2) + "\n");
+  atomicWriteFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
   return lock;
 }
 

@@ -1,8 +1,8 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 
 // ─── EmbeddingProvider Interface ─────────────────────────────────────────────
 
@@ -247,11 +247,9 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   }
 
   private hashString(str: string): number {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash);
+    // 使用 SHA256 替代 DJB2，满足项目安全规范对哈希算法的要求。
+    const digest = createHash("sha256").update(str, "utf-8").digest();
+    return digest.readUInt32BE(0);
   }
 }
 
@@ -358,6 +356,7 @@ export class VectorMemoryStore {
     vector: number[],
     metadata: Record<string, unknown> = {}
   ): Promise<void> {
+    this.validateVector(id, vector);
     this.vectors.set(id, {
       id,
       vector,
@@ -416,6 +415,7 @@ export class VectorMemoryStore {
     entries: { id: string; vector: number[]; metadata?: Record<string, unknown> }[]
   ): Promise<void> {
     for (const entry of entries) {
+      this.validateVector(entry.id, entry.vector);
       await this.addVector(entry.id, entry.vector, entry.metadata);
     }
     this.schedulePersist();
@@ -507,6 +507,18 @@ export class VectorMemoryStore {
     return dotProduct / denominator;
   }
 
+  private validateVector(id: string, vector: number[]): void {
+    if (this.vectors.size === 0) {
+      // 第一条向量决定当前 store 的维度；后续向量必须与此保持一致。
+      // 这比强制匹配 provider.dimensions 更灵活，因为 store 可能接收来自不同 provider 的预计算向量。
+      this.dimension = vector.length;
+    } else if (vector.length !== this.dimension) {
+      throw new Error(
+        `Vector dimension mismatch for "${id}": expected ${this.dimension}, got ${vector.length}`
+      );
+    }
+  }
+
   async healthCheck(): Promise<boolean> {
     return true;
   }
@@ -526,6 +538,8 @@ export class VectorMemoryStore {
         process.stderr.write(`[VectorMemoryStore] persist failed: ${err instanceof Error ? err.message : String(err)}\n`);
       });
     }, VectorMemoryStore.PERSIST_DEBOUNCE_MS);
+    // unref 防止 persist 防抖定时器阻止 Node.js 优雅退出
+    this.persistTimer.unref();
   }
 
   /**
@@ -634,9 +648,15 @@ export class VectorMemoryStore {
       const data = JSON.parse(raw);
       if (!data || !Array.isArray(data.entries)) return;
 
+      // 使用持久化文件中记录的维度；缺失时由第一条向量自动决定。
+      if (typeof data.dimension === "number" && data.dimension > 0) {
+        this.dimension = data.dimension;
+      }
+
       let loaded = 0;
       for (const e of data.entries) {
         if (!e.id || !Array.isArray(e.vector)) continue;
+        this.validateVector(e.id, e.vector);
         this.vectors.set(e.id, {
           id: e.id,
           vector: e.vector,
@@ -717,10 +737,8 @@ export class EmbeddingSimulator implements EmbeddingProvider {
   }
 
   private hashString(str: string): number {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash);
+    // 使用 SHA256 替代 DJB2，满足项目安全规范对哈希算法的要求。
+    const digest = createHash("sha256").update(str, "utf-8").digest();
+    return digest.readUInt32BE(0);
   }
 }

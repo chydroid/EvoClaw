@@ -11,6 +11,7 @@ import {
 } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 const DATA_DIR = process.env.EVOCLAW_DATA_DIR || path.join(process.cwd(), "data");
 const SAVE_DEBOUNCE_MS = 2000;
@@ -100,7 +101,7 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
         edges: this.edges,
       };
       // 原子写入：temp + fsync + rename，防止崩溃时产生截断的图数据文件
-      const tmpPath = `${this.filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const tmpPath = `${this.filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
       const fd = fs.openSync(tmpPath, "w");
       try {
         fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
@@ -123,7 +124,7 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code === "EXDEV" || code === "EBUSY") {
           const content = fs.readFileSync(tmpPath, "utf-8");
-          const dstTmp = `${this.filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
+          const dstTmp = `${this.filePath}.${process.pid}.${randomUUID().slice(0, 8)}.dst.tmp`;
           const fd2 = fs.openSync(dstTmp, "w");
           try {
             fs.writeFileSync(fd2, content, "utf-8");

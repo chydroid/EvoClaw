@@ -30,6 +30,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import type { AtomicMemory } from "./atomic-memory-extractor";
 import { atomicWriteFileSync } from "./atomic-write";
 
@@ -458,6 +459,6 @@ export class SceneBlockAggregator {
   }
 
   private genSceneId(): string {
-    return `scene_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    return `scene_${Date.now().toString(36)}_${randomUUID().slice(0, 4)}`;
   }
 }

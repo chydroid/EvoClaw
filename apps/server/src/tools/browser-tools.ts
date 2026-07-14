@@ -1,15 +1,46 @@
 import * as path from "path";
+import * as fs from "fs";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { BrowserController, PlaywrightBrowser, FileSystemManager } from "@evoclaw/infrastructure";
 
 /** Validate that a resolved path stays within the allowed base directory.
- *  Prevents path traversal attacks (e.g. `../../etc/passwd`). */
+ *  Prevents path traversal attacks (e.g. `../../etc/passwd`).
+ *
+ *  Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
+ *  再用 fs.realpathSync 解析符号链接，防止 workspace 内 symlink 指向外部目录。 */
 function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
   const normalizedBase = path.resolve(baseDir);
   const normalizedTarget = path.resolve(resolvedPath);
+
+  // 先做词法检查：若词法上已超出 base，直接拒绝（避免 realpath 浪费 IO）
   if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
     return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}". Use relative paths within the workspace only.`;
+  }
+
+  // 词法检查通过后，再用 realpath 解析符号链接，防止 workspace 内 symlink 指向外部目录
+  try {
+    let realTarget: string;
+    if (fs.existsSync(normalizedTarget)) {
+      realTarget = fs.realpathSync(normalizedTarget);
+    } else {
+      // 路径不存在（如 file_create）：realpath 父目录后拼接 basename
+      const parentDir = path.dirname(normalizedTarget);
+      if (fs.existsSync(parentDir)) {
+        const realParent = fs.realpathSync(parentDir);
+        realTarget = path.join(realParent, path.basename(normalizedTarget));
+      } else {
+        // 父目录也不存在：信任词法检查结果
+        return null;
+      }
+    }
+    // 对 realpath 结果再做一次词法检查
+    if (!realTarget.startsWith(normalizedBase + path.sep) && realTarget !== normalizedBase) {
+      return `Path traversal blocked (symlink escape): "${resolvedPath}" resolves to "${realTarget}" which is outside the allowed workspace "${normalizedBase}".`;
+    }
+  } catch {
+    // realpath 失败（权限/IO 错误）：保守拒绝，避免误放行
+    return `Path validation failed (realpath error): "${resolvedPath}".`;
   }
   return null;
 }
@@ -56,21 +87,11 @@ export function registerBrowserTools(
   }
 
   // SSRF 校验：对浏览器工具访问的 URL 做安全检查。
-  // 优先使用 ssrfProtection 服务（含协议白名单 + 内网地址 + metadata 端点检查）；
-  // 服务未注册时退化为协议白名单（仅允许 http/https），拒绝 file://、gopher://、ftp:// 等。
+  // 安全：服务未注册时 fail-closed（拒绝请求），防止内网地址绕过。
   async function validateUrlSsrf(url: string): Promise<{ ok: boolean; error?: string }> {
     const ssrfProtection = registry.resolveService<import("@evoclaw/security").SSRFProtection>("ssrfProtection");
     if (!ssrfProtection) {
-      let parsed: URL;
-      try {
-        parsed = new URL(url);
-      } catch {
-        return { ok: false, error: "Invalid URL format" };
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return { ok: false, error: `Unsupported protocol: ${parsed.protocol}. Only http/https allowed.` };
-      }
-      return { ok: true };
+      return { ok: false, error: "SSRF protection service unavailable" };
     }
     const result = await ssrfProtection.checkURL(url);
     if (!result.allowed) {
@@ -509,7 +530,8 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "");
       const state = String(params.state || "visible") as "attached" | "visible" | "hidden" | "detached";
-      const timeout = parseInt(String(params.timeout || "30000"), 10) || 30000;
+      const timeoutRaw = parseInt(String(params.timeout ?? "30000"), 10);
+      const timeout = Number.isFinite(timeoutRaw) ? timeoutRaw : 30000;
       if (!selector) return { error: "CSS selector is required" };
       try {
         const found = await pwBrowser.waitForElement(selector, timeout, state);
@@ -559,7 +581,8 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "") || null;
       const direction = String(params.direction || "down") as "up" | "down" | "left" | "right";
-      const amount = parseInt(String(params.amount || "300"), 10) || 300;
+      const amountRaw = parseInt(String(params.amount ?? "300"), 10);
+      const amount = Number.isFinite(amountRaw) ? amountRaw : 300;
       try {
         await pwBrowser.scroll(selector, direction, amount);
         return { success: true, selector: selector || "page", direction, amount };
@@ -678,7 +701,8 @@ export function registerBrowserTools(
         return { error: "Invalid index. Provide a non-negative integer." };
       }
       const direction = String(params.direction || "down") as "up" | "down" | "left" | "right";
-      const amount = parseInt(String(params.amount || "300"), 10) || 300;
+      const amountRaw = parseInt(String(params.amount ?? "300"), 10);
+      const amount = Number.isFinite(amountRaw) ? amountRaw : 300;
       try {
         const result = await pwBrowser.scrollByIndex(index, direction, amount);
         return result;

@@ -9,6 +9,7 @@
 import type { PersonaConfig } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
 import { nativeFetch } from "./llm-caller";
+import * as crypto from "crypto";
 
 // ── Types ──
 
@@ -52,7 +53,7 @@ export interface PlanningEngineDeps {
 // ── Helpers ──
 
 function generateId(): string {
-  return `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `plan-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
 function generateStepId(index: number): string {
@@ -252,10 +253,23 @@ async function callLLMForPlan(
 
 export class PlanningEngine {
   private plans = new Map<string, ExecutionPlan>();
+  /** plans Map 最大容量，防止无界增长导致 OOM */
+  private static readonly MAX_PLANS = 1000;
   private deps: PlanningEngineDeps;
 
   constructor(deps: PlanningEngineDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * 写入 plan 并执行 LRU 淘汰，防止 plans Map 无界增长。
+   */
+  private putPlan(id: string, plan: ExecutionPlan): void {
+    this.plans.set(id, plan);
+    if (this.plans.size > PlanningEngine.MAX_PLANS) {
+      const oldestKey = this.plans.keys().next().value;
+      if (oldestKey !== undefined) this.plans.delete(oldestKey);
+    }
   }
 
   /**
@@ -297,7 +311,7 @@ export class PlanningEngine {
       replanCount: 0,
     };
 
-    this.plans.set(planId, plan);
+    this.putPlan(planId, plan);
     return plan;
   }
 
@@ -503,7 +517,7 @@ export class PlanningEngine {
       replanCount: plan.replanCount + 1,
     };
 
-    this.plans.set(newPlanId, newPlan);
+    this.putPlan(newPlanId, newPlan);
     return newPlan;
   }
 
@@ -588,6 +602,6 @@ export class PlanningEngine {
 
   /** Store a plan (useful for externally-constructed plans) */
   setPlan(plan: ExecutionPlan): void {
-    this.plans.set(plan.id, plan);
+    this.putPlan(plan.id, plan);
   }
 }

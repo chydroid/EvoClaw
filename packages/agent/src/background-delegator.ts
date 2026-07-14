@@ -23,6 +23,8 @@
  * ```
  */
 
+import * as crypto from "crypto";
+
 // ── Types ─────────────────────────────────────────────────
 
 /** 后台任务状态 */
@@ -80,6 +82,9 @@ export type TaskCompleteCallback = (task: BackgroundTask) => void;
  * - 完成后通过回调通知，可合并结果
  */
 export class BackgroundDelegator {
+  private static readonly MAX_PENDING_RESULTS = 100;
+  private static readonly MAX_TASKS = 500;
+
   private tasks = new Map<string, BackgroundTask>();
   private onComplete?: TaskCompleteCallback;
   private pendingResults: BackgroundTask[] = [];
@@ -93,7 +98,7 @@ export class BackgroundDelegator {
    * 立即返回 task 对象，不等待执行完成。
    */
   delegate(description: string, fn: DelegateFn, options?: Omit<DelegateOptions, "description">): BackgroundTask {
-    const id = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `bg-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
     const timeoutMs = options?.timeoutMs ?? 120000;
     const abortController = new AbortController();
 
@@ -107,6 +112,11 @@ export class BackgroundDelegator {
     };
 
     this.tasks.set(id, task);
+
+    // 安全：自动淘汰过期任务，防止 Map 无界增长
+    if (this.tasks.size > BackgroundDelegator.MAX_TASKS) {
+      this.cleanupExpired();
+    }
 
     // 异步执行（不 await —— fire and forget）
     this.executeTask(task, fn).catch((err) => {
@@ -268,14 +278,21 @@ export class BackgroundDelegator {
         task.completedAt = Date.now();
       }
     }, task.timeoutMs);
+    timeoutHandle.unref?.();
 
     try {
       const result = await fn(task.description, task.abortController.signal);
       clearTimeout(timeoutHandle);
+      // 状态可能已被 timeout/cancel 回调修改，读取当前值判断（与 catch 块一致）
+      const currentStatus = task.status as BackgroundTaskStatus;
+      if (currentStatus === "cancelled" || currentStatus === "timeout") {
+        // 已被取消或超时，不覆盖状态
+        return;
+      }
       task.result = result;
       task.status = "completed";
       task.completedAt = Date.now();
-      this.pendingResults.push(task);
+      this.pushPendingResult(task);
       this.onComplete?.(task);
     } catch (err) {
       clearTimeout(timeoutHandle);
@@ -288,8 +305,26 @@ export class BackgroundDelegator {
       task.error = err instanceof Error ? err.message : String(err);
       task.status = "failed";
       task.completedAt = Date.now();
-      this.pendingResults.push(task);
+      this.pushPendingResult(task);
       this.onComplete?.(task);
+    }
+  }
+
+  /** 添加待消费结果，自动淘汰最旧条目防止无界增长 */
+  private pushPendingResult(task: BackgroundTask): void {
+    this.pendingResults.push(task);
+    if (this.pendingResults.length > BackgroundDelegator.MAX_PENDING_RESULTS) {
+      this.pendingResults.shift();
+    }
+  }
+
+  /** 自动淘汰已完成的过期任务 */
+  private cleanupExpired(): void {
+    const toRemove = this.listTasks().filter(
+      (t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "timeout",
+    );
+    for (const task of toRemove) {
+      this.tasks.delete(task.id);
     }
   }
 }

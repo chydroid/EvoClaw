@@ -84,10 +84,12 @@ export class EventLedger {
   private storeDir: string;
   private maxEntriesPerFile: number;
   private maxLoadedEntries: number;
+  private autoFlushMs: number;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   // flush 进程级互斥：防止 read-then-write 序列在并发调用时交错写入
   private flushing = false;
+  private beforeExitHandler: (() => void) | null = null;
 
   constructor(config: EventLedgerConfig = {}) {
     this.storeDir =
@@ -95,7 +97,25 @@ export class EventLedger {
       path.resolve(process.cwd(), "data", "ledger");
     this.maxEntriesPerFile = config.maxEntriesPerFile ?? 10_000;
     this.maxLoadedEntries = config.maxLoadedEntries ?? 50_000;
+    this.autoFlushMs = config.autoFlushMs ?? 500;
     this.load();
+    // 注册 beforeExit 钩子：进程退出时 flush 未落盘的审计事件
+    // （scheduleFlush 使用 unref()，进程可能在定时器触发前退出）
+    this.beforeExitHandler = () => this.flush();
+    process.on("beforeExit", this.beforeExitHandler);
+  }
+
+  /** 显式释放资源：取消订阅、清理定时器 */
+  dispose(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.beforeExitHandler) {
+      process.removeListener("beforeExit", this.beforeExitHandler);
+      this.beforeExitHandler = null;
+    }
+    this.flush();
   }
 
   // ── Append ──
@@ -126,6 +146,12 @@ export class EventLedger {
     };
     this.entries.push(entry);
     this.dirty = true;
+    // 运行时内存上限：entries 数组超过 maxLoadedEntries 时淘汰最旧条目
+    // （maxLoadedEntries 同时作为加载上限和运行时内存上限）
+    if (this.entries.length > this.maxLoadedEntries) {
+      const overflow = this.entries.length - this.maxLoadedEntries;
+      this.entries.splice(0, overflow);
+    }
     this.scheduleFlush();
     return seq;
   }
@@ -312,14 +338,15 @@ export class EventLedger {
       }
       // 文件按最新优先加载，跨文件间是逆时间序的；加载完成后按 seq 升序排序
       this.entries.sort((a, b) => a.seq - b.seq);
-    } catch {
-      // Silent — start fresh
+    } catch (err) {
+      // 记录加载错误便于排查，而非静默吞掉；加载失败时从空 ledger 开始
+      process.stderr.write(`[EventLedger] Failed to load from ${this.storeDir}: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
   private scheduleFlush(): void {
     if (this.flushTimer) return;
-    this.flushTimer = setTimeout(() => this.flush(), 500);
+    this.flushTimer = setTimeout(() => this.flush(), this.autoFlushMs);
     this.flushTimer.unref?.();
   }
 

@@ -15,6 +15,8 @@
  *   - DAG 用 Kahn 算法拓扑分层，同层并行执行
  */
 
+import * as crypto from "crypto";
+
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
 export type BatchToolExecutorFn = (
@@ -478,10 +480,13 @@ export class BatchExecutor {
 
   /**
    * 指数退避 + jitter：base * 2^attempt * (1 ± 20%)。
+   * 上限 30 秒，防止大 retries 值导致延迟指数增长。
    */
   private computeBackoff(attempt: number): number {
-    const base = this.retryDelayMs * 2 ** attempt;
-    const jitterFactor = 1 + (Math.random() * 0.4 - 0.2); // ±20%
+    const MAX_BACKOFF_MS = 30_000;
+    const base = Math.min(this.retryDelayMs * 2 ** attempt, MAX_BACKOFF_MS);
+    const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+    const jitterFactor = 1 + (fraction * 0.4 - 0.2); // ±20%
     return Math.max(0, Math.round(base * jitterFactor));
   }
 

@@ -16,6 +16,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -331,56 +332,10 @@ export class CronRunLogger {
   }
 
   /**
-   * 原子写入：temp + fsync + rename，防止崩溃时文件被截断。
-   * 本包不依赖 infrastructure/memory 的 atomicWriteFile（避免引入重依赖），故本地实现精简版。
+   * 原子写入：委托给 @evoclaw/core 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } catch (err) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-    fs.closeSync(fd);
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "EXDEV" || code === "EBUSY") {
-        // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
-        const dstTmp = `${targetPath}.${process.pid}.dst.tmp`;
-        const fd2 = fs.openSync(dstTmp, "w");
-        try {
-          fs.writeFileSync(fd2, content, "utf-8");
-          fs.fsyncSync(fd2);
-        } catch (w2err) {
-          try { fs.closeSync(fd2); } catch { /* ignore */ }
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw w2err;
-        }
-        fs.closeSync(fd2);
-        try {
-          fs.renameSync(dstTmp, targetPath);
-        } catch (renameErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw renameErr;
-        }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      } else {
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw err;
-      }
-    }
+    atomicWriteFileSync(targetPath, content);
   }
 
   private readAll(jobId?: string): RunLogEntry[] {

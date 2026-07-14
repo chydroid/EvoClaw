@@ -54,7 +54,7 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .action(async (topic: string | undefined, opts: Record<string, unknown>) => {
       if (opts.web) {
         const url = topic
-          ? `https://github.com/chydroid/EvoClaw/blob/main/docs/${topic}.md`
+          ? `https://github.com/chydroid/EvoClaw/blob/main/docs/${encodeURIComponent(topic)}.md`
           : "https://github.com/chydroid/EvoClaw";
         console.log(c("cyan", `Opening: ${url}`));
         openBrowser(url);

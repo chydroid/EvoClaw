@@ -10,6 +10,8 @@
  * 配合 ToolResultCache 使用：先查缓存，未命中则执行（带重试），结果写回缓存。
  */
 
+import * as crypto from "crypto";
+
 /** 重试配置 */
 export interface RetryOptions {
   /** 最大重试次数（不含首次执行）。默认 3。 */
@@ -78,8 +80,9 @@ export function computeBackoff(attempt: number, opts: typeof DEFAULT_OPTIONS): n
     opts.initialBackoffMs * Math.pow(opts.backoffMultiplier, attempt),
     opts.maxBackoffMs,
   );
-  // 抖动：±jitterRatio
-  const jitter = base * opts.jitterRatio * (Math.random() * 2 - 1);
+  // 抖动：±jitterRatio，使用加密安全随机数
+  const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+  const jitter = base * opts.jitterRatio * (fraction * 2 - 1);
   return Math.max(0, Math.round(base + jitter));
 }
 

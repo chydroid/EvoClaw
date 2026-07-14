@@ -186,6 +186,7 @@ async function runGit(
       proc.kill("SIGKILL");
       resolve({ stdout, stderr: `${stderr}\n[timeout after ${timeoutMs}ms]`, code: -1 });
     }, timeoutMs);
+    timer.unref?.();
 
     proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
     proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });

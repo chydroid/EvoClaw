@@ -7,7 +7,7 @@
  */
 
 import { EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import type { ToolPolicy } from "./agent-router";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -101,13 +101,14 @@ export class SubagentRegistry {
   }
 
   /**
-   * 释放资源：停止周期性清理定时器。
+   * 释放资源：停止周期性清理定时器并清空 subagents Map。
    */
   dispose(): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    this.subagents.clear();
   }
 
   // ─── Spawn ─────────────────────────────────────────────────────────────────
@@ -129,7 +130,7 @@ export class SubagentRegistry {
     // 本身就是当前要创建的 subagent 的后代（即 parent 的祖先链中已有该 parent），
     // 则会形成 A→B→A 循环，导致无限递归 spawn。
     if (config.parentAgentId) {
-      if (this.wouldCreateCycle(config.parentAgentId, config.parentAgentId)) {
+      if (this.wouldCreateCycle(config.parentAgentId)) {
         throw new Error(
           `Cycle detected: parent agent "${config.parentAgentId}" is already a descendant. Spawning would create an infinite loop.`,
         );
@@ -138,9 +139,9 @@ export class SubagentRegistry {
 
     const now = new Date().toISOString();
     const info: SubagentInfo = {
-      id: `subagent_${uuid()}`,
+      id: `subagent_${randomUUID()}`,
       parentAgentId: config.parentAgentId,
-      sessionId: config.sessionId ?? `subsession_${uuid()}`,
+      sessionId: config.sessionId ?? `subsession_${randomUUID()}`,
       status: "running",
       workspace: config.workspace,
       toolPolicy: config.toolPolicy,
@@ -164,18 +165,22 @@ export class SubagentRegistry {
    * 检测从 agentId 向上遍历祖先链是否会回到 agentId 自身（形成环）。
    * agentId 是即将被 spawn 的 subagent 的 parentAgentId。
    * 如果 agentId 本身是某个 subagent 的 id，我们检查它的祖先链是否已包含 agentId。
+   *
+   * 迭代实现，带 MAX_DEPTH=1000 安全阈值，避免恶意/畸形数据导致无限递归。
    */
-  private wouldCreateCycle(agentId: string, _originalAgentId: string, visited?: Set<string>): boolean {
-    const seen = visited ?? new Set<string>();
-    if (seen.has(agentId)) return true;
-    seen.add(agentId);
-
-    // 查找 agentId 是否是某个 subagent（即它有自己的 parentAgentId）
-    const subagent = this.subagents.get(agentId);
-    if (!subagent || !subagent.parentAgentId) return false;
-
-    // 递归向上遍历父链
-    return this.wouldCreateCycle(subagent.parentAgentId, _originalAgentId, seen);
+  private wouldCreateCycle(agentId: string): boolean {
+    const seen = new Set<string>();
+    let current = agentId;
+    let depth = 0;
+    const MAX_DEPTH = 1000;
+    while (depth++ < MAX_DEPTH) {
+      if (seen.has(current)) return true;
+      seen.add(current);
+      const subagent = this.subagents.get(current);
+      if (!subagent || !subagent.parentAgentId) return false;
+      current = subagent.parentAgentId;
+    }
+    return true; // 超过深度阈值，保守判定为环
   }
 
   // ─── Status ────────────────────────────────────────────────────────────────

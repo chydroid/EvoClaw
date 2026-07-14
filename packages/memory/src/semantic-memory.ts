@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ export class SemanticMemoryStore {
   // ── Public API ──────────────────────────────────────────────────────────
 
   addEntry(text: string, metadata: Record<string, unknown> = {}): SemanticMemoryEntry {
-    const id = uuid();
+    const id = randomUUID();
     const entry: SemanticMemoryEntry = {
       id,
       text,

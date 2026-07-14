@@ -235,7 +235,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       // MCP 标准返回格式：content 数组
-      const resultObj = typeof result === "string" ? JSON.parse(result) : result;
+      let resultObj: unknown = result;
+      if (typeof result === "string") {
+        try {
+          resultObj = JSON.parse(result);
+        } catch {
+          resultObj = result; // 保留原始字符串
+        }
+      }
       if (resultObj && typeof resultObj === "object" && "content" in resultObj) {
         return { content: (resultObj as { content: Array<{ type: string; text?: string }> }).content };
       }

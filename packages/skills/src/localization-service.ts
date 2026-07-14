@@ -1,4 +1,4 @@
-import { ServiceRegistry, type SkillI18n } from "@evoclaw/core";
+import { ServiceRegistry, type SkillI18n, atomicWriteFileSync } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -107,20 +107,11 @@ export class LocalizationService {
   saveI18nFile(skillDir: string, i18n: SkillI18n): void {
     const i18nPath = path.join(skillDir, "_i18n.json");
     // 安全：原子写入（tmp + fsync + rename），避免进程崩溃时 _i18n.json 被截断损坏
-    const tmpPath = `${i18nPath}.tmp.${process.pid}`;
     try {
       const existing = this.loadI18nFile(skillDir);
       const merged = { ...existing, ...i18n };
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(merged, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      fs.renameSync(tmpPath, i18nPath);
+      atomicWriteFileSync(i18nPath, JSON.stringify(merged, null, 2), { encoding: "utf-8" });
     } catch (err) {
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       process.stderr.write(`[LocalizationService] Failed to save i18n file: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
@@ -287,6 +278,8 @@ export class LocalizationService {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
+    // 防止定时器阻止 Node.js 优雅退出
+    timeout.unref();
 
     try {
       const response = await fetch(apiUrl, {

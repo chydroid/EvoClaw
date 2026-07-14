@@ -75,6 +75,12 @@ export interface WorkflowExecutionResult {
 export type WorkflowExecutorFn = (
   toolName: string,
   params: Record<string, unknown>,
+  /**
+   * 可选的取消信号。executeWithTimeout 超时后会 abort 此信号，
+   * 让支持 AbortSignal 的执行器（如 fetch）能够真正取消底层操作。
+   * 不支持信号的执行器可忽略此参数。Bug 9.1 修复。
+   */
+  signal?: AbortSignal,
 ) => Promise<unknown>;
 
 export interface WorkflowEngineConfig {
@@ -237,7 +243,10 @@ export class WorkflowEngine {
       if (this.config.persistPath) {
         try {
           await this.saveCheckpoint(workflow, result, this.config.persistPath);
-        } catch { /* ignore checkpoint errors */ }
+        } catch (err) {
+          // 记录 checkpoint 写入错误，防止运维盲区（resume 时使用过期 checkpoint）
+          process.stderr.write(`[WorkflowEngine] Failed to save checkpoint: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
       }
       return result;
     } catch (err) {
@@ -593,15 +602,26 @@ export class WorkflowEngine {
     params: Record<string, unknown>,
     timeoutMs: number,
   ): Promise<unknown> {
+    // Bug 9.1 修复：原实现仅 race 超时，超时后底层操作仍在后台执行
+    // （execPromise.catch 静默吞掉错误）。改为创建 AbortController，
+    // 超时后调用 abort 让支持 AbortSignal 的执行器能真正取消底层操作。
+    // 不支持信号的执行器会忽略此参数，行为与原实现一致。
+    const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(
-        () => reject(new Error(`节点执行超时 (${timeoutMs}ms)`)),
+        () => {
+          timedOut = true;
+          // abort 底层操作（若执行器支持）
+          try { controller.abort(); } catch { /* ignore */ }
+          reject(new Error(`节点执行超时 (${timeoutMs}ms)`));
+        },
         timeoutMs,
       );
       if (timer.unref) timer.unref();
     });
-    const execPromise = this.executorFn(toolName, params);
+    const execPromise = this.executorFn(toolName, params, controller.signal);
     execPromise.catch(() => {}); // 防止超时后 unhandledRejection
     try {
       return await Promise.race([
@@ -610,6 +630,11 @@ export class WorkflowEngine {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      // 若执行器先完成（非超时），也 abort 信号以释放底层资源
+      // （如 fetch AbortController 会清理连接）
+      if (!timedOut) {
+        try { controller.abort(); } catch { /* ignore */ }
+      }
     }
   }
 

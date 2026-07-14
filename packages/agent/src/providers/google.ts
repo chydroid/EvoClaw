@@ -25,6 +25,7 @@ import type {
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
 import { parseMimeTypeFromDataUri } from "../llm-caller.js";
+import * as crypto from "crypto";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -154,9 +155,10 @@ export class GoogleProvider implements ProviderPlugin {
     const apiKey = this.resolveApiKey();
     if (apiKey) {
       try {
-        const url = `${this.baseURL}/v1beta/models/${modelId}?key=${encodeURIComponent(apiKey)}`;
-        const res = await fetch(url, {
-          headers: this.config.headers ?? {},
+        // 安全：使用 header 传递 API Key，而非 URL query string。
+        // URL query string 会被 Web 服务器日志、反向代理日志、错误堆栈记录，导致密钥泄露。
+        const res = await fetch(`${this.baseURL}/v1beta/models/${encodeURIComponent(modelId)}`, {
+          headers: { "x-goog-api-key": apiKey, ...(this.config.headers ?? {}) },
           signal: AbortSignal.timeout(5000),
         });
         return res.ok;
@@ -291,7 +293,11 @@ export class GoogleProvider implements ProviderPlugin {
           const dataStr = trimmed.slice(6);
 
           try {
-            const events = JSON.parse(dataStr) as GeminiStreamEvent[];
+            // Gemini SSE 通常为 "data: [...]"（事件数组），但防御性处理单对象响应
+            const parsed = JSON.parse(dataStr);
+            const events: GeminiStreamEvent[] = Array.isArray(parsed)
+              ? parsed
+              : (parsed && typeof parsed === "object" ? [parsed as GeminiStreamEvent] : []);
 
             for (const event of events) {
               if (event.candidates) {
@@ -349,7 +355,7 @@ export class GoogleProvider implements ProviderPlugin {
       }));
 
     const totalTokens = promptTokens + completionTokens;
-    this.recordUsage(totalTokens, model);
+    this.recordUsage(promptTokens, completionTokens, model);
 
     return {
       id: `gemini_${Date.now()}`,
@@ -371,8 +377,11 @@ export class GoogleProvider implements ProviderPlugin {
       return { healthy: false, message: "No API key configured" };
     }
     try {
-      const url = `${this.baseURL}/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      // 安全：使用 header 传递 API Key（与 hasModel 一致）
+      const res = await fetch(`${this.baseURL}/v1beta/models`, {
+        headers: { "x-goog-api-key": apiKey },
+        signal: AbortSignal.timeout(5000),
+      });
       return { healthy: res.ok, message: res.ok ? undefined : `HTTP ${res.status}` };
     } catch (err) {
       return { healthy: false, message: (err as Error).message };
@@ -506,7 +515,7 @@ export class GoogleProvider implements ProviderPlugin {
     // Generation config
     body.generationConfig = {
       temperature: request.temperature ?? 0.3,
-      maxOutputTokens: request.maxTokens ?? 40960,
+      maxOutputTokens: Math.max(1, request.maxTokens ?? 40960),
     };
 
     if (request.stop && request.stop.length > 0) {
@@ -555,10 +564,9 @@ export class GoogleProvider implements ProviderPlugin {
       }
     }
 
-    const tokens =
-      (data.usageMetadata?.promptTokenCount ?? 0) +
-      (data.usageMetadata?.candidatesTokenCount ?? 0);
-    this.recordUsage(tokens, model);
+    const promptTokens = data.usageMetadata?.promptTokenCount ?? 0;
+    const completionTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
+    this.recordUsage(promptTokens, completionTokens, model);
 
     return {
       id: `gemini_${Date.now()}`,
@@ -568,7 +576,7 @@ export class GoogleProvider implements ProviderPlugin {
       usage: {
         promptTokens: data.usageMetadata?.promptTokenCount ?? 0,
         completionTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
-        totalTokens: tokens,
+        totalTokens: promptTokens + completionTokens,
       },
       finishReason: toolCalls.length > 0
         ? "tool_calls"
@@ -588,14 +596,15 @@ export class GoogleProvider implements ProviderPlugin {
     }
   }
 
-  private recordUsage(tokens: number, model: string): void {
+  private recordUsage(promptTokens: number, completionTokens: number, model: string): void {
+    const tokens = promptTokens + completionTokens;
     this.totalTokens += tokens;
     this.requestCount++;
     const info = GEMINI_MODELS.find((m) => m.id === model);
     if (info) {
       const inputCost = (info.costInputPerMillion ?? 0) / 1_000_000;
       const outputCost = (info.costOutputPerMillion ?? 0) / 1_000_000;
-      this.totalCost += tokens * ((inputCost + outputCost) / 2);
+      this.totalCost += promptTokens * inputCost + completionTokens * outputCost;
     }
   }
 
@@ -617,8 +626,9 @@ export class GoogleProvider implements ProviderPlugin {
       }
 
       if (i < maxRetries) {
-        const delay = Math.min(1000 * 2 ** i + Math.random() * 500, 10000);
-        await new Promise((r) => setTimeout(r, delay));
+        const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+        const delay = Math.min(1000 * 2 ** i + fraction * 500, 10000);
+        await new Promise((r) => { const t = setTimeout(r, delay); t.unref?.(); });
       }
     }
 

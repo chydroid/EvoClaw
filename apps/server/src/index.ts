@@ -39,7 +39,7 @@ import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent"
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler } from "@evoclaw/agent";
 import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
-import { SkillManager, AutoSkillManager, SkillDispatcher } from "@evoclaw/skills";
+import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
@@ -88,6 +88,7 @@ export class EvoClawServer {
   private conversationFlow: any;
   private agentModelExecutor: AgentModelExecutor;
   private skillManager: SkillManager;
+  private skillTranslateTimer: ReturnType<typeof setTimeout> | null = null;
   private evolutionEngine: EvolutionEngine;
   private memoryHub: MemoryHub;
   private securityGovernor: SecurityGovernor;
@@ -470,6 +471,22 @@ export class EvoClawServer {
     const executionCheckpointStore = this.agentModelExecutor.getExecutionCheckpointStore();
     this.registry.registerService("executionCheckpointStore", executionCheckpointStore);
     this.skillManager = new SkillManager(this.registry, this.eventBus);
+    // SkillCurator: 技能生命周期管理（使用跟踪、自动归档、进化记录、恢复）
+    // 之前从未实例化，导致 /api/skills/:id/evolution、/api/skills/curate 永远 503，
+    // 且 EvolutionEngine 的 curateFromEvolutionCandidate/curateImproveFromFeedback 静默返回。
+    // 此处实例化后会自注册为 "skillCurator" 服务，并启动自动归档定时器。
+    const skillCurator = new SkillCurator(
+      this.registry,
+      this.eventBus,
+      path.resolve(dataDir, "skills"),
+      path.resolve(dataDir, "skills-archive"),
+      path.resolve(dataDir, "skill-curator"),
+    );
+    skillCurator.start();
+    // SkillCircuitBreaker: 技能熔断器，失败技能自动熔断避免浪费 LLM 配额
+    new SkillCircuitBreaker(this.registry, this.eventBus);
+    // SkillCapabilityEvaluator: TF-IDF 能力评估，用于技能调度择优
+    new SkillCapabilityEvaluator(this.registry, this.eventBus);
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus, { storeDir: dataDir });
     // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
@@ -816,6 +833,7 @@ export class EvoClawServer {
               this.agentModelExecutor.abortSession(sessionId);
               reject(new Error("CHANNEL_CHAT_TIMEOUT"));
             }, CHANNEL_TIMEOUT);
+            timeoutHandle?.unref?.();
           }),
         ]);
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -941,21 +959,27 @@ export class EvoClawServer {
       } catch { /* non-critical */ }
     });
 
-    const skillTranslateTimer = setTimeout(async () => {
+    this.skillTranslateTimer = setTimeout(async () => {
       try {
         await this.skillManager.checkAndTranslateInstalledSkills();
       } catch { /* non-critical */ }
     }, 10000);
-    skillTranslateTimer.unref();
+    this.skillTranslateTimer.unref();
 
     const bootstrapFiles = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md"];
     for (const fileName of bootstrapFiles) {
       const fpath = path.join(workspaceDir, fileName);
       if (!fs.existsSync(fpath)) {
         const content = `# ${fileName.replace(".md", "")}\n\nSee ${workspaceDir}/${fileName} for documentation.\n`;
-        // Atomic write: temp file + rename to avoid partial/corrupt files on crash
+        // Atomic write: temp file + fsync + rename to avoid partial/corrupt files on crash
         const tmpPath = `${fpath}.tmp.${process.pid}`;
-        fs.writeFileSync(tmpPath, content, "utf-8");
+        const fd = fs.openSync(tmpPath, "w");
+        try {
+          fs.writeSync(fd, content);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
         fs.renameSync(tmpPath, fpath);
       }
     }
@@ -1104,11 +1128,12 @@ export class EvoClawServer {
         this.logger.warn("server", "Force-exiting immediately on second SIGINT");
         process.exit(1);
       }
-      // Hard timeout: force-exit after 10s if shutdown hangs
+      // Hard timeout: force-exit after 45s if shutdown hangs.
+      // gateway.stop() 最坏 20s（channel 10s + HTTP 10s）+ killAll() 并行后 5s + registry.stopAll() 10s
       const force = setTimeout(() => {
-        this.logger.error("server", "Shutdown timed out after 10s, force-exiting");
+        this.logger.error("server", "Shutdown timed out after 45s, force-exiting");
         process.exit(1);
-      }, 10000);
+      }, 45000);
       force.unref();
       try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
       clearTimeout(force);
@@ -1126,11 +1151,11 @@ export class EvoClawServer {
         this.logger.warn("server", "Force-exiting immediately on second SIGTERM");
         process.exit(1);
       }
-      // Hard timeout: force-exit after 10s if shutdown hangs
+      // Hard timeout: force-exit after 45s if shutdown hangs
       const force = setTimeout(() => {
-        this.logger.error("server", "Shutdown timed out after 10s, force-exiting");
+        this.logger.error("server", "Shutdown timed out after 45s, force-exiting");
         process.exit(1);
-      }, 10000);
+      }, 45000);
       force.unref();
       try { await this.shutdown(); } catch (err) { this.logger.error("server", "Shutdown error", err instanceof Error ? err : new Error(String(err))); }
       clearTimeout(force);
@@ -1140,10 +1165,13 @@ export class EvoClawServer {
     process.on("uncaughtException", async (err) => {
       this.logger.fatal("server", "Uncaught exception", err);
       try {
-        await Promise.race([
-          this.shutdown(),
-          new Promise(resolve => setTimeout(resolve, 5000)),
-        ]);
+        // 30s 超时：之前 5s 永远先于 shutdown() 完成，导致资源未清理就退出
+        let shutdownTimeout: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<void>((resolve) => {
+          shutdownTimeout = setTimeout(resolve, 30000);
+          shutdownTimeout.unref();
+        });
+        await Promise.race([this.shutdown(), timeoutPromise]);
       } catch { /* best-effort */ }
       process.exit(1);
     });
@@ -1159,6 +1187,10 @@ export class EvoClawServer {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     this.logger.info("server", "Shutting down...");
+    if (this.skillTranslateTimer) {
+      clearTimeout(this.skillTranslateTimer);
+      this.skillTranslateTimer = null;
+    }
     this.selfHealing.stop();
     this.scheduleManager.stop();
     // 清理浏览器健康检查 interval，避免定时器泄漏
@@ -1403,6 +1435,20 @@ export class EvoClawServer {
       if (resolved !== allowedBase && !resolved.startsWith(allowedBase + path.sep)) {
         return `Output path must be within ${allowedBase}`;
       }
+      // 解析符号链接后二次校验，防止通过 data/reports/ 内部 symlink 写到外部目录
+      let realResolved: string;
+      try {
+        realResolved = fs.realpathSync(resolved);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          realResolved = resolved;
+        } else {
+          return `Cannot resolve output path: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+      if (realResolved !== allowedBase && !realResolved.startsWith(allowedBase + path.sep)) {
+        return `Output path must be within ${allowedBase}`;
+      }
       return null;
     };
 
@@ -1627,37 +1673,35 @@ export class EvoClawServer {
     const os = require("os");
     const execFileAsync = promisify(execFile);
 
-    let mdAvailable: string | null = null;
+    let mdAvailable: string[] | null = null;
 
     const checkAvailable = async (): Promise<boolean> => {
-      if (mdAvailable !== null) return mdAvailable !== "";
+      if (mdAvailable !== null) return mdAvailable.length > 0;
       try {
         await execFileAsync("markitdown", ["--version"], { timeout: 5000 });
-        mdAvailable = "markitdown";
+        mdAvailable = ["markitdown"];
       } catch {
         try {
           await execFileAsync("python", ["-m", "markitdown", "--version"], { timeout: 5000 });
-          mdAvailable = "python -m markitdown";
+          mdAvailable = ["python", "-m", "markitdown"];
         } catch {
           try {
             await execFileAsync("python3", ["-m", "markitdown", "--version"], { timeout: 5000 });
-            mdAvailable = "python3 -m markitdown";
+            mdAvailable = ["python3", "-m", "markitdown"];
           } catch {
-            mdAvailable = "";
+            mdAvailable = [];
             process.stdout.write("[MarkItDown] markitdown not found. Install: pip install 'markitdown[all]'\n");
           }
         }
       }
-      return mdAvailable !== "";
+      return mdAvailable.length > 0;
     };
 
     const doConvert = async (inputPath: string): Promise<string | null> => {
       const available = await checkAvailable();
-      if (!available || !mdAvailable) return null;
+      if (!available || !mdAvailable || mdAvailable.length === 0) return null;
       try {
-        const parts = mdAvailable.split(" ");
-        const cmd = parts[0];
-        const baseArgs = parts.slice(1);
+        const [cmd, ...baseArgs] = mdAvailable;
         const args = [...baseArgs, inputPath];
         const { stdout } = await execFileAsync(cmd, args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: "utf-8", env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" } });
         return stdout || null;
@@ -1710,6 +1754,7 @@ export class EvoClawServer {
           try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 15000);
+            timeout.unref?.();
             try {
               // 使用 redirect: "manual" 手动跟随重定向，对每个 Location 重新做 SSRF 校验，
               // 防止攻击者通过 302 重定向到内网地址绕过初始 SSRF 检查。
@@ -1747,9 +1792,20 @@ export class EvoClawServer {
               if (!response.ok) {
                 return { error: `HTTP ${response.status} fetching URL`, source };
               }
+              const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024;
+              const contentLengthHeader = response.headers.get("content-length");
+              if (contentLengthHeader) {
+                const contentLength = parseInt(contentLengthHeader, 10);
+                if (!isNaN(contentLength) && contentLength > MAX_DOWNLOAD_SIZE) {
+                  return { error: `Download too large: ${contentLength} bytes. Maximum: ${MAX_DOWNLOAD_SIZE} bytes.`, source };
+                }
+              }
               // 在 body 读取完成前保持超时保护（原代码在 fetch 返回后立即 clear，body 下载无保护）
               const buffer = await response.arrayBuffer();
               clearTimeout(timeout);
+              if (buffer.byteLength > MAX_DOWNLOAD_SIZE) {
+                return { error: `Download too large: ${buffer.byteLength} bytes. Maximum: ${MAX_DOWNLOAD_SIZE} bytes.`, source };
+              }
               fs.writeFileSync(tmpFile, Buffer.from(buffer));
               const markdown = await doConvert(tmpFile);
               if (!markdown) {
@@ -1773,6 +1829,20 @@ export class EvoClawServer {
         const mdAllowedBase = path.resolve(__dirname, "..", "..", "..");
         const mdResolved = path.resolve(source);
         if (mdResolved !== mdAllowedBase && !mdResolved.startsWith(mdAllowedBase + path.sep)) {
+          return { error: `Path traversal blocked: "${source}" is outside the allowed project directory.` };
+        }
+        // 解析符号链接后二次校验，防止通过项目内 symlink 访问外部目录
+        let realSource: string;
+        try {
+          realSource = fs.realpathSync(mdResolved);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            realSource = mdResolved;
+          } else {
+            return { error: `Cannot resolve source path: ${err instanceof Error ? err.message : String(err)}` };
+          }
+        }
+        if (realSource !== mdAllowedBase && !realSource.startsWith(mdAllowedBase + path.sep)) {
           return { error: `Path traversal blocked: "${source}" is outside the allowed project directory.` };
         }
 
@@ -2035,30 +2105,56 @@ export class EvoClawServer {
         }
       }
 
-      const response = await fetch(`${baseURL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: formattedMessages,
-          max_tokens: maxTokens,
-        }),
+      const url = `${baseURL}/chat/completions`;
+      const headers = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      };
+      const body = JSON.stringify({
+        model,
+        messages: formattedMessages,
+        max_tokens: maxTokens,
       });
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        throw new Error(`Vision API error ${response.status}: ${errText.slice(0, 200)}`);
+      let lastError: Error | undefined;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        timeout.unref();
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers,
+            body,
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+            const content = data.choices?.[0]?.message?.content;
+            if (!content) {
+              throw new Error("Vision API returned empty content");
+            }
+            return content;
+          }
+          const errText = await response.text().catch(() => "");
+          const err = new Error(`Vision API error ${response.status}: ${errText.slice(0, 200)}`);
+          if (response.status >= 500 && response.status < 600) {
+            lastError = err;
+          } else {
+            throw err;
+          }
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt === 2) throw lastError;
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (attempt < 2) {
+          const delay = Math.min(1000 * 2 ** attempt, 30000);
+          await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        }
       }
-
-      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) {
-        throw new Error("Vision API returned empty content");
-      }
-      return content;
+      throw lastError ?? new Error("Vision API request failed");
     };
   }
 

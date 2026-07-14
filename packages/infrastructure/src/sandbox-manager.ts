@@ -2,6 +2,7 @@ import { DockerSandbox, type SandboxConfig, type SandboxResult } from "./docker-
 import { SSHSandbox, type SSHSandboxConfig, type SSHSandboxResult } from "./ssh-sandbox";
 import { LocalSandboxBackend, type SandboxExecuteOptions } from "./sandbox-backend";
 import type { SandboxPolicy } from "@evoclaw/core";
+import { randomUUID } from "crypto";
 
 export type SandboxBackendType = "docker" | "ssh" | "process";
 
@@ -40,7 +41,7 @@ export class SandboxManager {
   }
 
   async createSession(config: UnifiedSandboxConfig): Promise<SandboxSession> {
-    const id = `sandbox-${Date.now()}-${++this.sessionCounter}`;
+    const id = `sandbox-${randomUUID()}`;
     const session: SandboxSession = {
       id,
       backend: config.backend,

@@ -1,4 +1,3 @@
-import { v4 as uuid } from "uuid";
 import * as crypto from "crypto";
 
 export interface SkillProposalFile {
@@ -77,7 +76,7 @@ export class SkillWorkshop {
 
     const now = Date.now();
     const proposal: SkillProposal = {
-      id: uuid(),
+      id: crypto.randomUUID(),
       name,
       description,
       author,

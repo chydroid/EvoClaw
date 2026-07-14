@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from "events";
+import * as crypto from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ export class TUIManager extends EventEmitter {
   /** Add a user message to the conversation */
   addUserMessage(content: string, channel?: string): void {
     this.state.messages.push({
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `msg_${Date.now()}_${crypto.randomBytes(2).toString("hex")}`,
       role: "user",
       content,
       timestamp: Date.now(),
@@ -149,7 +150,7 @@ export class TUIManager extends EventEmitter {
   /** Add an assistant message */
   addAssistantMessage(content: string): void {
     this.state.messages.push({
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `msg_${Date.now()}_${crypto.randomBytes(2).toString("hex")}`,
       role: "assistant",
       content,
       timestamp: Date.now(),

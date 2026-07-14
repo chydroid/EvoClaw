@@ -245,7 +245,18 @@ export class ContextEngine {
     messages.push({ role: "system", content: systemContent });
 
     let historyTokens = 0;
-    const availableTokens = this.config.maxContextTokens - this.estimateTokens(systemContent) - this.config.reserveTokens;
+    // 下限保护：当系统提示词很大时 availableTokens 可能为负，
+    // 负值会导致循环条件判断错误并强制 push 第一条消息，使上下文超出 maxContextTokens 限制。
+    // Bug 7.1 修复：currentTask 在 line 281 会作为独立 user 消息加入 messages，
+    // 但原 availableTokens 计算只扣除 systemContent（含 "Current task:" 前缀版本），
+    // 未扣除作为 user 消息的 currentTask，导致实际 token 数超出预算。
+    const currentTaskTokens = input.currentTask
+      ? this.estimateTokens(input.currentTask)
+      : 0;
+    const availableTokens = Math.max(
+      0,
+      this.config.maxContextTokens - this.estimateTokens(systemContent) - this.config.reserveTokens - currentTaskTokens,
+    );
 
     const reversedHistory: typeof input.conversationHistory = [];
 
@@ -255,9 +266,13 @@ export class ContextEngine {
         this.estimateTokens(JSON.stringify(msg.tool_calls ?? {}));
 
       if (historyTokens + msgTokens > availableTokens) {
-        if (reversedHistory.length === 0) {
+        // availableTokens 为 0 时不强制 push 第一条消息（上下文已满）
+        if (reversedHistory.length === 0 && availableTokens > 0) {
           reversedHistory.push(msg);
           warnings.push("Context limit reached — some history was truncated");
+          truncated = true;
+        } else if (reversedHistory.length === 0 && availableTokens === 0) {
+          warnings.push("Context limit reached — system prompt exceeds maxContextTokens, all history truncated");
           truncated = true;
         }
         break;

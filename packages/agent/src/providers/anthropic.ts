@@ -24,6 +24,7 @@ import type {
 } from "@evoclaw/plugin-sdk";
 import type { CredentialPool } from "../credential-pool.js";
 import { parseMimeTypeFromDataUri } from "../llm-caller.js";
+import * as crypto from "crypto";
 
 // ── Known Models ──────────────────────────────────────────
 
@@ -295,7 +296,7 @@ export class AnthropicProvider implements ProviderPlugin {
       }));
 
     const totalTokens = inputTokens + outputTokens;
-    this.recordUsage(totalTokens, model);
+    this.recordUsage(inputTokens, outputTokens, model);
 
     return {
       id: `msg_${Date.now()}`,
@@ -317,17 +318,13 @@ export class AnthropicProvider implements ProviderPlugin {
       return { healthy: false, message: "No API key configured" };
     }
     try {
-      const res = await fetch(`${this.baseURL}/v1/messages`, {
-        method: "POST",
+      // 使用 GET /v1/models 探测鉴权和服务可达性，而非 POST /v1/messages（会产生计费）
+      const res = await fetch(`${this.baseURL}/v1/models?limit=1`, {
+        method: "GET",
         headers: this.buildHeaders(apiKey),
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1,
-          messages: [{ role: "user", content: "ping" }],
-        }),
         signal: AbortSignal.timeout(5000),
       });
-      // 200 = healthy; 401/403 = auth issue (still reachable)
+      // 200 = healthy; 401/403 = auth issue (服务可达但鉴权失败)
       return { healthy: res.ok || res.status === 401 || res.status === 403 };
     } catch (err) {
       return { healthy: false, message: (err as Error).message };
@@ -369,7 +366,7 @@ export class AnthropicProvider implements ProviderPlugin {
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 40960,
+      max_tokens: Math.max(1, request.maxTokens ?? 40960),
       stream,
     };
 
@@ -520,9 +517,9 @@ export class AnthropicProvider implements ProviderPlugin {
       }
     }
 
-    const tokens =
-      (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0);
-    this.recordUsage(tokens, model);
+    const inputTokens = data.usage?.input_tokens ?? 0;
+    const outputTokens = data.usage?.output_tokens ?? 0;
+    this.recordUsage(inputTokens, outputTokens, model);
 
     return {
       id: data.id ?? `msg_${Date.now()}`,
@@ -532,7 +529,7 @@ export class AnthropicProvider implements ProviderPlugin {
       usage: {
         promptTokens: data.usage?.input_tokens ?? 0,
         completionTokens: data.usage?.output_tokens ?? 0,
-        totalTokens: tokens,
+        totalTokens: inputTokens + outputTokens,
       },
       finishReason: toolCalls.length > 0
         ? "tool_calls"
@@ -550,14 +547,15 @@ export class AnthropicProvider implements ProviderPlugin {
     }
   }
 
-  private recordUsage(tokens: number, model: string): void {
+  private recordUsage(inputTokens: number, outputTokens: number, model: string): void {
+    const tokens = inputTokens + outputTokens;
     this.totalTokens += tokens;
     this.requestCount++;
     const info = ANTHROPIC_MODELS.find((m) => m.id === model);
     if (info) {
       const inputCost = (info.costInputPerMillion ?? 0) / 1_000_000;
       const outputCost = (info.costOutputPerMillion ?? 0) / 1_000_000;
-      this.totalCost += tokens * ((inputCost + outputCost) / 2);
+      this.totalCost += inputTokens * inputCost + outputTokens * outputCost;
     }
   }
 
@@ -579,8 +577,9 @@ export class AnthropicProvider implements ProviderPlugin {
       }
 
       if (i < maxRetries) {
-        const delay = Math.min(1000 * 2 ** i + Math.random() * 500, 10000);
-        await new Promise((r) => setTimeout(r, delay));
+        const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+        const delay = Math.min(1000 * 2 ** i + fraction * 500, 10000);
+        await new Promise((r) => { const t = setTimeout(r, delay); t.unref?.(); });
       }
     }
 

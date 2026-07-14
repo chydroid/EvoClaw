@@ -412,6 +412,7 @@ export class ConcurrentToolExecutor {
           durationMs: Date.now() - startTime,
         });
       }, this.config.toolTimeoutMs);
+      timeoutHandle.unref?.();
     });
 
     // 执行 Promise

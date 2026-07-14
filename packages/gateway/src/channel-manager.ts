@@ -186,7 +186,9 @@ export class ChannelManager {
       this.eventBus?.publish("channel.status", {
         channel: adapter.type,
         status,
-      }, "channel");
+      }, "channel")?.catch((err) => {
+        process.stderr.write(`[ChannelManager] publish channel.status failed: ${err}\n`);
+      });
     });
 
     // Start if channel is enabled

@@ -236,8 +236,10 @@ export class DockerSandbox {
       {
         ...config,
         image,
-        runAsUser: config.runAsUser ?? "root",
-        networkEnabled: config.networkEnabled ?? true,
+        // 与 run() 默认值一致：最小权限原则，以 nobody 运行且禁用网络。
+        // 调用方需要 root 或网络时应显式指定。
+        runAsUser: config.runAsUser ?? "nobody",
+        networkEnabled: config.networkEnabled ?? false,
       }
     );
   }

@@ -15,6 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── 类型 ──────────────────────────────────────────────────────
 
@@ -77,6 +78,8 @@ export class EmbeddingCache {
   private cache = new Map<string, CacheEntry>();
   private dirty = false;
   private loaded = false;
+  /** 全局缓存条目上限，超过时按 createdAt 最旧优先淘汰 */
+  private static readonly MAX_TOTAL_ENTRIES = 10000;
 
   constructor(options: EmbeddingCacheOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -133,73 +136,8 @@ export class EmbeddingCache {
     this.ensureLoaded();
     const data = Array.from(this.cache.values());
 
-    // 使用进程 ID + 时间戳避免多进程并发时 tmp 文件互相覆盖
-    const tmpPath = `${this.cacheFile}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      // 确保目录存在
-      const dir = path.dirname(this.cacheFile);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      // 写到临时文件 + 原子替换
-      const content = JSON.stringify(data);
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, content, { encoding: "utf-8" });
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      // 保持与目标文件相同的权限（若已存在）
-      try {
-        if (fs.existsSync(this.cacheFile)) {
-          const st = fs.statSync(this.cacheFile);
-          fs.chmodSync(tmpPath, st.mode);
-        }
-      } catch { /* ignore */ }
-      try {
-        fs.renameSync(tmpPath, this.cacheFile);
-      } catch (renameErr: unknown) {
-        // EXDEV/EBUSY 回退：跨设备或目标繁忙时，在目标侧写临时文件后 rename
-        // 参照 packages/memory/src/layered/atomic-write.ts 的实现
-        const code = (renameErr as NodeJS.ErrnoException)?.code;
-        if (code !== "EXDEV" && code !== "EBUSY") {
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw renameErr;
-        }
-        const dstTmp = `${this.cacheFile}.${process.pid}.${Date.now()}.dst.tmp`;
-        const fd2 = fs.openSync(dstTmp, "w");
-        try {
-          fs.writeFileSync(fd2, content, { encoding: "utf-8" });
-          fs.fsyncSync(fd2);
-        } catch (w2err) {
-          try { fs.closeSync(fd2); } catch { /* ignore */ }
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw w2err;
-        }
-        fs.closeSync(fd2);
-        // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
-        try {
-          fs.renameSync(dstTmp, this.cacheFile);
-        } catch (finalErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw finalErr;
-        }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      }
-      this.dirty = false;
-    } catch (err) {
-      // 清理残留 tmp
-      try {
-        fs.unlinkSync(tmpPath);
-      } catch {
-        /* ignore */
-      }
-      throw err;
-    }
+    atomicWriteFileSync(this.cacheFile, JSON.stringify(data), { encoding: "utf-8" });
+    this.dirty = false;
   }
 
   // ── 查询 ────────────────────────────────────────────────
@@ -240,6 +178,21 @@ export class EmbeddingCache {
 
     this.cache.set(key, entry);
     this.dirty = true;
+
+    // 全局上限保护：超过 MAX_TOTAL_ENTRIES 时按 createdAt 最旧优先淘汰
+    if (this.cache.size > EmbeddingCache.MAX_TOTAL_ENTRIES) {
+      let oldestKey: string | null = null;
+      let oldestCreatedAt = Infinity;
+      for (const [k, e] of this.cache) {
+        if (e.createdAt < oldestCreatedAt) {
+          oldestCreatedAt = e.createdAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey) {
+        this.cache.delete(oldestKey);
+      }
+    }
   }
 
   /**

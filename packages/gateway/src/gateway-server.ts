@@ -43,7 +43,17 @@ export interface GatewayConfig {
 }
 
 const DEFAULT_CORS_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:5173").split(",").map((s) => s.trim());
-const DEFAULT_PORT = parseInt(process.env.EvoClaw_PORT || "27788", 10);
+// 生产环境 CORS 安全告警：默认 dev URL（localhost:5173）若出现在生产环境，
+// 会允许开发机浏览器跨域访问生产 API，存在 CSRF/数据泄露风险。
+if (process.env.NODE_ENV === "production" && DEFAULT_CORS_ORIGINS.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))) {
+  process.stderr.write(
+    `[Gateway] WARNING: CORS_ORIGINS includes localhost/loopback in production mode. ` +
+    `Set CORS_ORIGINS to your production frontend URL(s) to prevent CSRF attacks.\n`,
+  );
+}
+// 端口解析含 NaN 校验，防止 EvoClaw_PORT=abc 导致 listen(NaN) 失败
+const _parsedPort = parseInt(process.env.EvoClaw_PORT || "27788", 10);
+const DEFAULT_PORT = (!isNaN(_parsedPort) && _parsedPort > 0 && _parsedPort <= 65535) ? _parsedPort : 27788;
 const DEFAULT_HOST = process.env.EvoClaw_HOST || "0.0.0.0";
 
 export class GatewayServer {
@@ -81,7 +91,11 @@ export class GatewayServer {
       enableREST: true,
       enableWS: true,
       rateLimitWindow: 60000,
-      rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || "100", 10),
+      // rateLimitMax 含 NaN 校验，防止 RATE_LIMIT_MAX=abc 导致 NaN 永远 < count 从而静默禁用限流
+      rateLimitMax: (() => {
+        const m = parseInt(process.env.RATE_LIMIT_MAX || "100", 10);
+        return (!isNaN(m) && m > 0) ? m : 100;
+      })(),
     };
 
     if (!this.config.jwtSecret || this.config.jwtSecret.length === 0) {
@@ -598,6 +612,12 @@ export class GatewayServer {
         return;
       }
       // Constant-time comparison for both username and password to avoid timing leaks
+      // 安全：限制凭证长度，防止超长输入导致 Buffer.alloc OOM
+      const MAX_CRED_LEN = 4096;
+      if (String(username).length > MAX_CRED_LEN || String(password).length > MAX_CRED_LEN) {
+        res.status(400).json({ error: "Credential too long" });
+        return;
+      }
       const userBuf = Buffer.from(String(username));
       const expectedUserBuf = Buffer.from(String(expectedUser));
       const maxUserLen = Math.max(userBuf.length, expectedUserBuf.length);
@@ -674,6 +694,9 @@ export class GatewayServer {
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         serviceCount: serviceInfos.length,
+        // 前端 HealthInfo / Dashboard 期望 nodeVersion 和 platform 字段
+        nodeVersion: process.versions.node,
+        platform: process.platform,
       });
     });
 
@@ -1332,11 +1355,15 @@ export class GatewayServer {
 
   private setupApprovalRoutes(): void {
     // GET /api/approvals/pending — list all pending approvals
+    // 映射后端 ApprovalRequest 字段为前端 PendingRequest 契约：
+    //   toolName→operation, reason→description, requestedBy→requester,
+    //   createdAt(number)→requestedAt(ISO string), 追加 expiresAt/target/channel。
     this.app.get("/api/approvals/pending", (req: Request, res: Response) => {
       const agentExecutor = this.registry.resolveService<{
         getPendingApprovals(sessionId?: string): Array<{
           id: string; sessionId: string; toolName: string; toolArgs: Record<string, unknown>;
           riskLevel: string; reason: string; createdAt: number; requestedBy: string; status: string;
+          expiresAt?: number;
         }>;
         getHumanApprovalManager(): { getConfig(): { riskLevels: Record<string, string>; requireApproval: Record<string, boolean>; approvalTimeout: number; maxPendingPerSession: number }; getTrustRules(): Array<{ toolName: string; trustedBy: string; createdAt: number; expiresAt: number }> } | null;
       }>("agentModelExecutor");
@@ -1347,7 +1374,30 @@ export class GatewayServer {
       }
 
       const sessionId = req.query.sessionId as string | undefined;
-      const pending = agentExecutor.getPendingApprovals(sessionId);
+      const rawPending = agentExecutor.getPendingApprovals(sessionId);
+      // 投影为前端 PendingRequest 形状
+      const pending = rawPending.map((p) => {
+        const requestedAt = new Date(p.createdAt).toISOString();
+        const expiresAt = p.expiresAt
+          ? new Date(p.expiresAt).toISOString()
+          : new Date(p.createdAt + 300_000).toISOString(); // 默认 5min 超时
+        const target =
+          (typeof p.toolArgs?.target === "string" && p.toolArgs.target) ||
+          (typeof p.toolArgs?.path === "string" && p.toolArgs.path) ||
+          (typeof p.toolArgs?.file === "string" && p.toolArgs.file) ||
+          "";
+        return {
+          id: p.id,
+          operation: p.toolName,
+          target,
+          description: p.reason || undefined,
+          channel: undefined,
+          requester: p.requestedBy,
+          requestedAt,
+          expiresAt,
+          riskLevel: p.riskLevel as "critical" | "high" | "medium" | "low",
+        };
+      });
       res.json({ pending, count: pending.length });
     });
 
@@ -1549,10 +1599,20 @@ export class GatewayServer {
         const body = (req.body || {}) as {
           timeoutSeconds?: number;
           defaultAction?: "deny" | "allow" | "fail-closed";
+          behaviorMode?: "immediate" | "debounced" | "scheduled";
+          debounceWindowMs?: number;
+          scheduleCron?: string;
+          escalationEnabled?: boolean;
+          escalationTimeout?: number;
         };
         manager.updateConfig({
           timeoutSeconds: body.timeoutSeconds,
           defaultAction: body.defaultAction,
+          behaviorMode: body.behaviorMode,
+          debounceWindowMs: body.debounceWindowMs,
+          scheduleCron: body.scheduleCron,
+          escalationEnabled: body.escalationEnabled,
+          escalationTimeout: body.escalationTimeout,
         });
         res.json({ success: true, config: manager.getConfig() });
       } catch (err) {
@@ -1561,16 +1621,18 @@ export class GatewayServer {
     });
 
     // GET /api/reaction-approvals — return reaction approval log
+    // 前端 ApprovalCenterPage 期望 ReactionEntry[]（含 messageId/emoji/user/channel）。
+    // 此前错误地返回 approvalTimeoutManager 的 ApprovalDecision[]（字段完全不匹配），
+    // 导致前端的 reactions 标签页永远显示空白或 undefined 字段。
+    // ReactionApprovalHandler 目前不维护历史记录，返回空数组直到历史功能上线。
     this.app.get("/api/reaction-approvals", (_req: Request, res: Response) => {
       const manager = this.registry.resolveService<ApprovalTimeoutManager>("approvalTimeoutManager");
       if (!manager) {
         res.status(503).json({ error: "approvalTimeoutManager not available" });
         return;
       }
-      const history = manager.getHistory();
-      const pending = manager.getPending();
       const stats = manager.getStats();
-      res.json({ history, pending, stats });
+      res.json({ history: [], pending: [], stats });
     });
   }
 

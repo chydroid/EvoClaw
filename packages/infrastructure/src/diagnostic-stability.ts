@@ -53,6 +53,8 @@ export interface StabilityConfig {
   stalledThresholdMs: number;
   /** 触发 resource-spike 的增长比例（默认 2.0） */
   resourceSpikeRatio: number;
+  /** 同时跟踪的最大实体数（默认 100000），防止长运行进程 OOM */
+  maxTrackedEntities: number;
 }
 
 /** 默认配置。 */
@@ -66,6 +68,7 @@ export const DEFAULT_STABILITY_CONFIG: StabilityConfig = {
   errorRateWindowMs: 5 * 60_000,
   stalledThresholdMs: 30 * 60_000,
   resourceSpikeRatio: 2.0,
+  maxTrackedEntities: 100_000,
 };
 
 interface ResourceSample {
@@ -84,13 +87,49 @@ export class StabilityMonitor {
   private startedAt = new Map<string, Date>();
   private resourceBaseline = new Map<string, number>();
   private resourceSamples = new Map<string, Map<string, ResourceSample[]>>();
+  /** 实体首次被跟踪的顺序，用于超限时按 FIFO 驱逐 */
+  private entityOrder: string[] = [];
 
   constructor(config?: Partial<StabilityConfig>) {
     this.config = { ...DEFAULT_STABILITY_CONFIG, ...config };
   }
 
+  /** 判断某实体是否已在任一跟踪 Map 中存在。 */
+  private isTrackingEntity(entityId: string): boolean {
+    return (
+      this.retryTracker.has(entityId) ||
+      this.phaseHistory.has(entityId) ||
+      this.errorEvents.has(entityId) ||
+      this.startedAt.has(entityId) ||
+      this.resourceSamples.has(entityId)
+    );
+  }
+
+  /** 注册新跟踪实体，并在超过上限时驱逐最旧实体。 */
+  private trackEntity(entityId: string): void {
+    if (!this.isTrackingEntity(entityId)) {
+      this.entityOrder.push(entityId);
+    }
+    this.enforceEntityLimit();
+  }
+
+  /** 按 FIFO 驱逐最旧实体，防止不同 sessionId 无限增长导致 OOM。 */
+  private enforceEntityLimit(): void {
+    while (this.entityOrder.length > this.config.maxTrackedEntities) {
+      const evictId = this.entityOrder.shift();
+      if (!evictId) break;
+      this.retryTracker.delete(evictId);
+      this.phaseHistory.delete(evictId);
+      this.errorEvents.delete(evictId);
+      this.startedAt.delete(evictId);
+      this.resourceBaseline.delete(evictId);
+      this.resourceSamples.delete(evictId);
+    }
+  }
+
   /** 记录重试事件。 */
   recordRetry(entityId: string, at: Date = new Date()): void {
+    this.trackEntity(entityId);
     const list = this.retryTracker.get(entityId) ?? [];
     list.push(at);
     this.retryTracker.set(entityId, list);
@@ -102,6 +141,7 @@ export class StabilityMonitor {
     newPhase: string,
     at: Date = new Date(),
   ): void {
+    this.trackEntity(entityId);
     const list = this.phaseHistory.get(entityId) ?? [];
     // 同时记录阶段名与时间戳，便于后续 prune 与抖动检测
     list.push(`${newPhase}@${at.getTime()}`);
@@ -114,6 +154,7 @@ export class StabilityMonitor {
     severity: "warning" | "error" | "critical",
     at: Date = new Date(),
   ): void {
+    this.trackEntity(entityId);
     const list = this.errorEvents.get(entityId) ?? [];
     list.push({ at, severity });
     this.errorEvents.set(entityId, list);
@@ -121,6 +162,7 @@ export class StabilityMonitor {
 
   /** 记录任务开始（用于 stalled 检测）。 */
   recordStart(entityId: string, at: Date = new Date()): void {
+    this.trackEntity(entityId);
     this.startedAt.set(entityId, at);
   }
 
@@ -131,6 +173,7 @@ export class StabilityMonitor {
     value: number,
     at: Date = new Date(),
   ): void {
+    this.trackEntity(entityId);
     const key = `${entityId}::${metric}`;
     if (!this.resourceBaseline.has(key)) {
       this.resourceBaseline.set(key, value);
@@ -323,6 +366,7 @@ export class StabilityMonitor {
     this.startedAt.clear();
     this.resourceBaseline.clear();
     this.resourceSamples.clear();
+    this.entityOrder = [];
   }
 
   /** 获取当前配置（用于诊断）。 */

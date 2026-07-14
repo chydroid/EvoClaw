@@ -162,7 +162,12 @@ export class TokenUsageTracker {
     durationMs?: number;
     toolCalls?: number;
   }): UsageRecord {
-    const cost = this.calculateCost(usage.provider, usage.model, usage.inputTokens, usage.outputTokens, usage.reasoningTokens);
+    // 防御负数/无效 token 数导致成本、统计异常
+    const inputTokens = Math.max(0, usage.inputTokens);
+    const outputTokens = Math.max(0, usage.outputTokens);
+    const reasoningTokens = usage.reasoningTokens !== undefined ? Math.max(0, usage.reasoningTokens) : undefined;
+    const cacheHitTokens = usage.cacheHitTokens !== undefined ? Math.max(0, usage.cacheHitTokens) : undefined;
+    const cost = this.calculateCost(usage.provider, usage.model, inputTokens, outputTokens, reasoningTokens);
     const record: UsageRecord = {
       id: `usage-${++this.counter}-${Date.now()}`,
       sessionId: usage.sessionId,
@@ -171,16 +176,16 @@ export class TokenUsageTracker {
       agentId: usage.agentId,
       provider: usage.provider,
       model: usage.model,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      reasoningTokens: usage.reasoningTokens,
+      inputTokens,
+      outputTokens,
+      reasoningTokens,
       inputCost: cost.input,
       outputCost: cost.output,
       reasoningCost: cost.reasoning,
       totalCost: cost.total,
       calledAt: Date.now(),
       durationMs: usage.durationMs,
-      cacheHitTokens: usage.cacheHitTokens,
+      cacheHitTokens,
       toolCalls: usage.toolCalls,
     };
     this.records.push(record);
@@ -391,7 +396,8 @@ export class TokenUsageTracker {
         this.counter = data.counter;
       }
       if (Array.isArray(data.records)) {
-        this.records = data.records;
+        // 防御性截断：磁盘文件可能超过 retainCount（手动编辑或 retainCount 调整后）
+        this.records = data.records.slice(-this.config.retainCount);
       }
     } catch (err) {
       process.stderr.write(`[TokenUsageTracker] Failed to load from disk: ${err}\n`);

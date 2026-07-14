@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync } from "@evoclaw/core";
 import * as nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
 import { simpleParser, type ParsedMail } from "mailparser";
@@ -243,6 +243,12 @@ export class EmailClient {
     if (!account) throw new Error(`Account not found: ${options.accountId}`);
 
     const transporter = this.getTransporter(options.accountId);
+
+    // 安全：CRLF 注入防护。与 displayName 校验一致，防止 subject 中
+    // 的 \r\n 被注入额外的 SMTP 头（如 Bcc: attacker@evil.com）。
+    if (options.subject && /[\r\n]/.test(options.subject)) {
+      throw new Error("Email subject contains invalid CRLF characters (potential header injection)");
+    }
 
     const attachments = (options.attachments || []).map((att) => ({
       filename: att.filename,
@@ -508,16 +514,7 @@ export class EmailClient {
     try {
       const filePath = path.join(this.dataDir, "accounts.json");
       const data = [...this.accounts.values()];
-      const tempPath = `${filePath}.tmp.${process.pid}`;
-      const content = JSON.stringify(data, null, 2);
-      const fd = fs.openSync(tempPath, "w");
-      try {
-        fs.writeFileSync(fd, content, "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        try { fs.closeSync(fd); } catch { /* ignore close errors to not mask original */ }
-      }
-      fs.renameSync(tempPath, filePath);
+      atomicWriteFileSync(filePath, JSON.stringify(data, null, 2));
     } catch (err) {
       process.stderr.write("[EmailClient] Failed to save accounts:" + " " + err + "\n");
     }

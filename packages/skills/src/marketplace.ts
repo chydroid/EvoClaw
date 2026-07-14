@@ -293,16 +293,24 @@ export class SkillMarketplace {
    * 失败时抛出错误，由调用方决定是否回退到本地 catalog。
    */
   async searchRemote(query: string, limit = 20): Promise<ClawHubSkillSearchResult[]> {
-    const url = new URL(`${this.config.registryURL}/api/v1/search`);
-    url.searchParams.set("q", query.trim() || "*");
-    url.searchParams.set("limit", String(limit));
+    let urlStr: string;
+    try {
+      const url = new URL(`${this.config.registryURL}/api/v1/search`);
+      url.searchParams.set("q", query.trim() || "*");
+      url.searchParams.set("limit", String(limit));
+      urlStr = url.toString();
+    } catch (err) {
+      throw new Error(`Invalid marketplace registry URL "${this.config.registryURL}": ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // 使用 AbortController + setTimeout 而非 AbortSignal.timeout()，兼容更广的 Node 版本
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15_000);
+    // 防止定时器阻止 Node.js 优雅退出
+    timeoutId.unref();
 
     try {
-      const res = await fetch(url.toString(), {
+      const res = await fetch(urlStr, {
         signal: controller.signal,
         headers: { Accept: "application/json" },
       });
@@ -321,7 +329,7 @@ export class SkillMarketplace {
       }
 
       const results = data.results ?? [];
-      process.stdout.write(`[Marketplace] searchRemote("${query}", limit=${limit}) → ${results.length} results from ${url.host}\n`);
+      process.stdout.write(`[Marketplace] searchRemote("${query}", limit=${limit}) → ${results.length} results from ${urlStr}\n`);
       return results;
     } finally {
       clearTimeout(timeoutId);
@@ -491,6 +499,23 @@ export class SkillMarketplace {
 
   /** Install a skill package from the marketplace */
   async install(name: string, version?: string): Promise<InstallResult> {
+    // 安全：防止路径穿越。name 直接用于 path.join 构建安装和归档路径，
+    // 如果包含 ".." 或路径分隔符可能导致目录逃逸和任意目录删除。
+    if (
+      typeof name !== "string" ||
+      name.length === 0 ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name.includes("..") ||
+      name.includes("\0")
+    ) {
+      return {
+        success: false,
+        packageName: name,
+        version: version ?? "latest",
+        error: `Invalid package name (path traversal detected): ${name}`,
+      };
+    }
     let pkg = this.getPackage(name);
     // catalog 中可能没有该技能（refreshCatalog 只拉取 trending，未含全量），
     // 此时从 ClawHub 详情 API 拉取并加入 catalog，再继续安装流程。

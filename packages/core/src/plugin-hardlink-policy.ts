@@ -51,8 +51,8 @@ export interface ProvenanceEntry {
   inode: FileInodeInfo;
   /** 首次记录时间 */
   recordedAt: string;
-  /** sha256 摘要（可选，用于完整性校验） */
-  sha256?: string;
+  /** HMAC-SHA256 摘要（可选，用于完整性校验） */
+  hmacSha256?: string;
 }
 
 const NIX_STORE_ROOT = "/nix/store";
@@ -187,6 +187,11 @@ export function scanPluginForHardlinks(params: {
  */
 export class PluginProvenanceIndex {
   private entries = new Map<string, ProvenanceEntry>();
+  private integrityKey: string;
+
+  constructor(integrityKey?: string) {
+    this.integrityKey = integrityKey ?? process.env.EVOCLAW_PLUGIN_INTEGRITY_KEY ?? "";
+  }
 
   /**
    * 记录插件的所有文件到起源索引。
@@ -221,11 +226,11 @@ export class PluginProvenanceIndex {
           if (!inodeInfo) continue;
           const relativePath = path.relative(pluginRoot, fullPath);
           const key = `${pluginName}:${relativePath}`;
-          let sha256: string | undefined;
+          let hmacSha256: string | undefined;
           if (computeHash) {
             try {
               const content = fs.readFileSync(fullPath);
-              sha256 = crypto.createHash("sha256").update(content).digest("hex");
+              hmacSha256 = crypto.createHmac("sha256", this.integrityKey).update(content).digest("hex");
             } catch {
               // skip hash on read failure
             }
@@ -237,7 +242,7 @@ export class PluginProvenanceIndex {
             pluginName,
             inode: inodeInfo,
             recordedAt: new Date().toISOString(),
-            sha256,
+            hmacSha256,
           });
           count++;
         }
@@ -252,7 +257,7 @@ export class PluginProvenanceIndex {
    * 检测项：
    * - 文件是否存在
    * - inode 是否变化（可能被替换为 hardlink）
-   * - sha256 是否匹配（如果索引中有记录）
+   * - HMAC-SHA256 是否匹配（如果索引中有记录）
    *
    * @returns 校验失败列表
    */
@@ -277,15 +282,15 @@ export class PluginProvenanceIndex {
           issue: `Inode changed: ${entry.inode.inode}-${entry.inode.dev} → ${currentInode.inode}-${currentInode.dev} (possible hardlink replacement)`,
         });
       }
-      if (entry.sha256) {
+      if (entry.hmacSha256) {
         try {
           const content = fs.readFileSync(fullPath);
-          const currentHash = crypto.createHash("sha256").update(content).digest("hex");
-          if (currentHash !== entry.sha256) {
-            issues.push({ relativePath: entry.relativePath, issue: "Content hash mismatch" });
+          const currentHash = crypto.createHmac("sha256", this.integrityKey).update(content).digest("hex");
+          if (currentHash !== entry.hmacSha256) {
+            issues.push({ relativePath: entry.relativePath, issue: "Content HMAC mismatch" });
           }
         } catch {
-          issues.push({ relativePath: entry.relativePath, issue: "Failed to compute hash" });
+          issues.push({ relativePath: entry.relativePath, issue: "Failed to compute HMAC" });
         }
       }
     }

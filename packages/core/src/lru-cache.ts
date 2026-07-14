@@ -56,6 +56,7 @@ const DEFAULT_CONFIG: LRUCacheConfig = {
 // ── Cache ─────────────────────────────────────────────────
 
 export class LRUCache<V> {
+  private static readonly MAX_INFLIGHT = 10000;
   private config: LRUCacheConfig;
   private map = new Map<string, DoublyLinkedNode<V>>();
   private head: DoublyLinkedNode<V> | null = null;
@@ -180,6 +181,14 @@ export class LRUCache<V> {
     // in-flight 去重：多个并发调用同一 key 时共享同一个 Promise
     const inflight = this.inflight.get(key);
     if (inflight) return inflight as Promise<V>;
+
+    // 若并发去重表已达上限，不再新增 in-flight 条目，直接执行 factory。
+    // 这避免了在工厂运行期间删除其他 key 的 in-flight Promise，导致缓存雪崩。
+    if (this.inflight.size >= LRUCache.MAX_INFLIGHT) {
+      const value = await factory();
+      this.set(key, value, ttlMs);
+      return value;
+    }
 
     // 先 set 占位 Promise 再执行 factory，避免 factory 同步抛出时
     // try/finally 在 inflight.set 之前运行导致该条目永久残留

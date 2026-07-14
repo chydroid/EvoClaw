@@ -85,7 +85,7 @@ export const DEFAULT_PRUNER_CONFIG: ToolOutputPrunerConfig = {
  * 计算 MD5 哈希。
  */
 function md5Hash(text: string): string {
-  return createHash("md5").update(text).digest("hex");
+  return createHash("sha256").update(text).digest("hex");
 }
 
 /**

@@ -110,9 +110,13 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const fetchData = useCallback(async (signal?: AbortSignal) => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    const signal = controller.signal;
     try {
       const [healthRes, sessionsRes, providersRes, skillsRes, bsRes] = await Promise.allSettled([
         fetch("/api/health", { signal }),
@@ -121,7 +125,7 @@ export default function Dashboard() {
         fetch("/api/skills", { signal }),
         fetch("/api/system/bootstrap-files", { signal }).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
-      if (signal?.aborted) return;
+      if (signal.aborted) return;
 
       const health = healthRes.status === "fulfilled" && healthRes.value.ok
         ? await healthRes.value.json() as SystemHealth : null;
@@ -158,19 +162,21 @@ export default function Dashboard() {
         bootstrapFiles: bootstrapFiles || [],
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("dashboard.load_error"));
+      if (!signal.aborted) {
+        setError(err instanceof Error ? err.message : t("dashboard.load_error"));
+      }
+    } finally {
+      clearTimeout(timeout);
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    fetchData(controller.signal);
-    const interval = setInterval(() => fetchData(controller.signal), 30000);
+    fetchData();
+    const interval = setInterval(() => fetchData(), 30000);
     return () => {
       clearInterval(interval);
-      controller.abort();
+      abortControllerRef.current?.abort();
     };
   }, [fetchData]);
 

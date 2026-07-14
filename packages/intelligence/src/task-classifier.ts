@@ -625,7 +625,13 @@ export class TaskClassifier {
     };
 
     process.stdout.write(`[TaskClassifier] 分类结果: ${primaryCategory} (置信度: ${(confidence * 100).toFixed(0)}%)\n`);
-    process.stdout.write(`[TaskClassifier] 意图相似度:` + " " + intentSimilarity + "\n");
+    // 输出 top-3 相似度而非整个对象，避免打印 [object Object]
+    const top3 = Object.entries(intentSimilarity)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([k, v]) => `${k}:${v.toFixed(2)}`)
+      .join(", ");
+    process.stdout.write(`[TaskClassifier] 意图相似度(top3): ${top3}\n`);
 
     return result;
   }
@@ -692,10 +698,12 @@ export class TaskClassifier {
     for (const cp of CATEGORY_PATTERNS) {
       let score = 0;
       for (const pattern of cp.patterns) {
-        const matches = task.match(pattern);
-        if (matches) {
-          score += matches.length > 1 ? 2 : 1;
-          if (matches.index !== undefined && matches.index < 20) {
+        // 使用 pattern.test 判断是否匹配（非全局正则的 match.length 返回捕获组数+1，非匹配次数）
+        if (pattern.test(task)) {
+          score += 1;
+          // 检查匹配位置是否靠前（增加权重）
+          const match = task.match(pattern);
+          if (match && match.index !== undefined && match.index < 20) {
             score += 1;
           }
         }
@@ -898,7 +906,18 @@ export class TaskClassifier {
   }
 
   private detectHasCode(text: string): boolean {
-    return /```|\{[\s\S]*?(?:function|=>|return|const|let|var|if|for|while)[\s\S]*?\}|function\s+\w+\s*\(|class\s+\w+|import\s+|from\s+['"][\w@]|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|def\s+\w+\s*\(|public\s+(static\s+)?(void|class)/i.test(text);
+    if (text.includes("```")) return true;
+    const patterns = [
+      /function\s+\w+\s*\(/,
+      /class\s+\w+/,
+      /import\s+/,
+      /(?:const|let|var)\s+\w+\s*=/,
+      /=>/,
+      /def\s+\w+\s*\(/,
+      /public\s+(?:static\s+)?(?:void|class)/,
+      /from\s+['"][\w@]/,
+    ];
+    return patterns.some((p) => p.test(text));
   }
 
   private detectRequiresAuth(categories: TaskCategory[]): boolean {

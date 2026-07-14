@@ -2,6 +2,7 @@ import {
   ServiceRegistry,
   EventBus,
   SystemEvents,
+  atomicWriteFileSync,
   type LearningEntry,
   type LearningSession,
   type LearningStats,
@@ -9,7 +10,7 @@ import {
   type LearningCategory,
   type LearningSeverity,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -68,7 +69,7 @@ export class LearningJournal {
     metadata?: Record<string, unknown>;
   }): LearningEntry {
     const entry: LearningEntry = {
-      id: uuid(),
+      id: randomUUID(),
       timestamp: new Date(),
       trigger: input.trigger,
       category: input.category,
@@ -177,7 +178,7 @@ export class LearningJournal {
 
   startSession(taskId: string, taskDescription: string): LearningSession {
     const session: LearningSession = {
-      id: uuid(),
+      id: randomUUID(),
       taskId,
       taskDescription,
       entries: [],
@@ -376,55 +377,10 @@ export class LearningJournal {
   }
 
   /**
-   * 原子写入：temp + fsync + rename，跨设备（EXDEV/EBUSY）时回退到目标侧写。
+   * 原子写入：委托给 @evoclaw/core 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const dir = path.dirname(targetPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } catch (err) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-    fs.closeSync(fd);
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "EXDEV" || code === "EBUSY") {
-        // 跨设备回退：在目标侧写临时文件后 rename，再清理源临时文件
-        const dstTmp = `${targetPath}.${process.pid}.dst.tmp`;
-        const fd2 = fs.openSync(dstTmp, "w");
-        try {
-          fs.writeFileSync(fd2, content, "utf-8");
-          fs.fsyncSync(fd2);
-        } catch (w2err) {
-          try { fs.closeSync(fd2); } catch { /* ignore */ }
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw w2err;
-        }
-        fs.closeSync(fd2);
-        try {
-          fs.renameSync(dstTmp, targetPath);
-        } catch (renameErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw renameErr;
-        }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      } else {
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw err;
-      }
-    }
+    atomicWriteFileSync(targetPath, content);
   }
 
   loadFromDisk(): void {

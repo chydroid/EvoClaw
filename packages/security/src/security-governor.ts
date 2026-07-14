@@ -6,6 +6,7 @@ import {
   type SandboxConfig,
   type SandboxResult,
   type PrivacyConfig,
+  type EventSubscription,
 } from "@evoclaw/core";
 import { AuditLogger } from "./audit-logger";
 import { RateLimiterService } from "./rate-limiter";
@@ -16,6 +17,8 @@ export class SecurityGovernor {
   private auditLogger: AuditLogger;
   private rateLimiter: RateLimiterService;
   private anomalyDetector: AnomalyDetector;
+  /** 保存 EventBus 订阅句柄，用于 shutdown 时取消订阅 */
+  private subscriptions: EventSubscription[] = [];
 
   constructor(
     private registry: ServiceRegistry,
@@ -28,7 +31,7 @@ export class SecurityGovernor {
     registry.registerService("securityGovernor", this);
 
     this.loadDefaultPolicies();
-    eventBus.subscribe("security.alert", async (event) => {
+    const sub = eventBus.subscribe("security.alert", async (event) => {
       await this.auditLogger.log({
         timestamp: new Date(),
         actor: event.source,
@@ -41,6 +44,16 @@ export class SecurityGovernor {
         userAgent: "evoclaw",
       });
     });
+    this.subscriptions.push(sub);
+  }
+
+  /** 关闭 SecurityGovernor：取消 EventBus 订阅并清理子服务资源 */
+  shutdown(): void {
+    for (const sub of this.subscriptions) {
+      try { this.eventBus.unsubscribe(sub.id); } catch { /* ignore */ }
+    }
+    this.subscriptions = [];
+    try { (this.rateLimiter as { destroy?: () => void }).destroy?.(); } catch { /* ignore */ }
   }
 
   private loadDefaultPolicies(): void {

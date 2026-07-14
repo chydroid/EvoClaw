@@ -1,9 +1,8 @@
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync, atomicReplaceSync } from "@evoclaw/core";
 import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/promises";
 import { constants } from "fs";
 import * as fsSync from "fs";
 import * as path from "path";
-import { randomUUID } from "crypto";
 
 interface FileInfo {
   path: string;
@@ -21,105 +20,19 @@ interface AuditLogEntry {
 }
 
 /**
- * 原子写入工具：temp + fsync + rename，保证崩溃时不会产生截断文件。
- * 符号链接目标会被解析后原地替换，保留符号链接。
- * 跨设备（EXDEV/EBUSY）时回退到 目标侧 temp + fsync + rename（保持原子性）。
- * 保留原文件权限位（修复 Docker/NAS 卷挂载权限问题）。
- *
- * 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突。
- *
- * 灵感来自 hermes-agent 的 utils.py atomic_json_write/atomic_replace。
+ * 原子写入工具：委托给 @evoclaw/core 的 atomicWriteFileSync。
+ * 保持异步签名，避免 infrastructure 调用方改动。
  */
 export async function atomicWriteFile(targetPath: string, content: string): Promise<void> {
-  const dir = path.dirname(targetPath);
-  if (!fsSync.existsSync(dir)) {
-    fsSync.mkdirSync(dir, { recursive: true });
-  }
-  // 临时文件名包含 pid + 随机后缀，避免同进程并发写入同一目标时冲突
-  const tmpPath = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  // 写入临时文件；异常时清理临时文件，避免泄漏
-  const fd = fsSync.openSync(tmpPath, "w");
-  try {
-    fsSync.writeFileSync(fd, content, "utf-8");
-    fsSync.fsyncSync(fd);
-  } catch (err) {
-    try { fsSync.closeSync(fd); } catch { /* ignore */ }
-    try { fsSync.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fsSync.closeSync(fd);
-  // 保留原文件权限位
-  try {
-    if (fsSync.existsSync(targetPath)) {
-      const st = fsSync.statSync(targetPath);
-      fsSync.chmodSync(tmpPath, st.mode);
-    }
-  } catch {
-    // 权限复制失败不阻断写入
-  }
-  // 原子替换：处理符号链接和跨设备
-  try {
-    await atomicReplace(tmpPath, targetPath);
-  } catch (err) {
-    try { fsSync.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
+  atomicWriteFileSync(targetPath, content);
 }
 
 /**
- * 原子替换：将 src 替换为 dst。
- * 如果 dst 是符号链接，解析 realpath 后原地替换，保留符号链接。
- * 跨设备时回退到 目标侧 temp + fsync + rename（保持原子性）。
+ * 原子替换：委托给 @evoclaw/core 的 atomicReplaceSync。
+ * 保持异步签名，避免 infrastructure 调用方改动。
  */
 export async function atomicReplace(src: string, dst: string): Promise<void> {
-  let realDst = dst;
-  try {
-    const st = fsSync.lstatSync(dst);
-    if (st.isSymbolicLink()) {
-      realDst = fsSync.realpathSync(dst);
-    }
-  } catch {
-    // dst 不存在，直接使用 dst
-  }
-  try {
-    fsSync.renameSync(src, realDst);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备：在目标侧写临时文件后 rename，保持原子性
-      const dstDir = path.dirname(realDst);
-      const dstTmp = path.join(dstDir, `.${path.basename(realDst)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-      const content = fsSync.readFileSync(src, "utf-8");
-      const fd = fsSync.openSync(dstTmp, "w");
-      try {
-        fsSync.writeFileSync(fd, content, "utf-8");
-        fsSync.fsyncSync(fd);
-      } catch (werr) {
-        try { fsSync.closeSync(fd); } catch { /* ignore */ }
-        try { fsSync.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fsSync.unlinkSync(src); } catch { /* ignore */ }
-        throw werr;
-      }
-      fsSync.closeSync(fd);
-      try {
-        // 保留原文件权限位
-        if (fsSync.existsSync(realDst)) {
-          const st = fsSync.statSync(realDst);
-          fsSync.chmodSync(dstTmp, st.mode);
-        }
-      } catch { /* ignore */ }
-      try {
-        fsSync.renameSync(dstTmp, realDst);
-      } catch (rerr) {
-        try { fsSync.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fsSync.unlinkSync(src); } catch { /* ignore */ }
-        throw rerr;
-      }
-      try { fsSync.unlinkSync(src); } catch { /* ignore */ }
-    } else {
-      throw err;
-    }
-  }
+  atomicReplaceSync(src, dst);
 }
 
 /**
@@ -203,7 +116,10 @@ export class CrossProcessLock {
           }
           continue;
         }
-        await new Promise((resolve) => setTimeout(resolve, CrossProcessLock.POLL_INTERVAL_MS));
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, CrossProcessLock.POLL_INTERVAL_MS);
+          t.unref?.();
+        });
       }
     }
     throw new Error(`Lock acquisition timed out after ${timeoutMs}ms: ${this.lockPath}`);

@@ -15,7 +15,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import type { EventBus } from "@evoclaw/core";
+import { atomicWriteFileSync, type EventBus } from "@evoclaw/core";
 
 // ──────────────────────────────────────────────────────────────
 // Types
@@ -88,15 +88,19 @@ export class EventLedger {
   private static readonly FLUSH_MAX_RETRIES = 10;
   /** beforeExit 监听器引用，供 dispose() 移除，避免实例泄漏。 */
   private beforeExitHandler: (() => void) | null = null;
+  /** 内存中最大事件数；超限后按 FIFO 驱逐最旧事件，防止 OOM。 */
+  private readonly maxInMemoryEvents: number;
 
   constructor(
     private eventBus?: EventBus,
-    opts?: { storePath?: string; autoSaveMs?: number },
+    opts?: { storePath?: string; autoSaveMs?: number; maxInMemoryEvents?: number },
   ) {
     this.storePath =
       opts?.storePath ||
       path.resolve(process.cwd(), "data", "event-ledger.jsonl");
+    this.maxInMemoryEvents = opts?.maxInMemoryEvents ?? 100_000;
     this.load();
+    this.enforceMemoryLimit();
     // 安全：scheduleSave 使用 1s 延迟 + unref()，进程退出时若窗口内还有
     // 未落盘事件会丢失。注册 beforeExit 钩子确保进程退出前 flush 所有待写事件。
     // flush() 全程同步 IO（writeFileSync/fsyncSync/renameSync），可在退出钩子中安全执行。
@@ -155,7 +159,15 @@ export class EventLedger {
     }
 
     this.scheduleSave();
+    this.enforceMemoryLimit();
     return appended;
+  }
+
+  /** 按 FIFO 驱逐最旧事件，确保内存事件数不超过上限。 */
+  private enforceMemoryLimit(): void {
+    if (this.events.length <= this.maxInMemoryEvents) return;
+    const overflow = this.events.length - this.maxInMemoryEvents;
+    this.events.splice(0, overflow);
   }
 
   /**
@@ -357,20 +369,11 @@ export class EventLedger {
     }
     if (!this.dirty || this.flushLock) return;
     this.flushLock = true;
-    const tmp = `${this.storePath}.tmp.${process.pid}`;
-    let fd: number | null = null;
     try {
-      const dir = path.dirname(this.storePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const jsonl = this.events
         .map((e) => JSON.stringify(e))
         .join("\n");
-      fs.writeFileSync(tmp, jsonl + "\n", { encoding: "utf-8", mode: 0o600 });
-      fd = fs.openSync(tmp, "r");
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fd = null;
-      fs.renameSync(tmp, this.storePath);
+      atomicWriteFileSync(this.storePath, jsonl + "\n", { encoding: "utf-8", mode: 0o600 });
       this.dirty = false;
       this.flushRetryCount = 0;
     } catch (err) {
@@ -386,12 +389,6 @@ export class EventLedger {
         process.stderr.write(`[EventLedger] Flush retry limit (${EventLedger.FLUSH_MAX_RETRIES}) reached, giving up auto-retry\n`);
       }
     } finally {
-      // 确保 fd 被关闭（fsyncSync 抛出时 fd 泄漏）
-      if (fd !== null) {
-        try { fs.closeSync(fd); } catch { /* already closed or error */ }
-      }
-      // 清理残留的 tmp 文件
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
       this.flushLock = false;
     }
   }

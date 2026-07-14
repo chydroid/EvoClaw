@@ -11,6 +11,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "./atomic-write";
 
 // ── Credential Suffix Detection ───────────────────────────
 
@@ -209,7 +210,7 @@ export function backupCorruptConfig(configPath: string): string | null {
 
     // 复制文件（不跟随符号链接）
     const content = fs.readFileSync(configPath);
-    fs.writeFileSync(backupPath, content);
+    atomicWriteFileSync(backupPath, content);
 
     return backupPath;
   } catch (err) {

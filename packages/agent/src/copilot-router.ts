@@ -111,6 +111,9 @@ interface CacheEntry {
 }
 
 export class CopilotRouter {
+  private static readonly MAX_PROVIDERS = 100;
+  private static readonly MAX_MODELS = 500;
+
   private config: CopilotRouterConfig;
   /** 路由决策缓存（LRU + TTL），避免重复计算 */
   private routeCache = new Map<string, CacheEntry>();
@@ -159,6 +162,9 @@ export class CopilotRouter {
     const cached = this.routeCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       this.cacheStats.hits++;
+      // LRU 更新：命中时删除并重新插入，使该条目排到 Map 末尾（最近使用）
+      this.routeCache.delete(cacheKey);
+      this.routeCache.set(cacheKey, cached);
       return { ...cached.decision, fromCache: true };
     }
     this.cacheStats.misses++;
@@ -264,6 +270,13 @@ export class CopilotRouter {
   /** 更新模型成本映射，用于成本感知路由 */
   updateModelCosts(costs: Record<string, ModelCostInfo>): void {
     for (const [model, cost] of Object.entries(costs)) {
+      // LRU 淘汰：超过最大条目数时删除最旧的（参照 setCache 模式）
+      if (this.modelCosts.size >= CopilotRouter.MAX_MODELS) {
+        const oldestKey = this.modelCosts.keys().next().value;
+        if (oldestKey) {
+          this.modelCosts.delete(oldestKey);
+        }
+      }
       this.modelCosts.set(model, cost);
     }
   }
@@ -457,6 +470,13 @@ export class CopilotRouter {
    * 当 provider 熔断或恢复时调用，路由决策会感知到状态变化。
    */
   updateProviderHealth(info: ProviderHealthInfo): void {
+    // LRU 淘汰：超过最大条目数时删除最旧的（参照 setCache 模式）
+    if (this.providerHealth.size >= CopilotRouter.MAX_PROVIDERS) {
+      const oldestKey = this.providerHealth.keys().next().value;
+      if (oldestKey) {
+        this.providerHealth.delete(oldestKey);
+      }
+    }
     this.providerHealth.set(info.providerId, info);
     // provider 健康状态变化时清除缓存，确保下次路由使用最新状态
     this.routeCache.clear();
@@ -467,6 +487,13 @@ export class CopilotRouter {
    */
   updateProviderHealthBatch(infos: ProviderHealthInfo[]): void {
     for (const info of infos) {
+      // LRU 淘汰：超过最大条目数时删除最旧的（参照 setCache 模式）
+      if (this.providerHealth.size >= CopilotRouter.MAX_PROVIDERS) {
+        const oldestKey = this.providerHealth.keys().next().value;
+        if (oldestKey) {
+          this.providerHealth.delete(oldestKey);
+        }
+      }
       this.providerHealth.set(info.providerId, info);
     }
     this.routeCache.clear();

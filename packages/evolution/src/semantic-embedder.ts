@@ -220,6 +220,7 @@ export class SemanticEmbedder {
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.config.apiTimeoutMs);
+      if (timeout.unref) timeout.unref();
 
       try {
         const response = await fetch(apiUrl, {

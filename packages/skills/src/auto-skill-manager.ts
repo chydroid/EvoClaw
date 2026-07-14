@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync as coreAtomicWriteFileSync } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
 import { TfidfMatcher, type TfidfMatchResult } from "./tfidf-matcher";
@@ -496,9 +496,12 @@ export class AutoSkillManager {
     const matches: SkillMatch[] = [];
     const lowerTask = taskDescription.toLowerCase();
 
-    // Cleanup cache if it grows too large
+    // LRU 淘汰：超容量时删除最旧条目，而非全量清空（避免周期性性能抖动）
     if (this.fileContentCache.size > 200) {
-      this.fileContentCache.clear();
+      const oldestKey = this.fileContentCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.fileContentCache.delete(oldestKey);
+      }
     }
 
     // 扫描三个目录：data/skills + bundled + optional
@@ -830,43 +833,7 @@ export class AutoSkillManager {
    * 项目硬约束：持久状态写入必须用原子写。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const tmpPath = `${targetPath}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "EXDEV" || code === "EBUSY") {
-        // 跨设备：rename 不可用，在目标侧写临时文件后 rename，保持原子性
-        const dstTmp = `${targetPath}.dst.${process.pid}.tmp`;
-        const fd2 = fs.openSync(dstTmp, "w");
-        try {
-          fs.writeFileSync(fd2, content, "utf-8");
-          fs.fsyncSync(fd2);
-        } finally {
-          fs.closeSync(fd2);
-        }
-        // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
-        try {
-          fs.renameSync(dstTmp, targetPath);
-        } catch (renameErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw renameErr;
-        }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      } else {
-        // 非 EXDEV：清理临时文件并重新抛出
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw err;
-      }
-    }
+    coreAtomicWriteFileSync(targetPath, content, { encoding: "utf-8" });
   }
 
   /**
@@ -958,8 +925,10 @@ export class AutoSkillManager {
       case "calculator":
         return [
           "```bash",
-          "# Evaluate expression",
-          "node -e \"process.stdout.write(eval('<EXPRESSION>'))\"",
+          "# Evaluate arithmetic expression safely",
+          "# Only allows digits, +, -, *, /, (, ), ., and spaces",
+          "expr='<EXPRESSION>'",
+          "node -e \"const s=process.argv[1];if(!/^[0-9+\\-*/().\\s]+$/.test(s)){process.exit(1)}process.stdout.write(String(Function('return('+s+')')()))\" \"$expr\"",
           "```",
         ];
       case "http-client":

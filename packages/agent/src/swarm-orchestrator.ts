@@ -13,6 +13,7 @@
  */
 
 import type { EventBus } from "@evoclaw/core";
+import * as crypto from "crypto";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ export class SwarmOrchestrator {
 
     const fullAgent: SwarmAgent = {
       ...agent,
-      id: `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `agent_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
       status: "idle",
       lastHeartbeat: Date.now(),
       metrics: {
@@ -249,7 +250,7 @@ export class SwarmOrchestrator {
   async delegate(request: Omit<DelegationRequest, "id">): Promise<DelegationResult> {
     const delegation: DelegationRequest = {
       ...request,
-      id: `deleg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `deleg_${Date.now()}_${crypto.randomBytes(2).toString("hex")}`,
     };
 
     // Auto-assign: find best agent for the capabilities
@@ -461,7 +462,7 @@ export class SwarmOrchestrator {
 
     const fullRequest: HandoffRequest = {
       ...request,
-      id: `handoff_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `handoff_${Date.now()}_${crypto.randomBytes(2).toString("hex")}`,
       createdAt: Date.now(),
     };
 
@@ -556,7 +557,7 @@ export class SwarmOrchestrator {
   proposeConsensus(proposal: Omit<ConsensusProposal, "id">): ConsensusProposal {
     const full: ConsensusProposal = {
       ...proposal,
-      id: `proposal_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `proposal_${Date.now()}_${crypto.randomBytes(2).toString("hex")}`,
     };
 
     this.proposals.set(full.id, full);
@@ -698,16 +699,13 @@ export class SwarmOrchestrator {
       .sort((a, b) => b.metrics.reliabilityScore - a.metrics.reliabilityScore)[0];
   }
 
-  /** Get all active (non-offline) agents */
+  /** Get all active (non-offline) agents — pure read, no side effects.
+   *  Offline marking is handled by checkHeartbeats(). */
   getActiveAgents(): SwarmAgent[] {
     const now = Date.now();
-    return Array.from(this.agents.values()).filter((a) => {
-      const alive = now - a.lastHeartbeat < this.config.heartbeatTimeoutMs;
-      if (!alive && a.status !== "offline") {
-        a.status = "offline";
-      }
-      return alive;
-    });
+    return Array.from(this.agents.values()).filter(
+      (a) => now - a.lastHeartbeat < this.config.heartbeatTimeoutMs
+    );
   }
 
   // ── Group Operations ────────────────────────────────────
@@ -811,6 +809,16 @@ export class SwarmOrchestrator {
     if (this.proposals.size > MAX) {
       const keys = Array.from(this.proposals.keys()).slice(0, this.proposals.size - MAX);
       for (const k of keys) { this.proposals.delete(k); this.votes.delete(k); }
+    }
+    // 修剪 pendingDelegations：删除最旧的 key（按插入顺序），保留较新的活跃委托
+    if (this.pendingDelegations.size > MAX) {
+      const keys = Array.from(this.pendingDelegations.keys()).slice(0, this.pendingDelegations.size - MAX);
+      for (const k of keys) this.pendingDelegations.delete(k);
+    }
+    // 修剪 activeHandoffs：删除最旧的 key（按 createdAt 时间戳插入顺序），保留较新的活跃 handoff
+    if (this.activeHandoffs.size > MAX) {
+      const keys = Array.from(this.activeHandoffs.keys()).slice(0, this.activeHandoffs.size - MAX);
+      for (const k of keys) this.activeHandoffs.delete(k);
     }
   }
 

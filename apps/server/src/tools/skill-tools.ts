@@ -66,7 +66,11 @@ export function registerAutoSkillTools(
         if (rawParams && typeof rawParams === "object") {
           execParams = rawParams as Record<string, unknown>;
         } else if (rawParams && typeof rawParams === "string") {
-          execParams = JSON.parse(rawParams);
+          const parsed = JSON.parse(rawParams);
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return { success: false, error: "params must be a JSON object, not array or primitive" };
+          }
+          execParams = parsed as Record<string, unknown>;
         }
       } catch {
         return { success: false, error: "Invalid JSON in params parameter" };

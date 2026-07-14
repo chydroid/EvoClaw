@@ -149,6 +149,12 @@ export class SSRFProtection {
       if (ip.startsWith("ff")) {
         return { allowed: false, reason: `IPv6 multicast blocked: ${ip}` };
       }
+      // 规范化 IPv4-mapped IPv6 完整形式：0:0:0:0:0:ffff:x.x.x.x → ::ffff:x.x.x.x
+      // 避免完整形式绕过下方的压缩形式正则匹配。
+      const normalizedV4Mapped = ip.replace(/^0:0:0:0:0:ffff:/i, "::ffff:");
+      if (normalizedV4Mapped !== ip) {
+        return this.checkIP(normalizedV4Mapped);
+      }
       // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x 点分十进制形式)
       const v4MappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
       if (v4MappedMatch) {
@@ -252,6 +258,7 @@ export class SSRFProtection {
         Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("DNS resolution timed out")), this.config.dnsTimeoutMs);
+          timer.unref?.();
         }),
       ]);
 

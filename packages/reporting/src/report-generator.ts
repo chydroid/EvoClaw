@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync } from "@evoclaw/core";
 import * as Handlebars from "handlebars";
 import * as fs from "fs";
 import * as path from "path";
@@ -328,25 +328,8 @@ export class ReportGenerator {
       if (resolved !== allowedBase && !resolved.startsWith(allowedBase + path.sep)) {
         throw new Error(`Output path must be within ${allowedBase}`);
       }
-      const dir = path.dirname(resolved);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
       // 安全：原子写入（tmp + fsync + rename），避免进程崩溃时报告文件被截断损坏
-      const tmpPath = `${resolved}.${process.pid}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, output, "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fs.renameSync(tmpPath, resolved);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw err;
-      }
+      atomicWriteFileSync(resolved, output, { encoding: "utf-8" });
     }
 
     this.eventBus.publish(
@@ -516,9 +499,10 @@ export class ReportGenerator {
       // 移除 <script>...</script> 块（非贪婪匹配，避免灾难性回溯）
       s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
       // 移除事件处理器属性 (onclick, onerror, onload, etc.)
-      s = s.replace(/\s+on\w+\s*=\s*"[^"]*"/gi, "");
-      s = s.replace(/\s+on\w+\s*=\s*'[^']*'/gi, "");
-      s = s.replace(/\s+on\w+\s*=\s*[^\s>]+/gi, "");
+      // 使用 [\s/]+ 而非 \s+：HTML 规范允许用 / 作为属性分隔符（如 <img/onerror=...>）
+      s = s.replace(/[\s/]+on\w+\s*=\s*"[^"]*"/gi, "");
+      s = s.replace(/[\s/]+on\w+\s*=\s*'[^']*'/gi, "");
+      s = s.replace(/[\s/]+on\w+\s*=\s*[^\s>]+/gi, "");
       // 移除危险协议的 href/src：javascript:、vbscript:、data:text/html
       s = s.replace(/(href|src)\s*=\s*["'](?:javascript|vbscript|data:text\/html):[^"']*["']/gi, "");
       return new Handlebars.SafeString(s);

@@ -223,7 +223,7 @@ export class RestartCoordinator {
         this.pendingRestartReason = reason;
         this.pendingRestartEmitHooks = opts?.emitHooks;
         this.pendingRestartSessionKey = opts?.sessionKey;
-        void this.emitPreparedGatewayRestart(undefined, reason, opts?.port);
+        this.safeEmitPreparedGatewayRestart(undefined, reason, opts?.port);
         return {
           ok: true,
           pid: process.pid,
@@ -461,7 +461,7 @@ export class RestartCoordinator {
       this.pendingRestartPreparing = true;
       const pendingCheck = this.preRestartCheck;
       if (scheduledSkipDeferral || !pendingCheck) {
-        void this.emitPreparedGatewayRestart(undefined, scheduledReason, port);
+        this.safeEmitPreparedGatewayRestart(undefined, scheduledReason, port);
         return;
       }
       this.deferGatewayRestartUntilIdle({
@@ -514,6 +514,25 @@ export class RestartCoordinator {
     }
   }
 
+  /**
+   * 安全包装：调用 emitPreparedGatewayRestart 并吞掉异常，避免未捕获的 Promise 拒绝。
+   * 之前 7 处 `this.safeEmitPreparedGatewayRestart(...)` 都是 fire-and-forget，
+   * 若内部抛出（如 beforeEmit hook 异常未处理）会变成 unhandledRejection。
+   */
+  private safeEmitPreparedGatewayRestart(
+    hooks?: RestartEmitHooks,
+    reasonOverride?: string,
+    port?: number,
+  ): void {
+    this.emitPreparedGatewayRestart(hooks, reasonOverride, port).catch((err) => {
+      process.stderr.write(
+        `[RestartCoordinator] emitPreparedGatewayRestart failed: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    });
+  }
+
   private deferGatewayRestartUntilIdle(opts: {
     getPendingCount: () => number;
     hooks?: RestartDeferralHooks;
@@ -535,12 +554,12 @@ export class RestartCoordinator {
       pending = opts.getPendingCount();
     } catch (err) {
       opts.hooks?.onCheckError?.(err);
-      void this.emitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
+      this.safeEmitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
       return;
     }
     if (pending <= 0) {
       opts.hooks?.onReady?.();
-      void this.emitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
+      this.safeEmitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
       return;
     }
 
@@ -555,14 +574,14 @@ export class RestartCoordinator {
         clearInterval(poll);
         this.activeDeferralPolls.delete(poll);
         opts.hooks?.onCheckError?.(err);
-        void this.emitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
+        this.safeEmitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
         return;
       }
       if (current <= 0) {
         clearInterval(poll);
         this.activeDeferralPolls.delete(poll);
         opts.hooks?.onReady?.();
-        void this.emitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
+        this.safeEmitPreparedGatewayRestart(opts.emitHooks, opts.reason, opts.port);
         return;
       }
       const elapsedMs = this.nowFn() - startedAt;
@@ -574,7 +593,7 @@ export class RestartCoordinator {
         clearInterval(poll);
         this.activeDeferralPolls.delete(poll);
         opts.hooks?.onTimeout?.(current, elapsedMs);
-        void this.emitPreparedGatewayRestart(
+        this.safeEmitPreparedGatewayRestart(
           opts.emitHooks,
           opts.reason,
           opts.port,

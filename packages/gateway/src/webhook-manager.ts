@@ -13,6 +13,7 @@
  */
 
 import * as crypto from "crypto";
+import { isUnsafeRegex } from "@evoclaw/security";
 import * as fs from "fs";
 import * as path from "path";
 import { atomicWriteFileSync } from "./atomic-write";
@@ -211,6 +212,8 @@ function matchLeaf(
       if (typeof value !== "string") return false;
       const pattern = typeof filter.value === "string" ? filter.value : "";
       if (pattern.length === 0) return false;
+      // 安全：拒绝 ReDoS 风险正则，防止灾难性回溯
+      if (isUnsafeRegex(pattern)) return false;
       try {
         return new RegExp(pattern).test(value);
       } catch {
@@ -692,6 +695,27 @@ export class WebhookManager {
         if (v6 === "::1" || v6 === "::" || v6 === "0:0:0:0:0:0:0:1" || v6 === "0:0:0:0:0:0:0:0") {
           return "Webhook URL must not point to private/internal network";
         }
+        // IPv4-mapped IPv6 地址检查：::ffff:x.x.x.x 或完整形式 0:0:0:0:0:ffff:x.x.x.x
+        // 这些地址在大多数 OS 上等效于连接嵌入的 IPv4 私有地址
+        const v4MappedMatch = v6.match(/^(?:0:0:0:0:0:)?ffff:(\d+\.\d+\.\d+\.\d+)$/) ||
+          v6.match(/^(?:0:0:0:0:0:)?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+        if (v4MappedMatch) {
+          let ipv4: string;
+          if (v4MappedMatch.length === 3) {
+            // 十六进制形式 ::ffff:xxxx:xxxx → 转换为 IPv4
+            const hi = parseInt(v4MappedMatch[1], 16);
+            const lo = parseInt(v4MappedMatch[2], 16);
+            ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+          } else {
+            ipv4 = v4MappedMatch[1];
+          }
+          // 对嵌入的 IPv4 递归检查私有地址
+          if (ipv4.startsWith("127.") || ipv4.startsWith("10.") ||
+              ipv4.startsWith("192.168.") || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(ipv4) ||
+              ipv4.startsWith("169.254.")) {
+            return "Webhook URL must not point to private/internal network";
+          }
+        }
         // 唯一本地地址 ULA (fc00::/7, 即 fc/fd 开头)
         if (v6.startsWith("fc") || v6.startsWith("fd")) {
           return "Webhook URL must not point to private/internal network";
@@ -878,13 +902,51 @@ export class WebhookManager {
         () => controller.abort(),
         wh.timeoutMs ?? 10000
       );
+      timeout.unref?.();
 
-      const response = await fetch(wh.url, {
+      // 安全：手动处理重定向，对每个 3xx Location 执行 SSRF 二次校验，
+      // 防止外部服务器 302 到内网/元数据端点绕过注册时的 URL 校验。
+      let response = await fetch(wh.url, {
         method: "POST",
         headers,
         body,
         signal: controller.signal,
+        redirect: "manual",
       });
+
+      // 手动跟随重定向链（最多 5 跳），每跳都做 SSRF 校验
+      let currentUrl = wh.url;
+      let redirectCount = 0;
+      while ([301, 302, 303, 307, 308].includes(response.status) && redirectCount < 5) {
+        const location = response.headers.get("location");
+        if (!location) break;
+        const redirectUrl = new URL(location, currentUrl).toString();
+        const redirectError = this.validateWebhookUrl(redirectUrl);
+        if (redirectError) {
+          clearTimeout(timeout);
+          return {
+            id: crypto.randomUUID(),
+            webhookId,
+            event: event.type,
+            timestamp: Date.now(),
+            status: "failed",
+            statusCode: response.status,
+            error: `Redirect blocked: ${redirectError}`,
+            attempt,
+            durationMs: Date.now() - startTime,
+          };
+        }
+        currentUrl = redirectUrl;
+        // 重定向后改用 GET（HTTP 规范：301/302/303 将 POST 转为 GET）
+        const method = [301, 302, 303].includes(response.status) ? "GET" : "POST";
+        response = await fetch(redirectUrl, {
+          method,
+          headers,
+          signal: controller.signal,
+          redirect: "manual",
+        });
+        redirectCount++;
+      }
 
       clearTimeout(timeout);
 
@@ -1016,12 +1078,14 @@ export class WebhookManager {
     if (!signature) return false;
 
     const expected = this.sign(payload, secret);
+    // 显式长度检查：timingSafeEqual 在长度不同时抛 RangeError，
+    // 虽然 try/catch 能捕获但会泄露长度信息（时序旁路）。
+    const expectedBuf = Buffer.from(expected);
+    const signBuf = Buffer.from(signature);
+    if (expectedBuf.length !== signBuf.length) return false;
     try {
       // Constant-time comparison
-      return crypto.timingSafeEqual(
-        Buffer.from(expected),
-        Buffer.from(signature)
-      );
+      return crypto.timingSafeEqual(expectedBuf, signBuf);
     } catch {
       return false;
     }

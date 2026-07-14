@@ -462,6 +462,9 @@ export class DAGExecutor {
   }
 
   private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 }

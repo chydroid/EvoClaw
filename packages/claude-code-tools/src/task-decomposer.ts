@@ -6,7 +6,7 @@
  */
 
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import { assertSafeLlmUrl } from "./llm-dispatcher";
 
 // ── Types ──────────────────────────────────────────────────
@@ -103,6 +103,8 @@ export interface DecompositionContext {
 
 export class TaskDecomposer {
   private plans = new Map<string, TaskPlan>();
+  /** plans Map 的容量上限，防止长期运行内存泄漏 */
+  private static readonly MAX_PLANS = 500;
 
   constructor(
     private registry?: ServiceRegistry,
@@ -117,7 +119,7 @@ export class TaskDecomposer {
     strategy: DecompositionStrategy = DecompositionStrategy.HYBRID,
     context?: DecompositionContext,
   ): Promise<TaskPlan> {
-    const rootId = uuid();
+    const rootId = randomUUID();
 
     // Classify the main task type
     const taskType = this.classifyTaskType(taskDescription);
@@ -164,7 +166,7 @@ export class TaskDecomposer {
     const totalComplexity = allTasks.reduce((sum, t) => sum + t.estimatedComplexity, 0);
 
     const plan: TaskPlan = {
-      id: uuid(),
+      id: randomUUID(),
       rootTask,
       subTasks,
       strategy,
@@ -175,6 +177,12 @@ export class TaskDecomposer {
     };
 
     this.plans.set(plan.id, plan);
+
+    // LRU 上限保护：超过容量时删除最旧的 plan（Map 按插入顺序保留首个条目）
+    if (this.plans.size > TaskDecomposer.MAX_PLANS) {
+      const oldestKey = this.plans.keys().next().value;
+      if (oldestKey) this.plans.delete(oldestKey);
+    }
 
     this.eventBus?.publish("claude-code-tools:task-decomposed", {
       planId: plan.id,
@@ -255,7 +263,7 @@ export class TaskDecomposer {
     const steps = this.getSequentialSteps(desc, type);
 
     const tasks = steps.map((step, i) => ({
-      id: uuid(),
+      id: randomUUID(),
       parentId: rootId,
       rootTaskId: rootId,
       name: step.name,
@@ -285,7 +293,7 @@ export class TaskDecomposer {
     const aspects = this.getParallelAspects(desc, type);
 
     return aspects.map((aspect) => ({
-      id: uuid(),
+      id: randomUUID(),
       parentId: rootId,
       rootTaskId: rootId,
       name: aspect.name,
@@ -315,7 +323,7 @@ export class TaskDecomposer {
       if (phase.parallel) {
         // Parallel tasks within this phase
         for (const step of phase.steps) {
-          const taskId = uuid();
+          const taskId = randomUUID();
           tasks.push({
             id: taskId,
             parentId: rootId,
@@ -339,7 +347,7 @@ export class TaskDecomposer {
         // Sequential tasks within this phase
         let prevId: string | null = null;
         for (const step of phase.steps) {
-          const taskId = uuid();
+          const taskId = randomUUID();
           const deps = prevId ? [prevId] : [...lastPhaseTaskIds];
           tasks.push({
             id: taskId,
@@ -673,6 +681,7 @@ export class TaskDecomposer {
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
+    if (timeoutId.unref) timeoutId.unref();
 
     try {
       const response = await fetch(apiURL, {
@@ -755,7 +764,7 @@ ${contextInfo}
       const items = JSON.parse(jsonStr);
       if (!Array.isArray(items)) return null;
 
-      const taskIds = items.map(() => uuid());
+      const taskIds = items.map(() => randomUUID());
 
       return items.map((item: any, i: number) => ({
         id: taskIds[i],
@@ -769,7 +778,10 @@ ${contextInfo}
         dependencies: (item.dependencies as number[] || [])
           .filter((d: number) => d >= 0 && d < taskIds.length)
           .map((d: number) => taskIds[d]),
-        estimatedComplexity: Math.max(1, Math.min(10, Number(item.complexity) || 5)),
+        estimatedComplexity: Math.max(1, Math.min(10, (() => {
+          const c = Number(item.complexity ?? 5);
+          return Number.isFinite(c) ? c : 5;
+        })())),
         acceptanceCriteria: Array.isArray(item.acceptanceCriteria)
           ? item.acceptanceCriteria.map(String) : [],
         context: ctx ?? {},

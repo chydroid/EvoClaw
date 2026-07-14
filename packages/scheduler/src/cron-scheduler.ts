@@ -578,6 +578,7 @@ export class CronScheduler extends EventEmitter {
         () => reject(new Error(`Job "${job.name}" timed out after ${job.timeout}ms`)),
         job.timeout,
       );
+      timer.unref?.();
     });
 
     const taskPromise = job.task();

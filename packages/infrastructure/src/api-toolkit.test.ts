@@ -528,4 +528,16 @@ describe("PageScraper", () => {
     expect(meta.url).toBe("https://broken.example.com");
     expect(meta.title).toBeUndefined();
   });
+
+  it("should block redirects to internal addresses (SSRF)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false, status: 302, statusText: "Found",
+      headers: new Map([["location", "http://127.0.0.1/secret"]]),
+      text: async () => "",
+    });
+
+    const meta = await PageScraper.getMetadata("https://example.com");
+    expect(meta.url).toBe("https://example.com");
+    expect(meta.title).toBeUndefined();
+  });
 });

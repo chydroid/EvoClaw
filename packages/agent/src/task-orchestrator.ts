@@ -9,7 +9,7 @@ import {
   type DAGNode,
   type ExecutionStep,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import { DAGExecutor } from "./dag-executor";
 import { AgentPoolManager } from "./agent-pool";
 
@@ -71,7 +71,7 @@ export class TaskOrchestrator implements ITaskExecutor {
     };
   }): Promise<Task> {
     const task: Task = {
-      id: uuid(),
+      id: randomUUID(),
       type: (input.type as Task["type"]) || "chat",
       priority: (input.priority as Task["priority"]) || "normal",
       status: "pending",
@@ -83,7 +83,7 @@ export class TaskOrchestrator implements ITaskExecutor {
         workspace: input.context?.workspace || "default",
         variables: input.context?.variables || {},
         tags: input.context?.tags || [],
-        traceId: uuid(),
+        traceId: randomUUID(),
       },
       dag: [],
       executionPlan: [],
@@ -139,6 +139,14 @@ export class TaskOrchestrator implements ITaskExecutor {
           ];
         }
 
+        // 检查任务在执行期间是否已被 cancel/pause，若是则保留该状态，
+        // 不被 completed 覆盖（Bug 1.1: cancel/pause 被无条件覆盖）
+        if (task.status === "cancelled" || task.status === "paused") {
+          // 任务已被并发取消或暂停：清理终态任务后提前返回
+          this.pruneActiveTasks();
+          return;
+        }
+
         task.status = "completed";
         task.completedAt = new Date();
         task.updatedAt = new Date();
@@ -148,6 +156,11 @@ export class TaskOrchestrator implements ITaskExecutor {
         // 保留最近 MAX_ACTIVE_TASKS 条记录，允许 getTaskStatus 查询最近完成的任务
         this.pruneActiveTasks();
       } catch (err) {
+        // 失败时同样检查是否已被 cancel/pause，避免覆盖
+        if (task.status === "cancelled" || task.status === "paused") {
+          this.pruneActiveTasks();
+          return;
+        }
         task.status = "failed";
         task.updatedAt = new Date();
         const message = err instanceof Error ? err.message : String(err);
@@ -159,6 +172,11 @@ export class TaskOrchestrator implements ITaskExecutor {
           task.status = "queued";
           await this.taskQueue.enqueue(task);
           await this.eventBus.publish(SystemEvents.TASK_RETRYING, task, LOG);
+          // 重试任务由 processQueue 的 while 循环自然消费（execute 返回后循环继续
+          // dequeue 会取到刚入队的重试任务）。若在此处再次触发 processQueueTraced，
+          // 会导致：(1) 当 execute 由 processQueue 调用时产生并发 processQueue 竞态；
+          // (2) 当 execute 被直接调用时，fire-and-forget 的 processQueue 会在调用方
+          // 检查 task.status 前将其改为 "running"，破坏调用方对 "queued" 状态的预期。
         } else {
           // 重试耗尽，清理过量终态任务
           this.pruneActiveTasks();
@@ -271,7 +289,11 @@ export class TaskOrchestrator implements ITaskExecutor {
       const agent = await this.agentPool.acquire();
       if (!agent) {
         await this.taskQueue.enqueue(task);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Bug 1.3 fix: setTimeout 需要 unref，避免阻止 Node.js 优雅退出
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, 100);
+          t.unref();
+        });
         // 继续尝试下一个任务，避免因单个任务无法获取 agent 而使后续任务饥饿。
         // 若队列已空，下一次 dequeue 返回 null 会自然 break。
         continue;

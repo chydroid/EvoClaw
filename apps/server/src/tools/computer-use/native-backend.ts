@@ -168,9 +168,9 @@ function escapeSendKeys(text: string): string {
 
 /** Windows 输入文本：SendKeys.SendWait（先转义特殊字符） */
 function psKeyTypeScript(text: string): string {
-  const escaped = escapeSendKeys(text);
+  const escaped = escapeSendKeys(text).replace(/'/g, "''");
   return `${PS_LOAD_FORMS}
-[System.Windows.Forms.SendKeys]::SendWait("${escaped}");`;
+[System.Windows.Forms.SendKeys]::SendWait('${escaped}');`;
 }
 
 /** 按键名 → SendKeys 表示法 */

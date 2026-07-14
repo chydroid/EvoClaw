@@ -125,7 +125,7 @@ export abstract class ChannelAdapterBase implements ChannelAdapterInterface {
   /** Helper: create a ChannelMessage from basic fields */
   protected createChannelMessage(from: string, text: string, extra?: Partial<ChannelMessage>): ChannelMessage {
     return {
-      messageId: `${this.config.channelId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      messageId: `${this.config.channelId}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
       channel: this.type,
       from,
       to: this.config.channelId,

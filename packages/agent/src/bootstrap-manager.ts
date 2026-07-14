@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 const BOOTSTRAP_FILES = [
   { name: "AGENTS.md", description: "Operating instructions + memory", required: true },
@@ -327,7 +328,7 @@ export class BootstrapManager {
 
   private writeFile(filePath: string, content: string): void {
     try {
-      fs.writeFileSync(filePath, content, "utf-8");
+      atomicWriteFileSync(filePath, content);
     } catch (e) {
       process.stderr.write(`[BootstrapManager] Failed to write ${filePath}: ${e}\n`);
     }

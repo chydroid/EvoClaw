@@ -15,65 +15,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import type { SkillLineage, LineageTreeNode, LineageQueryResult, EvolutionType } from "./evolution-types";
 import { shouldDeactivateParent } from "./evolution-types";
-
-// ── 原子写入 ──────────────────────────────────────────────────
-
-function atomicWriteFileSync(filePath: string, content: string): void {
-  // 临时文件名含 pid + 随机后缀，避免并发写入同一目标时冲突
-  const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  try {
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, { encoding: "utf-8" });
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    try {
-      if (fs.existsSync(filePath)) {
-        const st = fs.statSync(filePath);
-        fs.chmodSync(tmpPath, st.mode);
-      }
-    } catch { /* ignore */ }
-    try {
-      fs.renameSync(tmpPath, filePath);
-    } catch (renameErr: unknown) {
-      // EXDEV/EBUSY 回退：跨设备或目标繁忙时，在目标侧写临时文件后 rename
-      // 参照 packages/memory/src/layered/atomic-write.ts 的实现
-      const code = (renameErr as NodeJS.ErrnoException)?.code;
-      if (code !== "EXDEV" && code !== "EBUSY") {
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw renameErr;
-      }
-      const dstTmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
-      const fd2 = fs.openSync(dstTmp, "w");
-      try {
-        fs.writeFileSync(fd2, content, { encoding: "utf-8" });
-        fs.fsyncSync(fd2);
-      } catch (w2err) {
-        try { fs.closeSync(fd2); } catch { /* ignore */ }
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw w2err;
-      }
-      fs.closeSync(fd2);
-      // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
-      try {
-        fs.renameSync(dstTmp, filePath);
-      } catch (finalErr) {
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw finalErr;
-      }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
-  } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-}
 
 // ── 主类 ──────────────────────────────────────────────────────
 

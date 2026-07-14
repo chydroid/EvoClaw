@@ -14,6 +14,12 @@
  * composed into any operation that needs retry logic.
  */
 
+import * as crypto from "crypto";
+
+function random01(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+}
+
 // ── Types ─────────────────────────────────────────────────
 
 export interface RetryConfig {
@@ -118,11 +124,11 @@ export function isRetryableError(error: Error): boolean {
 // ── Jitter Functions ──────────────────────────────────────
 
 function fullJitter(delay: number): number {
-  return Math.random() * delay;
+  return random01() * delay;
 }
 
 function decorrelatedJitter(delay: number, baseDelay: number): number {
-  return baseDelay + Math.random() * delay;
+  return baseDelay + random01() * delay;
 }
 
 function computeDelay(
@@ -179,7 +185,10 @@ function withTimeout<T>(
 }
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
 }
 
 // ── Retry Executor ────────────────────────────────────────

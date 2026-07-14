@@ -17,7 +17,7 @@
  */
 
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import { SemanticEmbedder } from "./semantic-embedder";
 import type { ExecutionTrace, ReflectionResult } from "./external-reflector";
 
@@ -328,7 +328,7 @@ export class ExperienceDistiller {
     ).length;
 
     return {
-      id: uuid(),
+      id: randomUUID(),
       name: `auto-distilled:${failurePattern}`,
       failurePattern,
       template,
@@ -389,16 +389,21 @@ async function validateAndPrepare(params: Record<string, unknown>): Promise<Reco
 
 async function executeWithRetry(
   params: Record<string, unknown>,
-  options: { maxRetries: number; backoffMs: number },
+  options: { maxRetries: number; backoffMs: number; maxBackoffMs?: number },
 ): Promise<unknown> {
   let lastError: Error | null = null;
+  const maxBackoffMs = options.maxBackoffMs ?? 30000;
   for (let i = 0; i <= options.maxRetries; i++) {
     try {
       return await executeCore(params);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (i < options.maxRetries) {
-        await new Promise(r => setTimeout(r, options.backoffMs * Math.pow(2, i)));
+        const delayMs = Math.min(options.backoffMs * Math.pow(2, i), maxBackoffMs);
+        await new Promise(r => {
+          const t = setTimeout(r, delayMs);
+          if (t.unref) t.unref();
+        });
       }
     }
   }

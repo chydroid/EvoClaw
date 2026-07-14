@@ -1,6 +1,7 @@
 import {
   ServiceRegistry,
   EventBus,
+  atomicWriteFileSync,
   type Skill,
   type SkillExecutionResult,
   type SandboxPolicy,
@@ -295,12 +296,25 @@ export class SkillSandbox {
         let stdout = "";
         let stderr = "";
         let settled = false;
+        // 缓冲区上限：防止失控脚本输出耗尽内存（与 shell-media-tools 一致，20MB）
+        const MAX_BUFFER = 20 * 1024 * 1024;
 
-        const onStdoutData = (data: Buffer) => { stdout += data.toString(); };
-        const onStderrData = (data: Buffer) => { stderr += data.toString(); };
+        const onStdoutData = (data: Buffer) => {
+          stdout += data.toString();
+          if (stdout.length > MAX_BUFFER) {
+            child.stdout?.destroy();
+          }
+        };
+        const onStderrData = (data: Buffer) => {
+          stderr += data.toString();
+          if (stderr.length > MAX_BUFFER) {
+            child.stderr?.destroy();
+          }
+        };
 
         const cleanup = () => {
           clearTimeout(timeoutId);
+          clearTimeout(killTimer);
           child.stdout?.off("data", onStdoutData);
           child.stderr?.off("data", onStderrData);
           child.off("close", onClose);
@@ -311,9 +325,14 @@ export class SkillSandbox {
           if (settled) return;
           settled = true;
           cleanup();
-          child.kill();
+          child.kill(); // SIGTERM
+          // SIGKILL 回退：5s 后强制终止，防止子进程忽略 SIGTERM
+          killTimer = setTimeout(() => {
+            try { child.kill("SIGKILL"); } catch { /* ignore */ }
+          }, 5000);
           reject(new Error(`Python execution timed out after ${timeout}ms`));
         }, timeout);
+        let killTimer: ReturnType<typeof setTimeout>;
 
         const onClose = (code: number | null) => {
           if (settled) return;
@@ -378,8 +397,8 @@ export class SkillSandbox {
       />(?!\>)/,        // Output redirection >
       />>/,             // Append redirection >>
       /</,              // Input redirection <
-      /\n/,             // Newline injection
-      /\r/,             // Carriage return injection
+      // 换行注入风险已被命令白名单 + execFileSync 参数数组传递方式缓解，
+      // 移除 /\n/ 和 /\r/ 以允许合法的多行 shell 脚本
       /\b(rm|del|format|shutdown|reboot|wget|curl)\b\s+/i,  // Dangerous commands
     ];
     for (const pat of dangerousPatterns) {
@@ -480,12 +499,25 @@ export class SkillSandbox {
       let stdout = "";
       let stderr = "";
       let settled = false;
+      // 缓冲区上限：防止失控脚本输出耗尽内存（与 shell-media-tools 一致，20MB）
+      const MAX_BUFFER = 20 * 1024 * 1024;
 
-      const onStdoutData = (data: Buffer) => { stdout += data.toString(); };
-      const onStderrData = (data: Buffer) => { stderr += data.toString(); };
+      const onStdoutData = (data: Buffer) => {
+        stdout += data.toString();
+        if (stdout.length > MAX_BUFFER) {
+          child.stdout?.destroy();
+        }
+      };
+      const onStderrData = (data: Buffer) => {
+        stderr += data.toString();
+        if (stderr.length > MAX_BUFFER) {
+          child.stderr?.destroy();
+        }
+      };
 
       const cleanup = () => {
         clearTimeout(timeoutId);
+        clearTimeout(killTimer);
         child.stdout?.off("data", onStdoutData);
         child.stderr?.off("data", onStderrData);
         child.off("close", onClose);
@@ -496,9 +528,14 @@ export class SkillSandbox {
         if (settled) return;
         settled = true;
         cleanup();
-        child.kill();
+        child.kill(); // SIGTERM
+        // SIGKILL 回退：5s 后强制终止，防止子进程忽略 SIGTERM
+        killTimer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        }, 5000);
         reject(new Error(`Skill subprocess timed out after ${timeout}ms`));
       }, timeout);
+      let killTimer: ReturnType<typeof setTimeout>;
 
       const onClose = (code: number | null) => {
         if (settled) return;
@@ -695,6 +732,28 @@ export class SkillSandbox {
   private createControlledFetch(policy: SandboxPolicy): (...args: any[]) => Promise<unknown> {
     const allowedHosts = policy.allowedHosts;
 
+    // 校验 URL hostname 是否在 allowedHosts 中；支持通配符 "*"
+    const assertHostAllowed = (url: string): void => {
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        throw new Error(`Invalid URL for network access: ${url}`);
+      }
+      const allowed = allowedHosts.includes("*") ||
+        allowedHosts.some(
+          (host) =>
+            parsedUrl.hostname === host ||
+            parsedUrl.hostname.endsWith("." + host)
+        );
+
+      if (!allowed) {
+        throw new Error(
+          `Network access denied: "${parsedUrl.hostname}" is not in the allowed hosts list`
+        );
+      }
+    };
+
     return async (input: any, init?: any): Promise<unknown> => {
       let url: string;
       if (typeof input === "string") {
@@ -705,29 +764,38 @@ export class SkillSandbox {
         url = String(input);
       }
 
-      try {
-        const parsedUrl = new URL(url);
-        // 支持通配符 "*" 允许所有主机
-        const allowed = allowedHosts.includes("*") ||
-          allowedHosts.some(
-            (host) =>
-              parsedUrl.hostname === host ||
-              parsedUrl.hostname.endsWith("." + host)
-          );
+      // 初始 URL hostname 校验
+      assertHostAllowed(url);
 
-        if (!allowed) {
-          throw new Error(
-            `Network access denied: "${parsedUrl.hostname}" is not in the allowed hosts list`
-          );
+      // SSRF 防护：禁用自动跟随重定向，手动处理 301/302/303/307/308，
+      // 对重定向 Location 的 hostname 二次校验，防止 fail open。
+      const maxRedirects = 5;
+      let currentUrl = url;
+      // 调用方传入的 init 可能已包含 signal/headers 等，需保留并强制 manual
+      const baseInit: any = { ...init, redirect: "manual" };
+
+      for (let i = 0; i <= maxRedirects; i++) {
+        const response = await (globalThis as any).fetch(currentUrl, baseInit);
+        const status: number = response.status;
+        if (status === 301 || status === 302 || status === 303 || status === 307 || status === 308) {
+          const location = response.headers.get("location");
+          if (!location) {
+            throw new Error(`Redirect status ${status} without Location header`);
+          }
+          let nextUrl: string;
+          try {
+            nextUrl = new URL(location, currentUrl).toString();
+          } catch {
+            throw new Error(`Invalid redirect Location: ${location}`);
+          }
+          // 重定向后的 hostname 二次校验
+          assertHostAllowed(nextUrl);
+          currentUrl = nextUrl;
+          continue;
         }
-      } catch (err) {
-        if (err instanceof Error && err.message.startsWith("Network access denied")) {
-          throw err;
-        }
-        throw new Error(`Invalid URL for network access: ${url}`);
+        return response;
       }
-
-      return (globalThis as any).fetch(input, init);
+      throw new Error(`Too many redirects (>${maxRedirects})`);
     };
   }
 
@@ -735,14 +803,27 @@ export class SkillSandbox {
   const allowedPaths = policy.allowedPaths || [];
   const isAllowed = (filePath: string): boolean => {
     if (allowedPaths.length === 0 && !skillDir) return false;
-    const resolved = path.resolve(filePath);
+    let resolved = path.resolve(filePath);
+    // 解析 symlink 链：防止恶意技能在 skillDir 内创建指向敏感文件的 symlink
+    // 后通过该 symlink 读取 /etc/passwd、.env 等宿主系统文件。
+    try {
+      const real = fs.realpathSync(resolved);
+      if (real !== resolved) resolved = real;
+    } catch { /* 文件不存在，继续用 resolved */ }
     // Always allow access to the skill's own install directory
-    if (skillDir && resolved.startsWith(path.resolve(skillDir) + path.sep)) return true;
-    if (skillDir && resolved === path.resolve(skillDir)) return true;
+    if (skillDir) {
+      const resolvedSkillDir = path.resolve(skillDir);
+      let realSkillDir = resolvedSkillDir;
+      try { realSkillDir = fs.realpathSync(resolvedSkillDir); } catch { /* ignore */ }
+      if (resolved.startsWith(realSkillDir + path.sep)) return true;
+      if (resolved === realSkillDir) return true;
+    }
     if (allowedPaths.length === 0) return false;
     return allowedPaths.some(allowed => {
       const resolvedAllowed = path.resolve(allowed);
-      return resolved === resolvedAllowed || resolved.startsWith(resolvedAllowed + path.sep);
+      let realAllowed = resolvedAllowed;
+      try { realAllowed = fs.realpathSync(resolvedAllowed); } catch { /* ignore */ }
+      return resolved === realAllowed || resolved.startsWith(realAllowed + path.sep);
     });
   };
 
@@ -763,11 +844,7 @@ export class SkillSandbox {
         throw new Error(`File access denied: "${filePath}" is not in allowed paths`);
       }
       try {
-        const dir = path.dirname(filePath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        fs.writeFileSync(filePath, content, encoding || "utf-8");
+        atomicWriteFileSync(filePath, content, { encoding: encoding || "utf-8" });
       } catch (err) {
         throw new Error(`Failed to write file "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -853,8 +930,11 @@ export class SkillSandbox {
       try {
         const { execFile } = require("child_process");
         const pythonBin = this.resolvePythonBin();
+        // 含空格的 Python 路径需加引号，否则 splitCommandParts 会错误拆分
+        // （如 "C:\Program Files\Python\python.exe" 会被切成两个 token）
+        const quotedBin = pythonBin.includes(" ") ? `"${pythonBin}"` : pythonBin;
         // Replace python3 with the resolved python path
-        const finalCmd = resolvedCmd.replace(/^python3\b/, pythonBin).replace(/^python\b/, pythonBin);
+        const finalCmd = resolvedCmd.replace(/^python3\b/, quotedBin).replace(/^python\b/, quotedBin);
 
         // 将用户参数注入到命令行中
         const cmdWithParams = this.injectParamsToCommand(finalCmd, params);
@@ -1005,10 +1085,23 @@ export class SkillSandbox {
     let result = cmd;
     const action = params.action || params.command || params.subcommand;
 
+    /**
+     * 对参数值做安全引号包裹：含空格或 shell 元字符的值用双引号包裹，
+     * 并转义内部双引号，防止 splitCommandParts 拆分或参数注入。
+     */
+    const quoteValue = (v: string): string => {
+      if (v === "") return '""';
+      // 含空格或特殊字符时需加引号
+      if (/[\s"\\$`]/.test(v)) {
+        return `"${v.replace(/"/g, '\\"')}"`;
+      }
+      return v;
+    };
+
     for (const [key, value] of Object.entries(params)) {
       if (key === "action" || key === "command" || key === "subcommand" || key === "query") continue;
       if (value === undefined || value === null) continue;
-      const strValue = String(value);
+      const strValue = quoteValue(String(value));
       const escapedKey = escapeRegExp(key);
 
       // 检查命令中是否已有该参数（转义 key 防止正则元字符导致 SyntaxError）

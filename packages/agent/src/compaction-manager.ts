@@ -12,6 +12,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 export interface CompactionSummary {
   /** Unique ID for this compaction */
@@ -115,41 +116,11 @@ const HISTORICAL_SUCCESSOR_PREFIXES: string[] = [
 ];
 
 /**
- * 原子写入文件（temp + fsync + rename）。
- * 防止崩溃时产生截断的 compaction 记录。
+ * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
+ * 保持本地函数签名，避免调用方改动。
  */
 function atomicWriteFileLocal(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      const c = fs.readFileSync(tmpPath, "utf-8");
-      const fd2 = fs.openSync(targetPath, "w");
-      try {
-        fs.writeFileSync(fd2, c, "utf-8");
-        fs.fsyncSync(fd2);
-      } finally {
-        fs.closeSync(fd2);
-      }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    } else {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-  }
+  atomicWriteFileSync(targetPath, content);
 }
 
 /** 从文本中剥离所有历史前缀标记，防止过时指令存活。 */
@@ -178,7 +149,10 @@ function stripHistoricalPrefixes(text: string, prefixes: string[]): string {
 
 export class CompactionManager {
   private config: CompactionConfig;
+  /** 会话级压缩链。此前无大小限制，长时间运行后会无限增长。
+   *  添加 MAX_SESSIONS 上限并采用 LRU 淘汰策略。 */
   private compactions = new Map<string, CompactionSummary[]>();
+  private static readonly MAX_SESSIONS = 500;
   private compactionCounter = 0;
 
   // ── 反抖动与失败冷却（借鉴 hermes-agent context_compressor.py） ──
@@ -430,7 +404,13 @@ export class CompactionManager {
     // Store in-memory chain
     const chain = this.compactions.get(sessionId) || [];
     chain.push(compaction);
+    this.compactions.delete(sessionId);
     this.compactions.set(sessionId, chain);
+    // LRU 淘汰：限制会话数量防止内存无限增长
+    if (this.compactions.size > CompactionManager.MAX_SESSIONS) {
+      const oldestKey = this.compactions.keys().next().value;
+      if (oldestKey) this.compactions.delete(oldestKey);
+    }
 
     // Persist to disk
     this.persistCompaction(compaction);
@@ -677,14 +657,25 @@ export class CompactionManager {
     }
   }
 
-  /** Load compaction chain from disk */
+  /** Load compaction chain from disk (memory-first: 不覆盖已有的内存数据) */
   loadCompactionChain(sessionId: string): CompactionSummary[] {
+    // 内存优先：若内存中已有该会话的压缩链，直接返回，不使用磁盘数据覆盖
+    const cached = this.compactions.get(sessionId);
+    if (cached && cached.length > 0) {
+      return cached;
+    }
     try {
       const filePath = path.join(this.config.dataDir, `${sessionId}.json`);
       if (fs.existsSync(filePath)) {
         const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
         if (Array.isArray(data)) {
+          this.compactions.delete(sessionId);
           this.compactions.set(sessionId, data);
+          // LRU 淘汰：限制会话数量防止内存无限增长
+          if (this.compactions.size > CompactionManager.MAX_SESSIONS) {
+            const oldestKey = this.compactions.keys().next().value;
+            if (oldestKey) this.compactions.delete(oldestKey);
+          }
           return data;
         }
       }

@@ -204,6 +204,8 @@ export class Observability {
     // delete + set 使该 label 移到 Map 末尾，实现真正 LRU（最近访问顺序）
     map.delete(key);
     map.set(key, values);
+    // 与 counter/gauge 一致：限制 label 组合数防止高基数 label 导致 Map 无限增长
+    this.trimLabelCardinality(map, name);
   }
 
   histogramPercentile(name: string, percentile: number, labels: MetricLabel[] = []): number {
@@ -472,7 +474,8 @@ export class Observability {
   private labelKey(name: string, labels: MetricLabel[]): string {
     if (labels.length === 0) return "_default";
     const sorted = [...labels].sort((a, b) => a.key.localeCompare(b.key));
-    return sorted.map((l) => `${l.key}=${l.value}`).join(",");
+    // 使用 JSON 序列化避免手工 `key=value,key=value` 编码在值含 `,` 或 `=` 时有损
+    return JSON.stringify(sorted);
   }
 
   private labelString(labels: MetricLabel[]): string {
@@ -483,9 +486,14 @@ export class Observability {
 
   private parseLabelKey(key: string): MetricLabel[] {
     if (key === "_default") return [];
+    // 兼容旧格式 `k=v,k=v`：若 JSON.parse 失败则回退到手工拆分
+    try {
+      const parsed = JSON.parse(key);
+      if (Array.isArray(parsed)) return parsed as MetricLabel[];
+    } catch { /* not JSON, try legacy format */ }
     return key.split(",").map((pair) => {
-      const [k, v] = pair.split("=");
-      return { key: k, value: v };
+      const [k, ...rest] = pair.split("=");
+      return { key: k, value: rest.join("=") };
     });
   }
 

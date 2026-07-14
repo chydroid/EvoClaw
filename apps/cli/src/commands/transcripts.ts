@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Command } from "commander";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { c, ICONS, section } from "../utils/colors";
 import { apiRequest, checkServer, serverRequired } from "../utils/api";
 
@@ -133,6 +134,26 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         const { data } = await apiRequest<SessionDetail>("GET", `/api/sessions/${agentId}/${sessionId}`);
 
         const outputPath = (opts.output as string) || `transcript-${sessionId}.json`;
+        const resolvedOutputPath = path.resolve(outputPath);
+        const allowedBase = path.resolve(process.cwd());
+        const withinBase = (p: string, base: string) => p === base || p.startsWith(base + path.sep);
+        if (!withinBase(resolvedOutputPath, allowedBase)) {
+          throw new Error(`Output path must be within ${allowedBase}`);
+        }
+        let realOutputPath: string;
+        try {
+          realOutputPath = fs.realpathSync(resolvedOutputPath);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            realOutputPath = resolvedOutputPath;
+          } else {
+            throw err;
+          }
+        }
+        if (!withinBase(realOutputPath, allowedBase)) {
+          throw new Error(`Output path must be within ${allowedBase}`);
+        }
+
         const exportData = {
           ...data,
           exportedAt: new Date().toISOString(),
@@ -140,8 +161,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           agentId,
         };
 
-        fs.writeFileSync(outputPath, JSON.stringify(exportData, null, 2), "utf-8");
-        console.log(c("green", `${ICONS.ok()} Transcript exported to ${c("cyan", path.resolve(outputPath))}`));
+        atomicWriteFileSync(resolvedOutputPath, JSON.stringify(exportData, null, 2), { encoding: "utf-8" });
+        console.log(c("green", `${ICONS.ok()} Transcript exported to ${c("cyan", resolvedOutputPath)}`));
       } catch (err: any) {
         console.log(c("red", `${ICONS.error()} Failed to export transcript: ${err.message}`));
       }

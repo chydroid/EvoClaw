@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import * as path from "path";
+import * as fs from "fs";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { c, ICONS, divider, section } from "../utils/colors";
 import { apiRequest, checkServer, serverRequired } from "../utils/api";
 
@@ -349,10 +352,26 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         }
         const json = JSON.stringify(trajectory, null, 2);
         if (opts.output) {
-          const fs = require("fs");
-          const path = require("path");
           const outPath = path.resolve(String(opts.output));
-          fs.writeFileSync(outPath, json, "utf-8");
+          const allowedBase = path.resolve(process.cwd());
+          const withinBase = (p: string, base: string) => p === base || p.startsWith(base + path.sep);
+          if (!withinBase(outPath, allowedBase)) {
+            throw new Error(`Output path must be within ${allowedBase}`);
+          }
+          let realOutPath: string;
+          try {
+            realOutPath = fs.realpathSync(outPath);
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+              realOutPath = outPath;
+            } else {
+              throw err;
+            }
+          }
+          if (!withinBase(realOutPath, allowedBase)) {
+            throw new Error(`Output path must be within ${allowedBase}`);
+          }
+          atomicWriteFileSync(outPath, json, { encoding: "utf-8" });
           console.log(c("green", `${ICONS.ok()} Trajectory exported to ${outPath} (${json.length} bytes)`));
         } else {
           console.log(json);

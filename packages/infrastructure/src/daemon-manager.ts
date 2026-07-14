@@ -11,10 +11,11 @@
  * operations. All operations are idempotent.
  */
 
-import { spawn, execSync, spawnSync } from "child_process";
+import { spawn, execFileSync, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 export interface DaemonConfig {
   /** Service name (default: "evoclaw") */
@@ -128,17 +129,15 @@ export class DaemonManager {
 
     try {
       if (platform === "linux") {
-        const output = this.execSyncStdout(`systemctl is-active ${this.config.serviceName}`);
+        const output = this.execFileStdout("systemctl", ["is-active", this.config.serviceName]);
         status.running = output.trim() === "active";
       } else if (platform === "darwin") {
-        const output = this.execSyncStdout(
-          `launchctl list | grep ${this.config.serviceName}`
-        );
+        // 原 `launchctl list | grep <name>` 含 shell 管道，改用 execFileSync
+        // 运行 `launchctl list` 后在 JS 中过滤，避免 shell 注入。
+        const output = this.execFileStdout("launchctl", ["list"]);
         status.running = output.includes(this.config.serviceName);
       } else if (platform === "win32") {
-        const output = this.execSyncStdout(
-          `sc query ${this.config.serviceName}`
-        );
+        const output = this.execFileStdout("sc", ["query", this.config.serviceName]);
         status.running = output.includes("RUNNING");
       }
     } catch {
@@ -155,14 +154,14 @@ export class DaemonManager {
     try {
       const platform = os.platform();
       if (platform === "linux") {
-        execSync(`systemctl start ${this.config.serviceName}`);
+        execFileSync("systemctl", ["start", this.config.serviceName]);
         return { success: true, message: "Service started" };
       } else if (platform === "darwin") {
         const plist = this.getLaunchdPlistPath();
-        execSync(`launchctl load ${plist}`);
+        execFileSync("launchctl", ["load", plist]);
         return { success: true, message: "Service started" };
       } else if (platform === "win32") {
-        execSync(`sc start ${this.config.serviceName}`);
+        execFileSync("sc", ["start", this.config.serviceName]);
         return { success: true, message: "Service started" };
       }
       return { success: false, message: "Unsupported platform" };
@@ -178,14 +177,14 @@ export class DaemonManager {
     try {
       const platform = os.platform();
       if (platform === "linux") {
-        execSync(`systemctl stop ${this.config.serviceName}`);
+        execFileSync("systemctl", ["stop", this.config.serviceName]);
         return { success: true, message: "Service stopped" };
       } else if (platform === "darwin") {
         const plist = this.getLaunchdPlistPath();
-        execSync(`launchctl unload ${plist}`);
+        execFileSync("launchctl", ["unload", plist]);
         return { success: true, message: "Service stopped" };
       } else if (platform === "win32") {
-        execSync(`sc stop ${this.config.serviceName}`);
+        execFileSync("sc", ["stop", this.config.serviceName]);
         return { success: true, message: "Service stopped" };
       }
       return { success: false, message: "Unsupported platform" };
@@ -218,13 +217,13 @@ export class DaemonManager {
       fs.mkdirSync(logDir, { recursive: true });
 
       // Write unit file
-      fs.writeFileSync(unitPath, unitContent, "utf-8");
+      atomicWriteFileSync(unitPath, unitContent, { encoding: "utf-8" });
 
       // Reload systemd, enable and start
-      execSync("systemctl daemon-reload");
+      execFileSync("systemctl", ["daemon-reload"]);
 
       if (this.config.autoStart) {
-        execSync(`systemctl enable ${this.config.serviceName}`);
+        execFileSync("systemctl", ["enable", this.config.serviceName]);
       }
 
       process.stdout.write(`[DaemonManager] systemd service installed at ${unitPath}\n`);
@@ -244,14 +243,14 @@ export class DaemonManager {
 
   private uninstallSystemd(): { success: boolean; message: string } {
     try {
-      execSync(`systemctl stop ${this.config.serviceName}`, { stdio: "ignore" });
-      execSync(`systemctl disable ${this.config.serviceName}`, { stdio: "ignore" });
+      execFileSync("systemctl", ["stop", this.config.serviceName], { stdio: "ignore" });
+      execFileSync("systemctl", ["disable", this.config.serviceName], { stdio: "ignore" });
 
       const unitPath = this.getSystemdUnitPath();
       if (fs.existsSync(unitPath)) {
         fs.unlinkSync(unitPath);
       }
-      execSync("systemctl daemon-reload");
+      execFileSync("systemctl", ["daemon-reload"]);
 
       return { success: true, message: "systemd service removed" };
     } catch (err) {
@@ -403,11 +402,11 @@ ${envDict}
 </dict>
 </plist>`;
 
-      fs.writeFileSync(plistPath, plistContent, "utf-8");
+      atomicWriteFileSync(plistPath, plistContent, { encoding: "utf-8" });
 
       // Load the launchd agent
       if (this.config.autoStart) {
-        execSync(`launchctl load ${plistPath}`);
+        execFileSync("launchctl", ["load", plistPath]);
       }
 
       process.stdout.write(`[DaemonManager] launchd agent installed at ${plistPath}\n`);
@@ -428,7 +427,7 @@ ${envDict}
   private uninstallLaunchd(): { success: boolean; message: string } {
     try {
       const plistPath = this.getLaunchdPlistPath();
-      execSync(`launchctl unload ${plistPath}`, { stdio: "ignore" });
+      execFileSync("launchctl", ["unload", plistPath], { stdio: "ignore" });
 
       if (fs.existsSync(plistPath)) {
         fs.unlinkSync(plistPath);
@@ -550,12 +549,12 @@ ${envEntries}
   <startmode>${this.config.autoStart ? "Automatic" : "Manual"}</startmode>
 </service>`;
 
-      fs.writeFileSync(xmlPath, xml, "utf-8");
+      atomicWriteFileSync(xmlPath, xml, { encoding: "utf-8" });
 
       const winswPath = path.join(this.config.workingDirectory, "winsw.exe");
-      execSync(`"${winswPath}" install`);
+      execFileSync(winswPath, ["install"]);
       if (this.config.autoStart) {
-        execSync(`"${winswPath}" start`);
+        execFileSync(winswPath, ["start"]);
       }
 
       return {
@@ -621,7 +620,7 @@ ${envEntries}
     try {
       // Try multiple approaches
       try { spawnSync("nssm", ["remove", this.config.serviceName, "confirm"], { stdio: "ignore", shell: false }); } catch { /* not nssm */ }
-      try { execSync(`sc delete ${this.config.serviceName}`, { stdio: "ignore" }); } catch { /* not sc */ }
+      try { execFileSync("sc", ["delete", this.config.serviceName], { stdio: "ignore" }); } catch { /* not sc */ }
 
       return { success: true, message: "Windows Service removed" };
     } catch (err) {
@@ -640,9 +639,7 @@ ${envEntries}
       if (platform === "linux") return fs.existsSync(this.getSystemdUnitPath());
       if (platform === "darwin") return fs.existsSync(this.getLaunchdPlistPath());
       if (platform === "win32") {
-        const output = this.execSyncStdout(
-          `sc query ${this.config.serviceName}`
-        );
+        const output = this.execFileStdout("sc", ["query", this.config.serviceName]);
         return !output.includes("1060"); // 1060 = service not found
       }
       return false;
@@ -668,9 +665,9 @@ ${envEntries}
     }
   }
 
-  private execSyncStdout(command: string): string {
+  private execFileStdout(command: string, args: string[] = []): string {
     try {
-      return execSync(command, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+      return execFileSync(command, args, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
     } catch {
       return "";
     }

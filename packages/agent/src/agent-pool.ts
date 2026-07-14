@@ -7,7 +7,7 @@ import {
   type PoolMetrics,
   type HealthStatus,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export class AgentPoolManager implements AgentPool {
   private agents = new Map<string, Agent>();
@@ -46,11 +46,14 @@ export class AgentPoolManager implements AgentPool {
     agent.state.lastHeartbeat = new Date();
 
     if (agent.state.errorCount >= this.poolConfig.maxErrorCount) {
-      agent.state.status = "error";
-      process.stderr.write(
-        `[AgentPool] Agent "${agentId}" moved to error state after ${agent.state.errorCount} errors${errorMessage ? `: ${errorMessage}` : ""}\n`
-      );
-      await this.eventBus.publish("agent.error", agent, "agent-pool");
+      // 仅在首次进入 error 状态时发布事件，防止重复发布 agent.error
+      if (agent.state.status !== "error") {
+        agent.state.status = "error";
+        process.stderr.write(
+          `[AgentPool] Agent "${agentId}" moved to error state after ${agent.state.errorCount} errors${errorMessage ? `: ${errorMessage}` : ""}\n`
+        );
+        await this.eventBus.publish("agent.error", agent, "agent-pool");
+      }
     }
   }
 
@@ -64,8 +67,8 @@ export class AgentPoolManager implements AgentPool {
 
   private createAgent(role: AgentRole): Agent {
     const agent: Agent = {
-      id: uuid(),
-      name: `${role}-${uuid().slice(0, 8)}`,
+      id: randomUUID(),
+      name: `${role}-${randomUUID().slice(0, 8)}`,
       role,
       model: "default",
       state: {

@@ -81,7 +81,8 @@ function loadHistory(): string[] {
     const raw = localStorage.getItem(HISTORY_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed.slice(0, MAX_HISTORY) : [];
-  } catch {
+  } catch (err) {
+    console.error("[CLI] Failed to parse history:", err);
     return [];
   }
 }

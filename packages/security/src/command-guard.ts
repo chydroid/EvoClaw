@@ -125,56 +125,56 @@ export const HARDLINE_PATTERNS: HardlinePattern[] = [
   // 注意：alternation 必须包含 /\*（匹配 /*），不能只匹配 / 和 *
   // 否则 rm -rf /* 会因 / 后跟 * 不匹配 \s|$ 而漏检
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(\/|\/\*|\/ \*)(\s|$)/gi,
+    pattern: /\brm\s+(-[^\s]*\s+)*(\/|\/\*|\/ \*)(\s|$)/i,
     reason: "recursive delete of root filesystem",
   },
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(\/home|\/home\/\*|\/root|\/root\/\*|\/etc|\/etc\/\*|\/usr|\/usr\/\*|\/var|\/var\/\*|\/bin|\/bin\/\*|\/sbin|\/sbin\/\*|\/boot|\/boot\/\*|\/lib|\/lib\/\*)(\s|$)/gi,
+    pattern: /\brm\s+(-[^\s]*\s+)*(\/home|\/home\/\*|\/root|\/root\/\*|\/etc|\/etc\/\*|\/usr|\/usr\/\*|\/var|\/var\/\*|\/bin|\/bin\/\*|\/sbin|\/sbin\/\*|\/boot|\/boot\/\*|\/lib|\/lib\/\*)(\s|$)/i,
     reason: "recursive delete of system directory",
   },
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(~|\$HOME)(\/?|\/\*)?(\s|$)/gi,
+    pattern: /\brm\s+(-[^\s]*\s+)*(~|\$HOME)(\/?|\/\*)?(\s|$)/i,
     reason: "recursive delete of home directory",
   },
   // 文件系统格式化
   {
-    pattern: /\bmkfs(\.[a-z0-9]+)?\b/gi,
+    pattern: /\bmkfs(\.[a-z0-9]+)?\b/i,
     reason: "format filesystem (mkfs)",
   },
   // 原始块设备覆写（dd + 重定向）
   {
-    pattern: /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*/gi,
+    pattern: /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*/i,
     reason: "dd to raw block device",
   },
   {
-    pattern: />\s*\/dev\/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b/gi,
+    pattern: />\s*\/dev\/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b/i,
     reason: "redirect to raw block device",
   },
   // Fork bomb（经典 shell 形式）
   {
-    pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/g,
+    pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
     reason: "fork bomb",
   },
   // 杀死系统所有进程
   {
-    pattern: /\bkill\s+(-[^\s]+\s+)*-1\b/gi,
+    pattern: /\bkill\s+(-[^\s]+\s+)*-1\b/i,
     reason: "kill all processes",
   },
   // 系统关机/重启 — 锚定命令位置，避免误匹配 "echo reboot"
   {
-    pattern: new RegExp(_CMDPOS + "(shutdown|reboot|halt|poweroff)\\b", "gi"),
+    pattern: new RegExp(_CMDPOS + "(shutdown|reboot|halt|poweroff)\\b", "i"),
     reason: "system shutdown/reboot",
   },
   {
-    pattern: new RegExp(_CMDPOS + "init\\s+[06]\\b", "gi"),
+    pattern: new RegExp(_CMDPOS + "init\\s+[06]\\b", "i"),
     reason: "init 0/6 (shutdown/reboot)",
   },
   {
-    pattern: new RegExp(_CMDPOS + "systemctl\\s+(poweroff|reboot|halt|kexec)\\b", "gi"),
+    pattern: new RegExp(_CMDPOS + "systemctl\\s+(poweroff|reboot|halt|kexec)\\b", "i"),
     reason: "systemctl poweroff/reboot",
   },
   {
-    pattern: new RegExp(_CMDPOS + "telinit\\s+[06]\\b", "gi"),
+    pattern: new RegExp(_CMDPOS + "telinit\\s+[06]\\b", "i"),
     reason: "telinit 0/6 (shutdown/reboot)",
   },
 ];
@@ -206,68 +206,68 @@ export interface DangerousPattern {
  */
 export const DANGEROUS_PATTERNS: DangerousPattern[] = [
   // ── 文件删除 ──
-  { pattern: /\brm\s+(-[^\s]*\s+)*-r/gi, reason: "recursive file deletion" },
-  { pattern: /\brm\s+(-[^\s]*\s+)*-f/gi, reason: "force file deletion" },
-  { pattern: /\brmdir\b/gi, reason: "directory removal" },
+  { pattern: /\brm\s+(-[^\s]*\s+)*-r/i, reason: "recursive file deletion" },
+  { pattern: /\brm\s+(-[^\s]*\s+)*-f/i, reason: "force file deletion" },
+  { pattern: /\brmdir\b/i, reason: "directory removal" },
   // ── 权限修改 ──
-  { pattern: /\bchmod\s+(-[^\s]*\s+)*777\b/gi, reason: "chmod 777 (world-writable)" },
-  { pattern: /\bchmod\s+(-[^\s]*\s+)*-R\b/gi, reason: "recursive chmod" },
-  { pattern: /\bchown\b/gi, reason: "ownership change" },
-  { pattern: /\bchgrp\b/gi, reason: "group change" },
+  { pattern: /\bchmod\s+(-[^\s]*\s+)*777\b/i, reason: "chmod 777 (world-writable)" },
+  { pattern: /\bchmod\s+(-[^\s]*\s+)*-R\b/i, reason: "recursive chmod" },
+  { pattern: /\bchown\b/i, reason: "ownership change" },
+  { pattern: /\bchgrp\b/i, reason: "group change" },
   // ── 版本控制 ──
-  { pattern: /\bgit\s+push\s+(-[^\s]*\s+)*--force\b/gi, reason: "git push --force" },
-  { pattern: /\bgit\s+push\s+(-[^\s]*\s+)*-f\b/gi, reason: "git push -f (force)" },
-  { pattern: /\bgit\s+reset\s+--hard\b/gi, reason: "git reset --hard" },
-  { pattern: /\bgit\s+clean\s+-[^\s]*f/gi, reason: "git clean -f (force)" },
-  { pattern: /\bgit\s+rebase\b/gi, reason: "git rebase" },
+  { pattern: /\bgit\s+push\s+(-[^\s]*\s+)*--force\b/i, reason: "git push --force" },
+  { pattern: /\bgit\s+push\s+(-[^\s]*\s+)*-f\b/i, reason: "git push -f (force)" },
+  { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
+  { pattern: /\bgit\s+clean\s+-[^\s]*f/i, reason: "git clean -f (force)" },
+  { pattern: /\bgit\s+rebase\b/i, reason: "git rebase" },
   // ── 包管理 ──
-  { pattern: /\bnpm\s+install\b/gi, reason: "npm install (executes install scripts)" },
-  { pattern: /\bnpm\s+i\s+/gi, reason: "npm install (executes install scripts)" },
-  { pattern: /\bpip\s+install\b/gi, reason: "pip install" },
-  { pattern: /\bpip3\s+install\b/gi, reason: "pip3 install" },
-  { pattern: /\byarn\s+add\b/gi, reason: "yarn add" },
-  { pattern: /\bpnpm\s+add\b/gi, reason: "pnpm add" },
+  { pattern: /\bnpm\s+install\b/i, reason: "npm install (executes install scripts)" },
+  { pattern: /\bnpm\s+i\s+/i, reason: "npm install (executes install scripts)" },
+  { pattern: /\bpip\s+install\b/i, reason: "pip install" },
+  { pattern: /\bpip3\s+install\b/i, reason: "pip3 install" },
+  { pattern: /\byarn\s+add\b/i, reason: "yarn add" },
+  { pattern: /\bpnpm\s+add\b/i, reason: "pnpm add" },
   // ── 网络下载执行 ──
-  { pattern: /\bcurl\b[^\n|]*\|\s*(sh|bash|zsh|python|perl)\b/gi, reason: "curl piped to shell interpreter" },
-  { pattern: /\bwget\b[^\n|]*\|\s*(sh|bash|zsh|python|perl)\b/gi, reason: "wget piped to shell interpreter" },
-  { pattern: /\bcurl\b[^\n]*\|\s*sh\b/gi, reason: "curl | sh" },
+  { pattern: /\bcurl\b[^\n|]*\|\s*(sh|bash|zsh|python|perl)\b/i, reason: "curl piped to shell interpreter" },
+  { pattern: /\bwget\b[^\n|]*\|\s*(sh|bash|zsh|python|perl)\b/i, reason: "wget piped to shell interpreter" },
+  { pattern: /\bcurl\b[^\n]*\|\s*sh\b/i, reason: "curl | sh" },
   // ── 系统配置 ──
-  { pattern: /\bsysctl\b/gi, reason: "kernel parameter modification" },
-  { pattern: /\biptables\b/gi, reason: "firewall rule modification" },
-  { pattern: /\bufw\b/gi, reason: "firewall rule modification" },
+  { pattern: /\bsysctl\b/i, reason: "kernel parameter modification" },
+  { pattern: /\biptables\b/i, reason: "firewall rule modification" },
+  { pattern: /\bufw\b/i, reason: "firewall rule modification" },
   // ── 容器操作 ──
-  { pattern: /\bdocker\s+rm\b/gi, reason: "docker container removal" },
-  { pattern: /\bdocker\s+rmi\b/gi, reason: "docker image removal" },
-  { pattern: /\bdocker\s+compose\s+(down|restart|kill)\b/gi, reason: "docker compose destructive action" },
-  { pattern: /\bdocker\s+volume\s+rm\b/gi, reason: "docker volume removal" },
-  { pattern: /\bdocker\s+system\s+prune\b/gi, reason: "docker system prune" },
+  { pattern: /\bdocker\s+rm\b/i, reason: "docker container removal" },
+  { pattern: /\bdocker\s+rmi\b/i, reason: "docker image removal" },
+  { pattern: /\bdocker\s+compose\s+(down|restart|kill)\b/i, reason: "docker compose destructive action" },
+  { pattern: /\bdocker\s+volume\s+rm\b/i, reason: "docker volume removal" },
+  { pattern: /\bdocker\s+system\s+prune\b/i, reason: "docker system prune" },
   // ── 进程管理 ──
-  { pattern: /\bkillall\b/gi, reason: "kill all processes by name" },
-  { pattern: /\bpkill\b/gi, reason: "kill processes by pattern" },
-  { pattern: /\bkill\s+-9\b/gi, reason: "kill -9 (SIGKILL)" },
+  { pattern: /\bkillall\b/i, reason: "kill all processes by name" },
+  { pattern: /\bpkill\b/i, reason: "kill processes by pattern" },
+  { pattern: /\bkill\s+-9\b/i, reason: "kill -9 (SIGKILL)" },
   // ── 磁盘操作 ──
-  { pattern: /\bdu\s+-[^\s]*h/gi, reason: "disk usage (may be slow on large dirs)" },
-  { pattern: /\bdf\s+-[^\s]*h/gi, reason: "disk free check" },
+  { pattern: /\bdu\s+-[^\s]*h/i, reason: "disk usage (may be slow on large dirs)" },
+  { pattern: /\bdf\s+-[^\s]*h/i, reason: "disk free check" },
   // ── sudo ──
-  { pattern: /\bsudo\s+-S\b/gi, reason: "sudo -S (password from stdin — possible brute force)" },
-  { pattern: /\bsudo\s+-k\b/gi, reason: "sudo -k (reset timestamp)" },
+  { pattern: /\bsudo\s+-S\b/i, reason: "sudo -S (password from stdin — possible brute force)" },
+  { pattern: /\bsudo\s+-k\b/i, reason: "sudo -k (reset timestamp)" },
   // ── 网络工具 ──
-  { pattern: /\bnc\b/gi, reason: "netcat (network tool)" },
-  { pattern: /\bncat\b/gi, reason: "ncat (network tool)" },
-  { pattern: /\bssh\b/gi, reason: "ssh (remote shell)" },
-  { pattern: /\bscp\b/gi, reason: "scp (remote copy)" },
-  { pattern: /\brsync\b/gi, reason: "rsync (remote sync)" },
+  { pattern: /\bnc\b/i, reason: "netcat (network tool)" },
+  { pattern: /\bncat\b/i, reason: "ncat (network tool)" },
+  { pattern: /\bssh\b/i, reason: "ssh (remote shell)" },
+  { pattern: /\bscp\b/i, reason: "scp (remote copy)" },
+  { pattern: /\brsync\b/i, reason: "rsync (remote sync)" },
   // ── 编译/构建 ──
-  { pattern: /\bmake\b/gi, reason: "make (executes Makefile)" },
-  { pattern: /\bgcc\b/gi, reason: "gcc compilation" },
-  { pattern: /\bg\+\+\b/gi, reason: "g++ compilation" },
+  { pattern: /\bmake\b/i, reason: "make (executes Makefile)" },
+  { pattern: /\bgcc\b/i, reason: "gcc compilation" },
+  { pattern: /\bg\+\+\b/i, reason: "g++ compilation" },
   // ── 数据库 ──
-  { pattern: /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/gi, reason: "SQL DROP" },
-  { pattern: /\bTRUNCATE\s+TABLE\b/gi, reason: "SQL TRUNCATE" },
-  { pattern: /\bDELETE\s+FROM\b/gi, reason: "SQL DELETE" },
+  { pattern: /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i, reason: "SQL DROP" },
+  { pattern: /\bTRUNCATE\s+TABLE\b/i, reason: "SQL TRUNCATE" },
+  { pattern: /\bDELETE\s+FROM\b/i, reason: "SQL DELETE" },
   // ── 其他 ──
-  { pattern: /\bcrontab\b/gi, reason: "crontab modification" },
-  { pattern: /\bat\b\s+\d/gi, reason: "at (scheduled command)" },
+  { pattern: /\bcrontab\b/i, reason: "crontab modification" },
+  { pattern: /\bat\b\s+\d/i, reason: "at (scheduled command)" },
 ];
 
 // ── Hardline Check ────────────────────────────────────────
@@ -300,8 +300,6 @@ export function checkHardline(command: string): HardlineCheckResult {
 
 function checkHardlineNormalized(normalized: string): HardlineCheckResult {
   for (const { pattern, reason } of HARDLINE_PATTERNS) {
-    // 重置 lastIndex（防止带 g 标志的正则状态泄漏）
-    pattern.lastIndex = 0;
     if (pattern.test(normalized)) {
       return { blocked: true, reason, normalizedCommand: normalized };
     }

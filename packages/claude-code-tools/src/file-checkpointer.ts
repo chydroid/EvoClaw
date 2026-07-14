@@ -11,28 +11,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── Helpers ──
-
-/**
- * 原子写入文件：写临时文件 + fsync + rename，失败时清理临时文件。
- * 避免写入过程中断导致目标文件损坏。
- */
-function atomicWriteFileSync(filePath: string, data: Buffer | string): void {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    // renameSync 纳入 try/catch：rename 失败时清理临时文件，避免残留 tmp 文件
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* 忽略关闭失败 */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* 忽略清理失败 */ }
-    throw err;
-  }
-}
 
 // ── Types ──
 
@@ -280,11 +261,16 @@ export class FileCheckpointer {
       if (!fs.existsSync(fullPath)) {
         removed.push(snapshot.filePath);
       } else {
-        const currentContent = fs.readFileSync(fullPath);
-        const snapshotContent = Buffer.from(snapshot.content, "base64");
-        if (currentContent.equals(snapshotContent)) {
-          unchanged.push(snapshot.filePath);
-        } else {
+        try {
+          const currentContent = fs.readFileSync(fullPath);
+          const snapshotContent = Buffer.from(snapshot.content, "base64");
+          if (currentContent.equals(snapshotContent)) {
+            unchanged.push(snapshot.filePath);
+          } else {
+            modified.push(snapshot.filePath);
+          }
+        } catch {
+          // 文件存在但读取失败（权限/TOCTOU/目录）→ 视为已修改
           modified.push(snapshot.filePath);
         }
       }

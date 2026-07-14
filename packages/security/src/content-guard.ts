@@ -440,6 +440,8 @@ export class ContentGuard {
     const matchedDescs: string[] = [];
 
     for (const rule of SANITIZATION_PATTERNS) {
+      // 安全：带 g flag 的正则对象在模块级共享，显式重置 lastIndex 防止状态泄漏
+      rule.pattern.lastIndex = 0;
       const before = result.length;
       result = result.replace(rule.pattern, rule.replacement);
       if (result.length !== before) {

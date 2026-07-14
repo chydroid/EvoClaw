@@ -61,6 +61,8 @@ export interface ApprovalAuditEntry {
 
 /** 审计日志最大保留条数（防止 auditLog 无界增长） */
 const MAX_AUDIT_LOG = 1000;
+/** 历史决策最大保留条数（防止 history 数组无界增长） */
+const MAX_HISTORY = 2000;
 
 /** 审批等待Promise解析器 */
 interface PendingApproval {
@@ -82,6 +84,13 @@ export class ApprovalTimeoutManager {
   private onDenied?: (req: ApprovalRequest, reason?: string) => Promise<void> | void;
   private cleanupIntervalMs: number;
   private askFallback: "deny" | "allow" | "fail-closed";
+  // WebUI 设置面板可配置的额外字段。当前不影响运行时行为，
+  // 但需持久化以保证前端表单 round-trip 不丢失数据。
+  private behaviorMode: "immediate" | "debounced" | "scheduled" = "immediate";
+  private debounceWindowMs = 5000;
+  private scheduleCron = "";
+  private escalationEnabled = false;
+  private escalationTimeout = 60;
 
   private pending = new Map<string, PendingApproval>();
   private history: ApprovalDecision[] = [];
@@ -178,7 +187,9 @@ export class ApprovalTimeoutManager {
     };
     this.history.push(decision);
     if (this.onApproved) {
-      try { await this.onApproved(pending.request); } catch (err) { console.debug("[ApprovalTimeout]", err); }
+      try { await this.onApproved(pending.request); } catch (err) {
+        process.stderr.write(`[ApprovalTimeout] onApproved callback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     pending.resolve(decision);
     return true;
@@ -268,7 +279,9 @@ export class ApprovalTimeoutManager {
     }
     this.history.push(decision);
     if (this.onExpired) {
-      try { await this.onExpired(request); } catch (err) { console.debug("[ApprovalTimeout]", err); }
+      try { await this.onExpired(request); } catch (err) {
+        process.stderr.write(`[ApprovalTimeout] onExpired callback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     }
     pending.resolve(decision);
   }
@@ -290,35 +303,56 @@ export class ApprovalTimeoutManager {
 
   /**
    * 获取配置（映射为 WebUI ApprovalCenterPage 期望的字段名）。
-   * 仅 defaultTimeoutMs 与 askFallback 有真实后端语义；
-   * 其余字段返回默认值，前端据此渲染 Settings 表单。
+   * defaultTimeoutMs 与 askFallback 有真实后端语义；
+   * 其余字段从持久化状态返回（不再使用占位常量）。
    */
   getConfig() {
     return {
       timeoutSeconds: Math.round(this.defaultTimeoutMs / 1000),
       defaultAction: this.askFallback,
-      behaviorMode: "immediate" as const,
-      debounceWindowMs: this.cleanupIntervalMs,
-      scheduleCron: "",
-      escalationEnabled: false,
-      escalationTimeout: 60,
+      behaviorMode: this.behaviorMode,
+      debounceWindowMs: this.debounceWindowMs,
+      scheduleCron: this.scheduleCron,
+      escalationEnabled: this.escalationEnabled,
+      escalationTimeout: this.escalationTimeout,
     };
   }
 
   /**
    * 更新可运行时修改的配置字段。
-   * 仅 defaultTimeoutMs 与 askFallback 可热更新；
-   * 其余字段（behaviorMode / scheduleCron / escalation*）无后端实现，忽略。
+   * defaultTimeoutMs 与 askFallback 立即生效；
+   * behaviorMode / scheduleCron / escalation* 当前仅持久化（运行时效果待实现），
+   * 不再静默丢弃。
    */
   updateConfig(partial: {
     timeoutSeconds?: number;
     defaultAction?: "deny" | "allow" | "fail-closed";
+    behaviorMode?: "immediate" | "debounced" | "scheduled";
+    debounceWindowMs?: number;
+    scheduleCron?: string;
+    escalationEnabled?: boolean;
+    escalationTimeout?: number;
   }): void {
     if (typeof partial.timeoutSeconds === "number" && partial.timeoutSeconds > 0) {
       this.defaultTimeoutMs = partial.timeoutSeconds * 1000;
     }
     if (partial.defaultAction === "deny" || partial.defaultAction === "allow" || partial.defaultAction === "fail-closed") {
       this.askFallback = partial.defaultAction;
+    }
+    if (partial.behaviorMode === "immediate" || partial.behaviorMode === "debounced" || partial.behaviorMode === "scheduled") {
+      this.behaviorMode = partial.behaviorMode;
+    }
+    if (typeof partial.debounceWindowMs === "number" && partial.debounceWindowMs >= 0) {
+      this.debounceWindowMs = partial.debounceWindowMs;
+    }
+    if (typeof partial.scheduleCron === "string") {
+      this.scheduleCron = partial.scheduleCron;
+    }
+    if (typeof partial.escalationEnabled === "boolean") {
+      this.escalationEnabled = partial.escalationEnabled;
+    }
+    if (typeof partial.escalationTimeout === "number" && partial.escalationTimeout >= 0) {
+      this.escalationTimeout = partial.escalationTimeout;
     }
   }
 
@@ -333,6 +367,10 @@ export class ApprovalTimeoutManager {
     // 清理超过1小时的历史
     const cutoff = now - 3600000;
     this.history = this.history.filter((d) => (d.decidedAt ?? 0) > cutoff);
+    // 限制 history 最大长度防止无界增长（与 auditLog 一致）
+    if (this.history.length > MAX_HISTORY) {
+      this.history = this.history.slice(-MAX_HISTORY);
+    }
     // 清理过期的审计日志（基于 timestamp），并限制最大长度防止无界增长
     this.auditLog = this.auditLog.filter((e) => e.timestamp > cutoff);
     if (this.auditLog.length > MAX_AUDIT_LOG) {

@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import type { A2AAgentCard, A2ATask, A2ATaskResult, A2AServerConfig, A2ACapability } from "./types";
 import type { ToolDefinition } from "../types";
 
@@ -93,7 +94,14 @@ export class A2AServer {
   validateAuth(apiKey?: string): boolean {
     if (this.config.authType === "none") return true;
     if (this.config.authType === "api_key") {
-      return !!apiKey && (this.config.validApiKeys?.includes(apiKey) ?? false);
+      if (!apiKey) return false;
+      const validKeys = this.config.validApiKeys ?? [];
+      // 安全：使用恒定时间比较防止时序攻击
+      return validKeys.some((validKey) => {
+        const a = Buffer.from(apiKey, "utf8");
+        const b = Buffer.from(validKey, "utf8");
+        return a.length === b.length && crypto.timingSafeEqual(a, b);
+      });
     }
     return false;
   }

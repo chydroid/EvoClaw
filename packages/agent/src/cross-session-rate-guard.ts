@@ -19,9 +19,10 @@
  *   - 原子写入（遵循 AGENTS.md 的 atomicWriteFile 规则）
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -130,30 +131,11 @@ function parseDuration(value: string): number | null {
 }
 
 /**
- * 原子写入文件。
- * 遵循 AGENTS.md 的 atomicWriteFile 规则：temp + rename。
+ * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
+ * 保持本地函数签名，避免调用方改动。
  */
 function atomicWriteFile(filePath: string, content: string): void {
-  const dir = dirname(filePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  writeFileSync(tmpPath, content, "utf8");
-  try {
-    renameSync(tmpPath, filePath);
-  } catch {
-    // rename 失败，尝试直接写入
-    try {
-      writeFileSync(filePath, content, "utf8");
-    } catch (err) {
-      // 最终失败，记录到 stderr 避免静默吞错
-      process.stderr.write("[CrossSessionRateGuard] atomicWriteFile failed: " + err + "\n");
-    } finally {
-      // 无论回退写入成功与否，都尝试清理残留的临时文件
-      try { unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
-  }
+  atomicWriteFileSync(filePath, content);
 }
 
 // ── 主类 ────────────────────────────────────────────────────────────────────

@@ -110,8 +110,11 @@ export function checkpointWal(
   let busy = 0;
   let logFrames = 0;
   let checkpointedFrames = 0;
+  // 安全：白名单校验 wal_checkpoint 模式，防止 SQL 注入
+  const VALID_CHECKPOINT_MODES = new Set(["PASSIVE", "FULL", "RESTART", "TRUNCATE"]);
+  const safeMode = VALID_CHECKPOINT_MODES.has(mode) ? mode : "PASSIVE";
   try {
-    const row = db.prepare(`PRAGMA wal_checkpoint(${mode});`).get();
+    const row = db.prepare(`PRAGMA wal_checkpoint(${safeMode});`).get();
     const parsed = parseWalCheckpointRow(row);
     busy = parsed.busy;
     logFrames = parsed.log;
@@ -174,8 +177,15 @@ export function getWalStatus(db: SqliteDb, dbPath: string): WalStatus {
       const keys = Object.keys(row);
       if (keys.length > 0) {
         const v = row[keys[0]];
-        autocheckpoint =
-          typeof v === "bigint" ? Number(v) : typeof v === "number" ? v : Number(v) || 1000;
+        // wal_autocheckpoint=0 表示禁用自动检查点，是有效值，不应被 || 1000 覆盖
+        if (typeof v === "bigint") {
+          autocheckpoint = Number(v);
+        } else if (typeof v === "number") {
+          autocheckpoint = v;
+        } else {
+          const parsed = Number(v);
+          autocheckpoint = Number.isFinite(parsed) ? parsed : 1000;
+        }
       }
     }
   } catch {

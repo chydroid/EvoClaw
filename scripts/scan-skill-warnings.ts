@@ -5,7 +5,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { SkillManager, SKILLmdParser } from "../packages/skills/src";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 const SKILLS_DIRS = [
   "data/skills",
@@ -30,8 +30,10 @@ const detectEnvVarsFromContent: (instructions: string) => string[] = SmProto.det
 
 function checkBinaryExists(bin: string): boolean {
   try {
-    const cmd = process.platform === "win32" ? `where ${bin}` : `which ${bin}`;
-    execSync(cmd, { stdio: "ignore" });
+    const [command, args] = process.platform === "win32"
+      ? ["where", [bin]]
+      : ["which", [bin]];
+    execFileSync(command, args, { stdio: "ignore" });
     return true;
   } catch {
     return false;

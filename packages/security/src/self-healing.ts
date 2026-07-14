@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface HealingAction {
   id: string;
@@ -348,7 +348,9 @@ export class SelfHealingManager {
       const operator = parts[1];
       const rawThreshold = parts[2];
       const parsedThreshold = parseFloat(rawThreshold);
-      const threshold = Number.isFinite(parsedThreshold) ? parsedThreshold : (rawThreshold === "false" ? 0 : 0);
+      const threshold = Number.isFinite(parsedThreshold)
+        ? parsedThreshold
+        : (rawThreshold === "true" ? 1 : 0);
 
       let value: number;
 
@@ -420,7 +422,7 @@ export class SelfHealingManager {
     strategy: HealingStrategy
   ): HealingAction {
     const action: HealingAction = {
-      id: uuid(),
+      id: randomUUID(),
       type,
       target,
       description: `Auto-healing: ${type} on ${target}`,

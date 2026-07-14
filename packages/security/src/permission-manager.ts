@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface PermissionRequest {
   id: string;
@@ -32,6 +32,9 @@ export class PermissionManager {
   private approvedOperations = new Map<string, Date>();
   private whitelist: WhitelistEntry[] = [];
   private whitelistedDirs: Array<{ dirPath: string; operations: string[] }> = [];
+  /** 周期清理定时器：cleanExpiredRequests() 在生产代码中从未被调用，
+   *  导致 requests 和 approvedOperations Map 无界增长。 */
+  private cleanupTimer?: ReturnType<typeof setInterval>;
 
   /**
    * Add a directory to the auto-approve whitelist.
@@ -73,6 +76,19 @@ export class PermissionManager {
     private eventBus: EventBus
   ) {
     this.registerDefaultRules();
+    // 周期清理过期请求，防止 requests/approvedOperations Map 无界增长
+    this.cleanupTimer = setInterval(() => {
+      try { this.cleanExpiredRequests(); } catch { /* best-effort */ }
+    }, 60_000);
+    this.cleanupTimer.unref?.();
+  }
+
+  /** 停止清理定时器，在服务关闭时调用 */
+  shutdown(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
   }
 
   private registerDefaultRules(): void {
@@ -231,8 +247,8 @@ export class PermissionManager {
     requestedBy: string = "system"
   ): PermissionRequest {
     if (this.isWhitelisted(operation, target)) {
-      const approved: PermissionRequest = {
-        id: uuid().slice(0, 8),
+        const approved: PermissionRequest = {
+          id: randomUUID(),
         operation,
         description: `白名单授权: ${operation}`,
         target,
@@ -249,7 +265,7 @@ export class PermissionManager {
 
     if (this.isApprovedForOperation(operation, target)) {
       const approved: PermissionRequest = {
-        id: uuid().slice(0, 8),
+        id: randomUUID(),
         operation,
         description: `已批准: ${operation}`,
         target,
@@ -268,7 +284,7 @@ export class PermissionManager {
 
     if (rule?.autoApprove) {
       const approved: PermissionRequest = {
-        id: uuid().slice(0, 8),
+        id: randomUUID(),
         operation,
         description: rule.description,
         target,
@@ -292,7 +308,7 @@ export class PermissionManager {
 
     if (rule?.requireExplicitConsent) {
       const request: PermissionRequest = {
-        id: uuid().slice(0, 8),
+        id: randomUUID(),
         operation,
         description: rule.description,
         target,
@@ -314,7 +330,7 @@ export class PermissionManager {
     }
 
     const denied: PermissionRequest = {
-      id: uuid().slice(0, 8),
+      id: randomUUID().slice(0, 8),
       operation,
       description: "未知操作类型",
       target,

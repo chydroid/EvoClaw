@@ -592,12 +592,38 @@ export class SkillDispatcher {
    * 在执行 autoInstallForTask，避免并发重复安装同一技能。
    */
   private async serializedInstall<T>(fn: () => Promise<T>): Promise<T> {
+    // Bug 7 修复：原实现无超时——若前一次 install 挂起（fn 永不 resolve），
+    // release 永远不会被调用，后续所有 install 都会因 await prev 永久阻塞。
+    // 改为对 prev 等待和 fn 执行都加超时，超时后强制 release 并抛错。
+    const INSTALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟
     const prev = this.installLock;
     let release!: () => void;
     this.installLock = new Promise<void>((resolve) => { release = resolve; });
-    await prev;
+
+    // 等待前一次 install 完成，最多 INSTALL_TIMEOUT_MS
+    let prevTimedOut = false;
+    const prevTimeout = new Promise<void>((resolve) => {
+      const t = setTimeout(() => {
+        prevTimedOut = true;
+        resolve();
+      }, INSTALL_TIMEOUT_MS);
+      t.unref();
+    });
+    await Promise.race([prev, prevTimeout]);
+    if (prevTimedOut) {
+      // 前一次 install 超时未完成，但仍 release 当前锁以避免永久阻塞后续调用
+      process.stderr.write(`[SkillDispatcher] Previous install timed out after ${INSTALL_TIMEOUT_MS}ms, force-releasing lock\n`);
+    }
+
     try {
-      return await fn();
+      // 对 fn 执行也加超时，避免单次 install 挂起永久阻塞
+      const fnTimeout = new Promise<never>((_, reject) => {
+        const t = setTimeout(() => {
+          reject(new Error(`Install operation timed out after ${INSTALL_TIMEOUT_MS}ms`));
+        }, INSTALL_TIMEOUT_MS);
+        t.unref();
+      });
+      return await Promise.race([fn(), fnTimeout]);
     } finally {
       release();
     }
@@ -769,7 +795,7 @@ export class SkillDispatcher {
       else if (/今年|今年内|this year/i.test(lower)) params.freshness = "py";
 
       const countMatch = task.match(/(\d+)\s*(条|个|项|results?)/i);
-      if (countMatch) params.count = parseInt(countMatch[1]);
+      if (countMatch) params.count = parseInt(countMatch[1], 10);
     }
 
     if (skillName.includes("weather") || skillName.includes("天气")) {

@@ -18,6 +18,8 @@
  * adding pre-flight provider filtering and post-call health updates.
  */
 
+import * as crypto from "crypto";
+
 export interface FailoverConfig {
   /** Max consecutive failures before circuit opens */
   failureThreshold?: number;
@@ -568,7 +570,8 @@ export class ModelFailoverManager {
     const baseDelay = this.config.retryBaseDelayMs * Math.pow(2, safeAttempt);
     const capped = Math.min(baseDelay, this.config.retryMaxDelayMs);
     const safeJitterFactor = Math.max(0, Math.min(this.config.jitterFactor, 1));
-    const jitter = capped * safeJitterFactor * Math.random();
+    const fraction = crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+    const jitter = capped * safeJitterFactor * fraction;
     return Math.floor(Math.min(capped + jitter, this.config.retryMaxDelayMs));
   }
 

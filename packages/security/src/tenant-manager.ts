@@ -1,5 +1,5 @@
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface Tenant {
   id: string;
@@ -75,7 +75,7 @@ export class TenantManager {
 
     const now = new Date();
     const tenant: Tenant = {
-      id: uuid(),
+      id: randomUUID(),
       name,
       displayName: name,
       description: "",
@@ -175,8 +175,29 @@ export class TenantManager {
       }
     }
 
+    // 清理 Maps，防止频繁创建/删除租户导致内存泄漏
+    this.tenants.delete(tenantId);
+    this.tenantStats.delete(tenantId);
+
     this.eventBus.publish("tenant.deleted", { tenantId }, "tenant-manager")
       .catch((err) => process.stderr.write('[TenantManager] event publish failed: ' + err + '\n'));
+  }
+
+  /** 重置所有租户的每日计数器（应由 ScheduleManager 每日 0 点调用） */
+  resetDailyCounters(): void {
+    for (const stats of this.tenantStats.values()) {
+      stats.tasksToday = 0;
+      stats.tokensToday = 0;
+      stats.evolutionCyclesToday = 0;
+      stats.lastActivityAt = new Date();
+    }
+  }
+
+  /** 清理所有租户数据，释放内存 */
+  shutdown(): void {
+    this.tenants.clear();
+    this.tenantStats.clear();
+    this.defaultTenantId = null;
   }
 
   getDefaultTenant(): Tenant | undefined {
@@ -253,14 +274,6 @@ export class TenantManager {
 
   getAllStats(): TenantStats[] {
     return Array.from(this.tenantStats.values());
-  }
-
-  resetDailyCounters(): void {
-    for (const stats of this.tenantStats.values()) {
-      stats.tasksToday = 0;
-      stats.tokensToday = 0;
-      stats.evolutionCyclesToday = 0;
-    }
   }
 
   onSkillExecute(tenantId: string): boolean {

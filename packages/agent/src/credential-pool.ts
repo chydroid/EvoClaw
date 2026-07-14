@@ -14,6 +14,7 @@ import {
   loadCredentialPool,
   getCredentialPoolPath,
 } from "./credential-persistence";
+import * as crypto from "crypto";
 
 /** 凭证状态 */
 export type CredentialState = "ok" | "exhausted" | "dead";
@@ -114,7 +115,7 @@ export class CredentialPool {
       this.providerMap.set(provider, []);
       for (const key of opts.apiKeys) {
         const entry: CredentialEntry = {
-          id: `cred-${Math.random().toString(36).slice(2, 10)}`,
+          id: `cred-${crypto.randomUUID()}`,
           apiKey: key,
           state: "ok",
           stateSince: Date.now(),
@@ -130,7 +131,7 @@ export class CredentialPool {
       this.strategy = o.strategy ?? "fill_first";
       for (const c of o.credentials) {
         this.entries.push({
-          id: `cred-${Math.random().toString(36).slice(2, 10)}`,
+          id: `cred-${crypto.randomUUID()}`,
           apiKey: c.apiKey,
           baseUrl: c.baseUrl,
           state: "ok",
@@ -212,11 +213,15 @@ export class CredentialPool {
     let chosen: CredentialEntry;
     switch (this.strategy) {
       case "round_robin":
+        // 以 entries.length 为取模基准（而非 available.length）：
+        // available 集合会随凭证健康状态变化而增减，若以 available.length 取模，
+        // rrIndex 会在集合大小波动时被重置到不同周期，导致同一凭证被重复选择或跳过。
+        // 以稳定的 entries.length 为基准可保持完整轮转周期。
         chosen = available[this.rrIndex % available.length];
-        this.rrIndex = (this.rrIndex + 1) % available.length;
+        this.rrIndex = (this.rrIndex + 1) % Math.max(this.entries.length, 1);
         break;
       case "random":
-        chosen = available[Math.floor(Math.random() * available.length)];
+        chosen = available[crypto.randomInt(0, available.length)];
         break;
       case "least_used":
         chosen = available.reduce((a, b) => (a.useCount <= b.useCount ? a : b));
@@ -228,6 +233,8 @@ export class CredentialPool {
     }
 
     chosen.useCount++;
+    // 与 acquireLease() 一致：状态变更后持久化，防止进程崩溃导致 useCount 增量丢失。
+    this.persistSilently();
     return chosen;
   }
 

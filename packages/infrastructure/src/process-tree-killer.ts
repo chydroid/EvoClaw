@@ -326,7 +326,10 @@ async function killPid(pid: number, options: KillOptions): Promise<boolean> {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
 }
 
 // ── 主函数 ──────────────────────────────────────────────────────────────────

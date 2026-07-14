@@ -12,69 +12,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
-/**
- * 同步原子写入：temp + fsync + rename。
- *
- * 适用于小文件（< 10MB）的整文件写入，例如 L2 Markdown / L3 persona.md。
- * 不适用于大文件追加（请用 appendJsonlAtomic）。
- */
-export function atomicWriteFileSync(targetPath: string, content: string): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    if (fs.existsSync(targetPath)) {
-      const st = fs.statSync(targetPath);
-      fs.chmodSync(tmpPath, st.mode);
-    }
-  } catch { /* ignore */ }
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "EXDEV" || code === "EBUSY") {
-      // 跨设备回退：在目标侧写临时文件后 rename
-      const dstTmp = `${targetPath}.${process.pid}.${randomUUID().slice(0, 8)}.dst.tmp`;
-      const fd2 = fs.openSync(dstTmp, "w");
-      try {
-        fs.writeFileSync(fd2, content, "utf-8");
-        fs.fsyncSync(fd2);
-      } catch (w2err) {
-        try { fs.closeSync(fd2); } catch { /* ignore */ }
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw w2err;
-      }
-      fs.closeSync(fd2);
-      // 安全：EXDEV 回退的 rename 失败必须抛出，否则临时文件泄漏且静默数据丢失
-      try {
-        fs.renameSync(dstTmp, targetPath);
-      } catch (renameErr) {
-        try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw renameErr;
-      }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    } else {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-  }
-}
+export { atomicWriteFileSync };
 
 /**
  * 原子追加 JSONL 行：使用 fs.appendFileSync 在大多数 POSIX 系统上是原子的

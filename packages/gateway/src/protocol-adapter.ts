@@ -1,5 +1,5 @@
 import { Express, Request, Response } from "express";
-import { ServiceRegistry, EventBus, FeatureFlagStore } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, FeatureFlagStore, atomicWriteFileSync } from "@evoclaw/core";
 import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware } from "@evoclaw/agent";
 import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
@@ -16,7 +16,6 @@ import { CanvasHost } from "./canvas-host";
 import { FeishuAdapter } from "./channels/feishu";
 import { MatrixAdapter } from "./channels/matrix";
 import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
-import { atomicWriteFileSync } from "./atomic-write";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -414,55 +413,7 @@ class EnvSecretManager {
       }
 
       // 原子写入 .env：temp + fsync + rename，防止崩溃时 .env 损坏导致所有环境变量丢失
-      const tmpPath = `${ENV_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, existingLines.join("\n") + "\n", "utf-8");
-        fs.fsyncSync(fd);
-      } catch (werr) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw werr;
-      }
-      fs.closeSync(fd);
-      try {
-        if (fs.existsSync(ENV_FILE)) {
-          const st = fs.statSync(ENV_FILE);
-          fs.chmodSync(tmpPath, st.mode);
-        }
-      } catch { /* ignore */ }
-      try {
-        fs.renameSync(tmpPath, ENV_FILE);
-      } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        if (code === "EXDEV" || code === "EBUSY") {
-          // 跨设备回退
-          const content = fs.readFileSync(tmpPath, "utf-8");
-          const dstTmp = `${ENV_FILE}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.dst.tmp`;
-          const fd2 = fs.openSync(dstTmp, "w");
-          try {
-            fs.writeFileSync(fd2, content, "utf-8");
-            fs.fsyncSync(fd2);
-          } catch (w2err) {
-            try { fs.closeSync(fd2); } catch { /* ignore */ }
-            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-            throw w2err;
-          }
-          fs.closeSync(fd2);
-          try {
-            fs.renameSync(dstTmp, ENV_FILE);
-          } catch (renameErr) {
-            try { fs.unlinkSync(dstTmp); } catch { /* ignore cleanup */ }
-            try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
-            throw renameErr;
-          }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
-        } else {
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw err;
-        }
-      }
+      atomicWriteFileSync(ENV_FILE, existingLines.join("\n") + "\n", { encoding: "utf-8" });
     } catch (err) {
       process.stderr.write("[EnvSecretManager] Failed to persist .env:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
@@ -927,15 +878,29 @@ export class ProtocolAdapter {
       if (fs.existsSync(retentionFile)) {
         const data = JSON.parse(fs.readFileSync(retentionFile, "utf-8"));
         if (data.policy) {
-          Object.assign(this.retentionPolicy, data.policy);
+          // 安全：过滤原型污染危险键
+          const safePolicy = this.sanitizeKeys(data.policy);
+          Object.assign(this.retentionPolicy, safePolicy);
         }
         if (data.stats) {
-          Object.assign(this.retentionStats, data.stats);
+          const safeStats = this.sanitizeKeys(data.stats);
+          Object.assign(this.retentionStats, safeStats);
         }
       }
     } catch (err) {
       console.debug("[ProtocolAdapter] Failed to load retention:", err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** 过滤原型污染危险键 */
+  private sanitizeKeys<T extends Record<string, unknown>>(obj: Record<string, unknown>): T {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k !== "__proto__" && k !== "constructor" && k !== "prototype") {
+        result[k] = v;
+      }
+    }
+    return result as T;
   }
 
   /** Persist secrets to data/secrets.json */
@@ -1053,7 +1018,10 @@ export class ProtocolAdapter {
       .map((p) => {
         const cfg = p.config as Record<string, unknown> | undefined;
         const maxTokensRaw = cfg?.maxTokens;
-        const maxTokens = typeof maxTokensRaw === "number" && Number.isFinite(maxTokensRaw) ? maxTokensRaw : 4096;
+        const maxTokens = Math.max(
+          1,
+          typeof maxTokensRaw === "number" && Number.isFinite(maxTokensRaw) ? maxTokensRaw : 4096,
+        );
         const temperatureRaw = cfg?.temperature;
         const temperature = typeof temperatureRaw === "number" && Number.isFinite(temperatureRaw) ? temperatureRaw : 0.3;
         const timeoutRaw = cfg?.timeout;
@@ -1068,14 +1036,14 @@ export class ProtocolAdapter {
           enabled: true,
           order,
           provider: (p.id as string) || "custom",
-          model: (p.selectedModel as string) || (Array.isArray(p.models) ? (p.models as string[])[0] : "") || "",
+          model: (p.selectedModel as string) || (Array.isArray(p.models) ? String(p.models[0]) : "") || "",
           apiKey: (p.apiKey as string) || "",
           baseURL: (p.baseURL as string) || "",
           maxTokens,
           temperature,
           timeout,
           topP,
-          models: (p.models as string[]) || [],
+          models: Array.isArray(p.models) ? (p.models as string[]) : [],
         };
       });
 
@@ -2179,7 +2147,7 @@ export class ProtocolAdapter {
           refreshError = err instanceof Error ? err.message : String(err);
           return -1;
         });
-        const limit = parseInt(req.query.limit as string, 10) || 10;
+        const limit = Math.max(1, Math.min(parseInt(req.query.limit as string, 10) || 10, 100));
         const trending = skillManager.getMarketplace().getTrending(limit);
         res.json({ success: true, skills: trending, partial: staleCount < 0, refreshError });
       } catch (err) {
@@ -4771,7 +4739,7 @@ export class ProtocolAdapter {
           return;
         }
         const taskId = req.query.taskId as string | undefined;
-        const limit = parseInt(String(req.query.limit || "20"), 10) || 20;
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || "20"), 10) || 20, 200));
         const history = scheduleManager.getRunHistory(taskId, limit);
         res.json({ success: true, history });
       } catch (err) {
@@ -4855,13 +4823,13 @@ export class ProtocolAdapter {
     });
 
     // 重命名会话（更新 customName）
-    app.patch("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
+    app.patch("/api/sessions/:agentId/:sessionId", async (req: Request, res: Response) => {
       try {
         const agentId = String(req.params.agentId);
         const sessionId = String(req.params.sessionId);
         const sessionManager = this.registry.resolveService("sessionManager") as {
           loadSessionMeta(agentId: string, sessionId: string): import("@evoclaw/agent").SessionInfo | null;
-          updateSessionMeta(session: import("@evoclaw/agent").SessionInfo): void;
+          updateSessionMetaAsync(session: import("@evoclaw/agent").SessionInfo): Promise<void>;
         } | undefined;
 
         if (!sessionManager) {
@@ -4879,19 +4847,20 @@ export class ProtocolAdapter {
         if (body.customName !== undefined) {
           session.customName = body.customName.trim() || undefined;
         }
-        sessionManager.updateSessionMeta(session);
+        // 使用异步版本避免 sleepSync 阻塞事件循环
+        await sessionManager.updateSessionMetaAsync(session);
         res.json({ success: true, session });
       } catch (err) {
         this.handleError(err, res, "Failed to rename session");
       }
     });
 
-    app.delete("/api/sessions/:agentId/:sessionId", (req: Request, res: Response) => {
+    app.delete("/api/sessions/:agentId/:sessionId", async (req: Request, res: Response) => {
       try {
         const agentId = String(req.params.agentId);
         const sessionId = String(req.params.sessionId);
         const sessionManager = this.registry.resolveService("sessionManager") as {
-          deleteSession(agentId: string, sessionId: string): boolean;
+          deleteSessionAsync(agentId: string, sessionId: string): Promise<boolean>;
         } | undefined;
 
         if (!sessionManager) {
@@ -4899,7 +4868,8 @@ export class ProtocolAdapter {
           return;
         }
 
-        const success = sessionManager.deleteSession(agentId, sessionId);
+        // 使用异步版本避免 sleepSync 阻塞事件循环
+        const success = await sessionManager.deleteSessionAsync(agentId, sessionId);
         if (success) {
           // 清理 executor 中的会话级缓存（conversationHistory/iterationBudgets 等），防止 Map 无限增长
           const executor = this.registry.resolveService<{ clearChatHistory(sessionId?: string): void }>("agentModelExecutor");
@@ -5858,7 +5828,7 @@ export class ProtocolAdapter {
           return;
         }
 
-        const limit = parseInt(String(req.query.limit || "50"), 10) || 50;
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 500));
         res.json({ history: permissionRelay.getHistory(limit) });
       } catch (err) {
         this.handleError(err, res, "Failed to get permission history");
@@ -7113,9 +7083,8 @@ export class ProtocolAdapter {
           return;
         }
         const now = new Date().toISOString();
-        // 先生成新值（包含 await），再原子地修改 entry 字段，避免在
+        // 先生成新值（同步操作），再原子地修改 entry 字段，避免在
         // rotationVersion 自增和 value 赋值之间被并发请求插入导致状态不一致。
-        const crypto = await import("crypto");
         const newValue = crypto.randomBytes(32).toString("hex");
         entry.rotationVersion += 1;
         entry.lastRotatedAt = now;
@@ -8110,33 +8079,12 @@ export class ProtocolAdapter {
       }
     });
 
-    // GET /api/memory/status — 嵌入后端 / 向量索引状态
-    // 暴露 MemoryHub 的 embedding provider 状态与向量索引规模。
-    app.get("/api/memory/status", (_req: Request, res: Response) => {
-      try {
-        const hub = this.registry.resolveService<{
-          getEmbeddingProviderStatus?(): string;
-          getEmbeddingLoadError?(): string | null;
-          getVectorIndexSize?(): number;
-        }>("memoryHub");
-        if (!hub) {
-          res.status(503).json({ error: "MemoryHub not available" });
-          return;
-        }
-        const provider = hub.getEmbeddingProviderStatus?.() ?? "unavailable";
-        const loadError = hub.getEmbeddingLoadError?.() ?? null;
-        const vectorIndexSize = hub.getVectorIndexSize?.() ?? 0;
-        res.json({
-          embeddingBackend: provider,
-          embeddingProvider: provider,
-          embeddingLoadError: loadError,
-          vectorIndexSize,
-          vectorAvailable: provider === "transformers" || provider === "local-tfidf",
-        });
-      } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-      }
-    });
+    // GET /api/memory/status — 已移至 gateway-server.ts 统一注册。
+    // 此处曾重复注册同一路由，但返回的字段名（embeddingLoadError / vectorAvailable）
+    // 与前端 MemoryHubPage 期望的 MemoryStatus 契约（ready / model / loadError）不匹配。
+    // Express 按注册顺序匹配，protocol-adapter 在 gateway-server 之前 mountREST，
+    // 导致此版本覆盖了正确版本，前端永远看到 ready=undefined（"未就绪"）。
+    // 删除此重复路由后，gateway-server.ts 的版本将正确生效。
 
     // GET /api/memory/search?q=... — 关键词记忆检索（recall）
     // 与 /api/memory/semantic-search 不同，此端点使用 MemoryHub.recall() 进行

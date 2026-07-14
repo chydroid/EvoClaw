@@ -1,4 +1,4 @@
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface InstallRule {
   id: string;
@@ -54,12 +54,12 @@ const TRUSTED_AUTHORS = ["evoclaw-official", "evoclaw-bot"];
 function createDefaultPolicy(): InstallPolicy {
   const now = Date.now();
   return {
-    id: uuid(),
+    id: randomUUID(),
     name: "Default Install Policy",
     description: "Built-in default policy with sensible security rules",
     rules: [
       {
-        id: uuid(),
+        id: randomUUID(),
         pattern: "*",
         action: "block",
         reason: "Skills with shell access from untrusted sources pose a security risk",
@@ -71,7 +71,7 @@ function createDefaultPolicy(): InstallPolicy {
         priority: 50,
       },
       {
-        id: uuid(),
+        id: randomUUID(),
         pattern: "*",
         action: "block",
         reason: "Skills with network access from CLI source are not allowed",
@@ -79,7 +79,7 @@ function createDefaultPolicy(): InstallPolicy {
         priority: 40,
       },
       {
-        id: uuid(),
+        id: randomUUID(),
         pattern: "*",
         action: "review",
         reason: "Skills with file access from archive source require manual review",
@@ -87,7 +87,7 @@ function createDefaultPolicy(): InstallPolicy {
         priority: 30,
       },
       {
-        id: uuid(),
+        id: randomUUID(),
         pattern: "clawhub",
         action: "allow",
         reason: "Skills from ClawHub are vetted and trusted",
@@ -95,7 +95,7 @@ function createDefaultPolicy(): InstallPolicy {
         priority: 70,
       },
       {
-        id: uuid(),
+        id: randomUUID(),
         pattern: TRUSTED_AUTHORS.join("|"),
         action: "allow",
         reason: "Skills from trusted authors are allowed",
@@ -134,10 +134,10 @@ export class InstallPolicyManager {
   ): InstallPolicy {
     const now = Date.now();
     const policy: InstallPolicy = {
-      id: uuid(),
+      id: randomUUID(),
       name,
       description,
-      rules: rules.map((r) => ({ ...r, id: uuid() })),
+      rules: rules.map((r) => ({ ...r, id: randomUUID() })),
       defaultAction,
       createdAt: now,
       updatedAt: now,
@@ -159,7 +159,7 @@ export class InstallPolicyManager {
       policy.rules = updates.rules.map((r) => {
         if ("id" in r && typeof r.id === "string") return r as InstallRule;
         const { pattern, action, reason, scope, priority } = r;
-        return { id: uuid(), pattern, action, reason, scope, priority };
+        return { id: randomUUID(), pattern, action, reason, scope, priority };
       });
     }
     if (updates.defaultAction !== undefined) policy.defaultAction = updates.defaultAction;
@@ -233,7 +233,7 @@ export class InstallPolicyManager {
       hasNetworkAccess: (metadata?.hasNetworkAccess as boolean) ?? false,
       hasShellAccess: (metadata?.hasShellAccess as boolean) ?? false,
       author: metadata?.author as string | undefined,
-      capabilities: metadata?.capabilities as string[] | undefined,
+      capabilities: Array.isArray(metadata?.capabilities) ? (metadata.capabilities as string[]) : undefined,
       metadata,
     };
     return this.evaluate(context);

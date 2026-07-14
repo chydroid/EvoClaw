@@ -76,7 +76,7 @@ const DEFAULT_RETRY_CONFIG: Required<RetryConfig> = {
 
 /**
  * 生成加密安全的 [0, 1) 随机数。
- * 优先使用 crypto.randomBytes，回退到 Math.random。
+ * 使用 crypto.getRandomValues；crypto 不可用时返回 0，避免回退到 Math.random。
  */
 function generateSecureFraction(): number {
   try {
@@ -87,9 +87,9 @@ function generateSecureFraction(): number {
       return buf[0] / 0x100000000;
     }
   } catch {
-    // 回退
+    // 忽略：crypto 不可用时返回 0，避免回退到可预测的 Math.random
   }
-  return Math.random();
+  return 0;
 }
 
 // ── Jitter ────────────────────────────────────────────────

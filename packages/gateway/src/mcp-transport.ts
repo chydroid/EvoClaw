@@ -17,6 +17,9 @@ function generateId(): string {
 /** buffer 最大字节数（防止恶意客户端发送超大无换行数据导致内存耗尽） */
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
 
+/** SSE 连接数上限（防止恶意客户端打开无限连接导致内存耗尽） */
+const MAX_SSE_CLIENTS = 100;
+
 declare function setTimeout(
   callback: (...args: unknown[]) => void,
   ms: number,
@@ -140,6 +143,7 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
         this.pendingRequests.delete(id);
         reject(new Error(`Request "${method}" timed out`));
       }, 30000);
+      timer.unref?.();
 
       this.pendingRequests.set(id, { resolve, reject, timer });
 
@@ -160,6 +164,16 @@ export class MCPSSETransport extends EventEmitter implements MCPTransportImpl {
   }
 
   addSSEClient(write: (data: string) => void, end: () => void): void {
+    // 限制 SSE 客户端数量，超限时驱逐最旧的连接，防止内存无限增长
+    if (this.sseClients.size >= MAX_SSE_CLIENTS) {
+      const oldest = this.sseClients.values().next().value;
+      if (oldest) {
+        try { oldest.end(); } catch { /* ignore */ }
+        this.sseClients.delete(oldest);
+        process.stderr.write(`[MCPTransport] SSE clients exceeded ${MAX_SSE_CLIENTS}, evicted oldest connection\n`);
+      }
+    }
+
     this.sseClients.add({ write, end });
 
     const endpointEvent: JSONRPCMessage = {
@@ -449,6 +463,7 @@ export class MCPStdioTransport extends EventEmitter implements MCPTransportImpl 
         this.pendingRequests.delete(id);
         reject(new Error(`Request "${method}" timed out`));
       }, 30000);
+      timer.unref?.();
 
       this.pendingRequests.set(id, { resolve, reject, timer });
 

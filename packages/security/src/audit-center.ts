@@ -4,11 +4,11 @@ import {
   type AuditRecord,
   type AuditEventType,
   type SecuritySeverity,
+  type EventSubscription,
 } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { v4 } from "uuid";
 import { auditConfig, type ConfigAuditInput } from "./audit-config";
 import { auditChannels, type ChannelAuditInput } from "./audit-channel";
 import { auditToolPolicy, type ToolPolicyAuditInput } from "./audit-tool-policy";
@@ -125,9 +125,18 @@ export class AuditCenter {
   private maxRecords = 10000;
   private maxAlerts = 1000;
   private alertThrottles = new Map<string, number>();
+  /** 保存 EventBus 订阅句柄，用于 shutdown 时取消订阅 */
+  private subscriptions: EventSubscription[] = [];
   /** 脱敏器：审计记录入库前自动遮蔽 API key/token/邮箱等敏感信息，
    *  防止审计日志本身成为敏感数据泄漏源。 */
   private redactor = new TranscriptRedactor();
+  /**
+   * 用于清空审计记录的管理员令牌。仅由服务器启动流程通过
+   * setAdminClearToken() 设置（来源应为环境变量或密钥管理器），
+   * 不得来自客户端请求。P1-1 修复：原实现信任调用方自报的 roles
+   * 数组，任意调用方可构造 `{ roles: ["admin"] }` 抹除审计日志。
+   */
+  private adminClearToken: string | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -137,15 +146,31 @@ export class AuditCenter {
 
     this.registerDefaultRules();
 
-    this.eventBus.subscribe("security.audit", async (event) => {
+    const sub1 = this.eventBus.subscribe("security.audit", async (event) => {
       if (event.data && typeof event.data === "object") {
         this.record(event.data as unknown as AuditRecord);
       }
     });
+    this.subscriptions.push(sub1);
 
-    this.eventBus.subscribe("system.*", async (event) => {
-      this.recordSystemEvent(event.type, event.data as Record<string, unknown> | undefined, event.source);
-    });
+    // EventBus 不支持通配符匹配（subscriptions Map 使用精确字符串 key），
+    // 显式订阅每个系统事件以替代 "system.*" 通配符。
+    const systemEvents = ["system.starting", "system.ready", "system.shutting_down", "system.error"];
+    for (const evt of systemEvents) {
+      const sub = this.eventBus.subscribe(evt, async (event) => {
+        this.recordSystemEvent(event.type, event.data as Record<string, unknown> | undefined, event.source);
+      });
+      this.subscriptions.push(sub);
+    }
+  }
+
+  /** 关闭 AuditCenter：取消所有 EventBus 订阅，防止内存泄漏和重复回调 */
+  shutdown(): void {
+    for (const sub of this.subscriptions) {
+      try { this.eventBus.unsubscribe(sub.id); } catch { /* ignore */ }
+    }
+    this.subscriptions = [];
+    this.alertThrottles.clear();
   }
 
   record(entry: Omit<AuditRecord, "timestamp">): void {
@@ -334,24 +359,65 @@ export class AuditCenter {
   }
 
   /**
-   * 清空审计记录。需要管理员鉴权：调用方必须提供包含 "admin" 角色的 caller，
-   * 否则拒绝执行。清空操作会记录警告日志，防止审计日志被无声抹除。
+   * 设置用于清空审计记录的管理员令牌。仅由服务器启动流程调用，
+   * 令牌来源应为受信任的环境变量或密钥管理器，不得来自客户端请求。
    */
-  clearRecords(caller?: { userId?: string; roles?: string[] }): void {
-    const userId = caller?.userId ?? "unknown";
-    const roles = caller?.roles ?? [];
-    if (!roles.includes("admin")) {
+  setAdminClearToken(token: string | null): void {
+    this.adminClearToken = token;
+  }
+
+  /**
+   * 清空审计记录。需要管理员令牌鉴权：调用方必须提供与
+   * setAdminClearToken() 设置值匹配的 adminToken。
+   *
+   * P1-1 修复：原实现信任调用方自报的 roles 数组，任意调用方可构造
+   * `{ roles: ["admin"] }` 抹除审计日志。改为基于服务器端令牌的
+   * 严格时序比较验证（使用 constantTimeCompare 防止时序攻击）。
+   */
+  clearRecords(opts?: { adminToken?: string; reason?: string }): void {
+    if (!this.adminClearToken) {
       process.stderr.write(
-        `[AuditCenter] clearRecords DENIED for caller=${userId} roles=${JSON.stringify(roles)}\n`
+        `[AuditCenter] clearRecords DENIED: no admin token configured\n`
       );
       throw new Error(
-        `Access denied: clearing audit records requires admin role (caller: ${userId})`,
+        `Access denied: audit admin token not configured; cannot clear records`,
       );
     }
+    if (!opts?.adminToken || !this.constantTimeCompare(opts.adminToken, this.adminClearToken)) {
+      process.stderr.write(
+        `[AuditCenter] clearRecords DENIED: invalid or missing admin token\n`
+      );
+      throw new Error(
+        `Access denied: clearing audit records requires valid admin token`,
+      );
+    }
+    const reason = opts.reason ?? "no reason provided";
     process.stderr.write(
-      `[AuditCenter] clearRecords by admin=${userId}, clearing ${this.records.length} records\n`
+      `[AuditCenter] clearRecords by admin token, reason="${reason}", clearing ${this.records.length} records\n`
     );
     this.records = [];
+  }
+
+  /**
+   * 常量时间字符串比较，防止时序攻击泄漏令牌前缀信息。
+   * 仅当两字符串长度与每个字符均相等时返回 true。
+   */
+  private constantTimeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) {
+      // 仍走完整比较以避免长度泄漏
+      let result = a.length ^ b.length;
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const ca = a.charCodeAt(i) || 0;
+        const cb = b.charCodeAt(i) || 0;
+        result |= ca ^ cb;
+      }
+      return result === 0 && a.length === b.length;
+    }
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
   }
 
   private registerDefaultRules(): void {

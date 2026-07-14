@@ -26,6 +26,7 @@ import { validateToolResult } from "./tool-types";
 import { PromptRegistry } from "./prompt-registry";
 import * as https from "https";
 import * as http from "http";
+import * as crypto from "crypto";
 
 // ── Native HTTPS fetch ──
 // Uses Node.js native https/http modules instead of undici fetch() to avoid
@@ -75,7 +76,11 @@ export async function nativeFetch(
     const timeoutMs = options.timeout ?? 0;
     const internalController = timeoutMs > 0 ? new AbortController() : null;
     const timeoutId = internalController
-      ? setTimeout(() => internalController.abort(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs)
+      ? (() => {
+          const t = setTimeout(() => internalController.abort(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs);
+          if (t.unref) t.unref();
+          return t;
+        })()
       : null;
 
     const externalSignal = options.signal ?? null;
@@ -403,10 +408,14 @@ function formatCommandOutput(execObj: Record<string, unknown> | null, execStr: s
         result += "|---|------|------|------|------|--------|--------|\n";
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
-          const prevClose = Number(item.previous_close || 0);
-          const currentPrice = Number(item.current_price || 0);
+          // 安全：外部 API 可能返回非数字字符串（如 "N/A"），Number() 会产生 NaN 导致 toFixed() 输出 "NaN"
+          const prevCloseRaw = Number(item.previous_close ?? 0);
+          const prevClose = Number.isFinite(prevCloseRaw) ? prevCloseRaw : 0;
+          const currentPriceRaw = Number(item.current_price ?? 0);
+          const currentPrice = Number.isFinite(currentPriceRaw) ? currentPriceRaw : 0;
           const changePercent = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
-          const amount = Number(item.amount || 0);
+          const amountRaw = Number(item.amount ?? 0);
+          const amount = Number.isFinite(amountRaw) ? amountRaw : 0;
           const amountStr = amount >= 1e8 ? `${(amount / 1e8).toFixed(2)}亿` : amount >= 1e4 ? `${(amount / 1e4).toFixed(0)}万` : String(amount);
           // A股惯例：红涨绿跌
           const changeText = changePercent >= 0 ? `+${changePercent.toFixed(2)}%` : `${changePercent.toFixed(2)}%`;
@@ -1479,6 +1488,7 @@ export async function callLLMOnce(
   const timeout = provider.timeout || 60000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
+  if (timeoutId.unref) timeoutId.unref();
 
   // ── End-to-end cancellation: merge external abort signal with timeout ──
   // When the caller passes deps.abortSignal (e.g., from AgentModelExecutor.abortSession),
@@ -2143,12 +2153,18 @@ Have a specific URL?
           }
 
           if (classified.type === LLMErrorType.RATE_LIMIT && classified.backoffMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, classified.backoffMs));
+            await new Promise((resolve) => {
+              const t = setTimeout(resolve, classified.backoffMs);
+              t.unref?.();
+            });
           }
 
           // 5xx / provider 错误也按 backoffMs 等待，避免立即重试加剧服务端压力
           if (classified.type === LLMErrorType.PROVIDER_ERROR && classified.backoffMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, classified.backoffMs));
+            await new Promise((resolve) => {
+              const t = setTimeout(resolve, classified.backoffMs);
+              t.unref?.();
+            });
           }
 
           if (classified.type === LLMErrorType.AUTH || classified.type === LLMErrorType.BILLING) {
@@ -2478,7 +2494,7 @@ Have a specific URL?
             }
 
             const approvalRequest = {
-              id: `hitl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              id: `hitl-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
               operation: toolName,
               params: args,
               riskLevel: riskLevel || "medium",

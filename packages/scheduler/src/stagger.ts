@@ -11,6 +11,12 @@
  *  - 超出并发上限的任务延迟到下一个窗口执行
  */
 
+import * as crypto from "crypto";
+
+function random01(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+}
+
 /** 错峰调度输入条目。 */
 export interface StaggerEntry {
   /** 任务 ID。 */
@@ -112,7 +118,7 @@ export class StaggerCoordinator {
         if (overCapacity && i >= this.maxConcurrent) {
           // 超出并发上限，延迟到下一个窗口，并叠加随机 jitter
           // 避免所有被推迟的任务在下一窗口同时触发（thundering herd）
-          const jitter = Math.random() * this.windowMs * 0.5;
+          const jitter = random01() * this.windowMs * 0.5;
           const delayMs = this.windowMs + jitter;
           const executeAt = new Date(scheduledTime + delayMs);
           decisions.push({
@@ -130,7 +136,7 @@ export class StaggerCoordinator {
         const slot = inWindowSize > 0 ? i / inWindowSize : 0;
         const jitterSlot = inWindowSize > 0 ? this.maxJitterMs / inWindowSize : 0;
         // 在 [0, jitterSlot) 内取一个随机偏移，使同槽任务也略有错开
-        const randomOffset = jitterSlot * Math.random();
+        const randomOffset = jitterSlot * random01();
         const delayMs = Math.floor(slot * this.maxJitterMs + randomOffset);
 
         decisions.push({

@@ -1,6 +1,5 @@
-import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD } from "@evoclaw/core";
+import { type LongTermMemory, type MemoryEntry, type MemorySearchQuery, type MemorySearchResult, DEFAULT_EMBEDDING_DIMENSION, COSINE_SIMILARITY_THRESHOLD, atomicWriteFileSync } from "@evoclaw/core";
 import { applyPragmas, DEFAULT_PRODUCTION_PRAGMAS } from "@evoclaw/infrastructure";
-import { v4 as uuid } from "uuid";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -169,66 +168,12 @@ export class LongTermMemoryStore implements LongTermMemory {
     // 安全：仅在成功写入后才清除 dirty 标志。
     // 旧实现在 try 之前就 dirty=false，写入失败时数据永久丢失且不重试。
     try {
-      const dir = path.dirname(MEMORY_FILE);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
       const data = Array.from(this.entries.values()).map((e) => ({
         ...e,
         createdAt: e.createdAt.toISOString(),
         accessedAt: e.accessedAt.toISOString(),
       }));
-      // 原子写入：temp + fsync + rename，防止崩溃时产生截断的记忆文件
-      const tmpPath = `${MEMORY_FILE}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(data, null, 2), "utf-8");
-        fs.fsyncSync(fd);
-      } catch (werr) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        throw werr;
-      }
-      fs.closeSync(fd);
-      try {
-        if (fs.existsSync(MEMORY_FILE)) {
-          const st = fs.statSync(MEMORY_FILE);
-          fs.chmodSync(tmpPath, st.mode);
-        }
-      } catch { /* ignore */ }
-      try {
-        fs.renameSync(tmpPath, MEMORY_FILE);
-      } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException)?.code;
-        if (code === "EXDEV" || code === "EBUSY") {
-          // 跨设备回退：目标侧 temp + rename
-          const content = fs.readFileSync(tmpPath, "utf-8");
-          const dstTmp = `${MEMORY_FILE}.${process.pid}.${randomUUID().slice(0, 8)}.dst.tmp`;
-          const fd2 = fs.openSync(dstTmp, "w");
-          try {
-            fs.writeFileSync(fd2, content, "utf-8");
-            fs.fsyncSync(fd2);
-          } catch (w2err) {
-            try { fs.closeSync(fd2); } catch { /* ignore */ }
-            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-            throw w2err;
-          }
-          fs.closeSync(fd2);
-          // 安全：EXDEV 回退的 rename 失败必须抛出，否则数据丢失且 dirty 已清
-          try {
-            fs.renameSync(dstTmp, MEMORY_FILE);
-          } catch (renameErr) {
-            try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-            try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-            throw renameErr;
-          }
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } else {
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          throw err;
-        }
-      }
+      atomicWriteFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
       // 仅在成功写入后才清除 dirty
       this.dirty = false;
     } catch (err) {
@@ -272,7 +217,7 @@ export class LongTermMemoryStore implements LongTermMemory {
   async store(entry: MemoryEntry): Promise<MemoryEntry> {
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: entry.id || uuid(),
+      id: entry.id || randomUUID(),
       createdAt: entry.createdAt || new Date(),
       accessedAt: entry.accessedAt || new Date(),
     };

@@ -5,7 +5,7 @@ import {
   type ProgressReport,
   type LearningSession,
 } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 
 export interface ProgressPhase {
   name: string;
@@ -14,6 +14,9 @@ export interface ProgressPhase {
 }
 
 export class ProgressReporter {
+  private static readonly MAX_REPORTS = 200;
+  private static readonly MAX_TASKS = 200;
+
   private activeReports = new Map<string, ProgressReport[]>();
   private activeTasks = new Map<string, {
     sessionId: string;
@@ -37,7 +40,16 @@ export class ProgressReporter {
     taskDescription: string,
     phases: ProgressPhase[]
   ): string {
-    const reportId = uuid();
+    const reportId = randomUUID();
+
+    // LRU 淘汰：超过最大条目数时删除最旧的（activeTasks 与 activeReports 同步淘汰）
+    if (this.activeTasks.size >= ProgressReporter.MAX_TASKS) {
+      const oldestKey = this.activeTasks.keys().next().value;
+      if (oldestKey) {
+        this.activeTasks.delete(oldestKey);
+        this.activeReports.delete(oldestKey);
+      }
+    }
 
     this.activeTasks.set(reportId, {
       sessionId,
@@ -245,7 +257,7 @@ export class ProgressReporter {
     }
   ): ProgressReport {
     const report: ProgressReport = {
-      id: uuid(),
+      id: randomUUID(),
       sessionId: params.sessionId,
       taskId: params.taskId,
       phase: params.phase,

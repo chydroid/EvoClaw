@@ -1,5 +1,9 @@
 /** channels — Communication channel management */
 import { Command } from "commander";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { c } from "../utils/colors";
 import { apiRequest, checkServer } from "../utils/api";
 
@@ -38,17 +42,25 @@ interface StatusResponse {
 
 async function weixinApiPost(endpoint: string, body: string): Promise<string> {
   const url = `${WEIXIN_API_BASE}/${endpoint}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "iLink-App-Id": "bot",
-      "iLink-App-ClientVersion": "0",
-    },
-    body,
-  });
-  if (!res.ok) throw new Error(`WeChat API ${res.status}: ${await res.text()}`);
-  return res.text();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  timer.unref();
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "iLink-App-Id": "bot",
+        "iLink-App-ClientVersion": "0",
+      },
+      body,
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`WeChat API ${res.status}: ${await res.text()}`);
+    return res.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function weixinApiGet(endpoint: string, timeoutMs = 35000): Promise<string> {
@@ -76,28 +88,25 @@ async function fetchWeixinQRCode(): Promise<QRCodeResponse> {
     `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(DEFAULT_BOT_TYPE)}`,
     JSON.stringify({ local_token_list: [] }),
   );
-  return JSON.parse(rawText) as QRCodeResponse;
+  try {
+    return JSON.parse(rawText) as QRCodeResponse;
+  } catch {
+    throw new Error(`WeChat API returned invalid JSON: ${rawText.slice(0, 200)}`);
+  }
 }
 
 async function pollWeixinQRStatus(qrcode: string): Promise<StatusResponse> {
   const endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`;
   const rawText = await weixinApiGet(endpoint);
-  return JSON.parse(rawText) as StatusResponse;
+  try {
+    return JSON.parse(rawText) as StatusResponse;
+  } catch {
+    throw new Error(`WeChat API returned invalid JSON: ${rawText.slice(0, 200)}`);
+  }
 }
 
 /** Save WeChat account credentials to the openclaw state directory */
 function saveWeixinCredentials(accountId: string, token: string, baseUrl: string, userId?: string): void {
-  const fs = require("fs") as typeof import("fs");
-  const path = require("path") as typeof import("path");
-  const os = require("os") as typeof import("os");
-
-  // Atomic write: write to temp file then rename (prevents partial/corrupt files)
-  const atomicWriteFileSync = (filePath: string, contents: string): void => {
-    const tmp = `${filePath}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, contents, "utf-8");
-    fs.renameSync(tmp, filePath);
-  };
-
   // 安全：校验 accountId 格式，防止路径穿越（如 accountId="../../config"）
   const normalizedId = accountId.replace(/@/g, "-");
   if (!/^[a-zA-Z0-9_-]+$/.test(normalizedId)) {

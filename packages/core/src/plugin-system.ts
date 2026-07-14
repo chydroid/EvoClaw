@@ -7,7 +7,7 @@
 
 import type { EventBus } from "./event-bus";
 import type { ServiceRegistry } from "./service-registry";
-import { readdir } from "node:fs/promises";
+import { readdir, stat as statPath } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -363,7 +363,12 @@ export interface PluginManifest {
 export interface PluginHookRegistration {
   hookType: PluginHook["type"];
   priority: HookPriority;
-  handler: (hook: PluginHook) => Promise<PluginHookResult | void> | PluginHookResult | void;
+  /**
+   * Hook handler。可选的 AbortSignal 在 runHooks 超时后会被 abort，
+   * 让支持取消的 handler（如 fetch）能感知取消信号并停止后台执行。
+   * 不支持信号的 handler 可忽略此参数。Bug P2-11 修复。
+   */
+  handler: (hook: PluginHook, signal?: AbortSignal) => Promise<PluginHookResult | void> | PluginHookResult | void;
 }
 
 export interface Plugin {
@@ -510,6 +515,22 @@ export class PluginManager {
     process.stdout.write(`[PluginManager] Plugin "${name}" unregistered\n`);
   }
 
+  /**
+   * 统一关闭所有已加载插件：遍历 plugins Map，对每个插件调用
+   * unregisterPlugin（已包含 shutdown 调用和 hook 注销）。
+   * 单个插件卸载失败不阻塞其他插件的清理。
+   */
+  async shutdownAll(): Promise<void> {
+    const names = Array.from(this.plugins.keys());
+    for (const name of names) {
+      try {
+        await this.unregisterPlugin(name);
+      } catch (err) {
+        process.stderr.write(`[PluginManager] Failed to shutdown plugin "${name}": ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  }
+
   /** Enable/disable a plugin without unregistering */
   setPluginStatus(name: string, status: "active" | "disabled"): void {
     const loaded = this.plugins.get(name);
@@ -546,12 +567,35 @@ export class PluginManager {
       }
 
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      // Bug P2-11 修复：原 Promise.race 超时后 handler promise 仍在后台执行，
+      // 若 handler 最终 reject 会产生 unhandledRejection。改为：
+      // 1. 对 handler promise 附加 .catch 防止 unhandledRejection
+      // 2. 通过 AbortController 让支持取消的 handler 能感知取消信号
+      const hookController = new AbortController();
+      let timedOut = false;
+      const handlerPromise = Promise.resolve()
+        .then(() => handler(hook, hookController.signal))
+        .catch((err) => {
+          // handler 内部抛错时：若已超时，吞掉错误（避免 unhandledRejection）；
+          // 未超时则向上抛让 catch 块处理
+          if (timedOut) {
+            process.stderr.write(`[PluginManager] Hook "${hook.type}" handler in plugin "${plugin}" failed after timeout: ${err}\n`);
+            return undefined;
+          }
+          throw err;
+        });
       try {
         // 超时保护：单个 handler 最多执行 30 秒，避免恶意/卡死插件阻塞整个 hook 链
         const result = await Promise.race([
-          Promise.resolve(handler(hook)) as Promise<R | undefined>,
+          handlerPromise as Promise<R | undefined>,
           new Promise<R | undefined>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error(`Hook handler timeout after 30000ms`)), 30_000);
+            timeoutHandle = setTimeout(() => {
+              timedOut = true;
+              // 通知支持取消的 handler 停止执行
+              try { hookController.abort(); } catch { /* ignore */ }
+              reject(new Error(`Hook handler timeout after 30000ms`));
+            }, 30_000);
+            timeoutHandle.unref?.();
           }),
         ]) as R | undefined;
         if (result) {
@@ -700,11 +744,24 @@ export class PluginManager {
         } else if (entry.isDirectory()) {
           // Try loading as a package (index.js)
           const indexPath = join(fullPath, "index.js");
+          // Bug P2-12 修复：原代码 catch 块静默吞噬所有错误，导致 index.js
+          // 存在但有语法错误/抛异常/格式无效时无法被发现。改为：仅当
+          // index.js 不存在时静默跳过（合法的非插件目录），其他错误都记录到 stderr。
+          try {
+            const stat = await statPath(indexPath);
+            if (!stat.isFile()) {
+              continue; // index.js 不是文件，跳过
+            }
+          } catch {
+            // index.js 不存在或无法访问：合法的非插件目录，静默跳过
+            continue;
+          }
           try {
             const plugin = await this.loadPluginFromPath(indexPath);
             await this.registerPlugin(plugin);
-          } catch {
-            // Not a plugin directory, skip silently
+          } catch (err) {
+            // index.js 存在但加载失败：记录错误，便于排查
+            process.stderr.write(`[PluginManager] Failed to load plugin from "${indexPath}":` + " " + err + "\n");
           }
         }
       } catch (err) {

@@ -4,6 +4,17 @@ import * as os from "os";
 import { EventEmitter } from "events";
 import { atomicWriteFileSync } from "./atomic-write";
 
+// ── HTML escape (XSS 防护) ─────────────────────────────────
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 export interface CanvasFile {
   filename: string;
   content: string;
@@ -82,7 +93,7 @@ export class CanvasHost extends EventEmitter {
     const projectDir = path.join(this.rootDir, id);
     fs.mkdirSync(projectDir, { recursive: true });
     const defaultHtml = html || this.defaultIndexHtml(name);
-    fs.writeFileSync(path.join(projectDir, "index.html"), defaultHtml, "utf-8");
+    atomicWriteFileSync(path.join(projectDir, "index.html"), defaultHtml, { encoding: "utf-8" });
     this.loadProject(id, projectDir);
     const project = this.projects.get(id)!;
     this.emit("project-created", project);
@@ -158,7 +169,7 @@ export class CanvasHost extends EventEmitter {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${name}</title>
+  <title>${escapeHtml(name)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
@@ -170,7 +181,7 @@ export class CanvasHost extends EventEmitter {
 </head>
 <body>
   <div class="container">
-    <h1>${name}</h1>
+    <h1>${escapeHtml(name)}</h1>
     <p>Agent 驱动的可视化工作区</p>
     <div class="badge">EvoClaw Canvas</div>
   </div>

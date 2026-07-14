@@ -704,9 +704,14 @@ export async function handleBatchSkillInstall(
   for (let i = 0; i < urlSkills.length; i++) {
     const url = urlSkills[i];
     const idx = i + 1;
-    // Extract skill name from URL for display
-    const urlBasename = path.basename(new URL(url).pathname, ".zip");
-    const displayName = urlBasename || url;
+    // Extract skill name from URL for display（畸形 URL 时不抛错，回退到原始 url 作为显示名）
+    let displayName = url;
+    try {
+      const urlBasename = path.basename(new URL(url).pathname, ".zip");
+      displayName = urlBasename || url;
+    } catch {
+      // new URL() 对畸形 URL 抛 TypeError，保留原始 url 作为显示名
+    }
 
     progressLines.push(`⏳ [${idx}/${total}] 正在下载 ${displayName}...`);
 
@@ -904,9 +909,14 @@ export async function downloadAndExtractSkill(deps: SkillInstallerDeps, url: str
     fs.mkdirSync(skillsDir, { recursive: true });
   }
 
-  // Extract skill name from URL
-  const urlPath = new URL(url).pathname;
-  const zipBasename = path.basename(urlPath, ".zip") || `skill-${Date.now()}`;
+  // Extract skill name from URL（畸形 URL 时回退到默认名称，不抛错）
+  let zipBasename = `skill-${Date.now()}`;
+  try {
+    const urlPath = new URL(url).pathname;
+    zipBasename = path.basename(urlPath, ".zip") || zipBasename;
+  } catch {
+    // new URL() 对畸形 URL 抛 TypeError，使用默认 zipBasename
+  }
   const zipPath = path.join(skillsDir, `${zipBasename}.zip`);
 
   // ── Step 1: Download ──

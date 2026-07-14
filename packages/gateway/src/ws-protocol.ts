@@ -265,7 +265,7 @@ export class ProtocolHandler {
 
   /** Process an incoming frame from a client */
   async processFrame(client: WSClient, raw: string): Promise<void> {
-    let frame: ProtocolFrame;
+    let frame: unknown;
 
     try {
       frame = JSON.parse(raw);
@@ -274,9 +274,22 @@ export class ProtocolHandler {
       return;
     }
 
+    // 校验解析结果为非 null 对象
+    if (frame === null || typeof frame !== "object" || Array.isArray(frame)) {
+      client.close(4000, "Invalid frame: expected object");
+      return;
+    }
+
+    const f = frame as Record<string, unknown>;
+
     // First frame must be connect
-    if (frame.type === "connect" && !client.deviceId) {
-      return this.handleConnect(client, frame as ConnectFrame);
+    if (f.type === "connect" && !client.deviceId) {
+      try {
+        return await this.handleConnect(client, f as unknown as ConnectFrame);
+      } catch (err) {
+        client.close(4000, `Connect error: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
     }
 
     // All other frames require connect handshake
@@ -285,17 +298,23 @@ export class ProtocolHandler {
       return;
     }
 
-    switch (frame.type) {
+    switch (f.type) {
       case "req":
-        return this.handleRequest(client, frame as RequestFrame);
+        return this.handleRequest(client, f as unknown as RequestFrame);
       default:
-        client.close(4002, `Unexpected frame type: ${frame.type}`);
+        client.close(4002, `Unexpected frame type: ${f.type}`);
     }
   }
 
   // ─── Connect Handshake ────────────────────────────────────────────────────
 
   private async handleConnect(client: WSClient, frame: ConnectFrame): Promise<void> {
+    // 校验 params 存在且为对象
+    if (!frame.params || typeof frame.params !== "object") {
+      client.send({ type: "hello-error", reason: "Missing params", code: "protocol_error" });
+      client.close(4002, "Missing connect params");
+      return;
+    }
     const { auth, role, deviceId, deviceToken } = frame.params;
 
     // Validate role
@@ -348,8 +367,10 @@ export class ProtocolHandler {
     (client as unknown as Record<string, unknown>).deviceId = deviceId ?? `anon-${client.id}`;
 
     if (clientRole === "node") {
-      (client as unknown as Record<string, unknown>).caps = frame.params.caps ?? [];
-      (client as unknown as Record<string, unknown>).commands = frame.params.commands ?? [];
+      const caps = frame.params.caps;
+      const commands = frame.params.commands;
+      (client as unknown as Record<string, unknown>).caps = Array.isArray(caps) ? caps.filter(c => typeof c === "string") : [];
+      (client as unknown as Record<string, unknown>).commands = Array.isArray(commands) ? commands.filter(c => typeof c === "string") : [];
     }
 
     // Send hello-ok
@@ -386,6 +407,28 @@ export class ProtocolHandler {
         id,
         ok: false,
         error: { code: "unknown_method", message: `Unknown method: ${method}` },
+      });
+      return;
+    }
+
+    // Validate params is a plain object
+    if (params === undefined || params === null || typeof params !== "object" || Array.isArray(params)) {
+      client.send({
+        type: "res",
+        id,
+        ok: false,
+        error: { code: "invalid_params", message: "params must be an object" },
+      });
+      return;
+    }
+
+    // Validate idempotency key length
+    if (idempotencyKey && idempotencyKey.length > 256) {
+      client.send({
+        type: "res",
+        id,
+        ok: false,
+        error: { code: "invalid_idempotency_key", message: "Idempotency key too long" },
       });
       return;
     }

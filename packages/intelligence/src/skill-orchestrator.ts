@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 
 export interface OrchestrationStep {
@@ -67,7 +68,7 @@ export class SkillOrchestrator {
       mergeStrategy?: OrchestrationStep["mergeStrategy"];
     }>;
   }): OrchestrationPlan {
-    const id = `orch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `orch-${Date.now()}-${crypto.randomBytes(2).toString("hex")}`;
 
     const steps: OrchestrationStep[] = options.steps.map((s, i) => ({
       id: `step-${i}-${s.name.replace(/[^a-zA-Z0-9]/g, "-")}`,
@@ -182,7 +183,11 @@ export class SkillOrchestrator {
 
           if (result.success) {
             completed.add(result.stepId);
-            const step = plan.steps.find((s) => s.id === result.stepId)!;
+            const step = plan.steps.find((s) => s.id === result.stepId);
+            if (!step) {
+              failed.add(result.stepId);
+              continue;
+            }
             this.mergeOutput(aggregatedOutput, result.output, step.mergeStrategy);
           } else {
             failed.add(result.stepId);
@@ -372,6 +377,7 @@ export class SkillOrchestrator {
         controller.abort();
         reject(new Error(`Step timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      timer.unref?.();
       fn(controller.signal)
         .then((result) => { clearTimeout(timer); resolve(result); })
         .catch((err) => { clearTimeout(timer); reject(err); });
@@ -385,21 +391,32 @@ export class SkillOrchestrator {
   ): void {
     if (strategy === "none") return;
 
+    // 安全：过滤原型污染危险键
+    const safeOutput = (obj: Record<string, unknown>): Record<string, unknown> => {
+      const result: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (k !== "__proto__" && k !== "constructor" && k !== "prototype") {
+          result[k] = v;
+        }
+      }
+      return result;
+    };
+
     if (strategy === "replace") {
       Object.keys(accumulated).forEach((k) => delete accumulated[k]);
       if (output && typeof output === "object" && !Array.isArray(output)) {
-        Object.assign(accumulated, output);
+        Object.assign(accumulated, safeOutput(output as Record<string, unknown>));
       }
       return;
     }
 
     if (output && typeof output === "object" && !Array.isArray(output)) {
-      const obj = output as Record<string, unknown>;
+      const obj = safeOutput(output as Record<string, unknown>);
       for (const [key, value] of Object.entries(obj)) {
         if (strategy === "append" && Array.isArray(accumulated[key]) && Array.isArray(value)) {
           (accumulated[key] as unknown[]).push(...(value as unknown[]));
         } else if (accumulated[key] !== null && typeof accumulated[key] === "object" && value !== null && typeof value === "object" && !Array.isArray(value)) {
-          Object.assign(accumulated[key] as Record<string, unknown>, value as Record<string, unknown>);
+          Object.assign(accumulated[key] as Record<string, unknown>, safeOutput(value as Record<string, unknown>));
         } else {
           accumulated[key] = value;
         }
@@ -452,7 +469,10 @@ export class SkillOrchestrator {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 
   getPlan(planId: string): OrchestrationPlan | undefined {

@@ -272,11 +272,11 @@ export class UpdateManager {
           message: "Running post-update tasks...",
         });
         try {
-          // 安全：将命令字符串拆分为命令 + 参数数组，避免 shell 注入
-          const parts = this.config.postUpdateCommand.split(/\s+/).filter(Boolean);
-          if (parts.length > 0) {
-            const [cmd, ...args] = parts;
-            execFileSync(cmd, args, { stdio: "inherit" });
+          // 安全：将命令字符串拆分为命令 + 参数数组，避免 shell 注入。
+          // 使用引号感知 tokenizer，支持 "..." / '...' 包含空格的参数。
+          const { command, args } = this.parseCommand(this.config.postUpdateCommand);
+          if (command) {
+            execFileSync(command, args, { stdio: "inherit" });
           }
         } catch {
           // Post-update failure is non-critical
@@ -634,6 +634,40 @@ export class UpdateManager {
     }
 
     return 0;
+  }
+
+  /**
+   * 引号感知的命令 tokenizer：将命令字符串拆分为 { command, args }。
+   * 支持单引号 '...' 和双引号 "..." 包含空格的参数，引号被剥离。
+   * 不调用 shell，避免命令注入。
+   */
+  private parseCommand(cmd: string): { command: string; args: string[] } {
+    const tokens: string[] = [];
+    let current = "";
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (ch === "'" && !inDouble) {
+        inSingle = !inSingle;
+        continue;
+      }
+      if (ch === '"' && !inSingle) {
+        inDouble = !inDouble;
+        continue;
+      }
+      if (/\s/.test(ch) && !inSingle && !inDouble) {
+        if (current) {
+          tokens.push(current);
+          current = "";
+        }
+        continue;
+      }
+      current += ch;
+    }
+    if (current) tokens.push(current);
+    const [command, ...args] = tokens;
+    return { command: command ?? "", args };
   }
 
   private formatBytes(bytes: number): string {

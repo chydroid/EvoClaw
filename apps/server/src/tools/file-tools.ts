@@ -1,17 +1,53 @@
 import * as path from "path";
+import * as fs from "fs";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { PermissionManager, PermissionRelay } from "@evoclaw/security";
 import type { ErrorRecoveryManager } from "@evoclaw/security";
 import type { FileSystemManager } from "@evoclaw/infrastructure";
 
 /** Validate that a resolved path stays within the allowed base directory.
- *  Prevents path traversal attacks (e.g. `../../etc/passwd`). */
+ *  Prevents path traversal attacks (e.g. `../../etc/passwd`).
+ *
+ *  Bug 9 修复：原实现仅用 path.resolve 做词法规范化，不解析符号链接。
+ *  攻击者可在 workspace 内创建指向外部目录的 symlink（如 workspace/evil -> /etc），
+ *  path.resolve 会认为 evil 在 workspace 内，但实际访问的是 /etc。
+ *  改为：对已存在路径用 realpathSync 解析符号链接后再检查；
+ *  对不存在路径，realpath 父目录后拼接文件名再检查。 */
 function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
   const normalizedBase = path.resolve(baseDir);
   // On Windows, normalize drive letters for comparison
   const normalizedTarget = path.resolve(resolvedPath);
+
+  // 先做词法检查：若词法上已超出 base，直接拒绝（避免 realpath 浪费 IO）
   if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
     return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}". Use relative paths within the workspace only.`;
+  }
+
+  // Bug 9 修复：词法检查通过后，再用 realpath 解析符号链接，防止
+  // workspace 内的 symlink 指向外部目录。
+  try {
+    let realTarget: string;
+    if (fs.existsSync(normalizedTarget)) {
+      // 路径存在：直接 realpath
+      realTarget = fs.realpathSync(normalizedTarget);
+    } else {
+      // 路径不存在（如 file_create）：realpath 父目录后拼接 basename
+      const parentDir = path.dirname(normalizedTarget);
+      if (fs.existsSync(parentDir)) {
+        const realParent = fs.realpathSync(parentDir);
+        realTarget = path.join(realParent, path.basename(normalizedTarget));
+      } else {
+        // 父目录也不存在：信任词法检查结果
+        return null;
+      }
+    }
+    // 对 realpath 结果再做一次词法检查
+    if (!realTarget.startsWith(normalizedBase + path.sep) && realTarget !== normalizedBase) {
+      return `Path traversal blocked (symlink escape): "${resolvedPath}" resolves to "${realTarget}" which is outside the allowed workspace "${normalizedBase}".`;
+    }
+  } catch {
+    // realpath 失败（权限/IO 错误）：保守拒绝，避免误放行
+    return `Path validation failed (realpath error): "${resolvedPath}".`;
   }
   return null;
 }

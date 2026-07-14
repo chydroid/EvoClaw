@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page } from "playwright";
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, atomicWriteFileSync } from "@evoclaw/core";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -567,6 +567,8 @@ export class PlaywrightBrowser {
     }
 
     try {
+      // SSRF 检查：与 navigate() 一致，在 page.goto 前拦截内网/元数据端点。
+      await this.assertSafeUrl(loginUrl);
       await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
       await page.waitForSelector(usernameSelector, { timeout: 10000 });
@@ -692,36 +694,8 @@ export class PlaywrightBrowser {
     try {
       const cookies = await this.getCookies();
       if (cookies.length > 0) {
-        const dir = path.dirname(this.cookieFile);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
         // 安全：cookie 文件含会话凭据，必须设置 0o600 权限防止同机其他用户读取
-        const tmp = `${this.cookieFile}.tmp.${process.pid}`;
-        const tmpFd = fs.openSync(tmp, "w", 0o600);
-        try {
-          fs.writeFileSync(tmpFd, JSON.stringify(cookies, null, 2), "utf-8");
-          fs.fsyncSync(tmpFd);
-        } catch (err) {
-          // 写入或同步失败时清理残留的临时文件，避免 fd 泄漏与文件残留
-          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
-          throw err;
-        } finally {
-          try { fs.closeSync(tmpFd); } catch { /* already closed */ }
-        }
-        let fd: number | null = null;
-        try {
-          fd = fs.openSync(tmp, "r");
-          fs.fsyncSync(fd);
-          fs.closeSync(fd);
-          fd = null;
-          fs.renameSync(tmp, this.cookieFile);
-          // 确保 rename 后的文件也保持 0o600
-          try { fs.chmodSync(this.cookieFile, 0o600); } catch { /* ignore */ }
-        } finally {
-          if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
-          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
-        }
+        atomicWriteFileSync(this.cookieFile, JSON.stringify(cookies, null, 2), { encoding: "utf-8", mode: 0o600 });
       }
     } catch (err) {
       process.stderr.write(`[PlaywrightBrowser] Failed to save cookies: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -744,6 +718,8 @@ export class PlaywrightBrowser {
     this.activeTabId = tabId;
 
     if (url) {
+      // SSRF 检查：与 navigate() 一致，防止新标签页访问内网/元数据端点。
+      await this.assertSafeUrl(url);
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     }
 

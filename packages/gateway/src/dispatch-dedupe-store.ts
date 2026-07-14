@@ -241,7 +241,10 @@ export class DispatchDedupeStore {
           }
         }
       }
-    } catch { /* 静默失败 */ }
+    } catch (err) {
+      // 记录加载错误便于排查，而非静默吞掉
+      process.stderr.write(`[DispatchDedupeStore] Failed to load from ${this.config.persistPath}: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   /** 关闭 */

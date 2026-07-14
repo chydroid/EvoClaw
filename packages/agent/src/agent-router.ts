@@ -18,6 +18,8 @@
 import * as path from "path";
 import * as fs from "fs";
 import type { PersonaConfig } from "@evoclaw/core";
+import { atomicWriteFileSync } from "@evoclaw/core";
+import { isUnsafeRegex } from "@evoclaw/security";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -133,7 +135,13 @@ export class AgentRouter {
   private bindingsList: AgentBinding[] = [];
 
   constructor(config?: Partial<RouterConfig>) {
-    this.config = { ...DEFAULT_ROUTER_CONFIG, ...config };
+    // 深拷贝默认配置的数组字段，避免多实例共享同一引用
+    this.config = {
+      ...DEFAULT_ROUTER_CONFIG,
+      ...config,
+      agents: [...(config?.agents ?? DEFAULT_ROUTER_CONFIG.agents)],
+      bindings: [...(config?.bindings ?? DEFAULT_ROUTER_CONFIG.bindings)],
+    };
     this.rebuildIndex();
   }
 
@@ -223,6 +231,8 @@ export class AgentRouter {
       for (const binding of sorted) {
         if (binding.channel === request.channel && binding.peerPattern) {
           try {
+            // 安全：拒绝 ReDoS 风险正则，防止灾难性回溯
+            if (isUnsafeRegex(binding.peerPattern)) continue;
             const regex = new RegExp(binding.peerPattern);
             if (regex.test(request.peer)) {
               const agent = this.agentMap.get(binding.agentId);
@@ -333,17 +343,18 @@ export class AgentRouter {
 
   /** Import router configuration from JSON */
   importConfig(config: RouterConfig): void {
-    this.config = { ...DEFAULT_ROUTER_CONFIG, ...config };
+    this.config = {
+      ...DEFAULT_ROUTER_CONFIG,
+      ...config,
+      agents: [...(config.agents ?? DEFAULT_ROUTER_CONFIG.agents)],
+      bindings: [...(config.bindings ?? DEFAULT_ROUTER_CONFIG.bindings)],
+    };
     this.rebuildIndex();
   }
 
   /** Save configuration to a file */
   saveToFile(filePath: string): void {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(filePath, JSON.stringify(this.config, null, 2), "utf-8");
+    atomicWriteFileSync(filePath, JSON.stringify(this.config, null, 2));
   }
 
   /** Load configuration from a file */

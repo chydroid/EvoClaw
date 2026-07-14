@@ -6,6 +6,8 @@
  * claim tasks, report progress, and see each other's status.
  */
 
+import * as crypto from "crypto";
+
 export interface BoardTask {
   id: string;
   title: string;
@@ -58,6 +60,7 @@ export const DEFAULT_COLUMNS: BoardColumn[] = [
 ];
 
 export class Workboard {
+  private static readonly MAX_TASKS = 10000;
   private tasks: Map<string, BoardTask> = new Map();
   private runs: Map<string, BoardRun> = new Map();
   private readonly maxRuns = 500;
@@ -70,7 +73,7 @@ export class Workboard {
   // ── Task Management ──
 
   createTask(options: Omit<BoardTask, "id" | "createdAt" | "updatedAt" | "comments" | "subtaskIds" | "metadata"> & { metadata?: Record<string, unknown> }): BoardTask {
-    const id = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `task-${Date.now().toString(36)}-${crypto.randomBytes(2).toString("hex")}`;
     const now = Date.now();
     const task: BoardTask = {
       ...options,
@@ -82,7 +85,16 @@ export class Workboard {
       metadata: options.metadata ?? {},
     };
     this.tasks.set(id, task);
+    this.enforceTaskLimit();
     return task;
+  }
+
+  private enforceTaskLimit(): void {
+    while (this.tasks.size > Workboard.MAX_TASKS) {
+      const firstKey = this.tasks.keys().next().value;
+      if (!firstKey) break;
+      this.tasks.delete(firstKey);
+    }
   }
 
   updateTask(taskId: string, updates: Partial<Pick<BoardTask, "title" | "description" | "status" | "assignee" | "priority" | "tags" | "dueDate">>): BoardTask | null {

@@ -79,7 +79,7 @@ describe("EmbeddingSimulator", () => {
     const similarity12 = cosineSimilarity(v1, v2);
     const similarity13 = cosineSimilarity(v1, v3);
 
-    expect(similarity12).toBe(1.0);
+    expect(similarity12).toBeCloseTo(1.0, 10);
     expect(similarity13).toBeLessThan(1.0);
   });
 

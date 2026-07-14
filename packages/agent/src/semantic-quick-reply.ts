@@ -243,7 +243,7 @@ export class SemanticQuickReply {
     // Ensure centroids are computed
     await this.initialize();
     if (this.centroids.length === 0) {
-      process.stdout.write(`[SemanticQuickReply] No centroids available, skipping classify\n`);
+      process.stderr.write(`[SemanticQuickReply] No centroids available, skipping classify\n`);
       return null;
     }
 
@@ -270,11 +270,11 @@ export class SemanticQuickReply {
     // Log top-3 scores for debugging
     scores.sort((a, b) => b.score - a.score);
     const top3 = scores.slice(0, 3).map((s) => `${s.category}=${s.score.toFixed(4)}`).join(", ");
-    process.stdout.write(`[SemanticQuickReply] "${trimmed.slice(0, 30)}" → top3: ${top3}\n`);
+    process.stderr.write(`[SemanticQuickReply] "${trimmed.slice(0, 30)}" → top3: ${top3}\n`);
 
     if (!bestCategory || bestScore < this.threshold) return null;
 
-    process.stdout.write(`[SemanticQuickReply] Matched category="${bestCategory}" score=${bestScore.toFixed(4)} for "${trimmed.slice(0, 30)}"\n`);
+    process.stderr.write(`[SemanticQuickReply] Matched category="${bestCategory}" score=${bestScore.toFixed(4)} for "${trimmed.slice(0, 30)}"\n`);
 
     // Find the reply pool for this category from the regex-based table
     const entry = __test.SIMPLE_GREETING_ENTRIES.find((e: { category: string }) => e.category === bestCategory);

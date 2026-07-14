@@ -9,7 +9,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ──────────────────────────────────────────────────────────────
 // Types
@@ -93,7 +94,7 @@ export interface ObservabilityConfig {
 // ──────────────────────────────────────────────────────────────
 
 function generateId(): string {
-  return `${Date.now().toString(36)}-${randomUUID()}`;
+  return `${Date.now().toString(36)}-${crypto.randomUUID()}`;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -144,7 +145,8 @@ export class AgentObservability {
     }
 
     // Sampling: skip recording if random > samplingRate
-    if (Math.random() > this.config.samplingRate) {
+    const sampleThreshold = crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+    if (sampleThreshold > this.config.samplingRate) {
       const traceId = generateId();
       return this.makeTrace(traceId, sessionId, "", 0, {});
     }
@@ -586,38 +588,12 @@ export class AgentObservability {
   /** 保存 traces 到磁盘（JSON 格式） */
   private persistToDisk(): void {
     try {
-      if (!fs.existsSync(this.storeDir)) {
-        fs.mkdirSync(this.storeDir, { recursive: true });
-      }
       const filePath = path.join(this.storeDir, "traces.json");
       const data = {
         traces: Array.from(this.traces.values()).slice(-1000),
         savedAt: new Date().toISOString(),
       };
-      const serialized = JSON.stringify(data);
-      // 原子写入：temp + fsync + rename，防止崩溃时 JSON 文件损坏
-      const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-      const fd = fs.openSync(tmpPath, "w");
-      try {
-        fs.writeFileSync(fd, serialized, "utf-8");
-        fs.fsyncSync(fd);
-      } finally {
-        try { fs.closeSync(fd); } catch { /* ignore close errors to not mask original */ }
-      }
-      try {
-        fs.renameSync(tmpPath, filePath);
-      } catch (renameErr) {
-        // EXDEV/EBUSY 跨设备回退：在目标目录侧创建临时文件再 rename
-        const dstTmp = `${filePath}.${process.pid}.${Date.now()}.dst.tmp`;
-        try {
-          fs.copyFileSync(tmpPath, dstTmp);
-          fs.renameSync(dstTmp, filePath);
-          try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-        } catch (fallbackErr) {
-          try { fs.unlinkSync(dstTmp); } catch { /* ignore */ }
-          throw fallbackErr;
-        }
-      }
+      atomicWriteFileSync(filePath, JSON.stringify(data));
     } catch (err) {
       process.stderr.write(`[AgentObservability] Failed to persist: ${err}\n`);
     }
@@ -728,21 +704,7 @@ export class AgentObservability {
       // Export metrics to file
       const metricsFile = path.join(dir, `metrics-${new Date().toISOString().slice(0, 10)}.txt`);
       const metricsText = this.exportMetrics();
-      // 原子写入：temp + fsync + rename，防止覆盖式写入在崩溃时丢失数据
-      const metricsTmp = `${metricsFile}.${process.pid}.${Date.now()}.tmp`;
-      const mfd = fs.openSync(metricsTmp, "w");
-      try {
-        fs.writeFileSync(mfd, metricsText, "utf-8");
-        fs.fsyncSync(mfd);
-      } finally {
-        fs.closeSync(mfd);
-      }
-      try {
-        fs.renameSync(metricsTmp, metricsFile);
-      } catch {
-        // rename 失败时清理临时文件，避免残留
-        try { fs.unlinkSync(metricsTmp); } catch { /* ignore */ }
-      }
+      atomicWriteFileSync(metricsFile, metricsText);
 
       // Clean up old traces from memory (keep last 100)
       const toKeep = 100;

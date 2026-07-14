@@ -38,12 +38,17 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
     .option("-p, --port <number>", "Override default port", String(DEFAULT_PORT))
     .option("--no-open", "Print URL without opening browser")
     .action(async (opts: Record<string, unknown>) => {
-      const port = opts.port || DEFAULT_PORT;
-      const url = `http://localhost:${port}`;
+      const portNum = parseInt(String(opts.port || DEFAULT_PORT), 10);
+      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        console.log(c("red", `${ICONS.error()} Invalid port: ${opts.port}. Must be an integer between 1 and 65535.`));
+        process.exitCode = 1;
+        return;
+      }
+      const url = encodeURI(`http://localhost:${portNum}`);
 
       const serverAlive = await checkServer();
       if (!serverAlive) {
-        console.log(c("yellow", `${ICONS.warn()} Gateway is not running on port ${port}`));
+        console.log(c("yellow", `${ICONS.warn()} Gateway is not running on port ${portNum}`));
         console.log(c("gray", "  Start it with: EvoClaw gateway start"));
         console.log();
         console.log(c("gray", `  Dashboard URL (when running): ${url}`));

@@ -4,6 +4,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHmac, randomBytes } from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 /** 插件/技能来源类型 */
 export type InstallSource = "official" | "verified" | "community" | "local" | "url" | "unknown";
@@ -381,38 +382,18 @@ export class InstallPolicyManager {
       // 原子写入：temp + fsync + rename，防止崩溃时文件被截断
       this.atomicWriteFileSync(this.auditPath, JSON.stringify(toWrite, null, 2));
     } catch (err) {
-      // 静默失败,不阻塞主流程
+      // 审计日志写入失败不阻塞主流程，但必须记录到 stderr 以便运维发现
+      process.stderr.write(
+        `[InstallPolicy] persistAudit failed: ${err instanceof Error ? err.message : String(err)}\n`
+      );
     }
   }
 
   /**
-   * 同步原子写入：temp + fsync + rename。
-   * 灵感来自 @evoclaw/infrastructure 的 atomicWriteFile 与 gateway 的 atomicWriteFileSync。
+   * 同步原子写入：委托给 @evoclaw/core 的 atomicWriteFileSync。
    */
   private atomicWriteFileSync(targetPath: string, content: string): void {
-    const tmpPath = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-    const fd = fs.openSync(tmpPath, "w");
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } catch (err) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
-    fs.closeSync(fd);
-    try {
-      if (fs.existsSync(targetPath)) {
-        const st = fs.statSync(targetPath);
-        fs.chmodSync(tmpPath, st.mode);
-      }
-    } catch { /* ignore */ }
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (err: unknown) {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-      throw err;
-    }
+    atomicWriteFileSync(targetPath, content);
   }
 
   /** 加载审计日志 */

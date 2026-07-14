@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 
 /** 关闭上下文快照内容 */
 export interface ShutdownSnapshot {
@@ -32,7 +32,9 @@ export interface ShutdownSnapshot {
 /** 诊断命令定义 */
 interface DiagnosticCommand {
   name: string;
-  cmd: string;
+  command: string;
+  args: string[];
+  tailLines?: number;
 }
 
 const DIAGNOSTIC_TIMEOUT_MS = 5000;
@@ -109,31 +111,41 @@ export class ShutdownForensics {
     }
 
     const commands: DiagnosticCommand[] = [
-      { name: "ps", cmd: "ps aux" },
-      { name: "pstree", cmd: `pstree -p ${process.pid}` },
-      { name: "dmesg", cmd: "dmesg | tail -100" },
+      { name: "ps", command: "ps", args: ["aux"] },
+      { name: "pstree", command: "pstree", args: ["-p", String(process.pid)] },
+      { name: "dmesg", command: "dmesg", args: [], tailLines: 100 },
     ];
 
     const sections: string[] = [];
-    for (const { name, cmd } of commands) {
-      const output = await this.runCommand(name, cmd);
+    for (const diag of commands) {
+      const output = await this.runCommand(diag);
       sections.push(output);
     }
 
     fs.writeFileSync(logPath, sections.join("\n"), "utf8");
   }
 
-  /** 运行单个诊断命令，返回格式化的输出段。 */
-  private runCommand(name: string, cmd: string): Promise<string> {
+  /** 运行单个诊断命令，返回格式化的输出段。使用 execFile 避免 shell 注入。 */
+  private runCommand(diag: DiagnosticCommand): Promise<string> {
     return new Promise((resolve) => {
-      exec(cmd, { timeout: DIAGNOSTIC_TIMEOUT_MS }, (err, stdout, stderr) => {
-        if (err) {
-          resolve(`=== ${name} (failed: ${err.message}) ===\n`);
-          return;
+      execFile(
+        diag.command,
+        diag.args,
+        { timeout: DIAGNOSTIC_TIMEOUT_MS, shell: false },
+        (err, stdout, stderr) => {
+          if (err) {
+            resolve(`=== ${diag.name} (failed: ${err.message}) ===\n`);
+            return;
+          }
+          let out = stdout;
+          if (diag.tailLines && diag.tailLines > 0) {
+            const lines = out.split("\n");
+            out = lines.slice(-diag.tailLines).join("\n");
+          }
+          const combined = out + (stderr ? `\n[stderr]\n${stderr}` : "");
+          resolve(`=== ${diag.name} ===\n${combined}\n`);
         }
-        const combined = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
-        resolve(`=== ${name} ===\n${combined}\n`);
-      });
+      );
     });
   }
 }

@@ -833,6 +833,8 @@ function mapCategoryToType(
       return "experience";
     case "procedure":
       return "experience";
+    default:
+      return "system";
   }
 }
 

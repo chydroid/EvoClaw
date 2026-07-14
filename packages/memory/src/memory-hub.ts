@@ -48,6 +48,8 @@ export class MemoryHub {
   private transformersProvider: TransformersEmbeddingProvider | null = null;
   /** Tracked when transformers warmup fails — surfaced via status. */
   private embeddingLoadError: string | null = null;
+  /** Transformers warmup 超时定时器句柄；close() 时清理，避免阻止 Node 优雅退出 */
+  private warmupTimer: ReturnType<typeof setTimeout> | null = null;
   private memoryCuratorV2: import("./memory-curator-v2").MemoryCuratorV2 | null = null;
   /** curateMemories 串行化链：避免并发调用产生重复压缩条目。 */
   private curateChain: Promise<unknown> = Promise.resolve();
@@ -158,14 +160,19 @@ export class MemoryHub {
     // stuck on "transformers" forever.
     const TIMEOUT_MS = 60_000;
     const timer = setTimeout(() => {
+      this.warmupTimer = null;
       this.embeddingLoadError = `Transformers warmup timed out after ${TIMEOUT_MS}ms`;
       this.installLocalFallback(transformers);
     }, TIMEOUT_MS);
+    // unref 防止 warmup 阻止 Node.js 优雅退出
+    timer.unref();
+    this.warmupTimer = timer;
 
     transformers
       .warmUp()
       .then((ok) => {
         clearTimeout(timer);
+        this.warmupTimer = null;
         if (ok) {
           process.stdout.write("[MemoryHub] Transformers embedding model loaded successfully\n");
           return;
@@ -180,6 +187,7 @@ export class MemoryHub {
       })
       .catch((err) => {
         clearTimeout(timer);
+        this.warmupTimer = null;
         this.embeddingLoadError = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[MemoryHub] Transformers warmup threw: ${this.embeddingLoadError}\n`);
         this.installLocalFallback(transformers);
@@ -720,6 +728,12 @@ export class MemoryHub {
 
   /** 释放底层 SQLite 句柄、定时器与未落盘的脏数据，防止文件描述符泄漏和数据丢失 */
   async close(): Promise<void> {
+    // 0. 清理 transformers warmup 超时定时器
+    if (this.warmupTimer) {
+      clearTimeout(this.warmupTimer);
+      this.warmupTimer = null;
+    }
+
     // 1. 先 drain 分层记忆的后台任务（L1 持久化等），防止未落盘的 JSONL 行丢失
     // 安全：await drain/flush 完成后再关闭底层句柄，旧实现用 void 丢弃导致数据丢失
     try {

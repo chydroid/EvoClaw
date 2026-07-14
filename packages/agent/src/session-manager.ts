@@ -12,24 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-
-/** 原子写入文件（temp + fsync + rename），防止崩溃时产生截断的 session 元数据。 */
-function atomicWriteFileSync(filePath: string, content: string): void {
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  const fd = fs.openSync(tmp, "w");
-  try {
-    fs.writeFileSync(fd, content, "utf-8");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
-  }
-}
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -126,6 +109,9 @@ export class SessionManager {
   private activeLocks = new Map<string, SessionLock>();
   private sessionCache = new Map<string, SessionInfo>();
   private pendingCompactions = new Set<string>();
+  /** sessionCache 最大条目数。Bug 4.2 修复：原 Map 无上限，长运行进程
+   *  累积大量会话会导致 OOM。LRU 淘汰：每次 set 后超限时删除最旧条目。 */
+  private static readonly MAX_SESSION_CACHE_SIZE = 500;
 
   constructor(config: SessionConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -176,7 +162,7 @@ export class SessionManager {
     }
 
     // Cache
-    this.sessionCache.set(sessionId, session);
+    this.cacheSession(sessionId, session);
 
     process.stdout.write(`[SessionManager] Created session ${sessionId} for agent "${agentId}"\n`);
     return session;
@@ -204,7 +190,7 @@ export class SessionManager {
 
     try {
       const data = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
-      this.sessionCache.set(sessionId, data);
+      this.cacheSession(sessionId, data);
       return data as SessionInfo;
     } catch (err) {
       // 元数据损坏时记录到 stderr，避免静默吞错
@@ -213,12 +199,42 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 将 session 写入缓存，并在超过 MAX_SESSION_CACHE_SIZE 时淘汰最旧条目。
+   * Bug 4.2 修复：原 sessionCache Map 无上限，长运行进程会累积所有会话导致 OOM。
+   * 利用 Map 的插入顺序实现 LRU：set 已存在的 key 会更新值但不改变顺序，
+   * 因此仅在新增 key 时检查并淘汰。
+   */
+  private cacheSession(sessionId: string, session: SessionInfo): void {
+    const wasNew = !this.sessionCache.has(sessionId);
+    this.sessionCache.set(sessionId, session);
+    if (wasNew && this.sessionCache.size > SessionManager.MAX_SESSION_CACHE_SIZE) {
+      // Map 保持插入顺序，删除第一个（最旧）条目
+      const oldestKey = this.sessionCache.keys().next().value;
+      if (oldestKey !== undefined && oldestKey !== sessionId) {
+        this.sessionCache.delete(oldestKey);
+      }
+    }
+  }
+
   /** Update session metadata under a write lock. */
   updateSessionMeta(session: SessionInfo): void {
     this.withLock(session.agentId, session.sessionId, () => {
       session.updatedAt = new Date().toISOString();
       this.writeSessionMeta(session);
-      this.sessionCache.set(session.sessionId, session);
+      this.cacheSession(session.sessionId, session);
+    });
+  }
+
+  /**
+   * updateSessionMeta 的异步版本：使用 withLockAsync 获取锁，
+   * 等待期间不阻塞事件循环。HTTP handler 应优先使用此版本。
+   */
+  async updateSessionMetaAsync(session: SessionInfo): Promise<void> {
+    await this.withLockAsync(session.agentId, session.sessionId, () => {
+      session.updatedAt = new Date().toISOString();
+      this.writeSessionMeta(session);
+      this.cacheSession(session.sessionId, session);
     });
   }
 
@@ -264,17 +280,45 @@ export class SessionManager {
       return false;
     }
 
-    // 锁释放后清理锁文件（withLock 已释放锁，但锁文件可能残留）
-    const lockPath = path.join(this.getLockDir(), `${sessionId}.lock`);
-    try {
-      if (fs.existsSync(lockPath)) {
-        fs.unlinkSync(lockPath);
-      }
-    } catch {
-      // 锁文件清理失败不阻断删除
-    }
-    this.activeLocks.delete(sessionId);
+    // Bug 4.1 修复：原代码在此处重复检查并删除锁文件，但 releaseLock 已删除锁文件。
+    // 两步操作之间存在 TOCTOU 竞态：另一进程可能在 releaseLock 删除锁文件后、
+    // 此处 existsSync 检查前重新创建锁文件（acquire 同 sessionId 的锁），
+    // 此处的 unlinkSync 会误删另一进程刚创建的锁文件。
+    // 修复：信任 releaseLock 已正确清理，不再重复检查/删除锁文件。
+    return result;
+  }
 
+  /**
+   * deleteSession 的异步版本：使用 withLockAsync 获取锁，
+   * 等待期间不阻塞事件循环。HTTP handler 应优先使用此版本。
+   */
+  async deleteSessionAsync(agentId: string, sessionId: string): Promise<boolean> {
+    const result = await this.withLockAsync(agentId, sessionId, () => {
+      try {
+        const sessionDir = path.join(this.getAgentDir(agentId), sessionId);
+        if (!fs.existsSync(sessionDir)) {
+          process.stderr.write(`[SessionManager] Session ${sessionId} not found for deletion\n`);
+          return false;
+        }
+
+        this.rmdirRecursive(sessionDir);
+        this.sessionCache.delete(sessionId);
+
+        process.stdout.write(`[SessionManager] Deleted session ${sessionId} for agent "${agentId}"\n`);
+        return true;
+      } catch (err) {
+        process.stderr.write(`[SessionManager] Failed to delete session ${sessionId}:` + " " + err + "\n");
+        return false;
+      }
+    });
+
+    if (result === null) {
+      process.stderr.write(`[SessionManager] Could not acquire lock to delete session ${sessionId}\n`);
+      return false;
+    }
+
+    // Bug 4.1 修复：不再重复检查/删除锁文件（releaseLock 已处理），
+    // 避免与并发 acquireLock 产生 TOCTOU 竞态导致误删他人锁文件。
     return result;
   }
 
@@ -901,7 +945,10 @@ export class SessionManager {
    * 注意：acquireLock/withLock 为同步签名，无法 await，仍需使用 sleepSync。
    */
   private sleepAsync(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms);
+      t.unref?.();
+    });
   }
 
   /**

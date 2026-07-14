@@ -13,7 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 
 const GATEWAY_RESTART_INTENT_FILENAME = "gateway-restart-intent.json";
 const GATEWAY_RESTART_INTENT_TTL_MS = 60_000;
@@ -112,17 +112,7 @@ export function writeGatewayRestartIntentSync(opts: {
         : {}),
     };
     const content = `${JSON.stringify(payload)}\n`;
-    // 原子写入：temp 文件 → fsync → rename
-    // 临时文件名使用 crypto.randomUUID 而非 Math.random，避免可预测性
-    const tmpPath = `${intentPath}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
-    const fd = fs.openSync(tmpPath, "w", 0o600);
-    try {
-      fs.writeFileSync(fd, content, "utf-8");
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmpPath, intentPath);
+    atomicWriteFileSync(intentPath, content, { mode: 0o600 });
     return true;
   } catch {
     return false;

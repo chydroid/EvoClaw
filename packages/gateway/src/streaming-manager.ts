@@ -15,6 +15,8 @@
 
 // ── Types ─────────────────────────────────────────────────
 
+import * as crypto from "crypto";
+
 export interface StreamChunk {
   /** Unique chunk ID (sequential) */
   index: number;
@@ -136,7 +138,7 @@ export class StreamingManager {
       throw new Error(`Max concurrent streams reached (${this.config.maxConcurrentStreams})`);
     }
 
-    const streamId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const streamId = `stream_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
     const aborter = new AbortController();
     const chunkSize = this.getChunkSize(channel);
 

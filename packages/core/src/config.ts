@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import * as fs from "fs";
 import * as path from "path";
 import { ConfigWatcher, type SchemaConfigChange } from "./config-schema.js";
+import { atomicWriteFileSync } from "./atomic-write";
 
 export interface PersonaConfig {
   name: string;
@@ -321,7 +322,9 @@ export class ConfigManager {
       }
       process.stderr.write(msg + "\n");
     }
-    if (/dev|secret|change/i.test(this.config.auth.jwtSecret)) {
+    // 精确匹配已知弱默认值，而非子串匹配（避免误报含 "dev"/"secret" 子串的强密钥）
+    const WEAK_SECRETS = ["dev-secret", "change-me", "changeme", "secret", "default", "dev", "test", "change"];
+    if (WEAK_SECRETS.includes(this.config.auth.jwtSecret.toLowerCase())) {
       if (process.env.NODE_ENV === "production") {
         throw new Error("[Config] FATAL: JWT secret uses default/weak value. Set JWT_SECRET env var with a strong random secret (>= 16 chars) before running in production.");
       }
@@ -347,25 +350,8 @@ export class ConfigManager {
     if (!target) {
       throw new Error("[Config] No file path configured for persistence");
     }
-    const dir = path.dirname(target);
     await this.withLock(async () => {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      const temp = `${target}.${process.pid}.tmp`;
-      try {
-        const fd = fs.openSync(temp, "w");
-        try {
-          fs.writeFileSync(fd, JSON.stringify(this.config, null, 2), "utf-8");
-          fs.fsyncSync(fd);
-        } finally {
-          fs.closeSync(fd);
-        }
-        fs.renameSync(temp, target);
-      } catch (err) {
-        try { fs.unlinkSync(temp); } catch { /* ignore */ }
-        throw err;
-      }
+      atomicWriteFileSync(target, JSON.stringify(this.config, null, 2));
     });
     return target;
   }
@@ -427,6 +413,15 @@ export class ConfigManager {
       this.watcher.stopAll();
       this.watcher = null;
     }
+  }
+
+  /**
+   * 统一关闭：停止文件监听并清理 EventEmitter 监听器。
+   * 防止 FSWatcher 句柄和 EventEmitter 监听器在服务停止后泄漏。
+   */
+  shutdown(): void {
+    this.stopWatching();
+    this.emitter.removeAllListeners();
   }
 
   onChange(handler: ConfigChangeHandler): void {
@@ -498,19 +493,25 @@ export class ConfigManager {
     }
   }
 
-  // 已知限制：withLock 基于链式 Promise 实现串行化，未设置超时。
+  // Bug P2-7 修复：原 withLock 基于链式 Promise 串行化，未设置超时。
   // 若某个被锁保护的异步操作长时间挂起（既不 resolve 也不 reject），
-  // 后续所有排队操作将永久等待。当前风险可控（调用方均为短时本地 IO），
-  // 若未来引入不可控的外部异步操作，需在此增加超时机制。
+  // 后续所有排队操作将永久等待。改为对每个 fn 执行加超时。
+  private static readonly LOCK_TIMEOUT_MS = 30_000; // 30 秒
   private withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const execute = this.pending.then(fn).catch((err) => {
-      throw err;
+    const execPromise = this.pending.then(fn);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error(`ConfigManager.withLock timed out after ${ConfigManager.LOCK_TIMEOUT_MS}ms`));
+      }, ConfigManager.LOCK_TIMEOUT_MS);
+      t.unref();
     });
-    this.pending = execute.then(
+    const result = Promise.race([execPromise, timeoutPromise]);
+    // 链式锁：无论 exec 是否超时，pending 都要继续推进（避免永久阻塞后续操作）
+    this.pending = execPromise.then(
       () => {},
       () => {}
     );
-    return execute;
+    return result;
   }
 
   private deepMerge(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {

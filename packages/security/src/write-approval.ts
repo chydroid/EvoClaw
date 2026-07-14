@@ -31,6 +31,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import { isUnsafeRegex } from "./safe-regex.js";
 
 /** 门决策类型 */
@@ -101,27 +102,7 @@ export interface ApprovalResult {
 // ── 原子写入辅助 ──────────────────────────────────────────
 
 function atomicWriteFile(targetPath: string, content: string | Buffer): void {
-  const dir = path.dirname(targetPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${targetPath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, content);
-    fs.fsyncSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-  fs.closeSync(fd);
-  try {
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err: unknown) {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
+  atomicWriteFileSync(targetPath, content);
 }
 
 // ── WriteApprovalGate ────────────────────────────────────

@@ -1,32 +1,45 @@
 import * as fs from "fs";
 import * as path from "path";
-import * as crypto from "crypto";
 import ExcelJS from "exceljs";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 
+/** Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
+ *  再用 fs.realpathSync 解析符号链接，防止 workspace 内 symlink 指向外部目录。 */
 function validatePathWithinBase(resolvedPath: string, baseDir: string): string | null {
   const normalizedBase = path.resolve(baseDir);
   const normalizedTarget = path.resolve(resolvedPath);
+
+  // 先做词法检查：若词法上已超出 base，直接拒绝（避免 realpath 浪费 IO）
   if (!normalizedTarget.startsWith(normalizedBase + path.sep) && normalizedTarget !== normalizedBase) {
     return `Path traversal blocked: "${resolvedPath}" is outside the allowed workspace "${normalizedBase}".`;
   }
-  return null;
-}
 
-/** 原子写入文件：写临时文件 + fsync + rename，失败时清理临时文件 */
-function atomicWriteFileSync(filePath: string, data: Buffer): void {
-  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
+  // 词法检查通过后，再用 realpath 解析符号链接，防止 workspace 内 symlink 指向外部目录
   try {
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
+    let realTarget: string;
+    if (fs.existsSync(normalizedTarget)) {
+      realTarget = fs.realpathSync(normalizedTarget);
+    } else {
+      // 路径不存在（如 file_create）：realpath 父目录后拼接 basename
+      const parentDir = path.dirname(normalizedTarget);
+      if (fs.existsSync(parentDir)) {
+        const realParent = fs.realpathSync(parentDir);
+        realTarget = path.join(realParent, path.basename(normalizedTarget));
+      } else {
+        // 父目录也不存在：信任词法检查结果
+        return null;
+      }
+    }
+    // 对 realpath 结果再做一次词法检查
+    if (!realTarget.startsWith(normalizedBase + path.sep) && realTarget !== normalizedBase) {
+      return `Path traversal blocked (symlink escape): "${resolvedPath}" resolves to "${realTarget}" which is outside the allowed workspace "${normalizedBase}".`;
+    }
+  } catch {
+    // realpath 失败（权限/IO 错误）：保守拒绝，避免误放行
+    return `Path validation failed (realpath error): "${resolvedPath}".`;
   }
+  return null;
 }
 
 interface SheetItem {

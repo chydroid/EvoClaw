@@ -1,3 +1,5 @@
+import * as crypto from "crypto";
+
 /**
  * 稳定 JSON 序列化：按 key 字典序排序，保证相同语义对象输出相同字符串。
  *
@@ -276,8 +278,8 @@ function indent(str: string, indent: number, depth: number): string {
 /**
  * 计算对象的稳定 hash（用于 cache key）。
  *
- * 使用 djb2 + 长度后缀，与 prompt-cache.ts 保持一致。
- * 注意：非加密安全，但作为内存缓存 key 足够。
+ * 使用 SHA256 + 长度后缀，与 prompt-cache.ts 保持一致。
+ * 满足项目安全规范对哈希算法的要求。
  *
  * @param value 待哈希的值
  * @param opts 序列化选项
@@ -289,12 +291,8 @@ export function stableHash(
 ): string {
   const str = stableStringify(value, opts);
   if (str.length === 0) return "0:0";
-  // djb2 + 长度后缀
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0x7fffffff;
-  }
-  return `${hash.toString(36)}:${str.length.toString(36)}`;
+  const hash = crypto.createHash("sha256").update(str, "utf-8").digest("hex").slice(0, 16);
+  return `${hash}:${str.length.toString(36)}`;
 }
 
 /**

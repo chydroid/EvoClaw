@@ -40,6 +40,7 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    timeout.unref?.();
     try {
     const bingHost = isChinese ? "https://cn.bing.com" : "https://www.bing.com";
     let url = `${bingHost}/search?q=${encodeURIComponent(q)}&count=${limit}`;
@@ -108,6 +109,7 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    timeout.unref?.();
     try {
     let url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${limit}&hl=zh-CN`;
     if (freshness) {
@@ -158,6 +160,7 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    timeout.unref?.();
     try {
     let baiduUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(q)}&rn=${limit}`;
     if (freshness) {
@@ -229,6 +232,7 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
+    timeout.unref?.();
     try {
     // Use DuckDuckGo Lite for simpler HTML structure
     const response = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, {
@@ -322,6 +326,7 @@ export function registerWebTools(
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
+        timeout.unref?.();
         try {
         const response = await fetch(url, {
           headers: {
@@ -420,9 +425,10 @@ export function registerWebTools(
       if (ssrfReason) {
         return { error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      timeout.unref?.();
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
         // 安全：使用 redirect: "manual" 并对每个重定向目标重新 SSRF 校验，
         // 防止 302 重定向到内网/元数据端点绕过初始 SSRF 检查
         let currentUrl = url;
@@ -476,6 +482,9 @@ export function registerWebTools(
         };
       } catch (err: any) {
         return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
+      } finally {
+        // 始终清理 timeout，防止非超时错误（如 DNS 失败、连接重置）下 timer 句柄泄漏
+        clearTimeout(timeout);
       }
     }
   );
@@ -546,6 +555,7 @@ export function registerWebTools(
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 12000);
+        timeoutId.unref?.();
         try {
           const resp = await fetch("https://api.tavily.com/search", {
             method: "POST",

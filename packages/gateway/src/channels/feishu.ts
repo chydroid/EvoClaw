@@ -185,6 +185,7 @@ export class FeishuAdapter implements ChannelAdapter {
           Authorization: `Bearer ${this.accessToken}`,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const data = await res.json() as {
@@ -301,6 +302,7 @@ export class FeishuAdapter implements ChannelAdapter {
     try {
       const botRes = await fetch(`${this.baseURL}/open-apis/bot/v3/info`, {
         headers: { Authorization: `Bearer ${this.accessToken}` },
+        signal: AbortSignal.timeout(10_000),
       });
       const botData = await botRes.json() as { code: number; msg?: string; bot?: Record<string, unknown> };
       if (botData.code === 0 && botData.bot) {
@@ -323,6 +325,7 @@ export class FeishuAdapter implements ChannelAdapter {
       // First get bot's own open_id
       const botInfoRes = await fetch(`${this.baseURL}/open-apis/bot/v3/info`, {
         headers: { Authorization: `Bearer ${this.accessToken}` },
+        signal: AbortSignal.timeout(10_000),
       });
       const botInfoData = await botInfoRes.json() as { code: number; bot?: { open_id?: string } };
       const botOpenId = botInfoData.bot?.open_id;
@@ -330,6 +333,7 @@ export class FeishuAdapter implements ChannelAdapter {
       if (botOpenId) {
         const msgRes = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=open_id&page_size=1&receive_id=${botOpenId}`, {
           headers: { Authorization: `Bearer ${this.accessToken}` },
+          signal: AbortSignal.timeout(10_000),
         });
         const msgData = await msgRes.json() as { code: number; msg?: string };
         if (msgData.code === 0 || msgData.code === 230002) {
@@ -382,6 +386,7 @@ export class FeishuAdapter implements ChannelAdapter {
     try {
       const eventRes = await fetch(`${this.baseURL}/open-apis/im/v1/messages?receive_id_type=open_id&page_size=1`, {
         headers: { Authorization: `Bearer ${this.accessToken}` },
+        signal: AbortSignal.timeout(10_000),
       });
       // If we can reach this point, basic API access works
       details.eventSubscription = this.wsClient ? "✅ 长连接已建立" : "⚠️ 需要配置事件订阅";
@@ -634,7 +639,10 @@ export class FeishuAdapter implements ChannelAdapter {
           } catch (err) {
             lastError = err as Error;
             if (attempt < 2) {
-              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+              await new Promise(r => {
+                const t = setTimeout(r, 1000 * (attempt + 1));
+                t.unref?.();
+              });
             }
           }
         }

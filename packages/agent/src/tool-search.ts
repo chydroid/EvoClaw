@@ -347,6 +347,10 @@ export class ToolSearchEngine {
             required: ["tool_name"],
           },
         };
+      default: {
+        const _exhaustive: never = name;
+        throw new Error(`Unknown bridge tool: ${String(_exhaustive)}`);
+      }
     }
   }
 

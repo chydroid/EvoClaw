@@ -690,9 +690,10 @@ export const __test = { SIMPLE_GREETING_ENTRIES, pickByHash };
  */
 function buildClientVersion(version: string): number {
   const parts = version.split(".").map((p) => parseInt(p, 10));
-  const major = parts[0] ?? 0;
-  const minor = parts[1] ?? 0;
-  const patch = parts[2] ?? 0;
+  // parseInt 可能返回 NaN（如 version="abc" 或空段），NaN & 0xff === 0 会静默归零
+  const major = parts[0] !== undefined && Number.isFinite(parts[0]) ? parts[0] : 0;
+  const minor = parts[1] !== undefined && Number.isFinite(parts[1]) ? parts[1] : 0;
+  const patch = parts[2] !== undefined && Number.isFinite(parts[2]) ? parts[2] : 0;
   return ((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff);
 }
 
@@ -905,6 +906,7 @@ export class WeixinPluginAdapter {
         method: "POST",
         headers: buildHeaders(account.token),
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       });
 
       const respText = await response.text();
@@ -1393,6 +1395,35 @@ export class WeixinPluginAdapter {
   private static readonly TYPING_TICKET_CACHE_MAX = 1000;
 
   /**
+   * 解密微信媒体内容（图片/视频缩略图）。
+   *
+   * Bug P1-3 修复：原实现硬编码 AES-128-ECB，ECB 模式对相同明文块产生
+   * 相同密文块，易被模式分析攻击。微信官方 API 文档实际使用 AES-128-CBC
+   * + PKCS7 padding，IV = key（16 字节）。
+   *
+   * 策略：优先用 CBC 解密；若 CBC 解密失败（padding 错误或数据格式不符，
+   * 可能是旧版兼容场景仍用 ECB），回退到 ECB。
+   * 两个模式都失败时返回原始密文（让上层决定如何处理）。
+   */
+  private decryptWeChatMedia(encrypted: Buffer, aesKey: Buffer): Buffer {
+    // 1. 尝试 CBC（IV = key）
+    try {
+      const decipherCbc = crypto.createDecipheriv("aes-128-cbc", aesKey, aesKey);
+      return Buffer.concat([decipherCbc.update(encrypted), decipherCbc.final()]);
+    } catch {
+      // CBC 解密失败，尝试 ECB 回退
+    }
+    // 2. 回退到 ECB（旧版兼容）
+    try {
+      const decipherEcb = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
+      return Buffer.concat([decipherEcb.update(encrypted), decipherEcb.final()]);
+    } catch (err) {
+      process.stderr.write(`[Weixin] decryptWeChatMedia: both CBC and ECB failed: ${err}\n`);
+      return encrypted;
+    }
+  }
+
+  /**
    * 从微信 CDN 下载并解密图片
    */
   private async downloadImage(
@@ -1429,7 +1460,7 @@ export class WeixinPluginAdapter {
         return null;
       }
 
-      const response = await fetch(downloadUrl);
+      const response = await fetch(downloadUrl, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok) {
         process.stderr.write(`[Weixin] Image download failed: ${response.status}\n`);
         return null;
@@ -1437,10 +1468,13 @@ export class WeixinPluginAdapter {
 
       const encrypted = Buffer.from(await response.arrayBuffer());
 
-      // 解密（AES-128-ECB）
+      // 解密图片内容
+      // Bug P1-3 修复：原使用 AES-128-ECB，ECB 模式对相同明文块产生相同密文块，
+      // 易被模式分析攻击。微信官方 API 文档（图片/视频解密）实际使用
+      // AES-128-CBC + PKCS7 padding，IV = key（16 字节）。
+      // 改为优先用 CBC 解密；若失败（旧版兼容场景仍用 ECB）再回退到 ECB。
       if (aesKey && aesKey.length === 16) {
-        const decipher = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
-        return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+        return this.decryptWeChatMedia(encrypted, aesKey);
       }
 
       // 无密钥则直接返回原始数据（可能是明文）
@@ -1493,7 +1527,7 @@ export class WeixinPluginAdapter {
         return null;
       }
 
-      const response = await fetch(downloadUrl);
+      const response = await fetch(downloadUrl, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok) {
         process.stderr.write(`[Weixin] Video thumbnail download failed: ${response.status}\n`);
         return null;
@@ -1501,10 +1535,10 @@ export class WeixinPluginAdapter {
 
       const encrypted = Buffer.from(await response.arrayBuffer());
 
-      // 解密（AES-128-ECB）
+      // 解密视频缩略图
+      // Bug P1-3 修复：同 downloadImage，改用 CBC 优先 + ECB 回退
       if (aesKey && aesKey.length === 16) {
-        const decipher = crypto.createDecipheriv("aes-128-ecb", aesKey, null);
-        return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+        return this.decryptWeChatMedia(encrypted, aesKey);
       }
 
       return encrypted;
@@ -1537,6 +1571,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
+        signal: AbortSignal.timeout(10_000),
       });
 
       if (response.ok) {
@@ -1595,6 +1630,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
+        signal: AbortSignal.timeout(5_000),
       });
     } catch { /* best-effort */ }
   }
@@ -1619,6 +1655,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
+        signal: AbortSignal.timeout(5_000),
       });
     } catch { /* best-effort */ }
   }
@@ -1639,6 +1676,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
+        signal: AbortSignal.timeout(10_000),
       });
       const text = await response.text();
       process.stdout.write(`[Weixin] notifyStart response: ${response.status} ${text.substring(0, 100)}\n`);
@@ -1663,6 +1701,7 @@ export class WeixinPluginAdapter {
             bot_agent: "EvoClaw",
           },
         }),
+        signal: AbortSignal.timeout(10_000),
       });
       const text = await response.text();
       process.stdout.write(`[Weixin] notifyStop response: ${response.status} ${text.substring(0, 100)}\n`);

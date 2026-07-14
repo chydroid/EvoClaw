@@ -3,6 +3,8 @@ import { type ShortTermMemory } from "@evoclaw/core";
 export class ShortTermMemoryStore implements ShortTermMemory {
   private store = new Map<string, { value: unknown; expiresAt: number | null }>();
   private cleanupInterval: NodeJS.Timeout;
+  /** store Map 的容量上限，防止无 TTL 条目永不过期导致内存泄漏 */
+  private static readonly MAX_ENTRIES = 10000;
 
   constructor() {
     this.cleanupInterval = setInterval(() => {
@@ -25,6 +27,12 @@ export class ShortTermMemoryStore implements ShortTermMemory {
   async set(key: string, value: unknown, ttl?: number): Promise<void> {
     const expiresAt = ttl ? Date.now() + ttl : null;
     this.store.set(key, { value, expiresAt });
+
+    // LRU 上限保护：超过容量时删除最旧的条目（Map 按插入顺序保留首个条目）
+    if (this.store.size > ShortTermMemoryStore.MAX_ENTRIES) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey) this.store.delete(oldestKey);
+    }
   }
 
   async get<T>(key: string): Promise<T | null> {

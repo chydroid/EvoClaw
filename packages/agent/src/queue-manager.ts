@@ -17,6 +17,7 @@
 import type { EventBus } from "@evoclaw/core";
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 
 export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
 
@@ -121,6 +122,8 @@ interface LaneState {
 }
 
 export class QueueManager {
+  private static readonly MAX_QUEUES = 10000;
+  private static readonly SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
   private config: QueueConfig;
   private queues = new Map<string, QueueItem[]>();
   private processing = new Map<string, QueueItem>();
@@ -188,14 +191,29 @@ export class QueueManager {
 
     // Enforce max queue size
     if (queue.length >= this.config.maxQueueSize) {
-      // Remove lowest priority item
-      queue.sort((a, b) => a.priority - b.priority);
-      const removed = queue.shift();
-      if (removed) {
-        process.stderr.write(
-          `[QueueManager] Queue full for session "${sessionId}", dropped item: ${removed.id}\n`
-        );
+      // Bug 11.1 修复：原代码对整个 queue 排序后 shift，可能丢弃正在处理中
+      // (status="processing") 或已完成的任务，而不是最低优先级的 pending 任务。
+      // 修复：仅在 pending 任务中查找最低优先级者丢弃，避免影响活跃任务。
+      const pending = queue.filter((q) => q.status === "pending");
+      if (pending.length > 0) {
+        // 找到 pending 中优先级最低者（priority 数值越小优先级越低）
+        let lowest = pending[0];
+        for (const item of pending) {
+          if (item.priority < lowest.priority) {
+            lowest = item;
+          }
+        }
+        // 从 queue 数组中移除该 item
+        const idx = queue.indexOf(lowest);
+        if (idx >= 0) {
+          queue.splice(idx, 1);
+          process.stderr.write(
+            `[QueueManager] Queue full for session "${sessionId}", dropped lowest-priority pending item: ${lowest.id}\n`
+          );
+        }
       }
+      // 若没有 pending 任务（全部 processing/done），则不丢弃——
+      // 这种情况下队列实际活跃任务数 < maxQueueSize，新任务可安全入队。
     }
 
     // 记录入队时的诊断信息
@@ -353,6 +371,12 @@ export class QueueManager {
   markFailed(itemId: string, error: string): boolean {
     const item = this.findItem(itemId);
     if (!item) return false;
+
+    // 幂等性：已处于终态 (failed/done) 的项目不再处理，避免重复计数和重复事件发布。
+    // 此前并发调用 markFailed 会两次递增 retryCount 并重复从 processing Map 删除。
+    if (item.status === "failed" || item.status === "done") {
+      return false;
+    }
 
     // 更新车道活跃任务
     const lane = item.lane ?? "main";
@@ -530,6 +554,9 @@ export class QueueManager {
   /**
    * 清空指定车道的所有任务。
    * 借鉴 openclaw 的 CommandLaneClearedError 设计。
+   * 注意：仅清除队列中的待处理任务和非活跃的 activeTaskIds；
+   * 正在处理中的任务（this.processing）保留其 activeTaskId 直到 markDone/markFailed，
+   * 防止 dequeue 误判车道有空闲槽位而立即派发新任务导致并发超限。
    */
   clearLane(lane: QueueLane): number {
     let cleared = 0;
@@ -543,9 +570,15 @@ export class QueueManager {
       }
     }
 
-    // 清除车道活跃任务
+    // 仅清除非活跃的 activeTaskIds：正在 processing 中的任务保留其 ID
     const laneState = this.laneStates.get(lane);
-    laneState?.activeTaskIds.clear();
+    if (laneState) {
+      for (const taskId of Array.from(laneState.activeTaskIds)) {
+        if (!this.processing.has(taskId)) {
+          laneState.activeTaskIds.delete(taskId);
+        }
+      }
+    }
 
     this.eventBus.publish(
       "queue.lane_cleared",
@@ -749,6 +782,12 @@ export class QueueManager {
         if (!file.endsWith(".json")) continue;
 
         const sessionId = file.replace(".json", "");
+        if (!QueueManager.SESSION_ID_PATTERN.test(sessionId)) {
+          process.stderr.write(
+            `[QueueManager] Skipping invalid persisted queue filename: "${file}"\n`
+          );
+          continue;
+        }
         try {
           const data = JSON.parse(
             fs.readFileSync(path.join(this.config.dataDir, file), "utf-8"),
@@ -780,12 +819,38 @@ export class QueueManager {
   // ====== Private ======
 
   private getOrCreateQueue(sessionId: string): QueueItem[] {
+    this.validateSessionId(sessionId);
     let queue = this.queues.get(sessionId);
     if (!queue) {
       queue = [];
       this.queues.set(sessionId, queue);
+      this.enforceQueuesLimit();
     }
     return queue;
+  }
+
+  private validateSessionId(sessionId: string): void {
+    if (!QueueManager.SESSION_ID_PATTERN.test(sessionId)) {
+      throw new Error(`Invalid sessionId: "${sessionId}"`);
+    }
+  }
+
+  private enforceQueuesLimit(): void {
+    while (this.queues.size > QueueManager.MAX_QUEUES) {
+      let evicted = false;
+      for (const [key, queue] of this.queues) {
+        if (queue.length === 0) {
+          this.queues.delete(key);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) {
+        const firstKey = this.queues.keys().next().value;
+        if (!firstKey) break;
+        this.queues.delete(firstKey);
+      }
+    }
   }
 
   private findItem(itemId: string): QueueItem | undefined {
@@ -797,6 +862,7 @@ export class QueueManager {
   }
 
   private persistQueue(sessionId: string): void {
+    this.validateSessionId(sessionId);
     if (!this.config.persistQueue) return;
     try {
       const queue = this.queues.get(sessionId);
@@ -806,7 +872,7 @@ export class QueueManager {
       // 原子写入：写临时文件 + fsync + rename，避免部分写入导致文件损坏。
       // 与 @evoclaw/infrastructure 的 atomicWriteFile 同源模式（此处为同步版本，
       // 因为 persistQueue 的所有调用方均为同步签名）。
-      const tmpPath = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+      const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
       const fd = fs.openSync(tmpPath, "w");
       try {
         fs.writeFileSync(fd, JSON.stringify(queue, null, 2), "utf-8");

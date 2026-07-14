@@ -412,7 +412,7 @@ export class CanvasManager {
     replacements: Record<string, string> = {}
   ): { canvas: CanvasFile; url: string } {
     let html = CANVAS_TEMPLATE;
-    html = html.replace("{{title}}", () => this.escapeHTML(title));
+    html = html.replaceAll("{{title}}", () => this.escapeHTML(title));
     html = html.replace(
       "{{timestamp}}",
       () => replacements.timestamp ?? new Date().toLocaleString()

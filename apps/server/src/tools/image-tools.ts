@@ -14,23 +14,8 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
+import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
-
-/** 原子写入文件：写临时文件 + fsync + rename */
-function atomicWriteFileSync(filePath: string, data: Buffer): void {
-  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
-  const fd = fs.openSync(tmpPath, "w");
-  try {
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch { /* ignore */ }
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    throw err;
-  }
-}
 
 /** 图片生成提供商配置（与 protocol-adapter.ts 中结构一致） */
 interface ImageGenProvider {
@@ -113,10 +98,42 @@ export function validateDownloadUrl(url: string): void {
   if (hostname === "localhost") {
     throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
   }
+
+  // 辅助函数：校验 IPv4 四段是否属于私网/回环/链路本地段
+  const checkIPv4Parts = (a: number, b: number) => {
+    if (
+      a === 127 || // 127.0.0.0/8 loopback
+      a === 10 || // 10.0.0.0/8 private
+      (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+      (a === 192 && b === 168) || // 192.168.0.0/16 private
+      (a === 169 && b === 254) || // 169.254.0.0/16 link-local
+      a === 0 // 0.0.0.0/8 "this network"
+    ) {
+      throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+    }
+  };
+
   if (hostname.includes(":")) {
     // IPv6 地址：仅阻断私有/回环段，允许公网 IPv6
     if (hostname === "::1" || hostname === "::") {
       throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+    }
+    // IPv4-mapped IPv6: ::ffff:x.x.x.x 或 ::ffff:xxxx:xxxx
+    const v4MappedDotted = hostname.match(/^::ffff:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i);
+    if (v4MappedDotted) {
+      const a = parseInt(v4MappedDotted[1], 10);
+      const b = parseInt(v4MappedDotted[2], 10);
+      checkIPv4Parts(a, b);
+      return;
+    }
+    const v4MappedHex = hostname.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (v4MappedHex) {
+      const hi = parseInt(v4MappedHex[1], 16);
+      const lo = parseInt(v4MappedHex[2], 16);
+      const a = (hi >>> 8) & 0xff;
+      const b = hi & 0xff;
+      checkIPv4Parts(a, b);
+      return;
     }
     const firstSeg = hostname.split(":")[0] ?? "";
     const firstSegInt = parseInt(firstSeg, 16);
@@ -137,16 +154,24 @@ export function validateDownloadUrl(url: string): void {
   if (m) {
     const a = parseInt(m[1], 10);
     const b = parseInt(m[2], 10);
-    if (
-      a === 127 || // 127.0.0.0/8 loopback
-      a === 10 || // 10.0.0.0/8 private
-      (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
-      (a === 192 && b === 168) || // 192.168.0.0/16 private
-      (a === 169 && b === 254) || // 169.254.0.0/16 link-local
-      a === 0 // 0.0.0.0/8 "this network"
-    ) {
-      throw new Error(`Blocked image URL host (SSRF protection): ${hostname}`);
+    checkIPv4Parts(a, b);
+  }
+
+  // 短格式/十进制 IP：纯数字 hostname（如 "0"、"127.1"、"2130706433"）
+  if (/^\d+$/.test(hostname)) {
+    const num = parseInt(hostname, 10);
+    if (num <= 0xFFFFFFFF && num >= 0) {
+      const a = (num >>> 24) & 0xff;
+      const b = (num >>> 16) & 0xff;
+      checkIPv4Parts(a, b);
     }
+  }
+  // 短格式 IPv4：少于 4 段的点分十进制（如 "127.1"、"10.1"）
+  const shortMatch = hostname.match(/^(\d{1,3})\.(\d{1,3})$/);
+  if (shortMatch) {
+    const a = parseInt(shortMatch[1], 10);
+    const b = parseInt(shortMatch[2], 10);
+    checkIPv4Parts(a, b);
   }
 }
 
@@ -364,7 +389,10 @@ async function generateViaReplicate(
   const pollInterval = 5000;
 
   for (let i = 0; i < maxPolls; i++) {
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    await new Promise((resolve) => {
+      const t = setTimeout(resolve, pollInterval);
+      t.unref?.();
+    });
 
     const statusResponse = await fetch(prediction.urls.get, {
       headers: { "Authorization": `Bearer ${apiKey}` },

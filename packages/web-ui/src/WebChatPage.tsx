@@ -11,7 +11,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import type { CSSProperties } from "react";
-import { renderMarkdown } from "./markdown-renderer";
+import { renderMarkdown, sanitizeHtml } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
 import { useVoice, isSpeechRecognitionSupported, type VoiceState } from "./useVoice";
 import { voiceApi, type VoiceApiResponse } from "./api-client";
@@ -70,7 +70,31 @@ styleSheet.textContent = `
 document.head.appendChild(styleSheet);
 
 function renderMessageHtml(text: string): string {
-  return renderMarkdown(text);
+  return sanitizeHtml(renderMarkdown(text));
+}
+
+function secureRandom(): number {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
+  }
+  // 避免使用 Math.random() 作为安全敏感回退
+  return (Date.now() % 0x100000000) / 0x100000000;
+}
+
+function generateFileId(): string {
+  const suffix = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID().slice(0, 8)
+    : generateCryptoFallback();
+  return `file-${Date.now()}-${suffix}`;
+}
+
+function generateCryptoFallback(): string {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const arr = new Uint32Array(2);
+    crypto.getRandomValues(arr);
+    return Array.from(arr, (n) => n.toString(36)).join("").slice(0, 8);
+  }
+  return Date.now().toString(36).slice(-8) + Math.floor(performance.now()).toString(36).slice(-2);
 }
 
 interface AvatarInfo {
@@ -459,8 +483,11 @@ const actionBtnStyle: CSSProperties = {
 // Permission Whitelist - stored in localStorage
 const getWhitelist = (): string[] => {
   try {
-    return JSON.parse(localStorage.getItem("evoclaw_permission_whitelist") || "[]");
-  } catch {
+    const raw = localStorage.getItem("evoclaw_permission_whitelist") || "[]";
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.error("[WebChat] Failed to parse permission whitelist:", err);
     return [];
   }
 };
@@ -647,8 +674,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   if (inputHistoryRef.current.length === 0) {
     try {
       const saved = localStorage.getItem("evoclaw_input_history");
-      if (saved) inputHistoryRef.current = JSON.parse(saved);
-    } catch { /* ignore */ }
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        inputHistoryRef.current = Array.isArray(parsed) ? parsed : [];
+      }
+    } catch (err) {
+      console.error("[WebChat] Failed to parse input history:", err);
+      inputHistoryRef.current = [];
+    }
   }
   const historyIndexRef = useRef(-1);
   const savedInputRef = useRef("");
@@ -990,7 +1023,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     setLoadingMessageIndex(1);
     
     const progressInterval = setInterval(() => {
-      setCurrentProgress((prev) => Math.min(prev + Math.random() * 10 + 3, 85));
+      setCurrentProgress((prev) => Math.min(prev + secureRandom() * 10 + 3, 85));
       msgIndex = (msgIndex % (loadingMessages.length - 1)) + 1;
       setLoadingMessageIndex(msgIndex);
     }, 3000);
@@ -1225,7 +1258,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       setCurrentProgress(eventData.progress);
                     }
                   }
-                } catch { /* ignore parse errors */ }
+                } catch (err) {
+                  console.error("[WebChat] Failed to parse SSE event data:", err);
+                }
                 currentEvent = "";
               } else if (line.trim() === "") {
                 currentEvent = "";
@@ -1738,7 +1773,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       );
 
       if (progress < 100) {
-        const tid = setTimeout(tick, 80 + Math.random() * 60);
+        const tid = setTimeout(tick, 80 + secureRandom() * 60);
         timersRef.current.push(tid);
       } else {
         setAttachedFiles(prev =>
@@ -1793,7 +1828,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           continue;
         }
 
-        const id = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const id = generateFileId();
         const cancelToken = { cancelled: false };
 
         const info: AttachedFileInfo = {

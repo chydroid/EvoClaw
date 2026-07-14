@@ -692,7 +692,7 @@ export function CanvasPage() {
             const cmd = JSON.parse(e.data);
             handleA2UICommand(cmd);
           } catch (err) {
-            console.warn("[Canvas] Failed to parse SSE command:", err);
+            console.error("[Canvas] Failed to parse SSE command:", err);
           }
         };
         es.onerror = () => {

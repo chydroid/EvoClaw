@@ -207,6 +207,38 @@ export class ToolPolicyManager {
       if (policy.tools.includes(toolName)) {
         return { allowed: false, reason: `Tool "${toolName}" is denied` };
       }
+      // 与 allowlist 一致：denylist 模式也检查 category 级别权限，
+      // 防止 allowShell===false 时未显式列入 denylist 的 shell 工具被放行。
+      const category = getToolCategory(toolName);
+      if (category === "shell" && policy.allowShell === false) {
+        return { allowed: false, reason: "Shell access denied", requiresApproval: true };
+      }
+      if (category === "file" && policy.allowFileOps === false) {
+        return { allowed: false, reason: "File operations denied" };
+      }
+      if (category === "web" && policy.allowWeb === false) {
+        return { allowed: false, reason: "Web access denied" };
+      }
+      if (category === "browser" && policy.allowBrowser === false) {
+        return { allowed: false, reason: "Browser access denied" };
+      }
+      // Bug P2-9 修复：原实现对未分类工具（category=null）无条件放行。
+      // 当 admin 设置任意 allow*===false 时（意图为限制性策略），
+      // 未分类工具可能包含未识别的危险工具（如自定义 shell 命令），
+      // 应保守拒绝。仅当所有 allow* 标志均为 true 或未设置时才放行未分类工具。
+      if (category === null) {
+        const hasRestriction =
+          policy.allowShell === false ||
+          policy.allowFileOps === false ||
+          policy.allowWeb === false ||
+          policy.allowBrowser === false;
+        if (hasRestriction) {
+          return {
+            allowed: false,
+            reason: `Tool "${toolName}" is unclassified and policy has restrictions; deny by default`,
+          };
+        }
+      }
       return { allowed: true };
     }
 

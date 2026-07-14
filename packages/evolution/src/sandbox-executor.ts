@@ -16,7 +16,7 @@
  */
 
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import type { EvolutionCandidate } from "@evoclaw/core";
 import type { ExecutionTrace } from "./external-reflector";
 
@@ -86,7 +86,7 @@ export class SandboxExecutor {
     testInputs?: Array<{ name: string; input: unknown; expectedOutput?: unknown }>
   ): Promise<SandboxResult> {
     const startTime = Date.now();
-    const executionId = uuid();
+    const executionId = randomUUID();
 
     if (!this.config.enabled) {
       return this.createEmptyResult(candidate, executionId, startTime);
