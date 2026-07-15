@@ -335,8 +335,8 @@ export class LearningJournal {
       return bt - at;
     });
 
-    const offset = filter?.offset || 0;
-    const limit = filter?.limit || 50;
+    const offset = filter?.offset ?? 0;
+    const limit = filter?.limit ?? 50;
 
     return results.slice(offset, offset + limit);
   }

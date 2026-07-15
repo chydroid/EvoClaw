@@ -189,8 +189,8 @@ export class SkillRegistry {
       }
     });
 
-    const offset = query.offset || 0;
-    const limit = query.limit || 20;
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? 20;
     const page = Math.floor(offset / limit) + 1;
 
     return {
@@ -268,8 +268,8 @@ export class SkillRegistry {
       }
     });
 
-    const offset = query.offset || 0;
-    const limit = query.limit || 20;
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? 20;
 
     const result: RegistrySearchResult = {
       entries: deduplicated.slice(offset, offset + limit),
@@ -478,13 +478,13 @@ export class SkillRegistry {
 
     // Fallback: use curated well-known skills (no network dependency)
     if (query.keyword) {
-      const curated = this.getCuratedSkills(query.keyword, query.limit || 10);
+      const curated = this.getCuratedSkills(query.keyword, query.limit ?? 10);
       if (curated.length > 0) {
         const fallback: RegistrySearchResult = {
           entries: curated,
           total: curated.length,
           page: 1,
-          pageSize: query.limit || 20,
+          pageSize: query.limit ?? 20,
         };
         // Cache the result
         const cacheKey = JSON.stringify({ ...query, source: "curated-fallback" });
@@ -494,7 +494,7 @@ export class SkillRegistry {
       }
     }
 
-    return { entries: [], total: 0, page: 1, pageSize: query.limit || 20 };
+    return { entries: [], total: 0, page: 1, pageSize: query.limit ?? 20 };
   }
 
   /**

@@ -503,7 +503,7 @@ export function registerWebTools(
     },
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
-      const limit = parseInt(String(params.limit || "10"), 10) || 10;
+      const limit = parseInt(String(params.limit ?? "10"), 10) || 10;
       const freshness = String(params.freshness || "");
       if (!query) return { error: "Search query is required" };
 

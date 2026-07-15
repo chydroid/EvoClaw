@@ -74,7 +74,7 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       if (!alive) { serverRequired(); return; }
       try {
         const q = query || "";
-        const limit = parseInt(String(opts.limit || 20), 10);
+        const limit = parseInt(String(opts.limit ?? 20), 10);
         const r = await apiRequest<any>("GET", `/api/marketplace/search?q=${encodeURIComponent(q)}&limit=${limit}`);
         const results = r.data?.results || [];
         if (opts.json) { console.log(JSON.stringify(results, null, 2)); return; }

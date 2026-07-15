@@ -276,8 +276,8 @@ export class AuditCenter {
     filtered.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
     const total = filtered.length;
-    const offset = query.offset || 0;
-    const limit = query.limit || 50;
+    const offset = query.offset ?? 0;
+    const limit = query.limit ?? 50;
 
     return {
       records: filtered.slice(offset, offset + limit),

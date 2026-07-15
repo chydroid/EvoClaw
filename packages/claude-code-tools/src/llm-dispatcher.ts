@@ -609,7 +609,7 @@ export class LLMDispatcher {
       };
     }
 
-    const timeout = provider.timeout || 120000;
+    const timeout = provider.timeout ?? 120000;
     // SSRF 防护：校验 LLM API URL，拒绝私网/回环地址（须在启动定时器前完成，
     // 否则不安全的 URL 会先触发 abort 定时器）
     assertSafeLlmUrl(apiURL);

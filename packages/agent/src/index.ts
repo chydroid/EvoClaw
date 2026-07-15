@@ -8,6 +8,7 @@ export { SqliteCheckpointer, asSqliteDatabase } from "./sqlite-checkpointer";
 export type { SqliteDatabaseLike as AgentSqliteDatabaseLike } from "./sqlite-checkpointer";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
+export { destroyHttpAgents } from "./llm-caller";
 export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
 export type { TaskCheckpoint } from "./task-checkpoint-manager";
 export { taskStatusTracker } from "./task-status-tracker";

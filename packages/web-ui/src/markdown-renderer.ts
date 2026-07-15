@@ -290,11 +290,15 @@ export function renderMarkdown(text: string): string {
     }).join("");
 
     for (let i = linkPlaceholders.length - 1; i >= 0; i--) {
-      formatted = formatted.replace(`\x00LINK${i}\x00`, linkPlaceholders[i]);
+      // 使用函数 replacer 避免 $-injection：
+      // linkPlaceholders[i] 含用户控制的链接 URL/alt 文本（经 htmlEscape 但 $ 未转义），
+      // 直接作为 String.replace 第二参数会让 $&, $`, $' 被解释为替换序列。
+      formatted = formatted.replace(`\x00LINK${i}\x00`, () => linkPlaceholders[i]);
     }
 
     for (let i = colorSpanPlaceholders.length - 1; i >= 0; i--) {
-      formatted = formatted.replace(`\x00COLORSPAN${i}\x00`, colorSpanPlaceholders[i]);
+      // 同上：colorSpanPlaceholders[i] 含用户控制的 <span> 内容
+      formatted = formatted.replace(`\x00COLORSPAN${i}\x00`, () => colorSpanPlaceholders[i]);
     }
 
     // In the color span replacement, validate that only color property is used
@@ -428,7 +432,9 @@ export function renderMarkdown(text: string): string {
   // Restore <details> block placeholders
   let finalResult = result.join("");
   for (let i = detailsBlocks.length - 1; i >= 0; i--) {
-    finalResult = finalResult.replace(`\x00DETAILS${i}\x00`, detailsBlocks[i]);
+    // 函数 replacer 避免 $-injection：
+    // detailsBlocks[i] 含用户控制的 <details> summary/body（可能含 shell 片段中的 $` 或 $'）
+    finalResult = finalResult.replace(`\x00DETAILS${i}\x00`, () => detailsBlocks[i]);
   }
 
   return finalResult;

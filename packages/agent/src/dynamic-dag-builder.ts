@@ -91,7 +91,7 @@ export class DynamicDAGBuilder {
     if (nodes.length <= 2) {
       return {
         complexity: "simple",
-        estimatedDuration: nodes.reduce((sum, n) => sum + (n.timeout || 30000), 0),
+        estimatedDuration: nodes.reduce((sum, n) => sum + (n.timeout ?? 30000), 0),
         parallelismPossible: false,
         dependencyChain: nodes.map((n) => n.action),
       };

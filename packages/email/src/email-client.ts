@@ -553,7 +553,7 @@ export class EmailClient {
       await client.connect();
       await client.mailboxOpen(options.folder || "INBOX");
 
-      const limit = options.limit || 50;
+      const limit = options.limit ?? 50;
 
       const status = await client.status(options.folder || "INBOX", { messages: true });
       const total = status.messages ?? 0;

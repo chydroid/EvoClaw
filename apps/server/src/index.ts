@@ -50,7 +50,7 @@ import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
 import { SecurityMiddleware } from "@evoclaw/security";
-import { CopilotRouter, CredentialPool, A2AClient, A2AServer, EvalRunner, BUILTIN_EVAL_CASES, PromptRegistry, registerBuiltinPromptTemplates } from "@evoclaw/agent";
+import { CopilotRouter, CredentialPool, A2AClient, A2AServer, EvalRunner, BUILTIN_EVAL_CASES, PromptRegistry, registerBuiltinPromptTemplates, destroyHttpAgents } from "@evoclaw/agent";
 import { SkillIndex } from "@evoclaw/skills";
 import {
   registerFileTools,
@@ -1210,6 +1210,8 @@ export class EvoClawServer {
     // 先停止 gateway（HTTP 监听 + 通道清理），再 kill 子进程，最后停止注册服务。
     // 若先 killAll 会关闭子进程依赖的句柄，导致 gateway.stop() 清理失败。
     try { await this.gateway.stop(); } catch (e) { this.logger.error("server", `gateway stop failed: ${e}`); }
+    // 销毁共享的 keep-alive HTTP/HTTPS agent，防止 socket 文件描述符泄漏
+    try { destroyHttpAgents(); } catch { /* ignore */ }
     try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }
     // 清理插件：在 registry.stopAll() 之前调用插件的 unregisterPlugin/shutdown，避免资源泄漏
     try {

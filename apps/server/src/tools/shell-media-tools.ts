@@ -206,7 +206,7 @@ export function registerShellMediaTools(
           return { success: false, error: "cwd does not exist and workspace fallback unavailable" };
         }
       }
-      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout || "120"), 10) || 120, 1), 1200);
+      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "120"), 10) || 120, 1), 1200);
 
       // On Windows, replace python3 with python (python3 doesn't exist on Windows)
       let effectiveCommand = command;
@@ -805,7 +805,7 @@ except Exception as e:
         return { error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
       }
 
-      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout || "30"), 10) || 30, 1), 120);
+      const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "30"), 10) || 30, 1), 120);
 
       try {
         // 检查 Docker 后端是否可用

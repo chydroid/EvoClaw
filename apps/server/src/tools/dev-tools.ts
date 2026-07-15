@@ -202,7 +202,7 @@ export function registerDevTools(
       const target = params.target ? String(params.target) : "";
       const forcedFramework = params.framework ? String(params.framework).toLowerCase() : "auto";
       const watch = params.watch === true;
-      const timeoutSec = Math.max(1, Math.min(parseInt(String(params.timeout || "120"), 10) || 120, 1200));
+      const timeoutSec = Math.max(1, Math.min(parseInt(String(params.timeout ?? "120"), 10) || 120, 1200));
 
       // 路径校验：阻止 path traversal 逃逸工作区
       let targetAbs = workspaceRoot;

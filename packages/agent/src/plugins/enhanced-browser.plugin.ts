@@ -300,7 +300,7 @@ async function lightweightExtract(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeout || 15000);
+  const timeout = setTimeout(() => controller.abort(), options.timeout ?? 15000);
 
   try {
     // 初始 URL SSRF 检查：防止请求内网/元数据端点
@@ -396,8 +396,8 @@ async function lightweightExtract(
     const result: ExtractionResult = {
       url: currentUrl,
       title,
-      text: options.extractText !== false ? bodyText.slice(0, options.maxLength || 10000) : "",
-      html: html.slice(0, options.maxLength || 50000),
+      text: options.extractText !== false ? bodyText.slice(0, options.maxLength ?? 10000) : "",
+      html: html.slice(0, options.maxLength ?? 50000),
       links: options.extractLinks !== false ? extractLinksFromHtml(html) : [],
       forms: options.extractForms !== false ? extractFormsFromHtml(html) : [],
       meta: options.extractMeta !== false ? extractMetaFromHtml(html) : {},

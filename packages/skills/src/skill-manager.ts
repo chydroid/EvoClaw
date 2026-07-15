@@ -3139,7 +3139,11 @@ export class SkillManager {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} ${response.statusText}`);
         }
-        const contentLength = Number(response.headers.get("content-length") || 0);
+        const rawContentLength = Number(response.headers.get("content-length") || 0);
+        // NaN 防护：malformed content-length（如 "abc"）会让 Number() 返回 NaN，
+        // 而 NaN > MAX_DOWNLOAD_BYTES 为 false，会绕过大小限制。
+        // 当无法信任 header 时，强制按流式累积校验。
+        const contentLength = Number.isFinite(rawContentLength) ? rawContentLength : 0;
         if (contentLength > MAX_DOWNLOAD_BYTES) {
           throw new Error(`Download too large: ${contentLength} bytes (max ${MAX_DOWNLOAD_BYTES})`);
         }

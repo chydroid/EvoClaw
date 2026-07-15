@@ -77,7 +77,7 @@ export class SkillOrchestrator {
       description: s.name,
       dependsOn: s.dependsOn || [],
       params: s.params || {},
-      timeout: s.timeout || 60000,
+      timeout: s.timeout ?? 60000,
       retryCount: 0,
       maxRetries: s.maxRetries || 2,
       fallbackSkill: s.fallbackSkill,

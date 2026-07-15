@@ -15,7 +15,7 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
       if (!query) return { success: false, error: "Query is required" };
-      const limit = Math.max(1, Math.min(parseInt(String(params.limit || "10"), 10) || 10, 100));
+      const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "10"), 10) || 10, 100));
 
       // 通过 registry 获取 memoryHub
       // AgentModelExecutor 接口未公开 registry 属性，此处用 as any 访问其内部字段。

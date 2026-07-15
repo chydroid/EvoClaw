@@ -156,7 +156,7 @@ export function register(
       if (opts.overdue) filter.overdue = true;
       if (Array.isArray(opts.tag) && opts.tag.length > 0) filter.tags = opts.tag;
 
-      const limit = parseInt(String(opts.limit || "50"), 10);
+      const limit = parseInt(String(opts.limit ?? "50"), 10);
       if (isNaN(limit) || limit < 1) {
         printError("Invalid --limit value");
         return;

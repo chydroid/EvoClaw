@@ -142,7 +142,7 @@ export function registerSchedulerTools(
       publish("scheduler.shell_error", { taskId: task.id, error: "cwd must be within workspace" });
       return;
     }
-    const timeout = Math.min(Math.max(config.timeout || 60000, 1000), 300000); // 1s~5min
+    const timeout = Math.min(Math.max(config.timeout ?? 60000, 1000), 300000); // 1s~5min
     try {
       const { stdout, stderr, timedOut } = await new Promise<{ stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
         execFile(shell, shellArgs, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -329,7 +329,7 @@ export function registerSchedulerTools(
     },
     async (params: Record<string, unknown>) => {
       const taskId = String(params.taskId || "");
-      const limit = Math.max(1, Math.min(parseInt(String(params.limit || "20"), 10) || 20, 100));
+      const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "20"), 10) || 20, 100));
       const history = sched.getRunHistory(taskId || undefined, limit);
       return { success: true, history, count: history.length };
     }

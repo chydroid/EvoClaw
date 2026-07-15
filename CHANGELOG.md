@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.84.0] - 2026-07-15
+
+### Security Fixes
+
+- **Path Traversal**: Fixed `SkillLearner.saveSkill()` — `/learn recent <skillName>` slash command accepted unsanitized name containing `/`, `\`, or `..`, allowing escape from skills directory. Added validation mirroring `skill-curator.validateSkillName()` pattern
+- **Download Size Bypass**: Fixed `skill-manager.downloadFile()` — malformed `content-length` header (e.g., `"abc"`) caused `Number()` to return NaN, which silently bypassed `MAX_DOWNLOAD_BYTES` check (`NaN > MAX === false`). Now uses `Number.isFinite()` guard; streaming accumulation check remains as defense-in-depth
+
+### Bug Fixes
+
+- **String.replace $-injection** (3 locations in `markdown-renderer.ts`): Restoring LINK/COLORSPAN/DETAILS placeholders passed user-controlled HTML as the second argument to `String.replace`, which interprets `$&`, `` $` ``, `$'` as substitution sequences. Switched to function replacer (immune to `$`-interpretation)
+- **HTTP Agent Leak**: Module-level `httpAgent` / `httpsAgent` keep-alive agents in `llm-caller.ts` were never destroyed on shutdown. Exported `destroyHttpAgents()` and wired into `EvoClawServer.shutdown()` between `gateway.stop()` and `processManager.killAll()`
+- **line=0 Dropped**: `error-diagnostician.ts` `extractLine` used `parseInt(x, 10) || null`, dropping valid line 0 to null (2 locations). Now uses `Number.isFinite()` guard
+- **`x || default` Coercion** (28 locations across 12 files): Passing `0` for `limit`/`timeout`/`maxLength`/`offset` parameters silently replaced with non-zero default via `||`. Switched to `??` (nullish coalescing) to preserve explicit `0`. Affected files:
+  - `apps/server/src/tools/scheduler-tools.ts` (2 locations)
+  - `apps/server/src/tools/web-tools.ts` (1)
+  - `apps/server/src/tools/memory-tools.ts` (1)
+  - `apps/server/src/tools/dev-tools.ts` (1)
+  - `apps/server/src/tools/shell-media-tools.ts` (2)
+  - `packages/gateway/src/protocol-adapter.ts` (3)
+  - `packages/email/src/email-client.ts` (1)
+  - `packages/security/src/audit-center.ts` (2: offset + limit)
+  - `packages/security/src/audit-logger.ts` (1)
+  - `packages/skills/src/skill-registry.ts` (5)
+  - `packages/agent/src/llm-caller.ts` (1: provider.timeout)
+  - `packages/agent/src/dynamic-dag-builder.ts` (1)
+  - `packages/agent/src/plugins/enhanced-browser.plugin.ts` (3: timeout + 2 maxLength)
+  - `packages/claude-code-tools/src/llm-dispatcher.ts` (1)
+  - `packages/intelligence/src/skill-orchestrator.ts` (1)
+  - `packages/evolution/src/learning-journal.ts` (2: offset + limit)
+  - `apps/cli/src/commands/commitments.ts`, `system.ts`, `skills.ts` (3)
+
+### Infrastructure
+
+- All fixes verified with build, typecheck, and full test suite (5527 tests passing, 2 skipped)
+
 ## [0.83.0] - 2026-07-15
 
 ### Hermes 对标提升（第 1 轮）

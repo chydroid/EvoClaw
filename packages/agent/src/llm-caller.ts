@@ -56,6 +56,15 @@ export interface NativeFetchResponse {
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
+/**
+ * 销毁共享的 keep-alive HTTP/HTTPS agent。
+ * 应在进程优雅关闭时调用，防止 socket 文件描述符泄漏。
+ */
+export function destroyHttpAgents(): void {
+  try { httpAgent.destroy(); } catch { /* ignore */ }
+  try { httpsAgent.destroy(); } catch { /* ignore */ }
+}
+
 export interface NativeFetchOptions {
   method?: string;
   headers?: Record<string, string>;
@@ -1674,7 +1683,8 @@ export async function callLLMOnce(
   const tracing = observability?.getTracingService?.();
 
   const doCall = async (): Promise<CallLLMOnceResult | null> => {
-  const timeout = provider.timeout || 60000;
+  // 使用 ?? 保留 timeout=0（表示"无超时"）的显式配置；仅当 undefined/null 时回退默认值
+  const timeout = provider.timeout ?? 60000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   if (timeoutId.unref) timeoutId.unref();

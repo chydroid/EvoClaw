@@ -4740,7 +4740,7 @@ export class ProtocolAdapter {
           return;
         }
         const taskId = req.query.taskId as string | undefined;
-        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || "20"), 10) || 20, 200));
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit ?? "20"), 10) || 20, 200));
         const history = scheduleManager.getRunHistory(taskId, limit);
         res.json({ success: true, history });
       } catch (err) {
@@ -5829,7 +5829,7 @@ export class ProtocolAdapter {
           return;
         }
 
-        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 500));
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit ?? "50"), 10) || 50, 500));
         res.json({ history: permissionRelay.getHistory(limit) });
       } catch (err) {
         this.handleError(err, res, "Failed to get permission history");
@@ -8166,7 +8166,9 @@ export class ProtocolAdapter {
           res.status(503).json({ error: "executionCheckpointStore not available" });
           return;
         }
-        const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10) || 20));
+        // 用 ?? 保留 0，再用三元替换 || 20 以避免 0 被误转 20
+        const parsedLimit = parseInt(String(req.query.limit ?? "20"), 10);
+        const limit = Math.min(100, Math.max(1, Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20));
         const recent = store.getRecent({ limit });
         const byStatus: Record<string, number> = {};
         for (const exec of recent) {

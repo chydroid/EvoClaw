@@ -61,7 +61,7 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
             });
           }
         }
-        const limit = parseInt(String(opts.limit || "50"), 10);
+        const limit = parseInt(String(opts.limit ?? "50"), 10);
         entries = entries.slice(0, isNaN(limit) ? 50 : limit);
 
         if (opts.json) {

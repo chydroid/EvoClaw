@@ -499,6 +499,19 @@ export class SkillLearner {
     sourceDescription: string,
   ): Promise<LearnResult> {
     try {
+      // 路径穿越防护：name 不能包含路径分隔符或 .. 序列
+      // 防止 /learn recent <skillName> 用户输入操纵到 skillsDir 之外
+      if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || path.isAbsolute(name)) {
+        return {
+          skillName: name,
+          skillPath: "",
+          source,
+          sourceDescription,
+          content,
+          success: false,
+          error: `Invalid skill name (path separators or .. are not allowed): ${name}`,
+        };
+      }
       const skillDir = path.join(this.skillsDir, name);
       // 幂等：如果已存在，追加版本号
       let finalDir = skillDir;

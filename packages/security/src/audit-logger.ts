@@ -46,7 +46,7 @@ export class AuditLogger {
     if (filters.from) results = results.filter((l) => l.timestamp >= filters.from!);
     if (filters.to) results = results.filter((l) => l.timestamp <= filters.to!);
 
-    return results.slice(-(filters.limit || 100));
+    return results.slice(-(filters.limit ?? 100));
   }
 
   async export(): Promise<AuditEntry[]> {
