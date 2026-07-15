@@ -1,4 +1,4 @@
-export { MemoryHub } from "./memory-hub";
+export { MemoryHub, sanitizeMemoryContext, wrapMemoryContext, MEMORY_CONTEXT_FENCE_OPEN, MEMORY_CONTEXT_FENCE_CLOSE } from "./memory-hub";
 export type { MemoryHubEmbeddingOptions } from "./memory-hub";
 export { ShortTermMemoryStore } from "./short-term-memory";
 export { LongTermMemoryStore } from "./long-term-memory";

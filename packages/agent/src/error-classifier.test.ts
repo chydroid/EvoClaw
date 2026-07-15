@@ -3,6 +3,10 @@ import {
   classifyLLMError,
   isContextOverflowError,
   isRateLimitError,
+  isContentPolicyError,
+  isSslCertError,
+  isModelNotFoundError,
+  isUpstreamRateLimitError,
   estimateTokensFromText,
   estimateMessagesTokens,
   LLMErrorType,
@@ -221,5 +225,185 @@ describe("estimateMessagesTokens", () => {
 
   it("should return 0 for empty messages", () => {
     expect(estimateMessagesTokens([])).toBe(0);
+  });
+});
+
+// ── fix-1: 新增错误类型测试 ──
+
+describe("fix-1: SSL certificate errors", () => {
+  it("should classify SSL cert error as non-retryable", () => {
+    const result = classifyLLMError(undefined, "SSL certificate verify failed");
+    expect(result.type).toBe(LLMErrorType.SSL_CERT);
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+    expect(result.shouldRotateAuth).toBe(false);
+    expect(result.backoffMs).toBe(0);
+  });
+
+  it("should detect self-signed certificate", () => {
+    const result = classifyLLMError(undefined, "self.signed.certificate in chain");
+    expect(result.type).toBe(LLMErrorType.SSL_CERT);
+  });
+
+  it("should detect expired certificate", () => {
+    const result = classifyLLMError(undefined, "CERT_HAS_EXPIRED");
+    expect(result.type).toBe(LLMErrorType.SSL_CERT);
+  });
+
+  it("should detect via isSslCertError helper", () => {
+    expect(isSslCertError(undefined, "ssl cert verify failed")).toBe(true);
+    expect(isSslCertError(undefined, "some other error")).toBe(false);
+  });
+});
+
+describe("fix-1: Content policy errors", () => {
+  it("should classify content policy as non-retryable", () => {
+    const result = classifyLLMError(undefined, "content policy violation");
+    expect(result.type).toBe(LLMErrorType.CONTENT_POLICY);
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+    expect(result.shouldRotateAuth).toBe(false);
+  });
+
+  it("should detect content_filter", () => {
+    const result = classifyLLMError(undefined, "content_filter triggered");
+    expect(result.type).toBe(LLMErrorType.CONTENT_POLICY);
+  });
+
+  it("should detect safety flag", () => {
+    const result = classifyLLMError(undefined, "flagged by safety filter");
+    expect(result.type).toBe(LLMErrorType.CONTENT_POLICY);
+  });
+
+  it("should detect ResponsibleAiPolicyViolation", () => {
+    const result = classifyLLMError(undefined, "ResponsibleAiPolicyViolation detected");
+    expect(result.type).toBe(LLMErrorType.CONTENT_POLICY);
+  });
+
+  it("should detect via isContentPolicyError helper", () => {
+    expect(isContentPolicyError(undefined, "content policy violation")).toBe(true);
+    expect(isContentPolicyError(451, "")).toBe(true);
+    expect(isContentPolicyError(500, "server error")).toBe(false);
+  });
+});
+
+describe("fix-1: Model not found errors", () => {
+  it("should classify 404 with model_not_found pattern", () => {
+    const result = classifyLLMError(404, "model gpt-5 does not exist");
+    expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+  });
+
+  it("should classify 404 without specific text as model_not_found", () => {
+    const result = classifyLLMError(404, "model not found");
+    expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+  });
+
+  it("should detect model_not_found in text without status code", () => {
+    const result = classifyLLMError(undefined, "unknown model specified");
+    expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+  });
+
+  it("should detect via isModelNotFoundError helper", () => {
+    expect(isModelNotFoundError(404, "model not found")).toBe(true);
+    expect(isModelNotFoundError(404)).toBe(true);
+    expect(isModelNotFoundError(500, "server error")).toBe(false);
+  });
+});
+
+describe("fix-1: Payload too large errors", () => {
+  it("should classify 413 as payload_too_large (retryable, shouldCompact)", () => {
+    const result = classifyLLMError(413, "request entity too large");
+    expect(result.type).toBe(LLMErrorType.PAYLOAD_TOO_LARGE);
+    expect(result.retryable).toBe(true);
+    expect(result.shouldCompact).toBe(true);
+    expect(result.shouldSkipProvider).toBe(false);
+  });
+
+  it("should detect payload too large in text", () => {
+    const result = classifyLLMError(undefined, "payload too large");
+    expect(result.type).toBe(LLMErrorType.PAYLOAD_TOO_LARGE);
+  });
+});
+
+describe("fix-1: Provider policy blocked errors", () => {
+  it("should classify OpenRouter data policy block as PROVIDER_POLICY", () => {
+    const result = classifyLLMError(undefined, "no endpoints available matching your data policy");
+    expect(result.type).toBe(LLMErrorType.PROVIDER_POLICY);
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+  });
+
+  it("should detect guardrail block", () => {
+    const result = classifyLLMError(undefined, "guardrail not allowed for this account");
+    expect(result.type).toBe(LLMErrorType.PROVIDER_POLICY);
+  });
+});
+
+describe("fix-1: OpenRouter upstream 429", () => {
+  it("should detect upstream 429 and not rotate auth", () => {
+    const result = classifyLLMError(429, "upstream provider 429 rate limited");
+    expect(result.type).toBe(LLMErrorType.RATE_LIMIT);
+    expect(result.retryable).toBe(true);
+    expect(result.shouldRotateAuth).toBe(false); // 不轮换 key
+    expect(result.shouldSkipProvider).toBe(false);
+    expect(result.backoffMs).toBeGreaterThan(0);
+  });
+
+  it("should detect via isUpstreamRateLimitError helper", () => {
+    expect(isUpstreamRateLimitError("upstream 429")).toBe(true);
+    expect(isUpstreamRateLimitError("normal rate limit")).toBe(false);
+  });
+
+  it("normal 429 should still rotate auth", () => {
+    const result = classifyLLMError(429, "rate limit exceeded");
+    expect(result.type).toBe(LLMErrorType.RATE_LIMIT);
+    expect(result.shouldRotateAuth).toBe(true); // 普通 429 仍轮换
+  });
+});
+
+describe("fix-1: 5xx validation error detection", () => {
+  it("should treat 5xx with validation error as non-retryable", () => {
+    const result = classifyLLMError(500, "invalid request format");
+    expect(result.type).toBe(LLMErrorType.PROVIDER_ERROR);
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+  });
+
+  it("should treat 502 with bad request as non-retryable", () => {
+    const result = classifyLLMError(502, "malformed request payload");
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+  });
+
+  it("should treat 5xx without validation keywords as retryable", () => {
+    const result = classifyLLMError(500, "internal server error");
+    expect(result.retryable).toBe(true);
+    expect(result.shouldSkipProvider).toBe(false);
+  });
+});
+
+describe("fix-1: Server disconnect + large session heuristic", () => {
+  it("should heuristically treat disconnect on large session as context overflow", () => {
+    const result = classifyLLMError(undefined, "server disconnected", undefined, {
+      sessionTokens: 150_000,
+    });
+    expect(result.type).toBe(LLMErrorType.CONTEXT_OVERFLOW);
+    expect(result.shouldCompact).toBe(true);
+  });
+
+  it("should not apply heuristic for small session", () => {
+    const result = classifyLLMError(undefined, "server disconnected", undefined, {
+      sessionTokens: 5000,
+    });
+    expect(result.type).not.toBe(LLMErrorType.CONTEXT_OVERFLOW);
+  });
+
+  it("should detect peer closed connection", () => {
+    const result = classifyLLMError(undefined, "peer closed connection unexpectedly", undefined, {
+      sessionTokens: 120_000,
+    });
+    expect(result.type).toBe(LLMErrorType.CONTEXT_OVERFLOW);
   });
 });

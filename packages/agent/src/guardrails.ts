@@ -842,3 +842,326 @@ function actionRank(a: GuardrailAction): number {
     default:         return 0;
   }
 }
+
+// ─── R1-3: 工具循环检测（借鉴 hermes-agent tool_guardrails.py） ──────────────
+
+/**
+ * 幂等工具集合。这些工具重复调用不会造成副作用，
+ * 循环检测阈值相对宽松。
+ */
+export const IDEMPOTENT_TOOL_NAMES = new Set([
+  "web_search", "web_fetch", "file_read", "file_list", "ls",
+  "memory_retrieve", "memory_search", "skill_search", "skill_view",
+  "skill_index_list", "scrapling_fetch", "fetch_node_page",
+  "sequential_thinking", "assess_coding_capability", "markitdown_convert",
+]);
+
+/**
+ * 有副作用的工具集合。这些工具重复调用可能造成数据损坏，
+ * 循环检测阈值更严格。
+ */
+export const MUTATING_TOOL_NAMES = new Set([
+  "file_write", "file_delete", "file_move", "file_copy",
+  "shell_exec", "execute_command", "run_command",
+  "memory_save", "memory_store", "remember",
+  "skill_install", "skill_uninstall",
+  "browser_click", "browser_type", "browser_navigate",
+]);
+
+/**
+ * 工具调用签名。用 SHA-256 hash args 做去标识比较，
+ * 避免 args 中包含 timestamp 等动态字段导致签名不同。
+ */
+export interface ToolCallSignature {
+  /** 工具名称 */
+  toolName: string;
+  /** args 的归一化 hash */
+  argsHash: string;
+}
+
+/**
+ * 工具循环检测结果。
+ */
+export interface ToolLoopCheckResult {
+  /** 检测到的循环类型 */
+  detection: "none" | "exact_failure" | "same_tool_failure" | "no_progress";
+  /** 建议动作 */
+  action: "continue" | "warn" | "halt";
+  /** 人类可读的警告/阻断消息 */
+  message: string;
+  /** 当前计数 */
+  count: number;
+  /** 阈值 */
+  threshold: number;
+}
+
+/**
+ * 工具循环检测配置。
+ *
+ * 借鉴 hermes-agent ToolCallGuardrailConfig：
+ *   - warnings_enabled：达到 warn 阈值时发出警告（progress 事件）
+ *   - hard_stop_enabled：达到 halt 阈值时抛出 ToolLoopDetectedError
+ *   - 区分 exact_failure / same_tool_failure / no_progress 三种检测
+ */
+export interface ToolLoopGuardrailConfig {
+  /** 警告阈值 */
+  warningsEnabled: boolean;
+  /** 阻断阈值 */
+  hardStopEnabled: boolean;
+  /** 完全相同的工具调用（同 name + 同 argsHash）失败 N 次后警告 */
+  exactFailureWarnAfter: number;
+  /** 完全相同的工具调用失败 N 次后阻断 */
+  exactFailureHaltAfter: number;
+  /** 同名工具（不同 args）失败 N 次后警告 */
+  sameToolFailureWarnAfter: number;
+  /** 同名工具失败 N 次后阻断 */
+  sameToolFailureHaltAfter: number;
+  /** 无进展（工具返回相同结果）N 次后警告 */
+  noProgressWarnAfter: number;
+  /** 无进展 N 次后阻断 */
+  noProgressHaltAfter: number;
+}
+
+export const DEFAULT_TOOL_LOOP_CONFIG: ToolLoopGuardrailConfig = {
+  warningsEnabled: true,
+  hardStopEnabled: true,
+  exactFailureWarnAfter: 2,
+  exactFailureHaltAfter: 5,
+  sameToolFailureWarnAfter: 3,
+  sameToolFailureHaltAfter: 8,
+  noProgressWarnAfter: 2,
+  noProgressHaltAfter: 5,
+};
+
+/**
+ * 工具循环检测器。
+ *
+ * 借鉴 hermes-agent agent/tool_guardrails.py：
+ *   追踪每个 turn 内的工具调用历史，检测三种循环模式：
+ *   1. exact_failure：完全相同的工具调用（同 name + 同 args）反复失败
+ *   2. same_tool_failure：同名工具（不同 args）反复失败
+ *   3. no_progress：工具反复返回相同结果（无实质进展）
+ */
+export class ToolCallLoopDetector {
+  private config: ToolLoopGuardrailConfig;
+  /** 精确签名 → 失败次数 */
+  private exactFailureCounts = new Map<string, number>();
+  /** 工具名 → 失败次数 */
+  private sameToolFailureCounts = new Map<string, number>();
+  /** 结果 hash → 连续相同次数 */
+  private noProgressCounts = new Map<string, number>();
+  /** 上一次结果 hash（用于检测连续相同） */
+  private lastResultHash: string | null = null;
+  private consecutiveSameResults = 0;
+
+  constructor(config: Partial<ToolLoopGuardrailConfig> = {}) {
+    this.config = { ...DEFAULT_TOOL_LOOP_CONFIG, ...config };
+  }
+
+  /**
+   * 计算工具调用的签名。
+   * args 通过 JSON 归一化后 SHA-256 hash，去除 timestamp 等动态字段影响。
+   */
+  computeSignature(toolName: string, args: Record<string, unknown>): ToolCallSignature {
+    // 归一化 args：排序 key + 去除动态字段
+    const normalized = this.normalizeArgs(args);
+    const argsStr = JSON.stringify(normalized);
+    const argsHash = this.hashString(argsStr);
+    return { toolName, argsHash };
+  }
+
+  /**
+   * 记录一次工具调用结果，并检测循环。
+   *
+   * @param toolName 工具名称
+   * @param args 工具参数
+   * @param success 是否成功
+   * @param resultContent 结果内容（用于 no_progress 检测）
+   * @returns 检测结果
+   */
+  check(
+    toolName: string,
+    args: Record<string, unknown>,
+    success: boolean,
+    resultContent: string,
+  ): ToolLoopCheckResult {
+    const sig = this.computeSignature(toolName, args);
+    const exactKey = `${sig.toolName}:${sig.argsHash}`;
+    const resultHash = this.hashString(resultContent.slice(0, 4096));
+
+    // ── no_progress 检测 ──
+    if (resultHash === this.lastResultHash) {
+      this.consecutiveSameResults++;
+    } else {
+      this.consecutiveSameResults = 0;
+      this.lastResultHash = resultHash;
+    }
+
+    if (!success) {
+      // ── exact_failure 检测 ──
+      const exactCount = (this.exactFailureCounts.get(exactKey) ?? 0) + 1;
+      this.exactFailureCounts.set(exactKey, exactCount);
+
+      // ── same_tool_failure 检测 ──
+      const toolCount = (this.sameToolFailureCounts.get(toolName) ?? 0) + 1;
+      this.sameToolFailureCounts.set(toolName, toolCount);
+
+      // 检查 halt 阈值（优先级：exact > same_tool）
+      if (this.config.hardStopEnabled) {
+        if (exactCount >= this.config.exactFailureHaltAfter) {
+          return {
+            detection: "exact_failure",
+            action: "halt",
+            message: `工具 "${toolName}" 以相同参数失败 ${exactCount} 次，达到阻断阈值 ${this.config.exactFailureHaltAfter}。已停止循环。`,
+            count: exactCount,
+            threshold: this.config.exactFailureHaltAfter,
+          };
+        }
+        if (toolCount >= this.config.sameToolFailureHaltAfter) {
+          return {
+            detection: "same_tool_failure",
+            action: "halt",
+            message: `工具 "${toolName}" 失败 ${toolCount} 次（不同参数），达到阻断阈值 ${this.config.sameToolFailureHaltAfter}。已停止循环。`,
+            count: toolCount,
+            threshold: this.config.sameToolFailureHaltAfter,
+          };
+        }
+      }
+
+      // 检查 warn 阈值
+      if (this.config.warningsEnabled) {
+        if (exactCount >= this.config.exactFailureWarnAfter) {
+          return {
+            detection: "exact_failure",
+            action: "warn",
+            message: `⚠️ 工具 "${toolName}" 以相同参数已失败 ${exactCount} 次，可能陷入循环。`,
+            count: exactCount,
+            threshold: this.config.exactFailureWarnAfter,
+          };
+        }
+        if (toolCount >= this.config.sameToolFailureWarnAfter) {
+          return {
+            detection: "same_tool_failure",
+            action: "warn",
+            message: `⚠️ 工具 "${toolName}" 已失败 ${toolCount} 次（不同参数），可能需要换一种方法。`,
+            count: toolCount,
+            threshold: this.config.sameToolFailureWarnAfter,
+          };
+        }
+      }
+    }
+
+    // ── no_progress 检测 ──
+    if (this.consecutiveSameResults > 0 && success) {
+      if (this.config.hardStopEnabled && this.consecutiveSameResults >= this.config.noProgressHaltAfter) {
+        return {
+          detection: "no_progress",
+          action: "halt",
+          message: `工具连续 ${this.consecutiveSameResults} 次返回相同结果，无实质进展。已停止循环。`,
+          count: this.consecutiveSameResults,
+          threshold: this.config.noProgressHaltAfter,
+        };
+      }
+      if (this.config.warningsEnabled && this.consecutiveSameResults >= this.config.noProgressWarnAfter) {
+        return {
+          detection: "no_progress",
+          action: "warn",
+          message: `⚠️ 工具连续 ${this.consecutiveSameResults} 次返回相同结果，可能无实质进展。`,
+          count: this.consecutiveSameResults,
+          threshold: this.config.noProgressWarnAfter,
+        };
+      }
+    }
+
+    return { detection: "none", action: "continue", message: "", count: 0, threshold: 0 };
+  }
+
+  /**
+   * 重置所有计数器（新 turn 开始时调用）。
+   */
+  resetTurn(): void {
+    this.exactFailureCounts.clear();
+    this.sameToolFailureCounts.clear();
+    this.noProgressCounts.clear();
+    this.lastResultHash = null;
+    this.consecutiveSameResults = 0;
+  }
+
+  /**
+   * 获取某个工具的精确失败次数。
+   */
+  getExactFailureCount(toolName: string, args: Record<string, unknown>): number {
+    const sig = this.computeSignature(toolName, args);
+    const exactKey = `${sig.toolName}:${sig.argsHash}`;
+    return this.exactFailureCounts.get(exactKey) ?? 0;
+  }
+
+  /**
+   * 获取某个工具名的总失败次数。
+   */
+  getToolFailureCount(toolName: string): number {
+    return this.sameToolFailureCounts.get(toolName) ?? 0;
+  }
+
+  /**
+   * 更新配置。
+   */
+  updateConfig(config: Partial<ToolLoopGuardrailConfig>): void {
+    this.config = { ...this.config, ...config };
+  }
+
+  /** 获取当前配置 */
+  getConfig(): ToolLoopGuardrailConfig {
+    return { ...this.config };
+  }
+
+  // ── 内部方法 ──
+
+  /**
+   * 归一化 args：排序 key + 去除动态字段（timestamp、requestId 等）。
+   */
+  private normalizeArgs(args: Record<string, unknown>): Record<string, unknown> {
+    const DYNAMIC_KEYS = new Set([
+      "timestamp", "requestId", "request_id", "_ts", "nonce",
+      "session_id", "sessionId", "trace_id", "traceId",
+    ]);
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(args).sort()) {
+      if (DYNAMIC_KEYS.has(key)) continue;
+      const val = args[key];
+      if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+        sorted[key] = this.normalizeArgs(val as Record<string, unknown>);
+      } else {
+        sorted[key] = val;
+      }
+    }
+    return sorted;
+  }
+
+  /**
+   * SHA-256 hash 字符串（使用 crypto，截断到 16 字符节省内存）。
+   */
+  private hashString(s: string): string {
+    // 延迟导入避免循环依赖
+    const { createHash } = require("crypto") as typeof import("crypto");
+    return createHash("sha256").update(s).digest("hex").slice(0, 16);
+  }
+}
+
+/**
+ * 工具循环检测阻断错误。
+ * 当达到 halt 阈值时抛出，由调用方捕获并停止工具循环。
+ */
+export class ToolLoopDetectedError extends Error {
+  public readonly detection: string;
+  public readonly toolName: string;
+  public readonly count: number;
+
+  constructor(result: ToolLoopCheckResult, toolName: string) {
+    super(result.message);
+    this.name = "ToolLoopDetectedError";
+    this.detection = result.detection;
+    this.toolName = toolName;
+    this.count = result.count;
+  }
+}

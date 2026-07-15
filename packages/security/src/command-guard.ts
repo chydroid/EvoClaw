@@ -578,3 +578,61 @@ export function detectInvisibleChars(text: string): string[] {
   }
   return hits;
 }
+
+// ── R2-3: 破坏性命令检测（借鉴 hermes-agent _is_destructive_command） ──
+
+/**
+ * 破坏性命令模式。
+ *
+ * 借鉴 hermes-agent agent/tool_executor.py 的 _is_destructive_command：
+ *   匹配会导致数据丢失或系统不可逆变更的命令。
+ *   这类命令在执行前应自动 checkpoint 快照工作目录。
+ */
+const DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
+  // 文件删除
+  /\brm\s+-rf?\b/i,
+  /\brmdir\s+\/s\b/i,           // Windows
+  /\bdel\s+\/[sfq]/i,           // Windows del
+  // Git 破坏性操作
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bgit\s+clean\s+-[fd]/i,
+  /\bgit\s+push\s+(?:-f|--force)/i,
+  // 磁盘/文件系统
+  /\bmkfs\b/i,
+  /\bdd\s+.*of=\/dev\//i,
+  /\bfdisk\b/i,
+  /\bformat\s+[a-z]:/i,         // Windows format
+  // 系统操作
+  /\bshutdown\b/i,
+  /\breboot\b/i,
+  /\bhalt\b/i,
+  /\bpoweroff\b/i,
+  // 权限/所有权
+  /\bchmod\s+-R\s+0?777\b/i,
+  /\bchown\s+-R\b/i,
+  // 进程
+  /\bkillall\b/i,
+  /\bpkill\s+-9\b/i,
+  // fork bomb
+  /:\(\)\{.*:|:&\};:/,
+];
+
+/**
+ * 检测命令是否为破坏性命令。
+ *
+ * 借鉴 hermes-agent _is_destructive_command：
+ *   返回 true 时应在执行前自动 checkpoint 工作目录，
+ *   以便用户可以回滚。
+ *
+ * @param command 待检测的命令字符串
+ * @returns true 表示该命令是破坏性的
+ */
+export function isDestructiveCommand(command: string): boolean {
+  if (!command) return false;
+  // 归一化后再匹配（防止 ANSI/Unicode 绕过）
+  const normalized = normalizeCommand(command).toLowerCase();
+  return DESTRUCTIVE_COMMAND_PATTERNS.some((pattern) => {
+    pattern.lastIndex = 0;
+    return pattern.test(normalized);
+  });
+}

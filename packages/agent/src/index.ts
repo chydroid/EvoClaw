@@ -20,13 +20,15 @@ export { CompactionManager } from "./compaction-manager";
 export { AgentLifecycleManager, AgentLifecycleEvent } from "./agent-lifecycle";
 export { QueueManager } from "./queue-manager";
 export { buildAgentSystemPrompt, buildCompactSkillsPrompt } from "./system-prompt";
-export { classifyLLMError, isContextOverflowError, isRateLimitError, estimateTokensFromText, estimateMessagesTokens, LLMErrorType } from "./error-classifier";
+export { classifyLLMError, isContextOverflowError, isRateLimitError, isContentPolicyError, isSslCertError, isModelNotFoundError, isUpstreamRateLimitError, estimateTokensFromText, estimateMessagesTokens, formatClassifiedErrorForUser, LLMErrorType } from "./error-classifier";
+export type { ClassifiedError, ClassifyOptions, UserFriendlyError } from "./error-classifier";
 export type { DAGBuilderConfig, BuildContext } from "./dynamic-dag-builder";
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./types";
 export type { SubTask, TaskPlan, ProjectTemplate } from "./task-planner";
 export type { PromptMode, SystemPromptParams } from "./system-prompt";
-export type { ClassifiedError } from "./error-classifier";
 export type { CompactionSummary, CompactionConfig } from "./compaction-manager";
+export { closeInterruptedToolSequence, persistSessionTurn, persistToolExecutionCheckpoint, loadSessionHistory } from "./session-persistence";
+export type { SessionHistoryEntry, SessionPersistenceDeps, ToolCheckpointMetadata } from "./session-persistence";
 export type { AgentStatus, ToolCallStatus, LifecycleEventData, ErrorEvent, ToolCallEvent, CompactionEvent, PermissionEvent } from "./agent-lifecycle";
 export type { QueueMode, QueueItem, QueueConfig } from "./queue-manager";
 export { SessionManager } from "./session-manager";
@@ -64,6 +66,9 @@ export { ModelFailoverManager } from "./model-failover";
 export type { FailoverConfig, ProviderHealth, FailoverProvider } from "./model-failover";
 export { DefaultProviderRegistry } from "./provider-registry";
 export type { RegistryEntry, ResolvedProvider, RegistryConfig } from "./provider-registry";
+// R1-2: Provider Skip List — 持久化的失败 provider 跳过列表
+export { ProviderSkipList, getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
+export type { ProviderSkipEntry, SessionSkipList, ProviderSkipListConfig } from "./provider-skip-list";
 export { OpenAIProvider, AnthropicProvider, GoogleProvider } from "./providers/index.js";
 export { ProgressDraftsManager } from "./progress-drafts";
 export type { ProgressDraft, ProgressEvent, ProgressDraftsConfig, ProgressListener, DraftStatus } from "./progress-drafts";
@@ -155,8 +160,8 @@ export { ToolChainExecutor, type ToolChainDefinition, type ToolChainResult, type
 export { ToolChainRegistry, createBuiltinToolChainRegistry } from "./tool-chain-registry";
 
 // Guardrails system
-export { GuardrailsManager, InputGuardrail, OutputGuardrail, ToolGuardrail } from "./guardrails";
-export type { GuardrailResult, GuardrailConfig, GuardrailStats, InputRule, OutputRule, ToolRule, Severity, GuardrailAction } from "./guardrails";
+export { GuardrailsManager, InputGuardrail, OutputGuardrail, ToolGuardrail, ToolCallLoopDetector, ToolLoopDetectedError, DEFAULT_TOOL_LOOP_CONFIG, IDEMPOTENT_TOOL_NAMES, MUTATING_TOOL_NAMES } from "./guardrails";
+export type { GuardrailResult, GuardrailConfig, GuardrailStats, InputRule, OutputRule, ToolRule, Severity, GuardrailAction, ToolCallSignature, ToolLoopCheckResult, ToolLoopGuardrailConfig } from "./guardrails";
 
 // Structured Output system
 export { StructuredOutputParser, SchemaRegistry } from "./structured-output";
@@ -288,7 +293,7 @@ export type { ToolParallelismClass, ToolCall, ToolExecutionResult, ToolExecutorF
 // Tool Result Persistence Manager — 工具结果持久化管理器（三层防御）
 // 借鉴 hermes-agent tools/tool_result_storage.py + budget_config.py：
 //   Layer 1 per-tool cap → Layer 2 per-result persistence → Layer 3 per-turn budget
-export { ToolResultPersistenceManager, getToolResultPersistenceManager, resetToolResultPersistenceManager, generatePreview, DEFAULT_BUDGET_CONFIG } from "./tool-result-persistence";
+export { ToolResultPersistenceManager, getToolResultPersistenceManager, resetToolResultPersistenceManager, generatePreview, DEFAULT_BUDGET_CONFIG, budgetForContextWindow } from "./tool-result-persistence";
 export type { BudgetConfig, PersistedOutputInfo, TurnBudgetResult, TurnMessage } from "./tool-result-persistence";
 
 // Schema Sanitizer — JSON Schema 清洗器（多后端兼容）

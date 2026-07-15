@@ -81,6 +81,14 @@ export interface SlashCommandResult {
 }
 
 /**
+ * 渲染进度条（10 格）
+ */
+function renderProgressBar(progress: number): string {
+  const filled = Math.round((Math.max(0, Math.min(100, progress)) / 100) * 10);
+  return "█".repeat(filled) + "░".repeat(10 - filled);
+}
+
+/**
  * Handle slash commands (/help, /status, /model, etc.)
  * Returns null if the message is not a slash command.
  */
@@ -165,6 +173,30 @@ export async function handleSlashCommand(
         year: "numeric", month: "2-digit", day: "2-digit",
         hour: "2-digit", minute: "2-digit", second: "2-digit",
       });
+
+      // ── 任务执行进度 ──
+      const taskStatus = taskStatusTracker.get(sessionId);
+      let progressSection = "";
+      if (taskStatus) {
+        const phaseEmoji: Record<string, string> = {
+          thinking: "🤔", tool_calling: "🔧", generating: "✍️", done: "✅",
+          error: "❌", splitting: "📋", subtask_executing: "🔄",
+          resuming: "⏯️", waiting_approval: "⏸️", planning: "📝", reflecting: "🪞",
+        };
+        const emoji = phaseEmoji[taskStatus.phase] || "⏳";
+        const progressBar = renderProgressBar(taskStatus.progress);
+        progressSection = [
+          ``,
+          `**📊 当前任务状态**`,
+          `${emoji} 阶段: \`${taskStatus.phase}\``,
+          `📝 详情: ${taskStatus.detail}`,
+          `📈 进度: ${progressBar} ${taskStatus.progress}%`,
+          taskStatus.subtaskIndex !== undefined
+            ? `📋 子任务: ${taskStatus.subtaskIndex}/${taskStatus.subtaskTotal}${taskStatus.subtaskLabel ? ` — ${taskStatus.subtaskLabel}` : ""}`
+            : "",
+        ].filter(Boolean).join("\n");
+      }
+
       reply = [
         `**🧬 代理状态**`,
         ``,
@@ -176,6 +208,7 @@ export async function handleSlashCommand(
         `对话轮次: ${history.length}`,
         `已注册工具: ${deps.registeredTools.size}`,
         `自动压缩: ${deps.autoCompactionEnabled ? "已启用" : "未启用"}`,
+        progressSection,
       ].join("\n");
       break;
     }

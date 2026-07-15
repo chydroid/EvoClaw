@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.83.0] - 2026-07-15
+
+### Hermes 对标提升（第 1 轮）
+
+- **Tool Result Budget**: 新增 `budgetForContextWindow()` 函数，按模型上下文窗口动态缩放工具结果 budget，防止小上下文模型因工具结果过大触发 context_overflow
+- **Provider Skip List**: 新增 `ProviderSkipList` 类，持久化失败 provider 跳过列表（TTL 5 分钟自动过期 + LRU 淘汰），避免同 session 内重复尝试已知失败 provider
+- **Tool Loop Detection**: 新增 `ToolCallLoopDetector` 类，检测 3 种工具调用循环（exact_failure / same_tool_failure / no_progress），warn/halt 分级阻断，防止模型陷入"调用同一工具失败→重试→失败"循环浪费迭代预算
+- **Memory Context Sanitize**: 新增 `sanitizeMemoryContext()` + `wrapMemoryContext()` 函数，fence 标签 `<memory-context>` 协议，防止记忆上下文泄漏到用户可见输出
+
+### Hermes 对标提升（第 2 轮）
+
+- **Error Message Friendliness**: 新增 `formatClassifiedErrorForUser()` 函数，把 13 种 LLMErrorType 转换为用户可读消息 + action-oriented 恢复建议，通过 progress 事件上报给用户
+- **Output Security Filter**: 在输出阶段接入 `redactSensitiveText()` + `stripAnsi()`，多阶段输出消毒：剥离 API key / Bearer token / 密码 + ANSI 颜色码
+- **Destructive Command Detection**: 新增 `isDestructiveCommand()` 函数，检测 `rm -rf` / `git reset --hard` / `mkfs` 等破坏性命令，通过 progress 警告用户该操作不可逆
+
+### Bug Fixes
+
+- **formal-verification**: 修复 ReDoS 防护误报内置受信任模式的问题 — 内置 `AGENT_THREATS` 是源码中硬编码的已审计模式，跳过 `isUnsafeRegex` 检查；仅对用户自定义 `customThreats` 执行 ReDoS 检查
+
+### Infrastructure
+
+- 所有改进通过 build、typecheck 和完整测试套件验证（5527 tests passing, 2 skipped）
+
 ## [0.82.0] - 2026-07-15
 
 ### Security Fixes

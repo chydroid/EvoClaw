@@ -13,15 +13,18 @@ import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
 import type { ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
-import { classifyLLMError, LLMErrorType } from "./error-classifier";
+import { classifyLLMError, LLMErrorType, formatClassifiedErrorForUser } from "./error-classifier";
 import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
-import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
 import { retryAsync } from "./retry-utils";
+import { getStreamingRecoveryManager } from "./streaming-recovery";
+import { getProviderSkipList } from "./provider-skip-list";
+import { ToolCallLoopDetector } from "./guardrails";
 import { validateToolResult } from "./tool-types";
 import { PromptRegistry } from "./prompt-registry";
 import * as https from "https";
@@ -780,6 +783,118 @@ export interface LLMCallerDeps {
 
 // ── Helper: tool cache ──
 
+/**
+ * 生成可读的工具操作摘要（进度反馈用）。
+ * 针对编程任务高频工具（file_create/modify/delete, shell_exec 等）生成友好提示。
+ */
+function formatToolSummary(toolName: string, args: Record<string, unknown>): string {
+  switch (toolName) {
+    case "file_create": {
+      const p = String(args.path || "");
+      const content = String(args.content || "");
+      const sizeKB = (content.length / 1024).toFixed(1);
+      return `📝 创建文件: ${p} (${sizeKB} KB)`;
+    }
+    case "file_modify": {
+      const p = String(args.path || "");
+      const content = String(args.content || "");
+      const sizeKB = (content.length / 1024).toFixed(1);
+      return `✏️ 修改文件: ${p} (${sizeKB} KB)`;
+    }
+    case "file_delete": {
+      const p = String(args.path || "");
+      return `🗑️ 删除文件: ${p}`;
+    }
+    case "file_read": {
+      const p = String(args.path || "");
+      return `📖 读取文件: ${p}`;
+    }
+    case "file_list": {
+      const dir = String(args.path || String(args.dir || ""));
+      return `📂 列出目录: ${dir || "."}`;
+    }
+    case "shell_exec": {
+      const cmd = String(args.command || "");
+      // 截断长命令
+      const short = cmd.length > 80 ? cmd.slice(0, 80) + "..." : cmd;
+      return `🔧 执行命令: ${short}`;
+    }
+    case "web_search": {
+      const q = String(args.query || "");
+      return `🔍 搜索: ${q}`;
+    }
+    case "web_fetch": {
+      const url = String(args.url || "");
+      return `🌐 获取网页: ${url.slice(0, 60)}`;
+    }
+    case "code_exec":
+    case "python_exec": {
+      const code = String(args.code || "");
+      const firstLine = code.split("\n").find(l => l.trim().length > 0)?.trim() || "";
+      const short = firstLine.length > 60 ? firstLine.slice(0, 60) + "..." : firstLine;
+      return `🐍 执行代码: ${short}`;
+    }
+    default:
+      return `🔧 执行工具: ${toolName}`;
+  }
+}
+
+/**
+ * 生成工具完成后的可读摘要（进度反馈用）。
+ */
+function formatToolResultSummary(toolName: string, args: Record<string, unknown>, result: string): string {
+  // 尝试解析结果
+  let parsed: Record<string, unknown> | null = null;
+  try { parsed = JSON.parse(result); } catch { /* not JSON */ }
+
+  const success = parsed ? (parsed.success !== false) : !result.includes('"error"');
+
+  switch (toolName) {
+    case "file_create": {
+      const p = String(args.path || "");
+      return success ? `✅ 已创建: ${p}` : `❌ 创建失败: ${p}`;
+    }
+    case "file_modify": {
+      const p = String(args.path || "");
+      return success ? `✅ 已修改: ${p}` : `❌ 修改失败: ${p}`;
+    }
+    case "file_delete": {
+      const p = String(args.path || "");
+      return success ? `✅ 已删除: ${p}` : `❌ 删除失败: ${p}`;
+    }
+    case "file_read": {
+      const p = String(args.path || "");
+      return `✅ 已读取: ${p}`;
+    }
+    case "file_list": {
+      const dir = String(args.path || String(args.dir || ""));
+      // 尝试提取文件数量
+      const count = parsed && Array.isArray(parsed.files) ? parsed.files.length : undefined;
+      return count !== undefined ? `✅ 列出 ${count} 个文件` : `✅ 列出目录: ${dir || "."}`;
+    }
+    case "shell_exec": {
+      const cmd = String(args.command || "");
+      const short = cmd.length > 50 ? cmd.slice(0, 50) + "..." : cmd;
+      // 尝试提取执行时间
+      const duration = parsed?.duration as number | undefined;
+      const timeStr = duration ? ` (${duration}ms)` : "";
+      return success ? `✅ 命令完成${timeStr}: ${short}` : `❌ 命令失败: ${short}`;
+    }
+    case "web_search": {
+      const q = String(args.query || "");
+      const count = parsed?.results ? String(parsed.results).split(",").length : undefined;
+      return count !== undefined ? `✅ 搜索完成: "${q}" (${count} 条结果)` : `✅ 搜索完成: "${q}"`;
+    }
+    case "web_fetch": {
+      const url = String(args.url || "");
+      return `✅ 已获取: ${url.slice(0, 60)}`;
+    }
+    default: {
+      return success ? `✅ ${toolName} 完成` : `❌ ${toolName} 失败`;
+    }
+  }
+}
+
 function getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
   const sortedParams = Object.keys(params).sort().map(k => `${k}=${JSON.stringify(params[k])}`).join("&");
   return `${toolName}:${sortedParams}`;
@@ -899,17 +1014,17 @@ function computeDynamicToolLimit(
   ];
 
   if (veryComplexPatterns.some(p => p.test(lower))) {
-    limit = Math.min(cap, baseLimit + 20);
+    limit = Math.min(cap, baseLimit + 40);
   } else if (complexPatterns.some(p => p.test(lower))) {
-    limit = Math.min(cap, baseLimit + 10);
+    limit = Math.min(cap, baseLimit + 20);
   }
 
   if (hasActionIntentFn(message)) {
-    limit = Math.min(cap, limit + 5);
+    limit = Math.min(cap, limit + 10);
   }
 
   const sessionHistory = conversationHistory.get(sessionId) || [];
-  if (sessionHistory.length > 20) {
+  if (sessionHistory.length > 30) {
     limit = Math.max(baseLimit, limit - 5);
   }
 
@@ -1305,6 +1420,8 @@ export async function parseStreamingResponse(
   let totalTokens = 0;
   let promptTokens = 0;
   let lastChunkTime = Date.now();
+  // fix-4: 跟踪 finish_reason 以检测 length 截断等场景
+  let finishReason: string | undefined;
 
   let streamReadError: unknown = null;
   try {
@@ -1386,6 +1503,15 @@ export async function parseStreamingResponse(
                   name: tc.function?.name || "",
                   arguments: tc.function?.arguments || "",
                 });
+                // ── 进度反馈：流式工具调用首次出现时上报 ──
+                if (tc.function?.name && onProgress) {
+                  onProgress({
+                    type: "status",
+                    phase: "thinking",
+                    detail: `📋 LLM 决定调用: ${tc.function.name}`,
+                    progress: 45,
+                  });
+                }
               } else {
                 if (tc.id) existing.id = tc.id;
                 if (tc.function?.name) existing.name = tc.function.name;
@@ -1400,6 +1526,10 @@ export async function parseStreamingResponse(
           if ((chunk.usage as Record<string, unknown>)?.prompt_tokens) {
             promptTokens = (chunk.usage as Record<string, unknown>).prompt_tokens as number;
           }
+          // fix-4: 捕获 finish_reason（用于流式恢复判断 length 截断）
+          if (choice.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
         } catch { /* ignore parse errors in individual chunks */ }
       }
     }
@@ -1408,7 +1538,7 @@ export async function parseStreamingResponse(
     process.stderr.write(`[AgentModelExecutor] Stream read error for ${provider.name}:` + " " + readErr + "\n");
   }
 
-  // 流读取错误时，记录失败指标并返回 null（避免误记为成功）
+  // 流读取错误时，记录失败指标并尝试流式恢复（fix-4）
   if (streamReadError) {
     const obs = deps.registry?.resolveService<any>("observability");
     if (obs) {
@@ -1419,6 +1549,65 @@ export async function parseStreamingResponse(
       } catch { /* observability is best-effort */ }
     }
     deps.recordProviderFailure?.(provider.id, `Stream read error: ${streamReadError instanceof Error ? streamReadError.message : String(streamReadError)}`, "stream_read_error");
+
+    // ── fix-4: 流式恢复 — 尝试使用已交付的部分内容 ──
+    // 借鉴 hermes-agent conversation_loop.py 的多策略流式恢复：
+    // 当流式中断时，如果已有部分内容交付，优先使用而非丢弃。
+    // 避免浪费已完成的 LLM 调用，提升用户体验。
+    if (content.trim() || toolCallsMap.size > 0) {
+      // 先 flush 清洗器，获取残留的缓冲内容
+      const flushedTail = tagScrubber.flush();
+      if (flushedTail) content += flushedTail;
+
+      const recovery = getStreamingRecoveryManager();
+      const toolNames = Array.from(toolCallsMap.values()).map((tc) => tc.name).filter(Boolean);
+      // 检测是否在 thinking 块中中断（有开标签但无闭标签）
+      const hasOpenThink = /<think(?:ing)?\s*>/i.test(content);
+      const hasCloseThink = /<\/think(?:ing)?>/i.test(content);
+      // 检测是否在 tool-call 中断（参数 JSON 未闭合）
+      const interruptedInToolCall = toolCallsMap.size > 0
+        && Array.from(toolCallsMap.values()).some((tc) => !tc.arguments.endsWith("}"));
+
+      const result = recovery.recover({
+        partialText: content,
+        interruptedInThinking: hasOpenThink && !hasCloseThink,
+        interruptedInToolCall,
+        truncatedByLength: finishReason === "length",
+        toolCallsThisTurn: toolNames,
+        hasPriorTurnContent: false, // parseStreamingResponse 不感知 prior turns
+        retryCount: 0,
+      });
+
+      if (result.usedPartialContent && result.response) {
+        process.stdout.write(
+          `[LLMCaller] Stream recovered via "${result.strategy}" strategy: ${result.response.length} chars ` +
+          `(partial was ${content.length} chars)\n`,
+        );
+        // 构造 tool_calls（与正常路径一致）
+        const recoveredToolCalls = toolCallsMap.size > 0
+          ? Array.from(toolCallsMap.entries()).map(([, tc]) => ({
+              id: tc.id || `tc_${Date.now()}`,
+              type: "function" as const,
+              function: { name: tc.name, arguments: tc.arguments },
+            }))
+          : undefined;
+        return {
+          message: {
+            role: "assistant",
+            content: result.response,
+            tool_calls: recoveredToolCalls,
+          },
+          tokensUsed: totalTokens || Math.ceil(result.response.length / 4),
+          promptTokens,
+          responseMs: Date.now() - startTime,
+        };
+      }
+
+      process.stderr.write(
+        `[LLMCaller] Stream recovery unsuccessful (strategy: "${result.strategy}"). Discarding ${content.length} chars of partial content.\n`,
+      );
+    }
+
     return null;
   }
 
@@ -1600,6 +1789,9 @@ export async function callLLMOnce(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
+      // fix-1: 传递 sessionTokens 用于 server-disconnect + 大 session 启发式
+      // 注意：callLLMOnce 内部无法访问 lastPromptTokens，因此不传 sessionTokens。
+      // server-disconnect 启发式在 chat() 函数的其他位置仍可生效。
       const classified = classifyLLMError(response.status, errorText);
       process.stderr.write(
         `[AgentModelExecutor] ❌ LLM API FAILED for "${provider.name}": HTTP ${response.status} [${classified.type}]\n` +
@@ -1692,6 +1884,7 @@ export async function callLLMOnce(
       errorMessage = err.message;
       process.stderr.write(`[AgentModelExecutor] ❌ LLM fetch failed for "${provider.name}": ${errorMessage}\n`);
       process.stderr.write(`  URL: ${apiURL}, Model: ${provider.model}, Timeout: ${timeout}ms\n`);
+      // fix-1: classifyLLMError 自动检测 SSL cert / content_policy / model_not_found 等
       classified = classifyLLMError(undefined, undefined, errorMessage);
       errorType = classified?.type || "UNKNOWN";
     }
@@ -1759,8 +1952,8 @@ export async function tryCallLLM(
     deps = { ...deps, abortSignal };
   }
 
-  const BASE_MAX_TOOL_ROUNDS = 20;
-  const MAX_TOOL_ROUNDS_CAP = 50;
+  const BASE_MAX_TOOL_ROUNDS = 30;
+  const MAX_TOOL_ROUNDS_CAP = 100;
   const MAX_CONSECUTIVE_ERRORS = 3;
 
   const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
@@ -1871,6 +2064,18 @@ export async function tryCallLLM(
       continue;
     }
 
+    // ── R1-2: 检查 provider skip list（持久化的 non-transient 失败记录） ──
+    // 借鉴 hermes-agent 的 auth failover 持久化机制：
+    // provider 发生 AUTH/BILLING 等 non-transient 错误后，加入 skip list，
+    // 同 session 内不再重复尝试（TTL 5 分钟后自动重试）。
+    const skipEntry = getProviderSkipList().shouldSkip(sessionId, provider.id);
+    if (skipEntry) {
+      process.stdout.write(
+        `[LLMCaller] Skipping provider "${provider.name}" — in skip list (reason: ${skipEntry.reason}, expires in ${Math.round((skipEntry.expiresAt - Date.now()) / 1000)}s)\n`,
+      );
+      continue;
+    }
+
     let consecutiveErrors = 0;
 
     try {
@@ -1906,6 +2111,17 @@ Have a specific URL?
         : "";
 
       const sessionPDeps = getSessionPersistenceDeps(deps);
+
+      // ── fix-2: 中断后孤儿 tool_call 清理 ──
+      // 在每轮开始前检测并修复中断的 tool_call 序列，防止下一轮 LLM 调用返回 400。
+      // 等价于 hermes-agent 的 close_interrupted_tool_sequence。
+      // 注意：closeInterruptedToolSequence 在原数组上 in-place 修改，
+      // 而 history 变量持有同一引用，因此修复后 history 自动包含合成消息。
+      const closedCount = closeInterruptedToolSequenceFn(sessionPDeps, sessionId);
+      if (closedCount > 0) {
+        process.stdout.write(`[AgentModelExecutor] Recovered ${closedCount} interrupted tool_call(s) for session "${sessionId}"\n`);
+      }
+
       if (needsCompactionFn(sessionPDeps, sessionId, fullSystemPrompt, deps.config.maxTokens)) {
         process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
         compactConversationHistoryFn(sessionPDeps, sessionId);
@@ -2044,6 +2260,17 @@ Have a specific URL?
       // simple round counter. The budget supports consume/refund and Grace Call.
       const budget = deps.iterationBudget;
 
+      // fix-4: 重置流式恢复重试计数器（每次 chat() 调用重置，防止跨会话累积）
+      getStreamingRecoveryManager().resetTurn();
+
+      // R1-3: 工具循环检测器（每个 chat() 调用一个实例）
+      const toolLoopDetector = new ToolCallLoopDetector();
+      let toolLoopWarnedThisTurn = false;
+      // 工具循环阻断标志：由 executeSingleToolCall 内部检测设置，外部循环检查并 break
+      let toolLoopHaltFlag = false;
+      let toolLoopHaltMsg = "";
+      let toolLoopHaltDet = "";
+
       for (let round = 0; round < maxToolRounds; round++) {
         // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
         // In-flight fetches are already cancelled via the abort signal wired into
@@ -2068,6 +2295,7 @@ Have a specific URL?
             // Budget exhausted — try Grace Call (one final call without tools)
             if (budget.graceCallAvailable) {
               process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)\n`);
+              onProgress?.({ type: "budget_exhausted", phase: "generating", detail: `迭代预算已耗尽（${budget.getUsed()}/${budget.getMax()}），正在进行最终总结...`, progress: 92 });
               budget.useGraceCall();
               // Make one final LLM call without tools to produce a text answer
               const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps);
@@ -2089,17 +2317,57 @@ Have a specific URL?
                     });
                   } catch { /* best-effort */ }
                 }
+              } else {
+                // Grace Call 失败，生成有意义的总结
+                finalReply = [
+                  `⏰ 迭代预算已耗尽，最终总结请求也未能完成。`,
+                  ``,
+                  `**已执行的操作：**`,
+                  `- 已执行工具调用: ${successfulToolCalls} 次`,
+                  createdFiles.length > 0 ? `- 已创建文件: ${createdFiles.map(f => f.path).join("、")}` : "",
+                  ``,
+                  `💡 **建议：** 使用 \`/status\` 查看进度，或重新描述需求继续执行。`,
+                ].filter(Boolean).join("\n");
               }
               break; // Exit loop after Grace Call
             }
-            // No Grace Call available — force exit
+            // No Grace Call available — force exit with meaningful summary
             process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary\n`);
+            onProgress?.({ type: "budget_exhausted", phase: "generating", detail: `迭代预算已耗尽（${budget.getUsed()}/${budget.getMax()}），生成执行总结...`, progress: 95 });
+            // 优雅降级：生成有意义的总结，而非空白回复
+            if (!finalReply) {
+              finalReply = [
+                `⏰ 迭代预算已耗尽（${round} 轮），任务在此中断。`,
+                ``,
+                `**已执行的操作：**`,
+                `- 已执行工具调用: ${successfulToolCalls} 次`,
+                createdFiles.length > 0 ? `- 已创建文件: ${createdFiles.map(f => f.path).join("、")}` : "",
+                ``,
+                `💡 **建议：**`,
+                `1. 使用 \`/status\` 查看当前进度`,
+                `2. 将任务拆分为更小的子任务分批执行`,
+                `3. 重新描述需求，我会从已有进度继续`,
+              ].filter(Boolean).join("\n");
+            }
             break;
           }
           budget.consume(1);
         }
 
-        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1} 轮...`, progress: 30 + round * 3, providerName: provider.name, round: round + 1 });
+        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1}/${maxToolRounds} 轮...`, progress: Math.min(30 + round * 3, 90), providerName: provider.name, round: round + 1 });
+
+        // ── 进度反馈：预算接近耗尽时预警 ──
+        if (budget) {
+          const budgetPct = budget.getUsed() / budget.getMax();
+          if (budgetPct >= 0.8 && budgetPct < 1.0) {
+            onProgress?.({ type: "budget_warning", phase: "thinking", detail: `迭代预算已使用 ${Math.round(budgetPct * 100)}%（${budget.getUsed()}/${budget.getMax()}），即将耗尽`, progress: 85 });
+          }
+        }
+
+        // ── 进度反馈：接近最大轮次时预警 ──
+        if (round === maxToolRounds - 5) {
+          onProgress?.({ type: "rounds_warning", phase: "thinking", detail: `即将达到最大轮次限制（${maxToolRounds} 轮），剩余 5 轮`, progress: 88 });
+        }
 
         // ── Steer: inject real-time instructions ──
         if (deps.getSteerMessage) {
@@ -2133,8 +2401,24 @@ Have a specific URL?
           recordProviderFailure(provider.name);
           process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}\n`);
 
-          if (classified.type === LLMErrorType.CONTEXT_OVERFLOW && classified.shouldCompact) {
-            process.stdout.write(`[AgentModelExecutor] Compacting due to context overflow...\n`);
+          // ── R2-1: 错误消息友好化（借鉴 hermes-agent _content_policy_blocked_result） ──
+          const friendlyError = formatClassifiedErrorForUser(classified, provider.name);
+          if (friendlyError.shouldNotifyUser) {
+            const detail = friendlyError.actionableHint
+              ? `${friendlyError.userMessage}\n💡 ${friendlyError.actionableHint}`
+              : friendlyError.userMessage;
+            onProgress?.({
+              type: "error",
+              phase: "generating",
+              detail,
+              progress: 30,
+              round: round + 1,
+            });
+          }
+
+          // ── fix-1: 基于 shouldCompact 统一处理压缩（覆盖 CONTEXT_OVERFLOW 和 PAYLOAD_TOO_LARGE） ──
+          if (classified.shouldCompact) {
+            process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             conversationMessages = [
               { role: "system", content: fullSystemPrompt },
@@ -2152,23 +2436,20 @@ Have a specific URL?
             }
           }
 
-          if (classified.type === LLMErrorType.RATE_LIMIT && classified.backoffMs > 0) {
+          // ── fix-1: 基于 backoffMs 统一处理退避（覆盖 RATE_LIMIT/PROVIDER_ERROR/PAYLOAD_TOO_LARGE 等） ──
+          if (classified.backoffMs > 0 && classified.retryable) {
             await new Promise((resolve) => {
               const t = setTimeout(resolve, classified.backoffMs);
               t.unref?.();
             });
           }
 
-          // 5xx / provider 错误也按 backoffMs 等待，避免立即重试加剧服务端压力
-          if (classified.type === LLMErrorType.PROVIDER_ERROR && classified.backoffMs > 0) {
-            await new Promise((resolve) => {
-              const t = setTimeout(resolve, classified.backoffMs);
-              t.unref?.();
-            });
-          }
-
-          if (classified.type === LLMErrorType.AUTH || classified.type === LLMErrorType.BILLING) {
-            process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type}\n`);
+          // ── fix-1: 基于 shouldSkipProvider 统一处理 provider 跳过 ──
+          // 覆盖 AUTH/BILLING/CONTENT_POLICY/SSL_CERT/MODEL_NOT_FOUND/PROVIDER_POLICY 等 non-transient 错误
+          if (classified.shouldSkipProvider) {
+            process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type} (non-transient)\n`);
+            // R1-2: 持久化到 skip list，同 session 内不再重复尝试
+            getProviderSkipList().add(sessionId, provider.id, classified.type);
             break;
           }
 
@@ -2196,6 +2477,24 @@ Have a specific URL?
         }
 
         const assistantMsg = result.message;
+
+        // ── 进度反馈：提取 LLM 思考摘要 ──
+        // 当 LLM 返回文本内容时，提取前几行作为思考过程摘要反馈给用户
+        if (assistantMsg.content && onProgress) {
+          const content = assistantMsg.content;
+          // 提取第一段非空文本作为摘要（最多 120 字符）
+          const firstLine = content.split("\n").find(l => l.trim().length > 0)?.trim() || "";
+          const summary = firstLine.length > 120 ? firstLine.slice(0, 120) + "..." : firstLine;
+          if (summary) {
+            onProgress({
+              type: "status",
+              phase: "thinking",
+              detail: `💭 ${summary}`,
+              progress: Math.min(35 + round * 3, 85),
+              round: round + 1,
+            });
+          }
+        }
 
         // ── Parse XML-format tool calls from non-standard LLM providers ──
         // Some providers (Mimo/MiniMax, etc.) embed tool calls as XML in the
@@ -2353,6 +2652,40 @@ Have a specific URL?
               process.stderr.write(`[AgentModelExecutor] Auto skill_search failed:` + " " + err + "\n");
             }
           }
+          // ── fix-4: post_tool_empty 重试 ──
+          // 借鉴 hermes-agent 的 post_tool_empty_retried 策略：
+          // 当 LLM 在工具执行后返回空响应（无 content 且无 tool_calls）时，
+          // 追加一条 nudge 消息重试，而非直接以空回复结束。
+          if (!assistantMsg.content && successfulToolCalls > 0 && round < maxToolRounds - 1) {
+            const recovery = getStreamingRecoveryManager();
+            const retryCount = recovery.getRetryCount("post_tool_empty");
+            if (retryCount < recovery.getConfig().maxPostToolEmptyRetries) {
+              process.stderr.write(
+                `[AgentModelExecutor] Empty response after ${successfulToolCalls} tool calls; ` +
+                `nudge retry ${retryCount + 1}/${recovery.getConfig().maxPostToolEmptyRetries}\n`,
+              );
+              // 标记重试（递增计数器）
+              recovery.recover({
+                partialText: "",
+                interruptedInThinking: false,
+                interruptedInToolCall: false,
+                truncatedByLength: false,
+                toolCallsThisTurn: [],
+                hasPriorTurnContent: false,
+                retryCount,
+              });
+              // 追加 nudge 消息，引导 LLM 基于工具结果回复
+              conversationMessages.push(assistantMsg);
+              conversationMessages.push({
+                role: "user",
+                content: "工具已执行完毕，请根据以上工具执行结果回答我的问题。",
+              });
+              continue;
+            }
+            process.stderr.write(
+              `[AgentModelExecutor] post_tool_empty retries exhausted (${retryCount}). Breaking with empty reply.\n`,
+            );
+          }
           conversationMessages.push(assistantMsg);
           break;
         }
@@ -2420,7 +2753,12 @@ Have a specific URL?
             process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n`);
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
           }
-          onProgress?.({ type: "tool_call", phase: "tool_calling", detail: `正在执行工具: ${toolName}`, progress: 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolArgs: args, round: round + 1 });
+
+          // ── 进度反馈：生成可读的工具操作摘要 ──
+          const toolSummary = formatToolSummary(toolName, args);
+          const toolIdx = toolCalls.indexOf(tc);
+          const toolProgress = 50 + Math.floor((toolIdx / toolCalls.length) * 20);
+          onProgress?.({ type: "tool_call", phase: "tool_calling", detail: toolSummary, progress: toolProgress, toolName, toolArgs: args, round: round + 1 });
 
           // ── Observability: start tool span ──
           let toolSpanId: string | undefined;
@@ -2475,6 +2813,28 @@ Have a specific URL?
             toolName === "shell_exec" &&
             typeof args.command === "string" &&
             /^\s*(python3?|py)\s+/i.test(args.command);
+
+          // ── R2-3: 破坏性命令检测（借鉴 hermes-agent _is_destructive_command） ──
+          // 检测 rm -rf / git reset --hard / mkfs 等破坏性命令，
+          // 通过 progress 上报警告，提示用户该操作不可逆。
+          if (toolName === "shell_exec" && typeof args.command === "string") {
+            try {
+              const { isDestructiveCommand } = await import("@evoclaw/security");
+              if (isDestructiveCommand(args.command)) {
+                process.stderr.write(`[AgentModelExecutor] Destructive command detected: ${args.command.slice(0, 100)}\n`);
+                onProgress?.({
+                  type: "error",
+                  phase: "tool_calling",
+                  detail: `⚠️ 检测到破坏性命令：${args.command.slice(0, 80)}${args.command.length > 80 ? "..." : ""}\n此操作不可逆，请确认是否继续。`,
+                  progress: 50,
+                  toolName,
+                  round: round + 1,
+                });
+              }
+            } catch (importErr) {
+              // 安全包不可用时不阻断
+            }
+          }
 
           if (
             deps.humanApprovalManager &&
@@ -2585,13 +2945,20 @@ Have a specific URL?
                 const toolSem = getToolSemaphore(toolName);
                 return toolSem.withPermit(async () => {
                   let timer: ReturnType<typeof setTimeout> | undefined;
+                  // 为工具执行创建 AbortController，超时时 cancel 底层操作
+                  const toolAbortController = new AbortController();
+                  // 将 AbortSignal 注入 args，让支持取消的 handler 可以响应
+                  const argsWithSignal = { ...args, _signal: toolAbortController.signal };
                   try {
-                    const toolPromise = toolEntry.handler(args);
+                    const toolPromise = toolEntry.handler(argsWithSignal);
                     toolPromise.catch(() => {}); // 防止超时后 unhandledRejection
                     return await Promise.race([
                       toolPromise,
                       new Promise<never>((_, reject) => {
-                        timer = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`)), toolTimeout);
+                        timer = setTimeout(() => {
+                          toolAbortController.abort(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`));
+                          reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`));
+                        }, toolTimeout);
                         if (timer.unref) timer.unref();
                       }),
                     ]);
@@ -2696,7 +3063,9 @@ Have a specific URL?
               successfulToolCalls++;
               anyToolExecuted = true;
               recordToolSuccess(toolName);
-              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行完成`, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
+              // ── 进度反馈：工具完成时显示可读摘要 ──
+              const doneSummary = formatToolResultSummary(toolName, args, toolResult);
+              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: doneSummary, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
             } catch (err: unknown) {
               const errMsg = err instanceof Error ? err.message : String(err);
               const isTimeout = errMsg.includes("timed out");
@@ -2785,6 +3154,47 @@ Have a specific URL?
             });
           }
 
+          // ── R1-3: 工具循环检测（借鉴 hermes-agent tool_guardrails.py） ──
+          let toolLoopHalt = false;
+          let toolLoopHaltMessage = "";
+          let toolLoopHaltDetection = "";
+          try {
+            const loopResult = toolLoopDetector.check(toolName, args, !toolErrored, toolResult);
+            if (loopResult.action === "halt") {
+              process.stderr.write(`[AgentModelExecutor] Tool loop detected: ${loopResult.message}\n`);
+              onProgress?.({
+                type: "error",
+                phase: "tool_calling",
+                detail: loopResult.message,
+                progress: 60,
+                round: round + 1,
+              });
+              toolLoopHalt = true;
+              toolLoopHaltMessage = loopResult.message;
+              toolLoopHaltDetection = loopResult.detection;
+            } else if (loopResult.action === "warn" && !toolLoopWarnedThisTurn) {
+              toolLoopWarnedThisTurn = true;
+              process.stderr.write(`[AgentModelExecutor] Tool loop warning: ${loopResult.message}\n`);
+              onProgress?.({
+                type: "status",
+                phase: "tool_calling",
+                detail: loopResult.message,
+                progress: 55,
+                round: round + 1,
+              });
+            }
+          } catch (loopErr) {
+            process.stderr.write(`[AgentModelExecutor] Tool loop detector error: ${loopErr instanceof Error ? loopErr.message : String(loopErr)}\n`);
+          }
+
+          // 工具循环阻断：通过标记跳出外部 for 循环
+          if (toolLoopHalt) {
+            process.stderr.write(`[AgentModelExecutor] Halting tool loop: ${toolLoopHaltMessage}\n`);
+            toolLoopHaltFlag = true;
+            toolLoopHaltMsg = toolLoopHaltMessage;
+            toolLoopHaltDet = toolLoopHaltDetection;
+          }
+
           toolCallCount++;
 
           // 注意：技能自动提取（considerExtraction）已移除。
@@ -2849,6 +3259,58 @@ Have a specific URL?
 
           const result = await executeSingleToolCall(tc);
           conversationMessages.push(result);
+
+          // R1-3: 工具循环阻断检查（sequential 执行后）
+          if (toolLoopHaltFlag) {
+            conversationMessages.push({
+              role: "user",
+              content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
+            });
+            break;
+          }
+        }
+
+        // R1-3: 工具循环阻断检查（parallel 执行后）
+        if (toolLoopHaltFlag && sequentialCalls.length === 0) {
+          conversationMessages.push({
+            role: "user",
+            content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
+          });
+          break;
+        }
+
+        // ── fix-3: 工具执行增量持久化（防止崩溃丢失进度） ──
+        // 在每个工具执行轮次后将 assistant 消息（含 tool_calls）和工具响应
+        // 追加到 session JSONL 文件。即使进程崩溃，JSONL 文件保留了完整的执行状态，
+        // 可用于后续恢复或审计。借鉴 hermes-agent 的增量 session 持久化。
+        if (round > 0 || toolCallCount > 0) {
+          const sessionPDeps2 = getSessionPersistenceDeps(deps);
+          // 持久化 assistant 消息（含 tool_calls）
+          const assistantToolCalls = assistantMsg.tool_calls as Array<{ id: string; type: string; function: { name: string; arguments: string } }> | undefined;
+          if (assistantToolCalls && assistantToolCalls.length > 0) {
+            const assistantContent = typeof assistantMsg.content === "string" ? assistantMsg.content : null;
+            persistToolCheckpointFn(sessionPDeps2, sessionId, "assistant", assistantContent, {
+              tool_calls: assistantToolCalls,
+              round,
+              tokensUsed: totalTokensUsed,
+            });
+            // 持久化每个工具响应（回溯到本轮 assistant 消息之后的 tool 消息）
+            for (let i = conversationMessages.length - 1; i >= 0; i--) {
+              const msg = conversationMessages[i];
+              if (msg.role === "tool" && msg.tool_call_id) {
+                const toolContent = typeof msg.content === "string"
+                  ? msg.content
+                  : (msg.content ? JSON.stringify(msg.content) : "");
+                persistToolCheckpointFn(sessionPDeps2, sessionId, "tool", toolContent, {
+                  tool_call_id: msg.tool_call_id,
+                  name: msg.name,
+                  round,
+                });
+              } else if (msg.role === "assistant") {
+                break; // 遇到 assistant 消息，停止回溯
+              }
+            }
+          }
         }
 
         // ── Fallback: auto-execute installed skill when LLM used web_search instead ──
@@ -2937,6 +3399,7 @@ Have a specific URL?
       }
 
       if (finalReply) {
+        onProgress?.({ type: "done", phase: "done", detail: `任务完成（${successfulToolCalls} 次工具调用）`, progress: 100 });
         // Append skill fallback result if available
         if (skillFallbackResult) {
           finalReply += skillFallbackResult;
@@ -2948,6 +3411,20 @@ Have a specific URL?
             finalReply = `[输出安全过滤] ${outputCheck.reason}`;
           } else if (outputCheck.sanitizedOutput) {
             finalReply = outputCheck.sanitizedOutput;
+          }
+        }
+
+        // ── R2-2: 输出安全过滤（借鉴 hermes-agent redact.py + ansi_strip.py） ──
+        // 1. redactSensitiveText：剥离可能泄漏到响应的 API key / Bearer token / 密码
+        // 2. stripAnsi：剥离 shell 工具结果中的 ANSI 颜色码（防止污染响应）
+        if (finalReply) {
+          try {
+            const { redactSensitiveText, stripAnsi } = await import("@evoclaw/security");
+            finalReply = redactSensitiveText(finalReply).redacted;
+            finalReply = stripAnsi(finalReply);
+          } catch (importErr) {
+            // 安全包不可用时不阻断主流程
+            process.stderr.write(`[AgentModelExecutor] Output security filter skipped: ${importErr instanceof Error ? importErr.message : String(importErr)}\n`);
           }
         }
 

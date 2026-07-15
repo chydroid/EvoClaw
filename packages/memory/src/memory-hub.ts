@@ -28,6 +28,67 @@ export interface MemoryHubEmbeddingOptions {
   transformersOptions?: TransformersEmbeddingProviderOptions;
 }
 
+// ── R1-4: 记忆上下文 sanitize + fence 标签协议（借鉴 hermes-agent sanitize_context） ──
+
+/**
+ * 记忆上下文 fence 标签。注入到 prompt 时用此标签包裹，
+ * 明确界定记忆边界，防止 LLM 将记忆误读为新用户输入。
+ */
+export const MEMORY_CONTEXT_FENCE_OPEN = "<memory-context>";
+export const MEMORY_CONTEXT_FENCE_CLOSE = "</memory-context>";
+
+/**
+ * 需要从记忆上下文中剥离的注入标签模式。
+ *
+ * 借鉴 hermes-agent memory_manager.py 的 sanitize_context：
+ *   - <memory-context>...</memory-context>
+ *   - [System note: ...]
+ *   - [Context from memory: ...]
+ *   - 旧版 [Compacted ...] 标签
+ */
+const SANITIZE_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  // <memory-context>...</memory-context>（含跨行）
+  { pattern: /<memory-context>[\s\S]*?<\/memory-context>/gi, replacement: "" },
+  // [System note: ...] 系统注释（到行尾或下一个 ] ）
+  { pattern: /\[System note:[^\]]*\]/gi, replacement: "" },
+  // [Context from memory: ...]
+  { pattern: /\[Context from memory:[^\]]*\]/gi, replacement: "" },
+  // [Compacted ...]（旧版压缩标记）
+  { pattern: /\[Compacted[^\]]*\]/gi, replacement: "" },
+  // [This is a continuation of session ...]（旧版 successor 标记）
+  { pattern: /\[This is a continuation of session[^\]]*\]/gi, replacement: "" },
+];
+
+/**
+ * 清洗记忆上下文：剥离注入的 fence 标签和系统注释。
+ *
+ * 借鉴 hermes-agent sanitize_context：
+ *   - 防止 memory provider 注入的 fence 标签泄漏到用户可见输出
+ *   - 防止旧的压缩标记嵌入正文持续劫持回复
+ *
+ * @param text 待清洗的文本
+ * @returns 清洗后的文本
+ */
+export function sanitizeMemoryContext(text: string): string {
+  let result = text;
+  for (const { pattern, replacement } of SANITIZE_PATTERNS) {
+    // 重置 lastIndex 防止 g flag 累积
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, replacement);
+  }
+  return result.trim();
+}
+
+/**
+ * 用 fence 标签包裹记忆上下文。
+ *
+ * @param content 记忆内容
+ * @returns 包裹后的文本：<memory-context>content</memory-context>
+ */
+export function wrapMemoryContext(content: string): string {
+  return `${MEMORY_CONTEXT_FENCE_OPEN}\n${content}\n${MEMORY_CONTEXT_FENCE_CLOSE}`;
+}
+
 export class MemoryHub {
   private shortTerm: ShortTermMemory;
   private longTerm: LongTermMemory;

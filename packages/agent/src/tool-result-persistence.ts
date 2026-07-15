@@ -59,6 +59,59 @@ export const DEFAULT_BUDGET_CONFIG: BudgetConfig = {
   },
 };
 
+// ── budget 按模型上下文窗口缩放（借鉴 hermes-agent budget_for_context_window） ──
+
+/**
+ * 最小上下文长度阈值。低于此值的 aux 模型不应承担工具结果处理。
+ */
+const MINIMUM_CONTEXT_LENGTH = 16_384;
+
+/**
+ * 基准上下文长度。budget 默认值对应此上下文规模。
+ */
+const BASELINE_CONTEXT_LENGTH = 128_000;
+
+/**
+ * 根据模型上下文窗口动态缩放 budget 配置。
+ *
+ * 借鉴 hermes-agent tools/budget_config.py 的 budget_for_context_window：
+ *   - 小上下文模型（如本地 32K 模型）：按比例缩小 budget
+ *   - 大上下文模型（200K+）：保持默认值
+ *   - 防止单个工具结果把请求推过模型上限
+ *
+ * @param contextLength 模型的上下文窗口长度（tokens）
+ * @param baseConfig 基准配置（默认 DEFAULT_BUDGET_CONFIG）
+ * @returns 缩放后的 BudgetConfig
+ */
+export function budgetForContextWindow(
+  contextLength: number,
+  baseConfig: BudgetConfig = DEFAULT_BUDGET_CONFIG,
+): BudgetConfig {
+  // 上下文长度未知或异常大时，使用默认配置
+  if (!contextLength || contextLength <= 0 || contextLength >= BASELINE_CONTEXT_LENGTH) {
+    return baseConfig;
+  }
+
+  // 低于最小阈值时，返回极保守配置（仅保留 pinned 防死循环）
+  if (contextLength < MINIMUM_CONTEXT_LENGTH) {
+    return {
+      ...baseConfig,
+      defaultResultSizeChars: 4_000,
+      turnBudgetChars: 8_000,
+      previewSizeChars: 500,
+    };
+  }
+
+  // 按比例缩放：contextLength / BASELINE
+  const scale = contextLength / BASELINE_CONTEXT_LENGTH;
+  return {
+    ...baseConfig,
+    defaultResultSizeChars: Math.max(8_000, Math.floor(baseConfig.defaultResultSizeChars * scale)),
+    turnBudgetChars: Math.max(16_000, Math.floor(baseConfig.turnBudgetChars * scale)),
+    previewSizeChars: Math.max(500, Math.floor(baseConfig.previewSizeChars * scale)),
+  };
+}
+
 export interface PersistedOutputInfo {
   /** 是否被持久化 */
   persisted: boolean;

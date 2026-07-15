@@ -92,6 +92,7 @@ export {
   filterDeniedEnvVars,
   INVISIBLE_CHARS,
   detectInvisibleChars,
+  isDestructiveCommand,
 } from "./command-guard";
 export type {
   HardlinePattern,

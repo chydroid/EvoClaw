@@ -80,7 +80,8 @@ export interface SubagentRegistryEvent {
 const DEFAULT_MAX_CONCURRENT = 10;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 // 运行/空闲态子代理若超过此阈值仍未推进，视为父代理崩溃后遗留，允许清理
-const STALE_RUNNING_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+// 10 分钟：与 chat() 整体超时一致，防止子代理卡死长期占用并发槽位
+const STALE_RUNNING_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // ─── SubagentRegistry ─────────────────────────────────────────────────────────

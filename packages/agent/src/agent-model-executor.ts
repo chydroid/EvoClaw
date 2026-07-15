@@ -1315,20 +1315,68 @@ export class AgentModelExecutor {
     const channel = (context?.channel as string) || "web-ui";
     const peerId = (context?.peerId as string) || "user";
 
+    // ── 中断同 session 的旧任务，防止新请求与旧任务并发导致状态混乱 ──
+    this.abortSession(sessionId);
+
     // Resolve TracingService for OpenTelemetry span creation
     const observability = this.registry?.resolveService?.("observability") as any;
     const tracing = observability?.getTracingService?.();
 
-    if (tracing?.isEnabled()) {
-      return tracing.withSpan("agent.chat", async (span: Span) => {
-        span.setAttribute("session.id", sessionId);
-        span.setAttribute("message.length", message.length);
-        span.setAttribute("channel", channel);
-        return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, tracing, span);
-      });
-    } else {
-      return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, null, null);
+    // ── 整体超时保护（可选，默认禁用）──
+    // hermes 风格：不设硬超时，靠 max_iterations 限制 + 用户中断 + 频繁进度反馈
+    // 仅在显式配置 chatTimeoutMs > 0 时启用 Promise.race 超时
+    const chatTimeoutMs = this.config.chatTimeoutMs ?? 0;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const runChat = async () => {
+      if (tracing?.isEnabled()) {
+        return tracing.withSpan("agent.chat", async (span: Span) => {
+          span.setAttribute("session.id", sessionId);
+          span.setAttribute("message.length", message.length);
+          span.setAttribute("channel", channel);
+          return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, tracing, span);
+        });
+      } else {
+        return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, null, null);
+      }
+    };
+
+    // 仅在显式配置超时时启用 Promise.race
+    if (chatTimeoutMs > 0) {
+      try {
+        const result = await Promise.race([
+          runChat(),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => {
+              this.abortSession(sessionId);
+              reject(new Error("CHAT_TIMEOUT"));
+            }, chatTimeoutMs);
+            timeoutHandle?.unref?.();
+          }),
+        ]);
+        return result;
+      } catch (err) {
+        if (err instanceof Error && err.message === "CHAT_TIMEOUT") {
+          const duration = Date.now() - startTime;
+          process.stderr.write(`[AgentModelExecutor] chat() timed out after ${chatTimeoutMs}ms for session "${sessionId}"\n`);
+          return {
+            reply: `⏰ 任务执行超时（${Math.round(chatTimeoutMs / 60000)} 分钟）。\n\n建议：\n1. 输入 \`/status\` 查看当前进度\n2. 将任务拆分为更小的步骤分批执行\n3. 简化问题描述后重试`,
+            tokensUsed: 0,
+            contextTokens: 0,
+            duration,
+            permissionRequests: [],
+            toolsExecuted: false,
+            files: [],
+          };
+        }
+        throw err;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
     }
+
+    // 默认路径：无超时，靠 max_iterations + 用户中断 + 进度反馈
+    return runChat();
   }
 
   /** Inner implementation of chat() — separated to allow tracing span wrapping */
@@ -1588,6 +1636,58 @@ export class AgentModelExecutor {
     if (slashResult) {
       this.persistEarlyReturn(sessionId, message, slashResult.reply);
       return slashResult;
+    }
+
+    // ── 自然语言状态查询：拦截"任务怎么样了"等查询，不触发 LLM ──
+    // 防止用户在复杂任务执行中询问进度时，新 chat() 看到混乱的上下文给出乱码回复
+    const STATUS_QUERY_PATTERNS = [
+      /^(任务|进度|执行).{0,4}(怎么样|如何|怎样|得怎么样|到哪里).{0,2}[?？]?$/,
+      /^(how|what).{0,10}(status|progress|going|update).{0,2}\??$/i,
+      /^(怎么样了|进度|状态|进度如何|进行得|执行得)[?？]?$/,
+      /^(check|get|show)\s+(status|progress)\s*$/i,
+      /^(查看|查询|检查)\s*(任务|进度|状态|执行)\s*$/,
+    ];
+    const isStatusQuery = STATUS_QUERY_PATTERNS.some(p => p.test(effectiveMessage.trim()));
+    if (isStatusQuery) {
+      const taskStatus = taskStatusTracker.get(sessionId);
+      const ts = new Date().toLocaleString("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+      });
+      let reply: string;
+      if (taskStatus) {
+        const phaseLabels: Record<string, string> = {
+          thinking: "正在分析您的请求",
+          tool_calling: "正在执行工具调用",
+          generating: "正在生成回复",
+          done: "任务已完成",
+          error: "任务执行出错",
+          splitting: "正在拆分任务",
+          subtask_executing: "正在执行子任务",
+          resuming: "正在恢复执行",
+          waiting_approval: "等待审批",
+          planning: "正在制定计划",
+          reflecting: "正在反思执行结果",
+        };
+        const phaseLabel = phaseLabels[taskStatus.phase] || taskStatus.phase;
+        reply = [
+          `**📊 任务执行状态**`,
+          ``,
+          `📅 ${ts}`,
+          `🔹 阶段: ${phaseLabel}`,
+          `📝 详情: ${taskStatus.detail}`,
+          `📈 进度: ${taskStatus.progress}%`,
+          taskStatus.subtaskIndex !== undefined
+            ? `📋 子任务: ${taskStatus.subtaskIndex}/${taskStatus.subtaskTotal}${taskStatus.subtaskLabel ? ` — ${taskStatus.subtaskLabel}` : ""}`
+            : "",
+          ``,
+          `💡 提示: 可随时使用 \`/status\` 查看完整状态。`,
+        ].filter(Boolean).join("\n");
+      } else {
+        reply = `📅 ${ts}\n\n当前没有正在执行的任务。输入 \`/help\` 查看可用命令。`;
+      }
+      this.persistEarlyReturn(sessionId, message, reply);
+      return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
     }
 
     // ── Chat-based approval: if user says "同意/执行/yes/approve",

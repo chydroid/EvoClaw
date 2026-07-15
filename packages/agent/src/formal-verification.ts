@@ -229,6 +229,8 @@ export interface VerificationConfig {
 export class FormalVerifier {
   private config: Required<VerificationConfig>;
   private threats: AtlasTechnique[];
+  /** 内置威胁 ID 集合。这些是源码中硬编码的受信任模式，不需要 ReDoS 检查。 */
+  private builtInThreatIds: Set<string>;
   private matchHistory: ThreatMatch[] = [];
 
   constructor(config: VerificationConfig = {}) {
@@ -239,6 +241,7 @@ export class FormalVerifier {
       auditMode: config.auditMode ?? true,
       customThreats: config.customThreats ?? [],
     };
+    this.builtInThreatIds = new Set(AGENT_THREATS.map((t) => t.id));
     this.threats = [...AGENT_THREATS, ...(config.customThreats ?? [])];
   }
 
@@ -447,12 +450,12 @@ export class FormalVerifier {
 
   /** Remove custom threat definitions by ID */
   removeThreat(id: string): void {
-    this.threats = this.threats.filter((t) => t.id !== id);
     // Don't remove built-in threats
-    const builtInIds = new Set(AGENT_THREATS.map((t) => t.id));
-    if (builtInIds.has(id)) {
+    if (this.builtInThreatIds.has(id)) {
       process.stderr.write(`[FormalVerifier] Cannot remove built-in threat "${id}"\n`);
+      return;
     }
+    this.threats = this.threats.filter((t) => t.id !== id);
   }
 
   /** List all active threat definitions */
@@ -470,6 +473,12 @@ export class FormalVerifier {
       // Filter by configured severity
       if (!this.config.severities.includes(threat.severity)) continue;
 
+      // ReDoS 检查仅对用户提供的 customThreats 生效。
+      // 内置 AGENT_THREATS 是源码中硬编码的受信任模式（已审计），
+      // 且部分模式被 isUnsafeRegex 误报为 critical（如嵌套量词启发式
+      // 对 (?:all\s+)? 等安全模式产生假阳性），因此跳过检查。
+      const isBuiltIn = this.builtInThreatIds.has(threat.id);
+
       for (const pattern of threat.detectionPatterns) {
         let matched = false;
         let matchedText = "";
@@ -477,7 +486,7 @@ export class FormalVerifier {
         switch (pattern.type) {
           case "regex":
             try {
-              if (isUnsafeRegex(pattern.pattern)) break;
+              if (!isBuiltIn && isUnsafeRegex(pattern.pattern)) break;
               const regex = new RegExp(pattern.pattern, "i");
               const match = regex.exec(text);
               if (match) {

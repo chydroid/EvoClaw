@@ -13,6 +13,9 @@ export interface ModelConfig {
   topP?: number;
   /** ReAct 循环最大迭代次数（默认 20，复杂任务可调高） */
   maxIterations?: number;
+  /** 单次 chat() 整体超时（毫秒），默认 0 = 禁用（靠 max_iterations 限制 + 用户中断）。
+   * 对于需要长时间运行的编程任务，建议设为 0 或很大的值。 */
+  chatTimeoutMs?: number;
 }
 
 export interface ProviderConfig extends ModelConfig {
@@ -68,6 +71,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   maxTokens: 4096,
   temperature: 0.3,
   timeout: 60000,
+  chatTimeoutMs: 0, // 禁用整体超时，靠 max_iterations + 用户中断
 };
 
 // ── Task Status Tracker: real-time progress feedback for long-running tasks ──
@@ -82,7 +86,7 @@ export interface TaskStatus {
 }
 
 export interface AgentProgressEvent {
-  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token";
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token" | "budget_warning" | "rounds_warning" | "budget_exhausted" | "done";
   phase?: TaskStatus["phase"];
   detail: string;
   progress?: number;
