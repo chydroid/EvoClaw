@@ -4,7 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as crypto from "crypto";
-import { atomicWriteFileSync } from "@evoclaw/core";
+import { atomicWriteFileSync, migrateLegacyConfig, persistMigratedConfig, LEGACY_CONFIG_MIGRATION_RULES, getPathValue } from "@evoclaw/core";
 import { c, ICONS, divider, section } from "../utils/colors";
 import { VERSION, DEFAULT_PORT, apiRequest, checkServer } from "../utils/api";
 
@@ -275,6 +275,55 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
           if (!nodeModulesExists && fs.existsSync(pkgJsonPath)) {
             console.log(c("yellow", "⚠ Dependency installation requires manual action: pnpm install"));
           }
+
+          // ─── Legacy config migration (对标 OpenClaw doctor --fix) ───
+          // 扫描 evoclaw.json 配置文件中的遗留字段，迁移到当前规范格式。
+          // 原文件归档为 <path>.migrated，永不删除（遵循 AGENTS.md "Never delete; archive"）。
+          const configPath = path.join(process.cwd(), "evoclaw.json");
+          if (fs.existsSync(configPath)) {
+            try {
+              const rawConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+              // 先做 preview 检测：是否有遗留字段
+              const legacyHits: string[] = [];
+              for (const rule of LEGACY_CONFIG_MIGRATION_RULES) {
+                const val = getPathValue(rawConfig, rule.path);
+                if (val !== undefined) {
+                  legacyHits.push(rule.path.join("."));
+                }
+              }
+              if (legacyHits.length > 0) {
+                console.log(c("cyan", `  📦 Detected ${legacyHits.length} legacy config field(s):`));
+                for (const hit of legacyHits) {
+                  console.log(c("gray", `    • ${hit}`));
+                }
+                const result = migrateLegacyConfig(rawConfig);
+                if (result.config) {
+                  const persistChanges: string[] = [];
+                  const persistWarnings: string[] = [];
+                  await persistMigratedConfig({
+                    configPath,
+                    config: result.config,
+                    changes: persistChanges,
+                    warnings: persistWarnings,
+                  });
+                  for (const change of result.changes) {
+                    fixesApplied.push(`Legacy migration: ${change}`);
+                  }
+                  for (const change of persistChanges) {
+                    fixesApplied.push(change);
+                  }
+                  if (persistWarnings.length > 0) {
+                    for (const w of persistWarnings) {
+                      console.log(c("yellow", `  ⚠ ${w}`));
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.log(c("yellow", `  ⚠ Legacy config migration skipped: ${err instanceof Error ? err.message : String(err)}`));
+            }
+          }
+
           if (fixesApplied.length > 0) {
             for (const fix of fixesApplied) console.log(`  ${ICONS.ok()} ${fix}`);
             console.log(`\n${c("green", "✅ All fixes applied!")}`);

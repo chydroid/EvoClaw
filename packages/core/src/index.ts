@@ -137,6 +137,33 @@ export type { IdentityConfig, AuthConfig, GatewayConfig, LLMConfig, DataConfig, 
 export { ConfigMigrationManager } from "./config-migration";
 export type { MigrationStep, MigrationResult, ConfigMigrationConfig, SemVer } from "./config-migration";
 
+// Legacy Config Migrations — 同版本内的遗留字段迁移框架（对标 OpenClaw doctor --fix）
+//   - defineLegacyConfigMigration: 声明式迁移工厂
+//   - applyLegacyDoctorMigrations: 迁移运行器（顺序应用，容错）
+//   - archiveLegacyStateSource: 文件归档助手（永不删除，归档到 .migrated）
+//   - persistMigratedConfig: 迁移后配置原子写入 + 原文件归档
+export {
+  defineLegacyConfigMigration,
+  applyLegacyDoctorMigrations,
+  migrateLegacyConfig,
+  archiveLegacyStateSource,
+  persistMigratedConfig,
+  LEGACY_CONFIG_MIGRATIONS,
+  LEGACY_CONFIG_MIGRATION_RULES,
+  getRecord,
+  ensureRecord,
+  mergeMissing,
+  getPathValue,
+  setPathValue,
+  deletePathValue,
+} from "./legacy-config-migrations";
+export type {
+  LegacyConfigRule,
+  LegacyConfigMigrationSpec,
+  LegacyMigrationResult,
+  MigrateLegacyConfigResult,
+} from "./legacy-config-migrations";
+
 // Profile Manager — 多实例隔离系统（借鉴 hermes-agent Profile 设计）
 export { ProfileManager } from "./profile-manager";
 export type { ProfileConfig, ProfileManagerOptions } from "./profile-manager";
