@@ -53,6 +53,30 @@
     "./plugin-entry": {
       "types": "./dist/plugin-entry.d.ts",
       "default": "./dist/plugin-entry.js"
+    },
+    "./openai-compatible-provider": {
+      "types": "./dist/openai-compatible-provider.d.ts",
+      "default": "./dist/openai-compatible-provider.js"
+    },
+    "./providers/deepseek": {
+      "types": "./dist/providers/deepseek.d.ts",
+      "default": "./dist/providers/deepseek.js"
+    },
+    "./providers/groq": {
+      "types": "./dist/providers/groq.d.ts",
+      "default": "./dist/providers/groq.js"
+    },
+    "./providers/qwen": {
+      "types": "./dist/providers/qwen.d.ts",
+      "default": "./dist/providers/qwen.js"
+    },
+    "./providers/mistral": {
+      "types": "./dist/providers/mistral.d.ts",
+      "default": "./dist/providers/mistral.js"
+    },
+    "./providers/xai": {
+      "types": "./dist/providers/xai.d.ts",
+      "default": "./dist/providers/xai.js"
     }
   },
   "scripts": {

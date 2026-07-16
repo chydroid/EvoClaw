@@ -49,3 +49,18 @@ export * as ProviderRuntime from "./provider-runtime.js";
 export * as ToolRuntime from "./tool-runtime.js";
 export * as ApprovalRuntime from "./approval-runtime.js";
 export * as PluginEntry from "./plugin-entry.js";
+
+// ── OpenAI-compatible provider 基类（Round 9 新增） ─────────────────
+export {
+  createOpenAICompatibleProvider,
+  type OpenAICompatibleProviderSpec,
+} from "./openai-compatible-provider.js";
+
+// ── Provider 扩展样板（Round 9 新增） ──────────────────────────────
+export {
+  deepseekProvider,
+  groqProvider,
+  qwenProvider,
+  mistralProvider,
+  xaiProvider,
+} from "./providers/index.js";
