@@ -30,6 +30,12 @@ export type { TfidfMatchResult } from "./tfidf-matcher";
 //   - 永不删除技能，仅归档到 data/skills-archive/（遵循 AGENTS.md "Never delete; archive"）
 //   - Pinned 技能豁免自动归档；CrossProcessLock + atomicWriteFile 保护并发
 export * from "./skill-curator";
+// Round 7: SQLite-first 技能数据存储（对标 OpenClaw database-first）
+export { SkillSqliteStore } from "./skill-sqlite-store";
+export type {
+  SkillLifecycleRow,
+  SkillCuratorStateRow,
+} from "./skill-sqlite-store";
 export { SkillMarketplace } from "./marketplace";
 export type { SkillPackage, SkillReview, SearchQuery, SearchResult, InstallResult, MarketplaceConfig } from "./marketplace";
 export { SkillEcosystem } from "./skill-ecosystem";

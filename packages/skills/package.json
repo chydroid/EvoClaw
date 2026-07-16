@@ -28,6 +28,9 @@
     "uuid": "^9.0.0",
     "yaml": "^2.6.0"
   },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.19.19",
