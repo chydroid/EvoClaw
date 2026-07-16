@@ -32,7 +32,7 @@ const SERVER_VERSION = getServerVersion();
 // 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
@@ -73,6 +73,7 @@ import {
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
+import { loadAndRegisterToolExtensions } from "./tools";
 
 export class EvoClawServer {
   private registry: ServiceRegistry;
@@ -1034,6 +1035,9 @@ export class EvoClawServer {
       this.logger.error("server", `Failed to load built-in plugins: ${err}`);
     }
 
+    // ── Round 5: 发现并注册工具扩展（对标 OpenClaw extensions 机制） ──
+    await this.registerDiscoveredToolExtensions();
+
     this.securityMiddleware.registerHooks(this.pluginManager);
 
     await this.pluginManager.registerPlugin({
@@ -1250,6 +1254,64 @@ export class EvoClawServer {
 
   private registerPptxTools(fsBase: string): void {
     registerPptxTools(this.agentModelExecutor, fsBase);
+  }
+
+  /**
+   * Round 5: 发现并注册工具扩展。
+   *
+   * 扫描 node_modules 和 workspace packages 目录下的 evoclaw.extensions /
+   * openclaw.extensions 声明，加载工具扩展并桥接到 AgentModelExecutor。
+   * 失败的扩展不阻断启动（warn + skip），与 OpenClaw 行为一致。
+   */
+  private async registerDiscoveredToolExtensions(): Promise<void> {
+    try {
+      const projectRoot = path.resolve(__dirname, "..", "..", "..");
+      const roots = [
+        path.join(projectRoot, "node_modules"),
+        path.join(projectRoot, "packages"),
+        path.join(projectRoot, "apps"),
+      ];
+      const discoveries = discoverExtensions(roots, {
+        warn: (msg: string) => this.logger.warn("server", msg),
+      });
+      if (discoveries.length === 0) return;
+
+      const { loaded, failed } = await loadExtensions(discoveries, {
+        warn: (msg: string) => this.logger.warn("server", msg),
+      });
+      if (failed.length > 0) {
+        this.logger.warn("server", `[extensions] ${failed.length} extension(s) failed to load`);
+      }
+
+      // 仅处理工具类扩展
+      const toolEntries = loaded
+        .map((l) => ({ entry: l.entry, packageName: l.discovery.packageName, kind: classifyExtension(l.entry) }))
+        .filter((l) => l.kind === "tool" || l.kind === "plugin");
+
+      if (toolEntries.length === 0) return;
+
+      const result = await loadAndRegisterToolExtensions(
+        this.agentModelExecutor,
+        toolEntries.map((t) => ({ entry: t.entry, packageName: t.packageName })),
+        {
+          logger: {
+            warn: (msg: string) => this.logger.info("server", msg),
+          },
+        },
+      );
+
+      if (result.registered > 0) {
+        this.logger.info("server", `[extensions] registered ${result.registered} tool extension(s)`);
+      }
+      if (result.failed.length > 0) {
+        for (const f of result.failed) {
+          this.logger.warn("server", `[extensions] tool "${f.toolName}" registration failed: ${f.error}`);
+        }
+      }
+    } catch (err) {
+      // 扩展加载失败不应阻断启动
+      this.logger.error("server", `Tool extension discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private registerAutoSkillTool(): void {

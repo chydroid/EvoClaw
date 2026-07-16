@@ -27,3 +27,17 @@ export { registerComputerUseTools } from "./computer-use-tools";
 export type { ComputerUseToolDeps } from "./computer-use-tools";
 export type { ComputerBackend, MouseButton, ScrollDirection, ScreenSize, WindowInfo, WindowBounds } from "./computer-use/computer-backend";
 export { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./computer-use-tools";
+
+// ── 工具扩展注册（Round 5：对标 OpenClaw 扩展工具机制） ──
+export {
+  convertToolParameters,
+  convertToolDefinition,
+  registerToolExtension,
+  registerToolExtensions,
+  extractToolEntries,
+  loadAndRegisterToolExtensions,
+} from "./extension-loader";
+export type {
+  RegisterToolExtensionOptions,
+  LoadAndRegisterResult,
+} from "./extension-loader";

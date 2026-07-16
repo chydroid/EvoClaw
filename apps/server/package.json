@@ -20,6 +20,7 @@
     "@evoclaw/infrastructure": "workspace:*",
     "@evoclaw/intelligence": "workspace:*",
     "@evoclaw/memory": "workspace:*",
+    "@evoclaw/plugin-sdk": "workspace:*",
     "@evoclaw/reporting": "workspace:*",
     "@evoclaw/scheduler": "workspace:*",
     "@evoclaw/security": "workspace:*",

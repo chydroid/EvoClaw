@@ -128,6 +128,9 @@ importers:
       '@evoclaw/memory':
         specifier: workspace:*
         version: link:../../packages/memory
+      '@evoclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
       '@evoclaw/reporting':
         specifier: workspace:*
         version: link:../../packages/reporting
