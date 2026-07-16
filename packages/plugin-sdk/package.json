@@ -33,6 +33,26 @@
     "./health": {
       "types": "./dist/health.d.ts",
       "default": "./dist/health.js"
+    },
+    "./channel-runtime": {
+      "types": "./dist/channel-runtime.d.ts",
+      "default": "./dist/channel-runtime.js"
+    },
+    "./provider-runtime": {
+      "types": "./dist/provider-runtime.d.ts",
+      "default": "./dist/provider-runtime.js"
+    },
+    "./tool-runtime": {
+      "types": "./dist/tool-runtime.d.ts",
+      "default": "./dist/tool-runtime.js"
+    },
+    "./approval-runtime": {
+      "types": "./dist/approval-runtime.d.ts",
+      "default": "./dist/approval-runtime.js"
+    },
+    "./plugin-entry": {
+      "types": "./dist/plugin-entry.d.ts",
+      "default": "./dist/plugin-entry.js"
     }
   },
   "scripts": {
