@@ -77,6 +77,14 @@
     "./providers/xai": {
       "types": "./dist/providers/xai.d.ts",
       "default": "./dist/providers/xai.js"
+    },
+    "./channels/signal": {
+      "types": "./dist/channels/signal.d.ts",
+      "default": "./dist/channels/signal.js"
+    },
+    "./channels/irc": {
+      "types": "./dist/channels/irc.d.ts",
+      "default": "./dist/channels/irc.js"
     }
   },
   "scripts": {

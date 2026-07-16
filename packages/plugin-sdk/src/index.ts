@@ -64,3 +64,9 @@ export {
   mistralProvider,
   xaiProvider,
 } from "./providers/index.js";
+
+// ── Channel 扩展样板（Round 10 新增） ───────────────────────────────
+export {
+  signalChannel,
+  ircChannel,
+} from "./channels/index.js";
