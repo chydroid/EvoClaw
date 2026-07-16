@@ -152,3 +152,52 @@ export type {
   AgentExecutorLike,
   EventBusLike,
 } from "./acp/acp-adapter";
+
+// Round 6: 标准 ACP 协议层（对标 OpenClaw @openclaw/acp-core）
+export {
+  ACP_PROTOCOL_VERSION,
+  ACP_METHODS,
+  ACP_SESSION_UPDATE_TAGS,
+  ACP_ERROR_CODES,
+  ACP_MAX_PROMPT_BYTES,
+  ACP_LOAD_SESSION_REPLAY_LIMIT,
+  ACP_GATEWAY_DISCONNECT_GRACE_MS,
+  DEFAULT_ACP_AGENT_INFO,
+  AcpError,
+  toAcpError,
+  isAcpError,
+} from "./acp/acp-protocol";
+export type {
+  AcpAgentInfo,
+  AcpMethodName,
+  AcpSessionUpdateTag,
+  AcpSessionUpdate,
+  AcpSessionInfo,
+  AcpContentBlock,
+  AcpErrorCode,
+  AcpRuntimeControl,
+  AcpSessionMode,
+  AcpPromptMode,
+  AcpProvenanceMode,
+} from "./acp/acp-protocol";
+
+export {
+  InMemoryAcpEventLedger,
+  LEDGER_VERSION,
+  DEFAULT_MAX_SESSIONS,
+  DEFAULT_MAX_EVENTS_PER_SESSION,
+} from "./acp/acp-event-ledger";
+export type {
+  AcpEventLedgerEntry,
+  AcpEventLedgerReplay,
+  AcpEventLedger,
+} from "./acp/acp-event-ledger";
+
+export {
+  isAcpEnabledByPolicy,
+  resolveAcpDispatchPolicyError,
+  resolveAcpExplicitTurnPolicyError,
+  resolveAcpAgentPolicyError,
+  resolveConcurrentSessionLimitError,
+} from "./acp/acp-policy";
+export type { AcpConfig } from "./acp/acp-policy";

@@ -21,6 +21,16 @@
 
 import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
+import {
+  ACP_PROTOCOL_VERSION,
+  ACP_METHODS,
+  ACP_MAX_PROMPT_BYTES,
+  DEFAULT_ACP_AGENT_INFO,
+  type AcpAgentInfo,
+  type AcpSessionUpdate,
+  type AcpContentBlock,
+} from "./acp-protocol.js";
+import type { AcpEventLedger } from "./acp-event-ledger.js";
 
 // ─── JSON-RPC 2.0 基础类型 ───────────────────────────────────────────────────
 
@@ -159,6 +169,18 @@ export class AcpServer extends EventEmitter {
   private messageHandler: SendMessageHandler | null = null;
 
   private readonly capabilities: AcpCapabilities;
+
+  /** ACP 代理身份（对标 OpenClaw ACP_AGENT_INFO） */
+  private agentInfo: AcpAgentInfo = { ...DEFAULT_ACP_AGENT_INFO };
+
+  /** 事件账本（可选，用于 session/load 重放） */
+  private eventLedger: AcpEventLedger | null = null;
+
+  /** ACP 会话 → ledger sessionId 映射 */
+  private ledgerSessions = new Map<string, string>();
+
+  /** 是否已完成 initialize 握手 */
+  private initialized = false;
 
   constructor(
     private readonly stdin: NodeJS.ReadableStream = process.stdin,
@@ -334,6 +356,36 @@ export class AcpServer extends EventEmitter {
     this.messageHandler = handler;
   }
 
+  /** 设置代理身份（对标 OpenClaw ACP_AGENT_INFO） */
+  setAgentInfo(info: Partial<AcpAgentInfo>): void {
+    this.agentInfo = { ...this.agentInfo, ...info };
+  }
+
+  /** 获取代理身份 */
+  getAgentInfo(): AcpAgentInfo {
+    return { ...this.agentInfo };
+  }
+
+  /** 注入事件账本（启用 session/load 重放） */
+  setEventLedger(ledger: AcpEventLedger): void {
+    this.eventLedger = ledger;
+  }
+
+  /** 推送 ACP 标准 session/update 通知 */
+  notifySessionUpdate(sessionId: string, update: AcpSessionUpdate): void {
+    this.sendNotification({
+      method: ACP_METHODS.NOTIFICATION_SESSION_UPDATE,
+      params: { sessionId, update },
+    });
+    // 同时记录到事件账本
+    if (this.eventLedger) {
+      const ledgerId = this.ledgerSessions.get(sessionId);
+      if (ledgerId) {
+        this.eventLedger.recordUpdate(sessionId, update);
+      }
+    }
+  }
+
   // ─── JSON-RPC 核心 ────────────────────────────────────────────────────────
 
   /** 推送通知（不期待响应） */
@@ -425,6 +477,155 @@ export class AcpServer extends EventEmitter {
           }
           this.cancelMessage(params.sessionId);
           result = { sessionId: params.sessionId, cancelled: true };
+          break;
+        }
+
+        // ── 标准 ACP 协议方法（对标 https://agentclientprotocol.com/） ──
+
+        case ACP_METHODS.INITIALIZE: {
+          const params = req.params as { protocolVersion?: number } | undefined;
+          const clientVersion = params?.protocolVersion ?? ACP_PROTOCOL_VERSION;
+          this.initialized = true;
+          result = {
+            protocolVersion: ACP_PROTOCOL_VERSION,
+            agentInfo: this.agentInfo,
+            clientProtocolVersion: clientVersion,
+          };
+          break;
+        }
+
+        case ACP_METHODS.NEW_SESSION: {
+          const params = req.params as { cwd?: string; mcpServers?: string[]; mode?: string } | undefined;
+          const session = await this.createSession(
+            params?.cwd ? { cwd: params.cwd } : undefined,
+          );
+          if (this.eventLedger) {
+            const ledgerId = this.eventLedger.startSession();
+            this.ledgerSessions.set(session.id, ledgerId);
+          }
+          result = {
+            sessionId: session.id,
+            ...(params?.cwd ? { cwd: params.cwd } : {}),
+          };
+          break;
+        }
+
+        case ACP_METHODS.PROMPT: {
+          const params = req.params as { sessionId?: string; prompt?: string | AcpContentBlock[] } | undefined;
+          if (!params?.sessionId) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing sessionId");
+          }
+          const promptText = typeof params.prompt === "string"
+            ? params.prompt
+            : Array.isArray(params.prompt)
+              ? params.prompt.map((b) => b.type === "text" ? b.text : "").join("")
+              : "";
+          if (!promptText) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing prompt text");
+          }
+          // prompt 大小限制（CWE-400 防护）
+          if (Buffer.byteLength(promptText, "utf-8") > ACP_MAX_PROMPT_BYTES) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Prompt exceeds maximum size");
+          }
+          const runId = randomUUID();
+          if (this.eventLedger) {
+            this.eventLedger.recordUserPrompt(params.sessionId, promptText, runId);
+          }
+          // 流式推送 session/update 通知
+          const messages: AcpMessage[] = [];
+          try {
+            for await (const msg of this.sendMessage(params.sessionId, promptText)) {
+              messages.push(msg);
+              if (msg.role === "assistant") {
+                this.notifySessionUpdate(params.sessionId, {
+                  tag: "agent_message_chunk",
+                  text: msg.content,
+                });
+              }
+            }
+            result = { sessionId: params.sessionId, stop: { reason: "end_turn" } };
+          } catch (err) {
+            return this.errorResponse(
+              req.id,
+              RPC_ERROR.INTERNAL_ERROR,
+              err instanceof Error ? err.message : String(err)
+            );
+          }
+          break;
+        }
+
+        case ACP_METHODS.CANCEL: {
+          const params = req.params as { sessionId?: string } | undefined;
+          if (!params?.sessionId) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing sessionId");
+          }
+          this.cancelMessage(params.sessionId);
+          result = { sessionId: params.sessionId, cancelled: true };
+          break;
+        }
+
+        case ACP_METHODS.LIST_SESSIONS:
+          result = {
+            sessions: (await this.listSessions()).map((s) => ({
+              sessionId: s.id,
+              state: s.status === "active" ? "idle" : "closed",
+            })),
+          };
+          break;
+
+        case ACP_METHODS.LOAD_SESSION: {
+          const params = req.params as { sessionId?: string } | undefined;
+          if (!params?.sessionId) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing sessionId");
+          }
+          if (!this.eventLedger) {
+            return this.errorResponse(req.id, RPC_ERROR.METHOD_NOT_FOUND, "Event ledger not configured");
+          }
+          const replay = this.eventLedger.readReplay(params.sessionId);
+          result = {
+            sessionId: params.sessionId,
+            complete: replay.complete,
+            events: replay.events,
+          };
+          break;
+        }
+
+        case ACP_METHODS.RESUME_SESSION: {
+          const params = req.params as { sessionId?: string } | undefined;
+          if (!params?.sessionId) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing sessionId");
+          }
+          // 恢复会话：如果会话不存在则报错，存在则标记为 active
+          const session = this.sessions.get(params.sessionId);
+          if (!session) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, `Session not found: ${params.sessionId}`);
+          }
+          session.status = "active";
+          result = { sessionId: params.sessionId, state: "idle" };
+          break;
+        }
+
+        case ACP_METHODS.CLOSE_SESSION: {
+          const params = req.params as { sessionId?: string } | undefined;
+          if (!params?.sessionId) {
+            return this.errorResponse(req.id, RPC_ERROR.INVALID_PARAMS, "Missing sessionId");
+          }
+          await this.closeSession(params.sessionId);
+          result = { sessionId: params.sessionId, state: "closed" };
+          break;
+        }
+
+        case ACP_METHODS.SET_MODE: {
+          // session/set_mode — 当前为 no-op 占位（对标 OpenClaw 部分支持）
+          const params = req.params as { sessionId?: string; mode?: string } | undefined;
+          result = { sessionId: params?.sessionId ?? "", mode: params?.mode ?? "persistent" };
+          break;
+        }
+
+        case ACP_METHODS.SET_CONFIG_OPTION: {
+          // session/set_config_option — 当前为 no-op 占位
+          const params = req.params as { sessionId?: string; key?: string; value?: unknown } | undefined;
+          result = { sessionId: params?.sessionId ?? "", key: params?.key ?? "", value: params?.value };
           break;
         }
 
