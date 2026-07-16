@@ -333,23 +333,102 @@ function applySummaryPass(
 // ── Pass 3: args JSON 截断 ──────────────────────────────────────────────────
 
 /**
- * 安全截断 JSON 字符串，保持结构有效性。
+ * 安全截断 JSON 字符串，保证输出仍是有效 JSON。
  *
- * 借鉴 hermes-agent _truncate_args_json：
- *   - 保留前 N 个字符
- *   - 添加截断标记
- *   - 添加尾部闭合括号（猜测所需数量）
+ * 对标 Hermes agent/tool_executor.py 的 JSON 结构感知截断。
  *
- * 策略：通过计数未闭合的 { 和 [ 来决定需要添加多少闭合符号。
+ * 旧实现问题：
+ *   - 在任意位置切片 → 可能切断 key/value
+ *   - 末尾插入 `,"_truncated":true` → 在 key 中间或 value 中间时无效
+ *   - 中间插入纯文本 `\n... [args truncated N chars] ...\n` → JSON 解析失败
+ *
+ * 新实现策略：
+ *   1. 尝试 JSON.parse 原始字符串
+ *   2. 成功 → walk parsed value，按 key-value/element 边界累加预算，截断后加 _truncated 标记
+ *   3. 失败 → 退回保守策略：在最后一个安全边界（逗号、对象闭合、数组闭合）后截断
+ *
+ * @param jsonStr 原始 JSON 字符串
+ * @param headChars 保留的头部字符数预算
+ * @returns 截断后的有效 JSON 字符串（含 _truncated 标记）
  */
 function truncateJsonSafely(jsonStr: string, headChars: number): string {
   if (jsonStr.length <= headChars) return jsonStr;
 
+  // 策略 1：尝试解析后按结构边界截断（最优路径）
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return truncateParsedJson(parsed, headChars);
+  } catch {
+    // 原始字符串不是有效 JSON（罕见）→ 退回策略 2
+  }
+
+  // 策略 2：保守边界查找 — 在最后一个安全边界（逗号、对象闭合、数组闭合）后截断
+  return truncateByBoundary(jsonStr, headChars);
+}
+
+/**
+ * 对已解析的 JSON 值进行预算感知截断。
+ * - 对象：逐 key-value 重新序列化，超过预算时停止并加 _truncated
+ * - 数组：逐 element 重新序列化，超过预算时停止
+ * - 原始值：直接返回（已经很短）
+ */
+function truncateParsedJson(value: unknown, headChars: number): string {
+  if (Array.isArray(value)) {
+    // 数组：保留前 N 个完整 element
+    const kept: unknown[] = [];
+    let serialized = "[";
+    let first = true;
+    for (const el of value) {
+      const piece = first ? JSON.stringify(el) : "," + JSON.stringify(el);
+      if (serialized.length + piece.length + 2 > headChars) break; // +2 for "]"
+      serialized += piece;
+      kept.push(el);
+      first = false;
+    }
+    if (kept.length < value.length) {
+      // 部分截断：加 _truncated 标记（在数组中作为对象元素，避免破坏数组类型）
+      serialized += `${first ? "" : ","}{"_truncated":true,"_dropped":${value.length - kept.length}}]`;
+    } else {
+      serialized += "]";
+    }
+    return serialized;
+  }
+
+  if (value !== null && typeof value === "object") {
+    // 对象：逐 key-value 重新序列化
+    const entries = Object.entries(value as Record<string, unknown>);
+    const kept: Array<[string, unknown]> = [];
+    let serialized = "{";
+    let first = true;
+    for (const [k, v] of entries) {
+      const piece = first ? JSON.stringify(k) + ":" + JSON.stringify(v) : "," + JSON.stringify(k) + ":" + JSON.stringify(v);
+      if (serialized.length + piece.length + 2 > headChars) break; // +2 for "}"
+      serialized += piece;
+      kept.push([k, v]);
+      first = false;
+    }
+    if (kept.length < entries.length) {
+      serialized += `${first ? "" : ","}"_truncated":true,"_dropped":${entries.length - kept.length}}`;
+    } else {
+      serialized += "}";
+    }
+    return serialized;
+  }
+
+  // 原始值（string/number/bool/null）：直接 stringify，应该已足够短
+  return JSON.stringify(value);
+}
+
+/**
+ * 边界查找策略：当 JSON.parse 失败时使用。
+ * 在 headChars 预算内查找最后一个安全截断点（逗号后或对象/数组闭合后）。
+ */
+function truncateByBoundary(jsonStr: string, headChars: number): string {
   const head = jsonStr.slice(0, headChars);
 
-  // 计算未闭合的括号
-  let openBraces = 0;
-  let openBrackets = 0;
+  // 扫描 head，跟踪字符串上下文和括号深度
+  let lastSafeCut = -1;
+  let depth = 0;
   let inString = false;
   let escapeNext = false;
 
@@ -368,27 +447,53 @@ function truncateJsonSafely(jsonStr: string, headChars: number): string {
       continue;
     }
     if (inString) continue;
+
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      // 闭合后是一个安全截断点（如果是顶层或接近顶层）
+      if (depth <= 1) lastSafeCut = i + 1;
+    } else if (ch === "," && depth <= 1) {
+      // 逗号后是安全截断点（在顶层或一级嵌套）
+      lastSafeCut = i + 1;
+    }
+  }
+
+  if (lastSafeCut <= 0) {
+    // 没找到安全边界 → 返回空对象作为 fallback（避免无效 JSON）
+    return '{"_truncated":true,"_reason":"no_safe_boundary"}';
+  }
+
+  const partial = jsonStr.slice(0, lastSafeCut);
+  // 计算需要闭合的括号数
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < partial.length; i++) {
+    const ch = partial[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
     if (ch === "{") openBraces++;
     else if (ch === "}") openBraces--;
     else if (ch === "[") openBrackets++;
     else if (ch === "]") openBrackets--;
   }
 
-  // 如果在字符串中，先闭合字符串
+  // 移除末尾悬空的逗号
+  let trimmed = partial.replace(/,\s*$/, "");
+
+  // 在末尾加 _truncated 字段（如果当前在对象中）
   let closing = "";
-  if (inString) {
-    closing += '"';
+  if (openBraces > 0) {
+    closing = `,"_truncated":true`;
   }
-
-  // 添加截断标记（作为注释，但 JSON 不支持注释，所以放在字符串外）
-  // 我们用一个特殊的字符串字段来标记
-  closing += `,"_truncated":true`;
-
-  // 闭合括号
   for (let i = 0; i < openBrackets; i++) closing += "]";
   for (let i = 0; i < openBraces; i++) closing += "}";
 
-  return `${head}\n... [args truncated ${jsonStr.length - headChars} chars] ...\n${closing}`;
+  return trimmed + closing;
 }
 
 /**

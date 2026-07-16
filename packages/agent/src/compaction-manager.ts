@@ -707,7 +707,13 @@ export class CompactionManager {
   // 两者都会导致 API 400 错误。此方法确保输出的消息列表始终是 well-formed 的。
 
   /**
-   * 清洗工具调用/结果配对完整性。
+   * 清洗工具调用/结果配对完整性（strip 策略）。
+   *
+   * 对标 Hermes context_compressor.py _sanitize_tool_pairs（lines 2476-2552）：
+   *   - 旧实现：为孤儿 tool_call 插入桩 tool_result → Codex Responses API 中
+   *     `call_id != id` 时桩会被 repair_message_sequence 静默丢弃，重新暴露孤儿
+   *   - 新实现：直接从 assistant 消息中 STRIP 掉孤儿 tool_calls，保留 content 文本
+   *
    * @param messages 压缩后的消息列表（可能含孤儿 tool_calls 或孤儿 tool 结果）
    * @returns 修复后的消息列表（well-formed OpenAI 格式）
    */
@@ -742,20 +748,25 @@ export class CompactionManager {
         }
         result.push(msg);
       } else if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
-        // 为孤儿调用插入桩结果：assistant 有 tool_calls 但结果被压缩掉
-        result.push(msg);
+        // Strip 策略：剥离孤儿 tool_calls，保留 content 文本
+        // （对标 Hermes context_compressor.py lines 2527-2550）
         const calls = msg.tool_calls as Array<Record<string, unknown>>;
-        for (const tc of calls) {
-          if (typeof tc.id === "string" && !resultCallIds.has(tc.id)) {
-            // 插入桩结果，防止 API 400 "No tool call found for function call output"
-            result.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: "[Result from earlier conversation — see context summary above]",
-            });
-            // 标记已插入，避免重复
-            resultCallIds.add(tc.id);
-          }
+        const orphans = calls.filter(
+          (tc) => typeof tc.id === "string" && !resultCallIds.has(tc.id),
+        );
+        if (orphans.length === 0) {
+          result.push(msg);
+        } else if (orphans.length === calls.length) {
+          // 所有 tool_calls 都是孤儿 → 完全剥离 tool_calls 字段
+          const { tool_calls, ...rest } = msg;
+          void tool_calls;
+          result.push(rest);
+        } else {
+          // 部分孤儿 → 仅剥离孤儿，保留有结果的 tool_calls
+          const kept = calls.filter(
+            (tc) => !(typeof tc.id === "string" && !resultCallIds.has(tc.id)),
+          );
+          result.push({ ...msg, tool_calls: kept });
         }
       } else {
         result.push(msg);

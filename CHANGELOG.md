@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.85.0] - 2026-07-16
+
+### Hermes 对标提升（第 3 轮）
+
+- **CompactionManager.sanitizeToolPairs**：从「桩结果插入」策略改为「孤儿 tool_calls 剥离」策略（对标 Hermes `context_compressor.py _sanitize_tool_pairs` lines 2476-2552）。旧实现为孤儿 tool_call 插入桩 tool_result，在 Codex Responses API 中当 `call_id != id` 时桩会被 `repair_message_sequence` 静默丢弃，重新暴露孤儿；新实现直接从 assistant 消息中 STRIP 掉孤儿 tool_calls，保留 content 文本。处理三种场景：无孤儿、全部孤儿（剥离 `tool_calls` 字段）、部分孤儿（仅剥离孤儿）
+- **tool-output-pruner.truncateJsonSafely**：重写为 JSON 结构感知截断（对标 Hermes `agent/tool_executor.py`）。旧实现在任意位置切片并在末尾插入纯文本截断标记 `\n... [args truncated N chars] ...\n`，导致输出不是有效 JSON；新实现优先尝试 `JSON.parse` 后按 key-value/element 边界累加预算截断（对象/数组分别处理），解析失败时退回保守边界查找策略（在最后一个安全逗号或闭合括号后截断），并补齐所需闭合符号。保证输出始终是可解析的有效 JSON
+
+### Cleanup
+
+- 归档已迁移至 `data/skills-archive/` 的 `github` 和 `gog` 技能目录（`data/skills/github/`、`data/skills/gog/`）。两技能的归档副本分别位于 `data/skills-archive/github-2026-07-15T02-20-29-650Z/` 与 `data/skills-archive/gog-2026-07-15T02-20-29-660Z/`，遵循「Never delete; archive」约定
+
+### Infrastructure
+
+- 所有改动已通过 `pnpm build` → `pnpm typecheck` → `pnpm test`（219 test files / 5527+ tests 全部通过）
+
 ## [0.84.0] - 2026-07-15
 
 ### Security Fixes
