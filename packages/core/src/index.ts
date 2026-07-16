@@ -41,6 +41,20 @@ export { ConfigManager, defaultConfig } from "./config";
 export type { AppConfig, DeepPartial, PersonaConfig } from "./config";
 export { ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, ValidationError as ConfigValidationError } from "./config-schema";
 export type { ConfigValidationResult, SchemaConfigChange, SchemaConfigChangeHandler } from "./config-schema";
+// 扩展发现机制（对标 OpenClaw openclaw.extensions 字段扫描）
+export {
+  extractExtensionsFromPackageJson,
+  discoverExtensions,
+  loadExtension,
+  loadExtensions,
+  classifyExtension,
+} from "./extension-registry";
+export type {
+  DiscoveredExtension,
+  LoadedExtension,
+  FailedExtension,
+  ExtensionKind,
+} from "./extension-registry";
 export { PluginManager } from "./plugin-system";
 export type {
   Plugin, PluginManifest, PluginContext, PluginHookRegistration,
