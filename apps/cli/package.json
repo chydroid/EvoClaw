@@ -5,6 +5,16 @@
   "description": "EvoClaw CLI - EvoClaw 命令行工具",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./library": {
+      "types": "./dist/library.d.ts",
+      "default": "./dist/library.js"
+    }
+  },
   "bin": {
     "EvoClaw": "./dist/index.js",
     "evoclaw": "./dist/index.js",

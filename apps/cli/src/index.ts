@@ -2,6 +2,12 @@
 /**
  * EvoClaw CLI — Self-Evolving Agent OS command-line interface.
  * Built on Commander.js v13 for professional CLI ergonomics.
+ *
+ * 本文件同时承担两个角色（对标 OpenClaw `src/index.ts`）：
+ *   - 当作为主模块直接运行时（`node apps/cli/dist/index.js …`）→ 启动 CLI
+ *   - 当被其他模块 `import` 时 → 仅暴露库导出（library.ts），不执行 CLI
+ * 这样消费者可以通过 `@evoclaw/cli/library` 子路径以编程方式使用 EvoClaw 能力，
+ * 而不会触发 CLI 解析逻辑。
  */
 import { Command } from "commander";
 import * as path from "path";
@@ -108,14 +114,54 @@ for (const mod of commandModules) {
   }
 }
 
-// ── Parse & run ────────────────────────────────────────────────────
-process.on("unhandledRejection", (reason) => {
-  const msg = reason instanceof Error ? reason.message : String(reason);
-  process.stderr.write(c("red", `Unhandled rejection: ${msg}\n`));
-  process.exitCode = 1;
-});
+// ── Parse & run (only when invoked as main module) ─────────────────
+//
+// 对标 OpenClaw `src/index.ts` 的 `isMainModule` 守卫：
+// 当本文件被 `import` 时（库模式），跳过 CLI 解析与全局错误处理；
+// 仅在被 `node` 直接运行时（CLI 模式）才执行以下逻辑。
+function isMainModule(): boolean {
+  try {
+    if (!process.argv[1]) return true;
+    const invoked = path.resolve(process.argv[1]);
+    // CommonJS 模式下 __filename 为 Node 注入的全局变量
+    const here = __filename;
+    return invoked === here;
+  } catch {
+    return true;
+  }
+}
 
-program.parseAsync(process.argv).catch((err: Error) => {
-  process.stderr.write(c("red", `Error: ${err.message}\n`));
-  process.exitCode = 1;
-});
+if (isMainModule()) {
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    process.stderr.write(c("red", `Unhandled rejection: ${msg}\n`));
+    process.exitCode = 1;
+  });
+
+  program.parseAsync(process.argv).catch((err: Error) => {
+    process.stderr.write(c("red", `Error: ${err.message}\n`));
+    process.exitCode = 1;
+  });
+}
+
+// ── Library-mode re-exports ────────────────────────────────────────
+//
+// 当作为库被 `import` 时，透传 library.ts 的程序化 API（applyTemplate、
+// loadConfig、getReplyFromConfig、ensurePortAvailable 等）。这些导出仅在
+// 库模式下有意义，CLI 模式不读取它们。
+export {
+  applyTemplate,
+  ensurePortAvailable,
+  describePortOwner,
+  PortInUseError,
+  runExec,
+  runCommandWithTimeout,
+  ensureBinary,
+  waitForever,
+  loadConfig,
+  getReplyFromConfig,
+  createSessionManager,
+  ConfigManagerLazy,
+  AutoReplyEngineLazy,
+  SessionManagerLazy,
+} from "./library.js";
