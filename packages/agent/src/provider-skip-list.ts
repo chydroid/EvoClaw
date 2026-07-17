@@ -81,10 +81,14 @@ export class ProviderSkipList {
     const now = Date.now();
 
     let session = this.sessions.get(sessionId);
-    if (!session) {
+    if (session) {
+      // 真正的 LRU：将已存在的 session 移到 Map 末尾（最新插入序）
+      this.sessions.delete(sessionId);
+      this.sessions.set(sessionId, session);
+    } else {
       session = { sessionId, entries: new Map(), updatedAt: now };
       this.sessions.set(sessionId, session);
-      // LRU 淘汰
+      // LRU 淘汰：删除 Map 中最旧的 session（插入序首元素）
       if (this.sessions.size > this.config.maxSessions) {
         const oldestKey = this.sessions.keys().next().value;
         if (oldestKey) this.sessions.delete(oldestKey);

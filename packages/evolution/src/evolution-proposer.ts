@@ -375,8 +375,11 @@ export class EvolutionProposer {
         return false;
       }
     }
-    if (/\beval\s*\(/.test(improvement) || /new\s+Function\s*\(/.test(improvement)) {
-      process.stderr.write("[EvolutionProposer] LLM code contains eval/Function, rejected\n");
+    // 拦截 eval / Function 构造器（含无 new 的 Function() 调用与原型链 .constructor.constructor）
+    if (/\beval\s*\(/.test(improvement) ||
+        /\bFunction\s*\(/.test(improvement) ||
+        /\.constructor\s*\.\s*constructor\s*\(/.test(improvement)) {
+      process.stderr.write("[EvolutionProposer] LLM code contains eval/Function/constructor chain, rejected\n");
       return false;
     }
     return true;

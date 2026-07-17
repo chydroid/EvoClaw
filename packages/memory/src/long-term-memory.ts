@@ -272,7 +272,7 @@ export class LongTermMemoryStore implements LongTermMemory {
 
           if (query.embedding && entry.embedding) {
             const similarity = this.cosineSimilarity(query.embedding, entry.embedding);
-            if (similarity >= (query.threshold || COSINE_SIMILARITY_THRESHOLD)) {
+            if (similarity >= (query.threshold ?? COSINE_SIMILARITY_THRESHOLD)) {
               score += similarity * 0.5;
               matchedFields.push("embedding");
             } else if (!matchedFields.length) {
@@ -319,7 +319,7 @@ export class LongTermMemoryStore implements LongTermMemory {
 
       if (query.embedding && entry.embedding) {
         const similarity = this.cosineSimilarity(query.embedding, entry.embedding);
-        if (similarity >= (query.threshold || COSINE_SIMILARITY_THRESHOLD)) {
+        if (similarity >= (query.threshold ?? COSINE_SIMILARITY_THRESHOLD)) {
           score += similarity * 0.5;
           matchedFields.push("embedding");
         } else if (!matchedFields.length) {

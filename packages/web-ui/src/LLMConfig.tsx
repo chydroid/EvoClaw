@@ -946,7 +946,7 @@ function LLMConfigPanel() {
                   max={512000}
                   step={256}
                   value={currentProvider.config.maxTokens}
-                  onChange={(e) => updateConfig(activeProvider, { maxTokens: parseInt(e.target.value) || 40960 })}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); updateConfig(activeProvider, { maxTokens: Number.isFinite(n) ? n : 40960 }) }}
                 />
               </div>
 
@@ -959,7 +959,7 @@ function LLMConfigPanel() {
                   max={300000}
                   step={1000}
                   value={currentProvider.config.timeout}
-                  onChange={(e) => updateConfig(activeProvider, { timeout: parseInt(e.target.value) || 60000 })}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); updateConfig(activeProvider, { timeout: Number.isFinite(n) ? n : 60000 }) }}
                 />
               </div>
             </div>

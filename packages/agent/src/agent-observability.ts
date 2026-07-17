@@ -706,6 +706,9 @@ export class AgentObservability {
       const metricsText = this.exportMetrics();
       atomicWriteFileSync(metricsFile, metricsText);
 
+      // 清理超期的 trace/metrics 文件（保留最近 7 天），防止磁盘泄漏
+      this.pruneOldExportFiles(dir);
+
       // Clean up old traces from memory (keep last 100)
       const toKeep = 100;
       if (this.traces.size > toKeep) {
@@ -723,6 +726,26 @@ export class AgentObservability {
       // Export failure should not crash the agent，但记录到 stderr 以便排查
       process.stderr.write("[AgentObservability] export failed: " + err + "\n");
     }
+  }
+
+  /**
+   * 清理超期的 trace/metrics 导出文件（保留最近 7 天）。
+   * 文件名格式：traces-YYYY-MM-DD.jsonl 或 metrics-YYYY-MM-DD.txt
+   * Best-effort：任何删除错误均被吞掉以避免影响 observability 主流程。
+   */
+  private pruneOldExportFiles(dir: string): void {
+    const maxAgeDays = 7;
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        const match = f.match(/^(?:traces|metrics)-(\d{4}-\d{2}-\d{2})\.(?:jsonl|txt)$/);
+        if (!match) continue;
+        const fileDate = new Date(match[1] + "T00:00:00Z").getTime();
+        if (Number.isNaN(fileDate) || fileDate >= cutoff) continue;
+        try { fs.unlinkSync(path.join(dir, f)); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
   }
 }
 

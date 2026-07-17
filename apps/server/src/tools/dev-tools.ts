@@ -553,7 +553,7 @@ export function registerDevTools(
     },
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
-      const maxResults = parseInt(String(params.maxResults || "20"), 10) || 20;
+      const maxResults = Math.max(1, parseInt(String(params.maxResults ?? "20"), 10) || 20);
       const filePattern = params.filePattern ? String(params.filePattern) : null;
 
       if (!query) return { success: false, error: "Query is required" };

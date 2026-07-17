@@ -697,8 +697,10 @@ export class WebhookManager {
         }
         // IPv4-mapped IPv6 地址检查：::ffff:x.x.x.x 或完整形式 0:0:0:0:0:ffff:x.x.x.x
         // 这些地址在大多数 OS 上等效于连接嵌入的 IPv4 私有地址
-        const v4MappedMatch = v6.match(/^(?:0:0:0:0:0:)?ffff:(\d+\.\d+\.\d+\.\d+)$/) ||
-          v6.match(/^(?:0:0:0:0:0:)?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+        // 先归一化：将完整形式 0:0:0:0:0:ffff: 转为缩写 ::ffff:（WHATWG URL.hostname 返回 RFC 5952 缩写）
+        const v6Norm = v6.replace(/^0:0:0:0:0:ffff:/i, "::ffff:");
+        const v4MappedMatch = v6Norm.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i) ||
+          v6Norm.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
         if (v4MappedMatch) {
           let ipv4: string;
           if (v4MappedMatch.length === 3) {

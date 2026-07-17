@@ -1215,11 +1215,14 @@ export class GatewayServer {
         heartbeat.unref();
 
         // 包装工具调用以支持取消
-        const toolPromise = entry.handler(toolArgs);
+        const argsWithSignal = { ...toolArgs, _signal: abortController.signal };
+        const toolPromise = entry.handler(argsWithSignal);
+        // 防止取消/超时后底层 rejection 成为 unhandledRejection
+        toolPromise.catch(() => {});
         const abortPromise = new Promise<never>((_, reject) => {
           abortController.signal.addEventListener("abort", () => {
             reject(new Error("Tool execution cancelled by client"));
-          });
+          }, { once: true });
         });
 
         const result = await Promise.race([toolPromise, abortPromise]);

@@ -79,7 +79,7 @@ export class SkillOrchestrator {
       params: s.params || {},
       timeout: s.timeout ?? 60000,
       retryCount: 0,
-      maxRetries: s.maxRetries || 2,
+      maxRetries: s.maxRetries ?? 2,
       fallbackSkill: s.fallbackSkill,
       mergeStrategy: s.mergeStrategy || "merge",
     }));

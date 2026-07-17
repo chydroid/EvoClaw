@@ -594,7 +594,7 @@ export class LLMDispatcher {
         messages: [
           { role: "user", content: userPrompt },
         ],
-        max_tokens: maxTokens || provider.maxTokens || 4096,
+        max_tokens: Math.max(1, maxTokens ?? provider.maxTokens ?? 4096),
         temperature: temperature ?? provider.temperature ?? 0.3,
       };
     } else {
@@ -604,7 +604,7 @@ export class LLMDispatcher {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        max_tokens: maxTokens || provider.maxTokens || 4096,
+        max_tokens: Math.max(1, maxTokens ?? provider.maxTokens ?? 4096),
         temperature: temperature ?? provider.temperature ?? 0.3,
       };
     }

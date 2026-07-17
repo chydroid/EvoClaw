@@ -124,6 +124,8 @@ export class AuditCenter {
   private rules: AuditRule[] = [];
   private maxRecords = 10000;
   private maxAlerts = 1000;
+  /** 归档文件最大保留数量，超出时删除最旧的归档文件（防止磁盘泄漏） */
+  private maxArchiveFiles = 30;
   private alertThrottles = new Map<string, number>();
   /** 保存 EventBus 订阅句柄，用于 shutdown 时取消订阅 */
   private subscriptions: EventSubscription[] = [];
@@ -206,6 +208,8 @@ export class AuditCenter {
         } finally {
           fs.closeSync(fd);
         }
+        // 清理超出上限的旧归档文件，防止磁盘泄漏
+        this.pruneArchiveFiles(archiveDir);
       } catch (err) {
         process.stderr.write(`[AuditCenter] Failed to archive overflow records: ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -213,6 +217,25 @@ export class AuditCenter {
     }
 
     this.evaluateRules(record);
+  }
+
+  /**
+   * 清理超出 maxArchiveFiles 上限的旧归档文件。
+   * 按文件名中的时间戳降序排序，删除最旧的文件。
+   * Best-effort：任何删除错误均被吞掉以避免影响审计主流程。
+   */
+  private pruneArchiveFiles(archiveDir: string): void {
+    try {
+      const files = fs.readdirSync(archiveDir)
+        .filter((f) => f.startsWith("audit-archive-") && f.endsWith(".jsonl"))
+        .sort()
+        .reverse(); // 最新的在前
+      if (files.length <= this.maxArchiveFiles) return;
+      const toDelete = files.slice(this.maxArchiveFiles);
+      for (const f of toDelete) {
+        try { fs.unlinkSync(path.join(archiveDir, f)); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
   }
 
   private recordSystemEvent(

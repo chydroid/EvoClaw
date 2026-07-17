@@ -1761,8 +1761,8 @@ export async function callLLMOnce(
         if (cacheCtrl) msg.cache_control = cacheCtrl;
         return msg;
       }),
-      max_tokens: provider.maxTokens || 4096,
-      temperature: provider.temperature || 0.3,
+      max_tokens: Math.max(1, provider.maxTokens ?? 4096),
+      temperature: provider.temperature ?? 0.3,
       top_p: provider.topP ?? 1,
       stream: useStreaming,
     };

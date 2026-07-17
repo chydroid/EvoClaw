@@ -72,6 +72,8 @@ export interface EventLedgerConfig {
   autoFlushMs?: number;
   /** Maximum entries to keep in memory at load time; older entries are skipped. */
   maxLoadedEntries?: number;
+  /** Maximum number of ledger files to retain on disk; oldest are pruned. */
+  maxFiles?: number;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -85,6 +87,8 @@ export class EventLedger {
   private maxEntriesPerFile: number;
   private maxLoadedEntries: number;
   private autoFlushMs: number;
+  /** 保留的 ledger 文件最大数量，超出时删除最旧的文件（防止磁盘泄漏） */
+  private maxFiles: number;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   // flush 进程级互斥：防止 read-then-write 序列在并发调用时交错写入
@@ -98,6 +102,7 @@ export class EventLedger {
     this.maxEntriesPerFile = config.maxEntriesPerFile ?? 10_000;
     this.maxLoadedEntries = config.maxLoadedEntries ?? 50_000;
     this.autoFlushMs = config.autoFlushMs ?? 500;
+    this.maxFiles = config.maxFiles ?? 30;
     this.load();
     // 注册 beforeExit 钩子：进程退出时 flush 未落盘的审计事件
     // （scheduleFlush 使用 unref()，进程可能在定时器触发前退出）
@@ -401,6 +406,8 @@ export class EventLedger {
 
       if (newLines.length > 0) {
         fs.appendFileSync(targetFile, newLines.join("\n") + "\n", "utf-8");
+        // 清理超出 maxFiles 上限的旧 ledger 文件，防止磁盘泄漏
+        this.pruneOldFiles();
       }
 
       this.dirty = false;
@@ -420,5 +427,24 @@ export class EventLedger {
     const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.timestamp >= cutoff);
     return before - this.entries.length;
+  }
+
+  /**
+   * 清理超出 maxFiles 上限的旧 ledger 文件。
+   * 文件名格式：ledger-<timestamp>.jsonl，按文件名时间戳排序，删除最旧的。
+   * Best-effort：任何删除错误均被吞掉以避免影响 ledger 主流程。
+   */
+  private pruneOldFiles(): void {
+    try {
+      const files = fs.readdirSync(this.storeDir)
+        .filter((f) => f.startsWith("ledger-") && f.endsWith(".jsonl"))
+        .sort()
+        .reverse(); // 最新的在前
+      if (files.length <= this.maxFiles) return;
+      const toDelete = files.slice(this.maxFiles);
+      for (const f of toDelete) {
+        try { fs.unlinkSync(path.join(this.storeDir, f)); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort */ }
   }
 }

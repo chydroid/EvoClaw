@@ -1018,18 +1018,16 @@ export function downloadFile(url: string, destPath: string): Promise<void> {
         cleanup(new Error(`重定向次数过多 (>${redirectCount})`));
         return;
       }
-      // SSRF 防护：重定向目标需校验是否为私有/内网地址
-      if (redirectCount > 0) {
-        try {
-          const parsed = new URL(urlStr);
-          if (isPrivateHost(parsed.hostname)) {
-            cleanup(new Error(`SSRF blocked: redirect to internal host "${parsed.hostname}"`));
-            return;
-          }
-        } catch {
-          cleanup(new Error(`无效的重定向URL: ${urlStr}`));
+      // SSRF 防护：所有 URL（含初始 URL 与重定向）均需校验是否为私有/内网地址
+      try {
+        const parsed = new URL(urlStr);
+        if (isPrivateHost(parsed.hostname)) {
+          cleanup(new Error(`SSRF blocked: internal host "${parsed.hostname}"`));
           return;
         }
+      } catch {
+        cleanup(new Error(`无效的 URL: ${urlStr}`));
+        return;
       }
       const mod = urlStr.startsWith("https") ? https : require("http");
       const req = mod.get(urlStr, { timeout: 30000 }, (res: any) => {

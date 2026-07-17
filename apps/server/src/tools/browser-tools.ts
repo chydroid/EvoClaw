@@ -608,7 +608,7 @@ export function registerBrowserTools(
     },
     async (params: Record<string, unknown>) => {
       touchBrowserSession();
-      const maxElements = parseInt(String(params.max_elements || "200"), 10) || 200;
+      const maxElements = Math.max(0, parseInt(String(params.max_elements ?? "200"), 10) || 200);
       try {
         const result = await pwBrowser.extractDom({ maxElements });
         return {

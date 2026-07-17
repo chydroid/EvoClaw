@@ -110,8 +110,9 @@ export class MessageQueue {
               // 重试耗尽：记录告警，避免消息被静默丢弃
               process.stderr.write(`[MessageQueue] Message "${message.topic}" dropped after ${message.maxRetries} retries\n`);
             }
-            // 使用 continue 而非 break，确保同一 topic 的后续 handler 仍有机会处理该消息
-            continue;
+            // 使用 break 而非 continue：handler 失败后不再调用后续 handler，
+            // 避免同一消息被部分 handler 成功处理后又在重试时被全部 handler 重复调用（破坏幂等性）
+            break;
           }
         }
       }

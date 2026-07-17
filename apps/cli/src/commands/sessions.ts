@@ -278,8 +278,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       const alive = await checkServer();
       if (!alive) { serverRequired(); return; }
       const agentId = (opts.agent as string) || "default";
-      const n = parseInt(String(opts.n || "10"), 10);
-      const intervalSec = parseInt(String(opts.interval || "3"), 10) || 3;
+      const n = parseInt(String(opts.n ?? "10"), 10);
+      const intervalSec = Math.max(0, parseInt(String(opts.interval ?? "3"), 10) || 3);
       const once = Boolean(opts.once);
 
       let lastSig: string = "";

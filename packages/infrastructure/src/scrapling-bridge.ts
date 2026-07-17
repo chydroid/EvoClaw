@@ -45,9 +45,9 @@ export function generateAdaptiveScraperScript(params: {
   const contentSel = params.contentSelector || "#content, .content, .chapter-content, article";
   const nextSel = params.nextLinkSelector || 'a:contains("下一章"), a:contains("下一节"), a.next, a:contains("▶")';
   const encoding = params.encoding || "utf-8";
-  const delay = params.delay || 1;
+  const delay = params.delay ?? 1;
   const startChapter = params.startChapter || 1;
-  const maxChapters = params.maxChapters || 50;
+  const maxChapters = params.maxChapters ?? 50;
 
   return `#!/usr/bin/env python3
 """

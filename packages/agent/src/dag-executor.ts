@@ -381,6 +381,9 @@ export class DAGExecutor {
 
       if (skillManager) {
         const resultPromise = skillManager.executeSkill(node.skill, node.params);
+        // 防止取消/超时后底层 rejection 成为 unhandledRejection。
+        // 使用 Promise.resolve() 包装以兼容 executeSkill 返回非 Promise 值的情况。
+        Promise.resolve(resultPromise).catch(() => {});
         // 如果支持 abort 信号，在超时时将 promise 标记为已取消
         if (abortSignal) {
           const abortPromise = new Promise<never>((_resolve, reject) => {

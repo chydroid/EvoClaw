@@ -398,7 +398,7 @@ export class SessionManager {
     this.withLock(agentId, sessionId, () => {
       const transcriptPath = this.getTranscriptPath(agentId, sessionId);
       const lines = turns.map((t) => JSON.stringify(t) + "\n").join("");
-      fs.writeFileSync(transcriptPath, lines, "utf-8");
+      atomicWriteFileSync(transcriptPath, lines, { encoding: "utf-8" });
 
       // Update metadata
       const session = this.loadSessionMeta(agentId, sessionId);
