@@ -280,4 +280,4 @@ pnpm test
 
 ---
 
-详细的版本更新记录请参阅 [History.md](History.md)。
+详细的版本更新记录请参阅 [CHANGELOG.md](CHANGELOG.md)。

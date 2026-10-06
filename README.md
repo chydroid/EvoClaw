@@ -280,4 +280,4 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ---
 
-For detailed version history, see [History.md](History.md).
+For detailed version history, see [CHANGELOG.md](CHANGELOG.md).
