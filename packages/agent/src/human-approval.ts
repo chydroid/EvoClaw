@@ -86,6 +86,10 @@ const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   video_download: "medium",
   music_download: "medium",
   // Low risk - auto-approved
+  // email_add_account 设为 low：用户明确要求首次添加邮箱免人工审批。
+  // 与 security/permission-manager.ts 的 autoApprove:true 对齐，消除双轨冲突。
+  // 凭据加密落盘，真正高危的 email_send 仍保持 high。
+  email_add_account: "low",
   // shell_exec 设为 low：技能中的 Python 脚本无须批准即可执行
   shell_exec: "low",
   // skill_execute 设为 low：技能执行无须批准

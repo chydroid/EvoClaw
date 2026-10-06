@@ -160,6 +160,17 @@ const AGENT_SCHEMA: SchemaDefinition = {
   tone: { type: "string", default: "warm", enum: ["warm", "professional", "casual", "formal"], description: "Agent tone" },
   language: { type: "string", default: "zh", description: "Primary language" },
   maxContextTokens: { type: "number", default: 60000, min: 1000 },
+  /**
+   * 上下文窗口手动覆盖（0 = 自动）。
+   * 留空时按当前实际使用的模型自动解析真实窗口（用户设置 > 内置模型库 > 兜底），
+   * 用于内置模型库未收录的新模型；也可改用环境变量 EVOCLAW_CONTEXT_WINDOW。
+   */
+  contextWindowOverride: {
+    type: "number",
+    default: 0,
+    min: 0,
+    description: "Context window override in tokens (0 = auto-detect from active model)",
+  },
   maxHistoryTurns: { type: "number", default: 20, min: 1, max: 100 },
   autoCompaction: { type: "boolean", default: true },
   workspacePath: { type: "string", default: "data/workspace" },

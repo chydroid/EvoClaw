@@ -47,6 +47,7 @@ import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
 import * as crypto from "crypto";
 import { DurableTaskRunner, getDurableTaskRunner, type DurableTask } from "./durable-task-runner";
 import { SessionArchiveStore, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
+import { resolveContextWindow } from "./model-context-window";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -546,7 +547,7 @@ export class AgentModelExecutor {
     sessionId: string,
     fromSnapshotIndex?: number,
     onProgress?: AgentProgressCallback,
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     const resumeData = this.executionCheckpointStore.getSnapshotForResume(sessionId, fromSnapshotIndex);
     if (!resumeData) return null;
 
@@ -1343,7 +1344,7 @@ export class AgentModelExecutor {
     message: string,
     context?: Record<string, unknown>,
     onProgress?: AgentProgressCallback
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
@@ -1427,7 +1428,7 @@ export class AgentModelExecutor {
     peerId: string,
     tracing: any,
     parentSpan: any,
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
 
     // Mark session as active for heartbeat pausing
     this.markSessionActive(sessionId);
@@ -2151,6 +2152,17 @@ export class AgentModelExecutor {
 
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + personaContext + memoryContext;
 
+    // ── 解析本次生效的上下文窗口（分母）──
+    // 顺序：用户显式设置 > 内置模型库按当前模型解析 > 兜底。
+    // 这个值同时用于 ContextEngine 的截断预算，避免 1M 窗口的模型
+    // 仍在 128k 处被静默丢弃历史（丢弃即永久丢失）。
+    const userContextOverride = this.readConfiguredContextWindow();
+    const resolvedContextWindow = resolveContextWindow({
+      model: this.getActiveModelName(),
+      userOverride: userContextOverride,
+    });
+    const effectiveContextWindow = resolvedContextWindow.limit;
+
     // ── ContextEngine: use layered context assembly when available ──
     // This replaces the manual message assembly with ContextEngine.assembleContext()
     // which provides frozen/ephemeral prompt separation, bootstrap file loading,
@@ -2169,6 +2181,7 @@ export class AgentModelExecutor {
           pluginPrependContext: undefined,
           pluginAppendContext: undefined,
           currentTask: effectiveMessage,
+          maxContextTokens: effectiveContextWindow,
         });
         if (contextEngineResult.warnings.length > 0) {
           process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
@@ -3039,7 +3052,7 @@ export class AgentModelExecutor {
     onProgress?: AgentProgressCallback,
     searchPreDone: boolean = false,
     channel?: string
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
     this.ensureToolResultCacheV2();
     this.ensureTokenBudgetOptimizer();
@@ -3190,6 +3203,40 @@ export class AgentModelExecutor {
   /** 当前活动窗口轮数（<=0 表示不限制） */
   getSessionWindowRounds(): number {
     return this.windowRounds;
+  }
+
+  /**
+   * 读取用户在配置中显式设置的上下文窗口上限。
+   * 支持 config.contextWindowOverride 与环境变量 EVOCLAW_CONTEXT_WINDOW；
+   * 缺省或非法值返回 undefined（视为"自动检测"）。
+   */
+  private readConfiguredContextWindow(): number | undefined {
+    const raw = process.env.EVOCLAW_CONTEXT_WINDOW;
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+    try {
+      const cfg = this.registry?.resolveService<{ get(key: string): unknown }>("configManager");
+      const v = cfg?.get("contextWindowOverride");
+      const n = typeof v === "number" ? v : Number(v);
+      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    } catch { /* 未配置 → 自动检测 */ }
+    return undefined;
+  }
+
+  /**
+   * 取当前启用的模型名，用于解析真实的上下文窗口。
+   * 读不到时返回 undefined，由 resolveContextWindow 走 provider/兜底分支。
+   */
+  private getActiveModelName(): string | undefined {
+    try {
+      const providers = this.getProviders?.() ?? [];
+      const active = providers.find((p) => p.enabled);
+      return active?.model || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

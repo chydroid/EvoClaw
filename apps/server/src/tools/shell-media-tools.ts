@@ -592,10 +592,27 @@ except Exception as e:
         // Parse [RESULT]...[/RESULT] from output
         const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
         if (match) {
-          const parsed = JSON.parse(match[1]);
-          return { success: true, ...parsed };
+          try {
+            const parsed = JSON.parse(match[1]);
+            return { success: true, ...parsed };
+          } catch (jsonErr) {
+            // 关键修复：原先 JSON.parse 抛错会冒泡到外层 catch，
+            // 且没有 [RESULT] 标记时仍返回 success:true —— 脚本报错也会
+            // 被当成"下载完成"，与此前邮箱伪造完成态同型。
+            return {
+              success: false,
+              error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
+              output: result.slice(-2000),
+            };
+          }
         }
-        return { success: true, output: result.slice(-2000) };
+        // 无 [RESULT] 标记 = 脚本未产出结果（可能中途报错/被 kill），
+        // 必须如实报告失败，绝不能返回 success:true。
+        return {
+          success: false,
+          error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
+          output: result.slice(-2000),
+        };
       } catch (err: any) {
         const stderr = err.stderr?.toString() || err.message || String(err);
         // Check if partial download exists
@@ -696,10 +713,23 @@ except Exception as e:
           );
           const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
           if (match) {
-            const parsed = JSON.parse(match[1]);
-            return { success: true, ...parsed };
+            try {
+              const parsed = JSON.parse(match[1]);
+              return { success: true, ...parsed };
+            } catch (jsonErr) {
+              return {
+                success: false,
+                error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
+                output: result.slice(-2000),
+              };
+            }
           }
-          return { success: true, output: result.slice(-2000) };
+          // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
+          return {
+            success: false,
+            error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
+            output: result.slice(-2000),
+          };
         } catch (err: any) {
           const stderr = err.stderr?.toString() || err.message || String(err);
           return { success: false, error: stderr.slice(0, 5000) };
@@ -726,10 +756,23 @@ except Exception as e:
           );
           const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
           if (match) {
-            const parsed = JSON.parse(match[1]);
-            return { success: true, ...parsed };
+            try {
+              const parsed = JSON.parse(match[1]);
+              return { success: true, ...parsed };
+            } catch (jsonErr) {
+              return {
+                success: false,
+                error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
+                output: result.slice(-2000),
+              };
+            }
           }
-          return { success: true, output: result.slice(-2000) };
+          // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
+          return {
+            success: false,
+            error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
+            output: result.slice(-2000),
+          };
         } catch (err: any) {
           const stderr = err.stderr?.toString() || err.message || String(err);
           return { success: false, error: stderr.slice(0, 5000) };

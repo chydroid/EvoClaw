@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus, FeatureFlagStore, atomicWriteFileSync } from "@evoclaw/core";
-import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware } from "@evoclaw/agent";
+import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware, resolveContextWindow } from "@evoclaw/agent";
 import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
@@ -638,6 +638,63 @@ function executeCliCommand(command: string): Promise<{ stdout: string; stderr: s
     childProcess.on("close", onClose);
     childProcess.on("error", onError);
   });
+}
+
+/**
+ * 读取用户在配置中显式设置的上下文窗口上限。
+ *
+ * 需求：「实在做不到也要让用户来设置，不能定死 128k」。
+ * 优先读环境变量 EVOCLAW_CONTEXT_WINDOW（便于容器部署），
+ * 其次读 ConfigManager 的 contextWindowOverride；缺省即视为未设置。
+ */
+function readUserContextOverride(registry: ServiceRegistry): number | undefined {
+  const raw = process.env.EVOCLAW_CONTEXT_WINDOW;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  try {
+    const cfg = registry.resolveService<{ get(key: string): unknown }>("configManager");
+    const v = cfg?.get("contextWindowOverride");
+    const n = typeof v === "number" ? v : Number(v);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  } catch { /* 未注册或未配置 → 视为未设置 */ }
+  return undefined;
+}
+
+/**
+ * 解析 SSE `done` 事件里上报的上下文窗口（分母）。
+ *
+ * 优先级：agent 回传的真实解析值（已按实际使用模型 + 用户设置算好）
+ *        → 按当前启用模型用统一解析器计算
+ *        → 最后兜底。
+ * 任何分支都不再出现"硬编码 128k 覆盖模型判断"的情况。
+ */
+function resolveContextLimit(
+  result: unknown,
+  agentExecutor: unknown,
+  registry: ServiceRegistry
+): number {
+  const fromResult = (result as { contextLimit?: unknown } | null)?.contextLimit;
+  if (typeof fromResult === "number" && Number.isFinite(fromResult) && fromResult > 0) {
+    return Math.floor(fromResult);
+  }
+
+  try {
+    const getProvidersFn = (agentExecutor as Record<string, unknown>)?.getProviders;
+    if (typeof getProvidersFn === "function") {
+      const providers = (getProvidersFn as () => Array<{ enabled: boolean; model: string }>)();
+      const active = providers?.find((p) => p.enabled);
+      if (active?.model) {
+        return resolveContextWindow({
+          model: active.model,
+          userOverride: readUserContextOverride(registry),
+        }).limit;
+      }
+    }
+  } catch { /* ignore provider lookup errors */ }
+
+  return resolveContextWindow({ userOverride: readUserContextOverride(registry) }).limit;
 }
 
 export class ProtocolAdapter {
@@ -2950,7 +3007,7 @@ export class ProtocolAdapter {
         }
 
         const agentExecutor = this.registry.resolveService<{
-          chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+          chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
           /** End-to-end cancellation: aborts in-flight LLM fetches for a session. */
           abortSession?(sessionId: string): boolean;
           /** 软超时 / 浏览器关闭时把在飞任务存检查点并转入后台续跑（而非失败）。 */
@@ -3051,7 +3108,7 @@ export class ProtocolAdapter {
             // 不会以「请简化请求」失败告终。
             const result = await chatPromise;
 
-            let contextLimit = 128000;
+            let contextLimit = resolveContextLimit(result, agentExecutor, this.registry);
             let sessionTokensUsed = 0;
         try {
           const getProvidersFn2 = (agentExecutor as Record<string, unknown>).getProviders;
@@ -3060,34 +3117,16 @@ export class ProtocolAdapter {
             if (providersList2 && providersList2.length > 0) {
               const activeProvider2 = providersList2.find((p) => p.enabled);
               if (activeProvider2?.model) {
-                const MODEL_CONTEXT: Record<string, number> = {
-                  "gpt-4o": 128000, "gpt-4o-mini": 128000, "gpt-4-turbo": 128000, "gpt-4": 8192, "gpt-3.5-turbo": 16385,
-                  "claude-3-5-sonnet": 200000, "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
-                  "claude-sonnet-4-20250514": 200000, "deepseek-chat": 128000, "deepseek-reasoner": 128000,
-                  "qwen-max": 32768, "qwen-plus": 131072, "qwen-turbo": 131072,
-                  "glm-4": 128000, "glm-4-flash": 128000,
-                };
-                for (const [pattern, limit] of Object.entries(MODEL_CONTEXT)) {
-                  if (activeProvider2.model.includes(pattern.replace("-4-turbo", "").replace("-4o", ""))) {
-                    contextLimit = limit;
-                    break;
-                  }
-                }
-                if (activeProvider2.model.includes("gpt-4o") || activeProvider2.model.includes("gpt-4-turbo")) contextLimit = 128000;
-                if (activeProvider2.model.includes("claude")) contextLimit = 200000;
-                if (activeProvider2.model.includes("deepseek")) contextLimit = 128000;
+                // 兼容旧版 AgentModelExecutor 未回传 contextLimit 的情况：
+                // 直接用统一解析器按模型名解析，不再使用过期的硬编码表。
+                contextLimit = resolveContextWindow({
+                  model: activeProvider2.model,
+                  userOverride: readUserContextOverride(this.registry),
+                }).limit;
               }
             }
           }
         } catch (err) { /* ignore provider lookup errors */ }
-            try {
-              const contextEngine = this.registry.resolveService("contextEngine") as { getConfig(): Record<string, unknown> } | undefined;
-              if (contextEngine) {
-                const cfgMaxRaw = contextEngine.getConfig().maxContextTokens;
-                const cfgMax = typeof cfgMaxRaw === "number" && Number.isFinite(cfgMaxRaw) ? cfgMaxRaw : 0;
-                if (cfgMax > 0) contextLimit = cfgMax;
-              }
-            } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
             try {
               const lifecycleMgr = this.registry.resolveService<{ getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number }> }>("lifecycleManager");
               if (lifecycleMgr) {
@@ -3100,6 +3139,8 @@ export class ProtocolAdapter {
               reply: result.reply,
               tokensUsed: result.tokensUsed > 0 ? result.tokensUsed : sessionTokensUsed,
               contextTokens: ("contextTokens" in result ? (result as Record<string, unknown>).contextTokens : 0) || 0,
+              contextTokensEstimated: ("contextTokensEstimated" in result ? (result as Record<string, unknown>).contextTokensEstimated : false) === true,
+              contextLimitSource: ("contextLimitSource" in result ? (result as Record<string, unknown>).contextLimitSource : undefined),
               contextLimit,
               duration: result.duration,
               sessionId: resolvedSessionId,
@@ -3142,34 +3183,12 @@ export class ProtocolAdapter {
           // 不再以超时失败；仅在真正异常时抛出（由外层兜住）
           throw raceErr;
         }
-        // Resolve context limit from ContextEngine config
-        let contextLimit = 128000;
+        // 上下文窗口（分母）：优先用 agent 按**实际使用模型**解析出的真实值，
+        // 它已考虑用户显式设置 > provider 上报 > 内置模型库 > 兜底的优先级。
+        // 旧实现在此硬编码 128000 并用一张只认识 gpt-4o/claude-3 的过期表去猜，
+        // 最后还被 ContextEngine 的默认值无条件覆盖，导致任何模型都显示 128k。
+        let contextLimit = resolveContextLimit(result, agentExecutor, this.registry);
         let sessionTokensUsed = 0;
-        try {
-          const getProvidersFn = (agentExecutor as Record<string, unknown>).getProviders;
-          if (typeof getProvidersFn === "function") {
-            const providersList = (getProvidersFn as () => Array<{ enabled: boolean; model: string }>)();
-            if (providersList && providersList.length > 0) {
-              const activeProvider = providersList.find((p) => p.enabled);
-              if (activeProvider?.model) {
-                if (activeProvider.model.includes("gpt-4o") || activeProvider.model.includes("gpt-4-turbo")) contextLimit = 128000;
-                else if (activeProvider.model.includes("claude")) contextLimit = 200000;
-                else if (activeProvider.model.includes("deepseek")) contextLimit = 128000;
-                else if (activeProvider.model.includes("qwen")) contextLimit = 131072;
-              }
-            }
-          }
-        } catch (err) { /* ignore provider lookup errors */ }
-        try {
-          const contextEngine = this.registry.resolveService("contextEngine") as {
-            getConfig(): Record<string, unknown>;
-          } | undefined;
-          if (contextEngine) {
-            const cfgMaxRaw = contextEngine.getConfig().maxContextTokens;
-            const cfgMax = typeof cfgMaxRaw === "number" && Number.isFinite(cfgMaxRaw) ? cfgMaxRaw : 0;
-            if (cfgMax > 0) contextLimit = cfgMax;
-          }
-        } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
         try {
           const lifecycleMgr = this.registry.resolveService<{
             getAllStatuses(): Array<{ sessionId: string; tokensUsed?: number; compactionCount?: number }>;
@@ -3196,7 +3215,10 @@ export class ProtocolAdapter {
         res.json({
           reply: result.reply,
           tokensUsed: totalTokensUsed,
+          contextTokens: result.contextTokens || 0,
+          contextTokensEstimated: result.contextTokensEstimated === true,
           contextLimit,
+          contextLimitSource: result.contextLimitSource,
           duration: result.duration,
           sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
@@ -3266,7 +3288,7 @@ export class ProtocolAdapter {
       let resumeTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
       const agentExecutor = this.registry.resolveService<{
-        chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+        chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
       }>("agentModelExecutor");
 
       if (!agentExecutor) {

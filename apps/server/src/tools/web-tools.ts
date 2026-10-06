@@ -503,9 +503,12 @@ export function registerWebTools(
     },
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
-      const limit = Math.max(1, parseInt(String(params.limit ?? "10"), 10) || 10);
+      // 上限 clamp：原先只有下限，模型传 limit:100000 会原样透传给 provider，
+      // 造成超量请求/费用浪费与长时间挂起。
+      const limitRaw = parseInt(String(params.limit ?? "10"), 10);
+      const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10, 50));
       const freshness = String(params.freshness || "");
-      if (!query) return { error: "Search query is required" };
+      if (!query) return { success: false, error: "Search query is required" };
 
       const optimizeChineseQuery = (q: string): string[] => {
         const queries = [q];

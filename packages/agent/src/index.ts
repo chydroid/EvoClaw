@@ -16,6 +16,8 @@ export { reconcileCompletionTruthfulness, claimsCompletion, hasActionIntent } fr
 export type { ReconcileInput, ReconcileResult, PendingPermission } from "./completion-truthfulness";
 export { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS, ARCHIVE_TAG } from "./session-archive";
 export type { ArchiveTurn, LongTermLike, WindowResult } from "./session-archive";
+export { resolveContextWindow, matchModelEntry, describeContextWindowSource } from "./model-context-window";
+export type { ResolvedContextWindow, ContextWindowSource, ResolveContextWindowInput } from "./model-context-window";
 export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
 export type { TaskCheckpoint } from "./task-checkpoint-manager";
 export { taskStatusTracker } from "./task-status-tracker";

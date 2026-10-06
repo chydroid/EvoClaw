@@ -291,9 +291,13 @@ export function registerSchedulerTools(
       },
     },
     async (params: Record<string, unknown>) => {
-      const taskId = String(params.taskId || "");
+      const taskId = String(params.taskId || "").trim();
+      if (!taskId) return { success: false, error: "taskId is required" };
       const removed = sched.deleteTask(taskId);
-      return { success: removed, taskId };
+      // 明确区分"任务不存在"与"删除成功"，避免模型把 false 当成成功或误判
+      return removed
+        ? { success: true, taskId }
+        : { success: false, taskId, error: `Task not found: ${taskId}` };
     }
   );
 

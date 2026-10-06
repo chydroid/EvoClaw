@@ -9,6 +9,8 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness } from "./completion-truthfulness";
+import { resolveContextWindow } from "./model-context-window";
+import { estimateMessagesTokens } from "./error-classifier";
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -674,6 +676,12 @@ export interface TryCallLLMResult {
   reply: string;
   tokensUsed: number;
   contextTokens?: number;
+  /** contextTokens 是否来自本地估算（true 表示 provider 未上报 usage，为估算值） */
+  contextTokensEstimated?: boolean;
+  /** 当前模型真实的上下文窗口（分母），由 model-context-window 解析，已考虑用户设置 */
+  contextLimit?: number;
+  /** 分母来源：user | provider | catalog | fallback，供 UI 标注可信度 */
+  contextLimitSource?: "user" | "provider" | "catalog" | "fallback";
   duration: number;
   permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>;
   toolsExecuted: boolean;
@@ -3498,10 +3506,39 @@ Have a specific URL?
           checkpointStore.completeExecution(sessionId, finalReply);
         }
 
+        // ── 上下文占用（分子）──
+        // 优先用最后一次 LLM 调用真实上报的 prompt_tokens（最精确）。
+        // 旧实现在 lastPromptTokens 为 0 时回退到 totalTokensUsed，但那是
+        // **本轮所有调用的 token 总和**（含每次请求重复携带的 system prompt），
+        // 会把上下文占用严重高估——这正是用户感觉"精度不高"的原因。
+        // 现在改为：真实上报优先；否则对最终消息数组做本地估算，并显式
+        // 标记 contextTokensEstimated，让前端能如实标注"估算"。
+        let contextTokens = lastPromptTokens;
+        let contextTokensEstimated = false;
+        if (!(contextTokens > 0)) {
+          try {
+            contextTokens = estimateMessagesTokens(
+              messages.map((m) => ({ role: String(m.role), content: m.content == null ? null : String(m.content) }))
+            );
+            contextTokensEstimated = contextTokens > 0;
+          } catch { /* 估算不可用时保持 0 */ }
+        }
+
+        // ── 上下文窗口（分母）──
+        // 由 model-context-window 统一解析：用户设置 > provider 报告 >
+        // 内置模型库 > provider 兜底。绝不再硬编码 128k。
+        const contextWindow = resolveContextWindow({
+          model: provider.model,
+          provider: provider.provider || provider.name,
+        });
+
         return {
           reply: finalReply,
           tokensUsed: totalTokensUsed,
-          contextTokens: lastPromptTokens || totalTokensUsed,
+          contextTokens,
+          contextTokensEstimated,
+          contextLimit: contextWindow.limit,
+          contextLimitSource: contextWindow.source,
           duration: Date.now() - startTime,
           permissionRequests: pendingPermissions.length > 0 ? pendingPermissions : [],
           toolsExecuted: anyToolExecuted,

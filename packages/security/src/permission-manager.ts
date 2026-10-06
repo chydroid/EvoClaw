@@ -155,10 +155,13 @@ export class PermissionManager {
       description: "提交网页表单",
     });
 
+    // 邮箱账户添加：用户已明确要求首次添加无需人工审批。
+    // 凭据本身以 AES-256-CBC 加密落盘（data/email/accounts.json），且读取需
+    // EVOCLAW_EMAIL_KEY；真正高危的「发信」仍保留 requireExplicitConsent。
     this.rules.set("email_add_account", {
       operation: "email_add_account",
-      autoApprove: false,
-      requireExplicitConsent: true,
+      autoApprove: true,
+      requireExplicitConsent: false,
       description: "添加邮箱账户",
     });
 

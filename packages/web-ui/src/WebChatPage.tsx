@@ -661,7 +661,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [msgViewModes, setMsgViewModes] = useState<Record<string, "preview" | "raw">>({});
   const [contextUsed, setContextUsed] = useState(0);
-  const [contextLimit, setContextLimit] = useState(128000);
+  // Denominator: do NOT hardcode 128k. Start at 0 = "unknown", and fill it from the
+  // backend `contextLimit` (resolved against the actually-used model, or the user's
+  // own override) on the first response. 0 renders as "?" rather than a fake number.
+  const [contextLimit, setContextLimit] = useState(0);
+  // True when the numerator is a local estimate rather than provider-reported usage.
+  const [contextEstimated, setContextEstimated] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpandLevel, setTextAreaExpandLevel] = useState(0); // 0=2行, 1=5行, 2=10行
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
@@ -1344,12 +1349,16 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             }),
           );
 
-          // Use contextTokens (prompt_tokens from last LLM call) for context usage display,
-          // NOT tokensUsed (cumulative total_tokens which includes all rounds)
+          // Context usage numerator: prefer contextTokens (prompt_tokens reported by the
+          // last LLM call). Only fall back to tokensUsed / local estimation when the
+          // backend could not report it at all.
           if (typeof finalData.contextTokens === "number" && (finalData.contextTokens as number) > 0) {
             setContextUsed(finalData.contextTokens as number);
+            // Whether the numerator itself is an estimate (provider did not report usage)
+            setContextEstimated(finalData.contextTokensEstimated === true);
           } else if (typeof finalData.tokensUsed === "number" && (finalData.tokensUsed as number) > 0) {
             setContextUsed(finalData.tokensUsed as number);
+            setContextEstimated(true);
           } else {
             const allText = (currentMessagesRef.current || messages).map(m => m.content).join("") + text + ((finalData.reply as string) || "");
             setContextUsed(estimateTokens(allText));
@@ -1960,10 +1969,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     });
   }, []);
 
-  // Context usage percentage
-  const contextPercent = contextLimit > 0 ? Math.round((contextUsed / contextLimit) * 100) : 0;
-  const contextUsedDisplay = contextUsed >= 1000000 ? `${(contextUsed / 1000000).toFixed(1)}M` : contextUsed > 1000 ? `${(contextUsed / 1000).toFixed(1)}k` : contextUsed;
-  const contextLimitDisplay = contextLimit >= 1000000 ? `${(contextLimit / 1000000).toFixed(1)}M` : contextLimit > 1000 ? `${(contextLimit / 1000).toFixed(0)}k` : contextLimit;
+  // Context usage percentage.
+  // contextLimit === 0 means the backend has not told us the window yet
+  // (first render, or a failed request) — show "?" instead of a fabricated 0%.
+  const contextKnown = contextLimit > 0;
+  const contextPercent = contextKnown ? Math.round((contextUsed / contextLimit) * 100) : 0;
+  const formatTokens = (n: number): string =>
+    n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n > 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  const contextUsedDisplay = formatTokens(contextUsed);
+  const contextLimitDisplay = contextKnown ? formatTokens(contextLimit) : "?";
+  // Keep the bar honest: never show a full bar for an unknown denominator.
+  const contextBarPercent = contextKnown ? Math.min(100, Math.max(0, contextPercent)) : 0;
+  const contextTitle =
+    `上下文已用 ${contextUsedDisplay} / ${contextLimitDisplay}` +
+    (contextKnown ? `（${contextPercent}%）` : "（窗口未知）") +
+    (contextEstimated ? " · 数值为本地估算" : " · 数值由模型实时上报");
 
   return (
     <div style={chatContainerStyle}>
@@ -2740,12 +2760,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             </div>
 
             {/* Centered context usage bar */}
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", fontSize: "12px", color: "var(--text-secondary, #8b949e)" }}>
+            <div
+              style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", fontSize: "12px", color: "var(--text-secondary, #8b949e)" }}
+              title={contextTitle}
+            >
               <div style={contextProgressStyle}>
-                <div style={contextProgressFillStyle(contextPercent)} />
+                <div style={contextProgressFillStyle(contextBarPercent)} />
               </div>
-              <span>{contextPercent}%</span>
-              <span style={{ color: "var(--text-muted, #6e7681)" }}>{contextUsedDisplay} / {contextLimitDisplay} {t("sessions.tokens")}</span>
+              <span>{contextKnown ? `${contextPercent}%` : "?"}</span>
+              <span style={{ color: "var(--text-muted, #6e7681)" }}>
+                {contextUsedDisplay} / {contextLimitDisplay} {t("sessions.tokens")}
+                {contextEstimated ? " ≈" : ""}
+              </span>
               {messageQueue.length > 0 && (
                 <span style={{ color: "var(--accent, #58a6ff)", fontSize: "11px" }}>{t("chat.queue_label").replace("{0}", String(messageQueue.length))}</span>
               )}

@@ -48,6 +48,18 @@ export interface ContextAssemblyInput {
   pluginAppendContext?: string;
   pluginPrependContext?: string;
   currentTask?: string;
+  /**
+   * 本次调用生效的上下文窗口（tokens）。
+   *
+   * 不传则回退到 `config.maxContextTokens`（历史默认 128000）。
+   * 传入值应来自 `resolveContextWindow()`——即按**实际使用的模型**解析出的
+   * 真实窗口（或用户的显式设置）。
+   *
+   * 为什么必须支持按调用传入：config.maxContextTokens 是 ContextEngine 初始化
+   * 时的固定值，若不随模型变化，则 1M 窗口的模型仍会在 128k 处被静默截断
+   * （丢弃即永久丢失），既浪费模型能力又对用户不可见。
+   */
+  maxContextTokens?: number;
 }
 
 export interface ContextAssemblyResult {
@@ -253,9 +265,16 @@ export class ContextEngine {
     const currentTaskTokens = input.currentTask
       ? this.estimateTokens(input.currentTask)
       : 0;
+    // 生效窗口：优先用本次调用解析出的真实模型窗口，回退到配置值。
+    const effectiveMaxTokens =
+      typeof input.maxContextTokens === "number" &&
+      Number.isFinite(input.maxContextTokens) &&
+      input.maxContextTokens > 0
+        ? input.maxContextTokens
+        : this.config.maxContextTokens;
     const availableTokens = Math.max(
       0,
-      this.config.maxContextTokens - this.estimateTokens(systemContent) - this.config.reserveTokens - currentTaskTokens,
+      effectiveMaxTokens - this.estimateTokens(systemContent) - this.config.reserveTokens - currentTaskTokens,
     );
 
     const reversedHistory: typeof input.conversationHistory = [];
