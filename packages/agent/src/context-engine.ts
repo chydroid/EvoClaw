@@ -400,9 +400,16 @@ export class ContextEngine {
     return Math.ceil(cjkCount / 1.5 + otherCount / 4);
   }
 
+  /**
+   * 是否需要压缩历史。
+   * @param maxContextTokens 本次生效的窗口；不传则回退到 config.maxContextTokens。
+   *        必须与 assembleContext 使用同一个窗口，否则会出现
+   *        "1M 模型在 128k 就判定该压缩" 的错配。
+   */
   needsCompaction(
     conversationHistory: Array<{ role: string; content: string | null }>,
     systemPrompt: string,
+    maxContextTokens?: number,
   ): boolean {
     const historyTokens = conversationHistory.reduce(
       (sum, m) => sum + this.estimateTokens(m.content ?? ""),
@@ -410,13 +417,25 @@ export class ContextEngine {
     );
     const systemTokens = this.estimateTokens(systemPrompt);
     const totalEstimate = systemTokens + historyTokens;
+    const effectiveMax =
+      typeof maxContextTokens === "number" &&
+      Number.isFinite(maxContextTokens) &&
+      maxContextTokens > 0
+        ? maxContextTokens
+        : this.config.maxContextTokens;
 
-    return totalEstimate > this.config.maxContextTokens * 0.75;
+    return totalEstimate > effectiveMax * 0.75;
   }
 
-  getAvailableTokens(currentContext: string): number {
+  getAvailableTokens(currentContext: string, maxContextTokens?: number): number {
     const used = this.estimateTokens(currentContext);
-    return Math.max(0, this.config.maxContextTokens - used - this.config.reserveTokens);
+    const effectiveMax =
+      typeof maxContextTokens === "number" &&
+      Number.isFinite(maxContextTokens) &&
+      maxContextTokens > 0
+        ? maxContextTokens
+        : this.config.maxContextTokens;
+    return Math.max(0, effectiveMax - used - this.config.reserveTokens);
   }
 
   estimateMessagesTokens(
