@@ -35,6 +35,25 @@
   - `system-prompt.ts` 真实性契约新增第 6 条：严禁在回复中回显密码/授权码/密钥原文，需引用时只写前 2 位加星号。
 - **验证**：新增 5 项脱敏回归测试（含"普通长文件名/哈希不被误伤"的反向用例）。
 
+### 3. 真正的根因：工具被静默裁剪（上表第 1 节的修复并不充分）
+
+> 上一节只修了提示词，但**提示词说有、实际下发没有，模型照样调不了**。用户第二次实测仍失败，
+> 模型列举出「email_list_accounts / email_list_inbox / email_get_inbox_summary / email_send」并断言没有添加接口——
+> 这份清单恰好就是被裁剪后剩余的工具，**说明它读的是实际下发的 tools 数组**。
+
+- **根因**：`packages/agent/src/llm-caller.ts` 第 2261 行 `buildOpenAITools(deps.registeredTools, message, ...)` **传了 message**，走「按关键词激活工具组」分支。而 `TOOL_GROUPS.email.keywords` 只有 `["email","邮件","发送邮件","send email","inbox","收件箱"]`——**唯独没有「邮箱」**。于是「添加邮箱账户」无法激活 email 组，组内两个**动作类**工具 `email_add_account`、`email_send` 被过滤；另外 5 个只读 email 工具不在任何组里故照常下发。模型因此看到的全是「读」能力，顺理成章得出「没有注册接口」。
+- **实证**（用编译产物 `dist/llm-caller.js` 直接调用 `buildOpenAITools`）：
+  | message | 修复前 `email_add_account` | 修复后 |
+  |---|---|---|
+  | `帮我添加邮箱账户 chydroid@163.com` | ❌ 被裁 | ✅ 下发 |
+  | `添加邮件账户` | ✅ | ✅ |
+  | `send email` | ✅ | ✅ |
+- **改动**：
+  1. **补全 email 组关键词**：新增「邮箱 / 邮箱账户 / 电子邮箱 / 添加邮箱 / 配置邮箱 / 注册邮箱 / 邮件账号 / 邮箱账号 / imap / smtp / pop3 / 授权码」等中文常见说法。
+  2. **创建类工具永不裁剪（白名单兜底）**：`buildOpenAITools` 的 filter 中，凡匹配 `_(add|create|register|new|setup|connect|install)(?:_|$)` 的工具**无条件下发**，不再依赖关键词是否命中——避免其它领域（看板、定时任务、技能安装等）重蹈覆辙。
+  3. **顺序修正**：白名单必须排在 `checkFn` 可用性门禁**之后**，否则会让"服务不可用"的工具被强行下发（已由单测覆盖）。
+- **验证**：新增 6 项 `buildOpenAITools` 回归测试（含"无关消息不裁创建类工具""checkFn=false 仍不下发""非创建类仍可被裁以保留省 token 能力"）。`build`/`typecheck`/`test` 全绿（234 files / 5836 passed / 0 failed）；用新 dist 复跑实证表，四种措辞全部 ✅。
+
 ## [0.86.2] - 2026-10-06
 
 **可靠性攻坚：超时断点续跑 + 反伪造完成态 + 上下文窗口治理 + 权限体系收敛**

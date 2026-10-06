@@ -9,6 +9,7 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness } from "./completion-truthfulness";
+import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
 import type { Span } from "@opentelemetry/api";
@@ -1106,7 +1107,14 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   },
   email: {
     tools: ["email_send", "email_add_account"],
-    keywords: ["email", "邮件", "发送邮件", "send email", "inbox", "收件箱"],
+    // 必须覆盖中文常见说法：「邮箱」此前缺失，导致「添加邮箱账户」无法激活本组，
+    // email_add_account 被静默裁剪，模型误判「系统没有添加接口」（真实事故）。
+    keywords: [
+      "email", "e-mail", "邮件", "邮箱", "邮件账户", "邮箱账户", "电子邮箱",
+      "发送邮件", "发邮件", "收邮件", "收件箱", "inbox", "send email",
+      "添加邮箱", "配置邮箱", "注册邮箱", "邮件账号", "邮箱账号",
+      "imap", "smtp", "pop3", "授权码",
+    ],
   },
   coding: {
     tools: ["execute_programming_task", "decompose_programming_task", "assess_coding_capability", "get_task_result"],
@@ -1178,11 +1186,7 @@ export function buildOpenAITools(
 
   return Array.from(registeredTools.values())
     .filter((t) => {
-      // Include tool if it's in the active set OR if it's not in any TOOL_GROUP
-      // (i.e., dynamically registered tools not covered by groups are always included)
-      const isInAnyGroup = Object.values(TOOL_GROUPS).some(g => g.tools.includes(t.definition.name));
-      if (!activeTools.has(t.definition.name) && isInAnyGroup) return false;
-
+      // ── 1. 可用性门禁（最高优先级）：check_fn 判定不可用的服务一律不下发 ──
       // Service-gated tools: skip tools whose check_fn returns false.
       // Inspired by hermes-agent registry.get_definitions() — unavailable
       // tools are silently dropped so the LLM never sees them.
@@ -1203,6 +1207,21 @@ export function buildOpenAITools(
           }
         }
       }
+
+      // ── 2. 永不裁剪「创建/添加/注册」类工具 ──
+      // 关键词激活是 best-effort 的，措辞稍有变化就可能漏激活某个组。
+      // 一旦「新增某物」的工具因此消失，模型会直接失去该能力并误判
+      // 「系统没有提供接口」（真实事故：说「添加邮箱账户」时 email 组关键词
+      // 缺「邮箱」，email_add_account 被裁，模型遂称无法添加邮箱）。
+      // 这类工具数量有限且价值极高，故无条件下发（但仍受上面的可用性门禁约束）。
+      if (isCreationTool(t.definition.name)) return true;
+
+      // ── 3. 按关键词激活结果裁剪组内的非创建类工具（省 token）──
+      // Include tool if it's in the active set OR if it's not in any TOOL_GROUP
+      // (i.e., dynamically registered tools not covered by groups are always included)
+      const isInAnyGroup = Object.values(TOOL_GROUPS).some(g => g.tools.includes(t.definition.name));
+      if (!activeTools.has(t.definition.name) && isInAnyGroup) return false;
+
       return true;
     })
     .map((t) => {

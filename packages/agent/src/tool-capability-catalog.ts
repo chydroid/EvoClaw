@@ -65,6 +65,17 @@ export const CAPABILITY_RULES: CapabilityRule[] = [
 const CREATION_PATTERN = /_(?:add|create|register|new|setup|connect|install)(?:_|$)/;
 
 /**
+ * 判断工具名是否属于「创建/添加/注册」类。
+ *
+ * 除用于提示词速查表外，还用于**工具下发裁剪的白名单**：这类工具一旦因
+ * 关键词未命中而被裁掉，模型会直接失去"新增某物"的能力并误判系统不支持，
+ * 因此必须保证任何措辞下都下发。
+ */
+export function isCreationTool(toolName: string): boolean {
+  return typeof toolName === "string" && CREATION_PATTERN.test(toolName);
+}
+
+/**
  * 按单条规则匹配已注册工具。
  * 保持入参顺序输出，保证结果稳定可测。
  */
