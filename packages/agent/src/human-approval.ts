@@ -80,6 +80,13 @@ const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   file_modify: "high",
   email_send: "high",
   browser_login: "high",
+  // Git 远程/破坏性操作：此前在 security/permission-manager.ts 配了
+  // requireExplicitConsent，但本表缺配 → 缺省按 medium 处理（requireApproval=false）
+  // 导致 HITL 层直接放行，force push 这类高危操作实际无需审批。此处补齐对齐。
+  git_commit: "high",
+  git_push: "high",
+  // 自动装技能会引入可执行代码，设为 medium（medium 默认可配置为需审批）
+  skill_find_and_install: "medium",
   // Medium risk - configurable
   file_create: "medium",
   skill_install: "medium",

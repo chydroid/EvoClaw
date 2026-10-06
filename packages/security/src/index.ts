@@ -250,3 +250,10 @@ export type {
   SecurityWarningSeverity,
   StartupAuditOptions,
 } from "./startup-security-audit";
+// Shell 命令风险分级（safe / caution / critical / blocked）
+export {
+  assessShellCommand,
+  requiresApprovalForShellCommand,
+  describeShellRisk,
+} from "./shell-command-risk";
+export type { ShellRiskLevel, ShellRiskAssessment } from "./shell-command-risk";

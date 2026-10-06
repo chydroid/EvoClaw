@@ -5,6 +5,7 @@ import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
+import { assessShellCommand } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
@@ -259,7 +260,58 @@ export function registerShellMediaTools(
         }
       }
 
-      // ── 安全校验：阻止危险命令 ──
+      // ── 安全校验：三档风险分级 ──
+      // 用户明确要求：不能对所有命令都免审批，但极其危险的命令必须人工审批。
+      //   blocked  → 命令注入特征（换行/反引号/命令替换）：硬拦，不给审批机会
+      //   critical → 不可逆破坏（rm -rf /、mkfs、dd 写盘、关机…）：转人工审批
+      //   caution  → 有副作用但可恢复：放行，仅标记
+      //   safe     → 常规命令：直接执行，保持自动化能力
+      const risk = assessShellCommand(effectiveCommand || command);
+      if (risk.level === "blocked") {
+        return {
+          success: false,
+          error: `Command blocked by safety filter: ${risk.reason ?? "检测到命令注入特征"} (rule=${risk.rule ?? "unknown"})`,
+          command,
+        };
+      }
+      if (risk.level === "critical") {
+        // 走既有审批通道：llm-caller 会把它转成 pendingPermissions，
+        // 用户批准后由 approveAndExecute 重新执行本 handler。
+        const permMgr = registry?.resolveService<{
+          requestPermission(operation: string, target: string, details: Record<string, unknown>, requestedBy?: string): { id: string; status: string; error?: string };
+        }>("permissionManager");
+        if (permMgr) {
+          const perm = permMgr.requestPermission(
+            "shell_exec",
+            command,
+            { risk: "critical", rule: risk.rule, reason: risk.reason, command },
+            "tool",
+          );
+          if (perm.status === "denied") {
+            return { success: false, error: `高危命令已被拒绝执行：${risk.reason ?? ""}`, command };
+          }
+          if (perm.status === "pending") {
+            return {
+              success: false,
+              requiresPermission: true,
+              requestId: perm.id,
+              operation: "shell_exec",
+              description: `执行高危 shell 命令（${risk.reason ?? "不可逆操作"}）`,
+              target: command.slice(0, 200),
+              error: `Awaiting approval: ${risk.reason ?? "该命令可能造成不可逆破坏"}`,
+            };
+          }
+        } else {
+          // 拿不到权限服务时采取保守策略：宁可不执行，也不放过高危命令
+          return {
+            success: false,
+            error: `高危命令需人工审批，但权限服务不可用，已阻止执行：${risk.reason ?? ""} (rule=${risk.rule ?? "unknown"})`,
+            command,
+          };
+        }
+      }
+
+      // ── 旧危险模式黑名单（保留兜底；与上面的分级不冲突）──
       const DANGEROUS_PATTERNS = [
         // rm -rf 变体：-rf/-fr 单 token 或 -r -f 分割 token，后跟危险目标（/ ~ . * $HOME --no-preserve-root）
         /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*~]|\$HOME|--no-preserve-root)/i,

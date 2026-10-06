@@ -56,6 +56,49 @@ export function registerBrowserTools(
   const browser = browserController;
   let pwBrowser = playwrightBrowser;
 
+  // ── 统一审批闸门 ──
+  // permission-manager 已为 browser_navigate / browser_submit_form 配置了
+  // requireExplicitConsent:true，但此前没有任何 handler 调用 requestPermission，
+  // 导致配置形同虚设、真实表单提交可在无审批下执行。此处补上，
+  // 返回 requiresPermission 后由 llm-caller 转成 pendingPermissions，
+  // 用户批准后 approveAndExecute 会重新执行本 handler。
+  const requestApproval = async (
+    operation: string,
+    target: string,
+    details: Record<string, unknown>
+  ): Promise<{ blocked: true; result: Record<string, unknown> } | null> => {
+    try {
+      const permMgr = registry?.resolveService<{
+        requestPermission(op: string, t: string, d: Record<string, unknown>, by?: string): { id: string; status: string };
+      }>("permissionManager");
+      // 权限服务不可用时不阻断浏览器只读操作，交由 HITL 层（human-approval）兜底
+      if (!permMgr) return null;
+      const perm = permMgr.requestPermission(operation, target, details, "tool");
+      if (perm.status === "denied") {
+        return { blocked: true, result: { success: false, error: `Permission denied: ${operation}`, target } };
+      }
+      if (perm.status === "pending") {
+        return {
+          blocked: true,
+          result: {
+            success: false,
+            requiresPermission: true,
+            requestId: perm.id,
+            operation,
+            description: details.description as string,
+            target: target.slice(0, 200),
+            error: `Awaiting approval: ${operation}`,
+          },
+        };
+      }
+      return null;
+    } catch (err) {
+      // 审批服务异常时保守放行给 HITL 层，不阻断主流程
+      console.warn(`[browser-tools] approval check failed for ${operation}:`, err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  };
+
   // ── Browser session health management ──
   // Prevents memory leaks by tracking active browser contexts and
   // auto-cleaning stale ones. Also provides crash recovery.
@@ -114,8 +157,10 @@ export function registerBrowserTools(
       const url = String(params.url || "");
       const ssrfCheck = await validateUrlSsrf(url);
       if (!ssrfCheck.ok) {
-        return { error: ssrfCheck.error, url };
+        return { success: false, error: ssrfCheck.error, url };
       }
+      const gate = await requestApproval("browser_navigate", url, { description: "访问网页URL" });
+      if (gate) return gate.result;
       return await browser.navigate(url);
     }
   );
@@ -179,14 +224,21 @@ export function registerBrowserTools(
       try {
         fields = JSON.parse(String(params.fields || "{}"));
       } catch {
-        return { error: "Invalid fields JSON" };
+        return { success: false, error: "Invalid fields JSON" };
       }
       if (action) {
         const ssrfCheck = await validateUrlSsrf(action);
         if (!ssrfCheck.ok) {
-          return { error: ssrfCheck.error, action };
+          return { success: false, error: ssrfCheck.error, action };
         }
       }
+      // 表单提交会对外产生真实副作用（登录/下单/发帖等），必须显式审批
+      const gate = await requestApproval("browser_submit_form", action || "(当前页)", {
+        description: "提交网页表单",
+        method,
+        fieldNames: Object.keys(fields).slice(0, 20),
+      });
+      if (gate) return gate.result;
       return await browser.submitForm({ action, method, fields });
     }
   );
