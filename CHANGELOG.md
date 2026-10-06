@@ -10,6 +10,32 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.86.4] - 2026-10-07
+
+**修复 GitHub Actions 测试任务失败：test 脚本硬编码 Windows 绝对路径**
+
+- **现象**：CI（ubuntu-latest）执行 `pnpm test -- --coverage` 直接报错：
+  `sh: 1: C:/PROGRA~1/nodejs/node.exe: not found`，进程退出码 1。
+- **根因**：`package.json` 的 `test` / `test:watch` 被写死为
+  `C:/PROGRA~1/nodejs/node.exe scripts/vitest-runner.mjs`。该写法的初衷是绕开
+  better-sqlite3 的 ABI 问题——本机 PATH 上的 `node` 是受管 Node 22（ABI 127），
+  而预编译二进制针对 Node 24（ABI 137），版本不符会加载失败。
+  代价是脚本只能在 Windows 上运行，Linux CI 必然找不到该路径。
+- **改动**：硬编码路径从 `package.json` 移除，改为在 `scripts/vitest-runner.mjs`
+  内做**跨平台引导**：
+  - `Windows`：若当前 node 主版本 ≠ 期望版本（默认 24，可用
+    `EVOCLAW_TEST_NODE_MAJOR` 覆盖），依次尝试 `EVOCLAW_TEST_NODE` →
+    `C:/PROGRA~1/nodejs/node.exe` → `C:/Program Files/nodejs/node.exe`，
+    找到即 spawn 该 node 重跑本脚本；
+  - `Linux / macOS`：不做路径猜测，直接用当前 node（CI 由 `NODE_VERSION` 保证版本），
+    仅当显式设置了 `EVOCLAW_TEST_NODE` 才引导，避免污染 CI 行为。
+  - 用 `__EVOCLAW_TEST_BOOTSTRAPPED` 环境变量防止递归重入。
+- **验证**：
+  - Windows 本机：调用方 `node v22.22.2` → 自动引导至 v24.14.0，测试通过；
+    含 better-sqlite3 的 `packages/memory` 全绿（16 files / 351 passed），ABI 正常。
+  - CI 覆盖：`.github/workflows/ci.yml` 的 test job 为 matrix `["22","24"]`，
+    Linux 分支不引导，各版本使用 `pnpm install` 时为该 ABI 下载的原生二进制。
+
 ## [0.86.3] - 2026-10-07
 
 **修复「模型声称系统没有某工具」的能力误判 + 凭据明文泄露防护**
