@@ -73,6 +73,24 @@ function renderMessageHtml(text: string): string {
   return sanitizeHtml(renderMarkdown(text));
 }
 
+// Convert a streaming progress step into a single human-readable log line.
+// Used to persist the live streaming trace into a collapsible, non-disappearing
+// section after the final summary is produced.
+function stepToLine(step: { type: string; detail?: string; toolName?: string; toolError?: boolean }): string {
+  const detail = step.detail || "";
+  switch (step.type) {
+    case "understanding": return `📋 ${detail}`;
+    case "progress_summary": return detail;
+    case "working": return `⚙️ ${detail}`;
+    case "tool_call": return `🔧 ${step.toolName || ""}: ${detail}`;
+    case "tool_result": return `${step.toolError ? "❌" : "✅"} ${step.toolName || ""}: ${detail}`;
+    case "llm_call": return `🧠 ${detail}`;
+    case "final": return `✅ ${detail}`;
+    case "error": return `❌ ${detail}`;
+    default: return detail;
+  }
+}
+
 function secureRandom(): number {
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
     return crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000;
@@ -116,6 +134,7 @@ interface WebChatMessage {
   attachments?: AttachedFileInfo[];
   files?: Array<{ path: string; size: number; downloadUrl: string }>;
   intermediateOutput?: string;
+  streamLog?: string[];
 }
 
 interface AttachedFileInfo {
@@ -691,6 +710,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const sessionMessagesCache = useRef<Map<string, WebChatMessage[]>>(new Map());
   const currentMessagesRef = useRef<WebChatMessage[]>([]);
   const attachedFilesRef = useRef<AttachedFileInfo[]>([]);
+  // Persisted streaming trace for the current assistant message (survives after
+  // the live progressSteps state is cleared, so it can be shown collapsed).
+  const streamLogRef = useRef<string[]>([]);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -1074,6 +1096,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
       setProgressSteps([]);
+      streamLogRef.current = [];
 
       let res: Response;
       try {
@@ -1162,6 +1185,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       timestamp: Date.now(),
                     };
                     setProgressSteps((prev) => [...prev, step]);
+                    streamLogRef.current.push(`📋 ${step.detail}`);
                     setStatusMessage(`📋 ${eventData.text || t("chat.processing")}`);
                   } else if (currentEvent === "working") {
                     setStatusMessage(`${t("chat.phase.working_emoji")} ${eventData.detail || t("chat.working")}`);
@@ -1192,7 +1216,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       );
                       return [...filtered, step];
                     });
-                    if (label) setStatusMessage(label);
+                    if (label) {
+                      streamLogRef.current.push(label);
+                      setStatusMessage(label);
+                    }
                   } else {
                     const step: ProgressStep = {
                       type: eventData.type || currentEvent,
@@ -1213,6 +1240,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         }
                         return [...prev, step];
                       });
+                      streamLogRef.current.push(stepToLine(step));
                     }
 
                     if (eventData.phase === "generating" && eventData.reply) {
@@ -1405,6 +1433,15 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       setCurrentProgress(100);
       setProgressSteps([]);
       abortControllerRef.current = null;
+
+      // Persist the streaming trace onto the message so it does not vanish
+      // after the final summary — it is rendered as a collapsible section.
+      const trace = streamLogRef.current;
+      if (trace.length > 0) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === botMsgId ? { ...m, streamLog: trace } : m
+        ));
+      }
 
       // Auto-dequeue next message if queue has items
       setMessageQueue(prev => {
@@ -1970,7 +2007,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                 style={{
                   display: "inline-flex",
                   flexDirection: "column",
-                  maxWidth: "75%",
+                  maxWidth: msg.role === "assistant" ? "78%" : "75%",
                   alignItems: msg.role === "user" ? "flex-end" : "flex-start",
                   position: "relative",
                 }}
@@ -2297,6 +2334,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         </summary>
                         <div style={{ fontSize: "12px", color: "var(--text-muted)", opacity: 0.8, maxHeight: "200px", overflowY: "auto", marginTop: "4px" }}>
                           <div dangerouslySetInnerHTML={{ __html: renderMessageHtml(msg.intermediateOutput) }} />
+                        </div>
+                      </details>
+                    )}
+                    {msg.streamLog && msg.streamLog.length > 0 && (
+                      <details style={{ marginBottom: "8px" }}>
+                        <summary style={{ fontSize: "11px", color: "var(--text-muted)", cursor: "pointer", userSelect: "none" }}>
+                          {t("chat.stream_log", "执行过程")} ({msg.streamLog.length})
+                        </summary>
+                        <div style={{ fontSize: "12px", color: "var(--text-muted)", opacity: 0.85, maxHeight: "240px", overflowY: "auto", marginTop: "4px", lineHeight: "1.5" }}>
+                          {msg.streamLog.map((line, i) => (
+                            <div key={i} style={{ padding: "1px 0" }}>{line}</div>
+                          ))}
                         </div>
                       </details>
                     )}

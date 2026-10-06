@@ -9,6 +9,13 @@ export type { SqliteDatabaseLike as AgentSqliteDatabaseLike } from "./sqlite-che
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
 export { destroyHttpAgents } from "./llm-caller";
+// v0.36: 可持久化超长任务引擎（断点续跑，超时不再失败）
+export { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "./durable-task-runner";
+export type { DurableTask, DurableTaskStatus, ResumeDriver, DeliverFn } from "./durable-task-runner";
+export { reconcileCompletionTruthfulness, claimsCompletion, hasActionIntent } from "./completion-truthfulness";
+export type { ReconcileInput, ReconcileResult, PendingPermission } from "./completion-truthfulness";
+export { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS, ARCHIVE_TAG } from "./session-archive";
+export type { ArchiveTurn, LongTermLike, WindowResult } from "./session-archive";
 export type { TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
 export type { TaskCheckpoint } from "./task-checkpoint-manager";
 export { taskStatusTracker } from "./task-status-tracker";

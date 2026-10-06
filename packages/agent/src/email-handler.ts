@@ -413,10 +413,20 @@ export async function handleEmailOperation(
     };
   }
 
+  // 解析时间范围意图（"近一月 / 本月 / 近30天" 等），用于过滤与统计
+  const now = new Date();
+  const sinceMatch = message.match(
+    /(近\s*一?\s*个?\s*月|过去\s*一?\s*个?\s*月|最近\s*一?\s*个?\s*月|近\s*30\s*天|本月|一个月内|一个月内)/,
+  );
+  const since = sinceMatch
+    ? new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    : undefined;
+  const rangeLabel = since ? "近一月" : "全部";
+
   let summaryResult: unknown;
   try {
     const summaryTool = deps.registeredTools.get("email_get_inbox_summary")!;
-    summaryResult = await summaryTool.handler({});
+    summaryResult = await summaryTool.handler(since ? { since } : {});
   } catch (err) {
     return {
       reply: `❌ 获取收件箱摘要失败：${err instanceof Error ? err.message : String(err)}`,
@@ -427,7 +437,12 @@ export async function handleEmailOperation(
     };
   }
 
-  const summaryData = summaryResult as { success: boolean; summary?: { total: number; unread: number; categories: Record<string, number> }; error?: string };
+  const summaryData = summaryResult as {
+    success: boolean;
+    summary?: { total: number; unread: number; totalAll: number; categories: Record<string, number>; fetchError?: string };
+    error?: string;
+    fetchError?: string;
+  };
   if (!summaryData?.success) {
     return {
       reply: `❌ 无法获取邮箱摘要：${summaryData?.error || "未知错误"}\n\n可能是邮箱账号配置有误或网络连接问题。`,
@@ -438,15 +453,18 @@ export async function handleEmailOperation(
     };
   }
 
-  const { total, unread, categories } = summaryData.summary!;
+  const { total, unread, totalAll, categories, fetchError } = summaryData.summary!;
 
-  // List recent emails
+  // List recent emails (within the same range)
   let emails: unknown[] = [];
   if (deps.registeredTools.has("email_list_inbox")) {
     try {
       const inboxTool = deps.registeredTools.get("email_list_inbox")!;
-      const inboxResult = await inboxTool.handler({ limit: 20 });
-      const inboxData = inboxResult as { success: boolean; emails?: unknown[] };
+      const inboxResult = await inboxTool.handler(since ? { limit: 50, since } : { limit: 50 });
+      const inboxData = inboxResult as {
+        success: boolean;
+        emails?: Array<{ subject: string; from: string; date: Date | string; snippet: string; flags: string[]; categories?: string[] }>;
+      };
       if (inboxData?.success && inboxData.emails) {
         emails = inboxData.emails;
       }
@@ -455,8 +473,30 @@ export async function handleEmailOperation(
     }
   }
 
+  // ── 计算"需要重点关注"的邮件（用户明确要求列出） ──
+  type Attn = { subject: string; from: string; date: Date | string; reasons: string[] };
+  const attention: Attn[] = [];
+  for (const raw of emails) {
+    const e = raw as { subject: string; from: string; date: Date | string; flags: string[]; categories?: string[] };
+    const reasons: string[] = [];
+    const isUnseen = !Array.isArray(e.flags) || !e.flags.includes("\\Seen");
+    if (isUnseen) reasons.push("未读");
+    const cats = e.categories || [];
+    if (cats.includes("安全/账户")) reasons.push("安全/账户类（警惕钓鱼/盗号）");
+    if (cats.includes("账单/财务")) reasons.push("账单/财务类");
+    const daysAgo = (now.getTime() - new Date(e.date).getTime()) / 86400000;
+    if (!isNaN(daysAgo) && daysAgo <= 3) reasons.push("近3天内到达");
+    if (/(紧急|urgent|asap|立即|马上|截止|deadline|请确认|请查收|务必)/i.test(e.subject || "")) {
+      reasons.push("含紧急/需确认关键词");
+    }
+    if (reasons.length > 0) {
+      attention.push({ subject: e.subject || "(无主题)", from: e.from || "未知", date: e.date, reasons });
+    }
+  }
+  // 多维命中优先（未读 + 安全类 排在前面）
+  attention.sort((a, b) => b.reasons.length - a.reasons.length);
+
   // Generate report
-  const now = new Date();
   const reportTime = now.toLocaleString("zh-CN", {
     year: "numeric",
     month: "2-digit",
@@ -465,36 +505,65 @@ export async function handleEmailOperation(
     minute: "2-digit",
     second: "2-digit",
   });
-  let report = `📬 邮箱整理报告\n`;
+  let report = `📬 邮箱整理报告（${rangeLabel}）\n`;
   report += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
   report += `📅 生成时间：${reportTime}\n\n`;
-  report += `📊 收件箱概览：\n`;
-  report += `• 总邮件数：${total} 封\n`;
-  report += `• 未读邮件：${unread} 封\n\n`;
+
+  // 读取失败时如实告知，绝不伪装成"空邮箱"
+  if (fetchError) {
+    report += `⚠️ 读取邮箱失败（并非邮箱为空）：\n`;
+    report += `• 原因：${fetchError}\n`;
+    report += `• 排查：① 确认 .env 中已设置 EvoClaw_EMAIL_KEY（32+ 字节）；\n`;
+    report += `  ② 确认邮箱已开启 IMAP 且授权码正确；③ 检查网络/防火墙是否屏蔽 993 端口。\n\n`;
+  }
+
+  report += `📊 收件箱概览（${rangeLabel}）：\n`;
+  report += `• 邮件数：${total} 封\n`;
+  report += `• 未读：${unread} 封\n`;
+  if (since) {
+    report += `• 收件箱累计（含历史）：${totalAll} 封\n`;
+  }
+  report += `\n`;
 
   report += `📁 邮件分类统计：\n`;
-  for (const [category, count] of Object.entries(categories)) {
-    if (count > 0) {
+  const catEntries = Object.entries(categories).filter(([, c]) => c > 0);
+  if (catEntries.length > 0) {
+    for (const [category, count] of catEntries) {
       report += `• ${category}：${count} 封\n`;
+    }
+  } else {
+    report += `• （暂无可分类邮件）\n`;
+  }
+
+  // ── 重点关注板块（用户两次强调） ──
+  report += `\n📌 需要重点关注的邮件（共 ${attention.length} 封）：\n`;
+  if (attention.length === 0) {
+    report += `• 暂无需要特别关注的邮件（未读/安全账户类/账单财务类/近3天/紧急关键词均无明显命中）。\n`;
+  } else {
+    for (let i = 0; i < Math.min(attention.length, 15); i++) {
+      const a = attention[i];
+      const date = a.date instanceof Date ? a.date.toLocaleDateString("zh-CN") : new Date(a.date).toLocaleDateString("zh-CN");
+      report += `\n${i + 1}. ${a.subject}\n`;
+      report += `   📤 发件人：${a.from}\n`;
+      report += `   📅 日期：${date}\n`;
+      report += `   ⚠️ 关注理由：${a.reasons.join("；")}\n`;
     }
   }
 
   if (emails.length > 0) {
-    report += `\n📋 最近邮件：\n`;
-    for (let i = 0; i < Math.min(emails.length, 10); i++) {
-      const email = emails[i] as { subject: string; from: string; date: Date; snippet: string };
+    report += `\n📋 ${rangeLabel}邮件明细：\n`;
+    for (let i = 0; i < Math.min(emails.length, 20); i++) {
+      const email = emails[i] as { subject: string; from: string; date: Date | string; flags: string[] };
       const date = email.date instanceof Date ? email.date.toLocaleDateString("zh-CN") : new Date(email.date).toLocaleDateString("zh-CN");
-      report += `\n${i + 1}. ${email.subject || "(无主题)"}\n`;
+      const seen = Array.isArray(email.flags) && email.flags.includes("\\Seen");
+      report += `\n${i + 1}. ${seen ? "" : "[未读] "}${email.subject || "(无主题)"}\n`;
       report += `   📤 发件人：${email.from || "未知"}\n`;
       report += `   📅 日期：${date}\n`;
-      if (email.snippet) {
-        report += `   📝 预览：${email.snippet.substring(0, 100)}...\n`;
-      }
     }
   }
 
   report += `\n━━━━━━━━━━━━━━━━━━━━━━━\n`;
-  report += `✅ 邮件整理完成！`;
+  report += fetchError ? `⚠️ 邮件整理完成，但读取过程存在错误，请按上方提示排查。` : `✅ 邮件整理完成！`;
 
   return {
     reply: report,

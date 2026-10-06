@@ -182,6 +182,7 @@ export function registerEmailTools(
         accountId: { type: "string", description: "Email account ID (use first available if not provided)" },
         limit: { type: "number", description: "Maximum number of emails to fetch (default: 50)" },
         unreadOnly: { type: "boolean", description: "Only show unread emails (default: false)" },
+        since: { type: "string", description: "Only return emails on or after this ISO date (e.g. 2026-09-06)" },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -189,6 +190,11 @@ export function registerEmailTools(
       const limitRaw = Number(params.limit);
       const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 50, 500));
       const unreadOnly = Boolean(params.unreadOnly || false);
+      const sinceRaw = params.since ? String(params.since) : "";
+      const since = sinceRaw ? new Date(sinceRaw) : undefined;
+      if (since && isNaN(since.getTime())) {
+        return { success: false, error: `Invalid since date: ${sinceRaw}` };
+      }
 
       const accounts = emailClient.listAccounts();
       if (accounts.length === 0) {
@@ -207,8 +213,14 @@ export function registerEmailTools(
             accountId: targetId,
             limit,
             unreadOnly,
+            since,
           });
-          return { success: true, emails, account: accounts.find(a => a.id === targetId) };
+          // 为每封邮件附加分类，供上层生成"重点关注"列表使用
+          const enriched = emails.map((e) => ({
+            ...e,
+            categories: emailClient.classifyEmail(e.subject, e.subject + " " + (e.from || "")),
+          }));
+          return { success: true, emails: enriched, account: accounts.find(a => a.id === targetId) };
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
           console.error(`[Server] email_list_inbox failed for account ${targetId}: ${lastError}`);
@@ -227,10 +239,16 @@ export function registerEmailTools(
       description: "Get inbox summary and statistics",
       parameters: {
         accountId: { type: "string", description: "Email account ID (use first available if not provided)" },
+        since: { type: "string", description: "Only count emails on or after this ISO date (e.g. 2026-09-06)" },
       },
     },
     async (params: Record<string, unknown>) => {
       const accountId = String(params.accountId || "");
+      const sinceRaw = params.since ? String(params.since) : "";
+      const since = sinceRaw ? new Date(sinceRaw) : undefined;
+      if (since && isNaN(since.getTime())) {
+        return { success: false, error: `Invalid since date: ${sinceRaw}` };
+      }
 
       const accounts = emailClient.listAccounts();
       if (accounts.length === 0) {
@@ -245,8 +263,9 @@ export function registerEmailTools(
       let lastError = "";
       for (const targetId of accountIdsToTry) {
         try {
-          const summary = await emailClient.getInboxSummary(targetId);
-          return { success: true, summary, account: accounts.find(a => a.id === targetId) };
+          const summary = await emailClient.getInboxSummary(targetId, { since });
+          // fetchError 存在时仍返回 success:true，但携带错误原因，交由上层如实告知用户
+          return { success: true, summary, account: accounts.find(a => a.id === targetId), fetchError: summary.fetchError };
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
           console.error(`[Server] email_get_inbox_summary failed for account ${targetId}: ${lastError}`);

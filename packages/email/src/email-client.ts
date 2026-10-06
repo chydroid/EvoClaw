@@ -362,7 +362,7 @@ export class EmailClient {
     };
   }
 
-  private classifyEmail(subject: string, body: string): string[] {
+  classifyEmail(subject: string, body: string): string[] {
     const categories: string[] = [];
     const combined = (subject + " " + body).toLowerCase();
 
@@ -555,44 +555,45 @@ export class EmailClient {
 
       const limit = options.limit ?? 50;
 
-      const status = await client.status(options.folder || "INBOX", { messages: true });
-      const total = status.messages ?? 0;
-      const start = Math.max(1, total - limit + 1);
-      // 空邮箱：total=0 时跳过 fetch，避免某些 IMAP 服务器对非法范围报错
-      if (total === 0) return [];
-      let fetched = 0;
-      for await (const message of client.fetch(`${start}:*`, {
-        envelope: true,
-        flags: true,
-        size: true,
-        uid: true,
-      })) {
-        const envelope = message.envelope;
-        if (!envelope) continue;
+      // 仅在未指定 since / unreadOnly 时走"最近 N 封"的序列范围优化；
+      // 一旦指定了日期或仅未读过滤，则使用 IMAP 查询对象，保证按条件过滤。
+      const query: Record<string, unknown> = {};
+      if (options.since) query.since = options.since;
+      if (options.unreadOnly) query.unseen = true;
 
-        const fromAddr = envelope.from?.[0];
-        const toAddr = envelope.to?.[0];
-        const flags = message.flags;
-        // 已知限制：\Attachment 不是标准 IMAP 系统标志，服务器不会自动设置，
-        // 因此 hasAttachments 永远为 false。准确判断附件需要拉取 BODYSTRUCTURE
-        // 并递归检查 disposition 为 attachment 的 MIME 部分，此处暂不实现。
-        const hasAttachments = flags instanceof Set ? flags.has("\\Attachment") : false;
-        const flagsArray = flags instanceof Set ? Array.from(flags) : [];
-
-        emails.unshift({
-          uid: String(message.uid),
-          subject: envelope.subject || "(无主题)",
-          from: fromAddr ? `${fromAddr.name || ""} <${fromAddr.address}>`.trim() : "",
-          to: toAddr ? `${toAddr.name || ""} <${toAddr.address}>`.trim() : "",
-          date: envelope.date ? new Date(envelope.date) : new Date(),
-          size: message.size || 0,
-          flags: flagsArray,
-          hasAttachments,
-          snippet: "(请查看完整邮件以获取预览)",
-        });
-
-        fetched++;
-        if (fetched >= limit) break;
+      if (Object.keys(query).length === 0) {
+        const status = await client.status(options.folder || "INBOX", { messages: true });
+        const total = status.messages ?? 0;
+        const start = Math.max(1, total - limit + 1);
+        // 空邮箱：total=0 时跳过 fetch，避免某些 IMAP 服务器对非法范围报错
+        if (total === 0) return [];
+        let fetched = 0;
+        for await (const message of client.fetch(`${start}:*`, {
+          envelope: true,
+          flags: true,
+          size: true,
+          uid: true,
+        })) {
+          const item = this.mapMessage(message);
+          if (!item) continue;
+          emails.unshift(item); // 序列范围已是"最近在前"
+          fetched++;
+          if (fetched >= limit) break;
+        }
+      } else {
+        // 按条件查询：IMAP 返回升序，收集后取末尾 limit 条并反转为"最近在前"
+        const collected: EmailListItem[] = [];
+        for await (const message of client.fetch(query, {
+          envelope: true,
+          flags: true,
+          size: true,
+          uid: true,
+        })) {
+          const item = this.mapMessage(message);
+          if (!item) continue;
+          collected.push(item);
+        }
+        emails.push(...collected.slice(-limit).reverse());
       }
     } catch (err) {
       process.stderr.write(`[EmailClient] Failed to list emails: ${err}\n`);
@@ -604,6 +605,38 @@ export class EmailClient {
     }
 
     return emails;
+  }
+
+  /** 把 IMAP 单条消息映射为 EmailListItem（供 listEmails 复用） */
+  private mapMessage(message: {
+    uid: number;
+    envelope?: { from?: Array<{ name?: string; address?: string }>; to?: Array<{ name?: string; address?: string }>; subject?: string; date?: Date | string };
+    flags?: Set<string> | string[];
+    size?: number;
+  }): EmailListItem | null {
+    const envelope = message.envelope;
+    if (!envelope) return null;
+
+    const fromAddr = envelope.from?.[0];
+    const toAddr = envelope.to?.[0];
+    const flags = message.flags;
+    // 已知限制：\Attachment 不是标准 IMAP 系统标志，服务器不会自动设置，
+    // 因此 hasAttachments 永远为 false。准确判断附件需要拉取 BODYSTRUCTURE
+    // 并递归检查 disposition 为 attachment 的 MIME 部分，此处暂不实现。
+    const hasAttachments = flags instanceof Set ? flags.has("\\Attachment") : false;
+    const flagsArray = flags instanceof Set ? Array.from(flags) : [];
+
+    return {
+      uid: String(message.uid),
+      subject: envelope.subject || "(无主题)",
+      from: fromAddr ? `${fromAddr.name || ""} <${fromAddr.address}>`.trim() : "",
+      to: toAddr ? `${toAddr.name || ""} <${toAddr.address}>`.trim() : "",
+      date: envelope.date ? new Date(envelope.date) : new Date(),
+      size: message.size || 0,
+      flags: flagsArray,
+      hasAttachments,
+      snippet: "(请查看完整邮件以获取预览)",
+    };
   }
 
   /**
@@ -668,13 +701,16 @@ export class EmailClient {
   }
 
   /**
-   * Get inbox summary with statistics
+   * Get inbox summary with statistics.
+   * @param options.since 仅统计该日期之后的邮件（用于"近一月"等请求）
    */
-  async getInboxSummary(accountId: string): Promise<{
+  async getInboxSummary(accountId: string, options?: { since?: Date }): Promise<{
     total: number;
     unread: number;
+    totalAll: number;
     recent: EmailListItem[];
     categories: Record<string, number>;
+    fetchError?: string;
   }> {
     const account = this.accounts.get(accountId);
     if (!account) throw new Error(`Account not found: ${accountId}`);
@@ -690,11 +726,15 @@ export class EmailClient {
 
     let total = 0;
     let unread = 0;
+    let totalAll = 0;
     let recent: EmailListItem[] = [];
+    let fetchError: string | undefined;
     let client: ImapFlow | null = null;
 
-    try {
-      if (account.imapHost && account.imapPort) {
+    if (!account.imapHost || !account.imapPort) {
+      fetchError = "该邮箱未配置 IMAP 服务器（imapHost/imapPort 为空），无法读取收件箱，请检查邮箱配置。";
+    } else {
+      try {
         const password = this.decryptPassword(account);
         client = new ImapFlow({
           host: account.imapHost,
@@ -710,44 +750,32 @@ export class EmailClient {
         await client.connect();
         const mailbox = await client.mailboxOpen("INBOX");
 
-        // Get actual total from mailbox
-        total = mailbox && 'exists' in mailbox ? mailbox.exists : 0;
+        // 收件箱累计邮件数（不受 since 影响），仅作上下文展示
+        totalAll = mailbox && 'exists' in mailbox ? mailbox.exists : 0;
 
-        await client.logout();
-        client = null;
-
-        // Fetch recent emails
-        recent = await this.listEmails({ accountId, limit: 20 });
-
-        // Count unread from flags
-        unread = recent.filter(e => !e.flags.includes("\\Seen")).length;
-      } else {
-        // Fall back if no IMAP configured
-        total = 0;
-        unread = 0;
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[EmailClient] Failed to get full inbox summary for ${account.email}: ${errMsg}\n`);
-      // 出错时尝试获取邮件作为备用方案
-      try {
-        recent = await this.listEmails({ accountId, limit: 20 });
-        total = recent.length;
-        unread = recent.filter(e => !e.flags.includes("\\Seen")).length;
-      } catch (err2) {
-        const err2Msg = err2 instanceof Error ? err2.message : String(err2);
-        process.stderr.write(`[EmailClient] Fallback listEmails also failed: ${err2Msg}\n`);
-        total = 0;
-        unread = 0;
-        recent = [];
-      }
-    } finally {
-      // 确保 IMAP 连接在任何错误路径下都被关闭，防止 TCP socket 与登录会话泄漏
-      if (client) {
-        try {
-          await client.logout();
-        } catch {
-          try { await client.close(); } catch { /* ignore */ }
+        // 按时间范围抓取邮件并据此统计
+        const inRange = await this.listEmails({
+          accountId,
+          limit: options?.since ? 1000 : 20,
+          since: options?.since,
+        });
+        total = inRange.length;
+        unread = inRange.filter(e => !e.flags.includes("\\Seen")).length;
+        recent = inRange.slice(0, 20);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // 关键修复：不再静默吞掉错误，把真实原因带回给上层，
+        // 否则用户只会看到"0 封 + ✅ 完成"而误以为邮箱为空。
+        fetchError = errMsg;
+        process.stderr.write(`[EmailClient] Failed to get inbox summary for ${account.email}: ${errMsg}\n`);
+      } finally {
+        // 确保 IMAP 连接在任何错误路径下都被关闭，防止 TCP socket 与登录会话泄漏
+        if (client) {
+          try {
+            await client.logout();
+          } catch {
+            try { await client.close(); } catch { /* ignore */ }
+          }
         }
       }
     }
@@ -764,7 +792,7 @@ export class EmailClient {
       }
     }
 
-    return { total, unread, recent, categories };
+    return { total, unread, totalAll, recent, categories, fetchError };
   }
 
   /** 关闭所有 SMTP transporter，释放连接资源 */

@@ -31,7 +31,7 @@ export type { TfidfMatchResult } from "./tfidf-matcher";
 //   - Pinned 技能豁免自动归档；CrossProcessLock + atomicWriteFile 保护并发
 export * from "./skill-curator";
 // Round 7: SQLite-first 技能数据存储（对标 OpenClaw database-first）
-export { SkillSqliteStore } from "./skill-sqlite-store";
+export { SkillSqliteStore, probeSqlitePersistence } from "./skill-sqlite-store";
 export type {
   SkillLifecycleRow,
   SkillCuratorStateRow,

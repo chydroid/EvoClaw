@@ -48,6 +48,13 @@ const VIDEO_GEN_CONFIG_FILE = path.join(DATA_DIR, "video-gen-providers.json");
 const CHANNELS_CONFIG_FILE = path.join(DATA_DIR, "channels.json");
 const ENV_FILE = path.resolve(process.cwd(), ".env");
 
+/** 将用户填写的 baseURL 规整为 OpenAI 兼容的 chat/completions 端点 */
+function normalizeChatEndpoint(baseURL: string): string {
+  const u = baseURL.trim().replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(u)) return u;
+  return `${u}/chat/completions`;
+}
+
 // ── 默认图片生成提供商 ──────────────────────────────────────────────────────
 const DEFAULT_IMAGE_GEN_PROVIDERS: Record<string, unknown>[] = [
   {
@@ -926,6 +933,17 @@ export class ProtocolAdapter {
           )
         : p.config,
     }));
+  }
+
+  /** 在已保存（且已解析 ${VAR} 引用）的提供商中，按 modelId 找到其所属提供商 */
+  private findProviderForModel(modelId: string): Record<string, unknown> | undefined {
+    const resolved = this.resolveLLMProviders(this.savedLLMProviders || []);
+    return resolved.find(
+      (p) =>
+        (Array.isArray(p.models) && (p.models as string[]).includes(modelId)) ||
+        p.selectedModel === modelId ||
+        (p as Record<string, unknown>).model === modelId,
+    );
   }
 
   /** Resolve ${VAR} references in channel configs for runtime use */
@@ -2906,7 +2924,6 @@ export class ProtocolAdapter {
 
     app.post("/api/chat", async (req: Request, res: Response) => {
       const sessionId = (req.body.sessionId as string) || "web-ui";
-      let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         const message = (req.body.message as string) || "";
         const attachments = req.body.attachments as Array<{ name: string; type: string; size: number; data: string | null }> | undefined;
@@ -2936,6 +2953,8 @@ export class ProtocolAdapter {
           chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
           /** End-to-end cancellation: aborts in-flight LLM fetches for a session. */
           abortSession?(sessionId: string): boolean;
+          /** 软超时 / 浏览器关闭时把在飞任务存检查点并转入后台续跑（而非失败）。 */
+          requestDurablePause?(sessionId: string, message?: string, context?: Record<string, unknown>): void;
           getGreeting(): string | null;
           generateBriefUnderstanding(userMessage: string): Promise<string>;
         }>("agentModelExecutor");
@@ -2998,9 +3017,7 @@ export class ProtocolAdapter {
           };
 
           const complexity = estimateTaskComplexity(message);
-          const CHAT_TIMEOUT = complexity.timeoutMs;
-          process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s, autoSplit: ${complexity.shouldAutoSplit}\n`);
-          let chatTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          process.stdout.write(`[ProtocolAdapter] Chat complexity: ${complexity.level}, autoSplit: ${complexity.shouldAutoSplit}\n`);
           let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
           // ── End-to-end cancellation: listen for client disconnect ──
           // When the browser closes the SSE connection (user navigates away,
@@ -3011,7 +3028,10 @@ export class ProtocolAdapter {
           let clientDisconnected = false;
           const onClose = () => {
             clientDisconnected = true;
-            if (agentExecutor?.abortSession) {
+            // 浏览器关闭：把在飞任务存检查点并转入后台续跑，而不是丢弃
+            if (agentExecutor?.requestDurablePause) {
+              try { agentExecutor.requestDurablePause(resolvedSessionId); } catch { /* best-effort */ }
+            } else if (agentExecutor?.abortSession) {
               try { agentExecutor.abortSession(resolvedSessionId); } catch { /* best-effort */ }
             }
           };
@@ -3026,14 +3046,10 @@ export class ProtocolAdapter {
             keepAliveHandle.unref();
 
             const chatPromise = agentExecutor.chat(message, { sessionId: resolvedSessionId, attachments, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress);
-            chatPromise.catch(() => {}); // 防止超时后 unhandledRejection
-            const result = await Promise.race([
-              chatPromise,
-              new Promise<never>((_, reject) => {
-                chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
-                if (chatTimeoutHandle.unref) chatTimeoutHandle.unref();
-              }),
-            ]);
+            chatPromise.catch(() => {}); // 防止 unhandledRejection
+            // 不再设「失败式」硬超时：长任务会在超时 / 浏览器关闭时自动存检查点并转入后台续跑，
+            // 不会以「请简化请求」失败告终。
+            const result = await chatPromise;
 
             let contextLimit = 128000;
             let sessionTokensUsed = 0;
@@ -3092,18 +3108,15 @@ export class ProtocolAdapter {
             });
           } catch (chatErr) {
             if (clientDisconnected) {
-              // Client already left; no point sending an SSE error event.
-              console.debug("[ProtocolAdapter] Client disconnected; aborting chat silently");
-            } else if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
-              sendSSE("error", { message: "⏱️ 处理超时，请稍后重试。替代方案：① 简化您的请求后重试；② 将任务拆分为更小的步骤；③ 检查网络连接是否正常。" });
+              // 客户端已离开；后台续跑（如有）仍在继续，无需报错
+              console.debug("[ProtocolAdapter] Client disconnected; background task (if any) continues");
             } else {
               const errMsg = chatErr instanceof Error ? chatErr.message : String(chatErr);
-              sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n替代方案：① 请稍后重试；② 尝试简化请求；③ 前往 Ops 页面检查系统状态。` });
+              sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n如需帮助，请前往 Ops 页面检查系统状态，或稍后重试。` });
             }
           } finally {
             req.off("close", onClose);
             if (keepAliveHandle) clearInterval(keepAliveHandle);
-            if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
             try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
           return;
@@ -3111,8 +3124,7 @@ export class ProtocolAdapter {
 
         // ── Non-streaming Mode (original behavior) ──
         const complexity = estimateTaskComplexity(message);
-        const CHAT_TIMEOUT = complexity.timeoutMs;
-        process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, timeout: ${CHAT_TIMEOUT / 1000}s\n`);
+        process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, autoSplit: ${complexity.shouldAutoSplit}\n`);
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
@@ -3122,32 +3134,14 @@ export class ProtocolAdapter {
         });
 
         let result;
-        chatPromise.catch(() => {}); // 防止超时后 unhandledRejection
+        chatPromise.catch(() => {}); // 防止 unhandledRejection
         try {
-          result = await Promise.race([
-            chatPromise,
-            new Promise<never>((_, reject) => {
-              chatTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
-              if (chatTimeoutHandle.unref) chatTimeoutHandle.unref();
-            }),
-          ]);
+          // 不再设「失败式」硬超时：长任务会存检查点转入后台续跑
+          result = await chatPromise;
         } catch (raceErr) {
-          if (raceErr instanceof Error && raceErr.message === "CHAT_TIMEOUT") {
-            process.stderr.write(`[ProtocolAdapter] Chat request timed out after ${CHAT_TIMEOUT / 1000}s for session "${resolvedSessionId}"\n`);
-            res.json({
-              reply: "⏱️ 处理超时，请稍后重试。替代方案：\n① 简化您的请求后重试\n② 将任务拆分为更小的步骤\n③ 检查网络连接和模型配置是否正常\n\n需要我帮您将任务拆分后逐步完成吗？",
-              tokensUsed: 0,
-              contextLimit: 128000,
-              duration: CHAT_TIMEOUT,
-              sessionId: resolvedSessionId,
-              permissionRequests: [],
-            });
-            return;
-          }
+          // 不再以超时失败；仅在真正异常时抛出（由外层兜住）
           throw raceErr;
         }
-        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
-
         // Resolve context limit from ContextEngine config
         let contextLimit = 128000;
         let sessionTokensUsed = 0;
@@ -3208,10 +3202,8 @@ export class ProtocolAdapter {
           permissionRequests: result.permissionRequests || [],
           files: result.files || [],
         });
-        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
         return;
       } catch (err) {
-        if (chatTimeoutHandle) clearTimeout(chatTimeoutHandle);
         const errMsg = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[ProtocolAdapter] Chat endpoint error: ${errMsg}\n`);
         res.json({
@@ -3298,24 +3290,15 @@ export class ProtocolAdapter {
           sendSSE(event.type, event);
         };
 
-        const CHAT_TIMEOUT = complexity.timeoutMs;
         try {
           const resumeChatPromise = agentExecutor.chat(message, { sessionId, complexity: complexity.level, shouldAutoSplit: complexity.shouldAutoSplit, maxSubtasks: complexity.maxSubtasks }, onProgress);
-          resumeChatPromise.catch(() => {}); // 防止超时后 unhandledRejection
-          const result = await Promise.race([
-            resumeChatPromise,
-            new Promise<never>((_, reject) => {
-              resumeTimeoutHandle = setTimeout(() => reject(new Error("CHAT_TIMEOUT")), CHAT_TIMEOUT);
-              if (resumeTimeoutHandle.unref) resumeTimeoutHandle.unref();
-            }),
-          ]);
+          resumeChatPromise.catch(() => {}); // 防止 unhandledRejection
+          // 不再设「失败式」硬超时：恢复出的长任务同样会存检查点续跑
+          const result = await resumeChatPromise;
           sendSSE("done", { reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration, sessionId, resumed: true });
         } catch (chatErr) {
-          if (chatErr instanceof Error && chatErr.message === "CHAT_TIMEOUT") {
-            sendSSE("error", { message: "⏱️ 恢复任务超时，但进度已保存，可再次恢复。" });
-          } else {
-            sendSSE("error", { message: String(chatErr) });
-          }
+          // 仅在真正异常时提示；超时不再失败（进度已保存，可再次恢复）
+          sendSSE("error", { message: String(chatErr) });
         } finally {
           if (resumeTimeoutHandle) clearTimeout(resumeTimeoutHandle);
           try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
@@ -7332,7 +7315,15 @@ export class ProtocolAdapter {
           return;
         }
         const model = this.currentModelId
-          ? this.modelsStore.get(this.currentModelId)
+          ? this.findProviderForModel(this.currentModelId)
+            ? {
+                id: this.currentModelId,
+                name: this.currentModelId,
+                provider: (this.findProviderForModel(this.currentModelId) as Record<string, unknown>).name,
+                model: this.currentModelId,
+                status: "active",
+              }
+            : null
           : null;
         if (!model) {
           // Fallback: return the first active provider from saved LLM providers
@@ -7361,50 +7352,116 @@ export class ProtocolAdapter {
 
     app.post("/api/models/switch", (req: Request, res: Response) => {
       try {
-        const { modelId } = req.body || {};
+        const { modelId } = (req.body || {}) as { modelId?: string };
         if (!modelId) {
           res.status(400).json({ error: "modelId is required" });
           return;
         }
-        const modelSwitcher = this.registry.resolveService<{
-          switchModel(modelId: string): { previous: string; current: string };
-        }>("modelSwitcher");
-        if (modelSwitcher) {
-          const result = modelSwitcher.switchModel(modelId);
-          res.json(result);
+        const provider = this.findProviderForModel(modelId);
+        if (!provider) {
+          res.status(404).json({
+            error: `未找到包含模型 "${modelId}" 的已保存提供商配置；请先在 LLM 配置页保存该模型所属提供商后再切换`,
+          });
           return;
         }
         const previous = this.currentModelId;
-        if (!this.modelsStore.has(modelId)) {
-          res.status(404).json({ error: "Model not found" });
-          return;
-        }
+        // 更新该 provider 的 selectedModel 并重新下发生成器，使切换真正生效
+        const updated = (this.savedLLMProviders || []).map((p) =>
+          p.id === provider.id
+            ? { ...p, selectedModel: modelId, enabled: true }
+            : p,
+        );
+        this.savedLLMProviders = updated;
+        this.persistLLMProviders(updated);
+        this.applyLLMProviders(this.resolveLLMProviders(updated));
         this.currentModelId = modelId;
+        if (this.configRpcStore) {
+          this.configRpcStore.set("llm.currentModel", modelId);
+        }
         res.json({ previous, current: modelId });
       } catch (err) {
         this.handleError(err, res, "Failed to switch model");
       }
     });
 
-    app.post("/api/models/test", (req: Request, res: Response) => {
+    app.post("/api/models/test", async (req: Request, res: Response) => {
       try {
-        const { modelId } = req.body || {};
+        const { modelId } = (req.body || {}) as { modelId?: string };
         if (!modelId) {
           res.status(400).json({ error: "modelId is required" });
           return;
         }
-        const modelSwitcher = this.registry.resolveService<{
-          testModel(modelId: string): { success: boolean; latencyMs: number };
-        }>("modelSwitcher");
-        if (modelSwitcher) {
-          const result = modelSwitcher.testModel(modelId);
-          res.json(result);
+        // 解析 ${VAR} 引用后的真实提供商配置（API Key 从 .env 还原）
+        const resolved = this.resolveLLMProviders(this.savedLLMProviders || []);
+        const provider = resolved.find(
+          (p) =>
+            (Array.isArray(p.models) && (p.models as string[]).includes(modelId)) ||
+            p.selectedModel === modelId ||
+            (p as Record<string, unknown>).model === modelId,
+        );
+        if (!provider) {
+          res.json({
+            success: false,
+            error: `未找到包含模型 "${modelId}" 的已保存提供商配置；请先在 LLM 配置页保存该模型所属提供商后再测试`,
+          });
           return;
         }
+        const apiKey = (provider.apiKey as string) || "";
+        if (!apiKey || apiKey.includes("****")) {
+          res.json({ success: false, error: "该提供商未配置有效的 API Key（请先在 LLM 配置页保存真实 API Key）" });
+          return;
+        }
+        const baseURL = (provider.baseURL as string) || "";
+        if (!baseURL) {
+          res.json({ success: false, error: "该提供商未配置 Base URL" });
+          return;
+        }
+        const url = normalizeChatEndpoint(baseURL);
+        const timeoutMs =
+          ((provider.config as Record<string, unknown> | undefined)?.timeout as number) || 15000;
         const start = Date.now();
-        const exists = this.modelsStore.has(modelId);
-        const latencyMs = Date.now() - start;
-        res.json({ success: exists, latencyMs });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: modelId,
+              messages: [{ role: "user", content: "ping" }],
+              max_tokens: 5,
+              stream: false,
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          const latencyMs = Date.now() - start;
+          if (resp.ok) {
+            res.json({ success: true, latencyMs });
+          } else {
+            let detail = "";
+            try {
+              detail = (await resp.text()).slice(0, 300);
+            } catch {
+              /* ignore */
+            }
+            res.json({ success: false, latencyMs, error: `HTTP ${resp.status}: ${detail}` });
+          }
+        } catch (e) {
+          clearTimeout(timer);
+          const latencyMs = Date.now() - start;
+          const msg = e instanceof Error ? e.message : String(e);
+          res.json({
+            success: false,
+            latencyMs,
+            error: msg.includes("abort")
+              ? `请求超时（>${timeoutMs}ms，请检查 Base URL 或网络连通性）`
+              : msg,
+          });
+        }
       } catch (err) {
         this.handleError(err, res, "Failed to test model");
       }

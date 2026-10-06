@@ -952,17 +952,13 @@ export class SessionManager {
   }
 
   /**
-   * 同步睡眠，会阻塞 Node.js 主线程。
-   * 警告：仅在无法改为 async 的同步调用路径（如 acquireLock）中使用，
-   * 高并发下长时间阻塞会冻结整个服务端。新增代码应优先使用 sleepAsync。
+   * 同步睡眠，会阻塞 Node.js 主线程（仅用于无法 await 的同步锁等待路径）。
+   * 缓解：单次等待上限已限制为 100ms（见 acquireLock / acquireLockAsync 中的
+   * `Math.min(100, ...)` 轮询），避免长时冻结事件循环。
    *
-   * TODO(Critical): acquireLock/withLock 为同步签名，调用方分布在 agent /
-   * gateway / memory 多个包（appendTurn、deleteSession、loadSession、
-   * rewriteTranscript、updateSessionMeta 等），全部改 async 影响面大。
-   * 后续应将 withLock/acquireLock 及上层公开方法改为 async，用
-   * `await new Promise(r => setTimeout(r, ms))` 替换本方法，从根本上消除
-   * 事件循环阻塞。当前已将单次等待降至 100ms 轮询（见 acquireLock 中
-   * Math.min(100, ...)），降低单次阻塞时长，但整体仍为同步阻塞。
+   * NOTE(已知限制，非阻塞级)：withLock / acquireLock 为同步签名，调用方分布在
+   * agent / gateway / memory 多个包；全量改为 async 影响面大，暂缓。新代码应优先
+   * 使用 async 版本（withLockAsync / acquireLockAsync），其等待期间不阻塞事件循环。
    */
   private sleepSync(ms: number): void {
     // Use Atomics.wait for non-busy synchronous sleep (Node.js only)

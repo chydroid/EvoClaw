@@ -587,6 +587,11 @@ export const healthApi = {
     get<ComponentHealth>(`/api/health/component/${encodeURIComponent(name)}`),
   check: (name: string) =>
     post<ComponentHealth>(`/api/health/component/${encodeURIComponent(name)}/check`),
+  // Observability 健康报告（含组件健康，如 skills:sqlite-store 降级状态）
+  report: () => get<{
+    status: "healthy" | "degraded" | "unhealthy";
+    components: Array<{ name: string; status: "up" | "down" | "degraded"; message?: string; lastCheck: number }>;
+  }>("/api/health/report"),
 };
 
 // ═══════════════════════════════════════════════

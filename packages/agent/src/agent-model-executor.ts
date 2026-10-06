@@ -45,6 +45,8 @@ import { classifySkillError, isEmptySkillOutput, formatSkillReply, sanitizeSkill
 import { ToolResultCache, type CacheStats } from "./tool-result-cache";
 import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
 import * as crypto from "crypto";
+import { DurableTaskRunner, getDurableTaskRunner, type DurableTask } from "./durable-task-runner";
+import { SessionArchiveStore, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -161,6 +163,13 @@ export class AgentModelExecutor {
   private lifecycleManager: import("./agent-lifecycle").AgentLifecycleManager | null = null;
   private queueManager: import("./queue-manager").QueueManager | null = null;
   private sessionManager: import("./session-manager").SessionManager | null = null;
+  /**
+   * 会话窗口 + 归档存储。用于把超出活动窗口的历史轮次卸载到长期记忆，
+   * 从而让长任务不受 LLM 最大上下文长度限制。
+   */
+  private sessionArchive: import("./session-archive").SessionArchiveStore | null = null;
+  /** 活动窗口保留轮数；<=0 表示不限制（沿用全量历史） */
+  private windowRounds: number = DEFAULT_WINDOW_ROUNDS;
   private contextEngine: import("./context-engine").ContextEngine | null = null;
   private copilotRouter: CopilotRouter | null = null;
   private iterationBudgets = new Map<string, IterationBudget>();
@@ -251,6 +260,26 @@ export class AgentModelExecutor {
    */
   private tokenBudgetOptimizer: TokenBudgetOptimizer | null = null;
   private lastBudgetReport: BudgetReport | null = null;
+
+  /**
+   * 可持久化、可恢复的超长任务引擎。
+   * 超时不再是失败 —— 超时只意味着「存检查点 + 转入后台续跑」。
+   * 状态落盘到 data/durable-tasks/，进程重启后可由 resumeAll() 继续。
+   */
+  private durableRunner: DurableTaskRunner = getDurableTaskRunner();
+
+  /**
+   * 每个会话的「软超时 / 中断」暂停请求标记。
+   * 看门狗（或浏览器关闭）设置它，主循环在下一轮边界停下后，chat() 据此转入后台续跑，
+   * 而不是以失败告终。
+   */
+  private durablePauseRequested = new Map<string, boolean>();
+
+  /**
+   * 会话 → 当前在飞续跑任务 id 的映射。
+   * 用于在「用户发来新消息打断后台任务」时把它 parked 为可恢复态，避免进度丢失。
+   */
+  private activeTaskBySession = new Map<string, string>();
 
   /**
    * Service-gated tools: check_fn TTL 缓存。
@@ -675,6 +704,13 @@ export class AgentModelExecutor {
           : undefined,
       });
     } catch { /* observability not available */ }
+
+    // ── 会话窗口化 + 长期记忆归档 ──
+    // 解除"不限时长任务受最大上下文长度封顶"：活动上下文只保留最近
+    // windowRounds 轮（默认 10），更早轮次归档到长期记忆，需要时再检索读回。
+    this.sessionArchive = new SessionArchiveStore(
+      this.runtimeOptions.storeDir || path.join(process.cwd(), "data")
+    );
 
     // Computed Status Engine
     try {
@@ -1315,6 +1351,19 @@ export class AgentModelExecutor {
     const channel = (context?.channel as string) || "web-ui";
     const peerId = (context?.peerId as string) || "user";
 
+    // ── 若当前有「后台续跑中」的任务，且用户发来新消息：先把后台任务 parked 为可恢复态，
+    //    再让新消息接管（用户指令优先，但长任务进度不丢失）。 ──
+    const isResumeCall = !!(context?.resume);
+    const prevTaskId = isResumeCall ? undefined : this.activeTaskBySession.get(sessionId);
+    if (prevTaskId) {
+      this.durableRunner.pause(prevTaskId);
+      this.activeTaskBySession.delete(sessionId);
+    }
+
+    // ── 超长任务专用指令 ──
+    const slashResult = this.handleDurableSlashCommand(message, sessionId, channel);
+    if (slashResult) return slashResult;
+
     // ── 中断同 session 的旧任务，防止新请求与旧任务并发导致状态混乱 ──
     this.abortSession(sessionId);
 
@@ -1322,10 +1371,11 @@ export class AgentModelExecutor {
     const observability = this.registry?.resolveService?.("observability") as any;
     const tracing = observability?.getTracingService?.();
 
-    // ── 整体超时保护（可选，默认禁用）──
-    // hermes 风格：不设硬超时，靠 max_iterations 限制 + 用户中断 + 频繁进度反馈
-    // 仅在显式配置 chatTimeoutMs > 0 时启用 Promise.race 超时
+    // ── 软超时预算（不再以「请简化请求」失败告终）──
+    // hermes 风格：不设「失败式」硬超时。仅当显式配置 chatTimeoutMs > 0 时，
+    // 超时 = 存检查点 + 转入后台续跑（后台续跑不受软超时约束，直到真正完成）。
     const chatTimeoutMs = this.config.chatTimeoutMs ?? 0;
+    const effectiveTimeoutMs = isResumeCall ? 0 : chatTimeoutMs;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const runChat = async () => {
@@ -1341,42 +1391,27 @@ export class AgentModelExecutor {
       }
     };
 
-    // 仅在显式配置超时时启用 Promise.race
-    if (chatTimeoutMs > 0) {
-      try {
-        const result = await Promise.race([
-          runChat(),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => {
-              this.abortSession(sessionId);
-              reject(new Error("CHAT_TIMEOUT"));
-            }, chatTimeoutMs);
-            timeoutHandle?.unref?.();
-          }),
-        ]);
-        return result;
-      } catch (err) {
-        if (err instanceof Error && err.message === "CHAT_TIMEOUT") {
-          const duration = Date.now() - startTime;
-          process.stderr.write(`[AgentModelExecutor] chat() timed out after ${chatTimeoutMs}ms for session "${sessionId}"\n`);
-          return {
-            reply: `⏰ 任务执行超时（${Math.round(chatTimeoutMs / 60000)} 分钟）。\n\n建议：\n1. 输入 \`/status\` 查看当前进度\n2. 将任务拆分为更小的步骤分批执行\n3. 简化问题描述后重试`,
-            tokensUsed: 0,
-            contextTokens: 0,
-            duration,
-            permissionRequests: [],
-            toolsExecuted: false,
-            files: [],
-          };
-        }
-        throw err;
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-      }
+    // 软预算看门狗：到达预算后「请求暂停」（标记 + 中止在飞 LLM），
+    // 主循环在下一轮边界干净停下，再由下方逻辑转入后台续跑。
+    if (effectiveTimeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        this.requestDurablePause(sessionId, message, context);
+      }, effectiveTimeoutMs);
+      timeoutHandle?.unref?.();
     }
 
-    // 默认路径：无超时，靠 max_iterations + 用户中断 + 进度反馈
-    return runChat();
+    try {
+      const result = await runChat();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      // 若本次运行期间被请求暂停（软超时 / 浏览器关闭），转入后台续跑而不是失败
+      if (this.durablePauseRequested.get(sessionId) && !isResumeCall) {
+        this.durablePauseRequested.delete(sessionId);
+        return this.enterDurablePause(sessionId, message, context, result, onProgress, startTime, channel, peerId);
+      }
+      return result;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   }
 
   /** Inner implementation of chat() — separated to allow tracing span wrapping */
@@ -1584,7 +1619,30 @@ export class AgentModelExecutor {
       if (this.sessionManager && sessionId) {
         const loadedHistory = this.sessionManager.loadTranscript(agentId, sessionId);
         if (loadedHistory.length > 0) {
-          this.conversationHistory.set(sessionId, loadedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => {
+          // ── 会话窗口化 ──
+          // 活动上下文只保留最近 windowRounds 轮；更早轮次卸载到长期记忆，
+          // 解除"长任务受最大上下文长度封顶"的限制。归档为 fire-and-forget，
+          // 失败不影响本次会话加载。
+          let windowedHistory = loadedHistory;
+          if (this.sessionArchive && this.windowRounds > 0) {
+            const { keepFrom, newlyArchived } = await this.sessionArchive.archiveOlderTurns(
+              sessionId,
+              loadedHistory,
+              this.memoryHub?.getLongTerm(),
+              this.windowRounds
+            );
+            if (keepFrom > 0) {
+              windowedHistory = loadedHistory.slice(keepFrom);
+              if (newlyArchived > 0) {
+                process.stdout.write(
+                  `[AgentModelExecutor] Session window: archived ${newlyArchived} old turn(s) to long-term memory, ` +
+                  `active window = last ${this.windowRounds} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
+                );
+              }
+            }
+          }
+
+          this.conversationHistory.set(sessionId, windowedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => {
             const entry: Record<string, unknown> = {
               role: t.role,
               content: t.content,
@@ -2034,11 +2092,28 @@ export class AgentModelExecutor {
     if (this.memoryHub) {
       const memorySearchFn = async () => {
         try {
+          // 0. 归档层读回：把已卸载到长期记忆的旧轮次按当前问题召回，
+          //    这正是"其它内容放长期记忆、需要时再读"的读取路径。
+          let archivedBlock = "";
+          if (this.sessionArchive) {
+            const archived = await this.sessionArchive.recallArchived(
+              this.memoryHub!.getLongTerm(),
+              sessionId,
+              message,
+              5
+            );
+            if (archived.length > 0) {
+              archivedBlock = "\n[历史归档（更早的会话轮次）]\n" + archived.map((m, i) =>
+                `  ${i + 1}. ${m.entry.content.slice(0, 300)}`
+              ).join("\n") + "\n";
+            }
+          }
+
           // 1. 优先分层记忆
           if (this.memoryHub!.recallFromLayeredMemory) {
             const layered = this.memoryHub!.recallFromLayeredMemory(message);
             if (layered) {
-              memoryContext = layered.prependContext || "";
+              memoryContext = (layered.prependContext || "") + archivedBlock;
               personaContext = layered.appendSystemContext || "";
               if (memoryContext || personaContext) return;
             }
@@ -2052,7 +2127,9 @@ export class AgentModelExecutor {
           if (memories.length > 0) {
             memoryContext = "\n[相关历史记忆]\n" + memories.map((m, i) =>
               `  ${i + 1}. [${m.entry.type}] ${m.entry.content.slice(0, 300)}`
-            ).join("\n") + "\n";
+            ).join("\n") + "\n" + archivedBlock;
+          } else if (archivedBlock) {
+            memoryContext = archivedBlock;
           }
         } catch (err) {
           // memory is optional but errors should be diagnosable
@@ -3084,6 +3161,222 @@ export class AgentModelExecutor {
   /** Clear abort controller after chat completes (called from chatInner). */
   private clearSessionAbortController(sessionId: string): void {
     this.sessionAbortControllers.delete(sessionId);
+  }
+
+  // ── 超长任务：可持久化、可恢复的执行 ───────────────────────────────────────
+  //
+  // 核心思想：超时 / 浏览器关闭 / 进程重启 都不再是「失败」，而是「存检查点 + 转入后台续跑」。
+  // 后台续跑复用 chatInner（基于已落盘的对话历史重新加载），无需用户重新组织请求。
+
+  /** 注入可持久化任务引擎（server wiring 时设置，便于共享单例与测试替换）。 */
+  setDurableTaskRunner(runner: DurableTaskRunner): void {
+    this.durableRunner = runner;
+  }
+
+  /**
+   * 设置活动上下文窗口轮数。
+   *
+   * 默认 10 轮：更早的会话轮次会被归档到长期记忆（不再占用 prompt），
+   * 需要时由归档层检索读回，从而让长任务不受 LLM 最大上下文长度封顶。
+   * 传 0 或负数表示关闭窗口化（沿用全量历史）。
+   */
+  setSessionWindowRounds(rounds: number): void {
+    this.windowRounds = Number.isFinite(rounds) ? Math.floor(rounds) : DEFAULT_WINDOW_ROUNDS;
+    process.stdout.write(
+      `[AgentModelExecutor] Session window set to ${this.windowRounds} round(s)\n`
+    );
+  }
+
+  /** 当前活动窗口轮数（<=0 表示不限制） */
+  getSessionWindowRounds(): number {
+    return this.windowRounds;
+  }
+
+  /**
+   * 请求暂停：标记会话的暂停意图，并中止在飞 LLM 调用。
+   * 主循环（llm-caller 的 round 边界）检测到 abort 后会干净停下，
+   * chat() 随后据此转入后台续跑 —— 而不是以失败告终。
+   */
+  requestDurablePause(sessionId: string, _message?: string, _context?: Record<string, unknown>): void {
+    this.durablePauseRequested.set(sessionId, true);
+    this.abortSession(sessionId);
+  }
+
+  /**
+   * 进入「暂停 → 后台续跑」流程：记录/复用 durable task，返回阶段性回复，
+   * 并在后台 fire-and-forget 地续跑直到完成。绝不返回「请简化请求」式失败。
+   */
+  private enterDurablePause(
+    sessionId: string,
+    message: string,
+    context: Record<string, unknown> | undefined,
+    partialResult: Awaited<ReturnType<AgentModelExecutor["chat"]>>,
+    _onProgress: AgentProgressCallback | undefined,
+    startTime: number,
+    channel: string,
+    _peerId: string,
+  ): Awaited<ReturnType<AgentModelExecutor["chat"]>> {
+    const duration = Date.now() - startTime;
+    // 找到或创建 durable task
+    const existingId = context?.durableTaskId as string | undefined;
+    let task: DurableTask | undefined = existingId ? this.durableRunner.get(existingId) : undefined;
+    const userRequest = message || (context?.originalMessage as string) || "(续跑任务)";
+    if (!task) {
+      task = this.durableRunner.create(userRequest, sessionId, channel);
+    } else {
+      this.durableRunner.pause(task.id);
+    }
+    this.durableRunner.appendProgress(
+      task.id,
+      `前台运行在超时/中断后存盘并转入后台续跑（已用 ${Math.round(duration / 1000)}s，已续跑 ${task.resumeCount} 次）`,
+    );
+    // 后台续跑（不阻塞 HTTP 响应）
+    this.activeTaskBySession.set(sessionId, task.id);
+    void this.resumeDurableTask(task.id);
+
+    const reply =
+      `⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。\n\n` +
+      `- 任务 ID：\`${task.id}\`\n` +
+      `- 输入 \`/tasks\` 查看进度\n` +
+      `- 输入 \`/resume\` 可立即在后台续跑\n` +
+      `- 任务完成后会自动通知你（即使中途重启服务也会自动续跑）\n\n` +
+      `你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。`;
+    return {
+      reply,
+      tokensUsed: partialResult?.tokensUsed ?? 0,
+      contextTokens: partialResult?.contextTokens ?? 0,
+      duration,
+      permissionRequests: [],
+      toolsExecuted: true,
+      files: partialResult?.files ?? [],
+    };
+  }
+
+  /** 续跑一个 durable task（fire-and-forget）。 */
+  private async resumeDurableTask(taskId: string): Promise<void> {
+    const task = this.durableRunner.get(taskId);
+    if (!task) return;
+    this.activeTaskBySession.set(task.sessionId, task.id);
+    try {
+      const continuePrompt = this.buildContinuePrompt(task);
+      const result = await this.chat(
+        continuePrompt,
+        {
+          sessionId: task.sessionId,
+          channel: task.channel,
+          resume: true,
+          durableTaskId: task.id,
+          originalMessage: task.userRequest,
+        },
+        (ev) => {
+          const detail = (ev as { detail?: unknown })?.detail;
+          if (detail) this.durableRunner.appendProgress(task.id, String(detail));
+        },
+      );
+      // 续跑正常结束：仅当任务仍处 running（未被新消息 parked / 取消）时才标记完成；
+      // 若已被接管，则保持 parked 态交由用户 /resume。
+      const current = this.durableRunner.get(task.id);
+      if (current && current.status === "running" && !this.durablePauseRequested.get(task.sessionId)) {
+        this.durableRunner.complete(task.id, result.reply);
+      }
+    } catch (err) {
+      this.durableRunner.fail(
+        task.id,
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      if (this.activeTaskBySession.get(task.sessionId) === task.id) {
+        this.activeTaskBySession.delete(task.sessionId);
+      }
+    }
+  }
+
+  /** 续跑时注入给 LLM 的指令：基于已有进度继续，不要重复已完成的工作。 */
+  buildContinuePrompt(task: DurableTask): string {
+    return (
+      `我们之前在处理一个任务但没有完成（已保存检查点，可恢复）。\n\n` +
+      `原始请求：\n"""${task.userRequest}"""\n\n` +
+      `请基于对话历史中已有的进度（前面的步骤、工具结果都还在）继续推进，不要重复已经完成的工作。` +
+      `如果任务已经实质完成，请直接给出最终总结与交付物；如果还有剩余工作，请继续完成它。`
+    );
+  }
+
+  /** 超长任务专用指令：/tasks、/resume、/cancel-task。返回结构化结果或 null。 */
+  private handleDurableSlashCommand(
+    message: string,
+    sessionId: string,
+    channel: string,
+  ): Awaited<ReturnType<AgentModelExecutor["chat"]>> | null {
+    const m = message.trim();
+    if (m === "/tasks" || m.startsWith("/tasks ")) {
+      const tasks = this.durableRunner.list(sessionId);
+      if (tasks.length === 0) {
+        return this.buildEarlyResult(sessionId, "📋 当前会话没有进行中的超长任务。", channel);
+      }
+      const lines: string[] = ["📋 **超长任务状态**\n"];
+      for (const t of tasks.slice(0, 20)) {
+        const icon =
+          t.status === "completed" ? "✅" : t.status === "failed" ? "❌" : t.status === "cancelled" ? "🚫" : t.status === "running" ? "🔄" : "⏸️";
+        lines.push(
+          `${icon} \`${t.id}\` — ${t.status}（续跑 ${t.resumeCount} 次，更新于 ${new Date(t.updatedAt).toLocaleString("zh-CN")}）`,
+        );
+        lines.push(`   请求：${t.userRequest.slice(0, 80)}`);
+        if (t.status === "completed" && t.finalReply) {
+          lines.push(`   结论：${t.finalReply.slice(0, 240)}`);
+        }
+      }
+      lines.push("\n输入 `/resume <任务ID>` 立即在后台续跑；`/cancel-task <任务ID>` 取消。");
+      return this.buildEarlyResult(sessionId, lines.join("\n"), channel);
+    }
+    if (m === "/resume" || m.startsWith("/resume")) {
+      const idArg = m.replace("/resume", "").trim();
+      let task: DurableTask | undefined;
+      if (idArg) {
+        task = this.durableRunner.get(idArg);
+      } else {
+        task = this.durableRunner.list(sessionId).find((t) => t.status === "paused" || t.status === "running");
+      }
+      if (!task) {
+        return this.buildEarlyResult(sessionId, "⚠️ 没有可续跑的任务。", channel);
+      }
+      this.activeTaskBySession.set(sessionId, task.id);
+      void this.resumeDurableTask(task.id);
+      return this.buildEarlyResult(
+        sessionId,
+        `🔄 已将该任务 \`${task.id}\` 转入后台续跑，完成后会通知你。输入 \`/tasks\` 查看进度。`,
+        channel,
+      );
+    }
+    if (m.startsWith("/cancel-task")) {
+      const idArg = m.replace("/cancel-task", "").trim();
+      if (!idArg) {
+        return this.buildEarlyResult(sessionId, "⚠️ 请提供任务 ID：\n`/cancel-task <任务ID>`", channel);
+      }
+      const ok = this.durableRunner.cancel(idArg);
+      return this.buildEarlyResult(
+        sessionId,
+        ok ? `🚫 已取消任务 \`${idArg}\`。` : `⚠️ 任务 \`${idArg}\` 不存在或已终态，无法取消。`,
+        channel,
+      );
+    }
+    return null;
+  }
+
+  /** 构造一个「早返回」式结构化结果（用于指令类回复，不进入主 agent 流程）。 */
+  private buildEarlyResult(
+    _sessionId: string,
+    reply: string,
+    _channel: string,
+  ): Awaited<ReturnType<AgentModelExecutor["chat"]>> {
+    return {
+      reply,
+      tokensUsed: 0,
+      contextTokens: 0,
+      duration: 0,
+      permissionRequests: [],
+      toolsExecuted: false,
+      files: [],
+    };
   }
 
   private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {

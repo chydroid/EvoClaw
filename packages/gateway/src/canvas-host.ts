@@ -41,11 +41,29 @@ export class CanvasHost extends EventEmitter {
   }
 
   private ensureRootDir(): void {
-    try {
-      fs.mkdirSync(this.rootDir, { recursive: true });
-    } catch (err) {
-      process.stderr.write("[CanvasHost] Failed to create root dir:" + " " + err + "\n");
+    // 候选根目录：主路径（用户目录）失败时可回退到可写位置，避免 Windows 上 EPERM 直接禁用画布功能
+    const candidates = [
+      this.rootDir,
+      path.join(os.tmpdir(), "evoclaw-canvas"),
+      path.join(process.cwd(), ".evoclaw", "canvas"),
+    ];
+    for (const dir of candidates) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        if (dir !== this.rootDir) {
+          process.stderr.write(
+            `[CanvasHost] 主路径不可写，已回退到画布根目录: ${dir}\n`,
+          );
+        }
+        this.rootDir = dir;
+        return;
+      } catch (err) {
+        process.stderr.write(`[CanvasHost] 无法创建画布根目录 ${dir}: ${err}\n`);
+      }
     }
+    process.stderr.write(
+      "[CanvasHost] 所有候选路径均不可写，画布功能已禁用\n",
+    );
   }
 
   private loadProjects(): void {

@@ -12,7 +12,7 @@ import {
   TextInput,
 } from "./shared";
 import { useTranslation } from "./i18n";
-import { tracingApi, type TracingSpan } from "./api-client";
+import { tracingApi, healthApi, type TracingSpan } from "./api-client";
 
 // ═══════════════════════════════════════════════
 // Types
@@ -80,9 +80,9 @@ function kindBadgeVariant(kind: string): "info" | "warning" | "default" {
 // Tab definitions
 // ═══════════════════════════════════════════════
 
-type TabKey = "overview" | "traces" | "executions" | "spans";
+type TabKey = "overview" | "traces" | "executions" | "spans" | "health";
 
-const TAB_KEYS: TabKey[] = ["overview", "traces", "executions", "spans"];
+const TAB_KEYS: TabKey[] = ["overview", "traces", "executions", "spans", "health"];
 
 // ═══════════════════════════════════════════════
 // Overview Tab
@@ -655,6 +655,90 @@ function SpansTab({ t, locale }: { t: (k: string, fb?: string) => string; locale
 }
 
 // ═══════════════════════════════════════════════
+// Component Health Tab (Observability 健康面板)
+// ═══════════════════════════════════════════════
+
+function componentHealthVariant(status: string): "success" | "warning" | "error" | "default" {
+  if (status === "up") return "success";
+  if (status === "degraded") return "warning";
+  if (status === "down") return "error";
+  return "default";
+}
+
+function HealthComponentsTab({ t }: { t: (k: string, fb?: string) => string }) {
+  const [components, setComponents] = useState<Array<{ name: string; status: string; message?: string; lastCheck: number }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await healthApi.report();
+      setComponents(data.components || []);
+    } catch {
+      setComponents([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const degradedCount = components.filter(c => c.status === "degraded" || c.status === "down").length;
+
+  return (
+    <div>
+      {loading ? (
+        <Loading text={t("observability.health.loading")} />
+      ) : (
+        <>
+          <div style={{
+            padding: "10px 14px", borderRadius: "8px", fontSize: "13px", marginBottom: "14px",
+            background: degradedCount > 0 ? "var(--warning-bg)" : "var(--success-bg)",
+            color: degradedCount > 0 ? "var(--warning)" : "var(--success)",
+          }}>
+            {degradedCount > 0
+              ? t("observability.health.degraded").replace("{0}", String(degradedCount))
+              : t("observability.health.all_ok")}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {components.map(c => {
+              const variant = componentHealthVariant(c.status);
+              const isSqliteDegraded = c.name === "skills:sqlite-store" && (c.status === "degraded" || c.status === "down");
+              const accent = variant === "success" ? "var(--success)" : variant === "warning" ? "var(--warning)" : variant === "error" ? "var(--error)" : "var(--border)";
+              return (
+                <Card key={c.name} style={{ padding: "14px 16px", borderLeft: `3px solid ${accent}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 600, color: "var(--text-primary)", fontSize: "13px" }}>{c.name}</span>
+                    <Badge variant={variant}>{c.status}</Badge>
+                  </div>
+                  {c.message && (
+                    <div style={{ color: "var(--text-muted)", fontSize: "12px", marginTop: "6px" }}>{c.message}</div>
+                  )}
+                  {isSqliteDegraded && (
+                    <div style={{ marginTop: "8px", padding: "8px 10px", background: "var(--warning-bg)", borderRadius: "6px", fontSize: "12px", color: "var(--warning)" }}>
+                      <strong>{t("observability.health.remediation")}：</strong> {t("observability.health.sqlite_remediation")}
+                    </div>
+                  )}
+                  {c.lastCheck ? (
+                    <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: "6px" }}>
+                      {t("observability.health.last_check")}：{new Date(c.lastCheck).toLocaleString()}
+                    </div>
+                  ) : null}
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <div style={{ marginTop: "12px" }}>
+        <PrimaryButton small onClick={load}>{t("observability.refresh")}</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
 // Main Page
 // ═══════════════════════════════════════════════
 
@@ -773,6 +857,8 @@ export default function ObservabilityPage() {
       {/* Tab content */}
       {activeTab === "spans" ? (
         <SpansTab t={t} locale={locale} />
+      ) : activeTab === "health" ? (
+        <HealthComponentsTab t={t} />
       ) : loading ? (
         <Loading text={t("observability.loading")} />
       ) : (

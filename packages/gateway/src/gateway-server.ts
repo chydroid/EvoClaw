@@ -178,6 +178,12 @@ export class GatewayServer {
       this.server = http.createServer(this.app);
 
       this.server.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          process.stderr.write(
+            `[Gateway] 端口 ${port} 已被占用（很可能另一个 EvoClaw 实例或进程仍在使用）。` +
+              `请先结束占用进程：netstat -ano | findstr :${port} 找到 PID 后 taskkill /PID <PID> /F\n`,
+          );
+        }
         reject(err);
       });
 

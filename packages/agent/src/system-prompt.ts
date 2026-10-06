@@ -117,6 +117,26 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "When the user asks about a specific entity (company, product, person), you MUST search for the latest information, not rely on your training data."
   );
   sections.push("");
+  sections.push("## 真实性契约（最高优先级，违反即为严重错误）");
+  sections.push(
+    "1. 动手前不要预告成功。在真正调用工具并拿到成功返回之前，绝不允许说「已完成」「已添加」「已配置」等完成态措辞。"
+  );
+  sections.push(
+    "2. 只报告工具的真实结果。若工具返回 requiresPermission / pending / awaiting approval / error，" +
+    "你必须如实告知用户「该操作正在等待审批」或「该操作失败，原因如下」，绝对不可以声称已经完成。"
+  );
+  sections.push(
+    "3. 「我不知道有这个能力」是错误结论。判断能力时只看本提示词里列出的工具清单；" +
+    "清单里的工具就是你可以直接调用的能力，不要臆造「需要改配置文件」「无法通过对话完成」这类限制。"
+  );
+  sections.push(
+    "4. 需要多步才能完成的任务，必须逐步调用工具并在每步后核验；" +
+    "对于「添加/配置/注册」类操作，调用成功后应再用对应的查询工具（如 email_list_accounts）回读确认，并在回复中给出核验到的真实状态。"
+  );
+  sections.push(
+    "5. 宁可如实说「我做不到/需要你先做 X」，也不要伪造一个看起来成功的假结果。虚构成功比失败更糟。"
+  );
+  sections.push("");
   if (params.channel) {
     sections.push("## Current Channel");
     sections.push(`Current communication channel: ${params.channel}`);

@@ -258,9 +258,25 @@ export class WeChatAdapter implements ChannelAdapter {
 
   // ── Internal: Token Management ──────────────────────────
 
+  /**
+   * 统一的 token 报错脱敏：避免在错误链 / 日志中泄露 secret。
+   * 微信 token 接口要求凭证以 URL query 传递（官方 API 约束，无法改 POST body），
+   * 因此 fetch 失败时的报错可能包含完整 URL（含 secret）。若报错中包含 secret，
+   * 将其替换为 *** 后抛出；否则原样透传错误。
+   */
+  private sanitizeTokenError(err: unknown, secret: string | undefined, label: string): never {
+    if (secret) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (raw.includes(secret)) {
+        throw new Error(`${label} failed: ${raw.split(secret).join("***")}`);
+      }
+    }
+    throw err;
+  }
+
   private async refreshOfficialToken(): Promise<void> {
-    // NOTE: appSecret 目前通过 URL query 传递，存在泄露到日志/错误消息的风险。
-    // TODO: 应改用 POST body 传递 secret，避免出现在 URL 中。
+    // 微信 cgi-bin/token 要求 grant_type/appid/secret 以 URL query 传递（官方 API 约束，
+    // 不可改 POST body），故对报错中的 secret 做脱敏（见下方 catch）。
     try {
       const res = await fetch(
         `${this.baseURL}/cgi-bin/token?grant_type=client_credential&appid=${this.config.appId}&secret=${this.config.appSecret}`,
@@ -273,18 +289,13 @@ export class WeChatAdapter implements ChannelAdapter {
       // Expire 5 min early
       this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
     } catch (err) {
-      // 脱敏：fetch 网络错误可能包含完整 URL（含 secret），需从消息中移除后重新抛出
-      const raw = err instanceof Error ? err.message : String(err);
-      if (this.config.appSecret && raw.includes(this.config.appSecret)) {
-        throw new Error(`WeChat token refresh failed: ${raw.split(this.config.appSecret).join("***")}`);
-      }
-      throw err;
+      this.sanitizeTokenError(err, this.config.appSecret, "WeChat token refresh");
     }
   }
 
   private async refreshWeComToken(): Promise<void> {
-    // NOTE: corpsecret 目前通过 URL query 传递，存在泄露到日志/错误消息的风险。
-    // TODO: 应改用 POST body 传递 secret，避免出现在 URL 中。
+    // 微信企业号 gettoken 同样要求 corpid/corpsecret 以 URL query 传递（官方 API 约束），
+    // 故对报错中的 secret 做脱敏（见下方 catch）。
     try {
       const res = await fetch(
         `${this.baseURL}/cgi-bin/gettoken?corpid=${this.config.corpId}&corpsecret=${this.config.corpSecret}`,
@@ -296,12 +307,7 @@ export class WeChatAdapter implements ChannelAdapter {
       this.accessToken = data.access_token;
       this.tokenExpiry = Date.now() + (data.expires_in - 300) * 1000;
     } catch (err) {
-      // 脱敏：fetch 网络错误可能包含完整 URL（含 secret），需从消息中移除后重新抛出
-      const raw = err instanceof Error ? err.message : String(err);
-      if (this.config.corpSecret && raw.includes(this.config.corpSecret)) {
-        throw new Error(`WeCom token refresh failed: ${raw.split(this.config.corpSecret).join("***")}`);
-      }
-      throw err;
+      this.sanitizeTokenError(err, this.config.corpSecret, "WeCom token refresh");
     }
   }
 

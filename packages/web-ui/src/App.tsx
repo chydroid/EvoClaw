@@ -1,22 +1,33 @@
-import React, { useState, useEffect, useCallback, Component, type ReactNode } from "react";
+import React, { useState, useEffect, useCallback, Component, Suspense, type ReactNode } from "react";
 import type { CSSProperties } from "react";
-import EvolutionDashboard from "./EvolutionDashboard";
-import LLMConfig from "./LLMConfig";
-import ChannelConfigPage from "./ChannelConfig";
-import SkillsConfig from "./SkillsConfig";
-import { CLITerminal } from "./CLITerminal";
-import Dashboard from "./Dashboard";
-import { BootstrapConfig } from "./BootstrapConfig";
-import { StatusPage } from "./StatusPage";
-import { LogsPage } from "./LogsPage";
-import { CronPage } from "./CronPage";
-import { CanvasPage } from "./CanvasPage";
-import { CanvasGraphPage } from "./CanvasGraphPage";
-import { WebChatPage } from "./WebChatPage";
-import { PluginsPage } from "./PluginsPage";
-import { EventsPage } from "./EventsPage";
-import { PermissionsPage } from "./PermissionsPage";
-import { OpsPage } from "./OpsPage";
+
+// 路由级懒加载 + 预加载：保留动态 import 的 thunk 引用，
+// 认证后在浏览器空闲时主动触发高频页面（chat/dashboard/status）的 chunk 加载，
+// 抵消用户首次点击时的 Suspense loading 闪烁。
+type PreloadableComponent = React.LazyExoticComponent<React.ComponentType<any>> & { preload: () => Promise<unknown> };
+function lazyWithPreload(factory: () => Promise<{ default: React.ComponentType<any> }>): PreloadableComponent {
+  const Component = React.lazy(factory) as PreloadableComponent;
+  Component.preload = factory;
+  return Component;
+}
+
+const EvolutionDashboard = React.lazy(() => import("./EvolutionDashboard"));
+const LLMConfig = React.lazy(() => import("./LLMConfig"));
+const ChannelConfigPage = React.lazy(() => import("./ChannelConfig"));
+const SkillsConfig = React.lazy(() => import("./SkillsConfig"));
+const CLITerminal = React.lazy(() => import("./CLITerminal").then(m => ({ default: m.CLITerminal })));
+const Dashboard = lazyWithPreload(() => import("./Dashboard"));
+const BootstrapConfig = React.lazy(() => import("./BootstrapConfig").then(m => ({ default: m.BootstrapConfig })));
+const StatusPage = lazyWithPreload(() => import("./StatusPage").then(m => ({ default: m.StatusPage })));
+const LogsPage = React.lazy(() => import("./LogsPage").then(m => ({ default: m.LogsPage })));
+const CronPage = React.lazy(() => import("./CronPage").then(m => ({ default: m.CronPage })));
+const CanvasPage = React.lazy(() => import("./CanvasPage").then(m => ({ default: m.CanvasPage })));
+const CanvasGraphPage = React.lazy(() => import("./CanvasGraphPage").then(m => ({ default: m.CanvasGraphPage })));
+const WebChatPage = lazyWithPreload(() => import("./WebChatPage").then(m => ({ default: m.WebChatPage })));
+const PluginsPage = React.lazy(() => import("./PluginsPage").then(m => ({ default: m.PluginsPage })));
+const EventsPage = React.lazy(() => import("./EventsPage").then(m => ({ default: m.EventsPage })));
+const PermissionsPage = React.lazy(() => import("./PermissionsPage").then(m => ({ default: m.PermissionsPage })));
+const OpsPage = React.lazy(() => import("./OpsPage").then(m => ({ default: m.OpsPage })));
 import { THEMES, getStoredThemeId, storeThemeId, getThemeById, applyThemeToDocument, type ThemeDefinition } from "./theme";
 import { ToastContainer, showToast } from "./shared";
 import { useApiCall } from "./useApiCall";
@@ -26,45 +37,48 @@ import { useTranslation, type Lang } from "./i18n";
 import { useAppState } from "./AppStateContext.tsx";
 import type { TabId, ConnectionStatus } from "./app-state.ts";
 
-// New pages
-import SecretsManagerPage from "./SecretsManagerPage";
-import DeadLetterQueuePage from "./DeadLetterQueuePage";
-import ConfigRPCPage from "./ConfigRPCPage";
-import SessionManagementPage from "./SessionManagementPage";
-import SessionRetentionPage from "./SessionRetentionPage";
-import FeatureFlagsPage from "./FeatureFlagsPage";
-import ConfigMigrationPage from "./ConfigMigrationPage";
-import ConfigDoctorPage from "./ConfigDoctorPage";
-import HealthAggregatorPage from "./HealthAggregatorPage";
-import MessageTemplatesPage from "./MessageTemplatesPage";
-import ReplyReferencePage from "./ReplyReferencePage";
-import QueueManagerPage from "./QueueManagerPage";
-import ChannelMessagesPage from "./ChannelMessagesPage";
-import ObservabilityPage from "./ObservabilityPage";
-import GuardrailsPage from "./GuardrailsPage";
-import WorkboardPage from "./WorkboardPage";
-import SteerPage from "./SteerPage";
+// Page components are loaded on demand (route-level code splitting) so the main
+// bundle stays small. Each is a React.lazy dynamic import; the <Suspense> wrapping
+// {renderPage()} shows a fallback while the chunk loads, and the per-page
+// <ErrorBoundary> catches chunk load failures.
+const SecretsManagerPage = React.lazy(() => import("./SecretsManagerPage"));
+const DeadLetterQueuePage = React.lazy(() => import("./DeadLetterQueuePage"));
+const ConfigRPCPage = React.lazy(() => import("./ConfigRPCPage"));
+const SessionManagementPage = React.lazy(() => import("./SessionManagementPage"));
+const SessionRetentionPage = React.lazy(() => import("./SessionRetentionPage"));
+const FeatureFlagsPage = React.lazy(() => import("./FeatureFlagsPage"));
+const ConfigMigrationPage = React.lazy(() => import("./ConfigMigrationPage"));
+const ConfigDoctorPage = React.lazy(() => import("./ConfigDoctorPage"));
+const HealthAggregatorPage = React.lazy(() => import("./HealthAggregatorPage"));
+const MessageTemplatesPage = React.lazy(() => import("./MessageTemplatesPage"));
+const ReplyReferencePage = React.lazy(() => import("./ReplyReferencePage"));
+const QueueManagerPage = React.lazy(() => import("./QueueManagerPage"));
+const ChannelMessagesPage = React.lazy(() => import("./ChannelMessagesPage"));
+const ObservabilityPage = React.lazy(() => import("./ObservabilityPage"));
+const GuardrailsPage = React.lazy(() => import("./GuardrailsPage"));
+const WorkboardPage = React.lazy(() => import("./WorkboardPage"));
+const SteerPage = React.lazy(() => import("./SteerPage"));
 
-import { StreamViewPage } from "./StreamViewPage";
-import TokenUsagePage from "./TokenUsagePage";
-import InstallPolicyPage from "./InstallPolicyPage";
-import TranscriptRedactorPage from "./TranscriptRedactorPage";
-import ApprovalCenterPage from "./ApprovalCenterPage";
-import MCPScannerPage from "./MCPScannerPage";
-import MCPExternalPage from "./MCPExternalPage";
-import { VoiceConfigPage } from "./VoiceConfigPage";
-import EnhancementHubPage from "./EnhancementHubPage";
-import MemoryHubPage from "./MemoryHubPage";
-import { WebhooksPage } from "./WebhooksPage";
-import SandboxManagerPage from "./SandboxManagerPage";
-import EvalRunnerPage from "./EvalRunnerPage";
-import SkillWorkshopPage from "./SkillWorkshopPage";
-import MoaDashboardPage from "./MoaDashboardPage";
-import A2APage from "./A2APage";
-import ACPPage from "./ACPPage";
-import KanbanBoardPage from "./KanbanBoardPage";
-import ComputerUsePage from "./ComputerUsePage";
-import ToolSearchPage from "./ToolSearchPage";
+const StreamViewPage = React.lazy(() => import("./StreamViewPage").then(m => ({ default: m.StreamViewPage })));
+const TokenUsagePage = React.lazy(() => import("./TokenUsagePage"));
+const InstallPolicyPage = React.lazy(() => import("./InstallPolicyPage"));
+const TranscriptRedactorPage = React.lazy(() => import("./TranscriptRedactorPage"));
+const ApprovalCenterPage = React.lazy(() => import("./ApprovalCenterPage"));
+const MCPScannerPage = React.lazy(() => import("./MCPScannerPage"));
+const MCPExternalPage = React.lazy(() => import("./MCPExternalPage"));
+const VoiceConfigPage = React.lazy(() => import("./VoiceConfigPage").then(m => ({ default: m.VoiceConfigPage })));
+const EnhancementHubPage = React.lazy(() => import("./EnhancementHubPage"));
+const MemoryHubPage = React.lazy(() => import("./MemoryHubPage"));
+const WebhooksPage = React.lazy(() => import("./WebhooksPage").then(m => ({ default: m.WebhooksPage })));
+const SandboxManagerPage = React.lazy(() => import("./SandboxManagerPage"));
+const EvalRunnerPage = React.lazy(() => import("./EvalRunnerPage"));
+const SkillWorkshopPage = React.lazy(() => import("./SkillWorkshopPage"));
+const MoaDashboardPage = React.lazy(() => import("./MoaDashboardPage"));
+const A2APage = React.lazy(() => import("./A2APage"));
+const ACPPage = React.lazy(() => import("./ACPPage"));
+const KanbanBoardPage = React.lazy(() => import("./KanbanBoardPage"));
+const ComputerUsePage = React.lazy(() => import("./ComputerUsePage"));
+const ToolSearchPage = React.lazy(() => import("./ToolSearchPage"));
 
 interface NavGroup {
   id: string;
@@ -337,6 +351,25 @@ export default function App() {
   const { lang, setLang, t } = useTranslation();
 
   useEffect(() => { checkAuth(); }, []);
+  // 认证后空闲预加载高频页面 chunk，抵消首屏点击的 Suspense loading 闪烁
+  useEffect(() => {
+    if (!authenticated) return;
+    const preload = () => {
+      Dashboard.preload();
+      WebChatPage.preload();
+      StatusPage.preload();
+    };
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof w.requestIdleCallback === "function") {
+      const id = w.requestIdleCallback(preload, { timeout: 2000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const timer = setTimeout(preload, 800);
+    return () => clearTimeout(timer);
+  }, [authenticated]);
   useEffect(() => { applyThemeToDocument(currentTheme); }, [currentTheme]);
 
   // Global styles — injected once
@@ -1047,9 +1080,19 @@ export default function App() {
         {/* Main Content */}
         <main style={css.mainContent}>
           <GlobalBanner status={status} error={state.globalError} onClearError={() => dispatch({ type: "clearGlobalError" })} t={t} />
-          {renderPage()}
+          <Suspense fallback={<PageLoading />}>{renderPage()}</Suspense>
         </main>
       </div>
+    </div>
+  );
+}
+
+// ─── Page loading fallback (route-level lazy chunks) ────────
+
+function PageLoading() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", color: "var(--text-muted, #888)" }}>
+      <span style={{ fontSize: 14 }}>Loading…</span>
     </div>
   );
 }

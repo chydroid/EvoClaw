@@ -95,3 +95,9 @@ LEARNINGS.md
 *.tar
 *.tar.gz
 *.tgz
+
+# Local agent working data (WorkBuddy memory logs) — machine-local, not source
+.workbuddy/
+
+# Stray temp files created by tooling
+_tmp_*

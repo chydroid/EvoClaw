@@ -1676,6 +1676,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "chat.expand_input": "展开为 5 行",
     "chat.expand_input_10": "展开为 10 行",
     "chat.intermediate_output": "中间过程",
+    "chat.stream_log": "执行过程",
     "chat.error": "错误",
     "chat.cancel_upload": "取消上传",
     "chat.remove": "移除",
@@ -2403,6 +2404,17 @@ const DICT: Record<Lang, Record<string, string>> = {
     "observability.details": "详情",
     "observability.ms": "毫秒",
     "observability.seconds": "秒",
+
+    // ─── Observability 组件健康（Component Health）──────────────
+    "observability.tab.health": "组件健康",
+    "observability.health.title": "组件健康",
+    "observability.health.subtitle": "各子系统组件健康状态（来自 Observability 健康报告）",
+    "observability.health.loading": "加载组件健康...",
+    "observability.health.all_ok": "所有组件健康",
+    "observability.health.degraded": "降级组件：{0}",
+    "observability.health.last_check": "最近检查",
+    "observability.health.remediation": "修复建议",
+    "observability.health.sqlite_remediation": "为当前 Node 版本重建原生模块：pnpm rebuild better-sqlite3（或 prebuild-install）",
 
     // ─── Config Migration Page ────────────────────────────────
     "config_migration.load_fail": "加载迁移记录失败",
@@ -4134,6 +4146,7 @@ const DICT: Record<Lang, Record<string, string>> = {
     "chat.expand_input": "Expand to 5 lines",
     "chat.expand_input_10": "Expand to 10 lines",
     "chat.intermediate_output": "Intermediate Output",
+    "chat.stream_log": "Execution Trace",
     "chat.error": "Error",
     "chat.cancel_upload": "Cancel upload",
     "chat.remove": "Remove",
@@ -4784,6 +4797,17 @@ const DICT: Record<Lang, Record<string, string>> = {
     "observability.details": "Details",
     "observability.ms": "ms",
     "observability.seconds": "s",
+
+    // ─── Observability Component Health ───────────────────
+    "observability.tab.health": "Component Health",
+    "observability.health.title": "Component Health",
+    "observability.health.subtitle": "Per-component health status from the Observability health report",
+    "observability.health.loading": "Loading component health...",
+    "observability.health.all_ok": "All components healthy",
+    "observability.health.degraded": "Degraded components: {0}",
+    "observability.health.last_check": "Last check",
+    "observability.health.remediation": "Remediation",
+    "observability.health.sqlite_remediation": "Rebuild native module for current Node: pnpm rebuild better-sqlite3 (or prebuild-install)",
 
     // ─── Workboard ──────────────────────────────────
     "workboard.title": "Workboard",

@@ -8,6 +8,7 @@
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
+import { reconcileCompletionTruthfulness } from "./completion-truthfulness";
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -3413,6 +3414,31 @@ Have a specific URL?
         // Append skill fallback result if available
         if (skillFallbackResult) {
           finalReply += skillFallbackResult;
+        }
+
+        // ── 完成声明真实性对账 ──
+        // 防止「声称已完成但实际未执行」的伪造完成态：把模型的完成声明
+        // 与「本回合真实工具执行情况 + 仍未决的审批操作」比对，
+        // 一旦发现不可信的完成声明，确定性地追加一段更正说明。
+        // 详见 completion-truthfulness.ts。
+        try {
+          const verdict = reconcileCompletionTruthfulness({
+            finalReply,
+            pendingPermissions,
+            toolsExecuted: anyToolExecuted,
+            lastUserMessage: message,
+          });
+          if (verdict.needsCorrection && verdict.notice) {
+            finalReply += verdict.notice;
+            process.stderr.write(
+              `[AgentModelExecutor] Completion-claim reconciliation triggered (${verdict.reason}) for session "${sessionId}"\n`
+            );
+          }
+        } catch (reconcileErr) {
+          // 对账失败不得阻断主流程
+          process.stderr.write(
+            `[AgentModelExecutor] Completion-claim reconciliation skipped: ${reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)}\n`
+          );
         }
         // ── Guardrails: output validation ──
         if (deps.checkOutputGuardrail && finalReply) {

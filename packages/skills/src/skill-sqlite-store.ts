@@ -19,8 +19,8 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { applyPragmas, DEFAULT_PRODUCTION_PRAGMAS } from "@evoclaw/infrastructure";
-import type { SqliteDb, SqliteStatement } from "@evoclaw/infrastructure";
+import { applyPragmas, DEFAULT_PRODUCTION_PRAGMAS, Logger } from "@evoclaw/infrastructure";
+import type { SqliteDb, SqliteStatement, Observability } from "@evoclaw/infrastructure";
 import type { SkillUsageStats, EvolutionRecord } from "./skill-curator.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────
@@ -51,6 +51,26 @@ const DEFAULT_DB_FILE = path.join(DEFAULT_DB_DIR, "skills.db");
 
 /** 最大演化事件数（与 skill-curator.ts MAX_RECORDS 对齐） */
 const MAX_EVOLUTION_EVENTS = 5000;
+
+/**
+ * 探测 better-sqlite3 原生模块在当前 Node / ABI 下是否可加载。
+ * 供 SkillSqliteStore 与服务器健康探针共用，避免重复实现。
+ * 探测失败（典型为 NODE_MODULE_VERSION 不匹配）是运行时 SQLite 持久化
+ * 失效的根因，应被上报到健康面板。
+ */
+export function probeSqlitePersistence(): { available: boolean; reason?: string } {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require("better-sqlite3");
+    return { available: true };
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const reason = raw.startsWith("Could not locate the bindings file")
+      ? "native bindings not compiled for this Node.js/ABI version"
+      : raw.split("\n")[0];
+    return { available: false, reason };
+  }
+}
 
 // ─── Schema DDL ────────────────────────────────────────────────────────
 
@@ -109,6 +129,7 @@ CREATE TABLE IF NOT EXISTS skill_curator_state (
 export class SkillSqliteStore {
   private db: SqliteDb | null = null;
   private sqliteDegraded = false;
+  private readonly observability?: Observability;
 
   // prepared statements 缓存
   private stmts: {
@@ -125,28 +146,42 @@ export class SkillSqliteStore {
     getCuratorState?: SqliteStatement;
   } = {};
 
-  constructor(private readonly dbFile: string = DEFAULT_DB_FILE) {
+  constructor(
+    private readonly dbFile: string = DEFAULT_DB_FILE,
+    observability?: Observability,
+  ) {
+    this.observability = observability;
     this.init();
   }
 
   // ─── 初始化 ──────────────────────────────────────────────────────────
 
   private init(): void {
-    let BetterSqlite3: new (file: string, opts?: Record<string, unknown>) => SqliteDb;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      BetterSqlite3 = require("better-sqlite3");
-    } catch (err) {
+    const probe = probeSqlitePersistence();
+    if (!probe.available) {
       this.db = null;
       this.sqliteDegraded = true;
-      const reason = err instanceof Error ? err.message : String(err);
-      process.stderr.write(
-        `[SkillSqliteStore] better-sqlite3 not available, SQLite backend disabled (${reason})\n`,
+      const reason = probe.reason ?? "unknown";
+      Logger.getInstance().warn(
+        "skills:sqlite",
+        "better-sqlite3 unavailable — SQLite backend DISABLED; all skill persistence writes (usage/lifecycle/events/curator) are silently dropped (no-op).",
+        {
+          degraded: true,
+          reason,
+          remediation: "install better-sqlite3 for the current Node.js ABI (pnpm rebuild better-sqlite3)",
+        },
+      );
+      this.observability?.setComponentHealth(
+        "skills:sqlite-store",
+        "degraded",
+        `SQLite persistence backend disabled: ${reason}`,
       );
       return;
     }
 
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const BetterSqlite3: new (file: string, opts?: Record<string, unknown>) => SqliteDb = require("better-sqlite3");
       const dir = path.dirname(this.dbFile);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -155,7 +190,12 @@ export class SkillSqliteStore {
       applyPragmas(this.db, DEFAULT_PRODUCTION_PRAGMAS);
       this.db.exec(SCHEMA_SQL);
       this.prepareStatements();
-      process.stderr.write(`[SkillSqliteStore] SQLite opened at ${this.dbFile}\n`);
+      Logger.getInstance().info("skills:sqlite", `SQLite opened at ${this.dbFile}`);
+      this.observability?.setComponentHealth(
+        "skills:sqlite-store",
+        "up",
+        `SQLite persistence backend active (${this.dbFile})`,
+      );
     } catch (err) {
       this.db = null;
       this.sqliteDegraded = true;
@@ -163,8 +203,21 @@ export class SkillSqliteStore {
       const reason = fullReason.startsWith("Could not locate the bindings file")
         ? "native bindings not compiled for this Node.js/ABI version"
         : fullReason.split("\n")[0];
-      process.stderr.write(
-        `[SkillSqliteStore] SQLite init failed, falling back to JSON (${reason})\n`,
+      Logger.getInstance().warn(
+        "skills:sqlite",
+        "SQLite init FAILED — store is DEGRADED, all writes are no-ops (silent data loss).",
+        {
+          degraded: true,
+          reason,
+          likelyCause: "better_sqlite3 native binary built for a different Node.js version (NODE_MODULE_VERSION mismatch)",
+          remediation:
+            "rebuild better-sqlite3 for current Node (cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && ./node_modules/.bin/prebuild-install)",
+        },
+      );
+      this.observability?.setComponentHealth(
+        "skills:sqlite-store",
+        "degraded",
+        `SQLite persistence init failed: ${reason}`,
       );
     }
   }

@@ -35,11 +35,13 @@ const SERVER_VERSION = getServerVersion();
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
+import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
+import type { DurableTask } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler } from "@evoclaw/agent";
 import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
-import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator } from "@evoclaw/skills";
+import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
@@ -88,6 +90,7 @@ export class EvoClawServer {
   private sandboxManager: SandboxManager;
   private conversationFlow: any;
   private agentModelExecutor: AgentModelExecutor;
+  private durableRunner: DurableTaskRunner;
   private skillManager: SkillManager;
   private skillTranslateTimer: ReturnType<typeof setTimeout> | null = null;
   private evolutionEngine: EvolutionEngine;
@@ -203,6 +206,26 @@ export class EvoClawServer {
     this.observability.registerHealthComponent("memoryHub");
     this.observability.registerHealthComponent("securityGovernor");
     this.observability.registerHealthComponent("messageQueue");
+
+    // ── SQLite 技能持久化健康探针 ──
+    // better-sqlite3 原生模块可用性为进程级事实：加载失败（典型为
+    // NODE_MODULE_VERSION 不匹配）会导致技能持久化静默降级（no-op）。
+    // 注册为 Observability 组件健康，初始探测 + 周期性刷新，使降级在
+    // /api/health/report 与可观测性面板可见。
+    this.observability.registerHealthComponent("skills:sqlite-store");
+    const refreshSqliteHealth = () => {
+      const probe = probeSqlitePersistence();
+      this.observability.setComponentHealth(
+        "skills:sqlite-store",
+        probe.available ? "up" : "degraded",
+        probe.available
+          ? "SQLite persistence backend available"
+          : `SQLite persistence backend unavailable: ${probe.reason ?? "unknown"}`,
+      );
+    };
+    refreshSqliteHealth();
+    const sqliteHealthTimer = setInterval(refreshSqliteHealth, 5 * 60 * 1000);
+    sqliteHealthTimer.unref?.();
 
     this.securityMiddleware = new SecurityMiddleware(this.registry, this.eventBus);
 
@@ -440,6 +463,34 @@ export class EvoClawServer {
       this.configManager.get("persona"),
       { storeDir: dataDir }
     );
+
+    // ── 可持久化超长任务引擎（断点续跑）：消除「超时即失败 + 请简化请求」──
+    // 复用单例，确保 executor 内部与 server 拿到同一实例；用 dataDir 定位落盘点，
+    // 进程重启后 runner.resumeAll() 会重新把未完成任务转入后台续跑。
+    resetDurableTaskRunner();
+    this.durableRunner = getDurableTaskRunner(dataDir);
+    this.durableRunner.setResumeDriver((task: DurableTask) =>
+      this.agentModelExecutor
+        .chat(
+          this.agentModelExecutor.buildContinuePrompt(task),
+          {
+            sessionId: task.sessionId,
+            channel: task.channel,
+            resume: true,
+            durableTaskId: task.id,
+            originalMessage: task.userRequest,
+          },
+          (ev: unknown) => {
+            const detail = (ev as { detail?: unknown })?.detail;
+            if (detail !== undefined && detail !== null) {
+              this.durableRunner.appendProgress(task.id, String(detail));
+            }
+          },
+        )
+        .then((r) => r.reply),
+    );
+    this.agentModelExecutor.setDurableTaskRunner(this.durableRunner);
+
     // Wire GatewayMetadataCache → agentModelExecutor → tokenUsageTracker so
     // real-time cost estimation uses actual provider prices (not the stub
     // getModelCost: () => undefined that previously forced fallback defaults).
@@ -642,6 +693,14 @@ export class EvoClawServer {
     });
     this.protocolHandler.setEventBus(this.eventBus);
     this.registry.registerService("protocolHandler", this.protocolHandler);
+    // 后台超长任务完成/失败/取消时，通过 WebSocket 广播通知前端
+    this.durableRunner.setDeliver((_sessionId: string, event: string, payload: Record<string, unknown>) => {
+      try {
+        this.protocolHandler.broadcast(event, payload);
+      } catch (err) {
+        process.stderr.write(`[Server] durable deliver broadcast failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    });
     this.securityGovernor = new SecurityGovernor(this.registry, this.eventBus);
     this.auditCenter = new AuditCenter(this.registry, this.eventBus);
     this.tenantManager = new TenantManager(this.registry, this.eventBus);
@@ -790,6 +849,14 @@ export class EvoClawServer {
 
     this.logger.info("server", "Gateway server starting...");
     await this.gateway.start();
+
+    // ── 跨重启续跑：把上次未完成的超长任务（paused/running）转入后台继续，
+    //    不再因超时失败，即使服务重启/跨天也会自动恢复。 ──
+    try {
+      this.durableRunner.resumeAll();
+    } catch (err) {
+      this.logger.error("server", `durableRunner.resumeAll failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // Initialize KanbanBoard SQLite database (schema + event subscriptions)
     try {
@@ -2275,6 +2342,9 @@ async function main(): Promise<void> {
 main().catch((err) => {
   const logger = Logger.getInstance();
   logger.fatal("server", "Failed to start", err);
+  // 直接落到 stderr，避免被 LOG_LEVEL 过滤导致启动失败无任何提示
+  const detail = err instanceof Error ? (err.stack || err.message) : String(err);
+  process.stderr.write(`\n[EvoClaw] 启动失败（进程即将退出）：\n${detail}\n`);
   process.exit(1);
 });
 
