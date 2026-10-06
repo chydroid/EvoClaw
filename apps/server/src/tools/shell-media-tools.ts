@@ -188,7 +188,7 @@ export function registerShellMediaTools(
     },
     async (params: Record<string, unknown>) => {
       const command = String(params.command || "");
-      if (!command) return { error: "Command is required" };
+      if (!command) return { success: false, error: "Command is required" };
 
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
@@ -341,7 +341,7 @@ export function registerShellMediaTools(
       ];
       for (const pattern of DANGEROUS_PATTERNS) {
         if (pattern.test(command)) {
-          return { error: `Command blocked by safety filter: matched dangerous pattern`, command };
+          return { success: false, error: `Command blocked by safety filter: matched dangerous pattern`, command };
         }
       }
 
@@ -531,7 +531,7 @@ export function registerShellMediaTools(
     },
     async (params: Record<string, unknown>) => {
       const url = String(params.url || "");
-      if (!url) return { error: "URL is required" };
+      if (!url) return { success: false, error: "URL is required" };
       const selector = params.selector ? String(params.selector) : "";
       const extractLinks = String(params.extractLinks || "") === "true";
       const headless = String(params.headless || "") !== "false";
@@ -539,7 +539,7 @@ export function registerShellMediaTools(
       // SSRF 防护：阻止访问内网/元数据端点
       const ssrfReason = await checkSsrf(url);
       if (ssrfReason) {
-        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
 
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
@@ -606,14 +606,14 @@ except Exception as e:
     },
     async (params: Record<string, unknown>) => {
       const url = String(params.url || "");
-      if (!url) return { error: "URL is required" };
+      if (!url) return { success: false, error: "URL is required" };
       const format = String(params.format || "best");
       const noWatermark = String(params.noWatermark || "true") === "true";
 
       // SSRF 防护：阻止访问内网/元数据端点
       const ssrfReason = await checkSsrf(url);
       if (ssrfReason) {
-        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
 
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
@@ -699,7 +699,7 @@ except Exception as e:
       const artist = String(params.artist || "");
       const limitRaw = Number(params.limit);
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
-      if (!artist) return { error: "Artist name is required" };
+      if (!artist) return { success: false, error: "Artist name is required" };
       // Return structured data that the LLM will format into a nice list
       return JSON.stringify({
         artist,
@@ -724,7 +724,7 @@ except Exception as e:
     },
     async (params: Record<string, unknown>) => {
       const query = String(params.query || "");
-      if (!query) return { error: "Query (song name or URL) is required" };
+      if (!query) return { success: false, error: "Query (song name or URL) is required" };
       const audioFormat = String(params.audioFormat || "mp3");
       const quality = String(params.quality || "320");
 
@@ -741,7 +741,7 @@ except Exception as e:
       if (isUrl) {
         const ssrfReason = await checkSsrf(query);
         if (ssrfReason) {
-          return { error: `URL blocked by security policy: ${ssrfReason}`, url: query };
+          return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url: query };
         }
       }
 
@@ -893,11 +893,11 @@ except Exception as e:
       }
 
       const code = String(params.code || "");
-      if (!code) return { error: "Parameter 'code' is required" };
+      if (!code) return { success: false, error: "Parameter 'code' is required" };
 
       const language = String(params.language || "node").toLowerCase();
       if (language !== "python" && language !== "node") {
-        return { error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
+        return { success: false, error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
       }
 
       const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "30"), 10) || 30, 1), 120);

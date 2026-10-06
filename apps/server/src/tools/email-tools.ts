@@ -26,7 +26,7 @@ export function registerEmailTools(
       const provider = String(params.provider || "custom") as EmailAccount["provider"];
       const displayName = String(params.displayName || "");
       if (!email || !password) {
-        return { error: "email and password are required" };
+        return { success: false, error: "email and password are required" };
       }
       const perm = permissionManager.requestPermission("email_add_account", email, { provider }, "tool");
       if (perm.status === "denied") {
@@ -109,10 +109,10 @@ export function registerEmailTools(
       try {
         rawEmails = JSON.parse(String(params.rawEmails || "[]"));
       } catch {
-        return { error: "rawEmails must be a valid JSON array of email strings" };
+        return { success: false, error: "rawEmails must be a valid JSON array of email strings" };
       }
       if (rawEmails.length > 100) {
-        return { error: "rawEmails array too large, maximum 100 items" };
+        return { success: false, error: "rawEmails array too large, maximum 100 items" };
       }
       const parsed: ParsedEmail[] = [];
       for (const raw of rawEmails) {

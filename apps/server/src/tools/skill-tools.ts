@@ -22,6 +22,9 @@ export function registerAutoSkillTools(
     },
     async (params: Record<string, unknown>) => {
       const task = String(params.task || "");
+      if (!task.trim()) {
+        return { success: false, error: "task is required" };
+      }
       return await autoSkill.autoInstallForTask(task);
     }
   );
@@ -365,10 +368,11 @@ export function registerAutoSkillTools(
     async (params: Record<string, unknown>) => {
       const task = String(params.task || "");
       const match = await autoSkill.findSkillForTask(task);
-      if (!match) return { found: false, reason: "No matching skill found" };
+      if (!match) return { success: true, found: false, reason: "No matching skill found" };
 
       // If the skill is already installed, include its command templates
       const result: Record<string, unknown> = {
+        success: true,
         found: true,
         skillName: match.skillName,
         skillPath: match.skillPath,

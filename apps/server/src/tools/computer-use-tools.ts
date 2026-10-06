@@ -248,10 +248,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       try {
         const buf = await backend.screenshot();
         const size = await getValidScreenSize(backend, sessionId);
@@ -263,7 +263,7 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
           size: buf.length,
         };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -285,10 +285,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const x = Number(params.x);
       const y = Number(params.y);
       const buttonStr = String(params.button || "left");
@@ -297,11 +297,11 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       try {
         const size = await getValidScreenSize(backend, sessionId);
         const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { error: coordCheck.error };
+        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
         await backend.mouseClick(x, y, button, doubleClick);
         return { success: true, x, y, button, doubleClick };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -321,20 +321,20 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const x = Number(params.x);
       const y = Number(params.y);
       try {
         const size = await getValidScreenSize(backend, sessionId);
         const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { error: coordCheck.error };
+        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
         await backend.mouseMove(x, y);
         return { success: true, x, y };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -356,10 +356,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const fromX = Number(params.fromX);
       const fromY = Number(params.fromY);
       const toX = Number(params.toX);
@@ -367,13 +367,13 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       try {
         const size = await getValidScreenSize(backend, sessionId);
         const c1 = validateCoords(fromX, fromY, size);
-        if (!c1.ok) return { error: `起点${c1.error}` };
+        if (!c1.ok) return { success: false, error: `起点${c1.error}` };
         const c2 = validateCoords(toX, toY, size);
-        if (!c2.ok) return { error: `终点${c2.error}` };
+        if (!c2.ok) return { success: false, error: `终点${c2.error}` };
         await backend.mouseDrag(fromX, fromY, toX, toY);
         return { success: true, from: { x: fromX, y: fromY }, to: { x: toX, y: toY } };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -395,10 +395,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const x = Number(params.x);
       const y = Number(params.y);
       const directionStr = String(params.direction || "down");
@@ -410,11 +410,11 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       try {
         const size = await getValidScreenSize(backend, sessionId);
         const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { error: coordCheck.error };
+        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
         await backend.mouseScroll(x, y, direction, amount);
         return { success: true, x, y, direction, amount };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -433,22 +433,22 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const text = String(params.text || "");
-      if (!text) return { error: "text 不能为空" };
+      if (!text) return { success: false, error: "text 不能为空" };
       // 文本长度限制（防滥用）
       const MAX_TEXT_LEN = 2000;
       if (text.length > MAX_TEXT_LEN) {
-        return { error: `文本过长（${text.length} > ${MAX_TEXT_LEN}），请分段输入` };
+        return { success: false, error: `文本过长（${text.length} > ${MAX_TEXT_LEN}），请分段输入` };
       }
       try {
         await backend.keyType(text);
         return { success: true, length: text.length };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -467,21 +467,21 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const keysStr = String(params.keys || "");
       const keys = keysStr.split(",").map((k) => k.trim()).filter(Boolean);
-      if (keys.length === 0) return { error: "keys 不能为空" };
+      if (keys.length === 0) return { success: false, error: "keys 不能为空" };
       // 按键白名单 + 危险组合黑名单校验
       const keyCheck = validateKeySequence(keys);
-      if (!keyCheck.ok) return { error: keyCheck.error };
+      if (!keyCheck.ok) return { success: false, error: keyCheck.error };
       try {
         await backend.keyPress(keys);
         return { success: true, keys };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -499,10 +499,10 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       try {
         if (!backend.windowList) {
           return { windows: [], supported: false };
@@ -510,7 +510,7 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
         const windows = await backend.windowList();
         return { windows, supported: true, count: windows.length };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,
@@ -529,20 +529,20 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { error: "ComputerBackend 不可用" };
+      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
       const sessionId = String(params.sessionId || "default");
       const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { error: rate.error };
+      if (!rate.ok) return { success: false, error: rate.error };
       const windowId = String(params.windowId || "");
-      if (!windowId) return { error: "windowId 不能为空" };
+      if (!windowId) return { success: false, error: "windowId 不能为空" };
       try {
         if (!backend.windowFocus) {
-          return { error: "当前后端不支持窗口聚焦" };
+          return { success: false, error: "当前后端不支持窗口聚焦" };
         }
         await backend.windowFocus(windowId);
         return { success: true, windowId };
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
     checkFn,

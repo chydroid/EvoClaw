@@ -178,7 +178,7 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "body");
       if (!browser.getCurrentPage()) {
-        return { error: "No page loaded. Use browser_navigate first." };
+        return { success: false, error: "No page loaded. Use browser_navigate first." };
       }
       const text = await browser.getText(selector);
       return { selector, text, length: text.length };
@@ -198,7 +198,7 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "");
       if (!browser.getCurrentPage()) {
-        return { error: "No page loaded. Use browser_navigate first." };
+        return { success: false, error: "No page loaded. Use browser_navigate first." };
       }
       const elements = await browser.findElements(selector);
       return { selector, count: elements.length, elements };
@@ -276,7 +276,7 @@ export function registerBrowserTools(
       const url = String(params.url || "");
       const ssrfCheck = await validateUrlSsrf(url);
       if (!ssrfCheck.ok) {
-        return { error: ssrfCheck.error, url };
+        return { success: false, error: ssrfCheck.error, url };
       }
       return await browser.fetchJSON(url);
     }
@@ -302,7 +302,7 @@ export function registerBrowserTools(
       if (action === "new") {
         const sessionInfo = browserSessions.get("default");
         if (sessionInfo && sessionInfo.tabCount >= MAX_TABS_PER_SESSION) {
-          return { error: `Maximum tab limit (${MAX_TABS_PER_SESSION}) reached. Close an existing tab before opening a new one.`, tabCount: sessionInfo.tabCount };
+          return { success: false, error: `Maximum tab limit (${MAX_TABS_PER_SESSION}) reached. Close an existing tab before opening a new one.`, tabCount: sessionInfo.tabCount };
         }
         browser.newTab(tabId || `tab-${Date.now()}`);
         if (sessionInfo) sessionInfo.tabCount++;
@@ -320,7 +320,7 @@ export function registerBrowserTools(
         }
         return { success: ok, action: "close", tabId };
       }
-      return { error: `Unknown action: ${action}` };
+      return { success: false, error: `Unknown action: ${action}` };
     }
   );
 
@@ -494,7 +494,7 @@ export function registerBrowserTools(
       try {
         fields = JSON.parse(String(params.fields || "[]"));
       } catch {
-        return { error: "Invalid fields JSON array" };
+        return { success: false, error: "Invalid fields JSON array" };
       }
       await pwBrowser.fillForm(fields);
       return { success: true, fieldCount: fields.length };
@@ -530,14 +530,14 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "");
       const value = String(params.value || "");
-      if (!selector) return { error: "CSS selector is required" };
-      if (!value) return { error: "Option value is required" };
+      if (!selector) return { success: false, error: "CSS selector is required" };
+      if (!value) return { success: false, error: "Option value is required" };
       try {
         const selected = await pwBrowser.selectOption(selector, value);
         return { success: true, selector, value, selectedValues: selected };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Select failed: ${msg}`, selector, value };
+        return { success: false, error: `Select failed: ${msg}`, selector, value };
       }
     }
   );
@@ -556,13 +556,13 @@ export function registerBrowserTools(
       touchBrowserSession();
       const selector = String(params.selector || "");
       const checked = String(params.checked || "true") !== "false";
-      if (!selector) return { error: "CSS selector is required" };
+      if (!selector) return { success: false, error: "CSS selector is required" };
       try {
         await pwBrowser.checkCheckbox(selector, checked);
         return { success: true, selector, checked };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Check/uncheck failed: ${msg}`, selector };
+        return { success: false, error: `Check/uncheck failed: ${msg}`, selector };
       }
     }
   );
@@ -584,13 +584,13 @@ export function registerBrowserTools(
       const state = String(params.state || "visible") as "attached" | "visible" | "hidden" | "detached";
       const timeoutRaw = parseInt(String(params.timeout ?? "30000"), 10);
       const timeout = Number.isFinite(timeoutRaw) ? timeoutRaw : 30000;
-      if (!selector) return { error: "CSS selector is required" };
+      if (!selector) return { success: false, error: "CSS selector is required" };
       try {
         const found = await pwBrowser.waitForElement(selector, timeout, state);
         return { success: found, selector, state, timeout, found };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Wait failed: ${msg}`, selector, state, timeout };
+        return { success: false, error: `Wait failed: ${msg}`, selector, state, timeout };
       }
     }
   );
@@ -607,13 +607,13 @@ export function registerBrowserTools(
     async (params: Record<string, unknown>) => {
       touchBrowserSession();
       const selector = String(params.selector || "");
-      if (!selector) return { error: "CSS selector is required" };
+      if (!selector) return { success: false, error: "CSS selector is required" };
       try {
         await pwBrowser.hover(selector);
         return { success: true, selector };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Hover failed: ${msg}`, selector };
+        return { success: false, error: `Hover failed: ${msg}`, selector };
       }
     }
   );
@@ -640,7 +640,7 @@ export function registerBrowserTools(
         return { success: true, selector: selector || "page", direction, amount };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `Scroll failed: ${msg}` };
+        return { success: false, error: `Scroll failed: ${msg}` };
       }
     }
   );
@@ -674,7 +674,7 @@ export function registerBrowserTools(
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `extractDom failed: ${msg}` };
+        return { success: false, error: `extractDom failed: ${msg}` };
       }
     }
   );
@@ -692,14 +692,14 @@ export function registerBrowserTools(
       touchBrowserSession();
       const index = parseInt(String(params.index || ""), 10);
       if (Number.isNaN(index) || index < 0) {
-        return { error: "Invalid index. Provide a non-negative integer." };
+        return { success: false, error: "Invalid index. Provide a non-negative integer." };
       }
       try {
         const result = await pwBrowser.clickByIndex(index);
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `clickByIndex failed: ${msg}` };
+        return { success: false, error: `clickByIndex failed: ${msg}` };
       }
     }
   );
@@ -720,7 +720,7 @@ export function registerBrowserTools(
       touchBrowserSession();
       const index = parseInt(String(params.index || ""), 10);
       if (Number.isNaN(index) || index < 0) {
-        return { error: "Invalid index. Provide a non-negative integer." };
+        return { success: false, error: "Invalid index. Provide a non-negative integer." };
       }
       const text = String(params.text || "");
       const clearFirst = String(params.clear_first || "true").toLowerCase() !== "false";
@@ -730,7 +730,7 @@ export function registerBrowserTools(
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `inputByIndex failed: ${msg}` };
+        return { success: false, error: `inputByIndex failed: ${msg}` };
       }
     }
   );
@@ -750,7 +750,7 @@ export function registerBrowserTools(
       touchBrowserSession();
       const index = parseInt(String(params.index || ""), 10);
       if (Number.isNaN(index) || index < 0) {
-        return { error: "Invalid index. Provide a non-negative integer." };
+        return { success: false, error: "Invalid index. Provide a non-negative integer." };
       }
       const direction = String(params.direction || "down") as "up" | "down" | "left" | "right";
       const amountRaw = parseInt(String(params.amount ?? "300"), 10);
@@ -760,7 +760,7 @@ export function registerBrowserTools(
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `scrollByIndex failed: ${msg}` };
+        return { success: false, error: `scrollByIndex failed: ${msg}` };
       }
     }
   );
@@ -778,7 +778,7 @@ export function registerBrowserTools(
         return { success: true };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { error: `clearDomIndexes failed: ${msg}` };
+        return { success: false, error: `clearDomIndexes failed: ${msg}` };
       }
     }
   );

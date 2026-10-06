@@ -24,9 +24,9 @@ export function registerSkillIndexTools(
       const level: 0 | 1 | 2 = [0, 1, 2].includes(parsedLevel) ? (parsedLevel as 0 | 1 | 2) : 1;
       const allEntries = index.getAll();
       const entry = allEntries.find(e => e.name === skillName || e.id === skillName);
-      if (!entry) return { error: `Skill "${skillName}" not found in index` };
+      if (!entry) return { success: false, error: `Skill "${skillName}" not found in index` };
       const content = index.getSkillLevel(entry.id, level);
-      if (!content) return { error: `Skill "${skillName}" level ${level} not available` };
+      if (!content) return { success: false, error: `Skill "${skillName}" level ${level} not available` };
       return { skillName: entry.name, level, content, successRate: entry.successRate, useCount: entry.useCount };
     }
   );

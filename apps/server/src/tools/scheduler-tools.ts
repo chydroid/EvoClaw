@@ -187,10 +187,10 @@ export function registerSchedulerTools(
       try {
         handlerConfig = JSON.parse(String(params.handlerConfig || "{}"));
       } catch {
-        return { error: "Invalid handlerConfig JSON" };
+        return { success: false, error: "Invalid handlerConfig JSON" };
       }
       if (!name || !cronExpression) {
-        return { error: "name and cronExpression are required" };
+        return { success: false, error: "name and cronExpression are required" };
       }
       // 安全：shell 类型任务需审批告警并阻止明显危险命令（registerSchedulerTools 无 permissionManager，故仅告警+黑名单拦截）
       if (handlerType === "shell") {
@@ -257,7 +257,7 @@ export function registerSchedulerTools(
         try {
           updates.handlerConfig = JSON.parse(String(params.handlerConfig));
         } catch {
-          return { error: "Invalid handlerConfig JSON" };
+          return { success: false, error: "Invalid handlerConfig JSON" };
         }
         // 安全：shell 任务更新 handlerConfig 时重新检查危险命令（与 scheduler_create 一致）
         const existingTask = sched.getTask(taskId);

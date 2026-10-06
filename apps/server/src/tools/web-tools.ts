@@ -36,7 +36,7 @@ function cleanText(text: string): string {
   return decodeHtmlEntities(text.replace(/<\/?[^>]+>/g, "").trim().slice(0, 500));
 }
 
-async function trySearchBing(q: string, limit: number, ua: string, isChinese: boolean = false, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string; source?: string }> {
+async function trySearchBing(q: string, limit: number, ua: string, isChinese: boolean = false, freshness?: string): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string; source?: string }> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -58,7 +58,7 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
     });
     if (!response.ok) {
       clearTimeout(timeout);
-      return { error: `Bing HTTP ${response.status}` };
+      return { success: false, error: `Bing HTTP ${response.status}` };
     }
 
     const html = await response.text();
@@ -98,14 +98,14 @@ async function trySearchBing(q: string, limit: number, ua: string, isChinese: bo
     }
 
     if (results.length > 0) return { results, source: isChinese ? "Bing CN" : "Bing" };
-    return { error: "No results found in Bing" };
+    return { success: false, error: "No results found in Bing" };
     } finally { clearTimeout(timeout); }
   } catch (err: any) {
-    return { error: err.name === "AbortError" ? "Bing search timed out" : `Bing error: ${err.message || String(err)}` };
+    return { success: false, error: err.name === "AbortError" ? "Bing search timed out" : `Bing error: ${err.message || String(err)}` };
   }
 }
 
-async function trySearchGoogle(q: string, limit: number, ua: string, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+async function trySearchGoogle(q: string, limit: number, ua: string, freshness?: string): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -123,7 +123,7 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
     });
     if (!response.ok) {
       clearTimeout(timeout);
-      return { error: `Google HTTP ${response.status}` };
+      return { success: false, error: `Google HTTP ${response.status}` };
     }
 
     const html = await response.text();
@@ -149,14 +149,14 @@ async function trySearchGoogle(q: string, limit: number, ua: string, freshness?:
     }
 
     if (results.length > 0) return { results };
-    return { error: "No results found in Google" };
+    return { success: false, error: "No results found in Google" };
     } finally { clearTimeout(timeout); }
   } catch (err: any) {
-    return { error: err.name === "AbortError" ? "Google search timed out" : `Google error: ${err.message || String(err)}` };
+    return { success: false, error: err.name === "AbortError" ? "Google search timed out" : `Google error: ${err.message || String(err)}` };
   }
 }
 
-async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshness?: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshness?: string): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -176,13 +176,13 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
 
     if (!response.ok) {
       clearTimeout(timeout);
-      return { error: `Baidu HTML HTTP ${response.status}` };
+      return { success: false, error: `Baidu HTML HTTP ${response.status}` };
     }
 
     const html = await response.text();
     clearTimeout(timeout);
     if (html.length < 5000) {
-      return { error: "Baidu returned minimal content (possible anti-bot block)" };
+      return { success: false, error: "Baidu returned minimal content (possible anti-bot block)" };
     }
 
     const results: Array<{ title: string; url: string; snippet: string }> = [];
@@ -221,14 +221,14 @@ async function trySearchBaiduHTML(q: string, limit: number, ua: string, freshnes
     }
 
     if (results.length > 0) return { results };
-    return { error: "No results found in Baidu HTML" };
+    return { success: false, error: "No results found in Baidu HTML" };
     } finally { clearTimeout(timeout); }
   } catch (err: any) {
-    return { error: err.name === "AbortError" ? "Baidu HTML search timed out" : `Baidu HTML error: ${err.message || String(err)}` };
+    return { success: false, error: err.name === "AbortError" ? "Baidu HTML search timed out" : `Baidu HTML error: ${err.message || String(err)}` };
   }
 }
 
-async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -243,7 +243,7 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
 
     if (!response.ok) {
       clearTimeout(timeout);
-      return { error: `DuckDuckGo HTTP ${response.status}` };
+      return { success: false, error: `DuckDuckGo HTTP ${response.status}` };
     }
 
     const html = await response.text();
@@ -269,10 +269,10 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ res
     }
 
     if (results.length > 0) return { results };
-    return { error: "No results found in DuckDuckGo" };
+    return { success: false, error: "No results found in DuckDuckGo" };
     } finally { clearTimeout(timeout); }
   } catch (err: any) {
-    return { error: err.name === "AbortError" ? "DuckDuckGo search timed out" : `DuckDuckGo error: ${err.message || String(err)}` };
+    return { success: false, error: err.name === "AbortError" ? "DuckDuckGo search timed out" : `DuckDuckGo error: ${err.message || String(err)}` };
   }
 }
 
@@ -321,7 +321,7 @@ export function registerWebTools(
       // SSRF 防护：校验 URL 不指向内网/元数据端点
       const ssrfReason = await checkSsrf(url);
       if (ssrfReason) {
-        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
       try {
         const controller = new AbortController();
@@ -352,7 +352,7 @@ export function registerWebTools(
           const redirectSsrfReason = await checkSsrf(redirectUrl);
           if (redirectSsrfReason) {
             clearTimeout(timeout);
-            return { error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: redirectUrl };
+            return { success: false, error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: redirectUrl };
           }
           finalResponse = await fetch(redirectUrl, {
             headers: {
@@ -366,7 +366,7 @@ export function registerWebTools(
         }
         if (!finalResponse.ok) {
           clearTimeout(timeout);
-          return { error: `HTTP ${finalResponse.status}`, url: redirectUrl };
+          return { success: false, error: `HTTP ${finalResponse.status}`, url: redirectUrl };
         }
 
         if (format === "json") {
@@ -397,9 +397,9 @@ export function registerWebTools(
           length: plainText.length,
         };
       } catch (err: any) {
-        return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
+        return { success: false, error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
       } finally { clearTimeout(timeout); }
-    } catch (err: any) { return { error: err.message || String(err), url }; }
+    } catch (err: any) { return { success: false, error: err.message || String(err), url }; }
     }
   );
 
@@ -419,12 +419,12 @@ export function registerWebTools(
       const maxLengthRaw = Number(params.maxLength);
       const maxLength = Math.max(1, Number.isFinite(maxLengthRaw) && maxLengthRaw > 0 ? maxLengthRaw : 5000);
       if (!url || !url.startsWith("http")) {
-        return { error: "Valid HTTP/HTTPS URL is required", url };
+        return { success: false, error: "Valid HTTP/HTTPS URL is required", url };
       }
       // SSRF 防护
       const ssrfReason = await checkSsrf(url);
       if (ssrfReason) {
-        return { error: `URL blocked by security policy: ${ssrfReason}`, url };
+        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
       }
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
@@ -450,7 +450,7 @@ export function registerWebTools(
           const redirectSsrfReason = await checkSsrf(currentUrl);
           if (redirectSsrfReason) {
             clearTimeout(timeout);
-            return { error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: currentUrl };
+            return { success: false, error: `Redirect blocked by security policy: ${redirectSsrfReason}`, url: currentUrl };
           }
           response = await fetch(currentUrl, {
             headers: {
@@ -464,7 +464,7 @@ export function registerWebTools(
         }
         if (!response.ok) {
           clearTimeout(timeout);
-          return { error: `HTTP ${response.status}`, url: currentUrl };
+          return { success: false, error: `HTTP ${response.status}`, url: currentUrl };
         }
         const text = await response.text();
         clearTimeout(timeout);
@@ -482,7 +482,7 @@ export function registerWebTools(
           length: content.length,
         };
       } catch (err: any) {
-        return { error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
+        return { success: false, error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
       } finally {
         // 始终清理 timeout，防止非超时错误（如 DNS 失败、连接重置）下 timer 句柄泄漏
         clearTimeout(timeout);
@@ -651,7 +651,7 @@ export function registerWebTools(
 
       console.warn(`[WebSearch] All search providers failed for query variants: ${allQueries.join(", ")}`);
       const errorMsg = "All search providers failed for all query variants";
-      return { error: errorMsg, query, source: "none", results: [] };
+      return { success: false, error: errorMsg, query, source: "none", results: [] };
     }
   );
 }
