@@ -1,5 +1,7 @@
 export type PromptMode = "full" | "minimal" | "none";
 
+import { buildCapabilityCatalogLines } from "./tool-capability-catalog";
+
 export interface SystemPromptParams {
   promptMode: PromptMode;
   personaName: string;
@@ -101,6 +103,21 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
 
   sections.push("## Tooling");
   sections.push(`Available tools: ${params.registeredToolNames.join(", ")}.`);
+
+  // ── 能力速查表：把平铺的长工具名列表切成「意图 → 工具名」的短语义块 ──
+  // 背景：90+ 个工具名平铺成一行时，弱模型几乎必然漏看单项，进而断言
+  // "系统没有这个工具 / 缺少 XX 接口" 并臆造不存在的限制。真实案例：
+  // 用户要求添加邮箱账户，模型称缺少 email_add_account（该工具其实一直存在）。
+  const catalogLines = buildCapabilityCatalogLines(params.registeredToolNames);
+  if (catalogLines.length > 0) {
+    sections.push("");
+    sections.push("### ⚡ 能力速查表（判断「我有没有这个能力」时，先查这里）");
+    sections.push(
+      "下表把常用意图直接映射到工具名。用户提出的需求如果命中下表某一行，" +
+      "就说明你**已经有**对应能力，必须直接调用该工具，不得说「没有这个工具」「缺少接口」。"
+    );
+    for (const line of catalogLines) sections.push(line);
+  }
   sections.push(
     "Call tools when the user asks you to perform operations. " +
     "Do not describe what you will do — actually invoke the tool. " +
@@ -126,8 +143,10 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "你必须如实告知用户「该操作正在等待审批」或「该操作失败，原因如下」，绝对不可以声称已经完成。"
   );
   sections.push(
-    "3. 「我不知道有这个能力」是错误结论。判断能力时只看本提示词里列出的工具清单；" +
-    "清单里的工具就是你可以直接调用的能力，不要臆造「需要改配置文件」「无法通过对话完成」这类限制。"
+    "3. 「我不知道有这个能力 / 系统没有这个工具」是错误结论，绝大多数情况下是你在长长的工具清单里漏看了。" +
+    "开口说「没有」「缺少」「不支持」之前，必须先在上方「能力速查表」里按意图找到对应工具名，" +
+    "再到完整工具清单里逐个核对拼写。两处都确认不存在，才可以说做不到。" +
+    "不要臆造「需要改配置文件」「无法通过对话完成」「系统没有开放该接口」这类限制。"
   );
   sections.push(
     "4. 需要多步才能完成的任务，必须逐步调用工具并在每步后核验；" +
@@ -135,6 +154,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   );
   sections.push(
     "5. 宁可如实说「我做不到/需要你先做 X」，也不要伪造一个看起来成功的假结果。虚构成功比失败更糟。"
+  );
+  sections.push(
+    "6. 严禁在回复中回显用户提供的密码、邮箱授权码、API Key、Token 等凭据原文。" +
+    "需要引用时只写「已使用你提供的授权码」或显示前 2 位加星号（如 DC****），" +
+    "完整值只允许出现在工具参数里。"
   );
   sections.push("");
   if (params.channel) {

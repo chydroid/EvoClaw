@@ -205,6 +205,15 @@ export type { StaleResult } from "./file-state-registry";
 export { ToolSearchEngine, ToolSearchIndex, estimateTokens, estimateToolTokens, estimateTotalTokens } from "./tool-search";
 export type { ToolMeta, ToolSearchConfig, ToolSearchResult, IndexedTool } from "./tool-search";
 
+// ToolCapabilityCatalog — 能力速查表（意图 → 工具名 映射，防「漏看工具」型误判）
+export {
+  buildCapabilityCatalogLines,
+  matchCapabilityTools,
+  collectCreationTools,
+  CAPABILITY_RULES,
+} from "./tool-capability-catalog";
+export type { CapabilityRule } from "./tool-capability-catalog";
+
 // Observability system
 export { AgentObservability } from "./agent-observability";
 export type { Span, Trace, TraceSummary, Metric, SpanKind, SpanEvent, ObservabilityConfig } from "./agent-observability";

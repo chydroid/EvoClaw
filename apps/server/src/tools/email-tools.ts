@@ -12,10 +12,15 @@ export function registerEmailTools(
     "email_add_account",
     {
       name: "email_add_account",
-      description: "Add an email account for sending/receiving emails",
+      description:
+        "添加/配置/注册一个邮箱账户（IMAP 收信 + SMTP 发信），用于后续收发邮件。" +
+        "当用户说「添加邮箱」「配置邮箱账户」「注册邮件账号」「把我的 163/QQ/Gmail 邮箱接进来」时，" +
+        "就调用本工具——系统提供该能力，不要告诉用户没有添加接口。" +
+        "password 传邮箱授权码（不是登录密码）；163/QQ 等需在网页端开启 IMAP/SMTP 后生成授权码。" +
+        "添加成功后应调用 email_list_accounts 回读确认。",
       parameters: {
         email: { type: "string", description: "Email address" },
-        password: { type: "string", description: "Email password or app-specific password" },
+        password: { type: "string", description: "邮箱授权码（app-specific password），非登录密码" },
         provider: { type: "string", description: "Email provider: gmail, qq, 163, outlook, or custom" },
         displayName: { type: "string", description: "Display name for outgoing emails" },
       },

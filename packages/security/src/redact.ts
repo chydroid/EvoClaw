@@ -34,6 +34,7 @@ export type SecretKind =
   | "private_key"
   | "connection_string"
   | "generic_api_key"
+  | "credential_value"
   | "unknown";
 
 /** 前缀模式定义 */
@@ -96,6 +97,11 @@ const PREFIX_PATTERNS: PrefixPattern[] = [
   { kind: "connection_string", pattern: /(?:postgres(?:ql)?|mysql|mongodb(?:\+\w+)?|redis|amqp):\/\/[^\s:]+:[^\s@]+@/, minLength: 20 },
   // 通用 API key（key=XXX 或 api_key=XXX）
   { kind: "generic_api_key", pattern: /(?:api[_-]?key|secret|password|passwd|token)\s*[=:]\s*['"]?[A-Za-z0-9_-]{16,}/i, minLength: 25 },
+  // ── 凭据语境下的裸值（无 key= 前缀，散文中直接写出）──
+  // 场景：模型复述用户提供的邮箱授权码，如「密码填授权码 DCq4QHXN46bMPCc9」。
+  // 确定性：正则包含引导词（授权码/密码…），因此 preservePrefix 取到的前 4 字符
+  // 落在引导词上，被替换掉的值本身一个字符都不会残留。
+  { kind: "credential_value", pattern: /(?:授权码|应用专用密码|客户端授权码|第三方登录密码|邮箱密码|SMTP\s*密码|IMAP\s*密码|APP\s*密码|authorization code|app[- ]?specific password|app password)\s*[:：]?\s*(?:是|为|填|填写|填入|用|使用|is|are|=)?\s*['"]?[A-Za-z0-9]{12,}/gi, minLength: 16 },
 ];
 
 /** 脱敏结果 */

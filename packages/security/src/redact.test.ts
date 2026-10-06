@@ -187,3 +187,36 @@ describe("redactingFormatter", () => {
     expect(result.apiKey).toContain("*");
   });
 });
+
+describe("redactSensitiveText — 凭据语境裸值（回归）", () => {
+  it("★ 散文中裸写的邮箱授权码必须被脱敏，且不残留任何原始字符", () => {
+    const secret = "DCq4QHXN46bMPCc9";
+    const text = `用 imaplib 直连（用户名 chydroid@163.com，密码填授权码 ${secret}）拉取收件箱`;
+    const out = redactSensitiveText(text).redacted;
+    expect(out).not.toContain(secret);
+    // 保留的前缀应落在引导词上，值本身一个字符都不出现
+    expect(out).not.toContain("DCq4");
+    expect(out).toContain("[REDACTED:credential_value]");
+  });
+
+  it("英文 authorization code 语境同样脱敏", () => {
+    const out = redactSensitiveText("authorization code is AbCdEf123456GhIj").redacted;
+    expect(out).not.toContain("AbCdEf123456GhIj");
+  });
+
+  it("app-specific password 语境脱敏", () => {
+    const out = redactSensitiveText("app-specific password: Zx9Qw7Er5Ty3Ui1").redacted;
+    expect(out).not.toContain("Zx9Qw7Er5Ty3Ui1");
+  });
+
+  it("普通长字符串（文件名/哈希）不应被误伤", () => {
+    const text = "产物文件名是 webpackbundleprod20260101abcdef 已生成";
+    expect(redactSensitiveText(text).redacted).toBe(text);
+  });
+
+  it("统计结果中包含 credential_value 种类", () => {
+    const r = redactSensitiveText("授权码 AbCdEf123456GhIj");
+    expect(r.count).toBeGreaterThan(0);
+    expect(r.kinds).toContain("credential_value");
+  });
+});
