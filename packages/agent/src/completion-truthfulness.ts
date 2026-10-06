@@ -23,6 +23,14 @@ export interface PendingPermission {
   target: string;
 }
 
+/** 本回合执行过但**返回失败**的工具（用于识别「执行了却失败仍声称完成」） */
+export interface FailedTool {
+  /** 工具名 */
+  name: string;
+  /** 从工具返回值中提取出的错误摘要 */
+  error: string;
+}
+
 export interface ReconcileInput {
   /** 模型生成的最终回复 */
   finalReply: string;
@@ -32,13 +40,15 @@ export interface ReconcileInput {
   toolsExecuted?: boolean;
   /** 用户本轮的原始请求，用于判断是否包含"执行类"意图 */
   lastUserMessage?: string;
+  /** 本回合执行过但返回失败的工具列表 */
+  failedTools?: FailedTool[];
 }
 
 export interface ReconcileResult {
   /** 是否检测到虚假/不可信的完成声明 */
   needsCorrection: boolean;
   /** 问题类型，便于测试与日志定位 */
-  reason?: "pending_permissions" | "no_tool_executed";
+  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed";
   /** 应追加到最终回复的确定性更正文本 */
   notice?: string;
 }
@@ -88,12 +98,77 @@ export function hasActionIntent(text: string): boolean {
 }
 
 /**
+ * 从一个工具返回值中提取「失败证据」；成功则返回 null。
+ *
+ * 需要处理的真实形态（都是本次事故里出现过的）：
+ *   - `{ success: false, error: "..." }`
+ *   - `{ success: false, errors: ["Skill not found"] }`
+ *   - `{ success: true, result: { success: false, errors: ["Skill not found"] } }`  ← skill_execute 的外层包装，
+ *     外层 success 为 true 极易被模型误读为成功
+ *   - 序列化后的 JSON 字符串
+ *
+ * 注意：`{ success:false, requiresPermission:true }` 属于「等待审批」而非失败，
+ * 由 pendingPermissions 分支处理，此处必须排除，避免重复/误导。
+ */
+export function extractToolFailure(_toolName: string, result: unknown): string | null {
+  if (result == null) return null;
+  let obj: unknown = result;
+  if (typeof obj === "string") {
+    const t = obj.trim();
+    if (!t.startsWith("{") && !t.startsWith("[")) return null;
+    try {
+      obj = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== "object" || obj === null) return null;
+
+  const outer = pickError(obj as Record<string, unknown>);
+  if (outer) return outer;
+
+  // 包装形态：真正的失败藏在 result / data / output 里
+  for (const key of ["result", "data", "output"]) {
+    const nested = (obj as Record<string, unknown>)[key];
+    if (nested && typeof nested === "object") {
+      const inner = pickError(nested as Record<string, unknown>);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+function pickError(o: Record<string, unknown>): string | null {
+  if (!o || typeof o !== "object") return null;
+  // 等待审批不是失败
+  if (o.requiresPermission === true || o.status === "pending") return null;
+
+  const failed = o.success === false;
+  const hasErr = typeof o.error === "string" && o.error.trim().length > 0;
+  const hasErrs = Array.isArray(o.errors) && o.errors.length > 0;
+  if (!failed && !hasErr && !hasErrs) return null;
+
+  const parts: string[] = [];
+  if (hasErr) parts.push(String(o.error).trim());
+  if (hasErrs) parts.push((o.errors as unknown[]).map(String).join("; "));
+  if (parts.length === 0 && typeof o.message === "string" && o.message.trim()) parts.push(o.message.trim());
+  if (parts.length === 0 && typeof o.reason === "string" && o.reason.trim()) parts.push(o.reason.trim());
+  return parts.length > 0 ? parts.join("; ") : failed ? "工具返回失败" : null;
+}
+
+/**
  * 核心对账函数：把"完成声明"与"实际执行证据"比对。
  *
  * @returns needsCorrection=true 时，notice 为应确定性追加到回复末尾的更正说明
  */
 export function reconcileCompletionTruthfulness(input: ReconcileInput): ReconcileResult {
-  const { finalReply, pendingPermissions = [], toolsExecuted = false, lastUserMessage = "" } = input;
+  const {
+    finalReply,
+    pendingPermissions = [],
+    toolsExecuted = false,
+    lastUserMessage = "",
+    failedTools = [],
+  } = input;
 
   // 没有完成声明 → 无需干预（绝大多数正常回复走这条快速路径）
   if (!claimsCompletion(finalReply)) {
@@ -113,7 +188,20 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
     return { needsCorrection: true, reason: "pending_permissions", notice };
   }
 
-  // 情况二：声称完成，但本回合一个工具都没执行过（最典型的伪造完成态）
+  // 情况二：声称完成，但本回合有工具**执行了却返回失败**。
+  // 真实事故：调用 skill_execute("email_add_account") 返回 errors:["Skill not found"]
+  // （外层 success 仍为 true，模型误读为成功），随后回复「✅ 添加邮箱完成」。
+  if (failedTools.length > 0) {
+    const list = failedTools.map((f) => `- \`${f.name}\`：${f.error}`).join("\n");
+    const notice =
+      "\n\n---\n" +
+      "⚠️ **更正**：上面的「已完成」并不成立。本回合以下工具**执行了但返回失败**，该变更并未生效：\n" +
+      list +
+      "\n\n请修复上述失败后重新执行；在拿到工具的成功返回之前，请勿认为操作已经完成。";
+    return { needsCorrection: true, reason: "tool_failed", notice };
+  }
+
+  // 情况三：声称完成，但本回合一个工具都没执行过（最典型的伪造完成态）
   if (!toolsExecuted && hasActionIntent(lastUserMessage)) {
     const notice =
       "\n\n---\n" +

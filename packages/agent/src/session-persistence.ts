@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { MemoryEntry, MemorySearchQuery, MemorySearchResult } from "@evoclaw/core";
 import { estimateMessagesTokens } from "./error-classifier";
+import { redactContent, redactMetadata } from "./transcript-redactor";
 import type { CompactionManager } from "./compaction-manager";
 import type { AgentLifecycleManager } from "./agent-lifecycle";
 import type { SessionManager } from "./session-manager";
@@ -64,11 +65,12 @@ export function persistSessionTurn(
   try {
     const filePath = sessionFilePath(deps, sessionId);
     // fix-3: 保留 tool_calls / tool_call_id / name 字段，支持工具消息持久化
+    // 安全：落盘前脱敏，防止授权码/密码/token 明文写入 session JSONL
     const entry = JSON.stringify({
       role,
-      content,
+      content: redactContent(content),
       timestamp: new Date().toISOString(),
-      ...(metadata || {}),
+      ...(redactMetadata(metadata) || {}),
     });
     fs.appendFileSync(filePath, entry + "\n", "utf-8");
   } catch (err) {
@@ -117,11 +119,12 @@ export function persistToolExecutionCheckpoint(
   if (!deps.sessionPersistenceEnabled) return;
   try {
     const filePath = sessionFilePath(deps, sessionId);
+    // 安全：工具调用参数（含 password/授权码）落盘前脱敏
     const entry = JSON.stringify({
       role,
-      content,
+      content: redactContent(content),
       timestamp: new Date().toISOString(),
-      ...(metadata || {}),
+      ...(redactMetadata(metadata) || {}),
     });
     fs.appendFileSync(filePath, entry + "\n", "utf-8");
   } catch (err) {

@@ -10,6 +10,56 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.86.5] - 2026-10-07
+
+**基于当日真实会话记录（32 轮）的复盘修复：6 项缺陷**
+
+分析对象：`data/sessions/default/sess_muwf90m7_d28711d2/transcript.jsonl` 与对应的
+`sessions/sess_*.jsonl`（含完整 tool_calls），逐条比对「模型说的话」与「工具真实返回值」。
+
+### 1. 凭据明文落盘（安全，最严重）
+
+- **现象**：用户 4 次发送「添加邮箱 chydroid@163.com，授权码：DCq4QHXN46bMPCc9」，该授权码最终以明文存在于 **18 个文件**：会话 transcript、session jsonl 的 `tool_calls[].function.arguments`、长期记忆 `long-term.json`、向量索引、分层记忆、执行检查点等。
+- **根因**：`redactSensitiveText` 此前只作用于 LLM 的**最终回复输出**，`session-persistence` 与 `session-manager` 两条持久化链路完全没有脱敏；凭据还会被记忆归档二次复制。
+- **改动**：新增 `packages/agent/src/transcript-redactor.ts`，在三处写入点（`persistSessionTurn`、`persistToolExecutionCheckpoint`、`SessionManager.appendTurn`）前脱敏。
+  - **关键设计**：`tool_calls[].function.arguments` 是序列化后的 JSON 字符串，直接用正则替换会破坏 `":"` 与引号产生坏行；故走「解析 → 按 key 精确打码 → 重新序列化」，保证 JSON 仍然合法。
+  - 敏感键名（`password`/`token`/`secret`/`apiKey`/`授权码`…）命中即整体替换为 `[REDACTED]`，**不保留任何片段**。
+- **存量清理**：已对 13 个记录类文件做脱敏替换（原文件备份至 `/tmp/evoclaw-secret-bak`），复验 1065 个 `.jsonl` 全部可正常解析、记录类残留明文 0。
+  - 未处理项及原因：`.db-wal` 为 SQLite 二进制结构，文本替换有损坏风险；`data/workspace/config/email-accounts.json` 与 `fetch_*.py` 是**功能性**配置/脚本，脱敏会直接破坏邮箱收发。
+  - ⚠️ 遗留风险：SQLite WAL 与工作区配置中仍可能残留明文，**建议更换 163 授权码**。
+
+### 2. 内置工具被误当作技能调用
+
+- **现象**：08:34 模型调用 `skill_execute(skill="email_add_account")` → 返回 `Skill not found`，任务失败；而 `email_add_account` 本就是可用工具。
+- **改动**：`apps/server/src/tools/skill-tools.ts` 新增 `resolveBuiltinToolName()`（兼容 `-`/`_` 互换与大小写），命中已注册工具时**自动转发**到该工具执行，并在返回值中标注 `redirectedToTool`。转发仍走原工具 handler，不绕过任何权限门禁。
+
+### 3. 伪造完成漏检：工具执行了却返回失败，模型仍声称完成
+
+- **现象**：08:34 工具返回 `{success:true, result:{success:false, errors:["Skill not found"]}}`（**外层 success 为 true**，模型误读为成功），随后回复「✅ 添加邮箱 chydroid@163.com 完成」；而实际账户数为 0。
+- **根因**：既有 `reconcileCompletionTruthfulness` 只覆盖「等待审批」与「完全没执行工具」两类，漏了「执行了但失败」。
+- **改动**：新增 `extractToolFailure()`，识别 `{success:false,error}`、`{success:false,errors[]}`、以及上面那种**外层 true 内层 false 的包装形态**；对账新增 `tool_failed` 分支。等待审批（`requiresPermission`/`status:"pending"`）明确排除，避免与既有分支重复。
+
+### 4. 极短确认词被误判为闲聊 + 确认死循环
+
+- **现象**：上一轮 assistant 说「你回个『继续』，我立刻抓日志」，用户回「继续」→ 收到「🤗 主人 有什么事跟我说」；回「去」→ 收到「晚安 主人，做个好梦」。任务卡在确认循环里反复要确认。
+- **改动**：`agent-model-executor` 新增 `detectContinuationContext()`——用户消息 ≤24 字符且含继续类词（继续/接着/开干/往下/proceed…）**且**上一轮 assistant 回复含挂起信号（你回个/等你/就差这一步/剩余工作…）时，跳过 quickReply 与 semanticQuickReply，直接进入正常 LLM 流程。挂起信号从 transcript 读取，跨进程重启有效。
+- 同时在真实性契约新增第 7 条：禁止连续多轮以「你回个继续我就开工」结尾却不执行任何工具。
+
+### 5. 多任务重复输出
+
+- **现象**：[15] 与 [17] 是同一段回复的重复输出，[17] 还带「检测到您有 2 个任务需要处理」前缀。
+- **改动**：`task-analyzer.ts` 的 `handleMultipleTasks` 增加两层去重——完全相同的子任务只执行一次；内容相同的执行结果只输出一次并注明「已跳过重复输出」。任务计数改为去重后的数量。
+
+### 6. `/health` 工具数与实际下发不符
+
+- **现象**：`/health` 报「已注册工具: 128」，而实际随请求下发的只有 92 个（受关键词分组裁剪影响），数字会误导用户以为模型随时能调用全部工具。
+- **改动**：`slash-commands.ts` 新增可选 deps `buildDispatchedTools`，输出改为「已注册工具: N（当前随请求下发: M）」。
+
+### 验证
+
+新增 36 项单测（transcript-redactor 12 项、extractToolFailure/对账 10 项等）；
+`build` / `typecheck` / `test` 全绿 —— **235 files / 5858 passed / 0 failed**。
+
 ## [0.86.4] - 2026-10-07
 
 **修复 GitHub Actions 测试任务失败：test 脚本硬编码 Windows 绝对路径**

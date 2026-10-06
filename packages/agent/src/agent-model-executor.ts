@@ -1097,6 +1097,14 @@ export class AgentModelExecutor {
     return await entry.handler(params);
   }
 
+  /**
+   * 判断指定名称的工具是否已注册。
+   * 供 skill_execute 等工具识别「模型把内置工具误当成技能调用」的情况。
+   */
+  hasTool(name: string): boolean {
+    return this.registeredTools.has(name);
+  }
+
   unregisterTool(name: string): void {
     const entry = this.registeredTools.get(name);
     if (entry?.checkFn) {
@@ -1826,10 +1834,23 @@ export class AgentModelExecutor {
       return { reply: finalReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
     }
 
+    // ── 续做意图保护：极短的「继续/去/开干」不应被当成闲聊 ──
+    // 真实事故：上一轮 assistant 明确说「你回个『继续』，我立刻抓日志」，
+    // 用户回「继续」/「去」后却被 quickReply 判为闲聊，回复「晚安 / 有什么事跟我说」，
+    // 任务卡死在确认循环里。此处在 quickReply 之前拦截，
+    // 使其直接走正常 LLM 流程继续执行。
+    const continuationContext = this.detectContinuationContext(sessionId, effectiveMessage, agentId);
+    if (continuationContext.isContinuation) {
+      process.stdout.write(
+        `[AgentModelExecutor] Continuation intent detected ("${effectiveMessage.slice(0, 20)}"), ` +
+        `skipping quick replies to resume work\n`,
+      );
+    }
+
     // ── Quick reply for simple greetings and queries (no LLM needed) ──
     // Use the extended version which adds a capability block for hello/identity
     // categories, so first-time users get a useful self-introduction.
-    const quickReply = (() => {
+    const quickReply = continuationContext.isContinuation ? null : (() => {
       const result = this.tryQuickReplyExtended(effectiveMessage);
       if (result && tracing?.isEnabled()) {
         parentSpan?.setAttribute("agent.quick_reply", true);
@@ -1851,7 +1872,9 @@ export class AgentModelExecutor {
     // Catches paraphrased greetings / simple intents that the regex table
     // misses (e.g. "你今天有没有空帮我看看", "how are you doing today").
     // Best-effort: if the embedding provider is not ready, this is a no-op.
-    const semanticReply = await this.semanticQuickReply.classify(effectiveMessage, this.persona);
+    const semanticReply = continuationContext.isContinuation
+      ? null
+      : await this.semanticQuickReply.classify(effectiveMessage, this.persona);
     if (semanticReply) {
       const timestamp = new Date().toLocaleString("zh-CN", {
         year: "numeric", month: "2-digit", day: "2-digit",
@@ -2694,6 +2717,8 @@ export class AgentModelExecutor {
       workspacePath: this.workspacePath,
       thinkingLevel: this.thinkingLevel,
       autoCompactionEnabled: this.autoCompactionEnabled,
+      // 用于 /health 区分「已注册工具数」与「当前实际下发数」
+      buildDispatchedTools: () => this.buildOpenAITools(),
       registry: this.registry,
       memoryHub: this.memoryHub,
       compactionManager: this.compactionManager,
@@ -3438,6 +3463,75 @@ export class AgentModelExecutor {
     onProgress?: AgentProgressCallback
   ): Promise<{ message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; tokensUsed: number; promptTokens: number; classifiedError?: ClassifiedError } | null> {
     return callLLMOnceFn(provider, messages, tools, toolChoice, onProgress, this.getLLMCallerDeps());
+  }
+
+  // ── 续做意图检测（continuation intent）──
+
+  /**
+   * 上一轮 assistant 回复中「任务挂起、等你回复」的信号词。
+   * 命中说明上一轮有未完成的工作在等用户确认。
+   */
+  private static readonly CONTINUATION_HANGING_SIGNALS = [
+    "你回个", "回个", "等你", "等你的", "等待你", "请你确认", "需要你确认",
+    "就差这一步", "下一步", "剩余工作", "还没", "尚未", "等待审批",
+    "回我", "你说继续", "你确认后", "确认后我就", "告诉我", "你选",
+    "A 还是 B", "二选一", "请二选一",
+  ];
+
+  /** 用户侧的「继续做下去」信号（允许短句，如「继续完成刚才的任务」） */
+  private static readonly CONTINUATION_WORDS =
+    /(继续|接着|往下|开干|开工|搞起|来吧|去做|去吧|开始吧|proceed|continue|go on|go ahead|next step|keep going)/i;
+
+  /**
+   * 判断本轮是否为「接着上一轮未完成的工作继续做」。
+   *
+   * 判定条件（两者同时满足）：
+   *   1. 用户消息较短（≤ 24 字符）且含有继续类词语——短句正是最容易被
+   *      quickReply / 语义分类误判为闲聊的形态；
+   *   2. 上一轮 assistant 回复里存在"等你确认 / 还差一步"之类的挂起信号。
+   *
+   * 命中时调用方应跳过 quickReply 与 semanticQuickReply，让请求进入正常 LLM 流程。
+   */
+  private detectContinuationContext(
+    sessionId: string,
+    message: string,
+    agentId: string,
+  ): { isContinuation: boolean; lastAssistantReply?: string } {
+    try {
+      const trimmed = String(message || "").trim();
+      if (!trimmed || trimmed.length > 24) return { isContinuation: false };
+      if (!AgentModelExecutor.CONTINUATION_WORDS.test(trimmed)) return { isContinuation: false };
+
+      const lastAssistant = this.getLastAssistantReply(sessionId, agentId);
+      if (!lastAssistant) return { isContinuation: false };
+
+      const isHanging = AgentModelExecutor.CONTINUATION_HANGING_SIGNALS.some((s) =>
+        lastAssistant.includes(s),
+      );
+      return isHanging
+        ? { isContinuation: true, lastAssistantReply: lastAssistant }
+        : { isContinuation: false };
+    } catch {
+      // 检测失败不得阻断主流程
+      return { isContinuation: false };
+    }
+  }
+
+  /** 读取该会话最近一条 assistant 回复（用于判断是否存在挂起工作） */
+  private getLastAssistantReply(sessionId: string, agentId: string): string | null {
+    if (!sessionId || !this.sessionManager) return null;
+    try {
+      const turns = this.sessionManager.loadTranscript(agentId || "default", sessionId);
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const t = turns[i];
+        if (t && t.role === "assistant" && typeof t.content === "string" && t.content.trim()) {
+          return t.content;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   }
 
   private async parseStreamingResponse(

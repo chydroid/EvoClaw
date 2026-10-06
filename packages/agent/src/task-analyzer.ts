@@ -313,6 +313,15 @@ export function parseMultipleTasks(message: string): string[] {
 }
 
 /**
+ * 去重用的归一化键：忽略空白差异，并截取前 300 字符。
+ * 只用于判断"是否重复"，不参与任何持久化或展示。
+ */
+function dedupeKey(text: string): string {
+  if (typeof text !== "string") return "";
+  return text.replace(/\s+/g, "").slice(0, 300);
+}
+
+/**
  * Sequential execution of multiple tasks detected from a single user message.
  */
 export async function handleMultipleTasks(
@@ -328,10 +337,24 @@ export async function handleMultipleTasks(
   const results: string[] = [];
   let totalTokens = 0;
 
-  results.push(`检测到您有 ${tasks.length} 个任务需要处理，我将依次为您执行：`);
+  // ── 去重（第一层）：完全相同的子任务只执行一次 ──
+  // 真实事故：一条用户消息被拆出重复子任务，导致同一段回复在会话里连着出现两次。
+  const seenTaskKeys = new Set<string>();
+  const taskList: string[] = [];
+  for (const t of tasks) {
+    const key = dedupeKey(t);
+    if (!key || seenTaskKeys.has(key)) continue;
+    seenTaskKeys.add(key);
+    taskList.push(t);
+  }
 
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
+  results.push(`检测到您有 ${taskList.length} 个任务需要处理，我将依次为您执行：`);
+
+  // ── 去重（第二层）：内容相同的执行结果只输出一次 ──
+  const seenResultKeys = new Set<string>();
+
+  for (let i = 0; i < taskList.length; i++) {
+    const task = taskList[i];
     results.push(`\n--- 任务 ${i + 1}：${task} ---`);
 
     const systemPrompt = deps.buildSystemPrompt(undefined, { channel });
@@ -366,11 +389,19 @@ export async function handleMultipleTasks(
     }
 
     totalTokens += tokensUsed;
+
+    // 与已输出过的某个结果内容重复 → 只留一行说明，避免刷屏式重复
+    const rk = dedupeKey(taskResult);
+    if (rk && seenResultKeys.has(rk)) {
+      results.push("（该任务的执行结果与上一项完全相同，已跳过重复输出）");
+      continue;
+    }
+    if (rk) seenResultKeys.add(rk);
     results.push(taskResult);
   }
 
   results.push(`\n--- 所有任务处理完成 ---`);
-  results.push(`共完成 ${tasks.length} 个任务，耗时 ${Math.floor((Date.now() - startTime) / 1000)} 秒。`);
+  results.push(`共完成 ${taskList.length} 个任务，耗时 ${Math.floor((Date.now() - startTime) / 1000)} 秒。`);
 
   return {
     reply: results.join("\n"),

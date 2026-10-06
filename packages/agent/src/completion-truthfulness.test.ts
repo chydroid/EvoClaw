@@ -3,6 +3,7 @@ import {
   claimsCompletion,
   hasActionIntent,
   reconcileCompletionTruthfulness,
+  extractToolFailure,
   type PendingPermission,
 } from "./completion-truthfulness";
 
@@ -135,5 +136,88 @@ describe("reconcileCompletionTruthfulness", () => {
   it("空回复不报错", () => {
     const r = reconcileCompletionTruthfulness({ finalReply: "" });
     expect(r.needsCorrection).toBe(false);
+  });
+});
+
+describe("extractToolFailure — 识别「执行了但失败」的工具返回（回归）", () => {
+  it("★ skill_execute 的外层 success:true / 内层 errors 包装必须被识别", () => {
+    // 真实事故：调用 skill_execute("email_add_account") 返回该结构，
+    // 模型误读为成功并回复「✅ 添加邮箱完成」。
+    const raw = {
+      success: true,
+      result: { skillId: "email_add_account", success: false, output: null, errors: ["Skill not found"] },
+    };
+    const failure = extractToolFailure("skill_execute", raw);
+    expect(failure).toBeTruthy();
+    expect(failure).toContain("Skill not found");
+  });
+
+  it("识别 { success:false, error } 与 { success:false, errors:[...] }", () => {
+    expect(extractToolFailure("t", { success: false, error: "boom" })).toBe("boom");
+    expect(extractToolFailure("t", { success: false, errors: ["a", "b"] })).toBe("a; b");
+  });
+
+  it("识别 JSON 字符串形态", () => {
+    expect(extractToolFailure("t", JSON.stringify({ success: false, error: "x" }))).toBe("x");
+  });
+
+  it("成功返回不产生失败证据", () => {
+    expect(extractToolFailure("t", { success: true, accountId: "acct-1" })).toBeNull();
+    expect(extractToolFailure("t", { success: true })).toBeNull();
+  });
+
+  it("★ 等待审批不属于失败（由 pendingPermissions 分支处理）", () => {
+    expect(extractToolFailure("t", { success: false, requiresPermission: true, error: "Awaiting approval" })).toBeNull();
+    expect(extractToolFailure("t", { success: false, status: "pending", error: "x" })).toBeNull();
+  });
+
+  it("null / 非对象 / 非法 JSON 安全返回 null", () => {
+    expect(extractToolFailure("t", null)).toBeNull();
+    expect(extractToolFailure("t", 42)).toBeNull();
+    expect(extractToolFailure("t", "not json")).toBeNull();
+  });
+});
+
+describe("reconcileCompletionTruthfulness — 工具失败却声称完成（回归）", () => {
+  it("★ 完成声明 + 工具失败 → 必须追加更正", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 添加邮箱 chydroid@163.com 完成",
+      toolsExecuted: true,
+      lastUserMessage: "添加邮箱 chydroid@163.com",
+      failedTools: [{ name: "skill_execute", error: "Skill not found" }],
+    });
+    expect(v.needsCorrection).toBe(true);
+    expect(v.reason).toBe("tool_failed");
+    expect(v.notice).toContain("skill_execute");
+    expect(v.notice).toContain("Skill not found");
+  });
+
+  it("工具全部成功时不误报", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 添加邮箱完成",
+      toolsExecuted: true,
+      lastUserMessage: "添加邮箱",
+      failedTools: [],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("未声称完成时不干预", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "我暂时无法完成，需要你先开启 IMAP",
+      toolsExecuted: true,
+      failedTools: [{ name: "x", error: "y" }],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("等待审批优先于失败（不重复叠加）", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 已完成",
+      toolsExecuted: true,
+      failedTools: [{ name: "x", error: "y" }],
+      pendingPermissions: [{ id: "r1", operation: "file_modify", description: "d", target: "t" }],
+    });
+    expect(v.reason).toBe("pending_permissions");
   });
 });

@@ -8,7 +8,7 @@
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
-import { reconcileCompletionTruthfulness } from "./completion-truthfulness";
+import { reconcileCompletionTruthfulness, extractToolFailure } from "./completion-truthfulness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
@@ -2292,6 +2292,8 @@ Have a specific URL?
       let successfulToolCalls = 0;
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
+      // 本回合「执行了但返回失败」的工具，用于完成声明对账
+      const failedTools: Array<{ name: string; error: string }> = [];
 
       // ── IterationBudget integration ──
       // When available, use the Hermes-style budget system instead of the
@@ -3097,6 +3099,16 @@ Have a specific URL?
                   deps.pendingOperations.set(requestId, { sessionId, message, requestId, toolName, toolArgs: args });
                 }
               }
+              // ── 识别「执行了但返回失败」的工具 ──
+              // 典型：skill_execute 外层 success:true、内层 errors:["Skill not found"]，
+              // 模型极易误读为成功并声称完成。此处收集失败证据供对账使用。
+              const failure = extractToolFailure(toolName, rawResult);
+              if (failure) {
+                failedTools.push({ name: toolName, error: failure });
+                process.stdout.write(
+                  `[AgentModelExecutor] Tool "${toolName}" returned failure: ${failure}\n`,
+                );
+              }
               process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
               successfulToolCalls++;
               anyToolExecuted = true;
@@ -3454,6 +3466,7 @@ Have a specific URL?
             pendingPermissions,
             toolsExecuted: anyToolExecuted,
             lastUserMessage: message,
+            failedTools,
           });
           if (verdict.needsCorrection && verdict.notice) {
             finalReply += verdict.notice;

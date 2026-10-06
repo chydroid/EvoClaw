@@ -3,6 +3,26 @@ import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { AutoSkillManager, SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
 
+/**
+ * 将「被误当成技能调用」的名称解析为真正的内置工具名。
+ * 兼容 `-` / `_` 互换与大小写差异；命中则返回工具名，否则返回 null。
+ */
+function resolveBuiltinToolName(executor: AgentModelExecutor, rawName: string): string | null {
+  const name = String(rawName || "").trim();
+  if (!name) return null;
+  const candidates = [
+    name,
+    name.replace(/-/g, "_"),
+    name.replace(/_/g, "-"),
+    name.toLowerCase(),
+    name.toLowerCase().replace(/-/g, "_"),
+  ];
+  for (const c of candidates) {
+    if (executor.hasTool(c)) return c;
+  }
+  return null;
+}
+
 export function registerAutoSkillTools(
   executor: AgentModelExecutor,
   autoSkillManager: AutoSkillManager,
@@ -77,6 +97,35 @@ export function registerAutoSkillTools(
         }
       } catch {
         return { success: false, error: "Invalid JSON in params parameter" };
+      }
+      // ── 容错：模型把「内置工具」误当成「技能」调用 ──
+      // 真实事故：要求添加邮箱时，模型调用 skill_execute(skill="email_add_account")，
+      // 返回 "Skill not found"，导致任务直接失败（而 email_add_account 其实是可用的内置工具）。
+      // 此处识别该情况并自动转发到真正的工具，避免多一轮无效往返。
+      const redirected = resolveBuiltinToolName(executor, skillName);
+      if (redirected) {
+        try {
+          const toolResult = await executor.executeToolByName(redirected, execParams);
+          if (toolResult && typeof toolResult === "object" && !Array.isArray(toolResult)) {
+            return {
+              ...(toolResult as Record<string, unknown>),
+              redirectedToTool: redirected,
+              note: `「${skillName}」是内置工具而非技能，已自动改用工具 ${redirected} 执行。`,
+            };
+          }
+          return {
+            success: true,
+            result: toolResult,
+            redirectedToTool: redirected,
+            note: `「${skillName}」是内置工具而非技能，已自动改用工具 ${redirected} 执行。`,
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+            redirectedToTool: redirected,
+          };
+        }
       }
       try {
         const result = await skillManager.executeSkill(skillName, execParams);

@@ -49,6 +49,8 @@ export interface SlashCommandDeps {
   workspacePath: string;
   thinkingLevel: "off" | "low" | "medium" | "high";
   autoCompactionEnabled: boolean;
+  /** 可选：构建「当前实际下发给模型」的工具列表，用于状态展示时区分注册数与下发数 */
+  buildDispatchedTools?: () => Array<unknown>;
   registry: ServiceRegistry;
   memoryHub: MemoryHubLike | null;
   compactionManager: CompactionManager | null;
@@ -277,6 +279,15 @@ export async function handleSlashCommand(
     case "health": {
       const enabledProviders = deps.providers.filter(p => p.enabled);
       const toolCount = deps.registeredTools.size;
+      // 实际下发给模型的工具数：工具会按用户消息的关键词做分组裁剪
+      // （详见 llm-caller 的 buildOpenAITools），因此二者通常不相等。
+      // 只报"已注册"会让用户误以为模型随时能调用全部工具。
+      let dispatchedToolCount: number | null = null;
+      try {
+        dispatchedToolCount = deps.buildDispatchedTools ? deps.buildDispatchedTools().length : null;
+      } catch {
+        dispatchedToolCount = null;
+      }
       const skillManager = deps.registry?.resolveService<{ listSkills(): Promise<Array<unknown>> }>("skillManager");
       let skillCount = 0;
       if (skillManager) {
@@ -293,7 +304,8 @@ export async function handleSlashCommand(
         `📅 ${ts}`,
         `状态: ✅ 正常运行`,
         `已启用模型: ${enabledProviders.length}`,
-        `已注册工具: ${toolCount}`,
+        `已注册工具: ${toolCount}` +
+        (dispatchedToolCount !== null ? `（当前随请求下发: ${dispatchedToolCount}）` : ""),
         `已安装技能: ${skillCount}`,
         `Observability: ${obs ? "✅ 已集成" : "⚠ 未集成"}`,
         `Memory: ${deps.memoryHub ? "✅ 已集成" : "⚠ 未集成"}`,

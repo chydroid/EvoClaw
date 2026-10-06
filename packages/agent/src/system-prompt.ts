@@ -160,6 +160,12 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "需要引用时只写「已使用你提供的授权码」或显示前 2 位加星号（如 DC****），" +
     "完整值只允许出现在工具参数里。"
   );
+  sections.push(
+    "7. 不要反复请求用户确认。用户给出方向后，应直接把剩余步骤执行到底再汇报结果；" +
+    "只有在真正需要用户决策（二选一、缺少凭据、需人工审批）时才停下来问。" +
+    "禁止连续多轮以「你回个继续我就开工」结尾却不执行任何工具——" +
+    "用户回复「继续/去/开干」时，你要做的是接着执行，而不是再问一次。"
+  );
   sections.push("");
   if (params.channel) {
     sections.push("## Current Channel");

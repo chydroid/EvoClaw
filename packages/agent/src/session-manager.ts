@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { atomicWriteFileSync } from "@evoclaw/core";
+import { redactSessionTurn } from "./transcript-redactor";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -363,7 +364,9 @@ export class SessionManager {
   appendTurn(agentId: string, sessionId: string, turn: SessionTurn): void {
     this.withLock(agentId, sessionId, () => {
       const transcriptPath = this.getTranscriptPath(agentId, sessionId);
-      const line = JSON.stringify(turn) + "\n";
+      // 安全：落盘前脱敏，防止授权码/密码/token 明文写入 transcript。
+      // 真实事故：用户提供的 163 授权码曾以明文出现在 transcript 与工具参数中。
+      const line = JSON.stringify(redactSessionTurn(turn)) + "\n";
       fs.appendFileSync(transcriptPath, line, "utf-8");
 
       // Update session metadata
