@@ -22,9 +22,60 @@
 
 import { redactSensitiveText } from "@evoclaw/security";
 
-/** 敏感参数名（键名命中即整体打码，不保留任何片段） */
-const SENSITIVE_KEY_RE =
-  /(pass(word|wd)?|secret|token|api[_-]?key|apikey|auth(orization)?|credential|private[_-]?key|access[_-]?key|授权码|密码|密钥|口令)/i;
+/**
+ * 敏感参数名（键名命中即整体打码，不保留任何片段）。
+ *
+ * 刻意**不做子串匹配**。早期实现是一条无词边界的正则
+ * `/(pass(word|wd)?|secret|token|...)/i`，导致一批完全无害的字段被整体打码：
+ *   maxTokens / tokensUsed / promptTokens / totalTokens / tokenCount  ← token 计数
+ *   author / authorized                                          ← git 提交作者
+ *   credentialId                                                 ← 凭据 ID（非密钥）
+ * 结果是**持久化记录被静默污染**：工具结果里的作者名、token 计数全变成 [REDACTED]，
+ * 事后审计与续跑读取到的都是坏数据。
+ *
+ * 现在改为「驼峰/分隔符切分 → 整段精确匹配」：只有键名**本身就是**敏感词才打码。
+ * 同时保证 `authorizationHeader`、`apiKey`、`access_token` 等真实凭据字段仍能命中。
+ */
+const SENSITIVE_KEY_SEGMENTS = new Set([
+  "password", "passwd", "pass", "pwd", "passphrase",
+  "secret", "secrets", "token", "apikey",
+  "authorization", "auth", "credential", "credentials",
+  "privatekey", "accesskey", "clientsecret", "authtoken",
+  "accesstoken", "refreshtoken", "secretkey",
+  "授权码", "密码", "密钥", "口令",
+]);
+
+/**
+ * 计量类后缀。`tokenCount` / `tokenUsage` / `secretLimit` 这类键名切分后
+ * 恰好含有 `token`/`secret` 段，但它们是**指标**不是密钥。
+ * 若命中的敏感段后面紧跟这些名词，则整个键名判为非敏感。
+ */
+const METRIC_SUFFIXES = new Set([
+  "count", "usage", "used", "limit", "budget", "number", "total",
+  "size", "length", "threshold", "window", "cap", "stats", "rate", "quota",
+]);
+
+/** 判断一个键名是否为敏感字段名（整段精确匹配，不做子串匹配） */
+export function isSensitiveKey(key: string): boolean {
+  const segments = String(key)
+    // 先拆驼峰：authorizationHeader → authorization_Header
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    // 再按常见分隔符切分：api_key / access-token / a.b → a, b
+    .split(/[\s\-._/\\:@]+/)
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
+  if (segments.length === 0) return false;
+
+  for (let i = 0; i < segments.length; i++) {
+    if (!SENSITIVE_KEY_SEGMENTS.has(segments[i])) continue;
+    // 命中的敏感段后面紧跟计量名词（tokenCount / secretLimit）→ 是指标不是密钥
+    if (segments[i + 1] && METRIC_SUFFIXES.has(segments[i + 1])) continue;
+    return true;
+  }
+  // 兜底：整名拼接后命中（覆盖 apiKey → apiKey、api_key → apikey 这类无分隔写法）
+  return SENSITIVE_KEY_SEGMENTS.has(segments.join(""));
+}
 
 /** 打码占位符 */
 export const REDACTED_PLACEHOLDER = "[REDACTED]";
@@ -41,7 +92,7 @@ export function redactValueDeep(value: unknown): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SENSITIVE_KEY_RE.test(k) && typeof v === "string" && v.length > 0) {
+      if (isSensitiveKey(k) && typeof v === "string" && v.length > 0) {
         out[k] = REDACTED_PLACEHOLDER;
       } else {
         out[k] = redactValueDeep(v);

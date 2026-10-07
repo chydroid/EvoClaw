@@ -155,31 +155,24 @@ export function registerAutoSkillTools(
       // ── 容错：模型把「内置工具」误当成「技能」调用 ──
       // 真实事故：要求添加邮箱时，模型调用 skill_execute(skill="email_add_account")，
       // 返回 "Skill not found"，导致任务直接失败（而 email_add_account 其实是可用的内置工具）。
-      // 此处识别该情况并自动转发到真正的工具，避免多一轮无效往返。
+      //
+      // ⚠️ 这里**只做指引、不自动转发**。
+      // 审批门禁（humanApprovalManager.requiresApproval）位于 llm-caller 的
+      // executeSingleToolCall 中、entry.handler 之前；直接调 handler 会**绕过审批**，
+      // 使 git_push / shell_exec 等高危工具可以借 skill_execute 名字逃掉人工确认。
+      // （这是该修复第一版的真实缺陷：为了"少一轮往返"把安全边界拆了。）
+      // 正确做法是明确告知模型改调真正的工具——模型下一次调用就会走完整审批链路，
+      // 配合自动续跑（auto-continuation）不会造成额外停顿。
       const redirected = resolveBuiltinToolName(executor, skillName);
       if (redirected) {
-        try {
-          const toolResult = await executor.executeToolByName(redirected, execParams);
-          if (toolResult && typeof toolResult === "object" && !Array.isArray(toolResult)) {
-            return {
-              ...(toolResult as Record<string, unknown>),
-              redirectedToTool: redirected,
-              note: `「${skillName}」是内置工具而非技能，已自动改用工具 ${redirected} 执行。`,
-            };
-          }
-          return {
-            success: true,
-            result: toolResult,
-            redirectedToTool: redirected,
-            note: `「${skillName}」是内置工具而非技能，已自动改用工具 ${redirected} 执行。`,
-          };
-        } catch (err) {
-          return {
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-            redirectedToTool: redirected,
-          };
-        }
+        return {
+          success: false,
+          error:
+            `「${skillName}」不是技能，而是**内置工具**。请不要通过 skill_execute 调用它，` +
+            `请直接调用工具 \`${redirected}\`（同样的参数即可）。`,
+          builtinTool: redirected,
+          hint: `直接调用 \`${redirected}\` 即可；该调用会经过正常的权限/审批流程。`,
+        };
       }
       try {
         const result = await skillManager.executeSkill(skillName, execParams);

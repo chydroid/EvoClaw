@@ -10,6 +10,69 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.86.7] - 2026-10-07
+
+**回头审计 0.86.3~0.86.6 的修复，发现 4 个问题（其中 1 个是安全回归、2 个是"修复无效"）**
+
+审计方式：不信结论，直接用编译产物跑真实语料验证每个修复的实际行为。
+
+### 1. 【安全回归】skill_execute 自动转发绕过了审批门禁
+
+0.86.5 为修「模型把内置工具当技能调用」，让 `skill_execute` 收到内置工具名时
+**自动转发**到 `executor.executeToolByName()`。而审批逻辑
+（`humanApprovalManager.requiresApproval`）位于 `llm-caller.executeSingleToolCall`
+中、**`entry.handler` 之前**——直接调 handler 等于跳过审批。
+
+后果：`git_push` / `shell_exec` 等 high 风险工具可以借 `skill_execute` 这个名字
+**逃掉人工确认**。为了"少一轮往返"把安全边界拆了，是典型的负优化。
+
+修复：转发改为**只指引、不执行**，返回
+`{ success:false, error:"…请直接调用工具 X", builtinTool }`。
+模型下一次调用就走完整审批链路；配合 0.86.6 的自动续跑，不会造成额外停顿。
+同时在 `executeToolByName` 上加显式安全警告，防止再次被当成快捷通道。
+
+### 2. 【修复无效】`/health` 的"当前下发工具数"算的是全量
+
+0.86.5 加了 `已注册工具: N（当前随请求下发: M）`，但注入的是
+`() => this.buildOpenAITools()`，而该方法传 `message = undefined`
+——**不传消息就是"不裁剪"分支**，M 恒等于 N，等于没修。
+
+实证（修复前）：注册 23 → 报 23；修复后按真实消息算 → 21，换一条消息 → 22。
+
+修复：`buildOpenAITools(message?)` 接受真实用户消息，
+`/health` 取会话历史中最近一条 user 消息来算，并把文案改为
+`（按最近一条请求实际下发: M，随消息关键词变化）`。
+
+### 3.脱敏正则无词边界，静默污染持久化记录
+
+`SENSITIVE_KEY_RE` 是无词边界的子串匹配，导致一批**无害字段被整体打码**：
+`maxTokens` / `tokensUsed` / `promptTokens` / `totalTokens` / `tokenCount` /
+`author` / `authorized` / `credentialId`。
+
+工具结果里的作者名、token 计数全变成 `[REDACTED]`，事后审计与续跑读到的都是坏数据。
+（当前只因 token 计数恰好是 number 才没暴露，属于"运气好"，不是设计正确。）
+
+修复：改为「驼峰/分隔符切分 → 整段精确匹配」，并对
+`tokenCount` / `secretLimit` 这类**计量语义**加后缀豁免。
+验证 `authorizationHeader` / `apiKey` / `access_token` 等真实凭据字段仍能命中。
+
+### 4. 明细报告检测把「如实汇报 + 排查建议」判成编造
+
+`looksLikeDetailedReport` 的两个信号存在误判：
+
+- `tableRow` 用 `\d+`，`| GitHub | 0 |`（**如实汇报"查到了但为空"**）会被命中；
+- 编号列举只要≥3 条就命中，而**工具返回空后给用户列 3 条排查建议**是正常且诚实的回复。
+
+后果很糟：每次 `web_search` 无结果并给出建议列表，系统都会追加
+「⚠️ 更正：本回复中的数量与明细**不可信**…上面的表格/数量并非来自工具返回值」——
+**把如实汇报指成编造**。
+
+修复：表格只认非零数量；编号列举仅在「通篇不含建议/动作类措辞」时才作为编造证据。
+真实事故样本（0 封却报 30+ 封 + 非零明细）仍被正确识别。
+
+**审计结论**：4 个问题全部修复，新增 10 项回归测试。
+`build` + `typecheck` + `test` 全绿：**236 files / 5891 passed / 1 skipped / 0 failed**。
+
 ## [0.86.6] - 2026-10-07
 
 **核心痛点修复：agent 发现问题后不自动纠正，而是停下来等用户输入「继续」**

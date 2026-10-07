@@ -251,15 +251,26 @@ export function extractEmptyResult(_toolName: string, result: unknown): EmptyRes
  */
 export function looksLikeDetailedReport(text: string): boolean {
   if (!text) return false;
-  // 具体数量断言：数字 + 量词（封/条/个/项/次/封邮件…）
+  // 具体数量断言：数字 + 量词（封/条/个/项/次/笔/份/台/人/天/行/页/条记录/个结果）
+  // 必须是非零数字——「共 0 封邮件」是如实汇报，不是编造。
   const quantity = /(?:共|总计|一共|合计)?\s*([1-9]\d*)\s*\+?\s*(?:封|条|个|项|次|笔|份|台|人|天|行|页|条记录|个结果)/;
-  // 表格形式的明细行：| xxx | 数字 |
-  const tableRow = /\|\s*[^\n|]{2,}\s*\|\s*\d+\s*\|/;
+  // 表格形式的明细行：| xxx | 非零数字 |
+  // 同样必须非零——`| 类别 | 0 |` 是「查到了但为空」的如实表格。
+  const tableRow = /\|\s*[^\n|]{2,}\s*\|\s*[1-9]\d*\s*\|/;
   // 编号列举至少 3 条
   const numbered = /(?:^|\n)\s*(?:[1-9][0-9]?\s*[.、)）]|\*\s*\*\*)\s*\S/m;
   const numberedCount = (text.match(/(?:^|\n)\s*[1-9][0-9]?\s*[.、)）]\s*\S/gm) || []).length;
+  // 编号列举是三类信号里最弱的一类：工具返回空之后给用户列 3 条排查建议
+  // （web_search 无结果、接口返回空列表）是**正常且诚实**的回复，绝不能当成编造。
+  // 因此只有「通篇不含建议/动作类措辞」时才把编号列举当作数据明细的证据。
+  const ADVICE_WORDS = /(?:建议|请(?:您|你)?|可以|需要|试试|应该|下一步|重试|排查|否则|推荐|尝试)/;
+  const looksLikeAdvice = ADVICE_WORDS.test(text);
 
-  return Boolean(quantity.test(text) || tableRow.test(text) || (numbered.test(text) && numberedCount >= 3));
+  return Boolean(
+    quantity.test(text) ||
+    tableRow.test(text) ||
+    (!looksLikeAdvice && numbered.test(text) && numberedCount >= 3),
+  );
 }
 
 /**

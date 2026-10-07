@@ -49,8 +49,12 @@ export interface SlashCommandDeps {
   workspacePath: string;
   thinkingLevel: "off" | "low" | "medium" | "high";
   autoCompactionEnabled: boolean;
-  /** 可选：构建「当前实际下发给模型」的工具列表，用于状态展示时区分注册数与下发数 */
-  buildDispatchedTools?: () => Array<unknown>;
+  /**
+   * 可选：构建「当前实际下发给模型」的工具列表，用于状态展示时区分注册数与下发数。
+   * 必须传入**真实的用户消息**——工具下发会按消息关键词做分组裁剪，
+   * 不传消息走的是「不裁剪」分支，算出来的数字等于注册数，等于没修。
+   */
+  buildDispatchedTools?: (userMessage?: string) => Array<unknown>;
   registry: ServiceRegistry;
   memoryHub: MemoryHubLike | null;
   compactionManager: CompactionManager | null;
@@ -279,12 +283,19 @@ export async function handleSlashCommand(
     case "health": {
       const enabledProviders = deps.providers.filter(p => p.enabled);
       const toolCount = deps.registeredTools.size;
-      // 实际下发给模型的工具数：工具会按用户消息的关键词做分组裁剪
+      // 实际下发给模型的工具数：工具会按**用户消息的关键词**做分组裁剪
       // （详见 llm-caller 的 buildOpenAITools），因此二者通常不相等。
-      // 只报"已注册"会让用户误以为模型随时能调用全部工具。
+      // 只报「已注册」会让用户误以为模型随时能调用全部工具。
+      //
+      // ⚠️ 必须用真实用户消息去算：不传消息等价于「不裁剪」，算出来等于注册数，
+      // 那就等于没修（这是该修复第一版的真实缺陷）。
+      const chatHistory = deps.conversationHistory.get(sessionId) || [];
+      const lastUserMsg = [...chatHistory].reverse().find((m) => m.role === "user")?.content;
       let dispatchedToolCount: number | null = null;
       try {
-        dispatchedToolCount = deps.buildDispatchedTools ? deps.buildDispatchedTools().length : null;
+        dispatchedToolCount = deps.buildDispatchedTools && lastUserMsg
+          ? deps.buildDispatchedTools(String(lastUserMsg)).length
+          : null;
       } catch {
         dispatchedToolCount = null;
       }
@@ -305,7 +316,9 @@ export async function handleSlashCommand(
         `状态: ✅ 正常运行`,
         `已启用模型: ${enabledProviders.length}`,
         `已注册工具: ${toolCount}` +
-        (dispatchedToolCount !== null ? `（当前随请求下发: ${dispatchedToolCount}）` : ""),
+        (dispatchedToolCount !== null
+          ? `（按最近一条请求实际下发: ${dispatchedToolCount}，随消息关键词变化）`
+          : ""),
         `已安装技能: ${skillCount}`,
         `Observability: ${obs ? "✅ 已集成" : "⚠ 未集成"}`,
         `Memory: ${deps.memoryHub ? "✅ 已集成" : "⚠ 未集成"}`,

@@ -274,3 +274,42 @@ describe("extractEmptyResult / looksLikeDetailedReport — 空结果却产出详
     expect(looksLikeDetailedReport("好的，我知道了")).toBe(false);
   });
 });
+
+describe("looksLikeDetailedReport — 不得把「如实汇报 + 排查建议」当成编造（回归）", () => {
+  it("★ web_search 无结果时列 3 条排查建议 → 不得判为编造", () => {
+    const reply =
+      "搜索没有返回任何结果。你可以：\n" +
+      "1. 换个关键词再搜\n" +
+      "2. 用 web_fetch 直接抓取页面\n" +
+      "3. 改用 browser_launch 手动搜索";
+    expect(looksLikeDetailedReport(reply)).toBe(false);
+  });
+
+  it("★ 空结果 + 排查建议编号列表 → 不得判为编造", () => {
+    const reply = "工具返回 0 条记录。排查建议：\n1. 检查账号是否已配置\n2. 确认时间范围\n3. 重试";
+    expect(looksLikeDetailedReport(reply)).toBe(false);
+  });
+
+  it("★ 数量全为 0 的空表格 → 不得判为编造（那正是「查到了但为空」）", () => {
+    const reply = "| 类别 | 数量 |\n|---|---|\n| GitHub | 0 |\n| 账单 | 0 |";
+    expect(looksLikeDetailedReport(reply)).toBe(false);
+  });
+
+  it("★ 真实事故（0 封却报 30+ 封并给出非零明细）仍必须被判为编造", () => {
+    const reply =
+      "共拉取到 **30+ 封**邮件\n\n| 类别 | 数量 |\n|---|---|\n| GitHub CI/CD | 4 |\n| 安全通知 | 5 |";
+    expect(looksLikeDetailedReport(reply)).toBe(true);
+  });
+
+  it("纯编造的编号清单（不含建议措辞）仍会被识别", () => {
+    expect(looksLikeDetailedReport("1. GitHub 通知\n2. 安全提醒\n3. 账单")).toBe(true);
+  });
+
+  it("端到端：空结果 + 如实汇报不触发更正", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "| 类别 | 数量 |\n|---|---|\n| GitHub | 0 |\n\n查询到 0 封邮件，收件箱当前为空。",
+      emptyResultTools: [{ name: "email_analyze", field: "totalEmails=0" }],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+});

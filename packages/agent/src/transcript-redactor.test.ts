@@ -5,6 +5,7 @@ import {
   redactContent,
   redactMetadata,
   redactSessionTurn,
+  isSensitiveKey,
 } from "./transcript-redactor";
 
 const SECRET = "DCq4QHXN46bMPCc9";
@@ -107,5 +108,42 @@ describe("transcript-redactor", () => {
       redactSessionTurn(turn);
       expect(turn).toEqual(copy);
     });
+  });
+});
+
+describe("isSensitiveKey — 不得子串匹配打码合法字段（回归）", () => {
+  it("★ token 计数类字段必须原样保留（此前被误打码，静默污染持久化记录）", () => {
+    for (const k of ["maxTokens", "tokensUsed", "promptTokens", "totalTokens", "contextTokens", "tokenCount"]) {
+      expect(isSensitiveKey(k), `${k} 不该被判为敏感`).toBe(false);
+    }
+  });
+
+  it("★ author 类字段必须原样保留（git 提交作者不是凭据）", () => {
+    for (const k of ["author", "authorName", "authorized", "authority"]) {
+      expect(isSensitiveKey(k), `${k} 不该被判为敏感`).toBe(false);
+    }
+  });
+
+  it("★ 真实凭据字段仍必须命中（不能因修误伤而漏脱敏）", () => {
+    for (const k of [
+      "password", "passwd", "pwd", "userPassword", "secret", "apiKey", "api_key",
+      "access_token", "accessToken", "refreshToken", "authorization", "authorizationHeader",
+      "clientSecret", "privateKey", "accessKey", "授权码", "密码", "密钥", "口令",
+    ]) {
+      expect(isSensitiveKey(k), `${k} 应被判为敏感`).toBe(true);
+    }
+  });
+
+  it("打码后工具结果里的作者名与 token 计数不被破坏", () => {
+    const out = redactValueDeep({
+      author: "张三 <zhangsan@example.com>",
+      maxTokens: 4096,
+      tokensUsed: "12345",
+      password: SECRET,
+    }) as Record<string, unknown>;
+    expect(out.author).toBe("张三 <zhangsan@example.com>");
+    expect(out.maxTokens).toBe(4096);
+    expect(out.tokensUsed).toBe("12345");
+    expect(out.password).toBe("[REDACTED]");
   });
 });

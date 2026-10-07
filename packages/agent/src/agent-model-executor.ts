@@ -1088,6 +1088,15 @@ export class AgentModelExecutor {
   /**
    * 按名称执行已注册的工具。供 batch_execute / workflow_execute 等外部调用方使用，
    * 避免直接访问内部 registeredTools Map。
+   *
+   * ⚠️ **安全警告：本方法直接调用 handler，不经过 humanApprovalManager 审批门禁。**
+   * 审批逻辑位于 llm-caller 的 executeSingleToolCall 中、entry.handler 之前；
+   * 走这里等于跳过审批。
+   *
+   * 真实事故：skill_execute 曾用它把「被误当成技能的工具名」自动转发到真工具，
+   * 结果 git_push / shell_exec 等 high风险工具可以借 skill_execute 逃掉人工确认。
+   * 该转发已改为「只指引、不执行」。**新增调用方前请自行确认审批是否已在上游完成**，
+   * 绝不要把它当成"少一轮往返"的快捷通道。
    */
   async executeToolByName(name: string, params: Record<string, unknown>): Promise<unknown> {
     const entry = this.registeredTools.get(name);
@@ -2736,7 +2745,7 @@ export class AgentModelExecutor {
       thinkingLevel: this.thinkingLevel,
       autoCompactionEnabled: this.autoCompactionEnabled,
       // 用于 /health 区分「已注册工具数」与「当前实际下发数」
-      buildDispatchedTools: () => this.buildOpenAITools(),
+      buildDispatchedTools: (msg?: string) => this.buildOpenAITools(msg),
       registry: this.registry,
       memoryHub: this.memoryHub,
       compactionManager: this.compactionManager,
@@ -3469,8 +3478,14 @@ export class AgentModelExecutor {
     };
   }
 
-  private buildOpenAITools(): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {
-    return buildOpenAIToolsFn(this.registeredTools, undefined, (fn: () => boolean) => this.evaluateCheckFn(fn));
+  /**
+   * 构建下发给模型的工具列表。
+   *
+   * @param message 真实的用户消息。**必须传**，否则工具会按「不裁剪」分支全量下发，
+   *   与实际请求中模型拿到的列表不一致（/health 的工具数统计就踩过这个坑）。
+   */
+  private buildOpenAITools(message?: string): Array<{ type: string; function: { name: string; description: string; parameters: { type: string; properties: Record<string, unknown>; required: string[] } } }> {
+    return buildOpenAIToolsFn(this.registeredTools, message, (fn: () => boolean) => this.evaluateCheckFn(fn));
   }
 
   private async callLLMOnce(
