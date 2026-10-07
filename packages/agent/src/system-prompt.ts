@@ -102,12 +102,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   }
 
   sections.push("## Tooling");
-  sections.push(`Available tools: ${params.registeredToolNames.join(", ")}.`);
 
-  // ── 能力速查表：把平铺的长工具名列表切成「意图 → 工具名」的短语义块 ──
-  // 背景：90+ 个工具名平铺成一行时，弱模型几乎必然漏看单项，进而断言
-  // "系统没有这个工具 / 缺少 XX 接口" 并臆造不存在的限制。真实案例：
-  // 用户要求添加邮箱账户，模型称缺少 email_add_account（该工具其实一直存在）。
+  // ── 能力速查表：把工具名列表切成「意图 → 工具名」的短语义块 ──
+  // 背景：工具名平铺成一行时（`Available tools: a, b, c, ...`，实际 127 个），
+  // 弱模型几乎必然漏看单项，进而断言"系统没有这个工具 / 缺少 XX 接口"
+  // 并臆造不存在的限制。真实案例：用户要求添加邮箱账户，模型称缺少
+  // email_add_account（该工具其实一直存在且已下发）。
+  //
+  // ⚠️ 这里**只输出速查表，不再输出平铺全量清单**。
+  // 0.86.3 曾同时保留两者，结果速查表被淹没在 127 个名字里，等于没修；
+  // 平铺清单已由 tools 参数（真实下发的那一份）承载，无需在提示词里重复。
   const catalogLines = buildCapabilityCatalogLines(params.registeredToolNames);
   if (catalogLines.length > 0) {
     sections.push("");
@@ -289,6 +293,39 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     }
     sections.push("");
   }
+
+  // ── 任务定位纪律：动手之前先把目标/交付/限制/验收/假设钉清楚 ──
+  // 与下方 Execution Strategy 的关系：那一节讲「选定方法后怎么执行」，
+  // 这一节讲「执行之前先想清楚要做什么」。放在其前面作为前置步骤。
+  sections.push("## 接到任务先定位，再动手");
+  sections.push("");
+  sections.push("**1. 澄清四件事**：用户真正要解决什么 → 最终交付什么 → 有哪些硬限制 → 怎样算完成。");
+  sections.push(
+    "**2. 先自查后提问**：能通过上下文、文件、工具查明的信息自己先查清楚；" +
+    "查不到、或取决于用户个人偏好时，才集中提问，并说明这些信息影响什么；不要一答一答反复打断。"
+  );
+  sections.push(
+    "**3. 歧义处理**：不影响核心结果的小歧义，选最稳妥、改动最小且可撤销的方案继续执行，" +
+    "并明确说明假设；核心歧义不假设、不瞎猜。"
+  );
+  sections.push(
+    "**4. 复杂任务**：正式动手前简短输出 目标 / 交付物 / 关键限制 / 验收标准 / 当前假设 五项；" +
+    "用户纠正后以最新要求为准，立即重查范围。"
+  );
+  sections.push("**5. 简单任务**：需求明确直接执行，不为走流程而机械提问。");
+  sections.push(
+    "**6. 修 Bug 先找根因**：必须定位到根本原因再针对性修复，不要看着现象打补丁——" +
+    "定位不到根因就不要动手改，宁可先说明现象与已排除的原因。"
+  );
+  sections.push("");
+  sections.push(
+    "⚠️ **这一节不改变「不要停下来问用户」的纪律（第 7 条真实性契约）：**" +
+    "输出那五项之后**立刻继续执行**，不是发出五项然后等用户点头。" +
+    "只有「核心歧义」「缺少你无法自行获取的信息」「需要人工审批」这三类才允许停下来问。"
+  );
+  sections.push("");
+  sections.push("目标不是多问问题，而是确保接下来做的事真的解决用户的问题。");
+  sections.push("");
 
   sections.push("## Execution Strategy (MANDATORY)");
   sections.push(

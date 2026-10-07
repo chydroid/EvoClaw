@@ -92,6 +92,30 @@ export function collectCreationTools(toolNames: string[], limit = 24): string[] 
   return toolNames.filter((name) => CREATION_PATTERN.test(name)).slice(0, limit);
 }
 
+/** 超过这个数量的工具就自动折行，避免又变回"一行十几个名字"的可读性问题 */
+const WRAP_THRESHOLD = 6;
+/** 折行后每行最多放几个工具名 */
+const PER_LINE = 3;
+
+/**
+ * 渲染「意图 → 工具名」一行。
+ *
+ * 工具多时**必须折行**：browser_* 这类前缀天然命中十几个工具，
+ * 平铺一行等于又回到了「一行一长串名字、模型必然漏看单项」的老问题
+ * （真实数据：browser 组有 14 个工具名挤在一行）。
+ */
+function renderIntentLine(intent: string, tools: string[]): string[] {
+  if (tools.length <= WRAP_THRESHOLD) {
+    return [`- ${intent} → ${tools.map((t) => `\`${t}\``).join(", ")}`];
+  }
+  const out = [`- ${intent}（共 ${tools.length} 个）：`];
+  for (let i = 0; i < tools.length; i += PER_LINE) {
+    const chunk = tools.slice(i, i + PER_LINE).map((t) => `\`${t}\``).join(", ");
+    out.push(`  ${chunk}`);
+  }
+  return out;
+}
+
 /**
  * 生成能力速查表的提示词段落（不含标题行，由调用方决定标题）。
  * 若没有任何意图命中，返回空数组，调用方应跳过整段。
@@ -108,14 +132,12 @@ export function buildCapabilityCatalogLines(toolNames: string[]): string[] {
     const fresh = tools.filter((t) => !seen.has(t));
     if (fresh.length === 0) continue;
     for (const t of fresh) seen.add(t);
-    lines.push(`- ${rule.intent} → ${fresh.map((t) => `\`${t}\``).join(", ")}`);
+    lines.push(...renderIntentLine(rule.intent, fresh));
   }
 
   const creation = collectCreationTools(toolNames).filter((t) => !seen.has(t));
   if (creation.length > 0) {
-    lines.push(
-      `- 其它「新建/添加/注册」类操作 → ${creation.map((t) => `\`${t}\``).join(", ")}`,
-    );
+    lines.push(...renderIntentLine("其它「新建/添加/注册」类操作", creation));
   }
 
   return lines.length > 0 ? lines : [];

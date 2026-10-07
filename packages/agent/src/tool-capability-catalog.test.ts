@@ -107,3 +107,36 @@ describe("tool-capability-catalog", () => {
     });
   });
 });
+
+describe("buildCapabilityCatalogLines — 可读性折行（回归）", () => {
+  // 真实数据：browser_* 前缀天然命中 14 个工具名，全挤在一行。
+  // 一行十几个名字 = 回到「模型必然漏看单项」的老问题。
+  const many = Array.from({ length: 14 }, (_, i) => `browser_tool_${i}`);
+
+  // 注意：统计必须数「反引号包裹的完整名字」，用 includes 会被子串误伤
+  // （browser_tool_1 是 browser_tool_11 的子串，会多数一个）
+  const countNames = (line: string) => (line.match(/`[^`]+`/g) || []).length;
+
+  it("★ 工具数超过阈值时自动折行，单行不超过 3 个", () => {
+    const lines = buildCapabilityCatalogLines(many);
+    const worst = lines.reduce((m, l) => Math.max(m, countNames(l)), 0);
+    expect(worst).toBeLessThanOrEqual(3);
+  });
+
+  it("★ 折行后总行数变多，但意图标题仍在", () => {
+    const lines = buildCapabilityCatalogLines(many);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines[0]).toMatch(/^- .*（共 14 个）：$/);
+  });
+
+  it("★ 工具数少时仍保持单行（不要无谓折行）", () => {
+    const lines = buildCapabilityCatalogLines(["email_add_account", "email_send"]);
+    expect(lines.every((l) => l.startsWith("- ") && !l.includes("共"))).toBe(true);
+  });
+
+  it("折行不丢工具（全部可从输出中找回）", () => {
+    const lines = buildCapabilityCatalogLines(many);
+    const joined = lines.join("\n");
+    for (const t of many) expect(joined, `丢失了 ${t}`).toContain(t);
+  });
+});
