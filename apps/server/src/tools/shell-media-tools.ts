@@ -250,14 +250,22 @@ export function registerShellMediaTools(
         effectiveCommand = effectiveCommand.replace(/\bpython3\b/g, "python");
       }
 
-      // ── Windows 上 `python -c "..."` 内联代码保护 ──
-      // 事故：`python -c "import os,json,...; print(str(d)[:800])"` 经 cmd.exe /c
-      // 传递后引号被吃掉，稳定报 `SyntaxError: unterminated string literal`，
-      // 白白浪费一轮。含分号/嵌套引号的复杂内联代码一律拦下并给出替代方案，
-      // 简单的单行代码（如 `python -c "print(1)"`）仍放行。
+      // ── Windows 上 `-c` / `-e` 内联代码保护（python -c 与 node -e 同理）──
+      // 事故 1：`python -c "import os,json,...; print(str(d)[:800])"` 经 cmd.exe /c
+      //   传递后引号被吃掉，稳定报 `SyntaxError: unterminated string literal`。
+      // 事故 2（2026-10-07）：`node -e "const fs=require('fs');const files=..."`
+      //   同样被 cmd.exe 吃掉引号，报 `[eval]:1 "const ^^^^ Unterminated string constant`。
+      //   模型为此反复重试了 3 轮，最后放弃任务。
+      // 这类失败是**确定性**的：同样的命令再跑一次还是会炸，属于纯粹浪费轮次。
+      // 复杂内联代码一律拦下并给出替代方案；简单单行（如 `python -c "print(1)"`）仍放行。
       if (process.platform === "win32") {
-        const inlineMatch = effectiveCommand.match(/\bpython3?\s+-c\s+(.+)$/is);
-        if (inlineMatch) {
+        const INLINE_LANGS: Array<{ re: RegExp; name: string; ext: string }> = [
+          { re: /\bpython3?\s+-c\s+(.+)$/is, name: "python -c", ext: "py" },
+          { re: /\bnode(?:\.exe)?\s+(?:-e|--eval)\s+(.+)$/is, name: "node -e", ext: "mjs" },
+        ];
+        for (const lang of INLINE_LANGS) {
+          const inlineMatch = effectiveCommand.match(lang.re);
+          if (!inlineMatch) continue;
           const code = inlineMatch[1].trim();
           const quoteCount = (code.match(/"/g) || []).length;
           const isComplex = code.includes(";") || quoteCount > 2 || /\n/.test(code);
@@ -265,11 +273,12 @@ export function registerShellMediaTools(
             return {
               success: false,
               error:
-                "Windows 下 `python -c` 内联多行/含分号的代码会因 cmd.exe 引号处理而报 SyntaxError。" +
-                " 请把代码写入 .py 文件再执行（例如先 file_create 创建脚本，再 `python script.py`）。",
+                `Windows 下 \`${lang.name}\` 内联多行/含分号的代码会因 cmd.exe 引号处理而报语法错误` +
+                `（Unterminated string / Invalid or unexpected token）。` +
+                ` 请把代码写入 .${lang.ext} 文件再执行（先 file_create 创建脚本，再 \`${lang.name.split(" ")[0]} script.${lang.ext}\`）。`,
               command,
               cwd,
-              hint: "改用脚本文件：`python <脚本名>.py`（工作目录见 cwd 字段）",
+              hint: `改用脚本文件（工作目录见 cwd 字段）。注意：相对路径会落在 workspace 下。`,
             };
           }
         }

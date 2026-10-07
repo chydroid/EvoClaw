@@ -52,13 +52,52 @@ function validatePathWithinBase(resolvedPath: string, baseDir: string): string |
   return null;
 }
 
+/**
+ * 解析工具入参里的文件路径，返回**绝对路径**与**供 FileSystemManager 使用的相对路径**。
+ *
+ * 真实事故（2026-10-07）：模型连续 3 次调用 file_create 被拦在「等待审批」，
+ * 最后停下来问用户「请在弹窗中批准」，但界面根本没有弹窗。
+ *
+ * 根因是**相对路径的基准目录不一致**：
+ *   - `shell_exec` 的 cwd 是 `data/workspace`
+ *   - `file_create` 却把相对路径解析到**项目根**（fsBase）
+ * 而白名单只覆盖 `data/workspace` 与 `data/skills`（刻意不白名单项目根，
+ * 以防 agent 改源码 / .env）。于是模型写 `list_files.mjs`（它以为落在 workspace）
+ * 实际落到 `<repo>/list_files.mjs` → 不在白名单 → 触发审批 → 任务彻底卡死。
+ *
+ * 现在：**相对路径按 workspace 解析**（与 shell_exec 的 cwd 对齐，
+ * 产物也落在 workspace 而不是污染仓库根目录）。
+ *
+ * ⚠️ 必须同时返回 `forFs`：FileSystemManager 以 fsBase 为基准解析相对路径，
+ * 若只把 `resolved` 换给审批检查、却仍把原始相对路径交给 fsMgr，
+ * 就会出现「审批判定在 workspace、实际写入在仓库根」的错配 —— 那等于凭空开了一个
+ * 绕过白名单的写入口。两者必须指向同一个绝对路径。
+ *
+ * 绝对路径与项目根的边界校验保持原样：项目根依旧不会被自动放行。
+ */
+function resolveToolPath(
+  fsBase: string,
+  workspaceBase: string | undefined,
+  filePath: string,
+): { resolved: string; forFs: string } {
+  const resolved = path.isAbsolute(filePath)
+    ? path.resolve(fsBase, filePath)
+    : path.resolve(workspaceBase || fsBase, filePath);
+  // 换算成 fsBase 相对路径（统一用正斜杠），供 FileSystemManager 解析
+  const rel = path.relative(fsBase, resolved);
+  const forFs = rel && !rel.startsWith("..") ? rel.split(path.sep).join("/") : resolved;
+  return { resolved, forFs };
+}
+
 export function registerFileTools(
   executor: AgentModelExecutor,
   permissionManager: PermissionManager,
   permissionRelay: PermissionRelay | undefined,
   errorRecoveryManager: ErrorRecoveryManager,
   fileSystemManager: FileSystemManager,
-  fsBase: string
+  fsBase: string,
+  /** 相对路径的基准目录（通常是 data/workspace，已在白名单内）。缺省时退回 fsBase。 */
+  workspaceBase?: string
 ): void {
   const fsMgr = fileSystemManager;
   const errRecovery = errorRecoveryManager;
@@ -80,12 +119,12 @@ export function registerFileTools(
       const filePath = String(params.path || "");
       const content = String(params.content || "");
       const overwrite = params.overwrite === true;
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
-        return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content, overwrite));
+        return await errRecovery.executeWithRetry("file_create", fsPath, () => fsMgr.createFile(fsPath, content, overwrite));
       }
       const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
       if (permRequest.status === "denied") {
@@ -95,7 +134,7 @@ export function registerFileTools(
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
         return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_create", description: permRequest.description, target: filePath, error: `Awaiting user approval to create: ${filePath}` };
       }
-      return await errRecovery.executeWithRetry("file_create", filePath, () => fsMgr.createFile(filePath, content, overwrite));
+      return await errRecovery.executeWithRetry("file_create", fsPath, () => fsMgr.createFile(fsPath, content, overwrite));
     }
   );
 
@@ -112,12 +151,12 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       const content = String(params.content || "");
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
-        return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
+        return await errRecovery.executeWithRetry("file_modify", fsPath, () => fsMgr.modifyFile(fsPath, content));
       }
       const permRequest = permMgr.requestPermission("file_modify", filePath, { size: content.length }, "tool");
       if (permRequest.status === "denied") {
@@ -127,7 +166,7 @@ export function registerFileTools(
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
         return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_modify", description: permRequest.description, target: filePath, error: `Awaiting user approval to modify: ${filePath}` };
       }
-      return await errRecovery.executeWithRetry("file_modify", filePath, () => fsMgr.modifyFile(filePath, content));
+      return await errRecovery.executeWithRetry("file_modify", fsPath, () => fsMgr.modifyFile(fsPath, content));
     }
   );
 
@@ -142,13 +181,13 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
       if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
-        return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
-          await fsMgr.deleteFile(filePath);
+        return await errRecovery.executeWithRetry("file_delete", fsPath, async () => {
+          await fsMgr.deleteFile(fsPath);
           return { success: true, path: filePath };
         });
       }
@@ -160,8 +199,8 @@ export function registerFileTools(
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
         return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_delete", description: permRequest.description, target: filePath, error: `Awaiting user approval to delete: ${filePath}` };
       }
-      return await errRecovery.executeWithRetry("file_delete", filePath, async () => {
-        await fsMgr.deleteFile(filePath);
+      return await errRecovery.executeWithRetry("file_delete", fsPath, async () => {
+        await fsMgr.deleteFile(fsPath);
         return { success: true, path: filePath };
       });
     }
@@ -180,11 +219,11 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
-      return await errRecovery.executeWithRetry("file_read", filePath, async () => {
-        let content = await fsMgr.readFile(filePath);
+      return await errRecovery.executeWithRetry("file_read", fsPath, async () => {
+        let content = await fsMgr.readFile(fsPath);
         const parsedOffset = params.offset ? parseInt(String(params.offset), 10) : 1;
         const offset = Number.isFinite(parsedOffset) ? Math.max(1, parsedOffset) : 1;
         const parsedLimit = params.limit ? parseInt(String(params.limit), 10) : undefined;
@@ -211,10 +250,10 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const dirPath = String(params.path || ".");
-      const resolvedPath = path.resolve(fsBase, dirPath);
+      const { resolved: resolvedPath, forFs: fsDir } = resolveToolPath(fsBase, workspaceBase, dirPath);
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
-      return await errRecovery.executeWithRetry("file_list", dirPath, () => fsMgr.listAll(dirPath));
+      return await errRecovery.executeWithRetry("file_list", fsDir, () => fsMgr.listAll(fsDir));
     }
   );
 }

@@ -17,6 +17,7 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";
+import { commandExists } from "./command-exists";
 import { isIP } from "net";
 import { SKILLmdParser } from "./skill-md-parser";
 import { SkillSandbox } from "./skill-sandbox";
@@ -1566,13 +1567,7 @@ export class SkillManager {
 
   /** Check if a binary exists in the system PATH */
   private checkBinaryExists(bin: string): boolean {
-    try {
-      const which = process.platform === "win32" ? "where" : "which";
-      execFileSync(which, [bin], { stdio: "pipe", timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return commandExists(bin);
   }
 
   // ── Startup Monitoring ──
@@ -2403,11 +2398,13 @@ export class SkillManager {
 
     if (ocMeta?.requires?.bins) {
       for (const bin of ocMeta.requires.bins) {
-        try {
-          const which = process.platform === "win32" ? "where" : "which";
-          execFileSync(which, [bin], { stdio: "pipe", timeout: 5000 });
-        } catch {
-          warnings.push(`Required binary "${bin}" is not found in PATH`);
+        if (!commandExists(bin)) {
+          warnings.push(
+            `Required binary "${bin}" is not found in PATH. ` +
+            `若你已安装它，请确认它所在的目录已加入 PATH` +
+            `（Windows 常见位置：%APPDATA%\\npm、%APPDATA%\\Python\\PythonXY\\Scripts），` +
+            `或改用绝对路径调用。`,
+          );
         }
       }
     }
@@ -2888,15 +2885,7 @@ export class SkillManager {
 
     // anyBins 预检查：若任一二进制已在 PATH 上则视为已安装
     if (spec.bins && spec.bins.length > 0) {
-      const anyOnPath = spec.bins.some((b) => {
-        try {
-          const { execFileSync } = require("child_process") as typeof import("child_process");
-          execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
-          return true;
-        } catch {
-          return false;
-        }
-      });
+      const anyOnPath = spec.bins.some((b) => commandExists(b));
       if (anyOnPath) {
         step.message = `Skipped: one of [${spec.bins.join(", ")}] already on PATH`;
         step.status = "success";
@@ -2993,14 +2982,7 @@ export class SkillManager {
 
       // bins 后置校验
       if (spec.bins && spec.bins.length > 0) {
-        const missing = spec.bins.filter((b) => {
-          try {
-            execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
-            return false;
-          } catch {
-            return true;
-          }
-        });
+        const missing = spec.bins.filter((b) => !commandExists(b));
         if (missing.length > 0) {
           step.warnings.push(`Bins not on PATH after install: ${missing.join(", ")}`);
           step.status = "warning";
@@ -3231,14 +3213,7 @@ export class SkillManager {
 
       // bins 后置校验
       if (spec.bins && spec.bins.length > 0) {
-        const missing = spec.bins.filter((b) => {
-          try {
-            execFileSync(process.platform === "win32" ? "where" : "which", [b], { stdio: "pipe", shell: false, timeout: 3_000 });
-            return false;
-          } catch {
-            return true;
-          }
-        });
+        const missing = spec.bins.filter((b) => !commandExists(b));
         if (missing.length > 0) {
           step.warnings.push(`Bins not on PATH after download: ${missing.join(", ")}`);
           step.status = step.status === "success" ? "warning" : step.status;

@@ -874,7 +874,16 @@ export default function SkillsConfig() {
     if (installingBins) return; // 防止并发触发
     setInstallingBins(skillId);
     try {
-      const res = await fetch(`/api/skills/${skillId}/install-binary`, { method: "POST" });
+      // 超时保护：winget / npm 安装可能长时间无响应，
+      // 没有 AbortController 时按钮会一直停在「安装中...」，用户表现为「点了没反应」。
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 120_000);
+      let res: Response;
+      try {
+        res = await fetch(`/api/skills/${skillId}/install-binary`, { method: "POST", signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       const data = await res.json();
       if (!res.ok || !data.success) {
         const failed = (data.results || []).filter((r: any) => !r.installed);
@@ -895,7 +904,13 @@ export default function SkillsConfig() {
       // 同步更新左侧列表中的 skill 信息
       setSkills(prev => prev.map(s => s.id === skillId ? { ...s, missingBins: stillMissing } : s));
     } catch (err) {
-      setMessage({ type: "error", text: `${t("skills.binary_install_failed", "Binary 安装失败")}: ${err instanceof Error ? err.message : String(err)}` });
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      setMessage({
+        type: "error",
+        text: aborted
+          ? `${t("skills.binary_install_failed", "Binary 安装失败")}: 安装超时（120s），请在终端手动执行安装命令后重试`
+          : `${t("skills.binary_install_failed", "Binary 安装失败")}: ${err instanceof Error ? err.message : String(err)}`,
+      });
     } finally {
       setInstallingBins(null);
     }

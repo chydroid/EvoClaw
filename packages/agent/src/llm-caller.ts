@@ -2860,9 +2860,17 @@ Have a specific URL?
               failedTools.length > 0 ||
               emptyResultTools.length > 0 ||
               hasActionIntentFn(message);
+            // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
+            // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
+            // （停顿检测抓不到）。真实案例：node -e 引号报错 + Docker 不可用，
+            // 模型放弃并反问用户「要不要我继续」。这类必须让它换方案再试。
+            // 注意 pendingPermissions 非空时整个块已被跳过 —— 那是真的在等人工审批，
+            // 不该自动重试；extractToolFailure 也已把「等待审批」排除在 failedTools 外。
+            const stalledAfterFailure = failedTools.length > 0;
             const shouldContinue =
               hasWorkContext &&
               (premature !== null ||
+                stalledAfterFailure ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
             if (shouldContinue) {

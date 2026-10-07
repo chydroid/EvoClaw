@@ -10,6 +10,98 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.86.9] - 2026-10-07
+
+**复盘 12:16 之后的会话：修文件工具免审批、技能依赖检测全盘失效、自动续跑漏触发；补齐流式输出与思考折叠**
+
+分析对象：`data/sessions/sess_muxl36wq_88fbac6e.jsonl`（30 条，含完整 tool_calls 与真实返回值）。
+
+### 1. 【根因】file_create 相对路径解析到项目根 → 每次都要审批，任务彻底卡死
+
+真实症状：模型连续 3 次调`file_create` 都被拦成 `requiresPermission: true`，
+最后回复「请在弹窗中批准文件创建请求」——**而界面根本没有弹窗**，
+用户只看到任务停在那里。
+
+根因不是审批配置，而是**两个工具的相对路径基准目录不一致**：
+
+| 工具 | 相对路径基准 |
+|---|---|
+| `shell_exec` | `data/workspace` |
+| `file_create` / `file_modify` / `file_read` / `file_list` | **项目根**（`fsBase`） |
+
+而目录白名单只覆盖 `data/workspace` 与 `data/skills`
+（**刻意**不白名单项目根，以防 agent 改源码 / .env）。
+于是模型写 `list_files.mjs`（它以为落在 workspace，与 shell_exec 的 cwd 一致）
+实际落到 `<repo>/list_files.mjs` → 不在白名单 → 触发审批 → 死锁。
+
+修复：相对路径统一按 `workspace` 解析（`resolveToolPath()`），
+并把路径换算成 `fsBase` 相对路径后再交给 `FileSystemManager`，
+**保证「审批检查的绝对路径」与「实际写入的绝对路径」严格一致**——
+否则会出现「判定在 workspace、写入在仓库根」的错配，等于凭空开了一个绕过白名单的写入口。
+绝对路径与项目根边界校验保持原样，安全边界没有放松。
+
+副产品：产物不再落在仓库根，`git status` 不会被临时脚本污染。
+
+### 2. 【更严重】技能依赖检测对**所有**二进制都失效
+
+症状：用户已用 pwsh 装好 `mineru-open-api`，技能仍报
+`Required binary "mineru-open-api" is not found in PATH`，
+「一键安装缺失工具」点了没反应。
+
+实测发现旧实现 `execFileSync("where", [bin])` **连`node`、`python` 都检测不到**：
+
+- `spawnSync where EBUSY` —— WorkBuddy 注入的 shim 目录让同步 spawn 失败
+- `process.env.PATH` 本身畸形：实测存在裸 `C` 段（驱动器相对路径）与被截断的条目
+- Windows 上 npm 全局包落在 `%APPDATA%\npm`、pip 用户包落在
+  `%APPDATA%\Python\PythonXY\Scripts`，这两个目录**常常不在 PATH 里**
+
+新增 `packages/skills/src/command-exists.ts`，三路探测任一命中即视为存在：
+① 直接执行探测 → ② 扫描 PATH（按平台补齐 `.exe/.cmd/.bat/.com/.ps1`）→
+③ 扫描 Windows 用户级安装目录。替换 `skill-manager.ts` 中全部 5 处 `where` 调用。
+
+**实证**：`mineru-open-api` 确实已安装在
+`C:\Users\CY\AppData\Roaming\npm\mineru-open-api`（npm 全局目录），
+新探测能正确认出；旧探测对一切返回「未找到」。
+
+### 3.「一键安装缺失工具」无超时保护
+
+前端 fetch 无 `AbortController`，后端 winget/npm 卡住时按钮永远停在「安装中...」。
+已加 120s 超时 + 明确的超时提示。
+
+### 4.自动续跑漏触发：工具失败了就收尾
+
+12:16 那次会话里模型在 `node -e` 报错 + Docker 不可用后，
+**既没说完成（对账不触发）、用词也不像求确认（停顿检测抓不到）**，直接收尾。
+
+- 新增停顿话术：`告诉我一声`、`我也可以继续`、`是否继续/要不要接着`
+  （用 `(?<!你)` 排除「**你**可以继续」这种劝用户继续的正常收尾）
+- 新增第三条结构性触发条件：**本回合有失败工具 + 没有完成声明 → 继续**，
+  要求模型换方案而不是复述错误
+
+### 5. `node -e` 内联引号在 Windows 上必炸
+
+与此前修的 `python -c` 是同一类问题：`node -e "const fs=require('fs');..."`
+经 cmd.exe 传递后引号被吃掉，报
+`[eval]:1 "const ^^^^ Unterminated string constant`，模型为此白费 3 轮。
+已把内联代码保护泛化到 `python -c` 与 `node -e`。
+
+### 6. 流式输出与思考过程展示
+
+- **`working` 阶段事件此前只更新状态文字、不写入 streamLog**，流式结束后整段丢失。
+  现已写入，`streamLog` 覆盖全部阶段。
+- **思考过程折叠时只显示一个徽章**，看不到任何内容。
+  现改为：折叠时默认露出 **30 个字符**预览（超长加省略号），点击展开全文，
+  展开后再次点击折叠；两态都有 tooltip 提示。
+
+### 7. 审批徽章可点击（弹窗的兜底入口）
+
+`🔐 N 个权限请求` 徽章原本不可点击。虽然自动弹窗链路本身是通的
+（`setShowPermissionModal(true)` 有被调用），但一旦时序异常就完全无从批准。
+现在点击徽章可直接打开审批弹窗。
+
+**验证**：新增 31 项测试（command-exists 7 + auto-continuation 新增 9 + 其余回归）；
+`build` + `typecheck` + `test` 全绿：**238 files / 5921 passed / 1 skipped / 0 failed**。
+
 ## [0.86.8] - 2026-10-07
 
 **合并「接到任务先定位，再动手」纪律 + 补上系统提示词的测试护栏 + 修掉一处残留 bug**

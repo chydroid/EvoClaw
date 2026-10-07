@@ -295,6 +295,9 @@ const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => (
   boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
 });
 
+/** 思考过程折叠时默认露出的字符数 */
+const THINKING_PREVIEW_CHARS = 30;
+
 const thinkingBadgeStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -1192,9 +1195,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     setProgressSteps((prev) => [...prev, step]);
                     streamLogRef.current.push(`📋 ${step.detail}`);
                     setStatusMessage(`📋 ${eventData.text || t("chat.processing")}`);
-                  } else if (currentEvent === "working") {
-                    setStatusMessage(`${t("chat.phase.working_emoji")} ${eventData.detail || t("chat.working")}`);
-                  } else if (currentEvent === "progress_summary") {
+} else if (currentEvent === "working") {
+                      const detail = (eventData.detail as string) || t("chat.working");
+                      setStatusMessage(`${t("chat.phase.working_emoji")} ${detail}`);
+                      // ★ 同样写入 streamLog：此前 working 阶段只更新状态文字，
+                      // 流式结束后就消失了 —— 用户要求「所有流式输出都要保留」。
+                      streamLogRef.current.push(`⚙️ ${detail}`);
+                    } else if (currentEvent === "progress_summary") {
                     const summaryType = eventData.type as string;
                     const summaryCount = eventData.count as number;
                     const detail = eventData.detail as string || "";
@@ -2229,25 +2236,58 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     </button>
                   </>
                 )}
-                {/* Thinking badge */}
+                {/* 思考过程：完成后自动折叠，默认只露出 30 个字符，可点击展开/再折叠 */}
                 {msg.thinking && (
-                  <div style={thinkingBadgeStyle} onClick={() => toggleThinking(msg.id)}>
+                  <div
+                    style={{ ...thinkingBadgeStyle, cursor: "pointer" }}
+                    onClick={() => toggleThinking(msg.id)}
+                    title={showThinking[msg.id] ? t("chat.collapse_thinking", "点击折叠") : t("chat.expand_thinking", "点击展开")}
+                  >
                     <span>{showThinking[msg.id] ? "💭" : "🧠"}</span>
                     <span>{t("chat.thinking")}</span>
+                    {!showThinking[msg.id] && msg.thinking.length > THINKING_PREVIEW_CHARS && (
+                      <span
+                        style={{
+                          fontStyle: "italic",
+                          color: "var(--text-secondary, #8b949e)",
+                          maxWidth: "340px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {msg.thinking.slice(0, THINKING_PREVIEW_CHARS)}…
+                      </span>
+                    )}
                     <span style={{ fontSize: "10px", transform: showThinking[msg.id] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
                   </div>
                 )}
                 {showThinking[msg.id] && msg.thinking && (
-                  <div style={{ ...toolCallStyle, fontStyle: "italic", color: "var(--text-secondary)", marginBottom: "8px" }}>
+                  <div
+                    style={{ ...toolCallStyle, fontStyle: "italic", color: "var(--text-secondary)", marginBottom: "8px", whiteSpace: "pre-wrap" }}
+                    onClick={() => toggleThinking(msg.id)}
+                    title={t("chat.collapse_thinking", "点击折叠")}
+                  >
                     {msg.thinking}
                   </div>
                 )}
 
-                {/* Permission requests badge */}
+                {/* Permission requests badge —— 同时作为审批弹窗的兜底入口：
+                    自动弹窗若因时序/白名单等原因没出现，用户仍可点此打开审批。 */}
                 {msg.permissionRequests && msg.permissionRequests.length > 0 && (
-                  <div style={{ ...thinkingBadgeStyle, background: "rgba(248,113,113,0.15)", borderColor: "var(--error, #f87171)", marginBottom: "8px" }}>
+                  <div
+                    style={{ ...thinkingBadgeStyle, background: "rgba(248,113,113,0.15)", borderColor: "var(--error, #f87171)", marginBottom: "8px", cursor: "pointer" }}
+                    onClick={() => {
+                      setPendingPermissions(
+                        msg.permissionRequests!.map((p) => ({ ...p, messageId: msg.id })),
+                      );
+                      setShowPermissionModal(true);
+                    }}
+                    title={t("chat.permission_title")}
+                  >
                     <span>🔐</span>
                     <span>{t("chat.permission_requests_count").replace("{0}", String(msg.permissionRequests.length))}</span>
+                    <span style={{ fontSize: "10px" }}>▶</span>
                   </div>
                 )}
 

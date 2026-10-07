@@ -1307,7 +1307,10 @@ export class EvoClawServer {
       this.permissionRelay,
       this.errorRecoveryManager,
       this.fileSystemManager,
-      fsBase
+      fsBase,
+      // 相对路径基准 = workspace：与 shell_exec 的 cwd 一致，且已在白名单内。
+      // 不传的话相对路径会落到项目根（未白名单）→ file_create 每次都要审批。
+      path.resolve(__dirname, "..", "..", "..", "data", "workspace")
     );
   }
 

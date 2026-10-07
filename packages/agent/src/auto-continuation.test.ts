@@ -99,3 +99,40 @@ describe("buildContinuationDirective — 续跑指令", () => {
     expect(buildContinuationDirective({ kind: "promise_future_action" })).toContain("不要复述本指令");
   });
 });
+
+describe("detectPrematureStop — 2026-10-07 12:16 会话新增话术（回归）", () => {
+  // 真实事故：模型在 file_create 被拦、node -e 报错后收尾时说了这些话，
+  // 上一版规则全部漏掉，于是它"轻易停止"了任务。
+  it("★「告诉我一声就动手」应判定为停顿", () => {
+    expect(detectPrematureStop("你告诉我一声我就动手 🧬")).toBe("ask_user_to_continue");
+  });
+
+  it("★「或者我也可以继续」应判定为停顿", () => {
+    expect(detectPrematureStop("或者，如果你希望我先尝试另一种方式，我也可以继续")).toBe("ask_user_permission");
+  });
+
+  it("★「请在弹窗中批准…我立刻开工」应判定为停顿", () => {
+    expect(
+      detectPrematureStop("请在弹窗中批准文件创建请求，我立刻开工。", { toolCallsThisRound: false }),
+    ).toBe("promise_future_action");
+  });
+
+  it("如实汇报失败原因 + 继续汇报其它结果时不误判", () => {
+    expect(
+      detectPrematureStop(
+        "node -e 因引号转义失败，我已改用脚本文件重跑。共读取 14 个文件，其中 12 个是 docx。",
+        { toolCallsThisRound: false },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("detectPrematureStop — 不得把「劝用户继续」当成停顿（反向回归）", () => {
+  it("★「你可以继续」是正常的收尾话术，不判为停顿", () => {
+    expect(detectPrematureStop("脚本已修复并跑通，你可以继续下一步了。")).toBeNull();
+  });
+
+  it("★「请告诉我是否继续」是征询，仍判为停顿", () => {
+    expect(detectPrematureStop("请告诉我是否继续处理剩下的文件")).not.toBeNull();
+  });
+});
