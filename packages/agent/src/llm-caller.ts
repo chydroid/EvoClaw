@@ -1059,6 +1059,9 @@ function countResultItems(result: string): number | null {
   }
 }
 
+/** 会产出"搜索结果"的工具——只有它们真的跑通，才值得提示模型别再搜了 */
+const SEARCH_TOOLS_HINT = new Set(["web_search", "web_fetch", "fetch_node_page", "scrapling_fetch"]);
+
 function getIdempotencyKey(toolName: string, args: Record<string, unknown>): string {
   // Only include fields that affect the write outcome
   const relevantFields: Record<string, unknown> = {};
@@ -2390,6 +2393,9 @@ Have a specific URL?
       let successfulToolCalls = 0;
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
+      // 本回合**真正执行过**搜索类工具（区别于「尝试调用」）：
+      // 用于决定是否注入 "Do NOT search again" 提示，避免给失败调用也加噪音。
+      let actualSearchExecuted = false;
       // 本回合「执行了但返回失败」的工具，用于完成声明对账
       const failedTools: Array<{ name: string; error: string }> = [];
       // 本回合「执行了但返回空/零结果」的工具 —— 用于识别凭空编造的数据报告
@@ -3281,7 +3287,16 @@ Have a specific URL?
                 idempotencyCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
               }
 
-              if ((toolName === "web_search" || toolName === "skill_execute" || toolName === "web_fetch" || toolName === "fetch_node_page") && successfulToolCalls >= 2) {
+              // ★ 只在**真的执行过搜索类工具**时才注入。
+              // 事故（2026-10-07 15:2x）：`skill_execute` 明明返回
+              // 「不是技能而是内置工具」的错误，这里仍给它追加
+              // "You have search results now. Do NOT search again"，
+              // 与场景完全无关的噪音指令把模型带偏（它随即放弃了正确路径）。
+              if (
+                successfulToolCalls >= 2 &&
+                SEARCH_TOOLS_HINT.has(toolName) &&
+                actualSearchExecuted
+              ) {
                 toolResult += "\n\n[SYSTEM HINT: You have search results now. Do NOT search again. Provide your answer directly in chat.]";
               }
               if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
@@ -3321,6 +3336,8 @@ Have a specific URL?
               executedToolCalls.push({ id: tc.id, name: toolName, arguments: args });
               process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
               successfulToolCalls++;
+              // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
+              if (SEARCH_TOOLS_HINT.has(toolName)) actualSearchExecuted = true;
               anyToolExecuted = true;
               recordToolSuccess(toolName);
               // ── 进度反馈：工具完成时显示可读摘要 ──
@@ -3701,6 +3718,26 @@ Have a specific URL?
             `[AgentModelExecutor] Completion-claim reconciliation skipped: ${reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)}\n`
           );
         }
+        // ── 剥离泄漏的原始 tool_call XML ──
+        // 事故（2026-10-07 15:3x）：模型在最后一轮把工具调用以**裸 XML**
+        // 写进正文发给用户（`<tool_call><function=shell_exec>…`），
+        // 用户看到的是一堆积木而不是回复。成因是模型模仿了 prompt 里的
+        // XML 工具调用格式，而本轮又没有真正执行它。
+        if (finalReply) {
+          const beforeStrip = finalReply;
+          finalReply = finalReply
+            .replace(/<\u200b?tool_call>[\s\S]*?<\/\u200b?tool_call>/gi, "")
+            .replace(/<\u200b?function=[^>]*>[\s\S]*?<\/\u200b?function>/gi, "")
+            .replace(/<\u200b?parameter\s+name=[^>]*>[\s\S]*?<\/\u200b?parameter>/gi, "")
+            .replace(/<\u200b?invoke\s+name=[^>]*>[\s\S]*?<\/\u200b?invoke>/gi, "");
+          if (finalReply.trim().length === 0 && beforeStrip.trim().length > 0) {
+            // 整条回复只有裸 XML（模型没写出任何自然语言）→ 明确告知而非留白
+            finalReply =
+              "（本轮模型只输出了工具调用标记，没有给出文字回复。已停止执行；" +
+              "如需继续，请明确说明下一步要做什么。）";
+          }
+        }
+
         // ── Guardrails: output validation ──
         if (deps.checkOutputGuardrail && finalReply) {
           const outputCheck = deps.checkOutputGuardrail(finalReply);

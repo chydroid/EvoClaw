@@ -43,6 +43,26 @@ function stripDuplicatedCwdPrefix(command: string, cwd: string): string {
   });
 }
 
+/**
+ * 同步 spawn 在本机不可用 —— 追加可操作提示。
+ *
+ * 真实事故（2026-10-07 15:3x）：模型写的 Node 脚本里用
+ * `execSync/spawnSync` 调 `mineru-open-api`，14 个文件全部
+ * `spawnSync C://WINDOWS//system32//cmd.exe EBUSY`，
+ * 而脚本本身 `success:true` —— 模型看不出是环境问题，只以为 CLI 坏了。
+ *
+ * 根因：WorkBuddy 注入的 shim 目录让**同步** spawn 失败；
+ * 异步 spawn（shell_exec 自己用的就是）正常。
+ */
+const EBUSY_HINT =
+  "\n\n[SYSTEM HINT] 本机**同步 spawn 不可用**：Node 的 `execSync` / `spawnSync` 调用外部命令会返回 " +
+  "`spawnSync ... EBUSY`（WorkBuddy 的 shim 目录导致），异步 `exec` / `spawn` 则正常。\n" +
+  "若你的脚本里用了 execSync/spawnSync，请改成 Promise 形式的 exec/spawn（await 包裹）。";
+
+function withEbusyHint(text: string): string {
+  return /EBUSY/i.test(text) ? text + EBUSY_HINT : text;
+}
+
 /** Recursively search for a file by name under a directory tree (max depth 4) */
 function findFileRecursive(root: string, filename: string, maxDepth = 4): string | null {
   if (maxDepth <= 0) return null;
@@ -266,8 +286,14 @@ export function registerShellMediaTools(
         for (const lang of INLINE_LANGS) {
           const inlineMatch = effectiveCommand.match(lang.re);
           if (!inlineMatch) continue;
-          const code = inlineMatch[1].trim();
-          const quoteCount = (code.match(/"/g) || []).length;
+          // ★ 只取 `-c/-e` 后面**第一段引号包裹的内容**作为内联代码。
+          // 事故 3（2026-10-07 15:2x）：`python --version && python -c "import docx; print('OK')"`
+          // 被上一版规则误判为「复杂内联代码」而整条拦截 —— 那条命令其实无害，
+          // 只是把 `&&` 之后的分号也算了进去。拦截过宽会让模型无路可走。
+          const rawArgs = inlineMatch[1].trim();
+          const quoted = rawArgs.match(/^"([^"]*)"/);
+          const code = (quoted ? quoted[1] : rawArgs).trim();
+          const quoteCount = quoted ? 2 : (code.match(/"/g) || []).length;
           const isComplex = code.includes(";") || quoteCount > 2 || /\n/.test(code);
           if (isComplex) {
             return {
@@ -397,39 +423,15 @@ export function registerShellMediaTools(
         }
       }
 
-      // ── 旧危险模式黑名单（保留兜底；与上面的分级不冲突）──
-      const DANGEROUS_PATTERNS = [
-        // rm -rf 变体：-rf/-fr 单 token 或 -r -f 分割 token，后跟危险目标（/ ~ . * $HOME --no-preserve-root）
-        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\s+([.\/\*~]|\$HOME|--no-preserve-root)/i,
-        /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|-r\s+-f|-f\s+-r)\s+\/(\s|$)/i, // rm -rf / 或 rm -r -f /
-        /rm\s+-r\s+\//i, // rm -r / 无 -f
-        /rm\s+-rf\s+\//i, /rm\s+-rf\s+\~/i, /del\s+\/S\s+\/Q\s+C:\\/i,
-        /rm\s+-rf\s+\./i,
-        /rm\s+-rf\s+\*/i,
-        /rm\s+-fr\s+/i,
-        /rmdir\s+\/[sS]\s+\/[qQ]/i,
-        // Remove-Item：-Recurse 和 -Force 任意顺序
-        /Remove-Item\s+[^|;]*(-Recurse|-Force)[^|;]*(-Recurse|-Force)/i,
-        // PowerShell 危险 cmdlet
-        /\bpowershell\b.*\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex|Start-Process|Remove-Item)\b/i,
-        /\b(Stop-Process|Stop-Service|Set-ExecutionPolicy|Invoke-Expression|iex)\b/i,
-        /shutdown/, /reboot/, /format\s+[a-z]:/i,
-        /dd\s+if=/, /mkfs/, /fdisk/, /:\(\)\s*\{/, /fork\s*bomb/,
-        />\s*\/dev\/sda/, />\s*\/dev\/nvme/,
-        /chmod\s+777\s+\//, /chown\s+-R\s+\//,
-        /eval\s/, /\.\$\(/, /\$\(.*rm\s+-rf/,
-        // curl|sh 和 curl&&sh 变体（管道、&&、输出重定向）
-        /\b(curl|wget)\b[^|&;]*\|\s*(sh|bash|python)/i,  // curl|sh
-        /\b(curl|wget)\b[^|&;]*&&\s*(sh|bash|python)/i,  // curl&&sh
-        /\b(curl|wget)\b[^|&;]*>\s*\/[^\s|&;]+\s*&&\s*(sh|bash|python)/i,  // curl>file&&sh
-        /`[^`]*`/,  // 反引号命令替换
-        /\r|\n/,    // 换行注入
-      ];
-      for (const pattern of DANGEROUS_PATTERNS) {
-        if (pattern.test(command)) {
-          return { success: false, error: `Command blocked by safety filter: matched dangerous pattern`, command };
-        }
-      }
+      // ── 旧危险模式黑名单已移除（2026-10-07）──
+      // 它是 shell-command-risk.ts 的遗留重复实现，带来两个真实问题：
+      //  ① 误杀：`/rmdir\s+\/[sS]\s+\/[qQ]/i` 没有目标检查，
+      //     连 `rmdir /s /q doc2md_out`（清理自己刚建的临时目录）都拦。
+      //     实测模型因此卡住，改用 mkdir -p 又因 Unix 语法在 Windows 失败。
+      //  ② 消息无用：只说「matched dangerous pattern」，不给规则名与命中的具体原因，
+      //     模型无法据此调整，只能反复换命令重试。
+      // 现在统一由 assessShellCommand() + decideShellCommand() 裁决：
+      // 规则更全（整盘/根目录/注入/关机/磁盘写入…），消息带规则名、原因与当前安全等级。
 
       // ── 沙箱模式：通过 LocalSandboxBackend 执行，应用限制性 SandboxPolicy ──
       // 硬隔离（网络/子进程阻断）需 docker 后端；本地后端强制 timeout/memory/path。
@@ -484,7 +486,14 @@ export function registerShellMediaTools(
       const shell = process.platform === "win32"
         ? (process.env.ComSpec || "cmd.exe")
         : "/bin/bash";
-      const shellArgs = process.platform === "win32" ? ["/c", effectiveCommand] : ["-c", effectiveCommand];
+      // ★ Windows 下先切 UTF-8 代码页。cmd.exe 默认 GBK(936)，
+      // 中文报错信息会以乱码返回（实测「系统找不到指定的路径」变成
+      // 「ϵͳ�Ҳ���ָ�����·��」），模型完全无法解读错误含义，
+      // 只能反复换命令重试。chcp 只影响本次子进程，开销可忽略。
+      const cmdForRun = process.platform === "win32"
+        ? `chcp 65001 >nul & ${effectiveCommand}`
+        : effectiveCommand;
+      const shellArgs = process.platform === "win32" ? ["/c", cmdForRun] : ["-c", cmdForRun];
 
       // ── 使用 spawn 实现异步执行 + 进度反馈 ──
       return new Promise((resolve) => {
@@ -574,7 +583,7 @@ export function registerShellMediaTools(
             if (code === 0) {
               resolve({
                 success: true,
-                output: output.slice(0, 50000),
+                output: withEbusyHint(output.slice(0, 50000)),
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,
                 cwd,
@@ -583,8 +592,8 @@ export function registerShellMediaTools(
               resolve({
                 success: false,
                 exitCode: code,
-                error: errorOutput.slice(0, 10000) || output.slice(0, 10000),
-                output: output.slice(0, 50000),
+                error: withEbusyHint((errorOutput.slice(0, 10000) || output.slice(0, 10000))),
+                output: withEbusyHint(output.slice(0, 50000)),
                 command,
                 cwd,
               });

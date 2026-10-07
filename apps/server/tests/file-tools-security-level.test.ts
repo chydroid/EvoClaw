@@ -177,3 +177,68 @@ describe("file-tools × 总体安全等级 —— 集成执法验证", () => {
     }
   });
 });
+describe("file-tools 路径归一 —— 重复拼接与返回值（回归）", () => {
+  // 真实事故（2026-10-07 15:3x）：
+  // 模型按 shell_exec 的 cwd 推断，传 `data/workspace/x.py`（以为相对项目根）。
+  // 而相对路径已改为按 workspace 解析 → 拼成 <ws>/data/workspace/x.py，
+  // 脚本写进嵌套目录；随后 `node x.py` 报 SyntaxError，模型误判为
+  // 「file_create 往内容里注入了 ## Code Analyzer Report」，白绕好几轮。
+  const mount = () => {
+    const reg = new Map<string, { name: string; handler: (p: Record<string, unknown>) => Promise<unknown> }>();
+    const executor = {
+      registerTool(n: string, _d: unknown, h: (p: Record<string, unknown>) => Promise<unknown>) {
+        reg.set(n, { name: n, handler: h });
+      },
+    } as never;
+    const perm = {
+      isPathAutoApproved: () => true,
+      requestPermission: () => ({ id: "x", status: "approved" as const }),
+    } as never;
+    const rec = { executeWithRetry: async (_o: string, _t: string, fn: () => Promise<unknown>) => fn() } as never;
+    const fsm = {
+      createFile: async (p: string, c: string) => ({ path: p, size: c.length, created: true }),
+      modifyFile: async (p: string) => ({ path: p, size: 1 }),
+      deleteFile: async () => undefined,
+      readFile: async () => "c",
+      listAll: () => [],
+      operateAbsolute: async (p: string, c: string) => ({ path: p, size: c.length, created: true }),
+      deleteFileAbsolute: async () => undefined,
+    } as never;
+    registerFileTools(executor, perm, undefined, rec, fsm, FS_BASE, WORKSPACE);
+    return reg;
+  };
+
+  it("★ 传 data/workspace/x.py 不得拼成 workspace/data/workspace/x.py", async () => {
+    resetActiveSecurityLevel();
+    const r = (await mount().get("file_create")!.handler({
+      path: "data/workspace/deep_probe.py",
+      content: "x",
+    })) as Record<string, unknown>;
+    const p = String(r.path);
+    expect(p).not.toMatch(/data[\\/]workspace[\\/]data[\\/]workspace/);
+    expect(p.replace(/\\/g, "/")).toContain("data/workspace/deep_probe.py");
+  });
+
+  it("★ 多层重复前缀应被完全剥掉", async () => {
+    resetActiveSecurityLevel();
+    const r = (await mount().get("file_create")!.handler({
+      path: "data/workspace/data/workspace/deep2.py",
+      content: "x",
+    })) as Record<string, unknown>;
+    expect(String(r.path).replace(/\\/g, "/")).toContain("data/workspace/deep2.py");
+    expect(String(r.path)).not.toMatch(/workspace.*workspace.*workspace/);
+  });
+
+  it("★ 返回可直接复用的绝对路径（模型据此设 cwd 不会再拼错）", async () => {
+    resetActiveSecurityLevel();
+    const r = (await mount().get("file_create")!.handler({ path: "probe_abs.py", content: "x" })) as Record<string, unknown>;
+    expect(String(r.path)).toMatch(/^[A-Za-z]:[\\/]/); // 绝对路径
+    expect(typeof r.workspaceRelative).toBe("string");
+  });
+
+  it("普通相对路径行为不变", async () => {
+    resetActiveSecurityLevel();
+    const r = (await mount().get("file_create")!.handler({ path: "plain.py", content: "x" })) as Record<string, unknown>;
+    expect(String(r.path).replace(/\\/g, "/")).toContain("data/workspace/plain.py");
+  });
+});

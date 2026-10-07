@@ -59,10 +59,36 @@ export class SkillSandbox {
 
     const scripts = skill.body?.scripts;
     if (!scripts || Object.keys(scripts).length === 0) {
+      // ★ 两个真实缺陷叠在一起，导致「假成功」：
+      //  ① 少了 await —— createDefaultResult 是 async，返回的是 Promise，
+      //     直接赋给 output 后 JSON.stringify 出来就是 `{}`。
+      //     实测 doc-to-markdown 连续 15 次返回 `output:{}` 就是这个原因。
+      //  ② success 恒为 true —— 技能其实**什么都没做**（没脚本、又没匹配到命令模板），
+      //     却报成功。模型据此判定「这条路是通的」，于是把 14 个文件全压上去试，
+      //     全部空转。技能无法直接执行时应如实报失败，并告诉模型改用 shell_exec。
+      const fallback = await this.createDefaultResult(skill, params);
+      const didWork =
+        fallback &&
+        typeof fallback === "object" &&
+        (fallback as Record<string, unknown>).result !== undefined &&
+        ((fallback as Record<string, unknown>).result as Record<string, unknown>)?.status !== "not_executed";
+      if (!didWork) {
+        return {
+          skillId: skill.id,
+          success: false,
+          output: fallback,
+          errors: [
+            `Skill "${skill.name}" has no executable script and no runnable command template, ` +
+            `so nothing was executed. Read its SKILL.md and run the documented command yourself via shell_exec.`,
+          ],
+          duration: Date.now() - startTime,
+          resourceUsage: this.measureResourceUsage(startCpu, startMem),
+        };
+      }
       return {
         skillId: skill.id,
         success: true,
-        output: this.createDefaultResult(skill, params),
+        output: fallback,
         errors: [],
         duration: Date.now() - startTime,
         resourceUsage: this.measureResourceUsage(startCpu, startMem),
@@ -980,14 +1006,19 @@ export class SkillSandbox {
       }
     }
 
+    // ★ 不是 "completed"：既没有脚本、也没匹配到命令模板 = 什么都没做。
+    //   报 completed 会让模型误以为技能可用（真实事故：doc-to-markdown
+    //   被连续调用 15 次，每次都"成功"却零输出）。
     return {
       skillName: skill.name,
       skillVersion: skill.version,
       executedAt: new Date().toISOString(),
       params,
       result: {
-        status: "completed",
-        message: `Skill "${skill.name}" executed successfully (no scripts defined)`,
+        status: "not_executed",
+        message:
+          `Skill "${skill.name}" defines neither an executable script nor a runnable command template. ` +
+          `Nothing was executed. Open its SKILL.md and run the documented command yourself via shell_exec.`,
       },
     };
   }

@@ -364,6 +364,12 @@ async modifyFile(relativePath: string, content: string): Promise<{ path: string;
     const dirs: string[] = [];
 
     for (const entry of entries) {
+      // ★ 过滤编辑器/Office 临时文件与锁文件。
+      //   真实事故（2026-10-07 15:3x）：目录里有个
+      //   `~$月6日信阳市文旅系统明查暗访情况汇总.docx`（Word 打开文档时生成的
+      //   锁文件，162 字节），模型把它当成一个待转换的真实文档，
+      //   拿它去跑转换命令必然失败，还污染了"共 N 个文件"的统计口径。
+      if (isTransientEntryName(entry.name)) continue;
       const relPath = `${relativePath}/${entry.name}`;
       if (entry.isDirectory()) {
         dirs.push(relPath);
@@ -534,4 +540,22 @@ async modifyFile(relativePath: string, content: string): Promise<{ path: string;
   async healthCheck(): Promise<boolean> {
     return true;
   }
+}
+
+/**
+ * 是否为编辑器 / Office 产生的临时文件或锁文件。
+ * 典型：`~$xxx.docx`（Word 锁文件）、`.~lock.xxx#`（LibreOffice）、
+ * `.DS_Store`、`Thumbs.db`、`~$` 开头的任何文件。
+ */
+export function isTransientEntryName(name: string): boolean {
+  const n = String(name || "");
+  if (!n) return true;
+  return (
+    n.startsWith("~$") ||
+    n.startsWith(".~lock.") ||
+    n === ".DS_Store" ||
+    n === "Thumbs.db" ||
+    n === "desktop.ini" ||
+    (n.startsWith(".") && n.endsWith(".tmp"))
+  );
 }

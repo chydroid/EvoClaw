@@ -76,18 +76,43 @@ function validatePathWithinBase(resolvedPath: string, baseDir: string): string |
  *
  * 绝对路径与项目根的边界校验保持原样：项目根依旧不会被自动放行。
  */
+/**
+ * 剥掉模型习惯性带上的 workspace 前缀。
+ * `data/workspace/x`、`.\data\workspace\x`、甚至多套几层的
+ * `data/workspace/data/workspace/x` 都归一为 `x`。
+ */
+function stripWorkspacePrefix(filePath: string): string {
+  let candidate = filePath.replace(/^\.[\\/]+/, "");
+  const p = "data/workspace/";
+  for (;;) {
+    const lower = candidate.toLowerCase().replace(/\\/g, "/");
+    if (!lower.startsWith(p)) break;
+    candidate = candidate.slice(p.length);
+  }
+  return candidate;
+}
+
 function resolveToolPath(
   fsBase: string,
   workspaceBase: string | undefined,
   filePath: string,
-): { resolved: string; forFs: string } {
-  const resolved = path.isAbsolute(filePath)
-    ? path.resolve(fsBase, filePath)
-    : path.resolve(workspaceBase || fsBase, filePath);
+): { resolved: string; forFs: string; display: string } {
+  // 真实事故（2026-10-07 15:2x）：模型按 shell_exec 的 cwd 推断，
+  // 传 `data/workspace/readme.md`（它以为相对项目根）。而相对路径已改为按
+  // workspace 解析，于是拼成 `<ws>/data/workspace/readme.md` —— 目录多套一层，
+  // 脚本写进了嵌套目录，后续 `node xxx.js` 报 SyntaxError（读到了另一个文件），
+  // 模型据此误判为「file_create 往内容里注入了东西」，整整绕了几轮。
+  // 这里先剥掉模型习惯性带上的 workspace 前缀再解析。
+  const effective = workspaceBase && !path.isAbsolute(filePath)
+    ? stripWorkspacePrefix(filePath)
+    : filePath;
+  const resolved = path.isAbsolute(effective)
+    ? path.resolve(fsBase, effective)
+    : path.resolve(workspaceBase || fsBase, effective);
   // 换算成 fsBase 相对路径（统一用正斜杠），供 FileSystemManager 解析
   const rel = path.relative(fsBase, resolved);
   const forFs = rel && !rel.startsWith("..") ? rel.split(path.sep).join("/") : resolved;
-  return { resolved, forFs };
+  return { resolved, forFs, display: effective };
 }
 
 /**
@@ -176,7 +201,7 @@ export function registerFileTools(
       const filePath = String(params.path || "");
       const content = String(params.content || "");
       const overwrite = params.overwrite === true;
-      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, true);
       if (!pf.ok) return { success: false, error: pf.error };
       // 沙箱外的写操作在「一般安全」档需要用户确认
@@ -192,10 +217,15 @@ export function registerFileTools(
       } else if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
       }
-      const doCreate = () =>
-        pf.insideSandbox
-          ? fsMgr.createFile(fsPath, content, overwrite)
-          : fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+      const doCreate = async () => {
+        const r = pf.insideSandbox
+          ? await fsMgr.createFile(fsPath, content, overwrite)
+          : await fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+        // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
+        // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
+        // `...\data\workspace\data\workspace`，连踩两个坑。
+        return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+      };
       return await errRecovery.executeWithRetry("file_create", fsPath, doCreate);
     }
   );
@@ -213,7 +243,7 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       const content = String(params.content || "");
-      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, true);
       if (!pf.ok) return { success: false, error: pf.error };
       if (pf.needsConfirm) {
@@ -228,10 +258,12 @@ export function registerFileTools(
       } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
       }
-      const doModify = () =>
-        pf.insideSandbox
-          ? fsMgr.modifyFile(fsPath, content)
-          : fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
+      const doModify = async () => {
+        const r = pf.insideSandbox
+          ? await fsMgr.modifyFile(fsPath, content)
+          : await fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
+        return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+      };
       return await errRecovery.executeWithRetry("file_modify", fsPath, doModify);
     }
   );
@@ -247,7 +279,7 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, true);
       if (!pf.ok) return { success: false, error: pf.error };
       if (pf.needsConfirm) {
@@ -296,7 +328,7 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
       // 「一般安全」档允许读取沙箱外的一般文件；只有严格档会在这里被拒（pf.ok=false）

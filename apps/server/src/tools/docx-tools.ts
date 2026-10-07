@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { getActiveSecurityPolicy, decideFileAccess } from "@evoclaw/security";
 import * as docx from "docx";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
@@ -119,8 +120,25 @@ export function registerDocxTools(executor: AgentModelExecutor, fsBase: string):
       const filePath = String(params.path || "");
       if (!filePath) return { success: false, error: "Missing required parameter: path" };
       const resolvedPath = path.resolve(fsBase, filePath);
+      // ★ 接入「总体安全等级」。此前 docx_create 无视档位、始终硬拦沙箱外，
+      //   而同一时刻 file_* 系列已按 risky 档放行 —— 同一个保存动作，
+      //   换个工具就报错，模型只能绕道写 Python 脚本，纯属多余成本。
+      const policy = getActiveSecurityPolicy();
+      const insideFsBase = resolvedPath === path.resolve(fsBase) || resolvedPath.startsWith(path.resolve(fsBase) + path.sep);
+      if (!insideFsBase) {
+        const decision = decideFileAccess(policy, { insideSandbox: false, write: true });
+        if (decision === "deny") {
+          return {
+            success: false,
+            error:
+              `操作被安全策略拦截：当前为「${policy.label}」等级，只允许在沙箱（${path.resolve(fsBase)}）内写入文件。` +
+              `如需放开，请到「安全 → 总体安全」调整等级。`,
+          };
+        }
+      }
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
+      // 沙箱外且策略允许时，词法边界检查不再适用（策略本身就允许越界）
+      if (pathError && insideFsBase) return { success: false, error: pathError };
 
       const overwrite = params.overwrite === true;
       if (fs.existsSync(resolvedPath) && !overwrite) {

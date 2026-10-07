@@ -1,14 +1,111 @@
 # Changelog
 
-本文件是 EvoClaw **唯一**的版本变更记录（此前分散在 `History.md` 与 `CHANGELOG.md` 两处，
-自 0.86.2 起合并为单一文件，`History.md` 已废弃并删除）。
+本文件是 EvoClaw **唯一**的版本变更记录。
 
-> 本项目遵循语义化版本。记录每次代码修改、功能调整及系统变更的详细内容，按时间倒序排列。
-> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.86.1 → 0.86.2`）；
-> 仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。
-> **Convention over time**: 新版本条目必须写清「根因 / 改动 / 验证」，避免只罗列文件清单。
-> 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
+> 本项目遵循语义化版本。记录每次代码修改、功能调整及系统变更的详细内容，按时间倒序排列。  
+> **版本号升级规则（自 v0.60.1 起）**：正常迭代只递增最后一位 patch 号（如 `0.86.1 → 0.86.2`）；  
+> 仅在发生破坏性变更或重大里程碑时才递增 minor / major 位。  
+> **Convention over time**: 新版本条目必须写清「根因 / 改动 / 验证」，避免只罗列文件清单。  
+> 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
+
+## [0.87.2] - 2026-10-07
+
+**复盘 15:20 之后的会话（docx 批量转换任务）：修 11 个问题**
+
+分析对象：`data/sessions/sess_muxl36wq_88fbac6e.jsonl`（15:20 后约 90 条，含完整 tool_calls 与真实返回值）。
+
+### 1. 【最严重】技能"假成功"：什么都没做却报success:true（连续 15 次）
+
+`doc-to-markdown` 被调用 15 次，每次返回
+`{success:true, output:{}, duration:0, peakMemoryMB:0.003}` —— 纯空转。
+模型据此判定"这条路是通的"，把 14 个文件全压上去，全部白跑。
+
+两个缺陷叠加：
+- `skill-sandbox.ts` 的 `execute()` 里 `output: this.createDefaultResult(...)` **少了 `await`**。
+  该方法是 async，返回 Promise，被赋给 `output` 后 `JSON.stringify` 出来就是 `{}`。
+  这就是 15 次 `output:{}` 的直接原因。
+- `createDefaultResult` 末尾把"既无脚本、又没匹配到命令模板"返回为
+  `status:"completed"`，而 `execute()` 又恒置 `success:true`。
+
+修复：补 `await`；把该分支改为 `status:"not_executed"` 并让 `success:false`，
+错误信息明确告知"该技能没有可执行脚本，请读它的 SKILL.md 并用 shell_exec 自行运行命令"。
+一次失败即可让模型换路，不必空转 15 次。
+
+### 2. 【我引入的回归】file_create 路径重复拼接
+
+0.86.9 把相对路径改为按 workspace 解析后，模型按`shell_exec` 的 cwd 习惯传
+`data/workspace/x.py`（以为相对项目根）→ 拼成 `<ws>/data/workspace/x.py`，
+脚本写进嵌套目录；随后 `node x.py` 报 SyntaxError，
+模型误判为"file_create 往内容里注入了 `## Code Analyzer Report`"，白绕好几轮。
+
+修复：`stripWorkspacePrefix()` 剥掉模型习惯性带上的 `data/workspace/` 前缀（可多层）。
+
+### 3. file_create 返回值误导模型把 cwd 设错
+
+传绝对路径却回报 fsBase 相对路径（`data/workspace/read_docs.py`），
+模型拿它当 cwd 又拼一次 → `...\data\workspace\data\workspace`。
+修复：回报**可直接复用的绝对路径** + `workspaceRelative`。
+
+### 4. 遗留危险模式黑名单误杀 `rmdir /s /q <相对目录>`
+
+`shell-media-tools.ts` 里还有一份`shell-command-risk.ts` 的**遗留重复实现**，
+其中 `/rmdir\s+\/[sS]\s+\/[qQ]/i` 没有目标检查，连清理自己建的临时目录都拦。
+且消息只说"matched dangerous pattern"，不给规则名与原因，模型无法据此调整。
+
+修复：**删除该重复实现**，统一由 `assessShellCommand()` + `decideShellCommand()` 裁决
+（规则更全，消息带规则名、原因与当前安全等级）。
+
+### 5. `python -c` 内联保护误伤无害命令
+
+`python --version && python -c "import docx; print('OK')"` 被整条拦截 ——
+上一版把 `&&` 之后的分号也算进内联代码了。修复：只取第一段引号包裹的内容作为内联代码。
+
+### 6. 中文报错乱码导致模型无法解读
+
+cmd.exe 默认 GBK，「系统找不到指定的路径」返回成 `ϵͳ�Ҳ���ָ�����·��`，
+模型读不懂只能反复换命令。修复：Windows 下执行前 `chcp 65001 >nul &`。
+
+### 7. 同步 spawn 在本机不可用（EBUSY），却没有任何提示
+
+模型脚本里用 `execSync/spawnSync` 调 `mineru-open-api`，14 个文件全部
+`spawnSync cmd.exe EBUSY`，而脚本本身 `success:true` —— 模型看不出是环境问题。
+修复：shell_exec 检测到 EBUSY 时追加 SYSTEM HINT，说明同步 spawn 不可用、需改异步。
+
+### 8. docx_create 无视安全等级，行为与 file_* 不一致
+
+同一时刻 file_* 已按 risky 档放行沙箱外，`docx_create` 仍硬拦
+`Path traversal blocked`，模型只能绕道写 Python 脚本复制文件。修复：接入同一套裁决。
+
+### 9. 最终回复泄漏裸 tool_call XML
+
+最后一轮模型把工具调用以裸 XML 写进正文发给用户，用户看到的是一堆积木。
+修复：输出前剥离 `<tool_call>/<function=/<parameter>/<invoke>` 片段；
+若整条回复只有裸 XML，替换为明确说明而非留白。
+
+### 10. 给失败调用注入"别再搜了"的无关提示
+
+`skill_execute` 明明返回"不是技能而是内置工具"，却仍被追加
+`You have search results now. Do NOT search again.` —— 与场景无关的噪音把模型带偏。
+修复：改为仅在**搜索类工具真的成功执行**后才注入。
+
+### 11. Office 临时锁文件被当成真实文档
+
+目录里的 `~$月6日...汇总.docx`（Word 锁文件，162 字节）被模型当成待转换文档，
+必然失败，还把"共 16 个文件"的口径污染成实际 14 个。
+修复：`isTransientEntryName()` 过滤 `~$*` / `.~lock.*` / `.DS_Store` / `Thumbs.db` 等。
+
+### 附带确认：0.86.9 的 skill_execute 修复在生效
+
+`skill_execute("doc-to-markdown")` 返回了明确的"这是内置工具，请直接调用"，
+而不再是含糊的 "Skill not found"。
+
+**验证**：新增 18 项测试（路径归一 4 +临时文件过滤 6 + 既有安全等级集成 8）；
+`build` + `typecheck` 通过；`test` 全量 **240 files / 5960 passed / 1 skipped**。
+
+> **已知既有问题（非本轮引入）**：`packages/agent/src/kanban-board.test.ts` 有 1 项
+> `afterEach` 超时失败（`board.close()` 钩子 10s 超时）。已用 `git stash` 做基线对照，
+> 确认在未含本轮改动的基线上同样失败，属独立问题，另行处理。
 
 ## [0.87.1] - 2026-10-07
 
@@ -18,44 +115,44 @@
 
 ### 1. 【接线错误】配置文件从未被读入——设置永远不生效
 
-`apps/server/src/index.ts` 构造里只调了 `configManager.loadFromEnv()`，
-`loadFromFile()` **在整个项目里从未被调用过**（`grep` 全库确认）。
-于是 `get("security")` 永远只有默认值，`defaultConfig.security` 里
-压根没有 `securityLevel` 字段 → 无论用户在设置页选什么，
-启动时 `normalizeSecurityLevel(undefined)` 一律回落 `normal`。
+`apps/server/src/index.ts` 构造里只调了 `configManager.loadFromEnv()`，  
+`loadFromFile()` **在整个项目里从未被调用过**（`grep` 全库确认）。  
+于是 `get("security")` 永远只有默认值，`defaultConfig.security` 里  
+压根没有 `securityLevel` 字段 → 无论用户在设置页选什么，  
+启动时 `normalizeSecurityLevel(undefined)` 一律回落 `normal`。  
 表现就是「设置根本没生效，重启就丢」。
 
-修复：在 `start()` 注入策略**之前** `await loadFromFile()`；
+修复：在 `start()` 注入策略**之前** `await loadFromFile()`；  
 配置文件损坏时不阻止启动，退回默认档并明确告警。
 
 ### 2. 持久化只写单个键，不把默认配置写进磁盘
 
-没有采用 `ConfigManager.saveToFile()`——那会把整份 `this.config`
-（默认值 + 运行时值）全量写进 `config.json`，**包括 `auth.jwtSecret`
-这类本不该落盘的运行时值**，还会把当前版本的全部默认值固化下来，
+没有采用 `ConfigManager.saveToFile()`——那会把整份 `this.config`  
+（默认值 + 运行时值）全量写进 `config.json`，**包括 `auth.jwtSecret`  
+这类本不该落盘的运行时值**，还会把当前版本的全部默认值固化下来，  
 导致后续升级时旧默认值反过来覆盖新默认值。
 
-新增 `ConfigManager.persistPath(filePath, configPath, value)`：
-读文件 → 只改指定点分键 → 原子写回，文件里其余内容原样保留。
+新增 `ConfigManager.persistPath(filePath, configPath, value)`：  
+读文件 → 只改指定点分键 → 原子写回，文件里其余内容原样保留。  
 另补 `getFilePath()` 供调用方取当前绑定的文件路径。
 
 ### 3. 配置来源可追溯 + 支持 .env 覆盖
 
-启动日志现在带来源标记：`[source: .env | config.json | default]`。
-按项目约定（`.env` 放核心配置与密钥，`config.json` 放其余配置），
-新增 `EVOCLAW_SECURITY_LEVEL` 环境变量，优先级高于 `config.json`。
+启动日志现在带来源标记：`[source: .env | config.json | default]`。  
+按项目约定（`.env` 放核心配置与密钥，`config.json` 放其余配置），  
+新增 `EVOCLAW_SECURITY_LEVEL` 环境变量，优先级高于 `config.json`。  
 配置文件被外部修改时热更新等级（复用已有的 file watcher）。
 
 ### 4. POST 接口不再"假装成功"
 
-`POST /api/security-level` 现在返回 `persisted` 与 `persistError`；
-落盘失败时在响应里明确说明「已本次生效但重启会回落」，
+`POST /api/security-level` 现在返回 `persisted` 与 `persistError`；  
+落盘失败时在响应里明确说明「已本次生效但重启会回落」，  
 而不是静默吞掉异常让用户以为存好了。
 
 ### 5. 新增集成测试：策略在真实工具处理器里确实被执法
 
-本项目已经连续两次出现"策略写了但没接线"（0.86.3 能力速查表、
-0.86.9 技能依赖检测），因此本次不只测纯函数，而是
+本项目已经连续两次出现"策略写了但没接线"（0.86.3 能力速查表、  
+0.86.9 技能依赖检测），因此本次不只测纯函数，而是  
 **直接调用注册进来的 `file-tools` handler**，走完整链路验证：
 
 - 严格档：沙箱外创建/读取 → 被拒并给出可操作提示
@@ -79,56 +176,56 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 另：`config.json` 已加入 `.gitignore`（本机运行时配置，含路径偏好，不入库）。
 
-**验证**：新增 8 项集成测试；`build` + `typecheck` + `test` 全绿：
+**验证**：新增 8 项集成测试；`build` + `typecheck` + `test` 全绿：  
 **240 files / 5951 passed / 1 skipped / 0 failed**。
 
 ## [0.87.0] - 2026-10-07
 
 **新增「安全 → 总体安全」：三档安全等级，一个开关统管文件边界 / 危险命令 / 高危审批**
 
-此前三套安全机制彼此独立、分别配置，用户要逐项去改白名单与风险表，且容易改出前后矛盾
+此前三套安全机制彼此独立、分别配置，用户要逐项去改白名单与风险表，且容易改出前后矛盾  
 的组合（如"文件随便写但危险命令要审批"）。现在统一成一个可切换的策略。
 
 ### 三档定义
 
-| 等级 | 沙箱内 | 沙箱外 | 危险 shell 命令 | 高危操作审批 |
-|---|---|---|---|---|
-| **严格安全** `strict` | 全部允许 | **读写一律禁止** | `critical` 及以上**硬拦** | 需要 |
-| **一般安全** `normal` | 全部允许 | 读一般文件允许 / **写入弹确认** | `critical` 及以上需审批 | 需要 |
-| **一定风险** `risky` | 全部允许 | **读写全放行** | 仅命令注入与不可逆操作硬拦 | **不需要** |
+| 等级                | 沙箱内  | 沙箱外                 | 危险 shell 命令          | 高危操作审批  |
+| ----------------- | ---- | ------------------- | -------------------- | ------- |
+| **严格安全** `strict` | 全部允许 | **读写一律禁止**          | `critical` 及以上**硬拦** | 需要      |
+| **一般安全** `normal` | 全部允许 | 读一般文件允许 / **写入弹确认** | `critical` 及以上需审批    | 需要      |
+| **一定风险** `risky`  | 全部允许 | **读写全放行**           | 仅命令注入与不可逆操作硬拦        | **不需要** |
 
 ### 两条任何等级都不放宽的红线
 
-1. **命令注入特征**（换行 / 反引号 / `$(...)` 替换）—— 任何等级直接拦截，不接受审批。
+1. **命令注入特征**（换行 / 反引号 / `$(...)` 替换）—— 任何等级直接拦截，不接受审批。  
    那是攻击信号，不是合法的高危操作。
-2. **格式化磁盘、直接写磁盘设备、递归强删根目录 / 主目录 / 整盘** —— 任何等级直接拦截。
-   这里刻意只挑用户点名要保留的极端操作（`IRREVERSIBLE_RULES`），
+2. **格式化磁盘、直接写磁盘设备、递归强删根目录 / 主目录 / 整盘** —— 任何等级直接拦截。  
+   这里刻意只挑用户点名要保留的极端操作（`IRREVERSIBLE_RULES`），  
    避免在「一定风险」档把 git 破坏性操作、强杀进程这类日常开发也一并禁掉。
 
 ### 改动
 
-- **新增 `packages/security/src/security-level.ts`**：策略定义 + `decideFileAccess()` /
-  `decideShellCommand()` 裁决函数 + 模块级运行时 holder（`set/getActiveSecurityLevel`）。
-  用 holder 而非逐层透传，是因为策略要被 file-tools / shell / human-approval
+- **新增 `packages/security/src/security-level.ts`**：策略定义 + `decideFileAccess()` /  
+  `decideShellCommand()` 裁决函数 + 模块级运行时 holder（`set/getActiveSecurityLevel`）。  
+  用 holder 而非逐层透传，是因为策略要被 file-tools / shell / human-approval  
   三个彼此独立的模块读取，透传会把签名撑爆。
-- **`file-tools.ts`**：新增 `preflight()` 统一做「安全等级裁决 + 路径边界校验」。
-  沙箱内在原有白名单流程上叠加裁决；沙箱外按策略走
+- **`file-tools.ts`**：新增 `preflight()` 统一做「安全等级裁决 + 路径边界校验」。  
+  沙箱内在原有白名单流程上叠加裁决；沙箱外按策略走  
   拒绝 / 确认（转成 `requiresPermission`，前端弹审批窗）/ 放行。
-- **`filesystem-manager.ts`**：新增 `operateAbsolute()` / `deleteFileAbsolute()`。
-  这是给沙箱外已授权操作用的**显式通道**，不是绕过——调用方必须先完成裁决，
-  方法自身仍复核 realpath 一致性（防止"授权 A、写到 B"的调包），且照常写审计日志。
+- **`filesystem-manager.ts`**：新增 `operateAbsolute()` / `deleteFileAbsolute()`。  
+  这是给沙箱外已授权操作用的**显式通道**，不是绕过——调用方必须先完成裁决，  
+  方法自身仍复核 realpath 一致性（防止"授权 A、写到 B"的调包），且照常写审计日志。  
   `deleteFileAbsolute` 额外拒绝目录，目录删除不在该通道内放开。
-- **`shell-media-tools.ts`**：风险判定改由 `decideShellCommand()` 裁决，
+- **`shell-media-tools.ts`**：风险判定改由 `decideShellCommand()` 裁决，  
   拦截提示里带上当前等级名称与调整入口。
 - **`human-approval.ts`**：`一定风险`档下 high/critical 工具免审批。
 - **`config-schema.ts`**：`security.securityLevel` 配置项（默认 `normal`）。
 - **启动注入**：`apps/server/src/index.ts` 启动时按配置设定运行时策略并打日志。
-- **API**：`GET/POST /api/security-level`；POST 会校验取值，
+- **API**：`GET/POST /api/security-level`；POST 会校验取值，  
   拼错的等级直接 400 而非静默降级成默认档。
-- **前端**：新增 `OverallSecurityPage.tsx`，安全菜单组首位「总体安全」；
+- **前端**：新增 `OverallSecurityPage.tsx`，安全菜单组首位「总体安全」；  
   三档单选 + 每档权限明细表 + 红线说明；切换乐观更新、失败自动回滚。
 
-**验证**：新增 22 项测试（`security-level.test.ts`）；`build` + `typecheck` + `test`
+**验证**：新增 22 项测试（`security-level.test.ts`）；`build` + `typecheck` + `test`  
 全绿：**239 files / 5943 passed / 1 skipped / 0 failed**。
 
 ## [0.86.9] - 2026-10-07
@@ -139,88 +236,88 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 ### 1. 【根因】file_create 相对路径解析到项目根 → 每次都要审批，任务彻底卡死
 
-真实症状：模型连续 3 次调`file_create` 都被拦成 `requiresPermission: true`，
-最后回复「请在弹窗中批准文件创建请求」——**而界面根本没有弹窗**，
+真实症状：模型连续 3 次调`file_create` 都被拦成 `requiresPermission: true`，  
+最后回复「请在弹窗中批准文件创建请求」——**而界面根本没有弹窗**，  
 用户只看到任务停在那里。
 
 根因不是审批配置，而是**两个工具的相对路径基准目录不一致**：
 
-| 工具 | 相对路径基准 |
-|---|---|
-| `shell_exec` | `data/workspace` |
+| 工具                                                        | 相对路径基准            |
+| --------------------------------------------------------- | ----------------- |
+| `shell_exec`                                              | `data/workspace`  |
 | `file_create` / `file_modify` / `file_read` / `file_list` | **项目根**（`fsBase`） |
 
-而目录白名单只覆盖 `data/workspace` 与 `data/skills`
-（**刻意**不白名单项目根，以防 agent 改源码 / .env）。
-于是模型写 `list_files.mjs`（它以为落在 workspace，与 shell_exec 的 cwd 一致）
+而目录白名单只覆盖 `data/workspace` 与 `data/skills`  
+（**刻意**不白名单项目根，以防 agent 改源码 / .env）。  
+于是模型写 `list_files.mjs`（它以为落在 workspace，与 shell_exec 的 cwd 一致）  
 实际落到 `<repo>/list_files.mjs` → 不在白名单 → 触发审批 → 死锁。
 
-修复：相对路径统一按 `workspace` 解析（`resolveToolPath()`），
-并把路径换算成 `fsBase` 相对路径后再交给 `FileSystemManager`，
-**保证「审批检查的绝对路径」与「实际写入的绝对路径」严格一致**——
-否则会出现「判定在 workspace、写入在仓库根」的错配，等于凭空开了一个绕过白名单的写入口。
+修复：相对路径统一按 `workspace` 解析（`resolveToolPath()`），  
+并把路径换算成 `fsBase` 相对路径后再交给 `FileSystemManager`，  
+**保证「审批检查的绝对路径」与「实际写入的绝对路径」严格一致**——  
+否则会出现「判定在 workspace、写入在仓库根」的错配，等于凭空开了一个绕过白名单的写入口。  
 绝对路径与项目根边界校验保持原样，安全边界没有放松。
 
 副产品：产物不再落在仓库根，`git status` 不会被临时脚本污染。
 
 ### 2. 【更严重】技能依赖检测对**所有**二进制都失效
 
-症状：用户已用 pwsh 装好 `mineru-open-api`，技能仍报
-`Required binary "mineru-open-api" is not found in PATH`，
+症状：用户已用 pwsh 装好 `mineru-open-api`，技能仍报  
+`Required binary "mineru-open-api" is not found in PATH`，  
 「一键安装缺失工具」点了没反应。
 
 实测发现旧实现 `execFileSync("where", [bin])` **连`node`、`python` 都检测不到**：
 
 - `spawnSync where EBUSY` —— WorkBuddy 注入的 shim 目录让同步 spawn 失败
 - `process.env.PATH` 本身畸形：实测存在裸 `C` 段（驱动器相对路径）与被截断的条目
-- Windows 上 npm 全局包落在 `%APPDATA%\npm`、pip 用户包落在
+- Windows 上 npm 全局包落在 `%APPDATA%\npm`、pip 用户包落在  
   `%APPDATA%\Python\PythonXY\Scripts`，这两个目录**常常不在 PATH 里**
 
-新增 `packages/skills/src/command-exists.ts`，三路探测任一命中即视为存在：
-① 直接执行探测 → ② 扫描 PATH（按平台补齐 `.exe/.cmd/.bat/.com/.ps1`）→
+新增 `packages/skills/src/command-exists.ts`，三路探测任一命中即视为存在：  
+① 直接执行探测 → ② 扫描 PATH（按平台补齐 `.exe/.cmd/.bat/.com/.ps1`）→  
 ③ 扫描 Windows 用户级安装目录。替换 `skill-manager.ts` 中全部 5 处 `where` 调用。
 
-**实证**：`mineru-open-api` 确实已安装在
-`C:\Users\CY\AppData\Roaming\npm\mineru-open-api`（npm 全局目录），
+**实证**：`mineru-open-api` 确实已安装在  
+`C:\Users\CY\AppData\Roaming\npm\mineru-open-api`（npm 全局目录），  
 新探测能正确认出；旧探测对一切返回「未找到」。
 
 ### 3.「一键安装缺失工具」无超时保护
 
-前端 fetch 无 `AbortController`，后端 winget/npm 卡住时按钮永远停在「安装中...」。
+前端 fetch 无 `AbortController`，后端 winget/npm 卡住时按钮永远停在「安装中...」。  
 已加 120s 超时 + 明确的超时提示。
 
 ### 4.自动续跑漏触发：工具失败了就收尾
 
-12:16 那次会话里模型在 `node -e` 报错 + Docker 不可用后，
+12:16 那次会话里模型在 `node -e` 报错 + Docker 不可用后，  
 **既没说完成（对账不触发）、用词也不像求确认（停顿检测抓不到）**，直接收尾。
 
-- 新增停顿话术：`告诉我一声`、`我也可以继续`、`是否继续/要不要接着`
+- 新增停顿话术：`告诉我一声`、`我也可以继续`、`是否继续/要不要接着`  
   （用 `(?<!你)` 排除「**你**可以继续」这种劝用户继续的正常收尾）
-- 新增第三条结构性触发条件：**本回合有失败工具 + 没有完成声明 → 继续**，
+- 新增第三条结构性触发条件：**本回合有失败工具 + 没有完成声明 → 继续**，  
   要求模型换方案而不是复述错误
 
 ### 5. `node -e` 内联引号在 Windows 上必炸
 
-与此前修的 `python -c` 是同一类问题：`node -e "const fs=require('fs');..."`
-经 cmd.exe 传递后引号被吃掉，报
-`[eval]:1 "const ^^^^ Unterminated string constant`，模型为此白费 3 轮。
+与此前修的 `python -c` 是同一类问题：`node -e "const fs=require('fs');..."`  
+经 cmd.exe 传递后引号被吃掉，报  
+`[eval]:1 "const ^^^^ Unterminated string constant`，模型为此白费 3 轮。  
 已把内联代码保护泛化到 `python -c` 与 `node -e`。
 
 ### 6. 流式输出与思考过程展示
 
-- **`working` 阶段事件此前只更新状态文字、不写入 streamLog**，流式结束后整段丢失。
+- **`working` 阶段事件此前只更新状态文字、不写入 streamLog**，流式结束后整段丢失。  
   现已写入，`streamLog` 覆盖全部阶段。
-- **思考过程折叠时只显示一个徽章**，看不到任何内容。
-  现改为：折叠时默认露出 **30 个字符**预览（超长加省略号），点击展开全文，
+- **思考过程折叠时只显示一个徽章**，看不到任何内容。  
+  现改为：折叠时默认露出 **30 个字符**预览（超长加省略号），点击展开全文，  
   展开后再次点击折叠；两态都有 tooltip 提示。
 
 ### 7. 审批徽章可点击（弹窗的兜底入口）
 
-`🔐 N 个权限请求` 徽章原本不可点击。虽然自动弹窗链路本身是通的
-（`setShowPermissionModal(true)` 有被调用），但一旦时序异常就完全无从批准。
+`🔐 N 个权限请求` 徽章原本不可点击。虽然自动弹窗链路本身是通的  
+（`setShowPermissionModal(true)` 有被调用），但一旦时序异常就完全无从批准。  
 现在点击徽章可直接打开审批弹窗。
 
-**验证**：新增 31 项测试（command-exists 7 + auto-continuation 新增 9 + 其余回归）；
+**验证**：新增 31 项测试（command-exists 7 + auto-continuation 新增 9 + 其余回归）；  
 `build` + `typecheck` + `test` 全绿：**238 files / 5921 passed / 1 skipped / 0 failed**。
 
 ## [0.86.8] - 2026-10-07
@@ -229,7 +326,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 ### 1. 新增章节：接到任务先定位，再动手
 
-按用户提供的文本合并进系统提示词，位置在 `## Execution Strategy (MANDATORY)` **之前**
+按用户提供的文本合并进系统提示词，位置在 `## Execution Strategy (MANDATORY)` **之前**  
 （那一节讲「选定方法后怎么执行」，这一节讲「执行之前先想清楚要做什么」）：
 
 1. 澄清四件事（真正要解决什么 / 最终交付什么 / 硬限制 / 怎样算完成）
@@ -239,33 +336,33 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 5. 简单任务直接执行，不为走流程机械提问
 6. 修 Bug 先找根因，不要看着现象打补丁
 
-**关键：加了反冲突声明。** 本节第 4 条要求「输出五项」，而真实性契约第 7 条
-要求「不要停下来问用户」——这两条放在一起，模型极容易夹在中间输出五项后就停下
+**关键：加了反冲突声明。** 本节第 4 条要求「输出五项」，而真实性契约第 7 条  
+要求「不要停下来问用户」——这两条放在一起，模型极容易夹在中间输出五项后就停下  
 等用户点头（正是 0.86.6 修掉的病根）。因此显式声明：
 
-> 输出那五项之后**立刻继续执行**，不是发出五项然后等用户点头。
+> 输出那五项之后**立刻继续执行**，不是发出五项然后等用户点头。  
 > 只有「核心歧义」「缺少你无法自行获取的信息」「需要人工审批」这三类才允许停下来问。
 
 ### 2. 【残留 bug】能力速查表旁边的平铺全量清单一直没删
 
-0.86.3 的做法是「在原平铺清单旁边**新增**速查表」，但
-`sections.push(\`Available tools: ${registeredToolNames.join(", ")}\`)` **那行还在**。
-结果：127 个工具名平铺一行 + 速查表并存，速查表被淹没，
+0.86.3 的做法是「在原平铺清单旁边**新增**速查表」，但  
+`sections.push(\`Available tools: ${registeredToolNames.join(", ")}\`)\` **那行还在**。  
+结果：127 个工具名平铺一行 + 速查表并存，速查表被淹没，  
 「一行长串名字导致模型漏看单项」这个根因**根本没被消除**，等于只做了一半。
 
-实证：修复前提示词中仍含 `Available tools:`（一行 127 个名字）。
+实证：修复前提示词中仍含 `Available tools:`（一行 127 个名字）。  
 现已删除该行，只保留速查表（全量清单由真实下发的 tools 参数承载，不必在提示词里重复）。
 
 ### 3.速查表折行：browser 组 14 个名字挤一行
 
-`browser_*` 前缀天然命中 14 个工具，平铺一行等于又回到老问题。
-新增 `renderIntentLine()`：超过 6 个工具自动折行，每行最多 3 个，
+`browser_*` 前缀天然命中 14 个工具，平铺一行等于又回到老问题。  
+新增 `renderIntentLine()`：超过 6 个工具自动折行，每行最多 3 个，  
 标题显示「（共 N 个）」。实测单行工具名数量从 14 降到 5。
 
 ### 4. 补上 system-prompt.ts 的测试（此前该文件零测试）
 
-系统提示词是最容易出现「自相矛盾」的地方，0.86.3~0.86.7 连续几轮的
-「提示词说有、实际下发没有」「一处要求先问、一处要求不许问」都是提示词缺陷，
+系统提示词是最容易出现「自相矛盾」的地方，0.86.3~0.86.7 连续几轮的  
+「提示词说有、实际下发没有」「一处要求先问、一处要求不许问」都是提示词缺陷，  
 却因为没有测试而反复靠人工回归发现。新增 `system-prompt.test.ts`（13 项）锁定：
 
 - 七条真实性契约全部在位、第 7 条点名禁止的收尾话术仍在
@@ -275,7 +372,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 其中「平铺清单不再出现」这条断言在写完后**当场抓到 2.3 节的残留 bug**。
 
-**验证**：新增 30 项测试；`build` + `typecheck` + `test` 全绿：
+**验证**：新增 30 项测试；`build` + `typecheck` + `test` 全绿：  
 **237 files / 5908 passed / 1 skipped / 0 failed**。
 
 ## [0.86.7] - 2026-10-07
@@ -286,42 +383,42 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 ### 1. 【安全回归】skill_execute 自动转发绕过了审批门禁
 
-0.86.5 为修「模型把内置工具当技能调用」，让 `skill_execute` 收到内置工具名时
-**自动转发**到 `executor.executeToolByName()`。而审批逻辑
-（`humanApprovalManager.requiresApproval`）位于 `llm-caller.executeSingleToolCall`
+0.86.5 为修「模型把内置工具当技能调用」，让 `skill_execute` 收到内置工具名时  
+**自动转发**到 `executor.executeToolByName()`。而审批逻辑  
+（`humanApprovalManager.requiresApproval`）位于 `llm-caller.executeSingleToolCall`  
 中、**`entry.handler` 之前**——直接调 handler 等于跳过审批。
 
-后果：`git_push` / `shell_exec` 等 high 风险工具可以借 `skill_execute` 这个名字
+后果：`git_push` / `shell_exec` 等 high 风险工具可以借 `skill_execute` 这个名字  
 **逃掉人工确认**。为了"少一轮往返"把安全边界拆了，是典型的负优化。
 
-修复：转发改为**只指引、不执行**，返回
-`{ success:false, error:"…请直接调用工具 X", builtinTool }`。
-模型下一次调用就走完整审批链路；配合 0.86.6 的自动续跑，不会造成额外停顿。
+修复：转发改为**只指引、不执行**，返回  
+`{ success:false, error:"…请直接调用工具 X", builtinTool }`。  
+模型下一次调用就走完整审批链路；配合 0.86.6 的自动续跑，不会造成额外停顿。  
 同时在 `executeToolByName` 上加显式安全警告，防止再次被当成快捷通道。
 
 ### 2. 【修复无效】`/health` 的"当前下发工具数"算的是全量
 
-0.86.5 加了 `已注册工具: N（当前随请求下发: M）`，但注入的是
-`() => this.buildOpenAITools()`，而该方法传 `message = undefined`
+0.86.5 加了 `已注册工具: N（当前随请求下发: M）`，但注入的是  
+`() => this.buildOpenAITools()`，而该方法传 `message = undefined`  
 ——**不传消息就是"不裁剪"分支**，M 恒等于 N，等于没修。
 
 实证（修复前）：注册 23 → 报 23；修复后按真实消息算 → 21，换一条消息 → 22。
 
-修复：`buildOpenAITools(message?)` 接受真实用户消息，
-`/health` 取会话历史中最近一条 user 消息来算，并把文案改为
+修复：`buildOpenAITools(message?)` 接受真实用户消息，  
+`/health` 取会话历史中最近一条 user 消息来算，并把文案改为  
 `（按最近一条请求实际下发: M，随消息关键词变化）`。
 
 ### 3.脱敏正则无词边界，静默污染持久化记录
 
-`SENSITIVE_KEY_RE` 是无词边界的子串匹配，导致一批**无害字段被整体打码**：
-`maxTokens` / `tokensUsed` / `promptTokens` / `totalTokens` / `tokenCount` /
+`SENSITIVE_KEY_RE` 是无词边界的子串匹配，导致一批**无害字段被整体打码**：  
+`maxTokens` / `tokensUsed` / `promptTokens` / `totalTokens` / `tokenCount` /  
 `author` / `authorized` / `credentialId`。
 
-工具结果里的作者名、token 计数全变成 `[REDACTED]`，事后审计与续跑读到的都是坏数据。
+工具结果里的作者名、token 计数全变成 `[REDACTED]`，事后审计与续跑读到的都是坏数据。  
 （当前只因 token 计数恰好是 number 才没暴露，属于"运气好"，不是设计正确。）
 
-修复：改为「驼峰/分隔符切分 → 整段精确匹配」，并对
-`tokenCount` / `secretLimit` 这类**计量语义**加后缀豁免。
+修复：改为「驼峰/分隔符切分 → 整段精确匹配」，并对  
+`tokenCount` / `secretLimit` 这类**计量语义**加后缀豁免。  
 验证 `authorizationHeader` / `apiKey` / `access_token` 等真实凭据字段仍能命中。
 
 ### 4. 明细报告检测把「如实汇报 + 排查建议」判成编造
@@ -330,6 +427,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 
 - `tableRow` 用 `\d+`，`| GitHub | 0 |`（**如实汇报"查到了但为空"**）会被命中；
 - 编号列举只要≥3 条就命中，而**工具返回空后给用户列 3 条排查建议**是正常且诚实的回复。
+
 
 后果很糟：每次 `web_search` 无结果并给出建议列表，系统都会追加
 「⚠️ 更正：本回复中的数量与明细**不可信**…上面的表格/数量并非来自工具返回值」——
@@ -533,6 +631,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 - **`system-prompt.ts`**：新增 `## 真实性契约（最高优先级）` 5 条——不许预告成功、`pending/failed` 必须如实报告、能力只看工具清单不得臆造「需改配置文件」这类限制、添加类操作完成后须回读核验、宁可说做不到也不要伪造成功。
 - 单测 14 项，含对原始缺陷场景的复现用例。
 
+
 ### 3. 上下文窗口治理 — 分母动态化 + 分子提精度 + 会话窗口化
 
 - **分母硬编码 128k 的三重根因**（`protocol-adapter.ts`）：
@@ -674,6 +773,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
   - `packages/intelligence/src/skill-orchestrator.ts` (1)
   - `packages/evolution/src/learning-journal.ts` (2: offset + limit)
   - `apps/cli/src/commands/commitments.ts`, `system.ts`, `skills.ts` (3)
+
 
 ### Infrastructure
 
@@ -836,6 +936,7 @@ POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
 - **SSE 解析器模块** ([apps/mcp-server/src/sse-parser.ts](file:///d:/abc/EvoClaw/apps/mcp-server/src/sse-parser.ts)): 独立可测的 SSE 协议解析器，支持流式分片、多行 data 拼接、JSON 解析失败回退、注释行忽略
 - **`EVOCLAW_MCP_DISABLE_STREAM` 环境变量**: 设为 `true` 时禁用流式路径，纯同步调用（兼容旧版 Gateway 或调试场景）
 
+
 ### 测试
 
 - **SSE 解析器单元测试** ([apps/mcp-server/tests/sse-parser.test.ts](file:///d:/abc/EvoClaw/apps/mcp-server/tests/sse-parser.test.ts)): 12 个测试覆盖单事件/多事件/不完整尾部/流式分片/JSON 解析失败/注释行/空数据等场景
@@ -963,6 +1064,7 @@ EvoClaw 在核心能力（plugin-sdk/skill marketplace/layered memory/evolution 
 - **git_show ref 选项注入**: `git-operations.ts` 的 `show(ref)` 未调用 `assertNotOption`，`ref="--output=/etc/passwd"` 可注入。修复：添加 assertNotOption
 - **git push --force 无分支保护**: `git-operations.ts` 的 `push` 允许 force push 到 main/master。修复：添加分支保护 throw
 - **中文 prompt injection 未检测**: `skill-validator.ts` 的注入检测仅英文。修复：添加 9 条中文注入模式
+
 
 ### 验证
 - `pnpm build` 全绿
@@ -1148,6 +1250,7 @@ EvoClaw 在核心能力（plugin-sdk/skill marketplace/layered memory/evolution 
 9. **`auxiliary-client.ts` AsyncLocalStorage**：替代 Python `threading.local()` 实现异步上下文局部状态隔离。
 10. **`clarify-tool.ts` 竞态/泄漏/单位**：Promise.race 竞态修复（entry 上存储 `responsePromise`），unref'd timers 防泄漏，超时单位统一为 ms。
 11. **`mcp-config-security.ts` IOC + shell gate**：补充已知 IOC 黑名单 + shell 解释器检测。
+
 
 #### 测试新增
 
@@ -1384,6 +1487,7 @@ EvoClaw 在核心能力（plugin-sdk/skill marketplace/layered memory/evolution 
 - `redactString()` 脱敏函数：保留前 4 字符 + `***`
 - `packages/scheduler/src/index.ts` 导出 `CredentialGuard` 及相关类型
 
+
 #### 其他变更
 
 - `packages/agent/src/index.ts`：导出 `MoaCommittee` / `MoaPresetRegistry` / `GoalContract` / `GoalRegistry` / `BackgroundDelegator` 及相关类型
@@ -1599,6 +1703,7 @@ EvoClaw 在核心能力（plugin-sdk/skill marketplace/layered memory/evolution 
 - 新建 `Checkpointer<TState>` 接口 + `MemoryCheckpointer<TState>` 实现（put/get/list/putWrites/clear/clearAll）
 - 在 `packages/agent/src/index.ts` 导出全部类型
 
+
 **对标**：LangGraph StateGraph 的核心 API。现在可以用声明式图 DSL 编排复杂任务流程，支持 state 流动、条件路由、checkpoint 恢复、human-in-the-loop 中断。
 
 ### 验证
@@ -1789,6 +1894,7 @@ v0.62.6 ~ v0.62.8 共实施 13 项改进，全面弥合与主流 AI Agent 项目
    - `apt` 类型在 Windows 上跳过
    - 跳过时设置 warning 状态并返回 "Skipped: incompatible platform"，不再执行 `execFileSync`
 
+
 #### 验证
 
 `pnpm -r build` exit 0 / `pnpm typecheck` exit 0 / `pnpm test` 全部通过（exit 0，所有 testsuite failures=0 errors=0）/ 服务器重启后 `All systems ready!`，50 skills checked, 46 translated。启动日志中：
@@ -1887,6 +1993,7 @@ v0.62.6 ~ v0.62.8 共实施 13 项改进，全面弥合与主流 AI Agent 项目
 - `apps/cli/src/index.ts`：在 `commandModules` 数组追加 7 个新命令名（exec-policy / migrate / node / nodes / proxy / devices / commitments），保留原有 45 个命令。
 
 ## v0.61.0 (2026-06-28)
+
 
 ### 对照 openclaw-main 的 10 轮深度短板补齐
 
@@ -2186,6 +2293,7 @@ v0.62.6 ~ v0.62.8 共实施 13 项改进，全面弥合与主流 AI Agent 项目
 - 技能加载 — 41 个正常（data/skills 目录 40 个 + bundled 目录 1 个），0 个 evoclaw-curator 自动生成的技能
 
 ## v0.60.0 (2026-06-28)
+
 
 ### 对照 openclaw-main 的 10 轮基础设施与安全提升计划
 
