@@ -31,6 +31,20 @@ export interface FailedTool {
   error: string;
 }
 
+/**
+ * 本回合执行过、但返回**空/零结果**的工具。
+ *
+ * 真实事故：email_analyze 返回 `{totalEmails: 0, categories: {}, topSenders: []}`，
+ * 模型却输出了一份「共 30+ 封邮件、GitHub 通知 4 封 / 安全 5 封 / 账单 1 封…」
+ * 精确到个位数的数据报告——全部是凭空编造。
+ */
+export interface EmptyResultTool {
+  /** 工具名 */
+  name: string;
+  /** 判定的空结果字段（如 totalEmails=0），用于生成可读更正文本 */
+  field: string;
+}
+
 export interface ReconcileInput {
   /** 模型生成的最终回复 */
   finalReply: string;
@@ -42,13 +56,15 @@ export interface ReconcileInput {
   lastUserMessage?: string;
   /** 本回合执行过但返回失败的工具列表 */
   failedTools?: FailedTool[];
+  /** 本回合执行过但返回空/零结果的工具列表 */
+  emptyResultTools?: EmptyResultTool[];
 }
 
 export interface ReconcileResult {
   /** 是否检测到虚假/不可信的完成声明 */
   needsCorrection: boolean;
   /** 问题类型，便于测试与日志定位 */
-  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed";
+  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed";
   /** 应追加到最终回复的确定性更正文本 */
   notice?: string;
 }
@@ -157,6 +173,96 @@ function pickError(o: Record<string, unknown>): string | null {
 }
 
 /**
+ * 从工具返回值中判定「空/零结果」；有实质数据则返回 null。
+ *
+ * 覆盖三类真实形态：
+ *   - 计数字段为 0：`{ totalEmails: 0 }` / `{ total: 0 }` / `{ count: 0 }`
+ *   - 数据数组为空：`{ emails: [] }` / `{ accounts: [] }` / `[...]` 长度为 0
+ *   - 汇总对象为空：`{ categories: {} }` 且与计数同为 0
+ *
+ * 刻意只在 `success !== false` 时判定——失败由 extractToolFailure 处理，
+ * 避免同一返回值同时触发两个分支、产生叠加噪音。
+ */
+export function extractEmptyResult(_toolName: string, result: unknown): EmptyResultTool | null {
+  if (result == null) return null;
+  let obj: unknown = result;
+  if (typeof obj === "string") {
+    const t = obj.trim();
+    if (!t.startsWith("{") && !t.startsWith("[")) return null;
+    try {
+      obj = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  if (Array.isArray(obj)) {
+    return obj.length === 0 ? { name: _toolName, field: "[] (空数组)" } : null;
+  }
+  if (typeof obj !== "object" || obj === null) return null;
+
+  const o = obj as Record<string, unknown>;
+  if (o.success === false) return null; // 失败不算"空结果"
+  if (o.requiresPermission === true) return null;
+
+  // 包装形态：结果藏在 result / data / summary 里
+  for (const key of ["result", "data", "summary"]) {
+    const nested = o[key];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const inner = extractEmptyResult(_toolName, nested);
+      if (inner) return inner;
+    }
+  }
+
+  // 计数字段
+  const COUNT_FIELDS = [
+    "totalEmails", "totalCount", "total_count", "totalItems", "total",
+    "count", "length", "numFound", "resultCount",
+  ];
+  for (const f of COUNT_FIELDS) {
+    if (o[f] === 0) return { name: _toolName, field: `${f}=0` };
+  }
+
+  // 数据数组为空（只认"列表型"字段，避免把空 {} 配置误判）
+  const LIST_FIELDS = [
+    "emails", "accounts", "items", "results", "messages", "files", "records",
+    "topSenders", "topKeywords", "actionItems", "categories",
+  ];
+  const present = LIST_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(o, f));
+  if (present.length > 0) {
+    // 只要有任一列表字段非空，就认为有实质数据
+    const anyNonEmpty = present.some((f) => {
+      const v = o[f];
+      if (Array.isArray(v)) return v.length > 0;
+      if (v && typeof v === "object") return Object.keys(v as object).length > 0;
+      return false;
+    });
+    if (!anyNonEmpty) return { name: _toolName, field: `${present.join("/")} 全为空` };
+  }
+  return null;
+}
+
+/**
+ * 判断回复是否像一份「基于数据的事实报告」——即包含具体数量或逐条明细。
+ *
+ * 若工具明明返回空，回复却长这样，就几乎可以断定是编造：
+ *   - "共拉取到 30+ 封邮件"
+ *   - "| GitHub CI/CD 通知 | 4 |"
+ *   - "1. xxx  2. xxx  3. xxx"
+ */
+export function looksLikeDetailedReport(text: string): boolean {
+  if (!text) return false;
+  // 具体数量断言：数字 + 量词（封/条/个/项/次/封邮件…）
+  const quantity = /(?:共|总计|一共|合计)?\s*([1-9]\d*)\s*\+?\s*(?:封|条|个|项|次|笔|份|台|人|天|行|页|条记录|个结果)/;
+  // 表格形式的明细行：| xxx | 数字 |
+  const tableRow = /\|\s*[^\n|]{2,}\s*\|\s*\d+\s*\|/;
+  // 编号列举至少 3 条
+  const numbered = /(?:^|\n)\s*(?:[1-9][0-9]?\s*[.、)）]|\*\s*\*\*)\s*\S/m;
+  const numberedCount = (text.match(/(?:^|\n)\s*[1-9][0-9]?\s*[.、)）]\s*\S/gm) || []).length;
+
+  return Boolean(quantity.test(text) || tableRow.test(text) || (numbered.test(text) && numberedCount >= 3));
+}
+
+/**
  * 核心对账函数：把"完成声明"与"实际执行证据"比对。
  *
  * @returns needsCorrection=true 时，notice 为应确定性追加到回复末尾的更正说明
@@ -168,7 +274,23 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
     toolsExecuted = false,
     lastUserMessage = "",
     failedTools = [],
+    emptyResultTools = [],
   } = input;
+
+  // ── 情况零：工具返回空/零结果，回复却给出精确数量与逐条明细 → 数据系编造 ──
+  // 这一分支**刻意不要求先有完成声明**：本次事故的回复并未写「已完成」，
+  // 而是直接输出了一份看起来很专业的分类统计表，比伪造完成态更具迷惑性。
+  if (emptyResultTools.length > 0 && looksLikeDetailedReport(finalReply)) {
+    const list = emptyResultTools.map((e) => `- \`${e.name}\`：${e.field}`).join("\n");
+    const notice =
+      "\n\n---\n" +
+      "⚠️ **更正**：本回复中的数量与明细**不可信**。本回合以下工具返回的是**空/零结果**，" +
+      "并没有可供统计的数据：\n" +
+      list +
+      "\n\n上面的表格/数量并非来自工具返回值。请先确认该工具为何返回空" +
+      "（如参数范围、账号未配置、抓取失败），修复后再重新拉取；在此之前请勿采信这些数字。";
+    return { needsCorrection: true, reason: "empty_but_detailed", notice };
+  }
 
   // 没有完成声明 → 无需干预（绝大多数正常回复走这条快速路径）
   if (!claimsCompletion(finalReply)) {

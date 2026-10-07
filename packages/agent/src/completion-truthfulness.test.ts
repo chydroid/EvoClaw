@@ -3,6 +3,8 @@ import {
   claimsCompletion,
   hasActionIntent,
   reconcileCompletionTruthfulness,
+  extractEmptyResult,
+  looksLikeDetailedReport,
   extractToolFailure,
   type PendingPermission,
 } from "./completion-truthfulness";
@@ -219,5 +221,56 @@ describe("reconcileCompletionTruthfulness — 工具失败却声称完成（回�
       pendingPermissions: [{ id: "r1", operation: "file_modify", description: "d", target: "t" }],
     });
     expect(v.reason).toBe("pending_permissions");
+  });
+});
+
+describe("extractEmptyResult / looksLikeDetailedReport — 空结果却产出详细报告（回归）", () => {
+  it("★ email_analyze 返回 totalEmails=0 必须被判定为空结果", () => {
+    // 真实事故：工具返回 0 封，模型却输出「共 30+ 封邮件 + 分类数量表」
+    const raw = { success: true, totalEmails: 0, categories: {}, topSenders: [], topKeywords: [], actionItems: [] };
+    const e = extractEmptyResult("email_analyze", raw);
+    expect(e).toBeTruthy();
+    expect(e!.name).toBe("email_analyze");
+  });
+
+  it("★ 空结果 + 产出精确数量明细 → 必须在没有完成声明时也触发更正", () => {
+    const reply = "## 📊 邮件概览\n\n共拉取到 **30+ 封**邮件（2026-09-07 ~ 2026-10-07）\n\n| 类别 | 数量 |\n|---|---|\n| GitHub CI/CD 通知 | 4 |";
+    const v = reconcileCompletionTruthfulness({
+      finalReply: reply,
+      toolsExecuted: true,
+      emptyResultTools: [{ name: "email_analyze", field: "totalEmails=0" }],
+    });
+    expect(v.needsCorrection).toBe(true);
+    expect(v.reason).toBe("empty_but_detailed");
+    expect(v.notice).toContain("email_analyze");
+  });
+
+  it("空结果但回复如实说明「没有数据」时不干预", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "抱歉，工具返回了 0 封邮件，可能账号未配置或时间范围内没有邮件。请先确认配置。",
+      emptyResultTools: [{ name: "email_analyze", field: "totalEmails=0" }],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("有实质数据时不判为空结果", () => {
+    expect(extractEmptyResult("t", { success: true, totalEmails: 12, categories: { a: 3 } })).toBeNull();
+    expect(extractEmptyResult("t", { success: true, emails: [{ uid: "1" }] })).toBeNull();
+  });
+
+  it("失败结果不算空结果（避免两个分支叠加）", () => {
+    expect(extractEmptyResult("t", { success: false, error: "boom", totalEmails: 0 })).toBeNull();
+  });
+
+  it("空数组与包装形态也能识别", () => {
+    expect(extractEmptyResult("t", [])).toBeTruthy();
+    expect(extractEmptyResult("t", { success: true, result: { totalEmails: 0 } })).toBeTruthy();
+  });
+
+  it("looksLikeDetailedReport 的判定边界", () => {
+    expect(looksLikeDetailedReport("共 30+ 封邮件")).toBe(true);
+    expect(looksLikeDetailedReport("| GitHub 通知 | 4 |")).toBe(true);
+    expect(looksLikeDetailedReport("1. 甲\n2. 乙\n3. 丙")).toBe(true);
+    expect(looksLikeDetailedReport("好的，我知道了")).toBe(false);
   });
 });

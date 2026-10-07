@@ -14,6 +14,8 @@ export { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from 
 export type { DurableTask, DurableTaskStatus, ResumeDriver, DeliverFn } from "./durable-task-runner";
 export { reconcileCompletionTruthfulness, claimsCompletion, hasActionIntent } from "./completion-truthfulness";
 export type { ReconcileInput, ReconcileResult, PendingPermission } from "./completion-truthfulness";
+export { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
+export type { PrematureStopKind, ContinuationContext } from "./auto-continuation";
 export { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS, ARCHIVE_TAG } from "./session-archive";
 export type { ArchiveTurn, LongTermLike, WindowResult } from "./session-archive";
 export { resolveContextWindow, matchModelEntry, describeContextWindowSource } from "./model-context-window";

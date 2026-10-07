@@ -1105,6 +1105,14 @@ export class AgentModelExecutor {
     return this.registeredTools.has(name);
   }
 
+  /**
+   * 列出全部已注册工具名。
+   * 供 skill_find_and_install 在「安装外部技能之前」确认内置工具是否已覆盖该能力。
+   */
+  listToolNames(): string[] {
+    return Array.from(this.registeredTools.keys());
+  }
+
   unregisterTool(name: string): void {
     const entry = this.registeredTools.get(name);
     if (entry?.checkFn) {
@@ -1845,6 +1853,16 @@ export class AgentModelExecutor {
         `[AgentModelExecutor] Continuation intent detected ("${effectiveMessage.slice(0, 20)}"), ` +
         `skipping quick replies to resume work\n`,
       );
+      // ── 把「上一轮未完成到哪一步」显式带进上下文 ──
+      // 只跳过 quickReply 是不够的：模型进入 LLM 流程后看到的仍是历史消息，
+      // 而历史里工具结果早已丢失，它依然不知道自己做到哪、还差什么，
+      // 于是又回一句「你回个继续我就开工」——本次会话中这种循环发生了 5 次。
+      const pending = this.extractPendingProgress(continuationContext.lastAssistantReply);
+      if (pending) {
+        effectiveMessage =
+          `${effectiveMessage}\n\n[系统提示·续做上下文] 上一轮被中断的任务，系统从上一轮回复中提取到的进度如下` +
+          `（这是上一轮的真实状态，请据此**直接继续执行下一步**，不要再次请求用户确认，也不要重复已完成的部分）：\n${pending}`;
+      }
     }
 
     // ── Quick reply for simple greetings and queries (no LLM needed) ──
@@ -3515,6 +3533,28 @@ export class AgentModelExecutor {
       // 检测失败不得阻断主流程
       return { isContinuation: false };
     }
+  }
+
+  /**
+   * 从上一轮回复中提取「未完成进度」，供续做时注入上下文。
+   *
+   * 只挑带明确未完成的标记行（❌ / 还没 / 未 / 等待审批 / 只差 / 卡在 …），
+   * 最多 6 行，避免把整段回复塞回去。
+   */
+  private extractPendingProgress(lastAssistantReply: string | undefined): string {
+    if (!lastAssistantReply) return "";
+    const PENDING_MARKERS = [
+      "❌", "⚠️", "还没", "尚未", "未真正", "未执行", "未成功", "未抓到", "未取到",
+      "等待", "只差", "卡在", "卡住", "下一步", "接下来", "剩余",
+    ];
+    const lines = lastAssistantReply.split("\n");
+    const picked = lines
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && l.length <= 300)
+      .filter((l) => PENDING_MARKERS.some((m) => l.includes(m)))
+      .slice(0, 6);
+    if (picked.length === 0) return "";
+    return picked.map((l) => `- ${l}`).join("\n");
   }
 
   /** 读取该会话最近一条 assistant 回复（用于判断是否存在挂起工作） */

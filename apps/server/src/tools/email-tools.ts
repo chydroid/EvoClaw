@@ -182,7 +182,11 @@ export function registerEmailTools(
     "email_list_inbox",
     {
       name: "email_list_inbox",
-      description: "List emails from inbox with optional filters",
+      description:
+        "List emails from inbox with optional filters. IMPORTANT: this returns envelope metadata ONLY " +
+        "(uid/subject/from/date/size/categories) — it does NOT include email body text. " +
+        "To analyze actual content you MUST call email_get_email(uid) for each email of interest first. " +
+        "仅返回信封元数据（不含正文）；要做内容分析必须先调 email_get_email 取正文。",
       parameters: {
         accountId: { type: "string", description: "Email account ID (use first available if not provided)" },
         limit: { type: "number", description: "Maximum number of emails to fetch (default: 50)" },
@@ -234,6 +238,35 @@ export function registerEmailTools(
       }
 
       return { success: false, error: `All accounts failed. Last error: ${lastError}` };
+    }
+  );
+
+  executor.registerTool(
+    "email_get_email",
+    {
+      name: "email_get_email",
+      description:
+        "Read the FULL content (body text) of one email by its uid. " +
+        "Use this after email_list_inbox: the list only returns envelope metadata (subject/from/date/size) " +
+        "and does NOT contain any body text. 读取单封邮件正文；列表接口不返回正文，必须用它取正文后才能做内容分析。",
+      parameters: {
+        uid: { type: "string", description: "Email uid, as returned by email_list_inbox" },
+        accountId: { type: "string", description: "Email account ID (optional; defaults to the first configured account)" },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      const uid = String(params.uid || "");
+      if (!uid) return { success: false, error: "uid is required" };
+      const accountId = String(params.accountId || "");
+      const accounts = emailClient.listAccounts();
+      if (accounts.length === 0) return { success: false, error: "No email accounts configured" };
+      const targetId = accountId || accounts[0].id;
+      try {
+        const parsed = await emailClient.getEmail(targetId, uid);
+        return { success: true, uid, email: parsed };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     }
   );
 

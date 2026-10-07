@@ -8,6 +8,41 @@ import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownload
 import { assessShellCommand } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
 
+/**
+ * 剥掉命令里与当前工作目录重复的「项目相对路径」前缀。
+ *
+ * 事故：cwd 已是 `.../data/workspace`，模型却在命令里写
+ * `python data/workspace/fetch_ci_logs.py`，spawn 时解析成
+ * `.../data/workspace/data/workspace/fetch_ci_logs.py`（文件不存在）。
+ * 结果是同一处错误连续卡住两轮，用户被迫反复回「继续」。
+ *
+ * 策略（保守）：只有当「剥掉前缀后文件确实存在」、且「原路径确实不存在」时
+ * 才改写，避免误伤合法的同名嵌套目录。
+ */
+function stripDuplicatedCwdPrefix(command: string, cwd: string): string {
+  if (!command || !cwd) return command;
+  const projectRoot = path.resolve(__dirname, "..", "..", "..", "..");
+  const rel = path.relative(projectRoot, path.resolve(cwd)).replace(/\\/g, "/");
+  if (!rel || rel.startsWith("..")) return command;
+
+  // 匹配以该相对目录开头的路径片段（正斜杠或反斜杠均可）
+  const escaped = rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![:\\w/\\\\.])(${escaped})[\\\\/]`, "g");
+  return command.replace(re, (match, _prefix, offset) => {
+    // 取该片段后的整个路径 token
+    const rest = command.slice(offset + match.length).split(/\s+/)[0];
+    if (!rest) return match;
+    const candidate = path.resolve(cwd, rest.replace(/["']/g, ""));
+    const original = path.resolve(projectRoot, rel, rest.replace(/["']/g, ""));
+    // 仅在「原来拼不出来、剥掉后拼得出来」时改写
+    if (!fs.existsSync(original) && fs.existsSync(candidate)) {
+      console.log(`[shell_exec] Stripped duplicated cwd prefix: ${rel}/ -> ./`);
+      return "";
+    }
+    return match;
+  });
+}
+
 /** Recursively search for a file by name under a directory tree (max depth 4) */
 function findFileRecursive(root: string, filename: string, maxDepth = 4): string | null {
   if (maxDepth <= 0) return null;
@@ -215,6 +250,31 @@ export function registerShellMediaTools(
         effectiveCommand = effectiveCommand.replace(/\bpython3\b/g, "python");
       }
 
+      // ── Windows 上 `python -c "..."` 内联代码保护 ──
+      // 事故：`python -c "import os,json,...; print(str(d)[:800])"` 经 cmd.exe /c
+      // 传递后引号被吃掉，稳定报 `SyntaxError: unterminated string literal`，
+      // 白白浪费一轮。含分号/嵌套引号的复杂内联代码一律拦下并给出替代方案，
+      // 简单的单行代码（如 `python -c "print(1)"`）仍放行。
+      if (process.platform === "win32") {
+        const inlineMatch = effectiveCommand.match(/\bpython3?\s+-c\s+(.+)$/is);
+        if (inlineMatch) {
+          const code = inlineMatch[1].trim();
+          const quoteCount = (code.match(/"/g) || []).length;
+          const isComplex = code.includes(";") || quoteCount > 2 || /\n/.test(code);
+          if (isComplex) {
+            return {
+              success: false,
+              error:
+                "Windows 下 `python -c` 内联多行/含分号的代码会因 cmd.exe 引号处理而报 SyntaxError。" +
+                " 请把代码写入 .py 文件再执行（例如先 file_create 创建脚本，再 `python script.py`）。",
+              command,
+              cwd,
+              hint: "改用脚本文件：`python <脚本名>.py`（工作目录见 cwd 字段）",
+            };
+          }
+        }
+      }
+
       // Fix relative paths: LLM often generates "data/skills/..." but cwd
       // may already be inside data/workspace, causing path duplication.
       // Only replace if it's a relative path (not preceded by : or / or \)
@@ -226,6 +286,14 @@ export function registerShellMediaTools(
         /(?<![:\\/])data[\\/]skills[\\/]/g,
         skillsDirForward + "/"
       );
+
+      // ── 工作目录前缀重复修复 ──
+      // 事故：cwd 已经是 data/workspace，模型却写成
+      // "python data/workspace/fetch_ci_logs.py"，拼成
+      // data\workspace\data\workspace\fetch_ci_logs.py，脚本找不到，
+      // 连续两轮卡在同一处，用户被迫反复说「继续」。
+      // 这里在 spawn 之前就把重复的 cwd 前缀剥掉。
+      effectiveCommand = stripDuplicatedCwdPrefix(effectiveCommand, cwd);
 
       // Strip outer double-quotes around Windows drive-letter paths. LLM often
       // wraps absolute paths in quotes ("D:\...") which, when passed through
@@ -272,6 +340,9 @@ export function registerShellMediaTools(
           success: false,
           error: `Command blocked by safety filter: ${risk.reason ?? "检测到命令注入特征"} (rule=${risk.rule ?? "unknown"})`,
           command,
+          // 始终回传 cwd：模型需要知道命令在哪个目录执行，
+          // 否则只能靠猜来写相对路径（历史上因此拼出重复前缀）。
+          cwd,
         };
       }
       if (risk.level === "critical") {
@@ -491,6 +562,7 @@ export function registerShellMediaTools(
                 output: output.slice(0, 50000),
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,
+                cwd,
               });
             } else {
               resolve({
@@ -499,6 +571,7 @@ export function registerShellMediaTools(
                 error: errorOutput.slice(0, 10000) || output.slice(0, 10000),
                 output: output.slice(0, 50000),
                 command,
+                cwd,
               });
             }
           }

@@ -8,7 +8,8 @@
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
-import { reconcileCompletionTruthfulness, extractToolFailure } from "./completion-truthfulness";
+import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult } from "./completion-truthfulness";
+import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
@@ -963,6 +964,100 @@ const IDEMPOTENT_TOOLS = new Set([
   "email_send",
   "scheduler_create", "scheduler_delete",
 ]);
+
+/** 工具结果进入上下文的体积上限（字符）。超出则截断并附提示。 */
+const TOOL_RESULT_MAX_CHARS = 12_000;
+
+/**
+ * 截断过大的工具结果，避免单个返回值吃掉大量上下文。
+ *
+ * 事故：email_list_inbox 单次返回 6920 字节，同一轮被重复调用 3 次，
+ * 仅这一个工具就占了约 20KB 上下文。截断时保留一个明确标记，
+ * 让模型知道内容被截断了，而不是误以为工具只返回了这么点数据。
+ */
+export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_MAX_CHARS): string {
+  if (typeof text !== "string" || text.length <= maxChars) return text;
+  const head = Math.floor(maxChars * 0.75);
+  const tail = maxChars - head;
+  return (
+    text.slice(0, head) +
+    `\n\n...[结果过长已截断：原文 ${text.length} 字符，仅保留首尾]...\n\n` +
+    text.slice(text.length - tail)
+  );
+}
+
+/**
+ * 工具结果缓存查找（带「语义等价」识别）。
+ *
+ * 事故：模型连续三次调用 email_list_inbox，参数只有 limit 不同
+ * （100 → 200 → 50），而邮箱里邮件总数不足 50 封，三次返回的**完全相同**。
+ * 严格按 args 字面量做 key 时全部 miss，导致重复拉取 + 重复占上下文。
+ *
+ * 这里在精确命中失败后，再做一次「忽略分页参数」的等价命中：
+ * 仅当缓存结果**未被 limit 截断**时（条目数 < 当时的 limit）才复用，
+ * 否则新请求可能确实想要更多数据，不能复用。
+ */
+function lookupCachedToolResult(
+  cache: Map<string, { result: string; timestamp: number }> | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  ttlMs: number,
+): string | null {
+  if (!cache) return null;
+  const exactKey = `${toolName}:${JSON.stringify(args)}`;
+  const exact = cache.get(exactKey);
+  if (exact && Date.now() - exact.timestamp < ttlMs) return exact.result;
+
+  // 分页类参数不影响"结果集内容"，只在结果未被截断时才可安全忽略
+  const PAGINATION_KEYS = new Set(["limit", "limitCount", "maxResults", "topK", "perPage", "pageSize"]);
+  const hasPaginationArg = Object.keys(args).some((k) => PAGINATION_KEYS.has(k));
+  if (!hasPaginationArg) return null;
+
+  const strip = (o: Record<string, unknown>) => {
+    const c: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) if (!PAGINATION_KEYS.has(k)) c[k] = v;
+    return c;
+  };
+  const normalized = JSON.stringify(strip(args));
+
+  for (const [key, entry] of cache) {
+    if (!key.startsWith(`${toolName}:`)) continue;
+    if (Date.now() - entry.timestamp >= ttlMs) continue;
+    let cachedArgs: Record<string, unknown>;
+    try {
+      cachedArgs = JSON.parse(key.slice(toolName.length + 1));
+    } catch {
+      continue;
+    }
+    if (JSON.stringify(strip(cachedArgs)) !== normalized) continue;
+    // 缓存结果必须未被 limit 截断，才敢给更大的 limit 复用
+    const cachedLimit = Number((cachedArgs as Record<string, unknown>).limit);
+    if (!Number.isFinite(cachedLimit) || cachedLimit <= 0) continue;
+    const itemCount = countResultItems(entry.result);
+    if (itemCount !== null && itemCount >= cachedLimit) continue; // 被截断了，不复用
+    const newLimit = Number(args.limit);
+    if (Number.isFinite(newLimit) && newLimit > 0 && itemCount !== null && newLimit < itemCount) continue;
+    process.stdout.write(`[AgentModelExecutor] Cache hit (limit-normalized) for ${toolName}\n`);
+    return entry.result;
+  }
+  return null;
+}
+
+/** 从结果 JSON 中数出主条目数；无法判断时返回 null（保守地不复用） */
+function countResultItems(result: string): number | null {
+  try {
+    const o = JSON.parse(result);
+    if (!o || typeof o !== "object") return null;
+    for (const key of ["emails", "items", "results", "messages", "files", "records"]) {
+      if (Array.isArray((o as Record<string, unknown>)[key])) {
+        return ((o as Record<string, unknown>)[key] as unknown[]).length;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function getIdempotencyKey(toolName: string, args: Record<string, unknown>): string {
   // Only include fields that affect the write outcome
@@ -1993,6 +2088,9 @@ export async function tryCallLLM(
   const BASE_MAX_TOOL_ROUNDS = 30;
   const MAX_TOOL_ROUNDS_CAP = 100;
   const MAX_CONSECUTIVE_ERRORS = 3;
+  // 自动续跑上限：检测到「该继续却停下来问人」时，最多自动回灌多少轮。
+  // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
+  const MAX_AUTO_CONTINUE = 3;
 
   const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
   process.stdout.write(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
@@ -2294,6 +2392,14 @@ Have a specific URL?
       let skillFallbackResult: string | null = null;
       // 本回合「执行了但返回失败」的工具，用于完成声明对账
       const failedTools: Array<{ name: string; error: string }> = [];
+      // 本回合「执行了但返回空/零结果」的工具 —— 用于识别凭空编造的数据报告
+      const emptyResultTools: Array<{ name: string; field: string }> = [];
+      // 本回合真实执行过的工具（含参数），用于 transcript 持久化
+      const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+      // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
+      let autoContinueCount = 0;
+      // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
+      let lastReplyBackup = "";
 
       // ── IterationBudget integration ──
       // When available, use the Hermes-style budget system instead of the
@@ -2726,6 +2832,69 @@ Have a specific URL?
               `[AgentModelExecutor] post_tool_empty retries exhausted (${retryCount}). Breaking with empty reply.\n`,
             );
           }
+
+          // ── 自动续跑：检测到"该继续却停下来问人"时，回灌指令让模型继续 ──
+          // 用户反馈（核心痛点）：agent 发现问题后**不自动纠正后接着跑**，
+          // 而是停下来等用户输入"继续"。这里把两类停顿识别出来并自动续跑：
+          //   1) 明确要求用户回复"继续" / 承诺后续动作却没做（detectPrematureStop）
+          //   2) 工具失败 / 返回空结果 / 声称完成却没执行（completion-truthfulness）
+          // 例外：需要人工审批（pendingPermissions）时必须停下来等用户，不自动续跑。
+          if (
+            finalReply &&
+            autoContinueCount < MAX_AUTO_CONTINUE &&
+            round < maxToolRounds - 2 &&
+            pendingPermissions.length === 0
+          ) {
+            const premature = detectPrematureStop(finalReply, { toolCallsThisRound: false });
+            const preVerdict = reconcileCompletionTruthfulness({
+              finalReply,
+              pendingPermissions,
+              toolsExecuted: anyToolExecuted,
+              lastUserMessage: message,
+              failedTools,
+              emptyResultTools,
+            });
+            // 只有在"确实有活可干"的语境下才续跑，避免把纯闲聊的承诺句式误判成停顿
+            const hasWorkContext =
+              anyToolExecuted ||
+              failedTools.length > 0 ||
+              emptyResultTools.length > 0 ||
+              hasActionIntentFn(message);
+            const shouldContinue =
+              hasWorkContext &&
+              (premature !== null ||
+                (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
+
+            if (shouldContinue) {
+              autoContinueCount++;
+              const trigger = premature ?? preVerdict.reason ?? "unknown";
+              const directive = buildContinuationDirective({
+                kind: premature ?? "needs_correction",
+                userMessage: message,
+                correction: preVerdict.needsCorrection ? preVerdict.notice : undefined,
+                failedTools,
+                emptyResultTools,
+              });
+              process.stdout.write(
+                `[AgentModelExecutor] Auto-continue #${autoContinueCount}/${MAX_AUTO_CONTINUE} ` +
+                `(trigger=${trigger}) — resuming task instead of yielding to user\n`,
+              );
+              onProgress?.({
+                type: "auto_continue",
+                phase: "thinking",
+                detail: `检测到任务未完成（${trigger}），自动继续执行（${autoContinueCount}/${MAX_AUTO_CONTINUE}）…`,
+                progress: Math.min(30 + round * 3, 90),
+              });
+              conversationMessages.push(assistantMsg);
+              conversationMessages.push({ role: "user", content: directive });
+              // 保留一份备份，防止续跑后产不出新回复时返回空
+              if (finalReply) lastReplyBackup = finalReply;
+              // 清空本轮 finalReply：避免下一轮模型若返回空内容时误用旧的"停顿版"回复
+              finalReply = "";
+              continue;
+            }
+          }
+
           conversationMessages.push(assistantMsg);
           break;
         }
@@ -2832,11 +3001,23 @@ Have a specific URL?
               params: args,
             });
             if (cancelled || blocked) {
+              // 统一失败契约：历史返回只有 {skipped,reason} 没有 success:false，
+              // 下游失败对账完全识别不到，模型把「被取消」当成终态失败后
+              // 直接放弃并转向向用户索要替代方案。
+              // 现在显式区分：blocked 不可重试，cancelled 可以重试一次。
               return {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({ skipped: true, reason: blocked ? "blocked" : "cancelled" }),
+                content: JSON.stringify({
+                  success: false,
+                  skipped: true,
+                  reason: blocked ? "blocked" : "cancelled",
+                  retryable: !blocked,
+                  error: blocked
+                    ? `Tool "${toolName}" was blocked by a before_tool_call hook and did not run.`
+                    : `Tool "${toolName}" was cancelled by a before_tool_call hook and did not run. This is often transient — retry once before giving up or switching approach.`,
+                }),
               };
             }
             const mergedBTC = merged as Partial<import("@evoclaw/core").BeforeToolCallResult>;
@@ -2906,7 +3087,17 @@ Have a specific URL?
               role: "tool",
               tool_call_id: tc.id,
               name: toolName,
-              content: JSON.stringify({ pendingApproval: true, requestId: approvalRequest.id, message: "This operation requires your approval. Please approve or reject it." }),
+              // 统一失败契约：必须带 success:false，否则下游无法把它识别为
+              // 「未生效」的结果。同时保留 requiresPermission:true，让失败对账
+              // 把它归入「等待审批」而非「执行失败」，避免误报。
+              content: JSON.stringify({
+                success: false,
+                pendingApproval: true,
+                requiresPermission: true,
+                retryable: false,
+                requestId: approvalRequest.id,
+                message: "This operation requires your approval. Please approve or reject it.",
+              }),
             };
           }
 
@@ -2960,11 +3151,10 @@ Have a specific URL?
           }
 
           // ── Tool result cache ──
-          const resultCacheKey = `${toolName}:${JSON.stringify(args)}`;
-          const cachedResult = deps.toolResultCache?.get(resultCacheKey);
-          if (cachedResult && Date.now() - cachedResult.timestamp < 300_000) {
+          const cachedResult = lookupCachedToolResult(deps.toolResultCache, toolName, args, 300_000);
+          if (cachedResult !== null) {
             process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
-            return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult.result };
+            return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult };
           }
 
           // ── Skip with result from plugin hook ──
@@ -3077,7 +3267,7 @@ Have a specific URL?
 
               // Cache result
               if (deps.toolResultCache) {
-                deps.toolResultCache.set(resultCacheKey, { result: toolResult, timestamp: Date.now() });
+                deps.toolResultCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
               }
               if (IDEMPOTENT_TOOLS.has(toolName)) {
                 idempotencyCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
@@ -3109,6 +3299,18 @@ Have a specific URL?
                   `[AgentModelExecutor] Tool "${toolName}" returned failure: ${failure}\n`,
                 );
               }
+              const emptyEvidence = extractEmptyResult(toolName, rawResult);
+              if (emptyEvidence) {
+                emptyResultTools.push(emptyEvidence);
+                process.stdout.write(
+                  `[AgentModelExecutor] Tool "${toolName}" returned EMPTY result (${emptyEvidence.field})\n`,
+                );
+              }
+              // ── 记录真实工具调用，供 transcript 持久化 ──
+              // 历史实现在持久化时硬编码成 [{name:"llm_tools",arguments:{}}]，
+              // 导致会话恢复后模型完全看不到自己上一轮调用过什么、返回了什么，
+              // 只能靠猜——这是「反复要求用户说『继续』」的直接成因之一。
+              executedToolCalls.push({ id: tc.id, name: toolName, arguments: args });
               process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
               successfulToolCalls++;
               anyToolExecuted = true;
@@ -3252,7 +3454,10 @@ Have a specific URL?
           // 导致 data/skills/ 堆积大量 evoclaw-curator 自动生成的无用技能。
           // 现在技能只能通过 WebUI 手动创建或显式 API 调用创建。
 
-          return { role: "tool", tool_call_id: tc.id, name: toolName, content: toolResult };
+          // 体积上限：单个工具结果最多 TOOL_RESULT_MAX_CHARS 字符进入上下文。
+          // 事故：email_list_inbox 单次 6920 字符、同一轮被重复调用 3 次，
+          // 仅一个工具就吃掉约 20KB 上下文。
+          return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult) };
         };
 
         // ── Execute parallel-safe tools concurrently ──
@@ -3448,6 +3653,13 @@ Have a specific URL?
         }
       }
 
+      // 自动续跑兜底：若续跑后模型产不出新回复，恢复续跑前的内容，
+      // 以免返回空回复（其后的完成声明对账仍会追加更正说明）。
+      if (!finalReply && lastReplyBackup) {
+        finalReply = lastReplyBackup;
+        process.stdout.write(`[AgentModelExecutor] Auto-continue produced no new reply; restored previous reply for session "${sessionId}"\n`);
+      }
+
       if (finalReply) {
         onProgress?.({ type: "done", phase: "done", detail: `任务完成（${successfulToolCalls} 次工具调用）`, progress: 100 });
         // Append skill fallback result if available
@@ -3467,6 +3679,7 @@ Have a specific URL?
             toolsExecuted: anyToolExecuted,
             lastUserMessage: message,
             failedTools,
+            emptyResultTools,
           });
           if (verdict.needsCorrection && verdict.notice) {
             finalReply += verdict.notice;
@@ -3510,7 +3723,11 @@ Have a specific URL?
             deps.sessionManager.getOrCreateSession(agentId, sessionId);
             deps.sessionManager.appendTurn(agentId, sessionId, {
               turnIndex: 0, role: "assistant", content: finalReply, timestamp: new Date().toISOString(),
-              toolCalls: anyToolExecuted ? [{ id: "tool-call", name: "llm_tools", arguments: {} }] : undefined,
+              // 持久化真实工具调用（历史实现是 llm_tools 占位符，导致会话恢复后
+              // 模型看不到上一轮做过什么）。参数与结果均经脱敏。
+              toolCalls: executedToolCalls.length > 0
+                ? executedToolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }))
+                : undefined,
             });
           } catch (err) {
             process.stderr.write(`[AgentModelExecutor] SessionManager persist failed: ${err}\n`);

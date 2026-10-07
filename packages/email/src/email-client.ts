@@ -25,6 +25,35 @@ export interface EmailListItem {
   flags: string[];
   hasAttachments: boolean;
   snippet: string;
+  /**
+   * 正文预览。列表接口只取 envelope，恒为 null。
+   * 保留此字段是为了让调用方能显式区分「没有正文」与「正文是空的」，
+   * 历史上曾因 snippet 返回占位符字符串而导致上层误以为拿到正文并编造内容。
+   */
+  bodyPreview?: string | null;
+  /** 是否已在本次返回中包含正文预览 */
+  previewAvailable?: boolean;
+}
+
+/**
+ * 基于 envelope 构造**真实可用**的摘要文本。
+ *
+ * 只使用确实存在的信息（主题 / 发件人 / 大小 / 附件标志），
+ * 并明确声明正文未随列表返回、需另行读取——绝不返回看似预览的占位符。
+ */
+function buildEnvelopeSnippet(info: {
+  subject: string;
+  from: string;
+  size: number;
+  hasAttachments: boolean;
+}): string {
+  const { subject, from, size, hasAttachments } = info;
+  const parts: string[] = [];
+  if (subject) parts.push(`主题：${subject}`);
+  if (from) parts.push(`发件人：${from}`);
+  if (size > 0) parts.push(`约 ${Math.max(1, Math.round(size / 1024))} KB`);
+  const head = parts.join(" ｜ ");
+  return `${head}（正文未读取，需按 uid 单独获取）${hasAttachments ? " [含附件]" : ""}`;
 }
 
 export interface EmailAccount {
@@ -626,6 +655,20 @@ export class EmailClient {
     const hasAttachments = flags instanceof Set ? flags.has("\\Attachment") : false;
     const flagsArray = flags instanceof Set ? Array.from(flags) : [];
 
+    // ── snippet 必须承载真实信息，绝不能返回无意义的占位符 ──
+    // 事故：snippet 恒为 "(请查看完整邮件以获取预览)"，模型在**完全没有任何
+    // 正文内容**的情况下，仍输出了一份「30+ 封邮件、各类别精确到个」的分析报告
+    // ——纯属编造。列表接口只取 envelope（不拉正文，避免 N 封邮件的流量开销），
+    // 因此 snippet 如实说明「正文未取」并给出取正文的方法，而不是假装是预览。
+    const subjectText = (envelope.subject || "").replace(/^\s*(?:re|fwd|转发|答复)\s*[:：]\s*/i, "").trim();
+    const fromName = (fromAddr?.name || fromAddr?.address || "").trim();
+    const snippet = buildEnvelopeSnippet({
+      subject: subjectText || "(无主题)",
+      from: fromName,
+      size: message.size || 0,
+      hasAttachments,
+    });
+
     return {
       uid: String(message.uid),
       subject: envelope.subject || "(无主题)",
@@ -635,7 +678,10 @@ export class EmailClient {
       size: message.size || 0,
       flags: flagsArray,
       hasAttachments,
-      snippet: "(请查看完整邮件以获取预览)",
+      snippet,
+      // 明确告知调用方：列表接口不含正文，避免上层误以为 snippet 是正文摘要
+      bodyPreview: null,
+      previewAvailable: false,
     };
   }
 

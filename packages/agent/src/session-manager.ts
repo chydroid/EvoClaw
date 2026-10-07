@@ -340,6 +340,35 @@ export class SessionManager {
 
   // ─── Transcript I/O ───────────────────────────────────────────────────────
 
+  /**
+   * 近期已写入的 assistant turn 指纹（sessionId → {key, ts}）。
+   * 仅用于抑制同一轮内的重复/包含式写入，不做持久化，进程重启即失效。
+   */
+  private recentTurnKeys = new Map<string, { key: string; ts: number }>();
+
+  /** 同一轮（10 秒）内，内容指纹相同或新内容被已写内容完整包含 → 视为重复 */
+  private isDuplicateRecentTurn(agentId: string, sessionId: string, turn: SessionTurn): boolean {
+    if (turn.role !== "assistant") return false;
+    const content = typeof turn.content === "string" ? turn.content.trim() : "";
+    if (content.length < 40) return false;
+    const prior = this.recentTurnKeys.get(`${agentId}::${sessionId}`);
+    if (!prior) return false;
+    if (Date.now() - prior.ts > 10_000) return false;
+    if (content === prior.key) return true;
+    // 新内容只是已写内容的一部分（汇总里嵌套了子任务原文）→ 也判为重复
+    if (prior.key.includes(content)) return true;
+    return false;
+  }
+
+  private rememberRecentTurn(agentId: string, sessionId: string, turn: SessionTurn): void {
+    if (turn.role !== "assistant") return;
+    const content = typeof turn.content === "string" ? turn.content.trim() : "";
+    if (!content) return;
+    this.recentTurnKeys.set(`${agentId}::${sessionId}`, { key: content, ts: Date.now() });
+    // 防止无限增长
+    if (this.recentTurnKeys.size > 500) this.recentTurnKeys.clear();
+  }
+
   /** Load all turns from a session transcript */
   loadTranscript(agentId: string, sessionId: string): SessionTurn[] {
     const transcriptPath = this.getTranscriptPath(agentId, sessionId);
@@ -363,11 +392,18 @@ export class SessionManager {
   /** Append a turn to the transcript with automatic write-lock protection. */
   appendTurn(agentId: string, sessionId: string, turn: SessionTurn): void {
     this.withLock(agentId, sessionId, () => {
+      // ── 短时窗重复写入保护 ──
+      // 事故：一条用户消息被拆成 2 个子任务时，每个子任务各自持久化了一条
+      // assistant turn，随后外层汇总又把这两段完整内容再写一遍，
+      // 同一轮在 transcript 里留下 3 条 assistant 消息（内容高度重复）。
+      if (this.isDuplicateRecentTurn(agentId, sessionId, turn)) return;
+
       const transcriptPath = this.getTranscriptPath(agentId, sessionId);
       // 安全：落盘前脱敏，防止授权码/密码/token 明文写入 transcript。
       // 真实事故：用户提供的 163 授权码曾以明文出现在 transcript 与工具参数中。
       const line = JSON.stringify(redactSessionTurn(turn)) + "\n";
       fs.appendFileSync(transcriptPath, line, "utf-8");
+      this.rememberRecentTurn(agentId, sessionId, turn);
 
       // Update session metadata
       const session = this.loadSessionMeta(agentId, sessionId);

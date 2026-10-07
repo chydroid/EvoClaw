@@ -4,6 +4,43 @@ import type { AutoSkillManager, SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
 
 /**
+ * 判断任务描述是否已被**内置工具**覆盖。
+ *
+ * 命中逻辑刻意做得宽（关键词 → 工具名前缀），宁可多提示也不要漏：
+ * 目标是阻止「明明有内置能力却去装外部技能」这类浪费与供应链风险。
+ */
+function findBuiltinToolsForTask(executor: AgentModelExecutor, task: string): string[] {
+  const t = String(task || "").toLowerCase();
+  const GROUPS: Array<{ keywords: string[]; prefixes: string[] }> = [
+    { keywords: ["邮箱", "邮件", "收件箱", "imap", "smtp", "email", "inbox"], prefixes: ["email_"] },
+    { keywords: ["文件", "读写", "file"], prefixes: ["file_"] },
+    { keywords: ["定时", "提醒", "计划", "scheduler", "cron"], prefixes: ["scheduler_"] },
+    { keywords: ["浏览器", "网页", "browser", "web"], prefixes: ["browser_"] },
+    { keywords: ["搜索", "search", "联网"], prefixes: ["web_search", "web_fetch"] },
+    { keywords: ["git", "提交", "commit", "分支"], prefixes: ["git_"] },
+    { keywords: ["看板", "kanban", "任务板"], prefixes: ["kanban_"] },
+    { keywords: ["记忆", "memory", "记住"], prefixes: ["memory_"] },
+  ];
+  const out: string[] = [];
+  for (const g of GROUPS) {
+    if (!g.keywords.some((k) => t.includes(k))) continue;
+    for (const p of g.prefixes) {
+      out.push(...matchToolsByPrefix(executor, p));
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+/** 从执行器里找出匹配前缀的已注册工具名 */
+function matchToolsByPrefix(executor: AgentModelExecutor, prefix: string): string[] {
+  const names = executor.listToolNames?.() ?? [];
+  if (prefix.endsWith("_")) {
+    return names.filter((n) => n.startsWith(prefix));
+  }
+  return names.filter((n) => n === prefix);
+}
+
+/**
  * 将「被误当成技能调用」的名称解析为真正的内置工具名。
  * 兼容 `-` / `_` 互换与大小写差异；命中则返回工具名，否则返回 null。
  */
@@ -45,6 +82,23 @@ export function registerAutoSkillTools(
       if (!task.trim()) {
         return { success: false, error: "task is required" };
       }
+
+      // ── 先查内置工具，再考虑安装外部技能 ──
+      // 事故：用户只是说「添加邮箱」，模型第一轮就去 skill_find_and_install
+      // 找外部技能（最佳匹配度仅 5%，纯属噪音），而 email_add_account 一直是
+      // 内置工具。既浪费一轮，又引入不必要的供应链风险。
+      const builtin = findBuiltinToolsForTask(executor, task);
+      if (builtin.length > 0) {
+        return {
+          success: false,
+          error:
+            "内置工具已具备该能力，请先直接使用内置工具，不要安装外部技能：" +
+            builtin.join(", "),
+          builtinTools: builtin,
+          hint: "只有确认内置工具都无法满足时，才应安装技能。",
+        };
+      }
+
       return await autoSkill.autoInstallForTask(task);
     }
   );
