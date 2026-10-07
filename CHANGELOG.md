@@ -10,6 +10,78 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.87.1] - 2026-10-07
+
+**让安全等级真正持久化，并端到端验证配置确实生效**
+
+0.87.0 的设置**重启后会失效**，且注入逻辑存在接线错误。本次逐条查证并修复。
+
+### 1. 【接线错误】配置文件从未被读入——设置永远不生效
+
+`apps/server/src/index.ts` 构造里只调了 `configManager.loadFromEnv()`，
+`loadFromFile()` **在整个项目里从未被调用过**（`grep` 全库确认）。
+于是 `get("security")` 永远只有默认值，`defaultConfig.security` 里
+压根没有 `securityLevel` 字段 → 无论用户在设置页选什么，
+启动时 `normalizeSecurityLevel(undefined)` 一律回落 `normal`。
+表现就是「设置根本没生效，重启就丢」。
+
+修复：在 `start()` 注入策略**之前** `await loadFromFile()`；
+配置文件损坏时不阻止启动，退回默认档并明确告警。
+
+### 2. 持久化只写单个键，不把默认配置写进磁盘
+
+没有采用 `ConfigManager.saveToFile()`——那会把整份 `this.config`
+（默认值 + 运行时值）全量写进 `config.json`，**包括 `auth.jwtSecret`
+这类本不该落盘的运行时值**，还会把当前版本的全部默认值固化下来，
+导致后续升级时旧默认值反过来覆盖新默认值。
+
+新增 `ConfigManager.persistPath(filePath, configPath, value)`：
+读文件 → 只改指定点分键 → 原子写回，文件里其余内容原样保留。
+另补 `getFilePath()` 供调用方取当前绑定的文件路径。
+
+### 3. 配置来源可追溯 + 支持 .env 覆盖
+
+启动日志现在带来源标记：`[source: .env | config.json | default]`。
+按项目约定（`.env` 放核心配置与密钥，`config.json` 放其余配置），
+新增 `EVOCLAW_SECURITY_LEVEL` 环境变量，优先级高于 `config.json`。
+配置文件被外部修改时热更新等级（复用已有的 file watcher）。
+
+### 4. POST 接口不再"假装成功"
+
+`POST /api/security-level` 现在返回 `persisted` 与 `persistError`；
+落盘失败时在响应里明确说明「已本次生效但重启会回落」，
+而不是静默吞掉异常让用户以为存好了。
+
+### 5. 新增集成测试：策略在真实工具处理器里确实被执法
+
+本项目已经连续两次出现"策略写了但没接线"（0.86.3 能力速查表、
+0.86.9 技能依赖检测），因此本次不只测纯函数，而是
+**直接调用注册进来的 `file-tools` handler**，走完整链路验证：
+
+- 严格档：沙箱外创建/读取 → 被拒并给出可操作提示
+- 严格档：沙箱内创建 → 放行
+- 一般档：沙箱外读 → 放行；沙箱外写 → 转为 `requiresPermission`（弹审批）
+- 一定风险档：沙箱外读写 → 放行且不产生审批
+- 严格档：相对路径穿越 → 拦截
+- 任意档：workspace 内指向外部的符号链接 → 不因 risky 档而放行
+
+### 端到端验证记录
+
+```
+干净起点启动        → [source: default]  normal
+写入 config.json    → {"security":{"securityLevel":"strict"},"other":{"mySetting":42}}
+重启服务            → Loaded config file → [source: config.json] strict（严格安全）
+POST 切到 risky     → success:true, persisted:true
+磁盘复查            → {"security":{"securityLevel":"risky"},"other":{"mySetting":42}}  ✅ 用户原有配置未被覆盖
+GET 复读            → risky（内存 holder 已变）
+POST 非法值 strcit  → 400「未知的安全等级 "strcit"」
+```
+
+另：`config.json` 已加入 `.gitignore`（本机运行时配置，含路径偏好，不入库）。
+
+**验证**：新增 8 项集成测试；`build` + `typecheck` + `test` 全绿：
+**240 files / 5951 passed / 1 skipped / 0 failed**。
+
 ## [0.87.0] - 2026-10-07
 
 **新增「安全 → 总体安全」：三档安全等级，一个开关统管文件边界 / 危险命令 / 高危审批**

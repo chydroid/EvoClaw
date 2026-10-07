@@ -137,6 +137,8 @@ export class EvoClawServer {
   private cronScheduler: CronScheduler;
   private configValidator: ConfigValidator;
   private configWatcher: ConfigWatcher;
+  /** 配置文件绝对路径（构造函数解析，start() 与持久化共用） */
+  private configFilePath: string = path.resolve(process.cwd(), "config.json");
 
   // ── New P0/P1 modules ──
   private autoReplyEngine: AutoReplyEngine;
@@ -282,6 +284,7 @@ export class EvoClawServer {
 
     this.configWatcher = new ConfigWatcher();
     const configFilePath = path.resolve(process.cwd(), "config.json");
+    this.configFilePath = configFilePath;
     if (fs.existsSync(configFilePath)) {
       this.configManager.startWatching(configFilePath, this.configWatcher);
     } else {
@@ -1062,14 +1065,47 @@ export class EvoClawServer {
     this.logger.info("server", `File operations whitelisted for workspace & skills directories`);
 
     // ── 注入「总体安全等级」──
-    // 文件工具 / shell 工具 / human-approval 三处都读同一个运行时策略，
-    // 这里在启动时按配置设定一次即可。
-    const secCfg = this.configManager.get("security") as { securityLevel?: string } | undefined;
-    const activePolicy = setActiveSecurityLevel(secCfg?.securityLevel);
-    this.logger.info(
-      "server",
-      `Overall security level: ${activePolicy.level} (${activePolicy.label}) — ${activePolicy.summary}`,
-    );
+    // 文件工具 / shell 工具 / human-approval 三处都读同一个运行时策略。
+
+    // ★ 必须先把 config.json 读进来。此前构造函数只调了 loadFromEnv()，
+    //   loadFromFile() 从未被调用 → get("security") 永远只有默认值，
+    //   于是这里无论用户在设置页选了什么，重启后一律回落 normal，
+    //   表现为「设置根本没生效」。
+    if (fs.existsSync(this.configFilePath)) {
+      try {
+        await this.configManager.loadFromFile(this.configFilePath);
+        this.logger.info("config", `Loaded config file: ${this.configFilePath}`);
+      } catch (err) {
+        // 配置损坏不应阻止服务启动：退回默认安全等级，并明确告警
+        this.logger.error(
+          "config",
+          `Failed to load ${this.configFilePath}: ${err instanceof Error ? err.message : String(err)} — ` +
+          `falling back to default security level`,
+        );
+      }
+    }
+
+    const applySecurityLevel = () => {
+      // 优先级：.env（核心配置）> config.json > 默认值
+      const fromEnv = process.env.EVOCLAW_SECURITY_LEVEL;
+      const secCfg = this.configManager.get("security") as { securityLevel?: string } | undefined;
+      const raw = fromEnv && fromEnv.trim() ? fromEnv : secCfg?.securityLevel;
+      const policy = setActiveSecurityLevel(raw);
+      this.logger.info(
+        "server",
+        `Overall security level: ${policy.level} (${policy.label}) — ${policy.summary}` +
+        `${fromEnv ? " [source: .env]" : secCfg?.securityLevel ? " [source: config.json]" : " [source: default]"}`,
+      );
+    };
+    applySecurityLevel();
+
+    // 配置文件被外部修改时热更新等级（configManager 的 file watcher 会触发）
+    this.configManager.onChange((change) => {
+      if (change.path === "security.securityLevel") {
+        this.logger.info("server", `security.securityLevel changed via "${change.source}" — re-applying`);
+        applySecurityLevel();
+      }
+    });
 
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);

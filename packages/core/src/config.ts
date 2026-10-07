@@ -226,6 +226,11 @@ export class ConfigManager {
     return this.config;
   }
 
+  /** 当前绑定的配置文件路径（loadFromFile/saveToFile 之后才有值） */
+  getFilePath(): string | undefined {
+    return this.filePath ?? undefined;
+  }
+
   /**
    * Update a whole section. Broadcasts granular change events for every leaf
    * that actually changed so subscribers can react precisely.
@@ -360,6 +365,49 @@ export class ConfigManager {
    * Load configuration from a JSON file and merge it on top of defaults.
    * The file path is remembered for subsequent saveToFile() calls.
    */
+  /**
+   * 把**单个路径**写回配置文件，只改动该键，保留文件里其余内容。
+   *
+   * 为什么不用 `saveToFile()`：那会把整份 `this.config`（默认值 + 运行时值）
+   * 全量写进磁盘——包括 `auth.jwtSecret` 这类本不该落盘的运行时值，
+   * 还会把当前版本的全部默认值固化下来，导致后续版本升级时旧默认值反过来
+   * 覆盖新默认值。用户只想改一个安全等级，不该被动接受这些副作用。
+   *
+   * @param filePath 配置文件路径（不存在则创建）
+   * @param configPath 点分路径，如 "security.securityLevel"
+   */
+  async persistPath(filePath: string, configPath: string, value: unknown): Promise<void> {
+    await this.withLock(async () => {
+      let root: Record<string, unknown> = {};
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            root = parsed as Record<string, unknown>;
+          }
+        } catch (err) {
+          throw new Error(
+            `Failed to parse config file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      const segments = configPath.split(".").filter(Boolean);
+      if (segments.length === 0) throw new Error("configPath must not be empty");
+      let cursor = root;
+      for (let i = 0; i < segments.length - 1; i++) {
+        const seg = segments[i];
+        const next = cursor[seg];
+        if (!next || typeof next !== "object" || Array.isArray(next)) {
+          cursor[seg] = {};
+        }
+        cursor = cursor[seg] as Record<string, unknown>;
+      }
+      cursor[segments[segments.length - 1]] = value;
+      atomicWriteFileSync(filePath, `${JSON.stringify(root, null, 2)}\n`);
+    });
+  }
+
   async loadFromFile(filePath: string): Promise<void> {
     await this.withLock(async () => {
       if (!fs.existsSync(filePath)) {

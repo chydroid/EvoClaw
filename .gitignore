@@ -101,3 +101,6 @@ LEARNINGS.md
 
 # Stray temp files created by tooling
 _tmp_*
+
+# 本地运行时配置（由「安全 → 总体安全」写入，含本机路径偏好，不入库）
+config.json

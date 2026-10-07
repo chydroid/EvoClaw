@@ -4195,7 +4195,7 @@ export class ProtocolAdapter {
       }
     });
 
-    app.post("/api/security-level", (req: Request, res: Response) => {
+    app.post("/api/security-level", async (req: Request, res: Response) => {
       try {
         const raw = (req.body as { level?: unknown } | undefined)?.level;
         if (raw === undefined) {
@@ -4211,20 +4211,45 @@ export class ProtocolAdapter {
           return;
         }
         const policy = setActiveSecurityLevel(normalized);
-        // 持久化到配置文件（存在才写，避免污染空配置）
-        try {
-          const cfg = this.registry.resolveService<{
-            get(section: "security"): Record<string, unknown> | undefined;
-          }>("config");
-          const sec = (cfg?.get("security") ?? {}) as Record<string, unknown>;
-          sec.securityLevel = normalized;
-          // ConfigManager 没有暴露写盘 API 时静默跳过：运行时已生效，重启后回落默认值
-          void sec;
-        } catch {
-          /* best-effort 持久化 */
+
+        // 运行时已生效（先落内存，让本次会话立刻按新档位走）；
+        // 再持久化：内存配置 + config.json 的单个键。
+        // 用 persistPath 而不是 saveToFile —— 后者会把整份默认配置
+        // （含 auth.jwtSecret 等运行时值）全量写进磁盘。
+        const cfg = this.registry.resolveService<{
+          set(path: string, value: unknown): Promise<void>;
+          persistPath(filePath: string, configPath: string, value: unknown): Promise<void>;
+          getFilePath?(): string | undefined;
+        }>("config");
+        let persisted = false;
+        let persistError: string | undefined;
+        if (cfg) {
+          const target = cfg.getFilePath?.() ?? path.resolve(process.cwd(), "config.json");
+          try {
+            await cfg.set("security.securityLevel", normalized);
+            await cfg.persistPath(target, "security.securityLevel", normalized);
+            persisted = true;
+          } catch (err) {
+            persistError = err instanceof Error ? err.message : String(err);
+          }
+        } else {
+          persistError = "config service unavailable";
         }
-        process.stdout.write(`[SecurityLevel] switched to "${normalized}" (${policy.label})\n`);
-        res.json({ success: true, current: policy, levels: listSecurityPolicies() });
+        process.stdout.write(
+          `[SecurityLevel] switched to "${normalized}" (${policy.label})` +
+          `${persisted ? " [persisted]" : ` [NOT persisted: ${persistError}]`}\n`,
+        );
+        res.json({
+          success: true,
+          current: policy,
+          levels: listSecurityPolicies(),
+          persisted,
+          persistError,
+          // 明确告知重启后是否还是这个档位
+          note: persisted
+            ? undefined
+            : "设置已在本次运行中生效，但未能写入 config.json，重启后会回落到默认值",
+        });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
