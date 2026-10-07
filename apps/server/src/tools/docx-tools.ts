@@ -127,17 +127,25 @@ export function registerDocxTools(executor: AgentModelExecutor, fsBase: string):
       const insideFsBase = resolvedPath === path.resolve(fsBase) || resolvedPath.startsWith(path.resolve(fsBase) + path.sep);
       if (!insideFsBase) {
         const decision = decideFileAccess(policy, { insideSandbox: false, write: true });
-        if (decision === "deny") {
+        if (decision !== "allow") {
+          // ★ deny 与 confirm 都必须拒绝。
+          //   docx_create 没有审批通道（未接 PermissionManager），所以"需确认"
+          //   无法在这里走审批流程；若放行就等于绕过了 file_* 系列的确认机制，
+          //   也会让「拒绝路径穿越」这条防线在一般安全档下形同虚设。
           return {
             success: false,
             error:
-              `操作被安全策略拦截：当前为「${policy.label}」等级，只允许在沙箱（${path.resolve(fsBase)}）内写入文件。` +
-              `如需放开，请到「安全 → 总体安全」调整等级。`,
+              decision === "deny"
+                ? `操作被安全策略拦截：当前为「${policy.label}」等级，只允许在沙箱（${path.resolve(fsBase)}）内写入文件。` +
+                  `如需放开，请到「安全 → 总体安全」调整等级。`
+                : `该路径位于沙箱外，「${policy.label}」等级下 docx_create 不能直接写入（此工具无审批通道）。` +
+                  `请改用 file_* 工具写入（会走正常的用户确认流程），` +
+                  `或到「安全 → 总体安全」调整为「一定风险」后重试。`,
           };
         }
       }
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      // 沙箱外且策略允许时，词法边界检查不再适用（策略本身就允许越界）
+      // 沙箱外且策略明确 allow 时，词法边界检查不再适用（策略本身就允许越界）
       if (pathError && insideFsBase) return { success: false, error: pathError };
 
       const overwrite = params.overwrite === true;

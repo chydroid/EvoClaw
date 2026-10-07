@@ -1,8 +1,18 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, beforeEach, vi, afterEach, afterAll } from "vitest";
 import { SkillMarketplace } from "./marketplace";
 import type { SkillPackage } from "./marketplace";
 
 const mockFetch = vi.fn();
+vi.stubGlobal("fetch", mockFetch);
+
+// 测试专用缓存目录（绝不能用默认的 data/marketplace，那会污染生产数据）
+const testCacheDir = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-mkt-test-")),
+  "cache",
+);
 vi.stubGlobal("fetch", mockFetch);
 
 afterAll(() => {
@@ -185,9 +195,17 @@ describe("SkillMarketplace", () => {
   beforeEach(() => {
     mockFetch.mockReset();
     eventBus = createMockEventBus();
+    // ★ cacheDir 必须指向临时目录。
+    //   SkillMarketplace 的 cacheDir 默认是**相对路径** `data/marketplace`，
+    //   相对进程 cwd 解析。此前本测试没覆盖它，于是 install() 把
+    //   main-pkg / dep-pkg / x / y / pkg… 直接解压进了**生产目录**
+    //   `<repo>/data/marketplace/installed/`。
+    //   后果：① 生产技能列表被测试夹具污染；② 每次跑测试都会新增垃圾目录；
+    //   ③ 排查技能问题时会被这些假技能干扰。
     marketplace = new SkillMarketplace(eventBus, {
       registryURL: "https://test-registry.example.com",
       maxConcurrentDownloads: 2,
+      cacheDir: testCacheDir,
     });
   });
 

@@ -60,6 +60,9 @@ describe("docx_create tool", () => {
     })) as { success: boolean; error?: string };
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Path traversal blocked");
+    // 文案已改为说明「沙箱外 + 当前安全等级 + 无审批通道」，
+    // 比笼统的 "Path traversal blocked" 更能指导模型换路。
+    expect(result.error).toMatch(/沙箱外|Path traversal/);
+    expect(result.error).toContain("一般安全");
   });
 });

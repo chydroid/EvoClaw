@@ -75,6 +75,21 @@ export class AutoSkillManager {
   }
 
   /**
+   * 解析「市场安装」技能目录。
+   *
+   * 真实事故（2026-10-07，已连续发生两次）：技能从市场装好后，重建启动就没了。
+   * 根因是**扫描根与安装目录不一致**——SkillMarketplace 把技能解压到
+   * `<repo>/data/marketplace/installed/<name>/`，而扫描只看
+   * data/skills + bundled + optional，**谁都不覆盖它**。
+   * 结果：UI 看不到、agent 也找不到（skill_view 之外的按需查找同样落空）。
+   */
+  private resolveMarketplaceDir(): string {
+    // dist: packages/skills/dist → ../../data/marketplace/installed
+    // src : packages/skills/src  → ../../data/marketplace/installed
+    return path.resolve(__dirname, "..", "..", "data", "marketplace", "installed");
+  }
+
+  /**
    * Build the TF-IDF corpus from all available SKILL.md files locally.
    * Call this on startup and after any skill installation.
    *
@@ -508,6 +523,8 @@ export class AutoSkillManager {
     // 同名技能以高优先级目录为准（先扫到者胜）
     const scanDirs: Array<{ dir: string; source: "local" | "optional" }> = [
       { dir: this.skillsDir, source: "local" },
+      // 市场安装目录必须参与扫描，否则重启后 agent 找不到已装技能
+      { dir: this.resolveMarketplaceDir(), source: "local" },
       { dir: this.resolveBundledDir(), source: "local" },
       { dir: this.resolveOptionalDir(), source: "optional" },
     ];
@@ -748,7 +765,12 @@ export class AutoSkillManager {
     if (fs.existsSync(optionalPath)) return optionalPath;
 
     // Check case-insensitive across all three dirs
-    const searchDirs = [this.skillsDir, this.resolveBundledDir(), this.resolveOptionalDir()];
+    const searchDirs = [
+      this.skillsDir,
+      this.resolveMarketplaceDir(),
+      this.resolveBundledDir(),
+      this.resolveOptionalDir(),
+    ];
     for (const dir of searchDirs) {
       if (fs.existsSync(dir)) {
         const entries = fs.readdirSync(dir, { withFileTypes: true });

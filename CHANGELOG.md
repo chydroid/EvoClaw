@@ -9,6 +9,75 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.87.3] - 2026-10-07
+
+**修复「技能装完在、重建启动后消失」（已连续发生两次）**
+
+### 根因：安装目录与扫描根不一致
+
+`SkillMarketplace` 把技能解压到 `<repo>/data/marketplace/installed/<name>/`，
+但启动时的扫描只有两个根：
+
+| 扫描根 | 实际内容 |
+|---|---|
+| `data/skills` | **空目录**（AutoSkillManager 与 shell 的路径改写都指向它，但它一直是空的） |
+| `packages/skills/bundled` | 11 个内置技能 |
+
+**谁都不覆盖 `data/marketplace/installed/`。**
+市场安装只通过 `installSkill()` 写进内存`skills` Map，
+而 `listSkills()` 直接返回这个内存 Map —— 进程一重启就没人回收它，
+于是技能"凭空消失"。**磁盘文件其实一直都在，只是没有任何加载路径去读。**
+
+### 修复（两处，缺一不可）
+
+1. **`apps/server/src/index.ts`**：启动时第三个扫描根
+   `data/marketplace/installed`，并打印恢复日志
+   （`Restored N marketplace skill(s) on startup: ...`）。
+2. **`packages/skills/src/auto-skill-manager.ts`**：`resolveMarketplaceDir()` +
+   把它加入 `scanDirs` 与按需查找的 `searchDirs`。
+   这一处同样关键——否则**UI 能看到技能，agent 却找不到它**，
+   表现为"技能明明装了，agent 却说没有这个能力"。
+
+### 实测恢复
+
+```
+[server] Restored 4 marketplace skill(s) on startup: doc-to-markdown, longtask_system, test-skill, smzdm-deals
+技能数: 11 → 15
+```
+
+顺带找回了 3 个用户此前丢失但未察觉的技能（`longtask_system`、`smzdm-deals`、`test-skill`）。
+
+### 附带修掉：测试污染生产数据目录
+
+`packages/skills/src/marketplace.test.ts` 没覆盖 `cacheDir`，
+而它默认是**相对路径** `data/marketplace`（相对进程 cwd），
+于是测试把 `main-pkg` / `dep-pkg` / `x` / `y` / `pkg`… 直接解压进了生产目录。
+后果：① 生产技能列表被测试夹具污染（会出现名为 `test-skill` 的假技能）；
+② 每跑一次测试多一批垃圾目录；③ 排查技能问题时被假技能干扰。
+
+修复：测试改用 `os.tmpdir()` 下的临时目录；并清理已产生的 8 个残留目录
+（`dep-pkg` / `main-pkg` / `old-pkg` / `pkg` / `stable-pkg` / `x` / `y` / `my-pkg(=test-skill)`，
+备份在 `/tmp/evoclaw-junk-skills-bak`）。
+
+### 回归防护
+
+新增 `apps/server/tests/skill-install-persistence.test.ts`：
+断言「市场安装目录必须在启动扫描根里」——这正是本 bug 的判据，
+一旦有人把扫描根改回不含该目录，测试立刻失败。
+
+### 同时修掉我自己在 0.87.2 引入的安全回归
+
+把 `docx_create` 接入安全等级时，只处理了 `deny` 而漏了 `confirm`：
+在「一般安全」档下沙箱外写入会**直接放行**（因为 docx_create 没有审批通道），
+等于绕过了 `file_*` 系列的确认机制，也让「拒绝路径穿越」这条防线形同虚废
+（`docx-tools.test.ts > 拒绝路径穿越` 实测失败）。
+
+修复：`deny` 与 `confirm` 都拒绝，并明确告知"此工具无审批通道，请改用 file_* 工具
+或调整安全等级"。
+
+**验证**：新增 3 项持久化回归测试；`build` + `typecheck` 通过；
+`test` 全绿 **242 files / 5964 passed / 1 skipped / 0 failed**。
+
 ## [0.87.2] - 2026-10-07
 
 **复盘 15:20 之后的会话（docx 批量转换任务）：修 11 个问题**

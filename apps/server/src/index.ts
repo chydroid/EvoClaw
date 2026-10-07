@@ -1008,6 +1008,25 @@ export class EvoClawServer {
       }
     }
 
+    // 3. ★ 市场安装的技能目录也必须在启动时扫描（已连续两次发生「装完在、
+    //    重建启动后就消失」）。
+    //    根因：SkillMarketplace 把技能解压到 data/marketplace/installed/<name>/，
+    //    但上述两个扫描根是 data/skills（空）与 packages/skills/bundled，
+    //    **都不覆盖该目录**；市场安装只通过 installSkill() 写进内存 Map，
+    //    进程一重启就没人回收它 → 技能凭空消失。
+    //    磁盘文件其实一直都在（installed/<name>/SKILL.md），只是没人去读。
+    const marketplaceInstalledDir = path.resolve(__dirname, "..", "..", "..", "data", "marketplace", "installed");
+    if (fs.existsSync(marketplaceInstalledDir)) {
+      try {
+        const r = await this.skillManager.scanAndInstall(marketplaceInstalledDir);
+        if (r.installed.length > 0) {
+          this.logger.info("server", `Restored ${r.installed.length} marketplace skill(s) on startup: ${r.installed.map(s => s.name).join(", ")}`);
+        }
+      } catch (err) {
+        this.logger.error("server", `Startup marketplace skill scan failed: ${err}`);
+      }
+    }
+
     // 启动监测：在所有技能扫描完成后，输出结构化启动报告（含可操作解决方案）
     const startupWarnings = this.skillManager.getStartupWarnings();
     if (startupWarnings.length > 0) {
