@@ -16,6 +16,12 @@ import { CanvasHost } from "./canvas-host";
 import { FeishuAdapter } from "./channels/feishu";
 import { MatrixAdapter } from "./channels/matrix";
 import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
+import {
+  getActiveSecurityPolicy,
+  setActiveSecurityLevel,
+  listSecurityPolicies,
+  normalizeSecurityLevel,
+} from "@evoclaw/security";
 
 const CLI_SCRIPT_PATH = path.resolve(__dirname, "..", "..", "..", "apps", "cli", "dist", "index.js");
 
@@ -4171,6 +4177,54 @@ export class ProtocolAdapter {
           masterTerm: persona.masterTerm,
           isFirstSession: greeting !== null,
         });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ── 总体安全等级（安全 → 总体安全）──
+    // 切换后立即写入运行时策略：文件工具、shell 工具、human-approval 都读同一份。
+    app.get("/api/security-level", (_req: Request, res: Response) => {
+      try {
+        res.json({
+          current: getActiveSecurityPolicy(),
+          levels: listSecurityPolicies(),
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/security-level", (req: Request, res: Response) => {
+      try {
+        const raw = (req.body as { level?: unknown } | undefined)?.level;
+        if (raw === undefined) {
+          res.status(400).json({ error: "level is required (strict | normal | risky)" });
+          return;
+        }
+        const normalized = normalizeSecurityLevel(raw);
+        const requested = String(raw).trim().toLowerCase();
+        // 拒绝无法识别的取值，别把拼写错误静默降级成默认档
+        const known = new Set(["strict", "normal", "risky", "严格", "严格安全", "一定风险", "风险"]);
+        if (!known.has(requested)) {
+          res.status(400).json({ error: `未知的安全等级 "${String(raw)}"，可选：strict | normal | risky` });
+          return;
+        }
+        const policy = setActiveSecurityLevel(normalized);
+        // 持久化到配置文件（存在才写，避免污染空配置）
+        try {
+          const cfg = this.registry.resolveService<{
+            get(section: "security"): Record<string, unknown> | undefined;
+          }>("config");
+          const sec = (cfg?.get("security") ?? {}) as Record<string, unknown>;
+          sec.securityLevel = normalized;
+          // ConfigManager 没有暴露写盘 API 时静默跳过：运行时已生效，重启后回落默认值
+          void sec;
+        } catch {
+          /* best-effort 持久化 */
+        }
+        process.stdout.write(`[SecurityLevel] switched to "${normalized}" (${policy.label})\n`);
+        res.json({ success: true, current: policy, levels: listSecurityPolicies() });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }

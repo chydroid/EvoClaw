@@ -44,7 +44,7 @@ import type { MoaConfig, ModelRef } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
-import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager } from "@evoclaw/security";
+import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
@@ -1060,6 +1060,16 @@ export class EvoClawServer {
     this.permissionManager.addDirectoryWhitelist(workspaceDir, ["file_create", "file_modify", "file_delete"]);
     this.permissionManager.addDirectoryWhitelist(skillsDir, ["file_create", "file_modify", "file_delete"]);
     this.logger.info("server", `File operations whitelisted for workspace & skills directories`);
+
+    // ── 注入「总体安全等级」──
+    // 文件工具 / shell 工具 / human-approval 三处都读同一个运行时策略，
+    // 这里在启动时按配置设定一次即可。
+    const secCfg = this.configManager.get("security") as { securityLevel?: string } | undefined;
+    const activePolicy = setActiveSecurityLevel(secCfg?.securityLevel);
+    this.logger.info(
+      "server",
+      `Overall security level: ${activePolicy.level} (${activePolicy.label}) — ${activePolicy.summary}`,
+    );
 
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);

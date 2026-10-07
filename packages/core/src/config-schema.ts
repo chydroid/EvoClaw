@@ -190,6 +190,11 @@ const GATEWAY_SCHEMA: SchemaDefinition = {
 const SECURITY_SCHEMA: SchemaDefinition = {
   dmPolicy: { type: "string", default: "open", enum: ["open", "pairing", "allowlist"], description: "DM access policy" },
   sandboxMode: { type: "string", default: "off", enum: ["off", "non-main", "all"], description: "Sandbox execution mode" },
+  // 总体安全等级：把文件访问边界 / shell 危险命令 / 高危操作审批统一到一个开关。
+  // strict = 严格安全（仅沙箱内文件、危险操作一律禁止）
+  // normal = 一般安全（沙箱外可读一般文件，写入需确认；危险操作需审批）
+  // risky  = 一定风险（全文件可读写，除格式化磁盘等极端危险命令外免审批）
+  securityLevel: { type: "string", default: "normal", enum: ["strict", "normal", "risky"], description: "Overall security level" },
   execApproval: { type: "boolean", default: false, description: "Require approval for shell commands" },
   maxFileSize: { type: "number", default: 10485760, min: 1, description: "Max file size in bytes" },
   allowedDomains: { type: "array", items: { type: "string" }, description: "Whitelist domains for web access" },

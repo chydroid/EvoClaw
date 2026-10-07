@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { PermissionManager, PermissionRelay } from "@evoclaw/security";
+import { getActiveSecurityPolicy, decideFileAccess } from "@evoclaw/security";
 import type { ErrorRecoveryManager } from "@evoclaw/security";
 import type { FileSystemManager } from "@evoclaw/infrastructure";
 
@@ -89,6 +90,62 @@ function resolveToolPath(
   return { resolved, forFs };
 }
 
+/**
+ * 按「总体安全等级」裁决一次文件访问。
+ *
+ * 接入点在此处（而非 PermissionManager），因为沙箱内外是**路径维度**的判定，
+ * 与「哪个工具」无关。PermissionManager 仍负责白名单与 requestId 流程。
+ *
+ * 返回 `null` 表示放行；返回字符串表示拒绝原因；返回 `"__confirm__"` 时
+ * 由调用方转成审批请求（一般档下沙箱外写入即走此分支）。
+ */
+function judgeBySecurityLevel(
+  resolvedPath: string,
+  fsBase: string,
+  write: boolean,
+): { decision: "allow" | "confirm" | "deny"; insideSandbox: boolean; reason?: string } {
+  const policy = getActiveSecurityPolicy();
+  const normalizedBase = path.resolve(fsBase);
+  const insideSandbox =
+    resolvedPath === normalizedBase || resolvedPath.startsWith(normalizedBase + path.sep);
+  const decision = decideFileAccess(policy, { insideSandbox, write });
+  if (decision === "allow") return { decision, insideSandbox };
+  if (decision === "deny") {
+    return {
+      decision: "deny",
+      insideSandbox,
+      reason:
+        `操作被安全策略拦截：当前为「${policy.label}」等级，只允许在沙箱（${normalizedBase}）内` +
+        `${write ? "写入" : "读取"}文件，沙箱外路径一律禁止。` +
+        `如需放开，请到「安全 → 总体安全」调整等级。`,
+    };
+  }
+  return { decision: "confirm", insideSandbox };
+}
+
+/**
+ * 文件操作前置检查：安全等级裁决 + 路径边界校验。
+ *
+ * 返回 `ok:false` 时直接拒绝；`ok:true` 时 `insideSandbox` 决定走
+ * FileSystemManager 的常规入口还是 `operateAbsolute`（沙箱外已授权通道）。
+ */
+function preflight(
+  resolvedPath: string,
+  fsBase: string,
+  write: boolean,
+): { ok: false; error: string } | { ok: true; insideSandbox: boolean; needsConfirm: boolean } {
+  const judge = judgeBySecurityLevel(resolvedPath, fsBase, write);
+  if (judge.decision === "deny") return { ok: false, error: judge.reason! };
+  if (judge.insideSandbox) {
+    const pathError = validatePathWithinBase(resolvedPath, fsBase);
+    if (pathError) return { ok: false, error: pathError };
+    return { ok: true, insideSandbox: true, needsConfirm: false };
+  }
+  // 沙箱外：词法边界检查（路径穿越）已无意义——策略本身就允许越界，
+  // 但符号链接一致性仍由 operateAbsolute 复核。
+  return { ok: true, insideSandbox: false, needsConfirm: judge.decision === "confirm" };
+}
+
 export function registerFileTools(
   executor: AgentModelExecutor,
   permissionManager: PermissionManager,
@@ -120,21 +177,26 @@ export function registerFileTools(
       const content = String(params.content || "");
       const overwrite = params.overwrite === true;
       const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
-      if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
+      const pf = preflight(resolvedPath, fsBase, true);
+      if (!pf.ok) return { success: false, error: pf.error };
+      // 沙箱外的写操作在「一般安全」档需要用户确认
+      if (pf.needsConfirm) {
+        const cReq = permMgr.requestPermission("file_create", filePath, { size: content.length, outsideSandbox: true }, "tool");
+        if (cReq.status === "denied") {
+          return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${cReq.id}` };
+        }
+        if (cReq.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建沙箱外文件: ${filePath}`, params, category: "file" });
+          return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_create", description: "创建文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能创建: ${filePath}` };
+        }
+      } else if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
-        return await errRecovery.executeWithRetry("file_create", fsPath, () => fsMgr.createFile(fsPath, content, overwrite));
       }
-      const permRequest = permMgr.requestPermission("file_create", filePath, { size: content.length }, "tool");
-      if (permRequest.status === "denied") {
-        return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${permRequest.id}` };
-      }
-      if (permRequest.status === "pending") {
-        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
-        return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_create", description: permRequest.description, target: filePath, error: `Awaiting user approval to create: ${filePath}` };
-      }
-      return await errRecovery.executeWithRetry("file_create", fsPath, () => fsMgr.createFile(fsPath, content, overwrite));
+      const doCreate = () =>
+        pf.insideSandbox
+          ? fsMgr.createFile(fsPath, content, overwrite)
+          : fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+      return await errRecovery.executeWithRetry("file_create", fsPath, doCreate);
     }
   );
 
@@ -152,21 +214,25 @@ export function registerFileTools(
       const filePath = String(params.path || "");
       const content = String(params.content || "");
       const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
-      if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
+      const pf = preflight(resolvedPath, fsBase, true);
+      if (!pf.ok) return { success: false, error: pf.error };
+      if (pf.needsConfirm) {
+        const cReq = permMgr.requestPermission("file_modify", filePath, { size: content.length, outsideSandbox: true }, "tool");
+        if (cReq.status === "denied") {
+          return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${cReq.id}` };
+        }
+        if (cReq.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改沙箱外文件: ${filePath}`, params, category: "file" });
+          return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_modify", description: "修改文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能修改: ${filePath}` };
+        }
+      } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
-        return await errRecovery.executeWithRetry("file_modify", fsPath, () => fsMgr.modifyFile(fsPath, content));
       }
-      const permRequest = permMgr.requestPermission("file_modify", filePath, { size: content.length }, "tool");
-      if (permRequest.status === "denied") {
-        return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${permRequest.id}` };
-      }
-      if (permRequest.status === "pending") {
-        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
-        return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_modify", description: permRequest.description, target: filePath, error: `Awaiting user approval to modify: ${filePath}` };
-      }
-      return await errRecovery.executeWithRetry("file_modify", fsPath, () => fsMgr.modifyFile(fsPath, content));
+      const doModify = () =>
+        pf.insideSandbox
+          ? fsMgr.modifyFile(fsPath, content)
+          : fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
+      return await errRecovery.executeWithRetry("file_modify", fsPath, doModify);
     }
   );
 
@@ -182,12 +248,22 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
-      if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
+      const pf = preflight(resolvedPath, fsBase, true);
+      if (!pf.ok) return { success: false, error: pf.error };
+      if (pf.needsConfirm) {
+        const cReq = permMgr.requestPermission("file_delete", filePath, { outsideSandbox: true }, "tool");
+        if (cReq.status === "denied") {
+          return { success: false, error: `Permission denied for file_delete on ${filePath}. Request ID: ${cReq.id}` };
+        }
+        if (cReq.status === "pending") {
+          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除沙箱外文件: ${filePath}`, params, category: "file" });
+          return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_delete", description: "删除文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能删除: ${filePath}` };
+        }
+      } else if (permMgr.isPathAutoApproved(resolvedPath, "file_delete")) {
         permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_delete", description: `删除文件: ${filePath}`, params, category: "file" });
         return await errRecovery.executeWithRetry("file_delete", fsPath, async () => {
-          await fsMgr.deleteFile(fsPath);
+          if (pf.insideSandbox) await fsMgr.deleteFile(fsPath);
+          else await fsMgr.deleteFileAbsolute(resolvedPath);
           return { success: true, path: filePath };
         });
       }
@@ -200,7 +276,8 @@ export function registerFileTools(
         return { success: false, requiresPermission: true, requestId: permRequest.id, operation: "file_delete", description: permRequest.description, target: filePath, error: `Awaiting user approval to delete: ${filePath}` };
       }
       return await errRecovery.executeWithRetry("file_delete", fsPath, async () => {
-        await fsMgr.deleteFile(fsPath);
+        if (pf.insideSandbox) await fsMgr.deleteFile(fsPath);
+        else await fsMgr.deleteFileAbsolute(resolvedPath);
         return { success: true, path: filePath };
       });
     }
@@ -220,10 +297,14 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       const { resolved: resolvedPath, forFs: fsPath } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
+      const pf = preflight(resolvedPath, fsBase, false);
+      if (!pf.ok) return { success: false, error: pf.error };
+      // 「一般安全」档允许读取沙箱外的一般文件；只有严格档会在这里被拒（pf.ok=false）
+      const readTarget = pf.insideSandbox
+        ? () => fsMgr.readFile(fsPath)
+        : () => Promise.resolve(fs.readFileSync(resolvedPath, "utf-8")) as Promise<string>;
       return await errRecovery.executeWithRetry("file_read", fsPath, async () => {
-        let content = await fsMgr.readFile(fsPath);
+        let content = await readTarget();
         const parsedOffset = params.offset ? parseInt(String(params.offset), 10) : 1;
         const offset = Number.isFinite(parsedOffset) ? Math.max(1, parsedOffset) : 1;
         const parsedLimit = params.limit ? parseInt(String(params.limit), 10) : undefined;
@@ -251,9 +332,19 @@ export function registerFileTools(
     async (params: Record<string, unknown>) => {
       const dirPath = String(params.path || ".");
       const { resolved: resolvedPath, forFs: fsDir } = resolveToolPath(fsBase, workspaceBase, dirPath);
-      const pathError = validatePathWithinBase(resolvedPath, fsBase);
-      if (pathError) return { success: false, error: pathError };
-      return await errRecovery.executeWithRetry("file_list", fsDir, () => fsMgr.listAll(fsDir));
+      const pf = preflight(resolvedPath, fsBase, false);
+      if (!pf.ok) return { success: false, error: pf.error };
+      if (pf.insideSandbox) {
+        return await errRecovery.executeWithRetry("file_list", fsDir, () => fsMgr.listAll(fsDir));
+      }
+      // 沙箱外目录列举（一般安全 / 一定风险档允许）
+      return await errRecovery.executeWithRetry("file_list", fsDir, async () => {
+        const entries = fs.readdirSync(resolvedPath, { withFileTypes: true }).map((e) => ({
+          name: e.name,
+          type: e.isDirectory() ? "directory" : "file",
+        }));
+        return { path: dirPath, entries };
+      });
     }
   );
 }

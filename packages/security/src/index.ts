@@ -257,3 +257,20 @@ export {
   describeShellRisk,
 } from "./shell-command-risk";
 export type { ShellRiskLevel, ShellRiskAssessment } from "./shell-command-risk";
+export {
+  SECURITY_LEVELS,
+  DEFAULT_SECURITY_LEVEL,
+  normalizeSecurityLevel,
+  getSecurityPolicy,
+  listSecurityPolicies,
+  decideShellCommand,
+  decideFileAccess,
+  setActiveSecurityLevel,
+  getActiveSecurityPolicy,
+  resetActiveSecurityLevel,
+} from "./security-level";
+export type {
+  SecurityLevel,
+  SecurityPolicy,
+  FileAccessDecision,
+} from "./security-level";

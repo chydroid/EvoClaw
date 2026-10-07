@@ -10,6 +10,7 @@ export type TabId =
   | "events" | "skills" | "bootstrap" | "canvas" | "canvas-graph" | "monitoring"
   | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
   | "ops" | "cli"
+  | "overall-security"
   | "secrets" | "dlq" | "config-rpc" | "session-mgmt"
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"

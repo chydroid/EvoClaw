@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { atomicWriteFileSync } from "@evoclaw/core";
+import { getActiveSecurityPolicy } from "@evoclaw/security";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -172,6 +173,13 @@ export class HumanApprovalManager {
     if (this.isTrusted(toolName, args)) return false;
 
     const riskLevel = this.config.riskLevels[toolName] || "medium";
+    // 「一定风险」档：高危/极高危操作也免人工审批。
+    // 极端危险命令（格式化磁盘、删根目录、命令注入）在 shell 层已硬拦，
+    // 不依赖这里兜底，故此处放行不会让不可逆操作失去护栏。
+    const policy = getActiveSecurityPolicy();
+    if (!policy.approveRiskyOperations && (riskLevel === "high" || riskLevel === "critical")) {
+      return false;
+    }
     return this.config.requireApproval[riskLevel];
   }
 

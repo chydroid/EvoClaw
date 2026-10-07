@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
-import { assessShellCommand } from "@evoclaw/security";
+import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
 
 /**
@@ -344,17 +344,23 @@ export function registerShellMediaTools(
       //   caution  → 有副作用但可恢复：放行，仅标记
       //   safe     → 常规命令：直接执行，保持自动化能力
       const risk = assessShellCommand(effectiveCommand || command);
-      if (risk.level === "blocked") {
+      // 由「总体安全等级」裁决：不同档位对同一条命令的处置不同
+      // （严格档 critical 硬拦、一般档 critical 走审批、风险档仅拦不可逆操作）。
+      const verdict = decideShellCommand(getActiveSecurityPolicy(), risk);
+      if (verdict === "block") {
         return {
           success: false,
-          error: `Command blocked by safety filter: ${risk.reason ?? "检测到命令注入特征"} (rule=${risk.rule ?? "unknown"})`,
+          error:
+            `Command blocked by「${getActiveSecurityPolicy().label}」安全等级: ` +
+            `${risk.reason ?? "命中高危规则"} (rule=${risk.rule ?? "unknown"})。` +
+            `如需放开，请到「安全 → 总体安全」调整等级。`,
           command,
           // 始终回传 cwd：模型需要知道命令在哪个目录执行，
           // 否则只能靠猜来写相对路径（历史上因此拼出重复前缀）。
           cwd,
         };
       }
-      if (risk.level === "critical") {
+      if (verdict === "approve") {
         // 走既有审批通道：llm-caller 会把它转成 pendingPermissions，
         // 用户批准后由 approveAndExecute 重新执行本 handler。
         const permMgr = registry?.resolveService<{

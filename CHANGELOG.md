@@ -10,6 +10,55 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.87.0] - 2026-10-07
+
+**新增「安全 → 总体安全」：三档安全等级，一个开关统管文件边界 / 危险命令 / 高危审批**
+
+此前三套安全机制彼此独立、分别配置，用户要逐项去改白名单与风险表，且容易改出前后矛盾
+的组合（如"文件随便写但危险命令要审批"）。现在统一成一个可切换的策略。
+
+### 三档定义
+
+| 等级 | 沙箱内 | 沙箱外 | 危险 shell 命令 | 高危操作审批 |
+|---|---|---|---|---|
+| **严格安全** `strict` | 全部允许 | **读写一律禁止** | `critical` 及以上**硬拦** | 需要 |
+| **一般安全** `normal` | 全部允许 | 读一般文件允许 / **写入弹确认** | `critical` 及以上需审批 | 需要 |
+| **一定风险** `risky` | 全部允许 | **读写全放行** | 仅命令注入与不可逆操作硬拦 | **不需要** |
+
+### 两条任何等级都不放宽的红线
+
+1. **命令注入特征**（换行 / 反引号 / `$(...)` 替换）—— 任何等级直接拦截，不接受审批。
+   那是攻击信号，不是合法的高危操作。
+2. **格式化磁盘、直接写磁盘设备、递归强删根目录 / 主目录 / 整盘** —— 任何等级直接拦截。
+   这里刻意只挑用户点名要保留的极端操作（`IRREVERSIBLE_RULES`），
+   避免在「一定风险」档把 git 破坏性操作、强杀进程这类日常开发也一并禁掉。
+
+### 改动
+
+- **新增 `packages/security/src/security-level.ts`**：策略定义 + `decideFileAccess()` /
+  `decideShellCommand()` 裁决函数 + 模块级运行时 holder（`set/getActiveSecurityLevel`）。
+  用 holder 而非逐层透传，是因为策略要被 file-tools / shell / human-approval
+  三个彼此独立的模块读取，透传会把签名撑爆。
+- **`file-tools.ts`**：新增 `preflight()` 统一做「安全等级裁决 + 路径边界校验」。
+  沙箱内在原有白名单流程上叠加裁决；沙箱外按策略走
+  拒绝 / 确认（转成 `requiresPermission`，前端弹审批窗）/ 放行。
+- **`filesystem-manager.ts`**：新增 `operateAbsolute()` / `deleteFileAbsolute()`。
+  这是给沙箱外已授权操作用的**显式通道**，不是绕过——调用方必须先完成裁决，
+  方法自身仍复核 realpath 一致性（防止"授权 A、写到 B"的调包），且照常写审计日志。
+  `deleteFileAbsolute` 额外拒绝目录，目录删除不在该通道内放开。
+- **`shell-media-tools.ts`**：风险判定改由 `decideShellCommand()` 裁决，
+  拦截提示里带上当前等级名称与调整入口。
+- **`human-approval.ts`**：`一定风险`档下 high/critical 工具免审批。
+- **`config-schema.ts`**：`security.securityLevel` 配置项（默认 `normal`）。
+- **启动注入**：`apps/server/src/index.ts` 启动时按配置设定运行时策略并打日志。
+- **API**：`GET/POST /api/security-level`；POST 会校验取值，
+  拼错的等级直接 400 而非静默降级成默认档。
+- **前端**：新增 `OverallSecurityPage.tsx`，安全菜单组首位「总体安全」；
+  三档单选 + 每档权限明细表 + 红线说明；切换乐观更新、失败自动回滚。
+
+**验证**：新增 22 项测试（`security-level.test.ts`）；`build` + `typecheck` + `test`
+全绿：**239 files / 5943 passed / 1 skipped / 0 failed**。
+
 ## [0.86.9] - 2026-10-07
 
 **复盘 12:16 之后的会话：修文件工具免审批、技能依赖检测全盘失效、自动续跑漏触发；补齐流式输出与思考折叠**

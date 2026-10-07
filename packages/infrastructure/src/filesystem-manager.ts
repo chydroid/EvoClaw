@@ -212,7 +212,70 @@ export class FileSystemManager {
     return { path: relativePath, size: fileStat.size, created: !existed };
   }
 
-  async modifyFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
+  /**
+ * 在**调用方已完成授权裁决**的前提下，对任意绝对路径执行文件操作。
+ *
+ * ⚠️ 这是给「总体安全等级」用的显式通道，**不是绕过**：
+ *   - 调用方（file-tools）必须先用 `decideFileAccess()` 判定 allow，
+ *     或在 confirm 档位走完审批流程拿到批准，才允许调用本方法；
+ *   - 本方法自身仍做 realpath 规范化与符号链接一致性检查，
+ *     防止「授权的是 A 路径、实际写到 B 路径」这种调包；
+ *   - 一切操作照常写审计日志。
+ *
+ * 默认路径（沙箱内）请继续用 createFile/modifyFile，它们走 basePath 校验。
+ */
+async operateAbsolute(
+  absolutePath: string,
+  content: string,
+  mode: "create" | "modify",
+  overwrite = false,
+): Promise<{ path: string; size: number; created: boolean }> {
+  const fullPath = path.resolve(absolutePath);
+  // 授权的是哪个路径就必须是哪个路径：realpath 后必须仍指向同一目标，
+  // 防止用符号链接把一次「可写 A」的授权偷换成「实际写 B」。
+  if (fsSync.existsSync(fullPath)) {
+    const real = await fsSync.promises.realpath(fullPath);
+    if (real !== fullPath && path.resolve(real) !== fullPath) {
+      throw new Error(
+        `Symbolic link target mismatch: authorized "${fullPath}" resolves to "${real}". Refusing to operate on a different target.`,
+      );
+    }
+  }
+
+  const existed = fsSync.existsSync(fullPath);
+  if (mode === "create" && existed && !overwrite) {
+    throw new Error(`File already exists: ${absolutePath}`);
+  }
+  if (mode === "modify" && !existed) {
+    throw new Error(`File not found: ${absolutePath}`);
+  }
+
+  await fsSync.promises.mkdir(path.dirname(fullPath), { recursive: true });
+  await fsSync.promises.writeFile(fullPath, content, "utf-8");
+  await this.writeAuditLog(existed ? "modify" : "create", absolutePath, true);
+
+  const fileStat = await stat(fullPath);
+  return { path: absolutePath, size: fileStat.size, created: !existed };
+}
+
+/**
+ * 在**调用方已完成授权裁决**的前提下删除任意绝对路径。
+ * 与 {@link operateAbsolute} 同一条通道，审计日志照常写。
+ */
+async deleteFileAbsolute(absolutePath: string): Promise<void> {
+  const fullPath = path.resolve(absolutePath);
+  if (!fsSync.existsSync(fullPath)) {
+    throw new Error(`File not found: ${absolutePath}`);
+  }
+  // 只删文件本身；目录删除是另一类高危操作，不在此通道内放开
+  if (fsSync.statSync(fullPath).isDirectory()) {
+    throw new Error(`Refusing to delete a directory via the trusted path: ${absolutePath}`);
+  }
+  await fsSync.promises.unlink(fullPath);
+  await this.writeAuditLog("delete", absolutePath, true);
+}
+
+async modifyFile(relativePath: string, content: string): Promise<{ path: string; size: number }> {
     const fullPath = this.resolvePath(relativePath);
     await this.validatePath(fullPath);
 
