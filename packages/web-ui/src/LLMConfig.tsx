@@ -7,6 +7,7 @@ import {
   type ProviderCatalog,
   type ModelInfo,
 } from "./model-catalog";
+import { groupProviders, markUpdated } from "./provider-grouping";
 
 interface LLMProvider {
   id: string;
@@ -18,6 +19,12 @@ interface LLMProvider {
   selectedModel: string;
   enabled: boolean;
   order: number;
+  /**
+   * 最近一次配置/修改的时间戳（2026-10-08）。
+   * 用户要求「最新配置的或者修改的会自动排到最上方的位置」，
+   * 靠这个字段实现；缺省表示从未配置过。
+   */
+  updatedAt?: number;
   config: {
     temperature: number;
     maxTokens: number;
@@ -515,7 +522,12 @@ function LLMConfigPanel() {
     setSaving(true);
     setStatusMsg(null);
     try {
-      const payload = providers.map(p => {
+      // ★ 用户要求：「最新配置的或者修改的会自动排到最上方的位置」
+      // 保存时给每个 provider 打 updatedAt 时间戳；已配置组按它降序，
+      // 于是刚保存/刚改动的就会自动浮到已配置分组的最上面。
+      const stamped = providers.map((p) => markUpdated(p));
+      setProviders(stamped);
+      const payload = stamped.map(p => {
         const { catalog, ...rest } = p;
         return p.apiKey === "****" ? { ...rest, apiKey: undefined } : rest;
       });
@@ -649,7 +661,79 @@ function LLMConfigPanel() {
   }
 
   const currentProvider = providers.find((p) => p.id === activeProvider);
-  const sortedProviders = [...providers].sort((a, b) => a.order - b.order);
+  // ★ 用户要求（2026-10-08）：分成两个分组，已配置的在上；
+  // 组内「最近配置/修改的」自动排最上；未配置组不参与排序。
+  const groups = groupProviders(providers);
+  const sortedProviders = [...groups.configured, ...groups.unconfigured];
+
+  // 单个 provider 行的渲染（两个分组共用）
+  const renderProviderRow = (p: LLMProvider, opts: { sortable: boolean }) => (
+    <div
+      key={p.id}
+      style={{
+        ...s.sidebarItem,
+        background: activeProvider === p.id ? "var(--accent-bg)" : "transparent",
+        borderColor: activeProvider === p.id ? "var(--accent)" : "transparent",
+      }}
+      onClick={() => setActiveProvider(p.id)}
+    >
+      <div style={s.providerRow}>
+        <span style={s.orderBadge}>{p.order}</span>
+        <div style={{ flex: 1 as const }}>
+          <div style={s.providerName}>
+            <span style={{ ...s.enabledDot, background: p.enabled ? "var(--success)" : "var(--text-muted)" }} />
+            {p.name}
+          </div>
+          <div style={s.modelPreview}>{p.selectedModel || t("llm.no_model")}</div>
+        </div>
+        <div style={s.orderBtns} onClick={(e) => e.stopPropagation()}>
+          {/* 未配置组不参与排序 → 不显示上移/下移按钮（用户明确要求） */}
+          {opts.sortable && sortedProviders.length > 1 && (
+            <>
+              <button
+                style={{ ...s.orderBtn, opacity: sortedProviders[0]?.id === p.id ? 0.3 : 1 }}
+                disabled={sortedProviders[0]?.id === p.id}
+                onClick={() => moveProvider(p.id, "up")}
+                title={t("llm.move_up")}
+              >▲</button>
+              <button
+                style={{ ...s.orderBtn, opacity: sortedProviders[sortedProviders.length - 1]?.id === p.id ? 0.3 : 1 }}
+                disabled={sortedProviders[sortedProviders.length - 1]?.id === p.id}
+                onClick={() => moveProvider(p.id, "down")}
+                title={t("llm.move_down")}
+              >▼</button>
+            </>
+          )}
+          {!BUILT_IN_IDS.has(p.id) && (
+            <button style={s.deleteBtn} onClick={() => deleteProvider(p.id)} title={t("llm.delete_provider")}>
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const groupHeader = (label: string, count: number, hint?: string) => (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: "6px",
+        padding: "8px 10px 4px", marginTop: "4px",
+        fontSize: "11px", fontWeight: 600,
+        color: "var(--text-muted)",
+        borderTop: "1px solid var(--border-light, rgba(255,255,255,0.06))",
+        userSelect: "none",
+      }}
+    >
+      <span>{label}</span>
+      <span style={{
+        padding: "0 6px", borderRadius: "8px",
+        background: "var(--bg-hover, rgba(255,255,255,0.06))",
+        fontSize: "10px", fontWeight: 500,
+      }}>{count}</span>
+      {hint && <span style={{ fontSize: "10px", fontWeight: 400, opacity: 0.7 }}>{hint}</span>}
+    </div>
+  );
 
   return (
     <div style={s.container}>
@@ -671,54 +755,27 @@ function LLMConfigPanel() {
 
       <div style={s.body}>
         <div style={{ ...s.sidebar, width: sidebarWidth }}>
-          {sortedProviders.map((p) => (
-            <div
-              key={p.id}
-              style={{
-                ...s.sidebarItem,
-                background: activeProvider === p.id ? "var(--accent-bg)" : "transparent",
-                borderColor: activeProvider === p.id ? "var(--accent)" : "transparent",
-              }}
-              onClick={() => setActiveProvider(p.id)}
-            >
-              <div style={s.providerRow}>
-                <span style={s.orderBadge}>{p.order}</span>
-                <div style={{ flex: 1 as const }}>
-                  <div style={s.providerName}>
-                    <span style={{
-                      ...s.enabledDot,
-                      background: p.enabled ? "var(--success)" : "var(--text-muted)",
-                    }} />
-                    {p.name}
-                  </div>
-                  <div style={s.modelPreview}>{p.selectedModel || t("llm.no_model")}</div>
-                </div>
-                {sortedProviders.length > 1 && (
-                  <div style={s.orderBtns} onClick={(e) => e.stopPropagation()}>
-                    <button
-                      style={{ ...s.orderBtn, opacity: sortedProviders[0]?.id === p.id ? 0.3 : 1 }}
-                      disabled={sortedProviders[0]?.id === p.id}
-                      onClick={() => moveProvider(p.id, "up")}
-                      title={t("llm.move_up")}
-                    >▲</button>
-                    <button
-                      style={{ ...s.orderBtn, opacity: sortedProviders[sortedProviders.length - 1]?.id === p.id ? 0.3 : 1 }}
-                      disabled={sortedProviders[sortedProviders.length - 1]?.id === p.id}
-                      onClick={() => moveProvider(p.id, "down")}
-                      title={t("llm.move_down")}
-                    >▼</button>
-                    {!BUILT_IN_IDS.has(p.id) && (
-                      <button
-                        style={s.deleteBtn}
-                        onClick={() => deleteProvider(p.id)}
-                        title={t("llm.delete_provider")}
-                      >✕</button>
-                    )}
-                  </div>
-                )}
-              </div>
+          {/* ── 分组一：已配置（组内最近改动/配置的排最上） ── */}
+          {groups.configured.length > 0 && (
+            <>
+              {groupHeader("✅ 已配置", groups.configured.length, "最近改动的在最上")}
+              {groups.configured.map((p) => renderProviderRow(p, { sortable: true }))}
+            </>
+          )}
+
+          {/* ── 分组二：未配置（不参与排序，保持目录顺序） ── */}
+          {groups.unconfigured.length > 0 && (
+            <>
+              {groupHeader("⚪ 未配置", groups.unconfigured.length, "不参与排序")}
+              {groups.unconfigured.map((p) => renderProviderRow(p, { sortable: false }))}
+            </>
+          )}
+
+          {groups.configured.length === 0 && groups.unconfigured.length === 0 && (
+            <div style={{ padding: "12px", fontSize: "12px", color: "var(--text-muted)" }}>
+              {t("llm.no_provider")}
             </div>
-          ))}
+          )}
           <div style={s.addBtnWrap}>
             <button style={s.addProviderBtn} onClick={addProvider}>
               {t("llm.add_provider")}

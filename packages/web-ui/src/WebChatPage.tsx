@@ -18,6 +18,7 @@ import { voiceApi, type VoiceApiResponse } from "./api-client";
 import { showToast } from "./shared";
 import { mapSessionTurnsToMessages } from "./thinking-trace-mapping";
 import { buildFinalSummary } from "./final-summary";
+import { applyRoundContent } from "./message-bubbles";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -1373,35 +1374,26 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         // 用户诉求（2026-10-08）：「下一条内容不要显示在上一条内容的气泡里，
                         // 而是要新建一个气泡。」旧实现靠"长度 < 一半"猜测换轮，
                         // 换轮时把旧内容塞进同一个气泡的折叠区 → 看起来就是被冲掉。
+                        //
+                        // ★ 自检修正（23:3x）：原实现给上一轮改名
+                        //（`sealedId = ${botMsgId}-r${roundIdx-1}`）有两个问题——
+                        //   a) 首轮气泡 id 是**裸 botMsgId**（不是 -r1），命名不一致；
+                        //   b) 改名会打断 showThinking 等**按 id 索引**的展开状态。
+                        // 改为「只追加、不改名」，id 由 roundIndex 唯一确定。
+                        const newBubbleId = `${botMsgId}-r${roundIdx}`;
                         setMessages((prev) => {
-                          const cur = prev.find((m) => m.id === (activeBubbleIdRef.current ?? botMsgId));
-                          const prevContent = cur?.content?.trim() || "";
-                          if (!prevContent) return prev; // 首轮还没内容，无需新建
-                          // 若最新一条已经是本轮的气泡，则继续往它里面追加
-                          const last = prev[prev.length - 1];
-                          if (last && last.id === `${botMsgId}-r${roundIdx}`) {
-                            return prev.map((m) =>
-                              m.id === last.id ? { ...m, content: newReply } : m,
-                            );
-                          }
-                          // 封存上一轮气泡（保留思考轨迹），另起新气泡
-                          const sealedId = `${botMsgId}-r${roundIdx - 1}`;
-                          return [
-                            ...prev.map((m) =>
-                              m.id === (activeBubbleIdRef.current ?? botMsgId)
-                                ? { ...m, id: sealedId, content: prevContent, isFinalSummary: false }
-                                : m,
-                            ),
-                            {
-                              id: `${botMsgId}-r${roundIdx}`,
-                              role: "assistant" as const,
-                              content: newReply,
-                              timestamp: new Date().toISOString(),
-                            },
-                          ];
+                          const next = applyRoundContent(prev, {
+                            botMsgId,
+                            activeBubbleId: activeBubbleIdRef.current ?? botMsgId,
+                            roundIndex: roundIdx,
+                            reply: newReply,
+                          });
+                          activeBubbleIdRef.current = next.activeBubbleId;
+                          return next.messages.map((m) => {
+                            const hit = prev.find((o) => o.id === m.id);
+                            return hit ? { ...hit, ...m } : { ...m, timestamp: new Date().toISOString() };
+                          });
                         });
-                        // 后续事件改写最新气泡
-                        activeBubbleIdRef.current = `${botMsgId}-r${roundIdx}`;
                       } else {
                         setMessages((prev) =>
                           prev.map((m) => (m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, content: newReply } : m)),
