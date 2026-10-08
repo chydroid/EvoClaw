@@ -9,6 +9,56 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.91.1] - 2026-10-08
+
+**修复：模型排序小箭头点了没反应（0.91.0 引入的回归）**
+
+### 根因：两套排序口径打架
+
+0.91.0 让「已配置组」按 `updatedAt` 降序显示，但 `moveProvider`
+**仍然只交换 `order`** —— 而渲染顺序由 `updatedAt` 决定。
+
+结果：点了箭头，`order` 确实变了，但重新渲染时 `updatedAt` 一个字没动，
+**显示顺序完全不变** → 用户看到的就是「点不了」。
+
+复现（已写进测试锁住）：
+```
+当前显示   A → B → C        (updatedAt 300/200/100)
+交换 order A:1 B:3 C:2
+重新渲染   A → B → C        ← 顺序没变
+```
+
+### 修法
+
+新增 `reorderWithinGroup(list, id, direction, now?)`：
+- 按**显示顺序**取出该分组 → 交换相邻两项
+- **同时重写 `updatedAt`（降序）与 `order`（升序）**，两套口径保持一致
+  （只改一个会在落盘/重排后再次漂移）
+- 已在边界或 id 不存在 → 返回 `null`（不做修改）
+
+`moveProvider` 改为：先 `groupProviders(prev).configured` 取出已配置组
+→ 调用 `reorderWithinGroup` → 把新 `updatedAt`/`order` 写回原列表
+（未配置项保持原位不动）。传入未配置组的 id 直接返回原列表。
+
+### 顺带修：边界禁用判断用错了列表
+
+原判断用 `sortedProviders[0]` / `sortedProviders[len-1]`，
+那是**含 25 个未配置项的全列表** → 已配置组最后一项的下箭头永远不会禁用。
+改为 `groups.configured[0]` / `groups.configured[last]`，
+按钮显示条件也改为只看已配置组数量。
+
+### 测试
+
+新增 9 项测试，其中关键两条：
+- **用真实渲染函数验证手动操作的结果**：
+  `groupProviders(reorder(...))` 的输出必须等于预期顺序
+  （只测 `reorder` 本身返回对不对是不够的 —— 这次的 bug 正是
+  `reorder` 没错、但渲染不认）
+- **锁住旧实现的失效行为**：只交换 `order` 时渲染顺序不变
+
+**验证**：`build` + `typecheck` + `test` 全绿
+（248 files / 6052 passed / 1 skipped / 0 failed）。
+
 ## [0.91.0] - 2026-10-08
 
 **修复自检（发现并修掉 0.90.0 自己的 bug）+ 大模型配置分组**

@@ -83,6 +83,50 @@ export function markUpdated<T extends ProviderLike>(p: T, now = Date.now()): T {
   return { ...p, updatedAt: now };
 }
 
+/**
+ * 手动上移/下移（2026-10-08 修bug）。
+ *
+ * **为什么不能只交换 `order`**：已配置组的显示顺序是由 `updatedAt` 主导的
+ * （降序，见 {@link groupProviders}）。如果 moveProvider 只交换 `order`，
+ * `updatedAt` 一个字都没变 → 重新渲染时顺序照旧 → **用户看到「点了没反应」**。
+ * 这正是 0.91.0 上线后下箭头失效的原因。
+ *
+ * 修法：手动移动时，**按显示顺序取出目标列表 → 交换位置 → 重排 updatedAt**
+ * 让新顺序与updatedAt 顺序一致。这样箭头立刻可见，且与自动排序规则统一。
+ *
+ * @param list 该分组当前的**显示顺序**（已排序）
+ * @param id要移动的 provider
+ * @param direction 移动方向
+ * @returns 新的列表（未变化时返回 null）
+ */
+export function reorderWithinGroup<T extends ProviderLike>(
+  list: T[],
+  id: string,
+  direction: "up" | "down",
+  now = Date.now(),
+): T[] | null {
+  const idx = list.findIndex((p) => p.id === id);
+  if (idx < 0) return null;
+  const target = direction === "up" ? idx - 1 : idx + 1;
+  if (target < 0 || target >= list.length) return null;
+
+  const next = [...list];
+  const tmp = next[idx];
+  next[idx] = next[target];
+  next[target] = tmp;
+
+  // ★ 关键：把新顺序同时写进 updatedAt（降序）与 order（升序），
+  // 使「显示顺序」与「order」两套口径一致 —— 否则下一次
+  // groupProviders 排序或落盘后又会出现顺序漂移。
+  // 用一个足够小的时间基准，保证「最靠前的 updatedAt 最大」。
+  const base = now - next.length * 1000;
+  return next.map((p, i) => ({
+    ...p,
+    updatedAt: base + (next.length - i) * 1000,
+    order: i + 1,
+  }));
+}
+
 /** 展平成「先已配置、后未配置」的单列表，供 map 渲染 */
 export function flattenGrouped<T extends ProviderLike>(g: GroupedProviders<T>): T[] {
   return [...g.configured, ...g.unconfigured];

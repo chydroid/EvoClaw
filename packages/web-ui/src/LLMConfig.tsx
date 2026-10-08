@@ -7,7 +7,7 @@ import {
   type ProviderCatalog,
   type ModelInfo,
 } from "./model-catalog";
-import { groupProviders, markUpdated } from "./provider-grouping";
+import { groupProviders, markUpdated, reorderWithinGroup } from "./provider-grouping";
 
 interface LLMProvider {
   id: string;
@@ -643,20 +643,28 @@ function LLMConfigPanel() {
     setActiveProvider("");
   }
 
+  /**
+   * 上移/下移 provider（2026-10-08 修复「箭头点了没反应」）。
+   *
+   * ★ 原实现只交换 `order`，但已配置组的显示顺序由 `updatedAt` 主导 →
+   *   order 变了而显示不变，用户看到的就是「点不了」。
+   * 现在：按**显示顺序**在**已配置组内**移动，并同步改写 `updatedAt`，
+   * 让新顺序与排序规则一致（自动排序与手动排序因此统一，不再互相打架）。
+   *
+   * 未配置组不参与排序，故不提供移动（UI 上也不显示按钮）。
+   */
   function moveProvider(id: string, direction: "up" | "down") {
     setProviders((prev) => {
-      const sorted = [...prev].sort((a, b) => a.order - b.order);
-      const idx = sorted.findIndex((p) => p.id === id);
-      if (idx < 0) return prev;
-      if (direction === "up" && idx === 0) return prev;
-      if (direction === "down" && idx === sorted.length - 1) return prev;
+      const { configured } = groupProviders(prev);
+      const nextOrder = reorderWithinGroup(configured, id, direction);
+      if (!nextOrder) return prev; // 不在已配置组，或已在边界
 
-      const swapIdx = direction === "up" ? idx - 1 : idx + 1;
-      const tmp = sorted[idx].order;
-      sorted[idx].order = sorted[swapIdx].order;
-      sorted[swapIdx].order = tmp;
-
-      return [...sorted];
+      // 把新顺序写回原列表（未配置项保持原位不动 —— 它们不参与排序）
+      const byId = new Map(nextOrder.map((p) => [p.id, p]));
+      return prev.map((p) => {
+        const moved = byId.get(p.id);
+        return moved ? { ...p, updatedAt: moved.updatedAt, order: moved.order } : p;
+      });
     });
   }
 
@@ -687,18 +695,19 @@ function LLMConfigPanel() {
           <div style={s.modelPreview}>{p.selectedModel || t("llm.no_model")}</div>
         </div>
         <div style={s.orderBtns} onClick={(e) => e.stopPropagation()}>
-          {/* 未配置组不参与排序 → 不显示上移/下移按钮（用户明确要求） */}
-          {opts.sortable && sortedProviders.length > 1 && (
+          {/* 未配置组不参与排序 → 不显示上移/下移按钮（用户明确要求）。
+              计数也只看已配置组：移动范围限于本组，跨组移动无意义。 */}
+          {opts.sortable && groups.configured.length > 1 && (
             <>
               <button
-                style={{ ...s.orderBtn, opacity: sortedProviders[0]?.id === p.id ? 0.3 : 1 }}
-                disabled={sortedProviders[0]?.id === p.id}
+                style={{ ...s.orderBtn, opacity: groups.configured[0]?.id === p.id ? 0.3 : 1 }}
+                disabled={groups.configured[0]?.id === p.id}
                 onClick={() => moveProvider(p.id, "up")}
                 title={t("llm.move_up")}
               >▲</button>
               <button
-                style={{ ...s.orderBtn, opacity: sortedProviders[sortedProviders.length - 1]?.id === p.id ? 0.3 : 1 }}
-                disabled={sortedProviders[sortedProviders.length - 1]?.id === p.id}
+                style={{ ...s.orderBtn, opacity: groups.configured[groups.configured.length - 1]?.id === p.id ? 0.3 : 1 }}
+                disabled={groups.configured[groups.configured.length - 1]?.id === p.id}
                 onClick={() => moveProvider(p.id, "down")}
                 title={t("llm.move_down")}
               >▼</button>

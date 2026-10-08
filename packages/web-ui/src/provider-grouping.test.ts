@@ -6,7 +6,7 @@
  * 其它的未配置的模型分组不参与排序。」
  */
 import { describe, it, expect } from "vitest";
-import { groupProviders, isConfigured, markUpdated, flattenGrouped, type ProviderLike } from "./provider-grouping";
+import { groupProviders, isConfigured, markUpdated, flattenGrouped, reorderWithinGroup, type ProviderLike } from "./provider-grouping";
 
 const configured = (id: string, over: Partial<ProviderLike> = {}): ProviderLike => ({
   id,
@@ -171,5 +171,78 @@ describe("真实场景：30 个内置目录 + 4 个已配置", () => {
     // 未配置组仍是原目录顺序
     expect(g.unconfigured[0].id).toBe("builtin-0");
     expect(g.unconfigured[29].id).toBe("builtin-29");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 手动上移/下移（2026-10-08 修 bug：箭头点了没反应）
+// ══════════════════════════════════════════════════════════════
+describe("★ reorderWithinGroup —— 箭头必须真的能动", () => {
+  /** 事故复现：显示顺序由 updatedAt 主导，只交换 order 的话点了没反应 */
+  const build = () => ([
+    configured("A", { order: 1, updatedAt: 300 }),
+    configured("B", { order: 2, updatedAt: 200 }),
+    configured("C", { order: 3, updatedAt: 100 }),
+  ]);
+
+  it("上移：位置真的换了（核心断言）", () => {
+    const list = build();
+    const next = reorderWithinGroup(list, "C", "up")!;
+    expect(next.map((p) => p.id)).toEqual(["A", "C", "B"]);
+  });
+
+  it("★ 移动后按 groupProviders 重排，显示顺序与手动顺序一致", () => {
+    // 这才是「点了有反应」的真实验证：渲染用的就是 groupProviders 的结果
+    const list = build();
+    const moved = reorderWithinGroup(list, "C", "up")!;
+    const rendered = groupProviders(moved).configured.map((p) => p.id);
+    expect(rendered).toEqual(["A", "C", "B"]);
+  });
+
+  it("旧实现（只交换 order）确实无效 —— 锁住这个回归", () => {
+    const list = build();
+    // 模拟旧行为：只交换 order，不动 updatedAt
+    const old = [...list];
+    const t = old[1].order; old[1].order = old[2].order; old[2].order = t;
+    // 重新渲染后顺序没变 → 用户看到「点不了」
+    expect(groupProviders(old).configured.map((p) => p.id)).toEqual(["A", "B", "C"]);
+  });
+
+  it("下移同样生效", () => {
+    const next = reorderWithinGroup(build(), "A", "down")!;
+    expect(next.map((p) => p.id)).toEqual(["B", "A", "C"]);
+    expect(groupProviders(next).configured.map((p) => p.id)).toEqual(["B", "A", "C"]);
+  });
+
+  it("首项上移 / 末项下移返回 null（已在边界）", () => {
+    const list = build();
+    expect(reorderWithinGroup(list, "A", "up")).toBeNull();
+    expect(reorderWithinGroup(list, "C", "down")).toBeNull();
+  });
+
+  it("不存在的 id 返回 null", () => {
+    expect(reorderWithinGroup(build(), "Z", "up")).toBeNull();
+  });
+
+  it("不改动原数组（不可变）", () => {
+    const list = build();
+    const snapshot = list.map((p) => p.id);
+    reorderWithinGroup(list, "C", "up");
+    expect(list.map((p) => p.id)).toEqual(snapshot);
+  });
+
+  it("同步更新 order，保持 order 与显示一致", () => {
+    const next = reorderWithinGroup(build(), "C", "up")!;
+    const byId = new Map(next.map((p) => [p.id, p.order]));
+    expect(byId.get("A")).toBe(1);
+    expect(byId.get("C")).toBe(2);
+    expect(byId.get("B")).toBe(3);
+  });
+
+  it("连续多次上移，逐步前移而非跳到最前", () => {
+    let list = build();
+    list = reorderWithinGroup(list, "C", "up")!;   // A C B
+    list = reorderWithinGroup(list, "C", "up")!;   // C A B
+    expect(groupProviders(list).configured.map((p) => p.id)).toEqual(["C", "A", "B"]);
   });
 });
