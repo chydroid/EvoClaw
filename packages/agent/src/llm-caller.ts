@@ -2030,6 +2030,26 @@ export async function callLLMOnce(
 
     deps.recordProviderSuccess(provider.id);
 
+    // ── 非流式路径同样要记录思考轨迹 ──
+    // 实测（2026-10-08）：provider 走非流式时，只有 tool_result 入轨迹，
+    // decision 与 reasoning 全部缺失，轨迹只剩孤零零一条。
+    // 原因：非流式分支直接返回 msg.tool_calls，从未调用过 addDecision。
+    if (trace) {
+      const rc = (msg as { reasoning_content?: string | null }).reasoning_content;
+      if (rc && String(rc).trim()) trace.addReasoning(String(rc));
+      for (const tc of msg.tool_calls ?? []) {
+        const fn = tc?.function;
+        if (!fn?.name) continue;
+        let args: Record<string, unknown> = {};
+        try {
+          args = fn.arguments ? (JSON.parse(fn.arguments) as Record<string, unknown>) : {};
+        } catch {
+          args = { _rawArguments: String(fn.arguments ?? "").slice(0, 500) };
+        }
+        trace.addDecision(fn.name, args);
+      }
+    }
+
     return {
       message: {
         role: msg.role || "assistant",
