@@ -14,6 +14,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import { redactSessionTurn } from "./transcript-redactor";
+import type { ThinkingStep } from "./thinking-trace";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,15 @@ export interface SessionTurn {
   toolCallId?: string;
   toolResult?: unknown;
   metadata?: Record<string, unknown>;
+  /**
+   * 思考轨迹（可折叠时间线）。
+   * 用户诉求（2026-10-08）：任务完成后整个思考过程要完整保留、可展开查看。
+   * 此前 transcript 只存 role/content/toolCalls，思考信息**完全不落盘**，
+   * 刷新或重新打开会话后无从查看。
+   */
+  thinkingTrace?: ThinkingStep[];
+  /** 折叠态显示的一行摘要（默认 30 字） */
+  thinkingSummary?: string;
 }
 
 export interface SessionLoadResult {

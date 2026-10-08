@@ -109,6 +109,13 @@ export interface AgentProgressEvent {
   duration?: number;
   subtaskIndex?: number;
   subtaskTotal?: number;
+  /**
+   * 思考轨迹快照（截至本次事件的完整轨迹）。
+   *
+   * 用户诉求（2026-10-08）：思考过程要**实时可见**、完成后**完整保留**。
+   * 前端据此在执行过程中逐步渲染，并在消息落盘时一并保存。
+   */
+  thinkingSteps?: import("./thinking-trace").ThinkingStep[];
 }
 
 export type AgentProgressCallback = (event: AgentProgressEvent) => void;

@@ -9,6 +9,61 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.88.0] - 2026-10-08
+
+**思考过程全链路打通：实时可见 + 完成后完整保留 + 可折叠展开**
+
+用户诉求（原话）：「任务完成后，整个思考的解决问题的过程，一点都看不到。
+我希望都完整保留，但是可以折叠展开。」
+
+### 为什么之前完全看不到（三处同时丢失）
+
+1. **模型推理被主动丢弃**：`StreamingTagScrubber` 把 `<think>/<reasoning>/<thinking>`
+   区间内容**直接扔掉**——既不进正文也不留存，模型的推理文本从未被捕获过。
+   同时 `delta.reasoning_content`（OpenAI 风格的独立推理字段）**完全未被处理**。
+2. **行为轨迹没有结构**：工具决策/结果/失败散落在 progress 事件与 session jsonl 里，
+   前端只渲染了一个**静态的「思考中…」标签**——实测 `msg.thinking` 从未被赋过真实内容
+   （只有 `t("chat.phase.thinking")` 这种固定文案）。所以之前做的"30 字折叠预览"
+   背后其实是空的。
+3. **没有持久化**：transcript 只存 `turnIndex/role/content/timestamp/toolCalls`，
+   没有任何思考字段，刷新即丢。
+
+### 改动
+
+**后端**
+
+- 新增 `packages/agent/src/thinking-trace.ts`：统一的思考轨迹模型与采集器。
+  5 类条目：`reasoning`（模型推理）/ `decision`（决定调用工具）/
+  `tool_result`（工具结果）/ `error`（失败）/ `system`（自动续跑等系统行为）。
+  - `title` 是折叠态的一行摘要，`detail` 保存**原文**（参数、结果、推理全文）
+  - 超长内容截断时**显式标注**「已截断，原长度 N」，不做静默丢弃
+  - `summary(30)` 生成折叠态摘要
+- `StreamingTagScrubber`：span 内容改为**累积**而非丢弃，新增 `takeReasoning()`
+- `llm-caller`：主循环创建 trace，工具决策/成功/失败/自动续跑全部入轨迹；
+  `parseStreamingResponse` 与 `callLLMOnce` 增加可选 `trace` 参数（尾参，不影响既有调用方）
+- **同时支持两种推理来源**：模型输出里的 `<think>` span，
+  以及 provider 单独返回的 `delta.reasoning_content` / `delta.reasoning`
+- `SessionTurn` 新增 `thinkingTrace` / `thinkingSummary` 字段 → **落盘持久化**
+- progress 事件新增 `thinkingSteps` 字段（关键节点带全量快照，供实时渲染）
+
+**前端**（`WebChatPage.tsx`）
+
+- 思考区改为**可折叠时间线**：折叠态显示「N 步 + 30 字摘要」，点击展开
+- 展开后顶部有**分类统计**（推理 x / 决策 x / 结果 x / 失败 x / 系统 x）
+- 每条可**单独展开**看完整 detail（参数 JSON、结果、推理全文），带相对时间戳
+- 面板可滚动（`maxHeight: 420px`），长任务不会把页面撑爆
+- 执行过程中通过 `thinkingSteps` **实时渲染**，结束后随消息保留
+- 兼容旧字段 `msg.thinking`（老消息仍可显示）
+
+### 顺带修掉一个设计缺陷
+
+`summary()` 原本取第一条记录的 `detail`，对 `decision` 而言就是 `{"path":"x"}` ——
+折叠态完全看不出在干什么。改为：只有 `reasoning` 用 detail（那才是思考文本），
+其余一律用 title（「决定调用 file_read」）。这个缺陷是新增测试当场抓到的。
+
+**验证**：新增 18 项测试（7 项清洗器捕获 + 11 项轨迹采集）；
+`build` + `typecheck` + `test` 全绿：**243 files / 5982 passed / 1 skipped / 0 failed**。
+
 ## [0.87.3] - 2026-10-07
 
 **修复「技能装完在、重建启动后消失」（已连续发生两次）**

@@ -135,6 +135,25 @@ interface WebChatMessage {
   files?: Array<{ path: string; size: number; downloadUrl: string }>;
   intermediateOutput?: string;
   streamLog?: string[];
+  /**
+   * 完整思考轨迹（可折叠时间线）。
+   * 用户诉求（2026-10-08）：任务完成后思考过程要完整保留、可展开查看。
+   */
+  thinkingTrace?: ThinkingStep[];
+  /** 折叠态一行摘要（后端算好，默认 30 字） */
+  thinkingSummary?: string;
+}
+
+/** 思考轨迹条目（与后端 packages/agent/src/thinking-trace.ts 对齐） */
+interface ThinkingStep {
+  kind: "reasoning" | "decision" | "tool_result" | "error" | "system";
+  title: string;
+  detail?: string;
+  toolName?: string;
+  round?: number;
+  ok?: boolean;
+  truncated?: boolean;
+  offsetMs?: number;
 }
 
 interface AttachedFileInfo {
@@ -294,6 +313,79 @@ const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => (
   position: "relative",
   boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
 });
+
+/** 各类轨迹条目的展示元数据 */
+const THINKING_KIND_META: Record<string, { icon: string; label: string; color: string }> = {
+  reasoning: { icon: "\u{1F9E0}", label: "推理", color: "var(--accent, #58a6ff)" },
+  decision: { icon: "\u{1F4CC}", label: "决策", color: "var(--text-primary, #c9d1d9)" },
+  tool_result: { icon: "\u{2705}", label: "结果", color: "var(--success, #3fb950)" },
+  error: { icon: "\u274C", label: "失败", color: "var(--error, #f85149)" },
+  system: { icon: "\u2699", label: "系统", color: "var(--warning, #d29922)" },
+};
+
+/** 单步展开状态 key */
+const stepKey = (msgId: string, idx: number) => `${msgId}:${idx}`;
+
+/** 折叠态摘要：优先用后端算好的，否则退回旧 thinking 字段 */
+function truncateThinkingPreview(msg: { thinking?: string; thinkingSummary?: string }): string {
+  const base = msg.thinkingSummary || msg.thinking || "";
+  const flat = base.replace(/\s+/g, " ").trim();
+  return flat.length <= THINKING_PREVIEW_CHARS ? flat : `${flat.slice(0, THINKING_PREVIEW_CHARS)}…`;
+}
+
+const thinkingPanelStyle: CSSProperties = {
+  marginBottom: "10px",
+  padding: "8px 10px",
+  border: "1px solid var(--border-light, #21262d)",
+  borderRadius: "6px",
+  background: "var(--bg-sidebar)",
+  maxHeight: "420px",
+  overflowY: "auto",
+};
+
+const thinkingStatsStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  marginBottom: "8px",
+  paddingBottom: "6px",
+  borderBottom: "1px solid var(--border-light, #21262d)",
+};
+
+const thinkingStatChipStyle = (color: string): CSSProperties => ({
+  fontSize: "10px",
+  padding: "1px 6px",
+  borderRadius: "8px",
+  border: `1px solid ${color}`,
+  color,
+});
+
+const thinkingStepStyle: CSSProperties = { marginBottom: "4px" };
+
+const thinkingStepHeadStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  padding: "3px 4px",
+  borderRadius: "4px",
+  cursor: "pointer",
+  fontSize: "12px",
+};
+
+const thinkingDetailStyle: CSSProperties = {
+  margin: "2px 0 6px 0",
+  padding: "6px 8px",
+  background: "var(--bg-tertiary, #21262d)",
+  borderRadius: "4px",
+  fontSize: "11px",
+  lineHeight: 1.6,
+  color: "var(--text-secondary, #8b949e)",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  maxHeight: "260px",
+  overflowY: "auto",
+  fontFamily: "var(--font-mono, monospace)",
+};
 
 /** 思考过程折叠时默认露出的字符数 */
 const THINKING_PREVIEW_CHARS = 30;
@@ -657,6 +749,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const isStreamingRef = useRef(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<string, boolean>>({});
+  // 轨迹中每一步的展开状态（按 消息id:步序号 记录）
+  const [showStep, setShowStep] = useState<Record<string, boolean>>({});
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [currentProgress, setCurrentProgress] = useState(0);
@@ -718,6 +812,8 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const sessionMessagesCache = useRef<Map<string, WebChatMessage[]>>(new Map());
   const currentMessagesRef = useRef<WebChatMessage[]>([]);
   const attachedFilesRef = useRef<AttachedFileInfo[]>([]);
+  // 最新收到的思考轨迹快照（后端每次关键事件都会带全量）
+  const thinkingTraceRef = useRef<ThinkingStep[]>([]);
   // Persisted streaming trace for the current assistant message (survives after
   // the live progressSteps state is cleared, so it can be shown collapsed).
   const streamLogRef = useRef<string[]>([]);
@@ -1105,6 +1201,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
       setProgressSteps([]);
       streamLogRef.current = [];
+    thinkingTraceRef.current = [];
 
       let res: Response;
       try {
@@ -1273,6 +1370,27 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                           }
                           return { ...m, content: newReply };
                         }),
+                      );
+                    }
+
+                    // ── 思考轨迹（实时）──
+                    // 后端在关键节点（工具决策/结果/失败/自动续跑）带上完整快照，
+                    // 这里直接挂到消息上，执行过程中就能看到，结束后也不会消失。
+                    if (Array.isArray(eventData.thinkingSteps) && eventData.thinkingSteps.length > 0) {
+                      const steps = eventData.thinkingSteps as ThinkingStep[];
+                      thinkingTraceRef.current = steps;
+                      setMessages((prev) =>
+                        prev.map((m) =>
+                          m.id === botMsgId
+                            ? {
+                                ...m,
+                                thinkingTrace: steps,
+                                thinkingSummary: steps[0]?.kind === "reasoning"
+                                  ? (steps[0].detail || steps[0].title || "")
+                                  : (steps[0]?.title || ""),
+                              }
+                            : m,
+                        ),
                       );
                     }
 
@@ -1456,6 +1574,22 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       if (trace.length > 0) {
         setMessages((prev) => prev.map((m) =>
           m.id === botMsgId ? { ...m, streamLog: trace } : m
+        ));
+      }
+      // 思考轨迹同样落盘到消息对象 —— 否则刷新页面就没了。
+      // 这一条是用户诉求「完成后完整保留」的关键：只渲染不保存等于没做。
+      const finalTrace = thinkingTraceRef.current;
+      if (finalTrace.length > 0) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === botMsgId
+            ? {
+                ...m,
+                thinkingTrace: finalTrace,
+                thinkingSummary: finalTrace[0]?.kind === "reasoning"
+                  ? (finalTrace[0].detail || finalTrace[0].title || "")
+                  : (finalTrace[0]?.title || ""),
+              }
+            : m
         ));
       }
 
@@ -1652,6 +1786,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const toggleStep = (msgId: string, idx: number) => {
+    const k = stepKey(msgId, idx);
+    setShowStep((prev) => ({ ...prev, [k]: !prev[k] }));
   };
 
   const toggleThinking = (id: string) => {
@@ -2236,41 +2375,89 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     </button>
                   </>
                 )}
-                {/* 思考过程：完成后自动折叠，默认只露出 30 个字符，可点击展开/再折叠 */}
-                {msg.thinking && (
-                  <div
-                    style={{ ...thinkingBadgeStyle, cursor: "pointer" }}
-                    onClick={() => toggleThinking(msg.id)}
-                    title={showThinking[msg.id] ? t("chat.collapse_thinking", "点击折叠") : t("chat.expand_thinking", "点击展开")}
-                  >
-                    <span>{showThinking[msg.id] ? "💭" : "🧠"}</span>
-                    <span>{t("chat.thinking")}</span>
-                    {!showThinking[msg.id] && msg.thinking.length > THINKING_PREVIEW_CHARS && (
-                      <span
-                        style={{
-                          fontStyle: "italic",
-                          color: "var(--text-secondary, #8b949e)",
-                          maxWidth: "340px",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {msg.thinking.slice(0, THINKING_PREVIEW_CHARS)}…
-                      </span>
+                {/* ══════════════════════════════════════════════════════════
+                    思考轨迹：折叠态只露 30 字摘要 + 步数，点击展开完整时间线。
+                    数据来自后端 thinkingTrace（已落盘，刷新后仍在）。
+                    ══════════════════════════════════════════════════════ */}
+                {(msg.thinkingTrace && msg.thinkingTrace.length > 0) || msg.thinking ? (
+                  <>
+                    <div
+                      style={{ ...thinkingBadgeStyle, cursor: "pointer" }}
+                      onClick={() => toggleThinking(msg.id)}
+                      title={showThinking[msg.id] ? t("chat.collapse_thinking", "点击折叠") : t("chat.expand_thinking", "点击展开")}
+                    >
+                      <span>{showThinking[msg.id] ? "💭" : "🧠"}</span>
+                      <span>{t("chat.thinking")}</span>
+                      {msg.thinkingTrace && msg.thinkingTrace.length > 0 && (
+                        <span style={{ fontSize: "10px", opacity: 0.7 }}>
+                          {msg.thinkingTrace.length} 步
+                        </span>
+                      )}
+                      {!showThinking[msg.id] && (
+                        <span
+                          style={{
+                            fontStyle: "italic",
+                            color: "var(--text-secondary, #8b949e)",
+                            maxWidth: "340px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {truncateThinkingPreview(msg) || "（无摘要）"}
+                        </span>
+                      )}
+                      <span style={{ fontSize: "10px", transform: showThinking[msg.id] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+                    </div>
+
+                    {showThinking[msg.id] && (
+                      <div style={thinkingPanelStyle}>
+                        {/* 分组统计：一眼看出"想了几步 / 调了几次工具 / 失败几次" */}
+                        {msg.thinkingTrace && msg.thinkingTrace.length > 0 && (
+                          <div style={thinkingStatsStyle}>
+                            {(["reasoning", "decision", "tool_result", "error", "system"] as const).map((k) => {
+                              const n = msg.thinkingTrace!.filter((x) => x.kind === k).length;
+                              if (n === 0) return null;
+                              return (
+                                <span key={k} style={thinkingStatChipStyle(THINKING_KIND_META[k].color)}>
+                                  {THINKING_KIND_META[k].label} {n}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {msg.thinkingTrace && msg.thinkingTrace.length > 0 ? (
+                          msg.thinkingTrace.map((step, i) => (
+                            <div key={i} style={thinkingStepStyle}>
+                              <div style={thinkingStepHeadStyle} onClick={() => toggleStep(msg.id, i)}>
+                                <span style={{ color: THINKING_KIND_META[step.kind].color, fontSize: "11px" }}>
+                                  {THINKING_KIND_META[step.kind].icon}
+                                </span>
+                                <span style={{ flex: 1, color: "var(--text-primary, #c9d1d9)" }}>{step.title}</span>
+                                {step.offsetMs !== undefined && (
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)" }}>
+                                    +{(step.offsetMs / 1000).toFixed(1)}s
+                                  </span>
+                                )}
+                                {step.detail && (
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", transform: showStep[stepKey(msg.id, i)] ? "rotate(90deg)" : "none" }}>
+                                    ▶
+                                  </span>
+                                )}
+                              </div>
+                              {step.detail && showStep[stepKey(msg.id, i)] && (
+                                <pre style={thinkingDetailStyle}>{step.detail}</pre>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div style={thinkingDetailStyle}>{msg.thinking}</div>
+                        )}
+                      </div>
                     )}
-                    <span style={{ fontSize: "10px", transform: showThinking[msg.id] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
-                  </div>
-                )}
-                {showThinking[msg.id] && msg.thinking && (
-                  <div
-                    style={{ ...toolCallStyle, fontStyle: "italic", color: "var(--text-secondary)", marginBottom: "8px", whiteSpace: "pre-wrap" }}
-                    onClick={() => toggleThinking(msg.id)}
-                    title={t("chat.collapse_thinking", "点击折叠")}
-                  >
-                    {msg.thinking}
-                  </div>
-                )}
+                  </>
+                ) : null}
 
                 {/* Permission requests badge —— 同时作为审批弹窗的兜底入口：
                     自动弹窗若因时序/白名单等原因没出现，用户仍可点此打开审批。 */}

@@ -9,6 +9,7 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult } from "./completion-truthfulness";
+import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
@@ -1389,6 +1390,26 @@ const SCRUBBER_MAX_TAG_LEN = Math.max(...SCRUBBER_OPEN_TAGS.concat(SCRUBBER_CLOS
 export class StreamingTagScrubber {
   private inSpan = false;
   private buf = "";
+  /**
+   * 被清洗掉的推理内容（<think> / <reasoning> / <thinking> / <thought> 内部文本）。
+   *
+   * 真实事故（2026-10-08）：用户反馈「任务完成后整个思考过程一点都看不到」。
+   * 根因之一就是这里 —— span 内的推理文本被**直接丢弃**，既没进正文也没留存。
+   * 现在把它累积起来，由调用方取走作为「思考轨迹」的一部分。
+   */
+  private capturedReasoning = "";
+
+  /** 取走已捕获的推理文本（并清空累积器）。 */
+  takeReasoning(): string {
+    const v = this.capturedReasoning;
+    this.capturedReasoning = "";
+    return v;
+  }
+
+  /** 只读查看已捕获的推理文本长度，便于流式判断是否需要上报。 */
+  get reasoningLength(): number {
+    return this.capturedReasoning.length;
+  }
 
   /** 处理一个 delta，返回可见文本。 */
   feed(text: string): string {
@@ -1401,18 +1422,21 @@ export class StreamingTagScrubber {
         // 在 span 内：寻找闭合标签
         const closeIdx = this.findCloseTag(this.buf);
         if (closeIdx >= 0) {
-          // 找到闭合标签，跳过 span 内容
+          // 找到闭合标签：span 内容**不输出到正文，但累积到推理轨迹**
           const closeTag = this.matchCloseTag(this.buf, closeIdx);
+          this.capturedReasoning += this.buf.slice(0, closeIdx);
           this.buf = this.buf.slice(closeIdx + closeTag.length);
           this.inSpan = false;
         } else {
           // 未找到闭合标签，持留可能是部分闭合标签的尾部
           const partialSuffix = this.maxPartialCloseSuffix(this.buf);
           if (partialSuffix.length > 0) {
-            // 持留部分标签，丢弃其余
+            // 持留部分标签，其余作为推理内容累积
+            this.capturedReasoning += this.buf.slice(0, this.buf.length - partialSuffix.length);
             this.buf = this.buf.slice(this.buf.length - partialSuffix.length);
           } else {
-            // 无部分标签，全部丢弃（在 span 内的内容不输出）
+            // 无部分标签：全部累积为推理内容（在 span 内的内容不输出到正文）
+            this.capturedReasoning += this.buf;
             this.buf = "";
           }
           break; // 等待更多 delta
@@ -1533,7 +1557,9 @@ export async function parseStreamingResponse(
   provider: ProviderConfig,
   startTime: number,
   onProgress: AgentProgressCallback,
-  deps: LLMCallerDeps
+  deps: LLMCallerDeps,
+  /** 思考轨迹采集器（可选） */
+  trace?: ThinkingTrace
 ): Promise<ParseStreamingResponseResult | null> {
   const observability = deps.registry?.resolveService?.("observability") as any;
   const tracing = observability?.getTracingService?.();
@@ -1595,9 +1621,23 @@ export async function parseStreamingResponse(
           const choice = chunk.choices?.[0];
           if (!choice?.delta) continue;
 
+          // OpenAI 风格的独立推理字段（部分 provider 会单独返回）
+          const reasoningDelta =
+            (choice.delta as { reasoning_content?: string | null }).reasoning_content ??
+            (choice.delta as { reasoning?: string | null }).reasoning ??
+            null;
+          if (reasoningDelta) {
+            trace?.addReasoning(reasoningDelta);
+          }
+
           if (choice.delta.content) {
             // 通过清洗器处理 delta，清洗 <think>/<reasoning> 等推理标签
             const cleaned = tagScrubber.feed(choice.delta.content);
+            // 清洗器丢弃的推理内容转存进思考轨迹（不进正文，但完整保留）
+            if (tagScrubber.reasoningLength > 0) {
+              const reasoning = tagScrubber.takeReasoning();
+              if (reasoning.trim()) trace?.addReasoning(reasoning);
+            }
             content += cleaned;
 
             // ── Token-level streaming ──
@@ -1639,13 +1679,17 @@ export async function parseStreamingResponse(
                   arguments: tc.function?.arguments || "",
                 });
                 // ── 进度反馈：流式工具调用首次出现时上报 ──
-                if (tc.function?.name && onProgress) {
-                  onProgress({
-                    type: "status",
-                    phase: "thinking",
-                    detail: `📋 LLM 决定调用: ${tc.function.name}`,
-                    progress: 45,
-                  });
+                if (tc.function?.name) {
+                  // 决策入轨迹（参数可能后续分片到达，先记工具名）
+                  trace?.addDecision(tc.function.name, { _partial: true });
+                  if (onProgress) {
+                    onProgress({
+                      type: "status",
+                      phase: "thinking",
+                      detail: `📋 LLM 决定调用:${tc.function.name}`,
+                      progress: 45,
+                    });
+                  }
                 }
               } else {
                 if (tc.id) existing.id = tc.id;
@@ -1803,7 +1847,9 @@ export async function callLLMOnce(
   tools: Array<{ type: string; function: Record<string, unknown> }>,
   toolChoice: "auto" | "required" | "none",
   onProgress: AgentProgressCallback | undefined,
-  deps: LLMCallerDeps
+  deps: LLMCallerDeps,
+  /** 思考轨迹采集器（可选；传入后推理文本与工具决策会被记录） */
+  trace?: ThinkingTrace
 ): Promise<CallLLMOnceResult | null> {
   const observability = deps.registry?.resolveService?.("observability") as any;
   const tracing = observability?.getTracingService?.();
@@ -1948,7 +1994,7 @@ export async function callLLMOnce(
     }
 
     if (useStreaming && response.body) {
-      return await parseStreamingResponse(response, provider, startTime, onProgress!, deps);
+      return await parseStreamingResponse(response, provider, startTime, onProgress!, deps, trace);
     }
 
     const data = await response.json() as {
@@ -2404,6 +2450,9 @@ Have a specific URL?
       const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
+      // ── 思考轨迹：把"模型怎么想"与"agent 做了什么"合并成可折叠时间线 ──
+      // 用户诉求（2026-10-08）：任务完成后整个思考过程要完整保留、可折叠展开。
+      const trace = new ThinkingTrace();
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
 
@@ -2538,7 +2587,7 @@ Have a specific URL?
           });
         }
 
-        const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps);
+        const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps, trace);
 
         if (!result) {
           consecutiveErrors++;
@@ -2882,6 +2931,13 @@ Have a specific URL?
             if (shouldContinue) {
               autoContinueCount++;
               const trigger = premature ?? preVerdict.reason ?? "unknown";
+              trace.addSystem(
+                `自动续跑 #${autoContinueCount}/${MAX_AUTO_CONTINUE}（原因：${trigger}）`,
+                [
+                  premature ? `停顿检测：${premature}` : "",
+                  preVerdict.notice ?? "",
+                ].filter(Boolean).join("\n"),
+              );
               const directive = buildContinuationDirective({
                 kind: premature ?? "needs_correction",
                 userMessage: message,
@@ -2898,6 +2954,7 @@ Have a specific URL?
                 phase: "thinking",
                 detail: `检测到任务未完成（${trigger}），自动继续执行（${autoContinueCount}/${MAX_AUTO_CONTINUE}）…`,
                 progress: Math.min(30 + round * 3, 90),
+                thinkingSteps: trace.toJSON(),
               });
               conversationMessages.push(assistantMsg);
               conversationMessages.push({ role: "user", content: directive });
@@ -3318,6 +3375,7 @@ Have a specific URL?
               const failure = extractToolFailure(toolName, rawResult);
               if (failure) {
                 failedTools.push({ name: toolName, error: failure });
+                trace.addToolResult(toolName, rawResult, { round: round + 1, ok: false });
                 process.stdout.write(
                   `[AgentModelExecutor] Tool "${toolName}" returned failure: ${failure}\n`,
                 );
@@ -3334,6 +3392,7 @@ Have a specific URL?
               // 导致会话恢复后模型完全看不到自己上一轮调用过什么、返回了什么，
               // 只能靠猜——这是「反复要求用户说『继续』」的直接成因之一。
               executedToolCalls.push({ id: tc.id, name: toolName, arguments: args });
+              trace.addToolResult(toolName, toolResult, { round: round + 1, ok: true });
               process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
               successfulToolCalls++;
               // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
@@ -3773,6 +3832,11 @@ Have a specific URL?
               toolCalls: executedToolCalls.length > 0
                 ? executedToolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }))
                 : undefined,
+              // ★ 思考轨迹一并落盘。用户诉求：任务完成后思考过程要完整保留、
+              //   可折叠展开 —— 不落盘就等于没有（历史根因：transcript 只有
+              //   role/content/toolCalls，没有任何思考字段）。
+              thinkingTrace: trace.toJSON(),
+              thinkingSummary: trace.summary(30),
             });
           } catch (err) {
             process.stderr.write(`[AgentModelExecutor] SessionManager persist failed: ${err}\n`);
