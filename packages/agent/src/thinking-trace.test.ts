@@ -141,6 +141,65 @@ describe("ThinkingTrace — 轨迹采集与序列化", () => {
     expect(() => t.toJSON()).not.toThrow();
   });
 
+  // ── appendReasoning（2026-10-08 小米模型事故）──
+  // 推理是 2–6 字一个 chunk 下发的，逐 chunk 建条目会把一段完整思考
+  // 碎成几十条"这是一个""非常有趣" —— 展开后根本读不出模型在想什么。
+  it("★ 流式推理按轮合并成一条，而不是每个 chunk 一条", () => {
+    const t = new ThinkingTrace();
+    for (const piece of ["这是一个", "非常有趣", "的问题，", "让我认真想想"]) {
+      t.appendReasoning(piece, 1);
+    }
+    const steps = t.toJSON();
+    expect(steps).toHaveLength(1);
+    expect(steps[0].kind).toBe("reasoning");
+    expect(steps[0].detail).toBe("这是一个非常有趣的问题，让我认真想想");
+  });
+
+  it("★ 换轮后另起一条（不同轮的思考不混在一起）", () => {
+    const t = new ThinkingTrace();
+    t.appendReasoning("第一轮想", 1);
+    t.appendReasoning("第二轮想", 2);
+    const steps = t.toJSON();
+    expect(steps).toHaveLength(2);
+    expect(steps[0].detail).toBe("第一轮想");
+    expect(steps[1].detail).toBe("第二轮想");
+  });
+
+  it("★ title 跟着累积内容更新（取首行，不是第一个 chunk）", () => {
+    const t = new ThinkingTrace();
+    t.appendReasoning("嗯…", 1);
+    expect(t.toJSON()[0].title).toBe("嗯…");
+    t.appendReasoning("先确认文件是否存在再说", 1);
+    expect(t.toJSON()[0].title).toContain("先确认文件是否存在");
+  });
+
+  it("★ 纯空白不产生条目（避免空气泡 / 空步骤）", () => {
+    const t = new ThinkingTrace();
+    t.appendReasoning("   \n\t ", 1);
+    expect(t.size).toBe(0);
+  });
+
+  it("★ 超长推理触顶后标注截断且不再追加", () => {
+    const t = new ThinkingTrace();
+    t.appendReasoning("a".repeat(MAX_DETAIL_CHARS - 10), 1);
+    t.appendReasoning("b".repeat(100), 1);
+    const [step] = t.toJSON();
+    expect(step.truncated).toBe(true);
+    expect(step.detail).toContain("已截断");
+    // 已截断的条目不再被后续内容改写（否则标注与实际长度不符）
+    t.appendReasoning("c".repeat(50), 1);
+    expect(t.toJSON()).toHaveLength(2);
+  });
+
+  it("★ 中间插入了工具调用，推理不会错误地并进上一条", () => {
+    const t = new ThinkingTrace();
+    t.appendReasoning("第一轮先想", 1);
+    t.addDecision("file_read", { path: "a.md" });
+    t.appendReasoning("第二轮再想", 2);
+    const kinds = t.toJSON().map((s) => s.kind);
+    expect(kinds).toEqual(["reasoning", "decision", "reasoning"]);
+  });
+
   it("★ offsetMs 单调不减（前端可据此做时间线）", () => {
     const t = new ThinkingTrace();
     t.addSystem("一");

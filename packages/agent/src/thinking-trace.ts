@@ -71,6 +71,12 @@ function clampDetail(text: string | undefined): { detail?: string; truncated?: b
   };
 }
 
+/** 取第一段有意义文本作为标题（流式累积时标题也跟着更新） */
+function firstMeaningfulLine(s: string): string {
+  const line = s.split(/\r?\n/).find((l) => l.trim()) || "模型推理";
+  return clampTitle(line);
+}
+
 function clampTitle(text: string): string {
   const s = String(text ?? "").replace(/\s+/g, " ").trim();
   return s.length <= MAX_TITLE_CHARS ? s : `${s.slice(0, MAX_TITLE_CHARS - 1)}…`;
@@ -120,16 +126,56 @@ export class ThinkingTrace {
     return entry;
   }
 
-  /** 记录模型推理文本 */
+  /** 记录模型推理文本（一次一条，适合非流式/整段场景） */
   addReasoning(text: string, round?: number): void {
     const s = String(text || "").trim();
     if (!s) return;
     this.push({
       kind: "reasoning",
-      title: s.split(/\r?\n/).find((l) => l.trim())?.slice(0, MAX_TITLE_CHARS) || "模型推理",
+      title: firstMeaningfulLine(s),
       detail: s,
       round,
     });
+  }
+
+  /**
+   * 追加模型推理文本 —— **流式场景必须用这个**（2026-10-08）。
+   *
+   * 实测（小米 mimo-v2.6-flash）：`reasoning_content` 以 2–6 字一个 chunk
+   * 下发。若每个 chunk 都 `addReasoning`（各成一条），一段 68 字的思考
+   * 会变成几十条标题为"这是一个""非常有趣"的碎片 —— 展开后既看不连贯，
+   * 也把真正有价值的分析淹没了。用户要的是"一段完整的思考"，不是碎片流。
+   *
+   * 因此：同一轮连续推理**合并进同一条**条目（detail 递增、title 取首行），
+   * 直到轮次变化或超出长度上限为止。
+   */
+  appendReasoning(text: string, round?: number): void {
+    const s = String(text || "");
+    if (!s.trim()) return;
+
+    const last = this.steps[this.steps.length - 1];
+    const canMerge =
+      last !== undefined &&
+      last.kind === "reasoning" &&
+      !last.truncated &&
+      (round === undefined || last.round === undefined || last.round === round);
+
+    if (canMerge) {
+      const merged = (last.detail || "") + s;
+      if (merged.length <= MAX_DETAIL_CHARS) {
+        last.detail = merged;
+        last.title = firstMeaningfulLine(merged);
+        return;
+      }
+      // 触顶：收尾本条（显式标注截断），后续内容另起一条
+      const kept = merged.slice(0, MAX_DETAIL_CHARS);
+      last.detail = `${kept}\n…（推理内容过长，已截断，原长度 ${merged.length} 字符）`;
+      last.title = firstMeaningfulLine(kept);
+      last.truncated = true;
+      return;
+    }
+
+    this.push({ kind: "reasoning", title: firstMeaningfulLine(s.trim()), detail: s.trim(), round });
   }
 
   /** 记录"决定调用工具" */

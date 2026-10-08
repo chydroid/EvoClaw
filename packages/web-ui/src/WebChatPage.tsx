@@ -19,6 +19,7 @@ import { showToast } from "./shared";
 import { mapSessionTurnsToMessages } from "./thinking-trace-mapping";
 import { buildFinalSummary } from "./final-summary";
 import { applyRoundContent } from "./message-bubbles";
+import { mergeLiveReasoning, isNoiseProgressStep, tailText, pickThinkingSummary } from "./live-reasoning";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -145,6 +146,12 @@ interface WebChatMessage {
   thinkingTrace?: ThinkingStep[];
   /** 折叠态一行摘要（后端算好，默认 30 字） */
   thinkingSummary?: string;
+  /**
+   * 实时推理原文（2026-10-08）。
+   * 流式期间模型正在吐的思考全文，直接显示在气泡里；结束后清空
+   * （内容已并入 thinkingTrace 的 reasoning 条目，刷新后依然在）。
+   */
+  liveReasoning?: string;
   /**
    * 是否为任务收尾气泡（2026-10-08）。
    * 用户要求：最后一个气泡放任务完成/失败总结，且提示要明显。
@@ -831,6 +838,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   // Persisted streaming trace for the current assistant message (survives after
   // the live progressSteps state is cleared, so it can be shown collapsed).
   const streamLogRef = useRef<string[]>([]);
+  // ── 实时推理（2026-10-08）──
+  // 模型流式吐出的思考原文：推理 chunk 间隔只有几十毫秒，
+  // 因此先写 ref，再按 ~100ms 节流刷新 UI，避免每字一次 setState。
+  const liveReasoningRef = useRef("");
+  const lastReasoningRenderAtRef = useRef(0);
+  const reasoningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Permission state
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -1215,6 +1228,31 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       setProgressSteps([]);
       streamLogRef.current = [];
     thinkingTraceRef.current = [];
+      liveReasoningRef.current = "";
+      if (reasoningTimerRef.current) {
+        clearTimeout(reasoningTimerRef.current);
+        reasoningTimerRef.current = null;
+      }
+
+      /**
+       * 把思考轨迹挂到当前活跃气泡上（实时可见 + 结束后保留）。
+       * liveReasoning 非空时一并写入，供气泡里直接显示"模型正在想什么"。
+       */
+      const applyThinkingSteps = (steps: ThinkingStep[], liveReasoning?: string) => {
+        thinkingTraceRef.current = steps;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === (activeBubbleIdRef.current ?? botMsgId)
+              ? {
+                  ...m,
+                  thinkingTrace: steps,
+                  thinkingSummary: pickThinkingSummary(steps),
+                  ...(liveReasoning !== undefined ? { liveReasoning } : {}),
+                }
+              : m,
+          ),
+        );
+      };
 
       let res: Response;
       try {
@@ -1287,6 +1325,29 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
                   if (currentEvent === "done") {
                     finalData = eventData;
+                    // ★ done 也带完整轨迹快照：任务结束时必须落地一次，
+                    //   否则"完成后展开思考过程"就只剩空面板（2026-10-08）。
+                    if (Array.isArray(eventData.thinkingSteps) && eventData.thinkingSteps.length > 0) {
+                      applyThinkingSteps(eventData.thinkingSteps as ThinkingStep[]);
+                    }
+                  } else if (currentEvent === "reasoning") {
+                    // ── 模型推理原文（流式）──
+                    // 用户诉求（2026-10-08 小米模型）：展开后要看到大模型的
+                    // 思考与分析过程，而不是一堆「正在生成回复...」。
+                    const delta = (eventData.reasoningDelta as string) || "";
+                    const full = (eventData.reasoningText as string) || (liveReasoningRef.current + delta);
+                    const rIdx = typeof eventData.roundIndex === "number" ? eventData.roundIndex : undefined;
+                    liveReasoningRef.current = full;
+                    // 节流刷新：推理 chunk 每几十毫秒一个，不能每字 setState
+                    if (!reasoningTimerRef.current) {
+                      const wait = Math.max(0, 100 - (Date.now() - lastReasoningRenderAtRef.current));
+                      reasoningTimerRef.current = setTimeout(() => {
+                        reasoningTimerRef.current = null;
+                        lastReasoningRenderAtRef.current = Date.now();
+                        const text = liveReasoningRef.current;
+                        applyThinkingSteps(mergeLiveReasoning(thinkingTraceRef.current, text, rIdx) as ThinkingStep[], text);
+                      }, wait);
+                    }
                   } else if (currentEvent === "error") {
                     const errMsg = eventData.message || t("chat.process_error");
                     setMessages((prev) =>
@@ -1354,7 +1415,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       timestamp: Date.now(),
                     };
                     const isSearchOrFetchResult = step.type === "tool_result" && (step.toolName === "web_search" || step.toolName === "fetch_node_page");
-                    if (!isSearchOrFetchResult) {
+                    // ★ 刷屏噪声过滤（2026-10-08）：`token` 每片段一条、
+                    //   `status`+generating 每 50ms 一条，detail 恒为
+                    //   「正在生成回复...」。用户原话：展开看到的是"大量的
+                    //   正在生成回复"，而模型真正在想什么一个字都没有。
+                    //   正文已经在气泡里逐字渲染，这里再记一份纯属重复。
+                    const isNoise = isNoiseProgressStep({
+                      type: step.type,
+                      phase: eventData.phase as string | undefined,
+                      detail: step.detail,
+                    });
+                    if (!isSearchOrFetchResult && !isNoise) {
                       setProgressSteps((prev) => {
                         const lastStep = prev[prev.length - 1];
                         if (lastStep && lastStep.type === step.type && lastStep.toolName === step.toolName && lastStep.detail === step.detail) {
@@ -1405,21 +1476,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     // 后端在关键节点（工具决策/结果/失败/自动续跑）带上完整快照，
                     // 这里直接挂到消息上，执行过程中就能看到，结束后也不会消失。
                     if (Array.isArray(eventData.thinkingSteps) && eventData.thinkingSteps.length > 0) {
-                      const steps = eventData.thinkingSteps as ThinkingStep[];
-                      thinkingTraceRef.current = steps;
-                      setMessages((prev) =>
-                        prev.map((m) =>
-                          m.id === (activeBubbleIdRef.current ?? botMsgId)
-                            ? {
-                                ...m,
-                                thinkingTrace: steps,
-                                thinkingSummary: steps[0]?.kind === "reasoning"
-                                  ? (steps[0].detail || steps[0].title || "")
-                                  : (steps[0]?.title || ""),
-                              }
-                            : m,
-                        ),
-                      );
+                      applyThinkingSteps(eventData.thinkingSteps as ThinkingStep[]);
                     }
 
                     if (eventData.phase) {
@@ -1634,6 +1691,19 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, streamLog: trace } : m
         ));
       }
+      // 收尾：停掉推理节流定时器（防止流已结束还补一次渲染）
+      if (reasoningTimerRef.current) {
+        clearTimeout(reasoningTimerRef.current);
+        reasoningTimerRef.current = null;
+      }
+      // 兜底：若后端从未下发过轨迹快照，但确实收到过推理原文，
+      // 这里补一条 reasoning 条目 —— 否则用户"看到了思考流，结束后却没了"。
+      if (thinkingTraceRef.current.length === 0 && liveReasoningRef.current.trim()) {
+        const text = liveReasoningRef.current;
+        thinkingTraceRef.current = [
+          { kind: "reasoning", title: text.slice(0, 120), detail: text },
+        ];
+      }
       // 思考轨迹同样落盘到消息对象 —— 否则刷新页面就没了。
       // 这一条是用户诉求「完成后完整保留」的关键：只渲染不保存等于没做。
       const finalTrace = thinkingTraceRef.current;
@@ -1643,13 +1713,18 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             ? {
                 ...m,
                 thinkingTrace: finalTrace,
-                thinkingSummary: finalTrace[0]?.kind === "reasoning"
-                  ? (finalTrace[0].detail || finalTrace[0].title || "")
-                  : (finalTrace[0]?.title || ""),
+                thinkingSummary: pickThinkingSummary(finalTrace),
+                // 流式预览到此为止：内容已并入 thinkingTrace，
+                // 留着会和展开后的 reasoning 条目重复显示。
+                liveReasoning: undefined,
               }
             : m
         ));
+      } else {
+        // 没有任何轨迹时也要把残留的流式预览清掉
+        setMessages((prev) => prev.map((m) => (m.liveReasoning ? { ...m, liveReasoning: undefined } : m)));
       }
+      liveReasoningRef.current = "";
 
       // Auto-dequeue next message if queue has items
       setMessageQueue(prev => {
@@ -1846,9 +1921,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     }
   };
 
-  const toggleStep = (msgId: string, idx: number) => {
+  /**
+   * 展开/折叠某一步。
+   *
+   * ★ 默认态（2026-10-08）：`reasoning` 默认**展开** —— 用户最想看的就是
+   *   模型的思考原文，点开"思考过程"却还要再点一次才能看到文字，体验很差；
+   *   而工具参数/原始输出体积大、信息密度低，保持默认折叠。
+   */
+  const isStepExpanded = (msgId: string, idx: number, kind: ThinkingStep["kind"]): boolean => {
+    const v = showStep[stepKey(msgId, idx)];
+    return v === undefined ? kind === "reasoning" : v;
+  };
+
+  const toggleStep = (msgId: string, idx: number, kind?: ThinkingStep["kind"]) => {
     const k = stepKey(msgId, idx);
-    setShowStep((prev) => ({ ...prev, [k]: !prev[k] }));
+    setShowStep((prev) => ({ ...prev, [k]: !(prev[k] ?? (kind === "reasoning")) }));
   };
 
   const toggleThinking = (id: string) => {
@@ -2434,6 +2521,39 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                   </>
                 )}
                 {/* ══════════════════════════════════════════════════════════
+                    实时思考：模型正在吐的推理原文，流式逐字增长。
+                    （2026-10-08 用户诉求：执行过程中就要能看到大模型在想什么，
+                      而不是等结束、也不是看一堆「正在生成回复...」）
+                    ══════════════════════════════════════════════════════ */}
+                {msg.liveReasoning && msg.liveReasoning.trim() && (
+                  <div
+                    style={{
+                      marginBottom: "8px",
+                      padding: "8px 10px",
+                      border: "1px dashed var(--border-light, #21262d)",
+                      borderRadius: "6px",
+                      background: "var(--bg-main, #0d1117)",
+                      maxHeight: "240px",
+                      overflowY: "auto",
+                    }}
+                  >
+                    <div style={{ fontSize: "11px", color: "var(--accent)", marginBottom: "4px" }}>
+                      💭 模型思考中…
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        lineHeight: 1.7,
+                        color: "var(--text-secondary, #8b949e)",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {tailText(msg.liveReasoning, 3000)}
+                    </div>
+                  </div>
+                )}
+                {/* ══════════════════════════════════════════════════════════
                     思考轨迹：折叠态只露 30 字摘要 + 步数，点击展开完整时间线。
                     数据来自后端 thinkingTrace（已落盘，刷新后仍在）。
                     ══════════════════════════════════════════════════════ */}
@@ -2488,7 +2608,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         {msg.thinkingTrace && msg.thinkingTrace.length > 0 ? (
                           msg.thinkingTrace.map((step, i) => (
                             <div key={i} style={thinkingStepStyle}>
-                              <div style={thinkingStepHeadStyle} onClick={() => toggleStep(msg.id, i)}>
+                              <div style={thinkingStepHeadStyle} onClick={() => toggleStep(msg.id, i, step.kind)}>
                                 <span style={{ color: THINKING_KIND_META[step.kind].color, fontSize: "11px" }}>
                                   {THINKING_KIND_META[step.kind].icon}
                                 </span>
@@ -2499,13 +2619,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                                   </span>
                                 )}
                                 {step.detail && (
-                                  <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", transform: showStep[stepKey(msg.id, i)] ? "rotate(90deg)" : "none" }}>
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", transform: isStepExpanded(msg.id, i, step.kind) ? "rotate(90deg)" : "none" }}>
                                     ▶
                                   </span>
                                 )}
                               </div>
-                              {step.detail && showStep[stepKey(msg.id, i)] && (
-                                <pre style={thinkingDetailStyle}>{step.detail}</pre>
+                              {step.detail && isStepExpanded(msg.id, i, step.kind) && (
+                                <pre style={{ ...thinkingDetailStyle, ...(step.kind === "reasoning" ? { fontFamily: "inherit", fontSize: "12px", color: "var(--text-primary, #c9d1d9)" } : {}) }}>{step.detail}</pre>
                               )}
                             </div>
                           ))

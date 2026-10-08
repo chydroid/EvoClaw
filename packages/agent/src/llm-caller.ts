@@ -1593,6 +1593,18 @@ export async function parseStreamingResponse(
   let fallbackRound = 0;
   let roundStarted = false;
 
+  // ── 推理原文实时下发（2026-10-08）──
+  // 事故：用户用小米模型时，展开"执行过程"只看到铺天盖地的
+  // 「正在生成回复...」，而模型的思考/分析原文一个字都没有。
+  // 根因：推理内容（reasoning_content / <think>）此前只 `trace.add*()`
+  // 写进内存轨迹，**从不下发 progress 事件** —— 落盘了 ≠ 用户看得到。
+  // 实测 mimo-v2.6-flash 是 2–6 字一个 chunk 流式下发推理的，
+  // 所以这里逐 chunk 下发 delta，同时按节流附带完整轨迹快照
+  // （快照体积大，不能每个 chunk 都带）。
+  let reasoningAccum = "";
+  let lastReasoningPushAt = 0;
+  const REASONING_SNAPSHOT_MS = 400;
+
   let streamReadError: unknown = null;
   try {
     while (true) {
@@ -1635,8 +1647,25 @@ export async function parseStreamingResponse(
             (choice.delta as { reasoning_content?: string | null }).reasoning_content ??
             (choice.delta as { reasoning?: string | null }).reasoning ??
             null;
+          const currentRoundForReasoning = trace ? trace.round : fallbackRound || 1;
+
           if (reasoningDelta) {
-            trace?.addReasoning(reasoningDelta);
+            // 同一轮内合并成**一整段**（否则几十条碎片，展开后没法读）
+            trace?.appendReasoning(reasoningDelta, currentRoundForReasoning);
+            reasoningAccum += reasoningDelta;
+            const nowMs = Date.now();
+            const withSnapshot = nowMs - lastReasoningPushAt >= REASONING_SNAPSHOT_MS;
+            if (withSnapshot) lastReasoningPushAt = nowMs;
+            onProgress({
+              type: "reasoning",
+              phase: "thinking",
+              detail: "模型思考中…",
+              progress: 55,
+              reasoningDelta,
+              reasoningText: reasoningAccum,
+              roundIndex: currentRoundForReasoning,
+              ...(withSnapshot && trace ? { thinkingSteps: trace.toJSON() } : {}),
+            });
           }
 
           if (choice.delta.content) {
@@ -1645,7 +1674,23 @@ export async function parseStreamingResponse(
             // 清洗器丢弃的推理内容转存进思考轨迹（不进正文，但完整保留）
             if (tagScrubber.reasoningLength > 0) {
               const reasoning = tagScrubber.takeReasoning();
-              if (reasoning.trim()) trace?.addReasoning(reasoning);
+              if (reasoning.trim()) {
+                trace?.appendReasoning(reasoning, currentRoundForReasoning);
+                reasoningAccum += reasoning;
+                const nowMs = Date.now();
+                const withSnapshot = nowMs - lastReasoningPushAt >= REASONING_SNAPSHOT_MS;
+                if (withSnapshot) lastReasoningPushAt = nowMs;
+                onProgress({
+                  type: "reasoning",
+                  phase: "thinking",
+                  detail: "模型思考中…",
+                  progress: 55,
+                  reasoningDelta: reasoning,
+                  reasoningText: reasoningAccum,
+                  roundIndex: currentRoundForReasoning,
+                  ...(withSnapshot && trace ? { thinkingSteps: trace.toJSON() } : {}),
+                });
+              }
             }
             content += cleaned;
 
@@ -1856,6 +1901,25 @@ export async function parseStreamingResponse(
   }
 }
 
+// ── 轨迹快照节流器 ──
+//
+// 思考轨迹要"实时可见"，就得随事件下发；但快照是**全量**的（含推理全文与
+// 工具输出），每个 chunk 都带会把 SSE 流撑爆。实测推理 chunk 间隔仅几十毫秒，
+// 因此统一按最小间隔节流，`force` 用于 done / auto_continue 这类"必须落地"的节点。
+const traceSnapshotState = { lastAt: 0 };
+
+function traceSnapshot(
+  trace: ThinkingTrace | undefined,
+  opts: { force?: boolean; minIntervalMs?: number } = {},
+): ThinkingStep[] | undefined {
+  if (!trace || trace.isEmpty) return undefined;
+  const now = Date.now();
+  const min = opts.minIntervalMs ?? 300;
+  if (!opts.force && now - traceSnapshotState.lastAt < min) return undefined;
+  traceSnapshotState.lastAt = now;
+  return trace.toJSON();
+}
+
 // ── callLLMOnce ──
 
 export async function callLLMOnce(
@@ -2062,7 +2126,20 @@ export async function callLLMOnce(
     // 原因：非流式分支直接返回 msg.tool_calls，从未调用过 addDecision。
     if (trace) {
       const rc = (msg as { reasoning_content?: string | null }).reasoning_content;
-      if (rc && String(rc).trim()) trace.addReasoning(String(rc));
+      if (rc && String(rc).trim()) {
+        trace.addReasoning(String(rc));
+        // 非流式也要下发 —— 否则"落盘了但用户看不到"的老毛病又犯一次
+        onProgress?.({
+          type: "reasoning",
+          phase: "thinking",
+          detail: "模型思考中…",
+          progress: 55,
+          reasoningDelta: String(rc),
+          reasoningText: String(rc),
+          roundIndex: trace.round || 1,
+          thinkingSteps: trace.toJSON(),
+        });
+      }
       for (const tc of msg.tool_calls ?? []) {
         const fn = tc?.function;
         if (!fn?.name) continue;
@@ -2601,7 +2678,8 @@ Have a specific URL?
           budget.consume(1);
         }
 
-        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1}/${maxToolRounds} 轮...`, progress: Math.min(30 + round * 3, 90), providerName: provider.name, round: round + 1 });
+        // ★ 每轮开始就下发一次轨迹快照（force）：保证"上一轮的思考"及时送到前端
+        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1}/${maxToolRounds} 轮...`, progress: Math.min(30 + round * 3, 90), providerName: provider.name, round: round + 1, thinkingSteps: traceSnapshot(trace, { force: true }) });
 
         // ── 进度反馈：预算接近耗尽时预警 ──
         if (budget) {
@@ -2744,6 +2822,7 @@ Have a specific URL?
               detail: `💭 ${summary}`,
               progress: Math.min(35 + round * 3, 85),
               round: round + 1,
+              thinkingSteps: traceSnapshot(trace),
             });
           }
         }
@@ -3089,7 +3168,7 @@ Have a specific URL?
           const toolSummary = formatToolSummary(toolName, args);
           const toolIdx = toolCalls.indexOf(tc);
           const toolProgress = 50 + Math.floor((toolIdx / toolCalls.length) * 20);
-          onProgress?.({ type: "tool_call", phase: "tool_calling", detail: toolSummary, progress: toolProgress, toolName, toolArgs: args, round: round + 1 });
+          onProgress?.({ type: "tool_call", phase: "tool_calling", detail: toolSummary, progress: toolProgress, toolName, toolArgs: args, round: round + 1, thinkingSteps: traceSnapshot(trace) });
 
           // ── Observability: start tool span ──
           let toolSpanId: string | undefined;
@@ -3452,7 +3531,7 @@ Have a specific URL?
               recordToolSuccess(toolName);
               // ── 进度反馈：工具完成时显示可读摘要 ──
               const doneSummary = formatToolResultSummary(toolName, args, toolResult);
-              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: doneSummary, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1 });
+              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: doneSummary, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1, thinkingSteps: traceSnapshot(trace) });
             } catch (err: unknown) {
               const errMsg = err instanceof Error ? err.message : String(err);
               const isTimeout = errMsg.includes("timed out");
@@ -3472,7 +3551,7 @@ Have a specific URL?
               toolError = errMsg;
               recordToolFailure(toolName);
               process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" failed:` + " " + errMsg + "\n");
-              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1 });
+              onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1, thinkingSteps: traceSnapshot(trace) });
             }
           }
 
@@ -3796,7 +3875,8 @@ Have a specific URL?
       }
 
       if (finalReply) {
-        onProgress?.({ type: "done", phase: "done", detail: `任务完成（${successfulToolCalls} 次工具调用）`, progress: 100 });
+        // ★ force=true：任务结束时必须下发完整轨迹 —— 这是"完成后还能展开看"的最后一道保障
+        onProgress?.({ type: "done", phase: "done", detail: `任务完成（${successfulToolCalls} 次工具调用）`, progress: 100, thinkingSteps: traceSnapshot(trace, { force: true }) });
         // Append skill fallback result if available
         if (skillFallbackResult) {
           finalReply += skillFallbackResult;
@@ -3889,6 +3969,7 @@ Have a specific URL?
           try {
             const agentId = "default";
             deps.sessionManager.getOrCreateSession(agentId, sessionId);
+            process.stdout.write(`[AgentModelExecutor] Persisting thinking trace: ${trace.size} step(s), round=${trace.round}, provider=${provider.name}, replyChars=${finalReply.length}\n`);
             deps.sessionManager.appendTurn(agentId, sessionId, {
               turnIndex: 0, role: "assistant", content: finalReply, timestamp: new Date().toISOString(),
               // 持久化真实工具调用（历史实现是 llm_tools 占位符，导致会话恢复后

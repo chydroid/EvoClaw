@@ -9,6 +9,66 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.0] - 2026-10-09
+
+**模型推理原文流式下发：执行过程可见「模型在想什么」，执行过程面板不再被「正在生成回复...」刷屏**
+
+用户反馈（小米 mimo 模型实测）：「展开执行过程中显示的是大量的『正在生成回复...』，
+并没有看到我想看的大模型的思考和分析过程的流式输出内容。但那却是我想要在展开中看到的。」
+
+### 根因（三个，都在链路的不同环节）
+
+1. **推理原文从不下发**（agent）：`reasoning_content` / `<think>` 到达时只被
+   `trace.addReasoning()` 写进内存轨迹，**从未通过 progress 事件下发**。
+   实测 mimo-v2.6-flash 以 2–6 字一个 chunk 流式下发推理 —— 后端全程收到，
+   前端一个字都没见到。落盘了 ≠ 用户看得到。
+2. **轨迹碎片化**（agent）：若逐 chunk 建条目，一段 3000 字的思考会碎成
+   几百条标题为「这是一个」「非常有趣」的碎片，展开后根本无法阅读。
+3. **刷屏噪声**（web-ui）：`token` 事件每片段一条、`status`+`generating`
+   每 50ms 一条，detail 恒为「正在生成回复...」，把「执行过程」面板彻底淹没
+   （实测一次任务 575 个事件里 277 个是这种噪声）。
+
+### 改动
+
+**agent**
+- `thinking-trace.ts` 新增 `appendReasoning()`：同一轮连续推理**合并成一条**
+  （detail 递增、title 取首行），换轮/触顶(4000字)才另起或截断标注。
+- `llm-caller.ts`：
+  - reasoning delta 到达即发 `type:"reasoning"` 事件（`reasoningDelta` 增量 +
+    `reasoningText` 本轮累积 + `roundIndex`），快照按 400ms 节流附带；
+  - `<think>` 清洗器提取的推理同样下发；
+  - 非流式路径的 `reasoning_content` 也一次性下发；
+  - `llm_call`（每轮）/ `💭 摘要` / `tool_call` / `tool_result` / `done`
+    事件统一带 `thinkingSteps` 快照（`traceSnapshot()` 节流 300ms，
+    done/llm_call 强制）—— 修掉「只有 auto_continue 才带快照、正常完成
+    反而拿不到轨迹」的漏洞。
+- `types.ts`：`AgentProgressEvent` 新增 `reasoning` 类型与
+  `reasoningDelta` / `reasoningText` 字段。
+
+**web-ui**
+- 新模块 `live-reasoning.ts`（纯函数，可单测）：`mergeLiveReasoning`
+  （流式推理合并进轨迹，防快照覆盖产生重复条目）、`isNoiseProgressStep`
+  （噪声判定）、`pickThinkingSummary`（折叠摘要**优先取推理原文**，
+  旧实现只看 steps[0]，推理不在首位时摘要就变成「决定调用 shell_exec」）。
+- `WebChatPage.tsx`：
+  - 新增 `reasoning` 事件分支：~100ms 节流渲染，气泡内实时显示
+    「💭 模型思考中…」区块（推理原文逐字增长），结束并入 thinkingTrace；
+  - 「执行过程」过滤 token / generating-status 噪声；
+  - 轨迹中 `reasoning` 条目**默认展开**（用户最想看的就是思考原文，
+    不该再要求点第二次）；`done` 事件携带的快照也会落地。
+
+### 验证
+
+- 单测：`thinking-trace.test.ts` +6（合并/换轮/触顶/空白/工具分隔）、
+  `live-reasoning.test.ts` +14（合并/噪声过滤/摘要/尾部截取）。
+- `pnpm build → typecheck → test`：249 文件 / 6073 用例全部通过。
+- 真实任务（小米 mimo-v2.6-flash）抓原始 SSE：**264 个 reasoning 事件、
+  3004 字推理原文**流式到达前端；最终轨迹 10 条
+  （r1 推理 2929 字一整条 + 决策 + 工具结果 + r2 推理），不再是碎片。
+- 浏览器端到端（Playwright + 系统 Chrome）：执行中捕捉到「💭 模型思考中…」
+  实时区块；展开「思考过程」直接看到推理原文（默认展开）；
+  「执行过程」面板 0 处「正在生成回复」。
+
 ## [0.91.2] - 2026-10-09
 
 **模型「测试连接」改为两段式测速：8.7 秒 → 0.8 秒**

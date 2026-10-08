@@ -86,7 +86,9 @@ export interface TaskStatus {
 }
 
 export interface AgentProgressEvent {
-  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token" | "budget_warning" | "rounds_warning" | "budget_exhausted" | "auto_continue" | "done";
+  type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token" | "budget_warning" | "rounds_warning" | "budget_exhausted" | "auto_continue" | "done"
+    /** 模型推理原文流（2026-10-08）：reasoning_content / <think> 的增量下发 */
+    | "reasoning";
   phase?: TaskStatus["phase"];
   detail: string;
   progress?: number;
@@ -128,6 +130,22 @@ export interface AgentProgressEvent {
    * 仅在「本轮确实产出了正文」时携带；纯工具调用轮不带（不产生空气泡）。
    */
   roundIndex?: number;
+  /**
+   * 模型推理原文增量（2026-10-08 增补）。
+   *
+   * 用户反馈：用小米模型时「展开执行过程只看到大量『正在生成回复...』，
+   * 看不到大模型的思考和分析过程」。根因是推理内容（reasoning_content /
+   * `<think>`）只被写进轨迹对象，**从未通过 progress 事件下发** ——
+   * 落盘了不等于用户看得到。
+   *
+   * 现在每来一段推理就发一个 `type: "reasoning"` 事件：
+   * - `reasoningDelta`：本次增量（几字符，前端逐字追加，出流式打字效果）
+   * - `reasoningText`：本轮累积全文（前端可直接整体覆盖，便于纠偏）
+   * - `roundIndex`：属于第几轮 LLM 调用
+   */
+  reasoningDelta?: string;
+  /** 本轮推理累积全文 */
+  reasoningText?: string;
 }
 
 export type AgentProgressCallback = (event: AgentProgressEvent) => void;
