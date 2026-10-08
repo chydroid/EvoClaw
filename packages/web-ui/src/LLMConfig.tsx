@@ -434,7 +434,9 @@ function LLMConfigPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        showStatus(t("llm.test_ok", "连接成功") + ` (${data.latencyMs ?? 0}ms)`, true);
+        // 标明测速方式：models=只验连通性（快），stream=真实推理首包（准）
+        const via = data.probe === "models" ? " · 仅连通性" : data.probe === "stream" ? " · 推理首包" : "";
+        showStatus(t("llm.test_ok", "连接成功") + ` (${data.latencyMs ?? 0}ms${via})`, true);
       } else {
         showStatus(t("llm.test_fail", "连接失败") + ": " + (data.error || res.statusText), false);
       }

@@ -7520,7 +7520,65 @@ export class ProtocolAdapter {
         const url = normalizeChatEndpoint(baseURL);
         const timeoutMs =
           ((provider.config as Record<string, unknown> | undefined)?.timeout as number) || 15000;
+
+        // ─────────────────────────────────────────────────────────────
+        // 两段式测速（2026-10-09）：原来只发一次 max_tokens:5 的**非流式**
+        // 聊天请求，实测慢的 provider 要8.7 秒（用户反馈"都在5 秒以上"）。
+        //
+        // 根因：`stream:false` 要等模型**生成完**才返回，而 max_tokens:5
+        // 并不能减少排队+预填充（prefill）时间 —— 绝大多数耗时在服务端
+        // 准备阶段，不在生成阶段。
+        //
+        // 改为：
+        //   第 1 段 GET /models —— 只验 Base URL + API Key，不触发推理。
+        //          实测 34~1014ms，比聊天快一个数量级。
+        //   第 2 段仅当第 1 段不可用时（404/405/部分代理不实现该接口）
+        //          才回落到 **流式** 聊天：读首个 SSE 分片即返回并取消，
+        //          慢的 provider 也能从 8708ms 降到 3219ms。
+        // ─────────────────────────────────────────────────────────────
         const start = Date.now();
+        const base = baseURL.replace(/\/$/, "");
+        const modelsUrl = `${base}/models`;
+
+        const probeTimeout = Math.min(timeoutMs, 5000);
+        const probeController = new AbortController();
+        const probeTimer = setTimeout(() => probeController.abort(), probeTimeout);
+        let modelsProbe: { ok: boolean; status: number; body: string } | null = null;
+        try {
+          const r = await fetch(modelsUrl, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+            signal: probeController.signal,
+          });
+          clearTimeout(probeTimer);
+          let b = "";
+          try {
+            b = (await r.text()).slice(0, 300);
+          } catch {
+            /* ignore */
+          }
+          modelsProbe = { ok: r.ok, status: r.status, body: b };
+        } catch {
+          clearTimeout(probeTimer);
+        }
+
+        // /models 可用 → 直接判定，无需推理
+        if (modelsProbe && (modelsProbe.ok || (modelsProbe.status !== 404 && modelsProbe.status !== 405))) {
+          const latencyMs = Date.now() - start;
+          if (modelsProbe.ok) {
+            res.json({ success: true, latencyMs, probe: "models" });
+          } else {
+            res.json({
+              success: false,
+              latencyMs,
+              probe: "models",
+              error: `HTTP ${modelsProbe.status}: ${modelsProbe.body}`,
+            });
+          }
+          return;
+        }
+
+        // 回落：流式聊天，读到首个分片即返回
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -7529,19 +7587,22 @@ export class ProtocolAdapter {
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${apiKey}`,
+              Accept: "text/event-stream",
             },
             body: JSON.stringify({
               model: modelId,
               messages: [{ role: "user", content: "ping" }],
-              max_tokens: 5,
-              stream: false,
+              max_tokens: 1,
+              stream: true,
             }),
             signal: controller.signal,
           });
+          // ★ 立刻取消：拿到响应头就说明鉴权与模型名都通过了
+          resp.body?.cancel().catch(() => undefined);
           clearTimeout(timer);
           const latencyMs = Date.now() - start;
           if (resp.ok) {
-            res.json({ success: true, latencyMs });
+            res.json({ success: true, latencyMs, probe: "stream" });
           } else {
             let detail = "";
             try {
@@ -7549,7 +7610,7 @@ export class ProtocolAdapter {
             } catch {
               /* ignore */
             }
-            res.json({ success: false, latencyMs, error: `HTTP ${resp.status}: ${detail}` });
+            res.json({ success: false, latencyMs, probe: "stream", error: `HTTP ${resp.status}: ${detail}` });
           }
         } catch (e) {
           clearTimeout(timer);
@@ -7558,6 +7619,7 @@ export class ProtocolAdapter {
           res.json({
             success: false,
             latencyMs,
+            probe: "stream",
             error: msg.includes("abort")
               ? `请求超时（>${timeoutMs}ms，请检查 Base URL 或网络连通性）`
               : msg,
