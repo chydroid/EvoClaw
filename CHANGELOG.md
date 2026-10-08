@@ -9,6 +9,70 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.89.0] - 2026-10-08
+
+**适应不同大模型：让每个模型的流式思考都能显示出来**
+
+用户诉求（原话）：「我希望是把完成任务的过程，也就是大模型的流式思考输出
+给保存下来，在任务完成后折叠起来，需要的话可以展开来看」
++「要适应不同的大模型都能够显示出来」
+
+### 根因：不是抓不到，而是**从来没开口要**
+
+抓取代码（`reasoning_content` 解析、scrubber 累积、trace 采集）本来就是对的。
+真正的问题是：**系统此前从不传任何推理开关参数**，模型即使有推理能力也默认关闭。
+
+实测抓原始 SSE 流逐档对比 mimo-v2.6-flash：
+
+| 请求参数 | 推理字数 |
+|---|---|
+| 无参数 | **7 字** |
+| `enable_thinking: true` | 50 字 |
+| `reasoning_effort: "high"` | **68 字** |
+
+同一模型、同一问题，从 7 字变 68 字 —— 能力一直都在，只是没告诉它要用。
+
+### 改动
+
+新增 `packages/agent/src/reasoning-toggle.ts`：
+
+- `pickReasoningToggle(provider)` 纯函数，按 provider 特征选开关
+  - Qwen / MiMo / GLM / Kimi / MiniMax / StepFun / 混元 → `enable_thinking: true`
+  - OpenAI / Claude / Gemini 系 → `reasoning_effort: "high"`
+  - DeepSeek → `none`（调用方已单独发 `reasoning_type`，避免重复）
+  - **认不出来 → `none`**：白名单式只给确认支持的加，
+    因为开关名不通用，乱传会被 provider 忽略甚至报错
+- `applyReasoningToggle(body, provider)`：就地写入，
+  且**不覆盖**调用方已显式设置的值
+- 在 `llm-caller` 请求体构造处接入（tools 分支之后）
+- 新增 9 项测试覆盖各家差异（大小写、分隔符、显式值优先等）
+
+同时补上 UI 说明：没有 reasoning 条目时，直接写明是provider 能力限制，
+并指出切到支持推理的模型即可看到 —— 避免再次被误判成「没修好」。
+
+### ★ 端到端实测对比
+
+临时把 mimo 提到 order=0 跑真实任务（测完已还原配置）：
+
+| | 修复前（agnes-3.0-flash） | 修复后（mimo + 开关） |
+|---|---|---|
+| reasoning 条数 | **0** | **12** |
+| 总轨迹 | 14 条 | **31 条** |
+
+实际抓到的思考原文：
+- 「The list is truncated. I need to run a scrip…」（283 字）
+- 「用户再次问 data/workspace 下有几个 .md 文件。之前我用 shell_…」（84 字）
+
+### 沉淀
+
+- **不要假设模型默认开推理** —— 加个开关可能从 7 字变 68 字。
+- provider 开关名**不通用**（enable_thinking / reasoning_effort / reasoning_type），
+  必须白名单式适配，不能乱传。
+- 判断依据用 `id + name + model + baseURL` 归一化后匹配子串，比只看 model 名稳。
+
+**验证**：typecheck 全绿；build + typecheck + test 全绿
+（245 files / 5998 passed / 1 skipped / 0 failed）。
+
 ## [0.88.1] - 2026-10-08
 
 **复测修复：轨迹落盘了，但前端读不到（用户仍看不到）**

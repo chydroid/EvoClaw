@@ -27,6 +27,7 @@ import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWeb
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
+import { applyReasoningToggle } from "./reasoning-toggle";
 import { retryAsync } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
 import { getProviderSkipList } from "./provider-skip-list";
@@ -1950,6 +1951,15 @@ export async function callLLMOnce(
         body.reasoning_type = "deepseek_reasoning";
       }
     }
+
+    // ── 推理开关：让「不同大模型」都能吐出思考原文 ──
+    // 实测（2026-10-08）：抓原始 SSE 流逐个探测发现，provider 之间差异极大——
+    //   mimo-v2.6-flash 默认只给 7 字推理，加 enable_thinking 后给 50 字，
+    //   加 reasoning_effort:high 给 68 字；agnes-3.0-flash 则一个字段都不给。
+    // 系统此前**从不**传任何推理开关，所以即便模型本身支持思考，
+    // 拿到的也是被"阉割"的一点点，轨迹里几乎没有 reasoning 条目。
+    // 这里按 provider 特征补上开关，让能力被用起来。
+    applyReasoningToggle(body, provider);
 
     process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
     callStart = Date.now();
