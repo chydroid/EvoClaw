@@ -9,6 +9,74 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.90.0] - 2026-10-08
+
+**用户复盘 20:14-20:24 会话后指出四个问题，全部核实并修复**
+
+核实依据：`data/sessions/default/sess_muy586cq_c15452b5/transcript.jsonl`
+第 7 条（20:19，36 步轨迹）。
+
+### 一、气泡互相冲掉（用户最在意）
+
+**根因**：`WebChatPage.tsx` 靠
+`newReply.length < currentContent.length * 0.5` **猜测**是否换轮，
+换轮时把旧内容塞进**同一个气泡**的 `intermediateOutput` 折叠区
+→ 视觉上就是"下一条冲掉上一条"。
+
+**修法**：让后端显式声明轮次，前端不再猜。
+- `AgentProgressEvent` 新增 `roundIndex`
+- `ThinkingTrace.nextRound()` 自增（放在 trace 上：它是主循环与
+  `parseStreamingResponse` 之间**唯一共享的可变对象**）
+- token 事件**只在本轮首个正文 token** 携带 `roundIndex`
+- 前端收到 `roundIndex > 1` → **新建气泡**，旧气泡封存并保留其思考轨迹
+- 12 处 `m.id === botMsgId` 改写向 `activeBubbleIdRef`，
+  否则新内容会写进旧气泡
+
+### 二、最后一个气泡固定为任务完成总结
+
+新增 `packages/web-ui/src/final-summary.ts`：
+- ✅ 任务已完成 / ❌ 任务未完成 / ⏹️ 任务已中止，三态明确
+- 统计口径来自**真实执行记录**（thinkingTrace 的 decision/error 计数），
+  **不采信模型自述的"已完成"**
+- 简洁（不超过十余行），附产出文件清单（>10 个截断）
+- UI 上加彩色横幅 + 独立气泡样式，状态一目了然
+
+### 三、内部纠错提示词泄露给用户
+
+**根因**：`llm-caller.ts` 有一行 `finalReply += verdict.notice;`——
+把**给LLM 看的续跑指令**拼进了用户可见正文。
+事故实录（20:24），用户直接看到：
+> ⚠️ 更正：上面的「已完成」并不成立……请修复上述失败后重新执行；
+> 在拿到工具的成功返回之前，请勿认为操作已经完成。
+
+**修法**：新增 `buildUserFacingCorrection(verdict)`，只说人话
+（"任务未完成：有工具执行失败，变更没有生效"）；
+完整内部指令改记入 `trace.addSystem()` —— 可追溯，但不污染 UI。
+
+### 四、遇到困难就停下来求用户协助
+
+提示词第 7 条**早有**"不要把执行权交还用户"，但没生效。
+20:19 实录：模型声称"Python 执行的是缓存旧版本，我无法定位这个缓存机制"，
+然后让用户"双击打开文件自己看一眼"——**把核对工作甩给用户**。
+
+**关键洞察**：这类回复**一句"要不要继续"都没有**，
+所以既有的三类停顿检测（`ASK_TO_CONTINUE` / `PROMISE_FUTURE` /
+`ASK_PERMISSION`）**全部漏掉**。
+
+**修法**：
+- 新增 `GIVE_UP_PATTERNS` → `PrematureStopKind = "blame_environment"`
+- 续跑指令针对该原因给出**穷尽手段清单**：换工具 / 换写法
+  （内联 python -c 失败→写成 .py）/ `file_list` 确认真实文件名 /
+  用一条命令自证猜测，并明确"核对是你的职责，不是用户的"
+- system-prompt 新增第 8 条，写明上述手段与禁令
+
+### 验证
+
+新增 16 项回归测试，**全部用事故原文作为测试输入**
+（如 20:19 的"我无法定位这个缓存机制"、20:24 的泄露文本），
+避免"改了个寂寞"。`build` + `typecheck` + `test` 全绿：
+**246 files / 6014 passed / 1 skipped / 0 failed**。
+
 ## [0.89.0] - 2026-10-08
 
 **适应不同大模型：让每个模型的流式思考都能显示出来**

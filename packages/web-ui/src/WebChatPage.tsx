@@ -17,6 +17,7 @@ import { useVoice, isSpeechRecognitionSupported, type VoiceState } from "./useVo
 import { voiceApi, type VoiceApiResponse } from "./api-client";
 import { showToast } from "./shared";
 import { mapSessionTurnsToMessages } from "./thinking-trace-mapping";
+import { buildFinalSummary } from "./final-summary";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -143,6 +144,11 @@ interface WebChatMessage {
   thinkingTrace?: ThinkingStep[];
   /** 折叠态一行摘要（后端算好，默认 30 字） */
   thinkingSummary?: string;
+  /**
+   * 是否为任务收尾气泡（2026-10-08）。
+   * 用户要求：最后一个气泡放任务完成/失败总结，且提示要明显。
+   */
+  isFinalSummary?: boolean;
 }
 
 /** 思考轨迹条目（与后端 packages/agent/src/thinking-trace.ts 对齐） */
@@ -815,6 +821,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const attachedFilesRef = useRef<AttachedFileInfo[]>([]);
   // 最新收到的思考轨迹快照（后端每次关键事件都会带全量）
   const thinkingTraceRef = useRef<ThinkingStep[]>([]);
+  /**
+   * 当前正在写入的气泡 id（2026-10-08）。
+   * 多轮回复时，第一个气泡被封存后，后续事件要写到新气泡上，
+   * 否则会出现"新内容写进旧气泡"的错位。
+   */
+  const activeBubbleIdRef = useRef<string | null>(null);
   // Persisted streaming trace for the current assistant message (survives after
   // the live progressSteps state is cleared, so it can be shown collapsed).
   const streamLogRef = useRef<string[]>([]);
@@ -1143,6 +1155,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     };
 
     setMessages((prev) => [...prev, botMsg]);
+    activeBubbleIdRef.current = botMsgId;
 
     let msgIndex = 1;
     setLoadingMessageIndex(1);
@@ -1226,7 +1239,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             : t("chat.timeout");
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === botMsgId
+              m.id === (activeBubbleIdRef.current ?? botMsgId)
                 ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + abortMsg : "⚠️ " + abortMsg }
                 : m,
             ),
@@ -1235,7 +1248,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           const netErrMsg = t("chat.network_error", "Network error — cannot reach server");
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === botMsgId
+              m.id === (activeBubbleIdRef.current ?? botMsgId)
                 ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + netErrMsg : "⚠️ " + netErrMsg }
                 : m,
             ),
@@ -1277,7 +1290,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     const errMsg = eventData.message || t("chat.process_error");
                     setMessages((prev) =>
                       prev.map((m) =>
-                        m.id === botMsgId
+                        m.id === (activeBubbleIdRef.current ?? botMsgId)
                           ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + errMsg : "⚠️ " + errMsg }
                           : m,
                       ),
@@ -1352,24 +1365,48 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     }
 
                     if (eventData.phase === "generating" && eventData.reply) {
-                      setMessages((prev) =>
-                        prev.map((m) => {
-                          if (m.id !== botMsgId) return m;
-                          const newReply = eventData.reply as string;
-                          const currentContent = m.content || "";
-                          // If new reply is shorter than current content, this is a new LLM round
-                          // Move current content to intermediate output, start fresh with new round
-                          if (newReply.length < currentContent.length * 0.5 && currentContent.length > 50) {
-                            const prevIntermediate = m.intermediateOutput || "";
-                            return {
-                              ...m,
-                              intermediateOutput: prevIntermediate ? prevIntermediate + "\n\n---\n" + currentContent : currentContent,
-                              content: newReply,
-                            };
+                      const newReply = eventData.reply as string;
+                      const roundIdx = typeof eventData.roundIndex === "number" ? eventData.roundIndex : null;
+
+                      if (roundIdx !== null && roundIdx > 1) {
+                        // ★ 后端显式声明这是第 N 轮 → 新建一个气泡。
+                        // 用户诉求（2026-10-08）：「下一条内容不要显示在上一条内容的气泡里，
+                        // 而是要新建一个气泡。」旧实现靠"长度 < 一半"猜测换轮，
+                        // 换轮时把旧内容塞进同一个气泡的折叠区 → 看起来就是被冲掉。
+                        setMessages((prev) => {
+                          const cur = prev.find((m) => m.id === (activeBubbleIdRef.current ?? botMsgId));
+                          const prevContent = cur?.content?.trim() || "";
+                          if (!prevContent) return prev; // 首轮还没内容，无需新建
+                          // 若最新一条已经是本轮的气泡，则继续往它里面追加
+                          const last = prev[prev.length - 1];
+                          if (last && last.id === `${botMsgId}-r${roundIdx}`) {
+                            return prev.map((m) =>
+                              m.id === last.id ? { ...m, content: newReply } : m,
+                            );
                           }
-                          return { ...m, content: newReply };
-                        }),
-                      );
+                          // 封存上一轮气泡（保留思考轨迹），另起新气泡
+                          const sealedId = `${botMsgId}-r${roundIdx - 1}`;
+                          return [
+                            ...prev.map((m) =>
+                              m.id === (activeBubbleIdRef.current ?? botMsgId)
+                                ? { ...m, id: sealedId, content: prevContent, isFinalSummary: false }
+                                : m,
+                            ),
+                            {
+                              id: `${botMsgId}-r${roundIdx}`,
+                              role: "assistant" as const,
+                              content: newReply,
+                              timestamp: new Date().toISOString(),
+                            },
+                          ];
+                        });
+                        // 后续事件改写最新气泡
+                        activeBubbleIdRef.current = `${botMsgId}-r${roundIdx}`;
+                      } else {
+                        setMessages((prev) =>
+                          prev.map((m) => (m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, content: newReply } : m)),
+                        );
+                      }
                     }
 
                     // ── 思考轨迹（实时）──
@@ -1380,7 +1417,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       thinkingTraceRef.current = steps;
                       setMessages((prev) =>
                         prev.map((m) =>
-                          m.id === botMsgId
+                          m.id === (activeBubbleIdRef.current ?? botMsgId)
                             ? {
                                 ...m,
                                 thinkingTrace: steps,
@@ -1431,7 +1468,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             const abortMsg = wasUserAbort ? t("chat.stopped") : t("chat.timeout_short");
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === botMsgId
+                m.id === (activeBubbleIdRef.current ?? botMsgId)
                   ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + abortMsg : "⚠️ " + abortMsg }
                   : m,
               ),
@@ -1459,19 +1496,49 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             }
           }
 
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== botMsgId) return m;
+          setMessages((prev) => {
+            const activeId = activeBubbleIdRef.current ?? botMsgId;
+            // 最终回复写进当前活动气泡
+            const withFinal = prev.map((m) => {
+              if (m.id !== activeId) return m;
               const finalReply = (finalData!.reply as string) || "";
               const finalContent = finalReply || m.content || t("chat.empty_response", "(empty response from server)");
               return {
                 ...m,
                 content: finalContent,
-                intermediateOutput: m.intermediateOutput, // keep intermediate output visible
                 files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
               };
-            }),
-          );
+            });
+            // ★ 最后一个气泡固定为「任务完成总结」（用户要求：明显提示 + 简洁准确）
+            // 统计口径来自本次真实执行记录，不采信模型自述。
+            const trace = thinkingTraceRef.current;
+            const toolCalls = trace.filter((s) => s.kind === "decision").length;
+            const failures = trace.filter((s) => s.kind === "error").length;
+            const reasons = trace.filter((s) => s.kind === "reasoning").length;
+            const failedHard = failures > 0;
+            const summaryId = `${botMsgId}-summary`;
+
+            // 已经存在总结气泡（例如流式重入）则不重复追加
+            if (withFinal.some((m) => m.id === summaryId)) return withFinal;
+
+            return [
+              ...withFinal,
+              {
+                id: summaryId,
+                role: "assistant" as const,
+                content: buildFinalSummary({
+                  ok: !failedHard,
+                  toolCalls,
+                  failures,
+                  reasoningCount: reasons,
+                  files: (finalData!.files as Array<{ path: string }>) || [],
+                }),
+                timestamp: new Date().toISOString(),
+                isFinalSummary: true,
+                files: (finalData!.files as Array<{ path: string; size: number; downloadUrl: string }>) || [],
+              },
+            ];
+          });
 
           // Context usage numerator: prefer contextTokens (prompt_tokens reported by the
           // last LLM call). Only fall back to tokensUsed / local estimation when the
@@ -1539,7 +1606,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         const srvErrMsg = `Server error: ${errText.slice(0, 200)}`;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === botMsgId
+            m.id === (activeBubbleIdRef.current ?? botMsgId)
               ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + srvErrMsg : "⚠️ " + srvErrMsg }
               : m,
           ),
@@ -1549,7 +1616,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       const unexpErrMsg = t("chat.unexpected_error", "Unexpected error — please retry");
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === botMsgId
+          m.id === (activeBubbleIdRef.current ?? botMsgId)
             ? { ...m, content: m.content ? m.content + "\n\n---\n⚠️ " + unexpErrMsg : "⚠️ " + unexpErrMsg }
             : m,
         ),
@@ -1572,7 +1639,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       const trace = streamLogRef.current;
       if (trace.length > 0) {
         setMessages((prev) => prev.map((m) =>
-          m.id === botMsgId ? { ...m, streamLog: trace } : m
+          m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, streamLog: trace } : m
         ));
       }
       // 思考轨迹同样落盘到消息对象 —— 否则刷新页面就没了。
@@ -1580,7 +1647,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       const finalTrace = thinkingTraceRef.current;
       if (finalTrace.length > 0) {
         setMessages((prev) => prev.map((m) =>
-          m.id === botMsgId
+          m.id === (activeBubbleIdRef.current ?? botMsgId)
             ? {
                 ...m,
                 thinkingTrace: finalTrace,
@@ -2620,6 +2687,41 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                           ))}
                         </div>
                       </details>
+                    )}
+                    {msg.isFinalSummary && (
+                      <div
+                        style={{
+                          marginBottom: "10px",
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          letterSpacing: "0.3px",
+                          border: `1px solid ${
+                            msg.content.includes("❌")
+                              ? "var(--error, #f85149)"
+                              : msg.content.includes("⏹️")
+                                ? "var(--warning, #d29922)"
+                                : "var(--success, #3fb950)"
+                          }`,
+                          background: msg.content.includes("❌")
+                            ? "rgba(248,81,73,0.12)"
+                            : msg.content.includes("⏹️")
+                              ? "rgba(210,153,34,0.12)"
+                              : "rgba(63,185,80,0.12)",
+                          color: msg.content.includes("❌")
+                            ? "var(--error, #f85149)"
+                            : msg.content.includes("⏹️")
+                              ? "var(--warning, #d29922)"
+                              : "var(--success, #3fb950)",
+                        }}
+                      >
+                        {msg.content.includes("❌")
+                          ? "❌ 任务失败"
+                          : msg.content.includes("⏹️")
+                            ? "⏹️ 任务已中止"
+                            : "✅ 任务完成"}
+                      </div>
                     )}
                     {msg.content !== "" ? (
                       renderMessageContent(msg)

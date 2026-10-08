@@ -85,6 +85,29 @@ export class ThinkingTrace {
   private steps: ThinkingStep[] = [];
   private readonly startedAt = Date.now();
 
+  /**
+   * LLM 轮次序号（2026-10-08）。
+   *
+   * 用户反馈：「下一条内容冲掉上一条」。根因是前端靠"新回复长度 < 旧内容一半"
+   * 猜测是否换轮。改为由后端显式编号，前端据此**新建气泡**。
+   *
+   * 放在 trace 上是因为 ThinkingTrace 已经是主循环与
+   * parseStreamingResponse 之间**唯一**共享的可变对象
+   * （llmRoundIndex 若声明在 parseStreamingResponse 内部，主循环改不到）。
+   */
+  private llmRound = 0;
+
+  /** 进入新一轮 LLM 调用时自增，返回本轮序号（从 1 开始） */
+  nextRound(): number {
+    this.llmRound += 1;
+    return this.llmRound;
+  }
+
+  /** 只读当前轮次序号（不递增） */
+  get round(): number {
+    return this.llmRound;
+  }
+
   /** 追加一条 */
   push(step: Omit<ThinkingStep, "offsetMs"> & { offsetMs?: number }): ThinkingStep {
     const entry: ThinkingStep = {

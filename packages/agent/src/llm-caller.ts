@@ -8,7 +8,7 @@
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
-import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult } from "./completion-truthfulness";
+import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { isCreationTool } from "./tool-capability-catalog";
@@ -1585,6 +1585,14 @@ export async function parseStreamingResponse(
   // fix-4: 跟踪 finish_reason 以检测 length 截断等场景
   let finishReason: string | undefined;
 
+  // ── 分轮气泡标记（2026-10-08）──
+  // 用户反馈「下一条内容冲掉上一条」。根因是前端靠长度猜测换轮。
+  // 轮次序号由主循环经 trace.nextRound() 自增，这里只读取；
+  // roundStarted 保证 roundIndex 只在该轮**首个**正文 token 上出现一次。
+  // 注意：没传 trace 时（老调用方）也要能工作，故用局部兜底计数。
+  let fallbackRound = 0;
+  let roundStarted = false;
+
   let streamReadError: unknown = null;
   try {
     while (true) {
@@ -1647,6 +1655,13 @@ export async function parseStreamingResponse(
             // Backward-compat: still emit the throttled `status` event with
             // the full accumulated `reply` for older clients that expect it.
             if (cleaned) {
+              // ★ roundIndex：只在本轮**首个**正文 token 上携带一次。
+              // 前端据此新建气泡，从而「每轮回复各占一个气泡、互不覆盖」
+              // （用户反馈 2026-10-08：输出框互相冲掉）。
+              // 用局部变量标记，避免每个 token 都重复声明同一轮。
+              const isFirstTokenOfRound = !roundStarted;
+              if (isFirstTokenOfRound) roundStarted = true;
+              const currentRound = trace ? trace.round : fallbackRound || 1;
               onProgress({
                 type: "token",
                 phase: "generating",
@@ -1654,6 +1669,7 @@ export async function parseStreamingResponse(
                 progress: 80,
                 delta: cleaned,
                 reply: content,
+                ...(isFirstTokenOfRound ? { roundIndex: currentRound } : {}),
               });
             }
 
@@ -2617,6 +2633,11 @@ Have a specific URL?
           });
         }
 
+        // ── 新一轮 LLM 调用 ──
+        // 轮次序号在**进入下一轮时**自增，并通过 token 事件的 roundIndex 传给前端，
+        // 前端据此新建气泡（不再靠"长度是否变短"猜）。
+        // 存在 trace 上：它是主循环与 parseStreamingResponse 之间唯一共享的可变对象。
+        trace?.nextRound();
         const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps, trace);
 
         if (!result) {
@@ -3796,9 +3817,22 @@ Have a specific URL?
             emptyResultTools,
           });
           if (verdict.needsCorrection && verdict.notice) {
-            finalReply += verdict.notice;
+            // ★ 修复（2026-10-08，用户反馈）：这段 notice 是写给 **LLM 看的续跑指令**
+            //（"请修复上述失败后重新执行；在拿到工具的成功返回之前，请勿认为操作已经完成"），
+            // 属于内部提示词，**绝不能**拼进给用户看的正文。
+            // 事故实录：20:24 那轮回复末尾直接暴露了
+            //   "⚠️ 更正：上面的「已完成」并不成立……请修复上述失败后重新执行"
+            // 用户看到的是一段本该给模型自己看的纠错指令。
+            // 现在只记入轨迹（可追溯），正文保持干净；
+            // 若确实需要告知用户，用下面这句人话版摘要。
+            finalReply += buildUserFacingCorrection(verdict);
             process.stderr.write(
               `[AgentModelExecutor] Completion-claim reconciliation triggered (${verdict.reason}) for session "${sessionId}"\n`
+            );
+            // 同时把完整内部指令入轨迹，保留可追溯性而不污染 UI
+            trace?.addSystem?.(
+              `完成声明对账触发（${verdict.reason}）`,
+              verdict.notice
             );
           }
         } catch (reconcileErr) {

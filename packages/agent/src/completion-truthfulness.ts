@@ -65,8 +65,38 @@ export interface ReconcileResult {
   needsCorrection: boolean;
   /** 问题类型，便于测试与日志定位 */
   reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed";
-  /** 应追加到最终回复的确定性更正文本 */
+  /**
+   * 给 **LLM 看**的续跑/纠错指令（内部提示词）。
+   * ★ 绝不可直接展示给用户 —— 事故（2026-10-08 20:24）就是把它拼进了正文，
+   * 用户看到"请修复上述失败后重新执行；在拿到工具的成功返回之前…"这种
+   * 本该给模型自己看的句子。要展示请用 {@link buildUserFacingCorrection}。
+   */
   notice?: string;
+}
+
+/**
+ * 把内部纠错指令转成**给用户看**的一句话摘要。
+ *
+ * 用户要的是"明确的任务完成/失败提示 + 简洁准确的总结"，
+ * 不是一段内部指令。所以这里只说清「哪些没成功」，不复述
+ * "请修复上述失败后重新执行"这类对模型说的话。
+ */
+export function buildUserFacingCorrection(v: ReconcileResult): string {
+  if (!v.needsCorrection) return "";
+  const suffix = "\n\n---\n\n**⚠️ 任务未完成**：上面的结论需要修正——";
+
+  switch (v.reason) {
+    case "pending_permissions":
+      return suffix + "有操作仍在等待你的审批，尚未实际执行，之前的「已完成」不成立。";
+    case "tool_failed":
+      return suffix + "本回合有工具执行失败，相关变更**没有生效**，之前的「已完成」不成立。失败项见上方执行记录。";
+    case "no_tool_executed":
+      return suffix + "本回合没有实际执行任何工具操作，之前的「已完成」不成立。";
+    case "empty_but_detailed":
+      return suffix + "相关工具返回的是空结果，上文给出的数量与明细**并非来自实际数据**，请勿采信。";
+    default:
+      return suffix + "之前的「已完成」结论不成立，请以实际执行结果为准。";
+  }
 }
 
 /**

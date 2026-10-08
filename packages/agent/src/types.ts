@@ -116,6 +116,18 @@ export interface AgentProgressEvent {
    * 前端据此在执行过程中逐步渲染，并在消息落盘时一并保存。
    */
   thinkingSteps?: import("./thinking-trace").ThinkingStep[];
+  /**
+   * 新一轮 LLM 输出的开始标记（2026-10-08）。
+   *
+   * 用户反馈：「输出框多次变化，下一个变化总是会冲掉上一个页面的内容」。
+   * 根因：前端靠"新回复长度 < 旧内容一半"这种**猜测**来判断是否换轮，
+   * 换轮时把旧内容塞进同一个气泡的折叠区 → 看起来就是被冲掉。
+   *
+   * 现在由后端在每轮首个 token 事件上显式声明 `roundIndex`，
+   * 前端据此**新建气泡**，不再猜测。
+   * 仅在「本轮确实产出了正文」时携带；纯工具调用轮不带（不产生空气泡）。
+   */
+  roundIndex?: number;
 }
 
 export type AgentProgressCallback = (event: AgentProgressEvent) => void;
