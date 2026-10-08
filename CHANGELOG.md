@@ -9,6 +9,61 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.88.1] - 2026-10-08
+
+**复测修复：轨迹落盘了，但前端读不到（用户仍看不到）**
+
+用户反馈：「我到现在还是在结果中找不到完成任务的过程。」
+0.88.0 已落盘 17 条轨迹，但**刷新页面就没了**。
+
+### 根因：前端静默丢字段（不是后端问题）
+
+后端 `GET /api/sessions/:agentId/:sessionId` **早就返回**
+`thinkingTrace` / `thinkingSummary`（实测 68 轮中 2 轮带轨迹）。
+但 `WebChatPage.tsx` 加载历史时的map **只取 `role/content/timestamp`**，
+把轨迹字段直接丢掉。
+
+结果：任务执行当场能看到（走 progress 事件实时渲染），
+**一刷新页面就彻底消失** —— 正是用户描述的现象。
+
+### 改动
+
+- 新增 `packages/web-ui/src/thinking-trace-mapping.ts`：抽出 `mapSessionTurnsToMessages`
+  纯函数，完整保留 thinkingTrace / thinkingSummary
+  （独立文件而非放在 WebChatPage 里，因为后者依赖 DOM，node 环境无法单测）
+- 空轨迹数组视为「无轨迹」，不渲染空面板
+- 无 reasoning 条目时，UI 明确说明原因（见下）
+- 新增 `thinking-trace-mapping.test.ts`：7 项回归测试
+
+### ★ 附带查明：provider 能力差异（实测抓原始 SSE 流）
+
+逐个探测 4 个启用中的 provider 是否返回 `reasoning_content`：
+
+| provider | 模型 | reasoning_content |
+|---|---|---|
+| xiaomi-mimo | mimo-v2.6-flash | ✅ 有 |
+| custom-1791190214796-1 | agnes-3.0-flash | ❌ 无 |
+| custom-1791273818474-1 | agnes-3.0-flash | ❌ 无 |
+| deepseek | deepseek-v4.1-flash | ❌ 无（key 已失效 401）|
+
+系统**不传** `enable_thinking` 类参数，因此 provider 不吐就是拿不到 ——
+这不是 bug，是能力差异。
+
+为避免再次被误判成「没修好」，UI 在没有 reasoning 条目时直接写明：
+上面是**行为轨迹**（决定调什么工具、拿到什么结果、哪里失败）；
+本次模型**未返回推理原文**，这是 provider 能力限制，切换到
+mimo-v2.6-flash 即可看到模型思考文字。
+
+### 方法论教训
+
+**「落盘了」≠「用户看得到」。** 0.88.0 只验证了 transcript.jsonl 有 17 条
+就宣布完成，没验证前端能否读到。验证 UI 功能必须逐段确认完整链路：
+后端落盘 → 接口返回 → 前端映射 → 渲染。
+
+**验证**：真实任务端到端跑通（答案正确：8 个 .md），
+轨迹 14 条（decision 7 / error 2 / tool_result 2 / system 3）；
+build + typecheck + test 全绿（244 files / 5989 passed / 1 skipped / 0 failed）。
+
 ## [0.88.0] - 2026-10-08
 
 **思考过程全链路打通：实时可见 + 完成后完整保留 + 可折叠展开**

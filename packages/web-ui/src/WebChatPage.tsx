@@ -16,6 +16,7 @@ import { useTranslation } from "./i18n";
 import { useVoice, isSpeechRecognitionSupported, type VoiceState } from "./useVoice";
 import { voiceApi, type VoiceApiResponse } from "./api-client";
 import { showToast } from "./shared";
+import { mapSessionTurnsToMessages } from "./thinking-trace-mapping";
 
 const estimateTokens = (text: string): number => {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
@@ -938,12 +939,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         const res = await fetch(`/api/sessions/default/${initialSessionId}`);
         if (!res.ok) { setMessages([]); return; }
         const data = await res.json();
-        const turns: WebChatMessage[] = (data.turns || []).map((t: Record<string, unknown>, i: number) => ({
-          id: `${initialSessionId}-t${i}`,
-          role: (t.role as "user" | "assistant" | "system" | "tool") || "assistant",
-          content: (t.content as string) || "",
-          timestamp: (t.timestamp as string) || new Date().toISOString(),
-        }));
+        const turns = mapSessionTurnsToMessages(
+          (data.turns || []) as Array<Record<string, unknown>>,
+          initialSessionId
+        );
 
         if (turns.length > 0) {
           setMessages(turns);
@@ -2454,6 +2453,32 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                         ) : (
                           <div style={thinkingDetailStyle}>{msg.thinking}</div>
                         )}
+
+                        {/* 当一条 reasoning 都没有时，明确说明原因。
+                            实测（2026-10-08）：很多 provider（含 deepseek-v4.1-flash）
+                            根本不返回 <think> / reasoning_content，用户看不到"模型思考"
+                            就以为功能没修好。必须把这件事说清楚，而不是让人猜。 */}
+                        {msg.thinkingTrace &&
+                          msg.thinkingTrace.length > 0 &&
+                          !msg.thinkingTrace.some((x) => x.kind === "reasoning") && (
+                            <div
+                              style={{
+                                marginTop: "8px",
+                                padding: "6px 8px",
+                                fontSize: "11px",
+                                lineHeight: 1.6,
+                                color: "var(--text-muted, #6e7681)",
+                                background: "var(--bg-main, #0d1117)",
+                                border: "1px dashed var(--border-light, #21262d)",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              ⓘ 上面是<b>行为轨迹</b>（决定调什么工具、拿到什么结果、哪里失败）。
+                              本次模型<b>未返回推理原文</b>（无 reasoning_content / &lt;think&gt;），
+                              因此没有"模型心里想什么"那部分文字 —— 这是当前 provider
+                              的能力限制，切换到支持推理的模型（如 mimo-v2.6-flash）后即可看到。
+                            </div>
+                          )}
                       </div>
                     )}
                   </>
