@@ -351,6 +351,11 @@ export class RestartCoordinator {
         }
         this.sentinel.consumeAuthorization();
         this.sentinel.markConsumed();
+      } else if (process.env.VITEST) {
+        // 测试环境（Unix）：不发真实信号，避免 worker 被 SIGUSR1 默认行为杀死；与 supervisor 分支的 VITEST 短路对齐
+        this.sentinel.rollbackEmission();
+        clearGatewayRestartIntentSync();
+        return false;
       } else {
         // Unix 无监听器 → 直接发送信号
         process.kill(process.pid, "SIGUSR1");
