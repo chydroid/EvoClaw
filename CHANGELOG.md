@@ -9,6 +9,104 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.1] - 2026-10-11
+
+**任务执行链路代码审查：修复 9 处真实缺陷（轨迹丢失/计数虚高/跨会话串扰/契约断链）**
+
+对「完成任务」这条主链路（`/api/chat` → protocol-adapter → agent-model-executor →
+llm-caller → 工具执行 → 会话落盘 → 前端渲染）做了一次逐段审查，所有结论均以源码
+与真实 SSE 抓包为依据。分成四类：**轨迹交付**、**执行计数**、**并发隔离**、
+**契约一致性**。
+
+### 根因与改动
+
+**A. 思考轨迹交付断链（用户最关心的"看不到过程"残留出口）**
+
+1. `agent-model-executor.ts` 完成路径**逐字段手抄**返回对象，漏掉
+   `contextTokensEstimated` / `contextLimit` / `contextLimitSource` /
+   `thinkingTrace` —— gateway 明明在读这几个字段，却永远拿到 `undefined`：
+   前端「上下文窗口分母来源」（user/provider/catalog/fallback）从未显示过，
+   最终轨迹也传不到前端。改为 `{ ...result, reply, permissionRequests }` 展开覆盖。
+   实测确认：修复后终结 `done` 事件里 `contextLimitSource=fallback`、
+   `contextLimit=128000` 正常到达。
+2. `llm-caller.ts` 空回复分支：`if (finalReply)` 不成立时**不发 done、不落盘轨迹**，
+   直接 failover 到下一个 provider；若全部失败用户既看不到轨迹也收不到 done。
+   新增 `TryCallLLMResult.thinkingTrace`，并在该分支留存 `lastTraceSnapshot`，
+   兜底返回时一并交付。
+3. gateway 终结 `done` 事件补发 `thinkingSteps` —— agent 侧那条 done **早于**
+   完成声明对账等收尾写入，终结 done 的快照与落盘内容才是权威一致的一版。
+
+**B. 执行计数与失败证据失真（会让"完成声明对账"误判）**
+
+4. 工具**语义失败**（外层 `success:true` 内层 errors，如 skill 不存在）时，原实现
+   先记一条 `ok:false`、又**无条件**记一条 `ok:true`，并且 `successfulToolCalls++`。
+   轨迹里同一次调用既失败又成功，成功数虚高 → 提前触发「别再调工具了」的 nudge。
+   现在只记一条（`ok:false`）且不计入成功数。实测日志：
+   `Tool "shell_exec" finished with a failure result (not counted as success)`。
+5. 工具**硬失败**（抛异常）原实现既不进 `failedTools` 也不进轨迹 —— 轨迹里只有
+   「决定调用 X」没有任何结果（断裂），对账也漏掉这类失败。现已补齐两处。
+6. 自动续跑在 `stalledAfterFailure`（工具失败后直接收尾）时 trigger 记成字面量
+   `unknown`、轨迹 detail 为空，用户点开续跑记录看不到原因。现在归因为
+   `tool_failed` 并把失败工具名/错误、空结果工具列进 detail。
+
+**C. 并发隔离**
+
+7. `traceSnapshot()` 的节流状态是**模块级单例** `{ lastAt }`，被所有 session /
+   并发任务共享：A 会话刚发过快照，B 会话的快照就被吞掉（本意是"同一条流最快
+   300ms 一次"）。改为 `WeakMap<ThinkingTrace, number>` 按轨迹隔离，trace 回收
+   即释放。新增回归测试证明两个 trace 互不挤占。
+
+**D. 契约一致性 / 死代码**
+
+8. 前端 `error` 事件只读 `eventData.message`，而 agent 侧产生的 error
+   （破坏性命令告警、工具循环中断）把文案放在 `detail` → 全部被丢弃、只剩一句
+   笼统"处理出错"。改为 `message || detail || 默认文案`。
+9. 非流式路径**只**处理独立 `reasoning_content` 字段，从不清洗正文里的
+   `<think>/<reasoning>` —— 按路径/流式开关不同，同一个 provider 的推理会
+   （不）泄漏进用户正文。现在非流式也走同一个 `StreamingTagScrubber`，
+   被剥离的推理同样入轨迹并下发。
+10. `StreamingTagScrubber.flush()` 在未闭合 span 内**直接丢弃**缓冲 ——
+    流在 `<think>` 中途断掉时，这段推理凭空消失（与"不丢内容"的设计目标相悖）。
+    现在改为累积进 `capturedReasoning` 交给调用方。
+11. 决策入轨迹由**三处各写一遍**（流式写占位 `{_partial:true}`、非流式写完整参数、
+    正文 XML 解析出来的完全不写）统一为**一处理**：`executeSingleToolCall()` 拿到
+    完整参数后记一次。实测确认 SSE 里再也不出现 `_partial`。
+12. 死代码清理：`getToolCacheKey` / `getIdempotencyKey`（后者若被启用会按"仅路径"
+    去重，导致同路径不同内容的第二次写入被**静默跳过**，属危险代码）、
+    `fallbackRound`（恒为 0，从不自增）、deepseek 分支内恒假的
+    `tool_choice === "none"`、参数校验里恒真的冗余合取、`addToolResult` 里
+    `last.truncated = last.truncated` 自赋值 + 从未使用的 `durationMs` 选项；
+    同时把从未被调用的 `cleanToolCache` / `cleanIdempotencyCache` 接入调用链
+    （此前两个缓存**无界增长**），并把幂等判活的硬编码 `60_000` 改回
+    `IDEMPOTENCY_TTL` 常量。
+13. 轮次号与话术：绕过主循环直接执行待批准命令的 3 个早退分支不落 assistant 轮
+    （会话里只有用户消息、没有执行结果，下一轮模型看不到）；已补
+    `persistDirectAssistantTurn()`。轨迹实例从 provider 循环内**提升到循环外** ——
+    failover 时旧轨迹被丢弃、`llmRound` 归零，备用 provider 又从 `roundIndex:1`
+    开始，前端会把它的回复写进第 1 个气泡而**冲掉已显示的内容**。grace call 与
+    末轮总结也补上 `nextRound()` + trace，避免最终总结被写进既有气泡。
+14. `thinking-trace-mapping.ts` 的时间字段 `at` 统一为 `offsetMs`（与后端一致，
+    类型断言曾掩盖了这处命名漂移）。
+
+### 验证
+
+- 新增回归测试：`StreamingTagScrubber` 未闭合 span 保留推理（2）+ `traceSnapshot`
+  按 trace 隔离（3）；`pnpm build → typecheck → test`：**249 文件 / 6077 用例全部通过**。
+- 真实任务抓原始 SSE（agnes-3.0-flash，多轮工具循环）：
+  - 轨迹条目为**真实参数**（`{"command":"Get-ChildItem …","cwd":"D:\\abc\\EvoClaw",…}`），
+    全程 0 处 `_partial` 占位；
+  - 硬失败工具出现 `ok:false` 的 error 条目（修复前是完全断裂）；
+  - 续跑记录 `自动续跑 #1/3（原因：tool_failed）`，日志 trigger 不再是 `unknown`。
+- 真实任务抓原始 SSE（可完成的短任务）：
+  - 终结 `done` **含 `thinkingSteps`（2 条）**，`contextLimitSource=fallback`、
+    `contextLimit=128000`、`contextTokensEstimated=false` 均到达前端
+    （修复前三者被 executor 丢弃）。
+- 已知遗留（本次未改，已记录）：`TryCallLLMResult.files` 恒为 `[]`
+  （`createdFiles` 无任何写入方），故前端下载链接永不出现；`token` 事件携带的是
+  **累积 reply**（实测一次任务 2444 个 token 事件 ≈ 3.0MB，占整条流 95%），
+  长任务下呈平方增长 —— 改为下发 `delta` 需同步改前端累积逻辑，风险较高，
+  留待专门处理。
+
 ## [0.92.0] - 2026-10-09
 
 **模型推理原文流式下发：执行过程可见「模型在想什么」，执行过程面板不再被「正在生成回复...」刷屏**

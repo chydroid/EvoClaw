@@ -291,12 +291,6 @@ export class AgentModelExecutor {
   private static CHECK_FN_TTL_MS = 30_000;
   private checkFnCache = new Map<() => boolean, { timestamp: number; result: boolean }>();
 
-  /** 生成工具缓存 key，包含工具名和排序后的参数 */
-  private getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
-    const sortedParams = Object.keys(params).sort().map(k => `${k}=${JSON.stringify(params[k])}`).join("&");
-    return `${toolName}:${sortedParams}`;
-  }
-
   /** 清理过期和超量的工具缓存 */
   private cleanToolCache(): void {
     const now = Date.now();
@@ -2489,10 +2483,16 @@ export class AgentModelExecutor {
           this.observability.endTrace(currentTraceId);
         }
 
+        // ★ 2026-10-11：这里原来是逐字段手抄的返回对象，漏掉了
+        //   `contextTokensEstimated` / `contextLimit` / `contextLimitSource`
+        //   / `thinkingTrace` —— 上游（gateway 的终结 done 事件）明明在用
+        //   这几个字段，却永远拿到 undefined：前端「上下文窗口分母来源」
+        //   标注（user/provider/catalog/fallback）从未显示过，最终思考轨迹
+        //   也传不到前端。改为展开 result 再覆盖，新增字段自动透传，不再漏。
         if (pendingPermissions.length > 0) {
-          return { reply: guardrailedReply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [...pendingPermissions], toolsExecuted: result.toolsExecuted, files: result.files };
+          return { ...result, reply: guardrailedReply, permissionRequests: [...pendingPermissions] };
         }
-        return { reply: guardrailedReply, tokensUsed: result.tokensUsed, contextTokens: result.contextTokens, duration: result.duration, permissionRequests: [], toolsExecuted: result.toolsExecuted, files: result.files };
+        return { ...result, reply: guardrailedReply, permissionRequests: [] };
       }
     }
 

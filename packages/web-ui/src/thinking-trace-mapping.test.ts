@@ -9,9 +9,9 @@ import { describe, it, expect } from "vitest";
 import { mapSessionTurnsToMessages, type ThinkingStep } from "./thinking-trace-mapping";
 
 const trace: ThinkingStep[] = [
-  { kind: "reasoning", title: "先看 data/workspace 有哪些文件", detail: "用户要统计 .md 数量……", at: 1 },
-  { kind: "decision", title: "决定调用 shell_exec", detail: '{"command":"ls"}', at: 2 },
-  { kind: "tool_result", title: "shell_exec 返回", detail: "a.md\nb.md", at: 3 },
+  { kind: "reasoning", title: "先看 data/workspace 有哪些文件", detail: "用户要统计 .md 数量……", offsetMs: 1 },
+  { kind: "decision", title: "决定调用 shell_exec", detail: '{"command":"ls"}', offsetMs: 2 },
+  { kind: "tool_result", title: "shell_exec 返回", detail: "a.md\nb.md", offsetMs: 3 },
 ];
 
 describe("mapSessionTurnsToMessages —— 思考轨迹保留", () => {

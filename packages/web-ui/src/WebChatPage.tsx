@@ -1349,7 +1349,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       }, wait);
                     }
                   } else if (currentEvent === "error") {
-                    const errMsg = eventData.message || t("chat.process_error");
+                    // ★ agent 侧产生的 error 事件把文案放在 `detail`（如
+                    //   "⚠️ 检测到破坏性命令…"、"工具循环中断"），只有 gateway
+                    //   的终结错误用 `message`。原实现只读 `message`，于是 agent
+                    //   的告警文案全部被丢弃、只剩一句笼统的"处理出错"。
+                    const errMsg = eventData.message || eventData.detail || t("chat.process_error");
                     setMessages((prev) =>
                       prev.map((m) =>
                         m.id === (activeBubbleIdRef.current ?? botMsgId)
