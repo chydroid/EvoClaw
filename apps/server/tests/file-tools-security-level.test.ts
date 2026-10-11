@@ -18,6 +18,12 @@ const WORKSPACE = path.join(FS_BASE, "data", "workspace");
 // 沙箱外的真实路径（Windows 桌面），本机存在且可写
 const OUTSIDE_DIR = path.join(process.env.USERPROFILE || "C:/Users/CY", "Desktop");
 
+// Windows 专用测试：FS_BASE 是 Windows 绝对路径（D:/abc/EvoClaw），OUTSIDE_DIR
+// 是 Windows 桌面。在 Linux/macOS 上 path.resolve("D:/abc/EvoClaw") 会得到
+// /<cwd>/D:/abc/EvoClaw（相对拼接），C:/Users/CY/Desktop 也无法创建，整组测试
+// 在错误的路径语义下运行。非 Windows 平台跳过。
+const IS_WIN = process.platform === "win32";
+
 interface Registered {
   name: string;
   handler: (params: Record<string, unknown>) => Promise<unknown>;
@@ -56,7 +62,7 @@ function mountTools(): Map<string, Registered> {
   return registry;
 }
 
-describe("file-tools × 总体安全等级 —— 集成执法验证", () => {
+describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法验证", () => {
   beforeEach(() => resetActiveSecurityLevel());
 
   const run = async (tool: string, params: Record<string, unknown>) => {
@@ -177,7 +183,7 @@ describe("file-tools × 总体安全等级 —— 集成执法验证", () => {
     }
   });
 });
-describe("file-tools 路径归一 —— 重复拼接与返回值（回归）", () => {
+describe.skipIf(!IS_WIN)("file-tools 路径归一 —— 重复拼接与返回值（回归）", () => {
   // 真实事故（2026-10-07 15:3x）：
   // 模型按 shell_exec 的 cwd 推断，传 `data/workspace/x.py`（以为相对项目根）。
   // 而相对路径已改为按 workspace 解析 → 拼成 <ws>/data/workspace/x.py，

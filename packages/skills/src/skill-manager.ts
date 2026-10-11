@@ -2812,12 +2812,19 @@ export class SkillManager {
       }
     }
 
+    // 测试环境下把 npm/pip 安装超时压到 8s：registry 不可达时 npm 会一直挂到
+    // 超时才抛 ETIMEDOUT（实测可达 60s+），超过 vitest 全局 30s testTimeout，
+    // 导致整个 installSkill 链路上的所有测试超时（真实事故：2026-10-11）。
+    const isTestEnv = !!process.env.VITEST || process.env.NODE_ENV === "test";
+    const npmTimeout = isTestEnv ? 8000 : 60000;
+    const pipTimeout = isTestEnv ? 8000 : 120000;
+
     // Install npm packages in skill directory
     if (npmPkgs.length > 0) {
       try {
         const npmResult = execFileSync("npm", ["install", "--save", ...npmPkgs], {
           cwd: skillDir,
-          timeout: 60000,
+          timeout: npmTimeout,
           encoding: "utf-8",
         });
         step.message += `Installed ${npmPkgs.length} npm package(s). `;
@@ -2835,7 +2842,7 @@ export class SkillManager {
         const pipCmd = this.checkBinaryExists("pip3") ? "pip3" : "pip";
         const pipResult = execFileSync(pipCmd, ["install", ...pipPkgs], {
           cwd: skillDir,
-          timeout: 120000,
+          timeout: pipTimeout,
           encoding: "utf-8",
         });
         step.message += `Installed ${pipPkgs.length} pip package(s). `;
