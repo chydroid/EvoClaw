@@ -1440,39 +1440,78 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       streamLogRef.current.push(stepToLine(step));
                     }
 
-                    if (eventData.phase === "generating" && eventData.reply) {
-                      const newReply = eventData.reply as string;
+                    // ── 正文渲染：全量替换（reply）与增量追加（delta）双路径 ──
+                    // P0 欠账修复（2026-10-12）：后端 token 事件默认只带 delta
+                    // 增量（不再塞全量累积 reply，省掉 3MB 长任务下占 95% 体积的
+                    // 平方增长冗余）。前端按字段存在与否自动分流：
+                    //   - reply 存在（旧客户端/旧后端）→ 全量替换
+                    //   - delta 存在（新客户端/新后端）→ 追加到当前气泡
+                    // done 事件仍是权威全量来源，增量路径若与全量冲突以 done 为准。
+                    const hasReply = !!eventData.reply;
+                    const hasDelta = !!eventData.delta;
+                    if (eventData.phase === "generating" && (hasReply || hasDelta)) {
                       const roundIdx = typeof eventData.roundIndex === "number" ? eventData.roundIndex : null;
 
-                      if (roundIdx !== null && roundIdx > 1) {
-                        // ★ 后端显式声明这是第 N 轮 → 新建一个气泡。
-                        // 用户诉求（2026-10-08）：「下一条内容不要显示在上一条内容的气泡里，
-                        // 而是要新建一个气泡。」旧实现靠"长度 < 一半"猜测换轮，
-                        // 换轮时把旧内容塞进同一个气泡的折叠区 → 看起来就是被冲掉。
-                        //
-                        // ★ 自检修正（23:3x）：原实现给上一轮改名
-                        //（`sealedId = ${botMsgId}-r${roundIdx-1}`）有两个问题——
-                        //   a) 首轮气泡 id 是**裸 botMsgId**（不是 -r1），命名不一致；
-                        //   b) 改名会打断 showThinking 等**按 id 索引**的展开状态。
-                        // 改为「只追加、不改名」，id 由 roundIndex 唯一确定。
-                        const newBubbleId = `${botMsgId}-r${roundIdx}`;
-                        setMessages((prev) => {
-                          const next = applyRoundContent(prev, {
-                            botMsgId,
-                            activeBubbleId: activeBubbleIdRef.current ?? botMsgId,
-                            roundIndex: roundIdx,
-                            reply: newReply,
+                      if (hasReply) {
+                        const newReply = eventData.reply as string;
+                        if (roundIdx !== null && roundIdx > 1) {
+                          // ★ 后端显式声明这是第 N 轮 → 新建一个气泡。
+                          // 用户诉求（2026-10-08）：「下一条内容不要显示在上一条内容的气泡里，
+                          // 而是要新建一个气泡。」旧实现靠"长度 < 一半"猜测换轮，
+                          // 换轮时把旧内容塞进同一个气泡的折叠区 → 看起来就是被冲掉。
+                          //
+                          // ★ 自检修正（23:3x）：原实现给上一轮改名
+                          //（`sealedId = ${botMsgId}-r${roundIdx-1}`）有两个问题——
+                          //   a) 首轮气泡 id 是**裸 botMsgId**（不是 -r1），命名不一致；
+                          //   b) 改名会打断 showThinking 等**按 id 索引**的展开状态。
+                          // 改为「只追加、不改名」，id 由 roundIndex 唯一确定。
+                          const newBubbleId = `${botMsgId}-r${roundIdx}`;
+                          setMessages((prev) => {
+                            const next = applyRoundContent(prev, {
+                              botMsgId,
+                              activeBubbleId: activeBubbleIdRef.current ?? botMsgId,
+                              roundIndex: roundIdx,
+                              reply: newReply,
+                            });
+                            activeBubbleIdRef.current = next.activeBubbleId;
+                            return next.messages.map((m) => {
+                              const hit = prev.find((o) => o.id === m.id);
+                              return hit ? { ...hit, ...m } : { ...m, timestamp: new Date().toISOString() };
+                            });
                           });
-                          activeBubbleIdRef.current = next.activeBubbleId;
-                          return next.messages.map((m) => {
-                            const hit = prev.find((o) => o.id === m.id);
-                            return hit ? { ...hit, ...m } : { ...m, timestamp: new Date().toISOString() };
-                          });
-                        });
+                        } else {
+                          setMessages((prev) =>
+                            prev.map((m) => (m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, content: newReply } : m)),
+                          );
+                        }
                       } else {
-                        setMessages((prev) =>
-                          prev.map((m) => (m.id === (activeBubbleIdRef.current ?? botMsgId) ? { ...m, content: newReply } : m)),
-                        );
+                        // 增量路径：把 delta 追加到当前活动气泡。
+                        // 首轮气泡 id 是裸 botMsgId；第 N 轮气泡 id 是 `${botMsgId}-r${N}`。
+                        // 后端在每轮首个 token 上带 roundIndex，前端据此新建气泡。
+                        const deltaText = eventData.delta as string;
+                        setMessages((prev) => {
+                          let targetId: string;
+                          if (roundIdx !== null && roundIdx > 1) {
+                            targetId = `${botMsgId}-r${roundIdx}`;
+                          } else {
+                            targetId = activeBubbleIdRef.current ?? botMsgId;
+                          }
+                          activeBubbleIdRef.current = targetId;
+                          const existing = prev.find((m) => m.id === targetId);
+                          if (existing) {
+                            return prev.map((m) =>
+                              m.id === targetId ? { ...m, content: m.content + deltaText } : m,
+                            );
+                          }
+                          // 该轮首个 delta 到达（气泡尚未创建）→ 新建
+                          const created: WebChatMessage = {
+                            id: targetId,
+                            role: "assistant",
+                            content: deltaText,
+                            timestamp: new Date().toISOString(),
+                          };
+                          return [...prev, created];
+                        });
                       }
                     }
 

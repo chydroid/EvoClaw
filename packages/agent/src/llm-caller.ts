@@ -1553,7 +1553,9 @@ export async function parseStreamingResponse(
   onProgress: AgentProgressCallback,
   deps: LLMCallerDeps,
   /** 思考轨迹采集器（可选） */
-  trace?: ThinkingTrace
+  trace?: ThinkingTrace,
+  /** 是否让 token/status-generating 事件携带全量累积 reply（默认 false，只带 delta 增量） */
+  includeAccumulatedReplyInTokenEvents = false
 ): Promise<ParseStreamingResponseResult | null> {
   const observability = deps.registry?.resolveService?.("observability") as any;
   const tracing = observability?.getTracingService?.();
@@ -1700,25 +1702,36 @@ export async function parseStreamingResponse(
               const isFirstTokenOfRound = !roundStarted;
               if (isFirstTokenOfRound) roundStarted = true;
               const currentRound = trace ? trace.round : 1;
+              // P0 欠账修复（2026-10-12）：默认 token 事件只携带 delta 增量，
+              // 不再塞整条累积 reply（旧实现一次 3MB 任务的流里 token 事件
+              // 占 95% 体积、平方增长）。includeAccumulatedReplyInTokenEvents
+              // 供旧客户端按需开启全量替换渲染；前端按 reply 存在与否自动
+              // 决定走增量还是全量路径，无需额外兼容判断。
               onProgress({
                 type: "token",
                 phase: "generating",
                 detail: "正在生成回复...",
                 progress: 80,
                 delta: cleaned,
-                reply: content,
+                ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
                 ...(isFirstTokenOfRound ? { roundIndex: currentRound } : {}),
               });
             }
 
             const now = Date.now();
             if (now - lastChunkTime > 50) {
+              // P0 欠账修复（2026-10-12）：status+generating 是前端噪声过滤的对象
+              // （WebChatPage.tsx isNoiseProgressStep），但事件体仍每 50ms 携带
+              // 全量累积 reply —— 与 token 事件同源的体积浪费。token 事件已默认
+              // 只发 delta，status 事件不再携带 reply（保留 phase/detail/progress
+              // 供状态栏使用；旧客户端若依赖 status.reply 做全量替换，会被
+              // token 增量路径覆盖——前端按 reply 存在与否自动分流，无需改动）。
               onProgress({
                 type: "status",
                 phase: "generating",
                 detail: "正在生成回复...",
                 progress: 80,
-                reply: content,
+                ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
               });
               lastChunkTime = now;
             }
@@ -1932,7 +1945,14 @@ export async function callLLMOnce(
   onProgress: AgentProgressCallback | undefined,
   deps: LLMCallerDeps,
   /** 思考轨迹采集器（可选；传入后推理文本与工具决策会被记录） */
-  trace?: ThinkingTrace
+  trace?: ThinkingTrace,
+  /**
+   * 是否让 token/status-generating 事件携带全量累积 reply（默认 false）。
+   * P0 欠账修复（2026-10-12）：token 事件历史上每片段都塞整条累积 reply，
+   * 一次 3MB 任务的 SSE 流里 token 事件占 95% 体积（平方增长）。
+   * 新客户端按 `delta` 增量渲染；旧客户端可传 true 保持全量替换语义。
+   */
+  includeAccumulatedReplyInTokenEvents = false,
 ): Promise<CallLLMOnceResult | null> {
   const observability = deps.registry?.resolveService?.("observability") as any;
   const tracing = observability?.getTracingService?.();
@@ -2085,7 +2105,7 @@ export async function callLLMOnce(
     }
 
     if (useStreaming && response.body) {
-      return await parseStreamingResponse(response, provider, startTime, onProgress!, deps, trace);
+      return await parseStreamingResponse(response, provider, startTime, onProgress!, deps, trace, includeAccumulatedReplyInTokenEvents);
     }
 
     const data = await response.json() as {
@@ -2253,6 +2273,14 @@ export interface TryCallLLMOptions {
   channel?: string;
   /** Optional cancellation signal (forwarded from LLMCallerDeps.abortSignal). */
   abortSignal?: AbortSignal;
+  /**
+   * 正文 token 级事件是否携带累积 reply（默认 true，旧客户端靠它做全量替换渲染）。
+   * P0 欠账修复（2026-10-12）：token 事件历史上把**整条累积 reply** 塞进每个事件，
+   * 一次 3MB 长任务的 SSE 流里 token 事件占 95% 体积（平方增长）。
+   * 新客户端改用 `delta` 增量渲染后，通过此开关让事件只携带增量。
+   * 字段仍保留（前端按 reply 存在与否自动决定渲染模式），兼容旧客户端。
+   */
+  includeAccumulatedReplyInTokenEvents?: boolean;
 }
 
 export async function tryCallLLM(
@@ -2267,6 +2295,7 @@ export async function tryCallLLM(
     message, systemPrompt, installedSkills, providers, startTime,
     sessionId, pendingPermissions, attachments, onProgress,
     searchPreDone = false, channel, abortSignal,
+    includeAccumulatedReplyInTokenEvents = false,
   } = options;
 
   // Wire end-to-end cancellation signal into deps so callLLMOnce picks it up.
@@ -2687,7 +2716,7 @@ Have a specific URL?
               //   固定带 roundIndex:1，前端把「最终总结」写进第 1 个气泡、
               //   冲掉之前的回复；它的推理也无从入轨迹（流式可见但落盘没有）。
               trace.nextRound();
-              const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps, trace);
+              const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
               if (graceResult && graceResult.message?.content) {
                 finalReply = graceResult.message.content;
                 totalTokensUsed += graceResult.tokensUsed;
@@ -2781,7 +2810,7 @@ Have a specific URL?
         // 前端据此新建气泡（不再靠"长度是否变短"猜）。
         // 存在 trace 上：它是主循环与 parseStreamingResponse 之间唯一共享的可变对象。
         trace?.nextRound();
-        const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps, trace);
+        const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
 
         if (!result) {
           consecutiveErrors++;
@@ -3625,6 +3654,42 @@ Have a specific URL?
                 successfulToolCalls++;
                 // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
                 if (SEARCH_TOOLS_HINT.has(toolName)) actualSearchExecuted = true;
+                // ── 收集「产物文件」下载链（2026-10-12 P0 欠账修复）──
+                // 此前 `createdFiles` 声明后无任何写入方，`TryCallLLMResult.files`
+                // 恒为 []，前端「文件下载」区永远不出现。
+                // 只识别明确的文件写入类工具；结果 shape 见 file-tools.ts
+                // （errRecovery.executeWithRetry 剥掉 success 后透传 path/size/workspaceRelative）。
+                if ((toolName === "file_create" || toolName === "file_modify") && rawResult && typeof rawResult === "object") {
+                  const r = rawResult as Record<string, unknown>;
+                  const filePath =
+                    (typeof r.path === "string" && r.path) ||
+                    (typeof r.workspaceRelative === "string" && r.workspaceRelative) ||
+                    (typeof args.path === "string" ? args.path : undefined);
+                  const fileSize = typeof r.size === "number" ? r.size : 0;
+                  if (filePath) {
+                    // downloadUrl 走网关静态路由 /api/files/download/{path}（见 protocol-adapter）。
+                    // 用 workspaceRelative / 入参 path（相对 workspace 根），与路由的
+                    // 解析逻辑一致；绝对 path（沙箱外）不在该路由的边界内，仍保留 path 供 UI 展示。
+                    const relativePath =
+                      (typeof r.workspaceRelative === "string" && r.workspaceRelative) ||
+                      (typeof args.path === "string" ? args.path : filePath);
+                    const entry = {
+                      path: filePath,
+                      size: fileSize,
+                      downloadUrl: relativePath
+                        ? `/api/files/download/${relativePath.replace(/\\/g, "/")}`
+                        : "",
+                    };
+                    // 同一文件被 create 后再次 modify，只保留一条（路径+大小更新）
+                    const existing = createdFiles.find((f) => f.path === entry.path);
+                    if (existing) {
+                      existing.size = entry.size;
+                      existing.downloadUrl = entry.downloadUrl || existing.downloadUrl;
+                    } else {
+                      createdFiles.push(entry);
+                    }
+                  }
+                }
               }
               anyToolExecuted = true;
               recordToolSuccess(toolName);
@@ -3946,7 +4011,7 @@ Have a specific URL?
             // ★ 末轮总结同上：先占一个新轮次再调用，避免总结内容被写进
             //   既有气泡（roundIndex 固定为 1）而覆盖用户已看到的回复。
             trace.nextRound();
-            const summaryResult = await callLLMOnce(provider, summaryMessages, [], "auto", onProgress, deps, trace);
+            const summaryResult = await callLLMOnce(provider, summaryMessages, [], "auto", onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
             if (summaryResult && summaryResult.message?.content) {
               finalReply = summaryResult.message.content;
               totalTokensUsed += summaryResult.tokensUsed;
