@@ -29,7 +29,7 @@ describe("ShutdownForensics", () => {
     it("创建 shutdown-<timestamp>.json 文件", () => {
       const filePath = forensics.snapshotShutdownContext("SIGTERM");
       expect(fs.existsSync(filePath)).toBe(true);
-      expect(path.basename(filePath)).toMatch(/^shutdown-\d+\.json$/);
+      expect(path.basename(filePath)).toMatch(/^shutdown-\d+-\d+-[0-9a-f]{8}\.json$/);
     });
 
     it("返回的文件路径在 outputDir 下", () => {

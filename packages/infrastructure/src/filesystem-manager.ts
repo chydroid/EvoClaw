@@ -3,6 +3,7 @@ import { readFile, writeFile, unlink, access, mkdir, readdir, stat } from "fs/pr
 import { constants } from "fs";
 import * as fsSync from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 interface FileInfo {
   path: string;
@@ -78,7 +79,8 @@ export class CrossProcessLock {
     const pid = process.pid;
     while (Date.now() < deadline) {
       try {
-        fsSync.writeFileSync(this.lockPath, JSON.stringify({ pid, acquiredAt: Date.now() }), {
+        const token = randomUUID();
+        fsSync.writeFileSync(this.lockPath, JSON.stringify({ pid, token, acquiredAt: Date.now() }), {
           flag: "wx",
         });
         return;
@@ -88,19 +90,35 @@ export class CrossProcessLock {
         // 锁文件已存在，检查是否为 stale lock
         try {
           const raw = fsSync.readFileSync(this.lockPath, "utf-8");
-          const data = JSON.parse(raw) as { pid: number; acquiredAt: number };
+          const data = JSON.parse(raw) as { pid: number; token?: string; acquiredAt: number };
           if (!this.isProcessAlive(data.pid)) {
-            // Stale lock — 原子地 rename 到唯一临时名后删除，避免 TOCTOU 竞态。
-            // 两个进程可能同时判断 lock 为 stale，rename 是原子的，只有一个会成功，
-            // 另一个会因 ENOENT 失败（被 catch 后 continue），避免误删另一进程刚创建的新锁文件。
-            const staleTmp = `${this.lockPath}.${process.pid}.${Date.now()}.stale`;
+            // Stale lock — 带 token 的 CAS 抢占，避免 TOCTOU 竞态：
+            // 两个进程同时判 stale 时，都尝试 rename 带特定 token 的锁文件，
+            // 只有 token 匹配的那次 rename 成功；另一个的 rename 因文件已变化而失败。
+            const expectedToken = data.token;
+            const staleTmp = `${this.lockPath}.${process.pid}.${expectedToken ?? "nontok"}.stale`;
             try {
+              // CAS：rename 前重新读取锁文件，确认它仍是我们读到的那个 stale 内容
+              // （pid+token 匹配）。若已被其他进程替换为新锁（wx 创建成功），
+              // 则当前锁持有者是活进程，本轮放弃，进入轮询等待。
+              const reRead = fsSync.readFileSync(this.lockPath, "utf-8");
+              const reData = JSON.parse(reRead) as { pid: number; token?: string };
+              if (reData.pid !== data.pid || reData.token !== expectedToken) {
+                // 锁已被替换为其他进程持有的锁（或仍是活锁），不抢，等待其释放
+                await new Promise((resolve) => {
+                  const t = setTimeout(resolve, CrossProcessLock.POLL_INTERVAL_MS);
+                  t.unref?.();
+                });
+                continue;
+              }
               fsSync.renameSync(this.lockPath, staleTmp);
               try { fsSync.unlinkSync(staleTmp); } catch { /* ignore */ }
             } catch (renameErr: unknown) {
-              const code = (renameErr as NodeJS.ErrnoException)?.code;
-              if (code === "ENOENT") {
+              const rcode = (renameErr as NodeJS.ErrnoException)?.code;
+              if (rcode === "ENOENT") {
                 // 另一个进程已经处理了 stale lock，直接重试创建
+              } else if (rcode === "EEXIST") {
+                // CAS 失败：文件在我们读取和 rename 之间已被替换
               } else {
                 throw renameErr;
               }

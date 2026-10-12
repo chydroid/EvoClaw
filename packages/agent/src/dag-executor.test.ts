@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DAGExecutor } from "./dag-executor";
+import { TaskOrchestrator } from "./task-orchestrator";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { Task, DAGNode } from "@evoclaw/core";
 import type { ExecutionPlan } from "./planning-engine";
@@ -381,5 +382,71 @@ describe("DAGExecutor", () => {
     const nodeB = result.steps.find((s) => s.nodeId === "b");
     expect(nodeA?.status).toBe("skipped");
     expect(nodeB?.status).toBe("waiting_dependency");
+  });
+});
+
+// ── TaskOrchestrator: 失败/级联失败传播 ─────────────────────────────────────────
+// 回归：上游节点 failed 时，下游节点变 waiting_dependency，
+// 任务必须报失败，而不是"成功完成"（历史 bug：只查 status==="failed"）。
+describe("TaskOrchestrator DAG failure propagation", () => {
+  let registry: ServiceRegistry;
+  let eventBus: EventBus;
+  let orchestrator: TaskOrchestrator;
+
+  beforeEach(() => {
+    registry = new ServiceRegistry();
+    eventBus = new EventBus();
+    registry.registerService("eventBus", eventBus);
+    registry.registerService("skillManager", {
+      executeSkill: vi.fn().mockImplementation(async (skill: string) => {
+        if (skill === "fail-skill") throw new Error("boom");
+        return { ok: true };
+      }),
+    });
+    orchestrator = new TaskOrchestrator(registry, eventBus);
+  });
+
+  function makeTaskWithDAG(nodes: DAGNode[]): import("@evoclaw/core").Task {
+    return {
+      id: "task-dag-fail",
+      dag: nodes,
+      context: { sessionId: "s1", userId: "", workspace: "", variables: {}, tags: [], traceId: "" },
+      priority: "normal",
+      createdAt: new Date(),
+      status: "pending",
+      type: "automation",
+      input: {},
+      output: null,
+      executionPlan: [],
+      updatedAt: new Date(),
+      completedAt: null,
+      retryCount: 0,
+      maxRetries: 0,
+    };
+  }
+
+  it("upstream failed → downstream waiting_dependency → 任务必须失败", async () => {
+    const task = makeTaskWithDAG([
+      { id: "a", dependencies: [], action: "run", skill: "fail-skill", params: {}, timeout: 60000, retryCount: 0, retryDelay: 1 },
+      { id: "b", dependencies: ["a"], action: "run", skill: "ok-skill", params: {}, timeout: 60000 },
+      { id: "c", dependencies: ["b"], action: "run", skill: "ok-skill", params: {}, timeout: 60000 },
+    ]);
+    const result = await orchestrator.execute(task);
+    // 历史 bug：b/c 都是 waiting_dependency，只查 "failed" 会漏掉 → 报 completed
+    expect(result.status).toBe("failed");
+  });
+
+  it("upstream skipped（条件为 false）→ 下游 waiting_dependency → 任务仍为成功（良性级联）", async () => {
+    const task = makeTaskWithDAG([
+      { id: "a", dependencies: [], action: "action-a", params: {}, timeout: 60000, condition: "false" },
+      { id: "b", dependencies: ["a"], action: "action-b", params: {}, timeout: 60000 },
+      { id: "c", dependencies: [], action: "action-c", params: {}, timeout: 60000 },
+    ]);
+    const result = await orchestrator.execute(task);
+    // b 因 a skipped 而 waiting_dependency，但不算失败；c 正常完成
+    expect(result.status).toBe("completed");
+    const plan = result.executionPlan!;
+    expect(plan.find((s) => s.nodeId === "b")?.status).toBe("waiting_dependency");
+    expect(plan.find((s) => s.nodeId === "c")?.status).toBe("completed");
   });
 });

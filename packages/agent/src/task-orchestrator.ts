@@ -121,11 +121,33 @@ export class TaskOrchestrator implements ITaskExecutor {
           const result = await this.dagExecutor.executeDAG(task);
           task.output = result.output;
           task.executionPlan = result.steps;
-          // Check if any DAG nodes failed — treat as task failure
-          const failedNodes = result.steps.filter((s) => s.status === "failed");
+          // 检查 DAG 节点是否失败/级联失败。
+          // - "failed"：节点自身执行失败（重试耗尽），必为任务失败。
+          // - "waiting_dependency"：因依赖未 completed 而未执行。需区分两类：
+          //     · 上游是 "failed"  → 级联失败，任务必须失败（否则下游从未执行却报成功）
+          //     · 上游是 "skipped"（条件为 false）→ 属于"无事可做"的良性级联，不算失败
+          //   通过追溯依赖链判断该节点是否传递性地依赖某个 failed 节点。
+          const statusById = new Map(result.steps.map((s) => [s.nodeId, s.status]));
+          const dependsOnFailed = (nid: string, seen: Set<string> = new Set()): boolean => {
+            const deps = task.dag.find((n) => n.id === nid)?.dependencies ?? [];
+            for (const d of deps) {
+              if (seen.has(d)) continue;
+              seen.add(d);
+              const st = statusById.get(d);
+              if (st === "failed" || (st === "waiting_dependency" && dependsOnFailed(d, seen))) {
+                return true;
+              }
+            }
+            return false;
+          };
+          const failedNodes = result.steps.filter((s) => {
+            if (s.status === "failed") return true;
+            if (s.status === "waiting_dependency") return dependsOnFailed(s.nodeId);
+            return false;
+          });
           if (failedNodes.length > 0) {
-            const failedIds = failedNodes.map((s) => s.nodeId).join(", ");
-            throw new Error(`DAG execution had ${failedNodes.length} failed node(s): ${failedIds}`);
+            const ids = failedNodes.map((s) => `${s.nodeId}(${s.status})`).join(", ");
+            throw new Error(`DAG execution had ${failedNodes.length} failed/blocked node(s): ${ids}`);
           }
         } else {
           task.output = { message: "Task processed successfully" };

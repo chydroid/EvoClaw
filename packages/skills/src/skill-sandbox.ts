@@ -338,9 +338,15 @@ export class SkillSandbox {
           }
         };
 
+        // 先声明 killTimer（初始化为 undefined）再定义 cleanup：
+        // 若子进程在超时前就正常 close，cleanup() 会先于 setTimeout 的执行体运行，
+        // 届时 killTimer 尚未赋值——TDZ 导致 clearTimeout(killTimer) 抛
+        // "Cannot access 'killTimer' before initialization"，整条 executeSkill 链路
+        // 因 uncaught 失败（历史 bug，正常快速退出也中招）。
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
         const cleanup = () => {
           clearTimeout(timeoutId);
-          clearTimeout(killTimer);
+          if (killTimer) clearTimeout(killTimer);
           child.stdout?.off("data", onStdoutData);
           child.stderr?.off("data", onStderrData);
           child.off("close", onClose);
@@ -358,7 +364,6 @@ export class SkillSandbox {
           }, 5000);
           reject(new Error(`Python execution timed out after ${timeout}ms`));
         }, timeout);
-        let killTimer: ReturnType<typeof setTimeout>;
 
         const onClose = (code: number | null) => {
           if (settled) return;
@@ -541,9 +546,12 @@ export class SkillSandbox {
         }
       };
 
+      // 同 executePython：先声明 killTimer（初始化为 undefined）再定义 cleanup，
+      // 避免子进程快速正常退出时 cleanup 在 TDZ 中引用 killTimer 而崩溃。
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
         clearTimeout(timeoutId);
-        clearTimeout(killTimer);
+        if (killTimer) clearTimeout(killTimer);
         child.stdout?.off("data", onStdoutData);
         child.stderr?.off("data", onStderrData);
         child.off("close", onClose);
@@ -561,7 +569,6 @@ export class SkillSandbox {
         }, 5000);
         reject(new Error(`Skill subprocess timed out after ${timeout}ms`));
       }, timeout);
-      let killTimer: ReturnType<typeof setTimeout>;
 
       const onClose = (code: number | null) => {
         if (settled) return;

@@ -291,10 +291,17 @@ export class SkillCurator {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
       const skillName = entry.name;
       const stats = this.usageStats.get(skillName);
-      const lastUsed = stats?.lastUsedAt ? Date.parse(stats.lastUsedAt) : NaN;
-      const isExpired = Number.isNaN(lastUsed)
-        ? true // 从未记录使用：视为过期候选
-        : (now - lastUsed) > expiryMs;
+      // 从未使用过（lastUsedAt === null）的技能：以安装时间 createdAt 为参照，
+      // 给其 expiryDays 宽限期，而不是立即视为过期——否则"刚安装还没用过"的
+      // 技能会在下一个 30 天周期被归档，违反"活跃技能不应被归档"的约定。
+      const referenceTime = stats?.lastUsedAt
+        ? Date.parse(stats.lastUsedAt)
+        : stats?.createdAt
+          ? Date.parse(stats.createdAt)
+          : NaN;
+      const isExpired = Number.isNaN(referenceTime)
+        ? true // 无任何使用/创建记录：视为过期候选
+        : (now - referenceTime) > expiryMs;
       if (!isExpired) continue;
 
       expired.push(skillName);

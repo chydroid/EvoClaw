@@ -975,7 +975,13 @@ export class SkillManager {
         (skill.stats.averageDuration * successCountBefore + duration) /
         (successCountBefore + 1);
 
-      await this.eventBus.publish(SystemEvents.SKILL_EXECUTED, { skillId, params, result }, "skill-manager");
+      await this.eventBus.publish(SystemEvents.SKILL_EXECUTED, {
+        skillId,
+        name: skill.name,
+        success: true,
+        params,
+        result,
+      }, "skill-manager");
 
       await this.hookEngine.executeHook(skill, "onAfterExecute", { params, result });
 
@@ -997,7 +1003,7 @@ export class SkillManager {
 
       await this.eventBus.publish(
         SystemEvents.SKILL_FAILED,
-        { skillId, params, error: result.errors[0] },
+        { skillId, name: skill.name, success: false, params, error: result.errors[0] },
         "skill-manager"
       );
 

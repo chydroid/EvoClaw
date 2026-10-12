@@ -71,7 +71,9 @@ export class ShutdownForensics {
       argv: process.argv,
     };
 
-    const filePath = path.join(this.outputDir, `shutdown-${timestamp}.json`);
+    // 同一毫秒内多次调用（测试/快速重启）会同名覆盖，加 pid+随机后缀保证唯一
+    const uniqueId = `${timestamp}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+    const filePath = path.join(this.outputDir, `shutdown-${uniqueId}.json`);
     const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID().slice(0, 8)}.tmp`;
 
     // 原子写入：temp → fsync → rename

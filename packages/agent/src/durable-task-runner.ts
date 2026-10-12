@@ -146,6 +146,15 @@ export class DurableTaskRunner {
     this.persist();
   }
 
+  /** 递增续跑计数（字段此前从未被更新，导致监控/限流误判） */
+  private bumpResumeCount(id: string): void {
+    this.ensureLoaded();
+    const task = this.tasks.get(id);
+    if (!task) return;
+    task.resumeCount = (task.resumeCount ?? 0) + 1;
+    this.persist();
+  }
+
   /** 标记暂停并写入检查点时间 */
   pause(id: string): void {
     this.ensureLoaded();
@@ -231,6 +240,8 @@ export class DurableTaskRunner {
     }
     this.activeResume.add(id);
     this.markRunning(id);
+    // 记录本次续跑（字段此前从未递增，监控/限流若依赖它会误判）
+    this.bumpResumeCount(id);
     try {
       const reply = await this.resumeDriver(task);
       this.complete(id, reply);
