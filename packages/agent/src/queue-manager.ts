@@ -212,8 +212,37 @@ export class QueueManager {
           );
         }
       }
-      // 若没有 pending 任务（全部 processing/done），则不丢弃——
-      // 这种情况下队列实际活跃任务数 < maxQueueSize，新任务可安全入队。
+      // 若没有 pending 任务（全部 processing/done），则不能无脑放行——
+      // 否则 queue.length 会持续超过 maxQueueSize（processing/done 不清理前
+      // 每次入队都 +1）。改为：丢弃最旧的非活跃（done/failed）任务腾位；
+      // 若没有可丢的非活跃任务（全是 processing），拒绝入队并告警。
+      if (pending.length === 0) {
+        // 找最旧的 done/failed（非活跃）任务丢弃；它们已不被后续 dequeue 消费
+        const discardable = queue.filter(
+          (q) => q.status === "done" || q.status === "failed",
+        );
+        if (discardable.length > 0) {
+          let oldest = discardable[0];
+          for (const item of discardable) {
+            if (new Date(item.createdAt).getTime() < new Date(oldest.createdAt).getTime()) {
+              oldest = item;
+            }
+          }
+          const idx = queue.indexOf(oldest);
+          if (idx >= 0) {
+            queue.splice(idx, 1);
+            process.stderr.write(
+              `[QueueManager] Queue full for session "${sessionId}", dropped oldest completed item: ${oldest.id}\n`
+            );
+          }
+        } else {
+          // 全是 processing 任务，拒绝入队而非突破上限
+          process.stderr.write(
+            `[QueueManager] Queue full for session "${sessionId}" (all ${queue.length} items are processing), rejecting new enqueue: ${message.slice(0, 80)}\n`
+          );
+          throw new Error(`Queue for session "${sessionId}" is at capacity (${this.config.maxQueueSize}) with all slots processing; new item rejected.`);
+        }
+      }
     }
 
     // 记录入队时的诊断信息

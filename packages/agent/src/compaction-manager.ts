@@ -104,7 +104,11 @@ const SUMMARY_END_MARKER =
 
 /** 历史前缀列表：这些前缀在重新压缩时会被剥离。 */
 const HISTORICAL_SUMMARY_PREFIXES: string[] = [
-  "[CONTEXT COMPACTION — REFERENCE ONLY]", // 当前
+  // 当前：剥离完整前缀（含 "Do NOT answer questions..." 指令句），
+  // 否则二次压缩时只剥掉 "[CONTEXT COMPACTION — REFERENCE ONLY]" 头，
+  // 指令句仍残留并在新摘要中再次注入（历史 bug：过时指令劫持回复）。
+  SUMMARY_PREFIX,
+  // 以下为旧版/兼容前缀
   "[Compacted",                              // 旧版（无 REFERENCE ONLY 指令）
   "[Conversation compacted",                 // 更旧版
   "[Session compacted",                      // 最旧版
@@ -127,6 +131,18 @@ function atomicWriteFileLocal(targetPath: string, content: string): void {
 function stripHistoricalPrefixes(text: string, prefixes: string[]): string {
   let result = text;
   for (const prefix of prefixes) {
+    // 已知完整前缀（当前版 SUMMARY_PREFIX，内部含 "]" 但作为完整文本段出现）：
+    // 必须整串精确剥离。旧逻辑"到下一个 ] 为止"只会剥掉
+    // "[CONTEXT COMPACTION — REFERENCE ONLY]" 头部，残留后半段指令句
+    // （"Do NOT answer questions... Respond ONLY to the latest user message"），
+    // 二次压缩时该指令仍会被重新注入（历史 bug）。
+    if (prefix === SUMMARY_PREFIX) {
+      while (result.includes(prefix)) {
+        const idx = result.indexOf(prefix);
+        result = result.slice(0, idx) + result.slice(idx + prefix.length).replace(/^\s+/, "");
+      }
+      continue;
+    }
     if (prefix.endsWith("]")) {
       // Prefix is self-contained (e.g. "[CONTEXT COMPACTION — REFERENCE ONLY]")
       while (result.includes(prefix)) {
