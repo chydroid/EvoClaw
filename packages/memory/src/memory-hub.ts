@@ -666,6 +666,82 @@ export class MemoryHub {
     });
   }
 
+  /**
+   * 记录一次 Cron 定时任务的运行结果，供下次运行前继承（P1-3 运行间学习闭环）。
+   *
+   * 存入 longTerm memory（type: "procedural"，procedural 层——"定时任务的运行经验"
+   * 属于程序性知识，而非单次对话事件），metadata.tags 带 `cron` + jobId，
+   * 便于按 job 精确召回；ttl 设 30 天（cron 经验比对话记忆更持久，但仍有淘汰期，
+   * 与 SkillCurator 的"只归档不删除"不变量对齐——到期由 curator 归档，不硬删）。
+   *
+   * 内容做轻量摘要（success/error/result 各截断），避免超长 tool 结果撑爆 32KB 上限。
+   */
+  async rememberCronRun(run: {
+    jobId: string;
+    jobName: string;
+    success: boolean;
+    result?: unknown;
+    error?: string;
+    durationMs?: number;
+    sessionId?: string;
+  }): Promise<MemoryEntry> {
+    const TRUNC = 500;
+    const resultText = run.result != null
+      ? (typeof run.result === "string" ? run.result : JSON.stringify(run.result)).slice(0, TRUNC)
+      : "(无返回值)";
+    // 每次运行带唯一 runId：避免同一 job 在短时间内多次成功时，
+    // 两次 content 恰好相同被 remember() 的去重合并成一条（丢运行次数）。
+    const runId = `cron-${run.jobId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const content = [
+      `Cron 任务「${run.jobName}」(${run.jobId}) ${run.success ? "成功" : "失败"}运行 [${runId}]`,
+      run.success ? `结果: ${resultText}` : `错误: ${(run.error ?? "unknown").slice(0, TRUNC)}`,
+      run.durationMs != null ? `耗时: ${Math.round(run.durationMs)}ms` : "",
+      `时间: ${new Date().toISOString()}`,
+    ].filter(Boolean).join(" | ");
+
+    return this.remember({
+      type: "procedural",
+      content,
+      embedding: null,
+      metadata: {
+        source: "cron",
+        sessionId: run.sessionId ?? "",
+        userId: "system",
+        tags: ["cron", `cron:${run.jobId}`],
+        importance: run.success ? 0.5 : 0.7,
+        associations: [run.jobId],
+        entities: [run.jobName],
+      },
+      ttl: 30 * 24 * 60 * 60 * 1000,
+    });
+  }
+
+  /**
+   * 拉取某 Cron 任务最近的运行经验，拼成下一轮 task 的 context。
+   * 最多取 limit 条（按召回顺序），每条带一行摘要。失败/成功都返回，
+   * 调用方据此决定是「继承成功路径」还是「避开上次失败」。
+   */
+  async recallCronRuns(jobId: string, limit = 3): Promise<string[]> {
+    const results = await this.recall({
+      query: `cron ${jobId}`,
+      tags: [`cron:${jobId}`],
+      limit: limit * 3, // 多取一些再按 tag 精筛，避免向量召回噪音
+    });
+    const matched = results.filter((r) => r.entry.metadata.tags?.includes(`cron:${jobId}`));
+    // 按 accessedAt/createdAt 降序：「最近 N 次运行」语义。
+    // longTerm.search 同分下稳定保留插入序（旧条目在前），若不显式重排，
+    // 截断会丢掉最新运行——与"运行间学习继承最近经验"的目标相反。
+    matched.sort((a, b) => {
+      const at = a.entry.accessedAt?.getTime?.() ?? 0;
+      const bt = b.entry.accessedAt?.getTime?.() ?? 0;
+      if (at !== bt) return bt - at;
+      const ac = a.entry.createdAt?.getTime?.() ?? 0;
+      const bc = b.entry.createdAt?.getTime?.() ?? 0;
+      return bc - ac;
+    });
+    return matched.slice(0, limit).map((r) => r.entry.content);
+  }
+
   async freezeMemorySnapshot(): Promise<MemorySnapshot> {
     const allResults = await this.longTerm.search({ query: "", limit: 10000 });
     const allMemories = allResults.map((r) => r.entry);

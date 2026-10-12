@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import * as crypto from "crypto";
+import { RunLogStore } from "./run-log-store";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -310,10 +311,38 @@ export class CronScheduler extends EventEmitter {
   private executionHistory: CronExecutionRecord[] = [];
   private running: Set<string> = new Set();
   private maxConcurrent: number;
+  /**
+   * P1-3（2026-10-12）：每次运行落 SQLite 持久 runId（RunLogStore 此前只有测试调用，
+   * 生产链路无人接线）。注入后 job:start → startRun，job:complete/error → completeRun。
+   * 不注入则行为与历史完全一致（向后兼容）。
+   */
+  private runLogStore?: RunLogStore;
+  /** 当前运行中的 job 的 runId（jobId → runId），startRun 后填充，completeRun 时读取。 */
+  private activeRunIds: Map<string, string> = new Map();
 
-  constructor(options?: { maxConcurrentJobs?: number }) {
+  constructor(options?: { maxConcurrentJobs?: number; runLogStore?: RunLogStore }) {
     super();
     this.maxConcurrent = options?.maxConcurrentJobs ?? 5;
+    this.runLogStore = options?.runLogStore;
+    if (this.runLogStore) {
+      try {
+        this.runLogStore.init();
+      } catch (err) {
+        process.stderr.write(`[CronScheduler] RunLogStore init failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+  }
+
+  /** 供外部（server）替换/注入 RunLogStore（幂等：init 已做）。 */
+  setRunLogStore(store: RunLogStore | undefined): void {
+    this.runLogStore = store;
+    if (store) {
+      try {
+        store.init();
+      } catch (err) {
+        process.stderr.write(`[CronScheduler] RunLogStore init failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
   }
 
   // ── Public API ───────────────────────────────────────────────────────────
@@ -528,6 +557,15 @@ export class CronScheduler extends EventEmitter {
       success: false,
     };
 
+    // P1-3：每次运行落 SQLite runId（RunLogStore 此前只有测试调用）。
+    const runId = uid();
+    try {
+      this.runLogStore?.startRun({ runId, jobId: job.id, startedAt });
+    } catch (err) {
+      process.stderr.write(`[CronScheduler] RunLogStore.startRun failed for "${job.id}": ` + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+    this.activeRunIds.set(job.id, runId);
+
     this.emit("job:start", { ...record });
 
     job.status = "running";
@@ -545,6 +583,11 @@ export class CronScheduler extends EventEmitter {
       job.status = "idle";
       job.lastError = undefined;
       this.emit("job:complete", { ...record });
+      this.completeRunLog(job.id, runId, {
+        completedAt: record.completedAt,
+        status: "completed",
+        outputSummary: typeof result === "string" ? result : result != null ? JSON.stringify(result) : undefined,
+      });
     } catch (err) {
       record.completedAt = new Date();
       record.duration = record.completedAt.getTime() - startedAt.getTime();
@@ -555,8 +598,14 @@ export class CronScheduler extends EventEmitter {
       job.errorCount++;
       job.lastError = msg;
       this.emit("job:error", { ...record });
+      this.completeRunLog(job.id, runId, {
+        completedAt: record.completedAt,
+        status: "failed",
+        error: msg,
+      });
     } finally {
       this.running.delete(jobId);
+      this.activeRunIds.delete(jobId);
       job.updatedAt = new Date();
       this.executionHistory.push(record);
       if (this.executionHistory.length > 1000) {
@@ -564,6 +613,31 @@ export class CronScheduler extends EventEmitter {
       }
       // Re-schedule next run regardless of success/failure
       this.scheduleNext(job);
+    }
+  }
+
+  /** P1-3：落 RunLogStore 完成态；store 缺失或写入失败都不阻断主流程（best-effort）。 */
+  private completeRunLog(
+    jobId: string,
+    runId: string,
+    opts: {
+      completedAt?: Date;
+      status: "completed" | "failed" | "cancelled";
+      error?: string;
+      outputSummary?: string;
+    },
+  ): void {
+    if (!this.runLogStore) return;
+    try {
+      this.runLogStore.completeRun({
+        runId,
+        completedAt: opts.completedAt,
+        status: opts.status,
+        error: opts.error,
+        outputSummary: opts.outputSummary,
+      });
+    } catch (err) {
+      process.stderr.write(`[CronScheduler] RunLogStore.completeRun failed for "${jobId}": ` + (err instanceof Error ? err.message : String(err)) + "\n");
     }
   }
 

@@ -98,6 +98,16 @@ export const SystemEvents = {
   TASK_CANCELLED: "task.cancelled",
   TASK_RETRYING: "task.retrying",
 
+  /**
+   * Cron 定时任务一次运行结束（成功或失败都发）。
+   * 数据：{ jobId, jobName, sessionId?, success, result?, error?, duration? }
+   *
+   * P1-3 Cron 运行间学习闭环（2026-10-12）：EvolutionEngine / MemoryHub 据此
+   * 把每次 cron 运行的结果沉淀进记忆，下次运行前拉取继承，实现 run-to-run 学习。
+   * 失败时 server 侧另发 TASK_FAILED（source: "cron"），复用 EvolutionEngine 已有监听。
+   */
+  CRON_RUN_COMPLETED: "cron.run_completed",
+
   AGENT_REGISTERED: "agent.registered",
   AGENT_TERMINATED: "agent.terminated",
   AGENT_ERROR: "agent.error",

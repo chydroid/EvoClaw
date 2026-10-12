@@ -47,7 +47,7 @@ import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
-import { ScheduleManager, CronScheduler } from "@evoclaw/scheduler";
+import { ScheduleManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
@@ -344,15 +344,61 @@ export class EvoClawServer {
     this.registry.registerService("subagentRegistry", this.subagentRegistry);
 
     // ── Enhanced Cron Scheduler (OpenClaw parity) ──
-    this.cronScheduler = new CronScheduler({ maxConcurrentJobs: 5 });
+    // P1-3：Cron 每次运行落 SQLite 持久 runId（RunLogStore 此前只有测试调用）。
+    // better-sqlite3 不可用时（NODE_MODULE_VERSION 不匹配等）RunLogStore 创建会抛，
+    // 此时跳过注入——CronScheduler 无 store 即退回历史行为（不记 runLog），不影响调度。
+    let cronRunLogStore: RunLogStore | undefined;
+    try {
+      if (probeSqlitePersistence().available) {
+        const Database = require("better-sqlite3") as new (file: string, opts?: Record<string, unknown>) => SqliteDatabaseLike;
+        const dataDirRunLog = path.resolve(__dirname, "..", "..", "..", "data");
+        fs.mkdirSync(dataDirRunLog, { recursive: true });
+        const db = new Database(path.join(dataDirRunLog, "cron-run-logs.db"), { fileMustExist: false });
+        cronRunLogStore = new RunLogStore(db as unknown as SqliteDatabaseLike);
+      } else {
+        this.logger.warn("cron", "RunLogStore 跳过：better-sqlite3 不可用，Cron 运行日志仅走内存 history");
+      }
+    } catch (err) {
+      this.logger.warn("cron", `RunLogStore 初始化失败，Cron 运行日志仅走内存 history: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.cronScheduler = new CronScheduler({ maxConcurrentJobs: 5, runLogStore: cronRunLogStore });
     this.cronScheduler.on("job:start", (record) => {
       this.logger.info("cron", `Job "${record.jobName}" started`, { jobId: record.jobId });
     });
     this.cronScheduler.on("job:complete", (record) => {
       this.logger.info("cron", `Job "${record.jobName}" completed`, { jobId: record.jobId, duration: record.duration });
+      // P1-3 Cron 运行间学习闭环：把成功运行沉淀进 memoryHub，下次运行前可继承。
+      // 回调在 job 实际触发时执行（远晚于 memoryHub 初始化），此处直接引用安全。
+      void this.memoryHub
+        .rememberCronRun({
+          jobId: record.jobId,
+          jobName: record.jobName,
+          success: true,
+          result: record.result,
+          durationMs: record.duration,
+          sessionId: record.sessionId,
+        })
+        .catch((err) => this.logger.error("cron", `记忆沉淀失败（job:complete, jobId=${record.jobId}）: ${err instanceof Error ? err.message : String(err)}`));
     });
     this.cronScheduler.on("job:error", (record) => {
       this.logger.error("cron", `Job "${record.jobName}" failed`, record.error);
+      // 失败运行同样入记忆（高 importance），并广播 TASK_FAILED 让 EvolutionEngine
+      // 走既有的 LearningJournal.recordLearning 通道——复用而非新写一条失败处理链。
+      void this.memoryHub
+        .rememberCronRun({
+          jobId: record.jobId,
+          jobName: record.jobName,
+          success: false,
+          error: record.error,
+          durationMs: record.duration,
+          sessionId: record.sessionId,
+        })
+        .catch((err) => this.logger.error("cron", `记忆沉淀失败（job:error, jobId=${record.jobId}）: ${err instanceof Error ? err.message : String(err)}`));
+      void this.eventBus.publish(
+        SystemEvents.TASK_FAILED,
+        { source: "cron", taskId: record.jobId, description: `Cron 任务「${record.jobName}」执行失败`, error: record.error, skillId: record.jobId },
+        "server",
+      );
     });
     this.registry.registerService("cronScheduler", this.cronScheduler);
 
