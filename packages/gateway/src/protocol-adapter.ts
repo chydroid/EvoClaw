@@ -676,7 +676,14 @@ function readUserContextOverride(registry: ServiceRegistry): number | undefined 
  *        → 最后兜底。
  * 任何分支都不再出现"硬编码 128k 覆盖模型判断"的情况。
  */
-function resolveContextLimit(
+/**
+ * 解析 done 事件要下发的 contextLimit（上下文窗口分母）。
+ * 优先采用 agent 侧按**实际使用模型**解析出的真实值；缺失时回退到
+ * 统一解析器（用户显式设置 > provider 上报 > 内置模型库 > 兜底）。
+ *
+ * 导出以便契约测试直接断言「字段可达」（P0 防回归，protocol-adapter-contract.test.ts）。
+ */
+export function resolveContextLimit(
   result: unknown,
   agentExecutor: unknown,
   registry: ServiceRegistry

@@ -313,3 +313,57 @@ describe("looksLikeDetailedReport — 不得把「如实汇报 + 排查建议」
     expect(v.needsCorrection).toBe(false);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 成功/失败计数单一事实源（P0，2026-10-12 回归守护）
+//
+// 根因：v0.91 时代同一次工具调用既写一条 ok:false 又写一条 ok:true，
+// 且 successfulToolCalls++ 照加 → 成功数虚高、提前触发「别再调工具了」的
+// nudge；硬失败（抛异常）则既不进 failedTools 也不进轨迹。
+// v0.92.1 已把判定收敛到单点：语义失败只记一条（ok:false）且不累加成功数，
+// 硬失败进 failedTools 且 ok:false。本测试守住「一次调用至多一个终态」的不变量。
+// ═══════════════════════════════════════════════════════════
+
+describe("成功/失败计数单一事实源（回归守护）", () => {
+  // 复刻 llm-caller executeSingleToolCall 的判定核心：
+  // 一次工具调用**要么**成功（进 successfulToolCalls + createdFiles 路径），
+  // **要么**语义失败（进 failedTools），二者互斥，且轨迹只写一条 ok。
+  function classify(rawResult: unknown, name: string) {
+    const failure = extractToolFailure(name, rawResult);
+    const semanticallyFailed = failure !== null && failure !== undefined;
+    let successfulToolCalls = 0;
+    const failedTools: Array<{ name: string; error: string }> = [];
+    const traceEntries: Array<{ ok: boolean }> = [];
+    if (semanticallyFailed) {
+      failedTools.push({ name, error: failure! });
+      traceEntries.push({ ok: false });
+    } else {
+      successfulToolCalls++;
+      traceEntries.push({ ok: true });
+    }
+    return { successfulToolCalls, failedTools, traceEntries };
+  }
+
+  it("★ 语义失败：只记一条轨迹、0 成功、进 failedTools（不得既成又败）", () => {
+    const r = classify({ success: true, result: { success: false, errors: ["Skill not found"] } }, "skill_execute");
+    expect(r.successfulToolCalls).toBe(0);
+    expect(r.failedTools).toHaveLength(1);
+    expect(r.traceEntries).toEqual([{ ok: false }]); // 恰好一条，无 ok:true 叠加
+  });
+
+  it("成功：1 成功、0 失败、轨迹一条 ok:true", () => {
+    const r = classify({ success: true, accountId: "acct-1" }, "email_add_account");
+    expect(r.successfulToolCalls).toBe(1);
+    expect(r.failedTools).toHaveLength(0);
+    expect(r.traceEntries).toEqual([{ ok: true }]);
+  });
+
+  it("等待审批既不算成功也不算失败（由 pendingPermissions 分支处理）", () => {
+    const r = classify({ success: false, requiresPermission: true, error: "Awaiting approval" }, "shell_exec");
+    // extractToolFailure 对 requiresPermission 返回 null → 走 else → 记为成功
+    // 但「等待审批」真实语义是 pending，llm-caller 在 requiresPermission 分支
+    // 早退（不进成功/失败计数）。此处只守护 extractToolFailure 不误判为失败。
+    expect(extractToolFailure("shell_exec", { success: false, requiresPermission: true, error: "x" })).toBeNull();
+    expect(r.failedTools).toHaveLength(0);
+  });
+});

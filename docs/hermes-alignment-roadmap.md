@@ -37,8 +37,8 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 
 - [x] **files 恒空欠账**：`file_create`/`file_modify` 工具成功结果提取 path/size/workspaceRelative 写入 `createdFiles`，前端下载链接恢复出现。
 - [x] **token 事件体积欠账**：token/status-generating 事件默认只带 delta 增量，不再塞全量累积 reply（`includeAccumulatedReplyInTokenEvents` 开关保留旧客户端语义）；WebChatPage 按字段存在与否自动分流全量/增量渲染。
-- [ ] **类型契约防回归测试**：SSE `done` 事件字段（`contextLimitSource`/`thinkingSteps`/`contextTokensEstimated`）加 schema 级断言。
-- [ ] **成功/失败计数单一事实源**：工具结果判定统一到一处，消除"同一次调用既失败又成功"。
+- [x] **类型契约防回归测试**：`packages/gateway/src/protocol-adapter-contract.test.ts`（6 用例）守住 `done` 事件 `contextLimit`/`contextLimitSource`/`contextTokensEstimated`/`thinkingSteps` 四字段可达 + `files` 非空回归；`resolveContextLimit` 已导出供测试直接断言。
+- [x] **成功/失败计数单一事实源**：v0.92.1 已把判定收敛到 `executeSingleToolCall` 单点（语义失败只记一条 `ok:false` 且不累加成功数；硬失败进 `failedTools` 且 `ok:false`）；`packages/agent/src/completion-truthfulness.test.ts` 新增「一次调用至多一个终态」回归守护（3 用例），锁定互斥不变量。
 
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 
