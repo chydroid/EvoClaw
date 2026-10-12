@@ -823,8 +823,25 @@ export class SkillCurator {
    * @returns 是否成功
    */
   setPinned(skillId: string, pinned: boolean, reason?: string): boolean {
-    const entry = this.evolutions.get(skillId);
-    if (!entry) return false;
+    let entry = this.evolutions.get(skillId);
+    // 历史 bug：evolutions Map 只在 loadFromDisk 时填充，运行时从未写入，
+    // 导致 setPinned 对任何 skillId 都因 "entry 不存在" 直接返回 false，
+    // 用户无法 pin 任何技能，runCycle 的 pinned 豁免也永远匹配不到。
+    // 修复：不存在时按需创建最小 entry（skillName 取 skillId 作为回退）。
+    if (!entry) {
+      const now = new Date();
+      entry = {
+        skillId,
+        skillName: skillId,
+        versions: [],
+        extractionSource: null,
+        improvementHistory: [],
+        deprecation: null,
+        createdAt: now,
+        lastUpdatedAt: now,
+      };
+      this.evolutions.set(skillId, entry);
+    }
 
     entry.pinned = pinned;
     if (pinned) {
