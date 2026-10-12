@@ -44,7 +44,7 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 
 - [ ] **Bot Mode 产品化**：命名智能体社会——agent profile 绑定独立 model/memory/skills/头像/常驻会话 + 群聊房间 + `@mention` 编排（底层 GroupChat 已有）。
 - [ ] **Subagent mid-flight steering**：运行中下发指令重定向（对标 v0.21）。
-- [ ] **Cron 运行间学习闭环**：定时任务把每次运行结果沉淀进记忆/进化引擎，下次运行继承经验。
+- [x] **Cron 运行间学习闭环**：激活闲置的 `RunLogStore`（每次 cron 运行落 SQLite 持久 runId）；`MemoryHub.rememberCronRun`/`recallCronRuns` 把运行结果按 procedural 层入长期记忆（失败 importance 更高、TTL 30 天对齐归档不变量），下次 task 前拉最近 N 次注入 context；`job:error` 另发 `TASK_FAILED`（source: "cron"）复用 EvolutionEngine 既有 LearningJournal 通道。
 - [ ] **MCP 指挥中心**：工具过滤/动态挂载/路由仪表盘。
 
 ### P2 — 新特性拓展（补齐 v0.20+ 新战场）
