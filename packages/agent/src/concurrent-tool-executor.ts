@@ -436,14 +436,28 @@ export class ConcurrentToolExecutor {
     })();
 
     // 超时后 execPromise 仍在后台运行：捕获其 rejection 防止 unhandledRejection，
-    // 并在它最终完成/失败后记录诊断信息（结果已被丢弃）
+    // 并在它最终完成/失败后记录诊断信息（结果已被丢弃）。
+    // 修复：槽位的释放统一放在 execPromise 的收尾链里（无论是否超时，都要等后台
+    // 真正结束才 release），避免超时后在 finally 里提前释放、让下一个工具拿到槽位
+    // 时后台仍在跑导致实际并发数突破 maxConcurrency 上限。
+    let slotReleased = false;
+    const releaseSlot = () => {
+      if (slotReleased) return;
+      slotReleased = true;
+      this.activeExecutions.delete(tool.id);
+      this.semaphore.release();
+    };
     execPromise
       .then((result) => {
         if (timedOut) {
           logger_warn(`tool ${tool.name} completed after timeout (result discarded)`, { toolId: tool.id, success: result.success });
         }
+        releaseSlot();
       })
-      .catch(() => {});
+      .catch(() => {
+        // execPromise 本身吞掉了内部异常（不会 reject），此为防御性兜底
+        releaseSlot();
+      });
 
     try {
       const result = await Promise.race([execPromise, timeoutPromise]);
@@ -451,8 +465,6 @@ export class ConcurrentToolExecutor {
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       clearInterval(heartbeatTimer);
-      this.activeExecutions.delete(tool.id);
-      this.semaphore.release();
     }
   }
 
