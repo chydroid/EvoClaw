@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ThinkingTrace, MAX_TITLE_CHARS, MAX_DETAIL_CHARS } from "./thinking-trace";
-import { StreamingTagScrubber } from "./llm-caller";
+import { StreamingTagScrubber, traceSnapshot } from "./llm-caller";
 
 /**
  * 回归：思考过程必须被完整保留。
@@ -209,5 +209,52 @@ describe("ThinkingTrace — 轨迹采集与序列化", () => {
     for (let i = 1; i < steps.length; i++) {
       expect(steps[i].offsetMs!).toBeGreaterThanOrEqual(steps[i - 1].offsetMs!);
     }
+  });
+});
+/**
+ * 回归（2026-10-11 代码审查）：轨迹交付链路上的两个真实缺陷。
+ */
+describe("StreamingTagScrubber — 未闭合 span 的推理不能丢", () => {
+  it("★ 流在 <think> 内部中断时，flush() 仍要把这段推理交出来", () => {
+    const s = new StreamingTagScrubber();
+    expect(s.feed("<think>还没想完就断流了")).toBe("");
+    // 原实现：flush() 在 span 内直接 buf="" —— 这段推理凭空消失
+    expect(s.flush()).toBe("");
+    expect(s.takeReasoning()).toContain("还没想完就断流了");
+  });
+
+  it("span 外的残留缓冲仍按正文返回（不回归）", () => {
+    const s = new StreamingTagScrubber();
+    const out = s.feed("正文<thi");
+    expect(out).toBe("正文");
+    expect(s.flush()).toBe("<thi");
+  });
+});
+
+describe("traceSnapshot — 节流状态必须按 trace 隔离", () => {
+  it("★ 两个不同 trace 各自独立节流（原实现是模块级单例，A 会话会吞掉 B 会话的快照）", () => {
+    const a = new ThinkingTrace();
+    a.addSystem("A 的一步");
+    const b = new ThinkingTrace();
+    b.addSystem("B 的一步");
+
+    expect(traceSnapshot(a)).toBeDefined();
+    // 旧实现：模块级 lastAt 刚被 a 更新 → 这里返回 undefined，B 的快照被吞
+    expect(traceSnapshot(b)).toBeDefined();
+  });
+
+  it("同一个 trace 在节流窗口内仍被抑制（避免 SSE 被全量快照撑爆）", () => {
+    const t = new ThinkingTrace();
+    t.addSystem("一步");
+    expect(traceSnapshot(t)).toBeDefined();
+    expect(traceSnapshot(t)).toBeUndefined();
+  });
+
+  it("force 绕过窗口；空轨迹一律不产生快照", () => {
+    const t = new ThinkingTrace();
+    t.addSystem("一步");
+    expect(traceSnapshot(t, { force: true })).toBeDefined();
+    expect(traceSnapshot(t, { force: true })).toBeDefined();
+    expect(traceSnapshot(new ThinkingTrace())).toBeUndefined();
   });
 });

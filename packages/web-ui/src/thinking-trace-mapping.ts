@@ -16,7 +16,13 @@ export interface ThinkingStep {
   kind: "reasoning" | "decision" | "tool_result" | "error" | "system";
   title: string;
   detail?: string;
-  at?: number;
+  /** 相对任务开始的时间戳（毫秒）。字段名与后端 thinking-trace.ts 一致，
+   *  曾误写为 `at`，导致同一语义两套命名（类型断言掩盖了问题）。 */
+  offsetMs?: number;
+  toolName?: string;
+  round?: number;
+  ok?: boolean;
+  truncated?: boolean;
 }
 
 export interface MappedMessage {

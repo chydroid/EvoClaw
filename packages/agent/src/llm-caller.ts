@@ -628,7 +628,10 @@ function validateToolParams(
         }
       }
 
-      if (expectedType !== actualType && !(expectedType === "number" && actualType === "number")) {
+      // 注：数字已在上面按 string→number 自动强制转换过，到这里类型不符即为真不符
+      //（原条件里 `!(expectedType === "number" && actualType === "number")` 恒为 true，
+      //  是无作用的死代码，已移除。）
+      if (expectedType !== actualType) {
         return `Parameter "${key}" for tool "${toolName}" has wrong type: expected ${expectedType}, got ${actualType}. Value: ${JSON.stringify(value).slice(0, 100)}`;
       }
     }
@@ -690,6 +693,16 @@ export interface TryCallLLMResult {
   permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>;
   toolsExecuted: boolean;
   files: Array<{ path: string; size: number; downloadUrl: string }>;
+  /**
+   * 本回合的**最终**思考轨迹快照（2026-10-11）。
+   *
+   * 由 gateway 放进终结 `done` 事件下发，作为「任务完成后还能展开看」的
+   * 权威来源：它取自 return 的那一刻，因此包含了完成声明对账等**在流式
+   * done 之后**才写入轨迹的条目，与落盘内容完全一致。
+   * 没有它时，一旦模型没产出正文（走空回复/全 provider 失败分支），
+   * 用户就既看不到轨迹、也收不到 done。
+   */
+  thinkingTrace?: ThinkingStep[];
 }
 
 export interface CallLLMOnceResult {
@@ -917,11 +930,6 @@ function formatToolResultSummary(toolName: string, args: Record<string, unknown>
   }
 }
 
-function getToolCacheKey(toolName: string, params: Record<string, unknown>): string {
-  const sortedParams = Object.keys(params).sort().map(k => `${k}=${JSON.stringify(params[k])}`).join("&");
-  return `${toolName}:${sortedParams}`;
-}
-
 // ── Helper: strip data URI prefix ──
 // "data:image/png;base64,XXXX" → "XXXX"; returns "" if not a data URI.
 // Used by the multimodal input path to extract raw base64 for audio/file parts.
@@ -1063,24 +1071,6 @@ function countResultItems(result: string): number | null {
 
 /** 会产出"搜索结果"的工具——只有它们真的跑通，才值得提示模型别再搜了 */
 const SEARCH_TOOLS_HINT = new Set(["web_search", "web_fetch", "fetch_node_page", "scrapling_fetch"]);
-
-function getIdempotencyKey(toolName: string, args: Record<string, unknown>): string {
-  // Only include fields that affect the write outcome
-  const relevantFields: Record<string, unknown> = {};
-  if (toolName === "file_create" || toolName === "file_modify") {
-    relevantFields.path = args.path;
-  } else if (toolName === "email_send") {
-    relevantFields.to = args.to;
-    relevantFields.subject = args.subject;
-  } else if (toolName === "scheduler_create") {
-    relevantFields.name = args.name;
-    relevantFields.cronExpression = args.cronExpression;
-  } else {
-    // Generic: hash all args
-    return `${toolName}:${JSON.stringify(args)}`;
-  }
-  return `${toolName}:${JSON.stringify(relevantFields)}`;
-}
 
 function cleanIdempotencyCache(): void {
   const now = Date.now();
@@ -1472,7 +1462,10 @@ export class StreamingTagScrubber {
   /** 流结束时调用，返回持留的缓冲区。 */
   flush(): string {
     if (this.inSpan) {
-      // 仍在未闭合 span 内：丢弃所有持留内容
+      // 仍在未闭合 span 内：这段文本**同样是模型推理**，不能丢——
+      // 累计进 capturedReasoning 交给调用方入轨迹，只是不进正文。
+      // （原实现直接 buf="" 丢弃，未闭合 <think> 的推理会凭空消失。）
+      this.capturedReasoning += this.buf;
       this.buf = "";
       this.inSpan = false;
       return "";
@@ -1589,8 +1582,8 @@ export async function parseStreamingResponse(
   // 用户反馈「下一条内容冲掉上一条」。根因是前端靠长度猜测换轮。
   // 轮次序号由主循环经 trace.nextRound() 自增，这里只读取；
   // roundStarted 保证 roundIndex 只在该轮**首个**正文 token 上出现一次。
-  // 注意：没传 trace 时（老调用方）也要能工作，故用局部兜底计数。
-  let fallbackRound = 0;
+  // 注意：没传 trace 时（老调用方）roundIndex 恒为 1 —— 单次调用只有一轮，
+  // 语义正确（原 `fallbackRound` 变量从不自增，等价于常量 1，已删除）。
   let roundStarted = false;
 
   // ── 推理原文实时下发（2026-10-08）──
@@ -1647,7 +1640,7 @@ export async function parseStreamingResponse(
             (choice.delta as { reasoning_content?: string | null }).reasoning_content ??
             (choice.delta as { reasoning?: string | null }).reasoning ??
             null;
-          const currentRoundForReasoning = trace ? trace.round : fallbackRound || 1;
+          const currentRoundForReasoning = trace ? trace.round : 1;
 
           if (reasoningDelta) {
             // 同一轮内合并成**一整段**（否则几十条碎片，展开后没法读）
@@ -1706,7 +1699,7 @@ export async function parseStreamingResponse(
               // 用局部变量标记，避免每个 token 都重复声明同一轮。
               const isFirstTokenOfRound = !roundStarted;
               if (isFirstTokenOfRound) roundStarted = true;
-              const currentRound = trace ? trace.round : fallbackRound || 1;
+              const currentRound = trace ? trace.round : 1;
               onProgress({
                 type: "token",
                 phase: "generating",
@@ -1742,8 +1735,10 @@ export async function parseStreamingResponse(
                 });
                 // ── 进度反馈：流式工具调用首次出现时上报 ──
                 if (tc.function?.name) {
-                  // 决策入轨迹（参数可能后续分片到达，先记工具名）
-                  trace?.addDecision(tc.function.name, { _partial: true });
+                  // ★ 不在此处记 `addDecision`（2026-10-11）：此时参数还在分片
+                  //   传输中，只能写占位 `{_partial:true}`，展开轨迹会看到
+                  //   `{"_partial": true}` 这种垃圾。决策统一在工具执行前
+                  //   （executeSingleToolCall 拿到完整 args 后）记录一次。
                   if (onProgress) {
                     onProgress({
                       type: "status",
@@ -1906,17 +1901,24 @@ export async function parseStreamingResponse(
 // 思考轨迹要"实时可见"，就得随事件下发；但快照是**全量**的（含推理全文与
 // 工具输出），每个 chunk 都带会把 SSE 流撑爆。实测推理 chunk 间隔仅几十毫秒，
 // 因此统一按最小间隔节流，`force` 用于 done / auto_continue 这类"必须落地"的节点。
-const traceSnapshotState = { lastAt: 0 };
+//
+// ★ 节流状态必须**按 trace 隔离**（2026-10-11）。原实现用模块级
+//   `{ lastAt: 0 }` 单例，被所有 session / 所有并发任务共享：A 会话刚发过快照，
+//   B 会话的快照就被吞掉（节流本意是"同一条流最快 300ms 一次"，不是全局）。
+//   表现为"某个会话的思考轨迹长时间不更新"，且完全依赖时序、无法复现。
+//   WeakMap 让每个 trace 各记自己的时间戳，trace 被回收时条目自动释放。
+const traceSnapshotState = new WeakMap<ThinkingTrace, number>();
 
-function traceSnapshot(
+export function traceSnapshot(
   trace: ThinkingTrace | undefined,
   opts: { force?: boolean; minIntervalMs?: number } = {},
 ): ThinkingStep[] | undefined {
   if (!trace || trace.isEmpty) return undefined;
   const now = Date.now();
   const min = opts.minIntervalMs ?? 300;
-  if (!opts.force && now - traceSnapshotState.lastAt < min) return undefined;
-  traceSnapshotState.lastAt = now;
+  const lastAt = traceSnapshotState.get(trace) ?? 0;
+  if (!opts.force && now - lastAt < min) return undefined;
+  traceSnapshotState.set(trace, now);
   return trace.toJSON();
 }
 
@@ -2025,9 +2027,8 @@ export async function callLLMOnce(
       body.tool_choice = toolChoice;
 
       if (provider.provider === "deepseek" || provider.name.toLowerCase().includes("deepseek")) {
-        if (body.tool_choice === "none") {
-          body.tool_choice = "auto";
-        }
+        // 注：原代码在 toolChoice !== "none" 的块内再判断 `=== "none"`，
+        // 该分支永不成立（死代码）。此处只保留 deepseek 的推理标记。
         body.reasoning_type = "deepseek_reasoning";
       }
     }
@@ -2123,11 +2124,39 @@ export async function callLLMOnce(
     // ── 非流式路径同样要记录思考轨迹 ──
     // 实测（2026-10-08）：provider 走非流式时，只有 tool_result 入轨迹，
     // decision 与 reasoning 全部缺失，轨迹只剩孤零零一条。
-    // 原因：非流式分支直接返回 msg.tool_calls，从未调用过 addDecision。
+    //
+    // ★ 2026-10-11 两处修正：
+    //   1) `decision` 不再在这里记 —— 此时 `msg.tool_calls` 已完整，但**是否
+    //      真的执行、参数是否合法**要到主循环才知道；改由 executeSingleToolCall
+    //      统一记录（流式/非流式/XML 三条来源合一，避免同一决策记两遍或
+    //      流式侧只记 `{_partial:true}` 占位）。
+    //   2) 补上正文 `<think>/<reasoning>` 的清洗 —— 原实现只处理独立的
+    //      `reasoning_content` 字段，把推理包在正文标签里的 provider 会把
+    //      **内部推理原文**原样当正文交给用户（与流式行为不一致的泄漏）。
+    if (msg.content && typeof msg.content === "string") {
+      const scrub = new StreamingTagScrubber();
+      const visible = scrub.feed(msg.content) + scrub.flush();
+      const leakedReasoning = scrub.takeReasoning();
+      if (leakedReasoning.trim()) {
+        trace?.addReasoning(leakedReasoning, trace?.round);
+        onProgress?.({
+          type: "reasoning",
+          phase: "thinking",
+          detail: "模型思考中…",
+          progress: 55,
+          reasoningDelta: leakedReasoning,
+          reasoningText: leakedReasoning,
+          roundIndex: trace?.round || 1,
+          ...(trace ? { thinkingSteps: trace.toJSON() } : {}),
+        });
+      }
+      msg.content = visible;
+    }
+
     if (trace) {
       const rc = (msg as { reasoning_content?: string | null }).reasoning_content;
       if (rc && String(rc).trim()) {
-        trace.addReasoning(String(rc));
+        trace.addReasoning(String(rc), trace.round);
         // 非流式也要下发 —— 否则"落盘了但用户看不到"的老毛病又犯一次
         onProgress?.({
           type: "reasoning",
@@ -2139,17 +2168,6 @@ export async function callLLMOnce(
           roundIndex: trace.round || 1,
           thinkingSteps: trace.toJSON(),
         });
-      }
-      for (const tc of msg.tool_calls ?? []) {
-        const fn = tc?.function;
-        if (!fn?.name) continue;
-        let args: Record<string, unknown> = {};
-        try {
-          args = fn.arguments ? (JSON.parse(fn.arguments) as Record<string, unknown>) : {};
-        } catch {
-          args = { _rawArguments: String(fn.arguments ?? "").slice(0, 500) };
-        }
-        trace.addDecision(fn.name, args);
       }
     }
 
@@ -2324,6 +2342,31 @@ export async function tryCallLLM(
           expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
         });
       }
+      // ── 直接执行分支的 assistant 轮持久化（2026-10-11）──
+      // 下面这几条 return **绕过主循环**，必须自己补上 assistant 轮落盘：
+      // 否则会话记录里只有用户消息、没有命令执行结果，下一轮模型看不到
+      // 「刚才那条命令跑出了什么」（只能靠猜），刷新页面后这段交换也消失。
+      // 用户消息本身已在 AgentModelExecutor 里早期落盘，这里只补 assistant。
+      const persistDirectAssistantTurn = (reply: string): void => {
+        try {
+          if (deps.sessionManager) {
+            deps.sessionManager.getOrCreateSession("default", sessionId);
+            deps.sessionManager.appendTurn("default", sessionId, {
+              turnIndex: 0, role: "assistant", content: reply, timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (err) {
+          process.stderr.write(`[AgentModelExecutor] SessionManager persist failed (direct reply): ${err}\n`);
+        }
+        persistSessionTurnFn(getSessionPersistenceDeps(deps), sessionId, "assistant", reply);
+        const hist = [
+          ...(deps.conversationHistory.get(sessionId) || []),
+          { role: "assistant" as const, content: reply },
+        ];
+        if (hist.length > deps.maxHistoryLength) hist.splice(0, hist.length - deps.maxHistoryLength);
+        deps.conversationHistory.set(sessionId, hist);
+      };
+
       // Execute the pending command directly and return immediately
       try {
         const shellExecTool = deps.registeredTools.get("shell_exec");
@@ -2332,8 +2375,10 @@ export async function tryCallLLM(
           const execStr = typeof execResult === "string" ? execResult : JSON.stringify(execResult);
           const execObj = typeof execResult === "object" ? execResult as Record<string, unknown> : null;
           if (execObj?.success !== false && execStr && execStr.length > 0) {
+            const reply = formatCommandOutput(execObj, execStr);
+            persistDirectAssistantTurn(reply);
             return {
-              reply: formatCommandOutput(execObj, execStr),
+              reply,
               tokensUsed: 0,
               duration: Date.now() - startTime,
               permissionRequests: [],
@@ -2341,8 +2386,10 @@ export async function tryCallLLM(
               files: [],
             };
           } else {
+            const reply = `⚠️ 命令执行失败：${execStr.slice(0, 500)}`;
+            persistDirectAssistantTurn(reply);
             return {
-              reply: `⚠️ 命令执行失败：${execStr.slice(0, 500)}`,
+              reply,
               tokensUsed: 0,
               duration: Date.now() - startTime,
               permissionRequests: [],
@@ -2353,8 +2400,10 @@ export async function tryCallLLM(
         }
       } catch (err) {
         process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}\n`);
+        const reply = `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`;
+        persistDirectAssistantTurn(reply);
         return {
-          reply: `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`,
+          reply,
           tokensUsed: 0,
           duration: Date.now() - startTime,
           permissionRequests: [],
@@ -2364,6 +2413,19 @@ export async function tryCallLLM(
       }
     }
   }
+
+  // ── 思考轨迹：把"模型怎么想"与"agent 做了什么"合并成可折叠时间线 ──
+  // 用户诉求（2026-10-08）：任务完成后整个思考过程要完整保留、可折叠展开。
+  //
+  // ★ 2026-10-11：轨迹实例提升到 **provider 循环之外**（原先在循环体内 new）。
+  //   原因：failover 到下一个 provider 时旧轨迹被整个丢弃，`llmRound` 归零 →
+  //   备用 provider 又从 `roundIndex:1` 开始，前端会把它的回复写进第 1 个
+  //   气泡（`roundIdx > 1` 不成立），**冲掉已经显示的内容**——正是用户反馈的
+  //   「下一条内容冲掉上一条」在 failover 场景下的复现。提升后轮次号全程单调
+  //   递增，且跨 provider 的推理/工具记录都能保留（不丢内容）。
+  const trace = new ThinkingTrace();
+  /** 最近一次 provider 尝试留下的轨迹（全 provider 失败时兜底交付给前端） */
+  let lastTraceSnapshot: ThinkingStep[] | undefined;
 
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
@@ -2573,9 +2635,7 @@ Have a specific URL?
       const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
-      // ── 思考轨迹：把"模型怎么想"与"agent 做了什么"合并成可折叠时间线 ──
-      // 用户诉求（2026-10-08）：任务完成后整个思考过程要完整保留、可折叠展开。
-      const trace = new ThinkingTrace();
+      // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
 
@@ -2610,6 +2670,7 @@ Have a specific URL?
             permissionRequests: pendingPermissions,
             toolsExecuted: anyToolExecuted,
             files: createdFiles,
+            thinkingTrace: trace.isEmpty ? undefined : trace.toJSON(),
           };
         }
 
@@ -2622,7 +2683,11 @@ Have a specific URL?
               onProgress?.({ type: "budget_exhausted", phase: "generating", detail: `迭代预算已耗尽（${budget.getUsed()}/${budget.getMax()}），正在进行最终总结...`, progress: 92 });
               budget.useGraceCall();
               // Make one final LLM call without tools to produce a text answer
-              const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps);
+              // ★ 必须带上 trace 并先 nextRound()：否则这次调用的 token 事件会
+              //   固定带 roundIndex:1，前端把「最终总结」写进第 1 个气泡、
+              //   冲掉之前的回复；它的推理也无从入轨迹（流式可见但落盘没有）。
+              trace.nextRound();
+              const graceResult = await callLLMOnce(provider, conversationMessages, [], "none", onProgress, deps, trace);
               if (graceResult && graceResult.message?.content) {
                 finalReply = graceResult.message.content;
                 totalTokensUsed += graceResult.tokensUsed;
@@ -3060,12 +3125,25 @@ Have a specific URL?
 
             if (shouldContinue) {
               autoContinueCount++;
-              const trigger = premature ?? preVerdict.reason ?? "unknown";
+              // ★ 2026-10-11：`stalledAfterFailure`（工具失败后直接收尾，没有
+              //   明确停顿词、也没触发对账更正）时，原来 fallback 成字面量
+              //   "unknown"，轨迹条目 detail 甚至是空的 —— 用户点开续跑记录
+              //   看不到"为什么续跑"。实测日志确为 `trigger=unknown`。
+              //   现在归因清楚，并把失败工具名列进 detail。
+              const trigger = premature
+                ?? (stalledAfterFailure ? "tool_failed" : preVerdict.reason)
+                ?? "unknown";
               trace.addSystem(
                 `自动续跑 #${autoContinueCount}/${MAX_AUTO_CONTINUE}（原因：${trigger}）`,
                 [
                   premature ? `停顿检测：${premature}` : "",
                   preVerdict.notice ?? "",
+                  failedTools.length > 0
+                    ? `本轮失败工具：${failedTools.map((f) => `${f.name}(${f.error})`).join("、")}`
+                    : "",
+                  emptyResultTools.length > 0
+                    ? `本轮空结果工具：${emptyResultTools.map((e) => `${e.name}.${e.field}`).join("、")}`
+                    : "",
                 ].filter(Boolean).join("\n"),
               );
               const directive = buildContinuationDirective({
@@ -3163,6 +3241,13 @@ Have a specific URL?
             process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n`);
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
           }
+
+          // ★ 决策入轨迹的**唯一**位置（2026-10-11）：此处三条来源（流式
+          //   tool_calls / 非流式 tool_calls / 正文 XML 解析）已汇合，参数也已
+          //   完整解析，因此无论走哪条路径、参数取哪个早退分支，轨迹里都能看到
+          //   一句带真实参数的「决定调用 X」。（历史：流式侧只记占位
+          //   `{_partial:true}`、XML 来源完全不记 → 同一功能不同 provider 表现不一。）
+          trace.addDecision(toolName, args, round + 1);
 
           // ── 进度反馈：生成可读的工具操作摘要 ──
           const toolSummary = formatToolSummary(toolName, args);
@@ -3341,17 +3426,21 @@ Have a specific URL?
           }
 
           // ── Idempotency cache for write operations ──
-          // 使用模块级 IDEMPOTENT_TOOLS 定义，避免重复定义导致集合不一致
+          // 使用模块级 IDEMPOTENT_TOOLS 定义，避免重复定义导致集合不一致。
+          // key 保留**全量 args**（含内容），只按路径去重会让「同路径不同内容」
+          // 的第二次写入被误判为重复而**静默跳过**，风险高于收益。
           if (IDEMPOTENT_TOOLS.has(toolName)) {
+            cleanIdempotencyCache();
             const cacheKey = `${toolName}:${JSON.stringify(args)}`;
             const cached = idempotencyCache.get(cacheKey);
-            if (cached && Date.now() - cached.timestamp < 60_000) {
+            if (cached && Date.now() - cached.timestamp < IDEMPOTENCY_TTL) {
               process.stdout.write(`[AgentModelExecutor] Idempotent cache hit for ${toolName}\n`);
               return { role: "tool", tool_call_id: tc.id, name: toolName, content: cached.result };
             }
           }
 
           // ── Tool result cache ──
+          if (deps.toolResultCache) cleanToolCache(deps.toolResultCache);
           const cachedResult = lookupCachedToolResult(deps.toolResultCache, toolName, args, 300_000);
           if (cachedResult !== null) {
             process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
@@ -3502,10 +3591,16 @@ Have a specific URL?
               // ── 识别「执行了但返回失败」的工具 ──
               // 典型：skill_execute 外层 success:true、内层 errors:["Skill not found"]，
               // 模型极易误读为成功并声称完成。此处收集失败证据供对账使用。
+              //
+              // ★ 2026-10-11 修正：原实现这里先写一条 `ok:false`，紧接着又**无条件**
+              //   写一条 `ok:true`，于是同一次调用在轨迹里既"失败"又"成功"，
+              //   且 `successfulToolCalls++` 也照加 —— 完成声明对账看到的成功数
+              //   被虚高，会提前触发「别再调工具了」的 nudge。现在语义失败
+              //   只记一条（ok:false），且不计入成功数。
               const failure = extractToolFailure(toolName, rawResult);
-              if (failure) {
+              const semanticallyFailed = failure !== null && failure !== undefined;
+              if (semanticallyFailed) {
                 failedTools.push({ name: toolName, error: failure });
-                trace.addToolResult(toolName, rawResult, { round: round + 1, ok: false });
                 process.stdout.write(
                   `[AgentModelExecutor] Tool "${toolName}" returned failure: ${failure}\n`,
                 );
@@ -3522,11 +3617,15 @@ Have a specific URL?
               // 导致会话恢复后模型完全看不到自己上一轮调用过什么、返回了什么，
               // 只能靠猜——这是「反复要求用户说『继续』」的直接成因之一。
               executedToolCalls.push({ id: tc.id, name: toolName, arguments: args });
-              trace.addToolResult(toolName, toolResult, { round: round + 1, ok: true });
-              process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
-              successfulToolCalls++;
-              // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
-              if (SEARCH_TOOLS_HINT.has(toolName)) actualSearchExecuted = true;
+              trace.addToolResult(toolName, toolResult, { round: round + 1, ok: !semanticallyFailed });
+              if (semanticallyFailed) {
+                process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" finished with a failure result (not counted as success)\n`);
+              } else {
+                process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
+                successfulToolCalls++;
+                // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
+                if (SEARCH_TOOLS_HINT.has(toolName)) actualSearchExecuted = true;
+              }
               anyToolExecuted = true;
               recordToolSuccess(toolName);
               // ── 进度反馈：工具完成时显示可读摘要 ──
@@ -3550,6 +3649,11 @@ Have a specific URL?
               toolErrored = true;
               toolError = errMsg;
               recordToolFailure(toolName);
+              // ★ 2026-10-11：硬失败（抛异常）此前**既不进 failedTools 也不进轨迹**，
+              //   导致轨迹里只有「决定调用 X」却没有任何结果（断裂），
+              //   完成声明对账也漏掉这类失败（"失败被当成成功"的另一道缝）。
+              failedTools.push({ name: toolName, error: errMsg });
+              trace.addToolResult(toolName, toolResult, { round: round + 1, ok: false });
               process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" failed:` + " " + errMsg + "\n");
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1, thinkingSteps: traceSnapshot(trace) });
             }
@@ -3839,7 +3943,10 @@ Have a specific URL?
               ...conversationMessages,
               { role: "user" as const, content: "请根据以上工具执行结果，总结回答用户的问题。" as string | null },
             ];
-            const summaryResult = await callLLMOnce(provider, summaryMessages, [], "auto", onProgress, deps);
+            // ★ 末轮总结同上：先占一个新轮次再调用，避免总结内容被写进
+            //   既有气泡（roundIndex 固定为 1）而覆盖用户已看到的回复。
+            trace.nextRound();
+            const summaryResult = await callLLMOnce(provider, summaryMessages, [], "auto", onProgress, deps, trace);
             if (summaryResult && summaryResult.message?.content) {
               finalReply = summaryResult.message.content;
               totalTokensUsed += summaryResult.tokensUsed;
@@ -4046,9 +4153,20 @@ Have a specific URL?
           permissionRequests: pendingPermissions.length > 0 ? pendingPermissions : [],
           toolsExecuted: anyToolExecuted,
           files: createdFiles,
+          // ★ 最终轨迹（此处取值，含完成声明对账等在流式 done 之后写入的条目）
+          thinkingTrace: trace.isEmpty ? undefined : trace.toJSON(),
         };
       }
 
+      // ── 本 provider 没产出正文：**轨迹仍要交付**（2026-10-11）──
+      // 用户诉求是"任务完成后能看到完整思考过程"，失败/空回复同样是"完成"。
+      // 原实现直接 continue 到下一个 provider，若随后全部失败，用户既收不到
+      // done、也看不到任何轨迹（thinkingTrace 只在最终的 `if (finalReply)` 里落盘）。
+      // 这里先把已采集的轨迹存下来，兜底返回时一并交给前端。
+      if (!trace.isEmpty) {
+        lastTraceSnapshot = trace.toJSON();
+        onProgress?.({ type: "done", phase: "done", detail: `本轮未产出回复（${successfulToolCalls} 次工具调用）`, progress: 100, thinkingSteps: traceSnapshot(trace, { force: true }) });
+      }
       process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" returned empty response (model: ${provider.model})\n`);
     } catch (err: unknown) {
       // ── Execution checkpoint: mark failed ──
@@ -4076,6 +4194,9 @@ Have a specific URL?
     permissionRequests: pendingPermissions,
     toolsExecuted: false,
     files: [],
+    // 全部 provider 失败时，把最后一次尝试留下的轨迹交付前端 ——
+    // 否则用户只看到"所有模型都未能响应"，看不到之前每个模型都做了什么。
+    thinkingTrace: lastTraceSnapshot,
   };
   }; // end doTryCall
 

@@ -3152,6 +3152,15 @@ export class ProtocolAdapter {
               sessionId: resolvedSessionId,
               permissionRequests: result.permissionRequests || [],
               files: result.files || [],
+              // ★ 最终思考轨迹随终结 done 一起下发（2026-10-11）。
+              //   agent 侧也可能发过一条带轨迹的 done，但那条**早于**
+              //   完成声明对账等收尾写入；这里的快照取自结果返回的那一刻，
+              //   与落盘内容完全一致，是"完成后展开看"的权威来源。
+              //   同时覆盖了「模型没产出正文（空回复/全 provider 失败）」时
+              //   前端拿不到任何轨迹的缺口。
+              ...(("thinkingTrace" in result && (result as Record<string, unknown>).thinkingTrace)
+                ? { thinkingSteps: (result as Record<string, unknown>).thinkingTrace }
+                : {}),
             });
           } catch (chatErr) {
             if (clientDisconnected) {

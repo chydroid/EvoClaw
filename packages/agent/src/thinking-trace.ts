@@ -193,7 +193,7 @@ export class ThinkingTrace {
   addToolResult(
     toolName: string,
     raw: unknown,
-    opts: { round?: number; ok?: boolean; durationMs?: number } = {},
+    opts: { round?: number; ok?: boolean } = {},
   ): void {
     const text = typeof raw === "string" ? raw : safeJson(raw);
     const ok = opts.ok ?? !/\"success\"\s*:\s*false/.test(text.slice(0, 400));
@@ -205,10 +205,6 @@ export class ThinkingTrace {
       ok,
       round: opts.round,
     });
-    if (typeof opts.durationMs === "number") {
-      const last = this.steps[this.steps.length - 1];
-      if (last) last.truncated = last.truncated; // 保持字段位置可预测
-    }
   }
 
   /** 记录系统行为 */
