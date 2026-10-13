@@ -1,6 +1,7 @@
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
+import { extractClaimsFromEvidence } from "@evoclaw/intelligence";
 
 // ── HTML entity decoder ──
 function decodeHtmlEntities(text: string): string {
@@ -652,6 +653,138 @@ export function registerWebTools(
       console.warn(`[WebSearch] All search providers failed for query variants: ${allQueries.join(", ")}`);
       const errorMsg = "All search providers failed for all query variants";
       return { success: false, error: errorMsg, query, source: "none", results: [] };
+    }
+  );
+
+  // ============ P2: Grounded Research Tool (verifiable citations + fact check) ============
+  // Orchestrates: web_search → web_fetch (top N) → LLM claim extraction →
+  // cross-source verification → structured evidence pack.
+  // Delegates pure logic to @evoclaw/intelligence for testability.
+  executor.registerTool(
+    "grounded_research",
+    {
+      name: "grounded_research",
+      description:
+        "Run a grounded research workflow: search the web, fetch top sources, " +
+        "extract factual claims, cross-verify against independent sources, and " +
+        "return a structured evidence pack with per-claim citations and confidence. " +
+        "Use for questions that need verifiable, sourced answers rather than raw search results.",
+      parameters: {
+        question: { type: "string", description: "The research question to investigate" },
+        maxSources: {
+          type: "number",
+          description: "Max web pages to fetch for evidence (default 5, cap 10)",
+        },
+        maxSearchResults: {
+          type: "number",
+          description: "Max search results to consider (default 10, cap 20)",
+        },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      const question = String(params.question || "").trim();
+      if (!question) return { success: false, error: "question is required" };
+      const maxSources = Math.max(
+        1,
+        Math.min(parseInt(String(params.maxSources ?? "5"), 10) || 5, 10),
+      );
+      const maxSearchResults = Math.max(
+        1,
+        Math.min(parseInt(String(params.maxSearchResults ?? "10"), 10) || 10, 20),
+      );
+
+      // Resolve the agent executor's raw tool registry to call web_search/web_fetch
+      // by name (skips the LLM loop, reuses registered handlers).
+      const executorAny = executor as unknown as {
+        registeredTools?: Map<
+          string,
+          {
+            definition: Record<string, unknown>;
+            handler: (p: Record<string, unknown>) => Promise<unknown>;
+          }
+        >;
+      };
+      const runTool = async (
+        name: string,
+        p: Record<string, unknown>,
+      ): Promise<unknown> => {
+        const entry = executorAny.registeredTools?.get(name);
+        if (!entry) return { success: false, error: `tool ${name} not registered` };
+        try {
+          return await entry.handler(p);
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      };
+
+      // 1. Search
+      const searchRes = (await runTool("web_search", {
+        query: question,
+        limit: maxSearchResults,
+      })) as
+        | { results?: Array<{ title: string; url: string; snippet: string }>; success?: boolean; error?: string }
+        | undefined;
+      const rawResults: Array<{ title: string; url: string; snippet: string }> =
+        searchRes?.results ?? [];
+
+      // 2. Fetch top sources for full-text evidence
+      const seenUrls = new Set<string>();
+      const sources: Array<{
+        url: string;
+        title: string;
+        content: string;
+        status: number;
+      }> = [];
+      for (const r of rawResults) {
+        if (sources.length >= maxSources) break;
+        if (!r.url || seenUrls.has(r.url)) continue;
+        seenUrls.add(r.url);
+        const fetchRes = (await runTool("web_fetch", {
+          url: r.url,
+          format: "text",
+        })) as
+          | { text?: string; title?: string; status?: number; success?: boolean }
+          | undefined;
+        const text = (fetchRes?.text ?? "").trim();
+        if (text.length > 0) {
+          sources.push({
+            url: r.url,
+            title: fetchRes?.title ?? r.title,
+            content: text.slice(0, 4000),
+            status: fetchRes?.status ?? 200,
+          });
+        }
+      }
+
+      // 3. Build evidence documents for claim extraction
+      const evidenceDocs = sources.map((s, i) => ({
+        id: `src-${i + 1}`,
+        url: s.url,
+        title: s.title,
+        content: s.content,
+      }));
+
+      // 4. 抽取 + 跨源核实（纯逻辑在 @evoclaw/intelligence；extractClaimsFromEvidence 内部已核实）
+      const { claims } = extractClaimsFromEvidence(evidenceDocs, { maxClaims: 30 });
+
+      const totalSources = sources.length;
+      const verifiedCount = claims.filter((c) => c.status === "verified").length;
+      const contradictedCount = claims.filter((c) => c.status === "contradicted").length;
+      const unverifiedCount = claims.length - verifiedCount - contradictedCount;
+
+      return {
+        success: true,
+        question,
+        totalSources,
+        totalClaims: claims.length,
+        verifiedCount,
+        contradictedCount,
+        unverifiedCount,
+        confidence: totalSources > 0 ? Math.min(1, verifiedCount / Math.max(1, claims.length)) : 0,
+        claims,
+        sources: sources.map((s) => ({ url: s.url, title: s.title, status: s.status })),
+        degraded: totalSources === 0,
+      };
     }
   );
 }

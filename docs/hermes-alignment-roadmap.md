@@ -52,7 +52,7 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 - [x] **语音模式**：流式 TTS + barge-in 打断 + 本地唤醒词。
 - [x] **签名出站 Webhook**：任务完成/审批/告警事件推送到外部系统。
 - [ ] **Honcho dialectic 用户建模**：跨会话辩证用户建模层（叠加在现有分层记忆上）。
-- [ ] **grounded research**：web 检索 + 可验证引用 + 事实核查。
+- [x] **grounded research**：web 检索 + 可验证引用 + 事实核查。
 - [ ] **agentskills.io 公开标准兼容**：OpenClaw 私标之外增加公开标准支持。
 - [ ] **Programmatic Tool Calling / execute_code 产品化**：多步工具流水线折叠为单次推理调用。
 

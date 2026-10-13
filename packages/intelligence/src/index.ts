@@ -13,3 +13,11 @@ export type {
   StepResult,
   OrchestrationResult,
 } from "./skill-orchestrator";
+
+export {
+  extractClaimsFromEvidence,
+  extractClaimSentences,
+  crossVerifyClaims,
+  textSimilarity,
+} from "./grounded-research";
+export type { EvidenceDoc, ResearchClaim } from "./grounded-research";
