@@ -70,7 +70,7 @@ export class GatewayServer {
   /** requestCounts Map 大小上限，防止无界增长导致内存泄漏 */
   private readonly requestCountsMaxSize = 10_000;
   private mcpProtocolHandler: import("./mcp-protocol-handler").MCPProtocolHandler | null = null;
-  private avatarConfig: { user: string; bot: string; userNickname: string; botNickname: string } = {
+  private avatarConfig: { user: string; bot: string; userNickname: string; botNickname: string; botByAgent?: Record<string, string> } = {
     user: "assets/images/user.png",
     bot: "assets/images/favicon-32x32.png",
     userNickname: "Me",
@@ -712,7 +712,14 @@ export class GatewayServer {
       });
     });
 
-    this.app.get("/api/config/avatars", (_req: Request, res: Response) => {
+    this.app.get("/api/config/avatars", (req: Request, res: Response) => {
+      // P1-1 Bot Mode：支持 ?agentId=<id> 查询某 agent 的专属头像
+      const agentId = req.query.agentId as string | undefined;
+      if (agentId) {
+        const byAgent = this.avatarConfig.botByAgent?.[agentId];
+        res.json({ agentId, avatar: byAgent ?? null, fallback: byAgent ? null : this.avatarConfig.bot });
+        return;
+      }
       res.json({ avatars: this.avatarConfig });
     });
 
@@ -733,16 +740,35 @@ export class GatewayServer {
 
     this.app.put("/api/config/avatars", (req: Request, res: Response) => {
       try {
-        const { avatars } = (req.body || {}) as { avatars?: { user?: string; bot?: string; userNickname?: string; botNickname?: string } };
-        if (avatars && typeof avatars === "object") {
-          // 过滤原型污染危险键 + 值类型校验
+        const body = (req.body || {}) as {
+          avatars?: {
+            user?: string; bot?: string; userNickname?: string; botNickname?: string;
+            /** P1-1 Bot Mode：agentId → 头像 URL 映射 */
+            botByAgent?: Record<string, string>;
+          };
+        };
+        if (body.avatars && typeof body.avatars === "object") {
+          // 过滤原型污染危险键 + 值类型校验（仅接受 string 值）
           const safe: Record<string, unknown> = {};
-          for (const [k, v] of Object.entries(avatars)) {
+          for (const [k, v] of Object.entries(body.avatars)) {
             if (k !== "__proto__" && k !== "constructor" && k !== "prototype" && typeof v === "string") {
               safe[k] = v;
             }
           }
-          this.avatarConfig = { ...this.avatarConfig, ...safe };
+          // botByAgent 单独处理：只接受 agentId → string 映射（过滤原型污染键），与现有映射合并
+          const rawByAgent = body.avatars.botByAgent;
+          delete safe.botByAgent; // string 值校验已将其排除，此处显式确保不参与后续 spread
+          if (rawByAgent && typeof rawByAgent === "object") {
+            const byAgent: Record<string, string> = {};
+            for (const [k, v] of Object.entries(rawByAgent)) {
+              if (k !== "__proto__" && k !== "constructor" && k !== "prototype" && typeof v === "string") {
+                byAgent[k] = v;
+              }
+            }
+            this.avatarConfig = { ...this.avatarConfig, ...safe, botByAgent: { ...this.avatarConfig.botByAgent, ...byAgent } };
+          } else {
+            this.avatarConfig = { ...this.avatarConfig, ...safe };
+          }
         }
         res.json({ avatars: this.avatarConfig });
       } catch (err) {

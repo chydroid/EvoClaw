@@ -1460,6 +1460,13 @@ export class EvoClawServer {
 
     // 会话隔离：以 room + agent 维度建 session，同一房间内同 agent 共享上下文（常驻会话语义）
     const sessionId = `room-${room.id}-${agent.id}`;
+
+    // P1-1 Bot Mode：把该 agent 的 skills 白名单注册到 executor，
+    // 后续 skills prompt 构建将按此过滤（未配置 allowedSkills 的 agent 不受限）
+    if (agent.allowedSkills) {
+      this.agentModelExecutor.setAgentSkillFilter(agent.id, agent.allowedSkills);
+    }
+
     const CHANNEL_TIMEOUT = 5 * 60 * 1000;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {

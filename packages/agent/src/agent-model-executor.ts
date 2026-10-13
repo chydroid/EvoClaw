@@ -237,6 +237,12 @@ export class AgentModelExecutor {
    *  导致跨会话 trace ID 泄漏。改为 Map 后每个会话拥有独立的 trace ID。 */
   private _currentTraceIds = new Map<string, string | undefined>();
 
+  /** P1-1 Bot Mode：agentId → allowedSkills 白名单（由 RoomManager/AgentRouter 在 chat 前注入）。
+   *  未注册的 agentId 不受限（全量 skills 可见，向后兼容）。 */
+  private _agentSkillFilters = new Map<string, string[]>();
+  /** P1-1 Bot Mode：sessionId → 当前路由到的 agentId（chatInner 进入时设置，供 LLM deps 按 agent 过滤 skills） */
+  private _currentAgentBySession = new Map<string, string>();
+
   /** Current ContextEngine result keyed by sessionId (set by chatInner).
    *  此前为单一实例字段，并发 chatInner 调用会互相覆盖，导致跨会话上下文泄漏。
    *  改为 Map 后每个会话拥有独立的上下文引擎结果。 */
@@ -927,7 +933,12 @@ export class AgentModelExecutor {
       recordProviderSuccess: (id: string) => this.recordProviderSuccess(id),
       recordProviderFailure: (id: string, error: string, errorType?: string) => this.recordProviderFailure(id, error, errorType ?? "UNKNOWN"),
       getEventLedger: () => this.getEventLedger(),
-      buildSkillsPromptForRun: () => this.buildSkillsPromptForRun(),
+      buildSkillsPromptForRun: () => {
+        // P1-1 Bot Mode：按当前会话路由到的 agent 过滤 skills 白名单
+        const agentId = sessionId ? this._currentAgentBySession.get(sessionId) : undefined;
+        const allowlist = agentId ? this._agentSkillFilters.get(agentId) : undefined;
+        return this.buildSkillsPromptForRun(allowlist);
+      },
       executionCheckpointStore: this.executionCheckpointStore,
       humanApprovalManager: this.humanApprovalManager ?? undefined,
       recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
@@ -1252,14 +1263,17 @@ export class AgentModelExecutor {
     return this._cachedSkillNames;
   }
 
-  async buildSkillsPromptForRun(): Promise<string> {
+  async buildSkillsPromptForRun(allowedSkillNames?: string[]): Promise<string> {
     const skills: Array<{ name: string; description: string; location: string }> = [];
     const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ id: string; name: string; description: string; installPath: string }>> }>("skillManager");
     if (skillManager) {
       const installed = await skillManager.listSkills();
       if (Array.isArray(installed)) {
         this._cachedSkillNames = new Set(installed.map((s) => s.name));
+        const allowSet = allowedSkillNames && allowedSkillNames.length > 0 ? new Set(allowedSkillNames) : null;
         for (const s of installed) {
+          // P1-1 Bot Mode：allowedSkills 白名单过滤（null = 不过滤，全量可见，向后兼容）
+          if (allowSet && !allowSet.has(s.name)) continue;
           skills.push({
             name: s.name,
             description: s.description || `Execute ${s.name} skill`,
@@ -1269,6 +1283,18 @@ export class AgentModelExecutor {
       }
     }
     return buildCompactSkillsPrompt(skills);
+  }
+
+  /**
+   * P1-1 Bot Mode：注册某 agent 的 skills 白名单（透传自 AgentConfig.allowedSkills）。
+   * 下一轮该 agent 会话的 skills prompt 构建将按此白名单过滤；传 undefined 清除限制。
+   */
+  setAgentSkillFilter(agentId: string, allowedSkills?: string[]): void {
+    if (allowedSkills === undefined || allowedSkills.length === 0) {
+      this._agentSkillFilters.delete(agentId);
+    } else {
+      this._agentSkillFilters.set(agentId, allowedSkills);
+    }
   }
 
   getGreeting(): string | null {
@@ -1457,6 +1483,9 @@ export class AgentModelExecutor {
     this.registerSessionAbortController(sessionId);
 
     try {
+    // P1-1 Bot Mode：注册当前会话的 agentId，供 getLLMCallerDeps 按 agent 过滤 skills prompt
+    this._currentAgentBySession.set(sessionId, agentId);
+
     // Record session start in EventLedger
     const ledger = this.getEventLedger();
     if (ledger) {
