@@ -956,31 +956,370 @@ except Exception as e:
   // 会话创建互斥锁：串行化会话创建，防止并发调用各自创建会话产生孤儿
   let sessionCreatePromise: Promise<void> | null = null;
 
+  /**
+   * Programmatic Tool Calling：把多步工具流水线折叠为单次推理调用。
+   *
+   * 设计（对标 Hermes 的 run_in_sandbox 产品化方向）：
+   * - 模型写一段脚本（默认 Node.js ESM），脚本内可直接 import 并 await 调用
+   *   EvoClaw 已注册的任意工具（读文件、写文件、搜索、记忆等），一次推理
+   *   完成原先需要 N 轮 LLM 往返的多步流水线
+   * - 代码在 LocalSandboxBackend（软沙箱）中执行：继承宿主 Node 环境可跑 ESM，
+   *   但受 workspace 路径校验与 120s 超时约束；Docker 后端可用时可切硬隔离
+   * - 审计：执行记录（脚本 hash + 调用统计 + 耗时）写 data/logs/programmatic-calls.jsonl，
+   *   走 atomicWriteFile 约定；工具名黑名单不可被脚本调用（shell/网络/审批类）
+   * - service-gated：依赖 registry 中的 sandboxManager 与 executor 服务，缺任一
+   *   返回明确错误而非静默失败
+   */
+
+  /** 工具黑名单：脚本侧不允许直接调用的工具（shell/网络外发/审批/危险类） */
+  const PROGRAMMATIC_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set([
+    "shell_exec", "execute_code", "git_push", "git_commit",
+    "webhook_send", "email_send", "mcp_toggle_tool",
+    "approve", "reject", "device_pairing_approve",
+    "kill_task", "dlq_retry_batch",
+  ]);
+
+  /** 程序化调用审计日志目录（data/logs/，与现有日志目录对齐） */
+  const programmaticLogDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "logs");
+  const programmaticLogPath = path.join(programmaticLogDir, "programmatic-calls.jsonl");
+
+  /** 写一条程序化调用审计记录（原子写约定：JSONL 全文重写 + temp/fsync/rename） */
+  const writeProgrammaticAudit = (entry: Record<string, unknown>): void => {
+    try {
+      const { atomicWriteFileSync } = require("@evoclaw/core") as { atomicWriteFileSync: (p: string, d: string) => void };
+      fs.mkdirSync(programmaticLogDir, { recursive: true });
+      const line = JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n";
+      const existing = fs.existsSync(programmaticLogPath) ? fs.readFileSync(programmaticLogPath, "utf-8") : "";
+      atomicWriteFileSync(programmaticLogPath, existing + line);
+    } catch (err) {
+      // 审计失败不阻断执行（best-effort），stderr 提示
+      process.stderr.write(`[execute_code] audit log write failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  };
+
+  /** 从 executor 当前注册的 ToolDefinition[] 构建注入脚本的 API 文档 */
+  const buildProgrammaticApiDoc = (): string => {
+    try {
+      const defs = executor.getRegisteredTools();
+      const allowed = defs.filter((d) => !PROGRAMMATIC_FORBIDDEN_TOOLS.has(d.name));
+      return allowed
+        .map((d) => `- ${d.name}${d.description ? `: ${d.description.slice(0, 120)}` : ""}`)
+        .join("\n");
+    } catch {
+      return "(tool list unavailable — see docs for the registered tool set)";
+    }
+  };
+
+  /**
+   * 把用户脚本包装成「可调用工具」的 Node ESM 入口。
+   *
+   * 机制：宿主 spawn `node file.mjs`（workspace 内临时文件，宿主 ESM 环境，
+   * 可直接 import 宿主依赖）。脚本内通过 stdout 发
+   * `{"__evoclaw_call":{id,name,params}}` 协议消息发起工具调用，本 handler 侧
+   * 拦截并路由到 executor.executeToolByName（宿主侧执行，审批门禁由调用方保证）；
+   * 结果经 child.stdin 回传（`__EVOCRAW_RESULT:` 协议行），包装层封成 async
+   * `tools.call(name, params)`。
+   * stdout 仅允许协议消息与 console.log 重定向消息。
+   */
+  const buildProgrammaticScript = (userCode: string, opts: { toolListDoc: string }): string => {
+    const toolNames = opts.toolListDoc
+      .split("\n")
+      .map((l) => {
+        const m = l.match(/^- ([^:]+)/);
+        return m ? m[1].trim() : l.replace(/^- /, "");
+      })
+      .filter((n): n is string => Boolean(n));
+    const forbidden = Array.from(PROGRAMMATIC_FORBIDDEN_TOOLS);
+    // 脚本内白名单：运行时对未知/禁用工具名返回错误，宿主侧再校验一次
+    return [
+      "// ── EvoClaw programmatic tool calling wrapper（生成代码，勿手改）──",
+      `// 可用工具（${toolNames.length}）：${toolNames.join(", ")}`,
+      `// 禁用工具（调用即失败）：${forbidden.join(", ")}`,
+      "const ALLOWED = new Set(" + JSON.stringify(toolNames) + ");",
+      "const FORBIDDEN = new Set(" + JSON.stringify(forbidden) + ");",
+      "const pending = new Map();",
+      "let callSeq = 0;",
+      // stdin 保持可读（宿主经此回传结果）；脚本结束后需主动关闭所有 handle，
+      // 否则挂起的 stdin 'data' 监听会让 Node 事件循环不空、进程永不退出。
+      "let stdinDrained = false;",
+      "const closeStdin = () => { if (stdinDrained) return; stdinDrained = true; try { process.stdin.destroy(); } catch {} };",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => {",
+      "  for (const line of String(chunk).split('\\n')) {",
+      "    if (!line.startsWith('__EVOCRAW_RESULT:')) continue;",
+      "    try {",
+      "      const { id, ok, value } = JSON.parse(line.slice('__EVOCRAW_RESULT:'.length));",
+      "      const p = pending.get(id);",
+      "      if (!p) continue;",
+      "      pending.delete(id);",
+      "      if (ok) p.resolve(value); else p.reject(new Error((value && value.error) ? String(value.error) : 'tool call failed'));",
+      "    } catch { /* 忽略非协议行 */ }",
+      "  }",
+      "});",
+      "const tools = {",
+      "  call: async (name, params) => {",
+      "    if (FORBIDDEN.has(String(name))) throw new Error('tool is forbidden in programmatic scripts: ' + name);",
+      "    if (!ALLOWED.has(String(name))) throw new Error('unknown tool: ' + name);",
+      "    const id = ++callSeq;",
+      "    const p = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));",
+      "    process.stdout.write(JSON.stringify({ __evoclaw_call: { id, name, params: params || {} } }) + '\\n');",
+      "    return await p;",
+      "  },",
+      "  list: () => Array.from(ALLOWED),",
+      "};",
+      "console.log = (...args) => { try { process.stdout.write(JSON.stringify({ __evoclaw_log: args.map(String) }) + '\\n'); } catch {} };",
+      "console.error = (...args) => { process.stderr.write(args.join(' ') + '\\n'); };",
+      "// ── 用户脚本（ESM，可 import 宿主依赖；顶层 await 由 main() 包裹）──",
+      "// 脚本 IIFE 结束时关闭 stdin，确保 Node 事件循环排空、进程退出",
+      "(async () => {\n" + userCode + "\n})().finally(closeStdin);",
+    ].join("\n");
+  };
+
   executor.registerTool(
     "execute_code",
     {
       name: "execute_code",
       description:
-        "Execute code in an isolated sandbox (Docker container with read-only rootfs, no network, memory+CPU limits, nobody user). " +
-        "Safer than shell_exec for running untrusted or user-provided code. " +
-        "Supports Python and Node.js interpreters. " +
-        "Requires Docker to be available on the host; returns a clear error if Docker is not installed.",
+        "Execute code. Two modes: (1) sandboxed execution (default) — isolated Docker container " +
+        "(read-only rootfs, no network, memory+CPU limits, nobody user), safer than shell_exec for " +
+        "untrusted/user-provided code, supports Python and Node.js; returns a clear error if Docker is " +
+        "unavailable. (2) programmatic=true — runs a Node.js ESM script in a local soft sandbox with an " +
+        "injected `tools` API: call multiple registered tools from within one script and combine results " +
+        "(folds a multi-step tool pipeline into a single LLM turn). Forbidden tools (shell_exec, git_push, " +
+        "webhooks, approvals) are rejected; audit log written to data/logs/programmatic-calls.jsonl.",
       parameters: {
         code: {
           type: "string",
-          description: "The code to execute. For Python: 'print(\"hello\")'. For Node.js: 'console.log(\"hello\")'.",
+          description:
+            "The code to execute. For Python: 'print(\"hello\")'. For Node.js: plain ESM script, or use " +
+            "tools.call(name, params) when programmatic=true to invoke other tools from within the script.",
         },
         language: {
           type: "string",
-          description: "Interpreter: 'python' or 'node' (default: 'node').",
+          description: "Interpreter: 'python' or 'node' (default: 'node'). Programmatic tool calling requires 'node'.",
         },
         timeout: {
           type: "string",
           description: "Optional timeout in seconds (default: 30, max: 120).",
         },
+        programmatic: {
+          type: "boolean",
+          description:
+            "When true, runs a Node.js ESM script with an injected `tools` API so one call can drive a multi-step " +
+            "tool pipeline (call several tools in sequence/parallel and combine results). Only 'node' language is " +
+            "supported. Forbidden tools (shell_exec, git_push, webhooks, approvals, ...) are rejected. " +
+            "Prefer this over many separate tool calls for read-heavy pipelines.",
+        },
       },
     },
     async (params: Record<string, unknown>) => {
+      const programmatic = params.programmatic === true;
+      const requestedLanguage = String(params.language || "node").toLowerCase();
+
+      // ── Programmatic Tool Calling 路径（node + 注入 tools API，LocalSandboxBackend 软沙箱） ──
+      if (programmatic) {
+        if (requestedLanguage !== "node") {
+          return {
+            success: false,
+            error: "Programmatic tool calling requires language='node' (ESM + injected tools API). Python is not supported.",
+          };
+        }
+        const code = String(params.code || "");
+        if (!code) return { success: false, error: "Parameter 'code' is required" };
+
+        const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "120"), 10) || 120, 1), 120);
+        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+        const startedAt = Date.now();
+
+        // 组装脚本：注入 tools API（白名单）+ 脚本体
+        const scriptSource = buildProgrammaticScript(code, {
+          toolListDoc: buildProgrammaticApiDoc(),
+        });
+
+        // 软沙箱执行：直接 spawn node 并接管 stdout/stderr 流，
+        // 实现「脚本 stdout 协议消息 → 宿主工具调用 → stderr 结果回传」的跨进程循环。
+        // 脚本落在 workspace 内（与 shell_exec 的工作区约定一致），宿主 ESM 环境可直接 import 依赖。
+        const workspaceForExec = fs.existsSync(workspaceDir) ? workspaceDir : process.cwd();
+        const scriptFile = path.join(workspaceForExec, `.programmatic-${crypto.randomUUID().slice(0, 8)}.mjs`);
+        fs.writeFileSync(scriptFile, scriptSource, "utf-8");
+
+        let child: import("child_process").ChildProcess;
+        try {
+          child = spawn(process.execPath, [scriptFile], {
+            cwd: workspaceForExec,
+            // stdin 双工：宿主经 child.stdin 向脚本回传工具结果（__EVOCRAW_RESULT 协议行）
+            stdio: ["pipe", "pipe", "pipe"],
+            env: process.env,
+            windowsHide: true,
+          });
+        } catch (err: unknown) {
+          try { fs.unlinkSync(scriptFile); } catch { /* best-effort */ }
+          writeProgrammaticAudit({ kind: "execute_code", mode: "programmatic", status: "error", durationMs: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) });
+          return { success: false, error: `Failed to spawn programmatic script: ${err instanceof Error ? err.message : String(err)}` };
+        }
+
+        // 调用并发上限：防止脚本发起无界工具调用
+        const MAX_CONCURRENT_CALLS = 4;
+        let inFlight = 0;
+        const queue: Array<{ id: number; name: string; params: Record<string, unknown> }> = [];
+        const MAX_PENDING = 64;
+        let pendingCount = 0;
+        let rejectedCalls = 0;
+        const calledTools: string[] = [];
+
+        // 结果回传：经 child.stdin 发协议行（脚本侧 wrapper 监听 stdin 解析）。
+        // 已终结调用数（ok/fail）达到已入队调用总数后 end() stdin ——
+        // 否则宿主未关闭的 stdin pipe 会让脚本进程永不退出（top-level await 挂起）。
+        // FORBIDDEN/超限调用由脚本侧 wrapper 直接 throw（不进宿主队列），不计入 pending，
+        // 因此宿主只需按队列内调用数收尾。
+        // 宿主侧「已终结」语义：脚本发出的调用数 == 已回传结果数 → stdin 可关闭。
+        // 超限/未知工具由脚本侧 wrapper 直接 throw（宿主不可见），只有成功入队的调用
+        // 会计数，因此该等式等价于「脚本已不会再有新请求」。
+        let totalCalls = 0;
+        let repliedCount = 0;
+        const reply = (id: number, ok: boolean, value: unknown): void => {
+          repliedCount++;
+          try {
+            child.stdin?.write(`__EVOCRAW_RESULT:${JSON.stringify({ id, ok, value })}\n`);
+          } catch { /* child 已退出则忽略 */ }
+          if (totalCalls > 0 && repliedCount >= totalCalls) {
+            try { child.stdin?.end(); } catch { /* ignore */ }
+          }
+        };
+
+        const runNext = (): void => {
+          while (inFlight < MAX_CONCURRENT_CALLS && queue.length > 0) {
+            const call = queue.shift()!;
+            inFlight++;
+            void (async () => {
+              let value: unknown;
+              try {
+                if (PROGRAMMATIC_FORBIDDEN_TOOLS.has(call.name)) {
+                  value = { success: false, error: `tool is forbidden in programmatic scripts: ${call.name}` };
+                  rejectedCalls++;
+                } else {
+                  // 宿主侧执行：executeToolByName 跳过人工审批门禁（契约见 agent-model-executor），
+                  // 安全边界由工具白名单 + workspace 路径约束承担
+                  value = await executor.executeToolByName(call.name, call.params);
+                }
+              } catch (err: unknown) {
+                value = { success: false, error: err instanceof Error ? err.message : String(err) };
+              }
+              inFlight--;
+              reply(call.id, value !== null && typeof value === "object" && "success" in (value as object) ? Boolean((value as { success: unknown }).success) : true, value);
+              runNext();
+            })();
+          }
+        };
+
+        // 超时看门狗
+        const timeoutTimer = setTimeout(() => {
+          child?.kill("SIGKILL");
+        }, timeoutSec * 1000);
+        timeoutTimer.unref?.();
+
+        // stdout 逐行解析：协议消息（__evoclaw_call）+ console.log 重定向消息（__evoclaw_log）
+        let stdoutBuf = "";
+        let capturedStdout = "";
+        let stderr = "";
+        const MAX_CAPTURE = 5 * 1024 * 1024;
+        const processStdoutLine = (line: string): void => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("{")) {
+            // 非协议行（异常裸输出）：保留为可见输出
+            if (capturedStdout.length < MAX_CAPTURE) capturedStdout += line + "\n";
+            return;
+          }
+          let msg: { __evoclaw_call?: { id: number; name: string; params?: Record<string, unknown> }; __evoclaw_log?: unknown[] };
+          try { msg = JSON.parse(trimmed); } catch {
+            if (capturedStdout.length < MAX_CAPTURE) capturedStdout += line + "\n";
+            return;
+          }
+          if (msg.__evoclaw_call) {
+            pendingCount++;
+            totalCalls++;
+            if (pendingCount > MAX_PENDING) {
+              reply(msg.__evoclaw_call.id, false, { success: false, error: "too many pending programmatic calls" });
+              rejectedCalls++;
+              return;
+            }
+            queue.push({ id: msg.__evoclaw_call.id, name: String(msg.__evoclaw_call.name || ""), params: msg.__evoclaw_call.params ?? {} });
+            calledTools.push(msg.__evoclaw_call.name || "?");
+            runNext();
+          } else if (msg.__evoclaw_log !== undefined) {
+            if (capturedStdout.length < MAX_CAPTURE) capturedStdout += msg.__evoclaw_log.join(" ") + "\n";
+          }
+        };
+        const handleStdout = (chunk: Buffer): void => {
+          stdoutBuf += chunk.toString("utf-8");
+          let nl: number;
+          while ((nl = stdoutBuf.indexOf("\n")) >= 0) {
+            const line = stdoutBuf.slice(0, nl);
+            stdoutBuf = stdoutBuf.slice(nl + 1);
+            processStdoutLine(line);
+          }
+        };
+        const handleStderr = (chunk: Buffer): void => {
+          for (const rawLine of chunk.toString("utf-8").split("\n")) {
+            if (rawLine.startsWith("__EVOCRAW_RESULT:")) continue; // 宿主侧消费，不进捕获
+            if (stderr.length < MAX_CAPTURE) stderr += rawLine + "\n";
+          }
+        };
+        child.stdout?.on("data", handleStdout);
+        child.stderr?.on("data", handleStderr);
+
+        const closeInfo = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+          child.on("close", (code, signal) => resolve({ code, signal }));
+          child.on("error", (err) => {
+            stderr += `spawn error: ${err.message}\n`;
+            resolve({ code: -1, signal: null });
+          });
+        });
+
+        const timedOut = closeInfo.signal === "SIGKILL" || Date.now() - startedAt > (timeoutSec + 5) * 1000;
+        // 超时后 drain 未完成的工具调用：以错误回传，避免脚本侧 Promise 悬挂
+        if (queue.length > 0 || inFlight > 0) {
+          for (const c of queue.splice(0)) {
+            reply(c.id, false, { success: false, error: "programmatic call aborted by timeout" });
+            rejectedCalls++;
+          }
+        }
+
+        const success = closeInfo.code === 0 && !timedOut;
+        writeProgrammaticAudit({
+          kind: "execute_code",
+          mode: "programmatic",
+          status: success ? "ok" : "failed",
+          exitCode: closeInfo.code ?? -1,
+          durationMs: Date.now() - startedAt,
+          timedOut,
+          codeHash: crypto.createHash("sha256").update(code).digest("hex").slice(0, 16),
+          codeBytes: code.length,
+          toolCalls: calledTools.length,
+          rejectedCalls,
+          calledTools: calledTools.slice(0, 20),
+        });
+
+        try { fs.unlinkSync(scriptFile); } catch { /* best-effort */ }
+
+        const MAX_OUTPUT = 100_000;
+        const truncate = (s: string) => (s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n... [output truncated]" : s);
+        return {
+          success,
+          exitCode: closeInfo.code ?? -1,
+          stdout: truncate(capturedStdout).trim(),
+          stderr: truncate(stderr).trim(),
+          durationMs: Date.now() - startedAt,
+          timedOut,
+          language: "node",
+          sandbox: "local-programmatic",
+          programmatic: true,
+          toolCalls: calledTools.length,
+          rejectedCalls,
+        };
+      }
+
+      // ── 常规沙箱路径（Docker 硬隔离） ──
       if (!sandboxManager) {
         return {
           success: false,
@@ -992,7 +1331,7 @@ except Exception as e:
       const code = String(params.code || "");
       if (!code) return { success: false, error: "Parameter 'code' is required" };
 
-      const language = String(params.language || "node").toLowerCase();
+      const language = requestedLanguage;
       if (language !== "python" && language !== "node") {
         return { success: false, error: `Unsupported language: ${language}. Use 'python' or 'node'.` };
       }
