@@ -30,6 +30,19 @@ export interface ExternalMCPServerConfig {
   url?: string;
   /** 是否启用（默认 true） */
   enabled?: boolean;
+  /**
+   * 工具级过滤（P1-4 MCP 指挥中心）：
+   * - allowlist 模式：仅注册 tools 列表内的工具
+   * - denylist 模式：排除 tools 列表内的工具
+   * 不配置时默认放行全部工具（向后兼容）。
+   */
+  toolFilter?: { mode: "allowlist" | "denylist"; tools: string[] };
+  /**
+   * 按 agent 的细粒度工具范围（agentId → 该 agent 可见的工具 allow/deny）。
+   * 与 toolFilter 取交集：最终注册集合 = toolFilter 过滤后 ∩ 各 perAgent 规则。
+   * 用于多智能体场景下按 agent 裁剪外部工具集。
+   */
+  perAgent?: Record<string, { allow?: string[]; deny?: string[] }>;
 }
 
 /** 发现到的工具信息 */

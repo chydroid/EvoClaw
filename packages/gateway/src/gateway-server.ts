@@ -151,8 +151,14 @@ export class GatewayServer {
       ) => void;
       unregisterTool: (name: string) => void;
       registeredTools: Map<string, unknown>;
+      invalidateCheckFnCache?: () => void;
     }>("agentModelExecutor");
     this.mcpClientManager.setDependencies(this.mcpGateway, agentExecutor);
+    // 投毒门：注入 MCPToolPoisoningScanner（P1-4 注册门前置安全门）
+    const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
+    if (scanner) {
+      this.mcpClientManager.setPoisoningScanner(scanner);
+    }
     try {
       await this.mcpClientManager.connectAll();
     } catch (err) {
@@ -1352,6 +1358,33 @@ export class GatewayServer {
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
+    });
+
+    // ── P1-4 MCP 指挥中心：仪表盘 + 工具级动态挂载 ──────────────
+
+    // GET /api/mcp/dashboard — 各外部 server 的工具列表 + 动态挂载开关状态 + 投毒门拒绝记录
+    this.app.get("/api/mcp/dashboard", (_req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.status(503).json({ error: "MCP client manager not initialized" });
+        return;
+      }
+      res.json({ servers: this.mcpClientManager.getDashboard() });
+    });
+
+    // POST /api/mcp/dashboard/toggle — 动态挂载/卸载单个外部工具（P1-4）
+    // 只改 checkFn 判定，不重新注册，遵守 AGENTS.md"延迟失效"约定（下一轮工具列表构建生效）
+    this.app.post("/api/mcp/dashboard/toggle", (req: Request, res: Response) => {
+      if (!this.mcpClientManager) {
+        res.status(503).json({ error: "MCP client manager not initialized" });
+        return;
+      }
+      const { server, tool, enabled } = (req.body || {}) as { server?: string; tool?: string; enabled?: boolean };
+      if (!server || !tool || typeof enabled !== "boolean") {
+        res.status(400).json({ error: "server, tool, and enabled (boolean) are required" });
+        return;
+      }
+      const ok = this.mcpClientManager.toggleTool(server, tool, enabled);
+      res.json({ success: ok });
     });
 
     this.setupWebUI();

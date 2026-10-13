@@ -65,6 +65,12 @@ export interface AgentConfig {
   allowlist?: string[];
   /** Sandbox mode */
   sandbox?: "off" | "non-main" | "all";
+  /** 头像 URL 或 data URI（P1-1 Bot Mode，群聊房间/前端渲染用） */
+  avatar?: string;
+  /** 绑定 MemoryHub 命名空间（L0-L3 分层记忆隔离，P1-1） */
+  memoryStoreId?: string;
+  /** 该 agent 可见的 skill slug 白名单（P1-1，透传给 buildSkillsPromptForRun） */
+  allowedSkills?: string[];
 }
 
 export interface ToolPolicy {

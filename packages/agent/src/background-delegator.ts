@@ -50,6 +50,14 @@ export interface BackgroundTask {
   timeoutMs: number;
   /** AbortController（用于取消） */
   abortController: AbortController;
+  /**
+   * P1-2 mid-flight steering：待注入的实时指令队列。
+   * steer() 写入；DelegateFn 实现方在下一轮 prompt 组装点取出，
+   * 追加为新增 user message（不重写已缓存前缀，遵守 prompt-cache 约束）。
+   */
+  pendingInstructions: string[];
+  /** P1-2 硬转向：最近一次 hard steer 携带的指令（可选） */
+  lastHardSteer?: string;
 }
 
 /** 后台任务派发选项 */
@@ -109,6 +117,7 @@ export class BackgroundDelegator {
       createdAt: Date.now(),
       timeoutMs,
       abortController,
+      pendingInstructions: [],
     };
 
     this.tasks.set(id, task);
@@ -231,6 +240,58 @@ export class BackgroundDelegator {
       lines.push("");
     }
     return lines.join("\n");
+  }
+
+  /**
+   * P1-2 mid-flight steering：向运行中的后台任务注入实时指令。
+   *
+   * - `hard === false`（默认，软转向）：指令追加进 `task.pendingInstructions` 队列，
+   *   DelegateFn 实现方在下一轮 prompt 组装点调用 `drainInstructions(task.id)` 取出，
+   *   追加为**新增** user message，不重写已缓存前缀（prompt-cache 约束）。
+   * - `hard === true`（硬转向）：立即中止当前轮（abortController.abort），
+   *   指令记入 `lastHardSteer`，调用方可据此携带指令重新 spawn 新任务。
+   *
+   * 返回是否注入成功（未知 id / 任务已终态返回 false）。
+   */
+  steerTask(id: string, instruction: string, options?: { hard?: boolean }): boolean {
+    const task = this.tasks.get(id);
+    if (!task) return false;
+    const terminal = task.status === "completed" || task.status === "failed" ||
+      task.status === "cancelled" || task.status === "timeout";
+    if (terminal) return false;
+
+    if (options?.hard) {
+      task.lastHardSteer = instruction;
+      task.abortController.abort(new Error(`Task ${id} hard-steered by user: ${instruction.slice(0, 80)}`));
+      task.status = "cancelled";
+      task.completedAt = Date.now();
+    } else {
+      task.pendingInstructions.push(instruction);
+    }
+    return true;
+  }
+
+  /**
+   * 取出（并清空）指定任务当前累积的全部软转向指令。
+   * DelegateFn 实现方应在每轮 LLM 调用前调用本方法，把返回的指令
+   * 拼进**本轮新增的** user message，避免改动已缓存前缀。
+   */
+  drainInstructions(id: string): string[] {
+    const task = this.tasks.get(id);
+    if (!task || task.pendingInstructions.length === 0) return [];
+    const drained = task.pendingInstructions.splice(0, task.pendingInstructions.length);
+    return drained;
+  }
+
+  /** 构造 SubagentRegistry 可用的操控通道（把 steer/abort 桥接到本 delegator 的任务） */
+  buildSteerChannel(id: string): {
+    push: (instruction: string) => void;
+    abort: () => void;
+  } {
+    return {
+      push: (instruction) => { this.steerTask(id, instruction); },
+      abort: () => { this.steerTask(id, "hard steer", { hard: true }); },
+    };
   }
 
   /** 取消单个任务 */

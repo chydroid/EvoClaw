@@ -34,7 +34,8 @@ const SERVER_VERSION = getServerVersion();
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
-import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker } from "@evoclaw/agent";
+import type { ChannelMessage } from "@evoclaw/gateway";
+import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager } from "@evoclaw/agent";
 import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
 import type { DurableTask } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
@@ -130,6 +131,7 @@ export class EvoClawServer {
 
   // ── New modules (OpenClaw parity) ──
   private agentRouter: AgentRouter;
+  private roomManager!: RoomManager;
   private toolPolicyManager: ToolPolicyManager;
   private dmPairingManager: DMPairingManager;
   private semanticMemory: SemanticMemoryStore;
@@ -274,6 +276,7 @@ export class EvoClawServer {
       { key: "rolloutCanary", description: "金丝雀发布 — 百分比灰度发布新功能（仅对10%请求启用）", enabled: false, rolloutPercent: 10, owner: "devops", updatedAt: Date.now() },
       { key: "humanApproval", description: "人工审批 — 高风险工具操作需人工确认后执行", enabled: true, owner: "security", updatedAt: Date.now() },
       { key: "a2a", description: "A2A协议 — Agent-to-Agent跨框架通信协议支持", enabled: true, owner: "integration", updatedAt: Date.now() },
+      { key: "botModeGroupRouting", description: "Bot Mode群聊路由 — 群消息经Room路由到命名智能体（@mention优先）", enabled: false, owner: "integration", updatedAt: Date.now() },
     ]);
     this.registry.registerService("featureFlagStore", this.featureFlagStore);
 
@@ -316,6 +319,11 @@ export class EvoClawServer {
       sandbox: "off",
     });
     this.registry.registerService("agentRouter", this.agentRouter);
+
+    // ── RoomManager (P1-1 Bot Mode 群聊房间) ──
+    this.roomManager = new RoomManager(path.resolve(__dirname, "..", "..", "..", "data"));
+    this.roomManager.loadAll();
+    this.registry.registerService("roomManager", this.roomManager);
 
     // ── Tool Policy Manager (OpenClaw parity) ──
     this.toolPolicyManager = new ToolPolicyManager();
@@ -938,6 +946,15 @@ export class EvoClawServer {
       try {
         this.logger.info("channel", `Message from ${msg.channel}: ${msg.from} -> ${msg.text?.slice(0, 50)}`);
         const sessionId = `${msg.channel}-${msg.from}`;
+
+        // ── P1-1 Bot Mode 群聊房间路由（feature flag botModeGroupRouting 兜底，默认关闭）──
+        // 群消息此前被静默丢弃；现改为：命中已注册 Room → resolveSpeaker（@mention 优先）
+        // → 用该 agent 的 AgentConfig 调 chat() 回复回群；未命中房间则维持现有 default agent 行为。
+        if (msg.isGroup && this.featureFlagStore.isEnabled("botModeGroupRouting")) {
+          await this.handleGroupMessageViaRoom(msg);
+          return;
+        }
+
         const result = await Promise.race([
           this.agentModelExecutor.chat(msg.text, {
             sessionId,
@@ -1409,6 +1426,77 @@ export class EvoClawServer {
     try { await this.memoryHub.close(); } catch { /* ignore */ }
     try { await shutdownTracing(); } catch (e) { this.logger.error("server", `shutdownTracing failed: ${e}`); }
     this.logger.info("server", "Goodbye!");
+  }
+
+  /**
+   * P1-1 Bot Mode：把群消息经 Room 路由到命名智能体。
+   * - 命中已注册 Room（channel + groupId）→ resolveSpeaker（@mention 优先，否则 selectorFn/轮询）
+   * - 用目标 agent 的 AgentConfig 调 chat()（agentId 透传，保持该 agent 的模型/工具策略/skills 隔离）
+   * - 回复经 channelManager.sendMessage(channel, groupId, text) 回群
+   * - 未命中房间 / 房间无可用成员 → 回退 default agent 行为（向后兼容）
+   */
+  private async handleGroupMessageViaRoom(msg: ChannelMessage): Promise<void> {
+    const groupId = msg.groupId ?? msg.to;
+    const room = this.roomManager.getRoomByGroup(msg.channel, groupId);
+
+    // 未命中房间 → 维持现有 default agent 行为（静默处理，不回群，避免未注册群刷屏）
+    if (!room || room.agentIds.length === 0) {
+      this.logger.info("channel", `Group message in ${msg.channel}/${groupId}: no room registered, dropped (Bot Mode fallback)`);
+      return;
+    }
+
+    const targetAgentId = this.roomManager.resolveSpeaker(room.id, { text: msg.text ?? "", from: msg.from });
+    // 房间内无可用成员 → 同样回退丢弃
+    if (!targetAgentId) {
+      this.logger.info("channel", `Group message in room ${room.id}: no speaker resolved, dropped`);
+      return;
+    }
+
+    const agent = this.agentRouter.getAgent(targetAgentId);
+    if (!agent || !agent.enabled) {
+      this.logger.warn("channel", `Group room ${room.id}: agent "${targetAgentId}" not found/disabled, dropped`);
+      return;
+    }
+
+    // 会话隔离：以 room + agent 维度建 session，同一房间内同 agent 共享上下文（常驻会话语义）
+    const sessionId = `room-${room.id}-${agent.id}`;
+    const CHANNEL_TIMEOUT = 5 * 60 * 1000;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        this.agentModelExecutor.chat(msg.text ?? "", {
+          sessionId,
+          channel: msg.channel,
+          peerId: msg.from,
+          agentId: agent.id,
+          groupId,
+        }),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            this.agentModelExecutor.abortSession(sessionId);
+            reject(new Error("CHANNEL_CHAT_TIMEOUT"));
+          }, CHANNEL_TIMEOUT);
+          timeoutHandle?.unref?.();
+        }),
+      ]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+
+      const reply = result?.reply;
+      if (reply) {
+        // 记录本轮发言到房间历史（供后续 @mention 路由轮询/selector 参考）
+        this.roomManager.appendTurn(room.id, {
+          agentId: agent.id,
+          agentName: agent.name,
+          role: agent.name,
+          content: reply,
+          timestamp: Date.now(),
+        });
+        await this.channelManager.sendMessage(msg.channel, groupId, reply);
+      }
+    } catch (err) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      this.logger.error("channel", `Failed to route group message via room ${room.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private registerFileTools(fsBase: string): void {

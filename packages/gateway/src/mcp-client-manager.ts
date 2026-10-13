@@ -31,6 +31,32 @@ import { MCPTool } from "@evoclaw/core";
 import { atomicWriteFileSync } from "./atomic-write";
 import { validateMCPServerConfig } from "@evoclaw/security";
 
+/** 投毒扫描结果（MCPToolPoisoningScanner.scan 的返回契约，鸭子类型避免 gateway 直接依赖 security） */
+interface ToolPoisoningResult {
+  safe: boolean;
+  riskScore: number;
+  recommendation: "allow" | "warn" | "block";
+  threats: Array<{ type: string; severity: string; description: string }>;
+}
+
+/** 投毒扫描器接口（与 MCPToolPoisoningScanner.scan 鸭子类型兼容，便于测试注入） */
+export interface ToolPoisoningScanner {
+  scan(tool: { name: string; description: string }): ToolPoisoningResult;
+}
+
+/** 投毒扫描结果（MCPToolPoisoningScanner.scan 的返回契约，鸭子类型避免 gateway 直接依赖 security） */
+interface ToolPoisoningResult {
+  safe: boolean;
+  riskScore: number;
+  recommendation: "allow" | "warn" | "block";
+  threats: Array<{ type: string; severity: string; description: string }>;
+}
+
+/** 投毒扫描器接口（与 MCPToolPoisoningScanner.scan 鸭子类型兼容） */
+export interface ToolPoisoningScanner {
+  scan(tool: { name: string; description: string; inputSchema?: string }): ToolPoisoningResult;
+}
+
 /** 单个 server 的运行时状态 */
 interface ServerState {
   /** 配置名称 */
@@ -67,7 +93,23 @@ export class MCPClientManager {
     ) => void;
     unregisterTool: (name: string) => void;
     registeredTools: Map<string, unknown>;
+    invalidateCheckFnCache?: () => void;
   } | null = null;
+  /** 投毒扫描器（可选注入；未注入时注册门关闭投毒检查） */
+  private poisoningScanner: ToolPoisoningScanner | null = null;
+  /** 被投毒扫描拒绝的工具（serverName → toolName 列表），持久保留供仪表盘展示 */
+  private poisonedTools = new Map<string, string[]>();
+  /**
+   * 工具动态挂载开关（P1-4 toggleTool）：registeredName → 显式启用状态。
+   * 未设置（undefined）表示默认开启；显式 false 表示被 toggle 关闭。
+   * 仅影响下一轮工具列表构建，不重注册，遵守"延迟失效"约定。
+   */
+  private toolToggleState = new Map<string, boolean>();
+
+  /** 注入投毒扫描器（MCPToolPoisoningScanner 鸭子类型兼容） */
+  setPoisoningScanner(scanner: ToolPoisoningScanner): void {
+    this.poisoningScanner = scanner;
+  }
 
   constructor(dataDir: string) {
     this.configPath = path.join(dataDir, "mcp-servers.json");
@@ -77,6 +119,63 @@ export class MCPClientManager {
   setDependencies(mcpGateway: MCPGateway, agentExecutor: unknown): void {
     this.mcpGateway = mcpGateway;
     this.agentExecutor = agentExecutor as MCPClientManager["agentExecutor"];
+  }
+
+  /**
+   * 过滤出应注册到 agent executor 的工具列表。
+   * 优先级：perAgent[agentId] > toolFilter > 全量。
+   */
+  filterToolsForAgent(
+    tools: DiscoveredTool[],
+    config: ExternalMCPServerConfig,
+    agentId?: string,
+  ): DiscoveredTool[] {
+    let allowed: Set<string> | null = null;
+    let denied: Set<string> = new Set();
+
+    if (agentId && config.perAgent?.[agentId]) {
+      const pa = config.perAgent[agentId];
+      if (pa.allow && pa.allow.length > 0) {
+        allowed = new Set(pa.allow);
+      }
+      if (pa.deny && pa.deny.length > 0) {
+        denied = new Set(pa.deny);
+      }
+    } else {
+      if (config.toolFilter) {
+        if (config.toolFilter.mode === "allowlist" && config.toolFilter.tools.length > 0) {
+          allowed = new Set(config.toolFilter.tools);
+        } else if (config.toolFilter.mode === "denylist") {
+          denied = new Set(config.toolFilter.tools);
+        }
+      }
+    }
+
+    return tools.filter((t) => {
+      if (denied.has(t.name)) return false;
+      if (allowed !== null && !allowed.has(t.name)) return false;
+      return true;
+    });
+  }
+
+  /** 投毒门：对单个工具执行扫描，返回是否应拒绝注册 */
+  private shouldRejectByPoisoning(tool: DiscoveredTool, serverName: string): boolean {
+    if (!this.poisoningScanner) return false;
+    const result = this.poisoningScanner.scan({
+      name: tool.name,
+      description: tool.description,
+    });
+    if (result.recommendation === "block" || !result.safe) {
+      const existing = this.poisonedTools.get(serverName) ?? [];
+      if (!existing.includes(tool.name)) existing.push(tool.name);
+      this.poisonedTools.set(serverName, existing);
+      process.stderr.write(
+        `[MCPClientManager] Tool "${tool.name}" from server "${serverName}" rejected by poisoning scan: ` +
+        `riskScore=${result.riskScore}, threats=${result.threats.length}\n`,
+      );
+      return true;
+    }
+    return false;
   }
 
   /** 加载配置文件（不存在则返回空配置） */
@@ -179,8 +278,11 @@ export class MCPClientManager {
     this.mcpGateway?.registerTransport(name, transport);
     this.mcpGateway?.registerCapabilities(name, { tools: capsTools });
 
-    // 注册到 agentModelExecutor（让 agent 能直接调用）
-    this.registerServerTools(name, transport, tools);
+    // 注册到 agentModelExecutor（让 agent 能直接调用，经 toolFilter 过滤）
+    // 优先用本次连接传入的 config（reconnect/addServer 路径最准确），缺省回退到配置文件
+    const effectiveConfig = config ?? this.loadConfig()[name];
+    const filteredTools = effectiveConfig ? this.filterToolsForAgent(tools, effectiveConfig) : tools;
+    this.registerServerTools(name, transport, filteredTools);
 
     const state: ServerState = {
       name,
@@ -205,7 +307,7 @@ export class MCPClientManager {
     return connectPromise;
   }
 
-  /** 把外部工具注册到 agentModelExecutor */
+  /** 把外部工具注册到 agentModelExecutor（经 toolFilter + 投毒门过滤） */
   private registerServerTools(
     serverName: string,
     transport: MCPClientTransport,
@@ -216,6 +318,13 @@ export class MCPClientManager {
     for (const tool of tools) {
       // 工具名加前缀避免冲突：mcp__<server>__<tool>
       const registeredName = `mcp__${serverName}__${tool.name}`;
+
+      // 投毒门：拒绝恶意描述的工具（不注册）
+      if (this.shouldRejectByPoisoning(tool, serverName)) {
+        continue;
+      }
+
+      // 注册 checkFn 实现动态挂载（toggleTool 通过修改 enabledTools 集合控制，避免重注册破坏 prompt-cache）
       this.agentExecutor.registerTool(
         registeredName,
         {
@@ -252,8 +361,64 @@ export class MCPClientManager {
             clearTimeout(timeout);
           }
         },
+        // checkFn：动态挂载开关——toggleTool 关闭后，下一轮工具列表构建时本工具不再可见；
+        // 未显式 toggle 过（undefined）默认开启。走"延迟失效"约定，不重注册。
+        () => this.toolToggleState.get(registeredName) !== false,
       );
     }
+  }
+
+  /**
+   * 动态挂载/卸载单个 MCP 工具（P1-4 指挥中心）。
+   * 只切换工具在下一轮 prompt 构建时的可见性，不改注册集合，
+   * 遵守 AGENTS.md 的"延迟失效"约定（当前会话已缓存的工具列表不受影响，下轮生效）。
+   * @returns 是否成功切换（false 表示工具名不存在）
+   */
+  toggleTool(serverName: string, toolName: string, enabled: boolean): boolean {
+    const registeredName = `mcp__${serverName}__${toolName}`;
+    const state = this.servers.get(serverName);
+    if (!state) return false;
+    const exists = state.tools.some((t) => t.name === toolName);
+    if (!exists) return false;
+    this.toolToggleState.set(registeredName, enabled);
+    this.agentExecutor?.invalidateCheckFnCache?.();
+    process.stdout.write(
+      `[MCPClientManager] Tool "${registeredName}" toggled ${enabled ? "ON" : "OFF"} (effective next tool-list build)\n`,
+    );
+    return true;
+  }
+
+  /** 查询指定工具当前 toggle 状态（未显式 toggle 过则返回 undefined=默认开启） */
+  getToolToggle(serverName: string, toolName: string): boolean | undefined {
+    return this.toolToggleState.get(`mcp__${serverName}__${toolName}`);
+  }
+
+  /** 仪表盘数据：server 状态 + 每个工具当前 toggle 态 + 被投毒门拒绝的列表 */
+  getDashboard(): Array<{
+    name: string;
+    type: string;
+    connected: boolean;
+    toolCount: number;
+    tools: Array<{ name: string; enabled: boolean; poisoned: boolean }>;
+    lastError?: string;
+    connectedAt?: number;
+  }> {
+    return Array.from(this.servers.values()).map((s) => {
+      const poisoned = new Set(this.poisonedTools.get(s.name) ?? []);
+      return {
+        name: s.name,
+        type: s.transport.type,
+        connected: s.connected,
+        toolCount: s.tools.length,
+        tools: s.tools.map((t) => ({
+          name: t.name,
+          enabled: this.getToolToggle(s.name, t.name) ?? !poisoned.has(t.name),
+          poisoned: poisoned.has(t.name),
+        })),
+        lastError: s.lastError,
+        connectedAt: s.connectedAt,
+      };
+    });
   }
 
   /** 注销 server 的所有工具 */

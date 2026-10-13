@@ -16,7 +16,19 @@ import type { ToolPolicy } from "./agent-router";
 export type SubagentStatus = "idle" | "running" | "done" | "error";
 
 /** Events emitted by the subagent registry */
-export type SubagentEvent = "spawn" | "complete" | "error" | "kill" | "cleanup";
+export type SubagentEvent = "spawn" | "complete" | "error" | "kill" | "cleanup" | "steer";
+
+/**
+ * 子代理实时操控通道（P1-2 mid-flight steering）。
+ *
+ * - `push(instruction)`：把指令追加进该子代理的 prompt 队列，下一轮 LLM 调用可见，
+ *   不改写已缓存前缀（遵守 AGENTS.md prompt-cache 约束）。
+ * - `abort()`：硬转向——中止当前轮，携带 instruction 重新 spawn（调用方决定）。
+ */
+export interface SubagentSteerChannel {
+  push(instruction: string): void;
+  abort(): void;
+}
 
 /** Configuration used when spawning a new subagent */
 export interface SubagentConfig {
@@ -32,6 +44,8 @@ export interface SubagentConfig {
   label?: string;
   /** Optional metadata payload */
   metadata?: Record<string, unknown>;
+  /** 实时操控通道（P1-2）：spawn 时注入，供后续 steer() 写入指令 */
+  steerChannel?: SubagentSteerChannel;
 }
 
 /** Runtime information about a spawned subagent */
@@ -58,6 +72,12 @@ export interface SubagentInfo {
   error?: string;
   /** Arbitrary metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * 实时操控通道（P1-2 mid-flight steering，可选）。
+   * spawn 时由调用方（TaskOrchestrator/BackgroundDelegator）注入，
+   * 让 steer() 能把指令追加进该子代理下一轮的 prompt。
+   */
+  steerChannel?: SubagentSteerChannel;
 }
 
 /** Filter criteria for list() */
@@ -68,11 +88,15 @@ export interface SubagentListFilter {
   parentAgentId?: string;
 }
 
-/** Event payload emitted on spawn / complete / error / kill / cleanup */
+/** Event payload emitted on spawn / complete / error / kill / cleanup / steer */
 export interface SubagentRegistryEvent {
   event: SubagentEvent;
   subagent: SubagentInfo;
   timestamp: string;
+  /** 仅 steer 事件携带 */
+  instruction?: string;
+  /** 仅 steer 事件携带：是否硬转向 */
+  hard?: boolean;
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -150,6 +174,7 @@ export class SubagentRegistry {
       createdAt: now,
       lastActive: now,
       metadata: config.metadata,
+      steerChannel: config.steerChannel,
     };
 
     this.subagents.set(info.id, info);
@@ -237,6 +262,38 @@ export class SubagentRegistry {
     this.subagents.delete(id);
     this.emit("kill", info);
     process.stdout.write(`[SubagentRegistry] Killed subagent "${id}"\n`);
+    return true;
+  }
+
+  // ─── Steer (P1-2 mid-flight steering) ─────────────────────────────────────
+
+  /**
+   * 向运行中的子代理注入实时指令（对标 Hermes v0.21 subagent steering）。
+   *
+   * - `options.hard === false`（默认）：软转向——把 instruction 追加进子代理的 prompt
+   *   队列，下一轮 LLM 调用可见，不中断当前轮，不改写已缓存前缀（prompt-cache 约束）。
+   * - `options.hard === true`：硬转向——触发 steerChannel.abort() 中止当前轮；
+   *   调用方（TaskOrchestrator/BackgroundDelegator）可据此携带 instruction 重新 spawn。
+   *
+   * 未注入 steerChannel 的子代理（旧式 spawn）steer 返回 false，语义等价"不可操控"。
+   */
+  steer(id: string, instruction: string, options?: { hard?: boolean }): boolean {
+    const info = this.subagents.get(id);
+    if (!info) return false;
+    if (info.status === "done" || info.status === "error") return false;
+    if (!info.steerChannel) return false;
+
+    if (options?.hard) {
+      info.steerChannel.abort();
+      info.metadata = { ...info.metadata, lastHardSteer: instruction, hardSteeredAt: new Date().toISOString() };
+    } else {
+      info.steerChannel.push(instruction);
+    }
+    info.lastActive = new Date().toISOString();
+    this.emit("steer", info, instruction, options?.hard ?? false);
+    process.stdout.write(
+      `[SubagentRegistry] Steered subagent "${id}" (${options?.hard ? "hard" : "soft"}): "${instruction.slice(0, 60)}"\n`,
+    );
     return true;
   }
 
@@ -331,11 +388,13 @@ export class SubagentRegistry {
 
   // ─── Internal ──────────────────────────────────────────────────────────────
 
-  private emit(event: SubagentEvent, info: SubagentInfo): void {
+  private emit(event: SubagentEvent, info: SubagentInfo, instruction?: string, hard?: boolean): void {
     const payload: SubagentRegistryEvent = {
       event,
       subagent: info,
       timestamp: new Date().toISOString(),
+      instruction,
+      hard,
     };
 
     this.eventBus.publish(`subagent.${event}`, payload, "subagent-registry").catch((err) => {
