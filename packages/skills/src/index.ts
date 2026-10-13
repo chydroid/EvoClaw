@@ -1,6 +1,20 @@
 export { SkillManager } from "./skill-manager";
 export type { OptionalSkillInfo, StartupWarning, StartupWarningCategory, StartupWarningSolution, StartupReport } from "./skill-manager";
 export { SkillValidator } from "./skill-validator";
+// agentskills.io 公开标准兼容层（规范：https://agentskills.io/specification.md）
+//   在 OpenClaw 私标之外支持公开标准：frontmatter 校验 + 渐进式披露约束
+export {
+  AgentSkillsStdValidator,
+  extractAgentSkillsMeta,
+  AGENT_SKILLS_MAX_BODY_LINES,
+  AGENT_SKILLS_MAX_NAME_LENGTH,
+  AGENT_SKILLS_MAX_DESCRIPTION_LENGTH,
+  AGENT_SKILLS_MAX_COMPATIBILITY_LENGTH,
+} from "./agentskills";
+export type {
+  AgentSkillsValidation,
+  AgentSkillsValidator,
+} from "./agentskills";
 export { SkillHookEngine } from "./skill-hook-engine";
 export { SKILLmdParser } from "./skill-md-parser";
 export { SkillSandbox } from "./skill-sandbox";

@@ -91,6 +91,8 @@ export interface Skill extends SkillManifest {
   body: SkillBody;
   i18n?: SkillI18n;
   openclawMeta?: OpenClawSkillMeta;
+  /** agentskills.io 公开标准元数据（SKILL.md frontmatter 的 metadata 等字段） */
+  agentskillsMeta?: AgentSkillsMeta;
   configStatus?: SkillConfigStatus;
   latestVersion?: string;
   updateAvailable?: boolean;
@@ -145,6 +147,9 @@ export interface SKILLmdMeta {
   emoji?: string;
   os?: string[];
   metadata?: OpenClawMetadata;
+  // agentskills.io 公开标准字段（兼容层；OpenClaw 私标见 OpenClawMetadata）
+  compatibility?: string;
+  agentskillsMetadata?: Record<string, string>;
   // OpenClaw compatibility fields
   allowedTools?: string[];
   disableModelInvocation?: boolean;
@@ -176,6 +181,21 @@ export interface OpenClawSkillMeta {
   build?: string;
   skillKey?: string;
   always?: boolean;
+}
+
+/**
+ * agentskills.io 公开标准元数据
+ * 规范：https://agentskills.io/specification.md
+ * - frontmatter `metadata` 字段为 string→string 的任意映射（作者自定义）
+ * - `compatibility` 字段声明运行环境要求（≤500 字符）
+ */
+export interface AgentSkillsMeta {
+  metadata?: Record<string, string>;
+  compatibility?: string;
+  /** 规范校验结论（由 AgentSkillsValidator 填充） */
+  specValid?: boolean;
+  specErrors?: string[];
+  specWarnings?: string[];
 }
 
 export interface SkillInstallSpec {

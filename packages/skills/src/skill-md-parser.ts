@@ -69,6 +69,13 @@ export class SKILLmdParser {
             openclaw: openClawMeta,
           }
         : undefined,
+      // agentskills.io 公开标准字段（兼容层，与 OpenClaw 私标并存）
+      // 规范：https://agentskills.io/specification.md
+      compatibility: typeof data.compatibility === "string" && data.compatibility.trim() !== ""
+        ? data.compatibility
+        : undefined,
+      // 规范 metadata 为 string→string 映射；复用 OpenClaw 无冲突（键名不同）
+      agentskillsMetadata: this.parseAgentSkillsMetadata(data),
     };
 
     const sections = this.parseSections(body);
@@ -142,6 +149,21 @@ export class SKILLmdParser {
       i++;
     }
     return { data, body };
+  }
+
+  /**
+   * 归一化 frontmatter `metadata` 为 agentskills.io 规范的 string→string 映射。
+   * 规范（agentskills.io/specification.md）：metadata 是「字符串键到字符串值的映射」，
+   * 非字符串值（数字、嵌套对象）转 JSON 字符串保留信息，不丢弃。
+   */
+  private parseAgentSkillsMetadata(data: Record<string, unknown>): Record<string, string> | undefined {
+    const metadata = data.metadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+    const map: Record<string, string> = {};
+    for (const [k, v] of Object.entries(metadata as Record<string, unknown>)) {
+      map[k] = typeof v === "string" ? v : JSON.stringify(v);
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
   }
 
   private parseOpenClawMetadata(data: Record<string, unknown>): OpenClawSkillMeta | null {

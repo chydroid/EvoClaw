@@ -271,6 +271,31 @@ export class SkillManager {
       }
     }
 
+    // agentskills.io 公开标准校验（与 OpenClaw 私标并存）：
+    // 规范 violations 作为安装拒绝项；warnings（正文超 500 行、allowed-tools 数组形态等）
+    // 走启动警告通道，不阻断安装。dirName 显式跳过（false）：EvoClaw 安装目录可能带
+    // 私有前缀（如 data/skills/evoclaw-skill-<name>/），不是规范形态，同名检查由
+    // CLI validate-spec（对源目录校验）承担，安装路径不阻断。
+    const specResult = this.validator.validateAgentSkillsSpec(parsed, false);
+    if (!specResult.specValid) {
+      for (const e of specResult.errors) {
+        process.stderr.write(`[SkillManager] agentskills.io spec violation: ${e}\n`);
+      }
+      throw new Error(
+        `Skill does not conform to agentskills.io spec: ${specResult.errors.join("; ")}`
+      );
+    }
+    if (specResult.warnings.length > 0) {
+      for (const w of specResult.warnings) {
+        process.stderr.write(`[SkillManager] ⚠ ${w}\n`);
+        this.collectStartupWarning({
+          skillName: parsed.meta.name,
+          category: "VALIDATION",
+          message: w,
+        });
+      }
+    }
+
     // Validate skill quality before installing
     if (this.skillEcosystem) {
       try {
@@ -481,6 +506,13 @@ export class SkillManager {
       lifecycle: this.lifecycle.createLifecycle(parsed.meta.version),
       config: this.buildSkillConfig(parsed.meta.config || {}, ocMeta, savedConfig, detectedEnvVars, skillDir),
       openclawMeta: ocMeta,
+      // agentskills.io 公开标准元数据（规范校验结论由 validateAgentSkillsSpec 独立返回）
+      agentskillsMeta: parsed.meta.agentskillsMetadata || parsed.meta.compatibility
+        ? {
+            metadata: parsed.meta.agentskillsMetadata,
+            compatibility: parsed.meta.compatibility,
+          }
+        : undefined,
       requires: parsed.meta.requires || [],
       provides: [],
       triggers,

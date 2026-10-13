@@ -7,6 +7,7 @@ import {
   type SecurityScanResult,
   type SecurityFinding,
 } from "@evoclaw/core";
+import { AgentSkillsStdValidator } from "./agentskills";
 
 const SEMVER_REGEX = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$/;
 const NAME_REGEX = /^[a-z][a-z0-9_-]*$/;
@@ -39,6 +40,53 @@ const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-s
 const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
 
 export class SkillValidator {
+  /**
+   * agentskills.io 公开标准校验器（规范：https://agentskills.io/specification.md）。
+   * EvoClaw 双标并存：OpenClaw 私标走 validateManifest，公开标准走 agentSkillsStd。
+   * 公开标准的 errors 在 installSkill 时作为安装拒绝项，warnings 走启动警告通道。
+   */
+  readonly agentSkillsStd = new AgentSkillsStdValidator();
+
+  /**
+   * 校验 SKILL.md 是否符合 agentskills.io 公开标准。
+   * 复用 parse 阶段已提取的 meta 字段（name/description/compatibility/
+   * agentskillsMetadata/allowedTools）。
+   * @param doc 解析结果
+   * @param dirName 父目录名（用于 name 同名检查）；传 false 显式跳过
+   *   （如 EvoClaw 安装目录带私有前缀 evoclaw-skill-<name>/，非规范形态）
+   */
+  validateAgentSkillsSpec(
+    doc: SKILLmdDocument,
+    dirName?: string | false
+  ): {
+    specValid: boolean;
+    errors: string[];
+    warnings: string[];
+  } {
+    const meta = doc.meta;
+    // 重组为 frontmatter 原始字段形态，交给校验器统一判定
+    const data: Record<string, unknown> = {
+      name: meta.name,
+      description: meta.description,
+    };
+    if (meta.compatibility !== undefined) data.compatibility = meta.compatibility;
+    if (meta.license !== undefined) data.license = meta.license;
+    if (meta.agentskillsMetadata !== undefined) data.metadata = meta.agentskillsMetadata;
+    if (meta.allowedTools !== undefined) {
+      data["allowed-tools"] = meta.allowedTools;
+    } else if (meta.commandDispatch !== undefined) {
+      // 无显式 allowed-tools 时不做类型判定，避免误报
+    }
+
+    const fmResult = this.agentSkillsStd.validateFrontmatter(data, { dirName });
+    const bodyResult = this.agentSkillsStd.validateBody(doc.instructions || "");
+    return {
+      specValid: fmResult.specValid && bodyResult.specValid,
+      errors: [...fmResult.errors, ...bodyResult.errors],
+      warnings: [...fmResult.warnings, ...bodyResult.warnings],
+    };
+  }
+
   validateManifest(meta: SKILLmdMeta): {
     errors: string[];
     warnings: string[];

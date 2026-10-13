@@ -1,4 +1,6 @@
 /** skills — Manage skills via server API */
+import * as fs from "fs";
+import * as path from "path";
 import { Command } from "commander";
 import { c, ICONS, section } from "../utils/colors";
 import { apiRequest, checkServer, serverRequired } from "../utils/api";
@@ -277,6 +279,96 @@ export function register(program: Command, _shared: (cmd: Command) => Command, _
       } catch (err) {
         console.log(c("red", `${ICONS.error()} Failed to fetch trending: ${err instanceof Error ? err.message : String(err)}`));
       }
+    });
+
+  // skills validate-spec — 校验本地技能目录是否符合 agentskills.io 公开标准
+  // 离线本地校验（不需要 server）：复用 @evoclaw/skills 的 AgentSkillsStdValidator
+  // 规范：https://agentskills.io/specification.md
+  skills
+    .command("validate-spec <path>")
+    .description("Validate a local skill directory against the agentskills.io spec")
+    .option("--json", "Output as JSON")
+    .action(async (targetPath: string, opts: Record<string, unknown>) => {
+      const skillDir = path.resolve(targetPath);
+      // 允许传目录或 SKILL.md 文件
+      let skillMdPath: string;
+      if (fs.existsSync(skillDir) && fs.statSync(skillDir).isFile()) {
+        skillMdPath = skillDir;
+      } else {
+        const candidate = path.join(skillDir, "SKILL.md");
+        if (!fs.existsSync(candidate)) {
+          const isDir = fs.existsSync(skillDir);
+          process.exitCode = 1;
+          console.log(c("red", `${ICONS.error()} ${isDir ? "No SKILL.md found in directory" : "Path does not exist"}: ${skillDir}`));
+          return;
+        }
+        skillMdPath = candidate;
+      }
+
+      // 动态导入，避免 CLI 冷启动路径常驻依赖
+      const { AgentSkillsStdValidator, extractAgentSkillsMeta } = await import("@evoclaw/skills");
+      const validator = new AgentSkillsStdValidator();
+      const content = fs.readFileSync(skillMdPath, "utf-8");
+
+      // 轻量 frontmatter 提取：行级扫描（与 SKILLmdParser 的 lenient 扫描同构，
+      // 避免 CLI 引入 gray-matter 依赖）
+      let fm: Record<string, unknown> = {};
+      let body = content;
+      const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+      if (fmMatch) {
+        body = content.slice(fmMatch[0].length);
+        const topKeyRe = /^([a-zA-Z_][\w-]*)\s*:\s*(.*)$/;
+        const lines = fmMatch[1].split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const kv = lines[i].match(topKeyRe);
+          if (!kv) continue;
+          const key = kv[1];
+          const val = kv[2].trim();
+          if (val === "|" || val === ">") {
+            // block scalar：收集后续行直到下一个顶格 key
+            const block: string[] = [];
+            i++;
+            while (i < lines.length && !topKeyRe.test(lines[i])) {
+              block.push(lines[i].replace(/^  /, ""));
+              i++;
+            }
+            fm[key] = block.join("\n").trim();
+          } else {
+            // 单行值：去除引号；带嵌套映射的 key（如 metadata:）保留首行值
+            fm[key] = val.replace(/^["']|["']$/g, "");
+          }
+        }
+      }
+
+      const result = validator.validate(fm, body, {
+        dirName: path.basename(path.dirname(skillMdPath)),
+      });
+      const specMeta = extractAgentSkillsMeta(fm);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          path: skillMdPath,
+          specValid: result.specValid,
+          errors: result.errors,
+          warnings: result.warnings,
+          metadata: specMeta.metadata,
+          compatibility: specMeta.compatibility,
+        }, null, 2));
+      } else {
+        if (result.specValid) {
+          console.log(c("green", `${ICONS.ok()} ${path.basename(path.dirname(skillMdPath))} conforms to the agentskills.io spec`));
+        } else {
+          console.log(c("red", `${ICONS.error()} ${path.basename(path.dirname(skillMdPath))} does not conform to the agentskills.io spec:`));
+          for (const e of result.errors) console.log(c("red", `  ${e}`));
+        }
+        if (result.warnings.length > 0) {
+          console.log(c("yellow", `  Warnings:`));
+          for (const w of result.warnings) console.log(c("yellow", `  ${w}`));
+        }
+        console.log();
+      }
+
+      if (!result.specValid) process.exitCode = 1;
     });
 
   // skills list-optional — list optional (not default-enabled) skills
