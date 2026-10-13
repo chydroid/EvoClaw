@@ -234,6 +234,84 @@ describe("WebhookManager (outgoing)", () => {
   });
 });
 
+// ── P2-2 EventBus 桥接 + 持久化 ─────────────────────────────────────────────
+describe("WebhookManager (P2-2 EventBus bridge + persistence)", () => {
+  let wm: WebhookManager;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(new Response("ok", { status: 200 }));
+    wm = new WebhookManager("test-signing-key");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 最小 EventBus stub：只记订阅，不发事件（测试桥接注册逻辑） */
+  function makeEventBusStub() {
+    const subs: Array<{ type: string; id: string }> = [];
+    return {
+      subs,
+      subscribe<T>(
+        eventType: string,
+        _handler: (event: { type: string; source?: string; data: T; timestamp?: unknown }) => void | Promise<void>,
+      ): { id: string } {
+        const id = `sub-${subs.length}`;
+        subs.push({ type: eventType, id });
+        return { id };
+      },
+      unsubscribe(subscriptionId: string): void {
+        const idx = subs.findIndex((s) => s.id === subscriptionId);
+        if (idx >= 0) subs.splice(idx, 1);
+      },
+    };
+  }
+
+  it("subscribeToEventBus 默认桥接 P2-2 事件列表（8 个），返回取消订阅函数", () => {
+    const bus = makeEventBusStub();
+    const dispose = wm.subscribeToEventBus(bus);
+    expect(bus.subs).toHaveLength(8);
+    expect(bus.subs.map((s) => s.type)).toContain("task.completed");
+    expect(bus.subs.map((s) => s.type)).toContain("security.alert");
+
+    dispose();
+    expect(bus.subs).toHaveLength(0);
+  });
+
+  it("subscribeToEventBus 支持自定义事件列表", () => {
+    const bus = makeEventBusStub();
+    const dispose = wm.subscribeToEventBus(bus, ["task.failed", "system.error"]);
+    expect(bus.subs.map((s) => s.type)).toEqual(["task.failed", "system.error"]);
+    dispose();
+    expect(bus.subs).toHaveLength(0);
+  });
+
+  it("saveConfig 写盘，loadConfig 可恢复注册（SSRF 校验仍生效）", () => {
+    const osMod = require("os") as typeof import("os");
+    const fsMod = require("fs") as typeof import("fs");
+    const pathMod = require("path") as typeof import("path");
+    const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "webhook-persist-test-"));
+    const file = pathMod.join(tmp, "webhooks.json");
+    try {
+      wm.register(makeConfig({ id: "wh-persist", url: "https://example.com/hook" }));
+      wm.saveConfig(file);
+
+      const fresh = new WebhookManager("test-signing-key");
+      const count = fresh.loadConfig(file);
+      expect(count).toBe(1);
+      expect(fresh.getWebhook("wh-persist")?.url).toBe("https://example.com/hook");
+
+      // 不存在的文件 loadConfig 返回 0
+      const empty = new WebhookManager("k");
+      expect(empty.loadConfig(pathMod.join(tmp, "does-not-exist.json"))).toBe(0);
+    } finally {
+      fsMod.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("IncomingWebhookManager", () => {
   let manager: IncomingWebhookManager;
 

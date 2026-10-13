@@ -23,6 +23,7 @@ import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
 import { MCPClientManager } from "./mcp-client-manager";
+import { WebhookManager, type WebhookConfig } from "./webhook-manager";
 import { ProtocolHandler } from "./ws-protocol";
 import { WSServerTransport } from "./ws-server-transport";
 import type { ChannelManager } from "./channel-manager";
@@ -793,6 +794,7 @@ export class GatewayServer {
     this.setupInstallPolicyRoutes();
     this.setupTranscriptRedactorRoutes();
     this.setupMCPScannerRoutes();
+    this.setupWebhookRoutes();
 
     // ── Agent Capabilities API (v0.19.0+) ──
 
@@ -2417,6 +2419,93 @@ export class GatewayServer {
       }
       const auditLog = redactor.getAuditLog();
       res.json({ entries: auditLog, count: auditLog.length });
+    });
+  }
+
+  // ── P2-2 签名出站 Webhook 管理端点 ─────────────────────────────────
+  /**
+   * Webhook 出站事件端点（roadmap P2-2）：
+   * 出站 webhook 经 HMAC-SHA256 签名 + 注册时 SSRF 校验（WebhookManager 内置），
+   * 这里只暴露管理面：list / add / remove / stats / test。
+   */
+  private setupWebhookRoutes(): void {
+    const resolveWebhookManager = () => this.registry.resolveService<WebhookManager>("webhookManager");
+
+    // GET /api/webhooks — 列出已注册的出站 webhook（脱敏：不回传 secret）
+    this.app.get("/api/webhooks", (_req: Request, res: Response) => {
+      const manager = resolveWebhookManager();
+      if (!manager) {
+        res.status(503).json({ error: "WebhookManager not available" });
+        return;
+      }
+      res.json({
+        webhooks: manager.listWebhooks().map((w) => ({
+          id: w.id,
+          url: w.url,
+          events: w.events ?? [],
+          enabled: w.enabled ?? false,
+          createdAt: w.createdAt,
+        })),
+      });
+    });
+
+    // POST /api/webhooks — 注册新出站 webhook（SSRF 校验失败则拒绝）
+    this.app.post("/api/webhooks", (req: Request, res: Response) => {
+      const manager = resolveWebhookManager();
+      if (!manager) {
+        res.status(503).json({ error: "WebhookManager not available" });
+        return;
+      }
+      const input = (req.body || {}) as Omit<WebhookConfig, "id"> & { id?: string };
+      if (!input.url) {
+        res.status(400).json({ error: "url is required" });
+        return;
+      }
+      const id = input.id || `wh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const config: WebhookConfig = {
+        ...input,
+        id,
+        url: input.url,
+        events: input.events,
+        secret: input.secret,
+        enabled: input.enabled ?? true,
+        headers: input.headers,
+        maxRetries: input.maxRetries,
+        timeoutMs: input.timeoutMs,
+        rateLimitPerMinute: input.rateLimitPerMinute,
+      };
+      const ok = manager.register(config);
+      if (!ok) {
+        // register 返回 false：SSRF 校验失败或 id 冲突（register 已打印 stderr）
+        res.status(400).json({ error: `Webhook registration rejected (invalid URL/SSRF or duplicate id "${id}")` });
+        return;
+      }
+      // 持久化：register 成功后回写 data/webhooks.json（server 侧注入的 persistencePath）
+      const persistPath = this.registry.resolveService<{ path?: string }>("webhookPersistencePath")?.path;
+      if (persistPath) manager.saveConfig(persistPath);
+      res.json({ success: true, id });
+    });
+
+    // DELETE /api/webhooks/:id — 移除出站 webhook
+    this.app.delete("/api/webhooks/:id", (req: Request, res: Response) => {
+      const manager = resolveWebhookManager();
+      if (!manager) {
+        res.status(503).json({ error: "WebhookManager not available" });
+        return;
+      }
+      const { id } = req.params as { id: string };
+      const removed = manager.unregister(id);
+      res.json({ success: removed });
+    });
+
+    // GET /api/webhooks/stats — 分发统计（成功/失败计数、各 webhook 明细）
+    this.app.get("/api/webhooks/stats", (_req: Request, res: Response) => {
+      const manager = resolveWebhookManager();
+      if (!manager) {
+        res.status(503).json({ error: "WebhookManager not available" });
+        return;
+      }
+      res.json(manager.getStats());
     });
   }
 

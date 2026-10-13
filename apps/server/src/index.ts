@@ -33,7 +33,7 @@ const SERVER_VERSION = getServerVersion();
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension } from "@evoclaw/core";
-import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache } from "@evoclaw/gateway";
+import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager } from "@evoclaw/agent";
 import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
@@ -146,6 +146,11 @@ export class EvoClawServer {
   private autoReplyEngine: AutoReplyEngine;
   private commitmentManager: CommitmentManager;
   private memoryHost: MemoryHost;
+
+  // ── P2-2 签名出站 Webhook ──
+  private webhookManager!: WebhookManager;
+  private webhookDispose: (() => void) | null = null;
+  private webhookPersistencePath: string = "";
 
   // ── ACP + Operations modules (Round 4) ──
   private eventLedger: EventLedger;
@@ -1055,6 +1060,23 @@ export class EvoClawServer {
       } catch { /* non-critical */ }
     });
 
+    // ── P2-2 签名出站 Webhook：桥接 EventBus → WebhookManager.dispatch() ──
+    // 订阅任务完成/失败/取消、Cron 运行结束、系统告警/错误、安全事件，
+    // 转发到已注册的出站 webhook（HMAC-SHA256 签名，SSRF 校验在注册时执行）。
+    // 持久化配置到 data/webhooks.json（原子写，重启后自动恢复注册）。
+    this.webhookManager = new WebhookManager();
+    const webhookPersistencePath = path.resolve(__dirname, "..", "..", "..", "data", "webhooks.json");
+    this.webhookPersistencePath = webhookPersistencePath;
+    const loadedWebhooks = this.webhookManager.loadConfig(webhookPersistencePath);
+    if (loadedWebhooks > 0) {
+      this.logger.info("server", `WebhookManager loaded ${loadedWebhooks} persisted webhook(s)`);
+    }
+    this.webhookDispose = this.webhookManager.subscribeToEventBus(this.eventBus);
+    this.registry.registerService("webhookManager", this.webhookManager);
+    // 持久化路径注册到 registry，供 gateway 的 /api/webhooks 端点在增删后回写 data/webhooks.json
+    this.registry.registerService("webhookPersistencePath", { path: this.webhookPersistencePath });
+    // 注册成功后回写磁盘（新增/删除经 API 端点调用 saveConfig）
+
     // 2. 之后只有在 WebUI 技能页面手动点击「刷新」按钮时才会再次扫描安装
     //    （对应 /api/skills/refresh 端点 → SkillManager.scanAndInstall）
     try {
@@ -1392,6 +1414,12 @@ export class EvoClawServer {
     }
     this.selfHealing.stop();
     this.scheduleManager.stop();
+    // P2-2 WebhookManager：取消 EventBus 桥接订阅 + 清理重试定时器
+    if (this.webhookDispose) {
+      this.webhookDispose();
+      this.webhookDispose = null;
+    }
+    this.webhookManager?.dispose();
     // 清理浏览器健康检查 interval，避免定时器泄漏
     try { this.browserToolsCleanup?.(); this.browserToolsCleanup = null; } catch { /* ignore */ }
     this.configWatcher.stopAll();

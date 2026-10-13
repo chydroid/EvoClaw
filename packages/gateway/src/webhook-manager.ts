@@ -1060,6 +1060,102 @@ export class WebhookManager {
     this.deliveries.set(webhookId, []);
   }
 
+  // ── EventBus 桥接 + 持久化（P2-2 签名出站 Webhook）─────────────────
+
+  /**
+   * 订阅 EventBus 事件并转发到 dispatch()。
+   * 默认桥接 P2-2 设计文档列出的事件：任务完成/失败/取消、Cron 运行结束、
+   * 系统告警/错误、安全事件。调用方也可传自定义事件列表。
+   *
+   * 返回取消订阅函数（server shutdown 时调用，防止悬挂 handler）。
+   *
+   * EventBus 的 handler 收到 EvoEvent（{type, source, data, timestamp,...}）；
+   * 这里把 EvoEvent 的 data + source 转成 WebhookEvent 结构。
+   */
+  subscribeToEventBus(
+    eventBus: {
+      /** EventBus.subscribe(handler: (event: EvoEvent) => Promise<void>) → {id} */
+      subscribe<T>(
+        eventType: string,
+        handler: (event: { type: string; source?: string; data: T; timestamp?: unknown }) => void | Promise<void>,
+      ): { id: string };
+      unsubscribe(subscriptionId: string): void;
+    },
+    eventTypes?: string[],
+  ): () => void {
+    const defaults = [
+      "task.completed",
+      "task.failed",
+      "task.cancelled",
+      "cron.run_completed",
+      "system.error",
+      "security.alert",
+      "security.breach",
+      "security.rate_limit_exceeded",
+    ];
+    const events = eventTypes && eventTypes.length > 0 ? eventTypes : defaults;
+    const subs = events.map((eventType) => {
+      return eventBus.subscribe(eventType, (ev: { type: string; source?: string; data?: Record<string, unknown> }) => {
+        // EvoEvent.data 经 EventBus 透传；EvoEvent.source 是发布方标识
+        const data = (ev.data && typeof ev.data === "object") ? (ev.data as Record<string, unknown>) : {};
+        const source = ev.source ?? "evoclaw";
+        this.dispatch({
+          type: eventType,
+          timestamp: Date.now(),
+          data: { ...data, source },
+          source,
+        }).catch(() => {
+          // 单条分发失败不影响其他 webhook（dispatch 内部已 Promise.allSettled）
+        });
+      });
+    });
+    return () => {
+      for (const sub of subs) {
+        eventBus.unsubscribe(sub.id);
+      }
+    };
+  }
+
+  /** 持久化已注册 webhook 配置到磁盘（原子写，遵守 AGENTS.md 约束） */
+  saveConfig(persistencePath: string): void {
+    const data = JSON.stringify(
+      Array.from(this.webhooks.values()).map((w) => ({
+        id: w.id,
+        url: w.url,
+        events: w.events,
+        secret: w.secret,
+        enabled: w.enabled,
+        headers: w.headers,
+        maxRetries: w.maxRetries,
+        timeoutMs: w.timeoutMs,
+        rateLimitPerMinute: w.rateLimitPerMinute,
+        createdAt: w.createdAt,
+      })),
+      null,
+      2,
+    );
+    atomicWriteFileSync(persistencePath, data);
+  }
+
+  /** 从磁盘加载持久化 webhook 配置（不存在/损坏时静默返回 0） */
+  loadConfig(persistencePath: string): number {
+    try {
+      if (!fs.existsSync(persistencePath)) return 0;
+      const raw = fs.readFileSync(persistencePath, "utf-8");
+      const list = JSON.parse(raw) as Array<WebhookConfig & { createdAt?: number }>;
+      let count = 0;
+      for (const wh of list) {
+        if (wh.id && wh.url && this.register(wh)) count++;
+      }
+      return count;
+    } catch (err) {
+      process.stderr.write(
+        `[WebhookManager] Failed to load config from ${persistencePath}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return 0;
+    }
+  }
+
   // ── Signing ──────────────────────────────────────────────────────────
 
   private sign(payload: string, webhookSecret?: string): string {
