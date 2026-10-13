@@ -46,7 +46,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCir
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, setActiveSecurityLevel } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
@@ -494,9 +494,13 @@ export class EvoClawServer {
 
     const dataDir = path.resolve(__dirname, "..", "..", "..", "data");
 
-    // ── Voice Service (local speech recognition) ──
+    // ── Voice Service (local speech recognition + P2-1 输出侧 TTS/barge-in) ──
     const voiceService = new VoiceService(path.join(dataDir, "voice"));
     this.registry.registerService("voiceService", voiceService);
+    // P2-1 TTS provider + barge-in 会话注册表：缺 key 自动降级静音（不报错），
+    // gateway 的 /api/voice/tts、/api/voice/barge-in 惰性 resolve 这两个服务
+    this.registry.registerService("ttsProvider", createDefaultTTSProvider(process.env));
+    this.registry.registerService("ttsPlaybackRegistry", new TTSPlaybackRegistry());
 
     this.gateway = new GatewayServer(this.registry, this.eventBus);
     this.agentPool = new AgentPoolManager(this.registry, this.eventBus);

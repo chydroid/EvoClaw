@@ -5,6 +5,8 @@ import http from "http";
 import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { Observability } from "@evoclaw/infrastructure";
+import { TTSPlaybackRegistry, createDefaultTTSProvider } from "@evoclaw/infrastructure";
+import type { TTSProvider } from "@evoclaw/infrastructure";
 import type { TokenUsageTracker } from "@evoclaw/agent";
 import type {
   InstallPolicyManager,
@@ -1019,6 +1021,97 @@ export class GatewayServer {
       } catch (err) {
         this.handleError(res, err);
       }
+    });
+
+    // ── P2-1 语音输出侧：流式 TTS + barge-in 打断 ─────────────────────────
+    // TTS 播放会话注册到 TTSPlaybackRegistry；barge-in 按 sessionId 取消该流
+
+    // POST /api/voice/tts — 把文本合成音频，SSE 推 audio chunk 事件
+    // 事件类型: tts_start / tts_chunk / tts_degraded / done / error
+    this.app.post("/api/voice/tts", async (req: any, res: any) => {
+      const body = (req.body || {}) as { text?: string; sessionId?: string };
+      const text = (body.text ?? "").trim();
+      if (!text) {
+        res.status(400).json({ error: "text is required" });
+        return;
+      }
+      const sessionId = body.sessionId || `tts-${Date.now()}`;
+
+      // 惰性获取/创建 provider + 会话注册表（避免构造期缺 env 时崩溃，缺 key 自动降级静音）
+      let ttsProvider = this.registry.resolveService<TTSProvider>("ttsProvider");
+      let ttsRegistry = this.registry.resolveService<TTSPlaybackRegistry>("ttsPlaybackRegistry");
+      if (!ttsProvider || !ttsRegistry) {
+        ttsProvider = ttsProvider ?? createDefaultTTSProvider(process.env);
+        ttsRegistry = ttsRegistry ?? new TTSPlaybackRegistry();
+        try { this.registry.registerService("ttsProvider", ttsProvider); } catch { /* 已注册则忽略 */ }
+        try { this.registry.registerService("ttsPlaybackRegistry", ttsRegistry); } catch { /* 已注册则忽略 */ }
+      }
+
+      // 若该 session 已有活动 TTS 流（前端未先 barge-in），先取消旧流避免叠音
+      if (ttsRegistry.has(sessionId)) ttsRegistry.cancel(sessionId);
+      const controller = ttsRegistry.register(sessionId);
+
+      // SSE 响应头（复用 /api/mcp/stream 的 SSE 惯例）
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.flushHeaders?.();
+      const sendEvent = (event: string, data: Record<string, unknown>) => {
+        try {
+          res.write(`event: ${event}\n`);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch { /* 连接已断开 */ }
+      };
+
+      sendEvent("tts_start", { sessionId, provider: ttsProvider.name, degraded: !ttsProvider.isAvailable() });
+      try {
+        for await (const chunk of ttsProvider.synthesize(text, { signal: controller.signal })) {
+          if (controller.signal.aborted) break;
+          sendEvent(chunk.degraded ? "tts_degraded" : "tts_chunk", {
+            audio: chunk.audio,
+            sampleRate: chunk.sampleRate,
+            textFragment: chunk.textFragment,
+            degraded: chunk.degraded,
+          });
+        }
+        ttsRegistry.complete(sessionId);
+        sendEvent("done", { sessionId });
+      } catch (err) {
+        ttsRegistry.complete(sessionId);
+        const aborted = controller.signal.aborted;
+        sendEvent("error", {
+          sessionId,
+          aborted,
+          message: aborted ? "barge-in" : (err instanceof Error ? err.message : String(err)),
+        });
+      } finally {
+        try { res.end(); } catch { /* 已关闭 */ }
+      }
+    });
+
+    // POST /api/voice/barge-in — 用户开口打断正在播的 TTS 流
+    // 前端检测到用户说话（VAD / Web Speech interim）即调用，按 sessionId 取消对应流
+    this.app.post("/api/voice/barge-in", (req: any, res: any) => {
+      const body = (req.body || {}) as { sessionId?: string; all?: boolean };
+      let ttsRegistry = this.registry.resolveService<TTSPlaybackRegistry>("ttsPlaybackRegistry");
+      if (!ttsRegistry) {
+        ttsRegistry = new TTSPlaybackRegistry();
+        try { this.registry.registerService("ttsPlaybackRegistry", ttsRegistry); } catch { /* 已注册则忽略 */ }
+      }
+      if (body.all) {
+        const cancelled = ttsRegistry.cancelAll();
+        res.json({ cancelled });
+        return;
+      }
+      if (!body.sessionId) {
+        res.status(400).json({ error: "sessionId (or all=true) is required" });
+        return;
+      }
+      const cancelled = ttsRegistry.cancel(body.sessionId);
+      res.json({ cancelled });
     });
 
     // Workboard

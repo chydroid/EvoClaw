@@ -276,6 +276,14 @@ export interface VoiceStatusData {
   lastVerifiedAt?: string;
 }
 
+/** P2-1 流式 TTS 音频 chunk（base64 PCM，经 /api/voice/tts SSE 推送） */
+export interface VoiceTTSChunk {
+  audio: string;
+  sampleRate: number;
+  textFragment: string;
+  degraded: boolean;
+}
+
 export interface VoiceApiResponse {
   config: VoiceConfigData;
   status: VoiceStatusData;
@@ -295,6 +303,70 @@ export const voiceApi = {
   verify: () => post<VoiceVerificationResult>("/api/voice/verify"),
   toggle: (enabled: boolean) => post<{ status: VoiceStatusData }>("/api/voice/toggle", { enabled }),
   reset: () => post<{ status: VoiceStatusData }>("/api/voice/reset"),
+  /** P2-1 流式 TTS：SSE 推 audio chunk（onChunk 每收到一个 chunk 回调；barge-in 时调 onBargeIn） */
+  tts: (text: string, sessionId: string, onChunk: (c: VoiceTTSChunk) => void, onDone?: () => void, onError?: (msg: string, aborted?: boolean) => void) => {
+    // POST + 手动读 SSE 流（fetch 无法用 EventSource 发 POST body）
+    const controller = new AbortController();
+    const body = JSON.stringify({ text, sessionId });
+    (async () => {
+      try {
+        const res = await fetch(`${BASE}/api/voice/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) {
+          onError?.(`TTS request failed: ${res.status}`);
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buf = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          // SSE 帧以空行分隔；逐帧解析 event: / data:
+          let nl: number;
+          while ((nl = buf.indexOf("\n\n")) >= 0) {
+            const frame = buf.slice(0, nl);
+            buf = buf.slice(nl + 2);
+            let event = "message";
+            let dataStr = "";
+            for (const line of frame.split("\n")) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+            }
+            if (!dataStr) continue;
+            let data: Record<string, unknown>;
+            try { data = JSON.parse(dataStr); } catch { continue; }
+            if (event === "tts_chunk" || event === "tts_degraded") {
+              onChunk({
+                audio: String(data.audio ?? ""),
+                sampleRate: Number(data.sampleRate ?? 16000),
+                textFragment: String(data.textFragment ?? ""),
+                degraded: Boolean(data.degraded),
+              });
+            } else if (event === "done") {
+              onDone?.();
+            } else if (event === "error") {
+              onError?.(String(data.message ?? "TTS error"), Boolean(data.aborted));
+            }
+          }
+        }
+        // 正常读完但服务端未发 done（兜底）
+        onDone?.();
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") return; // barge-in/取消不算错误
+        onError?.(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return { cancel: () => controller.abort() };
+  },
+  /** P2-1 barge-in：打断正在播的 TTS 流 */
+  bargeIn: (sessionId?: string, all?: boolean) =>
+    post<{ cancelled: number } | { cancelled: boolean }>("/api/voice/barge-in", all ? { all: true } : { sessionId }),
 };
 
 // ═══════════════════════════════════════════════

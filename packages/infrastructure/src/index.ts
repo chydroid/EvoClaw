@@ -3,6 +3,8 @@ export { ProcessManager } from "./process-manager";
 export { FileSystemManager, atomicWriteFile, atomicReplace, CrossProcessLock } from "./filesystem-manager";
 export { Logger } from "./logger";
 export type { LogLevel, FileLoggingOptions } from "./logger";
+export { OpenAITTSProvider, createDefaultTTSProvider, splitTextIntoFragments, TTSPlaybackRegistry } from "./tts-stream";
+export type { TTSProvider, TTSChunk, TTSPlaybackSession } from "./tts-stream";
 export { RotatingFileAppender, pruneOldRollingLogs } from "./rotating-file-appender";
 export type { RotatingFileAppenderConfig } from "./rotating-file-appender";
 export {
