@@ -336,6 +336,10 @@ export class StabilityMonitor {
   prune(now: Date = new Date()): number {
     let removed = 0;
     const retryCutoff = now.getTime() - this.config.retryWindowMs;
+    const phaseCutoff = now.getTime() - this.config.errorRateWindowMs;
+    const resourceCutoff = now.getTime() - this.config.errorRateWindowMs;
+    const startedCutoff = now.getTime() - this.config.stalledThresholdMs;
+
     for (const [id, list] of this.retryTracker) {
       const kept = list.filter((t) => t.getTime() >= retryCutoff);
       removed += list.length - kept.length;
@@ -345,6 +349,20 @@ export class StabilityMonitor {
         this.retryTracker.set(id, kept);
       }
     }
+
+    for (const [id, list] of this.phaseHistory) {
+      const kept = list.filter((entry) => {
+        const ts = Number(entry.split("@").at(-1) ?? "0");
+        return Number.isFinite(ts) && ts >= phaseCutoff;
+      });
+      removed += list.length - kept.length;
+      if (kept.length === 0) {
+        this.phaseHistory.delete(id);
+      } else {
+        this.phaseHistory.set(id, kept);
+      }
+    }
+
     const errCutoff = now.getTime() - this.config.errorRateWindowMs;
     for (const [id, list] of this.errorEvents) {
       const kept = list.filter((e) => e.at.getTime() >= errCutoff);
@@ -355,6 +373,45 @@ export class StabilityMonitor {
         this.errorEvents.set(id, kept);
       }
     }
+
+    for (const [id, startedAt] of this.startedAt) {
+      if (startedAt.getTime() < startedCutoff) {
+        this.startedAt.delete(id);
+        removed += 1;
+      }
+    }
+
+    for (const [id, samples] of this.resourceSamples) {
+      for (const [metric, list] of samples) {
+        const kept = list.filter((sample) => sample.at.getTime() >= resourceCutoff);
+        removed += list.length - kept.length;
+        if (kept.length === 0) {
+          samples.delete(metric);
+        } else {
+          samples.set(metric, kept);
+        }
+      }
+      if (samples.size === 0) {
+        this.resourceSamples.delete(id);
+        for (const [key] of [...this.resourceBaseline]) {
+          const separatorIndex = key.lastIndexOf("::");
+          if (separatorIndex >= 0 && key.slice(0, separatorIndex) === id) {
+            this.resourceBaseline.delete(key);
+          }
+        }
+      }
+    }
+
+    for (const [key] of [...this.resourceBaseline]) {
+      const separatorIndex = key.lastIndexOf("::");
+      if (separatorIndex >= 0) {
+        const entityId = key.slice(0, separatorIndex);
+        if (!this.resourceSamples.has(entityId)) {
+          this.resourceBaseline.delete(key);
+        }
+      }
+    }
+
     return removed;
   }
 

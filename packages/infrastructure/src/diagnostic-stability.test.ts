@@ -161,6 +161,26 @@ describe("StabilityMonitor", () => {
       expect(result.issue).toBe("none");
     });
 
+    it("应一并清理过期的阶段切换、任务开始和资源样本", () => {
+      const config: Partial<StabilityConfig> = {
+        retryWindowMs: 100,
+        errorRateWindowMs: 100,
+        stalledThresholdMs: 200,
+      };
+      const m = new StabilityMonitor(config);
+      const now = new Date();
+      const old = new Date(now.getTime() - 500);
+      m.recordPhaseTransition("session-1", "init", old);
+      m.recordPhaseTransition("session-1", "auth", old);
+      m.recordStart("session-1", old);
+      m.recordResourceUsage("session-1", "rss", 10, old);
+      m.recordResourceUsage("session-1", "rss", 20, old);
+
+      const removed = m.prune(now);
+      expect(removed).toBeGreaterThan(0);
+      expect(m.assess("session-1", now).issue).toBe("none");
+    });
+
     it("未过期的记录应保留", () => {
       monitor.recordRetry("session-1");
       monitor.recordRetry("session-1");
