@@ -1012,6 +1012,19 @@ export const NO_RESULT_CACHE_TOOLS = new Set([
   "execute_code",
   "run_python",
   "run_node",
+  // 浏览器工具：页面状态是跨调用共享的活对象（当前标签/DOM 随导航与交互变化），
+  // 结果不是 args 的纯函数。评测事故（2026-10-15 browser-eval b05/b07）：
+  // browser_navigate 命中结果缓存 → 导航被跳过执行 → 只读工具（get_text/js_eval）
+  // 继续作用在旧页面上，agent 绕路 shell+fetch 解析站点。
+  "browser_navigate",
+  "browser_get_text",
+  "browser_get_html",
+  "browser_find_elements",
+  "browser_js_eval",
+  "browser_screenshot",
+  "browser_tabs",
+  "browser_submit_form",
+  "browser_fetch_json",
 ]);
 
 /**

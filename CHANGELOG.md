@@ -9,6 +9,48 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.7] - 2026-10-15
+
+**10 任务浏览器评测驱动的四项 browser_* 工具缺陷修复：selector 匹配改基于原始 HTML、只读导航镜像到 Playwright、browser_tabs 切换到真实标签后端、浏览器工具加入结果缓存豁免**
+
+以 10 个复杂浏览器任务（引用统计 / js_eval / 审批链路 / 表单提交 / 双标签 /
+截图 / 双页标签计数 / 作者页 / 组合流水线 / 同会话接力）对 HTTP API 做
+端到端评测（驱动 `/tmp/evoclaw-eval/evalbrowser.mjs`），暴露四个直接影响
+任务成功率的缺陷并逐一修复。
+
+### 根因与改动
+
+1. **findElements/getText 的 selector 匹配建立在去标签的 bodyPreview 上**（b01：
+   `div.quote` 计数恒为 0、`.quote .text` 取空）：`BrowserController.navigate`
+   只保存剥离标签的预览文本，`findElements` 的 `.`/复合选择器分支在纯文本上
+   正则匹配永远失败。修复：`NavigationResult` 新增 `rawHtml`（截断至 200KB，
+   防 LLM 上下文膨胀），`findElements`/`getText` 改为在原始标签上匹配
+   （`packages/infrastructure/src/browser-controller.ts`；无 rawHtml 时保留
+   旧退化路径）。工具结果中剥离 rawHtml 不灌给模型（browser-tools.ts）。
+2. **两套浏览器后端状态独立，navigate 后 js_eval/click 落在旧页面**（b02/b08：
+   `browser_js_eval` 作用在 example.com/about:blank 上而 controller 已导航到
+   别处）：只读工具走 BrowserController（HTTP 抓取）、写/交互工具走
+   PlaywrightBrowser（真实 headless Chromium），镜像缺失。修复：
+   `browser_navigate` 成功后将导航镜像到 Playwright 活动标签（失败仅
+   console.warn 不阻断只读结果）；`PlaywrightBrowser.listTabs` 改 async 并
+   附带 title 快照。
+3. **browser_tabs 列出的是 controller 的假标签而非真实标签**（b05：两次
+   navigate 后仅报 1 个陈旧 tab）：改为经 pwBrowser 路由
+   （list/new/switch/close），无 pwBrowser 时回退 controller。
+4. **browser_navigate 命中工具结果缓存 → 导航被跳过 → 后续只读工具继续作用
+   在旧页面**（b07：日志 `Cache hit for browser_navigate`，标签计数与页面
+   状态错位）：`NO_RESULT_CACHE_TOOLS` 扩展 9 个 browser_* 工具——页面是
+   跨调用共享的活对象，结果不是 args 的纯函数（`packages/agent/src/llm-caller.ts`）。
+
+### 验证
+
+- 新增 `browser-controller.test.ts` 6 条（rawHtml selector 匹配、class/复合
+  选择器、getText、legacy 退化、No page loaded 抛错）+ llm-caller 缓存豁免
+  测试；全量 `pnpm build → pnpm typecheck → pnpm test` 通过（6241 passed）。
+- 评测复测（含 driver 侧两处 ground-truth 修正：quotes 页 2 首条引用、
+  github /zen 为轮换短句故只断言「短小单行纯文本」）：**10/10 通过**，
+  总耗时 ~14min；b03 审批链路真实触发（pending → approve → 续跑落盘）。
+
 ## [0.92.6] - 2026-10-15
 
 **完成声明对账新增「写声明证据」分支：修复只读工具跑过就放行伪造写操作的情况**

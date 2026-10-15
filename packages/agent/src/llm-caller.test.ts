@@ -270,6 +270,21 @@ describe("lookupCachedToolResult — 副作用工具豁免", () => {
     }
   });
 
+  it("NO_RESULT_CACHE_TOOLS 覆盖浏览器工具（页面状态是活对象，结果非 args 纯函数）", () => {
+    // 评测事故（2026-10-15 browser-eval b05/b07）：browser_navigate 命中结果缓存
+    // → 导航被跳过 → js_eval/get_text 作用在旧页面上。
+    for (const t of ["browser_navigate", "browser_get_text", "browser_js_eval", "browser_tabs", "browser_screenshot"]) {
+      expect(NO_RESULT_CACHE_TOOLS.has(t)).toBe(true);
+    }
+    const r = lookupCachedToolResult(
+      new Map([["browser_navigate:{\"url\":\"https://x/\"}", { result: "{}", timestamp: Date.now() }]]),
+      "browser_navigate",
+      { url: "https://x/" },
+      300_000
+    );
+    expect(r).toBeNull();
+  });
+
   it("shell_exec 即使缓存命中也不复用（结果非 args 纯函数）", () => {
     const r = lookupCachedToolResult(cache, "shell_exec", { command: "node x.js add 3 4" }, 300_000);
     expect(r).toBeNull();

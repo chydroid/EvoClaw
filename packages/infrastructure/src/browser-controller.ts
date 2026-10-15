@@ -21,6 +21,9 @@ export interface NavigationResult {
   title: string;
   status: number;
   bodyPreview: string;
+  /** 完整原始 HTML。findElements/getText 的 selector 匹配必须基于原始标签，
+   *  bodyPreview 是剥掉标签后的预览文本，在其上做 class/id/tag 匹配恒为 0。 */
+  rawHtml: string;
   links: Array<{ text: string; href: string }>;
   forms: Array<{ action: string; method: string; fields: string[] }>;
   error?: string;
@@ -85,6 +88,7 @@ export class BrowserController {
           title: "",
           status: 0,
           bodyPreview: "",
+          rawHtml: "",
           links: [],
           forms: [],
           error: `Blocked by SSRF protection: ${ssrfCheck.reason}`,
@@ -127,6 +131,7 @@ export class BrowserController {
             title: "",
             status: finalResponse.status,
             bodyPreview: "",
+            rawHtml: "",
             links: [],
             forms: [],
             error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`,
@@ -163,6 +168,9 @@ export class BrowserController {
         title,
         status: finalResponse.status,
         bodyPreview,
+        // 上限 200KB：覆盖绝大多数页面的完整 HTML（供 findElements/getText 匹配），
+        // 同时避免超大页面让工具结果 JSON 膨胀进 LLM 上下文
+        rawHtml: body.slice(0, 200_000),
         links,
         forms,
       };
@@ -185,6 +193,7 @@ export class BrowserController {
         title: "",
         status: 0,
         bodyPreview: "",
+        rawHtml: "",
         links: [],
         forms: [],
         error: message,
@@ -201,27 +210,63 @@ export class BrowserController {
   async findElements(selector: string): Promise<BrowserElement[]> {
     if (!this.currentPage) throw new Error("No page loaded. Call navigate() first.");
 
-    const result = this.currentPage;
-    const body = result.bodyPreview;
+    // 回归（2026-10-15 browser-eval b01）：此前在 bodyPreview（剥掉标签后的预览文本）上
+    // 做 selector 匹配，class="x"/id="x"/<tag> 模式恒不命中 → count 恒为 0，
+    // 只读浏览器工具被彻底废掉，agent 只能绕过浏览器去 shell+fetch。
+    // 现在优先在原始 HTML 上匹配；未加载 rawHtml 时退化为预览文本（兼容旧调用方）。
+    const source = this.currentPage.rawHtml || this.currentPage.bodyPreview;
+    const html = source.includes("<") ? source : "";
 
     const elements: BrowserElement[] = [];
 
     if (selector.startsWith(".")) {
       const className = selector.slice(1);
-      const regex = new RegExp(`class=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["']`, "gi");
-      const matches = body.match(regex);
-      if (matches) {
-        elements.push({
-          tag: "element",
-          text: `Elements with class "${className}"`,
-          attributes: { class: className },
-          selector,
-        });
+      // 带标签名的类选择器（如 span.text）与纯类选择器（.text）分别匹配
+      const classRe = `class=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["']`;
+      if (html) {
+        // 提取每个含该 class 的开标签及其直接文本（最多 20 条）
+        const openRe = new RegExp(`<([a-zA-Z][\\w-]*)\\b[^>]*${classRe}[^>]*>`, "gi");
+        let m;
+        while ((m = openRe.exec(html)) !== null && elements.length < 20) {
+          const innerTag = m[1];
+          const closeRe = new RegExp(`</${escapeRegExp(innerTag)}\\s*>`, "i");
+          const rest = html.slice(openRe.lastIndex);
+          const closeIdx = rest.search(closeRe);
+          const inner = closeIdx >= 0 ? rest.slice(0, closeIdx) : "";
+          const text = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+          elements.push({
+            tag: innerTag,
+            text: text || `Element with class "${className}"`,
+            attributes: { class: className },
+            selector,
+          });
+        }
+        if (elements.length === 0) {
+          const matches = html.match(new RegExp(classRe, "gi"));
+          if (matches?.length) {
+            elements.push({
+              tag: "element",
+              text: `Elements with class "${className}"`,
+              attributes: { class: className },
+              selector,
+            });
+          }
+        }
+      } else {
+        const matches = source.match(new RegExp(classRe, "gi"));
+        if (matches) {
+          elements.push({
+            tag: "element",
+            text: `Elements with class "${className}"`,
+            attributes: { class: className },
+            selector,
+          });
+        }
       }
     } else if (selector.startsWith("#")) {
       const id = selector.slice(1);
       const regex = new RegExp(`id=["']${escapeRegExp(id)}["']`, "gi");
-      const matches = body.match(regex);
+      const matches = (html || source).match(regex);
       if (matches) {
         elements.push({
           tag: "element",
@@ -231,17 +276,58 @@ export class BrowserController {
         });
       }
     } else {
-      const tagRegex = new RegExp(`<${escapeRegExp(selector)}[^>]*>.*?</${escapeRegExp(selector)}>|<${escapeRegExp(selector)}[^>]*/>`, "gis");
-      const matches = body.match(tagRegex);
-      if (matches) {
-        for (const match of matches) {
-          const textMatch = match.match(/>([^<]*)</);
+      // 标签计数：开标签出现次数减去自闭合标签数，即真实元素个数。
+      // 支持复合选择器 tag / tag.class（如 div.quote）——旧代码只处理裸标签，
+      // "div.quote" 会被 escapeRegExp 后当成字面字符串在 HTML 里找，恒 0 命中。
+      const compound = selector.match(/^([a-zA-Z][\w-]*)(?:\.([\w-]+))?$/);
+      const tag = compound ? compound[1] : selector;
+      const tagClass = compound?.[2];
+
+      if (html) {
+        // 开标签计数（复合选择器 tag.class 需带 class 属性匹配；裸标签匹配全部开标签）
+        const openRe = tagClass
+          ? new RegExp(`<${escapeRegExp(tag)}\\b[^>]*class=["'][^"']*\\b${escapeRegExp(tagClass)}\\b[^"']*["'][^>]*>`, "gi")
+          : new RegExp(`<${escapeRegExp(tag)}\\b[^>]*>`, "gi");
+        const selfClosedRe = new RegExp(`<${escapeRegExp(tag)}\\b[^>]*\\/>`, "gi");
+        const count = Math.max(0, (html.match(openRe) || []).length - (html.match(selfClosedRe) || []).length);
+
+        // 提取每个匹配元素的直接文本（剥掉嵌套标签），最多 20 条。
+        // 负向前瞻 (?![^>]*\/>) 排除自闭合开标签；嵌套同名标签取最内层对。
+        const classRe = tagClass
+          ? `class=["'][^"']*\\b${escapeRegExp(tagClass)}\\b[^"']*["']`
+          : "";
+        const itemRe = new RegExp(
+          `<${escapeRegExp(tag)}\\b(?![^>]*\\/)[^>]*>([\\s\\S]*?)</${escapeRegExp(tag)}\\s*>`,
+          "gi"
+        );
+        let m;
+        while ((m = itemRe.exec(html)) !== null && elements.length < 20) {
+          const head = m[0].slice(0, m[0].indexOf(">") + 1);
+          if (tagClass && !head.match(new RegExp(classRe, "i"))) continue;
+          const text = m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+          elements.push({ tag: selector, text, attributes: {}, selector });
+        }
+        if (elements.length === 0 && count > 0) {
           elements.push({
             tag: selector,
-            text: textMatch ? textMatch[1].trim().slice(0, 200) : "",
-            attributes: {},
+            text: `${count} elements (tag match)`,
+            attributes: { count: String(count) },
             selector,
           });
+        }
+      } else {
+        const tagRegex = new RegExp(`<${escapeRegExp(selector)}[^>]*>.*?</${escapeRegExp(selector)}>|<${escapeRegExp(selector)}[^>]*/>`, "gis");
+        const matches = source.match(tagRegex);
+        if (matches) {
+          for (const match of matches) {
+            const textMatch = match.match(/>([^<]*)</);
+            elements.push({
+              tag: selector,
+              text: textMatch ? textMatch[1].trim().slice(0, 200) : "",
+              attributes: {},
+              selector,
+            });
+          }
         }
       }
     }
@@ -267,7 +353,7 @@ export class BrowserController {
       // 安全：SSRF 校验，防止表单提交到内网/元数据端点
       const ssrfCheck = await this.ssrfProtection.checkURL(url);
       if (!ssrfCheck.allowed) {
-        return { success: false, url, title: "", status: 0, bodyPreview: "", links: [], forms: [], error: `Blocked by SSRF protection: ${ssrfCheck.reason}` };
+        return { success: false, url, title: "", status: 0, bodyPreview: "", rawHtml: "", links: [], forms: [], error: `Blocked by SSRF protection: ${ssrfCheck.reason}` };
       }
 
       const headers: Record<string, string> = {
@@ -309,6 +395,7 @@ export class BrowserController {
             title: "",
             status: response.status,
             bodyPreview: "",
+            rawHtml: "",
             links: [],
             forms: [],
             error: `Blocked by SSRF protection on redirect: ${redirectSsrf.reason}`,
@@ -331,6 +418,7 @@ export class BrowserController {
         title,
         status: response.status,
         bodyPreview,
+        rawHtml: body.slice(0, 200_000),
         links: this.extractLinks(body),
         forms: this.extractForms(body),
       };
@@ -352,6 +440,7 @@ export class BrowserController {
         title: "",
         status: 0,
         bodyPreview: "",
+        rawHtml: "",
         links: [],
         forms: [],
         error: message,
@@ -367,6 +456,7 @@ export class BrowserController {
       title: "",
       status: 0,
       bodyPreview: "",
+      rawHtml: "",
       links: [],
       forms: [],
     });

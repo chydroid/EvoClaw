@@ -744,12 +744,18 @@ export class PlaywrightBrowser {
     }
   }
 
-  listTabs(): Array<{ id: string; url: string; active: boolean }> {
-    return [...this.tabs.values()].map((t) => ({
-      id: t.id,
-      url: t.url,
-      active: t.id === this.activeTabId,
-    }));
+  /**
+   * 列出所有标签页。title 惰性读取 page.title()（可能为空串），
+   * 结果中的 title 字段为「读取时点的快照」，调用方自行处理刷新。
+   */
+  async listTabs(): Promise<Array<{ id: string; url: string; title: string; active: boolean }>> {
+    const out: Array<{ id: string; url: string; title: string; active: boolean }> = [];
+    for (const t of this.tabs.values()) {
+      let title = "";
+      try { title = await t.page.title(); } catch { /* 标签页可能已销毁 */ }
+      out.push({ id: t.id, url: t.url, title, active: t.id === this.activeTabId });
+    }
+    return out;
   }
 
   async findElements(selector: string): Promise<

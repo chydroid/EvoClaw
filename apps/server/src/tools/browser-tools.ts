@@ -161,7 +161,22 @@ export function registerBrowserTools(
       }
       const gate = await requestApproval("browser_navigate", url, { description: "访问网页URL" });
       if (gate) return gate.result;
-      return await browser.navigate(url);
+      const navResult = await browser.navigate(url);
+      // 回归（2026-10-15 browser-eval）：只读类工具走 BrowserController（HTTP 抓取），
+      // 而 browser_js_eval/click/fill_form 走 PlaywrightBrowser。两者状态独立，
+      // 模型「navigate 后 js_eval」会得到 Playwright 侧的 "No active page"。
+      // 这里把只读导航也镜像到 Playwright 活动标签（首次调用会懒启动浏览器；
+      // 启动/镜像失败不阻断只读结果返回）。
+      if (navResult.success && pwBrowser) {
+        try {
+          await pwBrowser.navigate(url);
+        } catch (err) {
+          console.warn(`[browser-tools] mirror navigate to playwright failed:`, err instanceof Error ? err.message : String(err));
+        }
+      }
+      // rawHtml 仅供内部 findElements/getText 匹配，不进工具结果（避免 200KB 灌进 LLM 上下文）
+      const { rawHtml: _raw, ...publicResult } = navResult;
+      return publicResult;
     }
   );
 
@@ -293,32 +308,43 @@ export function registerBrowserTools(
       },
     },
     async (params: Record<string, unknown>) => {
+      touchBrowserSession();
       const action = String(params.action || "list");
       const tabId = String(params.tabId || "");
 
+      // 标签管理统一走 PlaywrightBrowser（真实标签页）：
+      // browser_navigate 的镜像导航让只读浏览也活在 Playwright 侧，
+      // 若此处仍列 BrowserController 的旧 tabs，会漏掉后续导航（评测 b05：
+      // navigate quotes → navigate example，list 只返回 1 个旧 tab）。
       if (action === "list") {
-        return { tabs: browser.listTabs(), activeTab: (browser.getCurrentPage()?.url || "") };
+        try {
+          const tabs = (await pwBrowser.listTabs()).map((t) => ({ ...t, title: t.title || t.url }));
+          return { tabs, activeTab: tabs.find((t) => t.active)?.url || "" };
+        } catch {
+          // 浏览器未启动：退回只读控制器记录（兼容旧会话）
+          return { tabs: browser.listTabs(), activeTab: (browser.getCurrentPage()?.url || "") };
+        }
       }
       if (action === "new") {
         const sessionInfo = browserSessions.get("default");
         if (sessionInfo && sessionInfo.tabCount >= MAX_TABS_PER_SESSION) {
           return { success: false, error: `Maximum tab limit (${MAX_TABS_PER_SESSION}) reached. Close an existing tab before opening a new one.`, tabCount: sessionInfo.tabCount };
         }
-        browser.newTab(tabId || `tab-${Date.now()}`);
+        const newTabId = await pwBrowser.newTab(tabId || undefined);
         if (sessionInfo) sessionInfo.tabCount++;
-        return { success: true, action: "new", tabId };
+        return { success: true, action: "new", tabId: newTabId };
       }
       if (action === "switch") {
-        const ok = browser.switchTab(tabId);
-        return { success: ok, action: "switch", tabId };
+        if (!tabId) return { success: false, error: "tabId is required for switch" };
+        await pwBrowser.switchTab(tabId);
+        return { success: true, action: "switch", tabId };
       }
       if (action === "close") {
-        const ok = browser.closeTab(tabId);
-        if (ok) {
-          const sessionInfo = browserSessions.get("default");
-          if (sessionInfo) sessionInfo.tabCount = Math.max(0, sessionInfo.tabCount - 1);
-        }
-        return { success: ok, action: "close", tabId };
+        if (!tabId) return { success: false, error: "tabId is required for close" };
+        await pwBrowser.closeTab(tabId);
+        const sessionInfo = browserSessions.get("default");
+        if (sessionInfo) sessionInfo.tabCount = Math.max(0, sessionInfo.tabCount - 1);
+        return { success: true, action: "close", tabId };
       }
       return { success: false, error: `Unknown action: ${action}` };
     }
