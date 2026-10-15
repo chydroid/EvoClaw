@@ -58,7 +58,7 @@ jobs:
           context: .
           push: true
           # one attempt ref：tag + commit sha 共同标识本次发布尝试
-          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}-test.${{ github.sha }}
+          tags: ghcr.io/chydroid/evoclaw:${{ github.ref_name }}-test.${{ github.sha }}  # ghcr 仓库名必须小写（chydroid/EvoClaw → chydroid/evoclaw）
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=evoclaw-release-test
@@ -71,7 +71,8 @@ jobs:
           CI_REPO: ${{ github.repository }}
         run: |
           set -e
-          TEST_IMAGE="ghcr.io/${CI_REPO}:${TAG_VERSION}-test.${CI_SHA}"
+          CI_REPO_LC="$(echo "${CI_REPO}" | tr '[:upper:]' '[:lower:]')" # ghcr 仓库名必须小写
+          TEST_IMAGE="ghcr.io/${CI_REPO_LC}:${TAG_VERSION}-test.${CI_SHA}"
           docker pull "$TEST_IMAGE"
           docker run -d --name evoclaw-smoke -p 27788:27788 "$TEST_IMAGE"
           # 镜像 HEALTHCHECK start-period=30s，给 120s 轮询窗口
@@ -139,8 +140,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/chydroid/evoclaw:${{ github.ref_name }}
+            ghcr.io/chydroid/evoclaw:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=evoclaw
@@ -162,6 +163,8 @@ jobs:
         run: |
           set -e
           mkdir -p logs/release
+          CI_REPO_LC="$(echo "${CI_REPO}" | tr '[:upper:]' '[:lower:]')"
+          export CI_REPO_LC
           TEST_DIGEST="$(cat "logs/release/digest-${TEST_DIGEST_FILE}.txt" 2>/dev/null || echo unknown)"
           export TEST_DIGEST
           node -e '
@@ -170,9 +173,9 @@ jobs:
               attemptRef: process.env.TAG_VERSION,
               commitSha: process.env.CI_SHA,
               version: process.env.TAG_VERSION,
-              stableImage: "ghcr.io/" + process.env.CI_REPO + ":" + process.env.TAG_VERSION,
+              stableImage: "ghcr.io/" + process.env.CI_REPO_LC + ":" + process.env.TAG_VERSION,
               stableDigest: process.env.STABLE_DIGEST,
-              testImage: "ghcr.io/" + process.env.CI_REPO + ":" + process.env.TAG_VERSION + "-test." + process.env.CI_SHA,
+              testImage: "ghcr.io/" + process.env.CI_REPO_LC + ":" + process.env.TAG_VERSION + "-test." + process.env.CI_SHA,
               testDigest: process.env.TEST_DIGEST,
               testResults: { health: "pass" },
               publishedAt: new Date().toISOString(),
