@@ -128,10 +128,16 @@ export class LocalSandboxBackend implements ISandboxBackend {
     options?: SandboxScriptOptions,
   ): Promise<SandboxResult> {
     const interpreter = options?.interpreter ?? "node";
+    // node 解释器下按脚本模块形态选扩展名：
+    // 出现 `require(`（CommonJS 用法）→ .cjs（ESM 作用域里 require 不存在，
+    // 评测事故 2026-10-15：模型写 require('fs') 被当 ESM 跑 → ReferenceError 死循环）。
+    // 其余默认 .mjs（import 语法 / 纯计算脚本均可用，顶层 await 可用）。
+    const cjsStyle = /\brequire\s*\(/.test(script);
+    const ext = interpreter === "node" ? (cjsStyle ? "cjs" : "mjs") : "py";
     // 将脚本写入临时文件，通过解释器执行
     const tmpFile = path.join(
       options?.workdir ?? process.cwd(),
-      `.sandbox-script-${randomUUID()}.${interpreter === "node" ? "mjs" : "py"}`,
+      `.sandbox-script-${randomUUID()}.${ext}`,
     );
     try {
       fs.writeFileSync(tmpFile, script, { encoding: "utf-8" });

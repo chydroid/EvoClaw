@@ -174,7 +174,7 @@ export class SandboxManager {
   async executeScript(
     sessionId: string,
     script: string,
-    options?: { interpreter?: string; timeoutMs?: number }
+    options?: { interpreter?: string; timeoutMs?: number; workdir?: string }
   ): Promise<SandboxResult> {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -211,6 +211,7 @@ export class SandboxManager {
     } else if (session.backend === "process") {
       return this.localBackend.executeScript(script, {
         timeoutMs: options?.timeoutMs,
+        workdir: options?.workdir,
         interpreter: interpreter === "python" || interpreter === "python3" ? interpreter : "node",
         policy: session.policy,
       });
@@ -242,12 +243,16 @@ export class SandboxManager {
   }
 
   async listBackends(): Promise<Array<{ type: SandboxBackendType; available: boolean }>> {
-    const dockerAvailable = await this.dockerSandbox.isAvailable();
-
+    const [dockerAvailable, processAvailable] = await Promise.all([
+      this.dockerSandbox.isAvailable(),
+      this.localBackend.isAvailable(),
+    ]);
+    // 2026-10-15 P3-5：ssh 需配置才可用——原恒 true 会让调用方误判后端存在
+    const sshAvailable = process.env.SANDBOX_SSH_HOST ? true : false;
     return [
       { type: "docker", available: dockerAvailable },
-      { type: "ssh", available: true },
-      { type: "process", available: true },
+      { type: "ssh", available: sshAvailable },
+      { type: "process", available: processAvailable },
     ];
   }
 

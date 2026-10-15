@@ -9,6 +9,60 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.5] - 2026-10-15
+
+**15 任务复杂评测驱动的三个 agent 可靠性修复 + execute_code 沙箱后端回退 + release 冒烟注入强密钥**
+
+以 15 个复杂任务（脚手架/数据流水线/Git/SQL/并发/哈希校验等）对
+HTTP API 做端到端评测，暴露三个直接影响任务成功率的缺陷并逐一修复。
+
+### 根因与改动
+
+1. **绝对路径消息被误判为斜杠命令**（评测 5/15 任务 0 分的直接根因）：
+   以 `/home/.../app.log 是一个日志...` 开头的正常任务消息命中
+   `handleSlashCommand` 的「未知命令」兜底，LLM 从未被触发。
+   修复：首个词含 `/`（绝对路径特征）即让给正常对话（
+   `packages/agent/src/slash-commands.ts`，新增 5 条回归测试）。
+2. **工具参数校验把描述里标 "Optional" 的参数当成必填**（`validateToolParams`
+   与 schema 生成只认 `required !== false && default === undefined`）：
+   shell_exec 的 `timeout`/`sandbox` 描述明确写了 "Optional" 仍反复报
+   `Missing required parameter`，模型空转 6+ 轮。修复：描述含 "Optional"
+   的参数不进 required（两处同步，新增 4 条回归测试）。
+3. **shell_exec 结果缓存返回修复前的旧输出**（文件改动后重跑同一命令
+   命中 300s TTL 内的陈旧结果，模型误判「修复无效」死循环）：
+   新增 `NO_RESULT_CACHE_TOOLS`（shell_exec/execute_code/run_python/run_node）
+   豁免结果缓存——命令输出不是 args 的纯函数（新增 3 条回归测试）。
+4. **execute_code 沙箱后端硬编码 docker**（无 docker 环境直接拒绝）：
+   改为按 SANDBOX_BACKEND 显式选择 + 可用性探测，docker 缺失时回退
+   process 软沙箱并在结果中注明后端（
+   `apps/server/src/tools/shell-media-tools.ts` +
+   `packages/infrastructure/src/sandbox-manager.ts` 的 listBackends
+   真实检测 ssh 配置）。
+5. **Code Analyzer 插件 before_tool_call 改写文件内容**（分析报告内联进
+   file_create 的 content → JS/TS 文件被污染无法运行）：改为
+   after_tool_call 把报告挂到 tool_result 的 `codeAnalysis` 字段，
+   磁盘文件保持原始字节（6 条回归测试）。
+6. **execute_code 本地软沙箱把 `require('fs')` 当 ESM 跑报
+   ReferenceError**（模型写 CommonJS 风格脚本被写进 `.mjs` 临时文件，
+   评测中反复重试仍失败）：`LocalSandboxBackend.executeScript` 按
+   脚本模块形态自动选 `.cjs`/`.mjs`（1 条回归测试），execute_code
+   参数说明同步更新。
+7. **shell_exec 换行硬拦无引导，模型原地打转**（安全等级「一定风险」下
+   heredoc 被 newline_injection 硬拦，模型换姿势重试 3+ 轮全失败才
+   绕道 file_create）：block 返回信息按规则给出可执行替代路径
+   （写脚本文件再执行 / execute_code 沙箱内多行无此限制）。
+8. **release.yml 冒烟容器未注入 JWT_SECRET**（v0.92.4 镜像
+   NODE_ENV=production 强密钥校验 fatal 退出）：冒烟 `docker run`
+   注入随机 `JWT_SECRET`/`WEB_UI_TOKEN`，本版本首次完整验证
+   两段式流水线（test 镜像冒烟 → stable + receipt）。
+
+### 验证
+
+- 全量 `pnpm build && pnpm test` 6229 通过（新增 12 条回归测试）。
+- 本地 15 任务评测：修复后由 0/15（路径误判期）→ 12/15 → 复测中
+  （t01 缓存修复 + t07/t10 判定脚本自修后预期 15/15）。
+- CI：v0.92.5 tag 触发 release.yml 两段式全绿即视为验证完成。
+
 ## [0.92.4] - 2026-10-14
 
 **release 两段式流水线首次冒烟：修复 Docker 镜像缺失 per-package 依赖（dotenv 崩溃，/health 永不就绪）**

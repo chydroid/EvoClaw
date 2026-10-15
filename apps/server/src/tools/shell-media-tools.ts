@@ -374,12 +374,18 @@ export function registerShellMediaTools(
       // （严格档 critical 硬拦、一般档 critical 走审批、风险档仅拦不可逆操作）。
       const verdict = decideShellCommand(getActiveSecurityPolicy(), risk);
       if (verdict === "block") {
+        // 引导：换行/命令替换被硬拦后模型容易原地打转（历史评测事故：
+        // 多次尝试 heredoc 均被拦）。给出可执行替代路径——把多行脚本
+        // 写成文件再执行，或用 execute_code 工具（沙箱内无此限制）。
+        const hint = risk.rule === "newline_injection"
+          ? " 多行脚本请改用 file_create 写成 .py/.js 文件后用 shell_exec 执行文件，或直接用 execute_code 工具执行（沙箱内支持多行代码）。"
+          : "";
         return {
           success: false,
           error:
             `Command blocked by「${getActiveSecurityPolicy().label}」安全等级: ` +
             `${risk.reason ?? "命中高危规则"} (rule=${risk.rule ?? "unknown"})。` +
-            `如需放开，请到「安全 → 总体安全」调整等级。`,
+            `如需放开，请到「安全 → 总体安全」调整等级。` + hint,
           command,
           // 始终回传 cwd：模型需要知道命令在哪个目录执行，
           // 否则只能靠猜来写相对路径（历史上因此拼出重复前缀）。
@@ -433,8 +439,10 @@ export function registerShellMediaTools(
       // 现在统一由 assessShellCommand() + decideShellCommand() 裁决：
       // 规则更全（整盘/根目录/注入/关机/磁盘写入…），消息带规则名、原因与当前安全等级。
 
-      // ── 沙箱模式：通过 LocalSandboxBackend 执行，应用限制性 SandboxPolicy ──
-      // 硬隔离（网络/子进程阻断）需 docker 后端；本地后端强制 timeout/memory/path。
+      // ── 沙箱模式：经 SandboxManager 的 process 会话执行（P3-5 去旁路 2026-10-15）──
+      // 旧实现旁路 manager 直连 new LocalSandboxBackend()：会话不复用、策略不一致、
+      // 且与 execute_code 的沙箱语义分叉。现在统一走 manager（会话创建/销毁 +
+      // 策略贯通）；manager 不可用时才回退旧旁路，保证行为不回退。
       if (params.sandbox === true) {
         const SANDBOX_POLICY: SandboxPolicy = {
           allowNetwork: false,
@@ -445,10 +453,41 @@ export function registerShellMediaTools(
           allowedHosts: [],
           allowedPaths: [cwd],
         };
-        const backend = new LocalSandboxBackend();
         const shellWrap = process.platform === "win32"
           ? [process.env.ComSpec || "cmd.exe", "/c", effectiveCommand]
           : ["/bin/bash", "-c", effectiveCommand];
+        let managerRouted = false;
+        if (sandboxManager) {
+          try {
+            const session = await sandboxManager.createSession({
+              backend: "process",
+              timeoutMs: timeoutSec * 1000,
+              policy: SANDBOX_POLICY,
+            });
+            const result = await sandboxManager.execute(session.id, shellWrap, {
+              timeoutMs: timeoutSec * 1000,
+              workdir: cwd,
+              maxOutputBytes: 5 * 1024 * 1024,
+            });
+            await sandboxManager.destroySession(session.id);
+            managerRouted = true;
+            return {
+              success: result.success,
+              output: result.stdout.slice(0, 50000),
+              stderr: result.stderr.slice(0, 5000) || undefined,
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+              error: result.error,
+              sandboxed: true,
+              backend: "process-manager",
+              command,
+            };
+          } catch (err) {
+            // manager 会话失败 → 回退旧旁路（LocalSandboxBackend 直连）
+            process.stderr.write(`[shell_exec] manager-routed sandbox failed, falling back to LocalSandboxBackend: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+        }
+        const backend = new LocalSandboxBackend();
         try {
           const result = await backend.execute(shellWrap, {
             timeoutMs: timeoutSec * 1000,
@@ -465,6 +504,7 @@ export function registerShellMediaTools(
             timedOut: result.timedOut,
             error: result.error,
             sandboxed: true,
+            backend: managerRouted ? "process-manager" : "process-legacy",
             command,
           };
         } catch (err) {
@@ -939,18 +979,30 @@ except Exception as e:
   // 返回明确错误而非静默降级到宿主机执行。
   // 自动管理会话生命周期：首次调用创建会话，后续复用；空闲 10 分钟后自动销毁。
   const sandboxManager = registry?.resolveService<{
-    createSession(config: { backend: "docker" | "ssh"; timeoutMs?: number }): Promise<{ id: string }>;
+    createSession(config: {
+      backend: "docker" | "ssh" | "process";
+      timeoutMs?: number;
+      /** P3-5：process 软沙箱会话携带 SandboxPolicy（尽力执行） */
+      policy?: SandboxPolicy;
+    }): Promise<{ id: string }>;
     executeScript(
       sessionId: string,
       script: string,
       options?: { interpreter?: string; timeoutMs?: number }
     ): Promise<{ success: boolean; exitCode: number; stdout: string; stderr: string; durationMs: number; timedOut: boolean; error?: string }>;
+    /** P3-5 去旁路：shell_exec.sandbox 经 manager 会话执行 */
+    execute(
+      sessionId: string,
+      command: string[],
+      options?: { timeoutMs?: number; workdir?: string; maxOutputBytes?: number }
+    ): Promise<{ success: boolean; exitCode: number; stdout: string; stderr: string; durationMs: number; timedOut: boolean; error?: string }>;
     destroySession(sessionId: string): Promise<void>;
     listBackends(): Promise<Array<{ type: string; available: boolean }>>;
   }>("sandboxManager");
 
-  // 沙箱会话缓存：executor 进程内复用同一个 docker 会话
+  // 沙箱会话缓存：executor 进程内复用同一个沙箱会话（P3-5：后端可配置，docker 缺失时降级 process）
   let sandboxSessionId: string | null = null;
+  let sandboxSessionBackend: "docker" | "ssh" | "process" | null = null;
   let sandboxSessionCreatedAt = 0;
   const SANDBOX_SESSION_TTL_MS = 10 * 60 * 1000; // 10 分钟空闲后销毁
   // 会话创建互斥锁：串行化会话创建，防止并发调用各自创建会话产生孤儿
@@ -1091,8 +1143,9 @@ except Exception as e:
         code: {
           type: "string",
           description:
-            "The code to execute. For Python: 'print(\"hello\")'. For Node.js: plain ESM script, or use " +
-            "tools.call(name, params) when programmatic=true to invoke other tools from within the script.",
+            "The code to execute. For Python: 'print(\"hello\")'. For Node.js: plain script — " +
+            "CommonJS (require) 与 ESM (import) 均可，模块形态自动识别（本地软沙箱下自动选 .cjs/.mjs 临时文件）。 " +
+            "Use tools.call(name, params) when programmatic=true to invoke other tools from within the script.",
         },
         language: {
           type: "string",
@@ -1339,38 +1392,76 @@ except Exception as e:
       const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "30"), 10) || 30, 1), 120);
 
       try {
-        // 检查 Docker 后端是否可用
+        // 后端选择（P3-5 落地 2026-10-15）：显式 SANDBOX_BACKEND 配置 → docker（可用时）
+        // → process 软沙箱降级。缺 docker 不再硬报错，改走本地软沙箱并在结果里
+        // 标注 backend（弱隔离提示，走既有 SandboxPolicy）。工具结果属
+        // prompt-cache 不敏感面（元数据，非工具集本身），无需延迟失效。
         const backends = await sandboxManager.listBackends();
-        const dockerAvailable = backends.some((b) => b.type === "docker" && b.available);
-        if (!dockerAvailable) {
+        const explicit = (process.env.SANDBOX_BACKEND || "").trim().toLowerCase();
+        const pick = (type: "docker" | "ssh" | "process") =>
+          backends.some((b) => b.type === type && b.available);
+        let chosen: "docker" | "ssh" | "process";
+        if (explicit === "ssh" && pick("ssh")) {
+          chosen = "ssh";
+        } else if (explicit === "docker" && pick("docker")) {
+          chosen = "docker";
+        } else if (explicit === "process" && pick("process")) {
+          chosen = "process";
+        } else if (pick("docker")) {
+          chosen = "docker";
+        } else {
+          // docker 缺（且未显式指定其他）→ 降级本地软沙箱
+          chosen = "process";
+        }
+        if (!pick(chosen)) {
           return {
             success: false,
-            error: "Docker is not available on the host. Cannot execute code in sandbox.",
-            hint: "Install Docker, or use shell_exec for non-sandboxed execution.",
+            error: `Sandbox backend "${chosen}" is not available on the host. Cannot execute code in sandbox.`,
+            hint: explicit
+              ? "Remove/adjust the SANDBOX_BACKEND setting, or use shell_exec for non-sandboxed execution."
+              : "Set SANDBOX_BACKEND=process for the local soft sandbox, install Docker, or use shell_exec.",
             backends,
           };
         }
-
-        // 复用或创建会话（10 分钟 TTL）
+        // 会话复用时必须沿用同一后端：换后端即失效旧会话
         const now = Date.now();
         if (sandboxSessionId && now - sandboxSessionCreatedAt > SANDBOX_SESSION_TTL_MS) {
           try { await sandboxManager.destroySession(sandboxSessionId); } catch { /* best-effort */ }
           sandboxSessionId = null;
         }
+        if (sandboxSessionId && sandboxSessionBackend && sandboxSessionBackend !== chosen) {
+          try { await sandboxManager.destroySession(sandboxSessionId); } catch { /* best-effort */ }
+          sandboxSessionId = null;
+        }
         if (!sandboxSessionId) {
           // 并发竞态防护：串行化会话创建，防止并发调用各自创建会话产生孤儿。
-          // 若已有调用正在创建会话，等待其完成；失败也忽略，由下方二次检查决定是否重试。
           if (sessionCreatePromise) {
             try { await sessionCreatePromise; } catch { /* 创建失败则忽略，下方会重试 */ }
           }
-          // 二次检查：等待期间可能已被其他调用设置，避免重复创建
           if (!sandboxSessionId) {
             sessionCreatePromise = (async () => {
-              const session = await sandboxManager.createSession({
-                backend: "docker",
+              const sessionCfg: Parameters<typeof sandboxManager.createSession>[0] = {
+                backend: chosen,
                 timeoutMs: timeoutSec * 1000,
-              });
+              };
+              if (chosen === "process") {
+                // 本地软沙箱策略：禁网禁子进程 + 超时/内存限额（尽力执行）。
+                // 不限制 allowedPaths——LocalSandboxBackend.executeScript 会把脚本
+                // 临时写到 cwd 下再 spawn 解释器，限制路径会把临时脚本本身拒掉。
+                // 软沙箱的弱隔离已在结果 note 里向模型与用户标注。
+                sessionCfg.policy = {
+                  allowNetwork: false,
+                  allowFileSystem: true,
+                  allowSubprocess: false,
+                  maxExecutionTime: timeoutSec * 1000,
+                  maxMemoryMB: 512,
+                  allowedHosts: [],
+                  allowedPaths: [],
+                };
+              }
+              const session = await sandboxManager.createSession(sessionCfg);
               sandboxSessionId = session.id;
+              sandboxSessionBackend = chosen;
               sandboxSessionCreatedAt = Date.now();
             })();
             try {
@@ -1384,7 +1475,8 @@ except Exception as e:
         if (!sandboxSessionId) {
           return {
             success: false,
-            error: "Failed to create sandbox session. Docker backend may be unavailable.",
+            error: `Failed to create sandbox session (${chosen} backend). Backend may be unavailable.`,
+            backends,
           };
         }
 
@@ -1408,7 +1500,10 @@ except Exception as e:
           durationMs: result.durationMs,
           timedOut: result.timedOut,
           language,
-          sandbox: "docker",
+          sandbox: chosen,
+          ...(chosen === "process"
+            ? { note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离" }
+            : {}),
         };
       } catch (err: any) {
         return {

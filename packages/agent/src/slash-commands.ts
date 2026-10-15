@@ -106,6 +106,13 @@ export async function handleSlashCommand(
 ): Promise<SlashCommandResult | null> {
   if (!message.startsWith("/")) return null;
 
+  // 评测事故（2026-10-15 eval15 t03/t06/t07/t12/t14）：以绝对路径开头的消息
+  // （如 "/home/.../app.log 是一个服务日志..."）会被当成斜杠命令，落入
+  // "未知命令" 兜底回复，LLM 从未被触发——整条任务直接 0 分。
+  // 命令名是单个词（不含 "/"）；首个词含 "/" 即绝对路径，让给正常对话。
+  const firstWord = message.split(" ")[0];
+  if (firstWord.length <= 1 || firstWord.slice(1).includes("/")) return null;
+
   const spaceIdx = message.indexOf(" ");
   const cmdName = spaceIdx === -1
     ? message.slice(1).toLowerCase()

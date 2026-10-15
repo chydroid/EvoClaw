@@ -74,7 +74,12 @@ jobs:
           CI_REPO_LC="$(echo "${CI_REPO}" | tr '[:upper:]' '[:lower:]')" # ghcr 仓库名必须小写
           TEST_IMAGE="ghcr.io/${CI_REPO_LC}:${TAG_VERSION}-test.${CI_SHA}"
           docker pull "$TEST_IMAGE"
-          docker run -d --name evoclaw-smoke -p 27788:27788 "$TEST_IMAGE"
+          # NODE_ENV=production（镜像内）要求 JWT_SECRET 强度校验，否则 fatal 退出——
+          # 冒烟只验证启动链路，注入随机密钥即可（镜像不内置任何 secret）
+          docker run -d --name evoclaw-smoke -p 27788:27788 \
+            -e "JWT_SECRET=$(openssl rand -hex 32)" \
+            -e "WEB_UI_TOKEN=$(openssl rand -hex 16)" \
+            "$TEST_IMAGE"
           # 镜像 HEALTHCHECK start-period=30s，给 120s 轮询窗口
           ok=0
           for i in $(seq 1 60); do

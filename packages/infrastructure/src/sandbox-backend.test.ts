@@ -134,6 +134,17 @@ describe("LocalSandboxBackend", () => {
     expect(result.stdout.trim()).toBe("script-output:3");
   });
 
+  it("executeScript 识别 CommonJS 脚本（require → .cjs，ESM 下 require 不存在）", async () => {
+    // 评测事故 2026-10-15：脚本写 require('fs') 被当 ESM 跑 → ReferenceError
+    const result = await backend.executeScript(
+      "const fs = require('fs');\nconsole.log('cjs-ok', typeof process.stdout !== 'undefined');",
+      { interpreter: "node", timeoutMs: 5000, workdir: os.tmpdir() },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.stdout.trim()).toContain("cjs-ok true");
+  });
+
   it("exitCode 非零时 success=false", async () => {
     const result = await backend.execute(
       ["node", "-e", "process.exit(3)"],

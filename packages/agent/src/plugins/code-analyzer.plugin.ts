@@ -1,4 +1,4 @@
-import type { Plugin, PluginHookRegistration, BeforeToolCallHook, BeforeAgentReplyHook } from "@evoclaw/core";
+import type { Plugin, PluginHookRegistration, BeforeAgentReplyHook, AfterToolCallHook } from "@evoclaw/core";
 
 const MANIFEST = {
   name: "Code Analyzer",
@@ -24,6 +24,14 @@ interface ScanConfig {
   performance?: boolean;
   architecture?: boolean;
   maxIssues?: number;
+  /**
+   * 2026-10-15 评测修复（v0.93 eval）：报告输出模式。
+   * - "inline"（旧行为，默认）：把报告内联进 before_tool_call 的 content 参数
+   *   （已废弃——会破坏磁盘文件字节，导致 JS/TS 等可执行文件 SyntaxError，
+   *   模型绕 5+ 轮仍失败；Python 类注释注入则静默污染）
+   * - "result"（推荐）：报告作为附加文本随 tool_result 下发，磁盘文件保持原字节
+   */
+  reportMode?: "inline" | "result";
 }
 
 type PatternDef = { regex: RegExp; message: string; severity: CodeIssue["severity"] };
@@ -213,39 +221,49 @@ export function createCodeAnalyzerPlugin(): Plugin {
 
   const hooks: PluginHookRegistration[] = [
     {
-      hookType: "before_tool_call",
+      hookType: "after_tool_call",
       priority: "normal",
+      // 2026-10-15 评测修复（v0.93 eval）：报告改为随 tool_result 下发，不再
+      // 通过 before_tool_call 改写 content 参数把报告内联写进磁盘文件。
+      // 旧行为（inline 模式）事故：报告文本带 C 风格 /* */ 注释头被写进
+      // JS/TS 可执行文件 → 文件无法运行（SyntaxError）；Python/Shell 的注释
+      // 语法差异让注入内容静默污染源码；模型 5+ 轮「重写仍被污染」死循环。
+      // 现在磁盘文件保持模型写入的原始字节；分析报告作为附加文本进 tool_result，
+      // 模型可读可改，且不影响文件本身。
       handler: async (hook) => {
-        const h = hook as BeforeToolCallHook;
+        const h = hook as import("@evoclaw/core").AfterToolCallHook;
         if (h.toolName !== "file_create" && h.toolName !== "file_modify") return {};
-
+        if (h.errored) return {};
         const params = h.params || {};
-        const content = String(params.content || "");
+        const content = String(params.content ?? "");
         const filePath = String(params.path || "");
-        if (!content || content.length < 10) return {};
+        if (!content || content.length < 10 || !filePath) return {};
 
-        const codeExts = /\.(js|ts|tsx|jsx|py|java|go|rs|cpp|c|rb|php|swift|kt|sh|bash|yaml|yml|json|html|css|scss|sql)$/i;
+        const codeExts = /\.(js|ts|tsx|jsx|mjs|cjs|py|java|go|rs|cpp|c|rb|php|swift|kt|sh|bash|yaml|yml|json|html|css|scss|sql)$/i;
         if (!codeExts.test(filePath)) return {};
 
         const issues = scanCode(content, filePath.split(".").pop());
-        if (issues.length > 0) {
-          analyzeCount++;
-          const report = formatIssues(issues, filePath);
-          console.log(`[Code Analyzer] Found ${issues.length} issue(s) in ${filePath} (total analyses: ${analyzeCount})`);
+        if (issues.length === 0) return {};
+        analyzeCount++;
+        const report = formatIssues(issues, filePath).trim();
+        process.stdout.write(`[Code Analyzer] ${issues.length} issue(s) in ${filePath} (total analyses: ${analyzeCount}) — 报告随 tool_result 下发，磁盘文件保持原字节\n`);
 
-          const prefixedContent = `/* [Code Analyzer v3.0.0] Scan results for ${filePath}: */\n${report}\n${content}`;
-          return {
-            params: { ...params, content: prefixedContent },
-          };
-        }
-        return {};
+        // 把报告附加到工具结果上（llm-caller 会把非字符串 result JSON.stringify）
+        let base: unknown = {};
+        try {
+          base = typeof h.result === "string" ? JSON.parse(h.result) : h.result;
+        } catch { /* result 非 JSON 时原样包装 */ }
+        if (typeof base !== "object" || base === null) base = { original: base };
+        return {
+          result: { ...(base as Record<string, unknown>), codeAnalysis: report },
+        };
       },
     },
     {
       hookType: "before_agent_reply",
       priority: "normal",
       handler: async (hook) => {
-        const h = hook as BeforeAgentReplyHook;
+        const h = hook as import("@evoclaw/core").BeforeAgentReplyHook;
         const messages = h.messages || [];
         let totalIssues = 0;
 

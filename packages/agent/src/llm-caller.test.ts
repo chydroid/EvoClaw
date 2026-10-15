@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import * as http from "http";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS } from "./llm-caller";
 
 // ═══════════════════════════════════════════════════════════
 // 测试套件：LLM Caller 安全过滤拒绝检测
@@ -205,5 +205,78 @@ describe("buildOpenAITools — 关键词激活不得吃掉创建类能力（回�
     reg.get("email_add_account")!.checkFn = () => false;
     const names = buildOpenAITools(reg, "添加邮箱", (fn) => fn()).map((t) => t.function.name as string);
     expect(names).not.toContain("email_add_account");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// validateToolParams / buildOpenAITools — "Optional" 描述参数
+// 不得进入 required 列表（回归：eval15 t13，shell_exec 的
+// timeout/sandbox 描述含 "Optional" 却仍被当成必填，
+// LLM 反复触发 "Missing required parameter" 空转 6+ 轮）
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > Optional 参数不进 required", () => {
+  const SHELL_PARAMS = {
+    command: { type: "string", description: "The shell command to execute." },
+    cwd: { type: "string", description: "Optional working directory (default: workspace)" },
+    timeout: { type: "string", description: "Optional timeout in seconds (default: 120, max: 1200)." },
+    sandbox: { type: "boolean", description: "Optional. When true, execute via LocalSandboxBackend." },
+  };
+  const def = { definition: { name: "shell_exec", description: "Execute a shell command", parameters: SHELL_PARAMS }, handler: async () => ({}) };
+
+  it("validateToolParams：缺省 Optional 参数不再报 Missing required", () => {
+    const err = validateToolParams("shell_exec", { command: "ls" }, def.definition);
+    expect(err).toBeNull();
+  });
+
+  it("validateToolParams：缺省必填参数仍报错", () => {
+    const err = validateToolParams("shell_exec", {}, def.definition);
+    expect(err).toMatch(/Missing required parameter "command"/);
+  });
+
+  it("buildOpenAITools：Optional 参数不进 required 列表，必填仍在", () => {
+    const reg = new Map([["shell_exec", def]]);
+    const out = buildOpenAITools(reg, "跑个命令", (fn) => fn());
+    const fn = out.find((t) => t.function.name === "shell_exec")!;
+    const required = (fn.function.parameters as { required: string[] }).required;
+    expect(required).toContain("command");
+    expect(required).not.toContain("cwd");
+    expect(required).not.toContain("timeout");
+    expect(required).not.toContain("sandbox");
+  });
+
+  it("显式 required:true 的描述不被 Optional 正则误放（必填标注优先）", () => {
+    const p = { x: { type: "string", description: "Required field", required: true } };
+    const reg = new Map([["t", { definition: { name: "t", description: "d", parameters: p }, handler: async () => ({}) }]]);
+    const out = buildOpenAITools(reg, "m", (fn) => fn());
+    const fn = out.find((t) => t.function.name === "t")!;
+    expect((fn.function.parameters as { required: string[] }).required).toContain("x");
+    expect(validateToolParams("t", {}, reg.get("t")!.definition)).toMatch(/Missing required parameter "x"/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 工具结果缓存豁免（回归：eval15 t01，shell_exec 修复后重跑
+// 命中修复前的旧输出，误判「修复无效」空转 5+ 轮）
+// ═══════════════════════════════════════════════════════════
+describe("lookupCachedToolResult — 副作用工具豁免", () => {
+  const cache = new Map([
+    ["shell_exec:{\"command\":\"node x.js add 3 4\"}", { result: '{"success":true,"output":"7"}', timestamp: Date.now() }],
+    ["file_read:{\"path\":\"x.js\"}", { result: "abc", timestamp: Date.now() }],
+  ]);
+
+  it("NO_RESULT_CACHE_TOOLS 覆盖命令执行类工具", () => {
+    for (const t of ["shell_exec", "execute_code", "run_python", "run_node"]) {
+      expect(NO_RESULT_CACHE_TOOLS.has(t)).toBe(true);
+    }
+  });
+
+  it("shell_exec 即使缓存命中也不复用（结果非 args 纯函数）", () => {
+    const r = lookupCachedToolResult(cache, "shell_exec", { command: "node x.js add 3 4" }, 300_000);
+    expect(r).toBeNull();
+  });
+
+  it("读类工具（file_read）缓存行为不变", () => {
+    const r = lookupCachedToolResult(cache, "file_read", { path: "x.js" }, 300_000);
+    expect(r).toBe("abc");
   });
 });

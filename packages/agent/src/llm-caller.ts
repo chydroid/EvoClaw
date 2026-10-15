@@ -590,7 +590,7 @@ function recordToolSuccess(toolName: string): void {
 // Validates that LLM-generated tool parameters match the expected schema.
 // Returns a descriptive error if validation fails, or null if OK.
 
-function validateToolParams(
+export function validateToolParams(
   toolName: string,
   args: Record<string, unknown>,
   definition: { parameters: Record<string, unknown> }
@@ -598,7 +598,8 @@ function validateToolParams(
   const params = definition.parameters;
   for (const [key, schema] of Object.entries(params)) {
     const p = schema as Record<string, unknown>;
-    const isRequired = p.required !== false && p.default === undefined;
+    const isRequired =
+      p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""));
     const value = args[key];
 
     // Check required parameters
@@ -997,6 +998,23 @@ export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_
 }
 
 /**
+ * 工具结果缓存豁免：命令执行类工具。
+ *
+ * 评测事故（2026-10-15 eval15 t01）：shell_exec 结果在 300s TTL 内按
+ * 精确 args 缓存。模型修了 src/index.js 后重跑同一命令
+ * `node .../index.js add 3 4`，命中缓存拿到**修复前**的旧输出
+ * （用法提示，exit 1），误判「修复无效」反复改 5+ 轮仍失败。
+ * 文件内容变了 → 同一命令的输出也变 → 结果不是 args 的纯函数，
+ * 命令执行类工具一律不走结果缓存（写操作另有幂等缓存，不受影响）。
+ */
+export const NO_RESULT_CACHE_TOOLS = new Set([
+  "shell_exec",
+  "execute_code",
+  "run_python",
+  "run_node",
+]);
+
+/**
  * 工具结果缓存查找（带「语义等价」识别）。
  *
  * 事故：模型连续三次调用 email_list_inbox，参数只有 limit 不同
@@ -1007,13 +1025,14 @@ export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_
  * 仅当缓存结果**未被 limit 截断**时（条目数 < 当时的 limit）才复用，
  * 否则新请求可能确实想要更多数据，不能复用。
  */
-function lookupCachedToolResult(
+export function lookupCachedToolResult(
   cache: Map<string, { result: string; timestamp: number }> | undefined,
   toolName: string,
   args: Record<string, unknown>,
   ttlMs: number,
 ): string | null {
   if (!cache) return null;
+  if (NO_RESULT_CACHE_TOOLS.has(toolName)) return null; // 副作用工具：结果非 args 纯函数
   const exactKey = `${toolName}:${JSON.stringify(args)}`;
   const exact = cache.get(exactKey);
   if (exact && Date.now() - exact.timestamp < ttlMs) return exact.result;
@@ -1343,7 +1362,8 @@ export function buildOpenAITools(
           type: p.type || "string",
           description: p.description || key,
         };
-        if (p.required !== false && p.default === undefined) {
+        // 与 validateToolParams 一致：描述里标 "Optional" 的参数不进 required 列表
+        if (p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""))) {
           required.push(key);
         }
       }
@@ -3584,8 +3604,8 @@ Have a specific URL?
                 }
               }
 
-              // Cache result
-              if (deps.toolResultCache) {
+              // Cache result（副作用工具不缓存：结果非 args 纯函数，见 NO_RESULT_CACHE_TOOLS）
+              if (deps.toolResultCache && !NO_RESULT_CACHE_TOOLS.has(toolName)) {
                 deps.toolResultCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
               }
               if (IDEMPOTENT_TOOLS.has(toolName)) {
