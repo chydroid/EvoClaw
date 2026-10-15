@@ -2682,6 +2682,12 @@ Have a specific URL?
       const emptyResultTools: Array<{ name: string; field: string }> = [];
       // 本回合真实执行过的工具（含参数），用于 transcript 持久化
       const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+      // 本回合真实执行过的**变更类**工具（文件写类）—— 完成声明对账的写操作证据
+      const WRITE_EVIDENCE_TOOLS = new Set(["file_create", "file_modify", "file_delete"]);
+      const writeOps = (): Array<{ name: string; args: string }> =>
+        executedToolCalls
+          .filter((c) => WRITE_EVIDENCE_TOOLS.has(c.name))
+          .map((c) => ({ name: c.name, args: JSON.stringify(c.arguments).slice(0, 200) }));
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
@@ -3152,6 +3158,7 @@ Have a specific URL?
               lastUserMessage: message,
               failedTools,
               emptyResultTools,
+              writeOps: writeOps(),
             });
             // 只有在"确实有活可干"的语境下才续跑，避免把纯闲聊的承诺句式误判成停顿
             const hasWorkContext =
@@ -4094,6 +4101,7 @@ Have a specific URL?
             lastUserMessage: message,
             failedTools,
             emptyResultTools,
+            writeOps: writeOps(),
           });
           if (verdict.needsCorrection && verdict.notice) {
             // ★ 修复（2026-10-08，用户反馈）：这段 notice 是写给 **LLM 看的续跑指令**

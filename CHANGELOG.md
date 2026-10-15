@@ -9,6 +9,31 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.6] - 2026-10-15
+
+**完成声明对账新增「写声明证据」分支：修复只读工具跑过就放行伪造写操作的情况**
+
+15 任务评测 t11 暴露：模型只执行了 file_list/file_read 两个只读工具，
+却把**未执行的** file_modify 以文本形式写进正文（「[工具运行详情] …」）
+并声称「已就地修改」——磁盘文件根本没变。旧对账的 `no_tool_executed`
+分支把任何工具调用都算作执行证据，此类伪造被快速路径放行。
+
+### 根因与改动
+
+- `completion-truthfulness.ts` 新增**情况四** `write_claimed_not_executed`：
+  回复含写文件类完成声明（已修改/已创建/已写入…，新增
+  `claimsWriteCompletion`，与总完成声明分离避免误伤「已运行验证」）
+  但本回合**没有任何变更类工具**（file_create/file_modify/file_delete）
+  真实执行过 → 触发确定性更正。
+- `llm-caller.ts` 记录 `executedToolCalls` 中的变更类调用作为
+  `writeOps` 证据，两处对账调用点同步传入。
+- 中文完成声明特征补「已 + 近指词 + 变更动词」（已就地修改 / 已改为…）。
+
+### 验证
+
+- 新增 4 条回归测试（t11 实录复现、writeOps 非空不干预、
+  只读验证声明不误伤、claimsWriteCompletion 边界）；
+  全量 pnpm build + pnpm test 通过。
 ## [0.92.5] - 2026-10-15
 
 **15 任务复杂评测驱动的三个 agent 可靠性修复 + execute_code 沙箱后端回退 + release 冒烟注入强密钥**

@@ -58,13 +58,15 @@ export interface ReconcileInput {
   failedTools?: FailedTool[];
   /** 本回合执行过但返回空/零结果的工具列表 */
   emptyResultTools?: EmptyResultTool[];
+  /** 本回合**真实执行过**的变更类工具调用（工具名 + 参数摘要） */
+  writeOps?: Array<{ name: string; args: string }>;
 }
 
 export interface ReconcileResult {
   /** 是否检测到虚假/不可信的完成声明 */
   needsCorrection: boolean;
   /** 问题类型，便于测试与日志定位 */
-  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed";
+  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed" | "write_claimed_not_executed";
   /**
    * 给 **LLM 看**的续跑/纠错指令（内部提示词）。
    * ★ 绝不可直接展示给用户 —— 事故（2026-10-08 20:24）就是把它拼进了正文，
@@ -92,6 +94,8 @@ export function buildUserFacingCorrection(v: ReconcileResult): string {
       return suffix + "本回合有工具执行失败，相关变更**没有生效**，之前的「已完成」不成立。失败项见上方执行记录。";
     case "no_tool_executed":
       return suffix + "本回合没有实际执行任何工具操作，之前的「已完成」不成立。";
+    case "write_claimed_not_executed":
+      return suffix + "本回合没有执行任何写文件/改文件类工具，「已修改/已创建」不成立。";
     case "empty_but_detailed":
       return suffix + "相关工具返回的是空结果，上文给出的数量与明细**并非来自实际数据**，请勿采信。";
     default:
@@ -113,6 +117,8 @@ const COMPLETION_CLAIM_PATTERNS: RegExp[] = [
   /(?:搞定|办妥|办好了|弄好了|处理好了|妥了)/,
   // 中文：已经配置好了 / 已经添加完了（"已经"+"动词"+"了"）
   /已经(?:完成|添加|新增|创建|删除|移除|修改|更新|发送|运行|执行|安装|配置|设置|保存|写入|注册|部署|处理)(?:好|完|完毕|完事)?了/,
+  // 中文："已 + 近指词 + 变更动词"（已就地修改 / 已改为 / 已更新为 …，2026-10-15 eval15 t11）
+  /已\S{0,8}(?:修改|创建|写入|删除|移除|更新|保存|部署|改完|改好)/s,
   // 中文：句尾独立的"完成/完毕"（如"✅ 添加邮箱 xxx 完成"），
   // 刻意要求其后无其他实词，避免误伤"能帮我完成吗？"这类询问句
   /(?:^|[\s，,。、：:；;）)])(?:完成|完毕)(?:了)?\s*[。！!]*\s*$/,
@@ -373,5 +379,38 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
     return { needsCorrection: true, reason: "no_tool_executed", notice };
   }
 
+  // 情况四：声称**写文件类完成**（已修改/已创建/已写入…），但本回合没有任何
+  // 变更类工具真正执行过。
+  // 真实事故（2026-10-15 eval15 t11）：只跑了 file_list/file_read 两个只读工具，
+  // 模型却把未执行的 file_modify 以**文本形式**写在正文里（"[工具运行详情] {…}"）
+  // 并声称「已就地修改」。文件根本没变。只读工具的调用不构成写操作证据，
+  // 必须单独识别——否则被情况三的 toolsExecuted 快速路径放行。
+  const writeOps = input.writeOps ?? [];
+  if (writeOps.length === 0 && hasActionIntent(lastUserMessage) && claimsWriteCompletion(finalReply)) {
+    const notice =
+      "\n\n---\n" +
+      "⚠️ **更正**：上面的「已修改/已创建」并不成立——本回合**没有执行任何写文件类工具**" +
+      "（只做了文件读取/列表等只读操作）。请真正调用 file_create/file_modify 等工具完成操作，" +
+      "并在拿到工具的成功返回后再汇报结果。";
+    return { needsCorrection: true, reason: "write_claimed_not_executed", notice };
+  }
+
   return { needsCorrection: false };
+}
+
+/**
+ * 写文件类完成声明：「已修改」「已创建」「已写入」「修改成功」……
+ * 与 COMPLETION_CLAIM_PATTERNS 的区别：这里只挑**变更动词**——
+ * 只读验证（「已运行」「已检查」）不算。
+ */
+const WRITE_CLAIM_PATTERNS: RegExp[] = [
+  /已\S{0,8}(?:修改|创建|写入|删除|更新|保存|部署|移除|新增)/s,
+  /(?:^|[\n\s，,。（(])[\S]{0,4}(?:修改|创建|写入|删除|更新|保存|部署)(?:成功|完毕|完成)/,
+  /已就地修改/,
+];
+
+/** 判断回复是否声称了写文件类完成 */
+export function claimsWriteCompletion(text: string): boolean {
+  if (!text) return false;
+  return WRITE_CLAIM_PATTERNS.some((re) => re.test(text));
 }

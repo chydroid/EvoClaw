@@ -12,7 +12,8 @@
 - 本机 npm 全局代理已于 2026-07-08 永久清除（原指向未运行的 127.0.0.1:31180/31181），registry 切换为 https://registry.npmmirror.com。
 
 ## 经验教训
-- **对标基线（2026-10-12）**：`docs/hermes-alignment-roadmap.md` 是 EvoClaw 对标 Hermes Agent v0.21.6 的项目级提升方案基线。P0 两条欠账（files 恒空、token 事件体积平方增长）已于 v0.93 修复；后续迭代按该文件的 P0→P3 路线图推进，完成一项勾掉对应 checkbox。截至 2026-10-15：P0/P1/P2 及 P3 除「7 终端后端/serverless」（设计完成、实现排期在评测窗口外）外全部落地；发布流水线三件套齐备（release-prepare 脚本 + release.yml 两段式 + ghcr 口径统一），真实 tag 首验待推送权限。
+- **对标基线（2026-10-12）**：`docs/hermes-alignment-roadmap.md` 是 EvoClaw 对标 Hermes Agent v0.21.6 的项目级提升方案基线。P0 两条欠账（files 恒空、token 事件体积平方增长）已于 v0.93 修复；后续迭代按该文件的 P0→P3 路线图推进，完成一项勾掉对应 checkbox。截至 2026-10-15：P0/P1/P2 及 P3 除「7 终端后端/serverless」（设计完成、实现排期在评测窗口外）外全部落地；发布流水线三件套齐备（release-prepare 脚本 + release.yml 两段式 + ghcr 口径统一），v0.92.5 已由 GitHub Release 的 receipt 资产验证两段式流水线端到端跑通。
+- **15 任务复杂评测（2026-10-15）**：/tmp/evoclaw-eval/eval15.mjs（驱动重建过一次）经 HTTP API 端到端跑 15 个复杂任务。首轮 0/15 → 修复后 13/15（t03 判定脚本自身 bug、t11 模型伪造完成态）→ 完成声明对账新增 write_claimed_not_executed 分支（v0.92.6）后复测中。已定位并修复的可靠性缺陷模式：① 绝对路径开头消息被误判斜杠命令；② 描述含 "Optional" 的参数被当成必填；③ shell_exec 结果缓存返回修复前旧输出（NO_RESULT_CACHE_TOOLS 豁免）；④ execute_code 软沙箱把 require() 当 ESM 跑（自动选 .cjs）；⑤ 换行硬拦无引导（block 信息附替代路径）；⑥ 只读工具跑过即放行伪造写完成态（写证据对账）。
 - **多会话并行（2026-10-14）**：本机常有多个 Claude 会话同时改本仓库；动运行时资源（27789 server、/tmp/evoclaw-eval 评测驱动、浏览器）前先 `ListAgents` 确认所有权，曾因双开导致任务重复发送与 EADDRINUSE 竞速。
 - **guardrails SQLi 误伤教训（2026-10-14）**：给 `ToolGuardrail` 规则加 `toolPattern: /./`（全工具生效）+ 含 `--\s*$`（多行）的模式会把源码注释分隔线误判成 SQL 注入并 block 写文件工具；任何"扫参数内容"的拦截规则都要先限定工具域、再用词界/引号锚定，防回归测试见 `packages/agent/src/guardrails.test.ts`。
 - better-sqlite3 v12.10.0 的预编译二进制（.node）在 pnpm install 时通过 .npmrc 配置的 `better-sqlite3_binary_host_mirror` 从 npmmirror 下载，ABI 137 匹配 Node v24，无需 `pnpm rebuild`。若 server-start.err 报 "native bindings not compiled"，先 `node -e "require('better-sqlite3')"` 测试，多为旧日志残留。

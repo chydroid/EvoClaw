@@ -367,3 +367,46 @@ describe("成功/失败计数单一事实源（回归守护）", () => {
     expect(r.failedTools).toHaveLength(0);
   });
 });
+
+// ── 情况四：写文件类完成声明，但本回合没执行任何变更类工具（2026-10-15 eval15 t11）──
+import { claimsWriteCompletion } from "./completion-truthfulness";
+
+describe("write_claimed_not_executed — 声称已修改但没跑写文件工具（回归）", () => {
+  it("★ t11 实录：只读工具执行过 + 正文里把 file_modify 当文本写出来 → 触发更正", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "[工具运行详情]\n{\"tool_name\":\"file_modify\"}\n已就地修改。",
+      toolsExecuted: true, // file_list / file_read 算执行过
+      lastUserMessage: "把 index.md 里的断链修改成指向 guide.md",
+      writeOps: [], // 没有任何写文件类工具真正执行
+    });
+    expect(v.needsCorrection).toBe(true);
+    expect(v.reason).toBe("write_claimed_not_executed");
+  });
+
+  it("writeOps 非空（真的执行过 file_modify）→ 不干预", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "已就地修改 index.md",
+      toolsExecuted: true,
+      lastUserMessage: "把断链修好",
+      writeOps: [{ name: "file_modify", args: "{\"path\":\"index.md\"}" }],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("只读验证声明（「已运行 node 脚本验证输出 7」）不触发写声明更正", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "已运行 node src/index.js add 3 4，输出 7。",
+      toolsExecuted: true,
+      lastUserMessage: "验证一下输出",
+      writeOps: [],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("claimsWriteCompletion 边界", () => {
+    expect(claimsWriteCompletion("已修改 main.txt")).toBe(true);
+    expect(claimsWriteCompletion("文件已创建成功")).toBe(true);
+    expect(claimsWriteCompletion("已运行脚本，结果正常")).toBe(false);
+    expect(claimsWriteCompletion("")).toBe(false);
+  });
+});
