@@ -1288,13 +1288,18 @@ export class EvoClawServer {
     this.eventBus.subscribe("agent_end", async (event: any) => {
       try {
         const data = event?.data;
-        if (!data?.userMessage || !data?.agentResponse) return;
+        if (!data?.userMessage || !data?.agentResponse) {
+          return;
+        }
+        // sessionId 传入 context：dialectic 用户建模按会话累计 claim 需要它
         await this.memoryHub.curateFromTurn(
           data.userMessage,
           data.agentResponse,
-          data.context || {},
+          { ...(data.context || {}), sessionId: data.sessionId },
         );
-      } catch { /* non-critical */ }
+      } catch (err) {
+        process.stderr.write(`[agent_end] handler failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     });
 
     this.eventBus.subscribe(SystemEvents.MEMORY_STORED, async () => {

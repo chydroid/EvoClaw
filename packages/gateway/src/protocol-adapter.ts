@@ -8364,6 +8364,39 @@ export class ProtocolAdapter {
       }
     });
 
+    // GET /api/memory/dialectic — Honcho dialectic 用户建模（Hermes 对标 P2）：
+    // 返回跨会话辩证 claims + 综合信念 + 可注入画像文本（管理/诊断面）
+    app.get("/api/memory/dialectic", async (_req: Request, res: Response) => {
+      try {
+        const hub = this.registry.resolveService<{
+          getDialecticContext(): string;
+          getDialectic(): {
+            getClaims(): unknown[];
+            getBeliefs(): unknown[];
+            export(): unknown;
+          } | null;
+        }>("memoryHub");
+        if (!hub) {
+          res.status(503).json({ error: "MemoryHub not available" });
+          return;
+        }
+        const dialectic = hub.getDialectic();
+        if (!dialectic) {
+          res.json({ available: false, claims: [], beliefs: [], rendered: "" });
+          return;
+        }
+        res.json({
+          available: true,
+          claims: dialectic.getClaims(),
+          beliefs: dialectic.getBeliefs(),
+          rendered: hub.getDialecticContext(),
+          model: dialectic.export(),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
     app.get("/api/memory/semantic-search", async (req: Request, res: Response) => {
       try {
         const hub = this.registry.resolveService<{ semanticSearch(q: string, limit?: number): Promise<unknown[]> }>("memoryHub");

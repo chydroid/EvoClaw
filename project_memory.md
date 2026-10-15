@@ -1,7 +1,7 @@
 # Project Memory
 
 ## 约定
-- EvoClaw 是 TypeScript pnpm monorepo，14 个内部包 + 2 个应用，端口 27788。
+- EvoClaw 是 TypeScript pnpm monorepo，14 个内部包 + 2 个应用；**实际运行端口以 `.env` 的 `EvoClaw_PORT=27789` 为准**（代码/文档默认 27788 仅在未设该变量时生效；server 只绑 IPv4，健康检查用 `127.0.0.1:27789`）。
 - 验证顺序必须为 `pnpm build -> pnpm typecheck -> pnpm test`（包间互相引用 dist 产物）。
 
 ## 约束
@@ -12,7 +12,9 @@
 - 本机 npm 全局代理已于 2026-07-08 永久清除（原指向未运行的 127.0.0.1:31180/31181），registry 切换为 https://registry.npmmirror.com。
 
 ## 经验教训
-- **对标基线（2026-10-12）**：`docs/hermes-alignment-roadmap.md` 是 EvoClaw 对标 Hermes Agent v0.21.6 的项目级提升方案基线。P0 两条欠账（files 恒空、token 事件体积平方增长）已于 v0.93 修复；后续迭代按该文件的 P0→P3 路线图推进，完成一项勾掉对应 checkbox。
+- **对标基线（2026-10-12）**：`docs/hermes-alignment-roadmap.md` 是 EvoClaw 对标 Hermes Agent v0.21.6 的项目级提升方案基线。P0 两条欠账（files 恒空、token 事件体积平方增长）已于 v0.93 修复；后续迭代按该文件的 P0→P3 路线图推进，完成一项勾掉对应 checkbox。截至 2026-10-15：P0/P1/P2 及 P3 除「7 终端后端/serverless」（设计完成、实现排期在评测窗口外）外全部落地；发布流水线三件套齐备（release-prepare 脚本 + release.yml 两段式 + ghcr 口径统一），真实 tag 首验待推送权限。
+- **多会话并行（2026-10-14）**：本机常有多个 Claude 会话同时改本仓库；动运行时资源（27789 server、/tmp/evoclaw-eval 评测驱动、浏览器）前先 `ListAgents` 确认所有权，曾因双开导致任务重复发送与 EADDRINUSE 竞速。
+- **guardrails SQLi 误伤教训（2026-10-14）**：给 `ToolGuardrail` 规则加 `toolPattern: /./`（全工具生效）+ 含 `--\s*$`（多行）的模式会把源码注释分隔线误判成 SQL 注入并 block 写文件工具；任何"扫参数内容"的拦截规则都要先限定工具域、再用词界/引号锚定，防回归测试见 `packages/agent/src/guardrails.test.ts`。
 - better-sqlite3 v12.10.0 的预编译二进制（.node）在 pnpm install 时通过 .npmrc 配置的 `better-sqlite3_binary_host_mirror` 从 npmmirror 下载，ABI 137 匹配 Node v24，无需 `pnpm rebuild`。若 server-start.err 报 "native bindings not compiled"，先 `node -e "require('better-sqlite3')"` 测试，多为旧日志残留。
 - 健康检查 `/health` 整体 status 为 `degraded` 属正常：personal_wechat 渠道启用但未连接（需扫码登录），非构建问题。
 - server-start.err 中的 CanvasHost EPERM（无法创建 `C:\Users\CY\.evoclaw\canvas`）、DockerSandbox 不可用、可选 skill 缺 API key/二进制（jq/ffmpeg/fd/gh 等）、SkillRegistry 远程不可达，均为可选功能/外部依赖警告，不阻塞核心服务。

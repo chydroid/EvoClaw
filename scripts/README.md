@@ -2,6 +2,20 @@
 
 EvoClaw 仓库级工具脚本。这些脚本不属于 pnpm workspace 包，独立运行。
 
+## 发布工具
+
+### release-prepare.mjs — 发布准备（P3-6 发布流水线本地阶段）
+
+按 CHANGELOG.md 成文的 patch-only 规则递增根版本号，校验 changelog 条目（`## [X.Y.Z] - 日期` + 根因/改动 + 验证/测试小节）后**原子写入**根 package.json。对标 Hermes stable release pipeline（`docs/hermes-alignment-roadmap.md` §四 P3-6）。
+
+```bash
+pnpm release:prepare              # patch 递增 + 校验 + 写入
+pnpm release:prepare -- --dry-run # 只校验不写
+node scripts/release-prepare.mjs --version 0.93.0  # minor/major 破坏性升级（仍需 changelog 条目）
+```
+
+校验不过会 exit 1 并提示补写 CHANGELOG 条目；tag/测试镜像/receipt 属 CI 阶段（release.yml，待实现）。测试：`scripts/release-prepare.test.ts`。
+
 ## 供应链安全工具
 
 借鉴 hermes-agent 的供应链安全实践（精确锁定依赖 + OSV 漏洞检查），提供以下两个脚本。

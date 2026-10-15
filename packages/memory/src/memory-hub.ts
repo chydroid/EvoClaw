@@ -18,6 +18,7 @@ import { FTS5SearchEngine, type FTS5SearchResult } from "./fts5-search";
 import { MemoryCurator, type MemorySnapshot } from "./memory-curator";
 import { VectorMemoryStore, LocalEmbeddingProvider, type EmbeddingProvider } from "./vector-memory";
 import { TransformersEmbeddingProvider, type TransformersEmbeddingProviderOptions } from "./transformers-embedding";
+import { DialecticUserModeler } from "./dialectic-user-model";
 
 /** Options for configuring the MemoryHub's embedding provider. */
 export interface MemoryHubEmbeddingOptions {
@@ -121,6 +122,11 @@ export class MemoryHub {
    * （如 dataDir 不可写），MemoryHub 仍可降级到原有 vector/FTS5 链路。
    */
   private layeredMemory: import("./layered").LayeredMemory | null = null;
+  /**
+   * Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像，
+   * 叠加在分层记忆之上。构造失败时为 null，主链路降级不受影响。
+   */
+  private dialectic: DialecticUserModeler | null = null;
 
   constructor(
     private registry: ServiceRegistry,
@@ -160,6 +166,15 @@ export class MemoryHub {
     } catch (err) {
       process.stderr.write('[memory-hub] LayeredMemory init failed, falling back to flat memory: ' + err + '\n');
       this.layeredMemory = null;
+    }
+
+    // Honcho dialectic 用户建模（Hermes 对标 P2）——跨会话辩证画像，叠加在 L0-L3 之上。
+    // 启发式抽取 + 规则综合，不依赖 LLM key；失败降级为无画像。
+    try {
+      this.dialectic = new DialecticUserModeler(dataDir);
+    } catch (err) {
+      process.stderr.write('[memory-hub] DialecticUserModeler init failed: ' + err + '\n');
+      this.dialectic = null;
     }
 
     // Wire the embedding provider. We prefer the local Transformers pipeline
@@ -661,9 +676,33 @@ export class MemoryHub {
     agentResponse: string,
     context: Record<string, unknown>
   ): Promise<MemoryEntry | null> {
+    // Honcho dialectic 用户建模：每轮观察用户消息，抽取 claim 并辩证综合。
+    // best-effort：失败不影响既有 curate 链路。
+    try {
+      await this.dialectic?.observeTurn(String(context.sessionId ?? "default"), userMessage);
+    } catch (err) {
+      process.stderr.write(`[memory-hub] dialectic observe failed: ${err}\n`);
+    }
     return this.curator.curateFromTurn(userMessage, agentResponse, context, {
       store: (entry: MemoryEntry) => this.remember(entry),
     });
+  }
+
+  /**
+   * 辩证用户模型的 prompt 注入文本（渲染为系统提示尾部画像）。
+   * 无模型内容时返回 ""；失败降级为 ""。
+   */
+  getDialecticContext(): string {
+    try {
+      return this.dialectic?.renderModel() ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** 辩证用户建模器访问器（管理端点/诊断用）。 */
+  getDialectic(): DialecticUserModeler | null {
+    return this.dialectic;
   }
 
   /**
@@ -878,6 +917,11 @@ export class MemoryHub {
       if (typeof lm?.drain === "function") {
         await lm.drain().catch(() => { /* ignore */ });
       }
+    } catch { /* ignore */ }
+
+    // 1.5 flush 辩证用户模型（持久化链）
+    try {
+      await this.dialectic?.flush();
     } catch { /* ignore */ }
 
     // 2. flush 向量存储的 dirty 数据，防止未落盘的向量丢失

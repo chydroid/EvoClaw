@@ -165,6 +165,24 @@ export class ErrorRecoveryManager {
     return record;
   }
 
+  /**
+   * 不可重试错误：确定性失败，重试永远不会成功。
+   * 2026-10-14 评测发现：file_create 遇 "File already exists" 被无差别重试 6 次
+   * （含 15.5s 退避），浪费整轮工具配额还让模型误判为瞬态故障。
+   */
+  private isNonRetryable(err: unknown): boolean {
+    const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+    return (
+      message.includes("already exists") ||
+      message.includes("eexist") ||
+      message.includes("enotempty") ||
+      message.includes("eisdir") ||
+      message.includes("enotdir") ||
+      message.includes("is a directory") ||
+      message.includes("not a directory")
+    );
+  }
+
   async executeWithRetry<T>(
     operation: string,
     target: string,
@@ -173,8 +191,11 @@ export class ErrorRecoveryManager {
   ): Promise<T> {
     const cfg = { ...this.retryConfig, ...config };
     let lastError: unknown;
+    let attemptsUsed = 0;
+    let nonRetryableHit = false;
 
     for (let attempt = 0; attempt <= cfg.maxRetries; attempt++) {
+      attemptsUsed = attempt + 1;
       try {
         const result = await fn();
 
@@ -189,6 +210,12 @@ export class ErrorRecoveryManager {
         return result;
       } catch (err) {
         lastError = err;
+
+        if (this.isNonRetryable(err)) {
+          // 确定性失败：记录一次后立即终止重试（不是"重试耗尽"）
+          nonRetryableHit = true;
+          break;
+        }
 
         if (attempt < cfg.maxRetries) {
           this.recordError(operation, target, err);
@@ -231,14 +258,18 @@ export class ErrorRecoveryManager {
 
     const errorRecord = this.recordError(operation, target, lastError);
 
-    this.eventBus.publish(
-      "error.max_retries_exceeded",
-      { operation, target, errorId: errorRecord.id, maxRetries: cfg.maxRetries },
-      "error-recovery-manager"
-    ).catch((err) => process.stderr.write('[ErrorRecoveryManager] event publish failed: ' + err + '\n'));
+    if (!nonRetryableHit) {
+      this.eventBus.publish(
+        "error.max_retries_exceeded",
+        { operation, target, errorId: errorRecord.id, maxRetries: cfg.maxRetries },
+        "error-recovery-manager"
+      ).catch((err) => process.stderr.write('[ErrorRecoveryManager] event publish failed: ' + err + '\n'));
+    }
 
     throw new Error(
-      `${operation} failed after ${cfg.maxRetries + 1} attempts: ${errorRecord.error}`
+      `${operation} failed after ${attemptsUsed} attempt(s)` +
+      (nonRetryableHit ? " [non-retryable]" : "") +
+      `: ${errorRecord.error}`
     );
   }
 

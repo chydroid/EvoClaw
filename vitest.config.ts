@@ -43,6 +43,8 @@ export default defineConfig({
       "apps/*/tests/**/*.spec.ts",
       "coding-tasks/*/test/**/*.test.ts",
       "coding-tasks/*/test/**/*.spec.ts",
+      "scripts/**/*.test.ts",
+      "scripts/**/*.spec.ts",
     ],
     exclude: [
       "node_modules",

@@ -522,7 +522,15 @@ describe("SkillCurator", () => {
       const registry = new ServiceRegistry();
       const eventBus = new EventBus();
       registry.registerService("eventBus", eventBus);
-      const curator = new SkillCurator(registry, eventBus, skillsDir, archiveDir, dataDir);
+      // 第 6 参 reportDir 指到临时目录，避免 runCycle 报告写进仓库根 logs/
+      const curator = new SkillCurator(
+        registry,
+        eventBus,
+        skillsDir,
+        archiveDir,
+        dataDir,
+        path.join(tmpRoot, "logs", "curator")
+      );
       return { curator, registry, eventBus };
     }
 

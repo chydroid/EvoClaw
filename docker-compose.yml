@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # image 双模式：填 image 时 docker compose 按本地 image 运行（可从 ghcr 拉预构建镜像），
+    # 留空/删除则走 build。CI 推送口径见 .github/workflows/release.yml（ghcr.io/chydroid/evoclaw）。
+    image: ghcr.io/chydroid/evoclaw:latest
     container_name: evoclaw
     ports:
       - "${EvoClaw_PORT:-27788}:27788"

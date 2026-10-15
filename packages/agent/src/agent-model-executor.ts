@@ -158,6 +158,8 @@ export class AgentModelExecutor {
     } | null;
     /** 扫描场景中的 Persona Update Signal。 */
     collectPersonaUpdateSignals?(): string[];
+    /** Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像注入文本。 */
+    getDialecticContext?(): string;
   } | null = null;
   private bootstrapManager: import("./bootstrap-manager").BootstrapManager | null = null;
   private compactionManager: import("./compaction-manager").CompactionManager | null = null;
@@ -2048,9 +2050,14 @@ export class AgentModelExecutor {
               permissionRequests: [],
               toolsExecuted: true,
             };
+          } else if (dispatchResult.path === "none") {
+            // 正常的「无技能匹配」路径（success:false 但没有技能参与），
+            // 必须先于 outputHasError 判断——否则会被误分类成
+            // skill "undefined" 的 unknown error（2026-10-14 评测发现）。
+            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM\n`);
           } else if (outputHasError) {
             if (classifiedError!.shouldFallbackToLLM) {
-              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user\n`);
+              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName ?? "(unknown)"}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user\n`);
               // Do not return an error to the user; let the LLM retry or handle the task.
             } else {
               process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user\n`);
@@ -2066,8 +2073,6 @@ export class AgentModelExecutor {
             }
           } else if (isEmptyOutput && dispatchResult.path === "skill") {
             process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM\n`);
-          } else if (dispatchResult.path === "none") {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM\n`);
           } else {
             // Skill matched but execution failed — fall through to LLM
             process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM\n`);
@@ -2221,6 +2226,14 @@ export class AgentModelExecutor {
       } else {
         await memorySearchFn();
       }
+    }
+
+    // Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像注入系统提示尾部，
+    // 与 L3 画像（personaContext）并列；空模型返回 ""，零成本降级。
+    if (this.memoryHub) {
+      try {
+        personaContext = (this.memoryHub.getDialecticContext?.() ?? "") + personaContext;
+      } catch { /* best-effort */ }
     }
 
     const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + personaContext + memoryContext;
@@ -2518,10 +2531,31 @@ export class AgentModelExecutor {
         //   这几个字段，却永远拿到 undefined：前端「上下文窗口分母来源」
         //   标注（user/provider/catalog/fallback）从未显示过，最终思考轨迹
         //   也传不到前端。改为展开 result 再覆盖，新增字段自动透传，不再漏。
-        if (pendingPermissions.length > 0) {
-          return { ...result, reply: guardrailedReply, permissionRequests: [...pendingPermissions] };
-        }
-        return { ...result, reply: guardrailedReply, permissionRequests: [] };
+        //
+        // ★ 2026-10-14 修复：此 guardrails 包装 return 此前**绕过了 agent_end**
+        //   （插件钩子 + EventBus 发布只存在于下面 LLM 不可用的兜底分支）——
+        //   正常 LLM 路径的 agent_end 从未发布过，MemoryCurator 会话策展、
+        //   dialectic 用户建模、agent_end 插件钩子在主路径上全部静默失效。
+        //   现在两条出口统一先发 agent_end 再返回。
+        const guardedResult = {
+          ...result,
+          reply: guardrailedReply,
+          permissionRequests:
+            pendingPermissions.length > 0 ? [...pendingPermissions] : [],
+        };
+        this.runAgentEndHook(sessionId, agentId, channel, {
+          reply: guardrailedReply,
+          tokensUsed: result.tokensUsed,
+          duration: Date.now() - startTime,
+          permissionRequests: guardedResult.permissionRequests,
+        });
+        this.eventBus.publish("agent_end", {
+          userMessage: message,
+          agentResponse: guardrailedReply,
+          sessionId,
+          context: { agentId, channel },
+        }, "agent-model-executor").catch(err => process.stderr.write(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
+        return guardedResult;
       }
     }
 

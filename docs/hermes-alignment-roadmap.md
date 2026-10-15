@@ -51,18 +51,18 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 
 - [x] **语音模式**：流式 TTS + barge-in 打断 + 本地唤醒词。
 - [x] **签名出站 Webhook**：任务完成/审批/告警事件推送到外部系统。
-- [ ] **Honcho dialectic 用户建模**：跨会话辩证用户建模层（叠加在现有分层记忆上）。
+- [x] **Honcho dialectic 用户建模**：跨会话辩证用户建模层（叠加在现有分层记忆上）。落地 2026-10-14：`packages/memory/src/dialectic-user-model.ts`（`DialecticUserModeler`——启发式 claim 抽取中英文模式 + topic 桶归类 → 正题/反题辩证（同 topic 对立主张互相 challenge，旧主张保留为 challenged 不删除）→ synthesis 产出稳定信念（证据加成 + 辩证折减），`CrossProcessLock + atomicWriteFile` 持久化到 `data/memory/dialectic/<userId>.json`）。接线：`MemoryHub.curateFromTurn` 每轮 observe（server `agent_end` 订阅补传 sessionId）+ `getDialecticContext()` 经 `agent-model-executor` 注入系统提示尾部（与 L3 画像并列，空模型零成本降级）+ `GET /api/memory/dialectic` 诊断端点。v1 不依赖 LLM key；13 测试守护。
 - [x] **grounded research**：web 检索 + 可验证引用 + 事实核查。
 - [x] **agentskills.io 公开标准兼容**：OpenClaw 私标之外增加公开标准支持（`agentskills.ts` 规范校验器 + SKILL.md frontmatter 归一化 + `evoclaw skills validate-spec` 离线校验，落地 2026-10-14）。
 - [x] **Programmatic Tool Calling / execute_code 产品化**：多步工具流水线折叠为单次推理调用（`execute_code programmatic=true` + 跨进程协议 + 工具白名单 + 审计日志，落地 2026-10-14）。
 
 ### P3 — 可观测与分发
 
-- [ ] **Curator 完整报告链路**：后台 cron 代理 + `logs/curator/run.json` + `REPORT.md` + consolidated-vs-pruned 分类。
-- [ ] **7 终端后端 / serverless**：SSH/Daytona/Modal/Vercel Sandbox 之外补闲置近零成本。
-- [ ] **发布流水线**：stable release pipeline（one attempt ref + 测试镜像 + receipt tag）。
+- [x] **Curator 完整报告链路**：后台 cron 代理 + `logs/curator/run.json` + `REPORT.md` + consolidated-vs-pruned 分类。落地 2026-10-14：`packages/skills/src/curator-report.ts`——`runCycle()`（24h 后台定时器即 cron 代理）结束后经 `CrossProcessLock + atomicWriteFile` 写 `logs/curator/run.json` + `REPORT.md`，每个技能打 `consolidated`（保留活跃）/ `pruned`（归档，可恢复）/ `pinned-exempt`（过期但 pinned 豁免）分类，附进化统计与最近记录；发布 `skill.curator.report` 事件；报告失败不影响周期结果。10 测试守护。
+- [ ] **7 终端后端 / serverless**：SSH/Daytona/Modal/Vercel Sandbox 之外补闲置近零成本。**设计完成 2026-10-14（见 §四 P3-5：注册表化 + SANDBOX_BACKEND 配置/fallback 链 + Modal/Vercel 适配器）**，实现排期在评测窗口外（动 execute 主路径）。
+- [x] **发布流水线**：stable release pipeline（one attempt ref + 测试镜像 + receipt tag）。落地 2026-10-15：三件套全部落地——① `scripts/release-prepare.mjs`（patch-only bump + CHANGELOG 三段式校验 + 原子写，`pnpm release:prepare`）；② `.github/workflows/release.yml` 两段式：阶段 A 推 `vX.Y.Z-test.<sha>` 测试镜像 + 容器 `/health` 120s 冒烟 + digest 传递，阶段 B 全绿后推 stable `vX.Y.Z` + `latest`，写 `logs/release/receipt-vX.Y.Z.json`（attemptRef/sha/双 digest/时间戳，不可变快照）并上传 GitHub Release asset，任一阶段失败不打 stable；③ 口径统一到 ghcr（QUICKSTART + docker-compose `image` 双模式）。剩余动作：真实 tag 推送（`git tag vX.Y.Z && git push`）需推送权限，在评测窗口外执行。
 
-## 四、代码级设计方案（P1 四项 + P2 语音/Webhook）
+## 四、代码级设计方案（P1 四项 + P2 语音/Webhook + P3 两项）
 
 > 基于 2026-10-12 代码勘察（GroupChat/AgentRouter/SubagentRegistry/CronScheduler/MCPClientManager）。
 > 每项给出：改动文件、新增/扩展的类型与 API、关键接线点、风险与回退。
@@ -241,6 +241,34 @@ discovered tools（前缀 `mcp__<server>__<tool>`），无 allow/deny、无 per-
 **风险**：出站 = 把内部事件推给外部系统，须走 `SecurityGovernor` 的 URL 白名单（防 SSRF，
 已有 SSRF 检测可复用），签名密钥存 .env 不入库。
 
+### P3-5 终端后端 / serverless（2026-10-14 勘察，设计完成待实现）
+
+**现状**（勘察见 §七 附录索引）：`SandboxManager`（`sandbox-manager.ts`）是 if-else 分支调度而非多态——`SandboxBackendType = "docker" | "ssh" | "process"` 三处硬分支（createSession `:58` / execute `:116` / executeScript `:186`）；`ISandboxBackend` 抽象层只有 `LocalSandboxBackend` 实现，docker/ssh 手工适配；`listBackends` 硬编码 ssh/process 恒可用（`:244`）；`execute_code` 沙箱模式硬编码 `backend:"docker"` 且无 docker 直接报错不降级（`shell-media-tools.ts:1369/:1343`）；`shell_exec.sandbox` 绕过 manager 直连 `LocalSandboxBackend`（`:438`）；配置零 env 项（`.env.example` 无 sandbox 键）；Daytona/Modal/Vercel/e2b/firecracker **全仓零代码痕迹**。
+
+**改动（地基三步，均可离线验证）**：
+
+1. **注册表化**：`SandboxManager` 改 `Map<SandboxBackendType, ISandboxBackend>` 注册表，让 docker/ssh 实现 `ISandboxBackend`（统一 `execute/executeScript` 签名），删三处 if-else；`listBackends` 改遍历注册表做真实 `isAvailable()` 探测（修掉硬编码）。回退：分支逻辑等价迁移，`sandbox-backend.test.ts` / `ssh-sandbox.test.ts` 现有用例守住。
+2. **配置 + fallback 链**：新增 env `SANDBOX_BACKEND`（可选 docker|ssh|process）+ `execute_code` 改为「显式配置 → listBackends 探测 → 依序 fallback（docker→process）」，缺 docker 时降级 process 并在结果里标注 backend（不再硬报错）；`shell_exec.sandbox` 改走 manager（去掉旁路）。工具选择属 prompt-cache 不敏感面（工具结果元数据，非工具集本身），无需延迟失效。
+3. **serverless 适配器**（外部依赖，落地需账号/key，走 service-gated）：优先「闲置近零成本」的 **Modal / Vercel Sandbox / Cloudflare Containers** 之一实现 `ISandboxBackend`（REST API + token env，`SANDBOX_MODAL_TOKEN` 等，缺 key 时 `isAvailable()` false 零成本降级），按窄腰原则放 `packages/infrastructure/src/modal-sandbox.ts`，不加核心工具。Daytona 已有免费额度可作第二档。
+
+**风险与回退**：注册表重构动 `execute` 主路径——须在评测窗口之外进行；process 降级弱隔离，结果需带 backend 标注 + 走既有 `SandboxPolicy`；REST `POST /api/sandbox/sessions` 白名单（`protocol-adapter.ts:6268`）同步扩枚举。
+
+### P3-6 发布流水线（2026-10-14 勘察；三件套已落地 2026-10-15）
+
+**现状**：`.github/workflows/` 仅 `ci.yml` 有发布面——lint→test→build→docker 四段，docker job 用 buildx + metadata-action 推 **ghcr.io**（`v*` tag 触发已就绪但仓库仅 `v0.5.0` 一个历史 tag，0.92.x 从未走过 tag 路径）；**无** release workflow、无 version bump 脚本、无 CHANGELOG 校验 hook、无测试镜像→验证→stable 的两段式、无 receipt。版本规则成文于 `CHANGELOG.md:6-7`（正常迭代只递增 patch，条目须含「根因/改动/验证」），纯手工维护；根 0.92.1 与子包 0.74.0 漂移（全部 `private:true`，npm 分发面明确排除）；镜像口径三处不一致（README 说 ghcr、QUICKSTART 说 Docker Hub `evoclaw/evoclaw`、compose 无 `image:` 字段）。
+
+**改动（三件套）**：
+
+1. **bump 脚本** `scripts/release-prepare.mjs`：读根 package.json 按 patch-only 规则递增 → 校验 CHANGELOG.md 头条存在且是当日新增的 `## [x.y.z]` 三段式条目（校验失败即退出，防漏写 changelog）→ `atomicWriteFile` 写回（遵守 AGENTS.md 原子写）。子包不同步（private 不发布，漂移写入 receipt 供审计——决策成文）。
+2. **one attempt ref**：`git tag vX.Y.Z && git push origin vX.Y.Z` 作为一次发布的唯一 attempt 标识（复用 ci.yml 已有 `v*` 触发与 `type=ref,event=tag` 镜像 tag 规则），新增 `release.yml`：
+   - **阶段 A 测试镜像**：buildx 构建并推 `ghcr.io/chydroid/EvoClaw:vX.Y.Z-test.<sha>` → `docker run --rm <test镜像> ` 起容器打 `/health` 冒烟 + 跑镜像内 `node --test`（或 `vitest run` 最小集）；
+   - **阶段 B receipt**：A 全绿后，仿 `curator-report.ts` 的 `run.json` 模式（`CrossProcessLock + atomicWriteFile`）写 `logs/release/receipt-vX.Y.Z.json`（attemptRef=tag、commit sha、测试结果、镜像 digest、时间戳），推 stable tag `vX.Y.Z` 镜像 + `latest`，receipt 上传为 release asset；任一阶段失败即停止，**不打 stable tag**（one attempt：同 tag 只允许一次 attempt，重试换 patch 号）。
+3. **口径统一**：QUICKSTART/README 镜像地址统一到 ghcr（CI 实际推法），`docker-compose.yml` 补 `image: ghcr.io/chydroid/EvoClaw:latest` + `build:` 双模式。
+
+**风险与回退**：release.yml 不触碰现有 ci.yml 的 lint/test/build/docker job（新增而非修改，回退 = 删一个文件）；本地无 docker 时阶段 A 由 CI 承担，本地只跑阶段 1 的 bump+校验（可离线验证）。
+
+**实现顺序（2026-10-15 更新）**：三件套已全部落地——① bump 脚本 `scripts/release-prepare.mjs`（本地可测，vitest `scripts/**/*.test.ts` 已纳入）；② `release.yml` 两段式（新增文件，回退 = 删文件）；③ 口径统一到 ghcr。剩余动作：首次真实发布需推送权限——`pnpm release:prepare` 写 changelog + bump 后 `git tag vX.Y.Z && git push origin vX.Y.Z`（one attempt），在评测窗口外执行。
+
 ## 五、设计原则约束（继承 AGENTS.md）
 
 - Prompt cache 神圣：任何改动系统提示/工具集的方案须走「延迟失效」或 compaction 例外。
@@ -263,3 +291,15 @@ discovered tools（前缀 `mcp__<server>__<tool>`），无 allow/deny、无 per-
 | 子代理注册 | `packages/agent/src/subagent-registry.ts` + `background-delegator.ts`（真实 abortController，steer 插桩点） |
 | Cron 学习闭环 | `packages/scheduler/src/cron-scheduler.ts` + `run-log-store.ts`（已存在未接线）+ `memory-hub.ts`/`evolution-engine.ts` 消费面 |
 | MCP 指挥中心 | `packages/gateway/src/mcp-client-manager.ts` + `mcp-client-transport.ts`（工具级过滤插入点）+ `mcp-poisoning-scanner.ts` |
+
+## 七、P3 勘察附录（2026-10-14）
+
+| 主题 | 关键落点 |
+|---|---|
+| 沙箱调度 | `packages/infrastructure/src/sandbox-manager.ts`（if-else 三分支 `:58/:116/:186`、`listBackends` 硬编码 `:244`）；`sandbox-backend.ts:54` `ISandboxBackend` 抽象仅 process 实现 |
+| 工具侧后端选择 | `apps/server/src/tools/shell-media-tools.ts`：execute_code 硬编码 docker `:1369`、无 docker 硬报错 `:1343`；shell_exec.sandbox 旁路 manager `:438`；programmatic 本地 spawn `:1120-1320` |
+| 沙箱测试面 | `sandbox-backend.test.ts`（17 用例）/ `ssh-sandbox.test.ts` / `docker-sandbox.test.ts`（2 浅用例）；缺 execute_code docker 路径与 REST 测试 |
+| CI/发布 | `.github/workflows/ci.yml`（lint→test→build→docker→ghcr，`v*` 触发已就绪）；无 release workflow/bump 脚本/CHANGELOG hook；仓库仅 `v0.5.0` 一个 tag |
+| 版本约定 | `CHANGELOG.md:6-7` patch-only + 「根因/改动/验证」三段式；根 0.92.1 vs 子包 0.74.0 漂移（全 private，npm 分发面排除） |
+| receipt 范式 | `packages/skills/src/curator-report.ts` 的 `CrossProcessLock + atomicWriteFile` 不可变快照（run.json + REPORT.md）→ 迁移为 release receipt |
+| 镜像口径 | README=ghcr、QUICKSTART=Docker Hub `evoclaw/evoclaw`、compose 无 `image:` —— 三处待统一到 ghcr |

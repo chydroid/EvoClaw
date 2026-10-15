@@ -1,6 +1,6 @@
 {
   "name": "evoclaw",
-  "version": "0.92.1",
+  "version": "0.92.2",
   "private": true,
   "description": "EvoClaw - 具备增强式自我进化能力的下一代自主智能体操作系统",
   "scripts": {
@@ -19,6 +19,7 @@
     "typecheck": "pnpm -r typecheck",
     "clean": "pnpm -r clean",
     "osv-check": "npx --yes tsx scripts/osv-check.ts",
+    "release:prepare": "node scripts/release-prepare.mjs",
     "lock-deps": "npx --yes tsx scripts/lock-deps.ts",
     "lock-deps:fix": "npx --yes tsx scripts/lock-deps.ts --fix"
   },

@@ -3,15 +3,16 @@
 ## 方式一：Docker（推荐，最快速）
 
 ```bash
-# 拉取预构建镜像（无需下载源码和编译）
-docker pull evoclaw/evoclaw:latest
+# 拉取预构建镜像（CI 推送至 ghcr；tag 镜像与 receipt 见 .github/workflows/release.yml）
+# 私有 ghcr 仓库需先登录：echo $GITHUB_TOKEN | docker login ghcr.io -u chydroid --password-stdin
+docker pull ghcr.io/chydroid/evoclaw:latest
 
 # 启动
 docker run -d --name evoclaw \
   -p 27788:27788 \
   --env-file .env \
   -v evoclaw-data:/app/data \
-  evoclaw/evoclaw:latest
+  ghcr.io/chydroid/evoclaw:latest
 
 # 查看日志
 docker logs -f evoclaw

@@ -9,6 +9,64 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.2] - 2026-10-14
+
+**Hermes 对标路线图收口：P2/P3 全部落地 + 评测缺陷修复（agent_end 断链/SQLi 误伤/确定性重试）**
+
+`docs/hermes-alignment-roadmap.md` P0→P3 全部勾选：P2 剩余两项与 P3 四项在本版本
+完成落地，并修复了 2026-10-14 真实任务评测暴露的 4 处主链路缺陷。
+
+### 根因与改动
+
+**A. P2/P3 落地（路线图 §三）**
+
+1. **Honcho dialectic 用户建模（P2）**：新增 `packages/memory/src/dialectic-user-model.ts`
+   （`DialecticUserModeler`——启发式 claim 抽取 + 正题/反题辩证 + synthesis 信念，
+   `CrossProcessLock + atomicWriteFile` 持久化）。接线：`MemoryHub.curateFromTurn`
+   每轮 observe（server `agent_end` 补传 sessionId）+ 系统提示尾部注入（空模型零成本
+   降级）+ `GET /api/memory/dialectic` 诊断端点。
+2. **Curator 完整报告链路（P3）**：新增 `packages/skills/src/curator-report.ts`——
+   `runCycle()`（24h 后台定时器）结束后写 `logs/curator/run.json` + `REPORT.md`
+   （consolidated/pruned/pinned-exempt 分类 + 进化统计），发布 `skill.curator.report`
+   事件，报告失败不影响周期结果。
+3. **发布流水线（P3-6）三件套**：① `scripts/release-prepare.mjs`（patch-only bump
+   + CHANGELOG 三段式校验 + 原子写，`pnpm release:prepare`）；② 新增
+   `.github/workflows/release.yml` 两段式：阶段 A 推 `vX.Y.Z-test.<sha>` 测试镜像 +
+   容器 `/health` 120s 冒烟 + digest 传递，阶段 B 全绿后推 stable `vX.Y.Z` + `latest`，
+   写 `logs/release/receipt-vX.Y.Z.json` 不可变快照并上传 GitHub Release asset，
+   任一阶段失败不打 stable（one attempt：同 tag 只允许一次尝试，重试递增 patch）；
+   ③ 镜像口径统一到 ghcr（QUICKSTART + docker-compose `image` 双模式，CI 只推 ghcr）。
+4. **终端后端 / serverless（P3-5）**：完成勘察与设计（路线图 §四 P3-5：SandboxManager
+   注册表化 + `SANDBOX_BACKEND` 配置/fallback 链 + Modal/Vercel 适配器），实现排期
+   在评测窗口外（动 execute 主路径，须整仓回归）。
+
+**B. 2026-10-14 评测缺陷修复（P0/P1 面）**
+
+5. **agent_end 断链**：guardrails 包装的 LLM 完成路径此前绕过 `agent_end`
+   发布（插件钩子 + 事件只存在于 LLM 不可用兜底分支），主路径上 MemoryCurator
+   会话策展、dialectic 建模、插件钩子全部静默失效；现两条出口统一先发
+   `agent_end` 再返回（`agent-model-executor.ts`）。
+6. **SQLi 误伤**：`tool-sql-injection` 规则全工具生效 + 裸 `--\s*$` 多行模式把
+   源码注释分隔线（Python `# -----` / Markdown `---`）误判为 SQL 注入并 block
+   写文件工具；现限定工具域（db/query/shell/exec 族）+ `'\s*--` 引号锚定 +
+   `\b1\s*=\s*1\b` 词界，回归测试见 `guardrails.test.ts`。
+7. **确定性错误无差别重试**：`file_create` 遇 "File already exists" 被重试 6 次
+   （含 15.5s 退避）；`ErrorRecoveryManager` 新增 `isNonRetryable` 判定
+   （EEXIST/ENOTEMPTY/EISDIR 族），命中即终止并标注 `[non-retryable]`，
+   不发布 `max_retries_exceeded`（不是"耗尽"）。
+8. **对账误判 + 空回复兜底**：同名工具先失败后成功时清掉早前 `failedTools`
+   记录（对账以最新状态为准）；整条回复只有裸 XML 时先补一次无工具的强制总结
+   调用（带 token 记账），失败才降级兜底文案。
+
+### 验证
+
+- `pnpm build → pnpm typecheck → pnpm test`：265 测试文件 / 6211 用例全部通过
+  （新增 `dialectic-user-model` 13 + `curator-report` 10 + `release-prepare` 9 +
+  `guardrails` + `error-recovery-manager` 守护用例；vitest 纳入 `scripts/**/*.test.ts`）。
+- `node scripts/release-prepare.mjs --dry-run` 校验本条目通过（三段式齐备）。
+- release.yml 为纯新增文件（回退 = 删文件），不动 ci.yml 既有 job；
+  真实 tag 推送（one attempt 首验）需推送权限，在评测窗口外执行。
+
 ## [0.92.1] - 2026-10-11
 
 **任务执行链路代码审查：修复 9 处真实缺陷（轨迹丢失/计数虚高/跨会话串扰/契约断链）**

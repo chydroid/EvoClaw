@@ -44,6 +44,8 @@ export type { TfidfMatchResult } from "./tfidf-matcher";
 //   - 永不删除技能，仅归档到 data/skills-archive/（遵循 AGENTS.md "Never delete; archive"）
 //   - Pinned 技能豁免自动归档；CrossProcessLock + atomicWriteFile 保护并发
 export * from "./skill-curator";
+// Curator 完整报告链路（Hermes 对标 P3）：run.json + REPORT.md + consolidated-vs-pruned 分类
+export * from "./curator-report";
 // Round 7: SQLite-first 技能数据存储（对标 OpenClaw database-first）
 export { SkillSqliteStore, probeSqlitePersistence } from "./skill-sqlite-store";
 export type {

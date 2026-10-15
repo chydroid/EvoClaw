@@ -12,6 +12,9 @@ export type { SemanticMemoryEntry, SemanticSearchResult, SemanticMemoryConfig } 
 export { MemoryHost } from "./memory-host-sdk";
 export type { MemoryHostEntry, MemoryHostQuery, MemoryHostConfig } from "./memory-host-sdk";
 export { MemoryWeaver } from "./memory-weaver";
+// Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像
+export { DialecticUserModeler, extractClaims } from "./dialectic-user-model";
+export type { DialecticClaim, SynthesizedBelief, DialecticModelFile, ClaimStatus, ClaimStance, ExtractedClaim } from "./dialectic-user-model";
 export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";
 export { FTS5SearchEngine } from "./fts5-search";
 export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";

@@ -343,10 +343,17 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   },
 
   // SQL injection in tool args
+  // 只对可能触达数据库/解释器的工具生效（file_create 等写文件工具豁免——
+  // 源码/Markdown 内容不是 SQL 上下文，历史上被误拦）。
+  // 2026-10-14 修复两类误伤：
+  // 1. 裸 `--\s*$`（多行）会命中任何以两个以上短横线结尾的行
+  //    （Python 注释分隔线 `# -----`、Markdown `---`）→ 改为 `'\s*--`
+  //    （SQL 注释注入必须紧跟引号，如 `admin'--`）；
+  // 2. 裸 `1\s*=\s*1` 会命中 `count1 = 1` 这类赋值语句 → 加 `\b` 词界。
   {
     id: "tool-sql-injection",
-    toolPattern: /./,
-    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|1\s*=\s*1|OR\s+1\s*=\s*1|'\s+OR\s+'|--\s*$)/im,
+    toolPattern: /(?:sql|query|database|\bdb\b|mysql|postgres|shell|exec|command|run|bash|terminal|execute)/i,
+    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+'|'\s*--)/im,
     severity: "high",
     action: "block",
     description: "SQL injection pattern in tool arguments",

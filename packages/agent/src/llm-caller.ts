@@ -3652,6 +3652,13 @@ Have a specific URL?
               } else {
                 process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
                 successfulToolCalls++;
+                // ── 后成功取代前失败（2026-10-14 评测修复）──
+                // 同名工具本轮先失败后成功时，清掉早前的 failedTools 记录：
+                // 对账以**最新状态**为准。否则模型重试成功后的诚实完成声明
+                // 仍会被 failedTools.length > 0 判成"任务未完成"，追加过期否定。
+                for (let i = failedTools.length - 1; i >= 0; i--) {
+                  if (failedTools[i].name === toolName) failedTools.splice(i, 1);
+                }
                 // 只有搜索类工具**真的成功**了，后面才值得提示「别再搜了」
                 if (SEARCH_TOOLS_HINT.has(toolName)) actualSearchExecuted = true;
                 // ── 收集「产物文件」下载链（2026-10-12 P0 欠账修复）──
@@ -4106,10 +4113,59 @@ Have a specific URL?
             .replace(/<\u200b?parameter\s+name=[^>]*>[\s\S]*?<\/\u200b?parameter>/gi, "")
             .replace(/<\u200b?invoke\s+name=[^>]*>[\s\S]*?<\/\u200b?invoke>/gi, "");
           if (finalReply.trim().length === 0 && beforeStrip.trim().length > 0) {
-            // 整条回复只有裸 XML（模型没写出任何自然语言）→ 明确告知而非留白
+            // 整条回复只有裸 XML（模型没写出任何自然语言）。
+            // 2026-10-14 评测修复：此前直接丢生硬兜底文案（10 任务中 2 次命中，
+            // 用户拿不到任何任务总结）。现在先补一次无工具的强制总结调用，
+            // 成功则用真实总结，失败才降级为兜底文案。
+            let recovered = "";
+            if (successfulToolCalls > 0) {
+              try {
+                trace?.nextRound();
+                const summaryResult = await callLLMOnce(
+                  provider,
+                  [
+                    ...conversationMessages,
+                    {
+                      role: "user" as const,
+                      content:
+                        "请根据以上工具执行结果，用自然语言总结回答用户的问题（直接输出总结，不要调用工具）。" as string,
+                    },
+                  ],
+                  [],
+                  "auto",
+                  onProgress,
+                  deps,
+                  trace,
+                  includeAccumulatedReplyInTokenEvents
+                );
+                if (summaryResult?.message?.content && String(summaryResult.message.content).trim()) {
+                  recovered = String(summaryResult.message.content);
+                  totalTokensUsed += summaryResult.tokensUsed;
+                  if (deps.tokenUsageTracker) {
+                    try {
+                      const outputTokens = Math.max(0, summaryResult.tokensUsed - summaryResult.promptTokens);
+                      deps.tokenUsageTracker.record({
+                        sessionId,
+                        provider: provider.provider || provider.name,
+                        model: provider.model || "unknown",
+                        inputTokens: summaryResult.promptTokens,
+                        outputTokens,
+                        durationMs: summaryResult.responseMs,
+                        channel: channel || "unknown",
+                      });
+                    } catch { /* best-effort */ }
+                  }
+                }
+              } catch (sumErr) {
+                process.stderr.write(
+                  `[AgentModelExecutor] XML-only reply summary failed: ${sumErr instanceof Error ? sumErr.message : String(sumErr)}\n`
+                );
+              }
+            }
             finalReply =
+              recovered.trim() ||
               "（本轮模型只输出了工具调用标记，没有给出文字回复。已停止执行；" +
-              "如需继续，请明确说明下一步要做什么。）";
+                "如需继续，请明确说明下一步要做什么。）";
           }
         }
 

@@ -16,6 +16,13 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { SkillValidator } from "./skill-validator";
+import {
+  newCuratorRunId,
+  summarizeUsage,
+  writeCuratorReport,
+  type CuratorRunReport,
+  type CuratorSkillOutcome,
+} from "./curator-report";
 
 /**
  * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
@@ -160,13 +167,16 @@ export class SkillCurator {
   private expiryDays = 30;
   /** EventBus 订阅句柄，用于 dispose 时清理。 */
   private subscriptions: EventSubscription[] = [];
+  /** 运行报告输出目录（Hermes 对标 P3：logs/curator/run.json + REPORT.md）。 */
+  private reportDir: string;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus,
     skillsDir?: string,
     archiveDir?: string,
-    dataDir?: string
+    dataDir?: string,
+    reportDir?: string
   ) {
     registry.registerService("skillCurator", this);
     this.validator = new SkillValidator();
@@ -179,6 +189,9 @@ export class SkillCurator {
     this.skillsDir = skillsDir
       ? path.resolve(skillsDir)
       : path.resolve(process.cwd(), "data", "skills");
+    this.reportDir = reportDir
+      ? path.resolve(reportDir)
+      : path.resolve(process.cwd(), "logs", "curator");
     this.loadFromDisk();
     this.loadUsage();
     this.subscribeSkillEvents();
@@ -193,7 +206,7 @@ export class SkillCurator {
   start(): void {
     if (this.scanTimer) return;
     this.scanTimer = setInterval(() => {
-      void this.runCycle().catch(err => {
+      void this.runCycle("timer").catch(err => {
         process.stderr.write(`[SkillCurator] Scan cycle failed: ${err instanceof Error ? err.message : String(err)}\n`);
       });
     }, this.scanIntervalMs);
@@ -275,12 +288,18 @@ export class SkillCurator {
   /**
    * 执行一次扫描周期：扫描 skillsDir 下的技能目录，
    * 将超过 expiryDays 天未使用的技能归档到 archiveDir（永不删除）。
+   * 周期结束后写运行报告（logs/curator/run.json + REPORT.md，consolidated-vs-pruned 分类）。
+   * @param trigger 后台定时（timer）或手动（manual），只影响报告元数据
    * @returns archived: 实际归档的技能名列表；expired: 满足过期条件的技能名列表
    */
-  async runCycle(): Promise<{ archived: string[]; expired: string[] }> {
+  async runCycle(trigger: "timer" | "manual" = "manual"): Promise<{ archived: string[]; expired: string[] }> {
     const archived: string[] = [];
     const expired: string[] = [];
+    const outcomes: CuratorSkillOutcome[] = [];
+    const startedAt = new Date().toISOString();
+    const startMs = Date.now();
     if (!fs.existsSync(this.skillsDir)) {
+      await this.emitReport(trigger, startedAt, startMs, outcomes, archived, expired);
       return { archived, expired };
     }
     const now = Date.now();
@@ -302,7 +321,10 @@ export class SkillCurator {
       const isExpired = Number.isNaN(referenceTime)
         ? true // 无任何使用/创建记录：视为过期候选
         : (now - referenceTime) > expiryMs;
-      if (!isExpired) continue;
+      if (!isExpired) {
+        outcomes.push({ skillName, classification: "consolidated", reason: "未过期，保留为活跃" });
+        continue;
+      }
 
       expired.push(skillName);
 
@@ -310,16 +332,60 @@ export class SkillCurator {
       const pinnedEntry = Array.from(this.evolutions.values()).find(
         e => e.skillName === skillName && e.pinned
       );
-      if (pinnedEntry) continue;
+      if (pinnedEntry) {
+        outcomes.push({ skillName, classification: "pinned-exempt", reason: "已过期但 pinned，豁免归档" });
+        continue;
+      }
 
       try {
         await this.archiveSkill(skillName);
         archived.push(skillName);
+        outcomes.push({
+          skillName,
+          classification: "pruned",
+          reason: `超过 ${this.expiryDays} 天未使用，已归档（永不删除，可恢复）`,
+        });
       } catch (err) {
-        process.stderr.write(`[SkillCurator] Auto-archive failed for "${skillName}": ${err instanceof Error ? err.message : String(err)}\n`);
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[SkillCurator] Auto-archive failed for "${skillName}": ${msg}\n`);
+        outcomes.push({ skillName, classification: "consolidated", reason: `归档失败，保持活跃：${msg}` });
       }
     }
+    await this.emitReport(trigger, startedAt, startMs, outcomes, archived, expired);
     return { archived, expired };
+  }
+
+  /** 汇总本次周期结果并原子写入运行报告（run.json + REPORT.md）。报告失败不影响周期结果。 */
+  private async emitReport(
+    trigger: "timer" | "manual",
+    startedAt: string,
+    startMs: number,
+    outcomes: CuratorSkillOutcome[],
+    archived: string[],
+    expired: string[]
+  ): Promise<void> {
+    try {
+      const report: CuratorRunReport = {
+        runId: newCuratorRunId(),
+        trigger,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startMs,
+        scanned: outcomes.length,
+        outcomes,
+        archived,
+        expired,
+        evolutionStats: this.getEvolutionStats(),
+        usageTotals: summarizeUsage(this.usageStats),
+        recentRecords: this.evolutionRecords.slice(-20),
+      };
+      await writeCuratorReport(this.reportDir, report);
+      void this.eventBus
+        .publish("skill.curator.report", report, "skill-curator")
+        .catch(() => { /* best-effort */ });
+    } catch (err) {
+      process.stderr.write(`[SkillCurator] Failed to write run report: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   /** 从 usage.json 加载使用统计。 */
