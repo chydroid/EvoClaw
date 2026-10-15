@@ -51,6 +51,14 @@
   github /zen 为轮换短句故只断言「短小单行纯文本」）：**10/10 通过**，
   总耗时 ~14min；b03 审批链路真实触发（pending → approve → 续跑落盘）。
 
+### 发布回执（v0.92.7 两段式流水线端到端验证）
+
+- GitHub Release `EvoClaw v0.92.7` 已创建（run 38742509991 全绿），
+  资产 `receipt-v0.92.7.json`：commitSha `6a2a8b9`，
+  stableImage `ghcr.io/chydroid/evoclaw:v0.92.7`（sha256:6c9e46be…），
+  testImage `…:v0.92.7-test.6a2a8b9`——两段式（test 镜像先行 + 稳定标签落位）
+  与 v0.92.5/v0.92.6 口径一致。
+
 ## [0.92.6] - 2026-10-15
 
 **完成声明对账新增「写声明证据」分支：修复只读工具跑过就放行伪造写操作的情况**
