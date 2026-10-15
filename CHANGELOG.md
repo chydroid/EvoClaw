@@ -9,6 +9,34 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.4] - 2026-10-14
+
+**release 两段式流水线首次冒烟：修复 Docker 镜像缺失 per-package 依赖（dotenv 崩溃，/health 永不就绪）**
+
+v0.92.3 的 release.yml 阶段 A 容器冒烟第一次真实运行即失败：容器启动
+`Error: Cannot find module 'dotenv'`（smoke logs 证实），`/health` 120s 未就绪，
+阶段 B 按 one-attempt 策略正确跳过（未打 stable 镜像——流水线守住了自身语义）。
+
+### 根因与改动
+
+1. 旧 Dockerfile 生产阶段只 `COPY` builder 的**根** `node_modules` + 已构建的
+   `packages/`/`apps/`。但 pnpm workspace 把各包生产依赖放在 **per-package**
+   `node_modules`（`apps/server/node_modules/dotenv` → 根 `.pnpm` store 的相对符号
+   链接），根 `node_modules` 在容器内缺少完整的 `.pnpm` store 布局 → dotenv 等
+   顶层 import 全部解析失败。
+2. 修复：生产阶段独立执行完整 `pnpm install --frozen-lockfile`（含 better-sqlite3
+   源码编译所需的 python3/make/g++ 工具链与 .npmrc 镜像配置），从 builder 只取编译
+   产物 `packages/`/`apps/`（含 dist）；per-package 符号链接由安装过程重建，布局与
+   builder 一致（frozen lockfile 确定性）。
+
+### 验证
+
+- 本地无 docker 构建环境，以 v0.92.4 的 CI 两段式首跑为准：阶段 A 容器 `/health`
+  冒烟 + 阶段 B stable 镜像 + receipt。
+- 静态校验：Dockerfile 仅改 Stage 2（Stage 1 builder 未动），YAML/构建逻辑无其他
+  面改动；release.yml 自 v0.92.3 起无变更（小写 ghcr 仓库名修复已验证有效——
+  v0.92.3 失败点已从 buildx tag 校验后移到容器运行期）。
+
 ## [0.92.3] - 2026-10-14
 
 **Hermes 对标路线图收口：P2/P3 全部落地 + 评测缺陷修复（agent_end 断链/SQLi 误伤/确定性重试）**
