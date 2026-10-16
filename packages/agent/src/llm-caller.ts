@@ -3759,7 +3759,13 @@ export async function tryCallLLM(
               // 「不是技能而是内置工具」的错误，这里仍给它追加
               // "You have search results now. Do NOT search again"，
               // 与场景完全无关的噪音指令把模型带偏（它随即放弃了正确路径）。
+              // 事故（2026-10-16 sess_mvasc4w8）：用户要「前 10 条 + 读各自 README」，
+              // web_fetch 返回的 json 被截断（`"truncated":true`，只拿到第 1 条完整数据），
+              // 提示仍触发 → 模型被劝「直接回答」，产出一篇只含 1 条数据的残稿并让用户重发。
+              // 修复：结果被截断（数据不完整）时跳过——截断恰恰是「还需要取数据」的信号。
+              const resultTruncated = toolResult.includes('"truncated":true') || toolResult.includes('"truncated": true');
               if (
+                !resultTruncated &&
                 successfulToolCalls >= 2 &&
                 SEARCH_TOOLS_HINT.has(toolName) &&
                 actualSearchExecuted

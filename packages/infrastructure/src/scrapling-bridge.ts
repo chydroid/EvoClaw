@@ -10,13 +10,35 @@
 
 import { execFileSync } from "child_process";
 
-/** Python 解释器路径 */
-const PYTHON = "python";
+/** 解析可用的 Python 解释器（一次性探测，结果缓存）。
+ *  回归（2026-10-16 会话 sess_mvasc4w8）：`spawn python ENOENT` —— 发行版默认
+ *  只装 python3 时 `python` 不存在。解析顺序：EVOCLAW_PYTHON_BIN 环境变量 →
+ *  `python`（若可执行）→ `python3`。 */
+let resolvedPython: string | null = null;
+export function resolvePython(): string {
+  if (resolvedPython !== null) return resolvedPython;
+  if (process.env.EVOCLAW_PYTHON_BIN) {
+    resolvedPython = process.env.EVOCLAW_PYTHON_BIN;
+    return resolvedPython;
+  }
+  const candidates = ["python", "python3"];
+  for (const c of candidates) {
+    try {
+      execFileSync(c, ["--version"], { stdio: "ignore", timeout: 5000 });
+      resolvedPython = c;
+      return resolvedPython;
+    } catch {
+      // 候选不存在（ENOENT）或不可执行 → 试下一个
+    }
+  }
+  resolvedPython = "python3";
+  return resolvedPython;
+}
 
 /** 检查 Scrapling 是否已安装 */
 export function isScraplingAvailable(): boolean {
   try {
-    execFileSync(PYTHON, ["-c", "import scrapling; print(scrapling.__version__)"], {
+    execFileSync(resolvePython(), ["-c", "import scrapling; print(scrapling.__version__)"], {
       encoding: "utf-8",
       timeout: 5000,
     });
@@ -214,7 +236,7 @@ ${options?.extractLinks ? 'links = page.css("a[href]"); print(f"Links: {len(link
 export function getScraplingInfo(): string {
   try {
     return execFileSync(
-      PYTHON,
+      resolvePython(),
       ["-c", "import scrapling; print(f'Scrapling v{scrapling.__version__}')"],
       { encoding: "utf-8", timeout: 3000 }
     ).trim();

@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
@@ -125,6 +125,36 @@ function findPythonPaths(): string[] {
   return paths;
 }
 
+/** 解析可用的 Python 解释器（缓存）。Linux 常只装 python3 无 python，
+ *  直接 spawn("python") 会 ENOENT。优先级：EVOCLAW_PYTHON_BIN →
+ *  （Windows 保留 python）→ PATH 探测 python → python3 → 兜底 python。 */
+let cachedPythonBin: string | null = null;
+function resolvePythonBin(): string {
+  if (cachedPythonBin) return cachedPythonBin;
+  if (process.env.EVOCLAW_PYTHON_BIN) {
+    cachedPythonBin = process.env.EVOCLAW_PYTHON_BIN;
+    return cachedPythonBin;
+  }
+  if (process.platform === "win32") {
+    cachedPythonBin = "python";
+    return cachedPythonBin;
+  }
+  // Unix：优先 python（若存在），否则 python3
+  for (const cand of ["python", "python3"]) {
+    try {
+      const r = spawnSync(cand, ["--version"], { stdio: "ignore", timeout: 5000 });
+      if (r.status === 0) {
+        cachedPythonBin = cand;
+        return cand;
+      }
+    } catch {
+      /* 候选不存在 → 试下一个 */
+    }
+  }
+  cachedPythonBin = "python3";
+  return cachedPythonBin;
+}
+
 /** 异步执行 Python 脚本，返回 stdout（替代 execSync 避免阻塞事件循环）。
  *  错误对象携带 stderr/stdout/code 属性，兼容原 execSync 错误处理代码。 */
 function runPythonScriptAsync(
@@ -134,7 +164,7 @@ function runPythonScriptAsync(
   timeoutMs: number,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("python", [scriptName], {
+    const child = spawn(resolvePythonBin(), [scriptName], {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],

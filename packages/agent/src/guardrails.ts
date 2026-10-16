@@ -296,7 +296,12 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   {
     id: "tool-shell-injection",
     toolPattern: /(?:shell|exec|command|run|bash|cmd|terminal|powershell)/i,
-    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|curl|wget|nc|ncat)|\|\s*(?:rm|del|format|shutdown|curl|wget)|&&\s*(?:rm|del|format|shutdown|curl|wget)|`[^`]*(?:rm|del|format|curl|wget)`|\$\([^)]*(?:rm|del|format|curl|wget)[^)]*\))/i,
+    // 回归（2026-10-16 会话 sess_mvasc4w8）：合法「下载+处理」链路
+    // `curl -s URL -o x.json && python3 -c ...` 被 `&&\s*curl` 分支硬拦，
+    // 模型被迫改走 Python 直连（撞 SSL 校验失败）浪费 4 轮。curl/wget
+    // 只是下载、非破坏性，从各操作符后分支移除；破坏性/DoS 集合
+    // （rm/del/format/shutdown/reboot/nc/ncat）不变，`&& rm`、`; nc` 仍拦。
+    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*(?:rm|del|format)`|\$\([^)]*(?:rm|del|format)[^)]*\))/i,
     severity: "high",
     action: "block",
     description: "Tool: shell injection pattern in arguments",

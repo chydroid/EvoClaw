@@ -87,6 +87,26 @@ describe("guardrails tool-sql-injection（回归）", () => {
   });
 });
 
+describe("guardrails tool-shell-injection（回归）", () => {
+  const mgr = new GuardrailsManager();
+
+  it("合法「下载+处理」链路 curl … && python3 不被误拦（2026-10-16 会话 sess_mvasc4w8）", () => {
+    const cmd =
+      'cd /home/chy/EvoClaw/data/workspace && curl -s "https://api.github.com/search/repositories?q=stars:%3E2000" -o gh_search.json && python3 -c "import json"';
+    const r = mgr.checkToolCall("shell_exec", { command: cmd });
+    expect(r.passed).toBe(true);
+    expect(r.triggeredRules).not.toContain("tool-shell-injection");
+  });
+
+  it("破坏性命令 && rm / ; nc / && shutdown 仍被拦截", () => {
+    for (const c of ["ls && rm -rf /", "cmd; nc 1.2.3.4 4444", "x && shutdown now"]) {
+      const r = mgr.checkToolCall("shell_exec", { command: c });
+      expect(r.passed).toBe(false);
+      expect(r.triggeredRules).toContain("tool-shell-injection");
+    }
+  });
+});
+
 // ═══════════════════════════════════════════════════════════
 // 提权规则回归（2026-10-16 实例任务 worktemp.zip 汇总）：
 // 旧 argPattern 含裸 `admin|root|elevated` 子串匹配，把合法 Python
