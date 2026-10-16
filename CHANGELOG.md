@@ -84,7 +84,16 @@
 仓库根不再产生 stray `inst_eval2/`。
 
 ### 发布回执（v0.92.9 两段式流水线端到端验证）
-（待推送后补：Release receipt 资产 commitSha / stable & test image sha256 / testResults.health / CI/CD run）
+
+- GitHub Release `EvoClaw v0.92.9` 已创建（Release run 38914768218 全绿：
+  Test Image & Smoke 14:19:03→14:21:45Z / Stable Image & Receipt
+  14:21:48→14:22:25Z），资产 `receipt-v0.92.9.json`（635 B，
+  sha256:8d2e379c…）：commitSha `9ffcc47d3109`（与 v0.92.9 代码 + 三处
+  工具层缺陷修复 21af12b + project_memory 文档 9ffcc47 一致）、stable
+  Image `ghcr.io/chydroid/evoclaw:v0.92.9`（sha256:53174154…）、test
+  Image `…:v0.92.9-test.9ffcc47d3109…`（sha256:3945a7be…）、
+  testResults.health=pass、publishedAt 2026-10-16T14:22:18.447Z。
+- CI/CD run 38912175969（push 9ffcc47）全绿。
 
 ## [0.92.8] - 2026-10-16
 
