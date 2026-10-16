@@ -295,3 +295,64 @@ describe("lookupCachedToolResult — 副作用工具豁免", () => {
     expect(r).toBe("abc");
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 工具参数 JSON 字符串自动解析（回归：实例任务 worktemp.zip，
+// docx_create 的 paragraphs/tables 被模型以 JSON 字符串下发，
+// 旧校验直接报 "expected array, got string" 导致成品无法生成）
+// ═══════════════════════════════════════════════════════════
+describe("validateToolParams — array/object 参数的 JSON 字符串自动解析", () => {
+  const DOCX_PARAMS = {
+    path: { type: "string", description: "Relative file path to create", required: true },
+    paragraphs: {
+      type: "array",
+      description: "Optional. List of paragraphs.",
+      items: { type: "object" },
+    },
+    meta: { type: "object", description: "Optional. Metadata object." },
+  };
+  const def = { definition: { name: "docx_create", description: "d", parameters: DOCX_PARAMS }, handler: async () => ({}) };
+
+  it("array 参数收到合法 JSON 数组字符串时自动解析为真数组", () => {
+    const args = {
+      path: "a.docx",
+      paragraphs: '[{"text":"标题","heading":true},{"text":"正文"}]',
+    };
+    expect(validateToolParams("docx_create", args, def.definition)).toBeNull();
+    expect(Array.isArray(args.paragraphs)).toBe(true);
+    expect((args.paragraphs as unknown[]).length).toBe(2);
+  });
+
+  it("object 参数收到合法 JSON 对象字符串时自动解析", () => {
+    const args = { path: "a.docx", meta: '{"a":1}' };
+    expect(validateToolParams("docx_create", args, def.definition)).toBeNull();
+    expect((args.meta as Record<string, unknown>).a).toBe(1);
+  });
+
+  it("非法 JSON 字符串仍报类型错误（不得静默吞掉真错）", () => {
+    const err = validateToolParams(
+      "docx_create",
+      { path: "a.docx", paragraphs: "not json" },
+      def.definition
+    );
+    expect(err).toMatch(/wrong type: expected array, got string/);
+  });
+
+  it("JSON 字符串但形态不符（object 期望却给到 array）仍报类型错误", () => {
+    const err = validateToolParams(
+      "docx_create",
+      { path: "a.docx", meta: "[1,2]" },
+      def.definition
+    );
+    expect(err).toMatch(/wrong type: expected object, got string/);
+  });
+
+  it("本来就是真数组/真对象时行为不变", () => {
+    expect(
+      validateToolParams("docx_create", { path: "a.docx", paragraphs: ["x"] }, def.definition)
+    ).toBeNull();
+    expect(
+      validateToolParams("docx_create", { path: "a.docx", meta: { a: 1 } }, def.definition)
+    ).toBeNull();
+  });
+});

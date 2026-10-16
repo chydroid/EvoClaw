@@ -66,3 +66,33 @@ describe("guardrails tool-sql-injection（回归）", () => {
     expect(r.passed).toBe(false);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 提权规则回归（2026-10-16 实例任务 worktemp.zip 汇总）：
+// 旧 argPattern 含裸 `admin|root|elevated` 子串匹配，把合法 Python
+// heredoc 里的 `root = ET.fromstring(...)`（变量名 root）判成提权并
+// block，模型被迫改走 file_create 绕路。收窄后：变量名不命中，
+// 真提权（sudo/su root/runas）仍拦。
+// ═══════════════════════════════════════════════════════════
+describe("guardrails tool-privilege-sudo（回归）", () => {
+  const mgr = new GuardrailsManager();
+
+  it("合法 Python heredoc（变量名 root）不被误拦", () => {
+    const cmd =
+      "cat > extract.py << 'EOF'\nimport xml.etree.ElementTree as ET\nroot = ET.fromstring(xml)\nbody = root.find('w:body', NS)\nEOF\npython3 extract.py";
+    const r = mgr.checkToolCall("shell_exec", { command: cmd });
+    expect(r.passed).toBe(true);
+    expect(r.triggeredRules).not.toContain("tool-privilege-sudo");
+  });
+
+  it("sudo 调用仍被硬拦", () => {
+    const r = mgr.checkToolCall("shell_exec", { command: "sudo rm -rf /tmp/x" });
+    expect(r.passed).toBe(false);
+    expect(r.triggeredRules).toContain("tool-privilege-sudo");
+  });
+
+  it("su root / runas 仍被硬拦", () => {
+    expect(mgr.checkToolCall("shell_exec", { command: "su root -c id" }).passed).toBe(false);
+    expect(mgr.checkToolCall("shell_exec", { command: "runas /user:admin cmd" }).passed).toBe(false);
+  });
+});

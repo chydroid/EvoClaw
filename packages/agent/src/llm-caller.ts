@@ -629,6 +629,27 @@ export function validateToolParams(
         }
       }
 
+      // 回归（2026-10-16 实例任务 worktemp.zip 汇总）：docx_create 的 paragraphs/tables
+      // 等 array 参数被模型以 JSON 字符串形式下发（工具参数序列化习惯），旧逻辑直接报
+      // "wrong type: expected array, got string"，模型原样重试仍失败，成品文档无法生成。
+      // 与 number/boolean 同原理：array/object 参数收到合法 JSON 字符串时自动解析。
+      if ((expectedType === "array" || expectedType === "object") && typeof value === "string") {
+        try {
+          const parsed: unknown = JSON.parse(value);
+          const matches =
+            expectedType === "array"
+              ? Array.isArray(parsed)
+              : // object 期望必须是「非数组」对象（typeof [] === "object"，不排数组会误放行）
+                parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+          if (matches) {
+            args[key] = parsed; // auto-coerce
+            continue;
+          }
+        } catch {
+          // 不是合法 JSON → 落到下方真类型错误
+        }
+      }
+
       // 注：数字已在上面按 string→number 自动强制转换过，到这里类型不符即为真不符
       //（原条件里 `!(expectedType === "number" && actualType === "number")` 恒为 true，
       //  是无作用的死代码，已移除。）

@@ -325,13 +325,18 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   },
 
   // Privilege escalation
+  // 回归（2026-10-16 实例任务）：旧 argPattern 含裸 `admin|root|elevated` 子串匹配，
+  // 把合法 Python heredoc 里的 `root = ET.fromstring(...)`、`root.find(...)`（变量名
+  // 叫 root）判成提权并 block，模型被迫改走 file_create 绕路。
+  // 收窄到真实提权信号：sudo/sudoers/runas/su 调用；`admin`、`root` 仅在与
+  // su 组合（su root / su -）时算信号，裸变量名不再命中。
   {
     id: "tool-privilege-sudo",
     toolPattern: /(?:shell|exec|command|run|bash|terminal)/i,
-    argPattern: /(?:sudo|runas|su\s|admin|root|elevated)/i,
+    argPattern: /sudo(?:ers)?\b|\brunas\b|\bsu\s+(?:-|root|admin)\b/i,
     severity: "high",
     action: "block",
-    description: "Tool: privilege escalation (sudo/admin)",
+    description: "Tool: privilege escalation (sudo/su/runas)",
   },
   {
     id: "tool-privilege-chmod",
