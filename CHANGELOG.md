@@ -33,6 +33,17 @@
 成品 11105 B，13/13 单位全覆盖、34 行表格（33 条数据 + 表头）、含 .wps 源的罗山
 条目、标题正确，python 解 docx 核验通过。
 
+
+### 发布回执（v0.92.8 两段式流水线端到端验证）
+
+- GitHub Release `EvoClaw v0.92.8` 已创建（Release run 38837479511 全绿：
+  Test Image & Smoke 02:04:26 / Stable Image & Receipt 02:05:14），
+  资产 `receipt-v0.92.8.json`（635 B）：commitSha `9369d57`（与本地
+  release commit 一致）、stableImage `ghcr.io/chydroid/evoclaw:v0.92.8`
+  （sha256:b4c61a86…）、testImage `…:v0.92.8-test.9369d57`
+  （sha256:14a44a88…）、testResults.health=pass、publishedAt 2026-10-16T02:05:06Z。
+- CI/CD run 38837479618（push 9369d57）全绿。
+
 ## [0.92.7] - 2026-10-15
 
 **10 任务浏览器评测驱动的四项 browser_* 工具缺陷修复：selector 匹配改基于原始 HTML、只读导航镜像到 Playwright、browser_tabs 切换到真实标签后端、浏览器工具加入结果缓存豁免**
