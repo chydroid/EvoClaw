@@ -9,6 +9,30 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.8] - 2026-10-16
+
+**实例任务评测（worktemp.zip 14 文件 → 信阳市10月6日明查暗访问题清单.docx）暴露的两处工具层缺陷修复**
+
+1. `guardrails.ts` `tool-privilege-sudo` 误伤（根因）：旧 argPattern
+   `(?:sudo|runas|su\s|admin|root|elevated)` 裸 `root` 子串命中合法 Python
+   heredoc 的变量名（`root = ET.fromstring(xml)`、`root.find(...)`），shell_exec
+   被硬 block，模型被迫改走 file_create 绕路写脚本。改动：收窄为
+   `sudo(?:ers)?\b|\brunas\b|\bsu\s+(?:-|root|admin)\b` —— 仅真实提权信号
+   （sudo/sudoers/runas 调用，或 su 与 root/admin/- 组合），裸变量名不再命中。
+2. `llm-caller.ts` `validateToolParams` array/object 参数类型死循环（根因）：
+   模型把 `docx_create` 的 `paragraphs`/`tables` 以 JSON 字符串下发（工具参数
+   序列化习惯），旧逻辑直接报 `wrong type: expected array, got string`，原样
+   重试仍失败，成品文档无法生成。改动：与既有 string→number / string→boolean
+   同原理，array/object 参数收到合法 JSON 字符串时自动解析为真值；object 期望
+   须排除数组（`typeof [] === "object"` 陷阱），非法 JSON 与形态不符仍报原错误。
+
+验证：回归测试 guardrails.test.ts +3（root 变量不误拦 / sudo、su root、runas
+仍硬拦）、llm-caller.test.ts +5（array 字符串自动解析 / object 字符串自动解析 /
+非法 JSON 报错 / 数组伪装 object 报错 / 真数组真对象行为不变）。
+`pnpm build → typecheck → test` 全绿（6249/6262）。实例任务复跑：agent 一轮生成
+成品 11105 B，13/13 单位全覆盖、34 行表格（33 条数据 + 表头）、含 .wps 源的罗山
+条目、标题正确，python 解 docx 核验通过。
+
 ## [0.92.7] - 2026-10-15
 
 **10 任务浏览器评测驱动的四项 browser_* 工具缺陷修复：selector 匹配改基于原始 HTML、只读导航镜像到 Playwright、browser_tabs 切换到真实标签后端、浏览器工具加入结果缓存豁免**
