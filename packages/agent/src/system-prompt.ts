@@ -501,12 +501,15 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   }
 
   if (!isMinimal && params.userTimezone) {
+    // P0-3 缓存稳定化（2026-10-16）：此处曾是分钟级 `new Date()`——每分钟翻转一次
+    // 就使整个 system 段（及其后整条前缀）的 provider 缓存全部失效。
+    // 现降为**天级**：同一自然日内字节恒定，5 分钟 TTL 的缓存窗口内可反复命中。
+    // 精确当前时间由用户消息自带的 🕐 时间戳提供，模型不需要 system 内的分钟时钟。
     const now = new Date();
-    const dateStr = now.toLocaleDateString("zh-CN", { timeZone: params.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined, year: "numeric", month: "long", day: "numeric", weekday: "long" });
-    const timeStr = now.toLocaleTimeString(params.timeFormat === "24" ? "zh-CN" : "en-US", { timeZone: params.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined, hour: "2-digit", minute: "2-digit", hour12: params.timeFormat !== "24" });
+    const tz = params.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined;
+    const dateStr = now.toLocaleDateString("zh-CN", { timeZone: tz, year: "numeric", month: "long", day: "numeric", weekday: "long" });
     sections.push("## Current Date & Time");
     sections.push(`Today is: ${dateStr}`);
-    sections.push(`Current time: ${timeStr}`);
     sections.push(`Time zone: ${params.userTimezone}`);
     sections.push(`Time format: ${params.timeFormat === "24" ? "24-hour" : "12-hour"}`);
     sections.push("When the user says '今天/昨天/明天/前天/后天' etc., interpret them as actual dates based on the date above.");

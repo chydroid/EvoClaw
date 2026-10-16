@@ -55,4 +55,31 @@ describe("xlsx_create tool", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("Path traversal blocked");
   });
+
+  describe("workspaceBase 相对路径基准（2026-10-16 实例任务事故回归）", () => {
+    let wsDir: string;
+    let wsHandler: (params: Record<string, unknown>) => Promise<unknown>;
+
+    beforeEach(() => {
+      wsDir = path.join(tmpDir, "data", "workspace");
+      fs.mkdirSync(wsDir, { recursive: true });
+      const wsExecutor = {
+        registerTool: (_name: string, _definition: unknown, fn: (params: Record<string, unknown>) => Promise<unknown>) => {
+          wsHandler = fn;
+        },
+      };
+      registerXlsxTools(wsExecutor as any, tmpDir, wsDir);
+    });
+
+    it("相对路径落在 workspace 而非 fsBase 根", async () => {
+      const result = (await wsHandler({
+        path: "inst_eval2/out.xlsx",
+      })) as { success: boolean; absolutePath?: string };
+
+      expect(result.success).toBe(true);
+      expect(result.absolutePath).toBe(path.join(wsDir, "inst_eval2", "out.xlsx"));
+      expect(fs.existsSync(path.join(wsDir, "inst_eval2", "out.xlsx"))).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, "inst_eval2"))).toBe(false);
+    });
+  });
 });

@@ -42,6 +42,8 @@ export interface UsageRecord {
   durationMs?: number;
   /** 提示缓存命中的token数 */
   cacheHitTokens?: number;
+  /** 提示缓存写入（创建）的token数 */
+  cacheWriteTokens?: number;
   /** 工具调用次数 */
   toolCalls?: number;
 }
@@ -52,10 +54,11 @@ export interface UsageSummary {
   totalOutputTokens: number;
   totalReasoningTokens: number;
   totalCacheHitTokens: number;
+  totalCacheWriteTokens: number;
   totalCost: number;
   totalCalls: number;
   byProvider: Record<string, { calls: number; tokens: number; cost: number }>;
-  byModel: Record<string, { calls: number; tokens: number; cost: number }>;
+  byModel: Record<string, { calls: number; tokens: number; cost: number; cacheHitTokens: number; cacheWriteTokens: number }>;
   byChannel: Record<string, { calls: number; tokens: number; cost: number }>;
   byUser: Record<string, { calls: number; tokens: number; cost: number }>;
   /** 趋势(最近24小时,按小时分组) */
@@ -159,6 +162,7 @@ export class TokenUsageTracker {
     outputTokens: number;
     reasoningTokens?: number;
     cacheHitTokens?: number;
+    cacheWriteTokens?: number;
     durationMs?: number;
     toolCalls?: number;
   }): UsageRecord {
@@ -167,6 +171,7 @@ export class TokenUsageTracker {
     const outputTokens = Math.max(0, usage.outputTokens);
     const reasoningTokens = usage.reasoningTokens !== undefined ? Math.max(0, usage.reasoningTokens) : undefined;
     const cacheHitTokens = usage.cacheHitTokens !== undefined ? Math.max(0, usage.cacheHitTokens) : undefined;
+    const cacheWriteTokens = usage.cacheWriteTokens !== undefined ? Math.max(0, usage.cacheWriteTokens) : undefined;
     const cost = this.calculateCost(usage.provider, usage.model, inputTokens, outputTokens, reasoningTokens);
     const record: UsageRecord = {
       id: `usage-${++this.counter}-${Date.now()}`,
@@ -186,6 +191,7 @@ export class TokenUsageTracker {
       calledAt: Date.now(),
       durationMs: usage.durationMs,
       cacheHitTokens,
+      cacheWriteTokens,
       toolCalls: usage.toolCalls,
     };
     this.records.push(record);
@@ -224,13 +230,15 @@ export class TokenUsageTracker {
   }
 
   /** 获取session总成本 */
-  getSessionCost(sessionId: string): { inputTokens: number; outputTokens: number; totalCost: number; calls: number } {
+  getSessionCost(sessionId: string): { inputTokens: number; outputTokens: number; totalCost: number; calls: number; cacheHitTokens: number; cacheWriteTokens: number } {
     const records = this.records.filter((r) => r.sessionId === sessionId);
     return {
       inputTokens: records.reduce((s, r) => s + r.inputTokens, 0),
       outputTokens: records.reduce((s, r) => s + r.outputTokens, 0),
       totalCost: records.reduce((s, r) => s + r.totalCost, 0),
       calls: records.length,
+      cacheHitTokens: records.reduce((s, r) => s + (r.cacheHitTokens ?? 0), 0),
+      cacheWriteTokens: records.reduce((s, r) => s + (r.cacheWriteTokens ?? 0), 0),
     };
   }
 
@@ -246,6 +254,7 @@ export class TokenUsageTracker {
       totalOutputTokens: 0,
       totalReasoningTokens: 0,
       totalCacheHitTokens: 0,
+      totalCacheWriteTokens: 0,
       totalCost: 0,
       totalCalls: records.length,
       byProvider: {},
@@ -260,6 +269,7 @@ export class TokenUsageTracker {
       summary.totalOutputTokens += r.outputTokens;
       summary.totalReasoningTokens += r.reasoningTokens ?? 0;
       summary.totalCacheHitTokens += r.cacheHitTokens ?? 0;
+      summary.totalCacheWriteTokens += r.cacheWriteTokens ?? 0;
       summary.totalCost += r.totalCost;
 
       // By provider
@@ -273,11 +283,13 @@ export class TokenUsageTracker {
       // By model
       const modelKey = `${r.provider}/${r.model}`;
       if (!summary.byModel[modelKey]) {
-        summary.byModel[modelKey] = { calls: 0, tokens: 0, cost: 0 };
+        summary.byModel[modelKey] = { calls: 0, tokens: 0, cost: 0, cacheHitTokens: 0, cacheWriteTokens: 0 };
       }
       summary.byModel[modelKey].calls++;
       summary.byModel[modelKey].tokens += r.inputTokens + r.outputTokens;
       summary.byModel[modelKey].cost += r.totalCost;
+      summary.byModel[modelKey].cacheHitTokens += r.cacheHitTokens ?? 0;
+      summary.byModel[modelKey].cacheWriteTokens += r.cacheWriteTokens ?? 0;
 
       // By channel
       if (r.channel) {

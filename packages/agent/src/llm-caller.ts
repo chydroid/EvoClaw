@@ -27,9 +27,27 @@ import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWeb
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
+import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
 import { retryAsync } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
+
+/**
+ * 从 CallLLMOnceResult.usageDetails 提取缓存命中/写入 token（provider 侧真值）。
+ * 各 record() 调用点共用，避免四处各写一遍 normalizeUsage 选项拼装。
+ * 无 usageDetails 时返回 undefined 字段（tracker 按 ?? 0 兜底）。
+ */
+function cacheExtrasFromResult(
+  result: { usageDetails?: unknown },
+  providerName: string,
+): { cacheHitTokens?: number; cacheWriteTokens?: number } {
+  if (!result.usageDetails) return {};
+  const canon = normalizeUsage(result.usageDetails, { provider: providerName });
+  return {
+    cacheHitTokens: canon.cacheReadTokens || undefined,
+    cacheWriteTokens: canon.cacheWriteTokens || undefined,
+  };
+}
 import { getProviderSkipList } from "./provider-skip-list";
 import { ToolCallLoopDetector } from "./guardrails";
 import { validateToolResult } from "./tool-types";
@@ -734,6 +752,8 @@ export interface CallLLMOnceResult {
   classifiedError?: ClassifiedError;
   /** Response time in milliseconds for observability and provider ranking. */
   responseMs?: number;
+  /** provider 原始 usage 对象（未解析）——供 normalizeUsage 提取缓存命中 token。 */
+  usageDetails?: unknown;
 }
 
 export interface ParseStreamingResponseResult {
@@ -742,6 +762,8 @@ export interface ParseStreamingResponseResult {
   promptTokens: number;
   /** Response time in milliseconds for observability and provider ranking. */
   responseMs?: number;
+  /** provider 原始 usage 对象（未解析）——供 normalizeUsage 提取缓存命中 token。 */
+  usageDetails?: unknown;
 }
 
 // ── Tool cache types ──
@@ -827,6 +849,8 @@ export interface LLMCallerDeps {
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
   // Token usage tracker (optional — enables real-time token/cost tracking)
   tokenUsageTracker?: import("./token-usage-tracker").TokenUsageTracker;
+  // 会话级工具组单调并集存储（P0-2：buildOpenAITools 的 baseTools 出参回写）
+  toolGroupStore?: Map<string, Set<string>>;
   // Service-gated tools: TTL-cached check_fn evaluator (optional — filters unavailable tools before sending to LLM)
   // Inspired by hermes-agent's registry._check_fn_cached (30s TTL, fail-safe).
   checkFnEvaluator?: (checkFn: () => boolean) => boolean;
@@ -1283,6 +1307,16 @@ export function buildOpenAITools(
   registeredTools: Map<string, { definition: ToolDefinition; handler: (params: Record<string, unknown>) => Promise<unknown>; checkFn?: () => boolean; dynamicSchemaOverrides?: () => Partial<ToolDefinition> }>,
   message?: string,
   checkFnEvaluator?: (checkFn: () => boolean) => boolean,
+  /**
+   * ★ P0-2（2026-10-16 缓存命中改造）：会话已激活的工具**单调并集**。
+   * 传入时以此为种子做关键词并集（只增不减）——同一会话稳态下 tools JSON
+   * 字节恒定，provider 缓存前缀（tools 是前缀第一段）不再逐轮漂移。
+   * 不传（或传空）时保持 fresh-session 语义，与旧行为字节一致（向后兼容：
+   * /health 工具计数走 message === undefined 全量分支）。
+   */
+  baseTools?: Set<string> | null,
+  /** 出参：本轮激活结果（会话调用方回写 Map，下一轮作为 baseTools 传入）。 */
+  out?: { activeTools?: Set<string> },
 ): OpenAIToolEntry[] {
   // Determine which tool groups to include based on the user message.
   // Core group is always included. Other groups are included if the
@@ -1291,7 +1325,9 @@ export function buildOpenAITools(
   // Composable toolsets: when a group is activated, recursively activate
   // all groups listed in its `includes` field. Cycle detection via visited
   // set — silently skip already-visited nodes (hermes toolsets.py pattern).
-  const activeTools = new Set(TOOL_GROUPS.core.tools);
+  const activeTools = baseTools && baseTools.size > 0
+    ? new Set(baseTools)
+    : new Set(TOOL_GROUPS.core.tools);
 
   const activateGroup = (groupName: string, visited: Set<string>): void => {
     if (visited.has(groupName)) return; // cycle or diamond — skip
@@ -1317,7 +1353,11 @@ export function buildOpenAITools(
     // groups only (inspired by OpenClaw's tool profile strategy).
     // The skill_execute tool can dynamically discover and run other skills,
     // so we don't need to include ALL tools for ambiguous requests.
-    if (activeTools.size <= TOOL_GROUPS.core.tools.length) {
+    //
+    // ★ P0-2：仅在会话首消息（base 为空）生效。后续消息的并集已含 skill
+    // （首消息激活过）或本就更多，不再反复补 skill 组导致字节抖动。
+    if ((baseTools === undefined || baseTools === null || baseTools.size === 0) &&
+        activeTools.size <= TOOL_GROUPS.core.tools.length) {
       for (const t of TOOL_GROUPS.skill.tools) activeTools.add(t);
     }
   } else {
@@ -1326,6 +1366,8 @@ export function buildOpenAITools(
       for (const t of group.tools) activeTools.add(t);
     }
   }
+
+  if (out) out.activeTools = activeTools;
 
   return Array.from(registeredTools.values())
     .filter((t) => {
@@ -1630,6 +1672,9 @@ export async function parseStreamingResponse(
   const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
   let totalTokens = 0;
   let promptTokens = 0;
+  // 原始 usage 对象（provider 最后/带 usage 的 chunk）——透传给 record()
+  // 供 normalizeUsage 提取 cache_read_input_tokens / cached_tokens（缓存命中真值）。
+  let streamUsageDetails: unknown = undefined;
   let lastChunkTime = Date.now();
   // fix-4: 跟踪 finish_reason 以检测 length 截断等场景
   let finishReason: string | undefined;
@@ -1685,7 +1730,15 @@ export async function parseStreamingResponse(
               };
               finish_reason?: string;
             }>;
-            usage?: { total_tokens?: number };
+            usage?: {
+              total_tokens?: number;
+              prompt_tokens?: number;
+              completion_tokens?: number;
+              prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } | null;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+              input_tokens_details?: { cached_tokens?: number; cache_creation_tokens?: number } | null;
+            };
           };
 
           const choice = chunk.choices?.[0];
@@ -1829,6 +1882,11 @@ export async function parseStreamingResponse(
           if ((chunk.usage as Record<string, unknown>)?.prompt_tokens) {
             promptTokens = (chunk.usage as Record<string, unknown>).prompt_tokens as number;
           }
+          // 保留带 cache 明细的最后一个 usage 对象（OpenAI 流式约定：
+          // 开启 stream_options.include_usage 后末块携带完整 usage）。
+          if (chunk.usage && typeof chunk.usage === "object") {
+            streamUsageDetails = chunk.usage;
+          }
           // fix-4: 捕获 finish_reason（用于流式恢复判断 length 截断）
           if (choice.finish_reason) {
             finishReason = choice.finish_reason;
@@ -1903,6 +1961,7 @@ export async function parseStreamingResponse(
           tokensUsed: totalTokens || Math.ceil(result.response.length / 4),
           promptTokens,
           responseMs: Date.now() - startTime,
+          usageDetails: streamUsageDetails,
         };
       }
 
@@ -1949,6 +2008,7 @@ export async function parseStreamingResponse(
     tokensUsed: totalTokens || Math.ceil(content.length / 4),
     promptTokens: promptTokens || 0,
     responseMs: streamResponseMs,
+    usageDetails: streamUsageDetails,
   };
   }; // end doParse
 
@@ -2072,8 +2132,17 @@ export async function callLLMOnce(
     // 仅对 Anthropic provider 生效（其他 provider 会忽略此字段或报错）。
     let messagesToSend = messages;
     if (provider.provider === "anthropic") {
+      // P0-3：ContextEngine 分层上下文时，首条 system = frozen + ephemeral。
+      // 把断点放在 frozen 段末尾（frozenContent.length），易变尾不拉进缓存块。
+      // 非 CE 路径（stableLength undefined）保持旧行为：整条 system 一个断点。
+      const ceResult = deps.contextEngineResult;
+      const stableLength =
+        ceResult && messages[0]?.role === "system"
+          ? (ceResult.frozenContent?.length ?? 0) || undefined
+          : undefined;
       messagesToSend = applyAnthropicCacheControl(
         messages as unknown as Array<Record<string, unknown>>,
+        stableLength,
       ) as unknown as Array<LLMMessage>;
     }
 
@@ -2095,6 +2164,14 @@ export async function callLLMOnce(
       top_p: provider.topP ?? 1,
       stream: useStreaming,
     };
+
+    // ── 流式 usage 上报：OpenAI 原生端点必须显式开启 stream_options.include_usage
+    // 才能在末块拿到完整 usage（含 prompt_tokens_details.cached_tokens）──
+    // 其他 OpenAI 兼容 provider（DeepSeek/agnes 代理等）默认就回传 chunk.usage，
+    // 不动请求体以免个别严格代理 400 拒绝未知字段。
+    if (useStreaming && /api\.openai\.com/i.test(provider.baseURL || "")) {
+      body.stream_options = { include_usage: true };
+    }
 
     if (tools.length > 0 && toolChoice !== "none") {
       body.tools = tools;
@@ -2254,6 +2331,9 @@ export async function callLLMOnce(
       tokensUsed: Number((data.usage as Record<string, unknown>)?.total_tokens ?? 0) || 0,
       promptTokens: Number((data.usage as Record<string, unknown>)?.prompt_tokens ?? 0) || 0,
       responseMs,
+      // 原始 usage 透传：normalizeUsage 由此提取 cache_read_input_tokens /
+      // prompt_tokens_details.cached_tokens（provider 侧缓存命中真值）。
+      usageDetails: data.usage ?? undefined,
     };
   } catch (err: unknown) {
     clearTimeout(timeoutId);
@@ -2316,6 +2396,13 @@ export async function callLLMOnce(
 export interface TryCallLLMOptions {
   message: string;
   systemPrompt: string;
+  /**
+   * P0-3 缓存稳定化（2026-10-16）：动态尾（plan/chain/stale-context/记忆检索等易变
+   * 内容）。非空时作为**第二条 system 消息**置于首条稳定 system 之后、history 之前，
+   * 稳定主体的 provider 前缀缓存不受逐轮变动影响；OpenAI 兼容 provider 将多条
+   * system 消息按顺序拼接，语义与旧行为一致（动态内容仍紧邻其后的 history）。
+   */
+  dynamicSystemTail?: string;
   installedSkills: unknown[];
   providers: ProviderConfig[];
   startTime: number;
@@ -2346,7 +2433,7 @@ export async function tryCallLLM(
 
   const doTryCall = async (): Promise<TryCallLLMResult | null> => {
   const {
-    message, systemPrompt, installedSkills, providers, startTime,
+    message, systemPrompt, dynamicSystemTail: callerDynamicSystemTail, installedSkills, providers, startTime,
     sessionId, pendingPermissions, attachments, onProgress,
     searchPreDone = false, channel, abortSignal,
     includeAccumulatedReplyInTokenEvents = false,
@@ -2442,11 +2529,16 @@ export async function tryCallLLM(
           process.stderr.write(`[AgentModelExecutor] SessionManager persist failed (direct reply): ${err}\n`);
         }
         persistSessionTurnFn(getSessionPersistenceDeps(deps), sessionId, "assistant", reply);
+        // ★ P0-1（2026-10-16 缓存命中改造）：删除此处的静默 splice。
+        // 每轮把最老消息删掉会使**整个 LLM 请求前缀原点漂移**（tools+system+
+        // history 全量重价），多轮会话永久失去 prompt-cache 命中。结构改写
+        // 统一交给 CompactionManager（AGENTS.md：prompt cache is sacred，压缩
+        // 是唯一合法前缀改写）。deps.maxHistoryLength 保留为内存上限语义，
+        // 但不再按轮截断前缀。
         const hist = [
           ...(deps.conversationHistory.get(sessionId) || []),
           { role: "assistant" as const, content: reply },
         ];
-        if (hist.length > deps.maxHistoryLength) hist.splice(0, hist.length - deps.maxHistoryLength);
         deps.conversationHistory.set(sessionId, hist);
       };
 
@@ -2534,34 +2626,28 @@ export async function tryCallLLM(
     try {
       const history = deps.conversationHistory.get(sessionId) || [];
 
-      const webToolStrategy = `### Web Tool Decision Strategy (ReAct)
-Follow this decision tree when handling web-related tasks:
+      // P0-3 缓存稳定化（2026-10-16）：静态 ReAct 策略串注册进 PromptRegistry
+      // （"web.tool_strategy" 模板），跨部署字节稳定（旧：内联字面量，散落各处）。
+      const webToolStrategy = PromptRegistry.getInstance().format("web.tool_strategy", {});
 
-\`\`\`
-Have a specific URL?
-├─ YES → Is it static content (article/doc/API/RSS)?
-│        ├─ YES → web_fetch
-│        │        Failed (blank/403/CAPTCHA)? → Try skill_execute with search skills → browser
-│        └─ NO (needs JS/login/interaction/screenshot) → browser_navigate
-└─ NO  → web_search (or skill_execute with tavily-search/baidu-search)
-         ├─ Success → For result URLs, apply the URL logic above
-         ├─ Failed → Try skill_execute with tavily-search or baidu-search
-         └─ No results → browser_search
-\`\`\`
-
-**Key rules:**
-1. For search tasks, prefer skill_execute with **tavily-search** (highest quality) or **baidu-search** over web_search
-2. When web_search returns no results, try tavily-search or baidu-search via skill_execute before giving up
-3. Always inform the user when switching tools — never silently downgrade
-4. For Chinese content, baidu-search often works better; for English/global content, tavily-search is preferred`;
-
-      const fullSystemPrompt = skillsPrompt
-        ? `${systemPrompt}\n\n## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${searchPreDone ? "**Search has already been performed.** Skip searching and go directly to analysis or code execution." : webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
+      // 稳定主体：system prompt（P0-3 后调用方保证不含记忆/画像/计划等逐轮易变内容）
+      // + 稳定 capabilities/skills 段。逐轮字节不变，provider 前缀缓存可命中。
+      const stableCapabilities = skillsPrompt
+        ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
+        : "";
+      const stableSystemPrompt = skillsPrompt
+        ? `${systemPrompt}\n\n${stableCapabilities}`
         : systemPrompt;
 
-      const searchPreDoneNotice = searchPreDone
-        ? PromptRegistry.getInstance().format("search.already_completed", {})
+      // P0-3：易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/
+      // 记忆召回）移出稳定 system 主体，全部放**第二条 system 消息**（紧邻其后）。
+      // 稳定主体在前 → provider 前缀缓存命中到第一个分叉字节；动态尾逐轮变化
+      // 只重价尾段。OpenAI 兼容 provider 按顺序拼接多条 system，语义不变。
+      const dynamicNotice = searchPreDone
+        ? `**Search has already been performed.** Skip searching and go directly to analysis or code execution.\n` +
+          PromptRegistry.getInstance().format("search.already_completed", {})
         : "";
+      const dynamicSystemTail = [dynamicNotice, callerDynamicSystemTail || ""].filter(Boolean).join("");
 
       const sessionPDeps = getSessionPersistenceDeps(deps);
 
@@ -2575,7 +2661,9 @@ Have a specific URL?
         process.stdout.write(`[AgentModelExecutor] Recovered ${closedCount} interrupted tool_call(s) for session "${sessionId}"\n`);
       }
 
-      if (needsCompactionFn(sessionPDeps, sessionId, fullSystemPrompt, deps.config.maxTokens)) {
+      // 压缩预算按「稳定主体 + 动态尾」全文估算（动态尾短小，误差可忽略，
+      // 且比旧 fullSystemPrompt 少算了动态内容更准确）。
+      if (needsCompactionFn(sessionPDeps, sessionId, stableSystemPrompt + dynamicSystemTail, deps.config.maxTokens)) {
         process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
         compactConversationHistoryFn(sessionPDeps, sessionId);
       }
@@ -2592,19 +2680,21 @@ Have a specific URL?
           role: m.role,
           content: m.content,
         })) as Array<LLMMessage>;
-        // Add search pre-done notice if applicable
-        if (searchPreDoneNotice) {
-          const sysMsg = messages.find(m => m.role === "system");
-          if (sysMsg && typeof sysMsg.content === "string") {
-            sysMsg.content += searchPreDoneNotice;
-          }
+        // P0-3：动态尾（searchPreDone 提示 + 调用方动态 system 尾）作为**第二条
+        // system 消息**插入首条稳定 system 之后、history 之前——稳定前缀不变，
+        // provider 缓存命中到第一条 system 末尾。
+        if (dynamicSystemTail) {
+          messages.splice(1, 0, { role: "system", content: dynamicSystemTail });
         }
         process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
-        // Fallback: manual message assembly (original behavior)
+        // Fallback: manual message assembly (stable system first, dynamic tail second)
         messages = [
-          { role: "system", content: fullSystemPrompt + searchPreDoneNotice },
+          { role: "system", content: stableSystemPrompt },
         ];
+        if (dynamicSystemTail) {
+          messages.push({ role: "system", content: dynamicSystemTail });
+        }
         messages.push(...history);
       }
 
@@ -2692,7 +2782,15 @@ Have a specific URL?
         messages.push({ role: "user", content: effectiveMessage });
       }
 
-      let tools = buildOpenAITools(deps.registeredTools, message, deps.checkFnEvaluator);
+      // ★ P0-2：会话级工具组单调并集（旧：按当前消息激活，逐轮漂移破坏
+      // provider 缓存前缀；现：只增不减，稳态下 tools JSON 字节恒定）。
+      // 首消息 / 无 base 时保持 fresh-session 语义（与旧行为字节一致）。
+      const baseTools = sessionId ? deps.toolGroupStore?.get(sessionId) : undefined;
+      const activeOut: { activeTools?: Set<string> } = {};
+      let tools = buildOpenAITools(deps.registeredTools, message, deps.checkFnEvaluator, baseTools, activeOut);
+      if (sessionId && deps.toolGroupStore && activeOut.activeTools) {
+        deps.toolGroupStore.set(sessionId, activeOut.activeTools);
+      }
 
       const SEARCH_ONLY_TOOLS = new Set(["web_search", "browser_search", "browser_navigate"]);
       if (searchPreDone) {
@@ -2792,6 +2890,7 @@ Have a specific URL?
                       outputTokens,
                       durationMs: graceResult.responseMs,
                       channel: channel || "unknown",
+                      ...cacheExtrasFromResult(graceResult, provider.provider || provider.name),
                     });
                   } catch { /* best-effort */ }
                 }
@@ -2905,7 +3004,8 @@ Have a specific URL?
             process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             conversationMessages = [
-              { role: "system", content: fullSystemPrompt },
+              { role: "system", content: stableSystemPrompt },
+              ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
               ...(deps.conversationHistory.get(sessionId) || []),
             ];
             if (imageAtts && imageAtts.length > 0) {
@@ -3080,6 +3180,7 @@ Have a specific URL?
               durationMs: result.responseMs,
               channel: channel || "unknown",
               toolCalls: toolCalls?.length ?? 0,
+              ...cacheExtrasFromResult(result, provider.provider || provider.name),
             });
           } catch { /* best-effort */ }
         }
@@ -4095,6 +4196,7 @@ Have a specific URL?
                     outputTokens,
                     durationMs: summaryResult.responseMs,
                     channel: channel || "unknown",
+                    ...cacheExtrasFromResult(summaryResult, provider.provider || provider.name),
                   });
                 } catch { /* best-effort */ }
               }
@@ -4214,6 +4316,7 @@ Have a specific URL?
                         outputTokens,
                         durationMs: summaryResult.responseMs,
                         channel: channel || "unknown",
+                        ...cacheExtrasFromResult(summaryResult, provider.provider || provider.name),
                       });
                     } catch { /* best-effort */ }
                   }
@@ -4284,6 +4387,11 @@ Have a specific URL?
           { role: "assistant", content: finalReply },
         ];
         const newHistory = [...history, ...cleanHistory];
+        // ★ P0-1（2026-10-16 缓存命中改造）：此 splice 是最后的前缀保护性截断。
+        // 历史教训：每轮按 maxHistoryLength(20) 静默删最老消息 → 整个 LLM 请求
+        // 前缀原点逐轮漂移，多轮会话永久失去 prompt-cache 命中。现上限已提高
+        // （见 AgentModelExecutor.maxHistoryLength），CompactionManager（100k
+        // tokens 阈值）在实践中先触发，正常轮次不再发生结构性改写。
         if (newHistory.length > deps.maxHistoryLength) {
           newHistory.splice(0, newHistory.length - deps.maxHistoryLength);
         }

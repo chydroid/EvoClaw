@@ -3,6 +3,7 @@ import * as path from "path";
 import PptxGenJS from "pptxgenjs";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import { resolveToolPath } from "./file-tools";
 
 /** Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
  *  再用 fs.realpathSync 解析符号链接，防止 workspace 内 symlink 指向外部目录。 */
@@ -50,7 +51,7 @@ interface SlideItem {
   images?: Array<{ data: string; x?: number; y?: number; width?: number; height?: number }>;
 }
 
-export function registerPptxTools(executor: AgentModelExecutor, fsBase: string): void {
+export function registerPptxTools(executor: AgentModelExecutor, fsBase: string, workspaceBase?: string): void {
   executor.registerTool(
     "pptx_create",
     {
@@ -101,7 +102,7 @@ export function registerPptxTools(executor: AgentModelExecutor, fsBase: string):
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       if (!filePath) return { success: false, error: "Missing required parameter: path" };
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const resolvedPath = resolveToolPath(fsBase, workspaceBase, filePath).resolved;
       const pathError = validatePathWithinBase(resolvedPath, fsBase);
       if (pathError) return { success: false, error: pathError };
 

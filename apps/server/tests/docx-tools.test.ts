@@ -65,4 +65,43 @@ describe("docx_create tool", () => {
     expect(result.error).toMatch(/沙箱外|Path traversal/);
     expect(result.error).toContain("一般安全");
   });
+
+  describe("workspaceBase 相对路径基准（2026-10-16 实例任务事故回归）", () => {
+    let wsDir: string;
+    let wsHandler: (params: Record<string, unknown>) => Promise<unknown>;
+
+    beforeEach(() => {
+      wsDir = path.join(tmpDir, "data", "workspace");
+      fs.mkdirSync(wsDir, { recursive: true });
+      const wsExecutor = {
+        registerTool: (_name: string, _definition: unknown, fn: (params: Record<string, unknown>) => Promise<unknown>) => {
+          wsHandler = fn;
+        },
+      };
+      registerDocxTools(wsExecutor as any, tmpDir, wsDir);
+    });
+
+    it("相对路径落在 workspace 而非 fsBase 根", async () => {
+      const result = (await wsHandler({
+        path: "inst_eval2/out.docx",
+        title: "t",
+      })) as { success: boolean; absolutePath?: string };
+
+      expect(result.success).toBe(true);
+      expect(result.absolutePath).toBe(path.join(wsDir, "inst_eval2", "out.docx"));
+      expect(fs.existsSync(path.join(wsDir, "inst_eval2", "out.docx"))).toBe(true);
+      // fsBase 根下不得出现同名目录
+      expect(fs.existsSync(path.join(tmpDir, "inst_eval2"))).toBe(false);
+    });
+
+    it("剥离模型习惯性带的 data/workspace/ 前缀", async () => {
+      const result = (await wsHandler({
+        path: "data/workspace/strip.docx",
+        title: "t",
+      })) as { success: boolean; absolutePath?: string };
+
+      expect(result.success).toBe(true);
+      expect(result.absolutePath).toBe(path.join(wsDir, "strip.docx"));
+    });
+  });
 });

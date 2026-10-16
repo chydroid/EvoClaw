@@ -52,6 +52,8 @@ export type TryCallLLMFn = (
   onProgress?: AgentProgressCallback,
   searchPreDone?: boolean,
   channel?: string,
+  /** P0-3（2026-10-16）：动态尾（画像/记忆/计划/工具链易变内容），作为第二条 system 消息。 */
+  dynamicSystemTail?: string,
 ) => Promise<TaskExecutionResult | null>;
 
 /** Callback for generating chat response (fallback) */

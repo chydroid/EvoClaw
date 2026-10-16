@@ -21,6 +21,10 @@ interface TokenOverview {
   totalCost: number;
   avgTokensPerSession: number;
   totalCalls: number;
+  totalInputTokens?: number;
+  totalCacheHitTokens?: number;
+  totalCacheWriteTokens?: number;
+  cacheHitRate?: number;
 }
 
 interface ModelUsage {
@@ -31,6 +35,8 @@ interface ModelUsage {
   totalTokens: number;
   cost: number;
   calls: number;
+  cacheHitTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 interface SessionUsage {
@@ -40,6 +46,8 @@ interface SessionUsage {
   outputTokens: number;
   cost: number;
   lastActive: string;
+  cacheHitTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 interface ProviderCost {
@@ -127,6 +135,10 @@ export default function TokenUsagePage() {
           totalCost: Number(overviewRes.totalCost) || 0,
           avgTokensPerSession: Number(overviewRes.avgTokensPerSession) || 0,
           totalCalls: Number(overviewRes.totalCalls) || 0,
+          totalInputTokens: Number(overviewRes.totalInputTokens) || 0,
+          totalCacheHitTokens: Number(overviewRes.totalCacheHitTokens) || 0,
+          totalCacheWriteTokens: Number(overviewRes.totalCacheWriteTokens) || 0,
+          cacheHitRate: Number(overviewRes.cacheHitRate) || 0,
         });
         if (Array.isArray(overviewRes.recentUsage)) setRecentUsage(overviewRes.recentUsage);
       }
@@ -221,9 +233,44 @@ export default function TokenUsagePage() {
             { label: t("tokenUsage.stats.totalCalls"), value: overview.totalCalls.toLocaleString(locale), color: "var(--text-primary)" },
           ]} />
 
-          {/* Prompt 缓存命中率 */}
+          {/* 输入缓存命中（provider 侧真值） */}
+          <Section title={t("tokenUsage.inputCache.title", "输入缓存命中（LLM 侧）")} style={{ marginTop: 20 }}>
+            <Card>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+                <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                    {t("tokenUsage.inputCache.cached", "缓存命中 Token")}
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
+                    {formatTokens(overview.totalCacheHitTokens ?? 0)}
+                  </div>
+                </div>
+                <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                    {t("tokenUsage.inputCache.hitRate", "输入缓存命中率")}
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
+                    {(overview.cacheHitRate ?? 0) > 0 ? ((overview.cacheHitRate ?? 0) * 100).toFixed(1) + "%" : "—"}
+                  </div>
+                </div>
+                <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                    {t("tokenUsage.inputCache.written", "缓存写入 Token")}
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>
+                    {formatTokens(overview.totalCacheWriteTokens ?? 0)}
+                  </div>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
+                {t("tokenUsage.inputCache.desc", "LLM 提供商返回的 cache_read / cached_tokens 真值。provider 未回传该字段时显示 0（不影响功能，仅数据缺失）。")}
+              </div>
+            </Card>
+          </Section>
+
+          {/* 本地前缀缓存（估算）——与上方 provider 真值区分 */}
           {promptCacheStats && (
-            <Section title={t("tokenUsage.promptCache.title", "Prompt 缓存命中率")} style={{ marginTop: 20 }}>
+            <Section title={t("tokenUsage.promptCache.title", "本地前缀缓存（估算）")} style={{ marginTop: 20 }}>
               <Card>
                 {promptCacheStats.enabled === false ? (
                   <EmptyState title={t("tokenUsage.promptCache.disabled", "Prompt 缓存未启用")} />
@@ -337,6 +384,11 @@ export default function TokenUsagePage() {
                     <span style={{ color: "var(--warning)" }}>{formatCost(m.cost)}</span>
                   )},
                   { key: "calls", label: t("tokenUsage.col.calls"), render: (m) => m.calls.toLocaleString(locale) },
+                  { key: "cacheHitTokens", label: t("tokenUsage.col.cacheHit", "缓存命中"), render: (m) => (
+                    (m.cacheHitTokens ?? 0) > 0
+                      ? <span style={{ color: "var(--success)" }}>{formatTokens(m.cacheHitTokens ?? 0)}</span>
+                      : <span style={{ color: "var(--text-muted)" }}>0</span>
+                  )},
                 ]}
                 data={modelUsage}
                 keyFn={(m) => m.model}
@@ -387,6 +439,11 @@ export default function TokenUsagePage() {
                   )},
                   { key: "inputTokens", label: t("tokenUsage.col.input"), render: (s) => formatTokens(s.inputTokens) },
                   { key: "outputTokens", label: t("tokenUsage.col.output"), render: (s) => formatTokens(s.outputTokens) },
+                  { key: "cacheHitTokens", label: t("tokenUsage.col.cacheHit", "缓存命中"), render: (s) => (
+                    (s.cacheHitTokens ?? 0) > 0
+                      ? <span style={{ color: "var(--success)" }}>{formatTokens(s.cacheHitTokens ?? 0)}</span>
+                      : <span style={{ color: "var(--text-muted)" }}>0</span>
+                  )},
                   { key: "cost", label: t("tokenUsage.col.cost"), render: (s) => (
                     <span style={{ color: "var(--warning)" }}>{formatCost(s.cost)}</span>
                   )},

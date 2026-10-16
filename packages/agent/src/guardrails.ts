@@ -283,7 +283,11 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   // Dangerous tool arguments
   {
     id: "tool-file-deletion",
-    toolPattern: /(?:delete|remove|unlink|rm|truncate|wipe|destroy)/i,
+    // ★ 词界匹配（2026-10-16 实例任务事故）：裸子串 `rm` 会命中
+    // "permission_status" / "confirm" 家族工具名 → 查审批状态的工具被误拦，
+    // 模型失去审批检查通道。lookaround 保证只拦真删除类工具名
+    // （file_delete / rm / truncate_file 仍命中；permission_status 放行）。
+    toolPattern: /(?<![a-z0-9])(?:delete|remove|unlink|rmdir|rm|truncate|wipe|destroy)(?![a-z0-9])/i,
     argPattern: /./, // any args — the tool name itself is dangerous
     severity: "high",
     action: "block",
@@ -355,10 +359,14 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   //    （Python 注释分隔线 `# -----`、Markdown `---`）→ 改为 `'\s*--`
   //    （SQL 注释注入必须紧跟引号，如 `admin'--`）；
   // 2. 裸 `1\s*=\s*1` 会命中 `count1 = 1` 这类赋值语句 → 加 `\b` 词界。
+  // 2026-10-16 修复第三类误伤（实例任务评测复盘）：`echo '---'`（shell 输出分隔线）
+  // 让 `'\s*--` 命中——单引号后紧跟三个破折号。真注入 `admin'--` 的特征是 `--`
+  // 之后**不再**是破折号/引号/单词（注释已收尾），故加负向前瞻 `(?![\-'"\w])`：
+  // `---`/`'---'` 这类「破折号串/分隔线」放行，`'-- `、`'--;` 注入仍拦。
   {
     id: "tool-sql-injection",
     toolPattern: /(?:sql|query|database|\bdb\b|mysql|postgres|shell|exec|command|run|bash|terminal|execute)/i,
-    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+'|'\s*--)/im,
+    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+'|'\s*--(?![\-'"\w]))/im,
     severity: "high",
     action: "block",
     description: "SQL injection pattern in tool arguments",

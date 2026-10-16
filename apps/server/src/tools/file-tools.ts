@@ -92,7 +92,7 @@ function stripWorkspacePrefix(filePath: string): string {
   return candidate;
 }
 
-function resolveToolPath(
+export function resolveToolPath(
   fsBase: string,
   workspaceBase: string | undefined,
   filePath: string,

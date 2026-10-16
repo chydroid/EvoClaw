@@ -296,6 +296,13 @@ const BUILTIN_TEMPLATES: Array<{ name: string; template: string; version: string
     tags: ["search", "llm-caller"],
     description: "Injected when SearchPreprocessor auto-executed a search.",
   },
+  {
+    name: "web.tool_strategy",
+    template: "### Web Tool Decision Strategy (ReAct)\nFollow this decision tree when handling web-related tasks:\n\n```\nHave a specific URL?\n├─ YES → Is it static content (article/doc/API/RSS)?\n│        ├─ YES → web_fetch\n│        │        Failed (blank/403/CAPTCHA)? → Try skill_execute with search skills → browser\n│        └─ NO (needs JS/login/interaction/screenshot) → browser_navigate\n└─ NO  → web_search (or skill_execute with tavily-search/baidu-search)\n         ├─ Success → For result URLs, apply the URL logic above\n         ├─ Failed → Try skill_execute with tavily-search or baidu-search\n         └─ No results → browser_search\n```\n\n**Key rules:**\n1. For search tasks, prefer skill_execute with **tavily-search** (highest quality) or **baidu-search** over web_search\n2. When web_search returns no results, try tavily-search or baidu-search via skill_execute before giving up\n3. Always inform the user when switching tools — never silently downgrade\n4. For Chinese content, baidu-search often works better; for English/global content, tavily-search is preferred",
+    version: "1.0",
+    tags: ["web", "llm-caller"],
+    description: "P0-3: static web tool ReAct strategy — registered for cross-deployment byte stability (replaces inline literal in llm-caller).",
+  },
 ];
 
 /** Register built-in templates on the singleton. Safe to call multiple times. */

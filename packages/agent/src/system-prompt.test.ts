@@ -138,3 +138,46 @@ describe("buildCompactSkillsPrompt — 压缩模式保持精简", () => {
     expect(() => buildCompactSkillsPrompt([])).not.toThrow();
   });
 });
+// ═══════════════════════════════════════════════════════════
+// P0-3/P1-5 缓存前缀稳定性（2026-10-16）
+// 不变量：system 主体同一自然日内跨分钟/小时边界字节恒定，
+// provider 前缀缓存（tools→system→history）可命中。
+// ═══════════════════════════════════════════════════════════
+import { vi } from "vitest";
+
+describe("buildAgentSystemPrompt — 跨分钟边界字节稳定（P0-3 回归）", () => {
+  it("同一日内跨过 60s 后输出完全相同（分钟级时钟已移出主体）", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 9, 16, 14, 59, 30));
+      const p1 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
+      vi.setSystemTime(new Date(2026, 9, 16, 15, 0, 5)); // 跨分钟
+      const p2 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
+      expect(p2).toBe(p1); // 逐轮字节恒定 → 缓存可命中
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("主体不再含分钟级 'Current time:'（精确时间改由 user 消息时间戳提供）", () => {
+    const p = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
+    expect(p).toContain("## Current Date & Time");
+    expect(p).toContain("Today is:");
+    expect(p).not.toContain("Current time:");
+  });
+
+  it("天级日期随跨日变化（预期内的唯一翻转点）", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 9, 16, 23, 59, 0));
+      const d1 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
+      vi.setSystemTime(new Date(2026, 9, 17, 0, 0, 30)); // 跨日
+      const d2 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
+      expect(d1).not.toBe(d2);
+      expect(d1).not.toContain("17");
+      expect(d2).toContain("17");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

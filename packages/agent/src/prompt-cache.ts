@@ -92,11 +92,18 @@ export interface AnthropicCacheableMessage {
  *
  * Anthropic 限制最多 4 个 cache_control 断点（system 算 1 个 + 3 个尾部）。
  *
+ * P0-3 缓存稳定化（2026-10-16）：可选 `stableLength` 参数——首条 system 消息的
+ * **稳定前缀**字符长度（ContextEngine frozen 段长度）。提供且有效时，把首条
+ * system 拆成两条：稳定段（带 cache_control，逐轮字节不变 → 命中）+ 易变尾
+ * （不带断点，只重价尾段）。缺省行为不变（整条 system 一个断点）。
+ *
  * @param messages 输入消息数组
- * @returns 新的消息数组，带 cache_control 标记
+ * @param stableLength 首条 system 消息中稳定前缀的字符长度（0/undefined = 旧行为）
+ * @returns 新的消息数组，带 cache_control 标记（不修改原数组）
  */
 export function applyAnthropicCacheControl(
   messages: Array<Record<string, unknown>>,
+  stableLength?: number,
 ): Array<Record<string, unknown>> {
   if (!Array.isArray(messages) || messages.length === 0) {
     return messages;
@@ -104,31 +111,57 @@ export function applyAnthropicCacheControl(
 
   const result = messages.map((m) => ({ ...m }));
 
-  // 1. 标记所有 system 消息（通常只有 1 条，但保守处理多条）
-  //    仅在最后一条 system 消息上设置断点（Anthropic 建议系统提示作为单个缓存块）
-  let lastSystemIdx = -1;
-  for (let i = 0; i < result.length; i++) {
-    if (result[i].role === "system") {
-      lastSystemIdx = i;
-    }
-  }
-  if (lastSystemIdx >= 0) {
-    result[lastSystemIdx].cache_control = { type: "ephemeral" };
+  // ── P0-3：把首条 system（frozen 段 + ephemeral 尾拼接而成）拆成两条 ──
+  // 稳定段（frozen，逐轮字节不变）带断点，provider 缓存命中到此；
+  // 易变尾（"Today is:" 等，随时间变）不带断点，只被尾部重价。
+  // 拆分后所有 system 消息中只有第 0 条（稳定段）拿断点，
+  // 其余 system（易变尾、llm-caller 动态尾）一律不补断点——
+  // 避免把逐轮变动的字节拉进缓存块、且保持 ≤4 断点。
+  let stableSystemIdx = -1;
+  if (
+    typeof stableLength === "number" &&
+    stableLength > 0 &&
+    result[0].role === "system" &&
+    typeof result[0].content === "string" &&
+    result[0].content.length > stableLength
+  ) {
+    const full = result[0].content as string;
+    const stablePart: Record<string, unknown> = { ...result[0], content: full.slice(0, stableLength) };
+    const tailPart: Record<string, unknown> = { ...result[0], content: full.slice(stableLength) };
+    stablePart.cache_control = { type: "ephemeral" };
+    result[0] = stablePart;
+    result.splice(1, 0, tailPart);
+    stableSystemIdx = 0;
   }
 
-  // 2. 标记最后 3 条非 system 消息
-  //    从数组末尾向前扫描，跳过 system 消息，收集最多 3 个索引
+  // ── 断点 1：稳定 system 段 ──
+  // 未拆分时，稳定段就是首条 system（整条）；拆分时即上面已标记的稳定段。
+  if (stableSystemIdx === -1) {
+    // 首条 system 作为单个缓存块（旧行为）
+    let firstSystemIdx = -1;
+    for (let i = 0; i < result.length; i++) {
+      if (result[i].role === "system") {
+        firstSystemIdx = i;
+        break;
+      }
+    }
+    if (firstSystemIdx >= 0) {
+      result[firstSystemIdx].cache_control = { type: "ephemeral" };
+      stableSystemIdx = firstSystemIdx;
+    }
+  }
+
+  // ── 断点 2-4：最后 3 条非 system 消息（稳定段之后的 history 尾部） ──
+  // 注意：其余 system 消息（易变尾 / 动态尾）不参与，避免给逐轮变动的
+  // 内容加断点、浪费 4 个断点槽位。
   const tailIndices: number[] = [];
   for (let i = result.length - 1; i >= 0 && tailIndices.length < 3; i--) {
-    if (result[i].role !== "system") {
+    if (result[i].role !== "system" && !result[i].cache_control) {
       tailIndices.push(i);
     }
   }
   for (const idx of tailIndices) {
-    // 避免重复标记（若 system 消息恰好在尾部 3 条内）
-    if (!result[idx].cache_control) {
-      result[idx].cache_control = { type: "ephemeral" };
-    }
+    result[idx].cache_control = { type: "ephemeral" };
   }
 
   return result;

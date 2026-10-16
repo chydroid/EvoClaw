@@ -78,7 +78,10 @@ export class AgentModelExecutor {
     dynamicSchemaOverrides?: () => Partial<ToolDefinition>;
   }>();
   private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
-  private maxHistoryLength = 20;
+  // ★ 200（原 20）：缓存命中改造。旧值 20 使会话在第 11 轮起每轮 splice 最老
+  // 消息、前缀原点漂移。200 条 user/assistant 对 ≈ 远超 100k tokens 压缩阈值，
+  // CompactionManager 必先触发，正常轮次不再发生静默截断。
+  private maxHistoryLength = 200;
   /** 当前会话 ID（由 dispatchCommand 维护，chat() 在 context.sessionId 缺失时回退使用） */
   public currentSessionId: string | undefined;
   private sessionDataDir: string;
@@ -176,6 +179,14 @@ export class AgentModelExecutor {
   private contextEngine: import("./context-engine").ContextEngine | null = null;
   private copilotRouter: CopilotRouter | null = null;
   private iterationBudgets = new Map<string, IterationBudget>();
+  /**
+   * ★ P0-2（2026-10-16 缓存命中改造）：每会话已激活的工具组（单调并集）。
+   * 旧行为：buildOpenAITools 按**当前消息**做关键词激活，话题一换 tools JSON
+   * 逐轮漂移 → provider 缓存前缀（tools 是前缀第一段）永远失配。
+   * 现行为：激活只增不减（会话级并集），同一会话稳态下 tools JSON 字节恒定，
+   * 仅在首次有新组被激活时前移一次分叉点；clearChatHistory 时清空。
+   */
+  private sessionToolGroups = new Map<string, Set<string>>();
   private pluginManager: import("@evoclaw/core").PluginManager | null = null;
   // ChannelManager integration — avoids cross-package import using any
   private channelManager: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> } | null = null;
@@ -956,6 +967,8 @@ export class AgentModelExecutor {
       semanticIntentClassifier: this.semanticQuickReply,
       tokenUsageTracker: this.tokenUsageTracker ?? undefined,
       checkFnEvaluator: (fn: () => boolean) => this.evaluateCheckFn(fn),
+      // P0-2：会话级工具组单调并集存储，buildOpenAITools 回写、下一轮复用
+      toolGroupStore: this.sessionToolGroups,
     };
   }
 
@@ -1343,6 +1356,7 @@ export class AgentModelExecutor {
       // 清理会话级上下文引擎缓存与 abort 控制器，避免跨会话泄漏
       this._contextEngineResults.delete(sessionId);
       this.sessionAbortControllers.delete(sessionId);
+      this.sessionToolGroups.delete(sessionId);
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
@@ -1356,6 +1370,7 @@ export class AgentModelExecutor {
       // 全局清理：上下文引擎缓存与 abort 控制器一并清空
       this._contextEngineResults.clear();
       this.sessionAbortControllers.clear();
+      this.sessionToolGroups.clear();
     }
   }
 
@@ -2236,7 +2251,11 @@ export class AgentModelExecutor {
       } catch { /* best-effort */ }
     }
 
-    const systemPrompt = this.buildSystemPrompt(undefined, { channel }) + personaContext + memoryContext;
+    // P0-3 缓存稳定化（2026-10-16）：system 主体保持**逐轮字节恒定**——
+    // persona/memory 是逐轮检索的动态内容，移出主体、并入动态尾
+    // （dynamicSystemTail → 第二条 system 消息，见 tryCallLLM），
+    // 让 provider 前缀缓存命中稳定的主体段。
+    const systemPrompt = this.buildSystemPrompt(undefined, { channel });
 
     // ── 解析本次生效的上下文窗口（分母）──
     // 顺序：用户显式设置 > 内置模型库按当前模型解析 > 兜底。
@@ -2262,12 +2281,15 @@ export class AgentModelExecutor {
           conversationHistory: history,
           systemPrompt,
           skillsContext: skillsPrompt || undefined,
-          memoryContext: memoryContext || undefined,
+          // P0-3：记忆段改走动态尾（dynamicSystemTail），不再进 CE frozen 段
+          memoryContext: undefined,
           compactionSummary: undefined, // handled by compactionManager separately
           pluginPrependContext: undefined,
           pluginAppendContext: undefined,
           currentTask: effectiveMessage,
           maxContextTokens: effectiveContextWindow,
+          // P0-3：天级「今天是」放进 CE ephemeral 尾部（主体不再带分钟时钟）
+          userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
         });
         if (contextEngineResult.warnings.length > 0) {
           process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
@@ -2391,7 +2413,17 @@ export class AgentModelExecutor {
       }
     }
 
-    const enhancedSystemPrompt = systemPrompt + (planContext ? "\n\n[执行计划]\n" + planContext : "") + (chainContext ? "\n\n" + chainContext : "");
+    // P0-3 缓存稳定化（2026-10-16）：易变成分（画像/记忆/计划/工具链）全部并入
+    // **动态尾**（第二条 system 消息），稳定主体（buildSystemPrompt）保持逐轮
+    // 字节恒定。记忆不再交给 ContextEngine.assembleContext 拼进 frozen 段
+    // （旧行为每轮随检索结果漂移 frozen hash），改由动态尾携带——同一份内容
+    // 只出现一次（tail），CE 的 system 消息因此也保持稳定。
+    let dynamicSystemTail = [
+      personaContext,
+      memoryContext,
+      planContext ? "\n\n[执行计划]\n" + planContext : "",
+      chainContext,
+    ].filter(Boolean).join("");
 
     // ── Structured Output: inject schema instruction if applicable ──
     if (this.structuredOutputParser && this.schemaRegistry) {
@@ -2400,7 +2432,9 @@ export class AgentModelExecutor {
         const schema = this.schemaRegistry.get("task-result");
         if (schema) {
           const schemaInstruction = this.structuredOutputParser.formatSchemaForPrompt(schema);
-          planContext += "\n\n" + schemaInstruction;
+          // P0-3：schema 说明属于动态内容——直接并入动态尾（此刻 planContext 已冻结，
+          // 再往 planContext 追加不会进入任何 system 段，属死代码）。
+          dynamicSystemTail += "\n\n" + schemaInstruction;
         }
       }
     }
@@ -2476,7 +2510,7 @@ export class AgentModelExecutor {
     if (routedProviders.length > 0) {
       const primaryProvider = routedProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(finalEnhancedMessage, enhancedSystemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel);
+      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -3166,7 +3200,8 @@ export class AgentModelExecutor {
     attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>,
     onProgress?: AgentProgressCallback,
     searchPreDone: boolean = false,
-    channel?: string
+    channel?: string,
+    dynamicSystemTail?: string,
   ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
     this.ensureToolResultCacheV2();
@@ -3199,7 +3234,7 @@ export class AgentModelExecutor {
       deps.abortSignal = sessionController.signal;
     }
     return tryCallLLMFn(deps, {
-      message, systemPrompt, installedSkills, providers, startTime,
+      message, systemPrompt, dynamicSystemTail, installedSkills, providers, startTime,
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,
       abortSignal: sessionController?.signal,

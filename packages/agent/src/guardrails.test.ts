@@ -65,6 +65,26 @@ describe("guardrails tool-sql-injection（回归）", () => {
     });
     expect(r.passed).toBe(false);
   });
+
+  it("shell_exec 里 echo '---' 输出分隔线不被误拦（2026-10-16 实例任务复盘）", () => {
+    // `'\s*--` 旧版命中 `echo '---'`（单引号后紧跟破折号串）；真注入 `admin'--`
+    // 的特征是 `--` 后不再是破折号/引号/单词，负向前瞻已区分两者。
+    const ok = mgr.checkToolCall("shell_exec", {
+      command: "ls -la /home/chy/test/ 2>&1; echo '---'; ls /home/chy/EvoClaw/data/workspace/inst_eval2/",
+    });
+    expect(ok.passed).toBe(true);
+
+    const ok2 = mgr.checkToolCall("shell_exec", {
+      command: "echo '---' && df -h",
+    });
+    expect(ok2.passed).toBe(true);
+
+    // 真注释注入（`'--` 后跟空格收尾）仍拦
+    const bad = mgr.checkToolCall("shell_exec", {
+      command: `mysql -e "SELECT 1 WHERE name = 'admin' -- "`,
+    });
+    expect(bad.passed).toBe(false);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -94,5 +114,29 @@ describe("guardrails tool-privilege-sudo（回归）", () => {
   it("su root / runas 仍被硬拦", () => {
     expect(mgr.checkToolCall("shell_exec", { command: "su root -c id" }).passed).toBe(false);
     expect(mgr.checkToolCall("shell_exec", { command: "runas /user:admin cmd" }).passed).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 删除工具规则回归（2026-10-16 实例任务 worktemp.zip 汇总）：
+// 旧 toolPattern 裸子串 `rm` 命中 "pe_rm_ission_status"、"con_firm"
+// 家族工具名 → 查审批状态的 permission_status 被硬拦，模型失去审批
+// 检查通道，任务对账为「未完成」。改为词界（lookaround）匹配后：
+// permission_* 放行，真删除类工具名仍拦。
+// ═══════════════════════════════════════════════════════════
+describe("guardrails tool-file-deletion（回归）", () => {
+  const mgr = new GuardrailsManager();
+
+  it("permission_status / permission_confirm 不再被误拦", () => {
+    expect(mgr.checkToolCall("permission_status", { requestId: "hitl-x" }).passed).toBe(true);
+    expect(mgr.checkToolCall("permission_confirm", { requestId: "hitl-y" }).passed).toBe(true);
+  });
+
+  it("真删除类工具名仍被拦截", () => {
+    for (const tool of ["file_delete", "memory_delete", "scheduler_delete", "rm", "truncate_file"]) {
+      const r = mgr.checkToolCall(tool, { path: "x" });
+      expect(r.passed).toBe(false);
+      expect(r.triggeredRules).toContain("tool-file-deletion");
+    }
   });
 });

@@ -1558,15 +1558,28 @@ export class EvoClawServer {
   }
 
   private registerDocxTools(fsBase: string): void {
-    registerDocxTools(this.agentModelExecutor, fsBase);
+    this.registerOfficeTools(fsBase, "docx");
   }
 
   private registerXlsxTools(fsBase: string): void {
-    registerXlsxTools(this.agentModelExecutor, fsBase);
+    this.registerOfficeTools(fsBase, "xlsx");
   }
 
   private registerPptxTools(fsBase: string): void {
-    registerPptxTools(this.agentModelExecutor, fsBase);
+    this.registerOfficeTools(fsBase, "pptx");
+  }
+
+  /**
+   * docx/xlsx/pptx 创建工具与 file_* 一样：相对路径基准 = workspace
+   * （与 shell_exec 的 cwd 一致），避免产物污染仓库根目录。
+   * 实例任务真实事故：docx_create 相对路径落在仓库根 inst_eval2/，
+   * 模型误判「/home/chy/test 下旧成品已更新」，任务对账为「未完成」。
+   */
+  private registerOfficeTools(fsBase: string, kind: "docx" | "xlsx" | "pptx"): void {
+    const workspaceBase = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
+    if (kind === "docx") registerDocxTools(this.agentModelExecutor, fsBase, workspaceBase);
+    if (kind === "xlsx") registerXlsxTools(this.agentModelExecutor, fsBase, workspaceBase);
+    if (kind === "pptx") registerPptxTools(this.agentModelExecutor, fsBase, workspaceBase);
   }
 
   /**

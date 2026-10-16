@@ -9,6 +9,83 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.92.9] - 2026-10-16
+
+**实例任务末轮「任务未完成」根因修复 + Token 用量输入缓存命中真值显示 + Prompt 构造缓存前缀稳定化（P0×3 + P1×2）**
+
+实例任务（worktemp.zip 汇总）末轮追问「增加文字汇总段」回复出现「⚠️ 任务未完成」，
+根因是 `docx_create` 的相对路径落在**仓库根**（`inst_eval2/`）而非 `data/workspace/`
+（与 file_*/shell_exec 的基准不一致），模型把新汇总版写到了工作区外；叠加
+`tool-file-deletion` 守卫的裸子串 `rm` 误伤 `permission_status`/`confirm` 类工具名，
+审批链路被拦。同时按「prompt cache is sacred」原则做了一轮 Prompt 构造的
+缓存前缀稳定化改造（tools JSON / system 段逐轮漂移是 provider 输入缓存零命中的
+主因），并在 Token 用量页增加了 provider 侧缓存命中真值。
+
+### 根因与改动
+
+1. **office 三件套工具相对路径基准错（主根因）**：`docx/xlsx/pptx-tools.ts`
+   的 `register*Tools` 只接 `fsBase`，`path.resolve(fsBase, filePath)` 把相对
+   路径解析到仓库根；`file_*` 工具走 `resolveToolPath(fsBase, workspaceBase, …)`
+   （相对 → `data/workspace`）。改动：三个 office 工具复用 `resolveToolPath`，
+   `index.ts` 三处注册统一改走 `registerOfficeTools(fsBase, kind)`（共享
+   workspaceBase 解析），沙箱/越界安全判定不变。
+2. **`tool-file-deletion` 守卫词界误伤**：toolPattern 裸子串命中
+   `permission_status`（pe**rm**ission）、`confirm`（con**firm**）类工具名。
+   改为 `(?<![a-z0-9])(?:delete|remove|unlink|rm|truncate|wipe|destroy)(?![a-z0-9])`
+   词界匹配：`file_delete`/`rm`/`truncate_file` 仍拦，`permission_*`/`confirm` 放行。
+3. **Token 用量输入缓存命中真值（数据通路全链）**：`normalizeUsage` 已有
+   Anthropic `cache_read_input_tokens` / OpenAI `cached_tokens` / Codex 三种形状
+   解析但零调用。改动：llm-caller 非流式/流式（OpenAI 原生端点开
+   `stream_options.include_usage`）回填 `usageDetails`，4 处 record 调用点经
+   `cacheExtrasFromResult` 聚合 `cacheHitTokens/cacheWriteTokens`；
+   TokenUsageTracker 增 `cacheWriteTokens` 并按 model 汇总；
+   `/api/token-usage/overview`、`/by-model`、`/by-session` 增加缓存命中字段与
+   `cacheHitRate`；TokenUsagePage 新增「输入缓存命中（LLM 侧）」区块
+   （命中 Token / 命中率 / 写入 Token），原本地哈希区块改标「本地前缀缓存（估算）」；
+   历史记录无该字段时 `?? 0` 兜底。
+4. **Prompt 构造缓存前缀稳定化**（前缀 = tools JSON → system → history，
+   任何字节漂移都会让 provider 缓存 N..end 全部重价）：
+   - **P0-1 移除历史静默 splice**：单轮内 `splice(0, n)` 把最老消息删掉使整条
+     前缀原点漂移；改为仅 CompactionManager（100k 阈值）做结构改写，
+     `maxHistoryLength` 20→200（仅作内存保护）。
+   - **P0-2 会话级工具组单调并集**：`buildOpenAITools` 按**当前消息**关键词
+     激活导致 tools JSON 话题一换就变；改为 `sessionToolGroups`
+     （Map<sessionId, Set>）逐轮只增不减，稳态字节恒定；fresh session /
+     `message === undefined`（/health 计数）语义不变。
+   - **P0-3 system 稳定化**：分钟级 `new Date()` 时钟降为天级
+     （system-prompt.ts）；persona/memory/plan/chain 等逐轮易变内容移出
+     稳定 system 主体，并入**第二条 system 消息**（dynamicSystemTail，
+     llm-caller TryCallLLMOptions 新字段 + executor 传参；OpenAI 兼容
+     provider 多条 system 顺序拼接语义不变）；`searchPreDone` 提示与
+     静态 web 工具 ReAct 策略串（注册进 PromptRegistry `web.tool_strategy`
+     保跨部署字节稳定）同步入动态尾。
+   - **P1-4 Anthropic 断点拆分**：`applyAnthropicCacheControl(messages,
+     stableLength?)` 新增可选参数——ContextEngine 分层上下文时把首条 system
+     （frozen + ephemeral 拼接）拆成稳定段（带 `cache_control`，逐轮字节
+     不变）与易变尾（不带断点，只重价尾段），断点总数仍 ≤4；OpenAI 兼容
+     provider 忽略 cache_control 无副作用。
+5. **`tool-sql-injection` 守卫 `echo '---'` 误伤（末轮复跑追加根因）**：
+   末轮复跑发现 `echo '---'`（shell 输出分隔线）被 argPattern 的
+   `'\s*--` 分支命中（单引号后紧跟破折号串），4 条良性 shell_exec 被硬 block，
+   模型被迫改走 file_create 写脚本绕路，收尾再次对账为「未完成」。
+   改动：该分支追加负向前瞻 `(?![\-'"\w])`——真注释注入（`'admin' -- `）的特征是
+   `--` 后不再是破折号/引号/单词字符，`echo '---'`/`'---' && df` 等分隔线用法放行。
+   回归测试：guardrails.test.ts 新增 `echo '---'` 放行 / 真注入仍拦三条断言。
+6. **确定性回归测试**：buildOpenAITools turn2/3 tools JSON 字节相同（单调
+   会话）、fresh/`message === undefined` 旧语义不变；
+   applyAnthropicCacheControl 拆分/越界/纯函数；system-prompt 跨 60s 边界
+   字节恒定（mock Date）、天级日期随跨日变化；TokenUsageTracker 缓存字段
+   聚合 / 旧记录 `?? 0` / 负数钳制；office 工具 workspaceBase 相对路径基准；
+   guardrails `echo '---'` 分隔线放行 + 真注入仍拦。
+
+验证：`pnpm build → typecheck → test` 全绿（6270/6283 含新增）。
+实例任务末轮复跑（instance-followup.mjs，「增加文字汇总段」）：末轮回复
+不再出现「任务未完成」，docx 相对路径落 `data/workspace/inst_eval2/`，
+仓库根不再产生 stray `inst_eval2/`。
+
+### 发布回执（v0.92.9 两段式流水线端到端验证）
+（待推送后补：Release receipt 资产 commitSha / stable & test image sha256 / testResults.health / CI/CD run）
+
 ## [0.92.8] - 2026-10-16
 
 **实例任务评测（worktemp.zip 14 文件 → 信阳市10月6日明查暗访问题清单.docx）暴露的两处工具层缺陷修复**

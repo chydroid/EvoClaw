@@ -2160,14 +2160,24 @@ export class GatewayServer {
         outputTokens: r.outputTokens,
         cost: r.totalCost,
         timestamp: new Date(r.calledAt).toISOString(),
+        cacheHitTokens: r.cacheHitTokens ?? 0,
+        cacheWriteTokens: r.cacheWriteTokens ?? 0,
       }));
       // Count unique sessions
       const uniqueSessions = new Set(recent.map(r => r.sessionId)).size;
+      // 缓存命中率 = 命中 / (命中 + 输入)；OpenAI 形状 inputTokens 已含命中
+      // （prompt_tokens 含 cached），命中率分母用 inputTokens 即全量输入。
+      const totalCacheHit = summary.totalCacheHitTokens;
+      const cacheHitRate = summary.totalInputTokens > 0 ? totalCacheHit / summary.totalInputTokens : 0;
       res.json({
         totalTokens: summary.totalInputTokens + summary.totalOutputTokens,
         totalCost: summary.totalCost,
         totalCalls: summary.totalCalls,
         avgTokensPerSession: uniqueSessions > 0 ? Math.round((summary.totalInputTokens + summary.totalOutputTokens) / uniqueSessions) : 0,
+        totalInputTokens: summary.totalInputTokens,
+        totalCacheHitTokens: totalCacheHit,
+        totalCacheWriteTokens: summary.totalCacheWriteTokens,
+        cacheHitRate,
         recentUsage,
       });
     });
@@ -2180,17 +2190,19 @@ export class GatewayServer {
         return;
       }
       const recent = tracker.getRecent(1000);
-      const byModel: Record<string, { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; calls: number }> = {};
+      const byModel: Record<string, { provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; calls: number; cacheHitTokens: number; cacheWriteTokens: number }> = {};
       for (const r of recent) {
         const key = `${r.provider}/${r.model}`;
         if (!byModel[key]) {
-          byModel[key] = { provider: r.provider, model: r.model, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, calls: 0 };
+          byModel[key] = { provider: r.provider, model: r.model, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, calls: 0, cacheHitTokens: 0, cacheWriteTokens: 0 };
         }
         byModel[key].inputTokens += r.inputTokens;
         byModel[key].outputTokens += r.outputTokens;
         byModel[key].totalTokens += r.inputTokens + r.outputTokens;
         byModel[key].cost += r.totalCost;
         byModel[key].calls++;
+        byModel[key].cacheHitTokens += r.cacheHitTokens ?? 0;
+        byModel[key].cacheWriteTokens += r.cacheWriteTokens ?? 0;
       }
       res.json({ models: Object.values(byModel) });
     });
@@ -2213,21 +2225,25 @@ export class GatewayServer {
             inputTokens: sessionCost.inputTokens,
             outputTokens: sessionCost.outputTokens,
             cost: sessionCost.totalCost,
+            cacheHitTokens: sessionCost.cacheHitTokens,
+            cacheWriteTokens: sessionCost.cacheWriteTokens,
             lastActive: new Date().toISOString(),
           }],
         });
         return;
       }
       const recent = tracker.getRecent(limit);
-      const bySession: Record<string, { inputTokens: number; outputTokens: number; cost: number; calls: number; lastActive: number }> = {};
+      const bySession: Record<string, { inputTokens: number; outputTokens: number; cost: number; calls: number; lastActive: number; cacheHitTokens: number; cacheWriteTokens: number }> = {};
       for (const r of recent) {
         if (!bySession[r.sessionId]) {
-          bySession[r.sessionId] = { inputTokens: 0, outputTokens: 0, cost: 0, calls: 0, lastActive: 0 };
+          bySession[r.sessionId] = { inputTokens: 0, outputTokens: 0, cost: 0, calls: 0, lastActive: 0, cacheHitTokens: 0, cacheWriteTokens: 0 };
         }
         bySession[r.sessionId].inputTokens += r.inputTokens;
         bySession[r.sessionId].outputTokens += r.outputTokens;
         bySession[r.sessionId].cost += r.totalCost;
         bySession[r.sessionId].calls++;
+        bySession[r.sessionId].cacheHitTokens += r.cacheHitTokens ?? 0;
+        bySession[r.sessionId].cacheWriteTokens += r.cacheWriteTokens ?? 0;
         if (r.calledAt > bySession[r.sessionId].lastActive) {
           bySession[r.sessionId].lastActive = r.calledAt;
         }
@@ -2238,6 +2254,8 @@ export class GatewayServer {
         inputTokens: data.inputTokens,
         outputTokens: data.outputTokens,
         cost: data.cost,
+        cacheHitTokens: data.cacheHitTokens,
+        cacheWriteTokens: data.cacheWriteTokens,
         lastActive: new Date(data.lastActive).toISOString(),
       }));
       res.json({ sessions });

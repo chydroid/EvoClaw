@@ -356,3 +356,108 @@ describe("validateToolParams — array/object 参数的 JSON 字符串自动解�
     ).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// P0-2/P0-3 缓存前缀稳定性（2026-10-16）
+// 不变量：同一会话稳态下 tools JSON 逐轮字节恒定；
+// Anthropic 断点拆到 system 稳定段末尾，易变尾不进缓存块。
+// ═══════════════════════════════════════════════════════════
+import { applyAnthropicCacheControl } from "./prompt-cache";
+
+describe("P0-2 buildOpenAITools — 会话级单调并集（tools JSON 字节稳定）", () => {
+  const mk = (names: string[]) =>
+    new Map(names.map((n) => [n, { definition: { name: n, description: "d", parameters: {} }, handler: async () => ({}) }]));
+  const REG = mk([
+    "web_search", "web_fetch", "file_read", "file_create",
+    "email_send", "email_add_account", "scheduler_create",
+    "kanban_add_task", "skill_execute", "skill_install", "shell_exec",
+  ]);
+  const evalFn = (fn: () => boolean) => fn();
+
+  it("turn2/turn3 的 tools JSON 与 turn1 完全相同（话题切换不再漂移）", () => {
+    const out1: { activeTools?: Set<string> } = {};
+    const tools1 = JSON.stringify(buildOpenAITools(REG, "帮我发邮件给张三", evalFn, undefined, out1));
+    const base = out1.activeTools!;
+
+    const out2: { activeTools?: Set<string> } = {};
+    const tools2 = JSON.stringify(buildOpenAITools(REG, "今天天气怎么样", evalFn, base, out2));
+    const out3: { activeTools?: Set<string> } = {};
+    const tools3 = JSON.stringify(buildOpenAITools(REG, "再查一下日程", evalFn, out2.activeTools, out3));
+
+    expect(tools2).toBe(tools1); // 话题换了，但并集种子保留 email 组
+    expect(tools3).toBe(tools1);
+  });
+
+  it("并集只增不减：新话题激活的组在后续轮保留（单调性）", () => {
+    const out1: { activeTools?: Set<string> } = {};
+    buildOpenAITools(REG, "帮我发邮件给张三", evalFn, undefined, out1);
+    const out2: { activeTools?: Set<string> } = {};
+    const tools2 = JSON.stringify(buildOpenAITools(REG, "帮我建个日程", evalFn, out1.activeTools, out2));
+    const out3: { activeTools?: Set<string> } = {};
+    const tools3 = JSON.stringify(buildOpenAITools(REG, "完全无关的消息", evalFn, out2.activeTools, out3));
+    expect(tools3).toBe(tools2); // 稳态后字节恒定
+    const names3 = JSON.parse(tools3).map((t: { function: { name: string } }) => t.function.name);
+    expect(names3).toContain("email_send");       // email 组不丢
+    expect(names3).toContain("scheduler_create"); // scheduler 组保留
+  });
+
+  it("fresh session（base 为空）行为与旧语义一致", () => {
+    const out: { activeTools?: Set<string> } = {};
+    const names = JSON.parse(
+      JSON.stringify(buildOpenAITools(REG, "今天天气怎么样", evalFn, undefined, out))
+    ).map((t: { function: { name: string } }) => t.function.name);
+    // 无关消息：非创建类 email_send 被裁剪（旧行为）
+    expect(names).not.toContain("email_send");
+    // 创建类工具白名单兜底保留
+    expect(names).toContain("email_add_account");
+  });
+
+  it("message === undefined（/health 计数路径）仍全量下发", () => {
+    const names = JSON.parse(JSON.stringify(buildOpenAITools(REG, undefined, evalFn)))
+      .map((t: { function: { name: string } }) => t.function.name);
+    expect(names).toContain("email_send");
+    expect(names).toContain("scheduler_create");
+  });
+});
+
+describe("P1-4 applyAnthropicCacheControl — 稳定段拆分断点", () => {
+  const msgs = () => [
+    { role: "system", content: "STABLE_BODY" + "VVVVVVVV" },
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+    { role: "user", content: "q2" },
+  ];
+
+  it("缺省（无 stableLength）：旧行为——整条 system 1 断点 + 尾部 3 断点", () => {
+    const r = applyAnthropicCacheControl(msgs());
+    expect(r).toHaveLength(4);
+    expect(r[0].cache_control).toEqual({ type: "ephemeral" });
+    const marked = r.filter((m) => m.cache_control).length;
+    expect(marked).toBeLessThanOrEqual(4);
+  });
+
+  it("stableLength=9：system 拆成稳定段(前9字符)+尾(其余)，断点只在稳定段", () => {
+    const r = applyAnthropicCacheControl(msgs(), 9);
+    expect(r).toHaveLength(5);
+    // "STABLE_BODYVVVVVVV".slice(0,9) === "STABLE_BO"；易变尾 = "DYVVVVVVVV"
+    expect(r[0]).toMatchObject({ role: "system", content: "STABLE_BO", cache_control: { type: "ephemeral" } });
+    expect(r[1]).toMatchObject({ role: "system", content: "DYVVVVVVVV" });
+    expect(r[1].cache_control).toBeUndefined(); // 易变尾不带断点
+    const marked = r.filter((m) => m.cache_control).length;
+    expect(marked).toBeLessThanOrEqual(4);
+  });
+
+  it("stableLength 越界（>= 全文长度）不拆分，保持旧行为", () => {
+    const r = applyAnthropicCacheControl(msgs(), 999);
+    expect(r).toHaveLength(4);
+    expect(r[0].content).toBe("STABLE_BODYVVVVVVVV");
+    expect(r[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("拆分后输入数组不被原地修改（纯函数）", () => {
+    const m = msgs();
+    applyAnthropicCacheControl(m, 9);
+    expect(m).toHaveLength(4);
+    expect(m[0].content).toBe("STABLE_BODYVVVVVVVV");
+  });
+});

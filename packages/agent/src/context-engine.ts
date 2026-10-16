@@ -49,6 +49,13 @@ export interface ContextAssemblyInput {
   pluginPrependContext?: string;
   currentTask?: string;
   /**
+   * P0-3 缓存稳定化（2026-10-16）：用户时区（如 "Asia/Shanghai"）。设置后在
+   * **ephemeral 尾部**追加「Today is: …」（天级，同日内字节恒定）。系统提示主体
+   * 里不再有分钟级时钟——逐分钟翻转的 `Current time` 会击穿 provider 前缀缓存，
+   * 易变内容全部放尾部。
+   */
+  userTimezone?: string;
+  /**
    * 本次调用生效的上下文窗口（tokens）。
    *
    * 不传则回退到 `config.maxContextTokens`（历史默认 128000）。
@@ -222,6 +229,16 @@ export class ContextEngine {
       parts.push(`Current timezone: ${this.config.timezone} (${this.config.timeFormat ?? "24"}h format)`);
     }
 
+    // P0-3：天级「今天是」放进易变尾部（同日内字节恒定；跨日才变一次，
+    // 而 system 主体里已不再带分钟时钟，frozen 段可长期命中 provider 缓存）。
+    if (input.userTimezone) {
+      const tz = input.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined;
+      const dateStr = new Date().toLocaleDateString("zh-CN", {
+        timeZone: tz, year: "numeric", month: "long", day: "numeric", weekday: "long",
+      });
+      parts.push(`Today is: ${dateStr} (timezone: ${input.userTimezone})`);
+    }
+
     if (this.config.platformHint) {
       parts.push(`Platform: ${this.config.platformHint}`);
     }
@@ -327,18 +344,32 @@ export class ContextEngine {
     //   1 个 system prompt 断点 + 3 个最后的非 system 消息断点。
     //   这样可以缓存 ~75% 的输入 token，大幅降低成本。
     //   之前只用了 1/4 断点（仅 system），命中率远低于最优。
+    //
+    // P0-3 缓存稳定化（2026-10-16）：system 消息 = frozen + ephemeral 两段拼接。
+    // 若存在稳定的 frozen 前缀，断点放在 boundary（frozen 末尾）而非整条 system 末尾：
+    //   - 稳定主体逐轮字节不变 → 该断点命中（命中部分按 10% 计费）；
+    //   - 尾部易变字节（时区尾注、记忆段等）只占 boundary..end 的一小段重价。
+    const frozenBoundary =
+      systemContent.length > 0 &&
+      systemContent.startsWith(frozen.content) &&
+      frozen.content.length > 0
+        ? frozen.content.length
+        : 0;
     const cacheControlAnnotations: Array<{
       role: string;
       index: number;
       cache_control: { type: string };
+      /** 仅 system 断点：断点放在该字符偏移处（0 = 整条消息末尾，保持旧行为） */
+      charOffset?: number;
     }> = [];
 
-    // 断点 1: system prompt（如果存在）
+    // 断点 1: system 稳定前缀（如果存在）
     if (messages.length > 0 && messages[0].role === "system") {
       cacheControlAnnotations.push({
         role: "system",
         index: 0,
         cache_control: { type: "ephemeral" },
+        charOffset: frozenBoundary,
       });
     }
 

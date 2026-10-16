@@ -4,6 +4,7 @@ import { getActiveSecurityPolicy, decideFileAccess } from "@evoclaw/security";
 import * as docx from "docx";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import { resolveToolPath } from "./file-tools";
 
 /** 验证解析后的路径不超出允许的基目录。
  *  Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
@@ -62,7 +63,7 @@ interface ImageItem {
   type: "png" | "jpg" | "gif" | "bmp";
 }
 
-export function registerDocxTools(executor: AgentModelExecutor, fsBase: string): void {
+export function registerDocxTools(executor: AgentModelExecutor, fsBase: string, workspaceBase?: string): void {
   executor.registerTool(
     "docx_create",
     {
@@ -119,7 +120,7 @@ export function registerDocxTools(executor: AgentModelExecutor, fsBase: string):
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
       if (!filePath) return { success: false, error: "Missing required parameter: path" };
-      const resolvedPath = path.resolve(fsBase, filePath);
+      const resolvedPath = resolveToolPath(fsBase, workspaceBase, filePath).resolved;
       // ★ 接入「总体安全等级」。此前 docx_create 无视档位、始终硬拦沙箱外，
       //   而同一时刻 file_* 系列已按 risky 档放行 —— 同一个保存动作，
       //   换个工具就报错，模型只能绕道写 Python 脚本，纯属多余成本。
