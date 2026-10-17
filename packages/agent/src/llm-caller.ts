@@ -9,6 +9,7 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
+import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, extractChangedPaths } from "./verification-stop";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { isCreationTool } from "./tool-capability-catalog";
@@ -2866,6 +2867,8 @@ export async function tryCallLLM(
           .map((c) => ({ name: c.name, args: JSON.stringify(c.arguments).slice(0, 200) }));
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
+      // 验证门 nudge 计数：模型在变更文件后未验证就声称完成时，回灌验证指令的轮数
+      let verificationNudgeCount = 0;
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
@@ -3358,7 +3361,46 @@ export async function tryCallLLM(
                 stalledAfterFailure ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
-            if (shouldContinue) {
+            // ── 验证门（Verification Gate）───────────────────────────
+            // 借鉴 hermes-agent verification_stop.py：模型在变更类工具
+            // （文件写类）之后声称完成，但未提供验证证据时，注入合成
+            // nudge 要求先验证再结束。与 completion-truthfulness 的
+            // 「事后对账」不同，这是事前拦截 —— 让模型继续跑。
+            const verificationGateTriggered =
+              shouldTriggerVerificationGate(
+                executedToolCalls.map((c) => c.name),
+                finalReply,
+                verificationNudgeCount,
+              );
+            const effectiveShouldContinue = shouldContinue || verificationGateTriggered;
+
+            if (effectiveShouldContinue) {
+              if (verificationGateTriggered) {
+                verificationNudgeCount++;
+                const changedPaths = extractChangedPaths(executedToolCalls);
+                const nudge = buildVerifyOnStopNudge(changedPaths, verificationNudgeCount - 1);
+                trace.addSystem(
+                  `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
+                  `变更文件：${changedPaths.join("、")}`,
+                );
+                process.stdout.write(
+                  `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
+                  `— file mutations detected without verification evidence; nudging agent to verify\n`,
+                );
+                onProgress?.({
+                  type: "auto_continue",
+                  phase: "thinking",
+                  detail: `验证门触发（第 ${verificationNudgeCount} 次）：请先验证工作成果再结束`,
+                  progress: Math.min(30 + round * 3, 90),
+                  thinkingSteps: trace.toJSON(),
+                });
+                conversationMessages.push(assistantMsg);
+                conversationMessages.push({ role: "user", content: nudge! });
+                if (finalReply) lastReplyBackup = finalReply;
+                finalReply = "";
+                continue;
+              }
+
               autoContinueCount++;
               // ★ 2026-10-11：`stalledAfterFailure`（工具失败后直接收尾，没有
               //   明确停顿词、也没触发对账更正）时，原来 fallback 成字面量
