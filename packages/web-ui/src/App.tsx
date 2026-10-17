@@ -80,6 +80,9 @@ const ACPPage = React.lazy(() => import("./ACPPage"));
 const KanbanBoardPage = React.lazy(() => import("./KanbanBoardPage"));
 const ComputerUsePage = React.lazy(() => import("./ComputerUsePage"));
 const ToolSearchPage = React.lazy(() => import("./ToolSearchPage"));
+const EmailPage = React.lazy(() => import("./EmailPage").then(m => ({ default: m.EmailPage })));
+const ReportingPage = React.lazy(() => import("./ReportingPage").then(m => ({ default: m.ReportingPage })));
+const CommitmentsPage = React.lazy(() => import("./CommitmentsPage").then(m => ({ default: m.CommitmentsPage })));
 
 interface NavGroup {
   id: string;
@@ -198,6 +201,16 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "ops", i18nKey: "nav.ops_page", iconId: "ops" },
       { id: "cli", i18nKey: "nav.cli", iconId: "cli" },
       { id: "computer-use" as TabId, i18nKey: "nav.computer_use", iconId: "ops" },
+    ],
+  },
+  {
+    id: "integrations",
+    i18nKey: "nav.integrations",
+    iconId: "channels",
+    items: [
+      { id: "email" as TabId, i18nKey: "nav.email", iconId: "email" },
+      { id: "reporting" as TabId, i18nKey: "nav.reporting", iconId: "reporting" },
+      { id: "commitments" as TabId, i18nKey: "nav.commitments", iconId: "commitments" },
     ],
   },
 ];
@@ -717,6 +730,9 @@ export default function App() {
       case "kanban-board": return <ErrorBoundary><KanbanBoardPage /></ErrorBoundary>;
       case "computer-use": return <ErrorBoundary><ComputerUsePage /></ErrorBoundary>;
       case "tool-search": return <ErrorBoundary><ToolSearchPage /></ErrorBoundary>;
+      case "email": return <ErrorBoundary><EmailPage /></ErrorBoundary>;
+      case "reporting": return <ErrorBoundary><ReportingPage /></ErrorBoundary>;
+      case "commitments": return <ErrorBoundary><CommitmentsPage /></ErrorBoundary>;
       default: return <ErrorBoundary><WebChatPage /></ErrorBoundary>;
     }
   }

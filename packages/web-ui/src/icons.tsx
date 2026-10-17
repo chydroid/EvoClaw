@@ -397,6 +397,29 @@ export const IconEnhancement = Icon(
   </>
 );
 
+export const IconEmail = Icon(
+  <>
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+    <path d="m22 7-10 6L2 7" />
+  </>
+);
+
+export const IconReporting = Icon(
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M9 9h6v6H9z" />
+    <path d="M16 12h3v6h-3z" />
+    <path d="M6 15h3v3H6z" />
+  </>
+);
+
+export const IconCommitments = Icon(
+  <>
+    <path d="M9 12l2 2 4-4" />
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+  </>
+);
+
 // Map of icon IDs to components
 export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   chat: IconChat,
@@ -439,4 +462,7 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   guardrails: IconGuardrails,
   voice: IconVoice,
   enhancement: IconEnhancement,
+  email: IconEmail,
+  reporting: IconReporting,
+  commitments: IconCommitments,
 };

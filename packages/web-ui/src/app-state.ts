@@ -21,7 +21,8 @@ export type TabId =
   | "session-retention" | "voice-settings" | "enhancement-hub"
   | "memory-hub" | "skill-workshop" | "webhooks"
   | "sandbox-manager" | "eval-runner"
-  | "moa-dashboard" | "a2a" | "acp" | "kanban-board" | "computer-use" | "tool-search";
+  | "moa-dashboard" | "a2a" | "acp" | "kanban-board" | "computer-use" | "tool-search"
+  | "email" | "reporting" | "commitments";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
 

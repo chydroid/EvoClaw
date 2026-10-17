@@ -3422,6 +3422,178 @@ export class ProtocolAdapter {
       }
     });
 
+    app.post("/api/reporting/generate", async (req: Request, res: Response) => {
+      try {
+        const reportGenerator = this.registry.resolveService<{
+          generateReport(data: unknown, options?: unknown): string;
+          getTemplateNames(): string[];
+        }>("reportGenerator");
+        if (!reportGenerator) {
+          res.status(503).json({ error: "ReportGenerator not available" });
+          return;
+        }
+        const { data, options } = req.body || {};
+        if (!data || typeof data !== "object") {
+          res.status(400).json({ error: "data (ReportData) is required" });
+          return;
+        }
+        const report = reportGenerator.generateReport(data as never, options as never);
+        res.json({ report });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    // ─── Email API ──────────────────────────────────────────────────────
+    // 暴露 EmailClient 的收发与收件箱能力，供 WebUI 邮件页面使用
+
+    app.get("/api/email/accounts", (_req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          listAccounts(): unknown[];
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        res.json({ accounts: emailClient.listAccounts() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/email/accounts", async (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          addAccount(email: string, password: string, provider?: string, displayName?: string): unknown;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const { email, password, provider, displayName } = req.body || {};
+        if (!email || !password) {
+          res.status(400).json({ error: "email and password are required" });
+          return;
+        }
+        const account = emailClient.addAccount(email, password, provider, displayName);
+        res.json({ account });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.delete("/api/email/accounts/:id", (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          removeAccount(accountId: string): boolean;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const removed = emailClient.removeAccount(String(req.params.id));
+        res.json({ removed });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/email/send", async (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          sendEmail(options: unknown): Promise<{ success: boolean; messageId?: string }>;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const { accountId, to, cc, bcc, subject, body, html, attachments } = req.body || {};
+        if (!accountId || !to || !subject) {
+          res.status(400).json({ error: "accountId, to and subject are required" });
+          return;
+        }
+        const result = await emailClient.sendEmail({ accountId, to, cc, bcc, subject, body, html, attachments });
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/email/inbox", async (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          listEmails(options: unknown): Promise<unknown[]>;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const { accountId, limit, unreadOnly, since } = req.query || {};
+        if (!accountId) {
+          res.status(400).json({ error: "accountId query param is required" });
+          return;
+        }
+        const options: Record<string, unknown> = { accountId };
+        if (limit !== undefined) options.limit = Number(limit);
+        if (unreadOnly !== undefined) options.unreadOnly = unreadOnly === "true";
+        if (since !== undefined) options.since = new Date(String(since));
+        const emails = await emailClient.listEmails(options as never);
+        res.json({ emails });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/email/emails/:accountId/:uid", async (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          getEmail(accountId: string, uid: string): Promise<unknown>;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const email = await emailClient.getEmail(String(req.params.accountId), String(req.params.uid));
+        res.json({ email });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/email/summary/:accountId", async (req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          getInboxSummary(accountId: string, options?: { since?: Date }): Promise<unknown>;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const since = req.query.since ? new Date(String(req.query.since)) : undefined;
+        const summary = await emailClient.getInboxSummary(String(req.params.accountId), { since });
+        res.json({ summary });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/email/health", async (_req: Request, res: Response) => {
+      try {
+        const emailClient = this.registry.resolveService<{
+          healthCheck(): Promise<boolean>;
+        }>("emailClient");
+        if (!emailClient) {
+          res.status(503).json({ error: "EmailClient not available" });
+          return;
+        }
+        const healthy = await emailClient.healthCheck();
+        res.json({ healthy });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     // ─── Intelligence API ───────────────────────────────────────────────
     // 暴露 TaskClassifier 服务的分类能力，供 WebUI 与外部客户端使用
 
@@ -5324,8 +5496,29 @@ export class ProtocolAdapter {
 
     // ─── Commitments (OpenClaw 兼容) ─────────────────────────────────────
     // 由 packages/agent 的 CommitmentManager 支撑，已注册为 "commitmentManager" 服务。
-    // 端点：GET /api/commitments, GET /api/commitments/summary,
+    // 端点：POST /api/commitments, GET /api/commitments, GET /api/commitments/summary,
     //       GET /api/commitments/:id, POST /api/commitments/:id/dismiss
+    app.post("/api/commitments", async (req: Request, res: Response) => {
+      try {
+        const mgr = this.registry.resolveService<{
+          create(params: unknown): unknown;
+        }>("commitmentManager");
+        if (!mgr) {
+          res.status(503).json({ error: "commitmentManager not available" });
+          return;
+        }
+        const { description, sessionId, agentId, deadline, metadata, tags } = req.body || {};
+        if (!description || typeof description !== "string") {
+          res.status(400).json({ error: "description (string) is required" });
+          return;
+        }
+        const commitment = mgr.create({ description, sessionId, agentId, deadline, metadata, tags });
+        res.json({ commitment });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.get("/api/commitments", async (_req: Request, res: Response) => {
       try {
         const mgr = this.registry.resolveService<{
