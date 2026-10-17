@@ -79,3 +79,8 @@
   - **reporting**：仅 `/api/reporting/templates`（protocol-adapter.ts:3407）+ scheduler 的 report_generate handler，**WebUI 无报告页面**。
   - **commitments**：`/api/commitments` 路由存在（CommitmentManager 在 agent 包），**WebUI 无对应页面**（grep commitments 在 web-ui/src 全空）。
   - 已有页面覆盖的：/api/executions→ObservabilityPage、/api/intelligence/classify→EnhancementHubPage、/api/files/*→CanvasPage、/api/kanban→KanbanBoardPage、/api/marketplace→SkillsConfig、/api/system/providers→Dashboard。**建议（未实施）**：email/reporting/commitments 三处补 WebUI 页面入口。
+- **第三轮 22 任务评测（2026-10-17，/tmp/evoclaw-eval/eval22.mjs + eval22-prompts.json：通用 10 + 办公 5 + 旅游 5 + 定时 1 + 资料收集 1）**：经 /api/chat + 自动审批端到端跑，单条 30-280s。**初轮 17/22 通过**，4 条失败中 3 条是驱动/提示词缺陷、1 条是模型执行质量：
+  - **驱动缺陷（已修驱动，非产品）**：g07 假设模型建 `a`/`b` 目录（实际 demoA/demoB）→ 改自动发现子目录；g05 数表格行/列表项（原正则只数 `^[-*]` 漏掉 markdown 表格）；g09 提示词写「index.md」但验收查 index.html（模型按提示产出 index.md + 3 html，正确）→ 验收改为接受任一。
+  - **提示词缺陷（已修，非产品）**：g10 的 CI 流水线逻辑完全正确（lint→test→tag，失败写 fail.log），但提示词让模型造 `app/math.py`，而 `math` 是 CPython **内置模块**（在 sys.meta_path 的 BuiltinImporter 命中，sys.path.insert 无效）→ `import math` 拿到标准库、`add` 不存在，CI 正确报错。已改为建议 calc.py/textutil.py 后重跑。
+  - **模型执行质量（s03 pptx，非工具缺陷）**：要求 4 页（封面「2026 Q4 汇报」+目录+业绩+结束页），模型只产 3 页且把封面并进目录（slide1=目录、slide2=业绩表格、slide3=感谢聆听）。pptx_create 工具本身按模型给的 spec 正确执行，属模型对多页 PPT 结构理解不足，记录在案。
+  - **通过的能力确认**：docx/xlsx/pptx 创建+解包验证（s01/s02/s04）、定时任务 create+list+execute+持久化（s11，backup/last.txt=今天日期）、GitHub trending 真实搜集 10 条（s12，含具体 star 数与单日新增，非编造）、web_search 驱动的旅游规划（s06/s07/s08/s09/s10 全过）、代码/测试/并发/正则/SQLite/HTTP/CI 流水线（g01-g06/g08/g10）。
