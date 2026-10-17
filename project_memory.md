@@ -97,3 +97,4 @@
   - **o09/o10（迭代预算耗尽）**：agent 把单脚本任务委派给子 agent，子 agent 探测 API 时耗尽预算（「迭代预算已耗尽（0 轮）」）。修复：重写为单脚本 python 任务（不调用其他工具），o10 还移除了依赖 SMTP 的 email_send（custom 提供商无 SMTP，ECONNREFUSED）→ 通过。
   - **o02（verify 阈值）**：12 行×5 列=60 单元格，原阈值 100 过高 → 改 ≥50。
   - **经验**：① 评测 driver 的 verify 必须与模型实际产出格式对齐（编号列表 vs 制表符）；② 跨时区日期比对用系统 `date` 而非 `toISOString`；③ 单脚本提示词能绕开子 agent 委派导致的预算耗尽；④ agent 凭据护栏是预期行为，用预创建绕过而非关闭。
+- **验证门（Verification Gate，2026-10-18，借鉴 hermes-agent verification_stop.py）**：在 llm-caller 主循环中引入事前拦截机制——模型在变更类工具（file_create/file_modify/docx_create/xlsx_create/pptx_create 等）之后声称完成，但未调用验证类工具（file_read/shell_exec/execute_code 等）且回复中不含验证证据时，注入合成 nudge 要求先验证再结束，与 completion-truthfulness 的「事后对账」形成双重保障。落地：`packages/agent/src/verification-stop.ts`（纯策略模块：路径过滤、文件写/验证工具集合、nudge 构建、触发判定）+ llm-caller 接线（验证门分支 + pendingVerificationReply 暂存兜底，借鉴 hermes _pending_verification_response 保留语义）+ 27 测试守护。build→typecheck→test 全绿（6309 passed / 13 skipped）。**未推送**。

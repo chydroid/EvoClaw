@@ -33,12 +33,13 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 
 ## 三、优先级路线图
 
-### P0 — 稳定与信任（✅ 已落地 2026-10-12）
+### P0 — 稳定与信任（✅ 已落地 2026-10-12 / 2026-10-18）
 
 - [x] **files 恒空欠账**：`file_create`/`file_modify` 工具成功结果提取 path/size/workspaceRelative 写入 `createdFiles`，前端下载链接恢复出现。
 - [x] **token 事件体积欠账**：token/status-generating 事件默认只带 delta 增量，不再塞全量累积 reply（`includeAccumulatedReplyInTokenEvents` 开关保留旧客户端语义）；WebChatPage 按字段存在与否自动分流全量/增量渲染。
 - [x] **类型契约防回归测试**：`packages/gateway/src/protocol-adapter-contract.test.ts`（6 用例）守住 `done` 事件 `contextLimit`/`contextLimitSource`/`contextTokensEstimated`/`thinkingSteps` 四字段可达 + `files` 非空回归；`resolveContextLimit` 已导出供测试直接断言。
 - [x] **成功/失败计数单一事实源**：v0.92.1 已把判定收敛到 `executeSingleToolCall` 单点（语义失败只记一条 `ok:false` 且不累加成功数；硬失败进 `failedTools` 且 `ok:false`）；`packages/agent/src/completion-truthfulness.test.ts` 新增「一次调用至多一个终态」回归守护（3 用例），锁定互斥不变量。
+- [x] **验证门（Verification Gate，2026-10-18，借鉴 hermes-agent verification_stop.py）**：在 llm-caller 主循环中引入事前拦截——模型在变更类工具（file_create/file_modify/docx_create/xlsx_create/pptx_create 等）之后声称完成，但未调用验证类工具（file_read/shell_exec/execute_code 等）且回复中不含验证证据时，注入合成 nudge 要求先验证再结束，与 completion-truthfulness 的「事后对账」形成双重保障。落地：`packages/agent/src/verification-stop.ts`（纯策略模块：路径过滤、文件写/验证工具集合、nudge 构建、触发判定）+ llm-caller 接线（验证门分支 + pendingVerificationReply 暂存兜底，借鉴 hermes _pending_verification_response 保留语义）+ 27 测试守护。build→typecheck→test 全绿（6309 passed / 13 skipped）。
 
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 
