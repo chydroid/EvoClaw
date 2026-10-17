@@ -9,6 +9,65 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.93.0] - 2026-10-17
+
+**v0.92.9 全面审计复盘修复 7 处缺陷（P1×2 + P2×2 + P3×1 + P4×1 + vitest 放行）**
+
+对 `packages/agent` 等包做全面审计（Explore 子代理 + 主会话逐条对照 git 历史
+核实「输入→错误结果」证据后才修），共修复 7 处、记录 2 处不修（设计取舍），
+另补 v0.92.9 两段式流水线回执对账（882bb45）。
+
+### 根因与改动
+
+1. **P1-1 OpenAI 原生流式 usage 被 guard 吞（llm-caller.ts parseStreamingResponse）**：
+   `if (!choice?.delta) continue` 在读 usage 之前执行，原生 OpenAI 末块
+   `{"choices":[],"usage":{…}}` 的 usage/prompt_tokens/finish_reason 永远读不到
+   → 3d3588b 的「provider 缓存命中真值」在原生 OpenAI 流式路径失效（tokensUsed
+   退化为 len/4 估算、cacheHit 恒 0）。修复：usage/finish 读取挪到 guard 之前，
+   删除 guard 后的重复读取块。
+2. **P1-2 Token 用量同一轮被记 2 遍（agent-model-executor.ts chat）**：executor 在
+   llm-caller 逐次 record（4 处，含 cache 明细）后又按 `result.tokensUsed`（全轮
+   total_tokens 之和、且 total_tokens 被误当 inputTokens）再记一条 → TokenUsagePage
+   总量/成本/cacheHitRate 虚高。修复：主路径删除该 record（保留 skill-fallback
+   本地路径 `recordTokenUsage(sessionId, "local", "skill-fallback", …)`，LLM 全挂
+   时 llm-caller 无记录）。
+3. **P2-1 CE 分支当前 user 消息重复注入（llm-caller.ts tryCallLLM）**：
+   ContextEngine.assembleContext 已 push currentTask，llm-caller 又 push
+   effectiveMessage → 请求里两条连续 user 消息。修复：CE 分支不再二次 push；
+   纯文本把 CE 末条 user 替换为 llm-caller 传入的 message（增强版：去重且不丢
+   搜索/新闻上下文），多模态把末条 user 换成 parts 版（CE 只拼字符串
+   currentTask，不感知附件）；非 CE 分支行为不变。
+4. **P2-2 PromptRegistry 未自注册内置模板（prompt-registry.ts）**：
+   `format("web.tool_strategy")` 等在非 server 宿主上抛「not registered」被外层
+   catch 吞成「LLM 调用失败/空响应」。修复：ensureLoaded() 内先自注册
+   BUILTIN_TEMPLATES（幂等、不覆盖磁盘/用户注册，`builtinsRegistered` 标志防递归）。
+5. **P3-1 guardrails 反引号/`$()` 分支 nc/ncat 漏拦（guardrails.ts
+   tool-shell-injection）**：经 git 核实 3d3588b 起这两分支本就不含 nc/ncat
+   （非 21af12b 回归，属既有漏拦），`$(nc …)`/反引号内 nc 可反弹 shell。
+   修复：补回 nc/ncat 并加 `\b` 词界（避免 `python -c "…connect(nc)"` 类子串误伤）。
+6. **P4 extension-registry 动态 import 临时目录扩展失败（extension-registry.ts +
+   vitest.config.ts）**：`"file:///" + fullPath` 对 POSIX 绝对路径（/tmp/…）拼出
+   `file:////tmp/…`（四斜杠，畸形）——Node 自身 importer 容忍、Vite（vitest）
+   resolver 拒绝。修复：`pathToFileURL(fullPath).href` 生成规范 URL；vitest
+   server.fs.allow 放行 tmpdir。extension-registry.test.ts 2 例由 fail 转 pass。
+7. **不修（记录）**：P3-2 sessionToolGroups/conversationHistory 无界——已有
+   retention 过期驱动 clearChatHistory 清理且 maxHistoryLength=200 为 P0-1 有意
+   设计；P3-3 cacheControlAnnotations 无消费者——context-engine 产出该字段但
+   llm-caller 走 applyAnthropicCacheControl，属死输出/双实现并存，留作后续统一
+   断点策略重构。
+
+### 验证 / 测试
+
+- 回归测试：llm-caller.test.ts 新增 P1-1 流式 usage 捕获（末块 choices 空 +
+  cached_tokens，断言 promptTokens/tokensUsed/usageDetails）与 P2-1 CE 去重
+  （本地 http server 捕获真实请求体，断言 user 消息恰 2 条、末条为增强版
+  effectiveMessage 且不含原始 currentTask）；guardrails.test.ts 新增子命令
+  nc/ncat 拦截 3 条断言。
+- 基线 build→typecheck→test 全绿（269 文件 / 6272 passed，13 skipped）；
+  修复后 6275 passed（+3 新断言，extension-registry 2 例 fail→pass 已含在内）。
+- v0.92.9 两段式流水线回执对账见 882bb45（run 38914768218 全绿、
+  receipt-v0.92.9.json health=pass）。
+
 ## [0.92.9] - 2026-10-16
 
 **实例任务末轮「任务未完成」根因修复 + Token 用量输入缓存命中真值显示 + Prompt 构造缓存前缀稳定化（P0×3 + P1×2）**
