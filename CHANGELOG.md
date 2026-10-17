@@ -68,6 +68,18 @@
 - v0.92.9 两段式流水线回执对账见 882bb45（run 38914768218 全绿、
   receipt-v0.92.9.json health=pass）。
 
+### 发布回执（v0.93.0 两段式流水线端到端验证）
+
+- GitHub Release `EvoClaw v0.93.0` 已创建（Release run 38997769175 全绿：
+  Test Image & Smoke 03:10:36→03:24:22Z / Stable Image & Receipt
+  03:24:24→03:26:23Z），资产 `receipt-v0.93.0.json`（635 B，
+  sha256:f247ea55…，本地实测与资产 digest 一致）：commitSha `2945a10e0b98`
+  （release commit，含 v0.92.9 后全部 7 处审计修复）、stable
+  Image `ghcr.io/chydroid/evoclaw:v0.93.0`（sha256:0f3f2bd9…）、test
+  Image `…:v0.93.0-test.2945a10e0b98…`（sha256:f6942500…）、
+  testResults.health=pass、publishedAt 2026-10-17T03:26:12.965Z。
+- CI/CD run 38997769152（push 2945a10）全绿。
+
 ## [0.92.9] - 2026-10-16
 
 **实例任务末轮「任务未完成」根因修复 + Token 用量输入缓存命中真值显示 + Prompt 构造缓存前缀稳定化（P0×3 + P1×2）**
