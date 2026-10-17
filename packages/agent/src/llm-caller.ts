@@ -2872,6 +2872,10 @@ export async function tryCallLLM(
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
+      // 验证门暂存回复：验证门触发时，模型已产出但被搁置的最终回复。
+      // 若验证门续跑后预算耗尽，用此备份兜底（借鉴 hermes-agent
+      // _pending_verification_response 的保留语义）。
+      let pendingVerificationReply = "";
 
       // ── IterationBudget integration ──
       // When available, use the Hermes-style budget system instead of the
@@ -2942,8 +2946,14 @@ export async function tryCallLLM(
                   } catch { /* best-effort */ }
                 }
               } else {
-                // Grace Call 失败，生成有意义的总结
-                finalReply = [
+                // Grace Call 失败 —— 优先用验证门暂存的回复兜底
+                // （借鉴 hermes-agent _pending_verification_response 保留语义：
+                //   验证门搁置的回复比重新生成的一次性总结更可靠）
+                if (pendingVerificationReply) {
+                  finalReply = pendingVerificationReply;
+                  process.stdout.write(`[AgentModelExecutor] Grace Call failed; using pending verification reply as fallback for session "${sessionId}"\n`);
+                } else {
+                  finalReply = [
                   `⏰ 迭代预算已耗尽，最终总结请求也未能完成。`,
                   ``,
                   `**已执行的操作：**`,
@@ -2951,7 +2961,8 @@ export async function tryCallLLM(
                   createdFiles.length > 0 ? `- 已创建文件: ${createdFiles.map(f => f.path).join("、")}` : "",
                   ``,
                   `💡 **建议：** 使用 \`/status\` 查看进度，或重新描述需求继续执行。`,
-                ].filter(Boolean).join("\n");
+                  ].filter(Boolean).join("\n");
+                }
               }
               break; // Exit loop after Grace Call
             }
@@ -3396,7 +3407,10 @@ export async function tryCallLLM(
                 });
                 conversationMessages.push(assistantMsg);
                 conversationMessages.push({ role: "user", content: nudge! });
-                if (finalReply) lastReplyBackup = finalReply;
+                if (finalReply) {
+                  lastReplyBackup = finalReply;
+                  pendingVerificationReply = finalReply;
+                }
                 finalReply = "";
                 continue;
               }
@@ -4303,7 +4317,11 @@ export async function tryCallLLM(
 
       // 自动续跑兜底：若续跑后模型产不出新回复，恢复续跑前的内容，
       // 以免返回空回复（其后的完成声明对账仍会追加更正说明）。
-      if (!finalReply && lastReplyBackup) {
+      // 优先级：pendingVerificationReply（验证门暂存）> lastReplyBackup（续跑备份）
+      if (!finalReply && pendingVerificationReply) {
+        finalReply = pendingVerificationReply;
+        process.stdout.write(`[AgentModelExecutor] No new reply after verification gate; using pending verification reply for session "${sessionId}"\n`);
+      } else if (!finalReply && lastReplyBackup) {
         finalReply = lastReplyBackup;
         process.stdout.write(`[AgentModelExecutor] Auto-continue produced no new reply; restored previous reply for session "${sessionId}"\n`);
       }
