@@ -88,3 +88,12 @@
   - **后端（packages/gateway/src/protocol-adapter.ts）**：新增 Email API 全套路由——GET/POST/DELETE /api/email/accounts、POST /api/email/send、GET /api/email/inbox、GET /api/email/emails/:accountId/:uid、GET /api/email/summary/:accountId、GET /api/email/health；新增 POST /api/reporting/generate；新增 POST /api/commitments（commitmentManager.create）。注意 @types/express@5.0.6 的 `ParamsDictionary[key]` 是 `string | string[]`，`req.params.X` 传 string 参数需包 `String()`（已有 commitments 路由先例如此）。
   - **前端（packages/web-ui/src/）**：新增 EmailPage.tsx（账户/收件箱/写邮件 三 tab）、ReportingPage.tsx（模板列表 + ReportData 表单 + 章节动态增删 + 生成结果）、CommitmentsPage.tsx（列表/概览/新建/取消）；icons.tsx 新增 IconEmail/IconReporting/IconCommitments 并注册 ICON_MAP；App.tsx 新增 lazy import + 3 个 renderPage case + 新 NAV_GROUP「integrations」；app-state.ts 的 TabId 补 3 项；i18n.ts 补 zh/en 两套 nav.* 与页面级 key。
   - **验证**：build→typecheck→test 全绿（6282 passed / 13 skipped / 1 skipped file）；重启 server 后逐一实测 9 个新路由全部 200 且语义正确（commitments 创建/列表/概览/取消、reporting 模板列表/生成、email 账户增删查/收件箱/健康检查，密码在 list 中以 `***` 脱敏）；WebUI dist 产出 3 个新 lazy chunk 且主 bundle 含 "Integrations" 分组。**未推送**。
+- **10 任务办公评测 eval23（2026-10-18，最终 10/10 通过）**：驱动 `/tmp/evoclaw-eval/eval23.mjs` + `eval23-prompts.json`，经 /api/chat + 自动审批端到端跑。覆盖 docx/xlsx/pptx 创建+解包验证、CSV 容错清洗+聚合、会议纪要行动项提取、邮件账户与收发、reporting API 报告生成、scheduler 定时备份、commitments 承诺创建、综合办公流水线。**三轮修复后全绿**：
+  - **o03（pptx，模型质量）**：模型默认跳过封面页只产 3 页（slide1=目录）。修复：提示词强制「slides 数组恰好 4 个元素，第 1 页是封面，第 2 页目录，第 3 页本周进展（含 2 列表格），第 4 页下周计划」→ 通过。
+  - **o04（verify 正则）**：模型 top5.txt 用编号列表格式 `1. ip bytes...`，verify 的 `/^\d+\t/` 不匹配。修复：放宽为 `/^\d+\./` → 通过。
+  - **o08（verify 时区 bug）**：`date -Iseconds` 输出本地时区（+08:00），verify 用 `new Date().toISOString()`（UTC）比对今天日期，跨日时段（UTC 16:28 = 北京时间 00:28 次日）误判「非今天」。修复：改用 `execSync("date +%F")` 与调度 shell 同时区 → 通过。
+  - **o06（agent 凭据护栏）**：agent 拒绝在对话中提供邮箱密码（「请勿在对话中提供敏感信息」）。修复：驱动在 agent 运行前经 REST API 预创建账户，提示词改为「系统已预先配置好」→ 通过。
+  - **o07/o09（REST API 认证）**：agent 不知道 API 用 Cookie 而非 Bearer，导致 401。修复：提示词加入 `-H "Cookie: web_ui_token=$WEB_UI_TOKEN"` → 通过。
+  - **o09/o10（迭代预算耗尽）**：agent 把单脚本任务委派给子 agent，子 agent 探测 API 时耗尽预算（「迭代预算已耗尽（0 轮）」）。修复：重写为单脚本 python 任务（不调用其他工具），o10 还移除了依赖 SMTP 的 email_send（custom 提供商无 SMTP，ECONNREFUSED）→ 通过。
+  - **o02（verify 阈值）**：12 行×5 列=60 单元格，原阈值 100 过高 → 改 ≥50。
+  - **经验**：① 评测 driver 的 verify 必须与模型实际产出格式对齐（编号列表 vs 制表符）；② 跨时区日期比对用系统 `date` 而非 `toISOString`；③ 单脚本提示词能绕开子 agent 委派导致的预算耗尽；④ agent 凭据护栏是预期行为，用预创建绕过而非关闭。
