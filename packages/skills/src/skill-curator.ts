@@ -328,11 +328,10 @@ export class SkillCurator {
 
       expired.push(skillName);
 
-      // Pinned 技能豁免自动归档（hermes-agent 不变量：pinned 永不归档）
-      const pinnedEntry = Array.from(this.evolutions.values()).find(
-        e => e.skillName === skillName && e.pinned
-      );
-      if (pinnedEntry) {
+      // Pinned 技能豁免自动归档（hermes-agent 不变量：pinned 永不归档）。
+      // K1 修复：双键匹配（Map 键 skillId + 字段 skillName，再经 skillManager
+      // 解析目录名→id 补一次），避免 UUID id ≠ 目录名时 pinned 恒不命中。
+      if (await this.isSkillPinnedAsync(skillName)) {
         outcomes.push({ skillName, classification: "pinned-exempt", reason: "已过期但 pinned，豁免归档" });
         continue;
       }
@@ -692,11 +691,14 @@ export class SkillCurator {
     // 路径穿越防护：skillName 不能包含路径分隔符或 .. 序列
     this.validateSkillName(skillName);
 
-    // 查找匹配的演化记录（用于 pinned 豁免与 skillId 元信息）
+    // 查找匹配的演化记录（用于 pinned 豁免与 skillId 元信息）。
+    // K1 修复：pinned 判定走双键匹配（Map 键 skillId + 字段 skillName +
+    // skillManager 目录名→id 解析），原字段单键在 UUID id ≠ 目录名时恒落空。
     const matchingEntry = Array.from(this.evolutions.values()).find(
       e => e.skillName === skillName
     );
-    if (matchingEntry?.pinned) {
+    const pinned = matchingEntry?.pinned ?? (await this.isSkillPinnedAsync(skillName));
+    if (pinned) {
       process.stdout.write(
         `[SkillCurator] Skill ${skillName} is pinned — archive skipped\n`
       );
@@ -841,6 +843,19 @@ export class SkillCurator {
       timestamp: now,
     });
 
+    // K3 修复：恢复成功后必须清掉归档时设置的 deprecation 标记——
+    // archiveSkill 把 entry.deprecation 设为 truthy，improveSkill/deprecateSkill
+    // 都以 `if (entry.deprecation) return null/false` 短路。不清理则恢复出来的
+    // 技能永远无法再被改进/再归档，陷入死状态。
+    const matchingEntry = Array.from(this.evolutions.values()).find(
+      e => e.skillName === skillName
+    );
+    if (matchingEntry?.deprecation) {
+      matchingEntry.deprecation = null;
+      matchingEntry.lastUpdatedAt = new Date();
+      this.schedulePersist();
+    }
+
     await this.eventBus.publish(
       "skill.curator.restored",
       { skillName, restoredPath: restoreDir },
@@ -888,6 +903,40 @@ export class SkillCurator {
    * @param reason 固定原因（可选）
    * @returns 是否成功
    */
+  /**
+   * K1 修复：判断技能目录是否被 pinned（同步版：纯内存匹配）。
+   *
+   * pinned 豁免的匹配历史上只用**目录名**（skillName）对 evolutions 条目的
+   * skillName——但 setPinned 以 **skillId** 为键创建/修改条目（新建条目
+   * 的 skillName 回退为 skillId 字面值）。当 skillId ≠ 目录名（UUID id vs
+   * 目录名）时，目录名匹配永远落空 → pinned 技能仍被自动归档。
+   * 现改为**双键匹配**：Map 键（skillId）与 skillName 字段任一命中即豁免。
+   */
+  private isSkillPinned(skillName: string): boolean {
+    // 1) 按 Map 键（skillId 或历史 skillName）直接匹配——id == name 退化场景
+    const byKey = this.evolutions.get(skillName);
+    if (byKey?.pinned) return true;
+    // 2) 按条目内的 skillName 字段匹配（历史行为，保留兼容）
+    return Array.from(this.evolutions.values()).some(e => e.skillName === skillName && e.pinned);
+  }
+
+  /** async 版：先走同步双键匹配，再经 skillManager 把目录名解析成 skillId 补一次按 id 匹配。 */
+  private async isSkillPinnedAsync(skillName: string): Promise<boolean> {
+    if (this.isSkillPinned(skillName)) return true;
+    const skillManager = this.registry.resolveService<{
+      listSkills(): Promise<Array<{ id: string; name: string }>>;
+    }>("skillManager");
+    if (!skillManager) return false;
+    try {
+      const skills = await skillManager.listSkills();
+      const match = skills.find((s) => s.name === skillName);
+      if (!match) return false;
+      return !!this.evolutions.get(match.id)?.pinned;
+    } catch {
+      return false;
+    }
+  }
+
   setPinned(skillId: string, pinned: boolean, reason?: string): boolean {
     let entry = this.evolutions.get(skillId);
     // 历史 bug：evolutions Map 只在 loadFromDisk 时填充，运行时从未写入，

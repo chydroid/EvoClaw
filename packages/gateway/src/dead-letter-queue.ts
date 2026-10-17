@@ -213,13 +213,33 @@ export class DeadLetterQueue {
     } catch (err) {
       process.stderr.write(`[DeadLetterQueue] Failed to delete ${id}:` + " " + err + "\n");
     }
-    // 旧版 JSONL 兼容：通过 readAll + writeAll 删除
+    // 旧版 JSONL 兼容：从该 channel 的 JSONL 文件中剔除该条目，只写回剩余行。
+    // 注意不能走 writeAll——它对遗留 JSONL 是整文件删除，会把同 channel 的
+    // 其他遗留条目一并清掉（GW-DLQ-1 数据丢失缺陷）。
     const dl = this.get(id);
     if (!dl) return false;
-    const entries = this.readAll(dl.channel);
-    const filtered = entries.filter((e) => e.id !== id);
-    this.writeAll(dl.channel, filtered);
-    return true;
+    const p = this.channelFile(dl.channel);
+    if (fs.existsSync(p)) {
+      try {
+        const lines = fs.readFileSync(p, "utf-8").split("\n").filter((l) => l.trim());
+        const kept = lines.filter((l) => {
+          try {
+            return (JSON.parse(l) as DeadLetter).id !== id;
+          } catch {
+            return true; // 损坏行保留，交由读取侧跳过逻辑处理
+          }
+        });
+        if (kept.length > 0) {
+          atomicWriteFileSync(p, kept.join("\n") + "\n", { encoding: "utf-8" });
+        } else {
+          fs.unlinkSync(p);
+        }
+        return true;
+      } catch (err) {
+        process.stderr.write(`[DeadLetterQueue] Failed to delete legacy ${id}:` + " " + err + "\n");
+      }
+    }
+    return false;
   }
 
   /**
@@ -447,9 +467,29 @@ export class DeadLetterQueue {
         try { fs.unlinkSync(this.messageFile(dl.id)); } catch { /* ignore */ }
       }
     }
-    // 旧版 JSONL 文件也清理
+    // 旧版 JSONL 文件：不能整文件删除——文件里可能同时有保留条目
+    // （purge 按时间/容量淘汰时，kept 里的遗留行会被整文件删除清掉）。
+    // 只剔除不在 keepIds 中的遗留行，剩余行原子写回。
     const p = this.channelFile(channel);
-    try { fs.unlinkSync(p); } catch { /* ignore */ }
+    try {
+      if (fs.existsSync(p)) {
+        const lines = fs.readFileSync(p, "utf-8").split("\n").filter((l) => l.trim());
+        const keptLines = lines.filter((l) => {
+          try {
+            return keepIds.has((JSON.parse(l) as DeadLetter).id);
+          } catch {
+            return true; // 损坏行保留，交由读取侧跳过逻辑处理
+          }
+        });
+        if (keptLines.length > 0) {
+          atomicWriteFileSync(p, keptLines.join("\n") + "\n", { encoding: "utf-8" });
+        } else {
+          fs.unlinkSync(p);
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[DeadLetterQueue] failed to rewrite legacy JSONL for ${channel}:` + " " + err + "\n");
+    }
   }
 
   /** 旧版 JSONL 文件列表（向后兼容） */

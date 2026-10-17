@@ -139,6 +139,19 @@ function getEncryptionKey(): Buffer {
   return Buffer.from(raw, "utf-8").subarray(0, 32);
 }
 
+/**
+ * HTML 实体转义（EM1 修复配套）：body 自动升级为 HTML 替代件前必须转义，
+ * 否则外部可控文本中的 <img onerror=…> 等标签会被收件人渲染。
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export class EmailClient {
   private accounts: Map<string, EmailAccount> = new Map();
   private transporters: Map<string, Transporter> = new Map();
@@ -293,7 +306,10 @@ export class EmailClient {
       bcc: options.bcc ? (Array.isArray(options.bcc) ? options.bcc.join(", ") : options.bcc) : undefined,
       subject: options.subject,
       text: options.body,
-      html: options.html || options.body.replace(/\n/g, "<br>"),
+      // 修复（EM1）：body 可能含用户/外部可控文本，直接 replace(/\n/g,"<br>") 拼进
+      // HTML 替代件会把标签原样带入（存储型 XSS 类缺陷 + < / & 破坏 HTML）。
+      // 先实体转义再换行；调用方显式提供 html 时保持原样（其负责转义）。
+      html: options.html || escapeHtml(options.body).replace(/\n/g, "<br>"),
       attachments: attachments.length > 0 ? attachments : undefined,
     });
 
@@ -717,7 +733,10 @@ export class EmailClient {
       let rawContent = "";
 
       try {
-        const msg = await client.fetchOne(uid, { envelope: true, source: true });
+        // EM2 修复：uid 是 UID 号，imapflow 的 fetchOne(seq) 默认按**序列号**取，
+        // 必须传 { uid: true }，否则 UID 42 会取成「第 42 封最旧的邮件」（完全不同的邮件），
+        // 且 UID > 序列号总数时直接取空。
+        const msg = await client.fetchOne(uid, { envelope: true, source: true, uid: true });
         if (msg && msg.source) {
           if (Buffer.isBuffer(msg.source)) {
             rawContent = msg.source.toString("utf-8");

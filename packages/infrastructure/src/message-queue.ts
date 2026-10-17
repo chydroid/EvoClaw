@@ -67,10 +67,19 @@ export class MessageQueue {
     this.handlers.get(topic)!.push(handler);
   }
 
+  // 退避结束不直接重入 processTopic（MQ-1 修复）：原实现在定时器回调里
+  // 直接 processTopic，与仍在跑的处理循环并发时同一 topic 会出现第二个
+  // 实例，同一消息被两个循环先后 shift 出去投递（重复消费）。
+  // 现改为：持锁期间计时器到点只置标记，由持锁循环在下一轮迭代消费
+  // （对应消息的 nextRetryAt 必然已过期，直接放行）；锁已释放时计时器
+  // 才允许重入 processTopic。
+  private backoffFired = new Set<string>();
   private async processTopic(topic: string): Promise<void> {
-    if (this.processingTopics.has(topic)) return;
+    if (this.processingTopics.has(topic)) {
+      // 循环仍持锁；到点的退避由循环内的检查点消费
+      return;
+    }
     this.processingTopics.add(topic);
-
     try {
       const messages = this.topics.get(topic);
       const handlers = this.handlers.get(topic);
@@ -79,13 +88,25 @@ export class MessageQueue {
       let backoffSkipped = 0;
       while (messages.length > 0) {
         const message = messages.shift()!;
+        // MQ-1：清除「退避已到期」标记（定时器在循环持锁期间触发时留下）。
+        // 标记对应的消息其 nextRetryAt 必然已过期，落到下方时间判断直接放行，
+        // 无需也不能重入 processTopic（锁仍在本循环手里）。
+        if (this.backoffFired.has(topic)) this.backoffFired.delete(topic);
 
         // 指数退避：未到重试时间的消息放回队列尾部，继续处理后续消息
         if (message.nextRetryAt && Date.now() < message.nextRetryAt) {
           messages.push(message);
-          // 调度退避结束后重新处理该 topic，避免消息永久滞留
+          // 调度退避结束仅置标记；若此刻循环正在跑，由循环内的检查点 break 后重入；
+          // 若循环已结束（锁已释放），则按原设计直接重新处理，避免消息滞留。
           const delay = Math.max(0, message.nextRetryAt - Date.now());
-          const timer = setTimeout(() => { this.pendingTimers.delete(timer); this.processTopic(topic); }, delay);
+          const timer = setTimeout(() => {
+            this.pendingTimers.delete(timer);
+            if (this.processingTopics.has(topic)) {
+              this.backoffFired.add(topic);
+            } else {
+              this.processTopic(topic).catch(() => {});
+            }
+          }, delay);
           this.pendingTimers.add(timer);
           if (timer.unref) timer.unref();
           backoffSkipped++;
@@ -131,5 +152,6 @@ export class MessageQueue {
       clearTimeout(timer);
     }
     this.pendingTimers.clear();
+    this.backoffFired.clear();
   }
 }

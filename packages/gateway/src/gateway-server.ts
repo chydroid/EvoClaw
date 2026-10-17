@@ -528,7 +528,10 @@ export class GatewayServer {
         throw new Error("channel, target, and text are required");
       }
       const result = await channelManager.sendMessage(channel, target, text);
-      return { delivered: true, result };
+      // delivered 必须反映 ChannelSendResult.success——原实现恒为 true，
+      // 渠道适配器下线/发送失败时 WS 客户端会把失败当成功（GW-MSG-1）。
+      const delivered = !(result && typeof result === "object" && (result as { success?: boolean }).success === false);
+      return { delivered, result };
     });
   }
 

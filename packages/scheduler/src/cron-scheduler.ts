@@ -661,6 +661,13 @@ export class CronScheduler extends EventEmitter {
     try {
       return await Promise.race([taskPromise, timeoutPromise]);
     } catch (raceErr) {
+      // S1 修复：超时分支不再立即返回——先等任务真正 settle 再抛超时错误。
+      // 原实现中 executeJob 的 finally 会提前 running.delete + scheduleNext，
+      // 而旧任务还在后台跑：下一次 cron tick 会对同一 job 再启动第二个实例
+      // （双份副作用）。等到任务结束才释放去重槽位，保证「同 job 永不并发」。
+      // 代价：任务挂死（永不 settle）时该 job 的后续触发持续被跳过，
+      // 直到任务结束——对「任务比超时还长」的 job 这是期望行为（宁缺勿重）。
+      await taskPromise.catch(() => { /* 任务错误已记录在 taskError，超时错误优先呈现 */ });
       // 如果是超时，且任务本身也失败了，附加原始错误信息
       if (taskError) {
         throw new Error(`${raceErr instanceof Error ? raceErr.message : String(raceErr)} (task error: ${taskError instanceof Error ? taskError.message : String(taskError)})`);

@@ -600,7 +600,7 @@ export class EvolutionEngine {
                 : 1,
             });
 
-            // 将沙箱失败轨迹加入经验蒸馏器
+            // 沙箱失败轨迹加入经验蒸馏器
             const sandboxReflection = await this.llmReflector.reflect(sandboxResult.executionTrace);
             this.experienceDistiller.addTrajectory(
               sandboxResult.executionTrace,
@@ -609,6 +609,10 @@ export class EvolutionEngine {
               process.stderr.write("[EvolutionEngine] addTrajectory failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
             });
 
+            // E1 修复：早退前必须打完成时间戳并持久化——否则 rejected 周期
+            // 一直停留在「运行中」（completedAt=null），进程崩溃前状态全丢。
+            cycle.completedAt = new Date();
+            this.schedulePersist();
             return;
           }
 
@@ -705,6 +709,9 @@ export class EvolutionEngine {
               process.stderr.write("[EvolutionEngine] addTrajectory failed:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
             });
 
+                  // E1 修复：同 612 行——早退前打完成时间戳并持久化 rejected 周期
+                  cycle.completedAt = new Date();
+                  this.schedulePersist();
                   return;
                 }
 

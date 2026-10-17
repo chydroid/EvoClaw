@@ -43,8 +43,15 @@ export class LongTermMemoryStore implements LongTermMemory {
    * 防止部分条目未入库 SQLite 导致重启后永久丢失。
    */
   private sqliteDegraded = false;
+  /**
+   * M4 修复配套：条目被删除/TTL 过期时通知宿主，宿主据此清理 FTS5 与
+   * 向量索引中的残留条目（否则语义/全文检索会命中已不存在的记忆，
+   * FTS5 回退结果还带不出 id 字段）。
+   */
+  private onEntriesRemoved: ((ids: string[]) => void) | undefined;
 
-  constructor() {
+  constructor(onEntriesRemoved?: (ids: string[]) => void) {
+    this.onEntriesRemoved = onEntriesRemoved;
     this.initSqlite();
     this.loadFromDisk();
     this.startExpireTimer();
@@ -386,10 +393,11 @@ export class LongTermMemoryStore implements LongTermMemory {
       }
     }
     this.scheduleSave();
+    this.onEntriesRemoved?.([id]);
   }
 
   async expire(): Promise<number> {
-    let expired = 0;
+    const expiredIds: string[] = [];
     const now = Date.now();
     for (const [id, entry] of this.entries) {
       if (entry.ttl > 0 && entry.createdAt.getTime() + entry.ttl < now) {
@@ -402,11 +410,12 @@ export class LongTermMemoryStore implements LongTermMemory {
             // best effort
           }
         }
-        expired++;
+        expiredIds.push(id);
       }
     }
-    if (expired > 0) this.scheduleSave();
-    return expired;
+    if (expiredIds.length > 0) this.scheduleSave();
+    this.onEntriesRemoved?.(expiredIds);
+    return expiredIds.length;
   }
 
   /** Get all entries (for backup/export) */

@@ -945,7 +945,10 @@ export class EvoClawServer {
     this.gateway.loadPersistedConfig();
 
     // Initialize migration system (detect version changes, load persisted records)
-    this.gateway.initMigrations(path.resolve("data"), SERVER_VERSION);
+    // 修复：裸 path.resolve("data") 锚定在**启动 cwd**——从仓库外启动时
+    // 会在启动目录旁生出一个游离 ./data。与全服务其余 data 路径一致，
+    // 锚定在 __dirname（dist/ 与 src/ 同深，上溯三层 = 仓库根）。
+    this.gateway.initMigrations(path.resolve(__dirname, "..", "..", "..", "data"), SERVER_VERSION);
 
     // Connect channel message handler to agent
     this.channelManager.setMessageHandler(async (msg) => {

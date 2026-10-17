@@ -138,7 +138,12 @@ export class MemoryHub {
     this.vectorStorePath = path.join(dataDir, "memory", "vector-index.json");
 
     this.shortTerm = new ShortTermMemoryStore();
-    this.longTerm = new LongTermMemoryStore();
+    // M3/M4 修复：长期记忆条目被删除（curate 衰减/压缩）或 TTL 过期时，
+    // 同步清理 FTS5 与向量索引的残留条目——否则全文/语义检索会命中
+    // 已不存在的记忆（FTS5 回退结果只有 rowid，调用方无法还原成记忆 id）。
+    this.longTerm = new LongTermMemoryStore((ids) => {
+      for (const id of ids) this.forgetMemory(id);
+    });
     this.graph = new KnowledgeGraphStore();
     this.fts5 = new FTS5SearchEngine();
     this.fts5.initialize();
@@ -292,6 +297,14 @@ export class MemoryHub {
       this.registry.unregisterService("vectorMemory");
     }
     this.vectorStore = new VectorMemoryStore(this.registry, this.eventBus, local, this.vectorStorePath);
+    // M1 修复：持久化索引可能锁在旧后端维度（如 transformers 384 维），
+    // 与本地 TF-IDF 的 256 维不兼容——addVector 会抛 mismatch、查询向量
+    // 与存量向量余弦全 0（语义检索静默返回空）。维度不可比，直接重置：
+    // 丢弃旧向量、锁到新维度，新记忆重建索引后立即恢复检索。
+    const dropped = this.vectorStore.resetDimension(local.dimensions);
+    if (dropped > 0) {
+      process.stdout.write(`[MemoryHub] local-TFIDF fallback: dropped ${dropped} stale vectors from a different embedding dimension, reindexing\n`);
+    }
     this.registry.replaceService("vectorMemory", this.vectorStore);
     if (transformersToReplace) {
       // Drop the transformers reference so the heavy static pipeline cache
@@ -576,7 +589,9 @@ export class MemoryHub {
       // so we surface |rank| so callers can sort score-descending.
       const fts5Results = this.searchFullText(query, limit);
       return fts5Results.map((r) => ({
-        id: String(r.rowid),
+        // M3 修复：FTS5 结果带的是记忆真实 id（metadata.id），原实现误用 rowid
+        // （内部行号，与记忆 id 无关）——调用方无法把结果还原回 store 里的条目。
+        id: String((r.metadata as { id?: unknown } | undefined)?.id ?? r.rowid),
         score: Math.abs(r.rank),
         text: r.content,
         metadata: (r.metadata ?? {}) as Record<string, unknown>,
@@ -594,12 +609,28 @@ export class MemoryHub {
     } catch (err) {
       // Inference failure (e.g. native lib missing) — fall back gracefully
       return this.searchFullText(query, limit).map((r) => ({
-        id: String(r.rowid),
+        // 同上：用记忆真实 id（metadata.id）而非 FTS5 rowid
+        id: String((r.metadata as { id?: unknown } | undefined)?.id ?? r.rowid),
         score: Math.abs(r.rank),
         text: r.content,
         metadata: (r.metadata ?? {}) as Record<string, unknown>,
       }));
     }
+  }
+
+  /**
+   * 从 FTS5 与向量索引中移除一条记忆（M3/M4 修复配套）。
+   * 长期记忆条目被删除/TTL 过期时由 LongTermMemoryStore 回调触发，
+   * 防止「记忆已消失但索引仍命中」的幽灵检索结果。
+   */
+  forgetMemory(id: string): void {
+    // 注意：longTerm 构造时的首次 expire 回调早于 fts5/vectorStore 初始化，
+    // 必须可选链防护，不能假设两个索引都已就位。
+    try { this.fts5?.deleteEntry(id); } catch { /* best-effort */ }
+    try {
+      const vs = this.vectorStore as unknown as { delete?: (id: string) => unknown };
+      vs?.delete?.(id);
+    } catch { /* best-effort */ }
   }
 
   async remember(entry: Omit<MemoryEntry, "id" | "createdAt" | "accessedAt">): Promise<MemoryEntry> {

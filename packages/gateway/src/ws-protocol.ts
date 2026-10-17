@@ -450,6 +450,8 @@ export class ProtocolHandler {
 
       const cached = this.idempotencyCache.get(idempotencyKey);
       if (cached && Date.now() - cached.at < this.options.idempotencyTTL) {
+        // 重放：回发缓存的响应帧。对象字面量中后写的属性胜出，
+        // `id` 写在展开之后，会覆盖 cached.result 里原始请求的 id。
         client.send({ ...cached.result, id });
         return;
       }

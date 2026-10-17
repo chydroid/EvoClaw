@@ -1246,7 +1246,6 @@ except Exception as e:
         let inFlight = 0;
         const queue: Array<{ id: number; name: string; params: Record<string, unknown> }> = [];
         const MAX_PENDING = 64;
-        let pendingCount = 0;
         let rejectedCalls = 0;
         const calledTools: string[] = [];
 
@@ -1319,9 +1318,11 @@ except Exception as e:
             return;
           }
           if (msg.__evoclaw_call) {
-            pendingCount++;
             totalCalls++;
-            if (pendingCount > MAX_PENDING) {
+            // 上限约束的是「积压队列深度」而非累计调用数：pendingCount 是生命周期
+            // 累计值（只 ++ 从不 --），用它做上限会把「并发 ≤4 的 70 次顺序调用」
+            // 误判为超限；队列长度才是真正的背压量（FORBIDDEN 调用不入队、不计数）。
+            if (queue.length > MAX_PENDING) {
               reply(msg.__evoclaw_call.id, false, { success: false, error: "too many pending programmatic calls" });
               rejectedCalls++;
               return;

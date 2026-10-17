@@ -823,5 +823,33 @@ describe("SkillCurator", () => {
 
       curator.dispose();
     });
+
+    // K1 回归：skillId ≠ 目录名时（UUID id vs 目录名）pinned 也必须命中。
+    // 原实现只用目录名对 skillName 字段匹配，UUID id 键的 pinned 条目恒落空。
+    // 现经 skillManager.listSkills() 目录名→id 解析后补一次按 id 匹配。
+    it("K1: pinned entry keyed by skillId (≠ directory name) still exempts archive", async () => {
+      const { curator, registry } = createCuratorWithDirs();
+      const skillName = "uuid-pinned-skill";
+      seedSkillDir(skillName);
+      const fakeSkillId = uuid();
+
+      // skillManager 报告目录名 → 稳定 id 的解析结果
+      registry.registerService("skillManager", {
+        listSkills: async () => [
+          { id: fakeSkillId, name: skillName },
+        ],
+      });
+
+      // setPinned 以 skillId 为键创建条目（skillName 回退为 skillId 字面值）
+      expect(curator.setPinned(fakeSkillId, true, "K1 regression")).toBe(true);
+
+      await curator.archiveSkill(skillName);
+
+      // 目录仍原位（未被归档）
+      expect(fs.existsSync(path.join(skillsDir, skillName, "SKILL.md"))).toBe(true);
+      expect(curator.listArchivedSkills().length).toBe(0);
+
+      curator.dispose();
+    });
   });
 });

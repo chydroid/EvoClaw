@@ -222,8 +222,14 @@ export class TenantManager {
       return { allowed: false, reason: `Tenant is ${tenant.status}` };
     }
 
-    const stats = this.tenantStats.get(tenantId);
-    if (!stats) return { allowed: true };
+    // SEC2 修复：无 usage-stats 记录时（租户重启后/旁路 createTenant 创建）
+    // 原实现直接放行 = 配额全失效（fail-open）。改为按需初始化零值 stats，
+    // 让配额检查在缺记录时仍然生效。
+    let stats = this.tenantStats.get(tenantId);
+    if (!stats) {
+      stats = this.createEmptyStats(tenantId);
+      this.tenantStats.set(tenantId, stats);
+    }
 
     const quota = tenant.quota;
 

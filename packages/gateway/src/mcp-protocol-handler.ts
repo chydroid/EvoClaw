@@ -139,7 +139,7 @@ export class MCPProtocolHandler {
   async handleToolCall(
     name: string,
     args: Record<string, unknown>,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
     if (MCPProtocolHandler.MCP_BLOCKED_TOOLS.has(name)) {
       return {
         content: [
@@ -160,6 +160,8 @@ export class MCPProtocolHandler {
     try {
       result = await this.toolRegistry.executeTool(name, args);
     } catch (err) {
+      // MCP 规范要求失败的工具调用在 result 上带 isError: true；
+      // 原实现只返回错误文本、不带标记，客户端会把失败当成功处理（MCPGW-1）
       return {
         content: [
           {
@@ -167,6 +169,7 @@ export class MCPProtocolHandler {
             text: `Tool "${name}" execution failed: ${err instanceof Error ? err.message : String(err)}`,
           },
         ],
+        isError: true,
       };
     }
 

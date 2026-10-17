@@ -402,17 +402,17 @@ export function registerAutoSkillTools(
 
       // --- Create the skill ---
       try {
-        const fsMgr = registry.resolveService<{ createFile(path: string, content: string): Promise<{ path: string; size: number }> }>("fileSystemManager");
+        const fsLib = await import("node:fs");
         const skillDir = path.resolve(__dirname, "..", "..", "..", "data", "skills", name);
         const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
-        if (fsMgr) {
-          await fsMgr.createFile(`${skillDir}/SKILL.md`, skillContent);
-        } else {
-          const fsPath = require("path");
-          const skillFullPath = fsPath.resolve(__dirname, "..", "..", "..", skillDir);
-          require("fs").mkdirSync(skillFullPath, { recursive: true });
-          require("fs").writeFileSync(fsPath.join(skillFullPath, "SKILL.md"), skillContent, "utf-8");
-        }
+        // 修复（SKILL-1）：原实现把**绝对**路径传给 FileSystemManager.createFile，
+        // 其 resolvePath 拒绝任何绝对路径（"absolute paths are not allowed"）→
+        // fileSystemManager 已注册时 skill_create 恒失败。且 server 中该服务
+        // 必然已注册（index.ts setBasePath），else 分支是死代码。
+        // 技能目录本就该走直接 fs 写入（fsBase=data 根，非 workspace 沙箱），
+        // 改为直接 fs：建目录 + 写文件 + installSkill。
+        fsLib.mkdirSync(skillDir, { recursive: true });
+        fsLib.writeFileSync(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
         const installed = await skillManager.installSkill(skillDir);
         return { success: true, skillId: installed.id, skillName: installed.name, message: `Skill "${name}" has been created, installed, and is ready to use!` };
       } catch (err) {

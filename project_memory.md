@@ -47,3 +47,25 @@
   - **不修的 P3-2（sessionToolGroups/conversationHistory 无界）**：已有 retention 过期驱动 clearChatHistory 清理（protocol-adapter 7742），且 maxHistoryLength=200 为 P0-1 有意设计（CompactionManager 才是结构改写点），非缺陷，避免过度改动。
   - **不修的 P3-3（cacheControlAnnotations 无消费者）**：context-engine 产出该字段（带 charOffset）但 llm-caller 走 `applyAnthropicCacheControl(messages, frozenBoundary)`，属死输出/双实现并存，非「错误结果」——留作后续统一断点策略的重构，不在本次 bug 修复范围。
   修复后 build→typecheck→test 全绿（269 文件 / 6275 passed，13 skipped，+3 新增断言）。
+- **v0.93.0 后关键流程全面审计（2026-10-17，4 个 Explore 子代理并行 + 主会话逐条核实）**：基线 build→typecheck→test 全绿。确认是 bug 才修，共修复 20 处、补 5 组回归测试，修后 build→typecheck→test 全绿（271 文件 / 6282 passed，13 skipped）。修复清单：
+  - **shell-media-tools execute_code**：背压上限误用生命周期累计值 pendingCount（只增不减）→ 改判积压队列 `queue.length > MAX_PENDING`。
+  - **skill-tools skill_create（SKILL-1）**：经 FileSystemManager.createFile 传绝对路径恒抛 "Access denied: absolute paths" → 改直接 node:fs 写 `data/skills/<name>/SKILL.md` 再 installSkill。
+  - **apps/server index.ts**：initMigrations 的 `path.resolve("data")` 锚定启动 cwd → 改 `__dirname` 三层上溯。
+  - **email-client（EM1/EM2）**：纯文本 body 直接进 html 无转义 → 新增 escapeHtml；imapflow fetchOne 缺 `uid: true` 按序列号误取 → 补选项（对照 imapflow@1.3.3 源码 L2934 验证）。
+  - **evolution-engine（E1）**：沙箱失败早退未置 completedAt/schedulePersist → 循环记录永久"进行中"。
+  - **cron-scheduler（S1）**：超时后提前释放 running 去重槽，同 job 双实例并发 → 先 `await taskPromise` settle 再抛（回归测试断言超时后第二次 executeJob 被跳过）。
+  - **skill-curator（K1/K3）**：pinned 判定 Map 键（UUID）≠ 目录名时单键匹配落空 → isSkillPinned 双键 + isSkillPinnedAsync 经 skillManager.listSkills 目录名→id 解析（回归测试注册 fake skillManager）；restoreSkill 不清 deprecation 死状态 → 恢复后清 null + schedulePersist。
+  - **mcp-poisoning-scanner（SEC1）**：黑名单 addBlacklistPattern 是 no-op（fail-open）→ blacklistCompiled 缓存 + effectivePatterns() 进 scan/sanitize，FIFO 淘汰同步删缓存（回归测试 2 例）。
+  - **vector-memory（M1）**：384→256 维切换后旧索引锁死 → resetDimension(newDim) 清空并锁新维（回归测试）；memory-hub installLocalFallback 建 store 后调之并打印 dropped。
+  - **memory-hub（M3/M4）**：FTS5 回退用 rowid 冒充记忆 id → 取 metadata.id；LongTermMemoryStore.expire/delete 不联动 FTS5/向量删除 → 构造注入 onEntriesRemoved 回调（forgetMemory 可选链）。
+  - **tenant-manager（SEC2）**：checkQuota 无 stats 时 fail-open → 按需 createEmptyStats 让配额照常生效。
+  - **process-manager**：kill() 已退出分支把 exit 监听器标的 "crashed" 覆盖成 "stopped" → 仅 running 时改写。
+  - **docx-tools（DOCX-UNIT）**：ImageRun.transformation 传英寸值被 docx.js 当像素（96 DPI）→ ×96。
+  - **message-queue（MQ-1）**：退避 timer 回调直接重入 processTopic，与仍在跑的循环并发 → 持锁期间到点只置 backoffFired 标记由持锁循环消费，锁已释放才重入（回归测试 2 例）。
+  - **scheduler-tools**：scheduled shell 默认 cwd 用 process.cwd()（split brain）→ 改 `__dirname` 4 层与 shell_exec 对齐。
+  - **gateway ws-protocol（GW-1）**：幂等重放 `{...cached.result, id}` 注释写反——对象字面量后写属性胜出，实为正确行为；仅订正注释（agent 报告误判，未改行为）。
+  - **mcp-protocol-handler（MCPGW-1）**：executeTool 抛错返回 result.content 无 `isError: true`，MCP 客户端把失败当成功 → 补标记 + handleToolCall 返回类型加 isError。
+  - **dead-letter-queue（GW-DLQ-1）**：delete/writeAll 对遗留 JSONL 整文件删除（delete(A) 把 B 也删了、purge 误杀保留行）→ 行级过滤原子写回。
+  - **gateway-server（GW-MSG-1）**：message.send 恒回 `delivered: true` → 按 ChannelSendResult.success 计算。
+  不修记录（设计取舍/误报，勿重复上报）：SEC4 agentPolicy `*` 短路命名策略（注释声明 first-most-specific-wins）；SEC3/S2 cron 解析器与 conformance 校验器口径差异（spec 待决）；ServiceRegistry stopAll / EventBus 超时吞错 / ProcessSupervisor 永久放弃重试（设计）；DLQ getStats 把 replayed 计入 total（统计口径，文档已注明）；retry-all 端点无真实 resend 路径（"标记未重放"语义，属既有 API 契约而非本次缺陷）；ChannelManager.handleIncomingMessage 死代码与入站策略门绕路（attachAdapter 直连 messageHandler 是既有布线，修复属架构改动超出本轮 bug 范围——记录在案）；Weixin 适配器 stopMonitor 不 notifyStop / sendMessage false 静默（微信渠道为可选外部依赖，记录在案）。
+  验证：build 12 包+2 应用全绿 → typecheck 全绿 → test 6282 passed。未推送（等用户指令）。

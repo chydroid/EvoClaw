@@ -40,7 +40,8 @@ export type PoisoningType =
   | "credential_harvesting"  // 试图获取凭证
   | "code_execution"         // 试图执行代码
   | "phishing_link"          // 钓鱼链接
-  | "social_engineering";    // 社会工程学
+  | "social_engineering"     // 社会工程学
+  | "custom_blacklist";     // 命中管理员运行时添加的黑名单条目（SEC1 修复）
 
 /** 扫描器配置 */
 export interface PoisoningScannerConfig {
@@ -200,6 +201,13 @@ export class MCPToolPoisoningScanner {
   private config: Required<PoisoningScannerConfig>;
   private patterns: typeof POISONING_PATTERNS;
   private blacklist: Array<{ id: string; pattern: string; reason: string; severity: string; createdAt: number }> = [];
+  /**
+   * SEC1 修复配套：黑名单编译缓存（id → 编译产物）。
+   * 黑名单原实现只存字符串、扫描时完全不走（addBlacklistPattern 是 no-op，
+   * 管理员以为拦住了新投毒短语，实际 fail-open）。现按 id 缓存 RegExp，
+   * scan()/sanitizeDescription() 额外扫描黑名单条目；add/remove 时同步增删缓存。
+   */
+  private blacklistCompiled = new Map<string, { id: string; regex: RegExp; reason: string; severity: string }>();
   private scanAuditLog: Array<{ toolName: string; riskScore: number; recommendation: string; threats: number; timestamp: number }> = [];
   private stats = {
     scanned: 0,
@@ -228,6 +236,32 @@ export class MCPToolPoisoningScanner {
     }
   }
 
+  /**
+   * SEC1 修复：扫描用的有效模式 = 内置/自定义 patterns + 黑名单条目。
+   * 黑名单条目按 id 缓存编译结果（add/remove 时同步维护），避免每次 scan
+   * 重复 new RegExp（字符串模式还可能在编译时抛错——编译失败的条目跳过
+   * 并 warn，不让整条扫描链路挂掉）。
+   */
+  private effectivePatterns(): Array<{ type: PoisoningType; pattern: RegExp; severity: "low" | "medium" | "high" | "critical"; description: string }> {
+    type SeverePattern = { type: PoisoningType; pattern: RegExp; severity: "low" | "medium" | "high" | "critical"; description: string };
+    const out: SeverePattern[] =
+      this.patterns.map((p) => ({
+        type: p.type,
+        pattern: p.pattern,
+        severity: p.severity,
+        description: p.description,
+      }));
+    for (const cached of this.blacklistCompiled.values()) {
+      out.push({
+        type: "custom_blacklist",
+        pattern: cached.regex,
+        severity: (["low", "medium", "high", "critical"].includes(cached.severity) ? cached.severity : "high") as "low" | "medium" | "high" | "critical",
+        description: `Blacklist: ${cached.reason}`,
+      });
+    }
+    return out;
+  }
+
   /** 扫描单个tool */
   scan(tool: MCPToolDescription): PoisoningScanResult {
     if (!this.config.enabled) {
@@ -243,7 +277,7 @@ export class MCPToolPoisoningScanner {
       tool.inputSchema ?? "",
     ].join("\n");
 
-    for (const p of this.patterns) {
+    for (const p of this.effectivePatterns()) {
       p.pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
       // 关键: 防止ReDoS, 限制单pattern最多匹配次数
@@ -342,8 +376,9 @@ export class MCPToolPoisoningScanner {
     let sanitized = text;
     // 在 description 单独文本上重新扫描, 以获得正确位置
     // (避免使用 name+description+inputSchema 合并文本的偏移位置)
+    // SEC1：含黑名单条目（sanitize 也必须清掉自定义黑名单命中的内容）
     const positions: Array<{ start: number; end: number }> = [];
-    for (const p of this.patterns) {
+    for (const p of this.effectivePatterns()) {
       p.pattern.lastIndex = 0;
       let match: RegExpExecArray | null;
       let matchCount = 0;
@@ -396,7 +431,19 @@ export class MCPToolPoisoningScanner {
     this.blacklist.push(record);
     // 限制 blacklist 数组大小防止无界增长（FIFO 淘汰最旧条目）
     if (this.blacklist.length > MAX_BLACKLIST_SIZE) {
-      this.blacklist.shift();
+      const evicted = this.blacklist.shift();
+      if (evicted) this.blacklistCompiled.delete(evicted.id);
+    }
+    // SEC1：编译进有效模式集——无效正则跳过并 warn，不让整条链路挂掉
+    try {
+      this.blacklistCompiled.set(id, {
+        id,
+        regex: new RegExp(entry.pattern, "gi"),
+        reason: entry.reason,
+        severity: entry.severity,
+      });
+    } catch (err) {
+      process.stderr.write(`[MCPToolPoisoningScanner] blacklist pattern compile failed (${id}): ${err instanceof Error ? err.message : String(err)}\n`);
     }
     return record;
   }
@@ -406,6 +453,7 @@ export class MCPToolPoisoningScanner {
     const idx = this.blacklist.findIndex((e) => e.id === id);
     if (idx === -1) return false;
     this.blacklist.splice(idx, 1);
+    this.blacklistCompiled.delete(id);
     return true;
   }
 

@@ -435,6 +435,27 @@ export class VectorMemoryStore {
     return this.vectors.get(id);
   }
 
+  /**
+   * 维度切换后重置向量索引（memory-hub M1 修复配套）。
+   *
+   * 场景：embeddings 后端切换（如 transformers 384 维 → 本地 TF-IDF 256 维）
+   * 后，旧持久化索引锁在 384 维——新向量 addVector 抛 "dimension mismatch"，
+   * 且查询向量（256）与存量向量（384）余弦相似度全为 0，语义检索静默返回空。
+   * 维度不同的向量彼此不可比，旧索引对新周期毫无价值：直接清空并锁到新维度
+   * （provider 的维度），新记忆重新建索引，检索立刻恢复可用。
+   * @param newDimension 新 provider 的向量维度
+   * @returns 被丢弃的旧向量条数
+   */
+  resetDimension(newDimension: number): number {
+    const dropped = this.vectors.size;
+    this.vectors.clear();
+    this.dimension = newDimension;
+    if (dropped > 0 && this.storePath) {
+      this.schedulePersist();
+    }
+    return dropped;
+  }
+
   // ── Async methods (use EmbeddingProvider) ──
 
   /**

@@ -64,3 +64,35 @@ describe("CronScheduler — 无 RunLogStore 时仍正常（向后兼容）", () 
     expect(scheduler.removeJob("j2")).toBe(true);
   });
 });
+
+describe("CronScheduler — S1 超出去重槽", () => {
+  it("超时后等任务真正 settle 才释放去重槽；并发第二次触发被跳过（同 job 永不双实例）", async () => {
+    const scheduler = new CronScheduler({ maxConcurrentJobs: 2 });
+    let release: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    scheduler.addJob({
+      id: "s1",
+      name: "s1",
+      schedule: "* * * * *",
+      task: async () => { await gate; },
+      timeout: 50,
+    });
+
+    const exec = (scheduler as unknown as { executeJob(id: string): Promise<void> }).executeJob.bind(scheduler);
+
+    const p1 = exec("s1"); // 首跑：50ms 触发超时，但槽位要等 gate 释放才交还
+    await new Promise((r) => setTimeout(r, 80));
+    // 超时后、任务 settle 前：去重槽仍被首跑持有 → 第二次触发被跳过
+    const p2 = exec("s1");
+    release!();
+    await p1;
+    await p2;
+
+    const job = scheduler.getJob("s1");
+    expect(job?.runCount).toBe(1); // 旧实现提前放槽会让 p2 也启动 → runCount=2
+    expect(job?.status).toBe("error");
+    expect(job?.lastError).toContain("timed out");
+
+    scheduler.removeJob("s1");
+  });
+});

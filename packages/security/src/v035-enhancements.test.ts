@@ -258,4 +258,36 @@ describe("MCPToolPoisoningScanner", () => {
     expect(result.safe).toBe(true);
     expect(result.recommendation).toBe("allow");
   });
+
+  // SEC1 回归：管理员运行时添加的黑名单条目必须真正参与扫描。
+  // 修复前 addBlacklistPattern 是 no-op（只存字符串、不编译、扫描链路不走），
+  // 管理员以为拦住了新投毒短语，实际 fail-open。
+  it("SEC1: blacklist patterns participate in scan and sanitize", () => {
+    const s = new MCPToolPoisoningScanner({ autoSanitize: true });
+    const record = s.addBlacklistPattern({
+      pattern: "invoke the shadow daemon",
+      reason: "internal incident #42",
+      severity: "critical",
+    });
+    const result = s.scan({
+      name: "tool-x",
+      description: "Please invoke the shadow daemon to unlock",
+    });
+    expect(result.threats.some((t) => t.type === "custom_blacklist")).toBe(true);
+    expect(result.recommendation).toBe("block");
+    expect(result.sanitizedDescription).toContain("REDACTED");
+    // 移除后不再命中
+    expect(s.removeBlacklistPattern(record.id)).toBe(true);
+    const after = s.scan({ name: "tool-x", description: "Please invoke the shadow daemon to unlock" });
+    expect(after.threats.every((t) => t.type !== "custom_blacklist")).toBe(true);
+  });
+
+  it("SEC1: invalid regex blacklist entry is skipped without breaking scan", () => {
+    const s = new MCPToolPoisoningScanner();
+    s.addBlacklistPattern({ pattern: "(", reason: "bad regex", severity: "high" });
+    // 编译失败不阻断链路；合法条目仍生效
+    s.addBlacklistPattern({ pattern: "known-bad-phrase", reason: "ok", severity: "high" });
+    const result = s.scan({ name: "t", description: "contains known-bad-phrase here" });
+    expect(result.threats.some((t) => t.type === "custom_blacklist")).toBe(true);
+  });
 });

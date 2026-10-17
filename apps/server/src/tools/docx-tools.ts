@@ -273,9 +273,13 @@ export function registerDocxTools(executor: AgentModelExecutor, fsBase: string, 
                 new docx.ImageRun({
                   data: buffer,
                   type: image.type,
+                  // 修复（DOCX-UNIT）：docx.js 的 transformation 单位是 **像素**
+                  // （96 DPI），而本工具参数描述与默认值（4×3）都按**英寸**语义
+                  // 提供——直接透传会把 4×3 英寸写进文档变成 4×3 像素的小缩略图。
+                  // 此处统一按 96 px/inch 换算。
                   transformation: {
-                    width: image.width,
-                    height: image.height,
+                    width: Math.round(image.width * 96),
+                    height: Math.round(image.height * 96),
                   },
                 }),
               ],

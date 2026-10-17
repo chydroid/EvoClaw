@@ -59,6 +59,27 @@ describe("VectorMemoryStore", () => {
     store.delete("x");
     expect(store.size()).toBe(0);
   });
+
+  // M1 回归：embeddings 后端维度切换（384→256）后，旧索引锁在旧维度——
+  // 新向量 addVector 抛 "dimension mismatch"、查询向量与存量向量余弦全 0，
+  // 语义检索静默返回空。resetDimension 清空旧向量并锁到新维度。
+  it("M1: resetDimension drops old vectors and re-locks to the new dimension", async () => {
+    const store = new VectorMemoryStore(null as never, null as never);
+    await store.addVector("old1", [1, 0, 0]);
+    await store.addVector("old2", [0, 1, 0]);
+    expect(store.size()).toBe(2);
+
+    const dropped = store.resetDimension(2);
+    expect(dropped).toBe(2);
+    expect(store.size()).toBe(0);
+
+    // 锁到 2 维后：先入 2 维向量，再来 3 维向量抛 mismatch（旧 3 维向量不可入库）
+    await store.addVector("new1", [1, 1]);
+    await expect(store.addVector("old3", [1, 0, 0])).rejects.toThrow("dimension mismatch");
+    const results = await store.search([1, 1], { threshold: 0.9 });
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("new1");
+  });
 });
 
 describe("EmbeddingSimulator", () => {

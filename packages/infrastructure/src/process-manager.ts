@@ -111,9 +111,12 @@ export class ProcessManager {
     const proc = this.processes.get(processId);
     if (proc && proc.childProcess) {
       const child = proc.childProcess;
-      // 安全：若进程已退出，立即返回而非等满 5s SIGKILL 定时器
+      // 安全：若进程已退出，立即返回而非等满 5s SIGKILL 定时器。
+      // 修复：已退出的进程状态可能已被 exit/error 监听器标记为 "crashed"
+      // （非 0 退出码）——kill 不应把它改写成 "stopped"，否则崩溃被误报
+      // 为正常停止。
       if (child.exitCode !== null || child.signalCode !== null) {
-        proc.status = "stopped";
+        if (proc.status === "running") proc.status = "stopped";
         return;
       }
       // 先 SIGTERM，等待最多 5s，若未退出则 SIGKILL 强制终止。
