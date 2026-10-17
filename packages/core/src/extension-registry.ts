@@ -19,6 +19,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -198,8 +199,11 @@ function scanPackage(
 export async function loadExtension(discovery: DiscoveredExtension): Promise<LoadedExtension> {
   const start = Date.now();
   const fullPath = path.resolve(discovery.packageDir, discovery.entryPath);
-  // URL 形式以兼容 ESM import（Windows 也要 file:// 前缀）
-  const fileUrl = "file:///" + fullPath.replace(/\\/g, "/");
+  // URL 形式以兼容 ESM import。旧实现 `"file:///" + fullPath` 对 POSIX 绝对
+  // 路径（/tmp/…）拼出 `file:////tmp/…`（四斜杠，畸形）——Node 自身 importer
+  // 会归一化容忍，但 Vite（vitest 环境）的 resolver 会拒绝 → loadExtension 失败。
+  // pathToFileURL 生成规范形式（POSIX file:///…、Windows file:///C:/…），两环境均可用。
+  const fileUrl = pathToFileURL(fullPath).href;
   const mod = await import(fileUrl);
   const entry = mod?.default ?? mod;
   return {

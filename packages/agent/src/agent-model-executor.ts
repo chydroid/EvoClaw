@@ -2514,8 +2514,13 @@ export class AgentModelExecutor {
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
-        // Record token usage for real-time tracking (TokenUsagePage WebUI)
-        this.recordTokenUsage(sessionId, primaryProvider.provider || "unknown", primaryProvider.model || "unknown", result.tokensUsed || 0, Math.max((result.tokensUsed || 0) - (result.contextTokens || 0), 0), result.duration, channel);
+        // Token 用量记账统一由 llm-caller 在**每次 LLM 调用**后逐条写入
+        // （主循环/grace/总结/恢复 4 处 record，含 cache 命中明细）——
+        // 此处**不再**二次记录：旧实现在本轮所有调用的 total_tokens 之和
+        // 上又写一条「inputTokens=tokensUsed、outputTokens=tokensUsed-contextTokens」，
+        // 同一轮被计 2 遍以上且量纲错（total_tokens 当 inputTokens 用），
+        // WebUI TokenUsagePage 总量/成本/cacheHitRate 全部虚高。
+        // 本方法保留给 skill-fallback 本地路径（LLM 全挂时 llm-caller 无记录）。
         const timestamp = new Date().toLocaleString("zh-CN", {
           year: "numeric",
           month: "2-digit",

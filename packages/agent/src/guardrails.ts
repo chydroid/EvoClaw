@@ -301,7 +301,10 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     // 模型被迫改走 Python 直连（撞 SSL 校验失败）浪费 4 轮。curl/wget
     // 只是下载、非破坏性，从各操作符后分支移除；破坏性/DoS 集合
     // （rm/del/format/shutdown/reboot/nc/ncat）不变，`&& rm`、`; nc` 仍拦。
-    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*(?:rm|del|format)`|\$\([^)]*(?:rm|del|format)[^)]*\))/i,
+    // 加固（会话审计 2026-10-17）：反引号与 `$()` 子命令分支补回
+    // nc/ncat——旧正则这两分支本就漏了 nc（`$(nc …)`、`` `nc evil` ``
+    // 可反弹 shell 到外部端口），一并纳入拦截。
+    argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*\b(?:rm|del|format|nc|ncat)\b[^`]*`|\$\([^)]*\b(?:rm|del|format|nc|ncat)\b[^)]*\))/i,
     severity: "high",
     action: "block",
     description: "Tool: shell injection pattern in arguments",

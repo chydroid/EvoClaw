@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "path";
+import { tmpdir } from "os";
 
 export default defineConfig({
   // 使用项目内固定缓存目录，避免 CI 中 /tmp 被系统清理导致 SSR 临时文件 ENOENT
@@ -90,6 +91,10 @@ export default defineConfig({
   server: {
     fs: {
       cachedChecks: false,
+      // extension-registry 等代码会在测试中动态 import 临时目录下的 .mjs（mkdtemp 场景）；
+      // 临时目录（Windows: C:\Users\…\AppData\Local\Temp）在仓库外，默认被 server.fs 拦
+      // （"Failed to load url … Does the file exist?"）→ 显式放行。
+      allow: [process.cwd(), tmpdir()],
     },
   },
 

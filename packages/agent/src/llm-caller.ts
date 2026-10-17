@@ -1741,7 +1741,29 @@ export async function parseStreamingResponse(
             };
           };
 
+          // ★ OpenAI 原生流式末块携带 usage（stream_options.include_usage=true 时）：
+          // `{"choices":[], "usage":{...}}` —— choices 为空、无 delta。
+          // 旧 guard `if (!choice?.delta) continue` 会在此块上直接跳过，导致
+          // usage/finish_reason 永远读不到（3d3588b 新增的 provider 侧缓存命中
+          // 真值链路在原生 OpenAI 流式路径上失效）。改为：usage/finish 在 guard
+          // 之前读取，guard 只拦「delta 内容解析」段。
           const choice = chunk.choices?.[0];
+          if ((chunk.usage as Record<string, unknown>)?.total_tokens) {
+            totalTokens = (chunk.usage as Record<string, unknown>).total_tokens as number;
+          }
+          if ((chunk.usage as Record<string, unknown>)?.prompt_tokens) {
+            promptTokens = (chunk.usage as Record<string, unknown>).prompt_tokens as number;
+          }
+          // 保留带 cache 明细的最后一个 usage 对象（OpenAI 流式约定：
+          // 开启 stream_options.include_usage 后末块携带完整 usage）。
+          if (chunk.usage && typeof chunk.usage === "object") {
+            streamUsageDetails = chunk.usage;
+          }
+          // fix-4: 捕获 finish_reason（用于流式恢复判断 length 截断）
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
+
           if (!choice?.delta) continue;
 
           // OpenAI 风格的独立推理字段（部分 provider 会单独返回）
@@ -1876,21 +1898,6 @@ export async function parseStreamingResponse(
             }
           }
 
-          if ((chunk.usage as Record<string, unknown>)?.total_tokens) {
-            totalTokens = (chunk.usage as Record<string, unknown>).total_tokens as number;
-          }
-          if ((chunk.usage as Record<string, unknown>)?.prompt_tokens) {
-            promptTokens = (chunk.usage as Record<string, unknown>).prompt_tokens as number;
-          }
-          // 保留带 cache 明细的最后一个 usage 对象（OpenAI 流式约定：
-          // 开启 stream_options.include_usage 后末块携带完整 usage）。
-          if (chunk.usage && typeof chunk.usage === "object") {
-            streamUsageDetails = chunk.usage;
-          }
-          // fix-4: 捕获 finish_reason（用于流式恢复判断 length 截断）
-          if (choice.finish_reason) {
-            finishReason = choice.finish_reason;
-          }
         } catch { /* ignore parse errors in individual chunks */ }
       }
     }
@@ -2736,12 +2743,19 @@ export async function tryCallLLM(
         process.stdout.write(`[AgentModelExecutor] User message truncated for session "${sessionId}"\n`);
       }
 
-      // Build user message — use multimodal format when images are attached
+      // Build user message — use multimodal format when images are attached.
+      // ★ P2-1 修复（会话审计 2026-10-17）：CE 分支下当前 user 消息**由
+      // ContextEngine 已追加**（assembleContext 末尾 push currentTask，且
+      // executor 传 currentTask 与 message 同源），此处**不再**二次追加——
+      // 旧逻辑导致当前用户消息在请求里出现两次（CE 原文一份 + 本处一份）。
+      // 仅 CE 分支的例外：多模态附件（image/audio/pdf parts）CE 不感知
+      // （它只拼字符串 currentTask），需把 CE 追加的最后一条 user 消息
+      // **替换**为 parts 版本，附件字节不丢。
       const imageAtts = attachments?.filter(a => a.type.startsWith("image/") && a.data?.startsWith("data:")) ?? [];
       const audioAtts = attachments?.filter(a => a.type.startsWith("audio/") && a.data?.startsWith("data:")) ?? [];
       const pdfAtts = attachments?.filter(a => (a.type === "application/pdf" || a.name?.toLowerCase().endsWith(".pdf")) && a.data?.startsWith("data:")) ?? [];
       const hasMultimodal = imageAtts.length > 0 || audioAtts.length > 0 || pdfAtts.length > 0;
-      if (hasMultimodal) {
+      const buildMultimodalParts = (): ChatContent[] => {
         const contentParts: ChatContent[] = [];
         if (effectiveMessage) {
           contentParts.push({ type: "text", text: effectiveMessage });
@@ -2777,10 +2791,40 @@ export async function tryCallLLM(
             file: { data: base64, mimeType: "application/pdf", filename: pdf.name },
           });
         }
-        messages.push({ role: "user", content: contentParts });
-      } else {
-        messages.push({ role: "user", content: effectiveMessage });
-      }
+        return contentParts;
+        };
+        if (!deps.contextEngineResult) {
+          // 非 CE 分支：手动追加当前 user 消息
+          if (hasMultimodal) {
+            messages.push({ role: "user", content: buildMultimodalParts() });
+          } else {
+            messages.push({ role: "user", content: effectiveMessage });
+          }
+        } else if (hasMultimodal && effectiveMessage) {
+          // CE 分支：把 CE 已追加的最后一条 user 消息替换为多模态 parts 版本。
+          // effectiveMessage 非空是守卫：CE 的 assembleContext 仅在
+          // currentTask 非空时 push 末尾 user 消息，此时 messages 最后一条
+          // user 必是 currentTask；空 message 时最后一条 user 是 history，
+          // 不可误替换。
+          const parts = buildMultimodalParts();
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "user") {
+              messages[i] = { role: "user", content: parts };
+              break;
+            }
+          }
+        } else if (!hasMultimodal && effectiveMessage) {
+          // CE 分支（纯文本）：把 CE 追加的 currentTask（executor 的
+          // effectiveMessage）**替换**为本处 effectiveMessage（= 传入 message
+          // 即 finalEnhancedMessage，含搜索/新闻上下文增强，与 CE 侧不同串）——
+          // 去重（旧逻辑两条 user 消息）且不丢增强内容（直接跳过会丢失）。
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "user") {
+              messages[i] = { role: "user", content: effectiveMessage };
+              break;
+            }
+          }
+        }
 
       // ★ P0-2：会话级工具组单调并集（旧：按当前消息激活，逐轮漂移破坏
       // provider 缓存前缀；现：只增不减，稳态下 tools JSON 字节恒定）。

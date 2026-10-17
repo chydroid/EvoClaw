@@ -54,6 +54,8 @@ export class PromptRegistry {
   private templates = new Map<string, PromptTemplateEntry>();
   private config: PromptRegistryConfig;
   private loaded = false;
+  /** 内置模板只注册一次（防 ensureLoaded → get() → ensureLoaded 递归） */
+  private builtinsRegistered = false;
   private static instance: PromptRegistry | null = null;
 
   constructor(config: PromptRegistryConfig = {}) {
@@ -250,6 +252,10 @@ export class PromptRegistry {
   }
 
   private ensureLoaded(): void {
+    if (!this.builtinsRegistered) {
+      this.builtinsRegistered = true;
+      registerBuiltinPromptTemplates(this);
+    }
     if (this.loaded || !this.config.autoLoad) return;
     this.loadFromDisk();
   }

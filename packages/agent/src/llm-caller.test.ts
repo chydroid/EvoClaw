@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as http from "http";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM } from "./llm-caller";
+import type { LLMCallerDeps } from "./llm-caller";
 
 // ═══════════════════════════════════════════════════════════
 // 测试套件：LLM Caller 安全过滤拒绝检测
@@ -459,5 +460,153 @@ describe("P1-4 applyAnthropicCacheControl — 稳定段拆分断点", () => {
     applyAnthropicCacheControl(m, 9);
     expect(m).toHaveLength(4);
     expect(m[0].content).toBe("STABLE_BODYVVVVVVVV");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 流式 usage 捕获回归（P1-1，会话审计 2026-10-17）：
+// OpenAI 原生流式末块携带 usage 时 `choices` 为空（`{"choices":[],
+// "usage":{...}}`），旧 guard `if (!choice?.delta) continue` 在该块上
+// 直接跳过 → usage/prompt/finish_reason 永远读不到，provider 侧缓存
+// 命中真值链路（3d3588b）在原生 OpenAI 流式路径上失效。修复后在
+// guard 之前读取 usage。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > parseStreamingResponse 流式 usage 捕获（P1-1）", () => {
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+
+  // 构造一条「末块 choices 为空、只带 usage」的流，断言末块 usage 被捕获
+  function makeStreamWithTrailingUsage() {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [
+      encoder.encode(sse({ choices: [{ delta: { content: "Hi" } }] })),
+      encoder.encode(sse({ choices: [{ delta: { content: " there" }, finish_reason: "stop" }] })),
+      // OpenAI 原生流式约定：include_usage 末块 choices 为空
+      encoder.encode(sse({ choices: [], usage: { total_tokens: 42, prompt_tokens: 30, completion_tokens: 12, prompt_tokens_details: { cached_tokens: 1000, cache_write_tokens: 50 } } })),
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) { chunks.forEach((x) => c.enqueue(x)); c.close(); },
+    });
+    return stream as unknown as NodeJS.ReadableStream & ReadableStream<Uint8Array>;
+  }
+
+  function fakeDeps() {
+    return {
+      registry: undefined,
+      recordProviderFailure: vi.fn(),
+      recordProviderSuccess: vi.fn(),
+    } as unknown as LLMCallerDeps;
+  }
+
+  it("末块 choices 为空时 usage/prompt/finish 仍被捕获", async () => {
+    const provider = {
+      name: "openai", model: "gpt-4o", baseURL: "https://api.openai.com/v1",
+      provider: "openai", id: "p1",
+    } as unknown as Parameters<typeof parseStreamingResponse>[1];
+    const body = makeStreamWithTrailingUsage();
+    const response = {
+      ok: true, status: 200, statusText: "OK",
+      body,
+      text: async () => "", json: async () => ({}),
+    } as unknown as Parameters<typeof parseStreamingResponse>[0];
+    const onProgress = vi.fn();
+    const result = await parseStreamingResponse(response, provider, Date.now(), onProgress, fakeDeps());
+    expect(result).not.toBeNull();
+    expect(result!.promptTokens).toBe(30);
+    expect(result!.tokensUsed).toBe(42); // 取流末块 usage.total_tokens，而非 ceil(len/4) 估算
+    expect(result!.usageDetails).toMatchObject({ prompt_tokens_details: { cached_tokens: 1000, cache_write_tokens: 50 } });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// P2-1 回归（会话审计 2026-10-17）：CE 分支下当前 user 消息只应出现
+// **一次**——ContextEngine 已在 assembleContext 末尾追加 currentTask，
+// llm-caller 旧逻辑再 push 一条，导致请求里出现两条连续 user 消息。
+// 修复：CE 分支不再二次 push（纯文本把 CE 追加的 currentTask 替换为
+// 传入 message 的增强版；多模态把末条 user 换成 parts 版）。
+// 测试用本地 http server 捕获真实请求体直接断言。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > CE 分支 user 消息去重（P2-1）", () => {
+  function ceResult(currentTask: string) {
+    const messages: Array<{ role: string; content: string }> = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "old-user" },
+      { role: "assistant", content: "old-ai" },
+      { role: "user", content: currentTask },
+    ];
+    return { messages, tokenEstimate: 10, truncated: false, warnings: [], frozenContent: "SYS" } as unknown as LLMCallerDeps["contextEngineResult"];
+  }
+
+  function minimalDeps(overrides: Partial<LLMCallerDeps>): LLMCallerDeps {
+    return {
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: new Map(),
+      buildSkillsPromptForRun: async () => "",
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      providers: [],
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      sessionManager: null,
+      pluginManager: null,
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      ...overrides,
+    };
+  }
+
+  it("CE 纯文本分支：请求体里当前 user 消息只有一条（且为传入 message 增强版）", async () => {
+    // 本地 server 捕获请求体，回一个最小 OpenAI 非流式补全
+    const captured: Array<{ role: string; content: unknown }> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        const body = JSON.parse(raw);
+        captured.push(...(body.messages as Array<{ role: string; content: unknown }>));
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+          usage: { total_tokens: 5, prompt_tokens: 3 },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const dep = minimalDeps({
+      contextEngineResult: ceResult("CURRENT_TASK_RAW"),
+      providers: [
+        { name: "p1", provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number],
+      ],
+    });
+    const res = await tryCallLLM(dep, {
+      message: "ENHANCED_FINAL_MESSAGE",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: dep.providers!,
+      startTime: Date.now(),
+      sessionId: "p2-1-test",
+      pendingPermissions: [],
+    });
+    server.close();
+
+    expect(res).not.toBeNull();
+    const userMsgs = captured.filter((m) => m.role === "user");
+    // 「old-user」（history）+ 当前 user 一条；**不是**两条当前 user
+    expect(userMsgs).toHaveLength(2);
+    expect(userMsgs[0].content).toBe("old-user");
+    // CE 追加的 currentTask 被替换为 llm-caller 传入的 message（增强版）
+    expect(userMsgs[1].content).toBe("ENHANCED_FINAL_MESSAGE");
+    expect(JSON.stringify(captured)).not.toContain("CURRENT_TASK_RAW");
   });
 });
