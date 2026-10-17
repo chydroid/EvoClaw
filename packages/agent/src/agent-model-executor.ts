@@ -2396,7 +2396,18 @@ export class AgentModelExecutor {
                     priority: "normal",
                     timeoutMs: 60000,
                   });
-                  if (acpResult.success && acpResult.result) {
+                  // ACP-FIX：只有委派结果携带**实质输出**（output/summary/文本结果）时
+                  // 才注入 planContext。本地代理 executeLocalDelegation 只回
+                  // {status:"delegated", suggestedTools, message:"Task delegated..."}——
+                  // 没有实际执行结果（本地代理并未跑过任务）。把这段提示注入计划后，
+                  // 模型会误信「任务已被子代理完成」，直接复述提示、一条工具都不跑
+                  // （eval10-t04 实例：ESM 模块任务 20s 结束、文件未产出）。
+                  // 远程/有实产结果的委派保持原行为。
+                  const acpOut = (acpResult.result ?? {}) as Record<string, unknown>;
+                  const hasSubstance = ["output", "summary", "result", "text"].some(
+                    (k) => typeof acpOut[k] === "string" && (acpOut[k] as string).length > 20
+                  );
+                  if (acpResult.success && acpOut && hasSubstance) {
                     planContext += `\n\n[ACP委派] 任务已委派给 ${acpAgent.name}。${JSON.stringify(acpResult.result)}`;
                   }
                 }

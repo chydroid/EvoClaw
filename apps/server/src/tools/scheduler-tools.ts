@@ -133,7 +133,6 @@ export function registerSchedulerTools(
     }
     const { execFile } = await import("child_process");
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
-    const shellArgs = process.platform === "win32" ? ["/c", config.command] : ["-c", config.command];
     // 安全：cwd 默认为 data/workspace 而非项目根目录，且必须校验 cwd 在 workspace 内，防止路径逃逸
     // 与 shell_exec（shell-media-tools）对齐：按 __dirname 定位项目根（4 层 = dist/tools → 根），
     // 而非 process.cwd()——从仓库外启动/不同 cwd 运行时两者会指向不同目录（split brain），
@@ -146,9 +145,23 @@ export function registerSchedulerTools(
       return;
     }
     const timeout = Math.min(Math.max(config.timeout ?? 60000, 1000), 300000); // 1s~5min
+    // SCHED-WSDUP 修复（2026-10-17 eval10-t06）：shell handler 的 cwd 是
+    // data/workspace 本身，但任务命令常写成 "date +%s > data/workspace/x"
+    // （相对项目根的输出风格）→ 重定向落到嵌套的 data/workspace/data/
+    // workspace/… 目录树，scheduler_execute 报 success=true 但文件不在
+    // 期望位置，与 shell_exec 的 WS-DUP 前缀剥除对齐：cwd 即 workspace 时
+    // 先剥掉 "data/workspace/" 前缀。
+    let command = config.command;
+    if (cwd === workspaceDir) {
+      const stripped = command.replace(/(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g, "");
+      if (stripped !== command) {
+        process.stdout.write(`[scheduler] Stripped workspace-relative prefix in task "${task.name}": ${command}\n`);
+        command = stripped;
+      }
+    }
     try {
       const { stdout, stderr, timedOut } = await new Promise<{ stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
-        execFile(shell, shellArgs, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+        execFile(shell, [process.platform === "win32" ? "/c" : "-c", command], { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
           // 超时时 Node 仍会回传已收集的 stdout/stderr，不丢弃
           const isTimeout = !!(err && (err as NodeJS.ErrnoException & { timedOut?: boolean }).timedOut);
           if (err && !isTimeout) {

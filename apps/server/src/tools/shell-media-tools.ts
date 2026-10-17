@@ -360,6 +360,43 @@ export function registerShellMediaTools(
       // 这里在 spawn 之前就把重复的 cwd 前缀剥掉。
       effectiveCommand = stripDuplicatedCwdPrefix(effectiveCommand, cwd);
 
+      // ── WS-DUP 修复（2026-10-17 eval10 t02/t06/t08）：workspace 相对前缀剥除 + 父目录补齐 ──
+      // 模型按 shell_exec 输出风格写 "data/workspace/eval10/x"（相对项目根），但
+      // shell_exec 的 cwd 是 data/workspace 本身 → 在 cwd 下命中不了重复前缀分支，
+      // `mkdir -p` 造出 data/workspace/data/workspace/… 嵌套目录树。原
+      // stripDuplicatedCwdPrefix 只剥 cwd 自身前缀，覆盖不了这种情况。
+      // 修法：cwd 为 workspace 时剥掉 "data/workspace/" 路径前缀；再对命令中
+      // 裸相对路径引用的文件自动补齐父目录（仅对常规文件后缀），消除
+      // 「目录不存在 → No such file → 模型加 mkdir 死循环」模式（t06 实例：
+      // scheduler_execute 把 tick.txt 写到嵌套路径，shell_exec 直写正常路径
+      // 失败 3 轮后才自行 mkdir）。
+      const wsDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+      effectiveCommand = effectiveCommand.replace(
+        /(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g,
+        (match, offset: number) => {
+          // 仅当「剥掉后」的路径在 cwd 下存在（或父目录已存在）时才改写，
+          // 避免误伤真的叫 data/workspace 的相对目录
+          const rest = effectiveCommand.slice(offset + match.length).split(/\s+/)[0].replace(/["']/g, "");
+          const normalized = rest ? (match + rest).replace(/\\/g, "/") : match;
+          const candidateRel = normalized.replace(/^data\/workspace\//, "");
+          if (candidateRel && (fs.existsSync(path.resolve(wsDir, candidateRel)) || fs.existsSync(path.dirname(path.resolve(wsDir, candidateRel))))) {
+            console.log(`[shell_exec] Stripped workspace-relative prefix: data/workspace/${rest}`);
+            return "";
+          }
+          return match;
+        }
+      );
+      for (const m of effectiveCommand.matchAll(/\s([A-Za-z0-9_./-]+\.(?:py|js|mjs|ts|json|txt|csv|log|sh))\b/g)) {
+        const relPath = m[1];
+        if (path.isAbsolute(relPath)) continue;
+        const target = path.resolve(cwd, relPath.replace(/^\.?\//, ""));
+        const parent = path.dirname(target);
+        if (!fs.existsSync(parent)) {
+          fs.mkdirSync(parent, { recursive: true });
+          console.log(`[shell_exec] Auto-created missing parent dir: ${parent}`);
+        }
+      }
+
       // Strip outer double-quotes around Windows drive-letter paths. LLM often
       // wraps absolute paths in quotes ("D:\...") which, when passed through
       // cmd.exe /c, can confuse downstream tools (e.g. python sees a file

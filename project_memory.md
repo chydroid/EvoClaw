@@ -69,3 +69,13 @@
   - **gateway-server（GW-MSG-1）**：message.send 恒回 `delivered: true` → 按 ChannelSendResult.success 计算。
   不修记录（设计取舍/误报，勿重复上报）：SEC4 agentPolicy `*` 短路命名策略（注释声明 first-most-specific-wins）；SEC3/S2 cron 解析器与 conformance 校验器口径差异（spec 待决）；ServiceRegistry stopAll / EventBus 超时吞错 / ProcessSupervisor 永久放弃重试（设计）；DLQ getStats 把 replayed 计入 total（统计口径，文档已注明）；retry-all 端点无真实 resend 路径（"标记未重放"语义，属既有 API 契约而非本次缺陷）；ChannelManager.handleIncomingMessage 死代码与入站策略门绕路（attachAdapter 直连 messageHandler 是既有布线，修复属架构改动超出本轮 bug 范围——记录在案）；Weixin 适配器 stopMonitor 不 notifyStop / sendMessage false 静默（微信渠道为可选外部依赖，记录在案）。
   验证：build 12 包+2 应用全绿 → typecheck 全绿 → test 6282 passed。未推送（等用户指令）。
+- **第二轮 10 任务复跑（2026-10-17，eval10.mjs 重跑，server 已用含三处修复的 dist 重启）**：t01-t08 全 PASS，t09/t10 为「非产品缺陷」：
+  - **三处修复确认生效**：t02（WS-DUP 嵌套目录）、t04（ACP-FIX 委派不再假完成）、t06（SCHED-WSDUP 定时任务嵌套写）全部转 PASS。
+  - **t09（27999 残留）非产品缺陷**：任务要求「启动微服务→验证→停掉」，模型两次都只启动不 kill。本机 `kill <pid>` 在复合命令里偶发 exit 144（疑似 shell 信号），需 `pgrep -af "server.mjs"` 先拿到真实 PID（模型 nohup 起的进程 ppid=1，`pgrep -f eval10/t09` 抓不到）再单独 kill。教训：评测 driver 里「启动后台服务」类任务的验收应直接查端口而非依赖模型自觉 kill。
+  - **t10（avg.txt 假阴性）非产品缺陷**：avg.txt 实为 `32.80`（5 字节，与 CSV 交叉核对均值 32.80、top3 重庆39/广州38/深圳36 全对），是 driver verify 在文件写入瞬间读到旧内容的竞态；复算 `/\d+\.\d{2}/.test("32.80")`=true，当前逻辑正确。
+  - **t05 driver bug（非产品）**：verify 仍用 `unzip`（本机未装）→ 改 python3 zipfile。
+- **主菜单缺口审计（2026-10-17，packages/web-ui/src/App.tsx 的 NAV_GROUPS vs renderPage case 分支 + gateway 全部 /api 路由）**：**所有 case 分支都有菜单项，无死渲染**；缺口在「能力有但没入口」：
+  - **email**：agent 工具齐（email_add_account/email_send/email_analyze，apps/server/src/tools/email-tools.ts，registerEmailTools 在 index.ts:1800 注册），feature flag `emailIntegration` 默认 false，但 **WebUI 无邮件页面、gateway 无 /api/email 路由** → 菜单无入口。
+  - **reporting**：仅 `/api/reporting/templates`（protocol-adapter.ts:3407）+ scheduler 的 report_generate handler，**WebUI 无报告页面**。
+  - **commitments**：`/api/commitments` 路由存在（CommitmentManager 在 agent 包），**WebUI 无对应页面**（grep commitments 在 web-ui/src 全空）。
+  - 已有页面覆盖的：/api/executions→ObservabilityPage、/api/intelligence/classify→EnhancementHubPage、/api/files/*→CanvasPage、/api/kanban→KanbanBoardPage、/api/marketplace→SkillsConfig、/api/system/providers→Dashboard。**建议（未实施）**：email/reporting/commitments 三处补 WebUI 页面入口。
