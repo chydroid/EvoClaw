@@ -2618,6 +2618,13 @@ export async function tryCallLLM(
   /** 最近一次 provider 尝试留下的轨迹（全 provider 失败时兜底交付给前端） */
   let lastTraceSnapshot: ThinkingStep[] | undefined;
 
+  // ── 跨 provider 累计（hermes turn_finalizer「静默停止显式说明」语义）──
+  // 兜底返回时需要知道「整个 turn 到底执行了多少工具、失败了哪些」，
+  // 以便在没有正文产出时给出**如实**的说明，而不是误导性地
+  // 「所有模型都未能响应」（工具明明已经跑过了）。
+  let totalSuccessfulToolCalls = 0;
+  let totalFailedTools: Array<{ name: string; error: string }> = [];
+
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
@@ -2644,6 +2651,11 @@ export async function tryCallLLM(
     // 该 provider 对本上下文确定性无输出：跳过剩余盲重试，直接 failover。
     // 混合证据（有一次非空返回/带 usage 的错误返回）fail-open：重置计数照常重试。
     let consecutiveDeterministicEmpty = 0;
+
+    // ── 本 provider 的工具执行统计（声明在 try 外，供 try/catch 之后的
+    //    跨 provider 累计读取；try 内不再重复声明） ──
+    let successfulToolCalls = 0;
+    const failedTools: Array<{ name: string; error: string }> = [];
 
     try {
       const history = deps.conversationHistory.get(sessionId) || [];
@@ -2861,14 +2873,12 @@ export async function tryCallLLM(
 
       let conversationMessages = [...messages];
       let finalReply = "";
-      let successfulToolCalls = 0;
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
       // 本回合**真正执行过**搜索类工具（区别于「尝试调用」）：
       // 用于决定是否注入 "Do NOT search again" 提示，避免给失败调用也加噪音。
       let actualSearchExecuted = false;
-      // 本回合「执行了但返回失败」的工具，用于完成声明对账
-      const failedTools: Array<{ name: string; error: string }> = [];
+      // 本回合「执行了但返回失败」的工具，用于完成声明对账（声明见 provider 循环外）
       // 本回合「执行了但返回空/零结果」的工具 —— 用于识别凭空编造的数据报告
       const emptyResultTools: Array<{ name: string; field: string }> = [];
       // 本回合真实执行过的工具（含参数），用于 transcript 持久化
@@ -4076,6 +4086,10 @@ export async function tryCallLLM(
               //   完成声明对账也漏掉这类失败（"失败被当成成功"的另一道缝）。
               failedTools.push({ name: toolName, error: errMsg });
               trace.addToolResult(toolName, toolResult, { round: round + 1, ok: false });
+              // ★ 失败也是「执行过」：anyToolExecuted 用于兜底回复的静默停止
+              // 显式说明——工具调用被真正发起过（即使失败），就不该用
+              // 「所有模型都未能响应」糊弄用户。
+              anyToolExecuted = true;
               process.stderr.write(`[AgentModelExecutor] Tool "${toolName}" failed:` + " " + errMsg + "\n");
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: `工具 ${toolName} 执行失败: ${toolError}`, progress: 55, toolName, toolResult: toolError, toolError: true, round: round + 1, thinkingSteps: traceSnapshot(trace) });
             }
@@ -4572,7 +4586,14 @@ export async function tryCallLLM(
             process.stderr.write(`[AgentModelExecutor] SessionManager persist failed: ${err}\n`);
           }
         }
-        persistSessionTurnFn(getSessionPersistenceDeps(deps), sessionId, "assistant", finalReply, { tokensUsed: totalTokensUsed });
+        // ── 收尾清理（hermes turn_finalizer「回复优先 guarded cleanup」）──
+        // 清理步骤一律独立 try/catch：**回复已组装完毕**，任何一步清理失败
+        // 都不得丢掉已算好的 finalReply。错误只记日志，不抛给调用方。
+        try {
+          persistSessionTurnFn(getSessionPersistenceDeps(deps), sessionId, "assistant", finalReply, { tokensUsed: totalTokensUsed });
+        } catch (persistErr) {
+          process.stderr.write(`[AgentModelExecutor] Session persistence failed: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}\n`);
+        }
 
         const cleanHistory: SessionHistoryEntry[] = [
           { role: "user", content: message },
@@ -4595,8 +4616,13 @@ export async function tryCallLLM(
         }
 
         // ── Execution checkpoint: mark completed ──
+        // 清理步骤：失败不得丢掉已组装好的 finalReply（hermes 回复优先语义）
         if (checkpointStore) {
-          checkpointStore.completeExecution(sessionId, finalReply);
+          try {
+            checkpointStore.completeExecution(sessionId, finalReply);
+          } catch (cpErr) {
+            process.stderr.write(`[AgentModelExecutor] Checkpoint complete failed: ${cpErr instanceof Error ? cpErr.message : String(cpErr)}\n`);
+          }
         }
 
         // ── 上下文占用（分子）──
@@ -4665,9 +4691,30 @@ export async function tryCallLLM(
         process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) unknown error: ${String(err)}\n`);
       }
     }
+    // ── 跨 provider 累计：本轮执行了多少工具、失败了哪些 ──
+    // 放在 try/catch **之外**：无论 provider 循环正常结束还是抛异常，
+    // 都要把本轮的工具统计累加到外层，供兜底回复如实说明。
+    totalSuccessfulToolCalls += successfulToolCalls;
+    totalFailedTools.push(...failedTools);
   }
 
-  const fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n替代方案：\n① 前往 Ops 页面查看详细诊断信息并修复配置\n② 尝试切换到其他模型提供商（如 DeepSeek、Qwen 等）\n③ 检查网络代理设置是否正确\n\n需要我帮您排查具体哪个模型出了问题吗？";
+  // ── 兜底回复：静默停止显式说明 + 失败写入脚注 ──
+  // hermes turn_finalizer 语义：若本轮**确实执行过工具**但没有任何 provider
+  // 产出正文，不得用误导性的「所有模型都未能响应」糊弄用户——
+  // 要如实说明「工具执行已停止（N 次执行、M 次失败），未能生成最终回复」，
+  // 并把失败的工具名列进脚注。
+  let fallbackReply: string;
+  if (anyToolExecuted) {
+    const failedList = totalFailedTools.length > 0
+      ? totalFailedTools.map((t) => `${t.name}（${t.error.slice(0, 80)}）`).join("、")
+      : "（无）";
+    fallbackReply =
+      `本轮已执行 ${totalSuccessfulToolCalls} 次工具，但未能生成最终文字回复，执行已停止。\n` +
+      `失败的工具：${failedList}\n` +
+      `如需继续，请明确说明下一步要做什么，或重新描述需求。`;
+  } else {
+    fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n替代方案：\n① 前往 Ops 页面查看详细诊断信息并修复配置\n② 尝试切换到其他模型提供商（如 DeepSeek、Qwen 等）\n③ 检查网络代理设置是否正确\n\n需要我帮您排查具体哪个模型出了问题吗？";
+  }
   process.stderr.write(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.\n`);
   return {
     reply: fallbackReply,
@@ -4675,8 +4722,8 @@ export async function tryCallLLM(
     contextTokens: 0,
     duration: Date.now() - startTime,
     permissionRequests: pendingPermissions,
-    toolsExecuted: false,
-    files: [],
+    toolsExecuted: anyToolExecuted,
+    files: createdFiles,
     // 全部 provider 失败时，把最后一次尝试留下的轨迹交付前端 ——
     // 否则用户只看到"所有模型都未能响应"，看不到之前每个模型都做了什么。
     thinkingTrace: lastTraceSnapshot,

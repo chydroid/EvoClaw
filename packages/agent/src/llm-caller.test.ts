@@ -734,6 +734,16 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
               handler: async () => JSON.stringify({ results: [{ content: "pong" }], success: true }),
             },
           ],
+          // fail_tool 抛错 → 进入 failedTools，用于验证「失败写入脚注」
+          [
+            "fail_tool",
+            {
+              definition: { name: "fail_tool", description: "test failing tool", parameters: {} },
+              handler: async () => {
+                throw new Error("boom");
+              },
+            },
+          ],
         ]),
         buildSkillsPromptForRun: async () => "",
         recordProviderSuccess: () => {},
@@ -922,5 +932,162 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
     // 混合证据未触发确定性短路：空响应计数被 401 清零，failover 由
     // shouldSkipProvider 驱动（p1 至少尝试 2 次：1 次空 + 1 次 401）
     expect(p1Calls).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 收尾三件套（2026-10-18，借鉴 hermes turn_finalizer）：
+//   - 静默停止显式说明：工具跑过但没产出正文时，如实说明而非误导性
+//     「所有模型都未能响应」
+//   - 失败写入脚注：失败的工具名列进兜底回复
+//   - 回复优先 guarded cleanup：persistSessionTurnFn / checkpointStore
+//     completeExecution 独立 try/catch，清理失败不得丢掉已组装好的 reply
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入脚注）", () => {
+  function finalizerDeps(port1: number, port2: number) {
+    const provider1 = { id: `p1-final-${Date.now()}`, name: `p1-final-${Date.now()}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const provider2 = { id: `p2-final-${Date.now()}`, name: `p2-final-${Date.now()}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    return {
+      dep: {
+        registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+        conversationHistory: new Map(),
+        pendingOperations: new Map(),
+        toolResultCache: new Map(),
+        registeredTools: new Map([
+          [
+            "echo_ping",
+            {
+              definition: { name: "echo_ping", description: "test echo tool", parameters: {} },
+              handler: async () => JSON.stringify({ results: [{ content: "pong" }], success: true }),
+            },
+          ],
+          [
+            "fail_tool",
+            {
+              definition: { name: "fail_tool", description: "test failing tool", parameters: {} },
+              handler: async () => { throw new Error("boom"); },
+            },
+          ],
+        ]),
+        buildSkillsPromptForRun: async () => "",
+        recordProviderSuccess: () => {},
+        recordProviderFailure: () => {},
+        getEventLedger: () => null,
+        config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+        persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+        sessionManager: null,
+        pluginManager: null,
+        maxHistoryLength: 200,
+        sessionDataDir: "/tmp",
+        sessionPersistenceEnabled: false,
+        autoCompactionEnabled: false,
+        compactionTokenThreshold: 0,
+        compactionManager: null,
+        lifecycleManager: null,
+        memoryHub: null,
+        providers: [provider1, provider2],
+      } as unknown as LLMCallerDeps,
+      provider1,
+      provider2,
+    };
+  }
+
+  // p1：第 1 次返回工具调用，之后永远返回空 message（连续 2 次即确定性短路 failover）
+  function makeEmptyAfterToolServer(p1CallsRef: { v: number }, toolName: string) {
+    return http.createServer((_req, res) => {
+      p1CallsRef.v++;
+      res.setHeader("Content-Type", "application/json");
+      if (p1CallsRef.v === 1) {
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "tc1", type: "function", function: { name: toolName, arguments: "{}" } }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { total_tokens: 2, prompt_tokens: 1 },
+        }));
+      } else {
+        // 空 message → null（连续 2 次即确定性短路）
+        res.end(JSON.stringify({ choices: [{ finish_reason: "stop" }], usage: { total_tokens: 1 } }));
+      }
+    });
+  }
+
+  it("工具跑过但没产出正文：兜底如实说明「已执行 N 次工具 + 失败工具脚注」", async () => {
+    const p1Calls = { v: 0 };
+    const p1 = makeEmptyAfterToolServer(p1Calls, "echo_ping");
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    // p2：永远空 message（连续 2 次即确定性短路）
+    const p2Calls = { v: 0 };
+    const p2 = http.createServer((_req, res) => {
+      p2Calls.v++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ finish_reason: "stop" }], usage: { total_tokens: 1 } }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const { dep, provider1, provider2 } = finalizerDeps(port1, port2);
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "finalizer-silent-stop-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    // ★ 关键断言：工具明明执行过（echo_ping 成功），不得返回误导性的
+    // 「所有模型都未能响应」，必须如实说明已执行 1 次工具且无失败。
+    expect(res!.reply).toContain("本轮已执行 1 次工具");
+    expect(res!.reply).toContain("未能生成最终文字回复");
+    expect(res!.reply).toContain("执行已停止");
+    expect(res!.reply).toContain("失败的工具：（无）");
+    // 不得出现旧的误导性兜底文案
+    expect(res!.reply).not.toContain("所有已启用的模型提供商均未能响应");
+  });
+
+  it("失败工具名列进兜底回复（失败写入脚注）", async () => {
+    const p1Calls = { v: 0 };
+    const p1 = makeEmptyAfterToolServer(p1Calls, "fail_tool");
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2Calls = { v: 0 };
+    const p2 = http.createServer((_req, res) => {
+      p2Calls.v++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ finish_reason: "stop" }], usage: { total_tokens: 1 } }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const { dep, provider1, provider2 } = finalizerDeps(port1, port2);
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "finalizer-failed-write-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    // fail_tool 抛错 → 进入 failedTools → 兜底回复必须带失败工具名
+    expect(res!.reply).toContain("fail_tool");
+    expect(res!.reply).toContain("失败的工具：");
+    expect(res!.reply).toContain("本轮已执行 0 次工具");
   });
 });
