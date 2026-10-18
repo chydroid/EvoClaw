@@ -45,6 +45,9 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
   2. **过载自动恢复阶梯**（缺口③，借鉴 hermes turn_recovery.py auto-recovery）：provider 瞬时过载类错误（429/5xx/超时/网络）不再「3 连败即 failover」，而是原地 jittered backoff 重试 15s→60s、最多 5 个周期、Retry-After 契约优先（cap 120s）；`packages/agent/src/overload-recovery.ts` 纯策略模块 + llm-caller 按 provider 计数接线；error-classifier 503/504/529 细分归入 overloaded/timeout 供阶梯识别；non-transient（auth/billing/验证错误等）不变。
   3. **子结果截断+哈希**（缺口②，借鉴 hermes subagent_lifecycle `_MAX_RESULT_CHARS`=32k）：`moa-engine.truncateSubResult()` 把单个 proposer/子 agent 的巨型输出截到 32k 并附 FNV-1a 短哈希，防撑爆聚合/综合阶段与父上下文。
   回归：27 条新测试（overload-recovery 12 / agent-model-executor-child-budget 5 / moa-engine 截断 4 / error-classifier-overload 5 / llm-caller 阶梯 e2e 1）。build→typecheck→test 全绿（6338 passed / 13 skipped，较上轮 +27）。
+- [x] **子任务预算隔离 + 硬失败计数（2026-10-18，eval23 o09 回归事故修复）**：
+  eval23 9/10 失败定位：o09 多任务分解路径（`task-analyzer.handleMultipleTasks` / `executeSubtasksFromCheckpoint`）与父 turn 共享同一 `IterationBudget` 实例——父循环耗尽后每个子任务第一轮即撞 `budget.isExhausted`（「迭代预算已耗尽（0 轮）」），0 次工具调用强制总结；且旧逻辑只看「有 reply 字符串」就记 completed，汇总头虚假显示「🎉 所有 3 个子任务已成功完成」。修复两条不变量（对齐 hermes「每个执行单元领新预算」+「成功/失败计数单一事实源」）：① `TaskAnalyzerDeps.resetIterationBudget?` 接线（`agent-model-executor.getTaskAnalyzerDeps` 绑定 `this.resetIterationBudget`），每个子任务执行前 + 每次重试前各重置一次；② 新增 `isSubtaskHardFailure()`（识别「迭代预算已耗尽」占位文案）——`executeSubtasksFromCheckpoint` 首跑/重试拿到硬失败文案一律走 failed 分支（❌ + `failedCount++`，不记 completed），`handleMultipleTasks` 汇总头改「共处理 N 个任务」且硬失败条目标 ❌。4 条新测试（`task-analyzer-subtask-budget.test.ts`：重置时机 2 断言 + 硬失败记 failed + 识别器）；全量 6342 passed / 13 skipped。
+  遗留（hermes 第三轮勘察 Top5，未实现）：tool_guardrails 循环止损（identical-call streak + 每 turn web_search/subagent cap）、truncation/overflow 的 partial 交付 + boosted max_tokens、empty_response 确定性短路、verification_evidence 编辑-验证账本、finalizer 收尾三件套（静默停止显式说明 / 失败写入脚注 / 回复优先 guarded cleanup）。
 
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 

@@ -2813,6 +2813,9 @@ export class AgentModelExecutor {
       generateChatResponse: this.generateChatResponse.bind(this),
       estimateTokenCount: this.estimateTokenCount.bind(this),
       resolveService: <T>(name: string) => this.registry?.resolveService<T>(name) as T | undefined,
+      // eval23 o09 事故修复（2026-10-18）：子任务执行前领新迭代预算，
+      // 避免与父 turn 共享已耗尽的 budget 导致「迭代预算已耗尽（0 轮）」。
+      resetIterationBudget: this.resetIterationBudget.bind(this),
     };
   }
 

@@ -84,9 +84,34 @@ export interface TaskAnalyzerDeps {
   estimateTokenCount: EstimateTokenCountFn;
   /** Resolve a service from the registry */
   resolveService: <T>(name: string) => T | undefined;
+  /**
+   * 重置会话迭代预算（可选）。
+   *
+   * 2026-10-18 eval23 o09 事故：多任务/子任务执行路径（handleMultipleTasks /
+   * executeSubtasksFromCheckpoint）直接复用**父 turn 的 budget 对象**——父 turn
+   * 在 chat() 入口已 consume(1) 且循环内逐轮 consume，拆出子任务后预算耗尽，
+   * 子任务第一轮即撞 `budget.isExhausted`（「迭代预算已耗尽（0 轮）」），
+   * 0 次工具调用就中断。修复：每个子任务执行前重置一次预算（与 chat() 入口
+   * resetIterationBudget 的「每个用户 turn 领新预算」语义对齐，
+   * 子任务视为该 turn 内的新执行单元）。
+   */
+  resetIterationBudget?: (sessionId: string) => void;
 }
 
 // ── Functions ──
+
+/**
+ * 判定子任务结果是否为「硬失败」占位文案。
+ *
+ * 2026-10-18 eval23 o09 事故：子任务响应是「⏰ 迭代预算已耗尽…」的
+ * 耗尽兜底文案时，旧逻辑只看到「有 reply 字符串」就标 completed/✅，
+ * 汇总头显示「🎉 所有 N 个子任务已成功完成」——与「成功/失败计数
+ * 单一事实源」不变量（executeSingleToolCall 单点判定）相违背。
+ * 硬失败文案必须记 failed/❌，让汇总头诚实显示 N/M。
+ */
+export function isSubtaskHardFailure(reply: string): boolean {
+  return typeof reply === "string" && reply.includes("迭代预算已耗尽");
+}
 
 /**
  * LLM-driven task understanding: replaces regex-based parseMultipleTasks.
@@ -372,6 +397,9 @@ export async function handleMultipleTasks(
     let tokensUsed = 0;
 
     if (enabledProviders.length > 0) {
+      // 每个子任务领一份新的迭代预算：与父 turn 共享的 budget 对象若已耗尽
+      // （「迭代预算已耗尽（0 轮）」），子任务第一轮即被强制总结、0 次工具调用。
+      deps.resetIterationBudget?.(sessionId);
       const result = await deps.tryCallLLM(task, systemPrompt, installedSkills, enabledProviders, startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel);
       if (result) {
         taskResult = result.reply;
@@ -392,6 +420,9 @@ export async function handleMultipleTasks(
 
     totalTokens += tokensUsed;
 
+    // 硬失败占位文案（如「迭代预算已耗尽」）不得计入「共完成 N 个任务」
+    const taskHardFailed = isSubtaskHardFailure(taskResult);
+
     // 与已输出过的某个结果内容重复 → 只留一行说明，避免刷屏式重复
     const rk = dedupeKey(taskResult);
     if (rk && seenResultKeys.has(rk)) {
@@ -399,11 +430,11 @@ export async function handleMultipleTasks(
       continue;
     }
     if (rk) seenResultKeys.add(rk);
-    results.push(taskResult);
+    results.push(taskHardFailed ? `❌ ${taskResult}` : taskResult);
   }
 
   results.push(`\n--- 所有任务处理完成 ---`);
-  results.push(`共完成 ${taskList.length} 个任务，耗时 ${Math.floor((Date.now() - startTime) / 1000)} 秒。`);
+  results.push(`共处理 ${taskList.length} 个任务，耗时 ${Math.floor((Date.now() - startTime) / 1000)} 秒。`);
 
   return {
     reply: results.join("\n"),
@@ -532,6 +563,8 @@ export async function executeSubtasksFromCheckpoint(
     let subtaskTokens = 0;
 
     try {
+      // 每个子任务领一份新的迭代预算（理由同 handleMultipleTasks）
+      deps.resetIterationBudget?.(sessionId);
       const resultPromise = deps.tryCallLLM(
         subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
         startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
@@ -556,9 +589,11 @@ export async function executeSubtasksFromCheckpoint(
       process.stderr.write(`[TaskAnalyzer] Subtask "${subtask.description}" failed:` + " " + err + "\n");
     }
 
-    if (subtaskResult) {
-      taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", subtaskResult.slice(0, 2000));
-      subtaskResults.push(`✅ **${subtask.description}**:\n${subtaskResult}`);
+    // 首跑拿到硬失败占位文案（如「迭代预算已耗尽」）视同失败 → 进重试循环
+    const firstAttemptResult = subtaskResult && !isSubtaskHardFailure(subtaskResult) ? subtaskResult : null;
+    if (firstAttemptResult) {
+      taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", firstAttemptResult.slice(0, 2000));
+      subtaskResults.push(`✅ **${subtask.description}**:\n${firstAttemptResult}`);
       totalTokensUsed += subtaskTokens;
       onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 完成: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
     } else {
@@ -575,6 +610,7 @@ export async function executeSubtasksFromCheckpoint(
         }
         process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})\n`);
         try {
+          deps.resetIterationBudget?.(sessionId);
           const retryPromise = deps.tryCallLLM(
             subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
             startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
@@ -587,7 +623,7 @@ export async function executeSubtasksFromCheckpoint(
           });
           try {
             const retryResult = await Promise.race([retryPromise, retryTimeoutPromise]);
-            if (retryResult) {
+            if (retryResult && !isSubtaskHardFailure(retryResult.reply)) {
               taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", retryResult.reply.slice(0, 2000));
               subtaskResults.push(`✅ **${subtask.description}** (重试成功):\n${retryResult.reply}`);
               totalTokensUsed += retryResult.tokensUsed;
