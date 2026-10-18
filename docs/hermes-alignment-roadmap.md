@@ -47,8 +47,8 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
   回归：27 条新测试（overload-recovery 12 / agent-model-executor-child-budget 5 / moa-engine 截断 4 / error-classifier-overload 5 / llm-caller 阶梯 e2e 1）。build→typecheck→test 全绿（6338 passed / 13 skipped，较上轮 +27）。
 - [x] **子任务预算隔离 + 硬失败计数（2026-10-18，eval23 o09 回归事故修复）**：
   eval23 9/10 失败定位：o09 多任务分解路径（`task-analyzer.handleMultipleTasks` / `executeSubtasksFromCheckpoint`）与父 turn 共享同一 `IterationBudget` 实例——父循环耗尽后每个子任务第一轮即撞 `budget.isExhausted`（「迭代预算已耗尽（0 轮）」），0 次工具调用强制总结；且旧逻辑只看「有 reply 字符串」就记 completed，汇总头虚假显示「🎉 所有 3 个子任务已成功完成」。修复两条不变量（对齐 hermes「每个执行单元领新预算」+「成功/失败计数单一事实源」）：① `TaskAnalyzerDeps.resetIterationBudget?` 接线（`agent-model-executor.getTaskAnalyzerDeps` 绑定 `this.resetIterationBudget`），每个子任务执行前 + 每次重试前各重置一次；② 新增 `isSubtaskHardFailure()`（识别「迭代预算已耗尽」占位文案）——`executeSubtasksFromCheckpoint` 首跑/重试拿到硬失败文案一律走 failed 分支（❌ + `failedCount++`，不记 completed），`handleMultipleTasks` 汇总头改「共处理 N 个任务」且硬失败条目标 ❌。4 条新测试（`task-analyzer-subtask-budget.test.ts`：重置时机 2 断言 + 硬失败记 failed + 识别器）；全量 6342 passed / 13 skipped。
-  遗留（hermes 第三轮勘察 Top5，未实现）：truncation/overflow 的 partial 交付 + boosted max_tokens、verification_evidence 编辑-验证账本。
-  （tool_guardrails 循环止损已落地：identical-cycle 周期检测 + 每 turn web_search 硬顶 50 + 成功 mutation 进度重置，`guardrails.ts` `ToolCallLoopDetector`；empty_response 确定性短路已落地：llm-caller 连续 2 次零输出即 failover，混合证据 fail-open；finalizer 收尾三件套已落地：静默停止显式说明 + 失败写入脚注 + 回复优先 guarded cleanup；truncation boosted max_tokens 已落地：`streaming-recovery.getMaxTokensBoost()` 按截断工具调用重试次数指数放大 max_tokens（2→4→8×），llm-caller 主循环调用前应用。）
+  遗留（hermes 第三轮勘察 Top5，未实现）：无——Top5 已全部落地。
+  （tool_guardrails 循环止损：identical-cycle 周期检测 + 每 turn web_search 硬顶 50 + 成功 mutation 进度重置；empty_response 确定性短路：连续 2 次零输出即 failover，混合证据 fail-open；finalizer 收尾三件套：静默停止显式说明 + 失败写入脚注 + 回复优先 guarded cleanup；truncation boosted max_tokens：按截断工具调用重试次数指数放大；verification_evidence 编辑-验证账本：内存存储的编辑失效语义，验证门区分「从未验证/验证过但已被改动/验证仍然有效」并定向复验。）
 
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 

@@ -32,6 +32,7 @@ import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
 import { retryAsync, jitteredBackoff } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
+import { getVerificationEvidenceStore, classifyVerificationCommand } from "./verification-evidence";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 
 /**
@@ -2911,6 +2912,11 @@ export async function tryCallLLM(
 
       // R1-3: 工具循环检测器（每个 chat() 调用一个实例）
       const toolLoopDetector = new ToolCallLoopDetector();
+      // 验证证据账本（hermes verification_evidence「编辑失效」语义）：
+      // 记录每次验证覆盖的路径，之后再编辑这些路径即判失效，
+      // 让验证门区分「从未验证」与「验证过但已被改动」，只对失效路径
+      // 要求定向复验。
+      const evidenceStore = getVerificationEvidenceStore(sessionId);
       let toolLoopWarnedThisTurn = false;
       // 工具循环阻断标志：由 executeSingleToolCall 内部检测设置，外部循环检查并 break
       let toolLoopHaltFlag = false;
@@ -3478,22 +3484,32 @@ export async function tryCallLLM(
             // 「事后对账」不同，这是事前拦截 —— 让模型继续跑。
             // 仅当变更路径中存在「可验证」文件（非纯文档/数据）时才触发。
             const changedPathsForGate = extractChangedPaths(executedToolCalls);
+            // ── 验证证据账本（hermes verification_evidence「编辑失效」语义）──
+            // getStalePaths() 三种返回值：
+            //   null  → 从未验证过 → 按旧行为全量 nudge
+            //   []    → 上次验证仍然有效（之后没再编辑）→ 不重复 nudge
+            //   [paths] → 上次验证已被后续编辑作废 → 只对失效路径定向复验
+            const stalePaths = evidenceStore.getStalePaths();
             const verificationGateTriggered =
               shouldTriggerVerificationGate(
                 changedPathsForGate,
                 executedToolCalls.map((c) => c.name),
                 finalReply,
                 verificationNudgeCount,
-              );
+              ) &&
+              // 验证仍然有效（stalePaths === []，之后没再编辑）→ 不重复 nudge
+              (stalePaths === null || stalePaths.length > 0);
             const effectiveShouldContinue = shouldContinue || verificationGateTriggered;
 
             if (effectiveShouldContinue) {
               if (verificationGateTriggered) {
                 verificationNudgeCount++;
-                const nudge = buildVerifyOnStopNudge(changedPathsForGate, verificationNudgeCount - 1);
+                // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径
+                const nudgePaths = stalePaths && stalePaths.length > 0 ? stalePaths : changedPathsForGate;
+                const nudge = buildVerifyOnStopNudge(nudgePaths, verificationNudgeCount - 1);
                 trace.addSystem(
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
-                  `变更文件：${changedPathsForGate.join("、")}`,
+                  `变更文件：${nudgePaths.join("、")}`,
                 );
                 process.stdout.write(
                   `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
@@ -4067,8 +4083,44 @@ export async function tryCallLLM(
                   }
                 }
               }
+              // ── 验证证据：编辑会让之前的验证作废（hermes mark_workspace_edited）──
+              // 文件写类工具成功 = 世界状态已变，此前的验证覆盖不再可信，
+              // 标记为失效；验证门后续会要求对这些路径定向复验。
+              if (
+                (toolName === "file_create" || toolName === "file_modify") &&
+                rawResult && typeof rawResult === "object"
+              ) {
+                const r = rawResult as Record<string, unknown>;
+                const editedPath =
+                  (typeof r.path === "string" && r.path) ||
+                  (typeof args.path === "string" ? args.path : undefined);
+                if (editedPath) evidenceStore.markEdited([editedPath]);
+              }
               anyToolExecuted = true;
               recordToolSuccess(toolName);
+              // ── 验证证据：把「验证类命令的成功运行」记入账本 ──
+              // 成功（exitCode===0）会清空编辑记录——与 hermes 语义一致：
+              // 「全量通过的验证证明工作区没问题」，之后的编辑才需重验。
+              const verifyKind = toolName === "shell_exec" || toolName === "execute_code"
+                ? classifyVerificationCommand(
+                    typeof (args as Record<string, unknown>).command === "string"
+                      ? (args as Record<string, unknown>).command as string
+                      : typeof (args as Record<string, unknown>).code === "string"
+                        ? (args as Record<string, unknown>).code as string
+                        : "",
+                  )
+                : null;
+              if (verifyKind) {
+                const exitCode =
+                  rawResult && typeof rawResult === "object" && typeof (rawResult as Record<string, unknown>).exitCode === "number"
+                    ? (rawResult as Record<string, unknown>).exitCode as number
+                    : 0;
+                evidenceStore.record(
+                  createdFiles.map((f) => f.path),
+                  `${toolName}:${verifyKind}`,
+                  exitCode,
+                );
+              }
               // ── 进度反馈：工具完成时显示可读摘要 ──
               const doneSummary = formatToolResultSummary(toolName, args, toolResult);
               onProgress?.({ type: "tool_result", phase: "tool_calling", detail: doneSummary, progress: 55 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20), toolName, toolResult: toolResult.slice(0, 200), toolError: false, round: round + 1, thinkingSteps: traceSnapshot(trace) });
