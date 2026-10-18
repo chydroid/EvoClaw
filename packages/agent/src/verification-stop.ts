@@ -184,12 +184,15 @@ export function extractChangedPaths(
  *
  * 触发条件（全部满足）：
  * 1. 本轮执行过变更类工具
- * 2. 模型准备结束（无更多工具调用）
+ * 2. 变更路径中至少存在一个**可验证**文件（纯文档/数据文件全部被
+ *    过滤掉时不触发——如只改 .txt/.md/.json，门没有验证对象，
+ *    否则 nudge 会因无可验证路径返回 null，白白烧掉一轮）
  * 3. 本轮未执行过验证类工具
  * 4. 最终回复不含验证证据
  * 5. nudge 次数未超上限
  */
 export function shouldTriggerVerificationGate(
+  changedPaths: string[],
   executedTools: string[],
   finalReply: string,
   nudgeAttempts: number,
@@ -199,6 +202,7 @@ export function shouldTriggerVerificationGate(
   const max = config.maxNudges ?? MAX_NUDGES;
   if (nudgeAttempts >= max) return false;
   if (!hasFileMutation(executedTools)) return false;
+  if (filterVerifiablePaths(changedPaths).length === 0) return false;
   if (hasVerificationIntent(executedTools)) return false;
   if (replyContainsVerificationEvidence(finalReply)) return false;
   return true;

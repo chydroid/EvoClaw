@@ -131,9 +131,10 @@ describe("buildVerifyOnStopNudge", () => {
 });
 
 describe("shouldTriggerVerificationGate", () => {
-  it("变更文件后未验证 → 触发", () => {
+  it("变更可验证文件后未验证 → 触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["file_create", "docx_create"],
         "文件已创建完成",
         0,
@@ -144,6 +145,7 @@ describe("shouldTriggerVerificationGate", () => {
   it("已调用验证工具 → 不触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["file_create", "file_read"],
         "文件已创建完成",
         0,
@@ -154,6 +156,7 @@ describe("shouldTriggerVerificationGate", () => {
   it("回复含验证证据 → 不触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["file_create"],
         "已验证，解包验证通过",
         0,
@@ -161,11 +164,34 @@ describe("shouldTriggerVerificationGate", () => {
     ).toBe(false);
   });
 
-  it("无变更文件 → 不触发", () => {
+  it("无变更类工具 → 不触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["shell_exec", "file_read"],
         "已完成",
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("只变更纯文档文件（无可验证对象）→ 不触发", () => {
+    expect(
+      shouldTriggerVerificationGate(
+        ["README.md", "config.json"],
+        ["file_create"],
+        "文件已创建完成",
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("空变更路径 → 不触发", () => {
+    expect(
+      shouldTriggerVerificationGate(
+        [],
+        ["file_create"],
+        "文件已创建完成",
         0,
       ),
     ).toBe(false);
@@ -174,6 +200,7 @@ describe("shouldTriggerVerificationGate", () => {
   it("达到最大次数 → 不触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["file_create"],
         "文件已创建完成",
         2,
@@ -184,6 +211,7 @@ describe("shouldTriggerVerificationGate", () => {
   it("显式禁用 → 不触发", () => {
     expect(
       shouldTriggerVerificationGate(
+        ["report.docx"],
         ["file_create"],
         "文件已创建完成",
         0,

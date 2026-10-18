@@ -3377,8 +3377,11 @@ export async function tryCallLLM(
             // （文件写类）之后声称完成，但未提供验证证据时，注入合成
             // nudge 要求先验证再结束。与 completion-truthfulness 的
             // 「事后对账」不同，这是事前拦截 —— 让模型继续跑。
+            // 仅当变更路径中存在「可验证」文件（非纯文档/数据）时才触发。
+            const changedPathsForGate = extractChangedPaths(executedToolCalls);
             const verificationGateTriggered =
               shouldTriggerVerificationGate(
+                changedPathsForGate,
                 executedToolCalls.map((c) => c.name),
                 finalReply,
                 verificationNudgeCount,
@@ -3388,11 +3391,10 @@ export async function tryCallLLM(
             if (effectiveShouldContinue) {
               if (verificationGateTriggered) {
                 verificationNudgeCount++;
-                const changedPaths = extractChangedPaths(executedToolCalls);
-                const nudge = buildVerifyOnStopNudge(changedPaths, verificationNudgeCount - 1);
+                const nudge = buildVerifyOnStopNudge(changedPathsForGate, verificationNudgeCount - 1);
                 trace.addSystem(
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
-                  `变更文件：${changedPaths.join("、")}`,
+                  `变更文件：${changedPathsForGate.join("、")}`,
                 );
                 process.stdout.write(
                   `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
