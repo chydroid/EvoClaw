@@ -33,6 +33,7 @@ import { applyReasoningToggle } from "./reasoning-toggle";
 import { retryAsync, jitteredBackoff } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
 import { getVerificationEvidenceStore, classifyVerificationCommand } from "./verification-evidence";
+import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 
 /**
@@ -3885,6 +3886,13 @@ export async function tryCallLLM(
                       new Promise<never>((_, reject) => {
                         timer = setTimeout(() => {
                           toolAbortController.abort(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`));
+                          // ★ 工具超时后标记 suspect（hermes SuspectableBackend 语义）：
+                          // 一个卡死的工具若被无脑重试，会耗尽整个 turn 的预算。
+                          // 标记后重试前可先 ensureHealthy()，避免盲目重试。
+                          getToolSuspectTracker().markToolSuspect(
+                            toolName,
+                            `timed out after ${toolTimeout / 1000}s`,
+                          );
                           reject(new Error(`Tool "${toolName}" timed out after ${toolTimeout / 1000}s`));
                         }, toolTimeout);
                         if (timer.unref) timer.unref();

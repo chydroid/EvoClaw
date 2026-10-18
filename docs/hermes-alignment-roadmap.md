@@ -50,6 +50,13 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
   遗留（hermes 第三轮勘察 Top5，未实现）：无——Top5 已全部落地。
   （tool_guardrails 循环止损：identical-cycle 周期检测 + 每 turn web_search 硬顶 50 + 成功 mutation 进度重置；empty_response 确定性短路：连续 2 次零输出即 failover，混合证据 fail-open；finalizer 收尾三件套：静默停止显式说明 + 失败写入脚注 + 回复优先 guarded cleanup；truncation boosted max_tokens：按截断工具调用重试次数指数放大；verification_evidence 编辑-验证账本：内存存储的编辑失效语义，验证门区分「从未验证/验证过但已被改动/验证仍然有效」并定向复验。）
 
+### P0 — 第四轮勘察（进行中）
+- [x] **deadline.py 统一有界执行层**（2026-10-18）：新建 `deadline.ts`——`clampTimeout`（null/非正数/NaN→无界，Infinity→夹到 365 天上限）、`withDeadline`（Promise.race fn vs deadline，超时 abandon 被守卫操作 + markSuspect + onAbandon，操作异常原样传播）、`DeadlineExceeded`（区别于 provider 传输超时）、`ToolSuspectTracker`（按工具名追踪 suspect，TTL 自动恢复，对齐 hermes SuspectableBackend）。接线 llm-caller 工具超时路径：工具被 length/卡死超时时 `markToolSuspect`，避免无脑重试耗尽 turn 预算。19 条新测试（`deadline.test.ts`）；全量 6393 passed / 13 skipped。
+- [ ] **turn_liveness.py — Turn 存活看门狗**：一个 turn 在飞行中无声卡死（无错误、lease 仍在续期），导致会话永不释放。#95548、#95663、#131740。
+- [ ] **repetition_guard.py — 模型输出重复检测**：模型陷入退化重复循环，耗尽输出预算。#86581、#100716、#112764。
+- [ ] **turn_overflow.py — 413 字节打分 + output-cap clamp**：413 按 payload 字节数打分（token 估计对图片是 byte-blind），图片密集会话永久卡死。#88960、#47339。
+- [ ] **turn_failure_copy.py — 失败文案 + 失败原因盖印**：`stamp_failure` + `exit_reason_failure` 表，让终态失败携带可操作的 `failure_reason`/`failure_retryable`。
+
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 
 - [x] **Bot Mode 产品化**：命名智能体社会——agent profile 绑定独立 model/memory/skills/头像/常驻会话 + 群聊房间 + `@mention` 编排（底层 GroupChat 已有）。
