@@ -610,3 +610,91 @@ describe("llm-caller > CE 分支 user 消息去重（P2-1）", () => {
     expect(JSON.stringify(captured)).not.toContain("CURRENT_TASK_RAW");
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 过载自动恢复阶梯（2026-10-18，借鉴 hermes turn_recovery.py auto-recovery）：
+// provider 瞬时过载（429/5xx/超时）时不立即 failover，而是原地
+// jittered backoff 等待后重试（Retry-After 契约优先），阶梯耗尽才
+// 退回旧行为（短退避 + failover 到下一个 provider）。
+// 本回归验证「阶梯实际生效」：provider1 持续 429 时，请求体应被
+// 重复发起（远多于 3 次），最终 failover 到 provider2 成功。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > 过载自动恢复阶梯（原地重试）", () => {
+  function providerConfig(port: number, name: string) {
+    return {
+      name, provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      enabled: true, order: 0, timeout: 5000,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  it("429 限流时原地重试 5 个周期，耗尽后 failover 到下一个 provider", async () => {
+    let p1Calls = 0;
+    let p2Calls = 0;
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      // 持续 429；Retry-After: 1 让阶梯等待仅 1s（测试提速）
+      res.statusCode = 429;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: { message: "rate limited, retry after 1 second" } }));
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ok-from-p2" }, finish_reason: "stop" }],
+        usage: { total_tokens: 1, prompt_tokens: 1 },
+      }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    // 复用 P2-1 夹具里的 minimalDeps 思路（同文件定义不可达 → 本地重建最小 deps）
+    const dep = {
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: new Map(),
+      buildSkillsPromptForRun: async () => "",
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      sessionManager: null,
+      pluginManager: null,
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      providers: [providerConfig(port1, "p1"), providerConfig(port2, "p2")],
+    } as unknown as LLMCallerDeps;
+
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [providerConfig(port1, "p1"), providerConfig(port2, "p2")],
+      startTime: Date.now(),
+      sessionId: "overload-ladder-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    expect(res!.reply).toContain("ok-from-p2");
+    // 关键断言：p1 被原地重试（5 个阶梯周期 + 3 次阶梯耗尽后的短退避重试）
+    // 远多于旧行为的「3 连败即 failover」。若阶梯被移除，p1Calls 会 == 3。
+    expect(p1Calls).toBeGreaterThanOrEqual(5);
+    expect(p2Calls).toBe(1);
+  }, 60_000);
+});

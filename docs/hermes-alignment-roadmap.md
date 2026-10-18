@@ -40,6 +40,11 @@ EvoClaw 借鉴基线停留在 Hermes v0.11~v0.12 时期，而 Hermes 主干已�
 - [x] **类型契约防回归测试**：`packages/gateway/src/protocol-adapter-contract.test.ts`（6 用例）守住 `done` 事件 `contextLimit`/`contextLimitSource`/`contextTokensEstimated`/`thinkingSteps` 四字段可达 + `files` 非空回归；`resolveContextLimit` 已导出供测试直接断言。
 - [x] **成功/失败计数单一事实源**：v0.92.1 已把判定收敛到 `executeSingleToolCall` 单点（语义失败只记一条 `ok:false` 且不累加成功数；硬失败进 `failedTools` 且 `ok:false`）；`packages/agent/src/completion-truthfulness.test.ts` 新增「一次调用至多一个终态」回归守护（3 用例），锁定互斥不变量。
 - [x] **验证门（Verification Gate，2026-10-18，借鉴 hermes-agent verification_stop.py）**：在 llm-caller 主循环中引入事前拦截——模型在变更类工具（file_create/file_modify/docx_create/xlsx_create/pptx_create 等）之后声称完成，但未调用验证类工具（file_read/shell_exec/execute_code 等）且回复中不含验证证据时，注入合成 nudge 要求先验证再结束，与 completion-truthfulness 的「事后对账」形成双重保障。落地：`packages/agent/src/verification-stop.ts`（纯策略模块：路径过滤、文件写/验证工具集合、nudge 构建、触发判定）+ llm-caller 接线（验证门分支 + pendingVerificationReply 暂存兜底，借鉴 hermes _pending_verification_response 保留语义）+ 27 测试守护。build→typecheck→test 全绿（6309 passed / 13 skipped）。
+- [x] **可靠性三件套（2026-10-18，第二轮 hermes 对标，缺口①②③）**：
+  1. **子会话迭代预算隔离**（缺口①）：`DEFAULT_CHILD_BUDGET`(50) 曾导出但从未使用——子代理会话与父会话共享同一份预算配置。落地：`agent-model-executor.getIterationBudget(sessionId, isChildSession)` + `isSubagentSessionId()`（`subsession_` 前缀，与 SubagentRegistry 的 sessionId 生成规则对齐），子会话固定吃 50 轮而非父配置值；MoA 各阶段经 `subsession_moa-*` sessionId 走独立子预算。
+  2. **过载自动恢复阶梯**（缺口③，借鉴 hermes turn_recovery.py auto-recovery）：provider 瞬时过载类错误（429/5xx/超时/网络）不再「3 连败即 failover」，而是原地 jittered backoff 重试 15s→60s、最多 5 个周期、Retry-After 契约优先（cap 120s）；`packages/agent/src/overload-recovery.ts` 纯策略模块 + llm-caller 按 provider 计数接线；error-classifier 503/504/529 细分归入 overloaded/timeout 供阶梯识别；non-transient（auth/billing/验证错误等）不变。
+  3. **子结果截断+哈希**（缺口②，借鉴 hermes subagent_lifecycle `_MAX_RESULT_CHARS`=32k）：`moa-engine.truncateSubResult()` 把单个 proposer/子 agent 的巨型输出截到 32k 并附 FNV-1a 短哈希，防撑爆聚合/综合阶段与父上下文。
+  回归：27 条新测试（overload-recovery 12 / agent-model-executor-child-budget 5 / moa-engine 截断 4 / error-classifier-overload 5 / llm-caller 阶梯 e2e 1）。build→typecheck→test 全绿（6338 passed / 13 skipped，较上轮 +27）。
 
 ### P1 — 架构对齐 Hermes 最新（把"有引擎"变成"有产品"）
 

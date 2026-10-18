@@ -552,6 +552,36 @@ export function classifyLLMError(
         isTransient: false,
       };
     }
+    // ── 过载 / 超时细分（2026-10-18，对齐 hermes 瞬时过载自动恢复阶梯）──
+    // 503 常由过载（overloaded）导致，504/529 多为上游超时。归入 overloaded/timeout
+    // 让恢复阶梯（overload-recovery）按 Retry-After 或 15s→60s 退避原地重试，
+    // 而不是走 2s 短退避后 failover 到下一个 provider。
+    if (statusCode === 503) {
+      return {
+        type: LLMErrorType.PROVIDER_ERROR,
+        retryable: true,
+        shouldCompact: false,
+        shouldRotateAuth: false,
+        shouldSkipProvider: false,
+        backoffMs: applyBackoffJitter(5000),
+        message: `Provider overloaded (HTTP 503). Waiting before retry in place.`,
+        reason: "overloaded",
+        isTransient: true,
+      };
+    }
+    if (statusCode === 504 || statusCode === 529) {
+      return {
+        type: LLMErrorType.TIMEOUT,
+        retryable: true,
+        shouldCompact: false,
+        shouldRotateAuth: false,
+        shouldSkipProvider: false,
+        backoffMs: applyBackoffJitter(5000),
+        message: `Provider gateway/upstream timeout (HTTP ${statusCode}). Retrying after backoff.`,
+        reason: statusCode === 529 ? "overloaded" : "timeout",
+        isTransient: true,
+      };
+    }
     return {
       type: LLMErrorType.PROVIDER_ERROR,
       retryable: true,

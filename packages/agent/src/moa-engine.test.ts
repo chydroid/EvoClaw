@@ -5,6 +5,8 @@ import {
   type MoaConfig,
   type ModelRef,
   type MoaEngineChatFn,
+  truncateSubResult,
+  MAX_SUB_RESULT_CHARS,
 } from "./moa-engine";
 
 // ── 测试夹具 ───────────────────────────────────────────────
@@ -433,6 +435,59 @@ describe("MoaEngine", () => {
       await engine.execute("question", "extra context info");
       expect(capturedPrompt).toContain("[Context]");
       expect(capturedPrompt).toContain("extra context info");
+    });
+  });
+
+  // ── 子结果截断（借鉴 hermes subagent_lifecycle._MAX_RESULT_CHARS） ───────
+
+  describe("truncateSubResult", () => {
+    it("未超限原样返回", () => {
+      expect(truncateSubResult("hello")).toBe("hello");
+      expect(truncateSubResult("x".repeat(MAX_SUB_RESULT_CHARS))).toBe("x".repeat(MAX_SUB_RESULT_CHARS));
+    });
+
+    it("超限时截断并附哈希标识（同输入同哈希，不同输入不同哈希）", () => {
+      const a = truncateSubResult("a".repeat(40_000));
+      const b = truncateSubResult("b".repeat(40_000));
+      expect(a.startsWith("a".repeat(MAX_SUB_RESULT_CHARS))).toBe(true);
+      expect(a.length).toBeGreaterThan(MAX_SUB_RESULT_CHARS);
+      expect(a.slice(MAX_SUB_RESULT_CHARS)).toMatch(/…\[truncated: original 40000 chars, fnv=[0-9a-f]{8}\]$/);
+      expect(a.slice(0, MAX_SUB_RESULT_CHARS)).not.toBe(b.slice(0, MAX_SUB_RESULT_CHARS));
+      // 确定性：同内容同哈希
+      expect(truncateSubResult("a".repeat(40_000))).toBe(a);
+    });
+
+    it("自定义上限生效", () => {
+      const t = truncateSubResult("abcdefghij", 5);
+      expect(t.startsWith("abcde")).toBe(true);
+      expect(t).toContain("truncated");
+    });
+  });
+
+  describe("proposer 巨型输出被截断（不撑爆聚合阶段）", () => {
+    it("超过 32k 的 proposal 内容在聚合输入中被截断", async () => {
+      let aggregatorInput = "";
+      const aggregator: ModelRef = { provider: "openai", model: "gpt-4o" };
+      const engine = new MoaEngine(
+        { ...baseConfig({ aggregationStrategy: "best" }), aggregator },
+        {
+          chatFn: createMockChatFn((_p, model) => {
+            if (model.model === "gpt-4o") {
+              aggregatorInput = _p;
+              return { content: "FINAL", tokensUsed: 40 };
+            }
+            // proposer 吐出 40k 字符
+            return { content: "z".repeat(40_000), tokensUsed: 12 };
+          }),
+        },
+      );
+      const result = await engine.execute("question");
+      expect(result.proposals[0].content.length).toBeLessThan(40_000);
+      expect(aggregatorInput).toContain("truncated");
+      // 每个 proposer 的输出都被截到 32k：聚合输入不再含 40k 原始内容
+      const nProposals = baseConfig().proposers.length;
+      expect(aggregatorInput.match(/truncated/g)?.length ?? 0).toBe(nProposals);
+      expect(aggregatorInput.length).toBeLessThan(nProposals * (MAX_SUB_RESULT_CHARS + 100) + 500);
     });
   });
 });

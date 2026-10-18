@@ -40,7 +40,7 @@ import { execute as dagExecute, executeSkillDirectly as dagExecuteSkillDirectly,
 import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type TrustRule, type RiskLevel } from "./human-approval";
 import { SemanticQuickReply } from "./semantic-quick-reply";
 import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
-import { IterationBudget, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
+import { IterationBudget, DEFAULT_CHILD_BUDGET, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
 import { classifySkillError, isEmptySkillOutput, formatSkillReply, sanitizeSkillOutput } from "./skill-dispatch-error-handler";
 import { ToolResultCache, type CacheStats } from "./tool-result-cache";
 import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
@@ -451,15 +451,36 @@ export class AgentModelExecutor {
     }
   }
 
-  /** Get or create iteration budget for a session */
-  getIterationBudget(sessionId: string): IterationBudget {
+  /**
+   * Get or create iteration budget for a session.
+   *
+   * 子会话（sessionId 以 `subsession_` 开头，由 SubagentRegistry 生成）使用
+   * 独立的 DEFAULT_CHILD_BUDGET（50）预算而非父配置值——借鉴 hermes-agent
+   * subagent 生命周期「子代理预算隔离」语义：
+   *   - 子代理拥有自己的迭代配额，不会因与父共享配置而耗尽（或反之被父
+   *     的放宽配置拉爆上下文）；
+   *   - 显式覆盖路径：调用方仍可在 getIterationBudget 前先预置一个带
+   *     自定义 maxIterations 的预算，或用 context.maxIterations 覆盖。
+   */
+  getIterationBudget(sessionId: string, isChildSession = false): IterationBudget {
     let budget = this.iterationBudgets.get(sessionId);
     if (!budget) {
-      const maxIter = this.config.maxIterations ?? 20;
+      const maxIter = isChildSession
+        ? DEFAULT_CHILD_BUDGET
+        : (this.config.maxIterations ?? 20);
       budget = new IterationBudget({ maxIterations: maxIter, enableGraceCall: true });
       this.iterationBudgets.set(sessionId, budget);
     }
     return budget;
+  }
+
+  /**
+   * 子会话判定：SubagentRegistry 生成的子会话 ID 形如 `subsession_<uuid>`。
+   * 与 subagent-registry.ts 的 sessionId 生成规则保持单一事实源——
+   * 该前缀同时是 clearChatHistory / 会话归属清理的约定标记。
+   */
+  isSubagentSessionId(sessionId: string): boolean {
+    return sessionId.startsWith("subsession_");
   }
 
   /** Reset iteration budget for a session (call at start of new turn) */
@@ -3241,7 +3262,9 @@ export class AgentModelExecutor {
 
     const deps = this.getLLMCallerDeps(sessionId);
     // Inject iteration budget and context engine result for this session
-    deps.iterationBudget = this.getIterationBudget(sessionId);
+    // 子会话（subagent）使用隔离的子预算（DEFAULT_CHILD_BUDGET），
+    // 不与父会话共享父配置值。
+    deps.iterationBudget = this.getIterationBudget(sessionId, this.isSubagentSessionId(sessionId));
     deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;
     // Wire per-session abort signal (set by abortSession) so callLLMOnce and
     // the tryCallLLM main loop can react to cancellation.

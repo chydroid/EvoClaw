@@ -281,6 +281,17 @@ export type { StaleContextConfig, ToolResultMeta } from "./stale-context";
 export { IterationBudget, DEFAULT_PARENT_BUDGET, DEFAULT_CHILD_BUDGET, isExecuteCodeTool } from "./iteration-budget";
 export type { IterationBudgetConfig, IterationBudgetStatus } from "./iteration-budget";
 
+// Overload 自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）
+export {
+  isOverloadLadderEligible,
+  computeOverloadWait,
+  OVERLOAD_RECOVERY_MAX,
+  OVERLOAD_RECOVERY_BASE_MS,
+  OVERLOAD_RECOVERY_CAP_MS,
+  RETRY_AFTER_CAP_MS,
+} from "./overload-recovery";
+export type { LadderErrorInfo } from "./overload-recovery";
+
 // Rate Limit Tracker system
 export { RateLimitTracker } from "./rate-limit-tracker";
 export type { RateLimitBucket, RateLimitState } from "./rate-limit-tracker";

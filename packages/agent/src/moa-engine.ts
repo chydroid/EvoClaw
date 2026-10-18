@@ -158,6 +158,33 @@ interface AgentModelExecutorLike {
   ): Promise<{ reply: string; tokensUsed: number }>;
 }
 
+// ─── 子结果截断（借鉴 hermes-agent subagent_lifecycle._MAX_RESULT_CHARS） ─────
+//
+// 子代理/子模型的输出在回喂父上下文前先截断，防止单个巨型输出（如某
+// proposer 吐了 200k 字符）撑爆聚合/综合阶段的 prompt 乃至父会话上下文。
+// 截断时附 FNV-1a 短哈希标识原始内容，便于审计区分不同的截断来源。
+/** 单个子结果的最大字符数（对齐 hermes _MAX_RESULT_CHARS = 32_000） */
+export const MAX_SUB_RESULT_CHARS = 32_000;
+
+/** 32 位 FNV-1a 哈希（无需引入 crypto，仅用于截断标记的内容标识） */
+function fnv1a32(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * 截断子结果到上限并附哈希标识。
+ * 未超限原样返回；超限时截到 limit 并追加 `[truncated … fnv=xxxxxxxx]`。
+ */
+export function truncateSubResult(content: string, limit: number = MAX_SUB_RESULT_CHARS): string {
+  if (!content || content.length <= limit) return content;
+  return content.slice(0, limit) + `\n…[truncated: original ${content.length} chars, fnv=${fnv1a32(content)}]`;
+}
+
 // ── MoaEngine ─────────────────────────────────────────────
 
 /**
@@ -329,7 +356,8 @@ export class MoaEngine {
       if (res.status === "fulfilled") {
         return {
           model,
-          content: res.value.content,
+          // 子结果截断：单个 proposer 的巨型输出不能撑爆后续聚合/综合阶段
+          content: truncateSubResult(res.value.content),
           latency: res.value.latency,
           tokens: res.value.tokens,
           weight: ref.weight ?? 0,
@@ -492,6 +520,7 @@ export class MoaEngine {
 
   /** 从 AgentModelExecutor 构建默认 ChatFn 适配器 */
   private buildAdapterChatFn(registry: ServiceRegistry): MoaEngineChatFn {
+    let moaSessionSeq = 0;
     return async (prompt, _model, options) => {
       const executor = registry.resolveService<AgentModelExecutorLike>("agentModelExecutor");
       if (!executor) {
@@ -499,8 +528,14 @@ export class MoaEngine {
       }
       const ctx: Record<string, unknown> = {};
       if (options?.signal) ctx.signal = options.signal;
+      // ── 子会话预算隔离（2026-10-18，对齐 hermes subagent 预算语义）──
+      // MoA 各阶段（proposer/aggregator/synthesizer）都是「子 agent」——
+      // 用 subsession_ 前缀的独立 sessionId，让它们吃 DEFAULT_CHILD_BUDGET
+      // （50）而不是父配置的 maxIterations，避免与主对话会话共用/互耗预算。
+      // 前缀与 agent-model-executor.isSubagentSessionId 的判定保持一致。
+      ctx.sessionId = `subsession_moa-${Date.now()}-${++moaSessionSeq}`;
       const res = await executor.chat(prompt, ctx);
-      return { content: res.reply, tokensUsed: res.tokensUsed };
+      return { content: truncateSubResult(res.reply), tokensUsed: res.tokensUsed };
     };
   }
 

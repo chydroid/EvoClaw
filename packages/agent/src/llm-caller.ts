@@ -30,8 +30,9 @@ import { needsCompaction as needsCompactionFn, compactConversationHistory as com
 import { applyAnthropicCacheControl } from "./prompt-cache";
 import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
-import { retryAsync } from "./retry-utils";
+import { retryAsync, jitteredBackoff } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
+import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 
 /**
  * 从 CallLLMOnceResult.usageDetails 提取缓存命中/写入 token（provider 侧真值）。
@@ -2460,6 +2461,13 @@ export async function tryCallLLM(
   // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
   const MAX_AUTO_CONTINUE = 3;
 
+  // ── 过载自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）──
+  // provider 出现瞬时过载类错误（429/5xx/超时/网络）时，不立即 failover，
+  // 而是原地 jittered backoff 等待后重试（15s→60s，最多 5 个周期，
+  // Retry-After 契约优先）。按 provider.name 计数——failover 到下一个
+  // provider 后用独立的计数（新 provider 的新状态）。
+  const overloadAttemptsByProvider = new Map<string, number>();
+
   const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
   process.stdout.write(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
 
@@ -3079,7 +3087,41 @@ export async function tryCallLLM(
           }
 
           // ── fix-1: 基于 backoffMs 统一处理退避（覆盖 RATE_LIMIT/PROVIDER_ERROR/PAYLOAD_TOO_LARGE 等） ──
+          // 增强（2026-10-18）：瞬时过载类错误（429/5xx/超时）优先走「原地恢复阶梯」
+          // ——最多 5 个周期、15s→60s jittered backoff、Retry-After 契约优先（见
+          // overload-recovery.ts），避免 provider 短暂过载时直接 failover 浪费备用渠道。
           if (classified.backoffMs > 0 && classified.retryable) {
+            const ladderInfo = {
+              type: classified.type,
+              retryable: classified.retryable,
+              hasRetryAfterContract: classified.hasRetryAfterContract,
+              backoffMs: classified.backoffMs,
+              isTransient: classified.isTransient,
+              reason: classified.reason,
+            };
+            const used = overloadAttemptsByProvider.get(provider.name) ?? 0;
+            if (isOverloadLadderEligible(ladderInfo, used)) {
+              const waitMs = computeOverloadWait(used + 1, ladderInfo);
+              overloadAttemptsByProvider.set(provider.name, used + 1);
+              process.stdout.write(
+                `[AgentModelExecutor] Overload ladder ${used + 1}/${OVERLOAD_RECOVERY_MAX} for provider "${provider.name}" (${classified.type}, ${classified.reason ?? "transient"}): ` +
+                `waiting ${Math.round(waitMs / 1000)}s before in-place retry\n`,
+              );
+              onProgress?.({
+                type: "error",
+                phase: "generating",
+                detail: `模型服务瞬时过载（${classified.type}），${Math.round(waitMs / 1000)}s 后原地重试（${used + 1}/${OVERLOAD_RECOVERY_MAX}）...`,
+                progress: 30,
+                round: round + 1,
+              });
+              await new Promise((resolve) => {
+                const t = setTimeout(resolve, waitMs);
+                t.unref?.();
+              });
+              // 原地重试同 provider：重置连续错误计数，避免 3 连败后误 failover
+              consecutiveErrors = 0;
+              continue;
+            }
             await new Promise((resolve) => {
               const t = setTimeout(resolve, classified.backoffMs);
               t.unref?.();
