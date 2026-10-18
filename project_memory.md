@@ -106,3 +106,4 @@
   - **② 子结果截断+哈希**（借鉴 hermes subagent_lifecycle `_MAX_RESULT_CHARS`=32k）：`moa-engine.truncateSubResult()`（32k 截断 + FNV-1a 短哈希标识）应用到各 proposer 输出与 executor 回复回传，防单个巨型子输出撑爆聚合/综合阶段 prompt。
   - 缺口④（pre_verify 插件钩子）未做：hermes 语义是「stop 前给插件最后否决权」，EvoClaw 已有 completion-truthfulness（事后对账）+ 验证门（事前拦截）双重机制覆盖同类目标，插件钩子属扩展点非能力缺口，留待插件体系成型。
   - 回归：+27 测试（overload-recovery 12 / child-budget 5 / moa 截断 4 / error-classifier-overload 5 / llm-caller 阶梯 e2e 1，本地 http server 429→Retry-After:1 验证 5 周期原地重试后 failover）。build→typecheck→test 全绿（6338 passed / 13 skipped）。
+  - **驱动 glob 坑（同轮）**：重跑前清理产物用了 `rm -f eval23-*.json`，glob 连带删掉配置 `eval23-prompts.json` → 全任务 ENOENT、0/0 假失败。清理结果文件只用 `rm -f eval23-o*.json`（带任务 id 前缀），勿裸 glob 清同目录配置。
