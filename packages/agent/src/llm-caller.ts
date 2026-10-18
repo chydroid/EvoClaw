@@ -10,6 +10,7 @@ import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, extractChangedPaths } from "./verification-stop";
+import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { isCreationTool } from "./tool-capability-catalog";
@@ -1670,6 +1671,9 @@ export async function parseStreamingResponse(
   let buffer = "";
 
   let content = "";
+  // 流式重复看门狗（hermes RunawayStreamWatch）：模型陷入退化重复循环时
+  // 在流式输出中途中断，避免耗尽整个 turn 并把垃圾送进最终回复。
+  const runawayWatch = new RunawayStreamWatch();
   // 流式标签清洗器：清洗 <think>/<reasoning> 等推理标签，防止泄漏到用户输出。
   // 灵感来自 hermes-agent StreamingThinkScrubber（有状态跨 chunk 处理）。
   const tagScrubber = new StreamingTagScrubber();
@@ -1821,6 +1825,25 @@ export async function parseStreamingResponse(
               }
             }
             content += cleaned;
+
+            // ── 流式重复看门狗（hermes RunawayStreamWatch）──
+            // 模型陷入退化重复循环时，在流式输出中途中断，
+            // 避免耗尽整个 turn 并把垃圾送进最终回复。
+            // 中断检查点丢弃被循环污染的部分（对齐 hermes
+            // REPETITION_LOOP_INTERRUPTED 语义）。
+            if (runawayWatch.feed(cleaned)) {
+              content += REPETITION_LOOP_INTERRUPTED;
+              process.stderr.write(
+                `[LLMCaller] Runaway repetition detected after ${runawayWatch.getChars()} chars; interrupting stream for session\n`,
+              );
+              onProgress({
+                type: "status",
+                phase: "generating",
+                detail: "检测到回复陷入重复循环，已中断输出。",
+                progress: 80,
+              });
+              break;
+            }
 
             // ── Token-level streaming ──
             // Fire a `token` event for every cleaned delta so the client can
