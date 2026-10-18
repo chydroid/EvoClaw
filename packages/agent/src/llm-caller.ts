@@ -3051,7 +3051,16 @@ export async function tryCallLLM(
         // 前端据此新建气泡（不再靠"长度是否变短"猜）。
         // 存在 trace 上：它是主循环与 parseStreamingResponse 之间唯一共享的可变对象。
         trace?.nextRound();
-        const result = await callLLMOnce(provider, conversationMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
+        // ── 截断工具调用 max_tokens 提升（hermes turn_truncation
+        //    boosted_output_cap）：工具调用被 length 截断后，同一 prompt
+        //    大概率再次被截断——按重试次数指数放大 max_tokens，给工具调用
+        //    足够空间一次写完（2→4→8→16→32，上限 32×）。
+        const maxTokensBoost = getStreamingRecoveryManager().getMaxTokensBoost();
+        const callProvider =
+          maxTokensBoost > 1
+            ? { ...provider, maxTokens: Math.max(provider.maxTokens ?? 4096, 4096) * maxTokensBoost }
+            : provider;
+        const result = await callLLMOnce(callProvider, conversationMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
 
         if (!result) {
           consecutiveErrors++;

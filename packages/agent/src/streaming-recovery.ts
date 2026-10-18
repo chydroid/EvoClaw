@@ -344,6 +344,19 @@ export class StreamingRecoveryManager {
   }
 
   /**
+   * 截断工具调用重试次数 → max_tokens 倍数（hermes turn_truncation
+   * `boosted_output_cap` 语义）：工具调用被 length 截断时，单纯重试同一
+   * prompt 大概率再次被截断——按重试次数**指数**放大 max_tokens，
+   * 让工具调用有足够空间一次写完（2→4→8→16→32，上限 32×）。
+   * 非截断场景（计数为 0）返回 1，不影响正常调用。
+   */
+  getMaxTokensBoost(): number {
+    const count = this.retryCounters.get("truncated_tool_call") ?? 0;
+    if (count <= 0) return 1;
+    return Math.min(32, Math.pow(2, count));
+  }
+
+  /**
    * 更新配置。
    */
   updateConfig(config: Partial<StreamingRecoveryConfig>): void {
