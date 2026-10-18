@@ -2639,6 +2639,12 @@ export async function tryCallLLM(
 
     let consecutiveErrors = 0;
 
+    // ── 空响应确定性短路（hermes empty_response_guard.deterministic_empty 语义）──
+    // 连续 ≥2 次「同一 (provider, model) 且零输出」（usage 证实 0 输出）即判
+    // 该 provider 对本上下文确定性无输出：跳过剩余盲重试，直接 failover。
+    // 混合证据（有一次非空返回/带 usage 的错误返回）fail-open：重置计数照常重试。
+    let consecutiveDeterministicEmpty = 0;
+
     try {
       const history = deps.conversationHistory.get(sessionId) || [];
 
@@ -3039,7 +3045,15 @@ export async function tryCallLLM(
 
         if (!result) {
           consecutiveErrors++;
+          consecutiveDeterministicEmpty++;
           recordProviderFailure(provider.name);
+          // 空响应确定性短路（hermes deterministic_empty）：连续 2 次同
+          // provider/model 零输出即判该 provider 对本上下文无输出，跳过剩余
+          // 盲重试直接 failover——省 1 次调用 + 1 个 backoff 周期。
+          if (consecutiveDeterministicEmpty >= 2) {
+            process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" (${provider.model}) returned ${consecutiveDeterministicEmpty} consecutive empty responses — deterministic, skipping remaining retries\n`);
+            break;
+          }
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
           continue;
         }
@@ -3047,6 +3061,9 @@ export async function tryCallLLM(
         const classified = result.classifiedError;
         if (classified && classified.type !== LLMErrorType.UNKNOWN) {
           consecutiveErrors++;
+          // 混合证据 fail-open（hermes empty_response_guard）：provider 有真响应
+          // （即使报错）说明并非「确定性无输出」——重置确定性空响应计数。
+          consecutiveDeterministicEmpty = 0;
           recordProviderFailure(provider.name);
           process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}\n`);
 
@@ -3161,6 +3178,13 @@ export async function tryCallLLM(
         }
 
         const assistantMsg = result.message;
+
+        // 成功路径（无 classifiedError）：有内容或有工具调用 = 混合证据 fail-open，
+        // 确定性空响应计数清零；空成功（无内容无工具调用）不清零、继续累计——
+        // 连续 2 次空响应即确定性短路（hermes usage-proof 口径，零输出才计）。
+        if (assistantMsg.content || (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0)) {
+          consecutiveDeterministicEmpty = 0;
+        }
 
         // ── 进度反馈：提取 LLM 思考摘要 ──
         // 当 LLM 返回文本内容时，提取前几行作为思考过程摘要反馈给用户
@@ -3303,6 +3327,20 @@ export async function tryCallLLM(
         }
 
         if (!toolCalls || toolCalls.length === 0) {
+          // ── 空成功确定性累计（hermes empty_response_guard usage-proof 口径）──
+          // 无 content 且无 tool_calls = 本次调用零输出。连续 2 次即判该
+          // provider 对本上下文确定性无输出：直接 failover（跳过 post_tool_empty
+          // nudge 的盲重试，省 1-2 次调用 + 迭代预算）。有工具调用过后再空是
+          // 正常分支（nudge 仍兜底，但只在累计 <2 时）。
+          if (!assistantMsg.content) {
+            consecutiveDeterministicEmpty++;
+            if (consecutiveDeterministicEmpty >= 2) {
+              process.stderr.write(
+                `[AgentModelExecutor] Provider "${provider.name}" (${provider.model}) produced ${consecutiveDeterministicEmpty} consecutive empty completions — deterministic, failing over instead of retrying\n`,
+              );
+              break;
+            }
+          }
           // ── Fallback: auto-trigger skill_search for skill-install intents ──
           // When the LLM returns a chat reply without calling any tool, but the
           // user message semantically matches a skill-install or action intent,

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as http from "http";
 import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM } from "./llm-caller";
+import { resetProviderSkipList } from "./provider-skip-list";
 import type { LLMCallerDeps } from "./llm-caller";
 
 // ═══════════════════════════════════════════════════════════
@@ -697,4 +698,229 @@ describe("llm-caller > 过载自动恢复阶梯（原地重试）", () => {
     expect(p1Calls).toBeGreaterThanOrEqual(5);
     expect(p2Calls).toBe(1);
   }, 60_000);
+});
+
+// ═══════════════════════════════════════════════════════════
+// 空响应确定性短路（2026-10-18，借鉴 hermes empty_response_guard）：
+// 同一 provider 连续 2 次零输出（无 message / 空 content）即判「对本上下文
+// 确定性无输出」，跳过第 3 次盲重试直接 failover。回归断言 p1 恰好 2 次
+// 调用——旧行为（MAX_CONSECUTIVE_ERRORS=3）会发起 3 次才 break。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > 空响应确定性短路（deterministic empty failover）", () => {
+  // ★ 跨测试隔离（两组进程级共享状态）：
+  // 1. ProviderHealthTracker（熔断器）：「2 连败即熔断 120s」会把后续测试的
+  //    同名 provider 直接跳过 → provider 名必须唯一。
+  // 2. ProviderSkipList（持久化到 data/provider-skip-list.json）：401 会把
+  //    provider.id 写进 skip list（TTL 5 分钟，磁盘跨进程存活）→ 每个测试
+  //    前 resetProviderSkipList()，且 runTag 让本轮 provider id 全唯一。
+  const runTag = Date.now();
+  beforeEach(() => resetProviderSkipList());
+  function emptyDeps(port1: number, port2: number, name1: string, name2: string) {
+    const provider1 = { id: name1, name: name1, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const provider2 = { id: name2, name: name2, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    return {
+      dep: {
+        registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+        conversationHistory: new Map(),
+        pendingOperations: new Map(),
+        toolResultCache: new Map(),
+        // 测试工具：echo_ping 返回非空 results → 工具执行路径正常产出，
+        // 让「空成功 + 工具调用交替」的混合证据路径可被验证。
+        registeredTools: new Map([
+          [
+            "echo_ping",
+            {
+              definition: { name: "echo_ping", description: "test echo tool", parameters: {} },
+              handler: async () => JSON.stringify({ results: [{ content: "pong" }], success: true }),
+            },
+          ],
+        ]),
+        buildSkillsPromptForRun: async () => "",
+        recordProviderSuccess: () => {},
+        recordProviderFailure: () => {},
+        getEventLedger: () => null,
+        config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+        persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+        sessionManager: null,
+        pluginManager: null,
+        maxHistoryLength: 200,
+        sessionDataDir: "/tmp",
+        sessionPersistenceEnabled: false,
+        autoCompactionEnabled: false,
+        compactionTokenThreshold: 0,
+        compactionManager: null,
+        lifecycleManager: null,
+        memoryHub: null,
+        providers: [provider1, provider2],
+      } as unknown as LLMCallerDeps,
+      provider1,
+      provider2,
+    };
+  }
+
+  it("连续 2 次空 message 即 failover（p1 恰好 2 次，第 3 次盲重试被省掉）", async () => {
+    let p1Calls = 0;
+    let p2Calls = 0;
+    // p1：永远返回「无 message」的空响应（choices[0] 存在但 message 缺失）
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ finish_reason: "stop" }],
+        usage: { total_tokens: 1 },
+      }));
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ok-from-p2" }, finish_reason: "stop" }],
+        usage: { total_tokens: 1, prompt_tokens: 1 },
+      }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const { dep, provider1, provider2 } = emptyDeps(port1, port2, "p1-null", "p2-null");
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "deterministic-empty-null-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    expect(res!.reply).toContain("ok-from-p2");
+    // 关键断言：p1 恰好 2 次（第 2 次即短路 failover）。
+    // 若确定性短路被移除，p1Calls 会 == 3（MAX_CONSECUTIVE_ERRORS 才 break）。
+    expect(p1Calls).toBe(2);
+    expect(p2Calls).toBe(1);
+  });
+
+  it("工具后连续 2 次空成功即 failover（省掉第 3 个盲 nudge 轮）", async () => {
+    let p1Calls = 0;
+    let p2Calls = 0;
+    // p1：第 1 次返回 echo_ping 工具调用（执行成功），之后永远空 content 成功补全。
+    // 期望：第 2/3 轮空成功累计到 2 → 确定性短路 break（旧行为第 4 轮 nudge
+    // 耗尽才 break，p1Calls 会 == 4）。
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      res.setHeader("Content-Type", "application/json");
+      if (p1Calls === 1) {
+        res.end(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "tc1", type: "function", function: { name: "echo_ping", arguments: "{}" } }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { total_tokens: 2, prompt_tokens: 1 },
+        }));
+      } else {
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+          usage: { total_tokens: 1, prompt_tokens: 1 },
+        }));
+      }
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ok-from-p2" }, finish_reason: "stop" }],
+        usage: { total_tokens: 1, prompt_tokens: 1 },
+      }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const { dep, provider1, provider2 } = emptyDeps(port1, port2, "p1-succ", "p2-succ");
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "deterministic-empty-success-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    expect(res!.reply).toContain("ok-from-p2");
+    // 关键断言：p1 恰好 3 次（1 工具轮 + 2 空成功即短路）。
+    // 若确定性短路被移除，第 4 轮 nudge 耗尽才 break，p1Calls 会 == 4。
+    expect(p1Calls).toBe(3);
+    expect(p2Calls).toBe(1);
+  });
+
+  it("混合证据 fail-open：空响应与出错交替时确定性计数清零，不提前短路", async () => {
+    let p1Calls = 0;
+    let p2Calls = 0;
+    // p1 交替返回：空 message（null）→ 429 出错（混合证据，计数清零）→ 空 message…
+    // 计数永远到不了 2，走旧行为：3 次连续错误才 break（429 先入过载阶梯——
+    // 为避免阶梯拖长测试，这里 p1Calls 上限只断言「没有提前短路 failover」：
+    // p2 在第 3 个 provider 循环 break 后才接到请求。
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      if (p1Calls % 2 === 1) {
+        // 奇数次：空 message → null
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ choices: [{ finish_reason: "stop" }], usage: { total_tokens: 1 } }));
+      } else {
+        // 偶数次：非瞬时错误 401（AUTH non-transient 不入阶梯、不 backoff）
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+      }
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ok-from-p2" }, finish_reason: "stop" }],
+        usage: { total_tokens: 1, prompt_tokens: 1 },
+      }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const { dep, provider1, provider2 } = emptyDeps(port1, port2, `p1-mix-${runTag}`, `p2-mix-${runTag}`);
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "deterministic-empty-mixed-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    // 401 AUTH → shouldSkipProvider 直接 break（跳过 p1 剩余重试）→ p2 兜底
+    expect(res!.reply).toContain("ok-from-p2");
+    expect(p2Calls).toBe(1);
+    // 混合证据未触发确定性短路：空响应计数被 401 清零，failover 由
+    // shouldSkipProvider 驱动（p1 至少尝试 2 次：1 次空 + 1 次 401）
+    expect(p1Calls).toBeGreaterThanOrEqual(2);
+  });
 });
