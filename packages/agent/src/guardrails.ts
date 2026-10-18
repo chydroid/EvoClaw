@@ -912,7 +912,7 @@ export interface ToolCallSignature {
  */
 export interface ToolLoopCheckResult {
   /** 检测到的循环类型 */
-  detection: "none" | "exact_failure" | "same_tool_failure" | "no_progress";
+  detection: "none" | "exact_failure" | "same_tool_failure" | "no_progress" | "identical_cycle" | "web_search_cap";
   /** 建议动作 */
   action: "continue" | "warn" | "halt";
   /** 人类可读的警告/阻断消息 */
@@ -948,6 +948,12 @@ export interface ToolLoopGuardrailConfig {
   noProgressWarnAfter: number;
   /** 无进展 N 次后阻断 */
   noProgressHaltAfter: number;
+  /** 多调用周期循环（A,B,A,B…）重复 N 个周期后警告（hermes identical-cycle，oh-my-pi#10521） */
+  identicalCycleWarnAfter: number;
+  /** 多调用周期循环重复 N 个周期后阻断 */
+  identicalCycleHaltAfter: number;
+  /** 每 turn web_search 类工具硬顶（超过即阻断；0 表示不限制） */
+  maxWebSearchesPerTurn: number;
 }
 
 export const DEFAULT_TOOL_LOOP_CONFIG: ToolLoopGuardrailConfig = {
@@ -959,7 +965,36 @@ export const DEFAULT_TOOL_LOOP_CONFIG: ToolLoopGuardrailConfig = {
   sameToolFailureHaltAfter: 8,
   noProgressWarnAfter: 2,
   noProgressHaltAfter: 5,
+  identicalCycleWarnAfter: 3,
+  identicalCycleHaltAfter: 5,
+  maxWebSearchesPerTurn: 50,
 };
+
+/**
+ * 多调用周期循环检测参数（对齐 hermes STALL_GUARD 常量）：
+ * - 周期最大长度 4（A,B,C,D 交替循环）；
+ * - 历史窗口 64 次调用（足够容纳 5 laps × 4 周期 + 余量）；
+ * - 「轮」(lap) = 一个完整周期内的全部 (工具, 结果) 都相同。
+ */
+const STALL_GUARD_MAX_CYCLE_PERIOD = 4;
+const STALL_GUARD_CYCLE_HISTORY = 64;
+/** laps 起算基线：3 个完整周期才算「重复」，容忍偶发双检。 */
+const STALL_GUARD_MIN_LAPS = 3;
+
+/**
+ * 成功 mutation 工具（hermes PROGRESS_RESET_TOOL_NAMES 语义）：
+ * 这些工具**成功**执行意味着世界状态已改变——「编辑→重跑」是新实验而非重放，
+ * 应重置失败计数与停滞检测状态。EvoClaw 对齐 verification-stop 的变更工具口径。
+ */
+export const PROGRESS_RESET_TOOLS = new Set([
+  "file_create", "file_modify", "file_delete",
+  "shell_exec", "execute_code", "apply_patch",
+  "docx_create", "xlsx_create", "pptx_create",
+  "browser_click", "browser_type", "browser_press", "browser_navigate", "browser_fill_form",
+]);
+
+/** 计入每 turn 硬顶的 web 检索类工具（hermes LoopCapConfig max_web_searches 口径）。 */
+const WEB_SEARCH_TOOLS = new Set(["web_search", "web_fetch", "scrapling_fetch", "browser_search"]);
 
 /**
  * 工具循环检测器。
@@ -981,6 +1016,10 @@ export class ToolCallLoopDetector {
   /** 上一次结果 hash（用于检测连续相同） */
   private lastResultHash: string | null = null;
   private consecutiveSameResults = 0;
+  /** 调用历史（hermes identical-cycle：(签名, 结果hash) 序列，窗口 64） */
+  private callHistory: Array<{ toolName: string; argsHash: string; resultHash: string }> = [];
+  /** 每 turn web_search 类工具调用计数 */
+  private webSearchCount = 0;
 
   constructor(config: Partial<ToolLoopGuardrailConfig> = {}) {
     this.config = { ...DEFAULT_TOOL_LOOP_CONFIG, ...config };
@@ -1017,6 +1056,30 @@ export class ToolCallLoopDetector {
     const exactKey = `${sig.toolName}:${sig.argsHash}`;
     const resultHash = this.hashString(resultContent.slice(0, 4096));
 
+    // ── 成功 mutation 进度重置（hermes PROGRESS_RESET_TOOL_NAMES 语义）──
+    // 编辑/执行类工具成功 = 世界状态已变，「改一下再跑」是新实验而非重放，
+    // 此前的失败计数与停滞状态全部作废。
+    if (success && PROGRESS_RESET_TOOLS.has(toolName)) {
+      this.exactFailureCounts.clear();
+      this.sameToolFailureCounts.clear();
+      this.consecutiveSameResults = 0;
+    }
+
+    // ── web_search 类工具每 turn 硬顶（hermes LoopCapConfig：计数不受
+    //    hard_stop 开关控制；超出即阻断，防止无界检索烧满预算） ──
+    if (WEB_SEARCH_TOOLS.has(toolName) && this.config.maxWebSearchesPerTurn > 0) {
+      this.webSearchCount++;
+      if (this.webSearchCount > this.config.maxWebSearchesPerTurn) {
+        return {
+          detection: "web_search_cap",
+          action: "halt",
+          message: `web_search 类工具本回合已调用 ${this.webSearchCount} 次，超过硬顶 ${this.config.maxWebSearchesPerTurn}。已停止，请基于已检索结果直接回答。`,
+          count: this.webSearchCount,
+          threshold: this.config.maxWebSearchesPerTurn,
+        };
+      }
+    }
+
     // ── no_progress 检测 ──
     if (resultHash === this.lastResultHash) {
       this.consecutiveSameResults++;
@@ -1024,6 +1087,10 @@ export class ToolCallLoopDetector {
       this.consecutiveSameResults = 0;
       this.lastResultHash = resultHash;
     }
+
+    // ── 记录调用历史（供 identical-cycle 检测，窗口 64） ──
+    this.callHistory.push({ toolName: sig.toolName, argsHash: sig.argsHash, resultHash });
+    if (this.callHistory.length > STALL_GUARD_CYCLE_HISTORY) this.callHistory.shift();
 
     if (!success) {
       // ── exact_failure 检测 ──
@@ -1101,7 +1168,73 @@ export class ToolCallLoopDetector {
       }
     }
 
+    // ── identical-cycle 检测（hermes _detect_identical_cycle / oh-my-pi#10521）──
+    // 交替循环 A,B,A,B,… 每次都重置「连续相同结果」计数，普通 no_progress 抓不到；
+    // 这里在 (工具,argsHash,resultHash) 历史上找最小周期 2..4，尾部连续相同
+    // 的完整周期数（lap）达到阈值即告警/阻断。
+    const cycle = this.detectIdenticalCycle();
+    if (cycle) {
+      if (this.config.hardStopEnabled && cycle.laps >= this.config.identicalCycleHaltAfter) {
+        return {
+          detection: "identical_cycle",
+          action: "halt",
+          message: `工具调用呈 ${cycle.period} 步周期循环重复 ${cycle.laps} 轮且结果不变（${cycle.tail.map(t => t.toolName).join("→")}…），无实质进展。已停止循环。`,
+          count: cycle.laps,
+          threshold: this.config.identicalCycleHaltAfter,
+        };
+      }
+      if (this.config.warningsEnabled && cycle.laps >= this.config.identicalCycleWarnAfter) {
+        return {
+          detection: "identical_cycle",
+          action: "warn",
+          message: `⚠️ 工具调用呈 ${cycle.period} 步周期循环重复 ${cycle.laps} 轮且结果不变，可能陷入交替循环。`,
+          count: cycle.laps,
+          threshold: this.config.identicalCycleWarnAfter,
+        };
+      }
+    }
+
     return { detection: "none", action: "continue", message: "", count: 0, threshold: 0 };
+  }
+
+  /**
+   * 检测尾部多调用周期循环（hermes _detect_identical_cycle 的 TS 移植）：
+   * 最小周期 2..STALL_GUARD_MAX_CYCLE_PERIOD，尾部连续 laps 个完整周期
+   * 的 (工具, argsHash, 结果hash) 逐一相同才计为一轮；
+   * laps ≥ STALL_GUARD_MIN_LAPS 返回 { period, laps, tail }，否则 null。
+   */
+  private detectIdenticalCycle(): { period: number; laps: number; tail: Array<{ toolName: string; argsHash: string; resultHash: string }> } | null {
+    const history = this.callHistory;
+    for (let period = 2; period <= STALL_GUARD_MAX_CYCLE_PERIOD; period++) {
+      if (history.length < period * STALL_GUARD_MIN_LAPS) continue;
+      let laps = 1;
+      while (true) {
+        const base = history.length - period * (laps + 1);
+        if (base < 0) break;
+        let lapEqual = true;
+        for (let i = 0; i < period; i++) {
+          const a = history[base + i];
+          const b = history[history.length - period + i];
+          if (a.toolName !== b.toolName || a.argsHash !== b.argsHash || a.resultHash !== b.resultHash) {
+            lapEqual = false;
+            break;
+          }
+        }
+        if (!lapEqual) break;
+        laps++;
+      }
+      if (laps >= STALL_GUARD_MIN_LAPS) {
+        // 周期 1（单一调用重复）由 consecutiveSameResults / no_progress 负责；
+        // 此处若尾部 period 段与 period-1 段完全相同说明是更短周期的别名，跳过（继续找更小周期不会命中，
+        // 因为从小到大枚举，先命中的一定是最小周期）。
+        return {
+          period,
+          laps,
+          tail: history.slice(history.length - period).map((e) => ({ ...e })),
+        };
+      }
+    }
+    return null;
   }
 
   /**
@@ -1113,6 +1246,8 @@ export class ToolCallLoopDetector {
     this.noProgressCounts.clear();
     this.lastResultHash = null;
     this.consecutiveSameResults = 0;
+    this.callHistory = [];
+    this.webSearchCount = 0;
   }
 
   /**

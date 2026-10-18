@@ -174,7 +174,7 @@ export { ToolChainExecutor, type ToolChainDefinition, type ToolChainResult, type
 export { ToolChainRegistry, createBuiltinToolChainRegistry } from "./tool-chain-registry";
 
 // Guardrails system
-export { GuardrailsManager, InputGuardrail, OutputGuardrail, ToolGuardrail, ToolCallLoopDetector, ToolLoopDetectedError, DEFAULT_TOOL_LOOP_CONFIG, IDEMPOTENT_TOOL_NAMES, MUTATING_TOOL_NAMES } from "./guardrails";
+export { GuardrailsManager, InputGuardrail, OutputGuardrail, ToolGuardrail, ToolCallLoopDetector, ToolLoopDetectedError, DEFAULT_TOOL_LOOP_CONFIG, IDEMPOTENT_TOOL_NAMES, MUTATING_TOOL_NAMES, PROGRESS_RESET_TOOLS } from "./guardrails";
 export type { GuardrailResult, GuardrailConfig, GuardrailStats, InputRule, OutputRule, ToolRule, Severity, GuardrailAction, ToolCallSignature, ToolLoopCheckResult, ToolLoopGuardrailConfig } from "./guardrails";
 
 // Structured Output system
