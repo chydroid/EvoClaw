@@ -5,6 +5,7 @@ import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-cl
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type NativeFetchResponse } from "./llm-caller";
+import { getTurnLivenessWatchdog } from "./turn-liveness";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -1468,10 +1469,10 @@ export class AgentModelExecutor {
           span.setAttribute("session.id", sessionId);
           span.setAttribute("message.length", message.length);
           span.setAttribute("channel", channel);
-          return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, tracing, span);
+          return this.chatInner(message, context, wrappedOnProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, tracing, span);
         });
       } else {
-        return this.chatInner(message, context, onProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, null, null);
+        return this.chatInner(message, context, wrappedOnProgress, startTime, sessionId, pendingPermissions, agentId, channel, peerId, null, null);
       }
     };
 
@@ -1484,17 +1485,40 @@ export class AgentModelExecutor {
       timeoutHandle?.unref?.();
     }
 
+    // ── Turn 存活看门狗（hermes turn_liveness.py 语义）──
+    // 一个 turn 在飞行中**无声卡死**（无错误、无进展）时，软超时可能还没到，
+    // 会话却已永不释放。这里启动看门狗：每次有进展（onProgress）就 touch，
+    // 超过 timeoutMs 无进展时报告停滞（不硬取消——对齐 hermes
+    // 「已恢复的 turn 绝不会被硬取消」，只通知，由 durable pause 接管）。
+    const liveness = getTurnLivenessWatchdog();
+    const wrappedOnProgress = onProgress
+      ? (event: Parameters<NonNullable<typeof onProgress>>[0]) => {
+          liveness.touch(sessionId);
+          return onProgress(event);
+        }
+      : onProgress;
+    liveness.start(sessionId, (event) => {
+      const waitedMin = Math.round(event.waitedMs / 60_000);
+      wrappedOnProgress?.({
+        type: "status",
+        phase: "thinking",
+        detail: `任务仍在进行中，已等待 ${waitedMin} 分钟无进展——可能是遇到复杂操作或临时卡死，我会继续等待。`,
+        progress: 50,
+      });
+    });
+
     try {
       const result = await runChat();
       if (timeoutHandle) clearTimeout(timeoutHandle);
       // 若本次运行期间被请求暂停（软超时 / 浏览器关闭），转入后台续跑而不是失败
       if (this.durablePauseRequested.get(sessionId) && !isResumeCall) {
         this.durablePauseRequested.delete(sessionId);
-        return this.enterDurablePause(sessionId, message, context, result, onProgress, startTime, channel, peerId);
+        return this.enterDurablePause(sessionId, message, context, result, wrappedOnProgress, startTime, channel, peerId);
       }
       return result;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      liveness.stop(sessionId);
     }
   }
 
