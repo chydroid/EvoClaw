@@ -21,6 +21,7 @@
  */
 
 import type { FailoverReason } from "./failover-policy";
+import { recoverPayloadTooLarge, serializedMessagesBytes, COMPRESSION_EXHAUSTED_NOTICE } from "./turn-overflow";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,8 @@ export interface RecoveryResult {
   retryDelayMs?: number;
   /** 诊断信息 */
   diagnostics?: Record<string, unknown>;
+  /** 终态通知文案（如 compression_exhausted 时的人话摘要） */
+  notice?: string;
 }
 
 /**
@@ -384,8 +387,7 @@ export class ErrorRecoveryExecutor {
       // ── 上下文压缩类 ──
 
       case "context_overflow":
-      case "long_context_tier":
-      case "payload_too_large": {
+      case "long_context_tier": {
         if (!this.turnState.checkAndMark("trigger_compaction")) {
           return {
             ...baseResult,
@@ -404,6 +406,59 @@ export class ErrorRecoveryExecutor {
           diagnostics: {
             needsCompaction: true,
             originalReason: reason,
+          },
+        };
+      }
+
+      // ── 413 payload-too-large：按**字节**打分（hermes turn_overflow 语义）──
+      // 413 是字节数错误，token 估计对图片是 byte-blind 的——
+      // 两个 vision 结果占请求体 96.6% 但只占 token 估计的 ~3.7%，
+      // 按 token 打分会让图片密集会话在「无进展」上耗尽所有压缩尝试，
+      // 永久卡死（#88960 / #47339）。
+      case "payload_too_large": {
+        if (!this.turnState.checkAndMark("trigger_compaction")) {
+          return {
+            ...baseResult,
+            shouldFailover: allowFailover,
+            action: "compaction_already_triggered",
+          };
+        }
+        const originalBytes = serializedMessagesBytes(messages as unknown as Record<string, unknown>[]);
+        const newMessages = triggerCompaction(messages);
+        const newBytes = serializedMessagesBytes(newMessages as unknown as Record<string, unknown>[]);
+        const shrank =
+          newBytes < originalBytes * 0.95 || newMessages.length < messages.length;
+        this.turnState.consumeRetry();
+        if (shrank) {
+          return {
+            ...baseResult,
+            recovered: true,
+            messages: newMessages,
+            shouldRetry: true,
+            action: "trigger_compaction_scored_by_bytes",
+            diagnostics: {
+              needsCompaction: true,
+              originalReason: reason,
+              originalBytes,
+              newBytes,
+              shrank: true,
+            },
+          };
+        }
+        // 字节数没怎么缩 → compression exhausted，不再重试
+        return {
+          ...baseResult,
+          recovered: false,
+          shouldRetry: false,
+          shouldFailover: allowFailover,
+          action: "compression_exhausted",
+          notice: COMPRESSION_EXHAUSTED_NOTICE,
+          diagnostics: {
+            needsCompaction: true,
+            originalReason: reason,
+            originalBytes,
+            newBytes,
+            shrank: false,
           },
         };
       }
