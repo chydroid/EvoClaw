@@ -21,7 +21,9 @@
  */
 
 import type { FailoverReason } from "./failover-policy";
+import { isTransientReason } from "./failover-policy";
 import { recoverPayloadTooLarge, serializedMessagesBytes, COMPRESSION_EXHAUSTED_NOTICE } from "./turn-overflow";
+import { exhaustedCopy, nonretryableCopy } from "./turn-failure-copy";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -138,6 +140,23 @@ export class TurnRetryState {
 }
 
 // ── 恢复动作实现 ────────────────────────────────────────────────────────────
+
+/**
+ * 终态通知文案（hermes turn_failure_copy 语义）：把非 compression_exhausted 的
+ * 其余 reason 的终态文案收口到同一张表——瞬时 reason 用重试耗尽文案，
+ * 非瞬时 reason 用不可重试文案。compression_exhausted 仍保留
+ * COMPRESSION_EXHAUSTED_NOTICE（413 专属语义）。
+ */
+function terminalNoticeForReason(
+  reason: FailoverReason,
+  attempts: number,
+  providerLabel = "模型服务",
+): string {
+  if (isTransientReason(reason)) {
+    return exhaustedCopy(reason, providerLabel, attempts);
+  }
+  return nonretryableCopy(reason, providerLabel);
+}
 
 /**
  * 剥离 Anthropic thinking 块。
@@ -297,6 +316,8 @@ export class ErrorRecoveryExecutor {
         ...baseResult,
         shouldFailover: allowFailover,
         action: "retry_budget_exhausted",
+        // 终态文案收口到 turn-failure-copy 表（hermes turn_failure_copy 语义）
+        notice: terminalNoticeForReason(reason, this.turnState.getRetryCount(), ctx.providerId ?? "模型服务"),
       };
     }
 
@@ -471,6 +492,7 @@ export class ErrorRecoveryExecutor {
             ...baseResult,
             shouldFailover: allowFailover,
             action: "rate_limit_retry_exhausted",
+            notice: terminalNoticeForReason("rate_limit", this.turnState.getRetryCount(), ctx.providerId ?? "模型服务"),
           };
         }
         return {
@@ -490,6 +512,7 @@ export class ErrorRecoveryExecutor {
             ...baseResult,
             shouldFailover: allowFailover,
             action: `${reason}_retry_exhausted`,
+            notice: terminalNoticeForReason(reason, this.turnState.getRetryCount(), ctx.providerId ?? "模型服务"),
           };
         }
         return {
@@ -509,6 +532,7 @@ export class ErrorRecoveryExecutor {
             ...baseResult,
             shouldFailover: allowFailover,
             action: `${reason}_retry_exhausted`,
+            notice: terminalNoticeForReason(reason, this.turnState.getRetryCount(), ctx.providerId ?? "模型服务"),
           };
         }
         return {
@@ -530,6 +554,7 @@ export class ErrorRecoveryExecutor {
             ...baseResult,
             shouldFailover: allowFailover,
             action: `${reason}_retry_exhausted`,
+            notice: terminalNoticeForReason(reason, this.turnState.getRetryCount(), ctx.providerId ?? "模型服务"),
           };
         }
         return {
@@ -557,6 +582,9 @@ export class ErrorRecoveryExecutor {
           ...baseResult,
           shouldFailover: allowFailover,
           action: `failover_${reason}`,
+          notice: nonretryableCopy(reason, ctx.providerId ?? "模型服务", {
+            detail: ctx.errorText,
+          }),
           diagnostics: { reason, nonRetryable: true },
         };
       }

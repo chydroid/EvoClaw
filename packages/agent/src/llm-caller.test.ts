@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as http from "http";
 import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM } from "./llm-caller";
 import { resetProviderSkipList } from "./provider-skip-list";
+import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
 
 // ═══════════════════════════════════════════════════════════
@@ -944,9 +945,15 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
 //     completeExecution 独立 try/catch，清理失败不得丢掉已组装好的 reply
 // ═══════════════════════════════════════════════════════════
 describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入脚注）", () => {
+  // ★ ProviderHealthTracker 熔断器按 provider.name 键控（进程级共享）：
+  // 两个兜底测试的 provider 名必须互不重复，否则 2 连败熔断会让第二个
+  // 测试的同名 provider 直接被跳过。用独立序号保证唯一。
+  let finalizerSeq = 0;
   function finalizerDeps(port1: number, port2: number) {
-    const provider1 = { id: `p1-final-${Date.now()}`, name: `p1-final-${Date.now()}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
-    const provider2 = { id: `p2-final-${Date.now()}`, name: `p2-final-${Date.now()}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    finalizerSeq++;
+    const tag = `final-${finalizerSeq}`;
+    const provider1 = { id: `p1-${tag}`, name: `p1-${tag}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const provider2 = { id: `p2-${tag}`, name: `p2-${tag}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
     return {
       dep: {
         registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
@@ -1089,5 +1096,139 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
     expect(res!.reply).toContain("fail_tool");
     expect(res!.reply).toContain("失败的工具：");
     expect(res!.reply).toContain("本轮已执行 0 次工具");
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // 终态失败盖码 + 人话文案（hermes turn_failure_copy，第四轮 Top5 #5）：
+  // 全 provider 失败且最后错误带 ClassifiedError 时，兜底回复按终态
+  // reason 给具体描述 + 下一步指引，结果盖 failure_reason / failure_retryable
+  // ═══════════════════════════════════════════════════════════
+  it("全 provider 失败 + 最后 401 auth → 盖码 + 非可重试 API Key 指引", async () => {
+    let p1Calls = 0;
+    let p2Calls = 0;
+    const failSeq = `ffail-${finalizerSeq + 100}`; // 熔断器隔离：与前面所有 provider 名不重复
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const provider1 = { id: `p1-${failSeq}`, name: `p1-${failSeq}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const provider2 = { id: `p2-${failSeq}`, name: `p2-${failSeq}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const dep = {
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: new Map<string, unknown>(),
+      buildSkillsPromptForRun: async () => "",
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      sessionManager: null,
+      pluginManager: null,
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      providers: [provider1, provider2],
+    } as unknown as LLMCallerDeps;
+
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1, provider2],
+      startTime: Date.now(),
+      sessionId: "turn-failure-stamp-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res).not.toBeNull();
+    // ★ 盖码不变式：终态失败结果必带 failure_reason + failure_retryable
+    expect(res!.failureReason).toBe("auth");
+    expect(res!.failureRetryable).toBe(false);
+    // ★ 人话文案：非可重试 auth 指引（检查 API Key），而非通用三条
+    expect(res!.reply).toContain("API Key");
+    expect(res!.reply).toContain(FAILED_TURN_NOTICE); // 没跑过工具 → 完全失败边界文案
+    // 不得再出现旧的通用误导文案
+    expect(res!.reply).not.toContain("所有已启用的模型提供商均未能响应");
+  });
+
+  it("全 provider 失败 + 最后 429 限流 → 盖码 retryable=true + 耗尽分句", async () => {
+    const failSeq = `ffail2-${finalizerSeq + 200}`;
+    const p1 = http.createServer((_req, res) => {
+      res.statusCode = 429;
+      res.setHeader("Content-Type", "application/json");
+      // Retry-After: 1 写在消息体（error-classifier 从错误文本解析），阶梯等待仅 1s
+      res.end(JSON.stringify({ error: { message: "rate limited, retry after 1 second" } }));
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const provider1 = { id: `p1-${failSeq}`, name: `p1-${failSeq}`, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
+    const dep = {
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: new Map<string, unknown>(),
+      buildSkillsPromptForRun: async () => "",
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      sessionManager: null,
+      pluginManager: null,
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      providers: [provider1],
+    } as unknown as LLMCallerDeps;
+
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1],
+      startTime: Date.now(),
+      sessionId: "turn-failure-rate-limit-test",
+      pendingPermissions: [],
+    });
+    p1.close();
+
+    expect(res).not.toBeNull();
+    // 429 → rate_limit（transient）→ retryable=true
+    expect(res!.failureReason).toBe("rate_limit");
+    expect(res!.failureRetryable).toBe(true);
+    // 耗尽文案按 reason 分句 + 通用「稍后重试」出口（无 Retry-After 头 → 不点名重置时间）
+    expect(res!.reply).toContain("被限流");
+    expect(res!.reply).toContain("稍后重试");
   });
 });

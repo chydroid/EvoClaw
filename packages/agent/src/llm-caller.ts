@@ -22,6 +22,7 @@ import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback
 import type { ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import { classifyLLMError, LLMErrorType, formatClassifiedErrorForUser } from "./error-classifier";
+import { stampFailure, terminalFailureCopy, type TerminalFailureEvidence } from "./turn-failure-copy";
 import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
@@ -738,6 +739,14 @@ export interface TryCallLLMResult {
   permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>;
   toolsExecuted: boolean;
   files: Array<{ path: string; size: number; downloadUrl: string }>;
+  /**
+   * 终态失败盖码（hermes turn_failure_copy stamp_failure 语义）：
+   * 终态失败结果必带 failure_reason（FailoverReason 值或站内码）+
+   * failure_retryable，供错误呈现层给出具体描述而非 unknown。
+   * 成功返回时两个字段均为 undefined。
+   */
+  failureReason?: string;
+  failureRetryable?: boolean;
   /**
    * 本回合的**最终**思考轨迹快照（2026-10-11）。
    *
@@ -2650,6 +2659,12 @@ export async function tryCallLLM(
   let totalSuccessfulToolCalls = 0;
   let totalFailedTools: Array<{ name: string; error: string }> = [];
 
+  // ── 终态失败证据（hermes turn_failure_copy 语义）──
+  // 收集最后一次 ClassifiedError 的具体失败原因，供兜底回复说清
+  // 「发生了什么 + 下一步做什么」，而不是通用的"请检查 API Key/服务是否在线"。
+  let lastFailureEvidence: TerminalFailureEvidence | null = null;
+  let errorAttemptsByProvider = new Map<string, number>();
+
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
@@ -3114,6 +3129,24 @@ export async function tryCallLLM(
           // （即使报错）说明并非「确定性无输出」——重置确定性空响应计数。
           consecutiveDeterministicEmpty = 0;
           recordProviderFailure(provider.name);
+          // 终态失败证据：记录最后一次 ClassifiedError（turn_failure_copy 盖码用）。
+          // Retry-After 契约已在 error-classifier 解析进 backoffMs（含 jitter），
+          // 这里取秒数供限流文案点名重置窗口。
+          errorAttemptsByProvider.set(
+            provider.name,
+            (errorAttemptsByProvider.get(provider.name) ?? 0) + 1,
+          );
+          lastFailureEvidence = {
+            reason: classified.reason ?? null,
+            label: `${provider.name}（${provider.provider || provider.name}/${provider.model}）`,
+            attempts: errorAttemptsByProvider.get(provider.name) ?? 1,
+            retryable: classified.retryable,
+            detail: classified.message,
+            resetSeconds: classified.hasRetryAfterContract
+              ? Math.round(classified.backoffMs / 1000)
+              : undefined,
+            model: provider.model,
+          };
           process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}\n`);
 
           // ── R2-1: 错误消息友好化（借鉴 hermes-agent _content_policy_blocked_result） ──
@@ -4790,26 +4823,29 @@ export async function tryCallLLM(
     totalFailedTools.push(...failedTools);
   }
 
-  // ── 兜底回复：静默停止显式说明 + 失败写入脚注 ──
-  // hermes turn_finalizer 语义：若本轮**确实执行过工具**但没有任何 provider
-  // 产出正文，不得用误导性的「所有模型都未能响应」糊弄用户——
-  // 要如实说明「工具执行已停止（N 次执行、M 次失败），未能生成最终回复」，
-  // 并把失败的工具名列进脚注。
-  let fallbackReply: string;
-  if (anyToolExecuted) {
-    const failedList = totalFailedTools.length > 0
-      ? totalFailedTools.map((t) => `${t.name}（${t.error.slice(0, 80)}）`).join("、")
-      : "（无）";
-    fallbackReply =
-      `本轮已执行 ${totalSuccessfulToolCalls} 次工具，但未能生成最终文字回复，执行已停止。\n` +
-      `失败的工具：${failedList}\n` +
-      `如需继续，请明确说明下一步要做什么，或重新描述需求。`;
-  } else {
-    fallbackReply = "抱歉，所有已启用的模型提供商均未能响应。请检查：\n1. 模型 API Key 是否正确配置\n2. 模型服务是否在线\n3. 网络连接是否正常\n\n替代方案：\n① 前往 Ops 页面查看详细诊断信息并修复配置\n② 尝试切换到其他模型提供商（如 DeepSeek、Qwen 等）\n③ 检查网络代理设置是否正确\n\n需要我帮您排查具体哪个模型出了问题吗？";
-  }
-  process.stderr.write(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.\n`);
-  return {
-    reply: fallbackReply,
+  // ── 兜底回复：终态失败盖码 + 人话文案（hermes turn_failure_copy 语义）──
+  // 边界二分（hermes failed_turn_notice 不变式）：
+  //   - 跑过工具 → PARTIAL_FAILED_TURN_NOTICE（可能有副作用已生效，重发前先验证）
+  //   - 什么都没跑 → FAILED_TURN_NOTICE（未处理，重发即可）
+  // 主体：有具体错误证据时按 reason 给 cause + 下一步指引（替代通用三条）；
+  //      没有证据（provider 静默跳过等）才退回通用文案。
+  const fallbackCopy = terminalFailureCopy(
+    lastFailureEvidence ?? {
+      reason: null,
+      label: expandedProviders[0] ? expandedProviders[0].name : "模型服务",
+      attempts: expandedProviders.length,
+      retryable: true,
+    },
+    {
+      partial: anyToolExecuted,
+      toolStats: {
+        executed: totalSuccessfulToolCalls,
+        failed: totalFailedTools,
+      },
+    },
+  );
+  const fallbackResult: TryCallLLMResult = {
+    reply: fallbackCopy,
     tokensUsed: 0,
     contextTokens: 0,
     duration: Date.now() - startTime,
@@ -4820,6 +4856,15 @@ export async function tryCallLLM(
     // 否则用户只看到"所有模型都未能响应"，看不到之前每个模型都做了什么。
     thinkingTrace: lastTraceSnapshot,
   };
+  // ★ 终态盖码不变式（hermes stamp_failure）：终态失败结果必带
+  //   failure_reason + failure_retryable，否则下游只能显示 unknown。
+  if (lastFailureEvidence?.reason) {
+    stampFailure(fallbackResult, lastFailureEvidence.reason, lastFailureEvidence.retryable);
+  } else {
+    stampFailure(fallbackResult, "unclassified", true);
+  }
+  process.stderr.write(`[AgentModelExecutor] All ${expandedProviders.length} model entry(s) across ${providers.length} provider(s) failed for session "${sessionId}". Provider details: ${expandedProviders.map(p => `${p.name}(${p.provider}/${p.model}, baseURL=${p.baseURL?.slice(0, 50)}, timeout=${p.timeout}ms)`).join("; ")}. Returning fallback message.\n`);
+  return fallbackResult;
   }; // end doTryCall
 
   if (tracing?.isEnabled()) {

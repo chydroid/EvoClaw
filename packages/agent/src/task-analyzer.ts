@@ -29,6 +29,13 @@ export interface TaskExecutionResult {
   permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>;
   toolsExecuted: boolean;
   files?: Array<{ path: string; size: number; downloadUrl: string }>;
+  /**
+   * 终态失败盖码（hermes turn_failure_copy stamp_failure 语义）：
+   * 终态失败结果必带 failure_reason + failure_retryable，供错误呈现层
+   * 给出具体描述而非 unknown（与 llm-caller 的 TryCallLLMResult 对齐）。
+   */
+  failureReason?: string;
+  failureRetryable?: boolean;
 }
 
 /** Callback signature for callLLMOnce — used by analyzeUserIntent and decomposeTaskWithLLM */
