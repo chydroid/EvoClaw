@@ -9,6 +9,59 @@
 > 0.1.0 ~ 0.72.5 的早期记录沿用原 `History.md` 格式（`## vX.Y.Z`），0.79.0 起改用  
 > Keep a Changelog 格式（`## [X.Y.Z] - YYYY-MM-DD`）。
 
+## [0.93.1] - 2026-10-19
+
+**第四轮 hermes 对标：Top5 全部落地 + 办公 WebUI/REST 入口补齐**
+
+对齐 `D:\abc\hermes\hermes-agent` 第四轮勘察 Top5，补齐 5 个核心可靠性子系统；同步补齐
+email / reporting / commitments 三组「有能力无入口」缺口（REST 路由 + WebUI 页面）。
+
+### 改动
+
+- **deadline.py 统一有界执行层**（第四轮 Top5 #1）：`deadline.ts`
+  — `clampTimeout`（NaN/非正→无界，Infinity→365 天）、`withDeadline`
+  （Promise.race，超时 abandon 不 await，markSuspect）、`DeadlineExceeded`
+  + `ToolSuspectTracker`；接入 llm-caller 工具超时路径，卡死工具标 suspect
+  防盲重试。19 新测试。
+- **turn_liveness.py Turn 存活看门狗**（#2）：`turn-liveness.ts`
+  — `(generation, activity_ts)` 绑定，stale poll 重置 generation 校验
+  （恢复的 turn 绝不被硬取消），600s 无进展 `onStale` 报告（不硬取消），
+  `touch()` 重置；接入 agent-model-executor.chat() 报告「任务仍在进行中，
+  已等待 N 分钟」。11 新测试。
+- **repetition_guard.py 重复检测**（#3）：`repetition-guard.ts`
+  — 单行覆盖率 / 60 字符窗口计数 / 等间距锚点；`RunawayStreamWatch`
+  16k 首检、翻倍到 64k tail，判定 runaway 时插入
+  `REPETITION_LOOP_INTERRUPTED` 中断流式输出。12 新测试。
+- **turn_overflow.py 413 字节打分压缩**（#4）：`turn-overflow.ts`
+  — 按字节数打分（token 估计对图片 byte-blind），字节缩水 ≥5% 或消息数
+  减少才重试，否则 `compression_exhausted`；`UNEXPLAINED_REJECTION_FRACTION`
+  软失败。14 新测试。
+- **turn_failure_copy.py 终态失败盖码**（#5）：`turn-failure-copy.ts`
+  — `stampFailure` 盖码不变式（failure_reason + failure_retryable 必填）、
+  失败 turn 边界文案二分（PARTIAL_FAILED_TURN_NOTICE / FAILED_TURN_NOTICE）、
+  `FAILURE_CAUSE_GLOSS` 25 FailoverReason + 9 SITE_FAILURE_CODES → 人话、
+  `exhaustedCopy` 按 reason 分句 + Retry-After 点名、`nonretryableCopy`
+  具体指引。41 新测试。
+- **工具循环止损增强**：`guardrails.ts` ToolCallLoopDetector 三项
+  — identical-cycle（A,B,A,B 交替，周期 2..4 /≥3 告警 /≥5 阻断）、
+  web_search 类硬顶 50、成功 mutation 重置进度。11 新测试。
+- **空响应确定性短路**：llm-caller 追踪连续零输出，provider 2 次零输出直接
+  failover（旧需 3 连败）；空 content 工具后无调用也计入。3 新测试。
+- **finalizer 收尾三件套**：跨 provider 累计 `totalSuccessfulToolCalls`/`
+  totalFailedTools`、失败写入脚注、回复优先 guarded cleanup。2 新测试。
+- **verification_evidence 编辑-验证账本**：`verification-evidence.ts`
+  — `record`/`markEdited`/`getStalePaths`（严格小于判失效）；接入
+  llm-caller 验证门 nudge 定向复验。12 新测试。
+- **办公入口补齐**：protocol-adapter.ts 新增 email 报告、reporting
+  `/api/reporting/generate`、commitments `/api/commitments` POST；WebUI
+  新增 EmailPage/ReportingPage/CommitmentsPage + icons + NAV_GROUP
+  「integrations」。
+
+### 验证
+
+- build 14 包+2 应用全绿 → typecheck 全绿 → test **6471 passed / 13 skipped**
+  (+213 新测试)。第四轮 Top5 全部落地；eval10/eval23 回归 10/10。
+
 ## [0.93.0] - 2026-10-17
 
 **v0.92.9 全面审计复盘修复 7 处缺陷（P1×2 + P2×2 + P3×1 + P4×1 + vitest 放行）**
