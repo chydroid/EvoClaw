@@ -62,6 +62,27 @@ email / reporting / commitments 三组「有能力无入口」缺口（REST 路�
 - build 14 包+2 应用全绿 → typecheck 全绿 → test **6471 passed / 13 skipped**
   (+213 新测试)。第四轮 Top5 全部落地；eval10/eval23 回归 10/10。
 
+## [0.93.2] - 2026-10-20
+
+**eval15 15 任务模拟发现并修复：shell_exec 脚本就近 cwd**
+
+### 改动
+
+- **shell_exec cwd 推断**：提取 `inferCwdFromScript` —— 当模型未显式传 `cwd`
+  且命令形如 `bash/node/python scripts/foo.sh`（路径落在 workspace 且真实
+  存在）时，推断 cwd 为脚本所在目录，而非默认 `data/workspace` 根。修复
+  脚本内部相对路径（如 `out/`）意外落到 workspace 根的问题
+  （2026-10-20 eval15 t05 事故）。安全边界：推断结果必在 workspace 内，
+  依赖 `fs.existsSync` 实证判定，未显式 cwd 时才生效，显式 cwd/缺失脚本
+  行为不变。+5 回归测试 `apps/server/tests/shell-cwd-inference.test.ts`。
+
+### 验证
+
+- build→typecheck 全绿 → test **6476 passed / 13 skipped** (+5)。
+- eval15 t05 重跑 ✅ PASS；t09/t13 驱动超时→360s 重跑均 ✅ PASS
+  （t09 170s/t13 30s，实际 work 正确）。13/15 验收通过，2 处
+  （t03 命名遵循缺口/记录不修，t05 已修）确认。
+
 ## [0.93.0] - 2026-10-17
 
 **v0.92.9 全面审计复盘修复 7 处缺陷（P1×2 + P2×2 + P3×1 + P4×1 + vitest 放行）**
