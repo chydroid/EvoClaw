@@ -19,6 +19,26 @@ import type { SandboxPolicy } from "@evoclaw/core";
  * 策略（保守）：只有当「剥掉前缀后文件确实存在」、且「原路径确实不存在」时
  * 才改写，避免误伤合法的同名嵌套目录。
  */
+/**
+ * 从命令行推断「执行脚本所在目录」作为默认 cwd。
+ * 场景（2026-10-20 eval15 t05 事故）：模型未传 cwd，shell_exec 默认 cwd=workspace；
+ * 若命令形如 `bash eval15/t05/build.sh` 而脚本内部用相对路径（如 `out/`），
+ * 输出会落到 workspace 根而非脚本目录 → 验证找不到文件。
+ * 规则：仅当未显式 cwd 时生效；若命令里的脚本路径落在 workspace 内且真实存在，
+ * 返回该脚本所在目录（否则返回 null，维持原行为）。安全边界：结果必在 workspace 内。
+ */
+export function inferCwdFromScript(command: string, workspaceDir: string): string | null {
+  if (!command) return null;
+  const m = command.match(/\b(?:python|python3|node|sh|bash|zsh)\s+([^\s]+\.(?:py|js|mjs|ts|sh))\b/);
+  if (!m) return null;
+  const token = m[1].replace(/["']/g, "");
+  if (path.isAbsolute(token)) return null;
+  const resolved = path.resolve(workspaceDir, token);
+  if (!resolved.startsWith(workspaceDir + path.sep)) return null;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
+  return path.dirname(resolved);
+}
+
 function stripDuplicatedCwdPrefix(command: string, cwd: string): string {
   if (!command || !cwd) return command;
   const projectRoot = path.resolve(__dirname, "..", "..", "..", "..");
@@ -278,6 +298,16 @@ export function registerShellMediaTools(
       const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
       // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
       let cwd = params.cwd ? String(params.cwd) : workspaceDir;
+      // ── 推断脚本就近工作目录（2026-10-20 eval15 t05 事故） ──
+      // 未显式 cwd 时，若命令执行位于 workspace 子目录的脚本（bash/node/python），
+      // 把 cwd 推断为脚本所在目录，避免脚本内部相对路径落到 workspace 根。
+      if (!params.cwd) {
+        const inferredCwd = inferCwdFromScript(command, workspaceDir);
+        if (inferredCwd) {
+          cwd = inferredCwd;
+          console.log(`[shell_exec] Inferred cwd from script dir: ${path.relative(workspaceDir, inferredCwd)}`);
+        }
+      }
       // 安全校验：cwd 必须在工作区内，防止路径逃逸
       const resolvedCwd = path.resolve(cwd);
       if (!resolvedCwd.startsWith(workspaceDir + path.sep) && resolvedCwd !== workspaceDir) {
