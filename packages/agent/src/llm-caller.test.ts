@@ -1,9 +1,27 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as http from "http";
+import * as os from "os";
+import * as path from "path";
+import * as fs from "fs";
 import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM } from "./llm-caller";
-import { resetProviderSkipList } from "./provider-skip-list";
+import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
+
+// ProviderSkipList 单例默认持久化到仓库 data/provider-skip-list.json（进程 cwd 相对）。
+// 测试中 401 失败会把条目写进该文件（TTL 5 分钟），残留条目会让后续运行/并行
+// 工作进程直接跳过同名 provider（sessionId 跨运行固定）→ 兜底盖码退化成
+// unclassified。两道隔离：
+//   ① 指向临时文件（isolateSkipList）——不写仓库 data/，也不读历史残留；
+//   ② sessionId 每轮唯一（RUN_TAG）——任何来源的残留条目都匹配不上。
+function isolateSkipList(): void {
+  resetProviderSkipList();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-skiplist-"));
+  getProviderSkipList({ filePath: path.join(tmpDir, "provider-skip-list.json") });
+}
+
+/** 每轮运行唯一的 tag：sessionId 带上它，杜绝跨运行的 skip list 残留命中。 */
+const RUN_TAG = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // ═══════════════════════════════════════════════════════════
 // 测试套件：LLM Caller 安全过滤拒绝检测
@@ -597,7 +615,7 @@ describe("llm-caller > CE 分支 user 消息去重（P2-1）", () => {
       installedSkills: [],
       providers: dep.providers!,
       startTime: Date.now(),
-      sessionId: "p2-1-test",
+      sessionId: `p2-1-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     server.close();
@@ -686,7 +704,7 @@ describe("llm-caller > 过载自动恢复阶梯（原地重试）", () => {
       installedSkills: [],
       providers: [providerConfig(port1, "p1"), providerConfig(port2, "p2")],
       startTime: Date.now(),
-      sessionId: "overload-ladder-test",
+      sessionId: `overload-ladder-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -715,7 +733,7 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
   //    provider.id 写进 skip list（TTL 5 分钟，磁盘跨进程存活）→ 每个测试
   //    前 resetProviderSkipList()，且 runTag 让本轮 provider id 全唯一。
   const runTag = Date.now();
-  beforeEach(() => resetProviderSkipList());
+  beforeEach(() => isolateSkipList());
   function emptyDeps(port1: number, port2: number, name1: string, name2: string) {
     const provider1 = { id: name1, name: name1, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port1}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
     const provider2 = { id: name2, name: name2, provider: "openai", model: "m", baseURL: `http://127.0.0.1:${port2}/v1`, enabled: true, order: 0, timeout: 5000 } as unknown as LLMCallerDeps["providers"][number];
@@ -802,7 +820,7 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "deterministic-empty-null-test",
+      sessionId: `deterministic-empty-null-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -865,7 +883,7 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "deterministic-empty-success-test",
+      sessionId: `deterministic-empty-success-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -920,7 +938,7 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "deterministic-empty-mixed-test",
+      sessionId: `deterministic-empty-mixed-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -948,6 +966,10 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
   // ★ ProviderHealthTracker 熔断器按 provider.name 键控（进程级共享）：
   // 两个兜底测试的 provider 名必须互不重复，否则 2 连败熔断会让第二个
   // 测试的同名 provider 直接被跳过。用独立序号保证唯一。
+  // ★ ProviderSkipList：401 失败会把 (session, providerId) 写进持久化文件，
+  // 残留条目（TTL 5 分钟）会让下一次运行的相同固定 id 直接被 skip →
+  // lastFailureEvidence 为 null → 盖码 unclassified。指向临时文件隔离。
+  beforeEach(() => isolateSkipList());
   let finalizerSeq = 0;
   function finalizerDeps(port1: number, port2: number) {
     finalizerSeq++;
@@ -1046,7 +1068,7 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "finalizer-silent-stop-test",
+      sessionId: `finalizer-silent-stop-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -1085,7 +1107,7 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "finalizer-failed-write-test",
+      sessionId: `finalizer-failed-write-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -1158,7 +1180,7 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
       installedSkills: [],
       providers: [provider1, provider2],
       startTime: Date.now(),
-      sessionId: "turn-failure-stamp-test",
+      sessionId: `turn-failure-stamp-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();
@@ -1218,7 +1240,7 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
       installedSkills: [],
       providers: [provider1],
       startTime: Date.now(),
-      sessionId: "turn-failure-rate-limit-test",
+      sessionId: `turn-failure-rate-limit-test-${RUN_TAG}`,
       pendingPermissions: [],
     });
     p1.close();

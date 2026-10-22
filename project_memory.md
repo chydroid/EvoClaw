@@ -123,3 +123,10 @@
   - **t03（命名遵循缺口，未修）**：任务要求方法名 `tail`/`head`，模型提供 `back`/`front` 并自称等价 —— 纯 agent 语义遵循差，driver verify 按字面名校验失败。记录在案（非产品缺陷）。
   - **t09/t13（驱动超时，已优）**：agent 实际完成（workspace 文件齐备、内容正确），但 `/api/chat?stream=false` 回合消耗 >240s 触发 driver 限时 → 判为 http=0。非产品缺陷：扩 driver 超时至 360s 即可（t09 170s，t13 30s 重跑均 ✅）。
   - 其它 12 条均 PASS（含 docx/pptx/xlsx、定时任务、报告生成、Python/Node/TS/Bash 脚本、CSV 聚合、承诺创建）。全部提交推送 `48f13d5`。
+- **20 任务复杂模拟（task-completion-sim.test.ts，2026-10-22）**：新增 `packages/agent/src/task-completion-sim.test.ts`（20 条端到端任务），走真实 TaskPlanner→DAGExecutor→SkillSandbox→TaskOrchestrator 管道（无 LLM，技能脚本在 VM 内纯计算执行），发现并修复 3 处「假成功」组件缺陷：
+  - **修复①（SkillSandbox，skill-sandbox.ts）**：JS 技能脚本经 `_result = { success:false, error }` 声明失败时，executeInSandbox 仍返回 success:true 假成功（新增 `isScriptReportedFailure` 判定：输出对象 `success===false` → SkillExecutionResult.success=false + errors）。
+  - **修复②（DAGExecutor，dag-executor.ts）**：executeNode 对 skillManager.executeSkill 的 resolve 结果**不检查 success 字段**，`{success:false}`（技能不存在/脚本失败）被当成节点成功，下游依赖照常执行。新增 `isSkillResultFailure`+`extractErrorStrings`，resolve 出 success:false 时翻成 rejection（错误信息进节点 error，触发 DAG failed 级联 + orchestrator 任务重试通道）。与 completion-truthfulness 的 { success:false } 约定一致。
+  - **修复③（SkillManager，skill-manager.ts）**：executeSkill 对沙箱 success:false 结果仍计入 successCount 并发 SKILL_EXECUTED 事件（假成功统计）。改为按 result.success 分流：失败计 failureCount + SKILL_FAILED + onError hook。
+  - 回归：integration.test.ts 新增「脚本声明失败不得记为成功」用例（_result={success:false} → successCount 不变、failureCount+1、SKILL_FAILED 事件）；task-completion-sim Task 11/10 守护假成功修复点。
+  - 顺带修 llm-caller.test.ts 的 **ProviderSkipList 跨运行 flaky**：401 测试把 (session,providerId) 写进仓库 `data/provider-skip-list.json`（TTL 5 分钟），残留条目让下一运行/并行进程同 session 名直接被 skip → 兜底盖码退化成 unclassified。两道隔离：①isolateSkipList() 把单例指向 /tmp 临时文件（resetProviderSkipList + getProviderSkipList({filePath})）；②全部 9 处 sessionId 加 RUN_TAG（`-run 唯一`）杜绝跨运行命中。已删仓库残留文件；/tmp/evoclaw-skiplist-* 残留清理被 auto-mode 拦截（35 个目录，无害，可手动 rm）。
+  - 验证：build→typecheck→test 全绿（286 文件 / 6497 passed / 13 skipped，基线 6476 → +21）。**未推送**。

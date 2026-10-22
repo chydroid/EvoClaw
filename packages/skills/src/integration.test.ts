@@ -60,11 +60,35 @@ User: "Calculate 5 + 3"
 Result: 8
 `;
 
+// 脚本主动声明失败的技能（_result.success = false）
+const FAILING_SKILL_CONTENT = `---
+name: test-failing-helper
+version: 1.0.0
+description: A skill that always reports failure
+author: EvoClaw Test Team
+triggers:
+  - type: keyword
+    pattern: "fail"
+    description: Triggers on failure keyword
+---
+
+## Instructions
+
+This skill always reports failure.
+
+## Scripts
+
+\`\`\`typescript
+_result = { success: false, error: "script refused to run" };
+\`\`\`
+`;
+
 describe("SkillManager Integration", () => {
   let registry: ServiceRegistry;
   let eventBus: EventBus;
   let skillManager: SkillManager;
   let testSkillPath: string;
+  let failingSkillPath: string;
 
   beforeAll(async () => {
     registry = new ServiceRegistry();
@@ -77,6 +101,9 @@ describe("SkillManager Integration", () => {
     await fs.mkdir(skillDir, { recursive: true });
     testSkillPath = path.join(skillDir, "test-math.SKILL.md");
     await fs.writeFile(testSkillPath, TEST_SKILL_CONTENT, "utf-8");
+
+    failingSkillPath = path.join(skillDir, "test-failing.SKILL.md");
+    await fs.writeFile(failingSkillPath, FAILING_SKILL_CONTENT, "utf-8");
   });
 
   afterAll(async () => {
@@ -153,6 +180,36 @@ describe("SkillManager Integration", () => {
       expect(updated!.stats.invocationCount).toBeGreaterThanOrEqual(2);
       expect(updated!.stats.successCount).toBeGreaterThanOrEqual(2);
       expect(updated!.stats.lastInvocation).toBeInstanceOf(Date);
+    });
+
+    // ★ 脚本级失败不得被记为成功：技能脚本以 _result = { success:false, error }
+    //   声明失败时，沙箱要如实报 success:false，SkillManager 要计入 failureCount
+    //   并广播 SKILL_FAILED（此前是「假成功」，成功率与事件流都说成功）。
+    it("should report script-declared failure as failure (not fake success)", async () => {
+      const failedSkill = await skillManager.installSkill(failingSkillPath);
+
+      const before = await skillManager.getSkill(failedSkill.id);
+      const successBefore = before!.stats.successCount;
+      const failureBefore = before!.stats.failureCount;
+
+      const failedEvents: unknown[] = [];
+      const sub = eventBus.subscribe("skill.failed", async (e) => {
+        failedEvents.push(e);
+      });
+
+      const result = await skillManager.executeSkill(failedSkill.id, {});
+
+      expect(result.success).toBe(false);
+      expect(result.errors?.[0]).toContain("script refused");
+      expect(result.output).toMatchObject({ success: false });
+
+      const after = await skillManager.getSkill(failedSkill.id);
+      expect(after!.stats.successCount).toBe(successBefore);
+      expect(after!.stats.failureCount).toBe(failureBefore + 1);
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(failedEvents.length).toBeGreaterThanOrEqual(1);
+      eventBus.unsubscribe(sub.id);
     });
   });
 

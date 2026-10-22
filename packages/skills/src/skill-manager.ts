@@ -1001,8 +1001,23 @@ export class SkillManager {
       const result = await this.sandbox.execute(skill, params);
 
       const duration = Date.now() - startTime;
-      skill.stats.successCount++;
       skill.stats.lastInvocation = new Date();
+
+      // 脚本级失败（沙箱 resolve 出 success:false）不算成功：统计与事件
+      // 必须与 result.success 一致，否则「技能失败」在成功率与事件流里
+      // 仍显示为成功。
+      if (!result.success) {
+        skill.stats.failureCount++;
+        await this.eventBus.publish(
+          SystemEvents.SKILL_FAILED,
+          { skillId, name: skill.name, success: false, params, error: result.errors?.[0] },
+          "skill-manager"
+        );
+        await this.hookEngine.executeHook(skill, "onAfterExecute", { params, result });
+        return result;
+      }
+
+      skill.stats.successCount++;
       skill.stats.averageDuration =
         (skill.stats.averageDuration * successCountBefore + duration) /
         (successCountBefore + 1);

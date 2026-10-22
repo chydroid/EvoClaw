@@ -127,6 +127,24 @@ export class SkillSandbox {
         result = await this.executeInSandbox(mainScript, skill, params, policy);
       }
 
+      // 判定技能脚本自身是否通过输出声明失败（约定：_result = { success:false, error }）。
+      // 缺了这层判定，脚本级失败会被包成 success:true 的假成功（模型据此误判「这条路是通的」）。
+      if (this.isScriptReportedFailure(result)) {
+        const out = result as Record<string, unknown>;
+        const errMsg =
+          typeof out.error === "string" && out.error.length > 0
+            ? out.error
+            : `Skill "${skill.name}" reported failure without an error message`;
+        return {
+          skillId: skill.id,
+          success: false,
+          output: result,
+          errors: [errMsg],
+          duration: Date.now() - startTime,
+          resourceUsage: this.measureResourceUsage(startCpu, startMem),
+        };
+      }
+
       return {
         skillId: skill.id,
         success: true,
@@ -912,6 +930,18 @@ export class SkillSandbox {
   }
 })();
     `.trim();
+  }
+
+  /**
+   * 判定技能脚本是否通过自身输出声明失败（约定：输出对象含 `success === false`）。
+   * 仅检查普通对象，不误伤非对象输出与无 success 字段的输出（如 { raw, text }）。
+   */
+  private isScriptReportedFailure(result: unknown): boolean {
+    return (
+      typeof result === "object" &&
+      result !== null &&
+      (result as Record<string, unknown>).success === false
+    );
   }
 
   private measureResourceUsage(

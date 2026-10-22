@@ -11,6 +11,30 @@ const DEFAULT_RETRY_COUNT = 0;
 const DEFAULT_RETRY_DELAY = 1000;
 const DEFAULT_TIMEOUT_MS = 60000;
 
+/**
+ * 从 SkillExecutionResult.output 里提取错误字符串数组（output 可能是任意类型）。
+ * 仅识别「对象含 errors 数组」这一约定，不误伤非对象输出。
+ */
+function extractErrorStrings(output: unknown): string[] {
+  if (typeof output !== "object" || output === null) return [];
+  const errs = (output as Record<string, unknown>).errors;
+  return Array.isArray(errs) ? errs.filter((e): e is string => typeof e === "string") : [];
+}
+
+/**
+ * 判定 executeSkill resolve 出的结果是否为「失败结果」。
+ * SkillManager 契约：失败以 resolve({ success:false, errors:[…] }) 表达而非 reject；
+ * 与 completion-truthfulness 的 { success:false } 约定一致。
+ * 仅识别显式 success === false，不误伤 { ok:true } / { done:true } 等无 success 字段输出。
+ */
+function isSkillResultFailure(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as Record<string, unknown>).success === false
+  );
+}
+
 export class DAGExecutor {
   constructor(
     private registry: ServiceRegistry,
@@ -385,15 +409,30 @@ export class DAGExecutor {
         // 使用 Promise.resolve() 包装以兼容 executeSkill 返回非 Promise 值的情况。
         Promise.resolve(resultPromise).catch(() => {});
         // 如果支持 abort 信号，在超时时将 promise 标记为已取消
-        if (abortSignal) {
-          const abortPromise = new Promise<never>((_resolve, reject) => {
-            abortSignal.addEventListener("abort", () => {
-              reject(new Error(`Node "${node.id}" aborted during skill execution`));
-            }, { once: true });
-          });
-          return Promise.race([resultPromise, abortPromise]);
+        const raced = abortSignal
+          ? Promise.race([
+              resultPromise,
+              new Promise<never>((_resolve, reject) => {
+                abortSignal.addEventListener("abort", () => {
+                  reject(new Error(`Node "${node.id}" aborted during skill execution`));
+                }, { once: true });
+              }),
+            ])
+          : Promise.resolve(resultPromise);
+        // SkillManager 的契约是 resolve 出 SkillExecutionResult（success:false 表示失败），
+        // 而不是 reject。若不在这一层把失败翻成 rejection，DAGExecutor 会把
+        // 「技能没找到/执行失败」当成节点成功（假成功），下游依赖照常执行。
+        const result = await raced;
+        if (isSkillResultFailure(result)) {
+          const r = result as { errors?: unknown[]; output?: unknown };
+          const errs =
+            Array.isArray(r.errors) && r.errors.length > 0
+              ? r.errors
+              : extractErrorStrings(r.output);
+          const detail = errs && errs.length > 0 ? errs.join("; ") : `skill "${node.skill}" reported failure`;
+          throw new Error(detail);
         }
-        return resultPromise;
+        return result;
       }
     }
 
