@@ -71,4 +71,16 @@ describe("ReportGenerator sections 归一化", () => {
     expect(html).toContain("120");
     expect(emptyH2(html)).toBe(0);
   });
+
+  it("缺 sections（undefined）不崩出 500 TypeError（回归 a26）", async () => {
+    const rg = await makeGenerator();
+    // eval30 a26：模型只传了业务数据键（收入/支出/利润），没传 sections。
+    // 旧代码在 eventBus.publish 处读 data.sections.length → 抛
+    // "Cannot read properties of undefined (reading 'length')" → API 500。
+    const data = { title: "无章节报告", generatedAt: "" } as unknown as ReportData;
+    const html = rg.generateReport(data);
+    expect(html).toContain("无章节报告");
+    // 无章节时报告仍可正常渲染（三个空 section 块或 0 块，但不崩）
+    expect(emptyH2(html)).toBe(0);
+  });
 });

@@ -337,7 +337,10 @@ export class ReportGenerator {
       {
         templateName,
         title: data.title,
-        sectionCount: data.sections.length,
+        // enrichedData.sections 已归一化（字符串 sections 补成对象、缺省为空数组），
+        // 取它的 length 而非 data.sections.length——调用方可能传 undefined sections，
+        // 直接读会崩出 500 TypeError（eval30 a26 暴露）。
+        sectionCount: (enrichedData.sections as unknown[]).length,
         format: options.format || "html",
       },
       "report-generator"
