@@ -451,7 +451,17 @@ export class ReportGenerator {
   }
 
   private enrichData(data: ReportData, options: ReportOptions): Record<string, unknown> {
-    const enrichedSections = data.sections.map((section) => {
+    // 归一化：调用方常把 sections 传成纯字符串数组（如 ["收入概览","支出分析"]），
+    // 而模板按 section.type 分支渲染——字符串 section 缺 type/title 会渲染成
+    // 空 <h2></h2> 与空 section-content（章节标题与内容全丢）。这里把字符串
+    // 自动补成 { type:"text", title, content }，保留原有对象 section 不变。
+    const normalizedSections: ReportSection[] = (data.sections || []).map((section) => {
+      if (typeof section === "string") {
+        return { id: section, title: section, type: "text" as const, content: section };
+      }
+      return section as ReportSection;
+    });
+    const enrichedSections = normalizedSections.map((section) => {
       if (section.type === "chart" && section.chartConfig && options.includeCharts !== false) {
         return {
           ...section,
