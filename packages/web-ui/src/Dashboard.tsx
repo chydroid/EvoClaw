@@ -108,11 +108,15 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 区分「请求失败」与「空数据」：单个卡片拉取失败时记录，避免把网络失败
+  // 与真实的空列表混成「无数据」 silently 展示。
+  const [cardErrors, setCardErrors] = useState<Record<string, string | null>>({});
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setCardErrors({});
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 30000);
@@ -126,6 +130,16 @@ export default function Dashboard() {
         fetch("/api/system/bootstrap-files", { signal }).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
       if (signal.aborted) return;
+
+      const failures: Record<string, string | null> = {};
+      const recordFailure = (key: string, res: PromiseSettledResult<Response | null>) => {
+        if (res.status === "rejected") failures[key] = t("dashboard.fetch_failed", "请求失败");
+        else if (res.status === "fulfilled" && (!res.value || !res.value.ok)) failures[key] = t("dashboard.fetch_failed", "请求失败");
+      };
+      recordFailure("sessions", sessionsRes);
+      recordFailure("providers", providersRes);
+      recordFailure("bootstrap", bsRes);
+      setCardErrors(failures);
 
       const health = healthRes.status === "fulfilled" && healthRes.value.ok
         ? await healthRes.value.json() as SystemHealth : null;
@@ -239,7 +253,9 @@ export default function Dashboard() {
 
         {/* Provider Status */}
         <Card title={t("dashboard.providers_header")}>
-          {data.providers.length > 0 ? (
+          {cardErrors.providers ? (
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.providers}</div>
+          ) : data.providers.length > 0 ? (
             data.providers.map((p, i) => (
               <div key={i} style={{ marginBottom: "10px" }}>
                 <div style={s.row}>
@@ -298,7 +314,9 @@ export default function Dashboard() {
 
         {/* Sessions */}
         <Card title={t("dashboard.sessions_header_count").replace("{0}", String(data.sessions.length))}>
-          {data.sessions.length > 0 ? (
+          {cardErrors.sessions ? (
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.sessions}</div>
+          ) : data.sessions.length > 0 ? (
             <DataTable
               columns={[
                 { key: "id", label: t("dashboard.session_id"), render: (s: SessionInfo) => <span style={{ fontSize: "11px", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{s.id}</span> },
@@ -317,7 +335,9 @@ export default function Dashboard() {
 
         {/* Bootstrap Files */}
         <Card title={t("dashboard.bootstrap_header")} style={{ gridColumn: "1 / -1" }}>
-          {data.bootstrapFiles.length > 0 ? (
+          {cardErrors.bootstrap ? (
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.bootstrap}</div>
+          ) : data.bootstrapFiles.length > 0 ? (
             <DataTable
               columns={[
                 { key: "path", label: t("dashboard.file"), render: (f: BootstrapFile) => <span style={{ fontFamily: "monospace", fontSize: "12px" }}>{f.path}</span> },

@@ -144,3 +144,10 @@
   - **P1-6 PluginsPage 展示值前端伪造 + 静默失败**：`installedAt`/`hooks` 由前端拼接（后端无此字段）；PluginManager `getPlugins()` 新增 `hooks/hookCount/registeredAt`（真实注册时间），`/api/plugins` 透传；安装 stub 改诚实语义（`stub:true`、healthCheck `healthy:false`、不持久化）；前端 toggle/uninstall 按 `res.ok && data.success` 判定，失败时红色横幅提示具体 error。
   - **P1-7 PermissionsPage 双端盲调 + 失败吞掉**：approve/deny 用 `Promise.allSettler` 同时打 relay 与 manager 两端且忽略结果；改为按归属系统（load 时 relay 优先，`ownedByRelayRef` 记录）只调一个端点（manager 已自行同步 relay），非 200 时读 `data.error` 并通过成功/错误横幅如实反馈。
   - 未修（中优先，留待后续）：各页 `getSafe()` 语义未区分「请求失败」与「空数据」；StatusPage 的 `engineStatus`/`contextHealth` 仍是本地常量（需后端真实字段）；`/api/system/providers` 的 models 字段实为空数组。
+- **修复后 live smoke test（2026-10-25，本地起 27789 逐一实测）**：未重启前 server 未运行（ECONNREFUSED），本会话 `ListAgents` 确认无其他会话后自行启动并验证后停止。全部通过：
+  - `GET /api/logs?limit=5`（带 `Cookie: web_ui_token=***`）→ `{"success":true,"logs":[...]}`，返回 Logger 环形缓冲中的真实日志（含 Registered services 等 info 条目）；`level=error` 过滤生效。
+  - `GET /api/plugins` → 12 个插件均带真实 `hooks` 摘要（如 `before_agent_start/normal`）、`hookCount`、`registeredAt`（2026-10-24T23:11:55.708Z），不再由前端拼接。
+  - `GET /api/compactions/web-ui` → `{"compactions":[]}`（磁盘恢复路径可用，当前无记录）。
+  - `GET /api/queue` → sessions 带真实 item id（如 `q-1792883126564-1`），证实 WebChatPage 按 id 删除的修复方向正确。
+  - `POST /api/queue/clear` 不带 sessionId → `{"success":true,"cleared":3,"allSessions":true}`，清空全部会话（sess-cap-test 3 条 → `{}`）；带 sessionId 的单会话路径未受影响。
+- **Dashboard 区分「请求失败」与「空数据」（2026-10-25，中优先项收口）**：Dashboard 原先把 sessions/providers/bootstrap 的网络失败静默塌成 `[]`，与真实空列表同显「无数据」。修复：`fetchData` 用 `recordFailure(key, res)` 按 PromiseSettledResult 逐卡记录（rejected 或非 ok 即记 `dashboard.fetch_failed`），`cardErrors` state 按 providers/sessions/bootstrap 三卡分别渲染红色横幅，失败与空数据现在可区分。build→typecheck→test 全绿（6501 passed / 13 skipped）。**未推送**。
