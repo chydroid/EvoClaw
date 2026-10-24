@@ -72,6 +72,13 @@ interface CanvasSnapshot {
   createdAt: number;
 }
 
+/** Undo/Redo 栈中存储的快照条目（位置无后端 op，单独记录） */
+interface CanvasSnapshotEntry {
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+  positions: Map<string, { x: number; y: number }>;
+}
+
 interface Viewport {
   x: number;
   y: number;
@@ -127,8 +134,8 @@ export function CanvasGraphPage() {
   const nextViewportRef = useRef<Viewport | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   // Undo/Redo 快照
-  const undoStackRef = useRef<Array<{ nodes: CanvasNode[]; edges: CanvasEdge[]; positions: Map<string, { x: number; y: number }> }>>([]);
-  const redoStackRef = useRef<Array<{ nodes: CanvasNode[]; edges: CanvasEdge[]; positions: Map<string, { x: number; y: number }> }>>([]);
+  const undoStackRef = useRef<CanvasSnapshotEntry[]>([]);
+  const redoStackRef = useRef<CanvasSnapshotEntry[]>([]);
   const [undoCount, setUndoCount] = useState(0);
   const [redoCount, setRedoCount] = useState(0);
 
@@ -343,7 +350,47 @@ export function CanvasGraphPage() {
     setViewport({ x: rect.width / 2 - cx * k, y: rect.height / 2 - cy * k, k });
   }, [snapshot, nodePositions]);
 
-  // ── Undo/Redo（快照式） ──
+  // ── Undo/Redo（快照式，且通过 apply-ops 与后端同步） ──
+  /**
+   * 计算从 cur 回退到 prev 所需的反向 CanvasAgentOp。
+   * 节点/连线差异可映射到后端 op（add_node / delete_node / connect_nodes / delete_connections），
+   * 位置（nodePositions）没有后端 op，仅在本地恢复并在 UI 中标注为会话本地态。
+   */
+  const diffSnapshots = useCallback((prev: CanvasSnapshotEntry, cur: CanvasSnapshot) => {
+    const ops: Array<Record<string, unknown>> = [];
+    const prevNodeIds = new Set(prev.nodes.map((n) => n.id));
+    const curNodeIds = new Set(cur.nodes.map((n) => n.id));
+    const prevNodeById = new Map(prev.nodes.map((n) => [n.id, n]));
+    // 被删除的节点（在 prev 中存在、cur 中不存在）→ 撤销时重新 add_node
+    for (const n of prev.nodes) {
+      if (!curNodeIds.has(n.id)) {
+        ops.push({ type: "add_node", id: n.id, nodeType: n.type, label: n.label, metadata: n.metadata });
+      }
+    }
+    // 新增的节点（在 cur 中存在、prev 中不存在）→ 撤销时删除
+    for (const n of cur.nodes) {
+      if (!prevNodeIds.has(n.id)) {
+        ops.push({ type: "delete_node", id: n.id });
+      }
+    }
+    const edgeKey = (e: CanvasEdge) => `${e.from}->${e.to}`;
+    const prevEdges = new Set(prev.edges.map(edgeKey));
+    const curEdges = new Set(cur.edges.map(edgeKey));
+    const curEdgeById = new Map(cur.edges.map((e) => [edgeKey(e), e]));
+    // 被删除的连线 → 撤销时重新 connect_nodes
+    for (const e of prev.edges) {
+      if (!curEdges.has(edgeKey(e))) {
+        ops.push({ type: "connect_nodes", fromNodeId: e.from, toNodeId: e.to, label: e.label });
+      }
+    }
+    // 新增的连线 → 撤销时 delete_connections
+    const addedEdgeKeys = [...curEdges].filter((k) => !prevEdges.has(k));
+    if (addedEdgeKeys.length > 0) {
+      ops.push({ type: "delete_connections", ids: addedEdgeKeys });
+    }
+    return ops;
+  }, []);
+
   const pushUndoSnapshot = useCallback(() => {
     if (!snapshot) return;
     undoStackRef.current.push({
@@ -357,7 +404,37 @@ export function CanvasGraphPage() {
     setRedoCount(0);
   }, [snapshot, nodePositions]);
 
-  const undo = useCallback(() => {
+  /** 将反向 ops 应用到后端；成功时返回后端最新状态，失败返回 null */
+  const applyReverseOps = useCallback(async (ops: Array<Record<string, unknown>>): Promise<CanvasSnapshot | null> => {
+    if (ops.length === 0) return snapshot;
+    try {
+      const res = await fetch("/api/canvas-graph/apply-ops", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ops }),
+      });
+      if (!res.ok) {
+        setError(`撤销操作同步到后端失败: HTTP ${res.status}`);
+        return null;
+      }
+      const data = await res.json();
+      if (data && data.active) {
+        return {
+          active: true,
+          nodes: (data.nodes || []) as CanvasNode[],
+          edges: (data.edges || []) as CanvasEdge[],
+          sessionKey: data.sessionKey || snapshot?.sessionKey || "",
+          createdAt: Date.now(),
+        };
+      }
+      return null;
+    } catch (err) {
+      setError(`撤销操作同步到后端失败: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }, [snapshot, setError]);
+
+  const undo = useCallback(async () => {
     const prev = undoStackRef.current.pop();
     if (!prev || !snapshot) return;
     // 当前状态推入 redo
@@ -366,13 +443,20 @@ export function CanvasGraphPage() {
       edges: [...snapshot.edges],
       positions: new Map(nodePositions),
     });
-    setSnapshot((s) => s ? { ...s, nodes: prev.nodes, edges: prev.edges } : s);
+    // 计算反向 ops 并同步到后端，保证撤销后后端状态与本地一致
+    const reverseOps = diffSnapshots(prev, snapshot);
+    const backendSnapshot = await applyReverseOps(reverseOps);
+    const target: CanvasSnapshot = backendSnapshot || {
+      active: snapshot.active, nodes: prev.nodes, edges: prev.edges,
+      sessionKey: snapshot.sessionKey, createdAt: Date.now(),
+    };
+    setSnapshot(target);
     setNodePositions(prev.positions);
     setUndoCount(undoStackRef.current.length);
     setRedoCount(redoStackRef.current.length);
-  }, [snapshot, nodePositions]);
+  }, [snapshot, nodePositions, diffSnapshots, applyReverseOps]);
 
-  const redo = useCallback(() => {
+  const redo = useCallback(async () => {
     const next = redoStackRef.current.pop();
     if (!next || !snapshot) return;
     undoStackRef.current.push({
@@ -380,11 +464,18 @@ export function CanvasGraphPage() {
       edges: [...snapshot.edges],
       positions: new Map(nodePositions),
     });
-    setSnapshot((s) => s ? { ...s, nodes: next.nodes, edges: next.edges } : s);
+    // 重做：反向 ops 从当前状态回到 next 状态，应用后即恢复 next
+    const reverseOps = diffSnapshots(next, snapshot);
+    const backendSnapshot = await applyReverseOps(reverseOps);
+    const target: CanvasSnapshot = backendSnapshot || {
+      active: snapshot.active, nodes: next.nodes, edges: next.edges,
+      sessionKey: snapshot.sessionKey, createdAt: Date.now(),
+    };
+    setSnapshot(target);
     setNodePositions(next.positions);
     setUndoCount(undoStackRef.current.length);
     setRedoCount(redoStackRef.current.length);
-  }, [snapshot, nodePositions]);
+  }, [snapshot, nodePositions, diffSnapshots, applyReverseOps]);
 
   // ── 删除选中节点（通过 ops API） ──
   const deleteSelected = useCallback(async () => {

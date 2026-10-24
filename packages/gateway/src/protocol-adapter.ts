@@ -2945,6 +2945,47 @@ export class ProtocolAdapter {
     // Queue routes are defined below in the main routing section.
     // See the "Queue API routes" section for full endpoints.
 
+    // ============ Logs Routes ============
+    // 读取 Logger 内存环形缓冲中的近期日志（已脱敏），供 WebUI 日志页展示。
+    // 前端级别集合为 info/warn/error/debug；trace 归并为 debug、fatal 归并为 error。
+    app.get("/api/logs", (req: Request, res: Response) => {
+      try {
+        const logger = this.registry.resolveService<{
+          getRecentEntries(options?: {
+            limit?: number;
+            level?: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+            subsystem?: string;
+          }): Array<{
+            timestamp: string;
+            level: string;
+            subsystem: string;
+            message: string;
+          }>;
+        }>("logger");
+        if (!logger) {
+          res.status(503).json({ error: "logger not available" });
+          return;
+        }
+        const levelParam = String(req.query.level ?? "");
+        const validLevels = new Set(["trace", "debug", "info", "warn", "error", "fatal"]);
+        const level = validLevels.has(levelParam)
+          ? (levelParam as "trace" | "debug" | "info" | "warn" | "error" | "fatal")
+          : undefined;
+        const limit = Math.max(1, Math.min(parseInt(String(req.query.limit ?? "200"), 10) || 200, 500));
+        const entries = logger.getRecentEntries({ limit, level });
+        const logs = entries.map((e, i) => ({
+          id: `log-${e.timestamp}-${i}`,
+          timestamp: e.timestamp,
+          level: e.level === "trace" ? "debug" : e.level === "fatal" ? "error" : e.level,
+          source: e.subsystem,
+          message: e.message,
+        }));
+        res.json({ success: true, logs });
+      } catch (err) {
+        this.handleError(err, res, "Failed to get logs");
+      }
+    });
+
     // ============ Compaction Routes ============
     app.get("/api/compactions/:sessionId", (req: Request, res: Response) => {
       try {
@@ -2953,7 +2994,8 @@ export class ProtocolAdapter {
           loadCompactionChain(sessionId: string): unknown[];
         }>("compactionManager");
         if (!cm) { res.status(503).json({ error: "compactionManager not available" }); return; }
-        const chain = cm.getCompactionChain(String(req.params.sessionId));
+        // loadCompactionChain 内存优先，内存缺失时从磁盘恢复（服务重启后仍可查询）
+        const chain = cm.loadCompactionChain(String(req.params.sessionId));
         res.json({ compactions: chain });
       } catch (err) {
         res.status(500).json({ error: String(err) });
@@ -4678,7 +4720,7 @@ export class ProtocolAdapter {
 
     app.get("/api/plugins", async (_req: Request, res: Response) => {
       try {
-        const pluginManager = this.registry.resolveService("pluginManager") as { getPlugins(): Array<{ manifest: { name: string; version: string; description: string; author?: string }; status: string; error?: string }> } | undefined;
+        const pluginManager = this.registry.resolveService("pluginManager") as { getPlugins(): Array<{ manifest: { name: string; version: string; description: string; author?: string }; status: string; error?: string; hooks?: Array<{ type: string; priority: string }>; hookCount?: number; registeredAt?: string }> } | undefined;
         const localizationService = this.registry.resolveService<{
           needsChineseTranslation(text: string): boolean;
           translateToChinese(text: string, context?: string): Promise<string>;
@@ -4691,6 +4733,10 @@ export class ProtocolAdapter {
             manifest: p.manifest,
             status: p.status,
             error: p.error,
+            // 真实 hooks 摘要与注册时间（PluginManager 提供）
+            hooks: p.hooks ?? [],
+            hookCount: p.hookCount ?? (p.hooks ?? []).length,
+            registeredAt: p.registeredAt,
           };
 
           if (localizationService && p.manifest.description && localizationService.needsChineseTranslation(p.manifest.description)) {
@@ -4769,20 +4815,26 @@ export class ProtocolAdapter {
           manifest: {
             name,
             version: version || "0.1.0",
-            description: `${name} — community plugin`,
+            description: `${name} — community plugin (stub, no functionality)`,
             author: source || "community",
           },
-          hooks: [],
+          hooks: [] as never[],
           async init() {
             process.stdout.write(`[PluginManager] Community plugin "${name}" initialized (stub)\n`);
           },
           async shutdown() {},
           async healthCheck() {
-            return { healthy: true, message: "Active (community stub)" };
+            return { healthy: false, message: "Community stub — no functionality loaded" };
           },
         };
         await pluginManager.registerPlugin(stubPlugin);
-        res.json({ success: true, message: `Plugin "${name}" installed (community)`, plugin: { name, version: version || "0.1.0" } });
+        // 诚实语义：未下载/加载任何第三方代码，仅注册占位 stub，且不持久化（重启消失）
+        res.json({
+          success: true,
+          stub: true,
+          message: `Plugin "${name}" registered as a community stub (no functionality; not persisted across restarts)`,
+          plugin: { name, version: version || "0.1.0" },
+        });
       } catch (err) {
         this.handleError(err, res, "Failed to install plugin");
       }
@@ -5387,18 +5439,27 @@ export class ProtocolAdapter {
     app.post("/api/queue/clear", (req: Request, res: Response) => {
       try {
         const { sessionId } = req.body || {};
-        if (!sessionId) {
-          res.status(400).json({ success: false, error: "sessionId is required" });
-          return;
-        }
 
         const queueManager = this.registry.resolveService("queueManager") as {
           getQueue(sessionId: string): Array<Record<string, unknown>>;
           clearQueue(sessionId: string): void;
+          getAllSessions(): string[];
         } | undefined;
 
         if (!queueManager) {
           res.status(503).json({ success: false, error: "Queue manager not available" });
+          return;
+        }
+
+        if (!sessionId) {
+          // 未指定 sessionId 时清空所有会话（日志页展示的是全部会话，按钮应作用于可见范围）
+          const sessionIds = queueManager.getAllSessions();
+          let cleared = 0;
+          for (const sid of sessionIds) {
+            cleared += queueManager.getQueue(sid).length;
+            queueManager.clearQueue(sid);
+          }
+          res.json({ success: true, cleared, allSessions: true });
           return;
         }
 

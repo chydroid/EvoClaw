@@ -187,7 +187,12 @@ export function PluginsPage() {
   const [installId, setInstallId] = useState("");
   const [showInstall, setShowInstall] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"success" | "error">("success");
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showMessage = (text: string, kind: "success" | "error" = "success") => {
+    setMessage(text);
+    setMessageKind(kind);
+  };
   const scheduleClearMessage = () => {
     if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
     messageTimerRef.current = setTimeout(() => { setMessage(""); }, 3000);
@@ -208,9 +213,10 @@ export function PluginsPage() {
           author: p.manifest?.author,
           status: p.status || "active",
           error: p.error,
-          hookCount: 0,
-          hooks: [],
-          installedAt: new Date().toISOString().split("T")[0],
+          // 后端 PluginManager 提供的真实 hooks 摘要与注册时间
+          hookCount: p.hookCount ?? (p.hooks || []).length,
+          hooks: p.hooks || [],
+          installedAt: p.registeredAt ? String(p.registeredAt).split("T")[0] : "",
           i18n: {
             description_zh: p.manifest?.description_zh || undefined,
           },
@@ -254,14 +260,20 @@ export function PluginsPage() {
     if (!plugin) return;
     const newStatus = plugin.status === "active" ? "disabled" : "active";
     try {
-      await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}/toggle`, {
+      const res = await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
+      const data = await res.json().catch(() => ({ success: false }));
+      if (!res.ok || !data.success) {
+        showMessage(data.error || t("plugins.toggle_fail"), "error");
+        scheduleClearMessage();
+        return;
+      }
       loadPlugins();
     } catch {
-      setMessage(t("plugins.toggle_fail"));
+      showMessage(t("plugins.toggle_fail"), "error");
       scheduleClearMessage();
     }
   };
@@ -270,10 +282,16 @@ export function PluginsPage() {
     const plugin = plugins.find((p) => p.id === id);
     if (!plugin) return;
     try {
-      await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}`, { method: "DELETE" });
+      const res = await fetch(`/api/plugins/${encodeURIComponent(plugin.name)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({ success: false }));
+      if (!res.ok || !data.success) {
+        showMessage(data.error || t("plugins.remove_fail"), "error");
+        scheduleClearMessage();
+        return;
+      }
       loadPlugins();
     } catch {
-      setMessage(t("plugins.remove_fail"));
+      showMessage(t("plugins.remove_fail"), "error");
       scheduleClearMessage();
     }
   };
@@ -288,12 +306,12 @@ export function PluginsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        setMessage(data.message || t("plugins.install_ok"));
+        showMessage(data.message || t("plugins.install_ok"));
       } else {
-        setMessage(data.error || t("plugins.install_fail"));
+        showMessage(data.error || t("plugins.install_fail"), "error");
       }
     } catch {
-      setMessage(t("plugins.install_fail"));
+      showMessage(t("plugins.install_fail"), "error");
     }
     setInstallId("");
     setShowInstall(false);
@@ -312,12 +330,12 @@ export function PluginsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        setMessage(data.message || t("plugins.install_ok"));
+        showMessage(data.message || t("plugins.install_ok"));
       } else {
-        setMessage(data.error || t("plugins.install_fail"));
+        showMessage(data.error || t("plugins.install_fail"), "error");
       }
     } catch {
-      setMessage(t("plugins.install_fail"));
+      showMessage(t("plugins.install_fail"), "error");
     }
     loadPlugins();
     loadAvailablePlugins();
@@ -346,7 +364,9 @@ export function PluginsPage() {
       {message && (
         <div style={{
           padding: "8px 14px", borderRadius: "6px", marginBottom: "12px",
-          background: "var(--success-bg)", color: "var(--success)", fontSize: "12px",
+          background: messageKind === "error" ? "rgba(248,81,73,0.15)" : "var(--success-bg)",
+          color: messageKind === "error" ? "#f85149" : "var(--success)",
+          fontSize: "12px",
         }}>
           {message}
         </div>
@@ -479,7 +499,7 @@ export function PluginsPage() {
 
               <div style={{ display: "flex", gap: "8px", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)" }}>
-                  {t("plugins.installed_at", "安装于")}: {plugin.installedAt}
+                  {t("plugins.installed_at", "注册于")}: {plugin.installedAt || t("plugins.registered_at_fallback", "未知")}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button

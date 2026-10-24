@@ -139,10 +139,15 @@ const LEVEL_COLORS: Record<LogLevel, string> = {
 
 const RESET = "\x1b[0m";
 
+/** 内存环形缓冲最大条数（供 /api/logs 查询近期日志） */
+const MAX_RECENT_ENTRIES = 500;
+
 // ─── Logger ────────────────────────────────────────────────────────────────────
 
 export class Logger {
   private config: LoggerConfig;
+  /** 近期日志环形缓冲（已脱敏），供 WebUI /api/logs 读取 */
+  private recentEntries: LogEntry[] = [];
   private static instance: Logger | null = null;
   /** 文件 Appender 集合（setupFileLogging 后启用） */
   private fileAppenders: {
@@ -299,6 +304,26 @@ export class Logger {
 
     // 文件日志：根据级别和子系统分发到对应 Appender
     this.writeToFiles(level, subsystem, entry);
+
+    // 内存环形缓冲（已脱敏的 entry），供 /api/logs 查询
+    this.recentEntries.push(entry);
+    if (this.recentEntries.length > MAX_RECENT_ENTRIES) {
+      this.recentEntries.splice(0, this.recentEntries.length - MAX_RECENT_ENTRIES);
+    }
+  }
+
+  /**
+   * 查询近期日志（内存环形缓冲，最新在前）。
+   * 可按级别过滤（该级别及以上）并限制返回条数。
+   */
+  getRecentEntries(options?: { limit?: number; level?: LogLevel; subsystem?: string }): LogEntry[] {
+    const minOrd = options?.level ? LEVEL_ORDER[options.level] : LEVEL_ORDER.trace;
+    const limit = Math.max(1, Math.min(options?.limit ?? 200, MAX_RECENT_ENTRIES));
+    const filtered = this.recentEntries
+      .filter((e) => LEVEL_ORDER[e.level] >= minOrd)
+      .filter((e) => !options?.subsystem || e.subsystem === options.subsystem);
+    // 最新在前，最多 limit 条
+    return filtered.slice(-limit).reverse();
   }
 
   /** 将日志行写入文件 Appender（agent.log / errors.log / gateway.log） */

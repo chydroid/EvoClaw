@@ -404,6 +404,8 @@ interface LoadedPlugin {
   plugin: Plugin;
   status: "initializing" | "active" | "disabled" | "error";
   error?: string;
+  /** 注册时间（供 /api/plugins 展示真实安装时间） */
+  registeredAt: Date;
 }
 
 export class PluginManager {
@@ -434,7 +436,7 @@ export class PluginManager {
     }
 
     // 初始化期间设为 "initializing"，runHooks 会跳过非 active 插件，避免暴露未就绪的 hooks
-    const loaded: LoadedPlugin = { plugin, status: "initializing" };
+    const loaded: LoadedPlugin = { plugin, status: "initializing", registeredAt: new Date() };
     this.plugins.set(name, loaded);
 
     // Register hooks
@@ -540,12 +542,30 @@ export class PluginManager {
   }
 
   /** Get all registered plugins */
-  getPlugins(): Array<{ manifest: PluginManifest; status: string; error?: string }> {
-    return Array.from(this.plugins.values()).map((p) => ({
-      manifest: p.plugin.manifest,
-      status: p.status,
-      error: p.error,
-    }));
+  getPlugins(): Array<{
+    manifest: PluginManifest;
+    status: string;
+    error?: string;
+    /** hooks 摘要（不含 handler，供 /api/plugins 展示） */
+    hooks: Array<{ type: string; priority: string }>;
+    hookCount: number;
+    /** 注册时间 ISO 字符串 */
+    registeredAt: string;
+  }> {
+    return Array.from(this.plugins.values()).map((p) => {
+      const hooks = (p.plugin.hooks || []).map((h) => ({
+        type: String(h.hookType),
+        priority: String(h.priority),
+      }));
+      return {
+        manifest: p.plugin.manifest,
+        status: p.status,
+        error: p.error,
+        hooks,
+        hookCount: hooks.length,
+        registeredAt: p.registeredAt.toISOString(),
+      };
+    });
   }
 
   /** Run all hooks of a given type in priority order */

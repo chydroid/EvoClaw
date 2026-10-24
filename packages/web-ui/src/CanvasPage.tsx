@@ -689,8 +689,20 @@ export function CanvasPage() {
         };
         es.onmessage = (e) => {
           try {
-            const cmd = JSON.parse(e.data);
-            handleA2UICommand(cmd);
+            const evt = JSON.parse(e.data);
+            // SSE 事件带信封 { type, projectId, data, timestamp }（见 /api/canvas/events），
+            // 真正的 A2UI 命令在 data 字段；同时兼容直接发送的裸命令对象。
+            if (evt && evt.type === "a2ui-push") {
+              // 仅处理当前选中项目的 A2UI 推送，避免其他项目串扰（未选中项目时全收）
+              if (projectRef.current && evt.projectId && evt.projectId !== projectRef.current.id) return;
+              const cmd = evt.data;
+              if (cmd && typeof cmd === "object") handleA2UICommand(cmd);
+              return;
+            }
+            if (evt && typeof evt === "object" && "cmd" in evt) {
+              handleA2UICommand(evt);
+            }
+            // 其他事件（如 connected / file-changed）不作为 A2UI 命令处理
           } catch (err) {
             console.error("[Canvas] Failed to parse SSE command:", err);
           }

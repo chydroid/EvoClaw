@@ -81,8 +81,28 @@ export function LogsPage() {
   const [queue, setQueue] = useState<{ queue: QueueItem[]; stats: { total: number; pending: number; processing: number; done: number; failed: number }; hasPending: boolean } | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const loadLogs = useCallback(async (signal?: AbortSignal) => {
+    setLoadingLogs(true);
+    try {
+      const res = await fetch("/api/logs?limit=200", { signal });
+      if (signal?.aborted) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.logs)) {
+          setLogs(data.logs as LogEntry[]);
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) return;
+      console.error("Failed to load logs:", err);
+    } finally {
+      if (!signal?.aborted) setLoadingLogs(false);
+    }
+  }, []);
 
   const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -143,12 +163,33 @@ export function LogsPage() {
     }
   }, [logs, autoScroll]);
 
+  // 日志独立轮询（10 秒刷新），与队列轮询解耦
+  useEffect(() => {
+    const controller = new AbortController();
+    loadLogs(controller.signal);
+    const interval = setInterval(() => loadLogs(controller.signal), 10000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
+  }, [loadLogs]);
+
   const filteredLogs = filter === "all" ? logs : logs.filter(l => l.level === filter);
 
   const clearQueue = async () => {
     try {
-      await fetch("/api/queue/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "web-ui" }) });
-      loadData();
+      // 日志页展示的是全部会话，因此清空不传 sessionId → 后端清空所有会话
+      const res = await fetch("/api/queue/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      if (!res.ok) {
+        console.error("Failed to clear queue: HTTP", res.status);
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
+        loadData();
+      } else {
+        console.error("Clear queue failed:", data?.error || "unknown");
+      }
     } catch (err) {
       console.error("Failed to clear queue:", err);
     }
@@ -166,10 +207,10 @@ export function LogsPage() {
       {/* Log Controls */}
       <div style={s.controls}>
         <button style={filter === "all" ? s.btnActive : s.btn} onClick={() => setFilter("all")}>{t("logs.filter_all")}</button>
-        <button style={filter === "info" ? s.btnActive : s.btn} onClick={() => setFilter("info")}>INFO</button>
-        <button style={filter === "warn" ? s.btnActive : s.btn} onClick={() => setFilter("warn")}>WARN</button>
-        <button style={filter === "error" ? s.btnActive : s.btn} onClick={() => setFilter("error")}>ERROR</button>
-        <button style={filter === "debug" ? s.btnActive : s.btn} onClick={() => setFilter("debug")}>DEBUG</button>
+        <button style={filter === "info" ? s.btnActive : s.btn} onClick={() => setFilter("info")}>{t("logs.filter_info")}</button>
+        <button style={filter === "warn" ? s.btnActive : s.btn} onClick={() => setFilter("warn")}>{t("logs.filter_warn")}</button>
+        <button style={filter === "error" ? s.btnActive : s.btn} onClick={() => setFilter("error")}>{t("logs.filter_error")}</button>
+        <button style={filter === "debug" ? s.btnActive : s.btn} onClick={() => setFilter("debug")}>{t("logs.filter_debug", "DEBUG")}</button>
         <button style={autoScroll ? s.btnActive : s.btn} onClick={() => setAutoScroll(!autoScroll)}>
           {autoScroll ? t("logs.auto_scroll_on") : t("logs.auto_scroll_off")}
         </button>
@@ -204,6 +245,7 @@ export function LogsPage() {
             )}
             <button style={s.btn} onClick={() => loadData()}>{t("logs.refresh")}</button>
             <button style={s.btn} onClick={clearQueue}>{t("logs.clear_queue")}</button>
+            <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{t("logs.clear_all_hint", "清空全部会话")}</span>
           </div>
         </div>
         {!queue?.queue || queue.queue.length === 0 ? (

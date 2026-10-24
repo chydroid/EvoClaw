@@ -5,7 +5,7 @@
  * Allows approving/denying pending requests from the UI.
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
 
 interface PermissionRequest {
@@ -77,6 +77,16 @@ export function PermissionsPage() {
   const [history, setHistory] = useState<PermissionRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [actionKind, setActionKind] = useState<"success" | "error">("success");
+  // 记录当前待处理请求由哪个系统拥有（relay 优先），避免 approve/deny 双端盲调
+  const ownedByRelayRef = useRef<Set<string>>(new Set());
+
+  const showMessage = (text: string, kind: "success" | "error" = "success") => {
+    setActionMsg(text);
+    setActionKind(kind);
+    setTimeout(() => setActionMsg(null), 4000);
+  };
 
   const loadData = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
@@ -131,6 +141,8 @@ export function PermissionsPage() {
 
       // Merge: deduplicate by id (relay takes precedence)
       const relayIds = new Set([...relayPending, ...relayHistory].map(r => r.id));
+      // 记录 relay 拥有的请求 id：approve/deny 时只调对应系统的端点，避免双端盲调
+      ownedByRelayRef.current = new Set(relayIds);
       const extraMgrPending = mgrPending.filter(r => !relayIds.has(r.id));
       const extraMgrHistory = mgrHistory.filter(r => !relayIds.has(r.id));
 
@@ -152,39 +164,45 @@ export function PermissionsPage() {
 
   const approve = async (id: string) => {
     try {
-      // Try both PermissionRelay and PermissionManager
-      await Promise.allSettled([
-        fetch(`/api/permission-relay/${id}/approve`, { method: "POST" }),
-        fetch("/api/permission/approve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId: id }),
-        }),
-      ]);
+      // 后端 manager 在 approve/deny 时已自行同步到 relay，因此按归属系统只调一个端点，
+      // 避免双端盲调与静默失败。relay 拥有的请求走 relay，否则走 manager。
+      const ownedByRelay = ownedByRelayRef.current.has(id);
+      const endpoint = ownedByRelay
+        ? `/api/permission-relay/${id}/approve`
+        : "/api/permission/approve";
+      const body = ownedByRelay ? undefined : JSON.stringify({ requestId: id });
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        showMessage(data?.error || `审批失败 (HTTP ${res.status})`, "error");
+        return;
+      }
+      showMessage(t("permissions.approved", "已批准"), "success");
       await loadData();
     } catch (err) {
-      console.error("Failed to approve permission request:", err);
+      showMessage(`审批失败: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
   };
 
   const deny = async (id: string) => {
     try {
-      // Try both PermissionRelay and PermissionManager
-      await Promise.allSettled([
-        fetch(`/api/permission-relay/${id}/deny`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: t("permissions.denied_from_webui", "Denied from Web UI") }),
-        }),
-        fetch("/api/permission/deny", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId: id }),
-        }),
-      ]);
+      const ownedByRelay = ownedByRelayRef.current.has(id);
+      const endpoint = ownedByRelay
+        ? `/api/permission-relay/${id}/deny`
+        : "/api/permission/deny";
+      const body = ownedByRelay
+        ? JSON.stringify({ reason: t("permissions.denied_from_webui", "Denied from Web UI") })
+        : JSON.stringify({ requestId: id, reason: t("permissions.denied_from_webui", "Denied from Web UI") });
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        showMessage(data?.error || `拒绝失败 (HTTP ${res.status})`, "error");
+        return;
+      }
+      showMessage(t("permissions.denied", "已拒绝"), "success");
       await loadData();
     } catch (err) {
-      console.error("Failed to deny permission request:", err);
+      showMessage(`拒绝失败: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
   };
 
@@ -202,6 +220,12 @@ export function PermissionsPage() {
         </div>
         <button style={{ ...s.refreshBtn, opacity: refreshing ? 0.6 : 1 }} onClick={() => loadData(true)} disabled={refreshing}>{t("perms.refresh", "刷新")}</button>
       </div>
+
+      {actionMsg && (
+        <div style={{ marginBottom: 16, padding: "10px 14px", borderRadius: 6, fontSize: 13, background: actionKind === "error" ? "var(--error-bg)" : "var(--success-bg)", color: actionKind === "error" ? "var(--error)" : "var(--success)", border: `1px solid ${actionKind === "error" ? "var(--error)" : "var(--success)"}` }}>
+          {actionMsg}
+        </div>
+      )}
 
       {/* Pending Requests */}
       <div style={s.panel}>

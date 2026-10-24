@@ -135,3 +135,12 @@
   - **驱动验收 bug（5 处，修 driver，非产品）**：a06 双反斜杠转义正则 / a16 execSync 跑 python 片段受 shell 引号转义坑（改 driver 内直接读 CSV）/ a19 verify.py 残留误判 / a22 `Ran N tests` 正则匹配错 / a10 鉴权端点无 cookie 返回 401 属鉴权生效非失败。
   - **模型执行质量（非产品缺陷，记录在案）**：a08 模型把自己 gen.py 的 assert 写错陷入重试循环耗尽 token 预算；a27 我给的 prompt 引用了不存在的 /api/kanban/cards 路由（实际是 boards→boards/:id/tasks 两级），模型撞 CAP 上限——修正 prompt 为真实 API 序列后通过。
   - 验证：build→typecheck→test 全绿（287 文件 / 6501 passed / 13 skipped）。推送 `5e3b1a0`。
+- **WebUI 全页面功能/信息真实性审计 + 7 处修复（2026-10-25，主会话逐页核对 gateway 全部 /api 路由与前端实际调用）**：逐页确认 12 个页面的 API 契约与展示值来源，发现并修复 7 处「UI 与后端契约不符 / 展示值前端伪造」类缺陷；修复后 build→typecheck→test 全绿（287 文件 / 6501 passed / 13 skipped）：
+  - **P0-1 Logger 无内存查询能力 → 新增 /api/logs**：`packages/infrastructure/src/logger.ts` 加 500 条环形缓冲 `recentEntries` + `getRecentEntries({limit,level,subsystem})`（已脱敏 entry，最新在前）；gateway 新增 `GET /api/logs`（level 白名单校验、limit 1..500、trace→debug/fatal→error 归并）。**此前 LogsPage 的日志区是死 UI（logs state 从未被 set，只拉 /api/queue 充数）**，现已接通并 10s 轮询。
+  - **P0-2 LogsPage 清空队列作用域错配**：按钮硬编码 `sessionId:"web-ui"`，页面却展示全部会话 → 后端 `POST /api/queue/clear` 支持省略 sessionId 时经 `getAllSessions()` 清空全部会话（返回 `{success, cleared, allSessions:true}`）；前端按空 body 调用并加「清空全部会话」提示。
+  - **P0-3 WebChatPage 出队用消息文本删队列项 → 404**：`DELETE /api/queue/${encodeURIComponent(item)}` 里的 item 是消息文本而非 item id；改为 `messageQueue` 项带 `id`（enqueue 时乐观生成 local id、后端返回真实 item.id 后替换），删除/自动出队都按 id 调用。
+  - **P0-4 CanvasPage A2UI SSE 信封未拆包**：SSE 事件是 `{type:"a2ui-push", projectId, data, timestamp}` 信封，前端把整个信封当命令喂给 `handleA2UICommand`（title/addText 全失效）；改为拆 `evt.data`，并按 `evt.projectId` 过滤只处理当前选中项目（未选中时全收）。
+  - **P0-5 CanvasGraphPage 撤销/重做与后端脱节**：原为本地快照栈，后端 delete 经 5s 轮询 refetch 后本地栈失效、撤销形同虚设；改为 `diffSnapshots(prev,cur)` 计算反向 op（add_node/delete_node/connect_nodes/delete_connections）并通过 `apply-ops` 同步到后端，撤销/重做后后端与本地一致。**位置（nodePositions）无后端 op，仅本地恢复并在代码注释中标注为会话本地态。**
+  - **P1-6 PluginsPage 展示值前端伪造 + 静默失败**：`installedAt`/`hooks` 由前端拼接（后端无此字段）；PluginManager `getPlugins()` 新增 `hooks/hookCount/registeredAt`（真实注册时间），`/api/plugins` 透传；安装 stub 改诚实语义（`stub:true`、healthCheck `healthy:false`、不持久化）；前端 toggle/uninstall 按 `res.ok && data.success` 判定，失败时红色横幅提示具体 error。
+  - **P1-7 PermissionsPage 双端盲调 + 失败吞掉**：approve/deny 用 `Promise.allSettler` 同时打 relay 与 manager 两端且忽略结果；改为按归属系统（load 时 relay 优先，`ownedByRelayRef` 记录）只调一个端点（manager 已自行同步 relay），非 200 时读 `data.error` 并通过成功/错误横幅如实反馈。
+  - 未修（中优先，留待后续）：各页 `getSafe()` 语义未区分「请求失败」与「空数据」；StatusPage 的 `engineStatus`/`contextHealth` 仍是本地常量（需后端真实字段）；`/api/system/providers` 的 models 字段实为空数组。

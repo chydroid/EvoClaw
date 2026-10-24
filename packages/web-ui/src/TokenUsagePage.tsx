@@ -93,9 +93,14 @@ export default function TokenUsagePage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabId>("overview");
   const [autoRefresh, setAutoRefresh] = useState(false);
-  const [costThreshold, setCostThreshold] = useState(50);
+  const [costThreshold, setCostThreshold] = useState<number>(() => {
+    // 成本阈值持久化到 localStorage，刷新/重启后仍保留（"保存成功"需名副其实）
+    const saved = typeof localStorage !== "undefined" ? localStorage.getItem("evoclaw_cost_threshold") : null;
+    const n = saved != null ? parseFloat(saved) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 50;
+  });
   const [thresholdModalOpen, setThresholdModalOpen] = useState(false);
-  const [thresholdInput, setThresholdInput] = useState("50");
+  const [thresholdInput, setThresholdInput] = useState<string>("50");
 
   // Data state — all initialized to empty/zero
   const [overview, setOverview] = useState<TokenOverview>({
@@ -171,6 +176,8 @@ export default function TokenUsagePage() {
     }
     setCostThreshold(val);
     setThresholdModalOpen(false);
+    // 持久化到 localStorage，使"保存成功"名副其实（刷新/重启后仍生效）
+    try { localStorage.setItem("evoclaw_cost_threshold", String(val)); } catch { /* quota exceeded */ }
     showToast(t("tokenUsage.cost.saved") + ": $" + val.toFixed(2), "success");
   };
 

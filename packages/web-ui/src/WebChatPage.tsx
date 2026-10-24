@@ -782,7 +782,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileInfo[]>([]);
   const [textAreaExpandLevel, setTextAreaExpandLevel] = useState(0); // 0=2行, 1=5行, 2=10行
   const [isTextareaHovered, setIsTextareaHovered] = useState(false);
-  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const [messageQueue, setMessageQueue] = useState<Array<{ id: string; message: string }>>([]);
   const [showQueuePanel, setShowQueuePanel] = useState(false);
   const [showCommandPanel, setShowCommandPanel] = useState(false);
   const [commandFilter, setCommandFilter] = useState("");
@@ -901,16 +901,28 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       setTimeout(() => setStatusMessage(null), 2000);
       return;
     }
-    setMessageQueue(prev => [...prev, text]);
+    // 乐观更新：先加入本地队列，再同步到后端；后端返回真实 item.id 用于删除
+    const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setMessageQueue(prev => [...prev, { id: localId, message: text }]);
     setInput("");
     // Also sync to backend QueueManager
     const sid = effectiveSessionIdRef.current;
     if (sid) {
-      fetch("/api/queue/enqueue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sid, message: text, mode: "followup" }),
-      }).catch(() => {});
+      (async () => {
+        try {
+          const res = await fetch("/api/queue/enqueue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId: sid, message: text, mode: "followup" }),
+          });
+          if (!res.ok) return;
+          const data = await res.json().catch(() => null);
+          const backendId = data && data.item && typeof data.item.id === "string" ? data.item.id : null;
+          if (backendId && backendId !== localId) {
+            setMessageQueue(prev => prev.map((q) => q.id === localId ? { id: backendId, message: text } : q));
+          }
+        } catch { /* 后端同步失败不影响本地队列展示 */ }
+      })();
     }
   }, [input, messageQueue.length]);
 
@@ -918,10 +930,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     setMessageQueue(prev => {
       const item = prev[index];
       const newQueue = prev.filter((_, i) => i !== index);
-      // Also sync to backend
+      // Also sync to backend：用后端 item.id 删除（不再用消息文本，避免 404）
       const sid = effectiveSessionIdRef.current;
       if (sid && item) {
-        fetch(`/api/queue/${encodeURIComponent(item)}`, { method: "DELETE" }).catch(() => {});
+        fetch(`/api/queue/${encodeURIComponent(item.id)}`, { method: "DELETE" }).catch(() => {});
       }
       return newQueue;
     });
@@ -1774,7 +1786,9 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         if (prev.length > 0 && sessionId) {
           const nextMsg = prev[0];
           const remaining = prev.slice(1);
-          dequeueTimerRef.current = setTimeout(() => handleSend(nextMsg), 300);
+          // 从后端队列中删除已出队的项（按 item id，而非消息文本）
+          fetch(`/api/queue/${encodeURIComponent(nextMsg.id)}`, { method: "DELETE" }).catch(() => {});
+          dequeueTimerRef.current = setTimeout(() => handleSend(nextMsg.message), 300);
           return remaining;
         }
         return prev;
@@ -3349,10 +3363,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           {showQueuePanel && messageQueue.length > 0 && (
             <div style={{ marginTop: "6px", padding: "8px 10px", borderRadius: "8px", background: "var(--bg-tertiary, #21262d)", border: "1px solid var(--border, #30363d)", maxHeight: "120px", overflowY: "auto" }}>
               <div style={{ fontSize: "11px", color: "var(--text-secondary, #8b949e)", marginBottom: "6px", fontWeight: 600 }}>{t("chat.message_queue_count").replace("{0}", String(messageQueue.length))}</div>
-              {messageQueue.map((msg, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 0", borderBottom: idx < messageQueue.length - 1 ? "1px solid var(--border, #30363d)" : "none" }}>
+              {messageQueue.map((item, idx) => (
+                <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 0", borderBottom: idx < messageQueue.length - 1 ? "1px solid var(--border, #30363d)" : "none" }}>
                   <span style={{ fontSize: "10px", color: "var(--text-muted, #6e7681)", flexShrink: 0 }}>#{idx + 1}</span>
-                  <span style={{ fontSize: "12px", color: "var(--text-primary, #c9d1d9)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{msg}</span>
+                  <span style={{ fontSize: "12px", color: "var(--text-primary, #c9d1d9)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.message}</span>
                   <button
                     style={{ width: 18, height: 18, borderRadius: 3, border: "none", background: "transparent", color: "var(--text-muted, #6e7681)", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
                     title={t("chat.remove")}
