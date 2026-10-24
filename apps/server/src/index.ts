@@ -73,6 +73,7 @@ import {
   registerVisionBatchTools,
   registerDevTools,
   registerMemoryTools,
+  registerKanbanTools,
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
@@ -1239,6 +1240,7 @@ export class EvoClawServer {
     await this.reportGenerator.initialize();
     this.registerSchedulerTools();
     this.registerReportingTools();
+    this.registerKanbanTools();
     this.registerIntelligenceTools();
     this.registerMarkItDownTools();
 
@@ -2056,6 +2058,14 @@ export class EvoClawServer {
         }
       }
     );
+  }
+
+  /** 注册 Kanban 多 Agent 工作队列工具 */
+  private registerKanbanTools(): void {
+    registerKanbanTools({
+      executor: this.agentModelExecutor,
+      kanbanBoard: this.kanbanBoard,
+    });
   }
 
   private registerMarkItDownTools(): void {
