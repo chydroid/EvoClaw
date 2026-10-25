@@ -54,6 +54,7 @@ const MessageTemplatesPage = React.lazy(() => import("./MessageTemplatesPage"));
 const ReplyReferencePage = React.lazy(() => import("./ReplyReferencePage"));
 const QueueManagerPage = React.lazy(() => import("./QueueManagerPage"));
 const FilesPage = React.lazy(() => import("./FilesPage").then(m => ({ default: m.FilesPage })));
+const AnalyticsPage = React.lazy(() => import("./AnalyticsPage").then(m => ({ default: m.AnalyticsPage })));
 const PairingPage = React.lazy(() => import("./PairingPage").then(m => ({ default: m.PairingPage })));
 const ChannelMessagesPage = React.lazy(() => import("./ChannelMessagesPage"));
 const ObservabilityPage = React.lazy(() => import("./ObservabilityPage"));
@@ -123,6 +124,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "canvas-graph", i18nKey: "nav.canvas_graph", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
       { id: "observability" as TabId, i18nKey: "nav.observability", iconId: "observability" },
+      { id: "analytics" as TabId, i18nKey: "nav.analytics", iconId: "analytics" },
       { id: "token-usage" as TabId, i18nKey: "nav.token_usage", iconId: "monitoring" },
 
       { id: "stream-view" as TabId, i18nKey: "nav.stream_view", iconId: "stream-view" },
@@ -710,6 +712,7 @@ export default function App() {
       case "message-queue": return <ErrorBoundary><QueueManagerPage /></ErrorBoundary>;
       case "channel-messages": return <ErrorBoundary><ChannelMessagesPage /></ErrorBoundary>;
       case "observability": return <ErrorBoundary><ObservabilityPage /></ErrorBoundary>;
+      case "analytics": return <ErrorBoundary><AnalyticsPage /></ErrorBoundary>;
       case "guardrails": return <ErrorBoundary><GuardrailsPage /></ErrorBoundary>;
       case "overall-security": return <ErrorBoundary><OverallSecurityPage /></ErrorBoundary>;
       case "pairing": return <ErrorBoundary><PairingPage /></ErrorBoundary>;

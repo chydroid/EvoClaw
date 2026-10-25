@@ -15,7 +15,7 @@ export type TabId =
   | "feature-flags" | "config-migration" | "config-doctor"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
-  | "observability" | "guardrails" | "workboard" | "steer" | "stream-view"
+  | "observability" | "analytics" | "guardrails" | "workboard" | "steer" | "stream-view"
   | "token-usage" | "install-policy" | "transcript-redactor" | "approval-center" | "mcp-scanner"
   | "mcp-external"
   | "session-retention" | "voice-settings" | "enhancement-hub"
