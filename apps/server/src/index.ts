@@ -74,6 +74,7 @@ import {
   registerDevTools,
   registerMemoryTools,
   registerKanbanTools,
+  registerVerifyTools,
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
@@ -2464,6 +2465,7 @@ export class EvoClawServer {
     );
     registerDevTools(this.agentModelExecutor);
     registerMemoryTools(this.agentModelExecutor);
+    registerVerifyTools(this.agentModelExecutor);
   }
 
   // ── v0.70: 一线 AI Agent 能力对齐工具注册 ──

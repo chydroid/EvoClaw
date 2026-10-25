@@ -694,3 +694,25 @@ export type {
   DLQRetryHandler,
   DLQBatchConfig,
 } from "./dlq-batch-utils";
+
+// verify — 项目验证系统（对标 hermes-agent agent/verify/）
+//   detectRecipe / runVerify / getRecipe / saveManifest
+export {
+  detectRecipe,
+  runVerify,
+  getRecipe,
+  saveManifest,
+  loadManifest,
+  manifestPath,
+  phaseOk,
+  verifyOk,
+  recipeToDict,
+  recipeFromDict,
+} from "./verify";
+export type {
+  Recipe,
+  RunVerifyOptions,
+  PhaseResult,
+  ReadinessResult,
+  VerifyResult,
+} from "./verify";
