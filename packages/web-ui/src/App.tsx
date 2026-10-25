@@ -54,6 +54,7 @@ const MessageTemplatesPage = React.lazy(() => import("./MessageTemplatesPage"));
 const ReplyReferencePage = React.lazy(() => import("./ReplyReferencePage"));
 const QueueManagerPage = React.lazy(() => import("./QueueManagerPage"));
 const FilesPage = React.lazy(() => import("./FilesPage").then(m => ({ default: m.FilesPage })));
+const DocsPage = React.lazy(() => import("./DocsPage").then(m => ({ default: m.DocsPage })));
 const AnalyticsPage = React.lazy(() => import("./AnalyticsPage").then(m => ({ default: m.AnalyticsPage })));
 const PairingPage = React.lazy(() => import("./PairingPage").then(m => ({ default: m.PairingPage })));
 const ChannelMessagesPage = React.lazy(() => import("./ChannelMessagesPage"));
@@ -183,6 +184,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "session-retention" as TabId, i18nKey: "nav.session_retention", iconId: "retention" },
       { id: "config-migration", i18nKey: "nav.config_migration", iconId: "config-migration" },
       { id: "config-doctor", i18nKey: "nav.config_doctor", iconId: "config-doctor" },
+      { id: "docs", i18nKey: "nav.docs", iconId: "docs" },
       { id: "sandbox-manager", i18nKey: "nav.sandbox_manager", iconId: "monitoring" },
     ],
   },
@@ -706,6 +708,7 @@ export default function App() {
       case "feature-flags": return <ErrorBoundary><FeatureFlagsPage /></ErrorBoundary>;
       case "config-migration": return <ErrorBoundary><ConfigMigrationPage /></ErrorBoundary>;
       case "config-doctor": return <ErrorBoundary><ConfigDoctorPage /></ErrorBoundary>;
+      case "docs": return <ErrorBoundary><DocsPage /></ErrorBoundary>;
       case "health-aggregator": return <ErrorBoundary><HealthAggregatorPage /></ErrorBoundary>;
       case "message-templates": return <ErrorBoundary><MessageTemplatesPage /></ErrorBoundary>;
       case "reply-refs": return <ErrorBoundary><ReplyReferencePage /></ErrorBoundary>;

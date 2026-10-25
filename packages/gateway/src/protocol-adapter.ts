@@ -3770,6 +3770,53 @@ export class ProtocolAdapter {
       }
     });
 
+    // ============ Docs Routes ============
+    // 项目文档（docs/*.md）的只读入口，供 WebUI DocsPage 渲染。
+    // 对标 hermes 的 DocsPage（iframe 到 Docusaurus）：EvoClaw 没有独立文档站，
+    // 直接把仓库里的 markdown 读出来交给前端 renderMarkdown 渲染。
+    const DOCS_DIR = path.resolve("docs");
+
+    app.get("/api/docs", (_req: Request, res: Response) => {
+      try {
+        if (!fs.existsSync(DOCS_DIR)) {
+          res.json({ docs: [] });
+          return;
+        }
+        const entries = fs.readdirSync(DOCS_DIR, { withFileTypes: true });
+        const docs = entries
+          .filter((e) => e.isFile() && /\.md$/i.test(e.name))
+          .map((e) => {
+            const full = path.join(DOCS_DIR, e.name);
+            const stat = fs.statSync(full);
+            return { name: e.name, size: stat.size, modifiedAt: stat.mtimeMs };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name));
+        res.json({ docs });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/docs/:name", (req: Request, res: Response) => {
+      try {
+        const name = String(req.params.name);
+        // 拒绝路径穿越与非 .md 文件
+        if (!name || name.includes("..") || name.includes("/") || name.includes("\\") || !/\.md$/i.test(name)) {
+          res.status(400).json({ error: "Invalid doc name" });
+          return;
+        }
+        const full = path.join(DOCS_DIR, name);
+        if (!full.startsWith(DOCS_DIR) || !fs.existsSync(full)) {
+          res.status(404).json({ error: "Document not found" });
+          return;
+        }
+        const content = fs.readFileSync(full, "utf-8");
+        res.json({ name, content });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.get("/api/system/bootstrap-file/:file", (req: Request, res: Response) => {
       try {
         const filename = String(req.params.file);
