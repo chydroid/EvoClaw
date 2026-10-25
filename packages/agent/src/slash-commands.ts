@@ -1320,6 +1320,64 @@ export async function handleSlashCommand(
       break;
     }
 
+    case "review": {
+      // /review — 独立审查者（对标 hermes agent/review_engine.py）
+      // 快照最近对话，生成审查提示词，用户可用此提示词启动一次独立审查。
+      const REVIEW_GOAL = [
+        "Act as an independent senior reviewer. Thoroughly review the work presented",
+        "in the conversation excerpt provided in your context: investigate any code,",
+        "pull request, branch, commit, documentation, design, or other artifact it",
+        "references (open the PR, read the diff, run the code or tests where feasible)",
+        "rather than judging from the excerpt alone. Produce a full, structured review:",
+        "what the work does, whether it is correct and complete, concrete defects or",
+        "risks found (with file/line references where possible), what was verified vs.",
+        "only read, and a clear final verdict with recommended next steps.",
+      ].join(" ");
+
+      const DEFAULT_CONTEXT_MESSAGES = 10;
+      const MESSAGE_CHAR_CAP = 12_000;
+      const limit = parseInt(args[0], 10) || DEFAULT_CONTEXT_MESSAGES;
+      const history = deps.conversationHistory.get(sessionId) || [];
+      const recent = history.slice(-limit);
+
+      const excerpts: string[] = [];
+      for (const msg of recent) {
+        if (!msg.content) continue;
+        let text: string;
+        if (typeof msg.content === "string") {
+          text = msg.content;
+        } else {
+          text = JSON.stringify(msg.content ?? "");
+        }
+        if (text.length > MESSAGE_CHAR_CAP) text = text.slice(0, MESSAGE_CHAR_CAP) + "...[truncated]";
+        excerpts.push("[" + msg.role + "] " + text);
+      }
+
+      if (excerpts.length === 0) {
+        reply = "📋 没有可审查的对话内容。当前会话为空。";
+        break;
+      }
+
+      const excerptText = excerpts.join("\n\n---\n\n");
+      reply = [
+        "**🔍 /review — 独立审查者**",
+        "",
+        "已快照最近 " + excerpts.length + " 条对话消息。以下是审查提示词，",
+        "可直接发送给模型启动一次独立审查：",
+        "",
+        "---",
+        REVIEW_GOAL,
+        "",
+        "Conversation excerpt:",
+        "",
+        excerptText,
+        "---",
+        "",
+        "用法：/review [消息数] — 默认快照最近 10 条消息。",
+      ].join("\n");
+      break;
+    }
+
     case "goal": {
       if (!deps.goalRegistry) {
         reply = "⚠ Goal Contract 系统未启用。GoalRegistry 未注册。";
