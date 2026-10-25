@@ -183,3 +183,16 @@
   - **② 插件蓝图注册（blueprint-plugins.ts）**：插件可通过编程方式注册蓝图，key 命名空间化为 `<plugin>:<key>`。buildPluginBlueprint 验证输入（插件名/key 格式、必填字段、slot 定义）；validateBlueprintSlots 校验 slot 类型/enum options/scheduleTemplate 占位符引用；mergeBlueprints 内置优先合并。
   - **③ 延迟语法裁决（lsp-verdicts.ts）**：无 LSP 服务器的轻量替代。DeferredVerdictTracker 跟踪回合中的文件编辑，停止门收集延迟诊断。NodeSyntaxChecker 用 `node --check` 检查 JS（解析 SyntaxError 输出），brace-balance 检查 TS（stripStringsAndComments 去字符串/注释后检查括号平衡）。collectLateVerdicts 返回系统备注让模型在下一轮修复。19 测试。
   - 验证：build→typecheck→test 全绿（6538 passed / 13 skipped）。已推送 `cdaf993`。
+- **eval30 10 任务复杂评测（2026-10-26，10/10 全通过）**：驱动 `/tmp/evoclaw-eval/eval30.mjs` 经 /api/chat 端到端跑 10 个复杂任务。覆盖 CSV 统计/JSON 转换/多文件合并去重/日志分析/正则提取/SQLite 操作/目录重组/多格式配置生成/定时任务/综合报告。全部通过，平均耗时 ~135s。
+  - **t04 触发 token 预算上限（937761/900000）**：日志分析任务 agent 陷入循环消耗 token，最终被预算上限强制截断。验证仍通过（文件已生成），但成本 $1.59。教训：复杂 shell 脚本任务应提示 agent 用 file_create 写脚本再执行，避免多次 shell_exec 调试循环。
+  - **驱动改进**：chat 返回后只轮询审批 60s（非 300s），避免空等。t04 的 chat 阻塞 293s 是因为 agent 在预算耗尽前持续运行。
+  - **通道变更**：新增 WeiboAdapter（微博私信/评论双模式），完善 QQ/DingTalk 适配器在 protocol-adapter 中的创建逻辑。已推送 `a747d48`。
+- **hermes 差距审计 + Phase 1 补齐（2026-10-26）**：三个 Explore agent 并行对比 hermes v0.22.5 的 agent/turn_*、tools/、gateway/ + plugins/ 三大领域。核心差距汇总：
+  - **工具层**：MCP OAuth（❌）、Todo 工具（❌）、Send message 工具（hermes 有意不注册为 agent 工具）、Transcription/STT（❌）、TTS（部分）
+  - **Gateway 层**：Message mirroring（❌）、Response delivery filters（❌）、Wake session（❌）、Hosted room authority（部分）
+  - **Turn 层**：turn_scripted_prelude（❌）、turn_author（❌）、turn_preflight_gate（❌）、turn_truncation recovery（❌，仅 notice 插入）、turn_facade lease（❌）
+  - **Phase 1 实施（3 项，78 测试全绿，build→typecheck→test 全绿 6630 passed）**：
+    - **① TodoStore + todo_list 工具**（`packages/agent/src/todo-store.ts` + `apps/server/src/tools/todo-tools.ts`）：对标 hermes tools/todo_tool.py。每 session 一个 TodoStore，内存修订版本列表，parent 嵌套子任务，压缩后重新注入活跃任务（formatForInjection 只注入 pending/in_progress）。上限保护：MAX_TODO_ITEMS=256 / MAX_TODO_CONTENT_CHARS=4000。sanitize parents 丢弃悬空引用 + 打破循环。normalize order 把 in_progress 提升。19 测试。
+    - **② Response Delivery Filters**（`packages/gateway/src/response-filters.ts`）：对标 hermes gateway/response_filters.py。静默标记检测（[SILENT]/NO_REPLY/静默/沉默），整响应精确匹配（isIntentionalSilenceResponse）+ 自主车道宽松匹配（isAutonomousSilenceResponse，支持标记在首行/末行/前缀）。流式部分匹配（isPartialSilenceMarker）暂扣显示。机器内部回合可静默，人类回合需 replyExpected=false。shouldSuppressDelivery 统一入口。31 测试。
+    - **③ Turn Truncation Recovery**（`packages/agent/src/turn-truncation.ts`）：对标 hermes agent/turn_truncation.py。在 StreamingRecoveryManager 已有策略上补充：思考耗尽检测（isThinkingExhausted，thinking 消耗全部 token）、重复主导中止（isRepetitionDominated）、窗口填满检测（checkWindowFilled，剩余空间 <512 token 时中止）、续写上限（4 次 nudge 后放弃）、上下文溢出终态（compressionExhausted + failed）。checkTruncation 统一策略入口，返回 8 种 action。buildContinuationNudge + mergeTruncatedParts。28 测试。
+  - **Phase 2 待做**：MCP OAuth（OAuth 2.1 + PKCE + device code）、turn_preflight compression gate、turn_scripted_prelude。

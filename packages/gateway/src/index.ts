@@ -96,6 +96,20 @@ export type {
   ArmableStallWatchdogParams,
 } from "./stall-watchdog";
 
+// Response Delivery Filters — 静默标记 + 交付决策（对标 hermes-agent gateway/response_filters.py）
+export {
+  LIVE_GATEWAY_SILENT_MARKERS,
+  BRACKETED_SILENCE_MARKERS,
+  INTERNAL_NOTIFICATION_DISPLAY_KIND,
+  isIntentionalSilenceResponse,
+  isAutonomousSilenceResponse,
+  isIntentionalSilenceAgentResult,
+  isMachineryDisplayKind,
+  silenceAllowed,
+  isPartialSilenceMarker,
+  shouldSuppressDelivery,
+} from "./response-filters";
+
 export { MCPProtocolHandler } from "./mcp-protocol-handler";
 export type { ToolDefinition, ToolRegistry, ResourceDefinition, PromptDefinition } from "./mcp-protocol-handler";
 

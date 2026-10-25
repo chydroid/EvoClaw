@@ -75,6 +75,7 @@ import {
   registerMemoryTools,
   registerKanbanTools,
   registerVerifyTools,
+  registerTodoTools,
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
@@ -1290,6 +1291,7 @@ export class EvoClawServer {
     this.registerSchedulerTools();
     this.registerReportingTools();
     this.registerKanbanTools();
+    this.registerTodoTools();
     this.registerIntelligenceTools();
     this.registerMarkItDownTools();
 
@@ -2114,6 +2116,14 @@ export class EvoClawServer {
     registerKanbanTools({
       executor: this.agentModelExecutor,
       kanbanBoard: this.kanbanBoard,
+    });
+  }
+
+  /** 注册 Todo 任务跟踪工具 */
+  private registerTodoTools(): void {
+    registerTodoTools({
+      executor: this.agentModelExecutor,
+      getSessionId: () => this.agentModelExecutor.currentSessionId || "web-ui",
     });
   }
 

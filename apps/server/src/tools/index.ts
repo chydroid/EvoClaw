@@ -22,6 +22,9 @@ export { registerMemoryTools } from "./memory-tools";
 // Kanban 多 Agent 工作队列工具集
 export { registerKanbanTools } from "./kanban-tools";
 export type { KanbanToolDeps } from "./kanban-tools";
+// Todo 任务跟踪工具（对标 hermes-agent tools/todo_tool.py）
+export { registerTodoTools, getTodoStore, clearTodoStore } from "./todo-tools";
+export type { TodoToolDeps } from "./todo-tools";
 // Computer Use 桌面控制工具集（截图/鼠标/键盘/窗口管理）
 export { registerComputerUseTools } from "./computer-use-tools";
 export type { ComputerUseToolDeps } from "./computer-use-tools";

@@ -261,6 +261,30 @@ export type { BoardTask, BoardComment, BoardRun, BoardColumn } from "./workboard
 export { KanbanBoard } from "./kanban-board";
 export type { Task, TaskInput, TaskStatus as KanbanTaskStatus, TaskPriority as KanbanTaskPriority, BoardStats, DispatchResult } from "./kanban-board";
 
+// TodoStore — 内存修订版本任务列表（对标 hermes-agent tools/todo_tool.py）
+//   每 session 一个 TodoStore，跟踪多步任务进度；压缩后重新注入活跃任务
+export { TodoStore, TODO_INJECTION_HEADER, capTodoResultPayload } from "./todo-store";
+export type { TodoItem, TodoSnapshot } from "./todo-store";
+
+// TurnTruncation — finish_reason=length 截断恢复策略（对标 hermes-agent agent/turn_truncation.py）
+//   思考耗尽 / 重复主导 / 窗口填满 / 续写上限 / 上下文溢出终态
+export {
+  isThinkingExhausted,
+  checkWindowFilled,
+  checkTruncation,
+  shouldContinueTruncation,
+  buildContinuationNudge,
+  mergeTruncatedParts,
+  THINKING_EXHAUSTED_USER,
+  REPETITION_DOMINATED_USER,
+  CEILING_NO_TEXT,
+  TRUNCATED_FINAL,
+  FIRST_TRUNCATED_FINAL,
+  WINDOW_FILLED_USER,
+  CONTEXT_OVERFLOW_PARTIAL_FINAL,
+} from "./turn-truncation";
+export type { TruncationCheckInput, TruncationAction, TruncationCheckResult } from "./turn-truncation";
+
 // Computed Status system
 export { ComputedStatusEngine } from "./computed-status";
 export type { ComputedStatusResult, StatusSource } from "./computed-status";
