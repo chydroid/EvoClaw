@@ -4549,9 +4549,17 @@ export class ProtocolAdapter {
       try {
         const pm = this.registry.resolveService<{
           setActivePersona(name: string): Record<string, unknown>;
+          getActivePersonaConfig(): Record<string, unknown>;
         }>("personaManager");
         if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
         const persona = pm.setActivePersona(String(req.params.name));
+        // 切换角色后同步到 AgentModelExecutor，使后续对话的 greeting/语气/自称即时生效
+        const executor = this.registry.resolveService<{
+          configurePersona(persona: Record<string, unknown>): void;
+        }>("agentModelExecutor");
+        if (executor) {
+          try { executor.configurePersona(pm.getActivePersonaConfig()); } catch { /* 同步失败不阻塞切换 */ }
+        }
         res.json({ success: true, persona });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

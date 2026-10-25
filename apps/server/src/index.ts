@@ -537,7 +537,7 @@ export class EvoClawServer {
       this.registry,
       this.eventBus,
       undefined,
-      this.configManager.get("persona"),
+      this.personaManager.getActivePersonaConfig(),
       { storeDir: dataDir }
     );
 
