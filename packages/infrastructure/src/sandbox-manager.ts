@@ -1,15 +1,18 @@
 import { DockerSandbox, type SandboxConfig, type SandboxResult } from "./docker-sandbox";
 import { SSHSandbox, type SSHSandboxConfig, type SSHSandboxResult } from "./ssh-sandbox";
 import { LocalSandboxBackend, type SandboxExecuteOptions } from "./sandbox-backend";
+import { SingularitySandbox, ModalSandboxBackend, DaytonaSandboxBackend, VercelSandboxBackend, type CloudSandboxConfig } from "./cloud-sandboxes";
 import type { SandboxPolicy } from "@evoclaw/core";
 import { randomUUID } from "crypto";
 
-export type SandboxBackendType = "docker" | "ssh" | "process";
+export type SandboxBackendType = "docker" | "ssh" | "process" | "singularity" | "modal" | "daytona" | "vercel_sandbox";
 
 export interface UnifiedSandboxConfig {
   backend: SandboxBackendType;
   docker?: SandboxConfig;
   ssh?: SSHSandboxConfig;
+  /** 云端/容器后端配置（singularity/modal/daytona/vercel_sandbox） */
+  cloud?: CloudSandboxConfig;
   timeoutMs?: number;
   maxOutputBytes?: number;
   /** 安全策略：网络/文件系统/子进程开关 + 资源限额（所有后端尽力执行） */
@@ -32,6 +35,7 @@ export class SandboxManager {
   private dockerSandbox: DockerSandbox;
   private localBackend: LocalSandboxBackend;
   private sshSandboxes = new Map<string, SSHSandbox>();
+  private cloudSandboxes = new Map<string, { backend: SingularitySandbox | ModalSandboxBackend | DaytonaSandboxBackend | VercelSandboxBackend; type: SandboxBackendType }>();
   private sessions = new Map<string, SandboxSession>();
   private sessionCounter = 0;
 
@@ -80,6 +84,38 @@ export class SandboxManager {
           session.status = "error";
           throw new Error("Local process backend is not available");
         }
+      } else if (config.backend === "singularity") {
+        const sb = new SingularitySandbox(config.cloud);
+        const available = await sb.isAvailable();
+        if (!available) {
+          session.status = "error";
+          throw new Error("Singularity/Apptainer is not available");
+        }
+        this.cloudSandboxes.set(id, { backend: sb, type: "singularity" });
+      } else if (config.backend === "modal") {
+        const sb = new ModalSandboxBackend(config.cloud);
+        const available = await sb.isAvailable();
+        if (!available) {
+          session.status = "error";
+          throw new Error("Modal API key not configured (MODAL_API_KEY)");
+        }
+        this.cloudSandboxes.set(id, { backend: sb, type: "modal" });
+      } else if (config.backend === "daytona") {
+        const sb = new DaytonaSandboxBackend(config.cloud);
+        const available = await sb.isAvailable();
+        if (!available) {
+          session.status = "error";
+          throw new Error("Daytona API key not configured (DAYTONA_API_KEY)");
+        }
+        this.cloudSandboxes.set(id, { backend: sb, type: "daytona" });
+      } else if (config.backend === "vercel_sandbox") {
+        const sb = new VercelSandboxBackend(config.cloud);
+        const available = await sb.isAvailable();
+        if (!available) {
+          session.status = "error";
+          throw new Error("Vercel API key not configured (VERCEL_API_KEY)");
+        }
+        this.cloudSandboxes.set(id, { backend: sb, type: "vercel_sandbox" });
       }
 
       session.status = "ready";
@@ -156,7 +192,17 @@ export class SandboxManager {
         };
         result = await this.localBackend.execute(command, execOpts);
       } else {
-        return this.errorResult(`Unsupported backend: ${session.backend}`);
+        // 云端后端（singularity/modal/daytona/vercel_sandbox）
+        const cloudEntry = this.cloudSandboxes.get(sessionId);
+        if (!cloudEntry) {
+          return this.errorResult(`Cloud backend not found for session: ${session.backend}`);
+        }
+        result = await cloudEntry.backend.execute(command, {
+          timeoutMs: options?.timeoutMs,
+          env: options?.env,
+          workdir: options?.workdir,
+          maxOutputBytes: options?.maxOutputBytes,
+        });
       }
 
       session.executeCount++;
@@ -215,6 +261,17 @@ export class SandboxManager {
         interpreter: interpreter === "python" || interpreter === "python3" ? interpreter : "node",
         policy: session.policy,
       });
+    } else {
+      // 云端后端
+      const cloudEntry = this.cloudSandboxes.get(sessionId);
+      if (!cloudEntry) {
+        return this.errorResult(`Cloud backend not found for session: ${session.backend}`);
+      }
+      return cloudEntry.backend.executeScript(script, {
+        timeoutMs: options?.timeoutMs,
+        workdir: options?.workdir,
+        interpreter: interpreter === "python" || interpreter === "python3" ? interpreter : "node",
+      });
     }
 
     return this.errorResult("Unsupported backend");
@@ -228,6 +285,12 @@ export class SandboxManager {
     if (ssh) {
       ssh.dispose();
       this.sshSandboxes.delete(sessionId);
+    }
+
+    const cloudEntry = this.cloudSandboxes.get(sessionId);
+    if (cloudEntry) {
+      await cloudEntry.backend.dispose();
+      this.cloudSandboxes.delete(sessionId);
     }
 
     session.status = "destroyed";
@@ -249,10 +312,19 @@ export class SandboxManager {
     ]);
     // 2026-10-15 P3-5：ssh 需配置才可用——原恒 true 会让调用方误判后端存在
     const sshAvailable = process.env.SANDBOX_SSH_HOST ? true : false;
+    // 云端后端可用性检查
+    const singularityAvailable = !!(process.env.SANDBOX_SINGULARITY_IMAGE || true); // CLI 驱动，运行时检查
+    const modalAvailable = !!process.env.MODAL_API_KEY;
+    const daytonaAvailable = !!process.env.DAYTONA_API_KEY;
+    const vercelAvailable = !!process.env.VERCEL_API_KEY;
     return [
       { type: "docker", available: dockerAvailable },
       { type: "ssh", available: sshAvailable },
       { type: "process", available: processAvailable },
+      { type: "singularity", available: singularityAvailable },
+      { type: "modal", available: modalAvailable },
+      { type: "daytona", available: daytonaAvailable },
+      { type: "vercel_sandbox", available: vercelAvailable },
     ];
   }
 
@@ -261,6 +333,10 @@ export class SandboxManager {
       ssh.dispose();
     }
     this.sshSandboxes.clear();
+    for (const [, entry] of this.cloudSandboxes) {
+      await entry.backend.dispose();
+    }
+    this.cloudSandboxes.clear();
     this.sessions.clear();
     await this.localBackend.dispose();
   }
