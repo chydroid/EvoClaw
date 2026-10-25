@@ -55,6 +55,12 @@ export interface RecoveryContext {
   providerId?: string;
   /** 是否允许 failover */
   allowFailover: boolean;
+  /**
+   * Rate limit 重置时间（ISO timestamp）。
+   * 对标 hermes fallback_cooldown.py：当 primary 的 rate limit 即将重置时，
+   * 跳过 failover walk，用重试循环的 backoff 等待 primary 恢复。
+   */
+  resetAt?: string;
 }
 
 export interface RecoveryResult {
@@ -167,6 +173,58 @@ export class TurnRetryState {
 }
 
 // ── 恢复动作实现 ────────────────────────────────────────────────────────────
+
+/**
+ * Fallback 冷却（对标 hermes fallback_cooldown.py）：
+ * 当 primary 的 rate limit 即将重置时，跳过 failover walk，
+ * 用重试循环的 backoff 等待 primary 恢复——避免 mid-task 切换模型。
+ */
+
+/** Rate limit 类失败原因 */
+const RATE_LIMIT_FAILOVER_REASONS = new Set<string>([
+  "rate_limit", "billing", "upstream_rate_limit",
+]);
+
+/**
+ * 解析绝对时间戳（ISO string 或 epoch seconds）。
+ */
+function parseAbsoluteTimestamp(raw: string): number | null {
+  if (!raw) return null;
+  // ISO string
+  const isoParsed = Date.parse(raw);
+  if (!Number.isNaN(isoParsed)) return isoParsed;
+  // Epoch seconds
+  const epoch = Number(raw);
+  if (!Number.isNaN(epoch) && epoch > 0) return epoch * 1000;
+  return null;
+}
+
+/**
+ * 判断 failover 是否应被 deferred——primary 的 rate limit 即将重置。
+ *
+ * @param reason 失败原因
+ * @param resetAt rate limit 重置时间
+ * @param minSwitchResetSeconds 最小切换等待秒数（0 = off）
+ * @param alreadyFallbackActivated 是否已激活 fallback
+ */
+export function switchDeferredByReset(
+  reason: string,
+  resetAt: string | undefined,
+  minSwitchResetSeconds: number = 0,
+  alreadyFallbackActivated: boolean = false,
+): boolean {
+  if (minSwitchResetSeconds <= 0) return false;
+  if (!RATE_LIMIT_FAILOVER_REASONS.has(reason)) return false;
+  if (alreadyFallbackActivated) return false;
+  if (!resetAt) return false;
+
+  const resetMs = parseAbsoluteTimestamp(resetAt);
+  if (resetMs === null) return false;
+  const delaySec = (resetMs - Date.now()) / 1000;
+  if (!Number.isFinite(delaySec) || delaySec <= 0) return false;
+  // 仅在重置时间早于阈值时 defer（primary 很快恢复 → 不值得切换）
+  return delaySec < minSwitchResetSeconds;
+}
 
 /**
  * 终态通知文案（hermes turn_failure_copy 语义）：把非 compression_exhausted 的
@@ -317,9 +375,21 @@ function triggerCompaction(messages: RecoveryMessage[]): RecoveryMessage[] {
  */
 export class ErrorRecoveryExecutor {
   private turnState: TurnRetryState;
+  /** Fallback 冷却阈值（秒）：primary rate limit 重置时间早于此值时 defer failover */
+  private minSwitchResetSeconds: number;
+  /** Fallback 是否已激活（激活后不再 defer） */
+  private fallbackActivated: boolean;
 
-  constructor(maxRetries: number = 3) {
+  constructor(maxRetries: number = 3, options?: { minSwitchResetSeconds?: number }) {
     this.turnState = new TurnRetryState(maxRetries);
+    // 对标 hermes fallback.min_switch_reset_seconds（默认 0 = off）
+    this.minSwitchResetSeconds = options?.minSwitchResetSeconds ?? 0;
+    this.fallbackActivated = false;
+  }
+
+  /** 标记 fallback 已激活（后续不再 defer failover） */
+  markFallbackActivated(): void {
+    this.fallbackActivated = true;
   }
 
   /**
@@ -339,6 +409,28 @@ export class ErrorRecoveryExecutor {
 
     // 检查重试预算
     if (this.turnState.isRetryExhausted()) {
+      // ── Fallback 冷却（对标 hermes fallback_cooldown.py）──
+      // 当 primary 的 rate limit 即将重置时，跳过 failover walk，
+      // 用重试循环的 backoff 等待 primary 恢复——避免 mid-task 切换模型。
+      const deferred = switchDeferredByReset(
+        String(reason),
+        ctx.resetAt,
+        this.minSwitchResetSeconds,
+        this.fallbackActivated,
+      );
+      if (deferred && ctx.resetAt) {
+        const resetMs = parseAbsoluteTimestamp(ctx.resetAt);
+        const waitMs = resetMs !== null ? Math.max(resetMs - Date.now(), 1000) : 5_000;
+        return {
+          ...baseResult,
+          shouldRetry: true,
+          shouldFailover: false,
+          retryDelayMs: waitMs,
+          action: "fallback_deferred_by_reset",
+          notice: `Primary provider rate limit will reset in ${Math.round(waitMs / 1000)}s — deferring failover to avoid mid-task model switch.`,
+          diagnostics: { reason: String(reason), resetAt: ctx.resetAt },
+        };
+      }
       return {
         ...baseResult,
         shouldFailover: allowFailover,
