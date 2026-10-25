@@ -32,7 +32,7 @@ const SERVER_VERSION = getServerVersion();
 // 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager } from "@evoclaw/agent";
@@ -84,6 +84,7 @@ export class EvoClawServer {
   private eventBus: EventBus;
   private configManager: ConfigManager;
   private personaManager: PersonaManager;
+  private envManager: EnvManager;
   private logger: Logger;
 
   private gateway: GatewayServer;
@@ -296,6 +297,10 @@ export class EvoClawServer {
     // ── Persona（多角色管理，对标 hermes Profile 的「身份」子集） ──
     this.personaManager = new PersonaManager(path.resolve(process.cwd(), "data", "personas.json"));
     this.registry.registerService("personaManager", this.personaManager);
+
+    // ── Env（运行时环境变量管理，对标 hermes EnvPage 的 env var 子集） ──
+    this.envManager = new EnvManager(path.resolve(process.cwd(), "data", "env.json"));
+    this.registry.registerService("envManager", this.envManager);
 
     this.configWatcher = new ConfigWatcher();
     const configFilePath = path.resolve(process.cwd(), "config.json");

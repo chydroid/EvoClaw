@@ -4566,6 +4566,55 @@ export class ProtocolAdapter {
         res.status(400).json({ error: msg });
       }
     });
+
+    // ─── Env（运行时环境变量管理）路由 ────────────────────────────────────
+    // 对标 hermes web/src/pages/EnvPage 的 env var 子集：list / set / delete。
+    // EvoClaw 的 SecretsManager 管的是**凭证**（加密 API key），与 env var 是两个概念，
+    // 因此 env var 需要独立的运行时管理（原只能在启动前改 .env）。
+    app.get("/api/env", (_req: Request, res: Response) => {
+      try {
+        const em = this.registry.resolveService<{
+          list(): Array<Record<string, unknown>>;
+        }>("envManager");
+        if (!em) { res.status(503).json({ error: "envManager not available" }); return; }
+        res.json({ env: em.list() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/env", (req: Request, res: Response) => {
+      try {
+        const em = this.registry.resolveService<{
+          set(key: string, value: string): Record<string, unknown>;
+        }>("envManager");
+        if (!em) { res.status(503).json({ error: "envManager not available" }); return; }
+        const body = req.body || {};
+        const key = String(body.key || "");
+        const value = String(body.value ?? "");
+        if (!key) { res.status(400).json({ error: "key is required" }); return; }
+        const entry = em.set(key, value);
+        res.json({ success: true, entry });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
+
+    app.delete("/api/env/:key", (req: Request, res: Response) => {
+      try {
+        const em = this.registry.resolveService<{
+          delete(key: string): boolean;
+        }>("envManager");
+        if (!em) { res.status(503).json({ error: "envManager not available" }); return; }
+        const removed = em.delete(String(req.params.key));
+        if (!removed) { res.status(404).json({ error: "Env var not found" }); return; }
+        res.json({ success: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
     // 切换后立即写入运行时策略：文件工具、shell 工具、human-approval 都读同一份。
     app.get("/api/security-level", (_req: Request, res: Response) => {
       try {

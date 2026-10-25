@@ -12,7 +12,7 @@ export type TabId =
   | "ops" | "cli"
   | "overall-security" | "pairing"
   | "secrets" | "dlq" | "config-rpc" | "session-mgmt"
-  | "feature-flags" | "config-migration" | "config-doctor" | "docs"
+  | "feature-flags" | "config-migration" | "env" | "config-doctor" | "docs"
   | "health-aggregator" | "message-templates" | "reply-refs" | "message-queue"
   | "channel-messages"
   | "observability" | "analytics" | "guardrails" | "workboard" | "steer" | "stream-view"
