@@ -157,3 +157,9 @@
   - `api-client.ts` 新增非破坏性的 `getSafeResult<T>()`（返回 `{data, error}`，不吞错误）+ `LoadState<T>` 类型，现有 `getSafe` 调用点零改动。
   - `Dashboard.tsx` 改用 `loadErrorCopy` 统一口径（`cardErrors` 从 string 升为 `LoadErrorCopy | null`，三卡渲染 title+details），移除已废弃的 `dashboard.fetch_failed` key。
   - build→typecheck→test 全绿（288 文件 / 6505 passed / 13 skipped，+4 新断言）。**未推送**。
+- **对标 hermes 前端对齐 Phase 1（2026-10-25，4 项全部落地，均 build→typecheck→test 全绿 6524 passed）**：
+  - **① api-error 人化（对标 hermes lib/api-error.ts）**：新增 `web-ui/src/api-error.ts`（extractDetail / humanizeStatus / ApiError{status,body,url,details} / apiErrorFromResponse / apiErrorFromNetworkFailure / errorMessage，+19 例单测）；`api-client.ts` 经 `fetchJSON` 统一转换（HTTP 非 2xx → apiErrorFromResponse，fetch reject → apiErrorFromNetworkFailure）；`useApiCall` 与 9 个页面（Permissions/OverallSecurity/SkillWorkshop/SkillsConfig/MCPExternal/EnhancementHub/MemoryHub/Steer/CanvasGraph）共 20 处 `err instanceof Error ? err.message : String(err)` 全改为 `errorMessage(err)`，根除 `Error: Error:` 双前缀。已推送 `ab85c49`。
+  - **② FilesPage（对标 hermes FilesPage）**：后端只读能力已存在（GET /api/files/list、GET /api/files/download/*）。只读浏览器：面包屑导航、目录进入、文件大小、下载链接、文本文件内联预览（扩展名白名单）。上传/新建目录无后端支持，不伪造按钮。已推送 `20f79cb`。
+  - **③ PairingPage + devicePairingManager 服务注册（对标 hermes PairingPage）**：**关键修复**——/api/pairing/* 五个路由早已存在，但 `devicePairingManager` 从未在 `apps/server/src/index.ts` 注册 → 全部 503；补 `new DevicePairingManager(eventBus)` + `registerService`。页面：列出已信任设备、按类型发起配对（生成 pairingCode）、撤销设备。已推送 `d4b3213`。
+  - **④ AnalyticsPage（对标 hermes AnalyticsPage）**：聚合 /api/metrics（Prometheus）、/api/token-usage/overview、/api/health.metrics 三个已有数据源，系统资源 + HTTP 运行 + 代币成本 + 最近调用，不新增后端与图表库。已推送 `6d8fc61`。
+  - **Phase 2 待做（低优先）**：DocsPage（需新增 /api/docs 路由渲染 docs/ markdown）；统一 api.ts 的 Cookie/认证集中注入（目前各页各自带 Cookie）；可选 key i18n 规范（hermes 17 语言的可选 key 回退，EvoClaw 只有 zh/en，收益较小）；events-reconnect（hermes 是 WebSocket 事件流，EvoClaw 用 SSE + 轮询，架构不同，需先定事件流协议）。
