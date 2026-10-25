@@ -48,7 +48,7 @@ import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
-import { ScheduleManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
+import { ScheduleManager, CronSuggestionManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
@@ -117,6 +117,7 @@ export class EvoClawServer {
   private browserToolsCleanup: (() => void) | null = null;
   private emailClient: EmailClient;
   private scheduleManager: ScheduleManager;
+  private cronSuggestionManager: CronSuggestionManager;
   private bootstrapManager: BootstrapManager;
   private compactionManager: CompactionManager;
   private lifecycleManager: AgentLifecycleManager;
@@ -819,6 +820,12 @@ export class EvoClawServer {
       dataDir: path.resolve(__dirname, "..", "..", "..", "data", "scheduler"),
     });
     this.registry.registerService("scheduleManager", this.scheduleManager);
+    // 2026-10-25 P2：建议式定时任务系统（对标 hermes cron/suggestions.py）
+    this.cronSuggestionManager = new CronSuggestionManager({
+      dataDir: path.resolve(__dirname, "..", "..", "..", "data", "scheduler"),
+    });
+    this.cronSuggestionManager.bindScheduleManager(this.scheduleManager, this.eventBus);
+    this.registry.registerService("cronSuggestionManager", this.cronSuggestionManager);
     this.reportGenerator = new ReportGenerator(this.registry, this.eventBus, {
       templateDir: path.resolve(__dirname, "..", "..", "..", "packages", "reporting", "src", "templates"),
     });
@@ -1253,6 +1260,8 @@ export class EvoClawServer {
 
     await this.emailClient.initialize();
     await this.scheduleManager.initialize();
+    this.cronSuggestionManager.load();
+    this.cronSuggestionManager.seedCatalogSuggestions();
     await this.reportGenerator.initialize();
     this.registerSchedulerTools();
     this.registerReportingTools();

@@ -2928,6 +2928,7 @@ export class AgentModelExecutor {
       executionCheckpointStore: this.executionCheckpointStore,
       humanApprovalManager: this.humanApprovalManager ?? undefined,
       evalRunner: this.evalRunner ?? undefined,
+      cronSuggestionManager: this.registry.resolveService("cronSuggestionManager") as import("./slash-commands").CronSuggestionManagerLike | undefined,
     };
     const result = await handleSlashCommandFn(deps, message, sessionId, startTime);
     if (!result) return null;

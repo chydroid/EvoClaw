@@ -16,6 +16,8 @@ export interface ScheduledTask {
   nextRun?: Date;
   runCount: number;
   errorCount: number;
+  /** 连续失败次数（对标 hermes failure_streak） */
+  failureStreak: number;
   maxRetries: number;
   retryDelayMs: number;
   lastError?: string;
@@ -48,13 +50,16 @@ export class ScheduleManager {
   private runningTasks: Set<string> = new Set();
   private dataDir: string;
   private started = false;
+  private failureNudgeThreshold: number;
 
   constructor(
     private registry: ServiceRegistry,
     private eventBus: EventBus,
-    options?: { dataDir?: string }
+    options?: { dataDir?: string; failureNudgeThreshold?: number }
   ) {
     this.dataDir = options?.dataDir || path.join(process.cwd(), "data", "scheduler");
+    // 2026-10-25 P2：连续失败审查阈值（对标 hermes cron.failure_nudge_threshold，默认 3）
+    this.failureNudgeThreshold = options?.failureNudgeThreshold ?? 3;
   }
 
   async initialize(): Promise<void> {
@@ -98,6 +103,7 @@ export class ScheduleManager {
       enabled: options.enabled !== false,
       runCount: 0,
       errorCount: 0,
+      failureStreak: 0,
       maxRetries: options.maxRetries ?? 3,
       retryDelayMs: options.retryDelayMs ?? 60000,
       nextRun: nextDate,
@@ -399,8 +405,25 @@ export class ScheduleManager {
     if (!result.success) {
       task.errorCount++;
       task.lastError = result.error;
+      // 2026-10-25 P2：连续失败计数（对标 hermes _failure_streak_nudge）
+      task.failureStreak++;
+      if (this.failureNudgeThreshold > 0 && task.failureStreak >= this.failureNudgeThreshold) {
+        // 发布审查建议事件——由上层（slash command / notification）消费
+        this.eventBus.publish(
+          "scheduler.failure_streak_review",
+          {
+            taskId: task.id,
+            taskName: task.name,
+            streak: task.failureStreak,
+            lastError: task.lastError,
+            nudge: `此任务已连续失败 ${task.failureStreak} 次。建议检查任务配置或提示词，或暂停该任务。`,
+          },
+          "schedule-manager",
+        );
+      }
     } else {
       task.lastError = undefined;
+      task.failureStreak = 0;
     }
 
     this.runHistory.push(result);
@@ -444,6 +467,7 @@ export class ScheduleManager {
         for (const t of data) {
           this.tasks.set(t.id, {
             ...t,
+            failureStreak: t.failureStreak ?? 0,
             createdAt: new Date(t.createdAt),
             updatedAt: new Date(t.updatedAt),
             lastRun: t.lastRun ? new Date(t.lastRun) : undefined,

@@ -69,6 +69,17 @@ export interface SlashCommandDeps {
     learnFromConversation(history: Array<{ role: "user" | "assistant" | "tool"; content: string; toolName?: string }>, skillName: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
   };
   learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
+  cronSuggestionManager?: CronSuggestionManagerLike;
+}
+
+/** CronSuggestionManager 最小接口（避免 agent 包依赖 scheduler 包） */
+export interface CronSuggestionManagerLike {
+  listPending(): Array<{ id: string; title: string; description: string; source: string }>;
+  getPendingCount(): number;
+  getCatalog(): Array<{ key: string; title: string; description: string }>;
+  acceptSuggestion(id: string): { success: boolean; taskId?: string; error?: string };
+  dismissSuggestion(id: string): boolean;
+  clearResolved(): number;
 }
 
 /** Result type for slash command handling */
@@ -1115,6 +1126,85 @@ export async function handleSlashCommand(
       } catch (err) {
         reply = `❌ /learn 出错: ${err instanceof Error ? err.message : String(err)}`;
       }
+      break;
+    }
+
+    case "suggestions": {
+      if (!deps.cronSuggestionManager) {
+        reply = "⚠ CronSuggestionManager 未注册。无法使用 /suggestions。";
+        break;
+      }
+      const sm = deps.cronSuggestionManager;
+      const subCmd = args[0]?.toLowerCase();
+
+      if (!subCmd || subCmd === "list" || subCmd === "help") {
+        const pending = sm.listPending();
+        if (pending.length === 0) {
+          reply = [
+            "📭 没有待处理的建议。",
+            "",
+            "可用子命令：",
+            "  /suggestions catalog — 查看内置建议目录",
+            "  /suggestions accept <id> — 接受建议",
+            "  /suggestions dismiss <id> — 拒绝建议",
+            "  /suggestions clear — 清除已处理建议",
+          ].join("\n");
+          break;
+        }
+        const lines: string[] = ["**📋 待处理建议** (" + pending.length + "/" + sm.getPendingCount() + ")"];
+        pending.forEach((s, i) => {
+          lines.push("");
+          lines.push((i + 1) + ". **" + s.title + "** (" + s.source + ")");
+          lines.push("   " + s.description);
+          lines.push("   ID: " + s.id + " — 接受: /suggestions accept " + s.id + " | 拒绝: /suggestions dismiss " + s.id);
+        });
+        lines.push("");
+        lines.push("/suggestions catalog — 查看内置目录");
+        lines.push("/suggestions clear — 清除已处理建议");
+        reply = lines.join("\n");
+        break;
+      }
+
+      if (subCmd === "catalog") {
+        const catalog = sm.getCatalog();
+        const lines: string[] = ["**📚 内置建议目录** (" + catalog.length + ")"];
+        catalog.forEach((c) => {
+          lines.push("• **" + c.title + "** — " + c.description);
+          lines.push("  " + c.key);
+        });
+        lines.push("");
+        lines.push("接受建议后会自动创建为定时任务。");
+        reply = lines.join("\n");
+        break;
+      }
+
+      if (subCmd === "accept") {
+        const id = args[1];
+        if (!id) { reply = "⚠ 请提供建议 ID。"; break; }
+        const result = sm.acceptSuggestion(id);
+        if (result.success) {
+          reply = "✅ 已接受建议并创建定时任务: " + result.taskId;
+        } else {
+          reply = "❌ " + (result.error ?? "未知错误");
+        }
+        break;
+      }
+
+      if (subCmd === "dismiss") {
+        const id = args[1];
+        if (!id) { reply = "⚠ 请提供建议 ID。"; break; }
+        const ok = sm.dismissSuggestion(id);
+        reply = ok ? "✅ 已拒绝建议。" : "❌ 建议不存在或已处理。";
+        break;
+      }
+
+      if (subCmd === "clear") {
+        const count = sm.clearResolved();
+        reply = "✅ 已清除 " + count + " 条已处理建议。";
+        break;
+      }
+
+      reply = "⚠ 未知子命令: " + subCmd + "\n可用: list, catalog, accept <id>, dismiss <id>, clear";
       break;
     }
 

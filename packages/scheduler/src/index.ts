@@ -5,6 +5,16 @@ export type {
   ScheduleStats,
 } from "./schedule-manager";
 
+// CronSuggestionManager — 建议式定时任务系统（对标 hermes cron/suggestions.py）
+// consent-first：系统建议自动化任务，用户主动接受后才创建
+export { CronSuggestionManager } from "./cron-suggestions";
+export type {
+  CronSuggestion,
+  CronSuggestionConfig,
+  SuggestionSource,
+  SuggestionStatus,
+} from "./cron-suggestions";
+
 export { CronScheduler } from "./cron-scheduler";
 export type {
   CronJob,
