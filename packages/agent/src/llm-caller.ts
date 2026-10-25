@@ -10,6 +10,7 @@ import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
+import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
@@ -2933,6 +2934,8 @@ export async function tryCallLLM(
       let autoContinueCount = 0;
       // 验证门 nudge 计数：模型在变更文件后未验证就声称完成时，回灌验证指令的轮数
       let verificationNudgeCount = 0;
+      // 2026-10-25 P2：Kanban worker 终止门计数（对标 hermes kanban_stop.py）
+      let kanbanStopNudgeCount = 0;
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
@@ -3556,9 +3559,45 @@ export async function tryCallLLM(
               ) &&
               // 验证仍然有效（stalePaths === []，之后没再编辑）→ 不重复 nudge
               (stalePaths === null || stalePaths.length > 0);
-            const effectiveShouldContinue = shouldContinue || verificationGateTriggered;
+            // ── Kanban 终止门（对标 hermes kanban_stop.py）──
+            // Kanban worker 必须以终端 board 工具结束（kanban_complete / kanban_block /
+            // kanban_request_review / kanban_request_changes），而非仅文字叙述。
+            // 仅在会话执行过 kanban 工具且未调用终端工具时触发。
+            const isKanbanWorkerSession = executedToolCalls.some((c) =>
+              TERMINAL_KANBAN_TOOLS.has(c.name) || c.name.startsWith("kanban_"),
+            );
+            const kanbanStopTriggered =
+              isKanbanWorkerSession &&
+              kanbanStopNudgeCount < 2 &&
+              finalReply &&
+              !sessionCalledKanbanTerminal(conversationMessages);
+            const kanbanShouldContinue = kanbanStopTriggered;
+
+            const effectiveShouldContinue = shouldContinue || verificationGateTriggered || kanbanShouldContinue;
 
             if (effectiveShouldContinue) {
+              if (kanbanStopTriggered) {
+                kanbanStopNudgeCount++;
+                const kanbanNudge = buildKanbanStopNudge(conversationMessages, kanbanStopNudgeCount - 1, {});
+                if (kanbanNudge) {
+                  trace.addSystem(
+                    `Kanban 终止门 #${kanbanStopNudgeCount}（worker 未调用终端工具即收尾）`,
+                    `已执行 kanban 工具但未调用 kanban_complete/kanban_block/kanban_request_review`,
+                  );
+                  process.stdout.write(
+                    `[AgentModelExecutor] Kanban stop gate #${kanbanStopNudgeCount} ` +
+                    `— kanban worker stopped without terminal board tool; nudging to complete\n`,
+                  );
+                  conversationMessages.push(assistantMsg);
+                  conversationMessages.push({ role: "user", content: kanbanNudge });
+                  if (finalReply) {
+                    lastReplyBackup = finalReply;
+                  }
+                  finalReply = "";
+                  continue;
+                }
+              }
+
               if (verificationGateTriggered) {
                 verificationNudgeCount++;
                 // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径
