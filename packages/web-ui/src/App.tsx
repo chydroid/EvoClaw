@@ -54,6 +54,7 @@ const MessageTemplatesPage = React.lazy(() => import("./MessageTemplatesPage"));
 const ReplyReferencePage = React.lazy(() => import("./ReplyReferencePage"));
 const QueueManagerPage = React.lazy(() => import("./QueueManagerPage"));
 const FilesPage = React.lazy(() => import("./FilesPage").then(m => ({ default: m.FilesPage })));
+const PairingPage = React.lazy(() => import("./PairingPage").then(m => ({ default: m.PairingPage })));
 const ChannelMessagesPage = React.lazy(() => import("./ChannelMessagesPage"));
 const ObservabilityPage = React.lazy(() => import("./ObservabilityPage"));
 const GuardrailsPage = React.lazy(() => import("./GuardrailsPage"));
@@ -157,6 +158,7 @@ const NAV_GROUPS: NavGroup[] = [
     iconId: "security",
     items: [
       { id: "overall-security" as TabId, i18nKey: "nav.overall_security", iconId: "security" },
+      { id: "pairing" as TabId, i18nKey: "nav.pairing", iconId: "pairing" },
       { id: "secrets", i18nKey: "nav.secrets", iconId: "secrets" },
       { id: "dlq", i18nKey: "nav.dlq", iconId: "dlq" },
       { id: "feature-flags", i18nKey: "nav.feature_flags", iconId: "feature-flags" },
@@ -710,6 +712,7 @@ export default function App() {
       case "observability": return <ErrorBoundary><ObservabilityPage /></ErrorBoundary>;
       case "guardrails": return <ErrorBoundary><GuardrailsPage /></ErrorBoundary>;
       case "overall-security": return <ErrorBoundary><OverallSecurityPage /></ErrorBoundary>;
+      case "pairing": return <ErrorBoundary><PairingPage /></ErrorBoundary>;
       case "workboard": return <ErrorBoundary><WorkboardPage /></ErrorBoundary>;
       case "steer": return <ErrorBoundary><SteerPage /></ErrorBoundary>;
 

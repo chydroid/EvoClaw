@@ -45,7 +45,7 @@ import type { MoaConfig, ModelRef } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
-import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, setActiveSecurityLevel } from "@evoclaw/security";
+import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
@@ -156,6 +156,7 @@ export class EvoClawServer {
   // ── ACP + Operations modules (Round 4) ──
   private eventLedger: EventLedger;
   private permissionRelay: PermissionRelay;
+  private devicePairingManager: DevicePairingManager;
   private crestodian: Crestodian;
   private observability: Observability;
   private securityMiddleware: SecurityMiddleware;
@@ -470,6 +471,10 @@ export class EvoClawServer {
       this.eventBus,
     );
     this.registry.registerService("permissionRelay", this.permissionRelay);
+
+    // ── Device Pairing（可信设备配对：web/mobile/desktop/cli） ──
+    this.devicePairingManager = new DevicePairingManager(this.eventBus);
+    this.registry.registerService("devicePairingManager", this.devicePairingManager);
 
     // ── Crestodian (Daemon Operations Manager) ──
     this.crestodian = new Crestodian(
