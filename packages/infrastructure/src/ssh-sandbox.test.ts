@@ -136,7 +136,7 @@ describe("SandboxManager", () => {
     it("should list available backends", async () => {
       const backends = await manager.listBackends();
       expect(backends.length).toBe(7);
-      expect(backends.map((b) => b.type).sort()).toEqual(["daytona", "docker", "modal", "process", "ssh", "singularity", "vercel_sandbox"]);
+      expect(backends.map((b) => b.type).sort()).toEqual(["daytona", "docker", "modal", "process", "singularity", "ssh", "vercel_sandbox"]);
     });
   });
 
