@@ -9,7 +9,7 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore } from "@evoclaw/core";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
-import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, extractChangedPaths } from "./verification-stop";
+import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
@@ -3563,7 +3563,7 @@ export async function tryCallLLM(
                 verificationNudgeCount++;
                 // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径
                 const nudgePaths = stalePaths && stalePaths.length > 0 ? stalePaths : changedPathsForGate;
-                const nudge = buildVerifyOnStopNudge(nudgePaths, verificationNudgeCount - 1);
+                const nudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount - 1);
                 trace.addSystem(
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
                   `变更文件：${nudgePaths.join("、")}`,

@@ -1,17 +1,19 @@
 /**
  * 验证门（Verification Gate）—— 防止「未验证就声称完成」
  *
- * 借鉴 hermes-agent 的 agent/verification_stop.py：
+ * 借鉴 hermes-agent 的 agent/verification_stop.py + agent/verify_hooks.py：
  *   - 模型在**变更类工具**（文件写类）之后立即声称「已完成」时，
  *     门会注入一条合成的 user nudge，要求模型先验证工作成果再结束。
  *   - 与 completion-truthfulness 的「事后对账」不同，这是**事前拦截**：
  *     不是追加更正说明，而是让模型继续跑，直到它给出验证证据。
+ *   - pre_verify 钩子（对标 hermes verify_hooks.py）：允许插件注册额外的
+ *     验证检查逻辑，在 nudge 时一并注入。最多 3 次。
  *
  * 设计取舍：
  *   - 纯策略模块，不直接运行检查——它只决定「是否需要继续」，
  *     真正的验证动作由模型自己发起（读文件、跑测试、解包校验等）。
  *   - 文档/Markdown/纯数据文件不触发门（无可验证行为）。
- *   - 最多 2 次 nudge，防止无限续跑。
+ *   - 最多 2 次 nudge（默认），pre_verify 钩子最多 3 次。
  */
 
 /** 变更类（文件写）工具名——这些工具的产出需要验证 */
@@ -63,6 +65,33 @@ const NON_CODE_FILENAMES = new Set([
 
 /** 最大 nudge 次数 */
 const MAX_NUDGES = 2;
+/** pre_verify 钩子最大触发次数（对标 hermes verify_hooks.py 最多 3 次） */
+const MAX_PRE_VERIFY_HOOKS = 3;
+
+/** pre_verify 钩子签名：接收变更路径和已尝试次数，返回额外验证指令或 null */
+export type PreVerifyHook = (
+  changedPaths: string[],
+  attempts: number,
+) => string | null | Promise<string | null>;
+
+/** pre_verify 钩子注册表 */
+const preVerifyHooks: PreVerifyHook[] = [];
+
+/**
+ * 注册 pre_verify 钩子。
+ * 钩子在验证门 nudge 时被调用，返回的额外指令会追加到 nudge 消息中。
+ */
+export function registerPreVerifyHook(hook: PreVerifyHook): void {
+  if (preVerifyHooks.length >= MAX_PRE_VERIFY_HOOKS) return;
+  preVerifyHooks.push(hook);
+}
+
+/**
+ * 清空 pre_verify 钩子（测试用）。
+ */
+export function clearPreVerifyHooks(): void {
+  preVerifyHooks.length = 0;
+}
 
 /** 验证门配置 */
 export interface VerificationGateConfig {
@@ -157,6 +186,42 @@ export function buildVerifyOnStopNudge(
     `4. 如果是数据文件，验证内容完整性和格式\n\n` +
     `验证完成后，给出验证结果并结束。如果确实无法验证（如纯文本文件），说明原因后可直接结束。`
   );
+}
+
+/**
+ * 构建验证门 nudge 消息（含 pre_verify 钩子）。
+ * 调用所有注册的 pre_verify 钩子，将额外验证指令追加到 nudge 中。
+ *
+ * @param changedPaths 本轮变更的文件路径
+ * @param attempts 已尝试的 nudge 次数
+ * @param maxNudges 最大 nudge 次数
+ * @returns nudge 消息，null 表示不需要 nudge
+ */
+export async function buildVerifyOnStopNudgeWithHooks(
+  changedPaths: string[],
+  attempts: number,
+  maxNudges: number = MAX_NUDGES,
+): Promise<string | null> {
+  const baseNudge = buildVerifyOnStopNudge(changedPaths, attempts, maxNudges);
+  if (baseNudge === null) return null;
+
+  // 调用 pre_verify 钩子
+  const hookInstructions: string[] = [];
+  for (const hook of preVerifyHooks) {
+    try {
+      const result = await hook(changedPaths, attempts);
+      if (result && result.trim()) {
+        hookInstructions.push(result.trim());
+      }
+    } catch {
+      // 钩子异常不阻断 nudge
+    }
+  }
+
+  if (hookInstructions.length === 0) return baseNudge;
+
+  const hookSection = `\n\n⚠️ pre_verify 钩子附加验证要求：\n${hookInstructions.join("\n\n")}`;
+  return baseNudge + hookSection;
 }
 
 /**
