@@ -28,3 +28,6 @@ export type { MatrixConfig } from "./matrix.js";
 
 export { DingtalkAdapter } from "./dingtalk.js";
 export type { DingtalkConfig } from "./dingtalk.js";
+
+export { WeiboAdapter } from "./weibo.js";
+export type { WeiboConfig } from "./weibo.js";

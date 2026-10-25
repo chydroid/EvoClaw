@@ -15,6 +15,9 @@ import { MessageTemplateEngine } from "./message-templates";
 import { CanvasHost } from "./canvas-host";
 import { FeishuAdapter } from "./channels/feishu";
 import { MatrixAdapter } from "./channels/matrix";
+import { DingtalkAdapter } from "./channels/dingtalk";
+import { QQAdapter } from "./channels/qq";
+import { WeiboAdapter } from "./channels/weibo";
 import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
 import {
   getActiveSecurityPolicy,
@@ -1211,6 +1214,24 @@ export class ProtocolAdapter {
           case "matrix": {
             if (settings.homeserver) {
               adapter = new MatrixAdapter(config);
+            }
+            break;
+          }
+          case "dingtalk": {
+            if (settings.appKey && settings.appSecret) {
+              adapter = new DingtalkAdapter(config);
+            }
+            break;
+          }
+          case "qq": {
+            if (settings.appId && settings.token) {
+              adapter = new QQAdapter(config);
+            }
+            break;
+          }
+          case "weibo": {
+            if (settings.appKey && settings.appSecret) {
+              adapter = new WeiboAdapter(config);
             }
             break;
           }

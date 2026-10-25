@@ -19,6 +19,7 @@ export type ChannelType =
   | "feishu"
   | "wechat"
   | "qq"
+  | "weibo"
   | "signal"
   | "imessage"
   | "google-chat"
