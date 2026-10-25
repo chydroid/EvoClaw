@@ -2929,6 +2929,7 @@ export class AgentModelExecutor {
       humanApprovalManager: this.humanApprovalManager ?? undefined,
       evalRunner: this.evalRunner ?? undefined,
       cronSuggestionManager: this.registry.resolveService("cronSuggestionManager") as import("./slash-commands").CronSuggestionManagerLike | undefined,
+      blueprintCatalog: this.registry.resolveService("blueprintCatalog") as import("./slash-commands").BlueprintCatalogLike | undefined,
     };
     const result = await handleSlashCommandFn(deps, message, sessionId, startTime);
     if (!result) return null;

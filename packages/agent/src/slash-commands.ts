@@ -70,6 +70,27 @@ export interface SlashCommandDeps {
   };
   learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
   cronSuggestionManager?: CronSuggestionManagerLike;
+  blueprintCatalog?: BlueprintCatalogLike;
+}
+
+/** BlueprintCatalog 最小接口（避免 agent 包依赖 scheduler 包） */
+export interface BlueprintCatalogLike {
+  listBlueprints(): Array<{ key: string; title: string; description: string; category: string; slotCount: number }>;
+  getBlueprint(key: string): {
+    key: string;
+    title: string;
+    description: string;
+    scheduleTemplate: string;
+    promptTemplate: string;
+    slots: Array<{ name: string; label: string; type: string; default?: string; optional?: boolean; options?: string[]; help?: string }>;
+  } | null;
+  fillBlueprint(key: string, values: Record<string, string>): {
+    name: string;
+    cronExpression: string;
+    description: string;
+    handlerType: string;
+    handlerConfig: Record<string, unknown>;
+  };
 }
 
 /** CronSuggestionManager 最小接口（避免 agent 包依赖 scheduler 包） */
@@ -1205,6 +1226,97 @@ export async function handleSlashCommand(
       }
 
       reply = "⚠ 未知子命令: " + subCmd + "\n可用: list, catalog, accept <id>, dismiss <id>, clear";
+      break;
+    }
+
+    case "blueprint": {
+      if (!deps.blueprintCatalog) {
+        reply = "⚠ BlueprintCatalog 未注册。无法使用 /blueprint。";
+        break;
+      }
+      const bp = deps.blueprintCatalog;
+      const subCmd = args[0]?.toLowerCase();
+
+      if (!subCmd || subCmd === "list" || subCmd === "help") {
+        const list = bp.listBlueprints();
+        const lines: string[] = ["**📐 Automation Blueprints** (" + list.length + " 个模板)\n"];
+        list.forEach((b) => {
+          lines.push("• **" + b.title + "** [" + b.category + "] — " + b.description);
+          lines.push("  key: " + b.key + " (slots: " + b.slotCount + ")");
+        });
+        lines.push("");
+        lines.push("用法: /blueprint <key> [slot=value ...]");
+        lines.push("示例: /blueprint morning-brief time=07:30");
+        lines.push("      /blueprint custom-reminder time=10:00 content=\"记得买牛奶\"");
+        reply = lines.join("\n");
+        break;
+      }
+
+      const key = args[0];
+      const blueprint = bp.getBlueprint(key);
+      if (!blueprint) {
+        reply = "❌ 未找到蓝图: " + key + "\n可用 /blueprint list 查看所有蓝图。";
+        break;
+      }
+
+      // 解析 slot 值：格式 key=value，值可含空格（用引号包裹）
+      const values: Record<string, string> = {};
+      const slotArgs = args.slice(1);
+      for (const arg of slotArgs) {
+        const eqIdx = arg.indexOf("=");
+        if (eqIdx === -1) continue;
+        const slotName = arg.slice(0, eqIdx);
+        let val = arg.slice(eqIdx + 1);
+        // 去除引号
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        values[slotName] = val;
+      }
+
+      // 如果蓝图没有 slots，直接创建
+      if (blueprint.slots.length === 0) {
+        try {
+          const result = bp.fillBlueprint(key, {});
+          reply = "✅ 已创建定时任务: " + result.name + "\n  cron: " + result.cronExpression;
+        } catch (err) {
+          reply = "❌ " + (err instanceof Error ? err.message : String(err));
+        }
+        break;
+      }
+
+      // 有 slots 的蓝图：检查是否所有必填 slot 都有值
+      const missing: string[] = [];
+      for (const slot of blueprint.slots) {
+        if (!slot.default && !values[slot.name]) {
+          missing.push(slot.label + "(" + slot.name + ")");
+        }
+      }
+
+      if (missing.length > 0) {
+        const lines: string[] = ["**" + blueprint.title + "** — " + blueprint.description, ""];
+        lines.push("需要填写以下 slot：");
+        for (const slot of blueprint.slots) {
+          const filled = values[slot.name] ?? (slot.default ? "(默认: " + slot.default + ")" : "(未填写)");
+          const req = !slot.default && !slot.optional ? " *" : "";
+          lines.push("  " + slot.label + " [" + slot.type + "]" + req + ": " + filled);
+          if (slot.options) lines.push("    选项: " + slot.options.join(", "));
+          if (slot.help) lines.push("    " + slot.help);
+        }
+        lines.push("");
+        lines.push("用法: /blueprint " + key + " " + blueprint.slots.map((s) => s.name + "=value").join(" ..."));
+        reply = lines.join("\n");
+        break;
+      }
+
+      // 所有必填 slot 都有值，填充并创建
+      try {
+        const result = bp.fillBlueprint(key, values);
+        reply = "✅ 已创建定时任务: " + result.name + "\n  cron: " + result.cronExpression;
+        if (result.description) reply += "\n  " + result.description;
+      } catch (err) {
+        reply = "❌ " + (err instanceof Error ? err.message : String(err));
+      }
       break;
     }
 

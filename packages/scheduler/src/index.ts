@@ -15,6 +15,23 @@ export type {
   SuggestionStatus,
 } from "./cron-suggestions";
 
+// BlueprintCatalog — 参数化自动化蓝图（对标 hermes cron/blueprint_catalog.py）
+// Blueprint = 可参数化的模板，用户填 slot 后创建为 cron job
+export {
+  listBlueprints,
+  getBlueprint,
+  fillBlueprint,
+  blueprintFormSchema,
+  blueprintDeepLink,
+  BlueprintFillError,
+} from "./blueprint-catalog";
+export type {
+  AutomationBlueprint,
+  BlueprintSlot,
+  BlueprintSlotType,
+  BlueprintFillResult,
+} from "./blueprint-catalog";
+
 export { CronScheduler } from "./cron-scheduler";
 export type {
   CronJob,

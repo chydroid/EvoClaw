@@ -48,7 +48,7 @@ import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
-import { ScheduleManager, CronSuggestionManager, CronScheduler, RunLogStore, type SqliteDatabaseLike } from "@evoclaw/scheduler";
+import { ScheduleManager, CronSuggestionManager, CronScheduler, RunLogStore, listBlueprints, getBlueprint, fillBlueprint, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData, ReportSection } from "@evoclaw/reporting";
 import { TaskClassifier, SkillOrchestrator } from "@evoclaw/intelligence";
@@ -826,6 +826,30 @@ export class EvoClawServer {
     });
     this.cronSuggestionManager.bindScheduleManager(this.scheduleManager, this.eventBus);
     this.registry.registerService("cronSuggestionManager", this.cronSuggestionManager);
+    // 2026-10-25 P2：参数化自动化蓝图（对标 hermes cron/blueprint_catalog.py）
+    const blueprintCatalog = {
+      listBlueprints: () => listBlueprints().map((b) => ({
+        key: b.key, title: b.title, description: b.description, category: b.category, slotCount: b.slots.length,
+      })),
+      getBlueprint: (key: string) => {
+        const b = getBlueprint(key);
+        if (!b) return null;
+        return {
+          key: b.key, title: b.title, description: b.description,
+          scheduleTemplate: b.scheduleTemplate, promptTemplate: b.promptTemplate,
+          slots: b.slots.map((s) => ({
+            name: s.name, label: s.label, type: s.type, default: s.default,
+            options: s.options, help: s.help,
+          })),
+        };
+      },
+      fillBlueprint: (key: string, values: Record<string, string>) => {
+        const b = getBlueprint(key);
+        if (!b) throw new Error("未找到蓝图: " + key);
+        return fillBlueprint(b, values);
+      },
+    };
+    this.registry.registerService("blueprintCatalog", blueprintCatalog);
     this.reportGenerator = new ReportGenerator(this.registry, this.eventBus, {
       templateDir: path.resolve(__dirname, "..", "..", "..", "packages", "reporting", "src", "templates"),
     });
