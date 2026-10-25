@@ -11,6 +11,7 @@ import {
 } from "./shared";
 import type { BadgeVariant } from "./shared";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 
 const API = window.__EVOCLAW_API__ || "";
 
@@ -409,7 +410,7 @@ export default function SteerPage() {
     } catch (err) {
       const failResult: SteerResult = {
         accepted: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: errorMessage(err),
       };
       setResult(failResult);
 

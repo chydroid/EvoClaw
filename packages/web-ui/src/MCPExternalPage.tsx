@@ -19,6 +19,7 @@ import {
   showToast, Modal, TextInput,
 } from "./shared";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 
 const API = window.__EVOCLAW_API__ || "";
 
@@ -66,7 +67,7 @@ export default function MCPExternalPage() {
       setServers(data.servers || []);
       setConfigPath(data.configPath);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
       setServers([]);
     } finally {
       setLoading(false);
@@ -107,7 +108,7 @@ export default function MCPExternalPage() {
       setNewConfig(`{\n  "type": "stdio",\n  "command": "npx",\n  "args": ["-y", "package-name"],\n  "env": {}\n}`);
       loadData();
     } catch (err) {
-      showToast(t("mcp_external.add_failed", "添加失败") + ": " + (err instanceof Error ? err.message : String(err)), "error");
+      showToast(t("mcp_external.add_failed", "添加失败") + ": " + (errorMessage(err)), "error");
     } finally {
       setAdding(false);
     }
@@ -126,7 +127,7 @@ export default function MCPExternalPage() {
       setRemoveTarget(null);
       loadData();
     } catch (err) {
-      showToast(t("mcp_external.remove_failed", "移除失败") + ": " + (err instanceof Error ? err.message : String(err)), "error");
+      showToast(t("mcp_external.remove_failed", "移除失败") + ": " + (errorMessage(err)), "error");
     }
   };
 
@@ -143,7 +144,7 @@ export default function MCPExternalPage() {
       showToast(t("mcp_external.reconnected", "重连成功") + `: ${data.name} (${data.toolCount} tools)`, "success");
       loadData();
     } catch (err) {
-      showToast(t("mcp_external.reconnect_failed", "重连失败") + ": " + (err instanceof Error ? err.message : String(err)), "error");
+      showToast(t("mcp_external.reconnect_failed", "重连失败") + ": " + (errorMessage(err)), "error");
     } finally {
       setReconnecting(null);
     }

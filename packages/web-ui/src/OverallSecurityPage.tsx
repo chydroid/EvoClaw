@@ -5,6 +5,7 @@
  * 三档定义见 `@evoclaw/security` 的 security-level.ts。
  */
 import React, { useEffect, useState, useCallback } from "react";
+import { errorMessage } from "./api-error";
 
 interface SecurityPolicy {
   level: string;
@@ -85,7 +86,7 @@ export default function OverallSecurityPage() {
       setCurrent(data.current);
       setLevels(data.levels || []);
     } catch (err) {
-      setMessage({ type: "error", text: `加载失败：${err instanceof Error ? err.message : String(err)}` });
+      setMessage({ type: "error", text: `加载失败：${errorMessage(err)}` });
     }
   }, []);
 
@@ -114,7 +115,7 @@ export default function OverallSecurityPage() {
       setMessage({ type: "success", text: `已切换到「${data.current.label}」` });
     } catch (err) {
       if (prev) setCurrent(prev);
-      setMessage({ type: "error", text: `切换失败：${err instanceof Error ? err.message : String(err)}` });
+      setMessage({ type: "error", text: `切换失败：${errorMessage(err)}` });
     } finally {
       setSaving(false);
     }

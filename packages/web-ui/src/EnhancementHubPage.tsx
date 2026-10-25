@@ -7,6 +7,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { PageHeader, Card, Badge, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 
 interface CapabilityStatus {
   active: boolean;
@@ -488,7 +489,7 @@ export function EnhancementHubPage(): React.ReactElement {
       );
       setMetricsMap(metrics);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }

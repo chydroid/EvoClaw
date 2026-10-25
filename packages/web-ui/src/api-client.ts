@@ -3,7 +3,14 @@
  *
  * Typed fetch wrappers for all backend endpoints.
  * Every function returns a Promise with proper TypeScript types.
+ *
+ * 错误语义（对标 hermes web/src/lib/api-error.ts）：
+ * HTTP 非 2xx → ApiError（优先取 body 里的 detail，否则按状态码给人话文案）；
+ * fetch 被 reject（网络错误 / 超时中止）→ ApiError(status=0, API_UNREACHABLE_MESSAGE)。
+ * 页面用 `errorMessage(err)` 取用户文案，不再拼 `Error: ${e}`。
  */
+
+import { apiErrorFromResponse, apiErrorFromNetworkFailure, errorMessage } from "./api-error";
 
 // ═══════════════════════════════════════════════
 // Base
@@ -36,46 +43,48 @@ function fetchWithTimeout(
     .finally(() => clearTimeout(timeoutId));
 }
 
-async function get<T>(path: string, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, { signal }, timeoutMs);
-  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
+/** 底层 JSON 请求：网络拒绝转成 ApiError(0)，HTTP 非 2xx 转成 ApiError(status)。 */
+async function fetchJSON<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${BASE}${path}`, init, timeoutMs);
+  } catch (err) {
+    throw apiErrorFromNetworkFailure(err, path);
+  }
+  if (!res.ok) throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), path);
   return res.json() as Promise<T>;
 }
 
+async function get<T>(path: string, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+  return fetchJSON<T>(path, { signal }, timeoutMs);
+}
+
 async function post<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, {
+  return fetchJSON<T>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   }, timeoutMs);
-  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
-  return res.json() as Promise<T>;
 }
 
 async function put<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, {
+  return fetchJSON<T>(path, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   }, timeoutMs);
-  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
-  return res.json() as Promise<T>;
 }
 
 async function del<T>(path: string, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, { method: "DELETE" }, timeoutMs);
-  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
-  return res.json() as Promise<T>;
+  return fetchJSON<T>(path, { method: "DELETE" }, timeoutMs);
 }
 
 async function patch<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(`${BASE}${path}`, {
+  return fetchJSON<T>(path, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   }, timeoutMs);
-  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => ""));
-  return res.json() as Promise<T>;
 }
 
 async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
@@ -92,22 +101,19 @@ export async function getSafeResult<T>(
   fallback: T,
   signal?: AbortSignal,
   timeoutMs?: number,
-): Promise<{ data: T; error: string | null }> {
+): Promise<LoadState<T>> {
   try {
     const data = await get<T>(path, signal, timeoutMs);
     return { data, error: null };
   } catch (err) {
-    return { data: fallback, error: err instanceof Error ? err.message : String(err) };
+    return { data: fallback, error: errorMessage(err) };
   }
 }
 
 export type LoadState<T> = { data: T; error: string | null };
 
-export class ApiError extends Error {
-  constructor(public status: number, public body: string) {
-    super(`HTTP ${status}: ${body.slice(0, 200)}`);
-  }
-}
+/** 统一错误文案提取（对齐 hermes errorMessage，永不产生 `Error: Error:` 双前缀）。 */
+export { errorMessage } from "./api-error";
 
 // ═══════════════════════════════════════════════
 // Health & System

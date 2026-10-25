@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { renderMarkdown, sanitizeHtml } from "./markdown-renderer";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 import { skillsIntegrityApi, type SkillIntegrityVerifyResponse, type LockVerifyResult } from "./api-client";
 
 // 校验 URL 协议，只允许 http/https，防止 javascript: 等协议注入 XSS
@@ -909,7 +910,7 @@ export default function SkillsConfig() {
         type: "error",
         text: aborted
           ? `${t("skills.binary_install_failed", "Binary 安装失败")}: 安装超时（120s），请在终端手动执行安装命令后重试`
-          : `${t("skills.binary_install_failed", "Binary 安装失败")}: ${err instanceof Error ? err.message : String(err)}`,
+          : `${t("skills.binary_install_failed", "Binary 安装失败")}: ${errorMessage(err)}`,
       });
     } finally {
       setInstallingBins(null);
@@ -1074,7 +1075,7 @@ export default function SkillsConfig() {
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       setMarketplaceResults([]);
-      setMarketplaceError(err instanceof Error ? err.message : String(err));
+      setMarketplaceError(errorMessage(err));
     } finally {
       if (!controller.signal.aborted) {
         setMarketplaceSearching(false);
@@ -1099,7 +1100,7 @@ export default function SkillsConfig() {
       }
       setMarketplaceDetail(data.detail as MarketplaceSearchResult);
     } catch (err) {
-      setMarketplaceDetailError(err instanceof Error ? err.message : String(err));
+      setMarketplaceDetailError(errorMessage(err));
       setMarketplaceDetail(null);
     } finally {
       setMarketplaceDetailLoading(null);
@@ -1141,7 +1142,7 @@ export default function SkillsConfig() {
       }
     } catch (err) {
       // 网络错误或 JSON 解析错误，显示具体异常信息
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       setMessage({ type: "error", text: `${t("skills.install_fail", "安装失败")}: ${msg}` });
     }
     setMarketplaceInstalling(null);

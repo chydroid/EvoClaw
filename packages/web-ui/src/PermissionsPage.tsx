@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 
 interface PermissionRequest {
   id: string;
@@ -180,7 +181,7 @@ export function PermissionsPage() {
       showMessage(t("permissions.approved", "已批准"), "success");
       await loadData();
     } catch (err) {
-      showMessage(`审批失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showMessage(`审批失败: ${errorMessage(err)}`, "error");
     }
   };
 
@@ -202,7 +203,7 @@ export function PermissionsPage() {
       showMessage(t("permissions.denied", "已拒绝"), "success");
       await loadData();
     } catch (err) {
-      showMessage(`拒绝失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showMessage(`拒绝失败: ${errorMessage(err)}`, "error");
     }
   };
 

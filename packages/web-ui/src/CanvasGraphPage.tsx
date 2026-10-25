@@ -49,6 +49,7 @@
  *     - 低缩放时缩小点避免视觉抖动
  */
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
+import { errorMessage } from "./api-error";
 
 interface CanvasNode {
   id: string;
@@ -172,7 +173,7 @@ export function CanvasGraphPage() {
       });
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -429,7 +430,7 @@ export function CanvasGraphPage() {
       }
       return null;
     } catch (err) {
-      setError(`撤销操作同步到后端失败: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`撤销操作同步到后端失败: ${errorMessage(err)}`);
       return null;
     }
   }, [snapshot, setError]);
@@ -493,7 +494,7 @@ export function CanvasGraphPage() {
       setSelectedNodeId(null);
       await fetchSnapshot();
     } catch (err) {
-      setError(`删除节点失败: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`删除节点失败: ${errorMessage(err)}`);
     }
   }, [selectedNodeId, snapshot, pushUndoSnapshot, fetchSnapshot]);
 

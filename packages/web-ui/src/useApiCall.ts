@@ -23,6 +23,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { showToast } from "./shared";
+import { errorMessage as formatErrorMessage } from "./api-error";
 
 export interface ApiCallOptions {
   /** 失败时显示的错误消息（为空则不显示 toast） */
@@ -86,7 +87,7 @@ export function useApiCall(): UseApiCallResult {
 
       return result;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = formatErrorMessage(err);
       const displayMsg = errorMessage || msg;
 
       if (mountedRef.current) {

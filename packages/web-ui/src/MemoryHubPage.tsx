@@ -14,6 +14,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { PageHeader, Card, Badge, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 
 // ── API 响应类型 ──────────────────────────────────────────────
 
@@ -304,7 +305,7 @@ export function MemoryHubPage(): React.ReactElement {
         setError("无法连接服务器，请检查服务是否运行");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }

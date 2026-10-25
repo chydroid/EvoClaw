@@ -22,6 +22,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "./i18n";
+import { errorMessage } from "./api-error";
 import {
   PageHeader, Card, Badge, PrimaryButton, SecondaryButton, GhostButton,
   Modal, StatsGrid, EmptyState, ErrorBanner, Loading, showToast,
@@ -243,7 +244,7 @@ export default function SkillWorkshopPage() {
         if (ps) setProposals(ps.proposals || []);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -267,7 +268,7 @@ export default function SkillWorkshopPage() {
       const data = await api.get(id);
       setSelected(data.proposal);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), "error");
+      showToast(errorMessage(err), "error");
       setSelectedId(null);
     } finally {
       setDetailLoading(false);
@@ -318,7 +319,7 @@ export default function SkillWorkshopPage() {
       setProposals(prev => [data.proposal, ...prev]);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.create_fail", "创建失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.create_fail", "创建失败")}: ${errorMessage(err)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -332,7 +333,7 @@ export default function SkillWorkshopPage() {
       await refreshDetail(id);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.submit_fail", "提交失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.submit_fail", "提交失败")}: ${errorMessage(err)}`, "error");
     } finally {
       markAction(id, false);
     }
@@ -350,7 +351,7 @@ export default function SkillWorkshopPage() {
       await refreshDetail(id);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.review_fail", "审核失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.review_fail", "审核失败")}: ${errorMessage(err)}`, "error");
     } finally {
       markAction(id, false);
     }
@@ -384,7 +385,7 @@ export default function SkillWorkshopPage() {
       await refreshDetail(id);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.revise_fail", "修订失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.revise_fail", "修订失败")}: ${errorMessage(err)}`, "error");
     } finally {
       markAction(id, false);
     }
@@ -399,7 +400,7 @@ export default function SkillWorkshopPage() {
       await refreshDetail(id);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.install_fail", "安装失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.install_fail", "安装失败")}: ${errorMessage(err)}`, "error");
     } finally {
       markAction(id, false);
     }
@@ -414,7 +415,7 @@ export default function SkillWorkshopPage() {
       await refreshDetail(id);
       await loadAll(true);
     } catch (err) {
-      showToast(`${t("workshop.rollback_fail", "回滚失败")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      showToast(`${t("workshop.rollback_fail", "回滚失败")}: ${errorMessage(err)}`, "error");
     } finally {
       markAction(id, false);
     }
