@@ -86,3 +86,33 @@ export {
   MAX_RETRIES,
 } from "./cron-protocol-conformance";
 export type { CronJobSpec, ConformanceFinding } from "./cron-protocol-conformance";
+
+// BlueprintSkillBridge — 技能前端标记桥接（对标 hermes-agent tools/blueprints.py）
+//   parseBlueprintFromSkillMd / blueprintToJobSpec / createBlueprintJob
+//   registerBlueprintSuggestion / exportBlueprintToSkillMd / listSkillBlueprints
+export {
+  parseBlueprintFromSkillMd,
+  blueprintToJobSpec,
+  createBlueprintJob,
+  registerBlueprintSuggestion,
+  exportBlueprintToSkillMd,
+  listSkillBlueprints,
+  parseBlueprintFromFile,
+  BlueprintParseError,
+} from "./blueprint-skill-bridge";
+export type { BlueprintSpec, BlueprintJobSpec } from "./blueprint-skill-bridge";
+
+// BlueprintPlugins — 插件蓝图注册（对标 hermes-agent cron/blueprint_plugins.py）
+//   buildPluginBlueprint / buildPluginBlueprints / listPluginBlueprints
+//   mergeBlueprints / validateBlueprintSlots / createPluginBlueprintRegistry
+export {
+  buildPluginBlueprint,
+  buildPluginBlueprints,
+  listPluginBlueprints,
+  mergeBlueprints,
+  validateBlueprintSlots,
+  createPluginBlueprintRegistry,
+  addBlueprintToRegistry,
+  PluginBlueprintError,
+} from "./blueprint-plugins";
+export type { PluginBlueprintRegistry, PluginManagerLike } from "./blueprint-plugins";

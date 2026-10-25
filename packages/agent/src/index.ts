@@ -708,3 +708,17 @@ export type {
   ReadinessResult,
   VerifyResult,
 } from "./verify";
+
+// lsp-verdicts — 延迟语法裁决（对标 hermes-agent agent/turn_stop_gates.py::_late_lsp_verdicts）
+//   DeferredVerdictTracker / NodeSyntaxChecker / collectLateVerdicts
+export {
+  DeferredVerdictTracker,
+  NodeSyntaxChecker,
+  collectLateVerdicts,
+  isCheckableFile,
+} from "./lsp-verdicts";
+export type {
+  Diagnostic,
+  DiagnosticChecker,
+  DiagnosticSeverity,
+} from "./lsp-verdicts";
