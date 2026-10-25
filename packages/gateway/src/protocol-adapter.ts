@@ -4459,7 +4459,105 @@ export class ProtocolAdapter {
       }
     });
 
-    // ── 总体安全等级（安全 → 总体安全）──
+    // ─── Persona（多角色管理）路由 ────────────────────────────────────────
+    // 对标 hermes Profile 的「身份」子集：多个命名角色 + 切换。
+    // EvoClaw 的配置是全局的，因此 persona 只管身份（name/title/masterTerm/tone/introduction），
+    // 不承载模型/MCP/技能配置——那些仍走全局 config。
+    app.get("/api/personas", (_req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          listPersonas(): Array<Record<string, unknown>>;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        res.json({ personas: pm.listPersonas() });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/personas/active", (_req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          getActivePersona(): Record<string, unknown> | null;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        const active = pm.getActivePersona();
+        res.json({ persona: active || null });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/personas", async (req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          createPersona(data: Record<string, unknown>): Record<string, unknown>;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        const body = req.body || {};
+        const persona = pm.createPersona({
+          name: String(body.name || ""),
+          title: body.title != null ? String(body.title) : undefined,
+          masterTerm: body.masterTerm != null ? String(body.masterTerm) : undefined,
+          tone: body.tone != null ? String(body.tone) : undefined,
+          introduction: body.introduction != null ? String(body.introduction) : undefined,
+        });
+        res.status(201).json({ success: true, persona });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
+
+    app.put("/api/personas/:name", async (req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          updatePersona(name: string, data: Record<string, unknown>): Record<string, unknown>;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        const body = req.body || {};
+        const persona = pm.updatePersona(String(req.params.name), {
+          name: body.name != null ? String(body.name) : undefined,
+          title: body.title != null ? String(body.title) : undefined,
+          masterTerm: body.masterTerm != null ? String(body.masterTerm) : undefined,
+          tone: body.tone != null ? String(body.tone) : undefined,
+          introduction: body.introduction != null ? String(body.introduction) : undefined,
+        });
+        res.json({ success: true, persona });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
+
+    app.delete("/api/personas/:name", (req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          deletePersona(name: string): boolean;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        const removed = pm.deletePersona(String(req.params.name));
+        if (!removed) { res.status(404).json({ error: "Persona not found" }); return; }
+        res.json({ success: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
+
+    app.post("/api/personas/:name/activate", (req: Request, res: Response) => {
+      try {
+        const pm = this.registry.resolveService<{
+          setActivePersona(name: string): Record<string, unknown>;
+        }>("personaManager");
+        if (!pm) { res.status(503).json({ error: "personaManager not available" }); return; }
+        const persona = pm.setActivePersona(String(req.params.name));
+        res.json({ success: true, persona });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    });
     // 切换后立即写入运行时策略：文件工具、shell 工具、human-approval 都读同一份。
     app.get("/api/security-level", (_req: Request, res: Response) => {
       try {

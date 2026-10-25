@@ -39,6 +39,8 @@ export { ServiceRegistry } from "./service-registry";
 export { EventBus } from "./event-bus";
 export { ConfigManager, defaultConfig } from "./config";
 export type { AppConfig, DeepPartial, PersonaConfig } from "./config";
+export { PersonaManager } from "./persona-manager";
+export type { Persona, PersonaStore } from "./persona-manager";
 export { ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, ValidationError as ConfigValidationError } from "./config-schema";
 export type { ConfigValidationResult, SchemaConfigChange, SchemaConfigChangeHandler } from "./config-schema";
 // 扩展发现机制（对标 OpenClaw openclaw.extensions 字段扫描）

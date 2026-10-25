@@ -54,6 +54,7 @@ const MessageTemplatesPage = React.lazy(() => import("./MessageTemplatesPage"));
 const ReplyReferencePage = React.lazy(() => import("./ReplyReferencePage"));
 const QueueManagerPage = React.lazy(() => import("./QueueManagerPage"));
 const FilesPage = React.lazy(() => import("./FilesPage").then(m => ({ default: m.FilesPage })));
+const ProfilesPage = React.lazy(() => import("./ProfilesPage").then(m => ({ default: m.ProfilesPage })));
 const DocsPage = React.lazy(() => import("./DocsPage").then(m => ({ default: m.DocsPage })));
 const AnalyticsPage = React.lazy(() => import("./AnalyticsPage").then(m => ({ default: m.AnalyticsPage })));
 const PairingPage = React.lazy(() => import("./PairingPage").then(m => ({ default: m.PairingPage })));
@@ -149,6 +150,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "llm", i18nKey: "nav.llm", iconId: "llm" },
       { id: "channels", i18nKey: "nav.channels", iconId: "channels" },
       { id: "evolution", i18nKey: "nav.evolution", iconId: "evolution" },
+      { id: "profiles" as TabId, i18nKey: "nav.profiles", iconId: "profiles" },
       { id: "workboard" as TabId, i18nKey: "nav.workboard", iconId: "workboard" },
       { id: "steer" as TabId, i18nKey: "nav.steer", iconId: "steer" },
       { id: "moa-dashboard" as TabId, i18nKey: "nav.moa_dashboard", iconId: "llm" },
@@ -698,6 +700,7 @@ export default function App() {
       case "llm": return <ErrorBoundary><LLMConfig /></ErrorBoundary>;
       case "channels": return <ErrorBoundary><ChannelConfigPage /></ErrorBoundary>;
       case "evolution": return <ErrorBoundary><EvolutionDashboard /></ErrorBoundary>;
+      case "profiles": return <ErrorBoundary><ProfilesPage /></ErrorBoundary>;
       case "ops": return <ErrorBoundary><OpsPage /></ErrorBoundary>;
       case "cli": return <ErrorBoundary><CLITerminal /></ErrorBoundary>;
       case "secrets": return <ErrorBoundary><SecretsManagerPage /></ErrorBoundary>;

@@ -8,7 +8,7 @@
 export type TabId =
   | "chat" | "status" | "dashboard"
   | "events" | "skills" | "bootstrap" | "files" | "canvas" | "canvas-graph" | "monitoring"
-  | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
+  | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution" | "profiles"
   | "ops" | "cli"
   | "overall-security" | "pairing"
   | "secrets" | "dlq" | "config-rpc" | "session-mgmt"
