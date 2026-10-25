@@ -88,9 +88,13 @@ export class TurnRetryState {
   private executedActions = new Set<string>();
   private retryCount = 0;
   private readonly maxRetries: number;
+  /** 自动恢复阶梯已用轮次（对标 hermes turn_recovery_autorecover.py） */
+  private autoRecoveryCycles = 0;
+  private readonly maxAutoRecoveryCycles: number;
 
-  constructor(maxRetries: number = 3) {
+  constructor(maxRetries: number = 3, maxAutoRecoveryCycles: number = 5) {
     this.maxRetries = maxRetries;
+    this.maxAutoRecoveryCycles = maxAutoRecoveryCycles;
   }
 
   /** 检查动作是否已执行 */
@@ -117,6 +121,28 @@ export class TurnRetryState {
     return true;
   }
 
+  /**
+   * 消耗一次自动恢复阶梯轮次。
+   * 对标 hermes turn_recovery_autorecover.py：当 max_retries 耗尽且 fallback chain
+   * 无剩余时，如果 provider 只是暂时不可用（overloaded/server_error/timeout），
+   * 按 15/30/60/60/60s 抖动退避后重新进入重试循环。
+   * 返回退避延迟（ms），null 表示阶梯已耗尽。
+   */
+  consumeAutoRecovery(): number | null {
+    if (this.autoRecoveryCycles >= this.maxAutoRecoveryCycles) return null;
+    this.autoRecoveryCycles++;
+    // 抖动退避：15/30/60/60/60s + 0-5s 随机抖动
+    const baseDelays = [15_000, 30_000, 60_000, 60_000, 60_000];
+    const base = baseDelays[Math.min(this.autoRecoveryCycles - 1, baseDelays.length - 1)];
+    const jitter = Math.floor(Math.random() * 5_000);
+    return base + jitter;
+  }
+
+  /** 获取已用的自动恢复轮次 */
+  getAutoRecoveryCycles(): number {
+    return this.autoRecoveryCycles;
+  }
+
   /** 当前重试次数 */
   getRetryCount(): number {
     return this.retryCount;
@@ -131,6 +157,7 @@ export class TurnRetryState {
   reset(): void {
     this.executedActions.clear();
     this.retryCount = 0;
+    this.autoRecoveryCycles = 0;
   }
 
   /** 已执行的动作列表（用于诊断） */
@@ -488,6 +515,18 @@ export class ErrorRecoveryExecutor {
 
       case "rate_limit": {
         if (!this.turnState.consumeRetry()) {
+          // 重试耗尽 → 尝试自动恢复阶梯（provider 暂时不可用时 park+retry）
+          const autoDelay = this.turnState.consumeAutoRecovery();
+          if (autoDelay !== null) {
+            return {
+              ...baseResult,
+              recovered: true,
+              shouldRetry: true,
+              retryDelayMs: autoDelay,
+              action: "auto_recovery_park",
+              diagnostics: { reason: "rate_limit", delayMs: autoDelay, cycle: this.turnState.getAutoRecoveryCycles() },
+            };
+          }
           return {
             ...baseResult,
             shouldFailover: allowFailover,
@@ -508,6 +547,18 @@ export class ErrorRecoveryExecutor {
       case "overloaded":
       case "server_error": {
         if (!this.turnState.consumeRetry()) {
+          // 重试耗尽 → 尝试自动恢复阶梯
+          const autoDelay = this.turnState.consumeAutoRecovery();
+          if (autoDelay !== null) {
+            return {
+              ...baseResult,
+              recovered: true,
+              shouldRetry: true,
+              retryDelayMs: autoDelay,
+              action: "auto_recovery_park",
+              diagnostics: { reason, delayMs: autoDelay, cycle: this.turnState.getAutoRecoveryCycles() },
+            };
+          }
           return {
             ...baseResult,
             shouldFailover: allowFailover,
@@ -528,6 +579,18 @@ export class ErrorRecoveryExecutor {
       case "timeout":
       case "network": {
         if (!this.turnState.consumeRetry()) {
+          // 重试耗尽 → 尝试自动恢复阶梯
+          const autoDelay = this.turnState.consumeAutoRecovery();
+          if (autoDelay !== null) {
+            return {
+              ...baseResult,
+              recovered: true,
+              shouldRetry: true,
+              retryDelayMs: autoDelay,
+              action: "auto_recovery_park",
+              diagnostics: { reason: "timeout", delayMs: autoDelay, cycle: this.turnState.getAutoRecoveryCycles() },
+            };
+          }
           return {
             ...baseResult,
             shouldFailover: allowFailover,
