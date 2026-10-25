@@ -32,14 +32,14 @@ function fetchWithTimeout(
     // 转发外部 signal 的 abort；在 fetch 完成后移除监听器，避免累积
     const onAbort = () => controller.abort();
     originalSignal.addEventListener("abort", onAbort, { once: true });
-    return fetch(input, { ...init, signal: controller.signal })
+    return fetch(input, { ...init, signal: controller.signal, credentials: "same-origin" })
       .finally(() => {
         clearTimeout(timeoutId);
         originalSignal.removeEventListener("abort", onAbort);
       });
   }
 
-  return fetch(input, { ...init, signal: controller.signal })
+  return fetch(input, { ...init, signal: controller.signal, credentials: "same-origin" })
     .finally(() => clearTimeout(timeoutId));
 }
 
@@ -87,7 +87,7 @@ async function patch<T>(path: string, body?: unknown, timeoutMs?: number): Promi
   }, timeoutMs);
 }
 
-async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+export async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
   try { return await get<T>(path, signal, timeoutMs); } catch { return fallback; }
 }
 
