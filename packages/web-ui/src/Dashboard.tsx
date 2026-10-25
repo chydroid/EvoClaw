@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { PageHeader, Card, Badge, StatsGrid, DataTable, Section, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
+import { loadErrorCopy, type LoadErrorCopy } from "./load-error-copy";
 
 interface SystemHealth {
   status: string;
@@ -109,8 +110,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // 区分「请求失败」与「空数据」：单个卡片拉取失败时记录，避免把网络失败
-  // 与真实的空列表混成「无数据」 silently 展示。
-  const [cardErrors, setCardErrors] = useState<Record<string, string | null>>({});
+  // 与真实的空列表混成「无数据」 silently 展示。文案经 load-error-copy 统一口径。
+  const [cardErrors, setCardErrors] = useState<Record<string, LoadErrorCopy | null>>({});
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -131,14 +132,14 @@ export default function Dashboard() {
       ]);
       if (signal.aborted) return;
 
-      const failures: Record<string, string | null> = {};
-      const recordFailure = (key: string, res: PromiseSettledResult<Response | null>) => {
-        if (res.status === "rejected") failures[key] = t("dashboard.fetch_failed", "请求失败");
-        else if (res.status === "fulfilled" && (!res.value || !res.value.ok)) failures[key] = t("dashboard.fetch_failed", "请求失败");
+      const failures: Record<string, LoadErrorCopy | null> = {};
+      const recordFailure = (key: string, what: string, res: PromiseSettledResult<Response | null>) => {
+        if (res.status === "rejected") failures[key] = loadErrorCopy(what, res.reason?.message);
+        else if (res.status === "fulfilled" && (!res.value || !res.value.ok)) failures[key] = loadErrorCopy(what);
       };
-      recordFailure("sessions", sessionsRes);
-      recordFailure("providers", providersRes);
-      recordFailure("bootstrap", bsRes);
+      recordFailure("sessions", t("dashboard.sessions_header"), sessionsRes);
+      recordFailure("providers", t("dashboard.providers_header"), providersRes);
+      recordFailure("bootstrap", t("dashboard.bootstrap_header"), bsRes);
       setCardErrors(failures);
 
       const health = healthRes.status === "fulfilled" && healthRes.value.ok
@@ -254,7 +255,10 @@ export default function Dashboard() {
         {/* Provider Status */}
         <Card title={t("dashboard.providers_header")}>
           {cardErrors.providers ? (
-            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.providers}</div>
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>
+              <div>{cardErrors.providers.title}</div>
+              {cardErrors.providers.details && <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: "2px" }}>{cardErrors.providers.details}</div>}
+            </div>
           ) : data.providers.length > 0 ? (
             data.providers.map((p, i) => (
               <div key={i} style={{ marginBottom: "10px" }}>
@@ -315,7 +319,10 @@ export default function Dashboard() {
         {/* Sessions */}
         <Card title={t("dashboard.sessions_header_count").replace("{0}", String(data.sessions.length))}>
           {cardErrors.sessions ? (
-            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.sessions}</div>
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>
+              <div>{cardErrors.sessions.title}</div>
+              {cardErrors.sessions.details && <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: "2px" }}>{cardErrors.sessions.details}</div>}
+            </div>
           ) : data.sessions.length > 0 ? (
             <DataTable
               columns={[
@@ -336,7 +343,10 @@ export default function Dashboard() {
         {/* Bootstrap Files */}
         <Card title={t("dashboard.bootstrap_header")} style={{ gridColumn: "1 / -1" }}>
           {cardErrors.bootstrap ? (
-            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>{cardErrors.bootstrap}</div>
+            <div style={{ color: "var(--error)", fontSize: "12px", padding: "8px 0" }}>
+              <div>{cardErrors.bootstrap.title}</div>
+              {cardErrors.bootstrap.details && <div style={{ color: "var(--text-muted)", fontSize: "11px", marginTop: "2px" }}>{cardErrors.bootstrap.details}</div>}
+            </div>
           ) : data.bootstrapFiles.length > 0 ? (
             <DataTable
               columns={[

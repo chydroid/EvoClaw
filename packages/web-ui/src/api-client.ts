@@ -82,6 +82,27 @@ async function getSafe<T>(path: string, fallback: T, signal?: AbortSignal, timeo
   try { return await get<T>(path, signal, timeoutMs); } catch { return fallback; }
 }
 
+/**
+ * 与 getSafe 同一语义，但**不静默吞掉错误**：返回 `{ data, error }`，
+ * 供页面区分「请求失败」与「数据本身就是空的」（对齐 hermes load-error-copy 的口径）。
+ * 保持向后兼容：现有 getSafe 调用点无需改动。
+ */
+export async function getSafeResult<T>(
+  path: string,
+  fallback: T,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<{ data: T; error: string | null }> {
+  try {
+    const data = await get<T>(path, signal, timeoutMs);
+    return { data, error: null };
+  } catch (err) {
+    return { data: fallback, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export type LoadState<T> = { data: T; error: string | null };
+
 export class ApiError extends Error {
   constructor(public status: number, public body: string) {
     super(`HTTP ${status}: ${body.slice(0, 200)}`);
