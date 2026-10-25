@@ -86,14 +86,10 @@ export type { ProviderSkipEntry, SessionSkipList, ProviderSkipListConfig } from 
 export { OpenAIProvider, AnthropicProvider, GoogleProvider } from "./providers/index.js";
 export { ProgressDraftsManager } from "./progress-drafts";
 export type { ProgressDraft, ProgressEvent, ProgressDraftsConfig, ProgressListener, DraftStatus } from "./progress-drafts";
-export { FormalVerifier, ATLAS_TACTICS } from "./formal-verification";
-export type { AtlasTacticId, AtlasTechnique, DetectionPattern, ThreatMatch, VerificationResult, RuntimeCheckContext, VerificationConfig } from "./formal-verification";
 export { TUIManager } from "./tui-interface";
 export type { TUIState, TUIMessage, TUIStatus, TUINotification, TUICommand, TUIConfig, TUIPanel } from "./tui-interface";
 export { TaskScheduler } from "./task-scheduler";
 export type { ScheduledTask, ScheduleResult, SchedulerConfig, TaskPriority, TaskCategory } from "./task-scheduler";
-export { SelfHealingEngine } from "./self-healing";
-export type { ResilienceConfig, HealthScore, ErrorPattern, MutationStrategy, AnomalyRecord, RecoveryStrategy } from "./self-healing";
 export { SwarmOrchestrator } from "./swarm-orchestrator";
 export type { SwarmAgent, SwarmConfig, AgentRole, DelegationRequest, DelegationResult, ConsensusProposal, ConsensusVote, ConsensusResult } from "./swarm-orchestrator";
 
@@ -110,8 +106,8 @@ export type { MoaMember, MoaPreset, MoaReferenceResult, MoaResult, MoaChatFn, Mo
 // MoA Engine — 增强的多阶段 Mixture-of-Agents 推理引擎（对标 hermes-agent moa_loop.py）
 // 4 阶段流水线：Proposal → Aggregation → Verification → Synthesis
 //   多 proposer 并行 + 4 种聚合策略（concat/best/vote/weighted）+ 验证回路 + AbortController 超时
-// 注：MoaResult / VerificationResult 已由 moa-committee / formal-verification 显式导出，
-//     此处以别名导出 moa-engine 的同名类型避免覆盖。
+// 注：MoaResult / VerificationResult 已由 moa-engine 显式导出，
+//     此处以别名导出避免覆盖。
 export * from "./moa-engine";
 export type { MoaResult as MoaEngineResult, VerificationResult as MoaVerificationResult } from "./moa-engine";
 
@@ -120,10 +116,6 @@ export type { MoaResult as MoaEngineResult, VerificationResult as MoaVerificatio
 export { GoalContract, GoalRegistry } from "./goal-contract";
 export type { ContractClause, ClauseResult, ContractVerificationResult, GoalContractConfig, GoalStatus, GoalRunRecord } from "./goal-contract";
 
-// BackgroundDelegator — 后台子 Agent 并行派发 + 结果合并
-// 对标 Hermes v0.18.0 "子 Agent 后台并行"：delegate_task fire-and-forget + 继续聊天
-export { BackgroundDelegator } from "./background-delegator";
-export type { BackgroundTask, BackgroundTaskStatus, DelegateOptions, DelegateFn, TaskCompleteCallback } from "./background-delegator";
 export { ReplyDeduplicator, areMessagesDuplicate } from "./reply-dedup";
 export type { DedupConfig, DedupEntry, DedupCheckResult } from "./reply-dedup";
 

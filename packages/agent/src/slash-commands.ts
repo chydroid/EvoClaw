@@ -68,7 +68,6 @@ export interface SlashCommandDeps {
     learnFromUrl(url: string, skillName?: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
     learnFromConversation(history: Array<{ role: "user" | "assistant" | "tool"; content: string; toolName?: string }>, skillName: string): Promise<{ skillName: string; skillPath: string; source: string; sourceDescription: string; content: string; success: boolean; error?: string }>;
   };
-  backgroundDelegator?: import("./background-delegator").BackgroundDelegator;
   learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
 }
 
@@ -1059,83 +1058,6 @@ export async function handleSlashCommand(
         reply = `❌ 编辑器调用失败: ${err instanceof Error ? err.message : String(err)}`;
       } finally {
         try { fsMod.unlinkSync(tmpFile); } catch { /* ignore */ }
-      }
-      break;
-    }
-
-    case "bg": {
-      // /bg — 后台任务管理
-      if (!deps.backgroundDelegator) {
-        reply = "⚠ BackgroundDelegator 未注册。";
-        break;
-      }
-      const subCmd = args[0]?.toLowerCase();
-      if (!subCmd || subCmd === "help") {
-        reply = [
-          "**🔄 /bg — 后台任务管理**",
-          "",
-          "`/bg list` — 列出所有后台任务",
-          "`/bg active` — 列出活动任务",
-          "`/bg pending` — 查看待合并的结果",
-          "`/bg merge` — 合并待处理结果到对话",
-          "`/bg cancel <id>` — 取消任务",
-          "`/bg cancelall` — 取消所有活动任务",
-          "`/bg await` — 等待所有活动任务完成",
-          "`/bg cleanup` — 清理已完成任务",
-        ].join("\n");
-        break;
-      }
-      if (subCmd === "list") {
-        const tasks = deps.backgroundDelegator.listTasks();
-        reply = tasks.length > 0
-          ? `**🔄 后台任务** (${tasks.length})\n` + tasks.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
-          : "📦 没有后台任务";
-      } else if (subCmd === "active") {
-        const tasks = deps.backgroundDelegator.listActiveTasks();
-        reply = tasks.length > 0
-          ? `**🔄 活动后台任务** (${tasks.length})\n` + tasks.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
-          : "📦 没有活动后台任务";
-      } else if (subCmd === "pending") {
-        const results = deps.backgroundDelegator.listPendingResults();
-        reply = results.length > 0
-          ? `**📦 待合并结果** (${results.length})\n` + results.map((t: { id: string; description: string; status: string }) => `  • \`${t.id}\` [${t.status}] ${t.description}`).join("\n")
-          : "📦 没有待合并结果";
-      } else if (subCmd === "merge") {
-        const results = deps.backgroundDelegator.consumePendingResults();
-        reply = results.length > 0 ? deps.backgroundDelegator.mergeResults(results) : "📦 没有待合并结果";
-      } else if (subCmd === "cancel") {
-        const taskId = args[1];
-        if (!taskId) { reply = "⚠ 请提供任务 ID"; break; }
-        const cancelled = deps.backgroundDelegator.cancel(taskId);
-        reply = cancelled ? `✅ 任务 \`${taskId}\` 已取消` : `⚠ 任务 \`${taskId}\` 不存在或已完成`;
-      } else if (subCmd === "cancelall") {
-        const count = deps.backgroundDelegator.cancelAll();
-        reply = `✅ 已取消 ${count} 个活动任务`;
-      } else if (subCmd === "cleanup") {
-        const count = deps.backgroundDelegator.cleanup();
-        reply = `✅ 已清理 ${count} 个已完成任务`;
-      } else if (subCmd === "await") {
-        // /bg await [taskId] — 等待任务完成（不指定则等待所有活动任务）
-        const taskId = args[1];
-        try {
-          if (taskId) {
-            const task = await deps.backgroundDelegator.awaitTask(taskId);
-            const icon = task.status === "completed" ? "✅" : task.status === "failed" ? "❌" : task.status === "timeout" ? "⏰" : "⚠";
-            reply = `${icon} 任务 \`${taskId}\` 已完成 [${task.status}]: ${task.description}\n${task.result ? task.result.slice(0, 1000) : task.error ?? ""}`;
-          } else {
-            const tasks = await deps.backgroundDelegator.awaitAllActive();
-            const lines = [`**⏳ 等待完成** (${tasks.length} 个任务)\n`];
-            for (const t of tasks) {
-              const icon = t.status === "completed" ? "✅" : t.status === "failed" ? "❌" : t.status === "timeout" ? "⏰" : "⚠";
-              lines.push(`${icon} \`${t.id}\` [${t.status}] ${t.description}`);
-            }
-            reply = lines.join("\n");
-          }
-        } catch (err) {
-          reply = `❌ 等待失败: ${err instanceof Error ? err.message : String(err)}`;
-        }
-      } else {
-        reply = `⚠ 未知的 /bg 子命令: "${subCmd}"\n可用: list, active, pending, merge, cancel, cancelall, await, cleanup`;
       }
       break;
     }
