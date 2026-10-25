@@ -7,7 +7,7 @@
 
 export type TabId =
   | "chat" | "status" | "dashboard"
-  | "events" | "skills" | "bootstrap" | "canvas" | "canvas-graph" | "monitoring"
+  | "events" | "skills" | "bootstrap" | "files" | "canvas" | "canvas-graph" | "monitoring"
   | "plugins" | "permissions" | "cron" | "llm" | "channels" | "evolution"
   | "ops" | "cli"
   | "overall-security"
