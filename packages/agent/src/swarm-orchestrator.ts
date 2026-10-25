@@ -32,21 +32,27 @@ export interface SwarmAgent {
   name: string;
   role: AgentRole;
   capabilities: string[];
-  /** Current status */
+  /** 当前状态 */
   status: "idle" | "busy" | "offline" | "error";
-  /** Current task if busy */
+  /** 当前任务（如果 busy） */
   currentTask?: string;
-  /** Performance metrics */
+  /** 性能指标 */
   metrics: {
     tasksCompleted: number;
     successRate: number;
     avgResponseTime: number;
     reliabilityScore: number; // 0-1
   };
-  /** When last heartbeat was received */
+  /** 上次心跳时间 */
   lastHeartbeat: number;
-  /** Arbitrary metadata */
+  /** 任意元数据 */
   metadata?: Record<string, unknown>;
+  /**
+   * 任务执行回调（可选）。
+   * 当 delegate() 调用此回调时，会实际执行任务并返回结果。
+   * 如果未设置，delegate() 退化为桩（只标记 busy，不执行）。
+   */
+  handler?: (task: string, context?: string) => Promise<string>;
 }
 
 export interface DelegationRequest {
@@ -306,9 +312,53 @@ export class SwarmOrchestrator {
 
     this.eventBus.publish("swarm:delegation-started", { delegation }, "swarm-orchestrator");
 
-    // In production, the agent would execute asynchronously;
-    // the orchestrator tracks the result via completeDelegation()
+    // 如果 agent 有 handler，实际执行任务
+    if (typeof agent.handler === "function") {
+      try {
+        const result = await agent.handler(delegation.task, delegation.context);
+        const elapsed = Date.now() - startTime;
+        agent.status = "idle";
+        agent.currentTask = undefined;
+        agent.metrics.tasksCompleted++;
+        const completed: DelegationResult = {
+          requestId: delegation.id,
+          success: true,
+          agentId: agent.id,
+          result,
+          timeSpentMs: elapsed,
+        };
+        this.delegationResults.set(delegation.id, completed);
+        this.trimMaps();
+        this.eventBus.publish("swarm:delegation-completed", { delegation: completed }, "swarm-orchestrator");
+        return completed;
+      } catch (err) {
+        const elapsed = Date.now() - startTime;
+        agent.status = "idle";
+        agent.currentTask = undefined;
+        const failed: DelegationResult = {
+          requestId: delegation.id,
+          success: false,
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+          timeSpentMs: elapsed,
+        };
+        this.delegationResults.set(delegation.id, failed);
+        this.trimMaps();
+        this.eventBus.publish("swarm:delegation-failed", { delegation: failed }, "swarm-orchestrator");
+        return failed;
+      } finally {
+        // 清理定时器
+        const timer = this.delegationTimers.get(delegation.id);
+        if (timer) {
+          clearTimeout(timer);
+          this.delegationTimers.delete(delegation.id);
+        }
+        this.activeDelegations.delete(delegation.id);
+        this.delegationStartTimes.delete(delegation.id);
+      }
+    }
 
+    // 无 handler：退化为桩（只标记 busy，等待 completeDelegation 手动完成）
     return {
       requestId: delegation.id,
       success: true,

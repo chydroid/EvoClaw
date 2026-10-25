@@ -776,6 +776,18 @@ export class AgentModelExecutor {
   /** Register built-in virtual agents in the swarm */
   private registerBuiltinSwarmAgents(): void {
     if (!this.swarmOrchestrator) return;
+    // 每个内置 agent 的 handler 调用 back into AgentModelExecutor 执行任务。
+    // 这样 swarm delegate() 不再是桩——实际执行委托的任务。
+    const execTask = async (task: string, context?: string): Promise<string> => {
+      // 使用 AgentModelExecutor 自身的 chat() 执行委托任务
+      const sessionId = `swarm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await this.chat(
+        `[Swarm delegation] ${context ? `Context: ${context}\n` : ""}Task: ${task}`,
+        { sessionId, agentId: "swarm-delegated", channel: "web-ui" },
+      );
+      return result.reply;
+    };
+
     const builtinAgents: Array<{ name: string; role: import("./swarm-orchestrator").AgentRole; capabilities: string[] }> = [
       { name: "PlannerAgent", role: "planner", capabilities: ["planning", "decomposition", "task-analysis"] },
       { name: "ResearchAgent", role: "researcher", capabilities: ["web-search", "web-fetch", "browser-navigate", "information-retrieval"] },
@@ -785,7 +797,9 @@ export class AgentModelExecutor {
     ];
     for (const agent of builtinAgents) {
       try {
-        this.swarmOrchestrator.registerAgent(agent);
+        const registered = this.swarmOrchestrator.registerAgent(agent);
+        // 给已注册的 agent 设置执行 handler
+        registered.handler = execTask;
       } catch (err) { console.debug("[AgentModelExecutor] max agents reached:", err instanceof Error ? err.message : String(err)); }
     }
   }
@@ -3979,7 +3993,7 @@ export class AgentModelExecutor {
     const bestAgent = this.swarmOrchestrator.findBestAgent(requiredCapabilities, "medium");
     if (!bestAgent) return null;
 
-    // Delegate the task
+    // Delegate the task（delegate() 现在会实际执行）
     try {
       const delegationResult = await this.swarmOrchestrator.delegate({
         fromAgentId: "main",
@@ -3988,12 +4002,19 @@ export class AgentModelExecutor {
         context: plan.steps.map(s => s.description).join("; "),
         requiredCapabilities,
         priority: "medium",
-        timeoutMs: 60000,
+        timeoutMs: 120000,
       });
 
-      if (delegationResult.success) {
+      if (delegationResult.success && delegationResult.result) {
+        // 委托实际执行成功——把结果作为上下文返回给主 agent
+        delegationHints.push(`[Swarm] ${bestAgent.name} (${bestAgent.role}) 已完成委托任务。结果:\n${delegationResult.result}`);
+        process.stdout.write(`[AgentModelExecutor] Swarm delegation completed: ${bestAgent.name} finished in ${delegationResult.timeSpentMs}ms for session "${sessionId}"\n`);
+      } else if (delegationResult.success) {
+        // delegate() 返回 success 但无 handler 执行（桩模式）
         delegationHints.push(`[Swarm] 任务已委派给 ${bestAgent.name} (${bestAgent.role})，专长: ${bestAgent.capabilities.join(", ")}`);
-        process.stdout.write(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned for session "${sessionId}"\n`);
+        process.stdout.write(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned (stub mode) for session "${sessionId}"\n`);
+      } else {
+        delegationHints.push(`[Swarm] 委派失败: ${delegationResult.error ?? "unknown error"}`);
       }
     } catch (err) {
       process.stderr.write(`[AgentModelExecutor] Swarm delegation failed: ${err}\n`);
