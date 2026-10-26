@@ -151,16 +151,19 @@ export function applyAnthropicCacheControl(
     }
   }
 
-  // ── 断点 2-4：最后 3 条非 system 消息（稳定段之后的 history 尾部） ──
-  // 注意：其余 system 消息（易变尾 / 动态尾）不参与，避免给逐轮变动的
-  // 内容加断点、浪费 4 个断点槽位。
-  const tailIndices: number[] = [];
-  for (let i = result.length - 1; i >= 0 && tailIndices.length < 3; i--) {
+  // ── 断点 2-4：最早 3 条非 system 消息（稳定 history 头部） ──
+  // 原实现把断点放在最后 3 条非 system 消息上——即最新的 history + 当前
+  // user 消息，这些内容逐轮变化，断点永不命中，浪费 3/4 断点槽位。
+  // 改为放在最早 3 条非 system 消息上：它们是 conversation 最老的、
+  // 逐轮字节不变的历史头部，断点可稳定命中，缓存覆盖 system + 早期 history。
+  // 跳过已有 cache_control 的（如 P0-3 拆分产生的 system 段不算非-system）。
+  const headIndices: number[] = [];
+  for (let i = 0; i < result.length && headIndices.length < 3; i++) {
     if (result[i].role !== "system" && !result[i].cache_control) {
-      tailIndices.push(i);
+      headIndices.push(i);
     }
   }
-  for (const idx of tailIndices) {
+  for (const idx of headIndices) {
     result[idx].cache_control = { type: "ephemeral" };
   }
 

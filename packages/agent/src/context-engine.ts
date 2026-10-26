@@ -229,14 +229,10 @@ export class ContextEngine {
       parts.push(`Current timezone: ${this.config.timezone} (${this.config.timeFormat ?? "24"}h format)`);
     }
 
-    // P0-3：天级「今天是」放进易变尾部（同日内字节恒定；跨日才变一次，
-    // 而 system 主体里已不再带分钟时钟，frozen 段可长期命中 provider 缓存）。
+    // P0-3：天级「今天是」已移至动态尾（dynamicSystemTail），此处不再重复。
+    // 时区行是稳定信息，保留在易变尾部（同日内字节恒定）。
     if (input.userTimezone) {
-      const tz = input.userTimezone === "Asia/Singapore" ? "Asia/Singapore" : undefined;
-      const dateStr = new Date().toLocaleDateString("zh-CN", {
-        timeZone: tz, year: "numeric", month: "long", day: "numeric", weekday: "long",
-      });
-      parts.push(`Today is: ${dateStr} (timezone: ${input.userTimezone})`);
+      // 日期上下文由 dynamicSystemTail 携带——跨日变化不影响 frozen 缓存。
     }
 
     if (this.config.platformHint) {
@@ -247,9 +243,9 @@ export class ContextEngine {
       parts.push(this.config.heartbeatPrompt);
     }
 
-    if (input.currentTask) {
-      parts.push(`Current task: ${input.currentTask}`);
-    }
+    // P0-3：Current task 已作为 user 消息单独推送（assembleContext 尾部），
+    // 此处不再重复——避免同一文本在 system 尾和 user 消息中出现两次。
+    // 去重后 ephemeral 尾更短，且不影响语义。
 
     return parts.length > 0 ? "\n\n" + parts.join("\n\n") : "";
   }

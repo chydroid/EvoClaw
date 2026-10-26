@@ -113,14 +113,15 @@ describe("ContextEngine", () => {
     expect(engine.estimateTokens("This is a test sentence.")).toBe(6);
   });
 
-  it("buildEphemeralSuffix includes currentTask when provided", () => {
+  it("buildEphemeralSuffix 不含 currentTask（P0-4：避免与 user 消息重复）", () => {
     const engineWithHints = new ContextEngine({
       workspacePath: "/tmp/test-workspace",
       timezone: "UTC",
     });
     const input = makeInput({ currentTask: "Fix the login bug" });
     const suffix = engineWithHints.buildEphemeralSuffix(input);
-    expect(suffix).toContain("Fix the login bug");
+    expect(suffix).not.toContain("Fix the login bug");
+    expect(suffix).not.toContain("Current task:");
   });
 
   it("buildEphemeralSuffix returns empty string when no hints configured", () => {

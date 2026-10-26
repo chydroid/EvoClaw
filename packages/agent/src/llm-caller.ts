@@ -1390,20 +1390,28 @@ export function buildOpenAITools(
       // Service-gated tools: skip tools whose check_fn returns false.
       // Inspired by hermes-agent registry.get_definitions() — unavailable
       // tools are silently dropped so the LLM never sees them.
+      //
+      // ★ P0-4 缓存稳定化（2026-10-26）：已进入会话单调并集（baseTools）的工具
+      // 跳过 checkFn 过滤——tools 数组是请求前缀第一段，checkFn 抖动（服务
+      // 短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → provider 缓存全量失效。
+      // 会话内已激活的工具保持在场，模型尝试调用时由执行期 checkFn 兜底报错。
       if (t.checkFn) {
-        if (checkFnEvaluator) {
-          // 包装 checkFnEvaluator，防止其内部异常冒泡导致整个 buildOpenAITools 失败
-          try {
-            if (!checkFnEvaluator(t.checkFn)) return false;
-          } catch {
-            return false; // fail-safe: exceptions treated as unavailable
-          }
-        } else {
-          // Fallback: evaluate directly without caching
-          try {
-            if (!t.checkFn()) return false;
-          } catch {
-            return false; // fail-safe: exceptions treated as unavailable
+        const isInSessionUnion = baseTools?.has(t.definition.name) ?? false;
+        if (!isInSessionUnion) {
+          if (checkFnEvaluator) {
+            // 包装 checkFnEvaluator，防止其内部异常冒泡导致整个 buildOpenAITools 失败
+            try {
+              if (!checkFnEvaluator(t.checkFn)) return false;
+            } catch {
+              return false; // fail-safe: exceptions treated as unavailable
+            }
+          } else {
+            // Fallback: evaluate directly without caching
+            try {
+              if (!t.checkFn()) return false;
+            } catch {
+              return false; // fail-safe: exceptions treated as unavailable
+            }
           }
         }
       }
@@ -2904,10 +2912,13 @@ export async function tryCallLLM(
         deps.toolGroupStore.set(sessionId, activeOut.activeTools);
       }
 
-      const SEARCH_ONLY_TOOLS = new Set(["web_search", "browser_search", "browser_navigate"]);
+      // ★ P0-4 缓存稳定化（2026-10-26）：searchPreDone 不再移除搜索工具。
+      // tools 数组是 Anthropic 请求前缀的第一段（在 messages 之前），
+      // 移除工具会改变前缀字节 → provider 缓存全量失效 → 每次搜索预完成
+      // 后所有历史 token 重新计费。改为依赖 system prompt 中的
+      // "Search has already been performed" 提示引导模型跳过搜索。
       if (searchPreDone) {
-        tools = tools.filter(t => !SEARCH_ONLY_TOOLS.has(t.function.name as string));
-        process.stdout.write(`[AgentModelExecutor] Search pre-done: removed search tools, ${tools.length} tools remaining\n`);
+        process.stdout.write(`[AgentModelExecutor] Search pre-done: keeping all tools for cache stability (${tools.length} tools)\n`);
       }
 
       const isAction = hasActionIntentFn(message);

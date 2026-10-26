@@ -620,6 +620,9 @@ export class AgentModelExecutor {
   private workspacePath: string;
   private bootstrapFiles: Array<{ path: string; content: string }> = [];
   private _cachedSkillNames: Set<string> = new Set();
+  /** P0-4 缓存稳定化：skills prompt 字符串缓存（避免每次调用重新构建） */
+  private _cachedSkillsPrompt: string | null = null;
+  private _cachedSkillsPromptHash: string | null = null;
   
   private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string; toolName: string; toolArgs: Record<string, unknown> }>();
   private pendingApprovalCommands = new Map<string, { command: string; rejectedAt: number }>();
@@ -1333,7 +1336,26 @@ export class AgentModelExecutor {
         }
       }
     }
-    return buildCompactSkillsPrompt(skills);
+
+    // P0-4 缓存稳定化（2026-10-26）：缓存 skills prompt 字符串。
+    // skills prompt 被注入稳定 system prompt（stableCapabilities 段），
+    // 每次重新构建即使内容相同也会触发异步 listSkills 调用，
+    // 且在并发安装/卸载时可能返回不同结果导致缓存前缀变化。
+    // 用 skills 列表的确定性哈希做缓存键：内容不变 → 返回缓存字符串。
+    const hash = skills.length > 0
+      ? skills.map(s => `${s.name}:${s.description}:${s.location}`).join("|")
+      : "";
+    const allowKey = allowedSkillNames ? allowedSkillNames.slice().sort().join(",") : "";
+    const cacheKey = `${hash}::${allowKey}`;
+
+    if (this._cachedSkillsPrompt !== null && this._cachedSkillsPromptHash === cacheKey) {
+      return this._cachedSkillsPrompt;
+    }
+
+    const prompt = buildCompactSkillsPrompt(skills);
+    this._cachedSkillsPrompt = prompt;
+    this._cachedSkillsPromptHash = cacheKey;
+    return prompt;
   }
 
   /**
@@ -2483,12 +2505,19 @@ export class AgentModelExecutor {
       }
     }
 
-    // P0-3 缓存稳定化（2026-10-16）：易变成分（画像/记忆/计划/工具链）全部并入
+    // P0-3 缓存稳定化（2026-10-16）：易变成分（画像/记忆/计划/工具链/日期）全部并入
     // **动态尾**（第二条 system 消息），稳定主体（buildSystemPrompt）保持逐轮
     // 字节恒定。记忆不再交给 ContextEngine.assembleContext 拼进 frozen 段
     // （旧行为每轮随检索结果漂移 frozen hash），改由动态尾携带——同一份内容
     // 只出现一次（tail），CE 的 system 消息因此也保持稳定。
+    // 日期上下文从 system-prompt.ts frozen 主体移出，跨日变化只影响动态尾。
+    const _tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
+    const _dateStr = new Date().toLocaleDateString("zh-CN", {
+      timeZone: _tz, year: "numeric", month: "long", day: "numeric", weekday: "long",
+    });
+    const dateContext = `## Current Date & Time\nToday is: ${_dateStr} (timezone: ${_tz})\nWhen the user says '今天/昨天/明天/前天/后天' etc., interpret them as actual dates based on the date above.`;
     let dynamicSystemTail = [
+      dateContext,
       personaContext,
       memoryContext,
       planContext ? "\n\n[执行计划]\n" + planContext : "",

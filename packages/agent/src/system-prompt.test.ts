@@ -159,23 +159,22 @@ describe("buildAgentSystemPrompt — 跨分钟边界字节稳定（P0-3 回归�
     }
   });
 
-  it("主体不再含分钟级 'Current time:'（精确时间改由 user 消息时间戳提供）", () => {
+  it("主体不含任何日期/时间内容（P0-4：日期已移至动态尾，frozen 前缀跨日字节恒定）", () => {
     const p = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
-    expect(p).toContain("## Current Date & Time");
-    expect(p).toContain("Today is:");
+    expect(p).not.toContain("## Current Date & Time");
+    expect(p).not.toContain("Today is:");
     expect(p).not.toContain("Current time:");
+    expect(p).not.toContain("Time zone:");
   });
 
-  it("天级日期随跨日变化（预期内的唯一翻转点）", () => {
+  it("主体跨日字节恒定（P0-4：日期移至动态尾后 frozen 前缀不再随日期翻转）", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date(2026, 9, 16, 23, 59, 0));
       const d1 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
       vi.setSystemTime(new Date(2026, 9, 17, 0, 0, 30)); // 跨日
       const d2 = build({ userTimezone: "Asia/Shanghai", timeFormat: "24" });
-      expect(d1).not.toBe(d2);
-      expect(d1).not.toContain("17");
-      expect(d2).toContain("17");
+      expect(d1).toBe(d2); // 跨日字节恒定 → frozen 缓存持续命中
     } finally {
       vi.useRealTimers();
     }
