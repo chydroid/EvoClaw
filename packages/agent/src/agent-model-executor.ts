@@ -1,6 +1,7 @@
 import { ServiceRegistry, EventBus, type DAGNode, type Skill, type PersonaConfig } from "@evoclaw/core";
 import type { Span } from "@opentelemetry/api";
 import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
+import { PromptRegistry } from "./prompt-registry";
 import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
@@ -265,6 +266,11 @@ export class AgentModelExecutor {
    *  此前为单一实例字段，并发 chatInner 调用会互相覆盖，导致跨会话上下文泄漏。
    *  改为 Map 后每个会话拥有独立的上下文引擎结果。 */
   private _contextEngineResults = new Map<string, import("./context-engine").LayeredContextResult | null>();
+
+  /** ★ P0-4：每会话的 stableCapabilities 字符串（systemPrompt 后缀）。
+   *  由 chatInner 在 CE 组装时构建，同时传给 CE（skillsContext）和
+   *  tryCallLLM（fallback 路径的 stableSystemPrompt 后缀）——两路径逐字节一致。 */
+  private _stableCapabilitiesBySession = new Map<string, string>();
 
   /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
@@ -2369,11 +2375,20 @@ export class AgentModelExecutor {
     if (this.contextEngine) {
       try {
         const skillsPrompt = await this.buildSkillsPromptForRun();
+        // ★ P0-4：构建 stableCapabilities 字符串（systemPrompt 后缀）。
+        // 此字符串同时用于 CE frozen 段（skillsContext）和 fallback 路径的
+        // stableSystemPrompt 后缀——两路径逐字节一致，切换不失效缓存。
+        // 格式必须与 llm-caller 旧实现完全一致。
+        const webToolStrategy = PromptRegistry.getInstance().format("web.tool_strategy", {});
+        const stableCapabilities = skillsPrompt
+          ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
+          : "";
+        this._stableCapabilitiesBySession.set(sessionId, stableCapabilities);
         const history = this.conversationHistory.get(sessionId) || [];
         contextEngineResult = this.contextEngine.assembleContext({
           conversationHistory: history,
           systemPrompt,
-          skillsContext: skillsPrompt || undefined,
+          skillsContext: stableCapabilities || undefined,
           // P0-3：记忆段改走动态尾（dynamicSystemTail），不再进 CE frozen 段
           memoryContext: undefined,
           compactionSummary: undefined, // handled by compactionManager separately
@@ -3350,6 +3365,7 @@ export class AgentModelExecutor {
     // 不与父会话共享父配置值。
     deps.iterationBudget = this.getIterationBudget(sessionId, this.isSubagentSessionId(sessionId));
     deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;
+    deps.stableCapabilities = this._stableCapabilitiesBySession.get(sessionId) ?? undefined;
     // Wire per-session abort signal (set by abortSession) so callLLMOnce and
     // the tryCallLLM main loop can react to cancellation.
     const sessionController = this.sessionAbortControllers.get(sessionId);

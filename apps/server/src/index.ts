@@ -664,6 +664,11 @@ export class EvoClawServer {
       workspacePath: path.resolve(__dirname, "..", "..", "..", "data", "workspace"),
       maxContextTokens: 128000,
       reserveTokens: 4000,
+      // ★ P0-4：配置 timezone/platformHint 使 CE ephemeral suffix 非空，
+      // 与 llm-caller fallback 路径的 ephemeralSuffix 逐字节一致——
+      // CE/非-CE 两路径切换不失效 provider 缓存。
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+      platformHint: process.platform,
     });
     this.agentModelExecutor.setContextEngine(this.contextEngine);
     this.registry.registerService("contextEngine", this.contextEngine);

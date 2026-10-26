@@ -189,4 +189,45 @@ describe("ContextEngine", () => {
     const rawTokens = engine.estimateTokens("Hello") + engine.estimateTokens("Hi");
     expect(tokens).toBe(rawTokens + 8);
   });
+
+  it("P0-4: buildFrozenPrefix 不含 bootstrap 文件重复（systemPrompt 已含 bootstrap）", () => {
+    // systemPrompt 模拟 buildSystemPrompt 的输出——已包含 bootstrap 内容
+    const systemPromptWithBootstrap = "You are helpful.\n\n## Your Identity\n\nI am EvoClaw.";
+    const input = makeInput({ systemPrompt: systemPromptWithBootstrap });
+    const frozen = engine.buildFrozenPrefix(input);
+    // bootstrap 内容不应重复出现——"## Your Identity" 只应出现一次
+    const identityCount = (frozen.content.match(/## Your Identity/g) || []).length;
+    expect(identityCount).toBe(1);
+  });
+
+  it("P0-4: buildFrozenPrefix 使用 skillsContext 原样拼接（不添加额外标题）", () => {
+    const stableCapabilities = "## Available Capabilities\n\n### Tools\nweb_search\n\n### Skills\nskill_list";
+    const input = makeInput({ systemPrompt: "You are helpful.", skillsContext: stableCapabilities });
+    const frozen = engine.buildFrozenPrefix(input);
+    // stableCapabilities 应原样出现在 frozen content 中
+    expect(frozen.content).toContain(stableCapabilities);
+    // 不应添加 "## Available Skills" 标题（stableCapabilities 自带标题）
+    expect(frozen.content).not.toContain("## Available Skills\n\n## Available Capabilities");
+  });
+
+  it("P0-4: assembleContext 的 system 消息 = frozen + ephemeral（与 fallback 路径一致）", () => {
+    const engineWithHints = new ContextEngine({
+      workspacePath: "/tmp/test-workspace",
+      timezone: "Asia/Shanghai",
+      platformHint: "linux",
+    });
+    const stableCapabilities = "## Available Capabilities\n\n### Tools\nweb_search";
+    const input = makeInput({
+      systemPrompt: "You are helpful.",
+      skillsContext: stableCapabilities,
+    });
+    const result = engineWithHints.assembleContext(input);
+    const systemMsg = result.messages[0];
+    expect(systemMsg.role).toBe("system");
+    // system 消息应包含 frozen 内容 + ephemeral 后缀
+    expect(systemMsg.content).toContain("You are helpful.");
+    expect(systemMsg.content).toContain(stableCapabilities);
+    expect(systemMsg.content).toContain("Current timezone: Asia/Shanghai");
+    expect(systemMsg.content).toContain("Platform: linux");
+  });
 });

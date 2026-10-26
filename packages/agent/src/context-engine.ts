@@ -171,22 +171,25 @@ export class ContextEngine {
     let content = input.systemPrompt;
     sectionNames.push("systemPrompt");
 
-    const bootstrapFiles = this.loadBootstrapFiles();
-    this.lastLoadedBootstrapFiles = bootstrapFiles.map((f) => f.path);
-
-    if (bootstrapFiles.length > 0 && this.config.promptMode !== "none") {
-      const bootstrapCtx = this.buildBootstrapContext(bootstrapFiles);
-      content += "\n\n" + bootstrapCtx;
-      sectionNames.push("bootstrap");
-    }
+    // P0-4（2026-10-26）：不再在此追加 bootstrap 文件——systemPrompt 由
+    // buildSystemPrompt 构建时已通过 bootstrapManager.buildSystemPromptInjection
+    // 注入了全部 bootstrap 内容（IDENTITY/SOUL/USER/AGENTS/TOOLS/HEARTBEAT）。
+    // 旧代码在此重复加载并追加一遍，导致 bootstrap 内容在 CE frozen 段出现两次
+    // → 既浪费 token 又使 CE/非-CE 两条路径的 frozen 字符串不一致（缓存全量失效）。
+    // loadBootstrapFiles 仍保留供 assembleContext 的 messages 组装使用（非 system 段）。
 
     if (input.compactionSummary) {
       content += "\n\n## Previous Conversation Summary (Compacted)\n\n" + input.compactionSummary;
       sectionNames.push("compaction");
     }
 
+    // P0-4：skillsContext 现在传入的是完整的 stableCapabilities 字符串
+    // （含 "## Available Capabilities" 标题 + 工具说明 + web 工具策略 + skills prompt），
+    // 与 llm-caller 非 CE fallback 路径的 stableSystemPrompt 后缀逐字节一致。
+    // 不再添加 "## Available Skills" 标题——stableCapabilities 自带标题，
+    // 避免 CE/非-CE 两条路径的 frozen 字符串不一致。
     if (input.skillsContext) {
-      content += "\n\n## Available Skills\n\n" + input.skillsContext;
+      content += "\n\n" + input.skillsContext;
       sectionNames.push("skills");
     }
 
@@ -262,6 +265,10 @@ export class ContextEngine {
     const messages: Array<{ role: string; content: string | null }> = [];
     const warnings: string[] = [];
     let truncated = false;
+
+    // P0-4：loadBootstrapFiles 不再在 buildFrozenPrefix 中调用（systemPrompt 已含
+    // bootstrap 内容），但仍在此调用以填充 lastLoadedBootstrapFiles（结果元信息）。
+    this.loadBootstrapFiles();
 
     const frozen = this.buildFrozenPrefix(input);
     const ephemeralContent = this.buildEphemeralSuffix(input);
