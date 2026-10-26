@@ -285,6 +285,34 @@ export {
 } from "./turn-truncation";
 export type { TruncationCheckInput, TruncationAction, TruncationCheckResult } from "./turn-truncation";
 
+// Turn Preflight system（对标 hermes turn_preflight / turn_preflight_gate）
+export {
+  runPreflightCompression,
+  compressAfterToolResults,
+  COMPRESSION_TIMEOUT_FINAL_RESPONSE,
+  HANDOFF_SKIP_FINAL_RESPONSE,
+} from "./turn-preflight";
+export type {
+  PreflightGateVerdict,
+  PreflightAction,
+  CompressAfterToolResultVerdict,
+  RunPreflightCompressionOptions,
+  RunPreflightCompressionDeps,
+} from "./turn-preflight";
+
+export { runPreflightGate, hasSignificantProgress, createPreflightGateDeps } from "./turn-preflight-gate";
+export type { RunPreflightGateOptions, RunPreflightGateDeps } from "./turn-preflight-gate";
+
+// Turn Scripted Prelude system（对标 hermes turn_scripted_prelude）
+export {
+  runScriptedPrelude,
+  playPrelude,
+  preludeCallId,
+  createEnvironmentCheckPrelude,
+  createSimplePrelude,
+} from "./turn-scripted-prelude";
+export type { PreludeStep, PreludeResult, PreludeCallbacks } from "./turn-scripted-prelude";
+
 // Computed Status system
 export { ComputedStatusEngine } from "./computed-status";
 export type { ComputedStatusResult, StatusSource } from "./computed-status";
