@@ -200,3 +200,13 @@
     - **⑤ Turn Preflight 压缩门控**（`packages/agent/src/turn-preflight.ts` + `turn-preflight-gate.ts`）：对标 hermes agent/turn_preflight*.py。API 调用前压力门控：延迟压缩（noisy estimate 等待真实 usage）、失败冷却跳过、should_compress 压缩、压缩后退款（api_call_count 不虚增）、压缩超时终态（progress-aware timeout）、锁/临时阻塞退款、Provider 溢出强制压缩 fail closed。工具后压缩（prompt_tokens 压力 + 工具结果裁剪）。Ollama runtime context floor 检查、不足进展阻断器（至少 10% 减少才认为有进展）。34 测试。
     - **⑥ Turn Scripted Prelude**（`packages/agent/src/turn-scripted-prelude.ts`）：对标 hermes agent/turn_scripted_prelude.py。首次模型调用前的工具序列：逐步骤执行工具调用，结果传回 generator，后续 step 可使用前面结果。确定性 call_id（session + tool + args + index 种子）。角色交替 user→assistant(tool_calls)→tool→...→assistant(model)。不计入 API 调用，不触发 pre/post_api_request hook。预lude 工厂（createSimplePrelude / createEnvironmentCheckPrelude）。17 测试。
   - **Phase 3 待做**：hermes 第三轮/第四轮勘察已落地的项（deadline / turn_liveness / repetition_guard / turn_overflow / turn_failure_copy / verification_evidence / empty_response_guard）已在 2026-10-18~19 落地。后续可探索：turn_author（author 角色系统）、turn_facade lease（lease 管理）、更多 gateway 插件（微博/QQ/钉钉已落地）。
+
+- **输入缓存命中率专项审计（2026-10-26，P0-4，两轮提交已推送 `307ea94` + `cf622c9`）**：Explore subagent 全面审计 LLM 请求路径的缓存稳定性，发现并修复 5 处缓存命中率杀手 + 2 处可观测性缺口：
+  - **断点重排（prompt-cache.ts）**：4 个断点中 3 个原放在最后 3 条非 system 消息上（最新 history + 当前 user 消息），逐轮变化永不命中。改为放在最早 3 条非 system 消息上（conversation 最老的稳定历史头部），断点可稳定命中。
+  - **日期去重 + 移出 frozen 前缀（system-prompt.ts / context-engine.ts / agent-model-executor.ts）**："Today is" 同时出现在 system 主体（frozen 前缀）和 CE 易变尾中——既重复计费又跨日翻转 frozen hash。现统一移至动态尾（dynamicSystemTail），frozen 前缀完全不含时间信息，跨日字节恒定。
+  - **Current task 去重（context-engine.ts）**：当前任务文本同时出现在 CE 易变尾（system 消息）和 user 消息中，重复计费。移除易变尾中的副本。
+  - **checkFn 会话豁免（llm-caller.ts）**：已进入会话单调并集（baseTools）的工具跳过 checkFn 过滤。checkFn 抖动（服务短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → provider 缓存全量失效。会话内已激活的工具保持在场，执行期 checkFn 兜底报错。
+  - **searchPreDone 不再移除搜索工具（llm-caller.ts，前次提交）**：tools 数组是请求前缀第一段，移除工具改变前缀字节 → 缓存全量失效。改为依赖 system prompt 提示引导模型跳过搜索。
+  - **可观测性接线（agent-model-executor.ts / llm-caller.ts / infrastructure/observability.ts）**：PromptCacheStabilityManager 从"仅导出未实例化"变为每轮 API 调用前 evaluate()，检测 anti-pattern 输出诊断日志；新增 recordLLMCacheHit() 发射 evoclaw_prompt_cache_hit_ratio gauge + hit/miss token counter（grafana 仪表盘此前引用但无代码发射）。
+  - **未修的架构级问题（需用户决策）**：① Anthropic provider 在 `llm-providers.json` 中 `enabled: false`，且请求走 `/v1/chat/completions`（OpenAI 格式）而非 Anthropic 原生 `/v1/messages`——cache_control 在当前部署中为死代码；② CE 路径与非 CE fallback 路径产生结构不同的 system 消息，切换时缓存全量失效；③ PromptCacheStabilityManager 的 evaluate() 每次调用做全量 hash 比较，长对话（200+ msgs）有 O(n) 开销，但实际开销可接受（stableHash 是字符串哈希）。
+  - **测试更新**：system-prompt.test.ts 改为验证 frozen 前缀跨日字节恒定（原测试验证跨日变化，现在不变化是期望行为）；context-engine.test.ts 验证易变尾不再含 currentTask 副本。全量 build→typecheck→test 全绿（6723 passed / 13 skipped）。
