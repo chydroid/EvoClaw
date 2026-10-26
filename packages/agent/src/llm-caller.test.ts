@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -1252,5 +1252,365 @@ describe("llm-caller > 收尾三件套（静默停止显式说明 / 失败写入
     // 耗尽文案按 reason 分句 + 通用「稍后重试」出口（无 Retry-After 头 → 不点名重置时间）
     expect(res!.reply).toContain("被限流");
     expect(res!.reply).toContain("稍后重试");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// Anthropic 原生 Messages API（2026-10-26）
+// 此前 Anthropic provider 走 OpenAI 兼容的 /v1/chat/completions，
+// 官方端点并不支持该路径（一律 404/400），provider 实际不可用。
+// 现改为原生 POST /v1/messages：system 顶层字段、tool_use/tool_result
+// content blocks、tools 用 input_schema、SSE 事件为 message_start /
+// content_block_* / message_delta / message_stop。
+// 测试用本地 http server 捕获真实请求体/响应，覆盖请求格式、
+// 非流式/流式响应解析、工具往返（tool_use → tool_result → 文本）。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > Anthropic 原生 Messages API", () => {
+  // 最小 deps：callLLMOnce 只需要 recordProviderSuccess/Failure + registry
+  function minimalDeps(overrides: Partial<LLMCallerDeps> = {}): LLMCallerDeps {
+    return {
+      registry: undefined,
+      recordProviderSuccess: vi.fn(),
+      recordProviderFailure: vi.fn(),
+      ...overrides,
+    } as unknown as LLMCallerDeps;
+  }
+
+  function anthropicProvider(port: number, baseURL?: string) {
+    return {
+      name: "claude",
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      apiKey: "sk-ant-test",
+      baseURL: baseURL ?? `http://127.0.0.1:${port}`,
+      id: "anthropic-1",
+      enabled: true,
+      order: 0,
+      timeout: 5000,
+      maxTokens: 4096,
+      temperature: 0.3,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  // 启动本地 server，返回 capture 工具
+  function captureServer(
+    responder: (req: http.IncomingMessage, res: http.ServerResponse, raw: string) => void,
+  ): { server: http.Server; captured: Array<{ url: string; headers: http.IncomingHttpHeaders; body: Record<string, unknown> }>; port: number; close: () => void } {
+    const captured: Array<{ url: string; headers: http.IncomingHttpHeaders; body: Record<string, unknown> }> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        captured.push({ url: req.url || "", headers: req.headers, body: JSON.parse(raw || "{}") });
+        responder(req, res, raw);
+      });
+    });
+    server.listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { server, captured, port, close: () => server.close() };
+  }
+
+  it("请求格式：端点 /v1/messages、system 顶层字段、tools/tool_choice 转换、cache_control 落在 content blocks", async () => {
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const result = await callLLMOnce(
+      anthropicProvider(port),
+      [
+        { role: "system", content: "SYS-PROMPT" },
+        { role: "user", content: "你好" },
+      ],
+      [{ type: "function", function: { name: "shell_exec", description: "run a command", parameters: { type: "object", properties: {} } } }],
+      "auto",
+      undefined,
+      minimalDeps(),
+    );
+    close();
+
+    expect(result).not.toBeNull();
+    // 端点：/v1/messages（baseURL 无 /v1 时自动补）
+    expect(captured).toHaveLength(1);
+    expect(captured[0].url).toBe("/v1/messages");
+    // 认证头：Anthropic 原生格式
+    expect(captured[0].headers["x-api-key"]).toBe("sk-ant-test");
+    expect(captured[0].headers["anthropic-version"]).toBe("2023-06-01");
+    expect(captured[0].headers.authorization).toBeUndefined();
+
+    const body = captured[0].body;
+    expect(body.model).toBe("claude-sonnet-4-6");
+    expect(body.max_tokens).toBe(4096);
+    expect(body.temperature).toBe(0.3);
+    expect(body.stream).toBe(false);
+
+    // system 提到顶层（content blocks 数组），且首条 system 带 cache_control 断点
+    expect(Array.isArray(body.system)).toBe(true);
+    const sysBlocks = body.system as Array<Record<string, unknown>>;
+    expect(sysBlocks[0]).toMatchObject({ type: "text", text: "SYS-PROMPT" });
+    expect(sysBlocks[0].cache_control).toEqual({ type: "ephemeral" });
+
+    // messages 不含 system 角色
+    const msgs = body.messages as Array<Record<string, unknown>>;
+    expect(msgs.every((m) => m.role !== "system")).toBe(true);
+    expect(msgs[0].role).toBe("user");
+    // cache_control 从 message 对象移到 content block 上（Anthropic 断点语义）
+    expect(msgs[0].cache_control).toBeUndefined();
+    const userBlocks = msgs[0].content as Array<Record<string, unknown>>;
+    expect(userBlocks[0]).toMatchObject({ type: "text", text: "你好" });
+    expect(userBlocks[0].cache_control).toEqual({ type: "ephemeral" });
+
+    // tools：input_schema 而非 function.parameters
+    const tools = body.tools as Array<Record<string, unknown>>;
+    expect(tools[0]).toMatchObject({ name: "shell_exec", description: "run a command" });
+    expect(tools[0].input_schema).toBeDefined();
+    expect(tools[0].function).toBeUndefined();
+    // tool_choice：{type:"auto"} 对象
+    expect(body.tool_choice).toEqual({ type: "auto" });
+
+    // 响应解析：content text → content；usage input+output → total/prompt
+    expect(result!.message.content).toBe("ok");
+    expect(result!.tokensUsed).toBe(12);
+    expect(result!.promptTokens).toBe(10);
+  });
+
+  it("请求格式：baseURL 已含 /v1 或 OpenAI 兼容路径时端点归一化为 /v1/messages", async () => {
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ content: [{ type: "text", text: "x" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    // baseURL 带 /v1 后缀
+    await callLLMOnce(
+      anthropicProvider(port, `http://127.0.0.1:${port}/v1`),
+      [{ role: "user", content: "q" }],
+      [],
+      "auto",
+      undefined,
+      minimalDeps(),
+    );
+    // baseURL 是 OpenAI 兼容路径（/v1/chat/completions）
+    await callLLMOnce(
+      anthropicProvider(port, `http://127.0.0.1:${port}/v1/chat/completions`),
+      [{ role: "user", content: "q" }],
+      [],
+      "auto",
+      undefined,
+      minimalDeps(),
+    );
+    close();
+
+    expect(captured[0].url).toBe("/v1/messages");
+    expect(captured[1].url).toBe("/v1/messages");
+  });
+
+  it("非流式响应：tool_use content block → 通用 tool_calls", async () => {
+    const { server, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        content: [
+          { type: "text", text: "让我执行：" },
+          { type: "tool_use", id: "toolu_123", name: "shell_exec", input: { command: "ls" } },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 30, output_tokens: 12, cache_read_input_tokens: 20, cache_creation_input_tokens: 5 },
+      }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const result = await callLLMOnce(
+      anthropicProvider(port),
+      [{ role: "user", content: "列目录" }],
+      [],
+      "auto",
+      undefined,
+      minimalDeps(),
+    );
+    close();
+
+    expect(result).not.toBeNull();
+    expect(result!.message.content).toBe("让我执行：");
+    expect(result!.message.tool_calls).toHaveLength(1);
+    expect(result!.message.tool_calls?.[0]).toMatchObject({
+      id: "toolu_123",
+      type: "function",
+      function: { name: "shell_exec", arguments: JSON.stringify({ command: "ls" }) },
+    });
+    // usage：total = input + output；cache 字段透传（normalizeUsage 识别）
+    expect(result!.tokensUsed).toBe(42);
+    expect(result!.promptTokens).toBe(30);
+    expect(result!.usageDetails).toMatchObject({
+      cache_read_input_tokens: 20,
+      cache_creation_input_tokens: 5,
+    });
+  });
+
+  it("流式响应：Anthropic SSE 事件解析（文本增量 + 工具调用分片 + usage）", async () => {
+    const events = [
+      { type: "message_start", message: { id: "msg_1", role: "assistant", content: [], usage: { input_tokens: 100, output_tokens: 1, cache_read_input_tokens: 80, cache_creation_input_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " world" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_s1", name: "shell_exec", input: {} } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"command"' } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: ':"ls"}' } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 25 } },
+      { type: "message_stop" },
+    ];
+    const sse = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+    const { server, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.end(sse);
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const onProgress = vi.fn();
+    const result = await callLLMOnce(
+      anthropicProvider(port),
+      [{ role: "user", content: "hello" }],
+      [],
+      "auto",
+      onProgress,
+      minimalDeps(),
+    );
+    close();
+
+    expect(result).not.toBeNull();
+    // 文本增量拼接
+    expect(result!.message.content).toBe("Hello world");
+    // 工具调用：id/name 来自 content_block_start，参数由 input_json_delta 累积
+    expect(result!.message.tool_calls).toHaveLength(1);
+    expect(result!.message.tool_calls?.[0]).toMatchObject({
+      id: "toolu_s1",
+      type: "function",
+      function: { name: "shell_exec", arguments: '{"command":"ls"}' },
+    });
+    // usage：message_start 的 input + message_delta 的累计 output
+    expect(result!.promptTokens).toBe(100);
+    expect(result!.tokensUsed).toBe(125);
+    expect(result!.usageDetails).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 25,
+      cache_read_input_tokens: 80,
+    });
+    // token 事件下发（流式可见性）
+    const tokenEvents = onProgress.mock.calls.filter((c) => (c[0] as { type?: string }).type === "token");
+    expect(tokenEvents.length).toBeGreaterThan(0);
+  });
+
+  it("工具往返：tool_use → tool_result → 最终文本（第二次请求体校验）", async () => {
+    let call = 0;
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      call++;
+      if (call === 1) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+          content: [{ type: "tool_use", id: "toolu_rt", name: "echo_tool", input: { msg: "hi" } }],
+          stop_reason: "tool_use",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }));
+      } else {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+          content: [{ type: "text", text: "done" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 20, output_tokens: 3 },
+        }));
+      }
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const dep = minimalDeps({
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: new Map([
+        ["echo_tool", {
+          definition: { name: "echo_tool", description: "echo back", parameters: {} },
+          handler: async () => "echo-result",
+        }],
+      ]),
+      buildSkillsPromptForRun: async () => "",
+      getEventLedger: () => null,
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+    });
+
+    const res = await tryCallLLM(dep, {
+      message: "echo hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [anthropicProvider(port)],
+      startTime: Date.now(),
+      sessionId: `anthropic-rt-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    close();
+
+    expect(res).not.toBeNull();
+    expect(res!.reply).toBe("done");
+    expect(res!.toolsExecuted).toBe(true);
+    expect(captured).toHaveLength(2);
+
+    // 第二次请求体：assistant 消息含 tool_use block；user 消息含 tool_result block
+    const msgs = captured[1].body.messages as Array<Record<string, unknown>>;
+    const assistantWithToolUse = msgs.find((m) =>
+      m.role === "assistant" &&
+      Array.isArray(m.content) &&
+      (m.content as Array<Record<string, unknown>>).some((b) => b.type === "tool_use"),
+    );
+    expect(assistantWithToolUse).toBeDefined();
+    expect((assistantWithToolUse!.content as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: "tool_use",
+      id: "toolu_rt",
+      name: "echo_tool",
+      input: { msg: "hi" },
+    });
+    const toolResultMsg = msgs.find((m) =>
+      m.role === "user" &&
+      Array.isArray(m.content) &&
+      (m.content as Array<Record<string, unknown>>).some((b) => b.type === "tool_result"),
+    );
+    expect(toolResultMsg).toBeDefined();
+    expect((toolResultMsg!.content as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "toolu_rt",
+      content: "echo-result",
+    });
+  });
+
+  it("OpenAI 兼容路径不受 Anthropic 分支影响（回归）", async () => {
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "openai-ok" }, finish_reason: "stop" }],
+        usage: { total_tokens: 7, prompt_tokens: 5 },
+      }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const result = await callLLMOnce(
+      { ...anthropicProvider(port), provider: "openai", name: "openai-test", baseURL: `http://127.0.0.1:${port}/v1` } as unknown as LLMCallerDeps["providers"][number],
+      [{ role: "user", content: "q" }],
+      [],
+      "auto",
+      undefined,
+      minimalDeps(),
+    );
+    close();
+
+    expect(result!.message.content).toBe("openai-ok");
+    expect(captured[0].url).toBe("/v1/chat/completions");
+    expect(captured[0].headers.authorization).toBe("Bearer sk-ant-test");
   });
 });

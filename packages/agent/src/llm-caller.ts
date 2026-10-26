@@ -860,6 +860,10 @@ export interface LLMCallerDeps {
   iterationBudget?: import("./iteration-budget").IterationBudget;
   // ContextEngine result (optional — enables layered context with frozen/ephemeral separation)
   contextEngineResult?: import("./context-engine").LayeredContextResult;
+  // ★ P0-4（2026-10-26）：稳定 capabilities 字符串（systemPrompt 后缀，含 web 工具策略 +
+  //   skills prompt）。由 agent-model-executor 构建后传入，CE 路径用作 frozen skillsContext，
+  //   非 CE fallback 路径用作 stableSystemPrompt 后缀——两路径逐字节一致，切换不失效缓存。
+  stableCapabilities?: string;
   // ContextPruning manager (optional — enables soft trim and hard clear of tool results)
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
   // Token usage tracker (optional — enables real-time token/cost tracking)
@@ -1666,6 +1670,260 @@ export class StreamingTagScrubber {
   }
 }
 
+// ── Anthropic 原生 Messages API 格式转换 ──
+// Anthropic 官方端点为 POST /v1/messages（非 OpenAI 兼容的
+// /v1/chat/completions），请求/响应/SSE 事件格式均不同。以下转换函数
+// 把通用（OpenAI 兼容）格式与 Anthropic 原生格式互转，仅在
+// provider.provider === "anthropic" 时启用，不影响其他 provider。
+
+/** 构造 Anthropic Messages API 端点 URL（{baseURL}/v1/messages）。 */
+function buildAnthropicMessagesUrl(baseURL: string): string {
+  let url = (baseURL || "").replace(/\/+$/, "");
+  // 兼容用户把 baseURL 配成 OpenAI 兼容路径（/v1/chat/completions）的情况
+  if (url.endsWith("/chat/completions")) {
+    url = url.slice(0, -"/chat/completions".length);
+  }
+  if (!url.endsWith("/messages")) {
+    if (!url.endsWith("/v1")) url = `${url}/v1`;
+    url = `${url}/messages`;
+  }
+  return url;
+}
+
+/** Anthropic tool_choice：auto→{type:"auto"}，required→{type:"any"}。 */
+function convertToolChoiceToAnthropic(
+  toolChoice: "auto" | "required" | "none",
+): Record<string, unknown> | undefined {
+  if (toolChoice === "required") return { type: "any" };
+  if (toolChoice === "auto") return { type: "auto" };
+  return undefined; // "none"：不传 tools
+}
+
+/** OpenAI function tool → Anthropic tool（input_schema 而非 parameters）。 */
+function convertToolsToAnthropic(
+  tools: Array<{ type: string; function: Record<string, unknown> }>,
+): Array<Record<string, unknown>> {
+  return tools.map((t) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters,
+  }));
+}
+
+/**
+ * 提取消息文本/多模态内容为 Anthropic content blocks。
+ * - 字符串内容：无 cache_control 时返回单 text block；有 cache_control 时
+ *   挂在 block 上（Anthropic 断点语义要求 cache_control 在 content block 上，
+ *   而非 message 对象上）。
+ * - ChatContent[]（text/image_url/input_audio/file）→ Anthropic
+ *   text/image/document/audio blocks（data URI 拆出 base64 source）。
+ */
+interface AnthropicContentPart {
+  type?: string;
+  text?: string;
+  image_url?: { url?: string };
+  file?: { data?: string; mimeType?: string; filename?: string };
+  input_audio?: { data?: string; format?: "wav" | "mp3" | "flac" | "ogg" };
+}
+
+function extractAnthropicContentBlocks(
+  content: unknown,
+  cacheCtrl: unknown,
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [];
+
+  if (typeof content === "string") {
+    blocks.push({ type: "text", text: content });
+  } else if (Array.isArray(content)) {
+    for (const partRaw of content as Array<unknown>) {
+      const part = partRaw as AnthropicContentPart | null | undefined;
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text" && typeof part.text === "string") {
+        blocks.push({ type: "text", text: part.text });
+      } else if (part.type === "image_url") {
+        const url = part.image_url?.url;
+        if (typeof url === "string") {
+          const m = /^data:([^;]+);base64,([\s\S]*)$/.exec(url);
+          if (m) {
+            blocks.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+          } else {
+            blocks.push({ type: "image", source: { type: "url", url } });
+          }
+        }
+      } else if (part.type === "file") {
+        if (typeof part.file?.data === "string") {
+          blocks.push({
+            type: "document",
+            source: { type: "base64", media_type: part.file.mimeType || "application/pdf", data: part.file.data },
+          });
+        }
+      } else if (part.type === "input_audio") {
+        if (typeof part.input_audio?.data === "string") {
+          const audioMime =
+            { wav: "audio/wav", mp3: "audio/mpeg", flac: "audio/flac", ogg: "audio/ogg" }[part.input_audio.format ?? "wav"];
+          blocks.push({ type: "audio", source: { type: "base64", media_type: audioMime, data: part.input_audio.data } });
+        }
+      }
+    }
+  }
+
+  // cache_control 只能挂在最后一个 block 上（Anthropic 断点语义）
+  if (cacheCtrl && blocks.length > 0) {
+    blocks[blocks.length - 1].cache_control = cacheCtrl;
+  }
+  return blocks;
+}
+
+/**
+ * 通用消息数组 → Anthropic Messages API 格式。
+ * - system 消息 → 顶层 system 字段（content blocks 数组，保留 cache_control）
+ * - assistant tool_calls → content 中的 tool_use blocks
+ * - role:"tool" 工具结果 → user 消息中的 tool_result blocks
+ *   （连续 tool 消息合并进同一条 user 消息，符合 Anthropic 工具往返约定）
+ */
+function convertMessagesToAnthropic(
+  messages: Array<Record<string, unknown>>,
+): { system?: unknown; messages: Array<Record<string, unknown>> } {
+  const systemBlocks: Array<Record<string, unknown>> = [];
+  const out: Array<Record<string, unknown>> = [];
+
+  for (const m of messages) {
+    const role = m.role;
+    const cacheCtrl = m.cache_control;
+
+    if (role === "system") {
+      // system 段：字符串内容转 text block，透传 message 级 cache_control
+      if (typeof m.content === "string") {
+        const block: Record<string, unknown> = { type: "text", text: m.content };
+        if (cacheCtrl) block.cache_control = cacheCtrl;
+        systemBlocks.push(block);
+      } else if (Array.isArray(m.content)) {
+        const parts = extractAnthropicContentBlocks(m.content, undefined);
+        if (cacheCtrl && parts.length > 0) {
+          // cache_control 只挂在最后一个 block（Anthropic 断点语义）
+          parts[parts.length - 1].cache_control = cacheCtrl;
+        }
+        systemBlocks.push(...parts);
+      }
+      continue;
+    }
+
+    // 工具结果消息 → user 消息中的 tool_result block
+    if (role === "tool") {
+      const block: Record<string, unknown> = {
+        type: "tool_result",
+        tool_use_id: String(m.tool_call_id ?? ""),
+        content: typeof m.content === "string"
+          ? m.content
+          : (m.content ? JSON.stringify(m.content) : ""),
+      };
+      // 连续 tool 消息合并进同一个 user 消息（多个 tool_result blocks）
+      const last = out[out.length - 1];
+      if (
+        last && last.role === "user" && Array.isArray(last.content) &&
+        (last.content as Array<Record<string, unknown>>).length > 0 &&
+        (last.content as Array<Record<string, unknown>>).every((b) => b?.type === "tool_result")
+      ) {
+        (last.content as Array<Record<string, unknown>>).push(block);
+      } else {
+        out.push({ role: "user", content: [block] });
+      }
+      continue;
+    }
+
+    // assistant 消息：tool_calls → tool_use blocks
+    const toolCalls = Array.isArray(m.tool_calls)
+      ? (m.tool_calls as Array<Record<string, unknown>>)
+      : [];
+    const contentBlocks = extractAnthropicContentBlocks(m.content, undefined);
+    for (const tc of toolCalls) {
+      const fn = tc.function as Record<string, unknown> | undefined;
+      let input: Record<string, unknown> = {};
+      try {
+        input = JSON.parse(String(fn?.arguments ?? "{}"));
+      } catch {
+        // 参数 JSON 不完整时保留空对象（Anthropic 要求 input 为对象）
+      }
+      contentBlocks.push({
+        type: "tool_use",
+        id: String(tc.id ?? ""),
+        name: String(fn?.name ?? ""),
+        input,
+      });
+    }
+    // cache_control 统一挂在最后一个 block（tool_use 或 text）上
+    if (cacheCtrl && contentBlocks.length > 0) {
+      contentBlocks[contentBlocks.length - 1].cache_control = cacheCtrl;
+    }
+    out.push({
+      role: role === "assistant" ? "assistant" : "user",
+      content: contentBlocks,
+    });
+  }
+
+  const result: { system?: unknown; messages: Array<Record<string, unknown>> } = { messages: out };
+  if (systemBlocks.length > 0) result.system = systemBlocks;
+  return result;
+}
+
+/**
+ * Anthropic 非流式响应 → OpenAI Chat Completions 形状。
+ * content blocks 中的 text 拼接为 content；tool_use blocks 转 tool_calls；
+ * usage 的 input/output tokens 映射为 total/prompt/completion，并透传
+ * cache_read_input_tokens / cache_creation_input_tokens（normalizeUsage 识别）。
+ */
+function convertAnthropicResponseToOpenAI(data: unknown): Record<string, unknown> {
+  const d = (data ?? {}) as {
+    content?: Array<Record<string, unknown>>;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+  const blocks = Array.isArray(d.content) ? d.content : [];
+  let text = "";
+  const toolCalls: Array<Record<string, unknown>> = [];
+  for (const block of blocks) {
+    if (block?.type === "text" && typeof block.text === "string") {
+      text += block.text;
+    } else if (block?.type === "tool_use") {
+      toolCalls.push({
+        id: String(block.id ?? ""),
+        type: "function",
+        function: {
+          name: String(block.name ?? ""),
+          arguments: JSON.stringify(block.input ?? {}),
+        },
+      });
+    }
+  }
+  const usage = d.usage ?? {};
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  return {
+    choices: [{
+      message: {
+        role: "assistant",
+        content: text || null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      },
+    }],
+    usage: {
+      total_tokens: inputTokens + outputTokens,
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      ...(usage.cache_read_input_tokens !== undefined
+        ? { cache_read_input_tokens: usage.cache_read_input_tokens }
+        : {}),
+      ...(usage.cache_creation_input_tokens !== undefined
+        ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
+        : {}),
+    },
+  };
+}
+
 // ── parseStreamingResponse ──
 
 export async function parseStreamingResponse(
@@ -1708,6 +1966,18 @@ export async function parseStreamingResponse(
   // fix-4: 跟踪 finish_reason 以检测 length 截断等场景
   let finishReason: string | undefined;
 
+  // ── Anthropic 原生 Messages API 流式事件状态 ──
+  // message_start 携带 input_tokens + cache 字段；message_delta 携带
+  // 累计 output_tokens；事件格式见 Anthropic Messages API streaming 文档。
+  let anthropicUsageSeen = false;
+  let anthropicInputTokens = 0;
+  let anthropicOutputTokens = 0;
+  let anthropicCacheRead: number | undefined;
+  let anthropicCacheCreation: number | undefined;
+  // Anthropic 文本增量触发重复看门狗中断时置位（跳出当前行循环，
+  // 与 OpenAI 路径 `break` 行为一致）
+  let runawayInterrupted = false;
+
   // ── 分轮气泡标记（2026-10-08）──
   // 用户反馈「下一条内容冲掉上一条」。根因是前端靠长度猜测换轮。
   // 轮次序号由主循环经 trace.nextRound() 自增，这里只读取；
@@ -1728,6 +1998,104 @@ export async function parseStreamingResponse(
   let lastReasoningPushAt = 0;
   const REASONING_SNAPSHOT_MS = 400;
 
+  // ── 文本增量统一处理（OpenAI delta.content / Anthropic text_delta 共用）──
+  // 清洗推理标签 → 看门狗 → token/status 事件下发。返回 true 表示触发
+  // 重复看门狗中断（调用方须跳出当前行的 for 循环，与 OpenAI 路径行为一致）。
+  const handleTextDelta = (rawText: string): boolean => {
+    const currentRound = trace ? trace.round : 1;
+    // 通过清洗器处理 delta，清洗 <think>/<reasoning> 等推理标签
+    const cleaned = tagScrubber.feed(rawText);
+    // 清洗器丢弃的推理内容转存进思考轨迹（不进正文，但完整保留）
+    if (tagScrubber.reasoningLength > 0) {
+      const reasoning = tagScrubber.takeReasoning();
+      if (reasoning.trim()) {
+        trace?.appendReasoning(reasoning, currentRound);
+        reasoningAccum += reasoning;
+        const nowMs = Date.now();
+        const withSnapshot = nowMs - lastReasoningPushAt >= REASONING_SNAPSHOT_MS;
+        if (withSnapshot) lastReasoningPushAt = nowMs;
+        onProgress({
+          type: "reasoning",
+          phase: "thinking",
+          detail: "模型思考中…",
+          progress: 55,
+          reasoningDelta: reasoning,
+          reasoningText: reasoningAccum,
+          roundIndex: currentRound,
+          ...(withSnapshot && trace ? { thinkingSteps: trace.toJSON() } : {}),
+        });
+      }
+    }
+    content += cleaned;
+
+    // ── 流式重复看门狗（hermes RunawayStreamWatch）──
+    // 模型陷入退化重复循环时，在流式输出中途中断，
+    // 避免耗尽整个 turn 并把垃圾送进最终回复。
+    // 中断检查点丢弃被循环污染的部分（对齐 hermes
+    // REPETITION_LOOP_INTERRUPTED 语义）。
+    if (runawayWatch.feed(cleaned)) {
+      content += REPETITION_LOOP_INTERRUPTED;
+      process.stderr.write(
+        `[LLMCaller] Runaway repetition detected after ${runawayWatch.getChars()} chars; interrupting stream for session\n`,
+      );
+      onProgress({
+        type: "status",
+        phase: "generating",
+        detail: "检测到回复陷入重复循环，已中断输出。",
+        progress: 80,
+      });
+      return true;
+    }
+
+    // ── Token-level streaming ──
+    // Fire a `token` event for every cleaned delta so the client can
+    // render incrementally without diffing the accumulated `reply`.
+    // Backward-compat: still emit the throttled `status` event with
+    // the full accumulated `reply` for older clients that expect it.
+    if (cleaned) {
+      // ★ roundIndex：只在本轮**首个**正文 token 上携带一次。
+      // 前端据此新建气泡，从而「每轮回复各占一个气泡、互不覆盖」
+      // （用户反馈 2026-10-08：输出框互相冲掉）。
+      // 用局部变量标记，避免每个 token 都重复声明同一轮。
+      const isFirstTokenOfRound = !roundStarted;
+      if (isFirstTokenOfRound) roundStarted = true;
+      const currentRoundForToken = trace ? trace.round : 1;
+      // P0 欠账修复（2026-10-12）：默认 token 事件只携带 delta 增量，
+      // 不再塞整条累积 reply（旧实现一次 3MB 任务的流里 token 事件
+      // 占 95% 体积、平方增长）。includeAccumulatedReplyInTokenEvents
+      // 供旧客户端按需开启全量替换渲染；前端按 reply 存在与否自动
+      // 决定走增量还是全量路径，无需额外兼容判断。
+      onProgress({
+        type: "token",
+        phase: "generating",
+        detail: "正在生成回复...",
+        progress: 80,
+        delta: cleaned,
+        ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
+        ...(isFirstTokenOfRound ? { roundIndex: currentRoundForToken } : {}),
+      });
+    }
+
+    const now = Date.now();
+    if (now - lastChunkTime > 50) {
+      // P0 欠账修复（2026-10-12）：status+generating 是前端噪声过滤的对象
+      // （WebChatPage.tsx isNoiseProgressStep），但事件体仍每 50ms 携带
+      // 全量累积 reply —— 与 token 事件同源的体积浪费。token 事件已默认
+      // 只发 delta，status 事件不再携带 reply（保留 phase/detail/progress
+      // 供状态栏使用；旧客户端若依赖 status.reply 做全量替换，会被
+      // token 增量路径覆盖——前端按 reply 存在与否自动分流，无需改动）。
+      onProgress({
+        type: "status",
+        phase: "generating",
+        detail: "正在生成回复...",
+        progress: 80,
+        ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
+      });
+      lastChunkTime = now;
+    }
+    return false;
+  };
+
   let streamReadError: unknown = null;
   try {
     while (true) {
@@ -1747,6 +2115,8 @@ export async function parseStreamingResponse(
 
         try {
           const chunk = JSON.parse(dataStr) as {
+            type?: string;
+            index?: number;
             choices?: Array<{
               delta?: {
                 content?: string | null;
@@ -1767,8 +2137,125 @@ export async function parseStreamingResponse(
               cache_read_input_tokens?: number;
               cache_creation_input_tokens?: number;
               input_tokens_details?: { cached_tokens?: number; cache_creation_tokens?: number } | null;
+              // Anthropic message_delta 事件携带的累计 output_tokens
+              input_tokens?: number;
+              output_tokens?: number;
             };
+            // ── Anthropic 原生 Messages API 流式事件字段 ──
+            message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
+            content_block?: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> };
+            delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; stop_reason?: string };
+            error?: { type?: string; message?: string };
           };
+
+          // ── Anthropic 原生 Messages API 流式事件分支 ──
+          // 事件类型：message_start / content_block_start / content_block_delta /
+          // content_block_stop / message_delta / message_stop（见 Anthropic
+          // Messages API streaming 文档）。与 OpenAI chunk（choices 数组）互斥，
+          // 命中后 continue，不进入下方 OpenAI 解析路径。
+          if (
+            typeof chunk.type === "string" &&
+            (chunk.type === "message_start" || chunk.type === "message_delta" ||
+              chunk.type === "message_stop" || chunk.type === "error" ||
+              chunk.type.startsWith("content_block_"))
+          ) {
+            switch (chunk.type) {
+              case "message_start": {
+                const u = chunk.message?.usage;
+                if (u) {
+                  anthropicUsageSeen = true;
+                  anthropicInputTokens = u.input_tokens ?? 0;
+                  anthropicOutputTokens = u.output_tokens ?? 0;
+                  anthropicCacheRead = u.cache_read_input_tokens;
+                  anthropicCacheCreation = u.cache_creation_input_tokens;
+                }
+                break;
+              }
+              case "content_block_start": {
+                const cb = chunk.content_block;
+                if (cb?.type === "tool_use") {
+                  // 工具调用开始：记录 id/name，参数由后续 input_json_delta 累积
+                  const idx = chunk.index ?? toolCallsMap.size;
+                  toolCallsMap.set(idx, { id: cb.id || "", name: cb.name || "", arguments: "" });
+                  // ── 进度反馈：流式工具调用首次出现时上报 ──
+                  if (cb.name && onProgress) {
+                    onProgress({
+                      type: "status",
+                      phase: "thinking",
+                      detail: `📋 LLM 决定调用:${cb.name}`,
+                      progress: 45,
+                    });
+                  }
+                }
+                break;
+              }
+              case "content_block_delta": {
+                const d = chunk.delta;
+                if (d?.type === "text_delta" && d.text) {
+                  // 文本增量：与 OpenAI delta.content 共用清洗/看门狗/事件下发
+                  // 返回 true 表示触发重复看门狗中断（与 OpenAI 路径一致，
+                  // 跳出当前行循环，丢弃本批剩余行）。
+                  if (handleTextDelta(d.text)) {
+                    runawayInterrupted = true;
+                    break;
+                  }
+                } else if (d?.type === "input_json_delta" && d.partial_json) {
+                  // 工具参数 JSON 分片累积
+                  const idx = chunk.index ?? 0;
+                  const existing = toolCallsMap.get(idx);
+                  if (existing) existing.arguments += d.partial_json;
+                } else if (d?.type === "thinking_delta" && d.thinking) {
+                  // 推理增量（Anthropic extended thinking）：与 reasoning_content 同路径
+                  const currentRound = trace ? trace.round : 1;
+                  trace?.appendReasoning(d.thinking, currentRound);
+                  reasoningAccum += d.thinking;
+                  const nowMs = Date.now();
+                  const withSnapshot = nowMs - lastReasoningPushAt >= REASONING_SNAPSHOT_MS;
+                  if (withSnapshot) lastReasoningPushAt = nowMs;
+                  onProgress({
+                    type: "reasoning",
+                    phase: "thinking",
+                    detail: "模型思考中…",
+                    progress: 55,
+                    reasoningDelta: d.thinking,
+                    reasoningText: reasoningAccum,
+                    roundIndex: currentRound,
+                    ...(withSnapshot && trace ? { thinkingSteps: trace.toJSON() } : {}),
+                  });
+                }
+                break;
+              }
+              case "message_delta": {
+                // 末段 usage（累计 output_tokens）+ stop_reason
+                const u = chunk.usage;
+                if (u) {
+                  anthropicUsageSeen = true;
+                  if (u.output_tokens !== undefined) anthropicOutputTokens = u.output_tokens;
+                  if (u.cache_read_input_tokens !== undefined) anthropicCacheRead = u.cache_read_input_tokens;
+                  if (u.cache_creation_input_tokens !== undefined) anthropicCacheCreation = u.cache_creation_input_tokens;
+                }
+                const stopReason = chunk.delta?.stop_reason;
+                if (stopReason) {
+                  // Anthropic 的 max_tokens 截断映射为 finishReason "length"
+                  // （流式恢复按 finishReason === "length" 判断截断）
+                  finishReason = stopReason === "max_tokens" ? "length" : stopReason;
+                }
+                break;
+              }
+              case "message_stop":
+                break;
+              case "error": {
+                // Anthropic 流内错误事件：记录日志，不中断已交付内容
+                process.stderr.write(
+                  `[LLMCaller] Anthropic stream error: ${chunk.error?.type ?? "error"}: ${chunk.error?.message ?? ""}\n`,
+                );
+                break;
+              }
+            }
+            // 重复看门狗中断：跳出当前行循环（与 OpenAI 路径一致）
+            if (runawayInterrupted) break;
+            continue;
+          }
 
           // ★ OpenAI 原生流式末块携带 usage（stream_options.include_usage=true 时）：
           // `{"choices":[], "usage":{...}}` —— choices 为空、无 delta。
@@ -1822,96 +2309,10 @@ export async function parseStreamingResponse(
           }
 
           if (choice.delta.content) {
-            // 通过清洗器处理 delta，清洗 <think>/<reasoning> 等推理标签
-            const cleaned = tagScrubber.feed(choice.delta.content);
-            // 清洗器丢弃的推理内容转存进思考轨迹（不进正文，但完整保留）
-            if (tagScrubber.reasoningLength > 0) {
-              const reasoning = tagScrubber.takeReasoning();
-              if (reasoning.trim()) {
-                trace?.appendReasoning(reasoning, currentRoundForReasoning);
-                reasoningAccum += reasoning;
-                const nowMs = Date.now();
-                const withSnapshot = nowMs - lastReasoningPushAt >= REASONING_SNAPSHOT_MS;
-                if (withSnapshot) lastReasoningPushAt = nowMs;
-                onProgress({
-                  type: "reasoning",
-                  phase: "thinking",
-                  detail: "模型思考中…",
-                  progress: 55,
-                  reasoningDelta: reasoning,
-                  reasoningText: reasoningAccum,
-                  roundIndex: currentRoundForReasoning,
-                  ...(withSnapshot && trace ? { thinkingSteps: trace.toJSON() } : {}),
-                });
-              }
-            }
-            content += cleaned;
-
-            // ── 流式重复看门狗（hermes RunawayStreamWatch）──
-            // 模型陷入退化重复循环时，在流式输出中途中断，
-            // 避免耗尽整个 turn 并把垃圾送进最终回复。
-            // 中断检查点丢弃被循环污染的部分（对齐 hermes
-            // REPETITION_LOOP_INTERRUPTED 语义）。
-            if (runawayWatch.feed(cleaned)) {
-              content += REPETITION_LOOP_INTERRUPTED;
-              process.stderr.write(
-                `[LLMCaller] Runaway repetition detected after ${runawayWatch.getChars()} chars; interrupting stream for session\n`,
-              );
-              onProgress({
-                type: "status",
-                phase: "generating",
-                detail: "检测到回复陷入重复循环，已中断输出。",
-                progress: 80,
-              });
-              break;
-            }
-
-            // ── Token-level streaming ──
-            // Fire a `token` event for every cleaned delta so the client can
-            // render incrementally without diffing the accumulated `reply`.
-            // Backward-compat: still emit the throttled `status` event with
-            // the full accumulated `reply` for older clients that expect it.
-            if (cleaned) {
-              // ★ roundIndex：只在本轮**首个**正文 token 上携带一次。
-              // 前端据此新建气泡，从而「每轮回复各占一个气泡、互不覆盖」
-              // （用户反馈 2026-10-08：输出框互相冲掉）。
-              // 用局部变量标记，避免每个 token 都重复声明同一轮。
-              const isFirstTokenOfRound = !roundStarted;
-              if (isFirstTokenOfRound) roundStarted = true;
-              const currentRound = trace ? trace.round : 1;
-              // P0 欠账修复（2026-10-12）：默认 token 事件只携带 delta 增量，
-              // 不再塞整条累积 reply（旧实现一次 3MB 任务的流里 token 事件
-              // 占 95% 体积、平方增长）。includeAccumulatedReplyInTokenEvents
-              // 供旧客户端按需开启全量替换渲染；前端按 reply 存在与否自动
-              // 决定走增量还是全量路径，无需额外兼容判断。
-              onProgress({
-                type: "token",
-                phase: "generating",
-                detail: "正在生成回复...",
-                progress: 80,
-                delta: cleaned,
-                ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
-                ...(isFirstTokenOfRound ? { roundIndex: currentRound } : {}),
-              });
-            }
-
-            const now = Date.now();
-            if (now - lastChunkTime > 50) {
-              // P0 欠账修复（2026-10-12）：status+generating 是前端噪声过滤的对象
-              // （WebChatPage.tsx isNoiseProgressStep），但事件体仍每 50ms 携带
-              // 全量累积 reply —— 与 token 事件同源的体积浪费。token 事件已默认
-              // 只发 delta，status 事件不再携带 reply（保留 phase/detail/progress
-              // 供状态栏使用；旧客户端若依赖 status.reply 做全量替换，会被
-              // token 增量路径覆盖——前端按 reply 存在与否自动分流，无需改动）。
-              onProgress({
-                type: "status",
-                phase: "generating",
-                detail: "正在生成回复...",
-                progress: 80,
-                ...(includeAccumulatedReplyInTokenEvents ? { reply: content } : {}),
-              });
-              lastChunkTime = now;
-            }
+            // 文本增量统一走 handleTextDelta（清洗推理标签 → 看门狗 →
+            // token/status 事件下发），与 Anthropic text_delta 共用同一逻辑。
+            // 返回 true 表示触发重复看门狗中断，跳出当前行循环。
+            if (handleTextDelta(choice.delta.content)) break;
           }
 
           if (choice.delta.tool_calls) {
@@ -1952,6 +2353,21 @@ export async function parseStreamingResponse(
   } catch (readErr) {
     streamReadError = readErr;
     process.stderr.write(`[AgentModelExecutor] Stream read error for ${provider.name}:` + " " + readErr + "\n");
+  }
+
+  // ── Anthropic 流式 usage 汇总 ──
+  // message_start 携带 input_tokens + cache 字段；message_delta 携带累计
+  // output_tokens。合并为 normalizeUsage 可识别的 Anthropic 形状（provider
+  // 侧缓存命中真值链路）。放在 streamReadError 之前，流恢复路径同样受益。
+  if (anthropicUsageSeen) {
+    totalTokens = anthropicInputTokens + anthropicOutputTokens;
+    promptTokens = anthropicInputTokens;
+    streamUsageDetails = {
+      input_tokens: anthropicInputTokens,
+      output_tokens: anthropicOutputTokens,
+      ...(anthropicCacheRead !== undefined ? { cache_read_input_tokens: anthropicCacheRead } : {}),
+      ...(anthropicCacheCreation !== undefined ? { cache_creation_input_tokens: anthropicCacheCreation } : {}),
+    };
   }
 
   // 流读取错误时，记录失败指标并尝试流式恢复（fix-4）
@@ -2152,8 +2568,11 @@ export async function callLLMOnce(
   }
 
   const baseURL = provider.baseURL || "";
-  let apiURL = baseURL;
-  if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
+  const isAnthropicProvider = provider.provider === "anthropic";
+  let apiURL = isAnthropicProvider
+    ? buildAnthropicMessagesUrl(baseURL)
+    : baseURL;
+  if (!isAnthropicProvider && !apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
     apiURL = apiURL.replace(/\/+$/, "");
     if (!apiURL.endsWith("/v1")) {
       apiURL = `${apiURL}/v1`;
@@ -2201,52 +2620,78 @@ export async function callLLMOnce(
       ) as unknown as Array<LLMMessage>;
     }
 
-    const body: Record<string, unknown> = {
-      model: provider.model,
-      messages: messagesToSend.map((m) => {
-        const msg: Record<string, unknown> = { role: m.role };
-        if (m.content !== undefined) msg.content = m.content;
-        if (m.tool_calls) msg.tool_calls = m.tool_calls;
-        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-        if (m.name) msg.name = m.name;
-        // 透传 cache_control（仅 Anthropic provider 设置了此字段）
-        const cacheCtrl = (m as LLMMessage & { cache_control?: unknown }).cache_control;
-        if (cacheCtrl) msg.cache_control = cacheCtrl;
-        return msg;
-      }),
-      max_tokens: Math.max(1, provider.maxTokens ?? 4096),
-      temperature: provider.temperature ?? 0.3,
-      top_p: provider.topP ?? 1,
-      stream: useStreaming,
-    };
-
-    // ── 流式 usage 上报：OpenAI 原生端点必须显式开启 stream_options.include_usage
-    // 才能在末块拿到完整 usage（含 prompt_tokens_details.cached_tokens）──
-    // 其他 OpenAI 兼容 provider（DeepSeek/agnes 代理等）默认就回传 chunk.usage，
-    // 不动请求体以免个别严格代理 400 拒绝未知字段。
-    if (useStreaming && /api\.openai\.com/i.test(provider.baseURL || "")) {
-      body.stream_options = { include_usage: true };
-    }
-
-    if (tools.length > 0 && toolChoice !== "none") {
-      body.tools = tools;
-      body.tool_choice = toolChoice;
-
-      if (provider.provider === "deepseek" || provider.name.toLowerCase().includes("deepseek")) {
-        // 注：原代码在 toolChoice !== "none" 的块内再判断 `=== "none"`，
-        // 该分支永不成立（死代码）。此处只保留 deepseek 的推理标记。
-        body.reasoning_type = "deepseek_reasoning";
+    // ── 请求体：Anthropic 原生 Messages API 与 OpenAI 兼容格式分叉 ──
+    // Anthropic 官方端点为 /v1/messages，请求格式不同（system 顶层字段、
+    // tool_use/tool_result content blocks、tools 用 input_schema、
+    // tool_choice 用 {type} 对象）。
+    let body: Record<string, unknown>;
+    if (isAnthropicProvider) {
+      const anth = convertMessagesToAnthropic(
+        messagesToSend as unknown as Array<Record<string, unknown>>,
+      );
+      body = {
+        model: provider.model,
+        messages: anth.messages,
+        max_tokens: Math.max(1, provider.maxTokens ?? 4096),
+        temperature: provider.temperature ?? 0.3,
+        top_p: provider.topP ?? 1,
+        stream: useStreaming,
+      };
+      if (anth.system !== undefined) body.system = anth.system;
+      if (tools.length > 0 && toolChoice !== "none") {
+        body.tools = convertToolsToAnthropic(tools);
+        body.tool_choice = convertToolChoiceToAnthropic(toolChoice);
       }
-    }
+      // 注意：Anthropic 原生端点不支持 reasoning_effort / enable_thinking
+      // 等 OpenAI 系推理开关（传了会 400），故跳过 applyReasoningToggle。
+    } else {
+      body = {
+        model: provider.model,
+        messages: messagesToSend.map((m) => {
+          const msg: Record<string, unknown> = { role: m.role };
+          if (m.content !== undefined) msg.content = m.content;
+          if (m.tool_calls) msg.tool_calls = m.tool_calls;
+          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+          if (m.name) msg.name = m.name;
+          // 透传 cache_control（仅 Anthropic provider 设置了此字段）
+          const cacheCtrl = (m as LLMMessage & { cache_control?: unknown }).cache_control;
+          if (cacheCtrl) msg.cache_control = cacheCtrl;
+          return msg;
+        }),
+        max_tokens: Math.max(1, provider.maxTokens ?? 4096),
+        temperature: provider.temperature ?? 0.3,
+        top_p: provider.topP ?? 1,
+        stream: useStreaming,
+      };
 
-    // ── 推理开关：让「不同大模型」都能吐出思考原文 ──
-    // 实测（2026-10-08）：抓原始 SSE 流逐个探测发现，provider 之间差异极大——
-    //   mimo-v2.6-flash 默认只给 7 字推理，加 enable_thinking 后给 50 字，
-    //   加 reasoning_effort:high 给 68 字；agnes-3.0-flash 则一个字段都不给。
-    // 系统此前**从不**传任何推理开关，所以即便模型本身支持思考，
-    // 拿到的也是被"阉割"的一点点，轨迹里几乎没有 reasoning 条目。
-    // 这里按 provider 特征补上开关，让能力被用起来。
-    applyReasoningToggle(body, provider);
+      // ── 流式 usage 上报：OpenAI 原生端点必须显式开启 stream_options.include_usage
+      // 才能在末块拿到完整 usage（含 prompt_tokens_details.cached_tokens）──
+      // 其他 OpenAI 兼容 provider（DeepSeek/agnes 代理等）默认就回传 chunk.usage，
+      // 不动请求体以免个别严格代理 400 拒绝未知字段。
+      if (useStreaming && /api\.openai\.com/i.test(provider.baseURL || "")) {
+        body.stream_options = { include_usage: true };
+      }
+
+      if (tools.length > 0 && toolChoice !== "none") {
+        body.tools = tools;
+        body.tool_choice = toolChoice;
+
+        if (provider.provider === "deepseek" || provider.name.toLowerCase().includes("deepseek")) {
+          // 注：原代码在 toolChoice !== "none" 的块内再判断 `=== "none"`，
+          // 该分支永不成立（死代码）。此处只保留 deepseek 的推理标记。
+          body.reasoning_type = "deepseek_reasoning";
+        }
+      }
+
+      // ── 推理开关：让「不同大模型」都能吐出思考原文 ──
+      // 实测（2026-10-08）：抓原始 SSE 流逐个探测发现，provider 之间差异极大——
+      //   mimo-v2.6-flash 默认只给 7 字推理，加 enable_thinking 后给 50 字，
+      //   加 reasoning_effort:high 给 68 字；agnes-3.0-flash 则一个字段都不给。
+      // 系统此前**从不**传任何推理开关，所以即便模型本身支持思考，
+      // 拿到的也是被"阉割"的一点点，轨迹里几乎没有 reasoning 条目。
+      // 这里按 provider 特征补上开关，让能力被用起来。
+      applyReasoningToggle(body, provider);
+    }
 
     process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
     callStart = Date.now();
@@ -2294,7 +2739,7 @@ export async function callLLMOnce(
       return await parseStreamingResponse(response, provider, startTime, onProgress!, deps, trace, includeAccumulatedReplyInTokenEvents);
     }
 
-    const data = await response.json() as {
+    let data = await response.json() as {
       choices?: Array<{
         message?: {
           role?: string;
@@ -2308,6 +2753,12 @@ export async function callLLMOnce(
       }>;
       usage?: { total_tokens?: number };
     };
+
+    if (isAnthropicProvider) {
+      // Anthropic 原生响应（content blocks + input_tokens/output_tokens）
+      // → 转换为 OpenAI Chat Completions 形状，复用下方统一解析路径。
+      data = convertAnthropicResponseToOpenAI(data) as typeof data;
+    }
 
     const choice = data.choices?.[0];
     const msg = choice?.message;
@@ -2716,14 +3167,27 @@ export async function tryCallLLM(
       // （"web.tool_strategy" 模板），跨部署字节稳定（旧：内联字面量，散落各处）。
       const webToolStrategy = PromptRegistry.getInstance().format("web.tool_strategy", {});
 
-      // 稳定主体：system prompt（P0-3 后调用方保证不含记忆/画像/计划等逐轮易变内容）
-      // + 稳定 capabilities/skills 段。逐轮字节不变，provider 前缀缓存可命中。
-      const stableCapabilities = skillsPrompt
+      // ★ P0-4（2026-10-26）：优先使用 agent-model-executor 传入的 stableCapabilities
+      // （与 CE frozen 段逐字节一致）。仅当 deps 未提供时回退到本地构建（向后兼容：
+      // 非 CE 路径或 CE 组装失败时 agent-model-executor 可能未构建 stableCapabilities）。
+      const stableCapabilities = deps.stableCapabilities ?? (skillsPrompt
         ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
-        : "";
+        : "");
       const stableSystemPrompt = skillsPrompt
         ? `${systemPrompt}\n\n${stableCapabilities}`
         : systemPrompt;
+
+      // ★ P0-4：易变尾附加（时区/平台）——与 CE buildEphemeralSuffix 输出一致。
+      // CE 路径的 messages[0] = frozen + ephemeral，fallback 路径的 messages[0]
+      // 也需追加同样的 ephemeral 内容，两路径逐字节一致，切换不失效缓存。
+      const ephemeralSuffix = deps.contextEngineResult?.frozenContent
+        ? "" // CE 路径已包含 ephemeral（在 messages[0] 中），不重复追加
+        : (() => {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
+            const parts = [`Current timezone: ${tz} (24h format)`];
+            if (process.platform) parts.push(`Platform: ${process.platform}`);
+            return "\n\n" + parts.join("\n\n");
+          })();
 
       // P0-3：易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/
       // 记忆召回）移出稳定 system 主体，全部放**第二条 system 消息**（紧邻其后）。
@@ -2775,8 +3239,10 @@ export async function tryCallLLM(
         process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
         // Fallback: manual message assembly (stable system first, dynamic tail second)
+        // ★ P0-4：stableSystemPrompt 追加 ephemeralSuffix（时区/平台），与 CE 路径
+        // messages[0] = frozen + ephemeral 结构一致，两路径切换不失效缓存。
         messages = [
-          { role: "system", content: stableSystemPrompt },
+          { role: "system", content: stableSystemPrompt + ephemeralSuffix },
         ];
         if (dynamicSystemTail) {
           messages.push({ role: "system", content: dynamicSystemTail });
@@ -3213,7 +3679,7 @@ export async function tryCallLLM(
             process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             conversationMessages = [
-              { role: "system", content: stableSystemPrompt },
+              { role: "system", content: stableSystemPrompt + ephemeralSuffix },
               ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
               ...(deps.conversationHistory.get(sessionId) || []),
             ];
