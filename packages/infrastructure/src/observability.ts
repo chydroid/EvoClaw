@@ -261,6 +261,23 @@ export class Observability {
     }
   }
 
+  /**
+   * 记录 LLM 缓存命中情况。
+   * 缓存命中率 = cacheHitTokens / (cacheHitTokens + cacheMissTokens)。
+   * 以 gauge 形式设置，供 Grafana 等仪表盘实时展示。
+   */
+  recordLLMCacheHit(provider: string, model: string, cacheHitTokens: number, cacheMissTokens: number): void {
+    const labels = [
+      { key: "provider", value: provider },
+      { key: "model", value: model },
+    ];
+    const total = cacheHitTokens + cacheMissTokens;
+    const hitRatio = total > 0 ? cacheHitTokens / total : 0;
+    this.gaugeSet(`${this.config.metricsPrefix}_prompt_cache_hit_ratio`, hitRatio, labels);
+    this.counterIncrement(`${this.config.metricsPrefix}_prompt_cache_hit_tokens`, labels, cacheHitTokens);
+    this.counterIncrement(`${this.config.metricsPrefix}_prompt_cache_miss_tokens`, labels, cacheMissTokens);
+  }
+
   recordToolCall(toolName: string, success: boolean, latencyMs: number): void {
     const labels = [
       { key: "tool", value: toolName },

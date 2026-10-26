@@ -869,6 +869,9 @@ export interface LLMCallerDeps {
   // Service-gated tools: TTL-cached check_fn evaluator (optional — filters unavailable tools before sending to LLM)
   // Inspired by hermes-agent's registry._check_fn_cached (30s TTL, fail-safe).
   checkFnEvaluator?: (checkFn: () => boolean) => boolean;
+  // ★ P0-4：运行时缓存稳定性分析器（optional — 每轮 API 调用前评估 request prefix
+  // 稳定性，检测 anti-pattern 并输出诊断日志）。未提供时跳过稳定性分析。
+  promptCacheStability?: import("./prompt-cache-stability").PromptCacheStabilityManager;
   // End-to-end cancellation signal (optional — aborts in-flight LLM calls and tool executions).
   // Set by AgentModelExecutor.abortSession(sessionId); propagated through callLLMOnce,
   // the tool execution retry loop, and HTTP transport (nativeFetch already accepts a signal).
@@ -2976,6 +2979,33 @@ export async function tryCallLLM(
       let toolLoopHaltMsg = "";
       let toolLoopHaltDet = "";
 
+      // ★ P0-4：运行时缓存稳定性评估——每轮 API 调用前检查 request prefix
+      // 是否与上次一致。检测到 anti-pattern（tools 抖动 / system 漂移 /
+      // message 顺序变更）时输出诊断日志，帮助定位缓存命中率低的根因。
+      if (deps.promptCacheStability && providers.length > 0) {
+        try {
+          const firstProvider = providers[0];
+          const providerName = String(firstProvider.provider || "");
+          const providerType = (providerName === "anthropic" ? "anthropic" :
+            providerName === "openai" ? "openai" :
+            providerName === "google" ? "google" : "unknown") as
+            import("./prompt-cache-stability").CacheProvider;
+          const stabilityResult = deps.promptCacheStability.evaluate({
+            provider: providerType,
+            model: firstProvider.model || "unknown",
+            systemPrompt,
+            tools: tools.map(t => ({ name: t.function.name, description: t.function.description })),
+            messages: conversationMessages,
+          });
+          if (!stabilityResult.isStable && stabilityResult.brokenReason) {
+            process.stdout.write(
+              `[AgentModelExecutor] ⚠️ Cache stability: UNSTABLE at message ${stabilityResult.brokenAt} — ${stabilityResult.brokenReason}\n` +
+              `  stablePrefix: ${stabilityResult.stablePrefixLength} msgs, hit tokens: ${stabilityResult.estimatedCacheHitTokens}, miss tokens: ${stabilityResult.estimatedCacheMissTokens}\n`
+            );
+          }
+        } catch { /* best-effort — stability analysis must never block LLM calls */ }
+      }
+
       for (let round = 0; round < maxToolRounds; round++) {
         // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
         // In-flight fetches are already cancelled via the abort signal wired into
@@ -3403,6 +3433,22 @@ export async function tryCallLLM(
               ...cacheExtrasFromResult(result, provider.provider || provider.name),
             });
           } catch { /* best-effort */ }
+        }
+
+        // ★ P0-4：发射 prompt cache hit ratio 指标（grafana 仪表盘
+        // `evoclaw_prompt_cache_hit_ratio` 依赖此 gauge）。cacheHitTokens
+        // 来自 provider 响应 usageDetails；cacheMissTokens = input - hit。
+        {
+          const cacheExtras = cacheExtrasFromResult(result, provider.provider || provider.name);
+          if (cacheExtras.cacheHitTokens !== undefined) {
+            const cacheMissTokens = Math.max(0, result.promptTokens - cacheExtras.cacheHitTokens);
+            const obs = deps.registry?.resolveService<any>("observability");
+            if (obs?.recordLLMCacheHit) {
+              try {
+                obs.recordLLMCacheHit(provider.provider || provider.name, provider.model || "unknown", cacheExtras.cacheHitTokens, cacheMissTokens);
+              } catch { /* best-effort */ }
+            }
+          }
         }
         // Check if LLM used web_search or tavily-search but user intent matches an installed skill
         // Also check if SearchPreprocessor auto-executed a search (searchPreDone)

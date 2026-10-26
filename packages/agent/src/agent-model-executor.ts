@@ -239,6 +239,10 @@ export class AgentModelExecutor {
   private structuredOutputParser: import("./structured-output").StructuredOutputParser | null = null;
   private schemaRegistry: import("./structured-output").SchemaRegistry | null = null;
   private promptCache: import("./prompt-cache").PromptCache | null = null;
+  /** ★ P0-4：运行时缓存稳定性分析器——每轮 API 调用前评估 request prefix
+   *  稳定性，检测 anti-pattern（tools 抖动 / system 漂移 / message 顺序变更），
+   *  输出命中/未命中原因日志。未接入 request path 前为死代码。 */
+  private promptCacheStability: import("./prompt-cache-stability").PromptCacheStabilityManager | null = null;
   private acpHandler: import("./acp-delegation").ACPProtocolHandler | null = null;
   private observability: import("./agent-observability").AgentObservability | null = null;
   private computedStatusEngine: import("./computed-status").ComputedStatusEngine | null = null;
@@ -728,6 +732,12 @@ export class AgentModelExecutor {
       this.promptCache = new PromptCache();
     } catch { /* prompt cache not available */ }
 
+    // Prompt Cache Stability Analyzer
+    try {
+      const { PromptCacheStabilityManager } = require("./prompt-cache-stability");
+      this.promptCacheStability = new PromptCacheStabilityManager();
+    } catch { /* prompt cache stability not available */ }
+
     // ACP Delegation
     try {
       const { ACPProtocolHandler } = require("./acp-delegation");
@@ -1008,6 +1018,8 @@ export class AgentModelExecutor {
       checkFnEvaluator: (fn: () => boolean) => this.evaluateCheckFn(fn),
       // P0-2：会话级工具组单调并集存储，buildOpenAITools 回写、下一轮复用
       toolGroupStore: this.sessionToolGroups,
+      // P0-4：运行时缓存稳定性分析器
+      promptCacheStability: this.promptCacheStability ?? undefined,
     };
   }
 
