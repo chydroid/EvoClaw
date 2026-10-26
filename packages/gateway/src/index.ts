@@ -215,3 +215,48 @@ export {
   resolveConcurrentSessionLimitError,
 } from "./acp/acp-policy";
 export type { AcpConfig } from "./acp/acp-policy";
+
+// ─── MCP OAuth ────────────────────────────────────────────
+export {
+  generatePkceVerifier,
+  generatePkceChallenge,
+  generateState,
+  generateNonce,
+  generateClientId,
+  loadToken,
+  saveToken,
+  deleteToken,
+  getTokenPath,
+  isTokenExpiring,
+  isTokenExpired,
+  httpGetJson,
+  httpPostForm,
+  httpPostJson,
+  discoverOAuthMetadata,
+  buildPkceAuthorizationUrl,
+  exchangeCodeForToken,
+  requestDeviceCode,
+  pollDeviceToken,
+  refreshToken,
+  tokenResponseToStorage,
+  startCallbackServer,
+  buildCallbackUri,
+} from "./mcp-oauth";
+export type {
+  OAuthToken,
+  OAuthClientInformation,
+  OAuthServerMetadata,
+  OAuthTokenStorage,
+  DeviceAuthorizationResponse,
+  TokenResponse,
+  PkceFlowResult,
+} from "./mcp-oauth";
+
+export { McpOAuthManager, createOAuthManager, generateTestToken, ensureSecureDir } from "./mcp-oauth-manager";
+export type {
+  OAuthStatus,
+  OAuthServerState,
+  AuthenticateOptions,
+  GetTokenOptions,
+  OAuthManagerOptions,
+} from "./mcp-oauth-manager";
