@@ -208,5 +208,8 @@
   - **checkFn 会话豁免（llm-caller.ts）**：已进入会话单调并集（baseTools）的工具跳过 checkFn 过滤。checkFn 抖动（服务短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → provider 缓存全量失效。会话内已激活的工具保持在场，执行期 checkFn 兜底报错。
   - **searchPreDone 不再移除搜索工具（llm-caller.ts，前次提交）**：tools 数组是请求前缀第一段，移除工具改变前缀字节 → 缓存全量失效。改为依赖 system prompt 提示引导模型跳过搜索。
   - **可观测性接线（agent-model-executor.ts / llm-caller.ts / infrastructure/observability.ts）**：PromptCacheStabilityManager 从"仅导出未实例化"变为每轮 API 调用前 evaluate()，检测 anti-pattern 输出诊断日志；新增 recordLLMCacheHit() 发射 evoclaw_prompt_cache_hit_ratio gauge + hit/miss token counter（grafana 仪表盘此前引用但无代码发射）。
-  - **未修的架构级问题（需用户决策）**：① Anthropic provider 在 `llm-providers.json` 中 `enabled: false`，且请求走 `/v1/chat/completions`（OpenAI 格式）而非 Anthropic 原生 `/v1/messages`——cache_control 在当前部署中为死代码；② CE 路径与非 CE fallback 路径产生结构不同的 system 消息，切换时缓存全量失效；③ PromptCacheStabilityManager 的 evaluate() 每次调用做全量 hash 比较，长对话（200+ msgs）有 O(n) 开销，但实际开销可接受（stableHash 是字符串哈希）。
+  - **未修的架构级问题（已全部修复，2026-10-26）**：
+    - ① **Anthropic provider 路径**（`4097571`）：实现原生 `/v1/messages` API——端点归一化为 `{baseURL}/v1/messages`，system 提取为顶层字段，assistant tool_calls → tool_use content blocks，role:"tool" → tool_result blocks，非流式/流式响应格式转换，cache_read/creation token 透传。仅 `provider.provider === "anthropic"` 时启用，OpenAI 兼容路径零影响。
+    - ② **CE/非-CE 路径统一**（`2303629`）：bootstrap 去重（systemPrompt 已含，CE frozen 不再重复追加）；stableCapabilities 由 agent-model-executor 统一构建并同时传给 CE（skillsContext）和 tryCallLLM（deps.stableCapabilities），两路径逐字节一致；fallback 路径追加 ephemeralSuffix（时区/平台）与 CE messages[0] = frozen + ephemeral 对齐；CE 配置补 timezone/platformHint。
+    - ③ PromptCacheStabilityManager evaluate() 每次调用做全量 hash 比较，长对话（200+ msgs）有 O(n) 开销，但实际开销可接受（stableHash 是字符串哈希）。
   - **测试更新**：system-prompt.test.ts 改为验证 frozen 前缀跨日字节恒定（原测试验证跨日变化，现在不变化是期望行为）；context-engine.test.ts 验证易变尾不再含 currentTask 副本。全量 build→typecheck→test 全绿（6723 passed / 13 skipped）。
