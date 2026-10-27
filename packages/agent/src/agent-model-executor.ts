@@ -1396,11 +1396,10 @@ export class AgentModelExecutor {
       selected = skills.filter((s) => selection.names.includes(s.name));
     }
 
-    // P0-4 缓存稳定化（2026-10-26）：缓存 skills prompt 字符串。
-    // skills prompt 被注入稳定 system prompt（stableCapabilities 段），
-    // 每次重新构建即使内容相同也会触发异步 listSkills 调用，
-    // 且在并发安装/卸载时可能返回不同结果导致缓存前缀变化。
-    // 用 skills 列表的确定性哈希做缓存键：内容不变 → 返回缓存字符串。
+    // P0-4 缓存稳定化（2026-10-26）：按内容哈希记忆化渲染后的 skills prompt。
+    // skills 列表由调用方 listSkills 取得（见上方 resolveService 调用），本层
+    // 缓存并不省掉那次异步调用，只保证「同一技能集合 → 逐字节相同的 prompt
+    // 字符串」，避免重渲染产生的微小差异击穿 skills 消息之后的缓存前缀。
     // ★ P0-5：按需选择时哈希基于**选中子集**（selection.names 排序后拼接），
     // 会话粘性下逐轮字节稳定；跨会话不同选择 → 缓存 miss → 重建（廉价）。
     const hash = selected.length > 0

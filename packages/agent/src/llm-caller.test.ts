@@ -538,7 +538,7 @@ describe("P0-5 applyAnthropicCacheControl — volatile 区域前 history 尾部�
     expect(marked).toBeLessThanOrEqual(4);
   });
 
-  it("history 短于 3 条时槽位顺延给 skills/tail（会话内稳定）", () => {
+  it("history 不足 3 条时无剩余断点（skills/tail 是 system 角色，不参与本步）", () => {
     const msgs = [
       { role: "system", content: "SYS" },
       { role: "user", content: "q" },

@@ -158,7 +158,8 @@ export function applyAnthropicCacheControl(
   // 之后时才成立。P0-5 布局 [sys, history..., skills?, tail?, user] 下，
   // 最后 3 条非 system 消息（排除末尾 user）即 history 尾部——它们是逐轮
   // 字节不变的稳定前缀，断点可稳定命中，缓存覆盖 system + 几乎全部 history。
-  // history 短于 3 条时槽位顺延给 skills/tail 消息（它们在会话内同样稳定）。
+  // history 不足 3 条时，断点只挂在实际存在的 history 尾部消息上（少挂几条），
+  // 不会顺延给 skills/tail——它们是 system 角色，本步只遍历非 system 消息。
   // 注意：**末尾 user 消息永远不挂断点**（逐轮必变，挂上只是浪费槽位）。
   const nonSysIndices: number[] = [];
   for (let i = 0; i < result.length; i++) {

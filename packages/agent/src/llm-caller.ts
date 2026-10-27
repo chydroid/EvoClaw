@@ -4415,21 +4415,26 @@ export async function tryCallLLM(
           }
         }
         // ★ P0-5：CacheTracer 记录真实 cache 命中 token（provider usage 真值）。
-        // cacheHitTokens 缺失时记 0（未上报 ≠ 未命中，但保守记 miss 便于观察）。
+        // 网关未上报 cache 字段时**跳过记录**：若按 0 命中 + 全额未命中记账，
+        // overallHitRate = hit/(hit+miss) 会被「不上报缓存统计」的网关拉向 0%，
+        // 与 cacheExtrasFromResult 的既定语义（不上报就不发指标）以及上面
+        // P0-4 gauge 路径保持一致。
         if (deps.cacheTracer) {
           try {
             const cacheExtras = cacheExtrasFromResult(result, provider.provider || provider.name);
-            const cacheHitTokens = cacheExtras.cacheHitTokens ?? 0;
-            const cacheMissTokens = Math.max(0, result.promptTokens - cacheHitTokens);
-            deps.cacheTracer.record({
-              sessionId,
-              provider: provider.provider as import("./prompt-cache-stability").CacheProvider,
-              model: provider.model,
-              cacheHitTokens,
-              cacheMissTokens,
-              requestId: undefined,
-              durationMs: result.responseMs,
-            });
+            if (cacheExtras.cacheHitTokens !== undefined) {
+              const cacheHitTokens = cacheExtras.cacheHitTokens;
+              const cacheMissTokens = Math.max(0, result.promptTokens - cacheHitTokens);
+              deps.cacheTracer.record({
+                sessionId,
+                provider: provider.provider as import("./prompt-cache-stability").CacheProvider,
+                model: provider.model,
+                cacheHitTokens,
+                cacheMissTokens,
+                requestId: undefined,
+                durationMs: result.responseMs,
+              });
+            }
           } catch { /* best-effort */ }
         }
         // Check if LLM used web_search or tavily-search but user intent matches an installed skill
@@ -5829,7 +5834,12 @@ export async function tryCallLLM(
           { role: "user", content: message },
           { role: "assistant", content: finalReply },
         ];
-        const newHistory = [...history, ...cleanHistory];
+        // ★ P0-5：末尾必须重新读取 conversationHistory。本轮剪枝写回（见上方
+        // pruning write-back）已把 Map 替换为剪枝后的数组；若沿用 provider 循环
+        // 开头捕获的局部 history，这里的新数组会把它覆盖回去，剪枝永不生效，
+        // history 前缀逐轮漂移 → 缓存命中率修复形同虚设。
+        const latestHistory = deps.conversationHistory.get(sessionId) || history;
+        const newHistory = [...latestHistory, ...cleanHistory];
         // ★ P0-1（2026-10-16 缓存命中改造）：此 splice 是最后的前缀保护性截断。
         // 历史教训：每轮按 maxHistoryLength(20) 静默删最老消息 → 整个 LLM 请求
         // 前缀原点逐轮漂移，多轮会话永久失去 prompt-cache 命中。现上限已提高

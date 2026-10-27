@@ -99,11 +99,22 @@ export class EvolutionApplier {
         case "install": {
           const skillManager = this.resolveSkillManager();
           if (!skillManager) return;
-          if (!event.skillId || !fs.existsSync(event.skillId)) {
-            process.stderr.write(`[EvolutionApplier] hotreload install: skill path not found: ${event.skillId}\n`);
-            return;
+          // ★ 契约错配修复：HotReloadManager.publish() 传的是 candidate.id（UUID），
+          // 不是文件路径，`fs.existsSync(uuid)` 恒为 false → 生产里每次 new_skill
+          // 都打一条假报错。真正的安装已在 applyNewSkill 中完成（installSkill
+          // 生成物），此处只做「已安装」确认。兼容旧语义：传的是真实路径则安装。
+          if (fs.existsSync(event.skillId)) {
+            await skillManager.installSkill(event.skillId);
+            break;
           }
-          await skillManager.installSkill(event.skillId);
+          const installed = await skillManager.getSkill(event.skillId);
+          if (installed) {
+            process.stdout.write(
+              `[EvolutionApplier] hotreload install skill "${event.skillId}" already installed (${installed.installPath})\n`
+            );
+            break;
+          }
+          process.stderr.write(`[EvolutionApplier] hotreload install: skill not found: ${event.skillId}\n`);
           break;
         }
         case "update":
