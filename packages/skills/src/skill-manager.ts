@@ -672,28 +672,15 @@ export class SkillManager {
       } catch { /* non-critical */ }
     });
 
-    const agentExecutor = this.svcRegistry?.resolveService<{
-      registerTool(name: string, definition: { name: string; description: string; parameters: Record<string, unknown> }, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
-    }>("agentModelExecutor");
-
-    if (agentExecutor) {
-      const handler = async (params: Record<string, unknown>) => {
-        return await this.executeSkill(skill.id, params);
-      };
-
-      agentExecutor.registerTool(
-        skill.name,
-        {
-          name: skill.name,
-          description: skill.description || `Execute the ${skill.name} skill`,
-          parameters: {
-            prompt: { type: "string", description: "User prompt for skill execution" },
-            query: { type: "string", description: "Query to pass to the skill" },
-          },
-        },
-        handler
-      );
-    }
+    // ★ P0-5（缓存命中率）：skill **不再**注册为独立 agent 工具。
+    // 旧行为：每个 skill 通过 registerTool 注册成同名工具，且不在任何
+    // TOOL_GROUP 内 → buildOpenAITools 永不裁剪 → tools 数组携带全部
+    // skill 定义（300 skill ≈ 24-45K tokens/请求），且安装/卸载改变
+    // tools 前缀 → provider 缓存全量失效。
+    // 现行为：skill 统一经 skill_execute(skill: name, params) 调用，
+    // 内容按需经 skill_view(level 1/2) 加载；所有内部执行路径
+    // （SkillDispatcher / SkillOrchestrator / DAG / quick-reply）直接
+    // 调 executeSkill，不依赖工具注册。
 
     await this.eventBus.publish(SystemEvents.SKILL_INSTALLED, skill, "skill-manager");
 
@@ -1135,18 +1122,7 @@ export class SkillManager {
 
       this.lifecycle.deactivate(skill);
 
-      // Unregister agent tool
-      const agentExecutor = this.svcRegistry?.resolveService<{
-        unregisterTool(name: string): void;
-      }>("agentModelExecutor");
-
-      if (agentExecutor) {
-        try {
-          agentExecutor.unregisterTool(skill.name);
-        } catch {
-          // Tool may not have been registered or unregister not supported
-        }
-      }
+      // ★ P0-5：skill 不再注册为 agent 工具（见 installSkill），此处无需 unregister。
 
       this.registry.unregisterSkill(skillId);
       this.skills.delete(skillId);

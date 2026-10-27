@@ -1,4 +1,6 @@
 export { EvolutionEngine } from "./evolution-engine";
+export { EvolutionApplier } from "./evolution-applier";
+export type { ApplyResult } from "./evolution-applier";
 export { RequirementMiner } from "./requirement-miner";
 export { EvolutionProposer } from "./evolution-proposer";
 export { EvolutionEvaluator } from "./evolution-evaluator";

@@ -87,8 +87,10 @@ export interface AnthropicCacheableMessage {
  * 在 messages 数组上应用 Anthropic cache_control 断点。
  *
  * 策略 system_and_3：
- * 1. 所有 system 消息标记 cache_control（通常只有 1 条）
- * 2. 最后 3 条非 system 消息标记 cache_control
+ * 1. 首条 system 消息（或按 stableLength 拆分的稳定段）标记 cache_control
+ * 2. volatile 区域之前的最后 3 条非 system 消息标记 cache_control
+ *    （P0-5：布局 [sys, history..., skills?, tail?, user] 下即 history 尾部；
+ *    末尾 user 消息逐轮必变，永不挂断点）
  *
  * Anthropic 限制最多 4 个 cache_control 断点（system 算 1 个 + 3 个尾部）。
  *
@@ -151,19 +153,22 @@ export function applyAnthropicCacheControl(
     }
   }
 
-  // ── 断点 2-4：最早 3 条非 system 消息（稳定 history 头部） ──
-  // 原实现把断点放在最后 3 条非 system 消息上——即最新的 history + 当前
-  // user 消息，这些内容逐轮变化，断点永不命中，浪费 3/4 断点槽位。
-  // 改为放在最早 3 条非 system 消息上：它们是 conversation 最老的、
-  // 逐轮字节不变的历史头部，断点可稳定命中，缓存覆盖 system + 早期 history。
-  // 跳过已有 cache_control 的（如 P0-3 拆分产生的 system 段不算非-system）。
-  const headIndices: number[] = [];
-  for (let i = 0; i < result.length && headIndices.length < 3; i++) {
+  // ── 断点 2-4：volatile 区域之前的最后 3 条非 system 消息（history 尾部） ──
+  // 旧实现把断点放在最早 3 条非 system 消息上——仅当易变内容位于 history
+  // 之后时才成立。P0-5 布局 [sys, history..., skills?, tail?, user] 下，
+  // 最后 3 条非 system 消息（排除末尾 user）即 history 尾部——它们是逐轮
+  // 字节不变的稳定前缀，断点可稳定命中，缓存覆盖 system + 几乎全部 history。
+  // history 短于 3 条时槽位顺延给 skills/tail 消息（它们在会话内同样稳定）。
+  // 注意：**末尾 user 消息永远不挂断点**（逐轮必变，挂上只是浪费槽位）。
+  const nonSysIndices: number[] = [];
+  for (let i = 0; i < result.length; i++) {
     if (result[i].role !== "system" && !result[i].cache_control) {
-      headIndices.push(i);
+      nonSysIndices.push(i);
     }
   }
-  for (const idx of headIndices) {
+  // 排除最后一条非 system 消息（当前 user 消息，逐轮必变）
+  const stableNonSys = nonSysIndices.slice(0, -1);
+  for (const idx of stableNonSys.slice(-3)) {
     result[idx].cache_control = { type: "ephemeral" };
   }
 

@@ -4,12 +4,14 @@ import {
   SystemEvents,
   atomicWriteFileSync,
   type EventHandler,
+  type EvoEvent,
   type EvolutionCycle,
   type ReinforcementFeedback,
   type LearningEntry,
   type LearningSession,
   type LearningTrigger,
   type LearningCategory,
+  type HotReloadEvent,
 } from "@evoclaw/core";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
@@ -30,6 +32,7 @@ import { EvolutionThreshold, type EvolutionThresholdConfig } from "./evolution-t
 import { SandboxExecutor } from "./sandbox-executor";
 import { GeneticEvolutionEngine, type FitnessScore } from "./genetic-engine";
 import { ExperienceDistiller } from "./experience-distiller";
+import { EvolutionApplier } from "./evolution-applier";
 import type { ExperienceAnalysis } from "./experience-analyzer";
 import type { SkillExecutionResult } from "@evoclaw/core";
 
@@ -49,7 +52,7 @@ export class EvolutionEngine {
   private sandboxExecutor: SandboxExecutor;
   private geneticEngine: GeneticEvolutionEngine;
   private experienceDistiller: ExperienceDistiller;
-  private skillAutoGenerator: import("./skill-auto-generator").SkillAutoGenerator | null = null;
+  private applier: EvolutionApplier;
   private evolutionABTest: import("./evolution-ab-test").EvolutionABTest | null = null;
 
   private cycles = new Map<string, EvolutionCycle>();
@@ -86,13 +89,8 @@ export class EvolutionEngine {
     this.sandboxExecutor = new SandboxExecutor(registry, eventBus);
     this.geneticEngine = new GeneticEvolutionEngine(registry, eventBus);
     this.experienceDistiller = new ExperienceDistiller(registry, eventBus);
+    this.applier = new EvolutionApplier(registry, eventBus, this.storeDir);
 
-    try {
-      const { SkillAutoGenerator } = require("./skill-auto-generator");
-      this.skillAutoGenerator = new SkillAutoGenerator();
-    } catch (err) {
-      process.stderr.write(`[EvolutionEngine] Failed to load SkillAutoGenerator: ${err}\n`);
-    }
     try {
       const { EvolutionABTest } = require("./evolution-ab-test");
       this.evolutionABTest = new EvolutionABTest();
@@ -443,6 +441,44 @@ export class EvolutionEngine {
         });
       }
     });
+
+    // ── 应用层：EVOLUTION_PUBLISHED / evolution.hotreload / evolution.rollback 的真实消费者 ──
+    // 修复热重载断裂：候选通过评估 + 沙箱后，由 EvolutionApplier 真正落地。
+    track(SystemEvents.EVOLUTION_PUBLISHED, async (event) => {
+      if (this.stopped) return;
+      const data = event.data as Record<string, unknown>;
+      const cycleId = String(data.cycleId || "");
+      const candidateId = String(data.candidateId || "");
+      const cycle = this.cycles.get(cycleId);
+      const candidate = cycle?.candidates.find((c) => c.id === candidateId);
+      if (!cycle || !candidate) return;
+
+      const result = await this.applier.applyCandidate(cycle, candidate);
+      process.stdout.write(
+        `[EvolutionEngine] Evolution ${candidateId.slice(0, 8)} applied → ${result.mode}: ${result.detail}\n`
+      );
+
+      if (result.applied) {
+        // 应用成功 → 强化反馈（供 reinforcement / experience 分析）
+        await this.recordFeedback({
+          cycleId,
+          skillId: cycle.targetSkill || candidate.id,
+          successRate: 0.9,
+          userAdoptionRate: 0,
+          tokenConsumption: 0,
+          errorRate: 0.1,
+        });
+      }
+    });
+
+    // 注意 HotReloadManager 对 rollback 发的是 `evolution.rollback`（而非 hotreload），
+    // 只订阅 hotreload 会让 EvolutionApplier 的 rollback 分支成为死代码。两个事件都要订阅。
+    const handleHotReloadEvent = async (event: EvoEvent): Promise<void> => {
+      if (this.stopped) return;
+      await this.applier.handleHotReload(event.data as HotReloadEvent);
+    };
+    track("evolution.hotreload", handleHotReloadEvent);
+    track(SystemEvents.EVOLUTION_ROLLBACK, handleHotReloadEvent);
   }
 
   async startEvolutionCycle(
@@ -491,6 +527,18 @@ export class EvolutionEngine {
     try {
       cycle.status = "analyzing";
       const analyzed = await this.requirementMiner.analyze(cycle.input);
+
+      // 传播目标技能：让应用（EvolutionApplier）与提炼（SkillCurator）
+      // 环节知道该修改哪个技能。此前 targetSkill 永远为 null，
+      // skill_update/code_patch 候选无处落地。
+      const targetSkill =
+        analyzed.find((r) => r.relatedSkills.length > 0)?.relatedSkills[0] ?? null;
+      if (targetSkill) {
+        cycle.targetSkill = cycle.targetSkill || targetSkill;
+        if (cycle.input.relatedSkills.length === 0) {
+          cycle.input.relatedSkills = [targetSkill];
+        }
+      }
 
       const recentFailures = this.feedbackStore
         .filter((f) => f.errorRate > 0.3)
@@ -639,22 +687,8 @@ export class EvolutionEngine {
             "evolution-engine"
           );
 
-          // Auto-generate skill from successful evolution
-          if (this.skillAutoGenerator) {
-            try {
-              const skillResult = await this.skillAutoGenerator.generateFromEvolution({
-                trigger: cycle.source,
-                solution: candidate.proposedChanges.description || "",
-                beforeCode: "",
-                afterCode: candidate.codeArtifacts.map((a) => a.source).join("\n") || "",
-              });
-              if (skillResult) {
-                process.stdout.write(`[EvolutionEngine] Auto-generated skill: ${skillResult.skillName} at ${skillResult.skillPath}\n`);
-              }
-            } catch (err) {
-              process.stderr.write(`[EvolutionEngine] Skill auto-generation failed: ${err}\n`);
-            }
-          }
+          // 注意：技能生成与安装由 EVOLUTION_PUBLISHED 订阅中的
+          // EvolutionApplier 完成（应用层落地），此处不再直接调用生成器。
 
           // Start A/B test for the evolution
           if (this.evolutionABTest) {
@@ -736,22 +770,7 @@ export class EvolutionEngine {
                   "evolution-engine"
                 );
 
-                // Auto-generate skill from successful genetic evolution
-                if (this.skillAutoGenerator) {
-                  try {
-                    const skillResult = await this.skillAutoGenerator.generateFromEvolution({
-                      trigger: cycle.source,
-                      solution: geneticResult.bestCandidate.proposedChanges.description || "",
-                      beforeCode: "",
-                      afterCode: geneticResult.bestCandidate.codeArtifacts.map((a) => a.source).join("\n") || "",
-                    });
-                    if (skillResult) {
-                      process.stdout.write(`[EvolutionEngine] Auto-generated skill (genetic): ${skillResult.skillName} at ${skillResult.skillPath}\n`);
-                    }
-                  } catch (err) {
-                    process.stderr.write(`[EvolutionEngine] Skill auto-generation failed (genetic): ${err}\n`);
-                  }
-                }
+                // 技能生成与安装同样由 EvolutionApplier（EVOLUTION_PUBLISHED 订阅）完成。
 
                 // Start A/B test for the genetic evolution
                 if (this.evolutionABTest) {

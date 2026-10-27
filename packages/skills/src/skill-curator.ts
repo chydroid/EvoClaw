@@ -56,6 +56,34 @@ function safeMoveSync(src: string, dst: string): void {
   }
 }
 
+/**
+ * 内容单元提取：用于质量闸门的任务-方案内容重叠检查。
+ * - 英文：长度 >= 3 的词（小写），过滤常见停用词
+ * - 中文：全部二元组（bigram），覆盖分词边界问题
+ */
+const CONTENT_STOPWORDS = new Set([
+  "the", "and", "for", "are", "with", "that", "this", "from", "have", "will",
+  "your", "please", "help", "need", "want", "when", "what", "how", "where",
+  "which", "their", "them", "then", "there", "could", "would", "should",
+]);
+
+function extractContentTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const w of text.toLowerCase().match(/[a-z][a-z0-9_+-]{2,}/g) || []) {
+    if (!CONTENT_STOPWORDS.has(w)) tokens.add(w);
+  }
+  for (const seg of text.match(/[一-鿿]{2,}/g) || []) {
+    for (let i = 0; i + 2 <= seg.length; i++) {
+      tokens.add(seg.slice(i, i + 2));
+    }
+  }
+  return tokens;
+}
+
+function isCjkBigram(token: string): boolean {
+  return /^[一-鿿]{2}$/.test(token);
+}
+
 export interface SkillVersion {
   version: string;
   timestamp: Date;
@@ -104,6 +132,14 @@ export interface ExtractionInput {
   context: Record<string, unknown>;
 }
 
+/** SkillCurator 可选配置（自动提取闸门参数）。 */
+export interface CuratorOptions {
+  /** 自动提取开关（默认 true，仅在进化闭环内受控启用）。 */
+  autoExtractionEnabled?: boolean;
+  /** 每小时最大自动提取次数（默认 3）。 */
+  autoExtractionMaxPerHour?: number;
+}
+
 export interface ImprovementInput {
   skillId: string;
   executionResult: SkillExecutionResult;
@@ -138,13 +174,23 @@ export class SkillCurator {
   private maxEvolutionEntries = 1000;
   private validator: SkillValidator;
   /**
-   * 自动提取已永久禁用。
-   * 历史上此开关默认关闭，但通过 API 可启用，导致 data/skills/ 堆积
-   * 大量 evoclaw-curator 自动生成的低质量技能（通用 7 步骤模板、
-   * 机械关键词触发器）。现在自动提取逻辑已从 llm-caller.ts 移除，
-   * 此字段保留仅为向后兼容，但不再可被启用。
+   * 自动提取开关（重新接回进化闭环）。
+   *
+   * 历史：此方法曾被 llm-caller 每 15 次工具调用触发一次，生成大量
+   * 低质量技能（通用 7 步骤模板、机械关键词触发器），导致 data/skills/
+   * 堆积无用技能，故被永久禁用。
+   *
+   * 现在重新启用，但调用点只剩 EvolutionEngine.curateFromEvolutionCandidate
+   * ——即候选通过评估 + 沙箱验证之后，并叠加四层闸门：
+   *   1. 本开关（默认开，可配置关闭）   2. 频率限制（每小时最多 autoExtractionMaxPerHour 次）
+   *   3. 质量检查（长度、通用模板拒绝、任务特有内容重叠）
+   *   4. TF-IDF 去重（与现有技能相似度过高则跳过）
    */
-  private autoExtractionEnabled = false;
+  private autoExtractionEnabled = true;
+  /** 每小时最大自动提取次数（频率闸门）。 */
+  private autoExtractionMaxPerHour = 3;
+  /** 最近提取时间戳（频率闸门）。 */
+  private recentExtractions: number[] = [];
   /** 归档目录：被归档的技能移到此目录，可恢复。 */
   private archiveDir: string;
   /** 演化记录持久化目录。 */
@@ -176,9 +222,16 @@ export class SkillCurator {
     skillsDir?: string,
     archiveDir?: string,
     dataDir?: string,
-    reportDir?: string
+    reportDir?: string,
+    options?: CuratorOptions
   ) {
     registry.registerService("skillCurator", this);
+    if (options?.autoExtractionEnabled !== undefined) {
+      this.autoExtractionEnabled = options.autoExtractionEnabled;
+    }
+    if (options?.autoExtractionMaxPerHour !== undefined) {
+      this.autoExtractionMaxPerHour = options.autoExtractionMaxPerHour;
+    }
     this.validator = new SkillValidator();
     this.storeDir = dataDir
       ? path.resolve(dataDir)
@@ -481,21 +534,22 @@ export class SkillCurator {
   }
 
   /**
-   * 自动提取已永久禁用，此方法仅为向后兼容保留，不再产生效果。
-   * 技能只能通过 WebUI 手动创建或显式 API 调用创建。
+   * 启用自动提取。默认开启；仅在进化闭环内受控调用
+   * （候选须通过评估 + 沙箱验证 + 质量闸门）。
    */
   enableAutoExtraction(): void {
-    process.stdout.write("[SkillCurator] Auto-extraction is permanently DISABLED — call ignored. Skills can only be created manually via WebUI or explicit API.\n");
+    this.autoExtractionEnabled = true;
+    process.stdout.write("[SkillCurator] Auto-extraction ENABLED (gated by quality checks, rate limits and dedup).\n");
   }
 
-  /** Disable automatic skill extraction. This is the default and permanent state. */
+  /** 禁用自动提取（可随时关闭进化闭环的技能提炼）。 */
   disableAutoExtraction(): void {
     this.autoExtractionEnabled = false;
     process.stdout.write("[SkillCurator] Auto-extraction DISABLED — no skills will be auto-created.\n");
   }
 
   isAutoExtractionEnabled(): boolean {
-    return false;
+    return this.autoExtractionEnabled;
   }
 
   /**
@@ -520,11 +574,196 @@ export class SkillCurator {
     solution: string,
     context: Record<string, unknown>
   ): Promise<Skill | null> {
-    // ── Gate 0: 自动提取已永久禁用 ──
-    // 历史上此方法会从任务解决方案中提取技能，但生成的技能质量过低
-    // （通用模板、机械关键词），现已禁用。技能只能通过 WebUI 手动创建。
-    process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: auto-extraction permanently disabled.\n");
-    return null;
+    // ── Gate 0: 开关 ──
+    if (!this.autoExtractionEnabled) {
+      process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: auto-extraction disabled by config.\n");
+      return null;
+    }
+
+    // ── Gate 1: 频率限制（每小时最多 autoExtractionMaxPerHour 次）──
+    const now = Date.now();
+    this.recentExtractions = this.recentExtractions.filter((t) => now - t < 3600_000);
+    if (this.recentExtractions.length >= this.autoExtractionMaxPerHour) {
+      process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: hourly auto-extraction limit reached.\n");
+      return null;
+    }
+
+    // ── Gate 2: 质量检查（长度 / 通用模板拒绝 / 任务特有内容）──
+    if (!this.isQualitySolution(task, solution)) {
+      process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: solution failed quality gate.\n");
+      return null;
+    }
+
+    // ── Gate 3: TF-IDF 去重（与现有技能相似度过高则跳过）──
+    if (await this.isDuplicateSolution(task, solution)) {
+      process.stdout.write("[SkillCurator] extractSkillFromSolution rejected: similar skill already exists.\n");
+      return null;
+    }
+
+    // ── 构建技能：SKILL.md → 安装 → 记录演化 ──
+    const slug = this.slugify(task);
+    const skillDir = path.join(this.skillsDir, "auto-extracted", slug);
+    const skillMdPath = path.join(skillDir, "SKILL.md");
+    if (fs.existsSync(skillMdPath)) {
+      // 幂等：同一任务重复提取直接跳过
+      process.stdout.write("[SkillCurator] extractSkillFromSolution skipped: skill already extracted.\n");
+      return null;
+    }
+
+    fs.mkdirSync(skillDir, { recursive: true });
+    atomicWriteFileLocal(skillMdPath, this.buildExtractedSkillMd(slug, task, solution, context));
+
+    const skillManager = this.registry.resolveService<{
+      installSkill(skillPath: string, force?: boolean): Promise<Skill>;
+    } | null>("skillManager");
+
+    if (!skillManager) {
+      // 无 skillManager（如测试环境）：文件已写入，下次启动会被加载
+      return null;
+    }
+
+    const skill = await skillManager.installSkill(skillMdPath);
+    this.recordExtraction(skill, task, solution, context);
+    this.recentExtractions.push(now);
+
+    process.stdout.write(`[SkillCurator] Auto-extracted skill "${slug}" from evolution solution.\n`);
+    return skill;
+  }
+
+  /**
+   * 质量闸门：拒绝短文本、通用模板、与任务无关的解决方案。
+   * 历史坏案例正是"通用 7 步骤模板 + 机械关键词"，必须显式拦截。
+   */
+  private isQualitySolution(task: string, solution: string): boolean {
+    const sol = solution.trim();
+    if (sol.length < 150) return false;
+
+    // 通用模板 / 占位符标记
+    if (/TODO|FIXME|placeholder|占位|待补充|Step \d+: Initialize|通用模板/i.test(sol)) {
+      return false;
+    }
+
+    // 任务特有内容重叠：与任务至少共享 2 个有意义的内容单元
+    const taskTokens = extractContentTokens(task);
+    const solTokens = extractContentTokens(solution);
+    const overlap = [...taskTokens].filter((t) => solTokens.has(t));
+    const meaningful = overlap.filter((t) => t.length >= 4 || isCjkBigram(t));
+    return meaningful.length >= 2;
+  }
+
+  /**
+   * 去重闸门：与现有技能（名称 + 描述 + 指令摘要）TF-IDF 相似度 ≥ 0.55
+   * 视为重复。skillManager 不可用时放行（fail-open），不阻塞进化闭环。
+   */
+  private async isDuplicateSolution(task: string, solution: string): Promise<boolean> {
+    try {
+      const skillManager = this.registry.resolveService<{
+        listSkills(): Promise<Array<{
+          id: string;
+          name: string;
+          description?: string;
+          body?: { instructions?: string };
+        }>>;
+      } | null>("skillManager");
+      if (!skillManager) return false;
+
+      const skills = await skillManager.listSkills();
+      if (!skills || skills.length === 0) return false;
+
+      const { TfidfMatcher } = await import("./tfidf-matcher.js");
+      const matcher = new TfidfMatcher();
+      matcher.initialize(skills.map((s) => ({
+        id: s.id,
+        text: `${s.name} ${s.description || ""} ${(s.body?.instructions || "").slice(0, 300)}`,
+      })));
+
+      const results = matcher.search(`${task}\n${solution}`, 0.45, 3);
+      return results.length > 0 && results[0].score >= 0.55;
+    } catch {
+      return false;
+    }
+  }
+
+  private slugify(text: string): string {
+    const normalized = text
+      .toLowerCase()
+      .replace(/[^a-z0-9一-鿿]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    const base = normalized.slice(0, 50);
+    // 截断后不同任务可能碰撞到同一前缀（如 weekly/monthly 都在 60 字符之外），
+    // 附加内容哈希保证 slug 唯一且确定。
+    const hash = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 6);
+    return `${base ? `${base}-` : ""}${hash}`;
+  }
+
+  private buildExtractedSkillMd(
+    slug: string,
+    task: string,
+    solution: string,
+    context: Record<string, unknown>
+  ): string {
+    const source = typeof context?.source === "string" ? context.source : "evolution-engine";
+    return [
+      "---",
+      `name: ${slug}`,
+      `version: "1.0.0"`,
+      `description: ${task.trim().slice(0, 120)}`,
+      "---",
+      "",
+      `# ${slug}`,
+      "",
+      "## 适用场景",
+      "",
+      task.trim(),
+      "",
+      "## 操作步骤",
+      "",
+      solution.trim(),
+      "",
+      "## 来源",
+      "",
+      `- 自动提取: ${source}`,
+      `- 上下文: ${JSON.stringify(context).slice(0, 200)}`,
+      "",
+    ].join("\n");
+  }
+
+  /**
+   * 记录提取事件到演化历史（trigger: "extraction"），
+   * 使后续 improveSkill / deprecateSkill 可追溯技能来源。
+   */
+  private recordExtraction(
+    skill: Skill,
+    task: string,
+    solution: string,
+    context: Record<string, unknown>
+  ): void {
+    try {
+      const entry: SkillEvolutionEntry = {
+        skillId: skill.id,
+        skillName: skill.name,
+        versions: [
+          {
+            version: skill.version || "1.0.0",
+            timestamp: new Date(),
+            changes: `自动提取: ${task.slice(0, 60)}`,
+            trigger: "extraction",
+            previousVersion: null,
+          },
+        ],
+        extractionSource: { task, solution, context },
+        improvementHistory: [],
+        deprecation: null,
+        createdAt: new Date(),
+        lastUpdatedAt: new Date(),
+      };
+      this.evolutions.set(skill.id, entry);
+      this.trimEvolutions();
+    } catch (err) {
+      process.stderr.write(
+        `[SkillCurator] recordExtraction failed: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
   }
 
   async improveSkill(

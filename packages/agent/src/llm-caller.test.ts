@@ -483,6 +483,77 @@ describe("P1-4 applyAnthropicCacheControl — 稳定段拆分断点", () => {
   });
 });
 
+describe("P0-5 applyAnthropicCacheControl — volatile 区域前 history 尾部断点", () => {
+  // P0-5 布局：[sys_frozen, ...history, skills?, tail?, user]
+  // 断点 2-4 落在 volatile 区域（skills/tail/user）之前的最后 3 条非 system 消息。
+  const layoutMsgs = () => [
+    { role: "system", content: "SYS_FROZEN" },
+    { role: "user", content: "h1" },
+    { role: "assistant", content: "a1" },
+    { role: "user", content: "h2" },
+    { role: "assistant", content: "a2" },
+    { role: "user", content: "h3" },
+    { role: "system", content: "SKILLS_SECTION" },
+    { role: "system", content: "DYNAMIC_TAIL" },
+    { role: "user", content: "current-question" },
+  ];
+
+  it("断点 2-4 落在 history 尾部（h3/a2/h2），不落在 volatile 区域", () => {
+    const r = applyAnthropicCacheControl(layoutMsgs());
+    // system 断点
+    expect(r[0].cache_control).toEqual({ type: "ephemeral" });
+    // history 尾部（索引 4=a2, 5=h3, 3=h2）挂断点
+    expect(r[5].cache_control).toEqual({ type: "ephemeral" }); // h3
+    expect(r[4].cache_control).toEqual({ type: "ephemeral" }); // a2
+    expect(r[3].cache_control).toEqual({ type: "ephemeral" }); // h2
+    // volatile 区域（skills=6, tail=7, user=8）不带断点
+    expect(r[6].cache_control).toBeUndefined();
+    expect(r[7].cache_control).toBeUndefined();
+    expect(r[8].cache_control).toBeUndefined();
+  });
+
+  it("末尾 user 消息永不挂断点（逐轮必变）", () => {
+    const r = applyAnthropicCacheControl(layoutMsgs());
+    expect(r[r.length - 1].cache_control).toBeUndefined();
+  });
+
+  it("无 skills/tail 时断点顺延给 history 尾部（排除末尾 user）", () => {
+    const msgs = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "h1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "q" },
+    ];
+    const r = applyAnthropicCacheControl(msgs);
+    expect(r[0].cache_control).toEqual({ type: "ephemeral" });
+    // 非 system 消息：h1(1), a1(2), q(3)。排除最后一条（q）→ h1, a1 挂断点
+    expect(r[1].cache_control).toEqual({ type: "ephemeral" });
+    expect(r[2].cache_control).toEqual({ type: "ephemeral" });
+    expect(r[3].cache_control).toBeUndefined();
+  });
+
+  it("断点总数 ≤ 4（Anthropic 限制）", () => {
+    const r = applyAnthropicCacheControl(layoutMsgs());
+    const marked = r.filter((m) => m.cache_control).length;
+    expect(marked).toBeLessThanOrEqual(4);
+  });
+
+  it("history 短于 3 条时槽位顺延给 skills/tail（会话内稳定）", () => {
+    const msgs = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "q" },
+      { role: "system", content: "SKILLS" },
+      { role: "system", content: "TAIL" },
+    ];
+    const r = applyAnthropicCacheControl(msgs);
+    expect(r[0].cache_control).toEqual({ type: "ephemeral" });
+    // 非 system：q(1)。排除最后一条（q）→ 无剩余 → skills/tail 不带断点
+    expect(r[1].cache_control).toBeUndefined();
+    expect(r[2].cache_control).toBeUndefined();
+    expect(r[3].cache_control).toBeUndefined();
+  });
+});
+
 // ═══════════════════════════════════════════════════════════
 // 流式 usage 捕获回归（P1-1，会话审计 2026-10-17）：
 // OpenAI 原生流式末块携带 usage 时 `choices` 为空（`{"choices":[],
@@ -1359,11 +1430,13 @@ describe("llm-caller > Anthropic 原生 Messages API", () => {
     const msgs = body.messages as Array<Record<string, unknown>>;
     expect(msgs.every((m) => m.role !== "system")).toBe(true);
     expect(msgs[0].role).toBe("user");
-    // cache_control 从 message 对象移到 content block 上（Anthropic 断点语义）
+    // cache_control 从 message 对象移到 content block 上（Anthropic 断点语义）。
+    // ★ P0-5 策略更新：末尾 user 消息逐轮必变，永不挂断点（断点 2-4 只挂
+    // volatile 区域之前的 history 尾部）。本用例无 history，仅 system 断点生效。
     expect(msgs[0].cache_control).toBeUndefined();
     const userBlocks = msgs[0].content as Array<Record<string, unknown>>;
     expect(userBlocks[0]).toMatchObject({ type: "text", text: "你好" });
-    expect(userBlocks[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(userBlocks[0].cache_control).toBeUndefined();
 
     // tools：input_schema 而非 function.parameters
     const tools = body.tools as Array<Record<string, unknown>>;
@@ -1612,5 +1685,441 @@ describe("llm-caller > Anthropic 原生 Messages API", () => {
     expect(result!.message.content).toBe("openai-ok");
     expect(captured[0].url).toBe("/v1/chat/completions");
     expect(captured[0].headers.authorization).toBe("Bearer sk-ant-test");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// P0-5 缓存稳定性回归：tc="none"（nudge 收尾）时 tools 段必须保持稳定
+//
+// 背景：曾用「tc="none" 时传空 tools 数组」强制禁用工具调用——理由是部分
+// OpenAI 兼容网关在不设 tool_choice 时按规范回退默认 "auto"，模型照常输出
+// tool_calls（agnes-3.0-flash 实测）。但 tools 是请求体的固定段，逐轮在
+// 「有/无」之间翻转会让前缀缓存在 tools 段处分叉；而 nudge 在 2 次成功
+// 工具调用后即触发，等于**每个编码轮都翻转一次**，缓存命中率在收尾阶段
+// 骤降（这正是「命中率上不去」的主因之一）。
+//
+// 修复：tools 始终下发 + 显式 tool_choice:"none"（网关真正收到禁用指令，
+// 请求体字节稳定）；个别网关若仍无视 tool_choice，由 toolCallsNoneRefusals
+// 兜底拒绝执行——语义与「置空 tools」等价，但不再击穿缓存。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > tc=none 时 tools 段保持稳定（P0-5 缓存回归）", () => {
+  function captureServer(
+    responder: (req: http.IncomingMessage, res: http.ServerResponse, raw: string) => void,
+  ): { server: http.Server; captured: Array<Record<string, unknown>>; port: number; close: () => void } {
+    const captured: Array<Record<string, unknown>> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        captured.push(JSON.parse(raw || "{}"));
+        responder(req, res, raw);
+      });
+    });
+    server.listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { server, captured, port, close: () => server.close() };
+  }
+
+  function openAIProvider(port: number) {
+    return {
+      name: "local", provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: "sk-test",
+      enabled: true, order: 0, timeout: 5000, maxTokens: 4096, temperature: 0.3,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  function minimalDeps(overrides: Partial<LLMCallerDeps> = {}): LLMCallerDeps {
+    return {
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      providers: [],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      registeredTools: new Map(),
+      conversationHistory: new Map(),
+      maxHistoryLength: 200,
+      providerStats: new Map(),
+      pluginManager: null,
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      sessionManager: null,
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      ...overrides,
+    } as unknown as LLMCallerDeps;
+  }
+
+  const TOOLS = [
+    { type: "function", function: { name: "shell_exec", description: "run a command", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } } },
+    { type: "function", function: { name: "file_read", description: "read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+  ];
+
+  const okReply = (content: string) => JSON.stringify({
+    choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }],
+    usage: { total_tokens: 10, prompt_tokens: 8 },
+  });
+
+  const toolCallReply = (id: string, name: string, args: Record<string, unknown>) => JSON.stringify({
+    choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }],
+    usage: { total_tokens: 10, prompt_tokens: 8 },
+  });
+
+  it("callLLMOnce：toolChoice='none' 时仍下发完整 tools 数组 + 显式 tool_choice='none'", async () => {
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(okReply("done"));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const result = await callLLMOnce(openAIProvider(port), [{ role: "user", content: "q" }], TOOLS, "none", undefined, minimalDeps());
+    close();
+
+    expect(result).not.toBeNull();
+    const body = captured[0];
+    // 回归核心：tools 段不得因 toolChoice="none" 被摘掉（摘掉 = 逐轮翻转击穿缓存）
+    expect(body.tools).toEqual(TOOLS);
+    // 且必须显式下发 "none"——不设时网关按规范回退 "auto"，模型继续调工具
+    expect(body.tool_choice).toBe("none");
+  });
+
+  it("callLLMOnce：toolChoice='auto' 时行为不变（tools + tool_choice:'auto'）", async () => {
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(okReply("done"));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const result = await callLLMOnce(openAIProvider(port), [{ role: "user", content: "q" }], TOOLS, "auto", undefined, minimalDeps());
+    close();
+
+    expect(result).not.toBeNull();
+    expect(captured[0].tools).toEqual(TOOLS);
+    expect(captured[0].tool_choice).toBe("auto");
+  });
+
+  it("tryCallLLM：网关无视 tool_choice=none 时拒绝执行工具并回灌拒绝结果", async () => {
+    // 轮次剧本：
+    //   round0/round1 → 返回工具调用（成功执行 → successfulToolCalls=2）
+    //   round2         → tc 变 "none"，网关**无视**该指令仍返回 tool_calls → 必须被拒绝
+    //   round3         → 返回文本收尾
+    // 注意：每轮工具参数必须互不相同——工具结果缓存以 args 为键，参数相同会
+    //   命中缓存而跳过 handler（本回归曾因此误判为「工具未执行」）。
+    let call = 0;
+    const handler = vi.fn(async () => ({ ok: true }));
+    const { server, captured, port, close } = captureServer((_req, res) => {
+      call++;
+      res.setHeader("Content-Type", "application/json");
+      if (call === 1) {
+        res.end(toolCallReply("tc-1", "my_test_tool", { cmd: "echo first" }));
+      } else if (call === 2) {
+        res.end(toolCallReply("tc-2", "my_test_tool", { cmd: "echo second" }));
+      } else if (call === 3) {
+        res.end(toolCallReply("tc-3", "my_test_tool", { cmd: "echo should-not-run" }));
+      } else {
+        res.end(okReply("FINAL"));
+      }
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    // 自定义工具名不在任何 TOOL_GROUP 内 → buildOpenAITools 无条件下发
+    const registeredTools = new Map([
+      ["my_test_tool", {
+        definition: { name: "my_test_tool", description: "test tool", parameters: { cmd: { type: "string", description: "command to run" } } },
+        handler,
+      }],
+    ]);
+    const dep = minimalDeps({ registeredTools });
+    const res = await tryCallLLM(dep, {
+      message: "跑个命令",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [openAIProvider(port)],
+      startTime: Date.now(),
+      sessionId: `p0-5-tc-none-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    close();
+
+    // 前两轮工具调用被真正执行（handler 收到的是带 _signal 的 args，只断言 cmd）
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler.mock.calls.map((c) => (c[0] as { cmd?: string }).cmd)).toEqual(["echo first", "echo second"]);
+
+    // tc 序列：前两轮 auto，第三轮起 nudge 生效
+    expect(captured.map((b) => b.tool_choice)).toEqual(["auto", "auto", "none", "none"]);
+
+    // tc="none" 的轮次：tools 段仍必须下发（缓存稳定性核心断言）
+    expect(Array.isArray(captured[2].tools)).toBe(true);
+    expect((captured[2].tools as unknown[]).length).toBeGreaterThan(0);
+    expect(captured[2].tool_choice).toBe("none");
+
+    // 被拒绝的那次调用不得触达 handler，且拒绝结果已回灌给模型
+    // （tool 角色 + 拒绝说明），保证下一轮请求格式合法（无人应答的 tool_calls 会被网关 400）
+    const lastMsgs = captured[3].messages as Array<{ role: string; content: unknown }>;
+    const refusal = lastMsgs.filter((m) => m.role === "tool").pop();
+    expect(refusal).toBeDefined();
+    expect(String(refusal!.content)).toContain("tool_choice=none");
+    expect(String(refusal!.content)).toContain("已拒绝执行");
+
+    expect(res?.reply).toBe("FINAL");
+  });
+});
+
+describe("P0-5 buildOpenAITools — 领域工具分组瘦身 + 输出分档（缓存前缀稳定）", () => {
+  const mk = (names: string[]) =>
+    new Map(names.map((n) => [n, { definition: { name: n, description: `desc of ${n}`, parameters: {} }, handler: async () => ({}) }]));
+
+  // 取真实注册集的一批：core + 刻意常驻的编码基座 + 各分组代表（含创建类）
+  const REG = mk([
+    // core
+    "web_search", "web_fetch", "file_read", "file_create", "file_modify",
+    "file_list", "file_delete", "shell_exec", "sequential_thinking",
+    // ★ 刻意保留常驻的 12 个编码基座工具
+    "apply_patch", "apply_rename", "batch_execute", "code_search", "codebase_search",
+    "find_references", "execute_code", "lint", "run_tests", "verify_project",
+    "todo_list", "plan_rename",
+    // browser / email
+    "browser_navigate", "browser_check", "browser_wait",
+    "email_send", "email_add_account", "email_list_inbox", "email_list_accounts",
+    // P0-5 收进分组的领域工具
+    "git_status", "git_diff", "git_commit",
+    "kanban_list_tasks", "kanban_add_task", "kanban_create_board",
+    "vision_analyze", "vision_find_elements",
+    "computer_mouse_click", "computer_key_press",
+    "checkpoint_save", "checkpoint_restore",
+    "workflow_execute", "grounded_research", "dlq_retry_batch",
+    "music_search", "memory_stats", "skill_create", "skill_uninstall",
+  ]);
+  const evalFn = (fn: () => boolean) => fn();
+
+  const run = (msg: string | undefined, base?: Set<string> | null) => {
+    const out: { activeTools?: Set<string> } = {};
+    const names = buildOpenAITools(REG, msg, evalFn, base, out).map((t) => t.function.name as string);
+    return { names, active: out.activeTools };
+  };
+
+  /** 常驻编码基座：任何措辞（哪怕完全无关）都必须在手 */
+  const ALWAYS_ON = [
+    "apply_patch", "apply_rename", "batch_execute", "code_search", "codebase_search",
+    "find_references", "execute_code", "lint", "run_tests", "verify_project",
+    "todo_list", "plan_rename",
+  ];
+  /** 领域工具：关键词不命中时必须被裁掉（这正是本次瘦身的目标） */
+  const DOMAIN_GATED = [
+    "email_list_inbox", "email_list_accounts",
+    "git_status", "git_diff", "git_commit",
+    "kanban_list_tasks", "vision_analyze", "vision_find_elements",
+    "computer_mouse_click", "computer_key_press",
+    "checkpoint_save", "checkpoint_restore",
+    "workflow_execute", "grounded_research", "dlq_retry_batch",
+    "music_search", "memory_stats", "skill_uninstall",
+  ];
+
+  it("无关消息：常驻编码基座全在，领域工具全裁", () => {
+    const { names } = run("今天天气怎么样");
+    for (const n of ALWAYS_ON) expect(names).toContain(n);
+    for (const n of DOMAIN_GATED) expect(names).not.toContain(n);
+  });
+
+  it("创建类工具（白名单）即使所属组未激活也恒定下发", () => {
+    const { names } = run("今天天气怎么样");
+    expect(names).toContain("kanban_create_board");
+    expect(names).toContain("kanban_add_task");
+    expect(names).toContain("email_add_account");
+    expect(names).toContain("skill_create");
+  });
+
+  it("关键词命中即下发对应组的全部工具", () => {
+    const git = run("帮我看看这个仓库的改动并提交").names;
+    expect(git).toContain("git_status");
+    expect(git).toContain("git_diff");
+    expect(git).toContain("git_commit");
+
+    const mail = run("帮我收一下邮件").names;
+    expect(mail).toContain("email_list_inbox");
+    expect(mail).toContain("email_list_accounts");
+    expect(mail).toContain("email_send");
+
+    const shot = run("帮我分析这张截图").names;
+    expect(shot).toContain("vision_analyze");
+    expect(shot).toContain("vision_find_elements");
+
+    const web = run("打开网页看看").names;
+    expect(web).toContain("browser_navigate");
+    expect(web).toContain("browser_check");
+    expect(web).toContain("browser_wait");
+  });
+
+  it("新激活的组排在数组末尾 → 前缀只增不改（缓存不失配）", () => {
+    const r1 = run("帮我看看这个仓库的改动");
+    expect(r1.names).toContain("git_status");
+
+    // turn2 激活 email 组：git 工具位置必须原封不动，email 工具只能追加在末尾
+    const r2 = run("顺便帮我收下邮件", r1.active!);
+    expect(r2.names).toContain("email_list_inbox");
+    expect(r2.names.slice(0, r1.names.length)).toEqual(r1.names);
+    expect(r2.names.indexOf("email_list_inbox")).toBeGreaterThan(r2.names.indexOf("git_status"));
+  });
+
+  it("同轮激活多个组：按组声明序排列，稳态后字节恒定", () => {
+    const r1 = run("帮我看看这个仓库的改动");
+    const r2 = run("顺便帮我分析这张截图并收下邮件", r1.active!);
+    expect(r2.names).toContain("vision_analyze");
+    expect(r2.names).toContain("email_list_inbox");
+    // 声明序：email 在 vision 之前
+    expect(r2.names.indexOf("email_list_inbox")).toBeLessThan(r2.names.indexOf("vision_analyze"));
+    // 但 git 组声明在 email/vision **之后**、却**先**被激活 → 必须仍排在它们前面：
+    // 组位次按「首次激活序」（baseTools 插入序）而非「组声明序」。
+    // 若按声明序排，git 会在下一轮「转为已激活」时插到中间 → 缓存全量失配。
+    expect(r2.names.indexOf("git_status")).toBeLessThan(r2.names.indexOf("email_list_inbox"));
+    expect(r2.names.indexOf("git_status")).toBeLessThan(r2.names.indexOf("vision_analyze"));
+
+    const r3 = run("再随便说点什么", r2.active!);
+    expect(r3.names).toEqual(r2.names);
+  });
+
+  it("message === undefined（/health 计数路径）仍全量下发", () => {
+    const { names } = run(undefined);
+    for (const n of DOMAIN_GATED) expect(names).toContain(n);
+    for (const n of ALWAYS_ON) expect(names).toContain(n);
+  });
+});
+
+describe("llm-caller > prompt cache 命中率指标（P0-5：网关未上报缓存字段时不得记 0%）", () => {
+  function captureServer(
+    responder: (req: http.IncomingMessage, res: http.ServerResponse, raw: string) => void,
+  ): { server: http.Server; captured: Array<Record<string, unknown>>; port: number; close: () => void } {
+    const captured: Array<Record<string, unknown>> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        captured.push(JSON.parse(raw || "{}"));
+        responder(req, res, raw);
+      });
+    });
+    server.listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { server, captured, port, close: () => server.close() };
+  }
+
+  const openAIProvider = (port: number) =>
+    ({
+      name: "local", provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: "sk-test", enabled: true, order: 0, timeout: 5000,
+      maxTokens: 4096, temperature: 0.3,
+    }) as unknown as LLMCallerDeps["providers"][number];
+
+  const replyWithUsage = (usage: Record<string, unknown>) => JSON.stringify({
+    choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+    usage,
+  });
+
+  /** 记录 recordLLMCacheHit 调用的假 observability 服务 */
+  const fakeObservability = () => {
+    const calls: Array<{ provider: string; model: string; hit: number; miss: number }> = [];
+    return {
+      calls,
+      service: {
+        recordLLMCacheHit: (provider: string, model: string, hit: number, miss: number) => {
+          calls.push({ provider, model, hit, miss });
+        },
+      },
+    };
+  };
+
+  async function runOnce(port: number, obs: ReturnType<typeof fakeObservability>) {
+    const dep: LLMCallerDeps = {
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      providers: [openAIProvider(port)],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      registeredTools: new Map(),
+      conversationHistory: new Map(),
+      maxHistoryLength: 200,
+      providerStats: new Map(),
+      pluginManager: null,
+      registry: {
+        resolveService: (name: string) => (name === "observability" ? obs.service : null),
+      } as unknown as LLMCallerDeps["registry"],
+      sessionManager: null,
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+    } as unknown as LLMCallerDeps;
+
+    return tryCallLLM(dep, {
+      message: "q",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [openAIProvider(port)],
+      startTime: Date.now(),
+      sessionId: `cache-metric-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+  }
+
+  it("网关回传 prompt_tokens_details.cached_tokens → 指标按真值发射", async () => {
+    const { server, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(replyWithUsage({ total_tokens: 8, prompt_tokens: 8, prompt_tokens_details: { cached_tokens: 6 } }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const obs = fakeObservability();
+    await runOnce(port, obs);
+    close();
+
+    expect(obs.calls).toHaveLength(1);
+    expect(obs.calls[0]).toMatchObject({ hit: 6, miss: 2 });
+  });
+
+  it("网关完全不回传缓存字段 → 不发指标（不得把「未上报」记成「0 命中」）", async () => {
+    const { server, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      // 典型「不上报缓存」的 OpenAI 兼容 usage：只有 token 总数
+      res.end(replyWithUsage({ total_tokens: 8, prompt_tokens: 8, completion_tokens: 0 }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const obs = fakeObservability();
+    await runOnce(port, obs);
+    close();
+
+    expect(obs.calls).toHaveLength(0);
+  });
+
+  it("网关回传 cached_tokens:0（会话首轮冷启动）→ 必须按 0 命中计入分母", async () => {
+    // 旧实现用 `canon.cacheReadTokens || undefined` 把真实的 0 塌成 undefined →
+    // 指标不发 → 命中率分母只含命中轮次 → 命中率虚高到接近 100%。
+    // 真实数据佐证：data/token-usage/records.json 4273 条里从未出现显式 0。
+    const { server, port, close } = captureServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(replyWithUsage({ total_tokens: 8, prompt_tokens: 8, prompt_tokens_details: { cached_tokens: 0 } }));
+    });
+    await new Promise<void>((r) => server.on("listening", r));
+
+    const obs = fakeObservability();
+    await runOnce(port, obs);
+    close();
+
+    expect(obs.calls).toHaveLength(1);
+    expect(obs.calls[0]).toMatchObject({ hit: 0, miss: 8 });
   });
 });

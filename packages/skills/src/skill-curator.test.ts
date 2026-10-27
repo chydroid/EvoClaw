@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, type Skill } from "@evoclaw/core";
 import { SkillCurator, type SkillEvolutionEntry, type SkillUsageStats } from "../src/skill-curator";
 import { v4 as uuid } from "uuid";
 import * as fs from "fs";
@@ -22,9 +22,8 @@ const LONG_SOLUTION = [
 /**
  * 向 SkillCurator 内部 evolutions Map 注入一条演化记录。
  *
- * 历史上这些记录由 extractSkillFromSolution 自动创建，但自动提取已永久禁用
- * （详见 skill-curator.ts）。测试中通过此辅助函数直接注入记录，
- * 以便测试 improveSkill / deprecateSkill 等演化功能仍然可用。
+ * extractSkillFromSolution 已重新接回进化闭环（带质量闸门），
+ * 但 improveSkill / deprecateSkill 的测试仍通过此辅助函数直接注入记录。
  */
 function seedEvolutionEntry(
   curator: SkillCurator,
@@ -65,70 +64,141 @@ describe("SkillCurator", () => {
     return { curator, registry, eventBus };
   }
 
-  // ── 自动提取已永久禁用 ──
-  // 历史上 extractSkillFromSolution 会从任务解决方案中提取技能，
-  // 但生成的技能质量过低（通用 7 步骤模板、机械关键词触发器），
-  // 导致 data/skills/ 堆积大量 evoclaw-curator 自动生成的无用技能。
-  // 现在此方法永远返回 null，技能只能通过 WebUI 手动创建。
-  describe("extractSkillFromSolution (permanently disabled)", () => {
-    it("should return null regardless of input quality", async () => {
-      const { curator } = createCurator();
+  // ── extractSkillFromSolution：重新接回进化闭环（四层闸门）──
+  // 接回 EvolutionEngine.curateFromEvolutionCandidate：仅在候选通过
+  // 评估 + 沙箱验证后调用。闸门：开关 / 频率限制 / 质量检查 / TF-IDF 去重。
+  describe("extractSkillFromSolution (gated, reconnected)", () => {
+    /** 高质量方案：任务特有、>150 字符、无模板标记。 */
+    const GOOD_TASK = "fetch latest stock prices from yahoo finance api and compute daily moving averages";
+    const GOOD_SOLUTION =
+      "Call the Yahoo Finance chart endpoint with the ticker symbol and interval parameter, parse the timestamp and close price arrays from the JSON response, then compute the simple moving average over the requested window by summing the last N close prices and dividing by N. Cache the fetched quotes in memory for five minutes to avoid hitting the rate limit, and handle non-trading days by returning the most recent available close price.";
 
+    function createGatedCurator(
+      options?: { autoExtractionEnabled?: boolean },
+      listSkillsImpl?: () => Promise<Array<{ id: string; name: string; description?: string; body?: { instructions?: string } }>>
+    ) {
+      const registry = new ServiceRegistry();
+      const eventBus = new EventBus();
+      registry.registerService("eventBus", eventBus);
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "curator-extract-"));
+      const curator = new SkillCurator(
+        registry,
+        eventBus,
+        path.join(tmpDir, "skills"),
+        path.join(tmpDir, "archive"),
+        path.join(tmpDir, "store"),
+        path.join(tmpDir, "report"),
+        options
+      );
+      const installed: string[] = [];
+      registry.registerService("skillManager", {
+        installSkill: async (p: string) => {
+          installed.push(p);
+          return { id: "skill-1", name: path.basename(path.dirname(p)), version: "1.0.0", installPath: p } as unknown as Skill;
+        },
+        listSkills: listSkillsImpl ?? (async () => []),
+        getSkill: async () => undefined,
+      });
+      return { curator, registry, eventBus, installed, tmpDir };
+    }
+
+    it("should reject generic 7-step templates (quality gate, 历史坏案例)", async () => {
+      const { curator, tmpDir } = createGatedCurator();
       const skill = await curator.extractSkillFromSolution(
         "search latest technology news with web api integration",
         LONG_SOLUTION,
         { source: "task-completion", taskId: "test-1" }
       );
-
       expect(skill).toBeNull();
+      // 未写出任何文件
+      expect(fs.existsSync(path.join(tmpDir, "skills", "auto-extracted"))).toBe(false);
     });
 
-    it("should return null even when called with rich solution", async () => {
-      const { curator } = createCurator();
-
-      const skill = await curator.extractSkillFromSolution(
-        "evaluate math expressions from user input queries",
-        LONG_SOLUTION,
-        { source: "test" }
-      );
-
-      expect(skill).toBeNull();
-    });
-
-    it("should return null for insufficient task/solution", async () => {
-      const { curator } = createCurator();
-
+    it("should reject short solutions", async () => {
+      const { curator } = createGatedCurator();
       const skill = await curator.extractSkillFromSolution("a", "b", {});
-
       expect(skill).toBeNull();
     });
 
-    it("should NOT create evolution entry", async () => {
-      const { curator } = createCurator();
-      const initialCount = curator.getAllEvolutions().length;
-
-      await curator.extractSkillFromSolution(
-        "search latest technology news with web api integration",
-        LONG_SOLUTION,
+    it("should reject solutions unrelated to the task", async () => {
+      const { curator } = createGatedCurator();
+      const skill = await curator.extractSkillFromSolution(
+        "bake sourdough bread in a clay oven",
+        GOOD_SOLUTION,
         {}
       );
-
-      // 不应增加任何演化记录（自动提取已永久禁用）
-      expect(curator.getAllEvolutions().length).toBe(initialCount);
+      expect(skill).toBeNull();
     });
 
-    it("should NOT write any files to disk", async () => {
-      const { curator } = createCurator();
-      const initialCount = curator.getAllEvolutions().length;
+    it("should respect disabled config", async () => {
+      const { curator } = createGatedCurator({ autoExtractionEnabled: false });
+      const skill = await curator.extractSkillFromSolution(GOOD_TASK, GOOD_SOLUTION, {});
+      expect(skill).toBeNull();
+    });
 
-      await curator.extractSkillFromSolution(
-        "fetch data from external api endpoint integration",
-        LONG_SOLUTION,
-        {}
-      );
+    it("should extract, install and record evolution entry for quality solution", async () => {
+      const { curator, installed, tmpDir } = createGatedCurator();
 
-      // 确认没有新增演化记录（间接验证没有写文件）
-      expect(curator.getAllEvolutions().length).toBe(initialCount);
+      const skill = await curator.extractSkillFromSolution(GOOD_TASK, GOOD_SOLUTION, {
+        source: "evolution-engine",
+        cycleId: "cycle-1",
+      });
+
+      expect(skill).not.toBeNull();
+      expect(installed).toHaveLength(1);
+      expect(fs.existsSync(installed[0])).toBe(true);
+      expect(installed[0].endsWith("SKILL.md")).toBe(true);
+      const extractedDir = path.join(tmpDir, "skills", "auto-extracted");
+      expect(fs.readdirSync(extractedDir)).toHaveLength(1);
+
+      const evolutions = curator.getAllEvolutions();
+      expect(evolutions).toHaveLength(1);
+      expect(evolutions[0].versions[0].trigger).toBe("extraction");
+    });
+
+    it("should skip duplicate extraction for same task (idempotent)", async () => {
+      const { curator, installed } = createGatedCurator();
+
+      const first = await curator.extractSkillFromSolution(GOOD_TASK, GOOD_SOLUTION, {});
+      expect(first).not.toBeNull();
+      const second = await curator.extractSkillFromSolution(GOOD_TASK, GOOD_SOLUTION, {});
+
+      expect(second).toBeNull();
+      expect(installed).toHaveLength(1);
+    });
+
+    it("should enforce hourly extraction limit", async () => {
+      const { curator, tmpDir } = createGatedCurator();
+
+      const tasks = [
+        "fetch latest stock prices from yahoo finance api and compute weekly moving averages",
+        "fetch latest stock prices from yahoo finance api and compute monthly moving averages",
+        "fetch latest stock prices from yahoo finance api and compute yearly moving averages",
+        "fetch latest stock prices from yahoo finance api and compute intraday moving averages",
+      ];
+
+      for (const task of tasks.slice(0, 3)) {
+        const skill = await curator.extractSkillFromSolution(task, GOOD_SOLUTION, {});
+        expect(skill).not.toBeNull();
+      }
+      const fourth = await curator.extractSkillFromSolution(tasks[3], GOOD_SOLUTION, {});
+      expect(fourth).toBeNull();
+      void tmpDir;
+    });
+
+    it("should skip when a similar skill already exists (TF-IDF dedup)", async () => {
+      const { curator, tmpDir } = createGatedCurator(undefined, async () => [
+        {
+          id: "existing-1",
+          name: "fetch-latest-stock-prices",
+          description: GOOD_TASK,
+          body: { instructions: GOOD_SOLUTION },
+        },
+      ]);
+
+      const skill = await curator.extractSkillFromSolution(GOOD_TASK, GOOD_SOLUTION, {});
+      expect(skill).toBeNull();
+      void tmpDir;
     });
   });
 
@@ -443,40 +513,27 @@ describe("SkillCurator", () => {
     });
   });
 
-  // ── autoExtractionToggle 已永久禁用 ──
-  // enableAutoExtraction() 现在是 no-op，isAutoExtractionEnabled() 永远返回 false。
-  // 这确保即使有代码尝试启用自动提取，也不会产生效果。
-  describe("autoExtractionToggle (permanently disabled)", () => {
-    it("should default to disabled", () => {
+  // ── autoExtractionToggle：开关现在真实生效（默认开，闸门保护）──
+  describe("autoExtractionToggle (gated)", () => {
+    it("should default to enabled (gated by quality checks)", () => {
       const registry = new ServiceRegistry();
       const eventBus = new EventBus();
       const curator = new SkillCurator(registry, eventBus);
-      expect(curator.isAutoExtractionEnabled()).toBe(false);
+      expect(curator.isAutoExtractionEnabled()).toBe(true);
     });
 
-    it("should remain disabled even after calling enableAutoExtraction", () => {
+    it("should enable via enableAutoExtraction and disable via disableAutoExtraction", () => {
       const registry = new ServiceRegistry();
       const eventBus = new EventBus();
-      const curator = new SkillCurator(registry, eventBus);
+      const curator = new SkillCurator(registry, eventBus, undefined, undefined, undefined, undefined, {
+        autoExtractionEnabled: false,
+      });
       expect(curator.isAutoExtractionEnabled()).toBe(false);
 
-      // 尝试启用 — 应为 no-op
       curator.enableAutoExtraction();
-
-      // 仍然应该返回 false
-      expect(curator.isAutoExtractionEnabled()).toBe(false);
-    });
-
-    it("should remain disabled after disableAutoExtraction", () => {
-      const registry = new ServiceRegistry();
-      const eventBus = new EventBus();
-      const curator = new SkillCurator(registry, eventBus);
+      expect(curator.isAutoExtractionEnabled()).toBe(true);
 
       curator.disableAutoExtraction();
-      expect(curator.isAutoExtractionEnabled()).toBe(false);
-
-      // 即使尝试启用，仍应保持禁用
-      curator.enableAutoExtraction();
       expect(curator.isAutoExtractionEnabled()).toBe(false);
     });
   });

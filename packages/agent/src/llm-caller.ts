@@ -43,16 +43,38 @@ import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } 
  * 从 CallLLMOnceResult.usageDetails 提取缓存命中/写入 token（provider 侧真值）。
  * 各 record() 调用点共用，避免四处各写一遍 normalizeUsage 选项拼装。
  * 无 usageDetails 时返回 undefined 字段（tracker 按 ?? 0 兜底）。
+ *
+ * ★ P0-5（2026-10-27）：**网关未上报任何缓存字段时返回 {}**。
+ *   normalizeUsage 对「字段缺失」和「字段存在且为 0」都落成 cacheReadTokens=0，
+ *   若不区分，OpenAI 兼容网关只要不回 cached_tokens，命中率指标就会被
+ *   「0 命中 + 全额未命中」污染成恒为 0%——看起来"缓存全废"，实际是"网关不上报"。
+ *   用「字段是否存在」区分这两种情况：不上报就不发指标，命中率 gauge 保持沉默，
+ *   这本身就回答了「这些网关到底回不回传 cached_tokens」。
+ *
+ *   反之，**字段存在且为 0 必须原样保留 0**（不能 `|| undefined`）：会话首轮
+ *   cache 必然冷启动，网关回 cached_tokens:0，这一轮是「0 命中 + 全额未命中」，
+ *   正是命中率分母的重要组成部分。旧实现把它塌成 undefined → 指标不发 →
+ *   分母只统计有命中的轮次 → 命中率虚高到接近 100%。
+ *   （真实数据佐证：data/token-usage/records.json 里 4273 条记录中
+ *   `cacheHitTokens` 要么是正数、要么整个字段缺失，**从未出现过显式 0**——
+ *   正是 `|| undefined` 把 0 吞掉的痕迹。）
  */
 function cacheExtrasFromResult(
   result: { usageDetails?: unknown },
   providerName: string,
 ): { cacheHitTokens?: number; cacheWriteTokens?: number } {
   if (!result.usageDetails) return {};
+  const raw = result.usageDetails as Record<string, unknown>;
+  const reportsCache =
+    typeof raw.cache_read_input_tokens === "number" ||
+    typeof raw.cache_creation_input_tokens === "number" ||
+    (typeof raw.prompt_tokens_details === "object" && raw.prompt_tokens_details !== null) ||
+    (typeof raw.input_tokens_details === "object" && raw.input_tokens_details !== null);
+  if (!reportsCache) return {};
   const canon = normalizeUsage(result.usageDetails, { provider: providerName });
   return {
-    cacheHitTokens: canon.cacheReadTokens || undefined,
-    cacheWriteTokens: canon.cacheWriteTokens || undefined,
+    cacheHitTokens: canon.cacheReadTokens,
+    cacheWriteTokens: canon.cacheWriteTokens,
   };
 }
 import { getProviderSkipList } from "./provider-skip-list";
@@ -273,7 +295,7 @@ export class ProviderHealthTracker {
 
   constructor(
     private maxConsecutiveFailures = 2,
-    private cooldownMs = 120_000,
+    private cooldownMs = 30_000, // 2026-10-26: 从 120s 降为 30s — 实测 120s 冷却导致主 provider 失败后长时间不可用
     private responseTimeWindowSize = 10
   ) {}
 
@@ -360,6 +382,8 @@ export class ProviderHealthTracker {
 
 // Module-level tracker shared by the provider failover loop.
 const providerHealthTracker = new ProviderHealthTracker();
+// ★ P0-5：稳定性评估计数器（每 10 次评估输出命中率摘要行）。
+let stabilityEvalCount = 0;
 
 function isProviderTripped(providerName: string): boolean {
   return providerHealthTracker.isTripped(providerName);
@@ -828,8 +852,6 @@ export interface LLMCallerDeps {
   recordProviderFailure: (id: string, error: string, errorType?: string) => void;
   // EventLedger resolver
   getEventLedger: () => EventLedgerLike | null;
-  // Skills prompt builder
-  buildSkillsPromptForRun: () => Promise<string>;
   // Execution checkpoint store (optional — enables durable execution)
   executionCheckpointStore?: ExecutionCheckpointStore;
   // Human-in-the-Loop approval manager (optional — enables approval workflow)
@@ -860,10 +882,6 @@ export interface LLMCallerDeps {
   iterationBudget?: import("./iteration-budget").IterationBudget;
   // ContextEngine result (optional — enables layered context with frozen/ephemeral separation)
   contextEngineResult?: import("./context-engine").LayeredContextResult;
-  // ★ P0-4（2026-10-26）：稳定 capabilities 字符串（systemPrompt 后缀，含 web 工具策略 +
-  //   skills prompt）。由 agent-model-executor 构建后传入，CE 路径用作 frozen skillsContext，
-  //   非 CE fallback 路径用作 stableSystemPrompt 后缀——两路径逐字节一致，切换不失效缓存。
-  stableCapabilities?: string;
   // ContextPruning manager (optional — enables soft trim and hard clear of tool results)
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
   // Token usage tracker (optional — enables real-time token/cost tracking)
@@ -876,6 +894,15 @@ export interface LLMCallerDeps {
   // ★ P0-4：运行时缓存稳定性分析器（optional — 每轮 API 调用前评估 request prefix
   // 稳定性，检测 anti-pattern 并输出诊断日志）。未提供时跳过稳定性分析。
   promptCacheStability?: import("./prompt-cache-stability").PromptCacheStabilityManager;
+  // ★ P0-5：volatile 区域起始索引（skills 消息/动态尾/user 消息在消息数组中的
+  // 位置）。由 tryCallLLM 按布局 [sys, ...history, skills?, tail?, user] 记录，
+  // Anthropic 原生路径据此把 volatile system 消息合并进 user 消息（避免 system
+  // 参数逐轮变化毒化 history 缓存）。
+  volatileSystemStartIdx?: number;
+  // ★ P0-5：CacheTracer（optional — 记录每次 LLM 调用的真实 cache 命中 token
+  // （provider usage cache_read_input_tokens），周期性输出 token 加权命中率）。
+  // 未提供时跳过 trace 记录。
+  cacheTracer?: import("./cache-trace").CacheTracer;
   // End-to-end cancellation signal (optional — aborts in-flight LLM calls and tool executions).
   // Set by AgentModelExecutor.abortSession(sessionId); propagated through callLLMOnce,
   // the tool execution retry loop, and HTTP transport (nativeFetch already accepts a signal).
@@ -1014,6 +1041,59 @@ export function parseMimeTypeFromDataUri(dataUri: string): string {
   return match ? match[1] : "";
 }
 
+// ── Helper: find last message index with given role ──
+// P0-5：易变内容（skills 段/动态尾）插入「最后一条 user 消息之前」时使用。
+// 找不到返回 -1（调用方回退为 push 到末尾）。
+function lastIndexOfRole(
+  messages: Array<{ role: string; content?: unknown }>,
+  role: string,
+): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === role) return i;
+  }
+  return -1;
+}
+
+// ── Helper: Anthropic 原生路径 volatile system 消息合并（P0-5）──
+// convertMessagesToAnthropic 把全部 system 消息提升进顶层 system 参数，而
+// Anthropic 缓存流 = system + messages 连续前缀——逐轮变化的 system 参数字节
+// 会毒化其后的 history 缓存。把 volatile 区域（skills 段/动态尾/创造性指令）
+// 的 system 消息合并进最后一条 user 消息后，system 参数只剩 frozen + ephemeral
+// （会话内字节稳定）→ history 可进缓存。内容为前缀拼接，语义等价。
+// 在 tryCallLLM 层（轮循环前）一次性调用；压缩重试重建路径需再次调用。
+function mergeVolatileSystemIntoUser(
+  messages: Array<LLMMessage>,
+  volatileStartIdx: number,
+): Array<LLMMessage> {
+  if (volatileStartIdx < 0 || volatileStartIdx >= messages.length) {
+    return messages;
+  }
+  const volatileParts: string[] = [];
+  const kept: Array<LLMMessage> = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "system" && i >= volatileStartIdx) {
+      volatileParts.push(typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""));
+    } else {
+      kept.push(m);
+    }
+  }
+  if (volatileParts.length === 0) {
+    return messages;
+  }
+  const lastUserIdx = lastIndexOfRole(kept, "user");
+  const prefix = volatileParts.join("\n\n");
+  if (lastUserIdx >= 0) {
+    const last = kept[lastUserIdx];
+    kept[lastUserIdx] = typeof last.content === "string"
+      ? { ...last, content: `${prefix}\n\n${last.content}` }
+      : { ...last, content: [{ type: "text", text: prefix }, ...(Array.isArray(last.content) ? last.content : [])] };
+  } else {
+    kept.push({ role: "user", content: prefix });
+  }
+  return kept;
+}
+
 function cleanToolCache(cache: Map<string, ToolResultCacheEntry>): void {
   const now = Date.now();
   for (const [key, entry] of cache) {
@@ -1044,7 +1124,12 @@ const IDEMPOTENT_TOOLS = new Set([
 ]);
 
 /** 工具结果进入上下文的体积上限（字符）。超出则截断并附提示。 */
-const TOOL_RESULT_MAX_CHARS = 12_000;
+// ★ 2026-10-26 修复：工具结果截断从 12K 降到 4K。
+//   创造性任务中模型过度调用 shell_exec/file_read，每个结果 2-5K 字符。
+//   5 轮 × 3 工具调用 × 4K = 60K 字符上下文，加上系统提示和工具定义，
+//   单轮 token 消耗可达 100K+。4K 上限足以保留关键信息，同时大幅降低
+//   上下文体积，加快每轮 LLM 调用速度。
+const TOOL_RESULT_MAX_CHARS = 4_000;
 
 /**
  * 截断过大的工具结果，避免单个返回值吃掉大量上下文。
@@ -1273,6 +1358,38 @@ interface ToolGroupDef {
   includes?: string[];
 }
 
+/**
+ * 工具分组（关键词激活 + 会话单调并集）。
+ *
+ * ★ P0-5（2026-10-27）常驻工具瘦身：
+ *   此前只有 core/browser/skill/email/coding/media/scheduler/memory 八组，
+ *   **其余 70 个工具不在任何组里 → 逐轮无条件下发**，实测 ≈37.5K 字符
+ *   （≈9–11K token），比整段系统提示词（≈20.8K 字符）还大。这部分是纯粹的
+ *   固定前缀开销，每轮重复计费。
+ *
+ *   本轮把其中「领域专用、关键词可可靠命中」的工具全部收进分组：
+ *   会话首消息未命中关键词时不下发，命中后进入单调并集、此后整段保持字节
+ *   稳定（缓存不再逐轮漂移）。
+ *
+ *   **刻意保留常驻（不分组）的 12 个**：apply_patch / apply_rename /
+ *   batch_execute / code_search / codebase_search / find_references /
+ *   execute_code / lint / run_tests / verify_project / todo_list / plan_rename。
+ *   理由：Agentic 编码任务的首消息常常是「这个页面报错了」这类**不含任何
+ *   编码关键词**的叙述，而代码检索/编辑/执行/测试是这类任务一上来就要用的
+ *   能力；一旦被关键词裁掉，模型只能退到 shell_exec，属于行为回归而非省 token。
+ *   这 12 个 + core 组 ≈13.6K 字符，是「任何请求都该在手」的稳定基座。
+ *
+ *   ★ 注意「创建类」工具（isCreationTool 白名单）即使被分进某组也**仍然恒定
+ *   下发**，所以把它们放进组里不省 token——但为了组内语义完整仍照写，
+ *   输出分档时会把它们归入稳定基座（见 buildOpenAITools 的档 1）。
+ */
+// 「无关键词命中」时的兜底技能集——**只含技能发现/执行/安装**这 6 个。
+// 不能用 TOOL_GROUPS.skill.tools 代替：该组现已并入 skill_create / skill_uninstall
+// （P0-5 瘦身），若把它们也塞进兜底，任何模糊首消息都会常驻下发，省不下 token。
+const SKILL_DISCOVERY_TOOLS = [
+  "skill_execute", "skill_install", "skill_search", "skill_find_and_install", "skill_view", "skill_index_list",
+];
+
 const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   core: {
     tools: [
@@ -1287,15 +1404,34 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
       "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",
       "browser_find_elements", "browser_submit_form", "browser_tabs", "browser_js_eval",
       "browser_fill_form", "browser_login",
+      // ↑ 以下 10 个此前未分组、逐轮常驻（≈4.2K 字符）
+      "browser_check", "browser_clear_dom_indexes", "browser_click_by_index",
+      "browser_extract_dom", "browser_hover", "browser_input_by_index",
+      "browser_scroll", "browser_scroll_by_index", "browser_select", "browser_wait",
     ],
-    keywords: ["browse", "browser", "网页", "网站", "打开", "navigate", "click", "screenshot", "登录", "login", "网页操作", "填写表单"],
+    keywords: [
+      "browse", "browser", "网页", "网站", "打开", "navigate", "click", "screenshot",
+      "登录", "login", "网页操作", "填写表单", "截图",
+      // 补充中文常见说法，覆盖此前常驻的 10 个浏览器工具的用途
+      "浏览器", "滚动", "scroll", "悬停", "hover", "下拉框", "下拉菜单",
+      "等待加载", "页面元素", "dom 索引", "提取页面", "页面检查",
+    ],
   },
   skill: {
-    tools: ["skill_execute", "skill_install", "skill_search", "skill_find_and_install", "skill_view", "skill_index_list"],
-    keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能", "翻译", "translate", "转换", "convert", "查找技能", "执行技能"],
+    tools: [
+      "skill_execute", "skill_install", "skill_search", "skill_find_and_install",
+      "skill_view", "skill_index_list",
+      "skill_create", "skill_uninstall",
+    ],
+    keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能", "翻译", "translate", "转换", "convert", "查找技能", "执行技能", "卸载技能", "创建技能"],
   },
   email: {
-    tools: ["email_send", "email_add_account"],
+    tools: [
+      "email_send", "email_add_account",
+      // ↑ 以下 6 个此前未分组、逐轮常驻（≈2.6K 字符）
+      "email_analyze", "email_get_email", "email_get_inbox_summary",
+      "email_list_accounts", "email_list_inbox", "email_summarize",
+    ],
     // 必须覆盖中文常见说法：「邮箱」此前缺失，导致「添加邮箱账户」无法激活本组，
     // email_add_account 被静默裁剪，模型误判「系统没有添加接口」（真实事故）。
     keywords: [
@@ -1310,16 +1446,48 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     keywords: ["programming", "编程", "代码", "code", "开发", "程序", "写代码", "实现功能"],
   },
   media: {
-    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert", "video_generate", "video_info", "image_generate", "image_info"],
+    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert", "video_generate", "video_info", "image_generate", "image_info", "music_search"],
     keywords: ["video", "视频", "download", "下载", "music", "音乐", "歌曲", "youtube", "b站", "抖音", "generate video", "生成视频", "制作视频", "create video", "生成图片", "画图", "generate image", "create image", "draw", "画一张", "图片生成"],
   },
   scheduler: {
-    tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history"],
-    keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务"],
+    tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history", "dlq_retry_batch"],
+    keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务", "死信", "dlq", "重试队列", "失败重试", "投递失败"],
   },
   memory: {
-    tools: ["memory_store", "memory_retrieve", "memory_search", "memory_delete"],
+    tools: ["memory_store", "memory_retrieve", "memory_search", "memory_delete", "memory_stats"],
     keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索"],
+  },
+  // ── 以下 7 组为 P0-5 新增：把原先「不分组 → 逐轮常驻」的领域工具收进分组 ──
+  git: {
+    tools: ["git_add", "git_blame", "git_commit", "git_diff", "git_log", "git_push", "git_show", "git_status"],
+    // 「代码/code/开发/修复/修改/实现」与 coding 组同源：只要消息进入编码语境，
+    // git 工具就该在手（git_status/git_diff/git_log 是每轮定位改动的常规动作）。
+    // 兜底：即便真的没命中，模型仍可用 core 组的 shell_exec 执行 git 命令。
+    keywords: ["git", "commit", "推送", "push", "拉取", "分支", "branch", "合并", "merge", "diff", "仓库", "repo", "代码库", "版本历史", "回滚", "撤销", "stash", "blame", "追溯", "改动", "编程", "代码", "code", "开发", "写代码", "修复", "修改", "实现", "提交代码"],
+  },
+  kanban: {
+    tools: ["kanban_add_task", "kanban_claim_task", "kanban_complete_task", "kanban_create_board", "kanban_get_stats", "kanban_list_tasks"],
+    keywords: ["kanban", "看板", "任务板", "任务队列", "领取任务", "看板统计", "board"],
+  },
+  vision: {
+    tools: ["vision_analyze", "vision_compare_images", "vision_describe_screen", "vision_detect_issues", "vision_find_elements"],
+    keywords: ["截图分析", "截图", "图片分析", "视觉分析", "屏幕截图", "对比图片", "找元素", "界面检查", "ui 检查", "图像识别", "视觉", "vision", "screenshot analysis", "analyze image"],
+  },
+  computer: {
+    tools: ["computer_key_press", "computer_key_type", "computer_mouse_click", "computer_mouse_drag", "computer_mouse_move", "computer_mouse_scroll", "computer_screenshot", "computer_window_focus", "computer_window_list"],
+    keywords: ["电脑", "桌面", "鼠标", "键盘", "窗口管理", "远程桌面", "gui", "desktop", "mouse", "keyboard", "computer use", "电脑自动化", "桌面自动化", "点击屏幕"],
+  },
+  checkpoint: {
+    tools: ["checkpoint_list", "checkpoint_restore", "checkpoint_save"],
+    keywords: ["检查点", "checkpoint", "存档", "快照", "回滚点", "保存进度", "恢复现场", "进度存档"],
+  },
+  workflow: {
+    tools: ["workflow_execute", "workflow_validate"],
+    keywords: ["workflow", "工作流", "编排", "流程编排"],
+  },
+  research: {
+    tools: ["grounded_research"],
+    keywords: ["研究", "调研", "查证", "资料收集", "事实核查", "research", "文献"],
   },
 };
 
@@ -1332,7 +1500,11 @@ export function buildOpenAITools(
   /**
    * ★ P0-2（2026-10-16 缓存命中改造）：会话已激活的工具**单调并集**。
    * 传入时以此为种子做关键词并集（只增不减）——同一会话稳态下 tools JSON
-   * 字节恒定，provider 缓存前缀（tools 是前缀第一段）不再逐轮漂移。
+   * 字节恒定，请求体末尾的 tools 段不再逐轮漂移。
+   * ★ 2026-10-27 更正：tools 在 key 插入序上位于 messages 之后（请求体末尾），
+   * 故 tools 段的字节稳定只影响 **tools 段自身**的缓存命中，不波及 messages
+   * 前缀（含冻结系统提示）。本函数仍要保证字节稳定——tools 段约占请求的
+   * 18K 字符（≈5K token），逐轮漂移等于每轮重算这 5K token。
    * 不传（或传空）时保持 fresh-session 语义，与旧行为字节一致（向后兼容：
    * /health 工具计数走 message === undefined 全量分支）。
    */
@@ -1380,7 +1552,7 @@ export function buildOpenAITools(
     // （首消息激活过）或本就更多，不再反复补 skill 组导致字节抖动。
     if ((baseTools === undefined || baseTools === null || baseTools.size === 0) &&
         activeTools.size <= TOOL_GROUPS.core.tools.length) {
-      for (const t of TOOL_GROUPS.skill.tools) activeTools.add(t);
+      for (const t of SKILL_DISCOVERY_TOOLS) activeTools.add(t);
     }
   } else {
     // No message provided — include all tools for backward compatibility
@@ -1391,7 +1563,17 @@ export function buildOpenAITools(
 
   if (out) out.activeTools = activeTools;
 
-  return Array.from(registeredTools.values())
+  // ── 输出分档（★ P0-5：tools 数组的顺序即缓存边界）──
+  // tools 是请求体的一段固定前缀。同一会话内若某个工具被插到**数组中间**，
+  // 它之后的所有字节全部失配 → 一次全量重算（≈整段 tools 的 token）。
+  // 会话工具集是单调并集（只增不减），所以把「本轮新激活的组」排到数组末尾，
+  // 前面的字节就逐轮保持前缀稳定：
+  //
+  //   档 0  core 组（恒定）
+  //   档 1  未分组常驻工具 + 创建类工具（两者都恒定下发 → 稳定基座）
+  //   档 2  本轮已激活、且上一轮就在并集里的组（按首次激活顺序）
+  //   档 3  本轮新激活的组（排最后 → 前缀只增不改）
+  const selected = Array.from(registeredTools.values())
     .filter((t) => {
       // ── 1. 可用性门禁（最高优先级）：check_fn 判定不可用的服务一律不下发 ──
       // Service-gated tools: skip tools whose check_fn returns false.
@@ -1399,9 +1581,9 @@ export function buildOpenAITools(
       // tools are silently dropped so the LLM never sees them.
       //
       // ★ P0-4 缓存稳定化（2026-10-26）：已进入会话单调并集（baseTools）的工具
-      // 跳过 checkFn 过滤——tools 数组是请求前缀第一段，checkFn 抖动（服务
-      // 短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → provider 缓存全量失效。
-      // 会话内已激活的工具保持在场，模型尝试调用时由执行期 checkFn 兜底报错。
+      // 跳过 checkFn 过滤——tools 段在请求体末尾，checkFn 抖动（服务短暂不可用
+      // →恢复）会导致 tools JSON 逐轮漂移 → tools 段（≈18K 字符 ≈5K token）每轮
+      // 重算。会话内已激活的工具保持在场，模型尝试调用时由执行期 checkFn 兜底报错。
       if (t.checkFn) {
         const isInSessionUnion = baseTools?.has(t.definition.name) ?? false;
         if (!isInSessionUnion) {
@@ -1438,7 +1620,68 @@ export function buildOpenAITools(
       if (!activeTools.has(t.definition.name) && isInAnyGroup) return false;
 
       return true;
-    })
+    });
+
+  // 工具名 → 所属组（一个工具只记第一次出现的组，避免重复）
+  const groupOfTool = new Map<string, string>();
+  for (const [gName, g] of Object.entries(TOOL_GROUPS)) {
+    for (const t of g.tools) if (!groupOfTool.has(t)) groupOfTool.set(t, gName);
+  }
+  const byName = new Map(selected.map((t) => [t.definition.name, t]));
+
+  const ranked: typeof selected = [];
+  const used = new Set<string>();
+  const take = (names: string[]): void => {
+    for (const n of names) {
+      const t = byName.get(n);
+      if (t && !used.has(t.definition.name)) {
+        used.add(t.definition.name);
+        ranked.push(t);
+      }
+    }
+  };
+
+  // 档 0：core
+  take(TOOL_GROUPS.core.tools);
+  // 档 1：未分组常驻（恒定下发）+ 创建类（白名单恒定下发）
+  take(
+    Array.from(byName.keys()).filter((n) => !groupOfTool.has(n) || isCreationTool(n)),
+  );
+  // 档 2 / 档 3：已激活的组按「首次激活顺序」排列。
+  //
+  // 顺序来源 = baseTools 的**插入序**（Set 的迭代序就是上一轮 tools 的激活序），
+  // 取组内工具的最小序号作为该组位次。这一点很关键：若改用「组声明序」，
+  // 某个后声明的组先激活、先声明组后激活时，后激活组一旦转为「已激活」
+  // 就会跳到前面去 → 数组中间插入 → 缓存全量失配（真实回归，见
+  // llm-caller.test.ts「同轮激活多个组」用例）。
+  // 用插入序则「谁先激活谁靠前」，组一旦落位永不移动，前缀逐轮只增不改。
+  const baseOrder = new Map<string, number>();
+  // 注意：Set.forEach 的第二个实参是 value 而非下标，必须自己计数
+  let bi = 0;
+  for (const t of baseTools ?? []) {
+    if (!baseOrder.has(t)) baseOrder.set(t, bi);
+    bi++;
+  }
+  const groupRank = (g: ToolGroupDef): number => {
+    let rank = Number.POSITIVE_INFINITY;
+    for (const t of g.tools) {
+      const i = baseOrder.get(t);
+      if (i !== undefined && i < rank) rank = i;
+    }
+    return rank;
+  };
+  const activeGroups = Object.entries(TOOL_GROUPS)
+    .filter(([, g]) => g.tools.some((t) => activeTools.has(t)))
+    .sort((a, b) => {
+      const ra = groupRank(a[1]);
+      const rb = groupRank(b[1]);
+      // 两者都未入并集（本轮新激活）→ 保持声明序（sort 稳定）
+      if (ra === Number.POSITIVE_INFINITY && rb === Number.POSITIVE_INFINITY) return 0;
+      return ra - rb;
+    });
+  for (const [, g] of activeGroups) take(g.tools);
+
+  return ranked
     .map((t) => {
       // Dynamic schema overrides: allow tools to inject runtime-dependent
       // description/parameters at schema build time (hermes pattern).
@@ -2600,10 +2843,12 @@ export async function callLLMOnce(
     const useStreaming = !!onProgress;
 
     // ── Anthropic prompt cache: apply cache_control breakpoints ──
-    // 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + 最后 3 条
-    // 非系统消息上注入 cache_control: {type: "ephemeral"}，启用 Anthropic
-    // 服务端 prompt 缓存。命中缓存时输入 token 按 10% 计费，可节省约 75% 成本。
+    // 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + volatile
+    // 区域之前的最后 3 条非 system 消息上注入 cache_control: {type: "ephemeral"}，
+    // 启用 Anthropic 服务端 prompt 缓存。命中缓存时输入 token 按 10% 计费。
     // 仅对 Anthropic provider 生效（其他 provider 会忽略此字段或报错）。
+    // ★ P0-5：volatile system 消息（skills 段/动态尾）的合并已在 tryCallLLM 层
+    // 完成（一次性，见该处注释），此处只负责断点。
     let messagesToSend = messages;
     if (provider.provider === "anthropic") {
       // P0-3：ContextEngine 分层上下文时，首条 system = frozen + ephemeral。
@@ -2672,7 +2917,18 @@ export async function callLLMOnce(
         body.stream_options = { include_usage: true };
       }
 
-      if (tools.length > 0 && toolChoice !== "none") {
+      // ★ 2026-10-27 修复：tools 与 tool_choice **始终**显式下发（只要 tools
+      //   非空）。旧实现用 `toolChoice !== "none"` 守卫，tc="none" 时两者都不设
+      //   → 部分 OpenAI 兼容网关按规范回退默认 "auto" → 模型照常输出
+      //   tool_calls（agnes-3.0-flash 实测）。
+      //   曾用「把 tools 置空」来强制禁用。tools 虽在请求体**末尾**（插入序在
+      //   messages 之后），置空只让缓存在 tools 段处分叉、不影响 messages 前缀，
+      //   但 nudge 是**同一会话内反复触发**的路径：每轮都在「有/无」之间翻转，
+      //   tools 段自身就永远无法命中。改为「保留 tools + 显式 tool_choice:"none"」：
+      //   网关真正收到禁用指令，且请求体字节逐轮完全一致。个别网关若仍无视
+      //   tool_choice，由 tryCallLLM 的拒绝兜底拦截（见 toolCallsNoneRefusals），
+      //   语义与置空 tools 等价。
+      if (tools.length > 0) {
         body.tools = tools;
         body.tool_choice = toolChoice;
 
@@ -2903,10 +3159,19 @@ export interface TryCallLLMOptions {
   message: string;
   systemPrompt: string;
   /**
-   * P0-3 缓存稳定化（2026-10-16）：动态尾（plan/chain/stale-context/记忆检索等易变
-   * 内容）。非空时作为**第二条 system 消息**置于首条稳定 system 之后、history 之前，
-   * 稳定主体的 provider 前缀缓存不受逐轮变动影响；OpenAI 兼容 provider 将多条
-   * system 消息按顺序拼接，语义与旧行为一致（动态内容仍紧邻其后的 history）。
+   * ★ P0-5（2026-10-27）：skills 元数据段（"## Available Capabilities" 标题 +
+   * 工具说明 + web 策略 + <available_skills> 列表）。由 agent-model-executor 构建后传入，
+   * 作为独立 system 消息放在 **history 之后、动态尾之前**——不再拼进 frozen system
+   * 前缀。skill 集合变化（安装/卸载/curator 改描述）只击穿该消息之后的字节，
+   * frozen + history 缓存不受影响。空串 = 无 skills 段。
+   */
+  skillsMessage?: string;
+  /**
+   * ★ P0-5（2026-10-27）：动态尾（plan/chain/stale-context/记忆检索等易变
+   * 内容）。非空时作为独立 system 消息置于 **history 之后、当前 user 消息之前**。
+   * 旧位置（index 1，frozen 与 history 之间）使逐轮变化内容毒化 history 前缀，
+   * 导致 history 永不命中缓存；移到 history 之后，跨轮公共前缀 = frozen + 全部
+   * history，provider 前缀缓存覆盖除 tail + user 外的全部 token。
    */
   dynamicSystemTail?: string;
   installedSkills: unknown[];
@@ -2939,7 +3204,7 @@ export async function tryCallLLM(
 
   const doTryCall = async (): Promise<TryCallLLMResult | null> => {
   const {
-    message, systemPrompt, dynamicSystemTail: callerDynamicSystemTail, installedSkills, providers, startTime,
+    message, systemPrompt, skillsMessage, dynamicSystemTail: callerDynamicSystemTail, installedSkills, providers, startTime,
     sessionId, pendingPermissions, attachments, onProgress,
     searchPreDone = false, channel, abortSignal,
     includeAccumulatedReplyInTokenEvents = false,
@@ -2951,12 +3216,24 @@ export async function tryCallLLM(
     deps = { ...deps, abortSignal };
   }
 
-  const BASE_MAX_TOOL_ROUNDS = 30;
-  const MAX_TOOL_ROUNDS_CAP = 100;
+  // ★ 2026-10-26 从 30/100 降为 10/30：实测复杂任务中模型在 40 轮工具调用后
+  //   仍未完成，消耗 40 万+ token。10 轮对大多数任务足够（每轮可并行多个工具），
+  //   30 轮上限覆盖极复杂场景。nudging 机制在 4 轮后已催促最终答案。
+  // ★ 2026-10-26 修复：工具轮次限制从 10/30 降到 5/15。
+  //   实测 agnes-3.0-flash 每轮 15-61s，5 轮 = 75-305s。
+  //   原 10 轮上限在 180s 超时内根本无法完成，且每轮上下文增长
+  //   导致 token 爆炸（300K+）。5 轮足够完成创造性任务（写作/设计/分析），
+  //   编码任务可通过 dynamic tool limit 适当上调。
+  const BASE_MAX_TOOL_ROUNDS = 5;
+  const MAX_TOOL_ROUNDS_CAP = 8;
   const MAX_CONSECUTIVE_ERRORS = 3;
   // 自动续跑上限：检测到「该继续却停下来问人」时，最多自动回灌多少轮。
   // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
-  const MAX_AUTO_CONTINUE = 3;
+  // ★ 2026-10-26 从 3 降为 1：实测 3 次续跑在复杂任务中导致模型循环——
+  //   每轮产生"详细但无实质完成"的响应 → 触发 empty_but_detailed → 续跑 →
+  //   重复同样的工具调用 → 再触发 → 3 轮消耗 40 万+ token 仍未完成。
+  //   1 次续跑在保留纠正能力的同时，避免循环耗尽预算。
+  const MAX_AUTO_CONTINUE = 1;
 
   // ── 过载自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）──
   // provider 出现瞬时过载类错误（429/5xx/超时/网络）时，不立即 failover，
@@ -2995,7 +3272,9 @@ export async function tryCallLLM(
   }
   process.stdout.write(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"\n`);
 
-  const skillsPrompt = await deps.buildSkillsPromptForRun();
+  // ★ P0-5：skills 段不再由 llm-caller 自行构建（旧 deps.buildSkillsPromptForRun），
+  // 改由 agent-model-executor 构建 skillsMessage 经 options 传入——构建时机与会话
+  // 粘性选择（Fix F）都在 executor 侧完成。
 
   // ── Approval intent detection: if user says "同意/执行/yes/approve",
   //    auto-execute the pending rejected shell command ──
@@ -3158,24 +3437,19 @@ export async function tryCallLLM(
     // ── 本 provider 的工具执行统计（声明在 try 外，供 try/catch 之后的
     //    跨 provider 累计读取；try 内不再重复声明） ──
     let successfulToolCalls = 0;
+    // ★ 2026-10-27：tc="none"（nudge 收尾）时网关若无视 tool_choice 仍返回
+    //   tool_calls，这里记录**已拒绝执行**的轮数，用于限制「拒绝后续跑」的
+    //   次数（防个别网关每轮都调工具烧掉迭代预算）。
+    let toolCallsNoneRefusals = 0;
     const failedTools: Array<{ name: string; error: string }> = [];
 
     try {
       const history = deps.conversationHistory.get(sessionId) || [];
 
-      // P0-3 缓存稳定化（2026-10-16）：静态 ReAct 策略串注册进 PromptRegistry
-      // （"web.tool_strategy" 模板），跨部署字节稳定（旧：内联字面量，散落各处）。
-      const webToolStrategy = PromptRegistry.getInstance().format("web.tool_strategy", {});
-
-      // ★ P0-4（2026-10-26）：优先使用 agent-model-executor 传入的 stableCapabilities
-      // （与 CE frozen 段逐字节一致）。仅当 deps 未提供时回退到本地构建（向后兼容：
-      // 非 CE 路径或 CE 组装失败时 agent-model-executor 可能未构建 stableCapabilities）。
-      const stableCapabilities = deps.stableCapabilities ?? (skillsPrompt
-        ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
-        : "");
-      const stableSystemPrompt = skillsPrompt
-        ? `${systemPrompt}\n\n${stableCapabilities}`
-        : systemPrompt;
+      // ★ P0-5：frozen system 主体只剩 systemPrompt（skills 段已移出为独立消息，
+      // 见下方 skillsMessage 插入逻辑）。webToolStrategy 仅服务于 skills 段构建，
+      // 已移至 agent-model-executor 侧。
+      const stableSystemPrompt = systemPrompt;
 
       // ★ P0-4：易变尾附加（时区/平台）——与 CE buildEphemeralSuffix 输出一致。
       // CE 路径的 messages[0] = frozen + ephemeral，fallback 路径的 messages[0]
@@ -3189,10 +3463,8 @@ export async function tryCallLLM(
             return "\n\n" + parts.join("\n\n");
           })();
 
-      // P0-3：易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/
-      // 记忆召回）移出稳定 system 主体，全部放**第二条 system 消息**（紧邻其后）。
-      // 稳定主体在前 → provider 前缀缓存命中到第一个分叉字节；动态尾逐轮变化
-      // 只重价尾段。OpenAI 兼容 provider 按顺序拼接多条 system，语义不变。
+      // 易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/记忆召回）
+      // 全部放在 history 之后、当前 user 消息之前（见 P0-5 布局说明）。
       const dynamicNotice = searchPreDone
         ? `**Search has already been performed.** Skip searching and go directly to analysis or code execution.\n` +
           PromptRegistry.getInstance().format("search.already_completed", {})
@@ -3222,37 +3494,63 @@ export async function tryCallLLM(
       // When ContextEngine has already assembled the context (with frozen/ephemeral
       // separation, bootstrap files, token-aware truncation), use its messages
       // instead of building them manually. This ensures consistent context management.
+      //
+      // ★ P0-5 布局：[sys_frozen, ...history, sys_skills?, sys_tail?, user]
+      // 易变内容（skills 段 + 动态尾）全部位于 history 之后、当前 user 消息之前。
+      // 跨轮公共前缀 = frozen + 全部 history → provider 前缀缓存覆盖除
+      // skills/tail/user 外的全部 token；旧布局把逐轮变化的 tail 插在 history
+      // 之前，导致 history 永不进缓存（缓存覆盖仅 frozen 前缀）。
       let messages: Array<LLMMessage>;
       if (deps.contextEngineResult) {
-        // Use ContextEngine's pre-assembled messages (includes system prompt,
-        // bootstrap files, skills context, memory, and truncated history)
+        // Use ContextEngine's pre-assembled messages (frozen system + truncated history +
+        // current user message)
         messages = deps.contextEngineResult.messages.map(m => ({
           role: m.role,
           content: m.content,
         })) as Array<LLMMessage>;
-        // P0-3：动态尾（searchPreDone 提示 + 调用方动态 system 尾）作为**第二条
-        // system 消息**插入首条稳定 system 之后、history 之前——稳定前缀不变，
-        // provider 缓存命中到第一条 system 末尾。
+        // P0-5：skills 段与动态尾插入**最后一条 user 消息之前**（history 之后）。
+        if (skillsMessage) {
+          const pos = lastIndexOfRole(messages, "user");
+          messages.splice(pos >= 0 ? pos : messages.length, 0, { role: "system", content: skillsMessage });
+        }
         if (dynamicSystemTail) {
-          messages.splice(1, 0, { role: "system", content: dynamicSystemTail });
+          const pos = lastIndexOfRole(messages, "user");
+          messages.splice(pos >= 0 ? pos : messages.length, 0, { role: "system", content: dynamicSystemTail });
         }
         process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
-        // Fallback: manual message assembly (stable system first, dynamic tail second)
-        // ★ P0-4：stableSystemPrompt 追加 ephemeralSuffix（时区/平台），与 CE 路径
+        // Fallback: manual message assembly — ★ P0-5：history 先于易变内容。
+        // stableSystemPrompt 追加 ephemeralSuffix（时区/平台），与 CE 路径
         // messages[0] = frozen + ephemeral 结构一致，两路径切换不失效缓存。
         messages = [
           { role: "system", content: stableSystemPrompt + ephemeralSuffix },
+          ...history,
         ];
+        if (skillsMessage) {
+          messages.push({ role: "system", content: skillsMessage });
+        }
         if (dynamicSystemTail) {
           messages.push({ role: "system", content: dynamicSystemTail });
         }
-        messages.push(...history);
       }
 
       // ── ContextPruning: trim large tool results and clear old ones ──
       // Apply context pruning to reduce token usage and prevent context overflow.
       // This is especially important for long conversations with many tool calls.
+      //
+      // ★ P0-5 幂等化：hard-clear 的 cutoffIndex 按位置滑动（idx < len-20），
+      // 旧实现只修改本地 messages 副本、不写回 conversationHistory → 下一轮
+      // 对未剪枝的原始 history 重新滑动 → history 内容逐轮变化 → 永久击穿
+      // 前缀缓存。现改为剪枝结果**写回 conversationHistory**：下一轮对已剪枝
+      // 内容再剪枝 → 再清空产生相同占位串（soft-trim 同理不再二次触发）→
+      // 字节稳定，缓存前缀不再漂移。
+      //
+      // history 在 messages 中的切片边界（CE 路径 history 可能被 CE 截断为尾部）：
+      const historyStartIdx = 1;
+      const volatileTailCount = (skillsMessage ? 1 : 0) + (dynamicSystemTail ? 1 : 0);
+      const historyEndIdx = deps.contextEngineResult
+        ? messages.length - volatileTailCount - 1 // CE: 末尾还有当前 user 消息
+        : 1 + history.length;                      // 非 CE: user 消息尚未 push
       if (deps.contextPruningManager) {
         // Cast to expected type — prune() only modifies string content (tool results)
         const pruningInput = messages.map(m => ({
@@ -3271,6 +3569,37 @@ export async function tryCallLLM(
             }
             return orig;
           });
+
+          // ★ P0-5：剪枝结果写回 conversationHistory（仅替换 history 切片内的条目）。
+          if (historyEndIdx > historyStartIdx) {
+            const fullHistory = deps.conversationHistory.get(sessionId);
+            if (fullHistory && fullHistory.length > 0) {
+              const sliceLen = historyEndIdx - historyStartIdx;
+              // CE 截断保留 history 尾部 → 切片对应 fullHistory 的后缀；
+              // 非 CE 路径切片即完整 history（offset=0）。
+              const offset = deps.contextEngineResult ? Math.max(0, fullHistory.length - sliceLen) : 0;
+              let changed = false;
+              const updated: typeof fullHistory = fullHistory.map((entry, i) => {
+                const j = i - offset;
+                if (j >= 0 && j < sliceLen) {
+                  const pruned = pruningResult.prunedMessages[historyStartIdx + j];
+                  if (
+                    pruned &&
+                    typeof entry.content === "string" &&
+                    typeof pruned.content === "string" &&
+                    pruned.content !== entry.content
+                  ) {
+                    changed = true;
+                    return { ...entry, content: pruned.content };
+                  }
+                }
+                return entry;
+              });
+              if (changed) {
+                deps.conversationHistory.set(sessionId, updated);
+              }
+            }
+          }
         }
       }
 
@@ -3381,11 +3710,49 @@ export async function tryCallLLM(
         deps.toolGroupStore.set(sessionId, activeOut.activeTools);
       }
 
+      // ★ 2026-10-26 核心修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说/方案/指南）
+      //   在首次 LLM 调用时移除所有工具，强制模型直接在回复中输出完整内容。
+      //   实测 agnes-3.0-flash 对这类任务会先 shell_exec 查文件→file_read 读文件→
+      //   file_create 写文件→checkpoint_restore，5-9 轮 × 15-61s = 远超超时。
+      //   移除工具后模型只能凭自身知识输出，1 轮即可完成。
+      //   副作用：模型无法创建文件——但创造性任务的用户诉求是"在聊天中阅读回复"，不是下载文件。
+      //   ★ 2026-10-26 二次修复：移除 hasActionIntent 检查——auto-continuation 消息
+      //   包含"分析"等 action 关键词会误判为 action task，导致 creative 检测失效。
+      //   creative pattern 本身足够具体（PRD/商业计划书/RESTful API 等），不会误匹配 action task。
+      // ★ 2026-10-27 修复：只看「当前消息 + 上一条 user 消息」。旧实现用
+      //   historyMsgs.some(...) 扫描**全部**历史，一旦会话里出现过创造性任务，
+      //   之后每一轮（包括用户转而要求写代码/跑测试）都会把 tools 置空，
+      //   模型彻底失去工具能力——这是持久性误伤。只看上一条 user 消息即可
+      //   覆盖「继续/是的请继续」这类跟进，又不会跨任务粘连。
+      const CREATIVE_TASK_PATTERN = /(?:设计.*API|RESTful.*API|API.*设计|产品需求文档|PRD|商业计划书|商业分析|技术文档|入门指南|操作指南|学习路径|短篇小说|写一篇|创作一篇|写一个.*故事|起草.*方案|需求分析|竞品分析|市场痛点|商业模式|财务预测|融资需求|团队配置|目标用户画像|用户旅程图|技术约束|成功指标|差异化策略)/i;
+      const historyMsgs = deps.conversationHistory.get(sessionId) || [];
+      // 上一条 user 消息（不含本轮：本轮 message 单独判断）
+      const prevUserIdx = lastIndexOfRole(historyMsgs, "user");
+      const prevUserMsg = prevUserIdx >= 0 ? historyMsgs[prevUserIdx] : undefined;
+      const isCreativeTask = CREATIVE_TASK_PATTERN.test(message) ||
+        (prevUserMsg && typeof prevUserMsg.content === "string" && CREATIVE_TASK_PATTERN.test(prevUserMsg.content));
+      if (isCreativeTask && tools.length > 0) {
+        process.stdout.write(`[AgentModelExecutor] Creative task detected — tools disabled (${tools.length}→0), forcing direct response in 1 round\n`);
+        tools = [];
+        // ★ 2026-10-27：此处保留 `tools = []`（与上面 nudge 路径的「保留 tools +
+        //   tool_choice:none」相反）是**有意的**。tools 在请求体末尾，置空只丢掉
+        //   tools 段本身的缓存、不影响 messages 前缀；而创造性任务**设计上只跑 1 轮**，
+        //   这个代价只付一次。换回来的是硬保证——模型手里没有任何工具，不可能先
+        //   shell_exec 查文件再 file_create 写文件。若改用 tool_choice:"none"，部分
+        //   网关会无视该指令（见 toolCallsNoneRefusals），模型仍发起工具调用 →
+        //   5-9 轮 × 15-61s 超时，正是本修复要消灭的问题。用 1 轮的 tools 段缓存
+        //   换掉 5-9 轮超时风险，划算。
+      }
+
       // ★ P0-4 缓存稳定化（2026-10-26）：searchPreDone 不再移除搜索工具。
-      // tools 数组是 Anthropic 请求前缀的第一段（在 messages 之前），
-      // 移除工具会改变前缀字节 → provider 缓存全量失效 → 每次搜索预完成
-      // 后所有历史 token 重新计费。改为依赖 system prompt 中的
-      // "Search has already been performed" 提示引导模型跳过搜索。
+      // ★ 2026-10-27 更正：tools **不是**前缀第一段。请求体 key 的插入序是
+      //   model → messages → max_tokens → … → (system) → tools → tool_choice，
+      //   `JSON.stringify(body)` 按插入序序列化，tools 因此落在整个请求的**末尾**。
+      //   置空 tools 只会让缓存在 tools 段处分叉（丢掉 tools 段自身的命中），
+      //   并不影响 messages 前缀——含 20.8K 冻结系统提示——的命中。
+      //   这里保留工具的真正原因是**能力**而非缓存：移除后模型无法再发起任何
+      //   合法搜索。改为依赖 system prompt 中的 "Search has already been
+      //   performed" 提示引导模型跳过搜索。
       if (searchPreDone) {
         process.stdout.write(`[AgentModelExecutor] Search pre-done: keeping all tools for cache stability (${tools.length} tools)\n`);
       }
@@ -3393,6 +3760,43 @@ export async function tryCallLLM(
       const isAction = hasActionIntentFn(message);
 
       let conversationMessages = [...messages];
+
+      // ★ P0-5：记录 volatile 区域起始索引（skills 消息位置；无 skills 段时为
+      // 动态尾位置；再无则为 user 消息位置）。布局：[sys, ...history, skills?, tail?, user]
+      deps.volatileSystemStartIdx = conversationMessages.length
+        - 1 // 末尾 user 消息
+        - (skillsMessage ? 1 : 0)
+        - (dynamicSystemTail ? 1 : 0);
+
+      // ★ 2026-10-26 修复：创造性任务的模型首次响应太短（589 chars），
+      //   触发 auto-continuation 额外轮次（+106s），总时间超 300s。
+      //   在 conversationMessages 中插入独立的 system 指令，比 system prompt 中的
+      //   bullet point 更醒目——模型对紧邻 user message 的 system 指令响应更好。
+      // ★ P0-5：指令插入位置从 index 1（frozen 与 history 之间，会毒化 history
+      //   缓存前缀）改为**当前 user 消息之前**（history + skills + tail 之后）。
+      if (isCreativeTask) {
+        const pos = lastIndexOfRole(conversationMessages, "user");
+        conversationMessages.splice(pos >= 0 ? pos : conversationMessages.length, 0, {
+          role: "system",
+          content: "[最高优先级系统指令] 这是一个创造性/设计/写作任务。你必须在本轮回复中直接输出完整的创造性内容（API 设计/PRD/商业计划书/技术文档等），覆盖用户要求的所有要点。不要调用任何工具、不要创建文件、不要搜索文件、不要恢复检查点、不要使用 sequential_thinking。你的语言能力本身就是完成这类任务的最佳工具。直接输出完整内容，不要分轮输出，不要以'接下来我会…'结尾。",
+        });
+      }
+
+      // ★ P0-5：Anthropic 原生路径一次性合并 volatile system 消息（skills 段 /
+      // 动态尾 / 创造性指令）进最后一条 user 消息。原因：convertMessagesToAnthropic
+      // 会把全部 system 消息提升进顶层 system 参数，而 Anthropic 缓存流 =
+      // system + messages 连续前缀——逐轮变化的 system 参数字节会毒化其后的
+      // history 缓存。合并后 system 参数 = frozen + ephemeral（会话内字节稳定）
+      // → history 可进缓存。
+      // 在此处（轮循环之前）一次性完成：轮内 budget warning 等后续 push 的
+      // user 消息不受影响（合并目标在它们之前）。
+      if (providers.some((p) => p.provider === "anthropic")) {
+        conversationMessages = mergeVolatileSystemIntoUser(
+          conversationMessages,
+          deps.volatileSystemStartIdx ?? 0,
+        );
+      }
+
       let finalReply = "";
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
@@ -3468,6 +3872,40 @@ export async function tryCallLLM(
               `[AgentModelExecutor] ⚠️ Cache stability: UNSTABLE at message ${stabilityResult.brokenAt} — ${stabilityResult.brokenReason}\n` +
               `  stablePrefix: ${stabilityResult.stablePrefixLength} msgs, hit tokens: ${stabilityResult.estimatedCacheHitTokens}, miss tokens: ${stabilityResult.estimatedCacheMissTokens}\n`
             );
+          }
+          // ★ P0-5：命中率摘要——每 10 次评估输出一行（stable 比例 + top brokenReasons），
+          // 让 96% 目标可实时观察（无需等 WebUI 聚合）。
+          stabilityEvalCount++;
+          if (stabilityEvalCount % 10 === 0) {
+            const hitRate = deps.promptCacheStability!.getHitRate();
+            const history = deps.promptCacheStability!.getHistory(50);
+            const broken = history.filter((h) => !h.isStable && h.brokenReason);
+            const reasonCounts = new Map<string, number>();
+            for (const h of broken) {
+              const key = h.brokenReason || "unknown";
+              reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
+            }
+            const topReasons = [...reasonCounts.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([r, c]) => `${r}(${c})`)
+              .join(", ") || "无";
+            process.stdout.write(
+              `[AgentModelExecutor] Cache hit rate: ${(hitRate * 100).toFixed(1)}% (${history.length - broken.length}/${history.length} stable, last 50 evals), top broken: ${topReasons}\n`
+            );
+          }
+          // ★ P0-5：CacheTracer token 加权命中率摘要（provider usage 真值，
+          // cache_read_input_tokens / (hit + miss)）。每 10 次评估输出一行。
+          if (deps.cacheTracer && deps.cacheTracer.size() > 0) {
+            const traceStats = deps.cacheTracer.stats();
+            const totalTokens = traceStats.totalCacheHitTokens + traceStats.totalCacheMissTokens;
+            if (totalTokens > 0) {
+              process.stdout.write(
+                `[AgentModelExecutor] Cache trace (token-weighted): ${(traceStats.overallHitRate * 100).toFixed(1)}% ` +
+                `(${traceStats.totalCacheHitTokens}/${totalTokens} tokens hit, ${traceStats.totalRequests} requests), ` +
+                `cost saved ~$${traceStats.totalEstimatedCostSaved.toFixed(4)}, latency saved ~${traceStats.totalEstimatedLatencySavedMs}ms\n`
+              );
+            }
           }
         } catch { /* best-effort — stability analysis must never block LLM calls */ }
       }
@@ -3592,9 +4030,15 @@ export async function tryCallLLM(
           }
         }
 
-        const tc: "auto" | "none" = "auto";
-        if (successfulToolCalls >= 4) {
-          process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1})\n`);
+        // ★ 2026-10-26 修复：nudge 阈值从 4 降到 2，且 nudge 后强制禁用工具调用。
+        //   创造性任务（API 设计/PRD/商业计划书）模型会过度调用工具
+        //   （shell_exec 查文件、file_read 读文件、file_create 写文件），
+        //   每次工具结果加入对话历史导致上下文爆炸（300K tokens/轮）。
+        //   model 对"请给出最终回复"的 nudge 响应很差，会继续调工具。
+        //   直接设置 tool_choice="none" 强制模型只输出文本，不再调工具。
+        const tc: "auto" | "none" = successfulToolCalls >= 2 ? "none" : "auto";
+        if (successfulToolCalls >= 2) {
+          process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
           conversationMessages.push({
             role: "user",
             content: PromptRegistry.getInstance().format("tool_loop.nudge_final_answer", {}),
@@ -3615,6 +4059,11 @@ export async function tryCallLLM(
           maxTokensBoost > 1
             ? { ...provider, maxTokens: Math.max(provider.maxTokens ?? 4096, 4096) * maxTokensBoost }
             : provider;
+        // ★ 2026-10-27 修复：tc="none" 时**不再**传空 tools 数组。tools 是请求体
+        //   固定段，逐轮在「有/无」之间翻转会击穿前缀缓存（nudge 在 2 次成功工具
+        //   调用后即触发 → 几乎每个编码轮都会翻转一次）。改为始终下发 tools +
+        //   显式 tool_choice:"none"（见 callLLMOnce 注释）；个别网关若无视该指令
+        //   仍返回 tool_calls，由下方 toolCallsNoneRefusals 兜底拒绝执行。
         const result = await callLLMOnce(callProvider, conversationMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
 
         if (!result) {
@@ -3678,10 +4127,12 @@ export async function tryCallLLM(
           if (classified.shouldCompact) {
             process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
+            // ★ P0-5：与主路径同布局——history 在前，skills 段 + 动态尾在后。
             conversationMessages = [
               { role: "system", content: stableSystemPrompt + ephemeralSuffix },
-              ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
               ...(deps.conversationHistory.get(sessionId) || []),
+              ...(skillsMessage ? [{ role: "system", content: skillsMessage }] : []),
+              ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
             ];
             if (imageAtts && imageAtts.length > 0) {
               const retryParts: ChatContent[] = [];
@@ -3692,6 +4143,20 @@ export async function tryCallLLM(
               conversationMessages.push({ role: "user", content: retryParts });
             } else {
               conversationMessages.push({ role: "user", content: message });
+            }
+            // ★ P0-5：重建后重新执行 Anthropic volatile system 合并（见主路径注释；
+            // 必须在 user push 之后，合并目标是当前 user 消息）。
+            // 压缩会缩短 history → skills/tail 索引前移，须按重建后的布局重算
+            // volatileSystemStartIdx（否则合并漏掉 skills/tail 消息）。
+            if (providers.some((p) => p.provider === "anthropic")) {
+              deps.volatileSystemStartIdx = conversationMessages.length
+                - 1 // 末尾 user 消息
+                - (skillsMessage ? 1 : 0)
+                - (dynamicSystemTail ? 1 : 0);
+              conversationMessages = mergeVolatileSystemIntoUser(
+                conversationMessages,
+                deps.volatileSystemStartIdx,
+              );
             }
           }
 
@@ -3880,7 +4345,40 @@ export async function tryCallLLM(
           continue;
         }
 
-        const toolCalls = assistantMsg.tool_calls;
+        // ★ 2026-10-27 兜底：tc="none" 时若网关无视 tool_choice（按规范回退默认
+        //   "auto"）而照常返回 tool_calls，则**拒绝执行**：把 assistant 消息与
+        //   对应的 tool 结果原样回灌（保持 OpenAI 消息格式合法——否则下一轮请求
+        //   会带无人应答的 tool_calls 被网关 400），并跳过本轮工具执行、进入下
+        //   一轮让模型在被拒绝后直接以文本收尾。语义与旧实现「tools 置空」一致，
+        //   但请求体 tools 段保持字节稳定，不再击穿前缀缓存。
+        //   为防个别网关持续无视（每轮都调工具），同一次调用最多容忍 1 轮拒绝
+        //   续跑，之后强制收尾，避免烧掉整个迭代预算。
+        let toolCalls = assistantMsg.tool_calls;
+        if (tc === "none" && toolCalls && toolCalls.length > 0) {
+          toolCallsNoneRefusals++;
+          const refusedNames = toolCalls.map((c) => c.function.name).join("、");
+          process.stdout.write(
+            `[AgentModelExecutor] Provider ignored tool_choice=none — refusing ${toolCalls.length} call(s) [${refusedNames}] (refusal #${toolCallsNoneRefusals})\n`,
+          );
+          conversationMessages.push(assistantMsg);
+          for (const refused of toolCalls) {
+            conversationMessages.push({
+              role: "tool",
+              tool_call_id: refused.id,
+              name: refused.function.name,
+              content:
+                "[系统] 本轮工具调用已被禁用（tool_choice=none），已拒绝执行。" +
+                "请直接用文本给出最终回复，不要再调用任何工具。",
+            });
+          }
+          if (toolCallsNoneRefusals > 1) {
+            if (!finalReply) {
+              finalReply = "（本轮工具调用已被系统禁用，模型未给出文本回复。请重试或换一种问法。）";
+            }
+            break;
+          }
+          continue;
+        }
 
         // Record token usage for real-time tracking (after XML tool-call parsing
         // so toolCalls count reflects both native and XML-parsed calls).
@@ -3915,6 +4413,24 @@ export async function tryCallLLM(
               } catch { /* best-effort */ }
             }
           }
+        }
+        // ★ P0-5：CacheTracer 记录真实 cache 命中 token（provider usage 真值）。
+        // cacheHitTokens 缺失时记 0（未上报 ≠ 未命中，但保守记 miss 便于观察）。
+        if (deps.cacheTracer) {
+          try {
+            const cacheExtras = cacheExtrasFromResult(result, provider.provider || provider.name);
+            const cacheHitTokens = cacheExtras.cacheHitTokens ?? 0;
+            const cacheMissTokens = Math.max(0, result.promptTokens - cacheHitTokens);
+            deps.cacheTracer.record({
+              sessionId,
+              provider: provider.provider as import("./prompt-cache-stability").CacheProvider,
+              model: provider.model,
+              cacheHitTokens,
+              cacheMissTokens,
+              requestId: undefined,
+              durationMs: result.responseMs,
+            });
+          } catch { /* best-effort */ }
         }
         // Check if LLM used web_search or tavily-search but user intent matches an installed skill
         // Also check if SearchPreprocessor auto-executed a search (searchPreDone)
@@ -3954,14 +4470,24 @@ export async function tryCallLLM(
           // user message semantically matches a skill-install or action intent,
           // we auto-trigger skill_search as a safety net.
           // Prefer semantic classification (embedding-based) over keyword matching.
+          // ★ 2026-10-26 修复：action_task 意图的置信度阈值从"任意正值"提高到 0.7，
+          //   否则分析类任务（如"设计API"、"项目管理"）会被误判为 action_task
+          //   （实测 score 0.51–0.57 就触发），导致无关技能被搜索和安装。
+          const MIN_SKILL_INSTALL_SCORE = 0.6;
+          const MIN_ACTION_TASK_SCORE = 0.7;
           let shouldTriggerSkillSearch = false;
           const classifier = deps.semanticIntentClassifier;
           if (classifier) {
             try {
               const intent = await classifier.classifyIntent(message);
-              if (intent && (intent.category === "skill_install" || intent.category === "action_task")) {
-                process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)}, auto-triggering skill_search\n`);
-                shouldTriggerSkillSearch = true;
+              if (intent) {
+                const threshold = intent.category === "skill_install" ? MIN_SKILL_INSTALL_SCORE : MIN_ACTION_TASK_SCORE;
+                if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score >= threshold) {
+                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (≥${threshold}), auto-triggering skill_search\n`);
+                  shouldTriggerSkillSearch = true;
+                } else if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score > 0) {
+                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (<${threshold}), skipping auto skill_search\n`);
+                }
               }
             } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
           }
@@ -4047,6 +4573,12 @@ export async function tryCallLLM(
               failedTools.length > 0 ||
               emptyResultTools.length > 0 ||
               hasActionIntentFn(message);
+            // ★ 2026-10-26 修复：创造性任务的首次响应可能较短但已包含实质内容
+            //   （1307 chars），不应触发 auto-continuation——续跑会额外消耗
+            //   60-100s（第二轮 LLM call），总时间超 300s。只有当创造性任务
+            //   的响应极短（< 300 chars，可能是确认/敷衍）时才续跑。
+            const isCreativeSubstantive = isCreativeTask && finalReply.length > 300;
+            process.stdout.write(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
             // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
             // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
             // （停顿检测抓不到）。真实案例：node -e 引号报错 + Docker 不可用，
@@ -4055,6 +4587,7 @@ export async function tryCallLLM(
             // 不该自动重试；extractToolFailure 也已把「等待审批」排除在 failedTools 外。
             const stalledAfterFailure = failedTools.length > 0;
             const shouldContinue =
+              !isCreativeSubstantive &&
               hasWorkContext &&
               (premature !== null ||
                 stalledAfterFailure ||
@@ -4898,6 +5431,16 @@ export async function tryCallLLM(
           // 体积上限：单个工具结果最多 TOOL_RESULT_MAX_CHARS 字符进入上下文。
           // 事故：email_list_inbox 单次 6920 字符、同一轮被重复调用 3 次，
           // 仅一个工具就吃掉约 20KB 上下文。
+          //
+          // ★ 2026-10-26 修复：sequential_thinking 工具结果不进入对话历史。
+          //   该工具每次调用返回完整 JSON + 最近 5 条思考上下文（~1500 字符），
+          //   一轮 13-15 次调用 = 20-22K 字符。这些思考痕迹被加入 conversationMessages
+          //   后，下一轮 LLM 调用要处理全部历史，导致 token 爆炸（185K-285K/轮）、
+          //   速度雪崩（12s→58s→141s），180s 超时内根本无法完成复杂任务。
+          //   思考痕迹已通过 trace 持久化，模型自身也记得思考内容，无需重复携带。
+          if (toolName === "sequential_thinking") {
+            return { role: "tool", tool_call_id: tc.id, name: toolName, content: "思考步骤已记录。请继续或给出最终回复。" };
+          }
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult) };
         };
 

@@ -16,14 +16,16 @@
 
 import { jitteredBackoff } from "./retry-utils";
 
-/** 同一 provider 的最大原地恢复周期数（对齐 hermes turn_recovery 5 cycles） */
-export const OVERLOAD_RECOVERY_MAX = 5;
-/** 首次等待基础值（ms） */
-export const OVERLOAD_RECOVERY_BASE_MS = 15_000;
-/** 普通退避等待上限（ms，对齐 hermes LIVE_RETRY_WAIT_CAP_S=60） */
-export const OVERLOAD_RECOVERY_CAP_MS = 60_000;
+/** 同一 provider 的最大原地恢复周期数（2026-10-26 从 5 降为 3：
+ *  实测 5 次 × 15-60s 等待 + 60s 超时 = 最多 375s，远超客户端超时。
+ *  3 次在保留瞬时过载恢复能力的同时，2 次失败后即可 failover 到备用 provider。） */
+export const OVERLOAD_RECOVERY_MAX = 3;
+/** 首次等待基础值（ms，2026-10-26 从 15s 降为 5s：加快 failover 决策） */
+export const OVERLOAD_RECOVERY_BASE_MS = 5_000;
+/** 普通退避等待上限（ms，2026-10-26 从 60s 降为 30s：避免单次等待过长） */
+export const OVERLOAD_RECOVERY_CAP_MS = 30_000;
 /** Retry-After 契约等待上限（ms；超出上限仍等待，但封顶，避免无限挂起） */
-export const RETRY_AFTER_CAP_MS = 120_000;
+export const RETRY_AFTER_CAP_MS = 60_000;
 
 /**
  * 参与阶梯判断的最小结构化错误描述。

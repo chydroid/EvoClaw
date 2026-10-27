@@ -254,17 +254,17 @@ describe("extractEmptyResult / looksLikeDetailedReport — 空结果却产出详
   });
 
   it("有实质数据时不判为空结果", () => {
-    expect(extractEmptyResult("t", { success: true, totalEmails: 12, categories: { a: 3 } })).toBeNull();
-    expect(extractEmptyResult("t", { success: true, emails: [{ uid: "1" }] })).toBeNull();
+    expect(extractEmptyResult("web_search", { success: true, totalEmails: 12, categories: { a: 3 } })).toBeNull();
+    expect(extractEmptyResult("web_search", { success: true, emails: [{ uid: "1" }] })).toBeNull();
   });
 
   it("失败结果不算空结果（避免两个分支叠加）", () => {
-    expect(extractEmptyResult("t", { success: false, error: "boom", totalEmails: 0 })).toBeNull();
+    expect(extractEmptyResult("web_search", { success: false, error: "boom", totalEmails: 0 })).toBeNull();
   });
 
   it("空数组与包装形态也能识别", () => {
-    expect(extractEmptyResult("t", [])).toBeTruthy();
-    expect(extractEmptyResult("t", { success: true, result: { totalEmails: 0 } })).toBeTruthy();
+    expect(extractEmptyResult("web_search", [])).toBeTruthy();
+    expect(extractEmptyResult("web_search", { success: true, result: { totalEmails: 0 } })).toBeTruthy();
   });
 
   it("looksLikeDetailedReport 的判定边界", () => {

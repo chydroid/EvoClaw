@@ -51,12 +51,12 @@ describe("isOverloadLadderEligible", () => {
 });
 
 describe("computeOverloadWait", () => {
-  it("无契约时：jittered backoff 落在 [15s, 90s] 内（15s 基数 ×2 + 0.5 jitter）", () => {
+  it("无契约时：jittered backoff 落在 [5s, 45s] 内（5s 基数 ×2 + 0.5 jitter，封顶 30s）", () => {
     const waits = Array.from({ length: 50 }, (_, i) => computeOverloadWait(i + 1, info({ type: "rate_limit" })));
     for (const w of waits) {
-      expect(w).toBeGreaterThanOrEqual(15_000);
-      // 基数 min(15s*2^(n-1), 60s) + jitter ≤ 0.5*基数
-      expect(w).toBeLessThanOrEqual(90_000 + 1);
+      expect(w).toBeGreaterThanOrEqual(5_000);
+      // 基数 min(5s*2^(n-1), 30s) + jitter ≤ 0.5*基数
+      expect(w).toBeLessThanOrEqual(45_000 + 1);
     }
     // 随周期单调不下降（指数退避，jitter 不破坏下限）
     for (let i = 1; i < waits.length; i++) {
@@ -64,14 +64,14 @@ describe("computeOverloadWait", () => {
     }
   });
 
-  it("有 Retry-After 契约时：尊重契约值（不超过 120s 上限）", () => {
+  it("有 Retry-After 契约时：尊重契约值（不超过 60s 上限）", () => {
     const w = computeOverloadWait(1, info({ type: "rate_limit", hasRetryAfterContract: true, backoffMs: 30_000 }));
     expect(w).toBe(30_000);
   });
 
-  it("契约值超上限时封顶 120s", () => {
+  it("契约值超上限时封顶 60s", () => {
     const w = computeOverloadWait(1, info({ type: "rate_limit", hasRetryAfterContract: true, backoffMs: 300_000 }));
-    expect(w).toBe(120_000);
+    expect(w).toBe(60_000);
   });
 
   it("契约值为 0/负 → 不等待（0s）", () => {

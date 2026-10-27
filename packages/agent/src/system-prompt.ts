@@ -191,6 +191,22 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   );
   sections.push("");
 
+  // ★ 2026-10-26 核心修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说/方案/指南）
+  //   必须在"真实性契约"之后、"Execution Discipline"之前插入，因为后者要求
+  //   "Use tools whenever they improve correctness"——对创造性任务这是错的。
+  //   放在此处覆盖 Execution Discipline 的工具优先引导。
+  sections.push("## 创造性任务直接输出（最高优先级）");
+  sections.push(
+    "当任务属于**创造性/设计/写作类**（API 设计、产品需求文档 PRD、商业计划书、技术文档、" +
+    "入门指南、短篇小说、创作、方案起草、需求分析、竞品分析、商业模式设计等），" +
+    "你必须**直接在回复中输出完整的创造性内容**——不要调用任何工具、不要创建文件、" +
+    "不要搜索文件、不要恢复检查点、不要使用 sequential_thinking。" +
+    "用户要在聊天中阅读你的完整回复，而不是下载一个文件。" +
+    "即使你拥有工具，对这类任务也**不应该使用**——你的语言能力本身就是完成这类任务的最佳工具。" +
+    "输出要求：结构清晰、内容完整、一次性给出全部交付物，不要分轮输出。"
+  );
+  sections.push("");
+
   // ── 执行纪律引导（对标 hermes agent/prompt_builder.py OPENAI_MODEL_EXECUTION_GUIDANCE）──
   // 核心目的：让模型真正"完成任务"而不是"谈论完成"。这些引导直接决定模型是：
   //   从记忆回答算术/哈希/时间 vs 用工具实际计算；
@@ -375,36 +391,21 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
       sections.push("- Adjust the total number of steps as your understanding evolves");
       sections.push("- Generate hypotheses and verify them before presenting conclusions");
     } else { // high
-      sections.push("ALWAYS use structured deep reasoning for any non-trivial task. Use the `sequential_thinking` tool extensively.");
+      sections.push("Use `sequential_thinking` for complex problems, but keep each thought concise (1-3 sentences). Cap total thoughts at 5-8 per round — excessive thinking inflates context and slows execution.");
       sections.push("");
-      sections.push("### Deep Reasoning Protocol");
-      sections.push("1. **Problem Decomposition** (2-3 thoughts):");
-      sections.push("   - Identify the core problem and all sub-problems");
-      sections.push("   - List constraints, assumptions, and unknowns");
-      sections.push("   - Enumerate possible approaches with pros/cons");
+      sections.push("### Deep Reasoning Protocol (brief steps only)");
+      sections.push("1. **Problem Decomposition** (1-2 thoughts):");
+      sections.push("   - Identify the core problem and constraints");
       sections.push("");
-      sections.push("2. **Hypothesis Generation** (1-2 thoughts):");
-      sections.push("   - Formulate a specific solution hypothesis");
-      sections.push("   - Identify what evidence would confirm/refute it");
+      sections.push("2. **Hypothesis & Plan** (1-2 thoughts):");
+      sections.push("   - Formulate a solution hypothesis");
+      sections.push("   - Plan the sequence of tool calls");
       sections.push("");
-      sections.push("3. **Execution Planning** (1-2 thoughts):");
-      sections.push("   - Plan the exact sequence of tool calls");
-      sections.push("   - Anticipate failure modes and prepare fallbacks");
+      sections.push("3. **Execute & Verify** (1-2 thoughts):");
+      sections.push("   - Execute and monitor for deviations");
+      sections.push("   - Verify the solution meets requirements");
       sections.push("");
-      sections.push("4. **Execution & Monitoring** (ongoing):");
-      sections.push("   - Execute steps while monitoring for deviations");
-      sections.push("   - Use isRevision=true when intermediate results contradict assumptions");
-      sections.push("   - Use branchFromThought to explore alternatives without losing progress");
-      sections.push("");
-      sections.push("5. **Verification & Reflection** (1-2 thoughts):");
-      sections.push("   - Verify the solution meets ALL original requirements");
-      sections.push("   - Reflect on what worked and what didn't");
-      sections.push("   - If verification fails, branch or revise and iterate");
-      sections.push("");
-      sections.push("### When to Branch or Revise");
-      sections.push("- **Revise** (isRevision=true): When new information contradicts a previous thought");
-      sections.push("- **Branch** (branchFromThought=N): When you want to explore an alternative without abandoning current progress");
-      sections.push("- **Extend** (needsMoreThoughts=true): When you reach the planned end but realize more analysis is needed");
+      sections.push("After 5-8 thinking steps, stop thinking and act. Over-analysis wastes time and tokens.");
     }
     sections.push("");
   }
@@ -465,6 +466,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- For search/web tasks: use `web_search` → `web_fetch` → browser tools, in that order.");
   sections.push("- For file/code tasks: use `file_create`, `shell_exec`, etc.");
   sections.push("- For translation/rewriting/summarization/explanation tasks: you can do these DIRECTLY with your language abilities — no tool needed. Just respond with the translated/rewritten/summarized content.");
+  // ★ 2026-10-26 修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说）
+  //   模型应直接在回复中输出完整内容，不要创建文件、不要搜索文件、不要恢复检查点。
+  //   实测 agnes-3.0-flash 对这类任务会先 shell_exec 查文件→file_read 读文件→
+  //   file_create 写文件→checkpoint_restore，5-9 轮 × 15-61s = 远超超时。
+  sections.push("- For creative/design/writing tasks (API design, PRD, business plan, technical docs, short stories, essays): respond DIRECTLY with the full content in your reply. Do NOT create files, do NOT search for files, do NOT restore checkpoints. The user wants to read your response, not download a file.");
   sections.push("- For math/calculation tasks: use `shell_exec` with Python, or compute directly if simple.");
   sections.push("- If built-in tools or your own capabilities work → done. If they fail or are insufficient → proceed to STEP 3.");
   sections.push("");

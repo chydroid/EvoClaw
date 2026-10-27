@@ -184,7 +184,9 @@ export class AgentModelExecutor {
   /**
    * ★ P0-2（2026-10-16 缓存命中改造）：每会话已激活的工具组（单调并集）。
    * 旧行为：buildOpenAITools 按**当前消息**做关键词激活，话题一换 tools JSON
-   * 逐轮漂移 → provider 缓存前缀（tools 是前缀第一段）永远失配。
+   * 逐轮漂移 → 请求体末尾的 tools 段（≈18K 字符 ≈5K token）每轮重算。
+   * ★ 2026-10-27 更正：tools 在请求体**末尾**（key 插入序位于 messages 之后），
+   * 因此旧行为丢掉的只是 tools 段自身的命中，**messages 前缀从未失配**。
    * 现行为：激活只增不减（会话级并集），同一会话稳态下 tools JSON 字节恒定，
    * 仅在首次有新组被激活时前移一次分叉点；clearChatHistory 时清空。
    */
@@ -244,6 +246,8 @@ export class AgentModelExecutor {
    *  稳定性，检测 anti-pattern（tools 抖动 / system 漂移 / message 顺序变更），
    *  输出命中/未命中原因日志。未接入 request path 前为死代码。 */
   private promptCacheStability: import("./prompt-cache-stability").PromptCacheStabilityManager | null = null;
+  /** ★ P0-5：真实 cache 命中追踪器（provider usage cache_read_input_tokens 真值） */
+  private cacheTracer: import("./cache-trace").CacheTracer | null = null;
   private acpHandler: import("./acp-delegation").ACPProtocolHandler | null = null;
   private observability: import("./agent-observability").AgentObservability | null = null;
   private computedStatusEngine: import("./computed-status").ComputedStatusEngine | null = null;
@@ -266,11 +270,6 @@ export class AgentModelExecutor {
    *  此前为单一实例字段，并发 chatInner 调用会互相覆盖，导致跨会话上下文泄漏。
    *  改为 Map 后每个会话拥有独立的上下文引擎结果。 */
   private _contextEngineResults = new Map<string, import("./context-engine").LayeredContextResult | null>();
-
-  /** ★ P0-4：每会话的 stableCapabilities 字符串（systemPrompt 后缀）。
-   *  由 chatInner 在 CE 组装时构建，同时传给 CE（skillsContext）和
-   *  tryCallLLM（fallback 路径的 stableSystemPrompt 后缀）——两路径逐字节一致。 */
-  private _stableCapabilitiesBySession = new Map<string, string>();
 
   /** 工具结果缓存，避免相同工具+参数的重复 LLM 调用 */
   private toolResultCache = new Map<string, { result: string; timestamp: number }>();
@@ -633,6 +632,28 @@ export class AgentModelExecutor {
   /** P0-4 缓存稳定化：skills prompt 字符串缓存（避免每次调用重新构建） */
   private _cachedSkillsPrompt: string | null = null;
   private _cachedSkillsPromptHash: string | null = null;
+
+  /**
+   * ★ P0-5（skill 按需加载）：已安装 skill > 阈值时，每轮只注入**相关性选中**
+   * 的 skill 元数据（top-K 相关 + 最近使用 top-3，上限 ~12），而非全量。
+   * 选择结果按 sessionId 粘性缓存——仅在 skill 集合变化或话题切换时重算，
+   * 避免逐轮漂移击穿 sys_skills 消息之后的缓存前缀。
+   */
+  private _skillSelectionBySession = new Map<string, {
+    names: string[];
+    topicHash: string;
+    skillSetHash: string;
+  }>();
+  /** skill 按需选择阈值：≤ 此数维持全量元数据（反正不大，且避免漏掉该用的 skill） */
+  private static readonly SKILL_SELECTION_THRESHOLD = 30;
+  /** 相关性命中上限（SkillIndex.search top-K） */
+  private static readonly SKILL_SELECTION_TOP_K = 8;
+  /** 最近使用保底数（useCount top-N，合并去重） */
+  private static readonly SKILL_SELECTION_RECENT = 3;
+  /** 选中总数上限 */
+  private static readonly SKILL_SELECTION_MAX = 12;
+  /** 话题切换信号阈值：top-1 命中 relevanceScore ≥ 此值且不在已选集合 → 重算 */
+  private static readonly SKILL_TOPIC_SWITCH_SCORE = 0.3;
   
   private pendingOperations = new Map<string, { sessionId: string; message: string; requestId: string; toolName: string; toolArgs: Record<string, unknown> }>();
   private pendingApprovalCommands = new Map<string, { command: string; rejectedAt: number }>();
@@ -743,6 +764,12 @@ export class AgentModelExecutor {
       const { PromptCacheStabilityManager } = require("./prompt-cache-stability");
       this.promptCacheStability = new PromptCacheStabilityManager();
     } catch { /* prompt cache stability not available */ }
+
+    // CacheTracer（P0-5：真实 cache 命中 token 追踪）
+    try {
+      const { CacheTracer } = require("./cache-trace");
+      this.cacheTracer = new CacheTracer();
+    } catch { /* cache tracer not available */ }
 
     // ACP Delegation
     try {
@@ -1001,12 +1028,9 @@ export class AgentModelExecutor {
       recordProviderSuccess: (id: string) => this.recordProviderSuccess(id),
       recordProviderFailure: (id: string, error: string, errorType?: string) => this.recordProviderFailure(id, error, errorType ?? "UNKNOWN"),
       getEventLedger: () => this.getEventLedger(),
-      buildSkillsPromptForRun: () => {
-        // P1-1 Bot Mode：按当前会话路由到的 agent 过滤 skills 白名单
-        const agentId = sessionId ? this._currentAgentBySession.get(sessionId) : undefined;
-        const allowlist = agentId ? this._agentSkillFilters.get(agentId) : undefined;
-        return this.buildSkillsPromptForRun(allowlist);
-      },
+      // ★ P0-5：buildSkillsPromptForRun 不再经 deps 传给 llm-caller——skills 段
+      // 现在由 executor 构建为 skillsMessage 独立消息传入（见 chat() 中构建处），
+      // 不再拼进 stableSystemPrompt / CE frozen 段。
       executionCheckpointStore: this.executionCheckpointStore,
       humanApprovalManager: this.humanApprovalManager ?? undefined,
       recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
@@ -1026,6 +1050,8 @@ export class AgentModelExecutor {
       toolGroupStore: this.sessionToolGroups,
       // P0-4：运行时缓存稳定性分析器
       promptCacheStability: this.promptCacheStability ?? undefined,
+      // P0-5：真实 cache 命中追踪器
+      cacheTracer: this.cacheTracer ?? undefined,
     };
   }
 
@@ -1335,7 +1361,7 @@ export class AgentModelExecutor {
     return this._cachedSkillNames;
   }
 
-  async buildSkillsPromptForRun(allowedSkillNames?: string[]): Promise<string> {
+  async buildSkillsPromptForRun(allowedSkillNames?: string[], message?: string, sessionId?: string): Promise<string> {
     const skills: Array<{ name: string; description: string; location: string }> = [];
     const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ id: string; name: string; description: string; installPath: string }>> }>("skillManager");
     if (skillManager) {
@@ -1355,13 +1381,30 @@ export class AgentModelExecutor {
       }
     }
 
+    // ★ P0-5（skill 按需加载）：已安装 skill > 阈值时，只注入**相关性选中**的
+    // skill 元数据（top-K 相关 + 最近使用 top-3，上限 ~12），而非全量。
+    // 300 skill 全量元数据 ≈ 15-25K tokens/请求；选中后 ≈ 600-1200 tokens。
+    // 选择结果按 sessionId 粘性缓存（_skillSelectionBySession），仅在
+    // skill 集合变化 / 话题切换时重算——重算只击穿 sys_skills 消息之后的
+    // 缓存前缀，frozen + history 不受影响。
+    let selected = skills;
+    if (
+      skills.length > AgentModelExecutor.SKILL_SELECTION_THRESHOLD &&
+      message && sessionId
+    ) {
+      const selection = this.selectSkillsForSession(skills, message, sessionId);
+      selected = skills.filter((s) => selection.names.includes(s.name));
+    }
+
     // P0-4 缓存稳定化（2026-10-26）：缓存 skills prompt 字符串。
     // skills prompt 被注入稳定 system prompt（stableCapabilities 段），
     // 每次重新构建即使内容相同也会触发异步 listSkills 调用，
     // 且在并发安装/卸载时可能返回不同结果导致缓存前缀变化。
     // 用 skills 列表的确定性哈希做缓存键：内容不变 → 返回缓存字符串。
-    const hash = skills.length > 0
-      ? skills.map(s => `${s.name}:${s.description}:${s.location}`).join("|")
+    // ★ P0-5：按需选择时哈希基于**选中子集**（selection.names 排序后拼接），
+    // 会话粘性下逐轮字节稳定；跨会话不同选择 → 缓存 miss → 重建（廉价）。
+    const hash = selected.length > 0
+      ? selected.map(s => `${s.name}:${s.description}:${s.location}`).join("|")
       : "";
     const allowKey = allowedSkillNames ? allowedSkillNames.slice().sort().join(",") : "";
     const cacheKey = `${hash}::${allowKey}`;
@@ -1370,10 +1413,88 @@ export class AgentModelExecutor {
       return this._cachedSkillsPrompt;
     }
 
-    const prompt = buildCompactSkillsPrompt(skills);
+    const prompt = buildCompactSkillsPrompt(selected);
     this._cachedSkillsPrompt = prompt;
     this._cachedSkillsPromptHash = cacheKey;
     return prompt;
+  }
+
+  /**
+   * ★ P0-5：skill 按需选择——TF-IDF 相关性（SkillIndex.search top-K）+ 最近使用
+   * top-3（useCount）合并去重，上限 SKILL_SELECTION_MAX。
+   *
+   * 会话粘性：选择结果缓存于 _skillSelectionBySession[sessionId]，仅在以下情况重算：
+   * 1. 会话首条消息（无缓存）；
+   * 2. skill 集合变化（listSkills hash 变化）且新装 skill 命中当前 topic；
+   * 3. 话题切换信号：当前消息 top-1 命中不在已选集合且 relevanceScore ≥ 阈值。
+   *
+   * 无 SkillIndex（未接线）时安全兜底为全量（不过滤）。
+   */
+  private selectSkillsForSession(
+    skills: Array<{ name: string; description: string; location: string }>,
+    message: string,
+    sessionId: string,
+  ): { names: string[]; topicHash: string; skillSetHash: string } {
+    const skillSetHash = skills.map(s => `${s.name}:${s.description}`).join("|");
+    const cached = this._skillSelectionBySession.get(sessionId);
+    const skillIndex = this.registry?.resolveService<{
+      search(query: string, limit?: number): Array<{ entry: { name: string }; relevanceScore: number }>;
+      getAll(): Array<{ name: string; useCount: number; lastUsedAt: number | null }>;
+    }>("skillIndex");
+
+    if (!skillIndex) {
+      // 安全兜底：无索引 → 全量（不过滤）
+      return { names: skills.map((s) => s.name), topicHash: "", skillSetHash };
+    }
+
+    // 搜索查询截断到前 500 字符：相关性信号在开头，且限制 TF-IDF 扫描成本
+    const query = message.slice(0, 500);
+    const results = skillIndex.search(query, AgentModelExecutor.SKILL_SELECTION_TOP_K + AgentModelExecutor.SKILL_SELECTION_RECENT);
+    const top1 = results[0];
+    const topicHash = top1 ? top1.entry.name : "";
+
+    // ── 会话粘性：可复用则直接返回 ──
+    if (cached) {
+      // 条件 3：话题切换信号——top-1 命中不在已选集合且 relevanceScore ≥ 阈值
+      const topicSwitched =
+        !!top1 &&
+        cached.topicHash !== topicHash &&
+        top1.relevanceScore >= AgentModelExecutor.SKILL_TOPIC_SWITCH_SCORE &&
+        !cached.names.includes(top1.entry.name);
+
+      if (!topicSwitched) {
+        if (cached.skillSetHash === skillSetHash) {
+          // 集合未变 → 完全复用
+          return { names: cached.names, topicHash: cached.topicHash, skillSetHash };
+        }
+        // 条件 2：skill 集合变化——仅当新装 skill 命中当前 topic 时重算，
+        // 否则沿用旧选择（更新 skillSetHash 避免逐轮重算）。
+        const skillNames = new Set(skills.map((s) => s.name));
+        const hasNewHit = results.some(
+          (r) => !cached.names.includes(r.entry.name) && skillNames.has(r.entry.name) &&
+            r.relevanceScore >= AgentModelExecutor.SKILL_TOPIC_SWITCH_SCORE,
+        );
+        if (!hasNewHit) {
+          const entry = { ...cached, skillSetHash };
+          this._skillSelectionBySession.set(sessionId, entry);
+          return entry;
+        }
+      }
+    }
+
+    // ── 重算：top-K 相关性 + 最近使用 top-3 合并去重，上限 MAX ──
+    const byRelevance = results.slice(0, AgentModelExecutor.SKILL_SELECTION_TOP_K).map((r) => r.entry.name);
+    const byRecent = skillIndex
+      .getAll()
+      .slice()
+      .sort((a, b) => (b.useCount || 0) - (a.useCount || 0) || (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))
+      .slice(0, AgentModelExecutor.SKILL_SELECTION_RECENT)
+      .map((e) => e.name);
+    const names = [...new Set([...byRelevance, ...byRecent])].slice(0, AgentModelExecutor.SKILL_SELECTION_MAX);
+
+    const entry = { names, topicHash, skillSetHash };
+    this._skillSelectionBySession.set(sessionId, entry);
+    return entry;
   }
 
   /**
@@ -1788,20 +1909,26 @@ export class AgentModelExecutor {
           // 活动上下文只保留最近 windowRounds 轮；更早轮次卸载到长期记忆，
           // 解除"长任务受最大上下文长度封顶"的限制。归档为 fire-and-forget，
           // 失败不影响本次会话加载。
+          // ★ 2026-10-26 修复：resume 调用使用更小的对话窗口（3 轮而非默认 10 轮）。
+          //   续跑任务的历史包含上一轮尝试的完整对话，10 轮会携带大量无用上下文
+          //   （重复的工具调用结果、失败的尝试等），导致每次 LLM 调用输入变大、
+          //   速度变慢、token 消耗指数级增长。3 轮足够保留"原始请求 + 最近进度"。
+          const isResume = !!(context?.resume);
+          const effectiveWindow = isResume ? Math.min(this.windowRounds, 3) : this.windowRounds;
           let windowedHistory = loadedHistory;
-          if (this.sessionArchive && this.windowRounds > 0) {
+          if (this.sessionArchive && effectiveWindow > 0) {
             const { keepFrom, newlyArchived } = await this.sessionArchive.archiveOlderTurns(
               sessionId,
               loadedHistory,
               this.memoryHub?.getLongTerm(),
-              this.windowRounds
+              effectiveWindow
             );
             if (keepFrom > 0) {
               windowedHistory = loadedHistory.slice(keepFrom);
               if (newlyArchived > 0) {
                 process.stdout.write(
-                  `[AgentModelExecutor] Session window: archived ${newlyArchived} old turn(s) to long-term memory, ` +
-                  `active window = last ${this.windowRounds} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
+                  `[AgentModelExecutor] Session window (${isResume ? "resume" : "normal"}): archived ${newlyArchived} old turn(s) to long-term memory, ` +
+                  `active window = last ${effectiveWindow} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
                 );
               }
             }
@@ -2371,24 +2498,29 @@ export class AgentModelExecutor {
     // This replaces the manual message assembly with ContextEngine.assembleContext()
     // which provides frozen/ephemeral prompt separation, bootstrap file loading,
     // token-aware context truncation, and cache control annotations.
+    //
+    // ★ P0-5：skills 段构建为**独立消息**（skillsMessage），不再拼进 CE frozen
+    // 段（skillsContext）或 fallback 的 stableSystemPrompt 后缀——由 llm-caller
+    // 放在 history 之后、动态尾之前。skill 集合变化只击穿该消息之后的字节，
+    // frozen + history 缓存不受影响。构建时机在 CE 块外（两条路径都需要）。
+    // P1-1 Bot Mode：按当前会话路由到的 agent 过滤 skills 白名单（与旧
+    // deps.buildSkillsPromptForRun 包装器行为一致）。
+    const agentSkillAllowlist = this._agentSkillFilters.get(agentId);
+    // ★ P0-5：传入当前消息 + sessionId 启用 skill 按需选择（>阈值时相关性 + 粘性）。
+    const skillsPrompt = await this.buildSkillsPromptForRun(agentSkillAllowlist, effectiveMessage, sessionId);
+    const skillsMessage = skillsPrompt
+      ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${PromptRegistry.getInstance().format("web.tool_strategy", {})}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\nWhen you need a skill's full instructions, call skill_view with level 2 before executing it.\nSkills not listed here can still be discovered via skill_search or skill_index_list.\n${skillsPrompt}`
+      : "";
+
     let contextEngineResult: import("./context-engine").LayeredContextResult | null = null;
     if (this.contextEngine) {
       try {
-        const skillsPrompt = await this.buildSkillsPromptForRun();
-        // ★ P0-4：构建 stableCapabilities 字符串（systemPrompt 后缀）。
-        // 此字符串同时用于 CE frozen 段（skillsContext）和 fallback 路径的
-        // stableSystemPrompt 后缀——两路径逐字节一致，切换不失效缓存。
-        // 格式必须与 llm-caller 旧实现完全一致。
-        const webToolStrategy = PromptRegistry.getInstance().format("web.tool_strategy", {});
-        const stableCapabilities = skillsPrompt
-          ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${webToolStrategy}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\n${skillsPrompt}`
-          : "";
-        this._stableCapabilitiesBySession.set(sessionId, stableCapabilities);
         const history = this.conversationHistory.get(sessionId) || [];
         contextEngineResult = this.contextEngine.assembleContext({
           conversationHistory: history,
           systemPrompt,
-          skillsContext: stableCapabilities || undefined,
+          // ★ P0-5：skills 段不再进 CE frozen（独立消息，见上）
+          skillsContext: undefined,
           // P0-3：记忆段改走动态尾（dynamicSystemTail），不再进 CE frozen 段
           memoryContext: undefined,
           compactionSummary: undefined, // handled by compactionManager separately
@@ -2636,7 +2768,7 @@ export class AgentModelExecutor {
     if (routedProviders.length > 0) {
       const primaryProvider = routedProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined);
+      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined, skillsMessage || undefined);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -3338,6 +3470,7 @@ export class AgentModelExecutor {
     searchPreDone: boolean = false,
     channel?: string,
     dynamicSystemTail?: string,
+    skillsMessage?: string,
   ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
     this.ensureToolResultCacheV2();
@@ -3365,7 +3498,6 @@ export class AgentModelExecutor {
     // 不与父会话共享父配置值。
     deps.iterationBudget = this.getIterationBudget(sessionId, this.isSubagentSessionId(sessionId));
     deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;
-    deps.stableCapabilities = this._stableCapabilitiesBySession.get(sessionId) ?? undefined;
     // Wire per-session abort signal (set by abortSession) so callLLMOnce and
     // the tryCallLLM main loop can react to cancellation.
     const sessionController = this.sessionAbortControllers.get(sessionId);
@@ -3373,7 +3505,7 @@ export class AgentModelExecutor {
       deps.abortSignal = sessionController.signal;
     }
     return tryCallLLMFn(deps, {
-      message, systemPrompt, dynamicSystemTail, installedSkills, providers, startTime,
+      message, systemPrompt, skillsMessage, dynamicSystemTail, installedSkills, providers, startTime,
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,
       abortSignal: sessionController?.signal,
@@ -4334,6 +4466,10 @@ export class AgentModelExecutor {
 
   getComputedStatus(): import("./computed-status").ComputedStatusEngine | null {
     return this.computedStatusEngine;
+  }
+
+  getSteerManager(): import("./steer-command").SteerManager | null {
+    return this.steerManager;
   }
 
   steer(sessionId: string, instruction: string, priority?: "low" | "normal" | "high" | "critical"): import("./steer-command").SteerResult | null {

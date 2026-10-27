@@ -188,6 +188,22 @@ export interface ContinuationContext {
 export function buildContinuationDirective(ctx: ContinuationContext): string {
   const lines: string[] = [];
 
+  // ★ 2026-10-26 修复：创造性任务的续跑指令改为"直接输出文本"而非"继续执行"。
+  //   模型对"继续执行"的理解是"调工具"，导致 shell_exec/file_read/file_create
+  //   等无关工具调用，5-9 轮 × 15-61s = 远超超时。创造性任务应直接在回复中
+  //   输出完整内容，不创建文件、不搜索文件、不恢复检查点。
+  const isCreativeTask = ctx.userMessage
+    && /(?:设计|编写|起草|撰写|创作|写一|写一篇|创作一篇|方案|指南|计划书|PRD|需求文档)/.test(ctx.userMessage);
+
+  if (isCreativeTask) {
+    lines.push("[系统指令] 你上一轮只给出了简短确认，但**任务尚未完成**。请**立即在回复中直接输出完整的创造性内容**——不要创建文件、不要搜索文件、不要恢复检查点、不要调用任何工具。用户要在聊天中阅读你的完整回复。");
+    if (ctx.userMessage) {
+      lines.push(`用户的目标是：${ctx.userMessage.slice(0, 300)}`);
+    }
+    lines.push("请直接在回复中输出完整内容，覆盖用户要求的所有要点。");
+    return lines.join("\n");
+  }
+
   lines.push("[系统指令] 你上一轮的回复把执行权交还给了用户，但**任务尚未完成**。请**立即继续执行**，不要再询问用户、不要以「回复继续」结尾。");
 
   if (ctx.userMessage) {

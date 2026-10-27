@@ -133,6 +133,18 @@ export async function analyzeUserIntent(
   // Quick shortcuts — no LLM needed
   if (!message || message.trim().length < 3) return [message];
 
+  // ★ 2026-10-26 修复：带编号需求的长消息（"要求：1）... 2）... 3）..."）
+  //   是单一任务的子需求，不是独立多任务。LLM 分析器对这类消息每次
+  //   都会额外烧一次 LLM 调用（无缓存、无 onProgress），复杂任务
+  //   （API 设计/PRD/商业计划书）的提示词都长这样，白白浪费 10-60s。
+  //   正则兜底 parseMultipleTasks 已能正确识别为单任务，直接走兜底。
+  const hasNumberedRequirements = /(?:要求|包括但不限于)[:：]?\s*\n?\s*[1１][)）.、]/.test(message)
+    || /\n\s*[1１][)）.、]\s/.test(message);
+  if (hasNumberedRequirements) {
+    const fallback = parseMultipleTasks(message);
+    if (fallback.length === 1) return fallback;
+  }
+
   const enabledProviders = deps.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
   if (enabledProviders.length === 0) {
     // No LLM available, fall back to treating as single task
@@ -704,7 +716,7 @@ export function computeDynamicToolLimit(
     /批量|batch/i,
     /对比.*分析|comparative.*analysis/i,
     /多步|multi.?step/i,
-    /完整.*流程|complete.*workflow/i,
+    /完整.*工作.*流程|complete.*workflow/i,
   ];
   const veryComplexPatterns = [
     /搜索.*整理.*报告/i,

@@ -219,7 +219,28 @@ function pickError(o: Record<string, unknown>): string | null {
  * 刻意只在 `success !== false` 时判定——失败由 extractToolFailure 处理，
  * 避免同一返回值同时触发两个分支、产生叠加噪音。
  */
-export function extractEmptyResult(_toolName: string, result: unknown): EmptyResultTool | null {
+/**
+ * 数据检索类工具白名单：只有这些工具的空结果才触发「empty_but_detailed」对账。
+ *
+ * 执行类工具（shell_exec / file_create / sequential_thinking / todo_list 等）
+ * 返回空输出是正常行为——「find 没找到文件」不等于「没有数据可查」。
+ * 若不区分，创造性任务（API 设计、PRD、商业计划书）中模型先 shell_exec
+ * 查文件（返回空），再基于自身知识生成带编号的设计文档，就会被误判为
+ * 「工具返回空但回复却有明细 → 编造数据」→ 触发自动续跑死亡螺旋
+ * （每轮 60K+ tokens，120s 超时内根本无法完成）。
+ */
+const DATA_RETRIEVAL_TOOLS = new Set([
+  "web_search", "tavily_search", "scrapling_fetch", "web_fetch",
+  "email_search", "email_list", "email_fetch",
+  "email_analyze", "email_summarize", // 邮件数据/分析工具：totalEmails=0 等空结果同样意味着"无数据可查"
+  "file_read", "file_search",
+  "skill_execute", // skill 可能返回数据
+  "knowledge_search", "semantic_search",
+]);
+
+export function extractEmptyResult(toolName: string, result: unknown): EmptyResultTool | null {
+  // ★ 2026-10-26 修复：非数据检索类工具的空结果不参与对账
+  if (!DATA_RETRIEVAL_TOOLS.has(toolName)) return null;
   if (result == null) return null;
   let obj: unknown = result;
   if (typeof obj === "string") {
@@ -232,7 +253,7 @@ export function extractEmptyResult(_toolName: string, result: unknown): EmptyRes
     }
   }
   if (Array.isArray(obj)) {
-    return obj.length === 0 ? { name: _toolName, field: "[] (空数组)" } : null;
+    return obj.length === 0 ? { name: toolName, field: "[] (空数组)" } : null;
   }
   if (typeof obj !== "object" || obj === null) return null;
 
@@ -244,7 +265,7 @@ export function extractEmptyResult(_toolName: string, result: unknown): EmptyRes
   for (const key of ["result", "data", "summary"]) {
     const nested = o[key];
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-      const inner = extractEmptyResult(_toolName, nested);
+      const inner = extractEmptyResult(toolName, nested);
       if (inner) return inner;
     }
   }
@@ -255,7 +276,7 @@ export function extractEmptyResult(_toolName: string, result: unknown): EmptyRes
     "count", "length", "numFound", "resultCount",
   ];
   for (const f of COUNT_FIELDS) {
-    if (o[f] === 0) return { name: _toolName, field: `${f}=0` };
+    if (o[f] === 0) return { name: toolName, field: `${f}=0` };
   }
 
   // 数据数组为空（只认"列表型"字段，避免把空 {} 配置误判）
@@ -272,7 +293,7 @@ export function extractEmptyResult(_toolName: string, result: unknown): EmptyRes
       if (v && typeof v === "object") return Object.keys(v as object).length > 0;
       return false;
     });
-    if (!anyNonEmpty) return { name: _toolName, field: `${present.join("/")} 全为空` };
+    if (!anyNonEmpty) return { name: toolName, field: `${present.join("/")} 全为空` };
   }
   return null;
 }
@@ -371,7 +392,12 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
   }
 
   // 情况三：声称完成，但本回合一个工具都没执行过（最典型的伪造完成态）
-  if (!toolsExecuted && hasActionIntent(lastUserMessage)) {
+  // ★ 2026-10-26 修复：创造性任务（API 设计/PRD/商业计划书/技术文档）
+  //   模型可以仅凭自身知识产出完整交付物，不需要工具。如果回复已经是
+  //   实质性内容（> 300 字符），不应强制要求工具调用——否则会触发
+  //   自动续跑，模型被迫调用 shell_exec/file_read 等无关工具，
+  //   每个结果加入对话历史导致 token 爆炸（300K+）和超时。
+  if (!toolsExecuted && hasActionIntent(lastUserMessage) && finalReply.length <= 300) {
     const notice =
       "\n\n---\n" +
       "⚠️ **更正**：上面的「已完成」并不成立——本次处理**没有实际执行任何工具操作**，该变更并未生效。\n" +

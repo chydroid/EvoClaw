@@ -154,6 +154,11 @@ const MODEL_NOT_FOUND_PATTERNS = [
   /model_not_found/i,
   /is.not.a.valid.model/i,
   /model.*deprecated/i,
+  // ★ 2026-10-26 修复：讯飞 MaaS API 返回 404 "no Route matched with those values"
+  //   表示该模型在 API 路由中不存在（永久错误），不应重试。之前未匹配此模式
+  //   导致过载阶梯每次重试该 provider 浪费 7s+11s+27s=45s。
+  /no.route.matched/i,
+  /route.*not.found/i,
 ];
 
 /** 请求体过大模式（413，transient，需压缩/裁剪后重试） */

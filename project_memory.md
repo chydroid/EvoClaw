@@ -202,11 +202,11 @@
   - **Phase 3 待做**：hermes 第三轮/第四轮勘察已落地的项（deadline / turn_liveness / repetition_guard / turn_overflow / turn_failure_copy / verification_evidence / empty_response_guard）已在 2026-10-18~19 落地。后续可探索：turn_author（author 角色系统）、turn_facade lease（lease 管理）、更多 gateway 插件（微博/QQ/钉钉已落地）。
 
 - **输入缓存命中率专项审计（2026-10-26，P0-4，两轮提交已推送 `307ea94` + `cf622c9`）**：Explore subagent 全面审计 LLM 请求路径的缓存稳定性，发现并修复 5 处缓存命中率杀手 + 2 处可观测性缺口：
-  - **断点重排（prompt-cache.ts）**：4 个断点中 3 个原放在最后 3 条非 system 消息上（最新 history + 当前 user 消息），逐轮变化永不命中。改为放在最早 3 条非 system 消息上（conversation 最老的稳定历史头部），断点可稳定命中。
+  - **断点重排（prompt-cache.ts）**：4 个断点中 3 个放在「末尾 user 消息之前」的最后 3 条非 system 消息上（即 history 尾部）。末尾 user 消息逐轮必变，永不挂断点；history 尾部在会话内字节恒定，断点稳定命中，缓存覆盖 system + 几乎全部 history。history 短于 3 条时槽位顺延给 skills/tail 消息（会话内同样稳定）。
   - **日期去重 + 移出 frozen 前缀（system-prompt.ts / context-engine.ts / agent-model-executor.ts）**："Today is" 同时出现在 system 主体（frozen 前缀）和 CE 易变尾中——既重复计费又跨日翻转 frozen hash。现统一移至动态尾（dynamicSystemTail），frozen 前缀完全不含时间信息，跨日字节恒定。
   - **Current task 去重（context-engine.ts）**：当前任务文本同时出现在 CE 易变尾（system 消息）和 user 消息中，重复计费。移除易变尾中的副本。
-  - **checkFn 会话豁免（llm-caller.ts）**：已进入会话单调并集（baseTools）的工具跳过 checkFn 过滤。checkFn 抖动（服务短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → provider 缓存全量失效。会话内已激活的工具保持在场，执行期 checkFn 兜底报错。
-  - **searchPreDone 不再移除搜索工具（llm-caller.ts，前次提交）**：tools 数组是请求前缀第一段，移除工具改变前缀字节 → 缓存全量失效。改为依赖 system prompt 提示引导模型跳过搜索。
+  - **checkFn 会话豁免（llm-caller.ts）**：已进入会话单调并集（baseTools）的工具跳过 checkFn 过滤。checkFn 抖动（服务短暂不可用→恢复）会导致 tools JSON 逐轮漂移 → 请求体末尾的 tools 段（≈18K 字符 ≈5K token）每轮重算。会话内已激活的工具保持在场，执行期 checkFn 兜底报错。
+  - **searchPreDone 不再移除搜索工具（llm-caller.ts，前次提交）**：tools 在请求体**末尾**（key 插入序位于 messages 之后），置空只会让 tools 段分叉、不影响 messages 前缀（含冻结系统提示）的命中。保留工具的真正原因是能力——移除后模型无法再发起任何合法搜索。改为依赖 system prompt 提示引导模型跳过搜索。
   - **可观测性接线（agent-model-executor.ts / llm-caller.ts / infrastructure/observability.ts）**：PromptCacheStabilityManager 从"仅导出未实例化"变为每轮 API 调用前 evaluate()，检测 anti-pattern 输出诊断日志；新增 recordLLMCacheHit() 发射 evoclaw_prompt_cache_hit_ratio gauge + hit/miss token counter（grafana 仪表盘此前引用但无代码发射）。
   - **未修的架构级问题（已全部修复，2026-10-26）**：
     - ① **Anthropic provider 路径**（`4097571`）：实现原生 `/v1/messages` API——端点归一化为 `{baseURL}/v1/messages`，system 提取为顶层字段，assistant tool_calls → tool_use content blocks，role:"tool" → tool_result blocks，非流式/流式响应格式转换，cache_read/creation token 透传。仅 `provider.provider === "anthropic"` 时启用，OpenAI 兼容路径零影响。

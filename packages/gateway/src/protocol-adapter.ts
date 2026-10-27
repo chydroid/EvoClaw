@@ -13,6 +13,7 @@ import { HealthAggregator } from "./health-aggregator";
 import { ReplyReferenceManager } from "./reply-reference";
 import { MessageTemplateEngine } from "./message-templates";
 import { CanvasHost } from "./canvas-host";
+import { detectCapabilityGap, detectUserCorrection, RecentSignalStore } from "./user-signal-detector";
 import { FeishuAdapter } from "./channels/feishu";
 import { MatrixAdapter } from "./channels/matrix";
 import { DingtalkAdapter } from "./channels/dingtalk";
@@ -721,6 +722,8 @@ export class ProtocolAdapter {
   private incomingWebhookManager: IncomingWebhookManager;
   private canvasHost: CanvasHost;
   private envSecrets: EnvSecretManager;
+  /** 用户信号（纠正/能力缺口）去重存储，防刷屏触发重复进化周期 */
+  private userSignalStore: RecentSignalStore;
 
   constructor(
     private registry: ServiceRegistry,
@@ -741,6 +744,50 @@ export class ProtocolAdapter {
     this.canvasHost = new CanvasHost();
     this.envSecrets = new EnvSecretManager();
     this.envSecrets.load();
+    this.userSignalStore = new RecentSignalStore();
+  }
+
+  /**
+   * 从对话结果中检测用户信号并广播给 EvolutionEngine：
+   *   - 用户纠正（user.correction_received）→ 学习 + 进化
+   *   - 能力缺口（capability.gap_detected）→ 学习 + 门槛受控进化
+   * 保守检测 + 5 分钟去重，误报成本由 EvolutionThreshold 冷却期兜底。
+   */
+  private publishUserSignals(userMessage: string, reply: string, sessionId: string): void {
+    try {
+      const correction = detectUserCorrection(userMessage);
+      if (correction) {
+        const key = `correction:${correction.title}`;
+        if (this.userSignalStore.isDuplicate(key)) return;
+        this.eventBus.publish("user.correction_received", {
+          title: correction.title,
+          context: correction.context,
+          correction: correction.correction,
+          source: "protocol-adapter:auto-detected",
+          taskId: `correction-${sessionId}-${Date.now()}`,
+          description: correction.title,
+          triggerEvolution: true,
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
+      }
+
+      const gap = detectCapabilityGap(reply, userMessage);
+      if (gap) {
+        const key = `gap:${gap.capability}`;
+        if (this.userSignalStore.isDuplicate(key)) return;
+        this.eventBus.publish("capability.gap_detected", {
+          capability: gap.capability,
+          title: gap.capability,
+          context: gap.context,
+          source: "protocol-adapter:auto-detected",
+          taskId: `gap-${sessionId}-${Date.now()}`,
+          description: `缺少能力: ${gap.capability}`,
+          triggerEvolution: true,
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
+      }
+    } catch (err) {
+      // 信号检测失败绝不影响对话主流程
+      console.debug("[ProtocolAdapter] user signal detection failed:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   getIncomingWebhookManager(): IncomingWebhookManager {
@@ -1727,6 +1774,26 @@ export class ProtocolAdapter {
     });
 
 
+
+    // GET /api/skills/lineage-stats — 技能版本血缘 DAG 统计
+    // 必须在 /api/skills/:id 之前注册，否则 "lineage-stats" 被当作 :id 匹配。
+    app.get("/api/skills/lineage-stats", (_req: Request, res: Response) => {
+      try {
+        const skillMgr = this.registry.resolveService<{ getLineageStats?: () => unknown }>("skillManager");
+        if (!skillMgr) {
+          res.status(503).json({ error: "skillManager not available" });
+          return;
+        }
+        if (!skillMgr.getLineageStats) {
+          res.json({ enabled: false, totalLineages: 0, activeLineages: 0, roots: 0 });
+          return;
+        }
+        const stats = skillMgr.getLineageStats();
+        res.json({ enabled: true, ...(stats as object || {}) });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
 
     app.get("/api/skills/:id", async (req: Request, res: Response) => {
       try {
@@ -3160,6 +3227,9 @@ export class ProtocolAdapter {
           // though no one is listening. The listener is removed in `finally`.
           let clientDisconnected = false;
           const onClose = () => {
+            // Node.js 16+: req.on("close") 在请求体消费完即触发，会误判客户端断开。
+            // 改用 res.on("close") + writableEnded 判断：仅当响应未写完时才算断开。
+            if (res.writableEnded) return;
             clientDisconnected = true;
             // 浏览器关闭：把在飞任务存检查点并转入后台续跑，而不是丢弃
             if (agentExecutor?.requestDurablePause) {
@@ -3168,7 +3238,7 @@ export class ProtocolAdapter {
               try { agentExecutor.abortSession(resolvedSessionId); } catch { /* best-effort */ }
             }
           };
-          req.on("close", onClose);
+          res.on("close", onClose);
           try {
             // Tell the user right away that a long-running task is being processed.
             sendSSE("working", { phase: "working", detail: "正在进行生成，请耐心等待..." });
@@ -3183,6 +3253,9 @@ export class ProtocolAdapter {
             // 不再设「失败式」硬超时：长任务会在超时 / 浏览器关闭时自动存检查点并转入后台续跑，
             // 不会以「请简化请求」失败告终。
             const result = await chatPromise;
+
+            // 检测用户纠正/能力缺口信号 → EvolutionEngine（学习 + 进化触发源）
+            this.publishUserSignals(message, result.reply, resolvedSessionId);
 
             let contextLimit = resolveContextLimit(result, agentExecutor, this.registry);
             let sessionTokensUsed = 0;
@@ -3241,7 +3314,7 @@ export class ProtocolAdapter {
               sendSSE("error", { message: `❌ 处理请求时出错：${errMsg}\n\n如需帮助，请前往 Ops 页面检查系统状态，或稍后重试。` });
             }
           } finally {
-            req.off("close", onClose);
+            res.off("close", onClose);
             if (keepAliveHandle) clearInterval(keepAliveHandle);
             try { res.end(); } catch (err) { console.debug("[ProtocolAdapter]", err instanceof Error ? err.message : String(err)); }
           }
@@ -3251,6 +3324,27 @@ export class ProtocolAdapter {
         // ── Non-streaming Mode (original behavior) ──
         const complexity = estimateTaskComplexity(message);
         process.stdout.write(`[ProtocolAdapter] Chat (non-stream) complexity: ${complexity.level}, autoSplit: ${complexity.shouldAutoSplit}\n`);
+
+        // ── Client disconnect detection (non-streaming) ──
+        // When the client times out / disconnects while the agent is still
+        // processing, abort the in-flight LLM fetch instead of burning tokens
+        // for a response nobody will receive. Mirrors the streaming path's
+        // onClose handler. The task is checkpointed for background resume
+        // rather than discarded.
+        let clientDisconnected = false;
+        const onClose = () => {
+          // Node.js 16+: req.on("close") 在请求体消费完即触发，会误判客户端断开。
+          // 改用 res.on("close") + writableEnded 判断：仅当响应未写完时才算断开。
+          if (res.writableEnded) return;
+          clientDisconnected = true;
+          if (agentExecutor?.requestDurablePause) {
+            try { agentExecutor.requestDurablePause(resolvedSessionId); } catch { /* best-effort */ }
+          } else if (agentExecutor?.abortSession) {
+            try { agentExecutor.abortSession(resolvedSessionId); } catch { /* best-effort */ }
+          }
+        };
+        res.on("close", onClose);
+
         const chatPromise = agentExecutor.chat(message, {
           sessionId: resolvedSessionId,
           attachments,
@@ -3268,6 +3362,18 @@ export class ProtocolAdapter {
           // 不再以超时失败；仅在真正异常时抛出（由外层兜住）
           throw raceErr;
         }
+
+        // ── Client may have disconnected while we were processing ──
+        // If so, skip sending the response — nobody is listening. The
+        // task was already checkpointed / aborted by onClose.
+        if (clientDisconnected) {
+          res.off("close", onClose);
+          console.debug("[ProtocolAdapter] Client disconnected (non-stream); response discarded");
+          return;
+        }
+        res.off("close", onClose);
+        // 检测用户纠正/能力缺口信号 → EvolutionEngine（非流式路径）
+        this.publishUserSignals(message, result.reply, resolvedSessionId);
         // 上下文窗口（分母）：优先用 agent 按**实际使用模型**解析出的真实值，
         // 它已考虑用户显式设置 > provider 上报 > 内置模型库 > 兜底的优先级。
         // 旧实现在此硬编码 128000 并用一张只认识 gpt-4o/claude-3 的过期表去猜，
@@ -3308,6 +3414,9 @@ export class ProtocolAdapter {
           sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
           files: result.files || [],
+          ...(("thinkingTrace" in result && (result as Record<string, unknown>).thinkingTrace)
+            ? { thinkingSteps: (result as Record<string, unknown>).thinkingTrace }
+            : {}),
         });
         return;
       } catch (err) {
@@ -3577,8 +3686,38 @@ export class ProtocolAdapter {
           return;
         }
         const result = await emailClient.sendEmail({ accountId, to, cc, bcc, subject, body, html, attachments });
+        if (!result?.success) {
+          // 外部依赖失败 → EvolutionEngine（external.failure_detected 自动触发源）
+          this.eventBus.publish("external.failure_detected", {
+            service: "email",
+            endpoint: String(to),
+            error: result?.messageId ? `sendEmail failed with messageId ${result.messageId}` : "sendEmail returned success:false",
+            context: `邮件发送失败: subject=${String(subject).slice(0, 120)}`,
+            source: "email-route",
+            severity: "high",
+            triggerEvolution: true,
+            taskId: `email-failure-${Date.now()}`,
+            description: `邮件发送失败: ${String(to)}`,
+          }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
+        }
         res.json(result);
       } catch (err) {
+        // 发送异常同样上报外部失败（fallback 为 null 表示无降级方案）
+        const failedTo = String((req.body?.to as string) || "unknown");
+        const failedSubject = String((req.body?.subject as string) || "");
+        this.eventBus.publish("external.failure_detected", {
+          service: "email",
+          endpoint: failedTo,
+          error: String(err),
+          context: `邮件发送异常: subject=${failedSubject.slice(0, 120)}`,
+          rootCause: err instanceof Error ? err.message : String(err),
+          fallback: null,
+          source: "email-route",
+          severity: "high",
+          triggerEvolution: true,
+          taskId: `email-failure-${Date.now()}`,
+          description: `邮件发送异常: ${failedTo}`,
+        }, "protocol-adapter").catch(() => { /* EventBus 内部已 allSettled，此处兜底 */ });
         res.status(500).json({ error: String(err) });
       }
     });
@@ -9031,25 +9170,6 @@ export class ProtocolAdapter {
         }
         const stats = executor.getEvolutionTriggerStats();
         res.json({ enabled: true, stats });
-      } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-      }
-    });
-
-    // GET /api/skills/lineage-stats — 技能版本血缘 DAG 统计
-    app.get("/api/skills/lineage-stats", (_req: Request, res: Response) => {
-      try {
-        const skillMgr = this.registry.resolveService<{ getLineageStats?: () => unknown }>("skillManager");
-        if (!skillMgr) {
-          res.status(503).json({ error: "skillManager not available" });
-          return;
-        }
-        if (!skillMgr.getLineageStats) {
-          res.json({ enabled: false, totalLineages: 0, activeLineages: 0, roots: 0 });
-          return;
-        }
-        const stats = skillMgr.getLineageStats();
-        res.json({ enabled: true, ...(stats as object || {}) });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }

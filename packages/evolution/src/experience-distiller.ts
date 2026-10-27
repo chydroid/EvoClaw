@@ -157,6 +157,24 @@ export class ExperienceDistiller {
             "experience-distiller",
           ).catch(() => {});
 
+          // 蒸馏出的新策略 = "发现了更优方法" → 广播给 EvolutionEngine
+          // （KNOWLEDGE_IMPROVEMENT_FOUND 的自动触发源；门槛受 evolutionThreshold 冷却期约束）
+          this.eventBus.publish(
+            "knowledge.improvement_found",
+            {
+              title: strategy.name,
+              description: strategy.description,
+              context: `从 ${cluster.length} 条轨迹蒸馏出针对 ${failurePattern} 的更优方法`,
+              newApproach: strategy.description,
+              recommendedAction: strategy.template,
+              improvedCode: strategy.template,
+              isOutdated: false,
+              source: "experience-distiller",
+              triggerEvolution: true,
+            },
+            "experience-distiller",
+          ).catch(() => {});
+
           strategies.push(strategy);
         }
       }

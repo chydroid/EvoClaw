@@ -49,7 +49,10 @@ export class SkillAutoGenerator {
 
     await this.ensureOutputDir();
 
-    const skillPath = join(this.outputDir, `${skillName}.md`);
+    // 目录布局 `<outputDir>/<skillName>/SKILL.md`：与 data/skills/ 下技能
+    // 结构一致，EvolutionApplier 可直接把 skillPath 交给 SkillManager.installSkill。
+    const skillDir = join(this.outputDir, skillName);
+    const skillPath = join(skillDir, "SKILL.md");
     await this.atomicWriteFile(skillPath, skillContent);
 
     return { skillPath, skillName };
